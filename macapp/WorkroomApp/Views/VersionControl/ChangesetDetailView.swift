@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 import WorkroomVCS
 
@@ -119,7 +120,7 @@ struct ChangesetDetailView: View {
       ProgressView().controlSize(.small)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     case .failed(let reason):
-      message("Changeset unavailable", systemImage: "exclamationmark.triangle", detail: reason)
+      MessageState("Changeset unavailable", systemImage: "exclamationmark.triangle", detail: reason)
     case .loaded(let changeset):
       loaded(changeset)
     }
@@ -130,7 +131,7 @@ struct ChangesetDetailView: View {
       header(changeset)
       Divider()
       if changeset.files.isEmpty {
-        message("No file changes", systemImage: "doc", detail: nil)
+        MessageState("No file changes", systemImage: "doc")
       } else {
         // A hand-rolled split (not `HSplitView`) so the divider shows a reliable resize cursor and
         // the list starts narrow. Live resize is driven by the AppKit `InspectorResizeHandle` (the
@@ -430,23 +431,8 @@ struct ChangesetDetailView: View {
         headerModeBinding: $diffMode,
         isFocused: isFocused, find: find, cannedDiffs: store.services.cannedDiffs)
     } else {
-      message("Select a file", systemImage: "sidebar.left", detail: nil)
+      MessageState("Select a file", systemImage: "sidebar.left")
     }
-  }
-
-  // MARK: Empty / error state
-
-  private func message(_ title: String, systemImage: String, detail: String?) -> some View {
-    VStack(spacing: 6) {
-      Image(systemName: systemImage).font(.title2).foregroundStyle(.tertiary)
-      Text(title).font(.callout).foregroundStyle(.secondary)
-      if let detail, !detail.isEmpty {
-        Text(detail).font(.footnote).foregroundStyle(.tertiary)
-          .multilineTextAlignment(.center).lineLimit(3)
-      }
-    }
-    .padding(24)
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
   }
 
   // MARK: Change-kind styling

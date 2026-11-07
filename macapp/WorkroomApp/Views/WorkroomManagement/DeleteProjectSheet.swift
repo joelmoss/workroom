@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 import WorkroomDomain
 
@@ -124,18 +125,14 @@ struct DeleteProjectSheet: View {
     // Everything is left-aligned for one consistent edge; only the action buttons keep the
     // platform-standard trailing placement. A plain (non-Form) layout is used deliberately —
     // the grouped Form right-aligned the field's value, which broke that alignment.
-    VStack(alignment: .leading, spacing: 16) {
+    VStack(alignment: .leading, spacing: Spacing.xl) {
       // Title + full path, led by a prominent warning glyph.
-      HStack(alignment: .top, spacing: 12) {
-        Image(systemName: "exclamationmark.triangle.fill")
-          .font(.system(size: 30))
-          .foregroundStyle(ThemeService.shared.tokens.warning)
-          .accessibilityHidden(true)
-        VStack(alignment: .leading, spacing: 4) {
+      WarningHeader(tokens: ThemeService.shared.tokens) {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
           Text("Delete project “\(project.displayName)”?")
-            .font(.headline)
+            .font(FontRole.title)
           Text(project.path)
-            .font(.callout)
+            .font(FontRole.body)
             .foregroundStyle(.secondary)
             .textSelection(.enabled)
             .lineLimit(1)
@@ -212,19 +209,15 @@ struct DeleteProjectSheet: View {
       }
 
       Divider()
-      HStack {
-        Spacer()
-        Button("Cancel") { onCancel() }
-          .keyboardShortcut(.cancelAction)
+      SheetFooter(onCancel: onCancel) {
         Button(deleteLabel) { onDelete(scope) }
-          .keyboardShortcut(.defaultAction)
-          .buttonStyle(.borderedProminent)
+          .sheetDefaultAction()
           .tint(.red)
           .disabled(!nameMatches)
           .accessibilityIdentifier("deleteProject.confirmButton")
       }
     }
-    .padding(20)
+    .padding(Spacing.xxl)
     .frame(width: 460)
     .onAppear { nameFieldFocused = true }
   }

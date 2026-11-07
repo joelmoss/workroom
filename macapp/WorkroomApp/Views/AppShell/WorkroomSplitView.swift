@@ -563,9 +563,8 @@ private struct WorkroomPaneTitleBar: View {
         .foregroundStyle(focused ? theme.tokens.accent : theme.tokens.fgMuted)
         .help(workroomName == nil ? "" : target.hostTooltip)
       if let reason = target.terminalUnavailability {
-        Image(systemName: "exclamationmark.triangle.fill")
+        WarningGlyph(tokens: theme.tokens)
           .font(.system(size: 10))
-          .foregroundStyle(theme.tokens.warning)
           .help(reason.title)
       }
       // `project / workroom`, same format and size as `WorkroomTabChip`. Full-strength on the focused

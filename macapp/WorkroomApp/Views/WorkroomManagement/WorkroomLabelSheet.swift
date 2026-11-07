@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 import WorkroomDomain
 
@@ -50,14 +51,14 @@ struct WorkroomLabelSheet: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      VStack(alignment: .leading, spacing: 4) {
+    VStack(alignment: .leading, spacing: Spacing.xl) {
+      VStack(alignment: .leading, spacing: Spacing.xs) {
         Text(workroom.label == nil ? "Set label for “\(workroom.name)”" : "Edit label")
-          .font(.headline)
+          .font(FontRole.title)
         Text(
           "A label is shown in place of the workroom name. The workroom and its branch are unchanged."
         )
-        .font(.callout)
+        .font(FontRole.body)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
       }
@@ -73,28 +74,23 @@ struct WorkroomLabelSheet: View {
         // Explain a disabled button when the reason isn't obvious (a collision); blank/unchanged are
         // self-evident, so they get no warning.
         if validation.collides {
-          Label(
+          WarningLabel(
             "Another workroom in this project already shows that name.",
-            systemImage: "exclamationmark.triangle.fill"
+            tokens: ThemeService.shared.tokens
           )
           .font(.caption)
-          .foregroundStyle(ThemeService.shared.tokens.warning)
         }
       }
 
       Divider()
-      HStack {
-        Spacer()
-        Button("Cancel") { onCancel() }
-          .keyboardShortcut(.cancelAction)
+      SheetFooter(onCancel: onCancel) {
         Button("Save", action: submit)
-          .keyboardShortcut(.defaultAction)
-          .buttonStyle(.borderedProminent)
+          .sheetDefaultAction()
           .disabled(!validation.canSubmit)
           .accessibilityIdentifier("workroomLabel.saveButton")
       }
     }
-    .padding(20)
+    .padding(Spacing.xxl)
     .frame(width: 380)
     .onAppear { fieldFocused = true }
   }

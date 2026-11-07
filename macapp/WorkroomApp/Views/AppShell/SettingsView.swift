@@ -1,5 +1,6 @@
 import AppKit
 import Defaults
+import DesignSystem
 import SwiftUI
 import WorkroomDomain
 
@@ -185,7 +186,9 @@ struct SettingsView: View {
   // hover. Drawn ourselves so it uses the theme tokens and doesn't depend on `List`'s built-in
   // selection. Settings rows inset by 6 (vs the project sidebar's 8).
   @ViewBuilder private func rowHighlight(_ pane: SettingsPane) -> some View {
-    RowHighlight(selected: selection == pane, hovered: hovered == pane, horizontalPadding: 6)
+    RowHighlight(
+      tokens: ThemeService.shared.tokens, selected: selection == pane, hovered: hovered == pane,
+      horizontalPadding: Spacing.s)
   }
 }
 

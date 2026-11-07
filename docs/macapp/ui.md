@@ -45,3 +45,35 @@ never shows.
 appcast to the fixed `appcast` release), `appcast-notes.sh` (re-renders a published item's
 `<description>` from the current release body — see [auto-update](../../CONTRIBUTING.md#auto-update-sparkle-appcast)), `make-icon.swift`
 (regenerates the `AppIcon` PNGs in `Assets.xcassets` — run `swift Scripts/make-icon.swift`).
+
+## App design tokens
+
+The Mac app's spacing, radii, type roles and shared components live in the `DesignSystem`
+package (`Packages/DesignSystem`), beside the theme colours (`ThemeTokens`). `DESIGN.md` is the
+web brand and does not apply to the app.
+
+| Token | Values (pt) |
+| --- | --- |
+| `Spacing` | `xxs` 2, `xs` 4, `s` 6, `m` 8, `l` 12, `xl` 16, `xxl` 20 (a sheet's padding), `xxxl` 24 |
+| `Radius` | `xs` 5 (small hover wells), `s` 6 (rows, picker rows), `m` 8 (cards, fields), `l` 12 (toasts) |
+
+`FontRole` names what text is for: `title` (a sheet's title, `.headline`), `body` (`.callout`),
+`detail` (`.footnote`), `noticeTitle` and `noticeBody` (an inline notice), `headerGlyph` (a sheet
+header's 30pt glyph) and `messageGlyph` (an empty pane's glyph, `.title2`).
+
+A token replaces a literal only where the value is the same. A value the scale lacks stays a
+literal: never round a view's metric to fit the scale. Many views still use literals; convert
+them when you touch them.
+
+Shared components (the warning components and the row styles take the theme as
+`tokens: ThemeService.shared.tokens`; the message and sheet components take none):
+
+- `MessageState`: an empty or failed pane, centred. `InlineMessage`: the one-line version at the
+  top of a list.
+- `SheetHeader` and `WarningHeader`: a sheet's 30pt glyph beside its title column.
+- `SheetFooter`: Cancel (Escape) then the sheet's primary button, which takes
+  `sheetDefaultAction()` to answer Return.
+- `Notice`: an inline warning panel. `WarningLabel`: a one-line warning. `WarningGlyph`: the
+  warning triangle alone, for a row or field.
+- `RowHighlight`: a source list's selected and hover fill. `pickerRowChrome`: a picker row's fill
+  and ring.

@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 import WorkroomDomain
 
@@ -259,14 +260,7 @@ private struct OpenTargetRow: View {
     // Slight indent so rows sit beneath their project header.
     .padding(.leading, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 6)
-        .fill(isHighlighted ? theme.tokens.surface : (hovered ? theme.tokens.hover : .clear))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 6)
-        .strokeBorder(isHighlighted ? theme.tokens.fgDim : .clear, lineWidth: 1.5)
-    )
+    .pickerRowChrome(tokens: theme.tokens, highlighted: isHighlighted, hovered: hovered)
     .help(target.path)
     .onHover { hovered = $0 }
   }

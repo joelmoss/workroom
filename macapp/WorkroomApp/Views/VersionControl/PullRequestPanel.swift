@@ -1,4 +1,5 @@
 import Defaults
+import DesignSystem
 import SwiftUI
 import WorkroomDomain
 import WorkroomVCS
@@ -84,8 +85,7 @@ struct PullRequestPanel: View {
     let copy = Self.ghWarningCopy(for: status)
     return VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 6) {
-        Image(systemName: "exclamationmark.triangle.fill")
-          .foregroundStyle(ThemeService.shared.tokens.warning)
+        WarningGlyph(tokens: ThemeService.shared.tokens)
           .accessibilityHidden(true)
         Text(copy.title)
           .fontWeight(.medium)

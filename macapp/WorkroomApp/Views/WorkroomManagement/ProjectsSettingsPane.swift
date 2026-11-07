@@ -1,4 +1,5 @@
 import Defaults
+import DesignSystem
 import SwiftUI
 import WorkroomDomain
 
@@ -197,8 +198,7 @@ private struct ProjectSettingsForm: View {
           .accessibilityIdentifier("projectSettings.baseBranch")
           // In the row, so a refusal moves nothing below it; the message is its tooltip.
           if let refused = draft.branchError {
-            Image(systemName: "exclamationmark.triangle.fill")
-              .foregroundStyle(ThemeService.shared.tokens.warning)
+            WarningGlyph(tokens: ThemeService.shared.tokens)
               .help("Not saved: \(refused)")
               .accessibilityLabel("Base branch not saved: \(refused)")
               .accessibilityIdentifier("projectSettings.baseBranchError")

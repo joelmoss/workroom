@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 
 /// The bottom-right toast surface for foreground notifications that arrive while the inspector is
@@ -126,8 +127,7 @@ private struct ToolWarningToastView: View {
 
   var body: some View {
     HStack(alignment: .top, spacing: 10) {
-      Image(systemName: "exclamationmark.triangle.fill")
-        .foregroundStyle(theme.tokens.warning)
+      WarningGlyph(tokens: theme.tokens)
       VStack(alignment: .leading, spacing: 2) {
         Text(warning.title).font(.callout).fontWeight(.semibold).lineLimit(2)
         Text(warning.detail).font(.caption).foregroundStyle(.secondary).lineLimit(4)

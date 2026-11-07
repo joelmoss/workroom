@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 import SyntaxHighlighting
 import WorkroomVCS
@@ -231,15 +232,15 @@ struct PlainFileViewer: View {
     case .text:
       fileBody
     case .empty:
-      message("Empty file", systemImage: "doc", detail: nil)
+      MessageState("Empty file", systemImage: "doc")
     case .binary:
-      message("Binary file", systemImage: "doc.fill", detail: "No preview available.")
+      MessageState("Binary file", systemImage: "doc.fill", detail: "No preview available.")
     case .tooLarge:
-      message(
+      MessageState(
         "File too large to preview", systemImage: "doc.fill",
         detail: "Open it in your editor (⌘-click in the Files list).")
     case .failed(let reason):
-      message("Can't open file", systemImage: "exclamationmark.triangle", detail: reason)
+      MessageState("Can't open file", systemImage: "exclamationmark.triangle", detail: reason)
     }
   }
 
@@ -292,20 +293,6 @@ struct PlainFileViewer: View {
           // Decorative: never absorb clicks/scroll from the web view or text view underneath.
           .allowsHitTesting(false)
       }
-    }
-  }
-
-  private func message(_ title: String, systemImage: String, detail: String?) -> some View {
-    centered {
-      VStack(spacing: 6) {
-        Image(systemName: systemImage).font(.title2).foregroundStyle(.tertiary)
-        Text(title).font(.callout).foregroundStyle(.secondary)
-        if let detail, !detail.isEmpty {
-          Text(detail).font(.footnote).foregroundStyle(.tertiary)
-            .multilineTextAlignment(.center).lineLimit(3)
-        }
-      }
-      .padding(24)
     }
   }
 

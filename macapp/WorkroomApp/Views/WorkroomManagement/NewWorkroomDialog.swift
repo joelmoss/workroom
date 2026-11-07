@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 import WorkroomDomain
 import WorkroomSystem
@@ -419,14 +420,7 @@ private struct PickerRow: View {
     .padding(.horizontal, 8)
     .padding(.vertical, 6)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 6)
-        .fill(isHighlighted ? theme.tokens.surface : (hovered ? theme.tokens.hover : .clear))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 6)
-        .strokeBorder(isHighlighted ? theme.tokens.fgDim : .clear, lineWidth: 1.5)
-    )
+    .pickerRowChrome(tokens: theme.tokens, highlighted: isHighlighted, hovered: hovered)
     .contentShape(Rectangle())
     .help(help)
     .onHover { hovered = $0 }

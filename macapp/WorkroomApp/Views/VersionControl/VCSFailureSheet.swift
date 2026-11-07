@@ -1,4 +1,5 @@
 import AppKit
+import DesignSystem
 import SwiftUI
 import WorkroomVCS
 
@@ -26,7 +27,7 @@ struct VCSFailureSheet: View {
   @State private var showDetails = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
+    VStack(alignment: .leading, spacing: Spacing.xl) {
       header
       // Selectable, because half of these messages contain a path or a command the user needs to get
       // into a terminal. `fixedSize(vertical:)` is what lets it wrap to its full height instead of
@@ -44,7 +45,7 @@ struct VCSFailureSheet: View {
       Divider()
       buttons
     }
-    .padding(20)
+    .padding(Spacing.xxl)
     .frame(width: 460)
     // `children: .contain` is load-bearing, not decoration. An `.accessibilityIdentifier` on a plain
     // container makes SwiftUI treat that container as ONE element and absorb everything inside it: the
@@ -55,14 +56,10 @@ struct VCSFailureSheet: View {
   }
 
   private var header: some View {
-    HStack(alignment: .top, spacing: 12) {
-      Image(systemName: "exclamationmark.triangle.fill")
-        .font(.system(size: 30))
-        .foregroundStyle(ThemeService.shared.tokens.warning)
-        .accessibilityHidden(true)
-      VStack(alignment: .leading, spacing: 2) {
+    WarningHeader(tokens: ThemeService.shared.tokens) {
+      VStack(alignment: .leading, spacing: Spacing.xxs) {
         Text(dialog.title)
-          .font(.headline)
+          .font(FontRole.title)
           .accessibilityIdentifier("vcs.failure.title")
         // Present only when the failure belongs to a workroom that is no longer selected. Without it the
         // dialog would describe the action but not its subject, which over a different workroom reads as
@@ -127,8 +124,7 @@ struct VCSFailureSheet: View {
           onDismiss()
           onRecover(recovery)
         }
-        .keyboardShortcut(.defaultAction)
-        .buttonStyle(.borderedProminent)
+        .sheetDefaultAction()
         .accessibilityIdentifier("vcs.failure.recover")
       }
     }

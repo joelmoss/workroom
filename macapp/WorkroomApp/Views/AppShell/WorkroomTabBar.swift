@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 import WorkroomDomain
 
@@ -481,9 +482,8 @@ private struct WorkroomTabChip: View {
         )
         .help(isRoot ? "" : target.hostTooltip)
       if let reason = target.terminalUnavailability {
-        Image(systemName: "exclamationmark.triangle.fill")
+        WarningGlyph(tokens: theme.tokens)
           .font(.system(size: 10))
-          .foregroundStyle(theme.tokens.warning)
           .help(reason.title)
       }
       // The project name and (for a workroom) its own name, separated by a slash — one shared, smaller

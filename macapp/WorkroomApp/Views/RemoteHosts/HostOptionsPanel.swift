@@ -1,4 +1,5 @@
 import Defaults
+import DesignSystem
 import SwiftUI
 import WorkroomDomain
 
@@ -38,13 +39,9 @@ struct HostOptionsPanel: View {
         }
         .formStyle(.grouped)
         Divider()
-        HStack {
-          Spacer()
-          Button("Cancel") { store.modals.pendingHostOptions = nil }
-            .keyboardShortcut(.cancelAction)
+        SheetFooter(onCancel: { store.modals.pendingHostOptions = nil }) {
           Button("Create Workroom") { create(provider) }
-            .keyboardShortcut(.defaultAction)
-            .buttonStyle(.borderedProminent)
+            .sheetDefaultAction()
             .accessibilityIdentifier("hostOptions.create")
         }
         .padding()

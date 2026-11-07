@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -144,17 +145,13 @@ struct AddProjectSheet: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      HStack(alignment: .top, spacing: 12) {
-        Image(systemName: "folder.badge.plus")
-          .font(.system(size: 30))
-          .foregroundStyle(.tint)
-          .accessibilityHidden(true)
-        VStack(alignment: .leading, spacing: 4) {
+    VStack(alignment: .leading, spacing: Spacing.xl) {
+      SheetHeader(systemImage: "folder.badge.plus", glyphStyle: .tint) {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
           Text("New Project")
-            .font(.headline)
+            .font(FontRole.title)
           Text("Add an existing repository, or create a new project directory.")
-            .font(.callout)
+            .font(FontRole.body)
             .foregroundStyle(.secondary)
         }
       }
@@ -165,18 +162,14 @@ struct AddProjectSheet: View {
       .onSubmit(submit)
 
       Divider()
-      HStack {
-        Spacer()
-        Button("Cancel") { onCancel() }
-          .keyboardShortcut(.cancelAction)
+      SheetFooter(onCancel: onCancel) {
         Button("Add Project", action: submit)
-          .keyboardShortcut(.defaultAction)
-          .buttonStyle(.borderedProminent)
+          .sheetDefaultAction()
           .disabled(!isValid)
           .accessibilityIdentifier("addProject.confirmButton")
       }
     }
-    .padding(20)
+    .padding(Spacing.xxl)
     .frame(width: 460)
     .onAppear { pathFieldFocused = true }
   }

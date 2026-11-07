@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 
 /// The sheet a remote provider's first-time setup is shown in (`ExeDevSetupSheet`,
@@ -31,14 +32,9 @@ struct RemoteSetupSheet<Steps: View>: View {
 
       Spacer(minLength: 20)
 
-      HStack {
-        Spacer()
-        Button("Cancel", action: onCancel)
-          .keyboardShortcut(.cancelAction)
-          .accessibilityIdentifier("\(identifier).cancel")
+      SheetFooter(cancelIdentifier: "\(identifier).cancel", onCancel: onCancel) {
         Button("Create Workroom", action: onCreate)
-          .buttonStyle(.borderedProminent)
-          .keyboardShortcut(.defaultAction)
+          .sheetDefaultAction()
           .disabled(!setup.isReady)
           .accessibilityIdentifier("\(identifier).create")
       }
@@ -121,9 +117,8 @@ struct SetupProblem: View {
   init(_ text: String) { self.text = text }
 
   var body: some View {
-    Label(text, systemImage: "exclamationmark.triangle.fill")
-      .font(.callout)
-      .foregroundStyle(ThemeService.shared.tokens.warning)
+    WarningLabel(text, tokens: ThemeService.shared.tokens)
+      .font(FontRole.body)
       .fixedSize(horizontal: false, vertical: true)
   }
 }

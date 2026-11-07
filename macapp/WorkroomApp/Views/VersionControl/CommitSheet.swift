@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 import WorkroomVCS
 
@@ -209,36 +210,25 @@ struct CommitSheet: View {
   /// `git status` afterwards and no other trace. This is not a refusal (committing from a partly
   /// staged file is legitimate), it is the difference between an informed choice and a silent loss.
   private func stagedLossNotice(_ paths: [String]) -> some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(alignment: .top, spacing: 8) {
-        Image(systemName: "exclamationmark.triangle.fill")
-          .foregroundStyle(ThemeService.shared.tokens.warning).accessibilityHidden(true)
-        VStack(alignment: .leading, spacing: 4) {
-          Text(
-            paths.count == 1
-              ? "1 file has staged changes that differ from the file on disk"
-              : "\(paths.count) files have staged changes that differ from the files on disk"
-          )
-          .font(.subheadline.weight(.semibold))
-          Text(
-            "Committing records what is on disk, so the version you staged will be replaced. "
-              + "Stage and commit it from the terminal instead if you meant to keep it."
-          )
-          .font(.caption).foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-          Text(paths.prefix(5).joined(separator: ", ") + (paths.count > 5 ? ", …" : ""))
-            .font(.system(.caption2, design: .monospaced))
-            .foregroundStyle(.secondary)
-            .textSelection(.enabled)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-      }
+    Notice(tokens: ThemeService.shared.tokens) {
+      Text(
+        paths.count == 1
+          ? "1 file has staged changes that differ from the file on disk"
+          : "\(paths.count) files have staged changes that differ from the files on disk"
+      )
+      .font(FontRole.noticeTitle)
+      Text(
+        "Committing records what is on disk, so the version you staged will be replaced. "
+          + "Stage and commit it from the terminal instead if you meant to keep it."
+      )
+      .font(FontRole.noticeBody).foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
+      Text(paths.prefix(5).joined(separator: ", ") + (paths.count > 5 ? ", …" : ""))
+        .font(.system(.caption2, design: .monospaced))
+        .foregroundStyle(.secondary)
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(10)
-    .background(
-      RoundedRectangle(cornerRadius: 6).fill(ThemeService.shared.tokens.warning.opacity(0.08))
-    )
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("commit.stagedLoss")
   }
@@ -348,8 +338,7 @@ struct CommitSheet: View {
           commitChecking(mode: .commit)
         }
       }
-      .keyboardShortcut(.defaultAction)
-      .buttonStyle(.borderedProminent)
+      .sheetDefaultAction()
       .disabled(
         blockedReason != nil || phase == .committing || isSpent || preflightState.isLoading
       )
@@ -584,19 +573,13 @@ private struct CommitFailureNotice: View {
   @State private var showDetails = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(alignment: .top, spacing: 8) {
-        Image(systemName: "exclamationmark.triangle.fill")
-          .foregroundStyle(ThemeService.shared.tokens.warning)
-          .accessibilityHidden(true)
-        VStack(alignment: .leading, spacing: 4) {
-          Text(dialog.title).font(.subheadline.weight(.semibold))
-          Text(dialog.message)
-            .font(.caption).foregroundStyle(.secondary)
-            .textSelection(.enabled)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-      }
+    Notice(tokens: ThemeService.shared.tokens) {
+      Text(dialog.title).font(FontRole.noticeTitle)
+      Text(dialog.message)
+        .font(FontRole.noticeBody).foregroundStyle(.secondary)
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+    } accessory: {
       // The hook's own output is the most useful text in the whole taxonomy — 40 lines of eslint
       // naming file and line — so it gets a scroll pane and selectable text, not a truncated line.
       if let details = dialog.details {
@@ -618,11 +601,6 @@ private struct CommitFailureNotice: View {
         .accessibilityIdentifier("commit.failure.detailsToggle")
       }
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(10)
-    .background(
-      RoundedRectangle(cornerRadius: 6).fill(ThemeService.shared.tokens.warning.opacity(0.08))
-    )
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("commit.failure")
   }

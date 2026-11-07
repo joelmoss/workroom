@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 
 /// The inspector's **Files** section body: the selected repo's working tree as a collapsible,
@@ -15,11 +16,11 @@ struct FilesPanel: View {
       if store.inspectorTargetID == nil {
         // No active workspace (nothing selected, or the selected workroom has no open tabs) — empty
         // out to match the detail pane's "No terminal" state rather than list a stale workroom.
-        placeholder("No open terminal", systemImage: "folder")
+        InlineMessage("No open terminal", systemImage: "folder")
       } else {
         switch model.state {
         case .idle:
-          placeholder("No workroom selected", systemImage: "folder")
+          InlineMessage("No workroom selected", systemImage: "folder")
         case .loading:
           HStack(spacing: 6) {
             ProgressView().controlSize(.small)
@@ -27,12 +28,12 @@ struct FilesPanel: View {
           }
           .padding(.vertical, 6).padding(.horizontal, 8)
         case .failed(let message):
-          placeholder(message, systemImage: "exclamationmark.triangle")
+          InlineMessage(message, systemImage: "exclamationmark.triangle")
         case .unavailable:
-          placeholder("Not a repository", systemImage: "folder.badge.questionmark")
+          InlineMessage("Not a repository", systemImage: "folder.badge.questionmark")
         case .loaded:
           if model.roots.isEmpty {
-            placeholder("No files", systemImage: "folder")
+            InlineMessage("No files", systemImage: "folder")
           } else {
             fileList
           }
@@ -86,14 +87,6 @@ struct FilesPanel: View {
       }
     }
     .padding(.vertical, 2)
-  }
-
-  private func placeholder(_ text: String, systemImage: String) -> some View {
-    HStack(spacing: 6) {
-      Image(systemName: systemImage).foregroundStyle(.tertiary)
-      Text(text).font(.callout).foregroundStyle(.secondary)
-    }
-    .padding(.vertical, 6).padding(.horizontal, 8)
   }
 }
 

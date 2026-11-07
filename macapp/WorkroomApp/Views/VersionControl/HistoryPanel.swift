@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 import WorkroomVCS
 
@@ -48,7 +49,7 @@ struct HistoryPanel: View {
       if store.inspectorTargetID == nil {
         // No active workspace (nothing selected, or the selected workroom has no open tabs) — empty
         // out to match the detail pane's "No terminal" state rather than show a stale last workroom.
-        placeholder("No open terminal", systemImage: "clock")
+        InlineMessage("No open terminal", systemImage: "clock", glyphStyle: .secondary)
       } else {
         switch model.state {
         case .idle:
@@ -59,10 +60,10 @@ struct HistoryPanel: View {
         case .loading where model.commits.isEmpty:
           loadingIndicator
         case .failed(let message):
-          placeholder(message, systemImage: "exclamationmark.triangle")
+          InlineMessage(message, systemImage: "exclamationmark.triangle", glyphStyle: .secondary)
         default:
           if model.commits.isEmpty {
-            placeholder("No history", systemImage: "clock")
+            InlineMessage("No history", systemImage: "clock", glyphStyle: .secondary)
           } else {
             list
           }
@@ -183,15 +184,6 @@ struct HistoryPanel: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     }
-  }
-
-  private func placeholder(_ text: String, systemImage: String) -> some View {
-    HStack(spacing: 6) {
-      Image(systemName: systemImage)
-      Text(text).font(.callout)
-    }
-    .foregroundStyle(.secondary)
-    .padding(.vertical, 6).padding(.horizontal, 8)
   }
 
   private var loadingIndicator: some View {

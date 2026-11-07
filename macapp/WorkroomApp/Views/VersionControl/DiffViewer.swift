@@ -1,4 +1,5 @@
 import Defaults
+import DesignSystem
 import SwiftUI
 import SyntaxHighlighting
 import WorkroomGit
@@ -303,15 +304,15 @@ struct DiffViewer: View {
     case .loaded(let diff):
       diffBody(diff)
     case .binary:
-      message("Binary file", systemImage: "doc.fill", detail: "No text diff to show.")
+      MessageState("Binary file", systemImage: "doc.fill", detail: "No text diff to show.")
     case .empty:
-      message("No changes", systemImage: "checkmark.circle", detail: nil)
+      MessageState("No changes", systemImage: "checkmark.circle")
     case .tooLarge:
-      message(
+      MessageState(
         "Diff too large to show", systemImage: "doc.fill",
         detail: "Open the file in your editor (⌘-click in the Files list).")
     case .failed(let reason):
-      message("Diff unavailable", systemImage: "exclamationmark.triangle", detail: reason)
+      MessageState("Diff unavailable", systemImage: "exclamationmark.triangle", detail: reason)
     }
   }
 
@@ -1050,21 +1051,7 @@ struct DiffViewer: View {
       .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  // MARK: Empty / error states
-
-  private func message(_ title: String, systemImage: String, detail: String?) -> some View {
-    centered {
-      VStack(spacing: 6) {
-        Image(systemName: systemImage).font(.title2).foregroundStyle(.tertiary)
-        Text(title).font(.callout).foregroundStyle(.secondary)
-        if let detail, !detail.isEmpty {
-          Text(detail).font(.footnote).foregroundStyle(.tertiary)
-            .multilineTextAlignment(.center).lineLimit(3)
-        }
-      }
-      .padding(24)
-    }
-  }
+  // MARK: Loading state
 
   private func centered<V: View>(@ViewBuilder _ inner: () -> V) -> some View {
     inner().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)

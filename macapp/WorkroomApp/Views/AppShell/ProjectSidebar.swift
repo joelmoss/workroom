@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 import UniformTypeIdentifiers
 import WorkroomDomain
@@ -442,8 +443,7 @@ struct ProjectSidebar: View {
       Spacer(minLength: 0)
       SidebarUnreadDot(source: .target(target.id))
       if target.isMissing {
-        Image(systemName: "exclamationmark.triangle.fill")
-          .foregroundStyle(ThemeService.shared.tokens.warning)
+        WarningGlyph(tokens: ThemeService.shared.tokens)
           .help("Project folder not found")
       }
       // OSC-9;4 spinner (any terminal's agent activity), to the LEFT of the run button — mirroring
@@ -519,8 +519,7 @@ struct ProjectSidebar: View {
       Spacer()
       SidebarUnreadDot(source: .target(targetID))
       ForEach(workroom.warnings, id: \.kind) { warning in
-        Image(systemName: "exclamationmark.triangle.fill")
-          .foregroundStyle(ThemeService.shared.tokens.warning)
+        WarningGlyph(tokens: ThemeService.shared.tokens)
           .help(warning.message)
       }
       // Spinner/delete slot: a progress spinner while the workroom's setup runs (issue #116) or a
@@ -792,11 +791,11 @@ struct ProjectSidebar: View {
   private func rowHighlight(hovered: Bool, selected: Bool) -> some View {
     if selected {
       WorkroomPaneCardBackground(highlighted: true)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .padding(.horizontal, 8)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.s))
+        .padding(.horizontal, Spacing.m)
         .padding(.vertical, 1)
     } else {
-      RowHighlight(selected: false, hovered: hovered, horizontalPadding: 8)
+      RowHighlight(tokens: ThemeService.shared.tokens, selected: false, hovered: hovered)
     }
   }
 
@@ -809,9 +808,9 @@ struct ProjectSidebar: View {
     let tokens = ThemeService.shared.tokens
     let fill: Color =
       selected ? tokens.hover : (hovered ? tokens.hover.opacity(0.5) : .clear)
-    RoundedRectangle(cornerRadius: 6)
+    RoundedRectangle(cornerRadius: Radius.s)
       .fill(fill)
-      .padding(.horizontal, 8)
+      .padding(.horizontal, Spacing.m)
       .padding(.vertical, 1)
   }
 

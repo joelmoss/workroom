@@ -191,20 +191,10 @@ struct FamilyRow: View {
     }
     .padding(.horizontal, 8)
     .padding(.vertical, 6)
-    .background(
-      RoundedRectangle(cornerRadius: 6)
-        .fill(
-          isActive
-            ? theme.tokens.accentSoft
-            : (isHighlighted ? theme.tokens.surface : (hovered ? theme.tokens.hover : .clear)))
-    )
     // Accent ring on the selected family; a fainter ring on the keyboard-highlighted row so ↑/↓
     // focus is visible even when it isn't the selected one.
-    .overlay(
-      RoundedRectangle(cornerRadius: 6)
-        .strokeBorder(
-          isActive ? theme.tokens.accent : (isHighlighted ? theme.tokens.fgDim : .clear),
-          lineWidth: 1.5)
+    .pickerRowChrome(
+      tokens: theme.tokens, highlighted: isHighlighted, hovered: hovered, active: isActive
     )
     .onHover { hovered = $0 }
     // Queryable by `ThemePickerUITests`. Two things here are load-bearing and were both found by

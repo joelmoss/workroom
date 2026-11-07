@@ -1,4 +1,5 @@
 import AppKit
+import DesignSystem
 import SwiftUI
 
 /// The app's error dialog: what went wrong in words a person can act on, a failed script's output
@@ -32,18 +33,14 @@ struct ErrorSheet: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      HStack(alignment: .top, spacing: 12) {
-        Image(systemName: "exclamationmark.triangle.fill")
-          .font(.system(size: 30))
-          .foregroundStyle(ThemeService.shared.tokens.warning)
-          .accessibilityHidden(true)
-        VStack(alignment: .leading, spacing: 6) {
+    VStack(alignment: .leading, spacing: Spacing.xl) {
+      WarningHeader(tokens: ThemeService.shared.tokens) {
+        VStack(alignment: .leading, spacing: Spacing.s) {
           Text(title)
-            .font(.headline)
+            .font(FontRole.title)
             .accessibilityIdentifier("error.title")
           Text(message)
-            .font(.callout)
+            .font(FontRole.body)
             .foregroundStyle(.secondary)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
@@ -109,7 +106,7 @@ struct ErrorSheet: View {
         }
       }
     }
-    .padding(20)
+    .padding(Spacing.xxl)
     // Wider for a script to read before approving it.
     .frame(width: script == nil ? 460 : 640)
     .onExitCommand(perform: dismissCancelling)
