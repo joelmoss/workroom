@@ -124,6 +124,8 @@ type Config struct {
 const ConfigEnv = "WORKROOM_CONFIG"
 
 // New creates a Config. If configPath is empty, uses $WORKROOM_CONFIG, else the default location.
+// The desktop app keeps one copy of that location (WorkroomDomain's CLIConfig), held to this one
+// by list.json's config_path.
 func New(configPath string) (*Config, error) {
 	if configPath == "" {
 		configPath = os.Getenv(ConfigEnv)

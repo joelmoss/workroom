@@ -310,7 +310,7 @@ final class WorkroomCLI: WorkroomCLIProtocol {
 
   /// The config Release and Nightly share, and the CLI uses outside the app.
   static var sharedConfigPath: String {
-    NSHomeDirectory() + "/.config/workroom/config.json"
+    CLIConfig.defaultPath(home: NSHomeDirectory())
   }
 
   /// Stores `descriptor` as the host descriptor of `project`, or of its `workroom` (#252), or

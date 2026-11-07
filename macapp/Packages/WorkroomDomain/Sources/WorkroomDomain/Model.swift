@@ -262,21 +262,26 @@ public struct Project: Codable, Identifiable, Hashable, Sendable {
   public var host: HostDescriptor? = nil
   /// The branch new workrooms start from, origin's copy first; nil means origin's default branch.
   public var baseBranch: String? = nil
+  /// Whether the root has a `.worktreeinclude`, as the CLI's `HasIncludeFile` sees it. Nil from a
+  /// `list --warnings=none`, which reads nothing but the config.
+  public var hasInclude: Bool? = nil
 
   public init(
     path: String, vcs: String, workrooms: [Workroom], host: HostDescriptor? = nil,
-    baseBranch: String? = nil
+    baseBranch: String? = nil, hasInclude: Bool? = nil
   ) {
     self.path = path
     self.vcs = vcs
     self.workrooms = workrooms
     self.host = host
     self.baseBranch = baseBranch
+    self.hasInclude = hasInclude
   }
 
   enum CodingKeys: String, CodingKey {
     case path, vcs, workrooms, host
     case baseBranch = "base_branch"
+    case hasInclude = "has_include"
   }
 
   public var id: String { path }
@@ -521,6 +526,15 @@ public enum WorkroomCLIError: LocalizedError {
   /// (the base branch changed in between), so it starts over as a Try Again.
   public static func isUnusableStartCommit(_ error: any Error) -> Bool {
     (error as? WorkroomCLIError)?.kind == "StartCommitUnusable"
+  }
+}
+
+/// Where the CLI keeps its config when nothing names another (`WORKROOM_CONFIG`): the one Release
+/// and Nightly share. Go's `config.New` owns the layout; `CLIContractTests` holds this copy to it
+/// through `list.json`'s `config_path`, which the CLI wrote under the home `/Users/dev`.
+public enum CLIConfig {
+  public static func defaultPath(home: String) -> String {
+    home + "/.config/workroom/config.json"
   }
 }
 

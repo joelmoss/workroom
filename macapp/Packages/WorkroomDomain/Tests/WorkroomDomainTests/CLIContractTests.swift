@@ -50,8 +50,10 @@ final class CLIContractTests: XCTestCase {
     let list = try decode(ListResponse.self, "list.json")
     XCTAssertEqual(list.workroomsDir, "/Users/dev/workrooms")
     XCTAssertEqual(list.configPath, "/Users/dev/.config/workroom/config.json")
+    XCTAssertEqual(list.configPath, CLIConfig.defaultPath(home: "/Users/dev"))
     XCTAssertEqual(list.baseBranch, "main")
     XCTAssertEqual(list.projects.map(\.path), ["/Users/dev/src/app", "/Users/dev/src/empty"])
+    XCTAssertEqual(list.projects.map(\.hasInclude), [true, false])
 
     let app = list.projects[0]
     XCTAssertEqual(app.vcs, "git")
