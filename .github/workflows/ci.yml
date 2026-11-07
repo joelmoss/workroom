@@ -107,9 +107,15 @@ jobs:
       scripts: ${{ needs.changes.outputs.scripts != 'false' }}
 
   # `needs` lists every other call, so a red master never publishes; add a new one here too. Not
-  # `changes`, which a push skips: a skipped need would skip this job too.
+  # `changes`, which a push skips. The `if` checks the needs' results itself: the implicit
+  # `success()` also skips a job when an ancestor of its needs was skipped (actions/runner#491), and
+  # every push skips `changes`. A push runs every call, so none is skipped short of a cancel.
   docs:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: >-
+      ${{ !cancelled()
+      && !contains(needs.*.result, 'failure')
+      && !contains(needs.*.result, 'cancelled')
+      && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
     needs: [actions, go, rust, app]
     permissions: {}
     uses: ./.github/workflows/ci-docs.yml
