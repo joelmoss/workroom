@@ -20,7 +20,7 @@ the test fail for unrelated reasons. Run with the command sandbox disabled.
 
 Release artifacts are gated by `app-test-scripts`. `app-release` deliberately does not depend on
 Debug-hosted `app-test`; the release/nightly workflows invoke app and package tests explicitly.
-Read the Makefile's release-target comment before changing this relationship.
+Read the release-target comment in `mk/app.mk` before changing this relationship.
 
 `make app-format` rewrites the Swift paths selected by the Makefile; `make app-lint` enforces strict
 formatting. The Xcode pre-build formatting warnings are non-fatal and do not replace that gate.

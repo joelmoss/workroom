@@ -17,8 +17,9 @@ set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$DIR/../.." && pwd)"
 # Overridable so the suite can be pointed at modified copies — used to confirm these cases
-# actually FAIL against a drifted Makefile/workflow rather than passing vacuously.
-MAKEFILE="${TEST_INVARIANTS_MAKEFILE:-$ROOT/Makefile}"
+# actually FAIL against a drifted Makefile/workflow rather than passing vacuously. The app targets
+# and their variables live in mk/app.mk, which the root Makefile includes.
+MAKEFILE="${TEST_INVARIANTS_MAKEFILE:-$ROOT/mk/app.mk}"
 WORKFLOWS_DIR="${TEST_INVARIANTS_WORKFLOWS_DIR:-$ROOT/.github/workflows}"
 fails=0
 

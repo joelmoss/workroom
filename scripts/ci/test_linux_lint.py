@@ -11,7 +11,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RUST = re.search(r"^VCS_RUST := (.+)$", (ROOT / "Makefile").read_text(), re.M)[1]
+RUST = re.search(r"^VCS_RUST := (.+)$", (ROOT / "mk" / "vcs.mk").read_text(), re.M)[1]
 STUB = '''#!{python}
 import hashlib, json, os, pathlib, sys
 name = pathlib.Path(sys.argv[0]).name

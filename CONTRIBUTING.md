@@ -193,7 +193,8 @@ workroom/
 ├── .goreleaser.yml          # CLI cross-platform build/release config
 ├── .golangci.yml            # Linter config
 ├── install.sh / install.ps1 # Standalone CLI installers
-└── Makefile                 # Dev tasks: app-* (macOS app), cli-* (Go engine) and vcs-lint (Rust)
+├── Makefile                 # Dev tasks: app-* (macOS app), cli-* (Go engine) and vcs-lint (Rust)
+└── mk/                      # The Makefile's targets, one file per area (cli, docs, actions, vcs, app)
 ```
 
 ### The macOS app architecture
