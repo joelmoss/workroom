@@ -453,7 +453,7 @@ The [runtime reference](docs/macapp/runtime.md) links the libghostty integration
 
 ```bash
 # Build the binary (version injected from git tags via ldflags)
-make cli-build              # → ./workroom
+make cli-build              # → bin/workroom
 
 # Run the full test suite
 make cli-test               # go test ./...
@@ -469,7 +469,7 @@ make cli-install
 make cli-clean
 ```
 
-Raw Go also works: `go build -o workroom .`, `go test ./...`. The version string defaults to `dev`
+Raw Go also works: `go build -o bin/workroom .`, `go test ./...`. The version string defaults to `dev`
 when built without ldflags (which disables `workroom update`).
 
 **Where to make changes:**
@@ -503,7 +503,7 @@ executor and a temp config — no real repo required.
 | `app-release` | Build → sign → notarize → staple → DMG (full release) |
 | `app-icon` | Regenerate the AppIcon PNGs |
 | `app-clean` | Remove `DerivedData` + the `.xcodeproj` |
-| `cli-build` | Build `./workroom` with version injected |
+| `cli-build` | Build `bin/workroom` with version injected |
 | `cli-test` | `go test ./...` |
 | `cli-install` | `go install` into `$GOBIN` |
 | `cli-lint` | `golangci-lint run` |

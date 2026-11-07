@@ -2,8 +2,9 @@
 
 .PHONY: cli-build cli-test cli-install cli-lint cli-clean
 
+# bin/ rather than the repo root, so a built binary never sits beside the sources (gitignored).
 cli-build: ## Build the workroom binary (version injected)
-	go build -ldflags "-X main.version=$(VERSION)" -o workroom .
+	go build -ldflags "-X main.version=$(VERSION)" -o bin/workroom .
 
 cli-test: ## Run the Go tests
 	go test ./...
@@ -20,4 +21,4 @@ cli-lint: ## Lint Go with golangci-lint (analyzers + formatters)
 	golangci-lint fmt --diff
 
 cli-clean: ## Remove the built binary
-	rm -f workroom
+	rm -f bin/workroom
