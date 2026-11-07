@@ -86,6 +86,9 @@ The area on screen that shows one tab.
 The strip along the bottom of a pane about that pane alone: its tab's live state and the coding agent running in it.
 _Avoid_: Status bar, terminal footer
 
+**Pane host**:
+What a pane asks about where it is shown, and acts through: the workroom window it belongs to (also when the pane is popped out into a window of its own), or the Quick Terminal (`PaneHost`). A pane reaches no further into either than its host offers.
+
 **Session**:
 A persistent pseudo-terminal held by workroomd, so a pane's shell outlives the pane, the window and the app.
 
