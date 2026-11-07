@@ -228,6 +228,44 @@ final class WorkroomLabelTests: XCTestCase {
       "a since-deleted target resolves empty so callers fall back to the stored snapshot")
   }
 
+  private func note(_ targetID: TerminalTarget.ID, source: String, episode: String? = nil)
+    -> WorkroomNotification
+  {
+    WorkroomNotification(
+      id: UUID(), targetID: targetID, tabID: UUID(), source: source, title: "T", body: nil,
+      date: Date(timeIntervalSince1970: 0), count: 1, episode: episode)
+  }
+
+  func testResolvedNotificationSourceTracksARename() {
+    var fox = Workroom(name: "fox", path: "/p/fox", vcsName: "workroom/fox", warnings: [])
+    fox.label = "Auth"
+    let item = note(.workroom(project: "/p", name: "fox"), source: "p / fox")
+    XCTAssertEqual(
+      resolvedNotificationSource(
+        item, projects: [Project(path: "/p", vcs: "git", workrooms: [fox])]), "p / Auth")
+    fox.label = "Login"
+    XCTAssertEqual(
+      resolvedNotificationSource(
+        item, projects: [Project(path: "/p", vcs: "git", workrooms: [fox])]), "p / Login",
+      "the label is read live, not the snapshot taken when the notification was raised")
+  }
+
+  func testResolvedNotificationSourceFallsBackToTheSnapshotForADeletedTarget() {
+    let projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    let item = note(.workroom(project: "/p", name: "ghost"), source: "p / ghost")
+    XCTAssertEqual(resolvedNotificationSource(item, projects: projects), "p / ghost")
+  }
+
+  func testResolvedNotificationSourcePassesANeedsYouAlertThrough() {
+    var fox = Workroom(name: "fox", path: "/p/fox", vcsName: "workroom/fox", warnings: [])
+    fox.label = "Auth"
+    let projects = [Project(path: "/p", vcs: "git", workrooms: [fox])]
+    let item = note(.workroom(project: "/p", name: "fox"), source: "p", episode: "e1")
+    XCTAssertEqual(
+      resolvedNotificationSource(item, projects: projects), "p",
+      "a needs-you alert's title names its place, so its source stays what the title leaves out")
+  }
+
   // MARK: Sheet validation
 
   func testSheetValidation() {

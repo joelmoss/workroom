@@ -1,17 +1,32 @@
 import DesignSystem
 import SwiftUI
+import WorkroomDomain
 
-/// Resolve a notification's origin label from the live model so a workroom's display label
+/// Resolve a notification's origin label from the live project list so a workroom's display label
 /// (issue #41) shows and tracks renames; falls back to the snapshot captured on the record when the
 /// target no longer exists (a since-deleted workroom keeps its last-known name). Shared by
-/// `NotificationsList` and `SidebarNotificationStrip` so both surfaces show identical labels.
+/// `NotificationsList` and `SidebarNotificationStrip` so both surfaces show identical labels. It
+/// takes the app-wide `ProjectStore`'s list, not a window, so the menu bar lists with none open.
+func resolvedNotificationSource(_ item: WorkroomNotification, projects: [Project]) -> String {
+  resolvedNotificationSource(item) {
+    AppStore.notificationSource(forTargetID: item.targetID, in: projects)
+  }
+}
+
+/// The same label resolved through a window's pane host, for the toasts it shows.
 @MainActor func resolvedNotificationSource(_ host: any PaneHost, _ item: WorkroomNotification)
+  -> String
+{
+  resolvedNotificationSource(item) { host.notificationSource(forTargetID: item.targetID) }
+}
+
+private func resolvedNotificationSource(_ item: WorkroomNotification, live: () -> String)
   -> String
 {
   // A "needs you" alert's title names its place, so its source is only what the title leaves out.
   if item.episode != nil { return item.source }
-  let live = host.notificationSource(forTargetID: item.targetID)
-  return live.isEmpty ? item.source : live
+  let resolved = live()
+  return resolved.isEmpty ? item.source : resolved
 }
 
 /// Open a notification's terminal wherever it lives (`WindowRegistry.open`, which also dismisses
@@ -29,7 +44,7 @@ import SwiftUI
 /// no read state: tapping a row opens the terminal it came from (which also dismisses it), then runs
 /// `onActivate` so a host that needs to close itself (the popover) can.
 struct NotificationsList: View {
-  @EnvironmentObject var store: AppStore
+  @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var notifications: NotificationCenterStore
   /// When true, drop the oldest notification (`items.first`) — it's the one already shown in the
   /// sidebar strip, so the strip's `+N` popover lists everything *else* (issue #118). The bell popover
@@ -71,7 +86,7 @@ struct NotificationsList: View {
       VStack(spacing: 0) {
         ForEach(Array(rows.enumerated()), id: \.element.id) { index, item in
           NotificationRow(
-            item: item, source: resolvedNotificationSource(store, item),
+            item: item, source: resolvedNotificationSource(item, projects: projectStore.projects),
             onOpen: { openNotification(item, then: onActivate) },
             onDelete: { notifications.dismiss(notifID: item.id) },
             onHoverChange: { hovering in
@@ -100,7 +115,7 @@ struct NotificationsList: View {
 /// badge lists everything except the oldest already shown in the strip (`dropFirst: true`). The bell
 /// hand-hosts this in an `NSPopover`; the `+N` badge presents it via a SwiftUI `.popover`.
 struct NotificationsPopover: View {
-  @EnvironmentObject var store: AppStore
+  @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var notifications: NotificationCenterStore
   /// Forwarded to `NotificationsList`: drop the oldest (the strip's displayed one) for the `+N` popover.
   var dropFirst: Bool = false
@@ -117,7 +132,7 @@ struct NotificationsPopover: View {
       // long list scrolls instead of clipping.
       ScrollView {
         NotificationsList(dropFirst: dropFirst, onActivate: onActivate)
-          .environmentObject(store)
+          .environmentObject(projectStore)
           .environmentObject(notifications)
       }
       .frame(maxHeight: .infinity)
@@ -160,7 +175,7 @@ struct NotificationsPopover: View {
 /// `swiftui-scrim-structural-gate-snaps`). It reuses `NotificationRow` and the shared
 /// `resolvedNotificationSource`/`openNotification` helpers so it stays in lock-step with the popover.
 struct SidebarNotificationStrip: View {
-  @EnvironmentObject var store: AppStore
+  @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @State private var showExtras = false
   @State private var plusHovering = false
@@ -176,7 +191,8 @@ struct SidebarNotificationStrip: View {
         // trailing accessory so hovering anywhere on the row highlights the whole thing.
         VStack(spacing: 0) {
           NotificationRow(
-            item: oldest, source: resolvedNotificationSource(store, oldest),
+            item: oldest,
+            source: resolvedNotificationSource(oldest, projects: projectStore.projects),
             onOpen: { openNotification(oldest, then: nil) },
             onDelete: { notifications.dismiss(notifID: oldest.id) },
             trailingAccessory: notifications.items.count > 1
@@ -218,7 +234,7 @@ struct SidebarNotificationStrip: View {
     .accessibilityIdentifier("sidebar.notifications.plus")
     .popover(isPresented: $showExtras, arrowEdge: .top) {
       NotificationsPopover(dropFirst: true, onActivate: { showExtras = false })
-        .environmentObject(store)
+        .environmentObject(projectStore)
         .environmentObject(notifications)
     }
   }
