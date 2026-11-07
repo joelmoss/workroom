@@ -251,6 +251,7 @@ extension View {
   /// theme is injected as every production root injects it.
   fileprivate func invalidationEnvironment(_ store: AppStore) -> some View {
     environmentObject(store)
+      .paneHost(store)
       .environmentObject(store.modals)
       .environmentObject(store.runCommand)
       .environmentObject(store.notifications)

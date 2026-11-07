@@ -253,6 +253,7 @@ struct RootWindow: View {
       .themeTokensRoot()
       .background(WindowDisplayObserver { store.windowDidDisplay() })
       .environmentObject(store)
+      .paneHost(store)
       .environmentObject(store.modals)
       .environmentObject(store.runCommand)
       .environmentObject(store.runCommands)

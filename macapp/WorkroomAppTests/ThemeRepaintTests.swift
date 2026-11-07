@@ -321,6 +321,7 @@ final class ThemeRepaintTests: XCTestCase {
         .themeTokensRoot()
         .environment(\.isQuickTerminal, true)
         .environmentObject(store)
+        .paneHost(store)
         .environmentObject(store.modals)
         .environmentObject(store.runCommand)
         .environmentObject(store.lifecycle)

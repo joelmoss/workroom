@@ -77,6 +77,7 @@ extension View {
   func detachedPaneEnvironment(store: AppStore, sessions: TerminalPanes) -> some View {
     self
       .environmentObject(store)
+      .paneHost(store)
       .environmentObject(store.modals)
       .environmentObject(store.runCommand)
       .environmentObject(store.lifecycle)

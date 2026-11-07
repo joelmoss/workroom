@@ -41,6 +41,7 @@ final class AdapterGateInvalidationTests: XCTestCase {
       ToastStackAdapter()
         .themeTokensRoot()
         .environmentObject(store)
+        .paneHost(store)
         .environmentObject(store.runCommand)
         .environmentObject(store.notifications))
   }
@@ -112,6 +113,7 @@ final class AdapterGateInvalidationTests: XCTestCase {
       TerminalStatusBarAdapter(target: target, tabID: UUID(), state: nil)
         .themeTokensRoot()
         .environmentObject(store)
+        .paneHost(store)
         .environmentObject(store.runCommand)
         .environmentObject(store.terminals.codingAgentManager))
     return StatusBarFixture(store: store, window: window, view: view)
