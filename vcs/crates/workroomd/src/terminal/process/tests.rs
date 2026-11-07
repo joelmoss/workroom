@@ -107,10 +107,20 @@ fn claude_profile_probe() {
 fn reads_a_childs_claude_profile() {
     use std::process::{Command, Stdio};
 
+    // The probe's libtest name, from this module's own path, so moving the module cannot leave
+    // `--exact` naming a test that no longer exists: the child would then run nothing and exit at
+    // once, and its environment would read as gone whenever it exited before the read.
+    let probe = format!(
+        "{}::claude_profile_probe",
+        module_path!()
+            .split_once("::")
+            .expect("a crate-qualified path")
+            .1
+    );
     let profile_of = |configure: &dyn Fn(&mut Command)| {
         let mut command = Command::new(std::env::current_exe().expect("test binary"));
         command
-            .args(["--exact", "process::tests::claude_profile_probe"])
+            .args(["--exact", probe.as_str()])
             .env(PROFILE_PROBE, "1")
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -126,6 +136,10 @@ fn reads_a_childs_claude_profile() {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let profile = claude_profile(pid);
+        assert!(
+            child.try_wait().expect("poll the profile probe").is_none(),
+            "the profile probe exited before its environment was read: `--exact {probe}` ran no test"
+        );
         let _ = child.kill();
         let _ = child.wait();
         profile

@@ -2,6 +2,18 @@ use super::*;
 use crate::terminal::session::{SessionId, SessionSpec};
 use std::ffi::{OsStr, OsString};
 
+/// Every test that runs `Daemon::run` takes this. Each run sleeps on the one process-wide wake
+/// pipe (`IDLE_WAKE`) and drains it when it wakes, so two at once can take each other's wake: a
+/// run that a client or session keeps busy then sleeps with no deadline and never idles out. A
+/// real daemon is one `Daemon::run` per process, where nothing else drains its pipe.
+static DAEMON_RUN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn daemon_run_lock() -> std::sync::MutexGuard<'static, ()> {
+    DAEMON_RUN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// A container's daemon is its entrypoint, so nothing makes the socket's folder first (#308):
 /// the lock beside the socket is the first thing written there.
 #[test]
@@ -90,6 +102,7 @@ fn serve_kept_fresh(
     age_again: bool,
     take_lock: impl FnOnce(&Path) -> InstanceLock,
 ) -> (Duration, Duration) {
+    let _run = daemon_run_lock();
     let dir = std::env::temp_dir().join(format!("wr-fresh-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -129,6 +142,7 @@ fn serve_kept_fresh(
 /// has it look again (`wake_idle`), so it idles out `idle_timeout` after that and not never.
 #[test]
 fn the_last_client_leaving_wakes_the_idle_check() {
+    let _run = daemon_run_lock();
     let dir = std::env::temp_dir().join(format!("wr-idlewake-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -183,6 +197,7 @@ fn a_tmp_daemon_looks_every_second_and_others_sleep_until_due() {
 /// Value: protects=a daemon idles out after its last session ends on its own; fails_when=remove_if_held stops calling wake_idle; why_new=the other idle test ends a client, not a session; seam=none; no_claim=kill and the rpc paths (their own wake_idle calls)
 #[test]
 fn a_session_ending_on_its_own_wakes_the_idle_check() {
+    let _run = daemon_run_lock();
     let dir = std::env::temp_dir().join(format!("wr-idleend-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
