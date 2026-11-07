@@ -160,7 +160,7 @@ recipe() {
     sed -n "/^$1:/,/^\$/p" "$file"
   done
 }
-for target in app-build app-test app-uitest; do
+for target in app-build app-test app-uitest app-uitest-vm; do
   if ! recipe "$target" | grep -Eq 'build(-for-testing)? .*\$\(APP_ID_FLAGS\)'; then
     echo "FAIL: $target no longer passes \$(APP_ID_FLAGS) where it builds — every workroom's Debug"
     echo "      build would share one identity again (prefs, session helpers, 'already running')."
@@ -179,6 +179,13 @@ fi
 if ! recipe app-uitest | grep -q '[$](call gui_lock,exclusive,app-uitest)'; then
   echo "FAIL: app-uitest no longer holds the GUI session exclusively — two workrooms' UI-test runs"
   echo "      would drive the one pointer and keyboard at once."
+  fails=$((fails + 1))
+fi
+# A Mac runs at most two macOS guests; a third `tart run` fails, so every guest boots in a slot.
+if ! recipe app-uitest-vm | grep -q 'Scripts/uitest-vm.sh' \
+  || ! grep -q 'gui-lock.py" vm-slot' "$DIR/uitest-vm.sh"; then
+  echo "FAIL: app-uitest-vm no longer boots its guests through gui-lock.py vm-slot — runs from"
+  echo "      several checkouts would start more guests than this Mac can run."
   fails=$((fails + 1))
 fi
 if recipe app-run | grep -q 'pkill'; then
