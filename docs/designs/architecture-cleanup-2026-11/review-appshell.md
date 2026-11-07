@@ -148,6 +148,7 @@ Scope: `Core/AppStore.swift` and its 12 `AppStore+*.swift` extensions, `Workroom
 - About 199 distinct `store.<member>` names are used from Views and WorkroomApp.swift.
 - No `extension AppStore: <Protocol>` exists anywhere: `grep -rnE 'extension AppStore\s*:'` returns nothing.
 - QuickTerminalController.swift:313 builds `AppStore(notifications: …)` for its single, project-less target. Per the init comment (AppStore.swift:962–967), that gives it a private, empty `ProjectStore`. It also gets its own `RemoteStateModel`, `HistoryModel`, status resolver and fixture branches, just to host one `TerminalSessions`. The doc comment at 107–113 describes the workaround: "the store's project lookups never see it".
+  - Note (2026-11-07): no longer so. Since row 4.9's follow-up the Quick Terminal builds no `AppStore`; a `QuickTerminalHost` hosts its panes with only the owners it uses, and its notification labels read `ProjectStore.shared`. The finding is kept as it was reviewed.
 
 **Cost.**
 - A view for, say, the creation pane can't be previewed or tested without a full AppStore.
