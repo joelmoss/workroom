@@ -205,9 +205,11 @@ struct ProjectSidebar: View {
   private func terminalSubtree(for target: TerminalTarget, parent: SidebarID) -> some View {
     let tabs = terminals.tabs(for: target)
     if tabs.count >= 2, store.isTerminalsExpanded(target.id) {
+      // Read once for every row, and only for the selected target.
+      let selectedID =
+        store.selectedTargetID == parent ? terminals.focusedTab(for: target)?.id : nil
       ForEach(tabs) { tab in
-        let selected =
-          store.selectedTargetID == parent && terminals.focusedTab(for: target)?.id == tab.id
+        let selected = selectedID == tab.id
         SidebarHoverRegion { hovered in
           terminalRow(tab, target: target, parent: parent, hovered: hovered)
             .listRowInsets(terminalRowInsets)

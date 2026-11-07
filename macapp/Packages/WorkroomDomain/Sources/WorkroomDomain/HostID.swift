@@ -9,7 +9,7 @@ public enum HostID: Hashable, Sendable {
 extension HostID {
   /// What a host an older Nightly made tells the user, wherever it is met: a connect
   /// (`RepositoryRoutingError.olderLayout`), a pane's attach (`DaemonInstall.formerLayoutMessage`)
-  /// and an older container (`HostDriverError.olderContainerMessage`).
+  /// and an older container (`HostDriverError.olderContainer`).
   public static let olderLayoutMessage =
     "This workroom's host was set up by an older Workroom Nightly, which this build can't open. "
     + "Delete the workroom and create it again."

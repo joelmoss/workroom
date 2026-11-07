@@ -177,12 +177,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   /// True while a window exists (VISIBLE or HIDDEN) — inspection aid for tests.
   var hasWindow: Bool { window != nil }
   /// The focused pane's surface (VISIBLE or HIDDEN), else nil.
-  var currentSurface: GhosttySurfaceView? {
-    guard let terminals = store?.terminals,
-      let tab = terminals.activeTab(for: Self.target())
-    else { return nil }
-    return terminals.surface(of: tab.id)
-  }
+  var currentSurface: GhosttySurfaceView? { store?.terminals.focusedSurface(for: Self.target()) }
   /// The live window — for tests asserting the chrome-less styling.
   var currentWindow: NSWindow? { window }
 

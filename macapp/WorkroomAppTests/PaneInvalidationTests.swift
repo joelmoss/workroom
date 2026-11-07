@@ -24,14 +24,17 @@ final class PaneInvalidationTests: XCTestCase {
     let window: NSWindow
   }
 
-  private func fixture() throws -> Fixture {
-    let store = AppStore()
-    store.terminals.sessionService = PersistentSessionService(
-      probe: { _ in .unhealthy(reason: "no sessions in invalidation fixture") },
-      ownership: { _ in .notOwned })
+  /// No sessions, and an inert surface, so nothing spawns.
+  private func makeInert(_ store: AppStore) {
+    store.terminals.sessionService = isolatedPaneSessionService()
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
+  }
+
+  private func fixture() throws -> Fixture {
+    let store = AppStore()
+    makeInert(store)
     let root = URL(fileURLWithPath: NSTemporaryDirectory())
       .appendingPathComponent("pane-invalidation-\(UUID().uuidString)")
     let paths = ["a", "b"].map { root.appendingPathComponent($0).path }
@@ -42,11 +45,7 @@ final class PaneInvalidationTests: XCTestCase {
     let surfaceB = try XCTUnwrap(store.terminals.surface(store.terminals.addTab(for: b)))
     let hosting = NSHostingView(
       rootView: WorkroomTerminalsView(target: b, sessions: store.terminals)
-        .environmentObject(store)
-        .environmentObject(store.modals)
-        .environmentObject(store.runCommand)
-        .environmentObject(store.notifications)
-        .environmentObject(store.terminals.codingAgentManager)
+        .invalidationEnvironment(store)
         .frame(width: 900, height: 600))
     hosting.frame = NSRect(x: 100, y: 100, width: 900, height: 600)
     let window = NSWindow(
@@ -59,10 +58,10 @@ final class PaneInvalidationTests: XCTestCase {
   }
 
   /// Lets SwiftUI run any update the changes scheduled.
-  private func settleRendering(_ f: Fixture) async throws {
+  private func settleRendering(_ window: NSWindow) async throws {
     try await Task.sleep(for: .milliseconds(150))
-    f.window.contentView?.layoutSubtreeIfNeeded()
-    f.window.displayIfNeeded()
+    window.contentView?.layoutSubtreeIfNeeded()
+    window.displayIfNeeded()
   }
 
   /// Report what a working agent reports: OSC 9;4 progress, then a title naming a known agent.
@@ -84,11 +83,11 @@ final class PaneInvalidationTests: XCTestCase {
       f.window.close()
       Task { await f.store.terminals.reapAll() }
     }
-    try await settleRendering(f)
+    try await settleRendering(f.window)
     resetPasses()
 
     try await agentStartsWorking(on: f.surfaceA)
-    try await settleRendering(f)
+    try await settleRendering(f.window)
 
     XCTAssertTrue(
       f.store.terminals.isRunning(forTargetID: f.a.id), "workroom A's change landed")
@@ -132,14 +131,7 @@ final class PaneInvalidationTests: XCTestCase {
     let projects = ProjectStore()
     projects.projects = paths.map { Project(path: $0, vcs: "git", workrooms: []) }
     let stores = [AppStore(projectStore: projects), AppStore(projectStore: projects)]
-    for store in stores {
-      store.terminals.sessionService = PersistentSessionService(
-        probe: { _ in .unhealthy(reason: "no sessions in invalidation fixture") },
-        ownership: { _ in .notOwned })
-      store.terminals.makeView = { _, cwd, command in
-        GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
-      }
-    }
+    for store in stores { makeInert(store) }
     let a = try XCTUnwrap(stores[0].target(for: .root(project: paths[0])))
     let b = try XCTUnwrap(stores[1].target(for: .root(project: paths[1])))
     let surfaceA = try XCTUnwrap(stores[0].terminals.surface(stores[0].terminals.addTab(for: a)))
@@ -160,11 +152,7 @@ final class PaneInvalidationTests: XCTestCase {
         SwitcherEnablementProbe(registry: registry)
         WorkroomTerminalsView(target: b, sessions: stores[1].terminals)
       }
-      .environmentObject(stores[1])
-      .environmentObject(stores[1].modals)
-      .environmentObject(stores[1].runCommand)
-      .environmentObject(stores[1].notifications)
-      .environmentObject(stores[1].terminals.codingAgentManager)
+      .invalidationEnvironment(stores[1])
       .frame(width: 900, height: 600))
     hosting.frame = frame
     windows[1].contentView = hosting
@@ -198,9 +186,7 @@ final class PaneInvalidationTests: XCTestCase {
     SwitcherEnablementProbe.bodyPasses = 0
 
     try await agentStartsWorking(on: f.surfaceA)
-    try await Task.sleep(for: .milliseconds(150))
-    f.windows[1].contentView?.layoutSubtreeIfNeeded()
-    f.windows[1].displayIfNeeded()
+    try await settleRendering(f.windows[1])
 
     XCTAssertTrue(f.one.terminals.isRunning(forTargetID: f.a.id), "window one's change landed")
     XCTAssertEqual(
@@ -231,9 +217,7 @@ final class PaneInvalidationTests: XCTestCase {
 
     f.one.terminals.closeTab(
       try XCTUnwrap(f.one.terminals.tabs(for: f.a).first).id, for: f.a)
-    try await Task.sleep(for: .milliseconds(150))
-    f.windows[1].contentView?.layoutSubtreeIfNeeded()
-    f.windows[1].displayIfNeeded()
+    try await settleRendering(f.windows[1])
 
     XCTAssertFalse(QuickSwitcher.canSwitchWorkrooms(registry: f.registry))
     XCTAssertGreaterThan(
@@ -249,14 +233,26 @@ final class PaneInvalidationTests: XCTestCase {
       f.window.close()
       Task { await f.store.terminals.reapAll() }
     }
-    try await settleRendering(f)
+    try await settleRendering(f.window)
     resetPasses()
 
     try await agentStartsWorking(on: f.surfaceB)
-    try await settleRendering(f)
+    try await settleRendering(f.window)
 
     XCTAssertTrue(f.store.terminals.isRunning(forTargetID: f.b.id))
     XCTAssertGreaterThan(
       TerminalTabStrip.bodyPasses, 0, "workroom B's own pane change must re-run its tab strip")
+  }
+}
+
+extension View {
+  /// What the terminals view reads from its environment, and nothing more: the counts above are
+  /// of these views' passes alone (`detachedPaneEnvironment` would add the usage monitor too).
+  fileprivate func invalidationEnvironment(_ store: AppStore) -> some View {
+    environmentObject(store)
+      .environmentObject(store.modals)
+      .environmentObject(store.runCommand)
+      .environmentObject(store.notifications)
+      .environmentObject(store.terminals.codingAgentManager)
   }
 }

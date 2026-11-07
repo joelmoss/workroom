@@ -53,8 +53,7 @@ struct DetachedSessionsButton: View {
           }
           Spacer(minLength: 8)
           Button("Active tab") { attachToActive(session) }
-            .disabled(
-              terminals.focusedTab(for: target).flatMap { terminals.surface(of: $0.id) } == nil)
+            .disabled(terminals.focusedSurface(for: target) == nil)
           Button("New tab") { openNew(session) }
           Button("Stop", role: .destructive) { stop(session) }
         }

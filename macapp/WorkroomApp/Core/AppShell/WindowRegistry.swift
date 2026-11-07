@@ -180,8 +180,7 @@ final class WindowRegistry: ObservableObject {
   /// DECSET-1004 focus report either way.
   private func reconcileTerminalFocus(in window: NSWindow, store: AppStore) {
     guard let target = store.selectedTarget,
-      let tab = store.terminals.focusedTab(for: target),
-      let surface = store.terminals.surface(of: tab.id),
+      let surface = store.terminals.focusedSurface(for: target),
       TerminalFocusReconciliation.shouldRestoreFirstResponder(in: window, to: surface)
     else { return }
     window.makeFirstResponder(surface)
@@ -201,8 +200,7 @@ final class WindowRegistry: ObservableObject {
     } else {
       let entry = Entry(window: window, store: store)
       entry.sessionObservation = store.terminals.paneWillChange.sink { [weak self] _ in
-        // The panes still hold the old value while `paneWillChange` runs.
-        Task { @MainActor in self?.recomputeActiveCodingAgents() }
+        self?.scheduleActiveCodingAgentsRecompute()
       }
       entries.append(entry)
     }
@@ -415,6 +413,21 @@ final class WindowRegistry: ObservableObject {
   }
 
   // MARK: Aggregation
+
+  /// Whether a recompute is queued for the next turn of the main actor.
+  private var activeCodingAgentsRecomputeQueued = false
+
+  /// Recompute once the panes' change has landed: `paneWillChange` runs while they still hold the
+  /// old value. One close, restore or hand-off sends it many times in one turn, and one recompute
+  /// after them all reads what each would have.
+  private func scheduleActiveCodingAgentsRecompute() {
+    guard !activeCodingAgentsRecomputeQueued else { return }
+    activeCodingAgentsRecomputeQueued = true
+    Task { @MainActor [weak self] in
+      self?.activeCodingAgentsRecomputeQueued = false
+      self?.recomputeActiveCodingAgents()
+    }
+  }
 
   private func recomputeActiveCodingAgents() {
     let agents = allStores.reduce(into: Set<CodingAgentBackend>()) {

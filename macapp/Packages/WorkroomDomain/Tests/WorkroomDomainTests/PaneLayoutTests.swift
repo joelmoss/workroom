@@ -112,6 +112,20 @@ final class PaneLayoutTests: XCTestCase {
     XCTAssertEqual(
       tree.showingDrag(0.7, forSplit: UUID(), from: 0.5), tree, "a gone node changes nothing")
   }
+  /// The drag a divider view holds starts from its node's stored ratio, and draws as
+  /// `showingDrag` does; none draws the tree as it is.
+  func testADividerDragIsMeasuredFromItsNodesStoredRatio() {
+    let id = UUID()
+    let tree = PaneLayout.split(
+      id: id, orientation: .horizontal, ratio: 0.5, first: .leaf(a), second: .leaf(b))
+    let drag = DividerDrag(split: id, ratio: 0.7, over: tree, fallback: 0.3)
+    XCTAssertEqual(drag.stored, 0.5, "the stored ratio, not the divider's fallback")
+    XCTAssertEqual(tree.showing(drag), tree.showingDrag(0.7, forSplit: id, from: 0.5))
+    XCTAssertEqual(tree.showing(nil), tree)
+    XCTAssertEqual(
+      DividerDrag(split: UUID(), ratio: 0.7, over: tree, fallback: 0.3).stored, 0.3,
+      "a node the tree no longer has falls back")
+  }
   func testContainsSplitFindsRootAndNestedNodesOnly() {
     // The lookup a holder of SEVERAL trees uses to find which one owns a dragged divider
     // (`AppStore.setWorkroomSplitRatio` over `workroomSplits`).

@@ -249,8 +249,7 @@ extension AppStore {
   /// not whatever had painted when the out-of-band `.status` file landed).
   private func diagnoseRunFailure(target: TerminalTarget, tab: TerminalTab.ID, exitCode: Int32) {
     guard terminals.codingAgentManager.isEnabled,
-      case .terminal? = terminals.tab(tab, for: target)?.content,
-      let view = terminals.surface(of: tab)
+      let view = terminals.view(forTab: tab, inTarget: target.id)
     else { return }
     let command = project(forTargetID: target.id).map {
       runCommands.runConfig(forProject: $0.path).command

@@ -14,18 +14,7 @@ final class TerminalSessionAttachmentTests: XCTestCase {
 
   /// No helper (so a new pane gets no session of its own) and an inert surface (so a reattach
   /// spawns nothing).
-  private func makeSessions() -> TerminalPanes {
-    let sessions = TerminalPanes()
-    sessions.makeView = { _, cwd, _ in
-      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
-    }
-    sessions.sessionService = PersistentSessionService(
-      probe: { _ in .unhealthy(reason: "isolated") }, ownership: { _ in .notOwned })
-    sessions.programStatus = ProgramStatusMonitor()
-    sessions.recordUnrecognizedTool = { _ in }
-    sessions.recency = SwitcherRecency()
-    return sessions
-  }
+  private func makeSessions() -> TerminalPanes { makeIsolatedPanes() }
 
   func testTheFocusedPaneTakesTheSessionOnItsTabAndItsSurface() throws {
     let sessions = makeSessions()

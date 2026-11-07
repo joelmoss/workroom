@@ -223,12 +223,10 @@ public enum HostDriverError: Error, Equatable, Sendable, LocalizedError {
   /// Only Nightly and Dev builds made them; they are made again rather than migrated.
   case olderContainer
 
-  /// What a container made by an older build says, wherever it is met: what any older host says.
-  public static let olderContainerMessage = HostID.olderLayoutMessage
-
   public var errorDescription: String? {
     switch self {
-    case .olderContainer: return Self.olderContainerMessage
+    // What any older host says.
+    case .olderContainer: return HostID.olderLayoutMessage
     case .unknownHost: return "This driver has no such host."
     case .notImplemented(let what): return "\(what) is not implemented yet."
     case .invalidConfiguration(let detail): return "Invalid host configuration: \(detail)"

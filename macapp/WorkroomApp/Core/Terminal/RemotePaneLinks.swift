@@ -74,8 +74,9 @@ final class RemotePaneLinks {
         return
       }
       // The pane that asked may have closed while the host answered. Tab IDs are never reused,
-      // so a reopened workroom doesn't revive it.
-      guard self.access.holds(tabID, target.id) else { return }
+      // so a reopened workroom doesn't revive it. A terminal tab stays one, so it has a state
+      // for as long as it is held.
+      guard self.access.state(tabID, target.id) != nil else { return }
       self.openFilePreview(FileDescriptor(path: file.path, isPreview: true), target)
     }
   }

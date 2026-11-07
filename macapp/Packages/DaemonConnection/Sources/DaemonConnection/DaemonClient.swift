@@ -25,7 +25,7 @@ public final class DaemonClient: @unchecked Sendable {
     let continuation: CheckedContinuation<Data, Error>
     /// The service the request went out on. A Control reply completes only a Control request: the
     /// stream counter is shared by every service, so a stream id alone does not say whose reply it is.
-    let service: UInt8
+    let service: DaemonService
     var bytes = Data()
   }
   private var pending: [UInt32: Pending] = [:]
@@ -68,7 +68,7 @@ public final class DaemonClient: @unchecked Sendable {
   /// Streams this connection gave up waiting on (request timeout) but whose reply may still
   /// arrive. Tracked so a late reply drains harmlessly instead of `receive()` treating an unknown
   /// stream id as a protocol violation and tearing down every OTHER in-flight request too.
-  private var abandoned: [UInt32: UInt8] = [:]
+  private var abandoned: [UInt32: DaemonService] = [:]
   /// Negotiated once in `connect()`, before this connection is shared with any other caller.
   /// `exec` is absent on a still-running pre-upgrade daemon that answers `reads` but has no VCS
   /// write service at all — `writer(context:reader:)` treats that as `VCSError.backendVersion`,
@@ -93,21 +93,6 @@ public final class DaemonClient: @unchecked Sendable {
   /// Marks a chunked request envelope. A whole request is JSON and starts `{`, so the two are
   /// unambiguous — see `REQUEST_CHUNK_MARKER`.
   private static let requestChunkMarker: UInt8 = 0x02
-  /// `Service::Vcs`, `Service::File`, `Service::Status` and `Service::Forward` in the daemon's
-  /// envelope. Status is retired (#382) and never asked, but a daemon from before then may still
-  /// send on it, which is dropped rather than failing the connection.
-  private static let vcsService = DaemonService.vcs.rawValue
-  public static let fileService = DaemonService.file.rawValue
-  private static let statusService = DaemonService.status.rawValue
-  private static let forwardService = DaemonService.forward.rawValue
-  /// `Service::Layout` (#255): JSON like the others, and chunked like VCS, since a layout can be
-  /// larger than one envelope.
-  public static let layoutService = DaemonService.layout.rawValue
-  /// `Service::ProgramStatus` (#358): requests on their own streams, events on stream 0.
-  public static let programStatusService = DaemonService.programStatus.rawValue
-  /// `Service::Control`: the session list a terminal helper answers (#239). Its payloads are
-  /// `SessionFrame`s, not a chunk flag and JSON.
-  private static let controlService = DaemonService.control.rawValue
   /// Live forwarded streams, keyed by the multiplex stream id the daemon echoes on every envelope.
   /// Every access holds `lock`: the insert in `reserveForward`, the remove in `releaseForward`, the
   /// read in `receive()` and the clear in `fail()`.
@@ -293,7 +278,7 @@ public final class DaemonClient: @unchecked Sendable {
     let outcome: FileNegotiation
     do {
       let reply = try await request(
-        DaemonFileRequest(method: "capabilities"), timeout: timeout, service: Self.fileService)
+        DaemonFileRequest(method: "capabilities"), timeout: timeout, service: .file)
       let capabilities = try DaemonFileReply<DaemonFileCapabilities>.decode(reply)
       outcome = capabilities.version == 1 ? .ready : .unsupported
     } catch {
@@ -328,7 +313,7 @@ public final class DaemonClient: @unchecked Sendable {
   /// The host's session list: the same `List` frame the local control client sends.
   public func sessions() async throws -> [SessionDescriptor] {
     let reply = try await request(
-      bytes: Data(DaemonControl.list()), timeout: 30, service: Self.controlService)
+      bytes: Data(DaemonControl.list()), timeout: 30, service: .control)
     guard let frame = try DaemonControl.firstFrame(of: reply) else {
       throw HostConnectionError.serviceUnavailable("Incomplete session list.")
     }
@@ -339,7 +324,7 @@ public final class DaemonClient: @unchecked Sendable {
   public func endSession(_ session: UUID) async throws -> Bool {
     guard let identifier = SessionIdentifier(uuidString: session.uuidString) else { return true }
     let reply = try await request(
-      bytes: Data(DaemonControl.kill(identifier)), timeout: 30, service: Self.controlService)
+      bytes: Data(DaemonControl.kill(identifier)), timeout: 30, service: .control)
     guard let frame = try DaemonControl.firstFrame(of: reply) else {
       throw HostConnectionError.serviceUnavailable("Incomplete kill reply.")
     }
@@ -355,8 +340,11 @@ public final class DaemonClient: @unchecked Sendable {
     }
     let reply = try await request(
       bytes: Data(DaemonControl.signal(signal, session: session)), timeout: 10,
-      service: Self.controlService)
-    guard let answer = RunSignalReply.decode(Array(reply)) else {
+      service: .control)
+    // A garbled reply reads as no reply, as an incomplete one does.
+    guard let frame = try? DaemonControl.firstFrame(of: reply),
+      let answer = RunSignalReply(frame: frame)
+    else {
       throw HostConnectionError.serviceUnavailable("No reply to a run signal.")
     }
     return answer
@@ -409,7 +397,7 @@ public final class DaemonClient: @unchecked Sendable {
       guard lock.withLock({ !closed }) else { return }
       do {
         try sendOnWrites(
-          DaemonEnvelope.encode(service: Self.forwardService, stream: stream, payload: payload))
+          DaemonEnvelope.encode(service: .forward, stream: stream, payload: payload))
       } catch {
         fail(error)
       }
@@ -430,7 +418,7 @@ public final class DaemonClient: @unchecked Sendable {
   public func fileRequest(_ request: DaemonFileRequest, timeout: TimeInterval = 45) async throws
     -> Data
   {
-    try await self.request(request, timeout: timeout, service: Self.fileService)
+    try await self.request(request, timeout: timeout, service: .file)
   }
 
   /// Subscribe to filesystem changes under `root`. The handler is registered BEFORE the request is
@@ -531,7 +519,7 @@ public final class DaemonClient: @unchecked Sendable {
     }
     let encoder = JSONEncoder()
     let reply = try await self.request(
-      bytes: encoder.encode(request), timeout: 15, service: Self.programStatusService)
+      bytes: encoder.encode(request), timeout: 15, service: .programStatus)
     let object = try JSONSerialization.jsonObject(with: reply) as? [String: Any]
     if let error = object?["error"] {
       throw HostConnectionError.serviceUnavailable("Program status: \(error)")
@@ -588,7 +576,7 @@ public final class DaemonClient: @unchecked Sendable {
   public func close() async { fail(HostConnectionError.connectionLost) }
 
   public func request<Request: Encodable>(
-    _ request: Request, timeout: TimeInterval = 30, service: UInt8 = DaemonService.vcs.rawValue
+    _ request: Request, timeout: TimeInterval = 30, service: DaemonService = .vcs
   ) async throws -> Data {
     let encoder = JSONEncoder()
     encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -598,7 +586,9 @@ public final class DaemonClient: @unchecked Sendable {
 
   /// `request`'s transport, for a payload that is already encoded: JSON for the four services that
   /// speak it, a `SessionFrame` for Control.
-  private func request(bytes: Data, timeout: TimeInterval, service: UInt8) async throws -> Data {
+  private func request(bytes: Data, timeout: TimeInterval, service: DaemonService) async throws
+    -> Data
+  {
     try Task.checkCancellation()
     // A request larger than the protocol's per-envelope ceiling (`MAX_ENVELOPE_PAYLOAD`) is split
     // across envelopes on one stream — the mirror of how replies have always been chunked. What
@@ -612,13 +602,13 @@ public final class DaemonClient: @unchecked Sendable {
     // error. Below the ceiling nothing changes — the envelope is byte-identical to what shipped
     // before, so the common path pays nothing for this.
     // Layout requests chunk too: every daemon with the service reassembles them (`layout.rs`).
-    let chunkable = service == Self.vcsService || service == Self.layoutService
+    let chunkable = service == .vcs || service == .layout
     let chunked = chunkable && bytes.count > Self.maxEnvelopePayload
     if !chunkable && bytes.count > Self.maxEnvelopePayload {
       throw FileServiceError.failed("Daemon request is too large.")
     }
     if chunked {
-      if service == Self.vcsService {
+      if service == .vcs {
         guard let exec = capabilities?.exec, exec >= Self.chunkedRequestVersion else {
           throw VCSError.partialData("VCS request is too large for this daemon.")
         }
@@ -757,33 +747,34 @@ public final class DaemonClient: @unchecked Sendable {
     }
   }
 
+  /// Whether an envelope from the daemon may arrive on `stream`. Stream 0 is the daemon's own: File
+  /// watch events, Program Status events and, from a daemon before #382, the Status service's
+  /// verdict changes, never a reply. On the VCS service it has always been a violation and still
+  /// is, and Layout replies are JSON chunks like VCS's, never on stream 0 (#255).
+  ///
+  /// `forward.rs` carries nothing there today and documents a stream-0 envelope as DROPPED, so it
+  /// is admitted here and dropped by `deliver(forward:)`: a future daemon that adds a stream-0
+  /// Forward notification must not fail every shipped client's whole connection. Control on stream
+  /// 0 is admitted and dropped by `deliver(control:)` for the reason Forward's is: no reply is ever
+  /// sent there, and a newer daemon that sends something must not fail a shipped client's
+  /// connection.
+  private static func admits(stream: UInt32, on service: DaemonService) -> Bool {
+    switch service {
+    case .file, .status, .forward, .control, .programStatus: true
+    case .vcs, .layout, .terminal: stream > 0
+    }
+  }
+
   private func receive() {
     var buffer = Data()
     var chunk = [UInt8](repeating: 0, count: 65536)
     do {
       while true {
         while let header = DaemonEnvelope.header(of: buffer) {
-          let (service, stream, length) = (header.service, header.stream, header.length)
-          // Stream 0 is the daemon's own: File watch events and, from a daemon before #382, the
-          // Status service's verdict changes, never a reply. On the VCS service it has always been a
-          // violation and still is.
-          // `forward.rs` carries nothing there today and documents a stream-0 envelope as DROPPED,
-          // so it is admitted here and dropped by `deliver(forward:)`: a future daemon that adds a
-          // stream-0 Forward notification must not fail every shipped client's whole connection.
-          // Control on stream 0 is admitted and dropped by `deliver(control:)` for the reason
-          // Forward's is: no reply is ever sent there, and a newer daemon that sends something must
-          // not fail a shipped client's connection.
-          let streamIsValid =
-            stream > 0 || service == Self.fileService || service == Self.statusService
-            || service == Self.forwardService || service == Self.controlService
-            || service == Self.programStatusService
-          // Layout replies are JSON chunks like VCS's, never on stream 0 (#255).
-          guard
-            service == Self.vcsService || service == Self.fileService
-              || service == Self.statusService || service == Self.forwardService
-              || service == Self.controlService || service == Self.layoutService
-              || service == Self.programStatusService, streamIsValid,
-            length > 0, length <= 1 << 20
+          let (stream, length) = (header.stream, header.length)
+          // Every service but Terminal's, which never travels on this connection.
+          guard let service = DaemonService(rawValue: header.service), service != .terminal,
+            Self.admits(stream: stream, on: service), length > 0, length <= 1 << 20
           else {
             throw HostConnectionError.serviceUnavailable("Invalid daemon envelope.")
           }
@@ -795,13 +786,13 @@ public final class DaemonClient: @unchecked Sendable {
           // JSON, so it is routed before the chunk guard every other service's payload satisfies.
           // Three of the five opcodes (DATA, EOF, CLOSE) are neither 0 nor 1, so leaving this below
           // the guard would tear the connection down on the first half-close.
-          if service == Self.forwardService {
+          if service == .forward {
             deliver(forward: payload, stream: stream)
             continue
           }
           // A Control reply is one whole `SessionFrame` with no chunk flag, so it is routed before
           // the chunk guard too.
-          if service == Self.controlService {
+          if service == .control {
             deliver(control: payload, stream: stream)
             continue
           }
@@ -865,11 +856,11 @@ public final class DaemonClient: @unchecked Sendable {
   /// and never completes another service's request.
   private func deliver(control payload: Data, stream: UInt32) {
     let completed: Pending? = lock.withLock {
-      if abandoned[stream] == Self.controlService {
+      if abandoned[stream] == .control {
         abandoned.removeValue(forKey: stream)
         return nil
       }
-      guard pending[stream]?.service == Self.controlService else { return nil }
+      guard pending[stream]?.service == .control else { return nil }
       return pending.removeValue(forKey: stream)
     }
     completed?.continuation.resume(returning: payload)
@@ -894,11 +885,11 @@ public final class DaemonClient: @unchecked Sendable {
   /// racing an event already in flight — is dropped: it is the normal shape of that race, not a
   /// protocol violation, and treating it as one would fail every other request on the connection. An
   /// undecodable or unrecognized event is dropped too, for forward compatibility.
-  private func deliver(event payload: Data, service: UInt8) {
+  private func deliver(event payload: Data, service: DaemonService) {
     // A daemon from before #382 pushes verdicts only to a connection that asked, which this build
     // never does; one that arrives anyway is dropped.
-    if service == Self.statusService { return }
-    if service == Self.programStatusService {
+    if service == .status { return }
+    if service == .programStatus {
       deliver(programStatus: payload)
       return
     }

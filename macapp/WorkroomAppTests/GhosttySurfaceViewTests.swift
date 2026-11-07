@@ -264,10 +264,6 @@ final class RemotePaneReconnectTests: XCTestCase {
     return view
   }
 
-  private func spin(_ seconds: TimeInterval) {
-    RunLoop.main.run(until: Date().addingTimeInterval(seconds))
-  }
-
   // Value: protects=a pane holds its remote host only while its ssh lives, so a dead link, a closed
   // pane or a pane pointed at another session lets an idle box go; fails_when=the surface's exit,
   // teardown or session swap stops clearing the attach; why_new=only endSession and forget were
@@ -303,7 +299,7 @@ final class RemotePaneReconnectTests: XCTestCase {
     let pending = try XCTUnwrap(view.attachment.pendingReconnect)
     view.tearDown()
     XCTAssertTrue(pending.isCancelled)
-    spin(1.5)
+    settle(1.5)
     XCTAssertFalse(view.attachment.isRestored)
   }
 }

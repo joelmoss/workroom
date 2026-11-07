@@ -78,12 +78,14 @@ struct WorkroomSplitView: View {
   /// node while the mouse is down — an auto-even after a pane closed (issue #126) — the override is
   /// dropped so the divider sees the new value and re-anchors onto it, instead of the drag silently
   /// replaying its stale start over the even.
-  @State private var liveRatio: (split: UUID, ratio: CGFloat, stored: CGFloat)?
+  @State private var liveRatio: DividerDrag?
 
   var body: some View {
     let leaves = layout.tabIDs
     let multi = leaves.count >= 2
-    let shown = displayedLayout
+    // The stored layout, with the in-flight divider ratio overlaid while a drag is live. Once
+    // committed, `liveRatio` clears and the store's own value takes over.
+    let shown = layout.showing(liveRatio)
     GeometryReader { geo in
       let plan = PaneTreeLayout.plan(shown, in: CGRect(origin: .zero, size: geo.size))
       ZStack(alignment: .topLeading) {
@@ -114,7 +116,9 @@ struct WorkroomSplitView: View {
           SplitDivider(
             orientation: d.orientation, ratio: d.ratio, total: d.total, noun: "workroom",
             identifier: "workroom.pane.divider",
-            onLive: { liveRatio = (d.id, $0, layout.ratio(forSplit: d.id) ?? d.ratio) },
+            onLive: {
+              liveRatio = DividerDrag(split: d.id, ratio: $0, over: layout, fallback: d.ratio)
+            },
             onCommit: {
               liveRatio = nil
               onSetRatio($0, d.id)
@@ -135,13 +139,6 @@ struct WorkroomSplitView: View {
     // Applied outside the GeometryReader so the panes reflow within the inset.
     .padding(.horizontal, Self.outerGutter)
     .padding(.bottom, WorkroomPaneMetrics.windowBottomMargin)
-  }
-
-  /// The layout to draw: the stored one, with the in-flight divider ratio overlaid while a drag is
-  /// live. Once committed, `liveRatio` clears and the store's own value takes over.
-  private var displayedLayout: PaneLayout<SidebarID> {
-    guard let liveRatio else { return layout }
-    return layout.showingDrag(liveRatio.ratio, forSplit: liveRatio.split, from: liveRatio.stored)
   }
 
   /// The whole workroom a Quick Terminal pane dragged over this window would join, in the drop

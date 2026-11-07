@@ -22,6 +22,10 @@ public final class TargetPanes<ID: Hashable> {
   /// that asks only this (whether a workroom has a terminal, across windows) re-renders when a
   /// target gains its first tab or loses its last, and not on any other change.
   public private(set) var hasTabs = false
+  /// The tabs `order` names, stored and written only when that set changes, as `hasTabs` is: a
+  /// reader looking one tab up re-renders as tabs join or leave the target, and not on a focus
+  /// move, a divider commit or a reorder.
+  private var members: Set<ID> = []
 
   @ObservationIgnored private let willChange: () -> Void
 
@@ -30,14 +34,14 @@ public final class TargetPanes<ID: Hashable> {
   }
 
   /// Whether the target holds `id` here, detached panes included.
-  public func holds(_ id: ID) -> Bool { state.order.contains(id) }
+  public func holds(_ id: ID) -> Bool { members.contains(id) }
 
   /// Edit the arrangement.
   @discardableResult
   public func updateState<Result>(_ body: (inout PaneState<ID>) -> Result) -> Result {
     willChange()
     let result = body(&state)
-    noteWhetherItHasTabs()
+    noteMembership()
     return result
   }
 
@@ -45,11 +49,13 @@ public final class TargetPanes<ID: Hashable> {
   public func empty() {
     willChange()
     state = state.emptied()
-    noteWhetherItHasTabs()
+    noteMembership()
   }
 
-  private func noteWhetherItHasTabs() {
+  private func noteMembership() {
     let has = !state.order.isEmpty
     if has != hasTabs { hasTabs = has }
+    let ids = Set(state.order)
+    if ids != members { members = ids }
   }
 }

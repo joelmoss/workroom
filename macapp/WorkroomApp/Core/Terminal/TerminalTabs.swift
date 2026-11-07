@@ -27,11 +27,8 @@ final class TerminalTabs {
   /// The records of `ids`, in that order, skipping any that has gone.
   func records(_ ids: [TerminalTab.ID]) -> [TerminalTab] { records.records(ids) }
 
-  /// The window holding `id`, or nil (no such tab, or one between windows).
-  func holder(of id: TerminalTab.ID) -> UUID? { records.holder(of: id) }
-
   /// Store `tab` for `holder`, adding it or replacing its record: refused when another window holds
-  /// it, which a window reading through its own layout never asks.
+  /// it or it is on its way to one, which a window reading through its own layout never asks.
   @discardableResult
   func set(_ tab: TerminalTab, by holder: UUID) -> Bool { records.set(tab, by: holder) }
 
@@ -52,7 +49,8 @@ final class TerminalTabs {
     surfaces.remove(id)
   }
 
-  /// `holder` lets go of `ids` without ending them, for another window to `claim`.
+  /// `holder` lets go of `ids` without ending them, for another window to `claim`. Until then no
+  /// window may store them.
   func release(_ ids: some Sequence<TerminalTab.ID>, by holder: UUID) {
     records.release(ids, by: holder)
   }

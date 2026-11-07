@@ -446,7 +446,7 @@ final class TerminalPanesTests: XCTestCase {
     XCTAssertTrue(surface?.isTornDown == true, "and torn down, so it can never spawn again")
 
     answered.yield()
-    for _ in 0..<200 where surface != nil { try await Task.sleep(for: .milliseconds(10)) }
+    try await waitFor(tries: 200) { surface == nil }
     XCTAssertNil(surface, "freed once the session's end is answered")
   }
 
@@ -472,7 +472,7 @@ final class TerminalPanesTests: XCTestCase {
       handOff = window.handOff(other)
       XCTAssertNil(handOff.flatMap { window.surface(of: $0.tabIDs[0]) }, "it let the tab go")
     }
-    for _ in 0..<100 where kept != nil { try await Task.sleep(for: .milliseconds(10)) }
+    try await waitFor(tries: 100) { kept == nil }
     XCTAssertNil(kept, "the window's own tab went with it")
     XCTAssertNotNil(moving, "a tab between windows survives the one it left")
 
@@ -1963,10 +1963,6 @@ final class RemotePaneFooterTests: XCTestCase {
     tab.content = .terminal(state)
     sessions.replace(tab, for: target)
     try XCTUnwrap(sessions.surface(tab)).attachment.sessionID = session
-  }
-
-  private func waitFor(_ condition: () -> Bool) async throws {
-    for _ in 0..<300 where !condition() { try await Task.sleep(for: .milliseconds(10)) }
   }
 
   func testTheFooterFollowsTheHostAtTheFirstPromptAndAfterEachCommand() async throws {

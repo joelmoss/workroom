@@ -10,8 +10,6 @@ struct TerminalTabAccess {
   /// `tabID`'s terminal state while `targetID` holds it; nil for a content tab or a tab it does not
   /// hold (closed, reaped or handed to another window).
   var state: @MainActor (TerminalTab.ID, TerminalTarget.ID) -> TerminalState?
-  /// Whether `targetID` holds `tabID`, whatever its content.
-  var holds: @MainActor (TerminalTab.ID, TerminalTarget.ID) -> Bool
   /// Change `tabID`'s terminal state in place. A no-op for a content tab or a tab not held, so a
   /// late answer for a pane that has gone lands nowhere.
   var mutate: @MainActor (TerminalTab.ID, TerminalTarget.ID, (inout TerminalState) -> Void) -> Void

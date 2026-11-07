@@ -41,15 +41,8 @@ public enum RunSignalReply: Equatable, Sendable {
   /// Refused for another reason (not a run session, an unknown signal), with the daemon's words.
   case refused(String)
 
-  /// The reply in a Control envelope's payload, or nil when it is not a reply to a signal.
-  public static func decode(_ payload: [UInt8]) -> RunSignalReply? {
-    var frames = SessionFrameDecoder()
-    frames.push(payload)
-    guard let frame = try? frames.next() else { return nil }
-    return RunSignalReply(frame: frame)
-  }
-
-  /// The reply one frame carries, or nil when it is not a reply to a signal.
+  /// The reply one frame carries, or nil when it is not a reply to a signal. A Control envelope's
+  /// payload is read with `DaemonControl.firstFrame(of:)`.
   public init?(frame: SessionFrame) {
     switch frame.kind {
     case .acknowledged: self = .delivered

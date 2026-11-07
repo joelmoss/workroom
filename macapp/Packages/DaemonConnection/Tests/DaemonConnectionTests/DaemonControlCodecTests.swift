@@ -55,20 +55,21 @@ final class DaemonControlCodecTests: XCTestCase {
 
   // MARK: - The shared codec sends exactly that
 
-  func testTheCodecsEnvelopeIsByteIdenticalToBothFormerEncoders() {
+  func testTheCodecsEnvelopeIsByteIdenticalToBothFormerEncoders() throws {
     let payloads: [[UInt8]] = [
       [], [0x21, 0, 0, 0, 0], Array(repeating: 7, count: 5000),
       Array(repeating: 0xAB, count: 70_000),
     ]
-    for service in UInt8(0)...7 {
+    for byte in UInt8(0)...7 {
+      let service = try XCTUnwrap(DaemonService(rawValue: byte))
       for stream: UInt32 in [0, 1, 0xFF, 0x0102_0304, 0xDEAD_BEEF, .max] {
         for payload in payloads {
-          let local = Legacy.localEnvelope(service: service, stream: stream, payload: payload)
+          let local = Legacy.localEnvelope(service: byte, stream: stream, payload: payload)
           XCTAssertEqual(
             DaemonEnvelope.encode(service: service, stream: stream, payload: payload), local)
           XCTAssertEqual(
             DaemonEnvelope.encode(service: service, stream: stream, payload: Data(payload)),
-            Legacy.remoteEnvelope(service: service, stream: stream, payload: Data(payload)))
+            Legacy.remoteEnvelope(service: byte, stream: stream, payload: Data(payload)))
         }
       }
     }
@@ -96,16 +97,12 @@ final class DaemonControlCodecTests: XCTestCase {
     XCTAssertEqual(DaemonService.forward.rawValue, 5)
     XCTAssertEqual(DaemonService.layout.rawValue, 6)
     XCTAssertEqual(DaemonService.programStatus.rawValue, 7)
-    XCTAssertEqual(DaemonClient.fileService, 3)
-    XCTAssertEqual(DaemonClient.layoutService, 6)
-    XCTAssertEqual(DaemonClient.programStatusService, 7)
   }
 
   // MARK: - Envelope (moved from the app's DaemonControlClientTests)
 
   func testEnvelopeHeaderIsServiceThenStreamThenLength() {
-    let bytes = DaemonEnvelope.encode(
-      service: DaemonService.terminal.rawValue, stream: 0xDEAD_BEEF, payload: [1, 2, 3])
+    let bytes = DaemonEnvelope.encode(service: .terminal, stream: 0xDEAD_BEEF, payload: [1, 2, 3])
     XCTAssertEqual(bytes[0], 0x01, "terminal service")
     XCTAssertEqual(Array(bytes[1..<5]), [0xDE, 0xAD, 0xBE, 0xEF], "stream id, big-endian")
     XCTAssertEqual(Array(bytes[5..<9]), [0, 0, 0, 3], "payload length, big-endian")
@@ -114,16 +111,14 @@ final class DaemonControlCodecTests: XCTestCase {
 
   func testEnvelopeRoundTrips() throws {
     let payload = Array(repeating: UInt8(7), count: 5000)
-    let bytes = DaemonEnvelope.encode(
-      service: DaemonService.control.rawValue, stream: 1, payload: payload)
+    let bytes = DaemonEnvelope.encode(service: .control, stream: 1, payload: payload)
     let decoded = try XCTUnwrap(DaemonEnvelope.decode(bytes))
     XCTAssertEqual(decoded.payload, payload)
     XCTAssertEqual(decoded.consumed, bytes.count)
   }
 
   func testEnvelopeNeedsMoreBytesRatherThanGuessing() {
-    let bytes = DaemonEnvelope.encode(
-      service: DaemonService.control.rawValue, stream: 1, payload: [9, 9])
+    let bytes = DaemonEnvelope.encode(service: .control, stream: 1, payload: [9, 9])
     for cut in 0..<bytes.count {
       XCTAssertNil(
         DaemonEnvelope.decode(Array(bytes.prefix(cut))), "a \(cut)-byte prefix should not decode")
@@ -134,8 +129,7 @@ final class DaemonControlCodecTests: XCTestCase {
   /// unchanged.
   func testASessionFrameSurvivesTheEnvelope() throws {
     let frame = SessionFrame(kind: .list)
-    let wire = DaemonEnvelope.encode(
-      service: DaemonService.control.rawValue, stream: 0, payload: frame.encoded())
+    let wire = DaemonEnvelope.encode(service: .control, stream: 0, payload: frame.encoded())
     let decoded = try XCTUnwrap(DaemonEnvelope.decode(wire))
 
     var frames = SessionFrameDecoder()
@@ -146,7 +140,7 @@ final class DaemonControlCodecTests: XCTestCase {
   /// The header the connection's read loop routes on: service, stream and length, read from the
   /// first nine bytes whatever follows them.
   func testTheHeaderIsReadFromTheFirstNineBytes() throws {
-    let wire = DaemonEnvelope.encode(service: 6, stream: 0x0102_0304, payload: [1, 2, 3, 4])
+    let wire = DaemonEnvelope.encode(service: .layout, stream: 0x0102_0304, payload: [1, 2, 3, 4])
     XCTAssertNil(DaemonEnvelope.header(of: Data(wire.prefix(8))))
     let header = try XCTUnwrap(DaemonEnvelope.header(of: Data(wire.prefix(9))))
     XCTAssertEqual(header, DaemonEnvelope.Header(service: 6, stream: 0x0102_0304, length: 4))
@@ -175,8 +169,9 @@ final class DaemonControlCodecTests: XCTestCase {
     XCTAssertFalse(DaemonControl.killed(SessionFrame(kind: .sessions, payload: [0, 0, 0, 0])))
   }
 
-  /// The local client reads a frame it has already decoded; the remote one decodes the envelope's
-  /// payload. Both must read the same answer from the same frame.
+  /// The local client reads a frame it has already decoded; the remote one reads the first frame
+  /// of the envelope's payload (`DaemonClient.signalSession`). Both must read the same answer from
+  /// the same frame.
   func testASignalOrRetagReplyReadsTheSameFromAFrameAsFromItsBytes() {
     let frames = [
       SessionFrame(kind: .acknowledged),
@@ -185,8 +180,9 @@ final class DaemonControlCodecTests: XCTestCase {
       SessionFrame(kind: .sessions, payload: [0, 0, 0, 0]),
     ]
     for frame in frames {
-      XCTAssertEqual(RunSignalReply(frame: frame), RunSignalReply.decode(frame.encoded()))
-      XCTAssertEqual(SessionRetag.reply(to: frame), SessionRetag.decode(frame.encoded()))
+      let read = try? DaemonControl.firstFrame(of: Data(frame.encoded()))
+      XCTAssertEqual(RunSignalReply(frame: frame), read.flatMap(RunSignalReply.init(frame:)))
+      XCTAssertEqual(SessionRetag.reply(to: frame), read.flatMap(SessionRetag.reply(to:)))
     }
   }
 

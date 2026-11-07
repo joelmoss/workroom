@@ -18,7 +18,7 @@ final class TabRecordsTests: XCTestCase {
     records.set(Tab(id: "a", title: "old"), by: .one)
     records.set(Tab(id: "a", title: "new"), by: .one)
     XCTAssertEqual(records["a"]?.title, "new")
-    XCTAssertEqual(records.ids(heldBy: .one), ["a"])
+    XCTAssertEqual(records.removeAll(heldBy: .one), ["a"])
   }
 
   func testRecordsFollowALayoutsNormalizedOrderAndSkipMissingOnes() {
@@ -72,6 +72,9 @@ final class TabRecordsTests: XCTestCase {
     records.release(["a"], by: .one)
     XCTAssertNil(records.holder(of: "a"), "in transit")
     XCTAssertEqual(records["a"]?.title, "one's", "a released tab keeps its record")
+    XCTAssertFalse(records.set(Tab(id: "a", title: "one's again"), by: .one))
+    XCTAssertNil(records.holder(of: "a"), "only a claim takes a tab in transit")
+    XCTAssertEqual(records["a"]?.title, "one's")
     XCTAssertTrue(records.claim(["a"], by: .two))
     XCTAssertEqual(records.holder(of: "a"), .two)
   }

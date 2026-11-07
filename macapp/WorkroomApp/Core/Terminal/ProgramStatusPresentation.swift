@@ -116,10 +116,10 @@ enum ProgramStatusPresentation {
     for tab: TerminalTab, of target: TerminalTarget,
     hosts: [HostID: ProgramStatusMonitor.HostState]
   ) -> [String] {
-    guard case .terminal(let state) = tab.content else { return [] }
+    guard let state = tab.terminal else { return [] }
     return tooltipLines(
       indicator: tab.indicator, rollup: state.programStatus,
-      hostState: hosts[target.remoteHost.map(HostID.remote) ?? .local],
+      hostState: hosts[target.hostID],
       hasSession: state.sessionID != nil)
   }
 

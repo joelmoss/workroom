@@ -41,18 +41,12 @@ struct PaneTreeView: View {
   /// cursor rate. The release commits it once. The workroom divider's pattern
   /// (`WorkroomSplitView.liveRatio`, issue #139), including `stored`: the split's ratio in the
   /// sessions when the drag began, so a re-even that lands mid-drag (issue #126) drops the override.
-  @State private var liveRatio: (split: UUID, ratio: CGFloat, stored: CGFloat)?
+  /// Once committed it clears, and the sessions' own value takes over.
+  @State private var liveRatio: DividerDrag?
   private static let space = "paneContent"
 
   /// Whichever drag is active: an in-tree pane-handle drag, or an incoming chip drag.
   private var activeDrag: PaneDragState? { drag ?? externalDrag }
-
-  /// The layout to draw: the given one, with the in-flight divider ratio overlaid while a drag is
-  /// live. Once committed, `liveRatio` clears and the sessions' own value takes over.
-  private var displayedLayout: TerminalPaneLayout {
-    guard let liveRatio else { return layout }
-    return layout.showingDrag(liveRatio.ratio, forSplit: liveRatio.split, from: liveRatio.stored)
-  }
 
   /// Whether a pane should show the dim scrim. `multiPane || !surfaceActive`: dim split-mates AND
   /// every pane of a *backgrounded* workroom — `surfaceActive` is `false` only for a co-displayed,
@@ -99,7 +93,8 @@ struct PaneTreeView: View {
   var body: some View {
     let focusedID = sessions.focusedTab(for: target)?.id
     let multiPane = layout.tabIDs.count >= 2
-    let shown = displayedLayout
+    // The given layout, with the in-flight divider ratio overlaid while a drag is live.
+    let shown = layout.showing(liveRatio)
     GeometryReader { geo in
       let plan = PaneTreeLayout.plan(shown, in: CGRect(origin: .zero, size: geo.size))
       ZStack(alignment: .topLeading) {
@@ -139,7 +134,9 @@ struct PaneTreeView: View {
           SplitDivider(
             orientation: d.orientation, ratio: d.ratio, total: d.total, noun: "pane",
             identifier: "pane.divider",
-            onLive: { liveRatio = (d.id, $0, layout.ratio(forSplit: d.id) ?? d.ratio) },
+            onLive: {
+              liveRatio = DividerDrag(split: d.id, ratio: $0, over: layout, fallback: d.ratio)
+            },
             onCommit: {
               liveRatio = nil
               sessions.setRatio($0, forSplit: d.id, for: target)
@@ -380,6 +377,9 @@ struct PaneLeafView: View {
   private let theme = ThemeService.shared
 
   var body: some View {
+    // Looked up once per pass, for the title bar, the content's context menu and whether this
+    // window still holds the surface: nil once the tab has gone, or moved to another window (#444).
+    let tab = sessions.tab(tabID, for: target)
     // The pane's own title bar (issue #150), a SIBLING above the content — never a wrapper around it.
     // `paneContent` therefore keeps the single structural position that `PaneLeafView` has always
     // guaranteed it: an `if` around the content would swap SwiftUI's `_ConditionalContent` branch and
@@ -390,7 +390,7 @@ struct PaneLeafView: View {
     // round as one panel — and every chrome overlay below (scrim, focus ring, padding, a11y) wraps
     // both, which is why the bar needs no unfocused fade of its own.
     VStack(spacing: 0) {
-      if !chromeless { titleBar }
+      if !chromeless { titleBar(tab) }
       // Non-terminal panes (a diff) have no first responder to claim focus on click, so a click
       // anywhere in the body focuses the pane. Gated on `!isTerminal` ONLY — the content type is
       // stable for a pane's lifetime, so the gesture is never attached/detached mid-interaction
@@ -408,7 +408,7 @@ struct PaneLeafView: View {
       // been promoted to selected, so later selection-based commands (Run, Close All) retargeted to
       // a pane where nothing visibly happened. The bar does its own activation via `.onTapGesture`,
       // which a button consumes before it fires, so scoping this here loses nothing.
-      paneContent
+      paneContent(tab)
         .modifier(
           ActivateOnPress(
             enabled: !isTerminal, onActivate: onActivate,
@@ -515,23 +515,23 @@ struct PaneLeafView: View {
 
   /// The pane's centre: a hosted terminal surface, or a diff viewer for a content tab. Clipped to the
   /// same rounded shape the focus border draws (the terminal host already clips itself).
-  @ViewBuilder private var paneContent: some View {
+  @ViewBuilder private func paneContent(_ tab: TerminalTab?) -> some View {
     switch content {
     // A terminal leaf's builder always reads its surface with `content`, so the `if` is one slot.
     case .terminal(let s):
       if let surface {
-        terminalPanel(s, surface: surface)
+        terminalPanel(s, surface: surface, held: tab != nil)
       }
     case .diff(let descriptor):
-      // The diff pane body carries the SAME context menu as its tab chip (issue #72) — fetch the live
-      // tab so "Keep Open" / split-guard reflect its current preview / split state. A diff leaf is
+      // The diff pane body carries the SAME context menu as its tab chip (issue #72) — the live
+      // tab, so "Keep Open" / split-guard reflect its current preview / split state. A diff leaf is
       // always a live tab while it renders, so the `else` is just a safety fallback.
       let diff = DiffViewer(
         descriptor: descriptor, directory: target.path, repositoryLocation: target.remoteLocation,
-        viewModeOverride: sessions.tab(tabID, for: target)?.diffViewModeOverride,
+        viewModeOverride: tab?.diffViewModeOverride,
         isFocused: focused, find: store.contentFind, cannedDiffs: store.services.cannedDiffs
       )
-      if let tab = sessions.tab(tabID, for: target) {
+      if let tab {
         contentPanel(
           diff.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions))
       } else {
@@ -543,10 +543,10 @@ struct PaneLeafView: View {
       let file = PlainFileViewer(
         descriptor: descriptor, directory: target.path, repositoryLocation: target.remoteLocation,
         isFocused: focused,
-        previewOverride: sessions.tab(tabID, for: target)?.markdownPreviewOverride,
+        previewOverride: tab?.markdownPreviewOverride,
         find: store.contentFind
       )
-      if let tab = sessions.tab(tabID, for: target) {
+      if let tab {
         contentPanel(
           file.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions))
       } else {
@@ -560,7 +560,7 @@ struct PaneLeafView: View {
         descriptor: descriptor, directory: target.path,
         repositoryLocation: target.remoteLocation, tabID: tabID, target: target,
         isFocused: focused, find: store.contentFind)
-      if let tab = sessions.tab(tabID, for: target) {
+      if let tab {
         contentPanel(
           detail.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions))
       } else {
@@ -569,8 +569,11 @@ struct PaneLeafView: View {
     }
   }
 
-  /// A terminal pane's centre: its surface and its status bar.
-  private func terminalPanel(_ s: TerminalState, surface: GhosttySurfaceView) -> some View {
+  /// A terminal pane's centre: its surface and its status bar. `held`: whether this window's
+  /// sessions still hold the tab.
+  private func terminalPanel(_ s: TerminalState, surface: GhosttySurfaceView, held: Bool)
+    -> some View
+  {
     // The terminal and its status bar (issue #49) stack as one rounded panel: the surface rounds
     // only its top corners, the enclosing clip rounds the bar's bottom, so every pane — including
     // each split member — carries its own bar as part of the pane.
@@ -587,10 +590,9 @@ struct PaneLeafView: View {
         // Only the host whose kind matches the model may hold the surface (issue #172): the pane
         // tree while the tab is docked, the detached window while it is not. And only in the
         // window whose sessions own the tab: one moved to another window (#444) leaves this
-        // window's tree a last pass that would otherwise take the surface back. Its own target
-        // is asked first, so a leaf observes the other targets' tabs only once the tab has left it.
-        mayHostSurface: sessions.detachedTabIDs.contains(tabID) == isDetached
-          && (sessions.tab(tabID, for: target) != nil || sessions.containsTab(tabID))
+        // window's tree a last pass that would otherwise take the surface back. Its own target is
+        // the only one that can hold it here: no tab moves between targets inside one window.
+        mayHostSurface: sessions.detachedTabIDs.contains(tabID) == isDetached && held
       )
       // Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state
       // is per-surface, and only the focused pane can be searched. Nothing until active.
@@ -632,8 +634,7 @@ struct PaneLeafView: View {
   ///
   /// The bar is store-free, so everything it shows is resolved here — this view already observes
   /// `sessions` and holds the store, and doing it once per pane keeps that churn out of the bar.
-  private var titleBar: some View {
-    let tab = sessions.tab(tabID, for: target)
+  private func titleBar(_ tab: TerminalTab?) -> some View {
     // The bar reads the changing title only in its text and accessibility leaves, keeping its
     // adaptive toolbar and action closures out of every spinner frame.
     return PaneTitleBar(
@@ -815,13 +816,11 @@ struct SplitDivider: View {
   /// identifier.
   let noun: String
   let identifier: String
-  /// The in-flight ratio, per mouse-moved tick.
+  /// The in-flight ratio, per mouse-moved tick, for the caller to park in local state rather than
+  /// the store (`DividerDrag`).
   let onLive: (CGFloat) -> Void
-  /// The final ratio, once, on mouse-up, for a caller that parks `onLive`'s values in local state
-  /// rather than the store (both splits do: the workroom split since issue #139, the terminal
-  /// panes since plan step 3.5). A VoiceOver step is already final, so it goes here too. nil:
-  /// `onLive` is the whole story.
-  var onCommit: ((CGFloat) -> Void)?
+  /// The final ratio, once, on mouse-up. A VoiceOver step is already final, so it goes here too.
+  let onCommit: (CGFloat) -> Void
   @State private var startRatio: CGFloat?
   /// The translation this drag is measured FROM. Normally zero (the gesture's own origin), but it
   /// re-bases whenever the divider is re-anchored mid-drag — `value.translation` is cumulative for
@@ -852,7 +851,7 @@ struct SplitDivider: View {
             // prevent. The final translation comes from this closure's own value; there's no need
             // to mirror each tick into a second `@State`.
             reanchorIfMovedElsewhere(value.translation)
-            if let onCommit, let start = startRatio {
+            if let start = startRatio {
               onCommit(dragged(from: start, by: rebased(value.translation)))
             }
             startRatio = nil
@@ -872,12 +871,11 @@ struct SplitDivider: View {
       .accessibilityValue("\(Int((ratio * 100).rounded()))%")
       .accessibilityAdjustableAction { direction in
         let step: CGFloat = 0.05
-        let emit = onCommit ?? onLive
         switch direction {
         case .increment:
-          emit(PaneTreeLayout.clampRatio(ratio + step, total: total, along: orientation))
+          onCommit(PaneTreeLayout.clampRatio(ratio + step, total: total, along: orientation))
         case .decrement:
-          emit(PaneTreeLayout.clampRatio(ratio - step, total: total, along: orientation))
+          onCommit(PaneTreeLayout.clampRatio(ratio - step, total: total, along: orientation))
         @unknown default: break
         }
       }

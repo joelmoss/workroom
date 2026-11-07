@@ -18,9 +18,14 @@ final class SessionRetagTests: XCTestCase {
   }
 
   func testRepliesSayWhetherItWasRetagged() {
-    XCTAssertEqual(SessionRetag.decode([0x32, 0, 0, 0, 0]), true)
+    XCTAssertEqual(reply([0x32, 0, 0, 0, 0]), true)
     let gone = Array("no session 5a1e0f7e".utf8)
-    XCTAssertEqual(SessionRetag.decode([0x14, 0, 0, 0, UInt8(gone.count)] + gone), false)
-    XCTAssertNil(SessionRetag.decode([0x31, 0, 0, 0, 0]), "a session list is no reply to a retag")
+    XCTAssertEqual(reply([0x14, 0, 0, 0, UInt8(gone.count)] + gone), false)
+    XCTAssertNil(reply([0x31, 0, 0, 0, 0]), "a session list is no reply to a retag")
+  }
+
+  /// A Control envelope's payload, read as a client reads it.
+  private func reply(_ payload: [UInt8]) -> Bool? {
+    (try? DaemonControl.firstFrame(of: Data(payload))).flatMap(SessionRetag.reply(to:))
   }
 }

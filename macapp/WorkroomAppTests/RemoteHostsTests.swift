@@ -46,8 +46,7 @@ final class RemoteHostsTests: XCTestCase {
       } catch {
         XCTAssertEqual(error as? RepositoryRoutingError, .olderLayout(host), attempt)
         XCTAssertEqual(
-          (error as? LocalizedError)?.errorDescription, HostDriverError.olderContainerMessage,
-          attempt)
+          (error as? LocalizedError)?.errorDescription, HostID.olderLayoutMessage, attempt)
       }
     }
     let driver = try XCTUnwrap(remote.registry.existingDriver(holding: id) as? ContainerHostDriver)

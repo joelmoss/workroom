@@ -24,7 +24,8 @@ public final class TabRecord<Tab> {
 ///
 /// **A tab is held by at most one holder at a time.** Storing or claiming a tab another holder has
 /// is refused, and a hand-over between windows releases the tabs (in transit, held by none) before
-/// the other window claims them.
+/// the other window claims them. Only `claim` takes a tab in transit: a write to one is refused,
+/// so no store between the release and the claim can take it back.
 @MainActor
 public final class TabRecords<Tab: Identifiable, Holder: Hashable> {
   private var records: [Tab.ID: TabRecord<Tab>] = [:]
@@ -41,22 +42,17 @@ public final class TabRecords<Tab: Identifiable, Holder: Hashable> {
   /// Who holds `id`, or nil when nobody does (no such tab, or one in transit between windows).
   public func holder(of id: Tab.ID) -> Holder? { holders[id] }
 
-  /// The tabs `holder` holds, in no meaningful order.
-  public func ids(heldBy holder: Holder) -> [Tab.ID] {
-    holders.compactMap { $0.value == holder ? $0.key : nil }
-  }
-
-  /// Store `tab` for `holder`, adding it or replacing its record. A new tab, or one in transit, is
-  /// `holder`'s from now on. Refused, and nothing stored, when another holder has it.
+  /// Store `tab` for `holder`: a new tab, `holder`'s from now on, or a new record for one `holder`
+  /// holds. Refused, and nothing stored, for a tab another holder has or one in transit.
   @discardableResult
   public func set(_ tab: Tab, by holder: Holder) -> Bool {
-    if let current = holders[tab.id], current != holder { return false }
-    holders[tab.id] = holder
-    if let record = records[tab.id] {
-      record.tab = tab
-    } else {
+    guard let record = records[tab.id] else {
+      holders[tab.id] = holder
       records[tab.id] = TabRecord(tab)
+      return true
     }
+    guard holders[tab.id] == holder else { return false }
+    record.tab = tab
     return true
   }
 
@@ -90,7 +86,7 @@ public final class TabRecords<Tab: Identifiable, Holder: Hashable> {
   /// Drop every tab `holder` holds (its window has gone), and return their ids.
   @discardableResult
   public func removeAll(heldBy holder: Holder) -> [Tab.ID] {
-    let ids = ids(heldBy: holder)
+    let ids = holders.compactMap { $0.value == holder ? $0.key : nil }
     for id in ids { remove(id) }
     return ids
   }

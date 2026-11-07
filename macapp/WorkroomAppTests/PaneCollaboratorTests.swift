@@ -36,7 +36,6 @@ private final class FakePaneTabs {
       state: { [weak self] tabID, targetID in
         self?.held[tabID].flatMap { $0.target == targetID ? $0.state : nil }
       },
-      holds: { [weak self] tabID, targetID in self?.held[tabID]?.target == targetID },
       mutate: { [weak self] tabID, targetID, body in
         guard var entry = self?.held[tabID], entry.target == targetID else { return }
         body(&entry.state)
@@ -67,12 +66,6 @@ private actor OpenGate {
   }
 }
 
-@MainActor
-private func isolatedSessionService() -> PersistentSessionService {
-  PersistentSessionService(
-    probe: { _ in .unhealthy(reason: "isolated") }, ownership: { _ in .notOwned })
-}
-
 /// Long enough for a released read's task to land its answer, if it is going to. Keeps `owner`, the
 /// collaborator, alive meanwhile, as its window's sessions do: one freed early drops its reads for
 /// that reason alone, and these tests would then pass against code that cancels nothing.
@@ -86,9 +79,10 @@ final class PaneLiveStateTests: XCTestCase {
   private let target = TerminalTarget.ID.quickTerminal
 
   private func makeLiveState(_ tabs: FakePaneTabs) -> PaneLiveState {
+    let service = isolatedPaneSessionService()
     let live = PaneLiveState(
       access: tabs.access, codingAgentManager: TerminalCodingAgentManager(),
-      sessionService: isolatedSessionService())
+      sessionService: { service })
     live.readsPaneBranches = true
     live.recordUnrecognizedTool = { _ in }
     return live
@@ -162,8 +156,8 @@ final class ProgramStatusBindingTests: XCTestCase {
   /// rather than by session; why_new=the binding can now be driven alone; seam=a seeded monitor.
   func testASessionsRollupLandsOnlyOnTheTabsAttachedToIt() {
     let tabs = FakePaneTabs()
-    let binding = ProgramStatusBinding(
-      access: tabs.access, sessionService: isolatedSessionService())
+    let service = isolatedPaneSessionService()
+    let binding = ProgramStatusBinding(access: tabs.access, sessionService: { service })
     let monitor = ProgramStatusMonitor()
     binding.monitor = monitor
     let session = UUID()
@@ -183,8 +177,8 @@ final class ProgramStatusBindingTests: XCTestCase {
   /// snapshot check goes; why_new=the binding can now be driven alone; seam=an empty monitor.
   func testARunTabIsGoneOnlyWhenItsOwnHostsSnapshotLeavesItOut() {
     let tabs = FakePaneTabs()
-    let binding = ProgramStatusBinding(
-      access: tabs.access, sessionService: isolatedSessionService())
+    let service = isolatedPaneSessionService()
+    let binding = ProgramStatusBinding(access: tabs.access, sessionService: { service })
     binding.monitor = ProgramStatusMonitor()
     let run = tabs.add(to: target, launch: .runSession, sessionID: UUID())
     _ = tabs.add(to: target, sessionID: UUID())
@@ -210,11 +204,6 @@ final class RemotePaneLinksTests: XCTestCase {
     HostFiles(
       context: FileContext(location: location, sharedLocation: nil),
       files: ["a.rb": Data("a\n".utf8), "b.rb": Data("b\n".utf8)])
-  }
-
-  /// Waits for `opened` to hold something, for up to two seconds.
-  private func waitForAnOpen(_ opened: () -> [String]) async throws {
-    for _ in 0..<200 where opened().isEmpty { try await Task.sleep(for: .milliseconds(10)) }
   }
 
   /// Value: protects=a ⌘-click whose pane closed while the host answered opens nothing (#254);
@@ -248,7 +237,7 @@ final class RemotePaneLinksTests: XCTestCase {
     let tab = tabs.add(to: target.id, sessionID: UUID())
 
     links.open("a.rb", tab: tab, target: target)
-    try await waitForAnOpen { opened }
+    try await waitFor(tries: 200) { !opened.isEmpty }
 
     XCTAssertEqual(opened, ["a.rb"])
   }
@@ -271,7 +260,7 @@ final class RemotePaneLinksTests: XCTestCase {
 
     links.open("a.rb", tab: tab, target: target)
     links.open("b.rb", tab: tab, target: target)
-    try await waitForAnOpen { opened }
+    try await waitFor(tries: 200) { !opened.isEmpty }
     await gate.open()
     try await waitForLateAnswers(keeping: links)
 

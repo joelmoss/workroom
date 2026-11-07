@@ -1715,9 +1715,7 @@ final class AppStore: ObservableObject {
           // workroom has a terminal (and thus a tab), don't race the pane's first appearance.
           let target = workroom.target(inProject: project.path)
           terminals.ensureTab(for: target)
-          let firstSurface = terminals.tabs(for: target).first.flatMap {
-            terminals.surface(of: $0.id)
-          }
+          let firstSurface = terminals.surface(terminals.tabs(for: target).first)
           if let title = UITestFixture.usageCodingAgentTitle {
             firstSurface?.handleTitleChange(title)
           }
@@ -2466,7 +2464,7 @@ final class AppStore: ObservableObject {
   /// when nothing's selected / no terminal exists. Drives the Go menu's scroll items (issue #42).
   private var focusedSurface: GhosttySurfaceView? {
     guard let target = selectedTarget else { return nil }
-    return terminals.focusedTab(for: target).flatMap { terminals.surface(of: $0.id) }
+    return terminals.focusedSurface(for: target)
   }
 
   /// Scroll the focused terminal to the top / bottom of its scrollback (issue #42). Driven by the Go

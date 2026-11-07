@@ -4,15 +4,20 @@ import WorkroomWire
 /// The daemon's services, as `wr_protocol::envelope::Service` numbers them: the first byte of every
 /// envelope.
 public enum DaemonService: UInt8, Sendable {
-  /// The session list, kill, signal and retag (`DaemonControl`).
+  /// The session list, kill, signal and retag (`DaemonControl`). Its payloads are `SessionFrame`s,
+  /// not a chunk flag and JSON.
   case control = 0x00
   case terminal = 0x01
   case vcs = 0x02
   case file = 0x03
-  /// Retired (#382) and never asked, but a daemon from before then may still send on it.
+  /// Retired (#382) and never asked, but a daemon from before then may still send on it, which is
+  /// dropped rather than failing the connection.
   case status = 0x04
   case forward = 0x05
+  /// JSON like the others, and chunked like VCS, since a layout can be larger than one envelope
+  /// (#255).
   case layout = 0x06
+  /// Requests on their own streams, events on stream 0 (#358).
   case programStatus = 0x07
 }
 
@@ -36,17 +41,13 @@ public enum DaemonEnvelope {
     }
   }
 
-  public static func encode(service: UInt8, stream: UInt32, payload: [UInt8]) -> [UInt8] {
-    var bytes = header(service: service, stream: stream, length: payload.count)
-    bytes.append(contentsOf: payload)
-    return bytes
+  public static func encode(service: DaemonService, stream: UInt32, payload: [UInt8]) -> [UInt8] {
+    envelope(service: service, stream: stream, payload: payload)
   }
 
   /// `encode` for a payload that is already `Data`, without copying it through an array first.
-  public static func encode(service: UInt8, stream: UInt32, payload: Data) -> Data {
-    var envelope = Data(header(service: service, stream: stream, length: payload.count))
-    envelope.append(payload)
-    return envelope
+  public static func encode(service: DaemonService, stream: UInt32, payload: Data) -> Data {
+    envelope(service: service, stream: stream, payload: payload)
   }
 
   /// The header at the start of `bytes`, or nil until all of it has arrived. The payload length is
@@ -65,10 +66,17 @@ public enum DaemonEnvelope {
     return (header, Array(bytes[headerSize..<end]), end)
   }
 
-  private static func header(service: UInt8, stream: UInt32, length: Int) -> [UInt8] {
-    let length = UInt32(length)
-    return [service] + [24, 16, 8, 0].map { UInt8((stream >> UInt32($0)) & 0xFF) }
-      + [24, 16, 8, 0].map { UInt8((length >> UInt32($0)) & 0xFF) }
+  /// The header, then `payload`, into one buffer sized for both.
+  private static func envelope<Bytes: RangeReplaceableCollection>(
+    service: DaemonService, stream: UInt32, payload: Bytes
+  ) -> Bytes where Bytes.Element == UInt8 {
+    var bytes = Bytes()
+    bytes.reserveCapacity(headerSize + payload.count)
+    bytes.append(service.rawValue)
+    withUnsafeBytes(of: stream.bigEndian) { bytes.append(contentsOf: $0) }
+    withUnsafeBytes(of: UInt32(payload.count).bigEndian) { bytes.append(contentsOf: $0) }
+    bytes.append(contentsOf: payload)
+    return bytes
   }
 
   private static func header(of bytes: [UInt8]) -> Header? {

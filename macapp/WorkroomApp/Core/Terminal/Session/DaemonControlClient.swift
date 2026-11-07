@@ -128,8 +128,7 @@ struct DaemonControlClient: SessionControlPlane {
     guard greeting.version >= minimumVersion else { return nil }
     buffer.removeFirst(greeting.consumed)
 
-    let envelope = DaemonEnvelope.encode(
-      service: DaemonService.control.rawValue, stream: 0, payload: frame)
+    let envelope = DaemonEnvelope.encode(service: .control, stream: 0, payload: frame)
     guard send(descriptor, envelope) else { return nil }
 
     // Loop rather than parse once: the daemon may send an unrelated envelope first, and a control

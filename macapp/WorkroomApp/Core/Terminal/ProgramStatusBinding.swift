@@ -13,16 +13,21 @@ final class ProgramStatusBinding {
 
   /// Where pane indicators read program status from. Tests swap in their own.
   var monitor: ProgramStatusMonitor = .shared
-  /// The sessions' `PersistentSessionService`, kept in step by `TerminalPanes`.
-  var sessionService: PersistentSessionService
+  /// The sessions' `PersistentSessionService`, asked of `TerminalPanes` each time, as
+  /// `PaneLiveState` asks it.
+  private let currentSessionService: @MainActor () -> PersistentSessionService
+  private var sessionService: PersistentSessionService { currentSessionService() }
   private var listener: UUID?
   /// Tabs where a `done` arrived while they had focus: it is marked seen when focus leaves, so a
   /// finish the user watched happen leaves no checkmark behind.
   private var watchedDone: Set<TerminalTab.ID> = []
 
-  init(access: TerminalTabAccess, sessionService: PersistentSessionService) {
+  init(
+    access: TerminalTabAccess,
+    sessionService: @escaping @MainActor () -> PersistentSessionService
+  ) {
     self.access = access
-    self.sessionService = sessionService
+    currentSessionService = sessionService
   }
 
   /// Forget a tab that left the window (close, reap, hand-off): a finish it watched is not marked
@@ -35,8 +40,12 @@ final class ProgramStatusBinding {
   func follow(_ host: HostID) {
     if listener == nil {
       listener = monitor.addListener { [weak self] change in
-        self?.applyProgramStatus(change.sessions)
-        self?.applyRunStatus(change)
+        guard let self else { return }
+        // One snapshot for both: the rollups written first change no tab's session or launch,
+        // the only fields the run status reads.
+        let terminals = access.terminals()
+        applyProgramStatus(change.sessions, to: terminals)
+        applyRunStatus(change, to: terminals)
       }
     }
     monitor.watch(host)
@@ -47,7 +56,14 @@ final class ProgramStatusBinding {
   /// said, a snapshot that did not name the session or an `ended` for it, never from a monitor that
   /// has not heard from the host yet.
   func applyRunStatus(_ change: ProgramStatusMonitor.Change) {
-    for (targetID, tabID, state) in access.terminals() {
+    applyRunStatus(change, to: access.terminals())
+  }
+
+  private func applyRunStatus(
+    _ change: ProgramStatusMonitor.Change,
+    to terminals: [(target: TerminalTarget.ID, tab: TerminalTab.ID, state: TerminalState)]
+  ) {
+    for (targetID, tabID, state) in terminals {
       guard state.launch.isRunSession, let sessionID = state.sessionID,
         (sessionService.remoteHost(of: sessionID) ?? .local) == change.host,
         change.isSnapshot || change.sessions.contains(sessionID)
@@ -64,7 +80,7 @@ final class ProgramStatusBinding {
     else { return }
     reportRunStatus(
       of: sessionID, tab: tabID, target: target.id,
-      gone: monitor.hasSnapshot(of: target.remoteHost.map(HostID.remote) ?? .local))
+      gone: monitor.hasSnapshot(of: target.hostID))
   }
 
   /// `gone`: whether a session the monitor does not hold may be reported as gone.
@@ -78,9 +94,12 @@ final class ProgramStatusBinding {
     }
   }
 
-  /// Puts the monitor's rollup on every tab attached to `sessions`.
-  func applyProgramStatus(_ sessions: Set<UUID>) {
-    for (targetID, tabID, state) in access.terminals() {
+  /// Puts the monitor's rollup on every tab of `terminals` attached to `sessions`.
+  private func applyProgramStatus(
+    _ sessions: Set<UUID>,
+    to terminals: [(target: TerminalTarget.ID, tab: TerminalTab.ID, state: TerminalState)]
+  ) {
+    for (targetID, tabID, state) in terminals {
       guard let sessionID = state.sessionID, sessions.contains(sessionID) else { continue }
       let rollup = monitor.rollup(for: sessionID)
       guard rollup != state.programStatus else { continue }

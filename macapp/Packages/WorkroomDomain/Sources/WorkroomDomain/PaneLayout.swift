@@ -206,6 +206,12 @@ public indirect enum PaneLayout<Leaf: Hashable>: Equatable {
     return settingRatio(ratio, forSplit: splitID)
   }
 
+  /// `showingDrag` for the drag in flight, or the tree as it is when there is none.
+  public func showing(_ drag: DividerDrag?) -> PaneLayout<Leaf> {
+    guard let drag else { return self }
+    return showingDrag(drag.ratio, forSplit: drag.split, from: drag.stored)
+  }
+
   /// Number of leaves in this (sub)tree (issue #83). A lone leaf is 1; a split is the sum of its
   /// children. Kept for callers that need the true pane count; `equalized()` deliberately does NOT
   /// weight by it — see `slots(along:)`.
@@ -295,3 +301,22 @@ public indirect enum PaneLayout<Leaf: Hashable>: Equatable {
 }
 
 extension PaneLayout: Sendable where Leaf: Sendable {}
+
+/// A divider drag in flight, held by the view that draws the split rather than written to its
+/// store on every mouse-moved tick: the ratio dragged to on split node `split`, and `stored`, that
+/// node's ratio when the drag began, so a re-even landing mid-drag (issue #126) drops the override
+/// (`PaneLayout.showing`). Both splits' dividers park their drags in one, the workroom split's
+/// since issue #139 and the terminal panes' since plan step 3.5; the release commits the ratio.
+public struct DividerDrag: Equatable, Sendable {
+  public let split: UUID
+  public let ratio: CGFloat
+  public let stored: CGFloat
+
+  /// A drag to `ratio` on `split`, measured against `layout`'s ratio for it, or `fallback` (the
+  /// divider's own) when the layout no longer has the node.
+  public init<Leaf>(split: UUID, ratio: CGFloat, over layout: PaneLayout<Leaf>, fallback: CGFloat) {
+    self.split = split
+    self.ratio = ratio
+    stored = layout.ratio(forSplit: split) ?? fallback
+  }
+}

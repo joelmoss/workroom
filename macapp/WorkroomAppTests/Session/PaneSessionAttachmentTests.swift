@@ -70,13 +70,6 @@ final class FakePaneSurface: PaneSessionSurface {
   func respawnSurface() { respawns += 1 }
 }
 
-/// A session service that answers no helper, so only what a test registers on it attaches.
-@MainActor
-func isolatedPaneSessionService() -> PersistentSessionService {
-  PersistentSessionService(
-    probe: { _ in .unhealthy(reason: "isolated") }, ownership: { _ in .notOwned })
-}
-
 extension XCTestCase {
   /// Registers a session on `service` on a host whose last attach left `log` behind, and `status`
   /// as the attach wrapper's record of ssh's exit status (none when nil). Returns the session and
@@ -155,10 +148,6 @@ final class PaneSessionAttachmentTests: XCTestCase {
 
   private func surface(of pane: PaneSessionAttachment) throws -> FakePaneSurface {
     try XCTUnwrap(pane.surface as? FakePaneSurface)
-  }
-
-  private func spin(_ seconds: TimeInterval) {
-    RunLoop.main.run(until: Date().addingTimeInterval(seconds))
   }
 
   /// The pane's attach ends with no status recorded: its wrapper removed the last one and was
@@ -246,7 +235,7 @@ final class PaneSessionAttachmentTests: XCTestCase {
     view.childExited()
     XCTAssertNotNil(view.pendingReconnect)
     XCTAssertFalse(view.isRestored)
-    spin(1.5)
+    settle(1.5)
     XCTAssertNil(view.pendingReconnect, "the reconnect did not run")
     XCTAssertTrue(view.isRestored)
   }
@@ -264,7 +253,7 @@ final class PaneSessionAttachmentTests: XCTestCase {
     view.reattach()  // the attach that just failed began now
     view.childExited()
     XCTAssertNotNil(view.pendingReconnect)
-    spin(1.5)
+    settle(1.5)
     XCTAssertNil(view.pendingReconnect, "the reconnect did not run")
     XCTAssertFalse(view.isRestored)
     try exitBeforeSshRecords(view)
@@ -291,7 +280,7 @@ final class PaneSessionAttachmentTests: XCTestCase {
     NotificationCenter.default.post(
       name: RemoteLinkMonitor.linksStale, object: nil,
       userInfo: [RemoteLinkMonitor.staleHostsKey: stale])
-    spin(0.05)
+    settle(0.05)
   }
 
   // Value: protects=a remote pane coming back within a second of the Mac waking or changing
@@ -391,14 +380,7 @@ final class PaneSessionAttachmentTests: XCTestCase {
   /// A tab's surface attaches through the service its window holds, whichever factory made the
   /// surface.
   func testATabsSurfaceAttachesThroughItsWindowsService() throws {
-    let sessions = TerminalPanes()
-    sessions.makeView = { _, cwd, _ in
-      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
-    }
-    sessions.sessionService = service
-    sessions.programStatus = ProgramStatusMonitor()
-    sessions.recordUnrecognizedTool = { _ in }
-    sessions.recency = SwitcherRecency()
+    let sessions = makeIsolatedPanes(service: service)
     let target = TerminalTarget(
       id: .workroom(project: "/p", name: "foo"), title: "foo", path: "/tmp", isMissing: false)
     let tab = sessions.addTab(for: target)

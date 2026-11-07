@@ -121,7 +121,7 @@ extension DaemonClient: HostServiceConnection {
 
   /// A Layout request. 15s: a `put` syncs a file and its directory, and a `get` reads one.
   func layoutRequest(_ request: DaemonLayoutRequest) async throws -> Data {
-    try await self.request(request, timeout: 15, service: Self.layoutService)
+    try await self.request(request, timeout: 15, service: .layout)
   }
 
   /// The port-forwarding service on this connection, or `VCSError.backendVersion` when the peer

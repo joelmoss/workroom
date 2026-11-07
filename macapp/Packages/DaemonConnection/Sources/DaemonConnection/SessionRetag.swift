@@ -13,14 +13,8 @@ public enum SessionRetag {
     controlFrame(kind: frameKind, payload: sessionBytes(session) + Array(workroom.utf8))
   }
 
-  /// How the daemon answered, from a Control envelope's payload: true retagged, false refused (no
-  /// such session, or a bad request), nil when it is no reply to a retag. Answered as a `Signal`
-  /// is.
-  public static func decode(_ payload: [UInt8]) -> Bool? {
-    RunSignalReply.decode(payload).map { $0 == .delivered }
-  }
-
-  /// `decode`, from a frame already read.
+  /// How the daemon answered, in one reply frame: true retagged, false refused (no such session, or
+  /// a bad request), nil when it is no reply to a retag. Answered as a `Signal` is.
   public static func reply(to frame: SessionFrame) -> Bool? {
     RunSignalReply(frame: frame).map { $0 == .delivered }
   }

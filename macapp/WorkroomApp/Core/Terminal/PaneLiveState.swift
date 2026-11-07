@@ -17,8 +17,10 @@ final class PaneLiveState {
   private let access: TerminalTabAccess
   private let codingAgentManager: TerminalCodingAgentManager
 
-  /// The sessions' `PersistentSessionService`, kept in step by `TerminalPanes`.
-  var sessionService: PersistentSessionService
+  /// The sessions' `PersistentSessionService`, asked of `TerminalPanes` each time, so a test or
+  /// the Quick Terminal that swaps theirs is followed here.
+  private let currentSessionService: @MainActor () -> PersistentSessionService
+  private var sessionService: PersistentSessionService { currentSessionService() }
   /// Where a remote pane's host-side working directory is asked for (#239). Settable for tests.
   var hostConnections: HostConnectionManager = .shared
   /// True for the Quick Terminal's sessions: its panes can each be in a different repository and no
@@ -64,11 +66,11 @@ final class PaneLiveState {
 
   init(
     access: TerminalTabAccess, codingAgentManager: TerminalCodingAgentManager,
-    sessionService: PersistentSessionService
+    sessionService: @escaping @MainActor () -> PersistentSessionService
   ) {
     self.access = access
     self.codingAgentManager = codingAgentManager
-    self.sessionService = sessionService
+    currentSessionService = sessionService
   }
 
   /// Cancel `tabID`'s host cwd, Claude profile and branch reads in flight, and forget that its first

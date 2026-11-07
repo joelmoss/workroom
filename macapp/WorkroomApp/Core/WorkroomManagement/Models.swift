@@ -1,6 +1,7 @@
 import Foundation
 import HostDrivers
 import WorkroomDomain
+import WorkroomWire
 
 // Mirrors the `workroom --json` public API (schema_version 1). Decoders are lenient:
 // unknown fields are ignored so a newer bundled/standalone CLI won't break the app.
@@ -65,6 +66,20 @@ struct TerminalTarget: Identifiable, Hashable {
   /// app matches a session's tag against: the workroom's own id for a remote workroom that has
   /// one, `id` otherwise (#255).
   var sessionWorkroomKey: String { remoteWorkroomID?.uuidString ?? id.encoded }
+
+  /// What a pane's session here is registered with: its project, its workroom
+  /// (`sessionWorkroomKey`) and its pane's `title`, in that order. A pane moving into this target
+  /// takes the same, under its own title.
+  func sessionMetadata(title: String) -> [(key: String, value: String)] {
+    [
+      (SessionMetadataKey.project, id.projectPath ?? path),
+      (SessionMetadataKey.workroom, sessionWorkroomKey),
+      (SessionMetadataKey.title, title),
+    ]
+  }
+
+  /// The daemon this target's panes talk to: their remote host's, or this Mac's.
+  var hostID: HostID { remoteHost.map(HostID.remote) ?? .local }
 
   /// Why no pane can mount here, or nil when one can: `unavailability`, except for a remote
   /// workroom whose host this app reaches.
