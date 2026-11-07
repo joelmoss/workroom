@@ -564,7 +564,7 @@ private struct WorkroomPaneTitleBar: View {
         .foregroundStyle(focused ? tokens.accent : tokens.fgMuted)
         .help(workroomName == nil ? "" : target.hostTooltip)
       if let reason = target.terminalUnavailability {
-        WarningGlyph(tokens: tokens)
+        WarningGlyph()
           .font(.system(size: 10))
           .help(reason.title)
       }

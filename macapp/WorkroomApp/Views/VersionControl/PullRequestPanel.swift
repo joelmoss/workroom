@@ -86,7 +86,7 @@ struct PullRequestPanel: View {
     let copy = Self.ghWarningCopy(for: status)
     return VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 6) {
-        WarningGlyph(tokens: tokens)
+        WarningGlyph()
           .accessibilityHidden(true)
         Text(copy.title)
           .fontWeight(.medium)

@@ -193,9 +193,7 @@ struct FamilyRow: View {
     .padding(.vertical, 6)
     // Accent ring on the selected family; a fainter ring on the keyboard-highlighted row so ↑/↓
     // focus is visible even when it isn't the selected one.
-    .pickerRowChrome(
-      tokens: tokens, highlighted: isHighlighted, hovered: hovered, active: isActive
-    )
+    .pickerRowChrome(highlighted: isHighlighted, hovered: hovered, active: isActive)
     .onHover { hovered = $0 }
     // Queryable by `ThemePickerUITests`. Two things here are load-bearing and were both found by
     // running the test rather than by reasoning:

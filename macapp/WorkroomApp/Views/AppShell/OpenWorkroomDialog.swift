@@ -260,7 +260,7 @@ private struct OpenTargetRow: View {
     // Slight indent so rows sit beneath their project header.
     .padding(.leading, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .pickerRowChrome(tokens: tokens, highlighted: isHighlighted, hovered: hovered)
+    .pickerRowChrome(highlighted: isHighlighted, hovered: hovered)
     .help(target.path)
     .onHover { hovered = $0 }
   }

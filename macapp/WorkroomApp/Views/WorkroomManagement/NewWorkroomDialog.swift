@@ -420,7 +420,7 @@ private struct PickerRow: View {
     .padding(.horizontal, 8)
     .padding(.vertical, 6)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .pickerRowChrome(tokens: tokens, highlighted: isHighlighted, hovered: hovered)
+    .pickerRowChrome(highlighted: isHighlighted, hovered: hovered)
     .contentShape(Rectangle())
     .help(help)
     .onHover { hovered = $0 }

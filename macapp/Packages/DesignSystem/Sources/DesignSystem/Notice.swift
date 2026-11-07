@@ -10,15 +10,11 @@ public struct Notice<Content: View, Accessory: View>: View {
   /// The panel's inset, wider than its rows' 8pt spacing so the tint reads as a panel.
   static var padding: CGFloat { 10 }
 
-  let tokens: ThemeTokens
+  @Environment(\.themeTokens) private var tokens
   let content: Content
   let accessory: Accessory
 
-  public init(
-    tokens: ThemeTokens, @ViewBuilder content: () -> Content,
-    @ViewBuilder accessory: () -> Accessory
-  ) {
-    self.tokens = tokens
+  public init(@ViewBuilder content: () -> Content, @ViewBuilder accessory: () -> Accessory) {
     self.content = content()
     self.accessory = accessory()
   }
@@ -40,26 +36,24 @@ public struct Notice<Content: View, Accessory: View>: View {
 }
 
 extension Notice where Accessory == EmptyView {
-  public init(tokens: ThemeTokens, @ViewBuilder content: () -> Content) {
-    self.init(tokens: tokens, content: content) { EmptyView() }
+  public init(@ViewBuilder content: () -> Content) {
+    self.init(content: content) { EmptyView() }
   }
 }
 
 /// A one-line warning: the warning triangle and its text, both in the theme's warning colour.
 /// The caller sets the font.
 public struct WarningLabel: View {
+  @Environment(\.themeTokens) private var tokens
   let label: Label<Text, Image>
-  let tokens: ThemeTokens
 
-  public init(_ titleKey: LocalizedStringKey, tokens: ThemeTokens) {
+  public init(_ titleKey: LocalizedStringKey) {
     label = Label(titleKey, systemImage: warningSymbol)
-    self.tokens = tokens
   }
 
   @_disfavoredOverload
-  public init<S: StringProtocol>(_ title: S, tokens: ThemeTokens) {
+  public init<S: StringProtocol>(_ title: S) {
     label = Label(title, systemImage: warningSymbol)
-    self.tokens = tokens
   }
 
   public var body: some View {
@@ -70,11 +64,9 @@ public struct WarningLabel: View {
 /// The warning triangle alone, in the theme's warning colour: a row's or a field's mark that
 /// something needs attention. The caller sets its size and gives it a `.help` saying what.
 public struct WarningGlyph: View {
-  let tokens: ThemeTokens
+  @Environment(\.themeTokens) private var tokens
 
-  public init(tokens: ThemeTokens) {
-    self.tokens = tokens
-  }
+  public init() {}
 
   public var body: some View {
     Image(systemName: warningSymbol).foregroundStyle(tokens.warning)
@@ -82,19 +74,18 @@ public struct WarningGlyph: View {
 }
 
 #Preview("Warnings") {
-  let tokens = ThemeTokens(preview: nil)
   VStack(alignment: .leading, spacing: Spacing.l) {
-    Notice(tokens: tokens) {
+    Notice {
       Text("1 file has staged changes that differ from the file on disk")
         .font(FontRole.noticeTitle)
       Text("Committing records what is on disk, so the version you staged will be replaced.")
         .font(FontRole.noticeBody).foregroundStyle(.secondary)
     }
-    WarningLabel("Another workroom in this project already shows that name.", tokens: tokens)
+    WarningLabel("Another workroom in this project already shows that name.")
       .font(.caption)
     HStack {
       Text("Project folder")
-      WarningGlyph(tokens: tokens).help("Project folder not found")
+      WarningGlyph().help("Project folder not found")
     }
   }
   .padding(Spacing.xxl)

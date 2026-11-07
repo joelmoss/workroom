@@ -483,7 +483,7 @@ private struct WorkroomTabChip: View {
         )
         .help(isRoot ? "" : target.hostTooltip)
       if let reason = target.terminalUnavailability {
-        WarningGlyph(tokens: tokens)
+        WarningGlyph()
           .font(.system(size: 10))
           .help(reason.title)
       }

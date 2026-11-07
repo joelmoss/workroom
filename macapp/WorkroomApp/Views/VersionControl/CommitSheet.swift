@@ -171,7 +171,7 @@ struct CommitSheet: View {
   /// `git status` afterwards and no other trace. This is not a refusal (committing from a partly
   /// staged file is legitimate), it is the difference between an informed choice and a silent loss.
   private func stagedLossNotice(_ paths: [String]) -> some View {
-    Notice(tokens: tokens) {
+    Notice {
       Text(
         paths.count == 1
           ? "1 file has staged changes that differ from the file on disk"
@@ -456,10 +456,9 @@ private struct CommitFileRow: View {
 private struct CommitFailureNotice: View {
   let dialog: VCSFailureDialog
   @State private var showDetails = false
-  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
-    Notice(tokens: tokens) {
+    Notice {
       Text(dialog.title).font(FontRole.noticeTitle)
       Text(dialog.message)
         .font(FontRole.noticeBody).foregroundStyle(.secondary)

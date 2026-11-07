@@ -6,15 +6,12 @@ import SwiftUI
 /// a subtle `hover` fill on hover, clear otherwise. One definition so a tweak to the highlight
 /// lands in every list at once.
 public struct RowHighlight: View {
-  let tokens: ThemeTokens
+  @Environment(\.themeTokens) private var tokens
   let selected: Bool
   let hovered: Bool
   let horizontalPadding: CGFloat
 
-  public init(
-    tokens: ThemeTokens, selected: Bool, hovered: Bool, horizontalPadding: CGFloat = Spacing.m
-  ) {
-    self.tokens = tokens
+  public init(selected: Bool, hovered: Bool, horizontalPadding: CGFloat = Spacing.m) {
     self.selected = selected
     self.hovered = hovered
     self.horizontalPadding = horizontalPadding
@@ -28,40 +25,52 @@ public struct RowHighlight: View {
   }
 }
 
+/// A picker row's fill and ring; see `pickerRowChrome`.
+private struct PickerRowChrome: ViewModifier {
+  @Environment(\.themeTokens) private var tokens
+  let highlighted: Bool
+  let hovered: Bool
+  let active: Bool
+
+  func body(content: Content) -> some View {
+    content
+      .background(
+        RoundedRectangle(cornerRadius: Radius.s)
+          .fill(
+            active
+              ? tokens.accentSoft
+              : (highlighted ? tokens.surface : (hovered ? tokens.hover : .clear)))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: Radius.s)
+          .strokeBorder(
+            active ? tokens.accent : (highlighted ? tokens.fgDim : .clear), lineWidth: 1.5)
+      )
+  }
+}
+
 extension View {
   /// A picker row's fill and ring (the open and new-workroom pickers, the theme picker): the
   /// `surface` fill and a faint ring on the keyboard-highlighted row, the `hover` wash under the
   /// pointer. An `active` row (the theme picker's chosen family) wears the accent instead, so ↑/↓
   /// focus stays visible on a row that isn't the chosen one.
-  public func pickerRowChrome(
-    tokens: ThemeTokens, highlighted: Bool, hovered: Bool, active: Bool = false
-  ) -> some View {
-    background(
-      RoundedRectangle(cornerRadius: Radius.s)
-        .fill(
-          active
-            ? tokens.accentSoft
-            : (highlighted ? tokens.surface : (hovered ? tokens.hover : .clear)))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: Radius.s)
-        .strokeBorder(
-          active ? tokens.accent : (highlighted ? tokens.fgDim : .clear), lineWidth: 1.5)
-    )
+  public func pickerRowChrome(highlighted: Bool, hovered: Bool, active: Bool = false)
+    -> some View
+  {
+    modifier(PickerRowChrome(highlighted: highlighted, hovered: hovered, active: active))
   }
 }
 
 #Preview("Rows") {
-  let tokens = ThemeTokens(preview: nil)
   VStack(spacing: Spacing.xs) {
     Text("Selected").frame(maxWidth: .infinity, minHeight: 24)
-      .background(RowHighlight(tokens: tokens, selected: true, hovered: false))
+      .background(RowHighlight(selected: true, hovered: false))
     Text("Hovered").frame(maxWidth: .infinity, minHeight: 24)
-      .background(RowHighlight(tokens: tokens, selected: false, hovered: true))
+      .background(RowHighlight(selected: false, hovered: true))
     Text("Highlighted picker row").padding(Spacing.s).frame(maxWidth: .infinity)
-      .pickerRowChrome(tokens: tokens, highlighted: true, hovered: false)
+      .pickerRowChrome(highlighted: true, hovered: false)
     Text("Active picker row").padding(Spacing.s).frame(maxWidth: .infinity)
-      .pickerRowChrome(tokens: tokens, highlighted: false, hovered: false, active: true)
+      .pickerRowChrome(highlighted: false, hovered: false, active: true)
   }
   .padding(Spacing.xxl)
   .frame(width: 300)

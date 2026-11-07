@@ -30,11 +30,10 @@ public struct SheetHeader<GlyphStyle: ShapeStyle, Content: View>: View {
 /// The header of a sheet that reports a failure or asks before something destructive: a
 /// `SheetHeader` led by the theme's warning triangle.
 public struct WarningHeader<Content: View>: View {
-  let tokens: ThemeTokens
+  @Environment(\.themeTokens) private var tokens
   let content: Content
 
-  public init(tokens: ThemeTokens, @ViewBuilder content: () -> Content) {
-    self.tokens = tokens
+  public init(@ViewBuilder content: () -> Content) {
     self.content = content()
   }
 
@@ -87,7 +86,7 @@ extension View {
 
 #Preview("Warning sheet") {
   VStack(alignment: .leading, spacing: Spacing.xl) {
-    WarningHeader(tokens: ThemeTokens(preview: nil)) {
+    WarningHeader {
       VStack(alignment: .leading, spacing: Spacing.xs) {
         Text("Delete project “workroom”?").font(FontRole.title)
         Text("~/dev/workroom").font(FontRole.body).foregroundStyle(.secondary)

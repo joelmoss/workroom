@@ -114,11 +114,10 @@ struct SetupDetail: View {
 /// What went wrong with a step.
 struct SetupProblem: View {
   let text: String
-  @Environment(\.themeTokens) private var tokens
   init(_ text: String) { self.text = text }
 
   var body: some View {
-    WarningLabel(text, tokens: tokens)
+    WarningLabel(text)
       .font(FontRole.body)
       .fixedSize(horizontal: false, vertical: true)
   }

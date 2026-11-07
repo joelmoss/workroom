@@ -444,7 +444,7 @@ struct ProjectSidebar: View {
       Spacer(minLength: 0)
       SidebarUnreadDot(source: .target(target.id))
       if target.isMissing {
-        WarningGlyph(tokens: tokens)
+        WarningGlyph()
           .help("Project folder not found")
       }
       // OSC-9;4 spinner (any terminal's agent activity), to the LEFT of the run button — mirroring
@@ -520,7 +520,7 @@ struct ProjectSidebar: View {
       Spacer()
       SidebarUnreadDot(source: .target(targetID))
       ForEach(workroom.warnings, id: \.kind) { warning in
-        WarningGlyph(tokens: tokens)
+        WarningGlyph()
           .help(warning.message)
       }
       // Spinner/delete slot: a progress spinner while the workroom's setup runs (issue #116) or a
@@ -796,7 +796,7 @@ struct ProjectSidebar: View {
         .padding(.horizontal, Spacing.m)
         .padding(.vertical, 1)
     } else {
-      RowHighlight(tokens: tokens, selected: false, hovered: hovered)
+      RowHighlight(selected: false, hovered: hovered)
     }
   }
 

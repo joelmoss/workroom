@@ -25,7 +25,6 @@ struct VCSFailureSheet: View {
   /// Collapsed by default: the tool's output is evidence for when the written remedy isn't enough, and
   /// expanding it by default would bury the remedy under a wall of stderr.
   @State private var showDetails = false
-  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     VStack(alignment: .leading, spacing: Spacing.xl) {
@@ -57,7 +56,7 @@ struct VCSFailureSheet: View {
   }
 
   private var header: some View {
-    WarningHeader(tokens: tokens) {
+    WarningHeader {
       VStack(alignment: .leading, spacing: Spacing.xxs) {
         Text(dialog.title)
           .font(FontRole.title)

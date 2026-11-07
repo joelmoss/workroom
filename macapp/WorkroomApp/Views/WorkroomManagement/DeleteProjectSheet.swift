@@ -128,7 +128,7 @@ struct DeleteProjectSheet: View {
     // the grouped Form right-aligned the field's value, which broke that alignment.
     VStack(alignment: .leading, spacing: Spacing.xl) {
       // Title + full path, led by a prominent warning glyph.
-      WarningHeader(tokens: tokens) {
+      WarningHeader {
         VStack(alignment: .leading, spacing: Spacing.xs) {
           Text("Delete project “\(project.displayName)”?")
             .font(FontRole.title)

@@ -21,7 +21,6 @@ struct WorkroomLabelSheet: View {
 
   @State private var typedLabel: String
   @FocusState private var fieldFocused: Bool
-  @Environment(\.themeTokens) private var tokens
 
   init(
     workroom: Workroom, project: Project, onSet: @escaping (String) -> Void,
@@ -75,11 +74,8 @@ struct WorkroomLabelSheet: View {
         // Explain a disabled button when the reason isn't obvious (a collision); blank/unchanged are
         // self-evident, so they get no warning.
         if validation.collides {
-          WarningLabel(
-            "Another workroom in this project already shows that name.",
-            tokens: tokens
-          )
-          .font(.caption)
+          WarningLabel("Another workroom in this project already shows that name.")
+            .font(.caption)
         }
       }
 

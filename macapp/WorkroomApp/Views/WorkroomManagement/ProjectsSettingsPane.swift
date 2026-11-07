@@ -145,7 +145,6 @@ private struct ProjectSettingsForm: View {
   /// The base-branch save under way, which the next one waits for.
   @State private var branchSave: Task<Void, Never>?
   @FocusState private var focused: Field?
-  @Environment(\.themeTokens) private var tokens
 
   private enum Field { case command, baseBranch }
 
@@ -161,8 +160,7 @@ private struct ProjectSettingsForm: View {
       Section {
         if SettingsRoute.shared.warnedProject == project.path, commandIsBlank {
           WarningLabel(
-            "No run command is defined yet — you can't run this workroom until you set one.",
-            tokens: tokens
+            "No run command is defined yet — you can't run this workroom until you set one."
           )
           // Stable identifier so the XCUITest doesn't match on the exact warning string.
           .accessibilityIdentifier("projectSettings.runWarning")
@@ -199,7 +197,7 @@ private struct ProjectSettingsForm: View {
           .accessibilityIdentifier("projectSettings.baseBranch")
           // In the row, so a refusal moves nothing below it; the message is its tooltip.
           if let refused = draft.branchError {
-            WarningGlyph(tokens: tokens)
+            WarningGlyph()
               .help("Not saved: \(refused)")
               .accessibilityLabel("Base branch not saved: \(refused)")
               .accessibilityIdentifier("projectSettings.baseBranchError")

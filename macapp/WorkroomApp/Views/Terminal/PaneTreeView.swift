@@ -372,8 +372,8 @@ struct PaneLeafView: View {
   /// the tree changing shape. Recorded after the body runs, which is what makes the comparison
   /// during a structural update see the previous value.
   @State private var lastPaneCount: Int?
-  // A view-rendering test that hosts this without `themeTokensRoot()` gets the key's default, the
-  // live tokens, so it needs no injection of its own.
+  // The window's `themeTokensRoot()` injects the theme; a view-rendering test that hosts this must
+  // add one too, or it draws the key's default, the system palette.
   @Environment(\.themeTokens) private var tokens
 
   var body: some View {

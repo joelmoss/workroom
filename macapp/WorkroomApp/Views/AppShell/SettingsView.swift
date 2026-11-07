@@ -188,8 +188,7 @@ struct SettingsView: View {
   // selection. Settings rows inset by 6 (vs the project sidebar's 8).
   @ViewBuilder private func rowHighlight(_ pane: SettingsPane) -> some View {
     RowHighlight(
-      tokens: tokens, selected: selection == pane, hovered: hovered == pane,
-      horizontalPadding: Spacing.s)
+      selected: selection == pane, hovered: hovered == pane, horizontalPadding: Spacing.s)
   }
 }
 

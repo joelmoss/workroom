@@ -210,7 +210,7 @@ private struct ToolWarningToastView: View {
 
   var body: some View {
     HStack(alignment: .top, spacing: 10) {
-      WarningGlyph(tokens: tokens)
+      WarningGlyph()
       VStack(alignment: .leading, spacing: 2) {
         Text(warning.title).font(.callout).fontWeight(.semibold).lineLimit(2)
         Text(warning.detail).font(.caption).foregroundStyle(.secondary).lineLimit(4)
