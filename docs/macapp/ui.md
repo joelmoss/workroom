@@ -65,16 +65,18 @@ A token replaces a literal only where the value is the same. A value the scale l
 literal: never round a view's metric to fit the scale. Many views still use literals; convert
 them when you touch them.
 
-Views read the theme colours from the environment, `@Environment(\.themeTokens) private var
-tokens`, not from `ThemeService.shared`. Every SwiftUI root injects them with
-`themeTokensRoot()`: each scene's root view, every `NSHostingView` or `NSHostingController`
-(the environment does not cross one), and the content of each `.sheet` and `.popover`, as the
-environment objects are re-injected there. A new hosting view that skips it keeps the old theme
-after a switch. `ThemeService.shared` stays for AppKit drawing, for
+Everything reads the theme from the environment; roots inject it. Views and the `DesignSystem`
+components read `@Environment(\.themeTokens) private var tokens`, not `ThemeService.shared`, and
+no component takes the theme as an argument. `DesignSystem` declares the key, with the system
+palette (`ThemeTokens(preview: nil)`) as its default. Every SwiftUI root injects the live theme
+with `themeTokensRoot()`: each scene's root view, every `NSHostingView` or
+`NSHostingController` (the environment does not cross one), and the content of each `.sheet`
+and `.popover`, as the environment objects are re-injected there. A tree a root is missing from
+draws the native palette and never sees a switch. A hosted test that renders a themed view
+injects a root too, as production does. `ThemeService.shared` stays for AppKit drawing, for
 picking a theme, and for `generation`, which keys the syntax highlighting.
 
-Shared components (the warning components and the row styles take the theme as
-`tokens: tokens`; the message and sheet components take none):
+Shared components:
 
 - `MessageState`: an empty or failed pane, centred. `InlineMessage`: the one-line version at the
   top of a list.
