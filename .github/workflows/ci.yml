@@ -21,8 +21,8 @@ concurrency:
 
 # The jobs live in one workflow per language (ci-actions, ci-go, ci-rust, ci-app, ci-docs), called
 # from here so that a pull request runs only the jobs its changes need: `changes` decides, from the
-# diff. A push runs every job, so every commit a release can be cut from has the full signal, and
-# so does the master push docs-deploy waits on.
+# diff. A push runs every job without asking it, so every commit a release can be cut from has the
+# full signal, and so does the master push docs-deploy waits on.
 #
 # Filtered per job, not with `on.pull_request.paths`: a workflow that path filter skips never
 # reports, and a required check waits on it forever, while a job skipped by its `if` reports as
@@ -30,10 +30,12 @@ concurrency:
 # job. So each call below always runs, and passes its jobs their filter as inputs: the checks keep
 # their names, as "<call> / <job>" (`app / app`), whatever a change touches.
 #
-# The filter fails open. Each input is "not false", so if `changes` fails or reports nothing, every
-# job runs.
+# The filter fails open. Each input is "not false", so if `changes` is skipped (every push), fails
+# or reports nothing, every job runs; each call's `!cancelled()` lets it run past a skipped or
+# failed `changes`.
 jobs:
   changes:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -61,14 +63,11 @@ jobs:
       - name: Classify the changed paths
         id: areas
         shell: bash
-        env:
-          EVENT: ${{ github.event_name }}
         run: |
-          paths=""
-          if [ "$EVENT" = pull_request ] && paths="$(git diff --name-only --no-renames HEAD^1 HEAD)"; then
+          if paths="$(git diff --name-only --no-renames HEAD^1 HEAD)"; then
             printf 'Changed paths:\n%s\n' "$paths"
           else
-            echo "Not a pull request, or no diff to read: every job runs."
+            echo "No diff to read: every job runs."
             paths=""
           fi
           printf '%s\n' "$paths" | python3 scripts/ci/changed_areas.py | tee -a "$GITHUB_OUTPUT"
@@ -107,10 +106,11 @@ jobs:
       app: ${{ needs.changes.outputs.app != 'false' }}
       scripts: ${{ needs.changes.outputs.scripts != 'false' }}
 
-  # `needs` lists every other call, so a red master never publishes; add a new one here too.
+  # `needs` lists every other call, so a red master never publishes; add a new one here too. Not
+  # `changes`, which a push skips: a skipped need would skip this job too.
   docs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: [changes, actions, go, rust, app]
+    needs: [actions, go, rust, app]
     permissions: {}
     uses: ./.github/workflows/ci-docs.yml
     secrets:

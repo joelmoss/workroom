@@ -3,7 +3,7 @@
 
 Reads the changed paths, one per line, on stdin and prints one `<job>=true|false` line per job,
 in the form `$GITHUB_OUTPUT` takes. ci.yml's `changes` job runs it on a pull request's diff; a
-push runs every job, by passing nothing.
+push skips that job, and so runs every job.
 
 Each rule names the jobs whose tests or build read that path, which is wider than the language it
 is written in: the shared tables under `testdata/` are read by several languages' tests, the app
