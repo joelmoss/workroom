@@ -108,7 +108,7 @@ final class TerminalCodingAgentUITests: XCTestCase {
 
   /// The exact issue #146 regression: TerminalTabStrip's Investigate previously hardcoded a bare
   /// `"claude"` invocation with no context, while TerminalStatusBar's already seeded it with the
-  /// diagnosis. Both now route through `AppStore.startInvestigate`, so clicking Investigate from
+  /// diagnosis. Both now route through `RunCommandController.startInvestigate`, so clicking Investigate from
   /// EITHER entry point must open a tab whose command carries the canned diagnosis text — not a
   /// bare `claude` with nothing to go on. Checked via the status-bar popover here (the tab-strip's
   /// popover is covered by the badge step of
@@ -120,7 +120,7 @@ final class TerminalCodingAgentUITests: XCTestCase {
   /// fakes the earlier diagnosis step), and a fresh fixture workroom is untrusted to `claude` on
   /// every run — its first-run trust prompt would block forever before anything the seed contains
   /// ever reaches the screen. `RunCommandTests.testStartInvestigateBuildsCommandAndTracksTab` already
-  /// pins `AppStore.startInvestigate`'s own command construction exactly; this test's job is only to
+  /// pins `RunCommandController.startInvestigate`'s own command construction exactly; this test's job is only to
   /// confirm THIS click path (the status-bar popover) actually reaches it.
   func testClickingInvestigateSeedsTheRealDiagnosisNotABareCommand() {
     let app = launchedApp(runCommand: "echo 'boom: build failed'; exit 7")

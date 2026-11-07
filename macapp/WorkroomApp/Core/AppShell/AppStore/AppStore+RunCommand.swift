@@ -388,21 +388,6 @@ extension AppStore {
     markRunExited(for: target, exitCode: exitCode)
   }
 
-  /// Start an interactive Investigate session (issue #49) seeded with the failure captured in
-  /// `bannerState`. `surface` is the pane's live terminal surface (if any), used to derive cwd —
-  /// takes the surface rather than a pre-computed `cwd: String` so both call sites share one cwd
-  /// derivation instead of each re-deriving `?? target.path` themselves (the same drift shape issue
-  /// #146 fixed for the command). The session itself is `RunCommandController.startInvestigate`.
-  @discardableResult
-  func startInvestigate(
-    bannerState: CodingAgentBannerState, target: TerminalTarget, surface: GhosttySurfaceView?,
-    codingAgentSetting: String = Defaults[.terminalCodingAgentBackend]
-  ) -> TerminalTab {
-    runCommand.startInvestigate(
-      bannerState: bannerState, target: target, surface: surface,
-      codingAgentSetting: codingAgentSetting)
-  }
-
   /// Respawn the run command in place of `oldTab` (issue #40): the replacement takes the old run tab's
   /// exact slot, so restarting a run command that lives in a split keeps it in the split instead of
   /// pulling it out as a solo pane. Mirrors `startRunCommand`'s state wiring; `respawnRunTab` closes

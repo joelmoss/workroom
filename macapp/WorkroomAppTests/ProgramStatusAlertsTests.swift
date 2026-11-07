@@ -28,7 +28,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
     store.terminals.programStatus = monitor
     alerts = ProgramStatusAlerts()
     alerts.monitor = monitor
-    alerts.stores = { [unowned self] in [store] }
+    alerts.notifyingHosts = { [unowned self] in [store] }
     alerts.isEnabled = { [unowned self] in enabled }
     alerts.isFinishEnabled = { [unowned self] in finishEnabled }
     alerts.now = { [unowned self] in clock }
@@ -600,7 +600,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
     other.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     other.terminals.programStatus = monitor
     var open = [store!, other]
-    alerts.stores = { open }
+    alerts.notifyingHosts = { open }
     let id = session(store.terminals.addTab(for: target))
     other.terminals.addTab(for: target, sessionID: id)
 
@@ -627,7 +627,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
     let host = RecordingHost()
     host.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     host.terminals.programStatus = monitor
-    alerts.stores = { [host] }
+    alerts.notifyingHosts = { [host] }
     alerts.start()
     let tab = host.terminals.addTab(for: target)
     let id = try XCTUnwrap(host.terminals.sessionID(forTab: tab.id, inTarget: target.id))

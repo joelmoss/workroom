@@ -12,7 +12,7 @@ extension AppStore: PaneHost {
     _ bannerState: CodingAgentBannerState, in target: TerminalTarget,
     surface: GhosttySurfaceView?
   ) -> TerminalTab {
-    startInvestigate(bannerState: bannerState, target: target, surface: surface)
+    runCommand.startInvestigate(bannerState: bannerState, target: target, surface: surface)
   }
 
   func runTabID(for targetID: TerminalTarget.ID) -> TerminalTab.ID? {
