@@ -320,7 +320,6 @@ final class ThemeRepaintTests: XCTestCase {
       return QuickTerminalContent(sessions: sessions)
         .themeTokensRoot()
         .environment(\.isQuickTerminal, true)
-        .environmentObject(store)
         .paneHost(store)
         .environmentObject(store.modals)
         .environmentObject(store.runCommand)

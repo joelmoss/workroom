@@ -20,9 +20,13 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
   /// inspector and commit sheet read, and the run config the workroom pane's Run button and the delete warnings
   /// read). If a pane ever needs one, it goes into `detachedPaneEnvironment` and comes out of
   /// here — deliberately, rather than by a test quietly going green.
+  ///
+  /// `AppStore` is among them: the pane views ask their window through the pane host instead
+  /// (`testPaneViewsTakeTheirWindowAsAPaneHost` below), and only the main window's chrome and
+  /// composition still take the store from the environment.
   private let sceneOnly: Set<String> = [
     "Updater", "WhatsNewService", "RemoteStateModel", "ProjectStore", "VCSStatusService",
-    "RunCommands",
+    "RunCommands", "AppStore",
   ]
 
   /// How each type is supplied, since several arrive through an owner rather than by their own name
@@ -32,7 +36,6 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
   /// A NEW environment object has no entry here, which fails the test rather than passing silently:
   /// that is the direction that matters, because the alternative is a crash in the field.
   private let supplier: [String: String] = [
-    "AppStore": ".environmentObject(store)",
     "ModalState": "store.modals",
     "RunCommandController": "store.runCommand",
     "WorkroomLifecycle": "store.lifecycle",
@@ -112,6 +115,35 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
         inject it (expected `\(expression)`). A detached pane that renders that view will TRAP, not \
         degrade.
         """)
+    }
+    XCTAssertTrue(
+      body.contains(".paneHost(store)"),
+      "`detachedPaneEnvironment` must inject the pane host: every pane view reads `\\.paneHost`")
+  }
+
+  /// The pane views (everything under `Views/Terminal`, and the toasts the Quick Terminal shows) ask
+  /// their window through `\.paneHost`, so a host other than a window's `AppStore` can serve them and
+  /// the detached and Quick Terminal windows inject no store. `TargetTerminalDetail` is the main
+  /// window's composition over the pane views, never rendered in either, and keeps its store.
+  func testPaneViewsTakeTheirWindowAsAPaneHost() throws {
+    let views = macappRoot.appendingPathComponent("WorkroomApp/Views")
+    let terminal = try FileManager.default.contentsOfDirectory(
+      at: views.appendingPathComponent("Terminal"), includingPropertiesForKeys: nil
+    ).filter { $0.pathExtension == "swift" && $0.lastPathComponent != "TargetTerminalDetail.swift" }
+    XCTAssertGreaterThan(terminal.count, 10, "parse looks wrong — Views/Terminal has more sources")
+    let files = terminal + [views.appendingPathComponent("AppShell/ToastStack.swift")]
+    let pattern = try NSRegularExpression(
+      pattern:
+        #"@EnvironmentObject\s+(?:private\s+|fileprivate\s+|internal\s+)?var\s+\w+\s*:\s*AppStore\b"#
+    )
+    for file in files {
+      let source = try String(contentsOf: file, encoding: .utf8)
+      let matches = pattern.numberOfMatches(
+        in: source, range: NSRange(source.startIndex..., in: source))
+      XCTAssertEqual(
+        matches, 0,
+        "\(file.lastPathComponent) takes the store from the environment; read `\\.paneHost` instead"
+      )
     }
   }
 }

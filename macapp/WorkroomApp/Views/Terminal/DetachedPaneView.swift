@@ -73,10 +73,12 @@ extension View {
   /// here. If a pane ever grows a dependency on `updater`, `whatsNew`, `remoteState`,
   /// `projectStore`, `vcsStatus` or `runCommands` (today purely `RootView` chrome, and the only six
   /// of the app's fourteen environment objects left out), add it here. The pane's sessions are not
-  /// one: views reach them as `store.terminals` or a parameter, and observe them per target.
+  /// one: views reach them as `host.terminals` or a parameter, and observe them per target.
+  ///
+  /// The store itself is not injected: pane views ask the window through its pane host
+  /// (`PaneHost`), and only the main window's chrome takes the store from the environment.
   func detachedPaneEnvironment(store: AppStore, sessions: TerminalPanes) -> some View {
     self
-      .environmentObject(store)
       .paneHost(store)
       .environmentObject(store.modals)
       .environmentObject(store.runCommand)

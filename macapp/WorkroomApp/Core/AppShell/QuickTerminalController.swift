@@ -363,7 +363,6 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
       rootView: QuickTerminalContent(sessions: sessions)
         .themeTokensRoot()
         .environment(\.isQuickTerminal, true)
-        .environmentObject(store)
         .paneHost(store)
         .environmentObject(store.modals)
         .environmentObject(store.runCommand)
