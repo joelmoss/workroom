@@ -23,7 +23,7 @@ struct WorkroomTerminalsView: View {
   /// `PaneTreeView.workroomIsSplit`).
   var workroomIsSplit: Bool = false
   @EnvironmentObject var notifications: NotificationCenterStore
-  @EnvironmentObject var store: AppStore
+  @Environment(\.paneHost) private var host
   @EnvironmentObject var modals: ModalState
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.themeTokens) private var tokens
@@ -59,7 +59,7 @@ struct WorkroomTerminalsView: View {
             Color.clear.preference(key: ContentFrameKey.self, value: geo.frame(in: .global))
           }
         )
-      } else if store.waitingForHostLayout.contains(target.id) {
+      } else if host.waitingForHostLayout.contains(target.id) {
         // A remote workroom asking its host for its layout (#255, D4): its tabs come from there,
         // within seconds, so nothing is offered meanwhile.
         ContentUnavailableView {
@@ -76,7 +76,7 @@ struct WorkroomTerminalsView: View {
         } description: {
           Text("Open one with ⌘T.")
         } actions: {
-          Button("New Terminal") { store.newTerminal(in: target) }
+          Button("New Terminal") { host.newTerminal(in: target) }
             .buttonStyle(.borderedProminent)
             // Use the active theme accent rather than the system blue (issue #36).
             .tint(tokens.accent)
@@ -121,9 +121,9 @@ struct WorkroomTerminalsView: View {
     // Create the first terminal once the pane appears (and for each new target), then reconcile
     // occlusion so the right surfaces render after a target switch (issue #3).
     .task(id: target.id) {
-      // Through the store so a pending auto-run (issue #7) suppresses the default first tab and the
+      // Through the host so a pending auto-run (issue #7) suppresses the default first tab and the
       // run command becomes tab #1 instead of being orphaned beside a stray "Terminal 1".
-      store.ensureInitialTerminal(for: target)
+      host.ensureInitialTerminal(for: target)
       sessions.reconcileOcclusion(for: target)
     }
     // Focusing a terminal dismisses its notifications — but ONLY while this view is the focused one

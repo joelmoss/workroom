@@ -24,7 +24,7 @@ struct TerminalTabStrip: View {
   let activeID: TerminalTab.ID?
   let target: TerminalTarget
   let sessions: TerminalPanes
-  @EnvironmentObject var store: AppStore
+  @Environment(\.paneHost) private var host
   @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
@@ -183,7 +183,7 @@ struct TerminalTabStrip: View {
           statusLines: ProgramStatusPresentation.tooltipLines(
             for: tab, of: target, hosts: programStatus.hosts)
         ) {
-          store.requestCloseTerminalTab(tab.id, for: target)
+          host.requestCloseTerminalTab(tab.id, for: target)
         }
         // Which chips the strip shows, for the edge button that reveals a waiting one (#358).
         .onScrollVisibilityChange { visible in
@@ -213,7 +213,7 @@ struct TerminalTabStrip: View {
             lastChipClick = ChipClick(id: tab.id, at: now)
           }
         }
-        .tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions)
+        .tabChipContextMenu(tab: tab, target: target, host: host, sessions: sessions)
         // Measure in .global space: a .local drag reads coordinates relative to the
         // chip, which itself moves via .offset(drag.translation) — that feedback loop
         // dampens the translation so the chip lags the cursor. Global space is fixed.
@@ -318,7 +318,7 @@ struct TerminalTabStrip: View {
   private var addTerminalButton: some View {
     Button {
       // Held while the host is asked for its layout (#255), as ⌘T is.
-      store.newTerminal(in: target)
+      host.newTerminal(in: target)
     } label: {
       Image(systemName: "plus")
         .font(.system(size: 11))
@@ -418,8 +418,7 @@ struct TerminalTabStrip: View {
           codingAgentPopoverTab = nil
         },
         onInvestigate: {
-          _ = store.startInvestigate(
-            bannerState: state, target: target, surface: sessions.surface(of: tab.id))
+          host.investigate(state, in: target, surface: sessions.surface(of: tab.id))
           codingAgentManager.dismiss(tab: tab.id)
           codingAgentPopoverTab = nil
         },
@@ -1043,11 +1042,11 @@ extension View {
   /// group (Close / Close Others / Close All).
   @ViewBuilder
   func tabChipContextMenu(
-    tab: TerminalTab, target: TerminalTarget, store: AppStore, sessions: TerminalPanes
+    tab: TerminalTab, target: TerminalTarget, host: any PaneHost, sessions: TerminalPanes
   ) -> some View {
     self.contextMenu {
-      if store.runCommand.runTabID(for: target.id) == tab.id {
-        runCommandMenuItems(store: store, target: target)
+      if host.runTabID(for: target.id) == tab.id {
+        runCommandMenuItems(host: host, target: target)
         Divider()
       }
       // The escape hatch for a program that left a request behind (#358).
@@ -1086,13 +1085,13 @@ extension View {
         // selected one — and the no-target overload resolves `selectedTarget`, which would open the
         // file into the other workroom's strip (issue #150).
         Button {
-          store.openFilePreview(path: descriptor.path, for: target)
+          host.openFilePreview(path: descriptor.path, for: target)
         } label: {
           Label("Open File", systemImage: "doc.text")
         }
         .disabled(descriptor.change == .deleted)
         Button {
-          store.openDiffTabFile(descriptor, for: target)
+          host.openDiffTabFile(descriptor, for: target)
         } label: {
           Label("Open File in…", systemImage: "arrow.up.forward.app")
         }
@@ -1127,7 +1126,7 @@ extension View {
           Divider()
         }
         Button {
-          store.openFileInEditor(path: descriptor.path)
+          host.openFileInEditor(path: descriptor.path)
         } label: {
           Label("Open File in…", systemImage: "doc.text")
         }
@@ -1195,26 +1194,26 @@ extension View {
       Divider()
       // This pane into a window of its own (#444), as dragging the chip out of the window does.
       if sessions.allowsDetach {
-        paneWindowMenuItem(store: store, tabID: tab.id, targetID: target.id)
+        paneWindowMenuItem(host: host, tabID: tab.id, targetID: target.id)
         Divider()
       } else if target.id == QuickTerminalController.targetID {
         QuickTerminalMoveToWorkroomMenu(
-          store: store, tabID: tab.id, target: target, style: .menuItem)
+          host: host, tabID: tab.id, target: target, style: .menuItem)
         Divider()
       }
       Button(role: .destructive) {
-        store.requestCloseTerminalTab(tab.id, for: target)
+        host.requestCloseTerminalTab(tab.id, for: target)
       } label: {
         Label("Close", systemImage: "xmark")
       }
       Button(role: .destructive) {
-        store.requestCloseOtherTerminalTabs(tab.id, for: target)
+        host.requestCloseOtherTerminalTabs(tab.id, for: target)
       } label: {
         Label("Close Others", systemImage: "xmark")
       }
       .disabled(sessions.tabs(for: target).count <= 1)
       Button(role: .destructive) {
-        store.requestCloseAllTerminalTabs(for: target)
+        host.requestCloseAllTerminalTabs(for: target)
       } label: {
         Label("Close All", systemImage: "xmark")
       }

@@ -4,11 +4,11 @@ import WorkroomWire
 /// Status-bar control listing background sessions that no tab in this workroom currently owns.
 struct DetachedSessionsButton: View {
   let target: TerminalTarget
-  @EnvironmentObject var store: AppStore
+  @Environment(\.paneHost) private var host
   @ObservedObject private var sessionsStore = DetachedSessionList.shared
   @State private var showing = false
   /// Read through Observation, so "Detach" enables once the focused tab has a surface.
-  private var terminals: TerminalPanes { store.terminals }
+  private var terminals: TerminalPanes { host.terminals }
 
   var body: some View {
     let detached = sessionsStore.detached(for: target.id.encoded)
@@ -63,14 +63,14 @@ struct DetachedSessionsButton: View {
 
   private func refresh() async {
     await sessionsStore.refresh(
-      workroomID: target.id.encoded, ownedSessionIDs: store.terminals.ownedSessionIDs(for: target))
+      workroomID: target.id.encoded, ownedSessionIDs: terminals.ownedSessionIDs(for: target))
   }
 
   private func attachToActive(_ session: SessionDescriptor) {
     guard let id = session.identifier.uuid else { return }
     guard
       TerminalSessionAttachment.attachToActivePane(
-        sessionID: id, target: target, sessions: store.terminals)
+        sessionID: id, target: target, sessions: terminals)
     else { return }
     showing = false
     Task { await refresh() }
@@ -78,7 +78,7 @@ struct DetachedSessionsButton: View {
 
   private func openNew(_ session: SessionDescriptor) {
     guard let id = session.identifier.uuid else { return }
-    store.whenHostLayoutRestored(target) { [terminals = store.terminals] target in
+    host.whenHostLayoutRestored(target) { [terminals = host.terminals] target in
       _ = terminals.addTab(for: target, sessionID: id)
       // The waiting list counts only sessions an open pane shows.
       WindowRegistry.shared.recomputeBadge()

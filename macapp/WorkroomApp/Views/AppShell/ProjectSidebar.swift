@@ -397,7 +397,7 @@ struct ProjectSidebar: View {
       // No tooltip here: a submenu's parent shows it on top of the submenu, over This Mac. Each
       // entry has its own.
       Divider()
-      runCommandMenuItems(store: store, target: project.rootTarget)
+      runCommandMenuItems(host: store, target: project.rootTarget)
       Divider()
       Button {
         store.modals.pendingProjectSettings = PendingProjectSettings(project: project)
@@ -490,7 +490,7 @@ struct ProjectSidebar: View {
         }
       }
       .contextMenu {
-        runCommandMenuItems(store: store, target: target)
+        runCommandMenuItems(host: store, target: target)
       }
   }
 
@@ -573,7 +573,7 @@ struct ProjectSidebar: View {
       .contextMenu {
         // A workroom still being made has nothing to open, label or delete yet.
         if !pending {
-          runCommandMenuItems(store: store, target: target)
+          runCommandMenuItems(host: store, target: target)
           Divider()
           // Open this workroom beside the current one (issue #163) — the same shared item the tab
           // chip and split pane title bar get from `workroomContextMenu`. Called directly because
@@ -724,7 +724,7 @@ struct ProjectSidebar: View {
     }
     .contextMenu {
       if runCommand.runTabID(for: target.id) == tab.id {
-        runCommandMenuItems(store: store, target: target)
+        runCommandMenuItems(host: store, target: target)
         Divider()
       }
       // The escape hatch for a program that left a request behind (#358).
@@ -738,7 +738,7 @@ struct ProjectSidebar: View {
         .disabled(tab.programStatus?.stale == true)
         Divider()
       }
-      paneWindowMenuItem(store: store, tabID: tab.id, targetID: target.id)
+      paneWindowMenuItem(host: store, tabID: tab.id, targetID: target.id)
       Divider()
       Button(role: .destructive) {
         store.requestCloseTerminalTab(tab.id, for: target)

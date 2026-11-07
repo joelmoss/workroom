@@ -323,7 +323,7 @@ struct PaneLeafView: View {
   let target: TerminalTarget
   let sessions: TerminalPanes
   /// Routes the diff pane's reused tab context menu (issue #72: "Open File in…", split, close group).
-  @EnvironmentObject var store: AppStore
+  @Environment(\.paneHost) private var host
   @EnvironmentObject var modals: ModalState
   /// The inline terminal agent (issue #49); its per-tab state drives the auto-diagnose opt-in dialog.
   @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
@@ -529,11 +529,11 @@ struct PaneLeafView: View {
       let diff = DiffViewer(
         descriptor: descriptor, directory: target.path, repositoryLocation: target.remoteLocation,
         viewModeOverride: tab?.diffViewModeOverride,
-        isFocused: focused, find: store.contentFind, cannedDiffs: store.services.cannedDiffs
+        isFocused: focused, find: host.contentFind, cannedDiffs: host.cannedDiffs
       )
       if let tab {
         contentPanel(
-          diff.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions))
+          diff.tabChipContextMenu(tab: tab, target: target, host: host, sessions: sessions))
       } else {
         contentPanel(diff)
       }
@@ -544,11 +544,11 @@ struct PaneLeafView: View {
         descriptor: descriptor, directory: target.path, repositoryLocation: target.remoteLocation,
         isFocused: focused,
         previewOverride: tab?.markdownPreviewOverride,
-        find: store.contentFind
+        find: host.contentFind
       )
       if let tab {
         contentPanel(
-          file.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions))
+          file.tabChipContextMenu(tab: tab, target: target, host: host, sessions: sessions))
       } else {
         contentPanel(file)
       }
@@ -559,14 +559,14 @@ struct PaneLeafView: View {
       let detail = ChangesetDetailView(
         descriptor: descriptor, directory: target.path,
         repositoryLocation: target.remoteLocation,
-        isFocused: focused, find: store.contentFind,
-        vcsReader: store.services.vcsReader, cannedDiffs: store.services.cannedDiffs,
-        onSelectFile: { [store, tabID, target] path in
-          store.selectChangesetFile(path, tab: tabID, in: target)
+        isFocused: focused, find: host.contentFind,
+        vcsReader: host.vcsReader, cannedDiffs: host.cannedDiffs,
+        onSelectFile: { [host, tabID, target] path in
+          host.selectChangesetFile(path, tab: tabID, in: target)
         })
       if let tab {
         contentPanel(
-          detail.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions))
+          detail.tabChipContextMenu(tab: tab, target: target, host: host, sessions: sessions))
       } else {
         contentPanel(detail)
       }
@@ -637,7 +637,7 @@ struct PaneLeafView: View {
   /// one XCUITest can actually drive.
   ///
   /// The bar is store-free, so everything it shows is resolved here — this view already observes
-  /// `sessions` and holds the store, and doing it once per pane keeps that churn out of the bar.
+  /// `sessions` and holds the pane host, and doing it once per pane keeps that churn out of the bar.
   private func titleBar(_ tab: TerminalTab?) -> some View {
     // The bar reads the changing title only in its text and accessibility leaves, keeping its
     // adaptive toolbar and action closures out of every spinner frame.
@@ -656,11 +656,11 @@ struct PaneLeafView: View {
       onSetMarkdownPreview: { sessions.setMarkdownPreview($0, forTab: tabID, in: target) },
       // The pane's OWN target, not `selectedTarget` — see `AppStore.openFilePreview(path:for:)`.
       onOpenFile: {
-        if let path = content.filePath { store.openFilePreview(path: path, for: target) }
+        if let path = content.filePath { host.openFilePreview(path: path, for: target) }
       },
       onSplitRight: { sessions.splitTab(tabID, on: .right, for: target) },
       onSplitDown: { sessions.splitTab(tabID, on: .bottom, for: target) },
-      onClose: { store.requestCloseTerminalTab(tabID, for: target) },
+      onClose: { host.requestCloseTerminalTab(tabID, for: target) },
       onActivate: onActivate,
       // Same screen placement a drag-out would produce, minus the drag: put the window under the
       // pointer rather than somewhere arbitrary.
@@ -668,7 +668,7 @@ struct PaneLeafView: View {
         ? { sessions.detachPane(tabID, for: target, at: NSEvent.mouseLocation) } : nil,
       moveToWorkroom: target.id == QuickTerminalController.targetID
         ? QuickTerminalMoveToWorkroomMenu(
-          store: store, tabID: tabID, target: target, style: .toolbar) : nil,
+          host: host, tabID: tabID, target: target, style: .toolbar) : nil,
       onDragChanged: onDragChanged,
       onDragEnded: onDragEnded
     )

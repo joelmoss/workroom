@@ -138,7 +138,7 @@ struct ToastStackActions {
   var dismissToast: (WorkroomNotification.ID) -> Void
 }
 
-/// Builds `ToastStack`'s model and actions from the window's `AppStore`.
+/// Builds `ToastStack`'s model and actions from the window's pane host (its `AppStore`).
 ///
 /// A view of its own, not a computation in `RootView`: its body is where the toast lists are read,
 /// so a toast arriving re-evaluates this and the stack, and not the window around them. This body
@@ -146,7 +146,7 @@ struct ToastStackActions {
 /// the notification list); the stack, measured, does not (`AdapterGateInvalidationTests`), so it
 /// needs no equality gate.
 struct ToastStackAdapter: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(\.paneHost) private var host
   @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var notifications: NotificationCenterStore
 
@@ -155,40 +155,40 @@ struct ToastStackAdapter: View {
       // Keep toasts honest with the spine: drop any whose notification was dismissed elsewhere.
       .onChange(of: notifications.items) { _, items in
         let live = Set(items.map(\.id))
-        for toast in store.toasts where !live.contains(toast.id) { store.dismissToast(toast.id) }
+        for toast in host.toasts where !live.contains(toast.id) { host.dismissToast(toast.id) }
       }
   }
 
   private var model: ToastStackModel {
     ToastStackModel(
-      toolWarnings: store.vcsToolWarnings,
-      runToasts: store.runToastItems.map { item in
+      toolWarnings: host.vcsToolWarnings,
+      runToasts: host.runToastItems.map { item in
         .init(item: item, source: resolvedSource(forTargetID: item.targetID, fallback: item.source))
       },
-      toasts: store.toasts.map { .init(item: $0, source: resolvedNotificationSource(store, $0)) }
+      toasts: host.toasts.map { .init(item: $0, source: resolvedNotificationSource(host, $0)) }
     )
   }
 
   /// Origin label for a run toast, resolved from the live model so a workroom's display label
   /// (issue #41) shows and tracks renames; falls back to the snapshot when the target is gone.
   private func resolvedSource(forTargetID id: TerminalTarget.ID, fallback: String) -> String {
-    let live = store.notificationSource(forTargetID: id)
+    let live = host.notificationSource(forTargetID: id)
     return live.isEmpty ? fallback : live
   }
 
   private var actions: ToastStackActions {
     ToastStackActions(
-      dismissToolWarning: { [store] tool in store.dismissToolWarning(tool: tool) },
-      openRunToast: { [store, runCommand] targetID in
-        store.openRunToast(for: targetID)
+      dismissToolWarning: { [host] tool in host.dismissToolWarning(tool: tool) },
+      openRunToast: { [host, runCommand] targetID in
+        host.openRunToast(for: targetID)
         runCommand.dismissRunToast(for: targetID)
       },
       dismissRunToast: { [runCommand] targetID in runCommand.dismissRunToast(for: targetID) },
-      openToast: { [store] toast in
-        store.dismissToast(toast.id)
+      openToast: { [host] toast in
+        host.dismissToast(toast.id)
         WindowRegistry.shared.open(toast)
       },
-      dismissToast: { [store] id in store.dismissToast(id) }
+      dismissToast: { [host] id in host.dismissToast(id) }
     )
   }
 }

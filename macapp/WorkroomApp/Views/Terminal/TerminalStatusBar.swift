@@ -250,7 +250,7 @@ struct TerminalStatusBarAdapter: View {
   let state: TerminalState?
   /// The pane's terminal surface, for the diagnosis' "Insert fix" and Investigate; nil with `state`.
   var surface: GhosttySurfaceView?
-  @EnvironmentObject var store: AppStore
+  @Environment(\.paneHost) private var host
   @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
   /// Observed here too (`DetachedSessionsButton` already observes it) so a divider next to that
@@ -302,7 +302,7 @@ struct TerminalStatusBarAdapter: View {
       // window opened (`DetachedPaneController` reads its content once).
       cwd: state.flatMap { $0.hostCwd ?? $0.cwd ?? surface?.lastKnownCwd },
       cwdIsOnHost: state?.hostCwd != nil,
-      branch: store.branchLabel(for: target) ?? state?.liveBranch,
+      branch: host.branchLabel(for: target) ?? state?.liveBranch,
       diagnosis: state == nil ? nil : codingAgentManager.banners[tabID],
       usage: state.flatMap { state in
         guard let backend = state.activeCodingAgentBackend, !target.isRemoteWorkroom else {
@@ -322,8 +322,8 @@ struct TerminalStatusBarAdapter: View {
         codingAgentManager.diagnose(tab: tabID, target: target.id)
       },
       insertFix: { [surface] fix in surface?.sendText(fix) },
-      investigate: { [store, codingAgentManager, tabID, target, surface] bannerState in
-        _ = store.startInvestigate(bannerState: bannerState, target: target, surface: surface)
+      investigate: { [host, codingAgentManager, tabID, target, surface] bannerState in
+        host.investigate(bannerState, in: target, surface: surface)
         codingAgentManager.dismiss(tab: tabID)
       },
       dismissDiagnosis: { [codingAgentManager, tabID] in codingAgentManager.dismiss(tab: tabID) }

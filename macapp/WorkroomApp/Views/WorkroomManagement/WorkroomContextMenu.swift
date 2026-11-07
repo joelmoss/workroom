@@ -4,27 +4,24 @@ import WorkroomDomain
 /// Target-scoped run actions, shared by project, workroom and run-tab context menus.
 @MainActor
 @ViewBuilder
-func runCommandMenuItems(store: AppStore, target: TerminalTarget) -> some View {
-  let available = target.opensTerminals && !store.lifecycle.isRunBlocked(target.id)
-  let configured =
-    store.project(forTargetID: target.id).map {
-      store.runCommands.hasRunCommand(forProject: $0.path)
-    } ?? false
-  let running = store.runCommand.isRunCommandRunning(for: target.id)
+func runCommandMenuItems(host: any PaneHost, target: TerminalTarget) -> some View {
+  let available = target.opensTerminals && !host.isRunBlocked(target.id)
+  let configured = host.hasRunCommand(for: target)
+  let running = host.isRunCommandRunning(for: target.id)
   Button {
-    store.runOrFocusRunCommand(for: target)
+    host.runOrFocusRunCommand(for: target)
   } label: {
     Label("Run", systemImage: "play.fill")
   }
   .disabled(!available || !configured)
   Button {
-    store.restartRunCommand(for: target)
+    host.restartRunCommand(for: target)
   } label: {
     Label("Restart", systemImage: "arrow.clockwise")
   }
   .disabled(!available || !running)
   Button {
-    store.runCommand.stopRunCommand(for: target)
+    host.stopRunCommand(for: target)
   } label: {
     Label("Stop", systemImage: "stop.fill")
   }
@@ -110,11 +107,11 @@ func moveToNewWindowMenuItem(store: AppStore, sid: SidebarID) -> some View {
 @MainActor
 @ViewBuilder
 func paneWindowMenuItem(
-  store: AppStore, tabID: TerminalTab.ID, targetID: TerminalTarget.ID
+  host: any PaneHost, tabID: TerminalTab.ID, targetID: TerminalTarget.ID
 ) -> some View {
-  let detached = store.terminals.detachedTabIDs.contains(tabID)
+  let detached = host.terminals.detachedTabIDs.contains(tabID)
   Button {
-    store.togglePaneWindow(tabID, targetID: targetID)
+    host.togglePaneWindow(tabID, targetID: targetID)
   } label: {
     Label(
       detached ? "Move Back to Main Window" : "Move to New Window",
@@ -186,7 +183,7 @@ extension NSImage {
 struct QuickTerminalMoveToWorkroomMenu: View {
   enum Style { case menuItem, toolbar }
 
-  let store: AppStore
+  let host: any PaneHost
   let tabID: TerminalTab.ID
   let target: TerminalTarget
   let style: Style
@@ -195,8 +192,8 @@ struct QuickTerminalMoveToWorkroomMenu: View {
   @State private var windows = WindowRegistry.shared.allStores
   @State private var hovering = false
 
-  init(store: AppStore, tabID: TerminalTab.ID, target: TerminalTarget, style: Style) {
-    self.store = store
+  init(host: any PaneHost, tabID: TerminalTab.ID, target: TerminalTarget, style: Style) {
+    self.host = host
     self.tabID = tabID
     self.target = target
     self.style = style
@@ -235,7 +232,7 @@ struct QuickTerminalMoveToWorkroomMenu: View {
   }
 
   private func menu(@ViewBuilder label: () -> some View) -> some View {
-    let groups = store.quickTerminalPaneWorkroomChoices(tabID, of: target, windows: windows)
+    let groups = host.quickTerminalPaneWorkroomChoices(tabID, of: target, windows: windows)
     return Menu {
       if groups.isEmpty {
         Button("No Open Workrooms") {}.disabled(true)
@@ -274,7 +271,7 @@ func workroomContextMenu(
   store: AppStore, sid: SidebarID, target: TerminalTarget, closeName: String?,
   onRemoveFromSplit: (() -> Void)? = nil
 ) -> some View {
-  runCommandMenuItems(store: store, target: target)
+  runCommandMenuItems(host: store, target: target)
   Divider()
   if let closeName {
     // Close the whole workroom (all its tabs); the workroom's files stay. Confirmed via

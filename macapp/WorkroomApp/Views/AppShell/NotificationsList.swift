@@ -5,12 +5,12 @@ import SwiftUI
 /// (issue #41) shows and tracks renames; falls back to the snapshot captured on the record when the
 /// target no longer exists (a since-deleted workroom keeps its last-known name). Shared by
 /// `NotificationsList` and `SidebarNotificationStrip` so both surfaces show identical labels.
-@MainActor func resolvedNotificationSource(_ store: AppStore, _ item: WorkroomNotification)
+@MainActor func resolvedNotificationSource(_ host: any PaneHost, _ item: WorkroomNotification)
   -> String
 {
   // A "needs you" alert's title names its place, so its source is only what the title leaves out.
   if item.episode != nil { return item.source }
-  let live = store.notificationSource(forTargetID: item.targetID)
+  let live = host.notificationSource(forTargetID: item.targetID)
   return live.isEmpty ? item.source : live
 }
 
