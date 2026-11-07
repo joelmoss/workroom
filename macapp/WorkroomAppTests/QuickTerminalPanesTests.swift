@@ -2,18 +2,18 @@ import XCTest
 
 @testable import Workroom
 
-/// The Quick Terminal runs a workroom's own `TerminalSessions`, with three differences: its shells
+/// The Quick Terminal runs a workroom's own `TerminalPanes`, with three differences: its shells
 /// are ended at quit rather than kept, its panes never move to a window of their own, and each pane
 /// reads its own folder's branch, since no workroom knows it.
 @MainActor
-final class QuickTerminalSessionsTests: XCTestCase {
+final class QuickTerminalPanesTests: XCTestCase {
   private let target = TerminalTarget(
     id: .quickTerminal, title: "Quick Terminal", path: "/a", unavailability: nil)
 
   private func makeSessions(
     quickTerminal: Bool = true, backend: SessionBackendAvailability = .notBundled
-  ) -> TerminalSessions {
-    let sessions = TerminalSessions()
+  ) -> TerminalPanes {
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
@@ -30,7 +30,7 @@ final class QuickTerminalSessionsTests: XCTestCase {
     return sessions
   }
 
-  private func state(_ id: TerminalTab.ID, in sessions: TerminalSessions) -> TerminalState? {
+  private func state(_ id: TerminalTab.ID, in sessions: TerminalPanes) -> TerminalState? {
     guard case .terminal(let state) = sessions.tab(id, for: target)?.content else { return nil }
     return state
   }

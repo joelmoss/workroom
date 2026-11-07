@@ -5,7 +5,7 @@ import XCTest
 /// Popping a detail panel out into its own window (issue #172).
 ///
 /// The design is "the tab never leaves its owning store": a detached pane's `TerminalTab` stays in
-/// `TerminalSessions` and only its host view moves, so what these tests pin is that the *model* now
+/// `TerminalPanes` and only its host view moves, so what these tests pin is that the *model* now
 /// answers three different questions three different ways about the same tab.
 @MainActor
 final class DetachedPaneTests: XCTestCase {
@@ -14,13 +14,13 @@ final class DetachedPaneTests: XCTestCase {
   private let other = TerminalTarget(
     id: .workroom(project: "/p", name: "bar"), title: "bar", path: "/tmp", isMissing: false)
 
-  private func rootSplitID(_ s: TerminalSessions) -> UUID? {
+  private func rootSplitID(_ s: TerminalPanes) -> UUID? {
     guard case .split(let id, _, _, _, _) = s.split(for: target) else { return nil }
     return id
   }
 
-  private func makeSessions() -> TerminalSessions {
-    let sessions = TerminalSessions()
+  private func makeSessions() -> TerminalPanes {
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     sessions.recency = SwitcherRecency()

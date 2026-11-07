@@ -87,7 +87,7 @@ final class AppStoreContentNavigationTests: XCTestCase {
   /// the first file's diff.
   ///
   /// The original bug, and why it hid: the second click retargets the shared preview tab in place
-  /// (`TerminalSessions.openContentPreview` invariant B), which moves no focus, and the diff opener
+  /// (`TerminalPanes.openContentPreview` invariant B), which moves no focus, and the diff opener
   /// recorded nothing of its own — so only ONE content entry ever existed and Back walked straight past
   /// both files to the terminal. This test failed exactly that way before the fix.
   func testBackShowsThePreviousDiff() {

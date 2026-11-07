@@ -6,7 +6,7 @@ import WorkroomVCS
 /// One rail card's data — a **value type**, resolved once when the rail opens.
 ///
 /// INVARIANT (prior learning `macapp-row-observes-sessions-invalidation-storm`): no rail view may hold
-/// an `AppStore` or `TerminalSessions`. `TerminalSessions` republishes on every title/activity pulse,
+/// an `AppStore` or `TerminalPanes`. `TerminalPanes` republishes on every title/activity pulse,
 /// so a card observing it to decide "am I the cursor" would re-render at OSC frequency — the
 /// WORKROOM-2B hang. Everything a card draws is snapshotted here instead.
 struct SwitcherCard: Identifiable, Equatable {

@@ -14,7 +14,7 @@ enum TerminalPanelMetrics {
 }
 
 /// Hosts a single terminal surface. Terminals live in
-/// `TerminalSessions` (retained across switches); this view mounts whichever one it's given and
+/// `TerminalPanes` (retained across switches); this view mounts whichever one it's given and
 /// re-mounts when that changes.
 ///
 /// Occlusion (plan A4): the hosted surface is marked visible on mount and **hidden on dismantle**,

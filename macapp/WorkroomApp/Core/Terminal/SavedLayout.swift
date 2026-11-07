@@ -428,7 +428,7 @@ struct TargetSession: Codable, Hashable, Sendable {
   var targetID: String
   /// Strip order. The array IS the order — no second field to fall out of sync with it.
   @Lossy var tabs: [TabSession]
-  /// `TerminalSessions`' split groups — leaves are `TabSession.key`. Several disjoint groups can
+  /// `TerminalPanes`' split groups — leaves are `TabSession.key`. Several disjoint groups can
   /// coexist; each needs two or more live leaves to survive. Same shape (and same `@Lossy` posture)
   /// as `WindowSession.workroomSplits` one level up.
   @Lossy var splits: [LayoutNode<String>]
@@ -439,7 +439,7 @@ struct TargetSession: Codable, Hashable, Sendable {
   /// `encodeIfPresent`), so a file written today carries just `splits`.
   var split: LayoutNode<String>?
   var focusedKey: String?
-  /// `TerminalSessions.counts` — so the next ⌘T after restoring "Terminal 3" is "Terminal 4".
+  /// `TerminalPanes.counts` — so the next ⌘T after restoring "Terminal 3" is "Terminal 4".
   var terminalCounter: Int?
   /// For a remote workroom whose layout its host keeps (#255): the host's revision this Mac last
   /// read or wrote. Additive and per Mac; never part of the layout a host keeps (`HostLayout`).
@@ -645,7 +645,7 @@ extension WindowSession {
 
 extension TargetSession {
   /// Nil when nothing usable survives — never an empty target, which would make
-  /// `TerminalSessions.ensureTab`'s "has this target been seeded?" check lie.
+  /// `TerminalPanes.ensureTab`'s "has this target been seeded?" check lie.
   fileprivate func sanitized(into report: inout SessionSanitizeReport) -> TargetSession? {
     var seenKeys = Set<String>()
     var tabs: [TabSession] = []
@@ -664,7 +664,7 @@ extension TargetSession {
         report.droppedTabs += 1
         continue
       }
-      // At most one preview tab per target (`TerminalSessions.previewTabID`). A hand-edited file
+      // At most one preview tab per target (`TerminalPanes.previewTabID`). A hand-edited file
       // with two would give the target two italic chips and an ambiguous retarget slot; keep the
       // first and persist the rest.
       if tab.isPreview {

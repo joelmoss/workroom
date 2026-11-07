@@ -9,7 +9,7 @@ enum TerminalSessionAttachment {
   static func attachToActivePane(
     sessionID: UUID,
     target: TerminalTarget,
-    sessions: TerminalSessions
+    sessions: TerminalPanes
   ) -> Bool {
     guard var tab = sessions.focusedTab(for: target),
       case .terminal(var state) = tab.content,
@@ -19,7 +19,7 @@ enum TerminalSessionAttachment {
       return false
     }
     // The tab's session id and its surface's attach id are written together, here and when the
-    // tab is made (`TerminalSessions.makeTerminalTab`), so readers of the tab's need not ask the view.
+    // tab is made (`TerminalPanes.makeTerminalTab`), so readers of the tab's need not ask the view.
     let previous = state.sessionID
     state.sessionID = sessionID
     view.attachment.sessionID = sessionID

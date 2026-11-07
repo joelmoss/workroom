@@ -6,7 +6,7 @@ import WorkroomDomain
 /// travel: they are the app's (`TerminalTabs`), and `sessions` carries only their layout.
 struct WorkroomHandOff {
   let sid: SidebarID
-  var sessions: TerminalSessions.TargetHandOff
+  var sessions: TerminalPanes.TargetHandOff
   let run: RunCommands.HandOff
 }
 

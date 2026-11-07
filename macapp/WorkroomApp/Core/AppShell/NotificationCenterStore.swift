@@ -38,7 +38,7 @@ struct WorkroomNotification: Identifiable, Equatable {
 
 /// The notification spine: an in-memory, session-only history that drives every surface
 /// (system banner, sidebar/tab/toolbar badges, the inspector panel). Owned by `AppStore`
-/// (`let notifications = NotificationCenterStore()`), mirroring `let terminals = TerminalSessions()`.
+/// (`let notifications = NotificationCenterStore()`), mirroring `let terminals = TerminalPanes()`.
 ///
 /// There is no read state: a notification lives until it's dismissed — the user focuses or opens
 /// its terminal, clicks it in the panel, or clears the panel — or until it's evicted at the cap.
@@ -88,7 +88,7 @@ final class NotificationCenterStore: ObservableObject {
 
   /// Fired with the new aggregate `total` whenever the history changes, so a coordinator can mirror
   /// the count onto an AppKit surface (the Dock icon badge) WITHOUT coupling this store to AppKit —
-  /// the same seam as `TerminalSessions.Event.activity`. Driving the Dock badge from here (the
+  /// the same seam as `TerminalPanes.Event.activity`. Driving the Dock badge from here (the
   /// model), not a SwiftUI view, is deliberate: SwiftUI suspends a hidden/occluded window's body
   /// updates — exactly when a backgrounded terminal posts a notification and the badge must change —
   /// so a view-driven `.onChange` misses it until the app is next foregrounded (issue #32).

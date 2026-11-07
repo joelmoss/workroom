@@ -5,7 +5,7 @@ import WorkroomVCS
 /// ⌘-click in a remote pane resolves on the HOST (#254, C7): against the shell's directory there, as
 /// its daemon reports it (`hostCwd`), and through the host's file service. The file opens in the
 /// in-app viewer, since no editor on this Mac can open a file on another machine. Web URLs still
-/// go to this Mac's browser. The click itself arrives as `.cmdClickFile`, which `TerminalSessions`
+/// go to this Mac's browser. The click itself arrives as `.cmdClickFile`, which `TerminalPanes`
 /// sends to `open`.
 ///
 /// The ⌘-hover cursor is also the ⌘-click's gate (`GhosttySurfaceView.mouseDown`), and it is

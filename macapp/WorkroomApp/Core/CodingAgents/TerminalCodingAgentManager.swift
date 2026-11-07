@@ -67,7 +67,7 @@ enum CodingAgentBannerState: Equatable, Sendable {
 /// Orchestrates the inline terminal agent (issue #49, T6): classify a finished command, decide
 /// manual vs automatic, run the diagnosis (debounced, cooldown-bounded, cancel-superseding), guard
 /// the pane lifecycle, and publish per-tab banner state. `@MainActor` + `ObservableObject` to match
-/// `AppStore`/`TerminalSessions`. Pure decision logic lives in `FailureClassifier`; the runner and
+/// `AppStore`/`TerminalPanes`. Pure decision logic lives in `FailureClassifier`; the runner and
 /// the feature gates are injected so the state machine is seam-tested with a fake.
 @MainActor
 final class TerminalCodingAgentManager: ObservableObject {

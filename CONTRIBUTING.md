@@ -202,8 +202,9 @@ The app (`macapp/`, see [`macapp/AGENTS.md`](macapp/AGENTS.md)) is a value-based
 SwiftUI app. The core loop:
 
 1. **Sidebar selection** (project / root / workroom) sets `AppStore.selectedTargetID`.
-2. **Opening a target** creates a libghostty terminal surface (`GhosttySurfaceView`), caches it in
-   `TerminalSessions` keyed by target, and renders it in the detail pane. One live terminal per
+2. **Opening a target** creates a libghostty terminal surface (`GhosttySurfaceView`), keeps its tab
+   in the app's `TerminalTabs` and the window's layout of it in `TerminalPanes` keyed by target, and
+   renders it in the detail pane. One live terminal per
    target persists for the session.
 3. **Terminal I/O** surfaces libghostty/OSC callbacks app-wide — title (OSC 0/2), command-finished
    (OSC 133), busy/progress (OSC 9;4), and notifications (OSC) drive tab/sidebar animation, badges,

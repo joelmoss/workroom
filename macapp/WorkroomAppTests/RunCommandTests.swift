@@ -1688,7 +1688,7 @@ final class RunCommandTests: XCTestCase {
 
   // MARK: Run sessions (#522)
 
-  /// A run tab the store has reattached from a saved session, as `TerminalSessions.restore`
+  /// A run tab the store has reattached from a saved session, as `TerminalPanes.restore`
   /// reports one.
   private func restoredRun(_ store: AppStore, _ t: TerminalTarget) -> TerminalTab {
     let tab = store.terminals.addRunTab(

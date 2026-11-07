@@ -152,7 +152,7 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
       .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { availableWidth = $0 })
       // Scroll the selected chip into view (issue #129 follow-up). Every selection path — ⌘1-9,
       // ⌥⌘1-9, the cycle shortcuts, chip taps, sidebar taps, close-reselection, new-tab creation, and
-      // surface-focus routing — funnels through one write (`TerminalSessions.setFocused` /
+      // surface-focus routing — funnels through one write (`TerminalPanes.setFocused` /
       // `AppStore.selectedTargetID`), so this one `.onChange` sees all of them. Skipped mid-drag
       // (`scrollSuspended`): a reorder drag already moves the run, and scrolling under the cursor
       // would fight it. Duration matches the reorder gap's `.easeInOut(duration: 0.18)` so a selection

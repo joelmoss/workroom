@@ -172,8 +172,9 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
   enforces per-command timeouts, and decodes the JSON envelope (`ok` / `error.kind`).
 - `Core/AppShell/AppStore/AppStore.swift` — `@MainActor` store; loads via `list --json` (config-only first,
   then `--warnings=fast`), and mutates via `add-project` / `create` / `delete`.
-- `Core/Terminal/TerminalSessions.swift` — caches one live terminal **per workroom** for the app
-  session so switching doesn't kill running shells (decision D2).
+- `Core/Terminal/TerminalPanes.swift` — each window's layout of its live terminals **per workroom**,
+  over the app's tabs in `TerminalTabs.swift`, kept for the app session so switching doesn't kill
+  running shells (ADR 0069).
 - `Views/` — `NavigationSplitView`: projects sidebar · workroom list · terminal detail,
   with empty/error states, a destructive delete confirmation, and a detail toolbar.
 - `Core/WorkroomManagement/Models.swift` — `Codable` mirrors of the `--json` contract (lenient decoding).
@@ -195,7 +196,7 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
 1. **libghostty pin**: the `GhosttyKit` xcframework, built from one upstream commit because the
    embedding C API is not yet stable. `GHOSTTY_SHA` in `vcs/scripts/build-ghostty-vt.sh` is the
    single source of truth for the engine — don't restate it here. ✓ the app builds + links.
-2. **Terminal teardown** (`TerminalSessions` → `GhosttySurfaceView.tearDown`): ✓ frees the
+2. **Terminal teardown** (`TerminalPanes` → `GhosttySurfaceView.tearDown`): ✓ frees the
    surface via `ghostty_surface_free` (callbacks cleared first). Still worth a runtime check:
    switch/delete workrooms repeatedly and confirm no orphaned shells in `ps`.
 3. **Signing/notarization**: ✓ configured (Developer ID for Release, team B898J443L9;

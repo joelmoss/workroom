@@ -5,13 +5,13 @@ import Foundation
 ///
 /// This exists because that question used to be asked **per row**. `HistoryRow`,
 /// `DivergentSiblingRow` and `ChangesPanel.ChangedFileRow` each held `@EnvironmentObject AppStore` +
-/// `@ObservedObject TerminalSessions` purely to run the `selectedTarget` → `focusedTab(for:)` →
+/// `@ObservedObject TerminalPanes` purely to run the `selectedTarget` → `focusedTab(for:)` →
 /// descriptor chain, so every terminal title update and activity pulse — which republish
-/// `TerminalSessions` at the rate an agent writes output — invalidated every row in the pane. That is
+/// `TerminalPanes` at the rate an agent writes output — invalidated every row in the pane. That is
 /// the WORKROOM-2B App Hang (≥2000 ms on the main thread, sampled inside `HistoryRow.body`).
 ///
 /// Now the *panel* reads it once per body pass and hands each row a plain value, so no row observes
-/// `TerminalSessions`, and that is what keeps a pulse from rebuilding them (measured for #538: a pulse
+/// `TerminalPanes`, and that is what keeps a pulse from rebuilding them (measured for #538: a pulse
 /// never reaches a row's `==`). Keeping the chain in one place also means a new `TabContent` case has
 /// exactly one site to teach, instead of three that fail silently by never highlighting.
 /// `Equatable` because the inspector rows now take it as a plain value and are themselves `Equatable`:
@@ -29,10 +29,10 @@ enum FocusedTabSelection: Equatable {
   ///
   /// Deliberately a free function over the two stores rather than a computed property on `AppStore`:
   /// the tab strip lives in a separate observation tree from the inspector, so the caller must be the
-  /// view that observes `TerminalSessions` (a panel), and making that dependency explicit at the call
+  /// view that observes `TerminalPanes` (a panel), and making that dependency explicit at the call
   /// site is the whole point.
   @MainActor
-  static func current(store: AppStore, sessions: TerminalSessions) -> FocusedTabSelection? {
+  static func current(store: AppStore, sessions: TerminalPanes) -> FocusedTabSelection? {
     guard let target = store.selectedTarget, let tab = sessions.focusedTab(for: target) else {
       return nil
     }

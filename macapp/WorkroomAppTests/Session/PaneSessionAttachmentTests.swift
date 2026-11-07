@@ -367,7 +367,7 @@ final class PaneSessionAttachmentTests: XCTestCase {
   // Value: protects=a remote pane attaching through the service its window registered it on, and
   // holding its host while it does (#356); fails_when=the attachment asks another service (the
   // singleton the view used to read) or drops its token; why_new=the view ignored
-  // `TerminalSessions.sessionService` until the attachment was injected; seam=none
+  // `TerminalPanes.sessionService` until the attachment was injected; seam=none
   /// The positive side: a remote session's pane launches the host driver's attach, carries none of
   /// this Mac's session variables, and counts as attached to its host until its surface goes.
   func testARemotePaneLaunchesItsHostsAttachThroughItsService() throws {
@@ -391,7 +391,7 @@ final class PaneSessionAttachmentTests: XCTestCase {
   /// A tab's surface attaches through the service its window holds, whichever factory made the
   /// surface.
   func testATabsSurfaceAttachesThroughItsWindowsService() throws {
-    let sessions = TerminalSessions()
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }

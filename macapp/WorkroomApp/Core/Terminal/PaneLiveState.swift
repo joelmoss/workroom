@@ -7,7 +7,7 @@ import WorkroomWire
 /// What one window's terminals report about themselves while they run, written onto their tabs: the
 /// title (issue #2) and the coding agent and tool it names, the Claude profile that agent runs with
 /// (#480), the cwd (issue #49), the branch of a Quick Terminal pane's folder, a remote pane's cwd on
-/// its host (#239) and OSC 9;4 progress. `TerminalSessions` hands it each surface event as it is
+/// its host (#239) and OSC 9;4 progress. `TerminalPanes` hands it each surface event as it is
 /// raised, synchronously, inside the runtime callback that raised it.
 ///
 /// One object per window, not one per tab: the reads it starts are keyed by tab, and `forget`
@@ -17,7 +17,7 @@ final class PaneLiveState {
   private let access: TerminalTabAccess
   private let codingAgentManager: TerminalCodingAgentManager
 
-  /// The sessions' `PersistentSessionService`, kept in step by `TerminalSessions`.
+  /// The sessions' `PersistentSessionService`, kept in step by `TerminalPanes`.
   var sessionService: PersistentSessionService
   /// Where a remote pane's host-side working directory is asked for (#239). Settable for tests.
   var hostConnections: HostConnectionManager = .shared

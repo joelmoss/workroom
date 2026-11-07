@@ -106,7 +106,7 @@ enum QuickTerminalEdge: String, CaseIterable, Defaults.Serializable,
 ///
 /// Its tabs and panes are a workroom's — the same `WorkroomTerminalsView`, tab strip and pane tree,
 /// so they look and behave the same — over a private `AppStore` that is never registered with
-/// `WindowRegistry` (never saved, restored or counted in the badge), whose `TerminalSessions` keeps
+/// `WindowRegistry` (never saved, restored or counted in the badge), whose `TerminalPanes` keeps
 /// no background session (`persistsSessions`) and moves no pane to a window of its own
 /// (`allowsDetach`). The target is no project, so the store's project lookups never see it. The
 /// window is an AppKit `NSWindow`, not a SwiftUI scene, for exact chrome control, and follows live

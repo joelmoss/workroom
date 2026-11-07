@@ -8,7 +8,7 @@ import XCTest
 
 /// The Changes panel's half of the WORKROOM-2B fix.
 ///
-/// `ChangedFileRow` had the identical defect the History rows did — `@ObservedObject TerminalSessions`
+/// `ChangedFileRow` had the identical defect the History rows did — `@ObservedObject TerminalPanes`
 /// held purely to compute `isSelected` — just bounded at `renderCap` (200) instead of the whole commit
 /// log, which is why it never crossed the 2-second app-hang threshold on its own. The lookup now lives
 /// in the panel, and the file list is an eager `VStack`, so the row's equality gate is what keeps a
@@ -109,7 +109,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
   /// re-renders once per burst, yet SwiftUI never asks a row's `==` (measured for #538: zero calls,
   /// and no rebuilds with `==` forced false). The gate is pinned by
   /// `testStatusChangeRebuildsOnlyTheChangedFileRow`; this test pins the original WORKROOM-2B defect,
-  /// a row that observes `TerminalSessions` itself and so rebuilds on every pulse, gate or not.
+  /// a row that observes `TerminalPanes` itself and so rebuilds on every pulse, gate or not.
   func testTerminalPulseBurstRebuildsNoChangedFileRows() throws {
     let store = makeStore(changedFiles: files(60))
     let (window, view) = host(store)

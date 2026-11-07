@@ -93,7 +93,7 @@ final class DiffViewerUITests: XCTestCase {
   // MARK: git, preview semantics, selection, double-click, per-tab toggle
 
   /// One launch walks the Changes → diff flow in order. Steps share the preview slot
-  /// (`TerminalSessions.openContentPreview`), so the order is load-bearing:
+  /// (`TerminalPanes.openContentPreview`), so the order is load-bearing:
   ///
   /// 1. The Changes panel is a flat list; clicking a file opens the git worktree diff.
   /// 2. A single click opens a PREVIEW tab; clicking a second file replaces it in place (≤1
@@ -109,7 +109,7 @@ final class DiffViewerUITests: XCTestCase {
   /// 5. LAST: the tab toolbar's diff view-mode toggle starts on the global default (unified) and
   ///    flips THIS tab to side-by-side — without changing the global setting. It goes last because
   ///    the per-tab `diffViewModeOverride` persists across a preview retarget
-  ///    (`TerminalSessions`), so any `diff.line` assertion after it would go dark.
+  ///    (`TerminalPanes`), so any `diff.line` assertion after it would go dark.
   func testChangedFileClicksOpenPreviewPersistAndToggleDiffMode() throws {
     let app = launchedApp(diffViewMode: "unified")  // the global default the toggle overrides
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))

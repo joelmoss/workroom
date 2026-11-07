@@ -194,7 +194,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     let target = TerminalTarget(
       id: .workroom(project: "/p", name: "remote"), title: "remote", path: path,
       unavailability: .remote, remoteHost: id)
-    let sessions = TerminalSessions()
+    let sessions = TerminalPanes()
     sessions.remoteFiles = { location in
       try connection.files(context: FileContext(location: location, sharedLocation: nil))
     }

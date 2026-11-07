@@ -143,7 +143,7 @@ final class WorkroomHandOverTests: XCTestCase {
         ended.append(session)
         return true
       })
-    let (from, to) = (TerminalSessions(), TerminalSessions())
+    let (from, to) = (TerminalPanes(), TerminalPanes())
     for sessions in [from, to] {
       sessions.sessionService = service
       sessions.makeView = { _, cwd, command in

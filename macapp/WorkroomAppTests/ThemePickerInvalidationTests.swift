@@ -44,7 +44,7 @@ final class ThemePickerInvalidationTests: XCTestCase {
   }
 
   /// No live terminal is registered with `ThemeService.shared` in this bare harness, so
-  /// `applyFamily`'s per-window `TerminalSessions.applyThemeToAll` sweep is a no-op — this isolates
+  /// `applyFamily`'s per-window `TerminalPanes.applyThemeToAll` sweep is a no-op — this isolates
   /// the cost this TODO entry is about (the picker's own re-render) from the per-surface reconfigure
   /// a real window's terminals would also pay. The app-global engine reload is NOT excluded: it
   /// moved into `applyActiveTheme` itself (WORKROOM-3R) and now runs once per apply regardless, which

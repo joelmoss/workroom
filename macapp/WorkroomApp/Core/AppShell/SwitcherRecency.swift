@@ -23,7 +23,7 @@ struct WindowToken: Hashable {
 
 /// A workroom *as opened in one window* — the unit ⌥Tab switches between.
 ///
-/// The window is part of the identity because `TerminalSessions` is per-window: the same workroom can
+/// The window is part of the identity because `TerminalPanes` is per-window: the same workroom can
 /// be open in two windows with different tabs, and they are two different places to switch to.
 struct WorkroomSlotID: Hashable {
   let window: WindowToken
@@ -104,7 +104,7 @@ struct RecencyList<ID: Hashable>: Equatable {
 /// `RecencyList` a trivially testable value type.
 ///
 /// **Recording is unconditional.** Both write-points — `AppStore`'s `selectionDidChange(from:)` for
-/// workrooms, `TerminalSessions.setFocused` for panes — sit *above* `AppStore`'s
+/// workrooms, `TerminalPanes.setFocused` for panes — sit *above* `AppStore`'s
 /// `isNavigatingHistory` guard, because `applyLocation` raises that flag for its whole body and the
 /// switcher's own commit goes through it — a gated write would never record where the switcher just
 /// took you, and ⌥Tab would ping-pong between two places forever. Recency answers "where did the

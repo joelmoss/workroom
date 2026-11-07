@@ -201,7 +201,7 @@ extension NavPayload {
   }
 
   /// This payload as tab content, taking its preview flag from the tab it is landing in — see
-  /// `TerminalSessions.setContent`.
+  /// `TerminalPanes.setContent`.
   func makeTabContent(isPreview: Bool) -> TabContent {
     switch self {
     case .diff(var d):
@@ -297,7 +297,7 @@ extension TabSession {
   }
 
   /// The non-terminal content this tab describes, or nil for a terminal (which needs a surface, so
-  /// only `TerminalSessions` can build it) and for anything unrecognised.
+  /// only `TerminalPanes` can build it) and for anything unrecognised.
   ///
   /// Deliberately lenient where the capture direction above is exhaustive: an unknown kind is a tab
   /// written by a NEWER build, and dropping it is the whole point of the lossy schema.
@@ -499,7 +499,8 @@ enum PaneIndicator: Equatable {
 /// or wiring, and is `@ObservationIgnored`, as it was never published.
 @MainActor
 @Observable
-final class TerminalSessions {
+final class TerminalPanes {
+  // The log category keeps the type's old name, so a log filter written for it still matches.
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "TerminalSessions")
 

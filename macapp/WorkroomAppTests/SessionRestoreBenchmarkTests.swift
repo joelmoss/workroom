@@ -58,7 +58,7 @@ final class SessionRestoreBenchmarkTests: XCTestCase {
       try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
       defer { try? FileManager.default.removeItem(at: directory) }
       let launches = directory.appendingPathComponent("children")
-      let sessions = TerminalSessions()
+      let sessions = TerminalPanes()
       sessions.recency = SwitcherRecency()
       sessions.sessionService = PersistentSessionService(
         probe: { _ in .unhealthy(reason: "owned restore benchmark") },

@@ -14,7 +14,7 @@ import WorkroomDomain
 /// The strip is handed those via a binding plus the `chipLocal`/`chipDropTarget` closures.
 struct WorkroomTerminalsView: View {
   let target: TerminalTarget
-  let sessions: TerminalSessions
+  let sessions: TerminalPanes
   /// Whether this workroom's terminal may hold keyboard focus — `false` for a co-displayed but
   /// non-focused split member, so it doesn't steal first responder (and the workroom selection) on mount.
   var surfaceActive: Bool = true

@@ -5,7 +5,7 @@ import WorkroomDomain
 /// Binds one window's terminal tabs to the program status their sessions report (#358,
 /// `docs/program-status.md`): puts the monitor's rollup on every tab attached to a session that
 /// changed, marks finished and failed records seen as focus moves, and tells the sessions' owner
-/// what each run tab's session says (#522). `TerminalSessions` follows a host here when it makes or
+/// what each run tab's session says (#522). `TerminalPanes` follows a host here when it makes or
 /// adopts a daemon-backed tab, and hands it each surface's focus changes.
 @MainActor
 final class ProgramStatusBinding {
@@ -13,7 +13,7 @@ final class ProgramStatusBinding {
 
   /// Where pane indicators read program status from. Tests swap in their own.
   var monitor: ProgramStatusMonitor = .shared
-  /// The sessions' `PersistentSessionService`, kept in step by `TerminalSessions`.
+  /// The sessions' `PersistentSessionService`, kept in step by `TerminalPanes`.
   var sessionService: PersistentSessionService
   private var listener: UUID?
   /// Tabs where a `done` arrived while they had focus: it is marked seen when focus leaves, so a

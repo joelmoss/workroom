@@ -1,4 +1,4 @@
-/// What `TerminalSessions`' pane collaborators (`PaneLiveState`, `ProgramStatusBinding`,
+/// What `TerminalPanes`' pane collaborators (`PaneLiveState`, `ProgramStatusBinding`,
 /// `RemotePaneLinks`) may do with one window's tabs: read a terminal tab's state, change it, find
 /// its surface, and raise one of the sessions' events. The sessions build it over their own
 /// layouts and the app's tab records (`TerminalTabs`), so a collaborator reaches only the tabs this
@@ -21,5 +21,5 @@ struct TerminalTabAccess {
   /// `tabID`'s surface while the window holds it.
   var surface: @MainActor (TerminalTab.ID) -> GhosttySurfaceView?
   /// Raise an event to the sessions' owner, inline.
-  var raise: @MainActor (TerminalSessions.Event) -> Void
+  var raise: @MainActor (TerminalPanes.Event) -> Void
 }

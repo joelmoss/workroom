@@ -7,7 +7,7 @@ import XCTest
 
 /// Pane state is observed per target (plan step 3.5): a change to one workroom's tabs re-runs the
 /// views that read that workroom and no others. When the views held the window's whole
-/// `TerminalSessions` as an `ObservableObject`, an agent working in one workroom re-ran every
+/// `TerminalPanes` as an `ObservableObject`, an agent working in one workroom re-ran every
 /// workroom's strip and panes in the window, and the app-wide tab registry (step 3.9) would have
 /// carried that to every window (the WORKROOM-2B class, ADR 0018).
 ///

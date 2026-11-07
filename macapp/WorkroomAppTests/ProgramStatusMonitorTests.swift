@@ -324,7 +324,7 @@ final class ProgramStatusMonitorTests: XCTestCase {
 
   /// Value: protects=a run's state, as its daemon publishes it, reaches its run tab through the
   /// monitor (#522): the only production route from the supervisor's status to the tab;
-  /// fails_when=the monitor drops the run line or TerminalSessions stops forwarding it, so a run
+  /// fails_when=the monitor drops the run line or TerminalPanes stops forwarding it, so a run
   /// that failed reads as running; seam=none; no_claim=the daemon side (run_session.rs)
   func testARunsStateFromItsDaemonReachesItsTab() async throws {
     let (monitor, gate) = makeMonitor()
@@ -502,8 +502,8 @@ final class ProgramStatusPaneTests: XCTestCase {
   private let target = TerminalTarget(
     id: .workroom(project: "/p", name: "ps"), title: "ps", path: "/tmp", isMissing: false)
 
-  private func makeSessions(_ monitor: ProgramStatusMonitor) -> TerminalSessions {
-    let sessions = TerminalSessions()
+  private func makeSessions(_ monitor: ProgramStatusMonitor) -> TerminalPanes {
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     sessions.recency = SwitcherRecency()

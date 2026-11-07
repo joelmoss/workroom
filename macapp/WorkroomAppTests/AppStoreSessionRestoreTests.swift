@@ -156,7 +156,7 @@ final class AppStoreSessionRestoreTests: XCTestCase {
   /// `bootstrap` gates on `consumeInitialRestore()`, which is app-wide and one-shot: the launch window
   /// consumes it, so every sibling reaches the clear with `shouldRestore == false`. Clearing there
   /// wiped what `claimSessionIfNeeded` had just written from the window's own session — so window 2
-  /// came back with its panes restored into `TerminalSessions` but nothing selected, i.e. visibly
+  /// came back with its panes restored into `TerminalPanes` but nothing selected, i.e. visibly
   /// empty. Only the window COUNT was asserted end to end, so nothing caught it.
   func testRestoredSiblingKeepsItsOwnSelectionThroughBootstrap() async throws {
     let projects = [project("/p", workrooms: ["calm-otter"])]

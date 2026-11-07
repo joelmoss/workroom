@@ -12,7 +12,7 @@ import WorkroomVCS
 ///
 /// ```
 /// BEFORE                                     AFTER
-/// TerminalSessions.updateTitle / pulse       TerminalSessions.updateTitle / pulse
+/// TerminalPanes.updateTitle / pulse       TerminalPanes.updateTitle / pulse
 ///   │ @Published tabsByTarget/activityPulses   │
 ///   ▼                                          ▼
 /// EVERY HistoryRow (@ObservedObject)         HistoryPanel.body — ONE pass
@@ -25,7 +25,7 @@ import WorkroomVCS
 ///                                            selection/theme moved → affected rows rebuild
 /// ```
 ///
-/// So: the panel owns the `TerminalSessions` dependency and resolves the focused tab **once**
+/// So: the panel owns the `TerminalPanes` dependency and resolves the focused tab **once**
 /// (`FocusedTabSelection`); rows receive plain values and observe nothing. Measured by
 /// `HistoryRowInvalidationTests` — a pulse burst must rebuild zero rows, and a selection or content
 /// change must still rebuild the affected ones.
@@ -40,7 +40,7 @@ struct HistoryPanel: View {
   /// Read HERE, deliberately, and nowhere below: this is the one view that needs to know which
   /// content tab is focused. It reads the selected target's panes through Observation, so one panel
   /// body pass per change there is the cost; N row bodies was not (see the diagram above).
-  let sessions: TerminalSessions
+  let sessions: TerminalPanes
   private let theme = ThemeService.shared
 
   var body: some View {
@@ -95,7 +95,7 @@ struct HistoryPanel: View {
 
   /// The commit id of the focused changeset tab, or `nil`. Resolved once per panel body pass and handed
   /// to the rows as a value — the row-level `isSelected` this replaced is what made every row observe
-  /// `AppStore` + `TerminalSessions` (see the type doc's invalidation diagram).
+  /// `AppStore` + `TerminalPanes` (see the type doc's invalidation diagram).
   private var selectedCommitID: String? {
     FocusedTabSelection.current(store: store, sessions: sessions)?.changesetCommitID
   }
@@ -120,7 +120,7 @@ struct HistoryPanel: View {
     // (`isSelected ? accent : …`, `hovering ? rowHover : .clear`), and Swift evaluates just the taken
     // branch — so an unselected, unhovered row reads NO token and therefore registers no observation.
     // It used to repaint anyway, by accident: applying a theme also re-themes live terminals, which
-    // republished `TerminalSessions`, which every row observed. Removing that observation (the App Hang
+    // republished `TerminalPanes`, which every row observed. Removing that observation (the App Hang
     // fix) removed the accidental repaint with it, and the unpushed badge's warning tint would have
     // stayed stale until something else invalidated the row.
     let themeGeneration = theme.generation
@@ -226,7 +226,7 @@ struct HistoryRow: View, Equatable {
   let pushScope: VCSPushScope?
   /// The focused changeset tab's commit id, resolved ONCE by `HistoryPanel` and passed down as a plain
   /// value. This row observes nothing: it used to hold `@EnvironmentObject AppStore` +
-  /// `@ObservedObject TerminalSessions` just to compute the comparison below, which is what made a
+  /// `@ObservedObject TerminalPanes` just to compute the comparison below, which is what made a
   /// terminal title/activity pulse rebuild every row in the pane (WORKROOM-2B).
   let selectedCommitID: String?
   /// `ThemeService.generation`, so a theme change makes this row's equality gate report "changed".

@@ -10,8 +10,8 @@ import XCTest
 /// `HistoryRow.body` → `AvatarSubject.gravatar` → `String(format:)`.
 ///
 /// The format string was only where the single watchdog sample happened to land. The hang was an
-/// invalidation storm: `HistoryRow` observed `AppStore` + `TerminalSessions` purely to answer
-/// "is my commit the focused changeset?", and `TerminalSessions` republishes on every terminal
+/// invalidation storm: `HistoryRow` observed `AppStore` + `TerminalPanes` purely to answer
+/// "is my commit the focused changeset?", and `TerminalPanes` republishes on every terminal
 /// title update and activity pulse — so while an agent streamed, EVERY row body re-ran, over an
 /// eager `VStack` holding the whole loaded window.
 ///

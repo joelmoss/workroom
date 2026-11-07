@@ -99,7 +99,7 @@ final class AppStoreCloseTabsTests: XCTestCase {
     (TargetID.workroom(project: "/p", name: name), name)
   }
 
-  /// Value: protects=a closed remote pane whose host kept its session shows an alert naming the workroom, but not once a quit has begun; fails_when=AppStore drops the handler or ignores isTerminating; why_new=RemotePaneCloseTests stops at TerminalSessions' .remoteCloseFailed event; seam=none
+  /// Value: protects=a closed remote pane whose host kept its session shows an alert naming the workroom, but not once a quit has begun; fails_when=AppStore drops the handler or ignores isTerminating; why_new=RemotePaneCloseTests stops at TerminalPanes' .remoteCloseFailed event; seam=none
   func testAFailedRemoteCloseAlertsUnlessTheAppIsQuitting() {
     let store = remoteWorkroomStore(["remote"])
     let (id, title) = failed("remote")

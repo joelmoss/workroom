@@ -4,7 +4,7 @@ import Observation
 /// tab ids. The tabs themselves are app-wide, in `TabRecords`, so two windows showing one workroom
 /// each arrange their own tabs here (#444 Q12), and a move between windows shifts ids from one
 /// window's layout to the other's while every tab stays where it is (D2 as revised by eng review
-/// D4). Each window's `TerminalSessions` holds one per target it shows, in a dictionary that changes only
+/// D4). Each window's `TerminalPanes` holds one per target it shows, in a dictionary that changes only
 /// when a target is added or removed, so a change here is this target's alone (eng review D3).
 ///
 /// Views observe it through Observation: a view that reads one target's arrangement re-renders

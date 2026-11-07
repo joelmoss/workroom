@@ -393,7 +393,7 @@ private struct WorkroomTabChip: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private let theme = ThemeService.shared
   /// Read through Observation: this chip re-renders when its own workroom's panes change.
-  private var terminals: TerminalSessions { store.terminals }
+  private var terminals: TerminalPanes { store.terminals }
 
   private var isRoot: Bool {
     if case .root = sid { return true }

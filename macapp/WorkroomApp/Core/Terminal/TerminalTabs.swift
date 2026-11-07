@@ -3,7 +3,7 @@ import TerminalModel
 
 /// Every terminal tab of the app, by id: its record (`TerminalTab`: content, session, live and
 /// agent state) and, for a terminal, its surface (D2 as revised by eng review D4, ADR 0069). Each
-/// window's `TerminalSessions` keeps only its layout, per target, over these ids (`TargetPanes`),
+/// window's `TerminalPanes` keeps only its layout, per target, over these ids (`TargetPanes`),
 /// so a tab lives here once, whichever window shows it, and a move between windows (#444, and the
 /// Q12 merge into a window already showing the workroom) shifts ids from one layout to another
 /// while the tab itself stays put. Nothing per tab travels, so nothing per tab can be dropped on
@@ -13,7 +13,7 @@ import TerminalModel
 /// window reads its tabs here only through its own layout, so it never sees another window's.
 ///
 /// Production and tests share `.shared`, as windows share it: a window that goes takes its tabs
-/// with it (`TerminalSessions`' `deinit`), as its store once did.
+/// with it (`TerminalPanes`' `deinit`), as its store once did.
 @MainActor
 final class TerminalTabs {
   static let shared = TerminalTabs()

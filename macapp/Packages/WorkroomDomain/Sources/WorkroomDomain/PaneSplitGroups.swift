@@ -3,7 +3,7 @@ import Foundation
 
 /// The split groups of one view of panes: the workroom split of a window (`SidebarID` leaves,
 /// `AppStore.workroomSplits`) and the terminal split of one target (tab-id leaves,
-/// `TerminalSessions`). Both are a LIST of `PaneLayout` trees, disjoint (a leaf belongs to at most
+/// `TerminalPanes`). Both are a LIST of `PaneLayout` trees, disjoint (a leaf belongs to at most
 /// one) and each holding at least two leaves, since a lone leaf is "no split". **Array order carries
 /// no meaning**: a group is addressed by membership, and a strip places each group's run at its
 /// earliest member's slot (`normalized(_:)`).
@@ -15,7 +15,7 @@ import Foundation
 /// terminal split does neither — arrives as a `PaneSplitPolicy` on each call.
 ///
 /// Edits return a new value and never hand out an index, so no caller can hold a group index across
-/// a mutation (the stale-index class `TerminalSessions.setSplit` once asserted against).
+/// a mutation (the stale-index class `TerminalPanes.setSplit` once asserted against).
 public struct PaneSplitGroups<Leaf: Hashable>: Equatable {
   public private(set) var groups: [PaneLayout<Leaf>]
 

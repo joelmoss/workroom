@@ -5,15 +5,15 @@ import XCTest
 
 /// What a target contributes to a saved session (issue #46).
 ///
-/// Uses the same factory seam as `TerminalSessionsTests`: a `GhosttySurfaceView` only creates its PTY
+/// Uses the same factory seam as `TerminalPanesTests`: a `GhosttySurfaceView` only creates its PTY
 /// when it enters a window, so constructing one here spawns nothing.
 @MainActor
 final class SessionCaptureTests: XCTestCase {
   private let target = TerminalTarget(
     id: .workroom(project: "/p", name: "foo"), title: "foo", path: "/tmp", isMissing: false)
 
-  private func makeSessions() -> TerminalSessions {
-    let sessions = TerminalSessions()
+  private func makeSessions() -> TerminalPanes {
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command)
     }
@@ -22,7 +22,7 @@ final class SessionCaptureTests: XCTestCase {
   }
 
   /// Mirrors what `AppStore.captureWindowSession` does, without needing a window or a store.
-  private func capture(_ sessions: TerminalSessions) -> TargetSession? {
+  private func capture(_ sessions: TerminalPanes) -> TargetSession? {
     guard let captured = sessions.sessionCapture(forTargetID: target.id) else { return nil }
     var keys: [TerminalTab.ID: String] = [:]
     var tabs: [TabSession] = []

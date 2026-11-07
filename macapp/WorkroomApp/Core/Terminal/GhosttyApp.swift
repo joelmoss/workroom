@@ -12,8 +12,8 @@ import os
 /// Lifecycle contract (plan A1):
 ///   - `ghostty_app_tick` is the render/IO pump. libghostty calls `wakeup_cb` (possibly off the
 ///     main thread) when it has work; we **coalesce** those into a single main-queue tick.
-///   - Surfaces are created/freed by `TerminalSessions`; `shutdown()` frees the app+config on quit
-///     (individual surfaces are freed first by `TerminalSessions.reapAll`).
+///   - Surfaces are created/freed by `TerminalPanes`; `shutdown()` frees the app+config on quit
+///     (individual surfaces are freed first by `TerminalPanes.reapAll`).
 ///   - All libghostty calls happen on the main thread.
 ///
 /// Init is **fail-soft** (plan A2): if `ghostty_init`/`ghostty_app_new` fails or the bundled
@@ -209,7 +209,7 @@ final class GhosttyApp {
 
   /// Rebuild the config for the current appearance and apply it app-wide (called on a light/dark
   /// change from `ThemeService.applyActiveTheme`, once per apply — NOT once per window). Individual
-  /// surfaces are refreshed by `TerminalSessions.applyThemeToAll` via `GhosttySurfaceView.updateConfig`.
+  /// surfaces are refreshed by `TerminalPanes.applyThemeToAll` via `GhosttySurfaceView.updateConfig`.
   ///
   /// `force` rebuilds even when the appearance is unchanged — needed for a *same-appearance theme
   /// switch* (issue #36), where the active theme name changes but `dark` does not, so the plain

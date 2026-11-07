@@ -426,7 +426,7 @@ struct RootView: View {
       .onAppear {
         // Register this window's terminals for theme sweeps — every window stays themed when the theme
         // changes (issue #70/#36; ThemeService owns application, the surface iteration stays in
-        // TerminalSessions). Weakly held, so a closed window drops out on its own.
+        // TerminalPanes). Weakly held, so a closed window drops out on its own.
         ThemeService.shared.registerTerminals(store.terminals)
         applyAppearance()
       }
@@ -543,7 +543,7 @@ struct RootView: View {
           // Go-menu "Last-Used Workroom" (⌥⇥, issue #132). Counted across every window, so it stays
           // enabled when this window holds the only workroom and another window holds a second one.
           // Observation tracks the other windows' reads too, and they ask only whether each workroom
-          // has terminals (`TerminalSessions.activeTargetIDs`), so another window's workroom opening
+          // has terminals (`TerminalPanes.activeTargetIDs`), so another window's workroom opening
           // or emptying re-runs this body, and its tabs' titles, agents and progress do not.
           canSwitchWorkrooms: QuickSwitcher.canSwitchWorkrooms() && !modals.hasModalPresentation,
           // Go-menu "Open in…" + ⌘O — enabled only with an editor and a valid selection.
@@ -588,7 +588,7 @@ struct RootView: View {
   /// Pushes the chosen appearance onto the running app. nil (System) tells AppKit to
   /// follow the OS appearance and keep tracking it. Terminals follow the appearance too, but
   /// only those currently in a window get AppKit's change hook — so sweep them all explicitly
-  /// (see `TerminalSessions.applyThemeToAll`).
+  /// (see `TerminalPanes.applyThemeToAll`).
   private func applyAppearance() {
     NSApp.appearance = theme.nsAppearance
     // Route through the single chokepoint: recomputes chrome tokens for the (possibly flipped)

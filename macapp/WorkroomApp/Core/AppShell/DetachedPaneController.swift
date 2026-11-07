@@ -43,7 +43,7 @@ final class DetachedPaneFocus: ObservableObject {
 }
 
 /// The windows holding popped-out panes (issue #172). One per detached tab, owned by the `AppStore`
-/// whose `TerminalSessions` still owns the tab — so a detached window's lifetime is a subset of its
+/// whose `TerminalPanes` still owns the tab — so a detached window's lifetime is a subset of its
 /// store's, and closing the origin window can never strand a window over a freed surface.
 ///
 /// ```

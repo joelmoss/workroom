@@ -16,7 +16,7 @@ import WorkroomDomain
 struct PaneTreeView: View {
   let layout: TerminalPaneLayout
   let target: TerminalTarget
-  let sessions: TerminalSessions
+  let sessions: TerminalPanes
   /// A drag originating outside the tree (a strip tab chip dragged into the content), in content-local
   /// coords — rendered with the same edge preview + ghost as an in-tree pane-handle drag.
   var externalDrag: PaneDragState?
@@ -273,7 +273,7 @@ struct PaneTreeView: View {
   }
 }
 
-/// The pane rects the renderer laid out, carried to `TerminalSessions.paneRects`. Reduce keeps the
+/// The pane rects the renderer laid out, carried to `TerminalPanes.paneRects`. Reduce keeps the
 /// last non-empty value: sibling subtrees contribute nothing, so an empty map must not clobber a
 /// real measurement (same shape as `ContentFrameKey`'s non-zero rule).
 private struct PaneRectsKey: PreferenceKey {
@@ -286,7 +286,7 @@ private struct PaneRectsKey: PreferenceKey {
   }
 }
 
-/// The rect the split was laid out in, carried to `TerminalSessions.paneSpace`. Keeps the last
+/// The rect the split was laid out in, carried to `TerminalPanes.paneSpace`. Keeps the last
 /// non-empty value for the same reason `PaneRectsKey` does — an empty sibling contribution must not
 /// erase a real measurement.
 private struct PaneSpaceKey: PreferenceKey {
@@ -324,7 +324,7 @@ struct PaneLeafView: View {
   /// The target this pane belongs to — its `path` is the workroom directory handed to a diff pane (so
   /// its `DiffResolver` runs against the right repo), and it routes the diff pane's context-menu actions.
   let target: TerminalTarget
-  let sessions: TerminalSessions
+  let sessions: TerminalPanes
   /// Routes the diff pane's reused tab context menu (issue #72: "Open File in…", split, close group).
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var modals: ModalState

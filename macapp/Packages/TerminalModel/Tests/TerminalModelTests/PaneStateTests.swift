@@ -4,7 +4,7 @@ import TerminalModel
 import WorkroomDomain
 import XCTest
 
-/// The id-only rules of one target's panes (`PaneState`). `TerminalSessions`' suites keep the tests
+/// The id-only rules of one target's panes (`PaneState`). `TerminalPanes`' suites keep the tests
 /// of its wiring: which rule each action runs, with which detached set, recency and split policy.
 final class PaneStateTests: XCTestCase {
   private typealias State = PaneState<String>

@@ -123,7 +123,7 @@ final class WorkroomSplitTests: XCTestCase {
 
   func testRearrangingWithinAGroupIsNotBlockedByTheFloor() {
     // Moving a member that is ALREADY in the group leaves the pane count unchanged, so the floor
-    // must not apply — the same policy `TerminalSessions.moveTabIntoSplit` applies via `addsAMember`.
+    // must not apply — the same policy `TerminalPanes.moveTabIntoSplit` applies via `addsAMember`.
     let store = store3()
     store.insertWorkroomSplit(
       wr("feature"), beside: wr("main"), edge: .right, destinationRect: roomy())
@@ -1228,7 +1228,7 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
 
 /// Workroom evening weighted by each workroom's terminal panes: with `main | feature` side by side,
 /// splitting a terminal in `feature` gives it two thirds, so all three terminals are the same width.
-/// Drives real terminal splits through `TerminalSessions` and its `.paneCountChanged` event.
+/// Drives real terminal splits through `TerminalPanes` and its `.paneCountChanged` event.
 @MainActor
 final class WorkroomSplitPaneWeightTests: XCTestCase {
 

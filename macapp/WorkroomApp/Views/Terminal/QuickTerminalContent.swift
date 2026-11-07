@@ -4,7 +4,7 @@ import SwiftUI
 /// Everything in the Quick Terminal's window: a workroom's own terminals view (tab strip, pane
 /// tree, title bars, footers) over its one target, with the strip where the titlebar would be.
 struct QuickTerminalContent: View {
-  let sessions: TerminalSessions
+  let sessions: TerminalPanes
   /// Read here so a changed "Opens in" applies to the next tab, not only the next window.
   @Default(.quickTerminalDirectory) private var directory
   /// The surrounding window isn't SwiftUI, so nothing else redraws this on a theme switch.

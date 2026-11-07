@@ -7,12 +7,12 @@ import XCTest
 @testable import Workroom
 
 /// One window's terminal tabs, held as plain values for a pane collaborator (`PaneLiveState`,
-/// `ProgramStatusBinding`, `RemotePaneLinks`) to drive with no `TerminalSessions`: the states by
+/// `ProgramStatusBinding`, `RemotePaneLinks`) to drive with no `TerminalPanes`: the states by
 /// tab, and the events the collaborator raised.
 @MainActor
 private final class FakePaneTabs {
   private(set) var held: [TerminalTab.ID: (target: TerminalTarget.ID, state: TerminalState)] = [:]
-  private(set) var events: [TerminalSessions.Event] = []
+  private(set) var events: [TerminalPanes.Event] = []
 
   func add(
     to target: TerminalTarget.ID, launch: TerminalLaunch = .shell, sessionID: UUID? = nil
@@ -96,7 +96,7 @@ final class PaneLiveStateTests: XCTestCase {
 
   /// Value: protects=a branch read in flight for a tab that left the window (close, reap, hand-off)
   /// lands nowhere; fails_when=`forget` stops cancelling the tab's branch read; why_new=the read
-  /// is owned by `PaneLiveState` now, with no `TerminalSessions` to drop the tab first;
+  /// is owned by `PaneLiveState` now, with no `TerminalPanes` to drop the tab first;
   /// seam=`resolveBranch` held on a gate. The tab is still held, so only the cancel can drop it.
   func testAForgottenTabsBranchReadLandsNowhere() async throws {
     let tabs = FakePaneTabs()
@@ -131,7 +131,7 @@ final class PaneLiveStateTests: XCTestCase {
 
   /// Value: protects=a slow branch read for a folder the pane has left never lands on top of the
   /// newer folder's; fails_when=a newer read stops replacing an older one; why_new=covered only
-  /// through `TerminalSessions` before; seam=the first folder's read held on a gate.
+  /// through `TerminalPanes` before; seam=the first folder's read held on a gate.
   func testANewerFoldersBranchWinsOverAnOlderSlowerRead() async throws {
     let tabs = FakePaneTabs()
     let live = makeLiveState(tabs)

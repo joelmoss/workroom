@@ -22,7 +22,7 @@ struct TerminalTabStrip: View {
   let tabs: [TerminalTab]
   let activeID: TerminalTab.ID?
   let target: TerminalTarget
-  let sessions: TerminalSessions
+  let sessions: TerminalPanes
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var notifications: NotificationCenterStore
@@ -1041,7 +1041,7 @@ extension View {
   /// group (Close / Close Others / Close All).
   @ViewBuilder
   func tabChipContextMenu(
-    tab: TerminalTab, target: TerminalTarget, store: AppStore, sessions: TerminalSessions
+    tab: TerminalTab, target: TerminalTarget, store: AppStore, sessions: TerminalPanes
   ) -> some View {
     self.contextMenu {
       if store.runCommand.runTabID(for: target.id) == tab.id {

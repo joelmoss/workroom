@@ -8,7 +8,7 @@ struct DetachedSessionsButton: View {
   @ObservedObject private var sessionsStore = DetachedSessionList.shared
   @State private var showing = false
   /// Read through Observation, so "Detach" enables once the focused tab has a surface.
-  private var terminals: TerminalSessions { store.terminals }
+  private var terminals: TerminalPanes { store.terminals }
 
   var body: some View {
     let detached = sessionsStore.detached(for: target.id.encoded)

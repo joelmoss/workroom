@@ -606,7 +606,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     let target = TerminalTarget(
       id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
       unavailability: .remote, remoteHost: UUID())
-    let sessions = TerminalSessions()
+    let sessions = TerminalPanes()
     func provider(resolved: [String: String] = [:], failing: [String: Error] = [:])
       -> (RepositoryLocation) async throws -> FileProviding
     {
@@ -724,7 +724,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
       id: .workroom(project: "/p", name: "remote"), title: "remote", path: root.path,
       unavailability: .remote, remoteHost: host)
     let location = try XCTUnwrap(target.remoteLocation)
-    let sessions = TerminalSessions()
+    let sessions = TerminalPanes()
     sessions.remoteFiles = { location in
       HostFiles(
         context: FileContext(location: location, sharedLocation: nil),
@@ -745,7 +745,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     let target = TerminalTarget(
       id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
       unavailability: .remote, remoteHost: UUID())
-    let sessions = TerminalSessions()
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     sessions.remoteFiles = { location in
@@ -778,7 +778,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     let target = TerminalTarget(
       id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
       unavailability: .remote, remoteHost: UUID())
-    let sessions = TerminalSessions()
+    let sessions = TerminalPanes()
     let files: [String: Data] = ["a.rb": Data("x\n".utf8)]
     func provider(failing: [String: Error]) -> (RepositoryLocation) async throws
       -> FileProviding
@@ -825,7 +825,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     let target = TerminalTarget(
       id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
       unavailability: .remote, remoteHost: UUID())
-    let sessions = TerminalSessions()
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     sessions.remoteFiles = { location in
@@ -878,7 +878,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
       id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
       unavailability: .remote, remoteHost: UUID())
     let asked = Counter()
-    let sessions = TerminalSessions()
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     sessions.remoteFiles = { location in
@@ -913,7 +913,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     let target = TerminalTarget(
       id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
       unavailability: .remote, remoteHost: UUID())
-    let sessions = TerminalSessions()
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     sessions.remoteFiles = { location in

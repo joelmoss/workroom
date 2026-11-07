@@ -19,7 +19,7 @@ final class PersistentSessionService {
   private let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "PersistentSession")
 
-  /// How many of `TerminalSessions.closeTab`'s kills are in flight, local and remote apart. Counted
+  /// How many of `TerminalPanes.closeTab`'s kills are in flight, local and remote apart. Counted
   /// so quitting can wait for them: `closeTab` stays synchronous (it's called from UI actions, not
   /// `async` contexts), and an unawaited kill racing an immediate quit would leave that pane's
   /// session running although its user closed it moments before. Counted here rather than per

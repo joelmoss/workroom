@@ -200,7 +200,7 @@ final class PaneTreeLayoutTests: XCTestCase {
 }
 
 /// The measured-rect pane floor (`PaneTreeLayout.canSplit`) behind
-/// `AppStore.insertWorkroomSplit`'s drop guard. `TerminalSessions.fits` answers the same question
+/// `AppStore.insertWorkroomSplit`'s drop guard. `TerminalPanes.fits` answers the same question
 /// from a live `GhosttySurfaceView`'s bounds; the workroom pane tree has no surface to measure, so
 /// this takes the rect the renderer's own plan produced.
 final class PaneCanSplitTests: XCTestCase {
@@ -241,7 +241,7 @@ final class PaneCanSplitTests: XCTestCase {
   }
 
   func testUnmeasuredRectPermitsTheSplit() {
-    // Matches `TerminalSessions.fits`' `available > 0` escape: nothing is laid out yet, so the
+    // Matches `TerminalPanes.fits`' `available > 0` escape: nothing is laid out yet, so the
     // renderer's points-based clamp is the authority, not a floor applied to a zero rect.
     XCTAssertTrue(PaneTreeLayout.canSplit(.zero, along: .horizontal))
     XCTAssertTrue(PaneTreeLayout.canSplit(.zero, along: .vertical))

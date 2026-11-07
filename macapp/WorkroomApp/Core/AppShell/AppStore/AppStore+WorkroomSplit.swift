@@ -5,7 +5,7 @@ import WorkroomDomain
 
 /// Workroom-into-workroom split (issue #23 follow-up). The stored `workroomSplitGroups` lives on
 /// `AppStore`; these are the transforms over it. The structural rules (move semantics, collapse,
-/// auto-even, the fit check) are `PaneSplitGroups`', shared with `TerminalSessions`' terminal split
+/// auto-even, the fit check) are `PaneSplitGroups`', shared with `TerminalPanes`' terminal split
 /// one level down; what is the workroom split's own is the policy it hands them
 /// (`workroomSplitPolicy`: dead leaves pruned, workrooms weighted by their terminals) and every
 /// entry's guard on `target(for:) != nil` — which rejects `.project` and any leaf that no longer
@@ -49,7 +49,7 @@ extension AppStore {
   }
 
   /// Whether a split is currently *shown*: the selected workroom belongs to a group with ≥2 live
-  /// members. Mirrors `TerminalSessions.split(for:)` — groups are persistent state; selecting a
+  /// members. Mirrors `TerminalPanes.split(for:)` — groups are persistent state; selecting a
   /// workroom outside every group shows it solo without dissolving anything (the group reappears on
   /// reselect).
   var isWorkroomSplitVisible: Bool {
@@ -105,7 +105,7 @@ extension AppStore {
   /// Whether inserting `sid` beside `beside` GROWS the destination group, rather than rearranging
   /// within it. Two members of the same group swapping places leaves the pane count unchanged, which
   /// is why the floor below only applies to a genuine addition — the same
-  /// gate `TerminalSessions.moveTabIntoSplit` applies (`PaneSplitGroups.addsMember`).
+  /// gate `TerminalPanes.moveTabIntoSplit` applies (`PaneSplitGroups.addsMember`).
   func workroomSplitWouldAddMember(_ sid: SidebarID, beside: SidebarID) -> Bool {
     workroomSplitGroups.addsMember(sid, beside: beside)
   }
@@ -144,7 +144,7 @@ extension AppStore {
   /// Insert `sid` beside `beside` on `edge`. Joins `beside`'s existing group, or seeds a **new** group
   /// from the two of them (leaving any other group untouched — a window holds many groups);
   /// **removes `sid` from its current group first** so dragging an existing pane to a new edge is a
-  /// *move*, not a duplicate (`PaneSplitGroups.inserting`, as `TerminalSessions.moveTabIntoSplit`).
+  /// *move*, not a duplicate (`PaneSplitGroups.inserting`, as `TerminalPanes.moveTabIntoSplit`).
   /// Focuses the inserted member. No-op for a self-drop or non-resolving leaf.
   ///
   /// Returns whether a split was actually made. The three drag call sites ignore it (hence
@@ -243,7 +243,7 @@ extension AppStore {
   /// view) when fewer than two members remain — re-pointing `selectedTargetID` to a survivor if the
   /// removed member was focused. Other groups are untouched. **Never reaps terminals** (the workroom
   /// keeps running; it just leaves the split). No-op if `sid` isn't a member of any group. The
-  /// workroom-level `TerminalSessions.extractFromSplit`.
+  /// workroom-level `TerminalPanes.extractFromSplit`.
   func removeWorkroomSplitMember(_ sid: SidebarID) {
     // A running create's pane can't be closed (#483, AC 2); a run that has ended is dropped first.
     guard let group = workroomSplit(containing: sid),

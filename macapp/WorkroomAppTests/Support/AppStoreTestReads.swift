@@ -19,7 +19,7 @@ extension AppStore {
 }
 
 @MainActor
-extension TerminalSessions {
+extension TerminalPanes {
   /// The surface of `tab` while this window holds it, nil for a content tab: `surface(of:)` for a
   /// test that already has the tab value.
   func surface(_ tab: TerminalTab?) -> GhosttySurfaceView? { tab.flatMap { surface(of: $0.id) } }

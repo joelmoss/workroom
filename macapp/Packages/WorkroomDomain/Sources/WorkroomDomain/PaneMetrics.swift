@@ -2,7 +2,7 @@ import Foundation
 
 /// The three numbers every split shares: the pane floors and the gutter between panes. Both splits
 /// read them, the workroom split (`AppStore+WorkroomSplit`, `WorkroomSplitView`) and the terminal
-/// split (`TerminalSessions`, `PaneTreeView`), and so do the layout math and the fit guards in
+/// split (`TerminalPanes`, `PaneTreeView`), and so do the layout math and the fit guards in
 /// `PaneTreeLayout`, so the renderer's clamp and the guards can never disagree about a floor.
 public enum PaneMetrics {
   /// Smallest usable pane WIDTH (points). A split is refused when it would shrink a pane below this;
@@ -29,7 +29,7 @@ public enum PaneMetrics {
   /// used to carry 28. 150 keeps the same ~94pt of actual content the old 120 left, rather than
   /// shrinking every stacked pane to roughly four terminal rows.
   ///
-  /// Read together with `TerminalSessions.fits(splitting:)`, which measures the whole PANE rect —
+  /// Read together with `TerminalPanes.fits(splitting:)`, which measures the whole PANE rect —
   /// chrome included — for every content kind, so this number means the same thing for a terminal and
   /// a diff pane.
   public static let minPaneHeight: CGFloat = 150

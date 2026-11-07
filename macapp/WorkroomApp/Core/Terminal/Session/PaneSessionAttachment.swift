@@ -30,7 +30,7 @@ final class PaneSessionAttachment {
     let environment: [(key: String, value: String)]
   }
 
-  /// Where this pane's session is attached and ended. `TerminalSessions` sets its own
+  /// Where this pane's session is attached and ended. `TerminalPanes` sets its own
   /// `sessionService` here when it makes the pane, before the session id.
   var service: PersistentSessionService
   /// The surface it attaches. Weak: the surface owns its attachment.

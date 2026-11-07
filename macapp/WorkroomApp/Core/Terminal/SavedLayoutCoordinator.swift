@@ -19,7 +19,7 @@ final class SavedLayoutCoordinator {
   /// **The ceiling is not an optimisation — it is what makes saving work at all.**
   ///
   /// The dirty sources publish faster than 1 Hz whenever a terminal is doing anything:
-  /// `TerminalSessions.pulsePaneActivity` bumps a `@Published` dict per activity report, and every
+  /// `TerminalPanes.pulsePaneActivity` bumps a `@Published` dict per activity report, and every
   /// live-title/cwd/progress update replaces the tab's record (`TerminalTab` is a value). A plain
   /// cancel-and-replace debounce therefore has its deadline pushed out forever while output streams,
   /// and **never fires** — so splitting a pane beside a running dev server would never be saved.
@@ -86,7 +86,7 @@ final class SavedLayoutCoordinator {
   /// Stop writing until the matching `resumeSaves()`.
   ///
   /// **This is the gate that stops the launch window deleting the others.** Restoring window 1
-  /// mutates `TerminalSessions` and `AppStore`, which marks the session dirty. If that write landed
+  /// mutates `TerminalPanes` and `AppStore`, which marks the session dirty. If that write landed
   /// before the sibling windows had opened and registered, the document would be rebuilt from the one
   /// live window and overwrite the file — silently discarding windows 2 and 3 on the very launch that
   /// was meant to bring them back.

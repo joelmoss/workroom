@@ -500,7 +500,7 @@ enum WorkroomPaneToolbarPresentation {
     let openIn = !isMissing && hasEditor
     // Close-all is the one control NOT gated on the directory, and deliberately so. Its neighbours are
     // gated because a vanished directory gives them nothing to act on — there is nowhere to run and
-    // nothing to open. Tabs are different: they live in `TerminalSessions`, not on disk, so a workroom
+    // nothing to open. Tabs are different: they live in `TerminalPanes`, not on disk, so a workroom
     // whose directory disappears keeps every terminal it had open.
     //
     // And a missing target is exactly where they get stranded. `TargetTerminalDetail` withholds

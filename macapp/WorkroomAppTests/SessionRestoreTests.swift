@@ -8,7 +8,7 @@ import XCTest
 
 /// Rehydrating a target's panes from a saved session (issue #46).
 ///
-/// Same factory seam as `TerminalSessionsTests`: constructing a `GhosttySurfaceView` is inert until it
+/// Same factory seam as `TerminalPanesTests`: constructing a `GhosttySurfaceView` is inert until it
 /// enters a window, so nothing here spawns a shell.
 @MainActor
 final class SessionRestoreTests: XCTestCase {
@@ -18,8 +18,8 @@ final class SessionRestoreTests: XCTestCase {
   /// Recovery's gate when every target may reattach.
   private static let every: (TerminalTarget.ID) -> Bool = { _ in true }
 
-  private func makeSessions() -> TerminalSessions {
-    let sessions = TerminalSessions()
+  private func makeSessions() -> TerminalPanes {
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command)
     }
@@ -297,12 +297,12 @@ final class SessionRestoreTests: XCTestCase {
   /// libghostty cannot spawn into a directory that no longer exists, so a dead cwd must fall back.
   func testRestoredCwdFallsBackWhenTheDirectoryIsGone() {
     XCTAssertEqual(
-      TerminalSessions.restoredCwd("/definitely/not/a/real/directory", fallback: "/tmp"), "/tmp")
-    XCTAssertEqual(TerminalSessions.restoredCwd(nil, fallback: "/tmp"), "/tmp")
-    XCTAssertEqual(TerminalSessions.restoredCwd("", fallback: "/tmp"), "/tmp")
-    XCTAssertEqual(TerminalSessions.restoredCwd("/tmp", fallback: "/var"), "/tmp")
+      TerminalPanes.restoredCwd("/definitely/not/a/real/directory", fallback: "/tmp"), "/tmp")
+    XCTAssertEqual(TerminalPanes.restoredCwd(nil, fallback: "/tmp"), "/tmp")
+    XCTAssertEqual(TerminalPanes.restoredCwd("", fallback: "/tmp"), "/tmp")
+    XCTAssertEqual(TerminalPanes.restoredCwd("/tmp", fallback: "/var"), "/tmp")
     // A file is not a directory.
-    XCTAssertEqual(TerminalSessions.restoredCwd("/etc/hosts", fallback: "/tmp"), "/tmp")
+    XCTAssertEqual(TerminalPanes.restoredCwd("/etc/hosts", fallback: "/tmp"), "/tmp")
   }
 
   /// A restore is not a navigation — seeding back/forward with it would record a place the user never
@@ -492,7 +492,7 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertFalse(s.visibleTabIDs(for: target).isEmpty)
   }
 
-  private func capture(_ sessions: TerminalSessions) -> TargetSession? {
+  private func capture(_ sessions: TerminalPanes) -> TargetSession? {
     guard let captured = sessions.sessionCapture(forTargetID: target.id) else { return nil }
     var keys: [TerminalTab.ID: String] = [:]
     var tabs: [TabSession] = []

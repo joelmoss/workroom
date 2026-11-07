@@ -7,7 +7,7 @@ import WorkroomDomain
 /// this runs; `SavedLayoutStore` owns the file.
 ///
 /// Capture reads only through existing public queries plus the one new
-/// `TerminalSessions.sessionCapture(forTargetID:)`, so each target's pane state stays private where
+/// `TerminalPanes.sessionCapture(forTargetID:)`, so each target's pane state stays private where
 /// it belongs.
 extension AppStore {
   /// This window's whole restorable state, right now.
@@ -254,7 +254,7 @@ extension AppStore {
   }
 
   /// Whether `targetID`'s restored panes may reattach to this Mac's live sessions: a target that
-  /// still exists, is local, and opens here (`TerminalSessions.materializeLivePersistentSessions`).
+  /// still exists, is local, and opens here (`TerminalPanes.materializeLivePersistentSessions`).
   /// The path is stat-ed too: the first load, which the restore runs in, reads config only and
   /// never flags a missing directory.
   func reattachesLocally(_ targetID: TerminalTarget.ID) -> Bool {

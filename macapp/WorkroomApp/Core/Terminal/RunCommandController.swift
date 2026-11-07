@@ -96,15 +96,15 @@ final class RunCommandController: ObservableObject {
   // MARK: State
 
   /// The window's terminals: run tabs live there, and the teardown reads their surfaces.
-  private let terminals: TerminalSessions
+  private let terminals: TerminalPanes
 
-  init(terminals: TerminalSessions) {
+  init(terminals: TerminalPanes) {
     self.terminals = terminals
   }
 
-  /// Run-STATE is owned here (not on `TerminalSessions`) so the toolbar, sidebar, menu, and RootView
+  /// Run-STATE is owned here (not on `TerminalPanes`) so the toolbar, sidebar, menu, and RootView
   /// — which all observe this store — react to start/stop/exit from one `@Published` source (OV-A).
-  /// `TerminalSessions` only creates/focuses the tab and reports its removal via `.tabsRemoved`.
+  /// `TerminalPanes` only creates/focuses the tab and reports its removal via `.tabsRemoved`.
   ///
   /// This and the other run-state collections are computed over private stored ones so that a write
   /// which changes nothing notifies no one: `@Observable` skips an equal whole-value assignment, but

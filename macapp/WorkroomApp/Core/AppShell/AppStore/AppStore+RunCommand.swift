@@ -128,7 +128,7 @@ extension AppStore {
   // MARK: Run command — actions (issue #7)
 
   /// Apply one status line from the supervisor to `RunState`/`RunOutcome` (issues #7, #522): the
-  /// AUTHORITATIVE run state, as the run session's daemon publishes it (`TerminalSessions` raises
+  /// AUTHORITATIVE run state, as the run session's daemon publishes it (`TerminalPanes` raises
   /// `.runStatus`). A line repeated changes nothing. The first line of a run reattached from a saved
   /// session (`runCommand.restoredRuns`) is how the run is now, not something the user just did: a running
   /// one shows no "Running" toast (Q13), and a failure never starts an agent to diagnose it (Q7).
@@ -373,7 +373,7 @@ extension AppStore {
     if session != nil { terminals.reportRunStatus(tab: tab.id, target: target) }
   }
 
-  /// A tab's own process exited (`TerminalSessions.Event.childExited`), raised by the sessions that
+  /// A tab's own process exited (`TerminalPanes.Event.childExited`), raised by the sessions that
   /// hold the tab now, so a tab that moved here from another window (#444) reports here. For the
   /// target's run tab the process is its session's attach, so its exit means the run session is
   /// over (a quit, a kill), not a user-command stop, which the run's status reports. Matching the

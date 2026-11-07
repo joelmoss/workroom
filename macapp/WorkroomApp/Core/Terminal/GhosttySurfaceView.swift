@@ -6,8 +6,8 @@ import WorkroomDomain
 import WorkroomVCS
 import WorkroomWire
 
-/// What a surface tells its owner, `TerminalSessions`, through `GhosttySurfaceView.onEvent`: the
-/// same single-sink rule as `TerminalSessions.Event` (ADR 0021), one layer down.
+/// What a surface tells its owner, `TerminalPanes`, through `GhosttySurfaceView.onEvent`: the
+/// same single-sink rule as `TerminalPanes.Event` (ADR 0021), one layer down.
 enum SurfaceEvent {
   /// A desktop notification the program raised, for the notification spine.
   case activity(TerminalActivity)
@@ -113,7 +113,7 @@ final class GhosttySurfaceView: NSView {
   /// `true` in the app: a real terminal spawns its surface exactly as before.
   private let spawnsSurface: Bool
 
-  /// Everything this surface tells its owner, set once by `TerminalSessions.wire` (again when
+  /// Everything this surface tells its owner, set once by `TerminalPanes.wire` (again when
   /// another window adopts the tab, #444) and cleared by `tearDown`. A plain synchronous call at the
   /// moment each thing happens, in the order it happens, never deferred through a `Task`, queue or
   /// stream (ADR 0021): titles, cwd and progress arrive on every frame, and the owner's handling of

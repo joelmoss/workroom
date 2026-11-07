@@ -18,8 +18,8 @@ final class PaneRenderingTests: XCTestCase {
   private let target = TerminalTarget(
     id: .workroom(project: "/p", name: "panes"), title: "panes", path: "/tmp", isMissing: false)
 
-  private func makeSessions() -> TerminalSessions {
-    let s = TerminalSessions()
+  private func makeSessions() -> TerminalPanes {
+    let s = TerminalPanes()
     // Mount real `GhosttySurfaceView`s (so the AppKit hierarchy assertions below are meaningful) but
     // with `spawnsSurface: false` — no libghostty Metal renderer / login shell. Hosting live surfaces
     // in the headless CI unit-test host crashed XCTest's post-test memory checker on teardown; the
@@ -30,7 +30,7 @@ final class PaneRenderingTests: XCTestCase {
   }
 
   /// Host the content (the same layout decision `WorkroomTerminalsView` makes) in a window.
-  private func host(_ sessions: TerminalSessions) -> (NSWindow, NSView) {
+  private func host(_ sessions: TerminalPanes) -> (NSWindow, NSView) {
     let store = AppStore()
     let root = TestPaneHost(target: target, sessions: sessions)
       .environmentObject(store)
@@ -321,7 +321,7 @@ final class PaneRenderingTests: XCTestCase {
 private struct TestDetachedHost: View {
   let tabID: TerminalTab.ID
   let surface: GhosttySurfaceView
-  let sessions: TerminalSessions
+  let sessions: TerminalPanes
 
   var body: some View {
     TerminalContainerView(
@@ -334,7 +334,7 @@ private struct TestDetachedHost: View {
 /// so the harness drives the exact rendering path that produced the blank bug.
 private struct TestPaneHost: View {
   let target: TerminalTarget
-  let sessions: TerminalSessions
+  let sessions: TerminalPanes
 
   var body: some View {
     if let active = sessions.activeTab(for: target) {

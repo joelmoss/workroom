@@ -19,7 +19,7 @@ struct ChangedFileRow: View, Equatable {
   /// Which revision this row's diff comes from — the Changes group it's rendered under.
   let source: DiffSource
   /// What the focused content tab is showing, resolved ONCE by the panel. The row used to hold
-  /// `@ObservedObject TerminalSessions` and compute this itself, which meant every terminal
+  /// `@ObservedObject TerminalPanes` and compute this itself, which meant every terminal
   /// title/activity publish rebuilt all `renderCap` rows (WORKROOM-2B's defect, one pane over).
   let selection: FocusedTabSelection?
   /// Still an `@EnvironmentObject`: the row's click/context-menu actions need the store, and those are
@@ -221,12 +221,12 @@ struct ChangedFileRow: View, Equatable {
 struct ChangesPanel: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var vcsStatus: VCSStatusService
-  /// Read HERE so the rows don't have to. While each `ChangedFileRow` observed `TerminalSessions`
+  /// Read HERE so the rows don't have to. While each `ChangedFileRow` observed `TerminalPanes`
   /// directly, every terminal title/activity write rebuilt all `renderCap` rows — the same defect
   /// that produced the WORKROOM-2B App Hang in the History pane (see `HistoryPanel`'s invalidation
   /// diagram). The panel reads the selected target's focused tab through Observation, so only that
   /// target's pane changes re-run it, and no row rebuilds (`ChangedFileRowInvalidationTests`).
-  let sessions: TerminalSessions
+  let sessions: TerminalPanes
   /// Hard cap on rendered rows so a huge change set can't blow up the list (the underlying
   /// output is already byte-capped by `StatusCommandRunner`).
   private let renderCap = 200
@@ -295,7 +295,7 @@ struct ChangesPanel: View {
   private func fileList(_ files: [ChangedFile], source: DiffSource) -> some View {
     let shown = Array(files.prefix(renderCap))
     // Resolved once for the whole list, not once per row: this is the read that used to make every row
-    // observe `TerminalSessions`.
+    // observe `TerminalPanes`.
     let selection = FocusedTabSelection.current(store: store, sessions: sessions)
     VStack(alignment: .leading, spacing: 1) {
       ForEach(shown) { file in

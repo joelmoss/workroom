@@ -6,16 +6,16 @@ import XCTest
 
 @testable import Workroom
 
-/// Lifecycle tests for the rewritten `TerminalSessions` (plan T1). The factory seam lets us exercise
+/// Lifecycle tests for the rewritten `TerminalPanes` (plan T1). The factory seam lets us exercise
 /// add/close/select/move/reap without spawning real shells: a `GhosttySurfaceView` only creates its
 /// PTY when it enters a window, so constructing one here is inert.
 @MainActor
-final class TerminalSessionsTests: XCTestCase {
+final class TerminalPanesTests: XCTestCase {
   private let target = TerminalTarget(
     id: .workroom(project: "/p", name: "foo"), title: "foo", path: "/tmp", isMissing: false)
 
-  private func makeSessions() -> TerminalSessions {
-    let sessions = TerminalSessions()
+  private func makeSessions() -> TerminalPanes {
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     // Defaults to a no-op so a future test setting `foregroundProcessNameForTesting` to an
     // unrecognized name doesn't silently write to the developer's real `Application Support` file
@@ -32,7 +32,7 @@ final class TerminalSessionsTests: XCTestCase {
   /// A remote workroom's pane always attaches to a session on its host, whatever the background-
   /// sessions setting, and its process on this Mac starts in a directory that exists here.
   func testARemotePaneIsRegisteredWithItsHostAndStartsHomeHere() {
-    let s = TerminalSessions()
+    let s = TerminalPanes()
     var started: String?
     s.makeView = { _, cwd, _ in
       started = cwd
@@ -462,7 +462,7 @@ final class TerminalSessionsTests: XCTestCase {
     weak var kept: GhosttySurfaceView?
     weak var moving: GhosttySurfaceView?
     let adopter = makeSessions()
-    var handOff: TerminalSessions.TargetHandOff?
+    var handOff: TerminalPanes.TargetHandOff?
     let other = TerminalTarget(
       id: .workroom(project: "/p", name: "moving"), title: "moving", path: "/tmp", isMissing: false)
     autoreleasepool {
@@ -760,7 +760,7 @@ final class TerminalSessionsTests: XCTestCase {
 
   func testSplitInheritsFocusedPaneCwd() {
     var cwds: [String] = []
-    let s = TerminalSessions()
+    let s = TerminalPanes()
     s.makeView = { _, cwd, _ in
       cwds.append(cwd)
       return GhosttySurfaceView(workingDirectory: cwd)
@@ -1240,7 +1240,7 @@ final class TerminalSessionsTests: XCTestCase {
     s.addTab(for: target)
     let second = s.tabs(for: target)[1].id
     s.focus(first, for: target)
-    var events: [TerminalSessions.Event] = []
+    var events: [TerminalPanes.Event] = []
     s.onEvent = { events.append($0) }
 
     s.select(second, for: target)
@@ -1588,7 +1588,7 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertNil(s.split(for: target))
   }
 
-  private func activeCodingAgent(in sessions: TerminalSessions) -> CodingAgentBackend? {
+  private func activeCodingAgent(in sessions: TerminalPanes) -> CodingAgentBackend? {
     guard case .terminal(let state)? = sessions.tabs(for: target).first?.content else { return nil }
     return state.activeCodingAgentBackend
   }
@@ -1608,8 +1608,8 @@ final class ContentPaneFloorTests: XCTestCase {
   private let target = TerminalTarget(
     id: .workroom(project: "/p", name: "foo"), title: "foo", path: "/tmp", isMissing: false)
 
-  private func makeSessions() -> TerminalSessions {
-    let sessions = TerminalSessions()
+  private func makeSessions() -> TerminalPanes {
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     // A fresh recency list per test, so close-successor order never depends on (or pollutes) the
@@ -1619,7 +1619,7 @@ final class ContentPaneFloorTests: XCTestCase {
   }
 
   /// A diff pane, focused, with `rect` reported as its laid-out size (nil ⇒ never measured).
-  private func sessionsWithFocusedDiff(rect: CGRect?) -> (TerminalSessions, TerminalTab.ID) {
+  private func sessionsWithFocusedDiff(rect: CGRect?) -> (TerminalPanes, TerminalTab.ID) {
     let s = makeSessions()
     let tab = s.openDiffPreview(
       DiffDescriptor(path: "A.swift", change: .modified, source: .gitWorktree, isPreview: true),
@@ -1692,9 +1692,9 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     id: .workroom(project: "/p", name: "foo"), title: "foo", path: "/tmp", isMissing: false)
 
   private func makeSessions(space: CGRect = CGRect(x: 0, y: 0, width: 1800, height: 1000))
-    -> TerminalSessions
+    -> TerminalPanes
   {
-    let sessions = TerminalSessions()
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     sessions.recency = SwitcherRecency()
@@ -1706,12 +1706,12 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
   // `splits(for:).first`, not `split(for:)`: this class builds exactly one group, but two of its
   // cases move focus OUT of it (an extract, and adding a solo tab), and `split(for:)` answers the
   // narrower "which group is on screen".
-  private func rootRatio(_ s: TerminalSessions) -> CGFloat? {
+  private func rootRatio(_ s: TerminalPanes) -> CGFloat? {
     guard case .split(_, _, let ratio, _, _) = s.splits(for: target).first else { return nil }
     return ratio
   }
 
-  private func rootSplitID(_ s: TerminalSessions) -> UUID? {
+  private func rootSplitID(_ s: TerminalPanes) -> UUID? {
     guard case .split(let id, _, _, _, _) = s.splits(for: target).first else { return nil }
     return id
   }
@@ -1726,7 +1726,7 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
   }
 
   /// `a | b | c`, three columns: closing one frees width, so the left/right dividers even out.
-  private func threeColumns(_ s: TerminalSessions) {
+  private func threeColumns(_ s: TerminalPanes) {
     s.addTab(for: target)
     s.splitFocusedPane(for: target, orientation: .horizontal)
     s.splitFocusedPane(for: target, orientation: .horizontal)
@@ -1922,9 +1922,9 @@ final class RemotePaneFooterTests: XCTestCase {
     id: .workroom(project: "/p", name: "remote"), title: "r", path: "/tmp", isMissing: false)
 
   private func makeSessions(_ connection: HostCwdConnection, on host: HostID) async throws
-    -> TerminalSessions
+    -> TerminalPanes
   {
-    let sessions = TerminalSessions()
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     sessions.recency = SwitcherRecency()
@@ -1946,7 +1946,7 @@ final class RemotePaneFooterTests: XCTestCase {
       session, on: .remote(host), via: driver, workingDirectory: "/home/w")
   }
 
-  private func state(in sessions: TerminalSessions) -> TerminalState? {
+  private func state(in sessions: TerminalPanes) -> TerminalState? {
     guard case .terminal(let state)? = sessions.tabs(for: target).first?.content else { return nil }
     return state
   }
@@ -1954,7 +1954,7 @@ final class RemotePaneFooterTests: XCTestCase {
   /// Give `tab` the session `addTab` keeps only where persistent sessions are available, which a CI
   /// runner's are not: on the tab and as its surface's attach id, as a pane made with one has it.
   private func give(
-    _ session: UUID, to tab: TerminalTab?, in sessions: TerminalSessions,
+    _ session: UUID, to tab: TerminalTab?, in sessions: TerminalPanes,
     target: TerminalTarget
   ) throws {
     var tab = try XCTUnwrap(tab)
@@ -2013,7 +2013,7 @@ final class RemotePaneFooterTests: XCTestCase {
     let hostID = UUID()
     let session = UUID()
     registerRemote(session, on: hostID)
-    let s = TerminalSessions()
+    let s = TerminalPanes()
     s.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     s.recordUnrecognizedTool = { _ in }
     s.recency = SwitcherRecency()
@@ -2146,8 +2146,8 @@ final class RemotePaneCloseTests: XCTestCase {
   private func makeSessions(
     hostUpdates: AsyncStream<HostConnectionManager.Snapshot>? = nil,
     endRemote: @escaping (UUID, HostID) async throws -> Bool
-  ) -> TerminalSessions {
-    let sessions = TerminalSessions()
+  ) -> TerminalPanes {
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     sessions.recency = SwitcherRecency()
@@ -2420,7 +2420,7 @@ final class RemotePaneCloseTests: XCTestCase {
   func testAQuitWaitsForACloseWhoseWindowHasClosed() async throws {
     let target = remoteTarget()
     var ended = false
-    var s: TerminalSessions? = makeSessions { _, _ in
+    var s: TerminalPanes? = makeSessions { _, _ in
       try await Task.sleep(for: .milliseconds(100))
       ended = true
       return true
@@ -2433,9 +2433,9 @@ final class RemotePaneCloseTests: XCTestCase {
     XCTAssertTrue(ended, "the quit did not wait for the closed window's kill")
   }
 
-  /// Value: protects=every window's panes count their close kills where the quit looks for them; fails_when=TerminalSessions defaults to a service other than PersistentSessionService.shared; why_new=the quit sites in WorkroomApp.swift have no test seam; seam=none
+  /// Value: protects=every window's panes count their close kills where the quit looks for them; fails_when=TerminalPanes defaults to a service other than PersistentSessionService.shared; why_new=the quit sites in WorkroomApp.swift have no test seam; seam=none
   func testPanesCountCloseKillsOnTheSharedService() {
-    XCTAssertTrue(TerminalSessions().sessionService === PersistentSessionService.shared)
+    XCTAssertTrue(TerminalPanes().sessionService === PersistentSessionService.shared)
   }
 
   func testASuccessfulRemoteCloseReportsNothing() async throws {

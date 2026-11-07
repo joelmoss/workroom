@@ -191,7 +191,7 @@ struct ExeDevSetupSheet: View {
 }
 
 /// A terminal of the sheet's own running `ssh exe.dev`, for a sign-up finished by hand. Not one of
-/// `TerminalSessions`' tabs: it belongs to no workroom, and goes with the step.
+/// `TerminalPanes`' tabs: it belongs to no workroom, and goes with the step.
 private struct SignUpTerminal: View {
   @State private var surface: GhosttySurfaceView
 

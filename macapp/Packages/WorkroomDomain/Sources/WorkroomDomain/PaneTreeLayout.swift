@@ -29,7 +29,7 @@ public enum PaneTreeLayout {
   /// differ because the tab strip's furniture only constrains width — see `PaneMetrics.minPaneWidth`.
   /// Every clamp and fit guard reads the floor through here, so the axis can never be picked twice.
   /// Whether `rect` can be split along `orientation` without either half landing under the axis
-  /// floor. The same arithmetic as `TerminalSessions.fits`, but over a MEASURED pane rect rather than
+  /// floor. The same arithmetic as `TerminalPanes.fits`, but over a MEASURED pane rect rather than
   /// a live `GhosttySurfaceView`'s bounds — so it also works for the workroom pane tree, whose leaves
   /// are `SidebarID`s with no surface to measure (`AppStore.insertWorkroomSplit` had no fit guard at
   /// all, and a third workroom dropped into ~700pt produced two 172pt panes).
@@ -263,7 +263,7 @@ public enum PaneTreeLayout {
   /// Clamp a proposed divider ratio to keep both panes ≥ the axis's floor (the single, view-owned clamp).
   ///
   /// Below the floor the proposed ratio is returned UNCHANGED, not centred. Every caller feeds the
-  /// result straight to a persisting setter (`TerminalSessions.setRatio`,
+  /// result straight to a persisting setter (`TerminalPanes.setRatio`,
   /// `AppStore.setWorkroomSplitRatio`), so returning `0.5` here doesn't just freeze the divider — it
   /// overwrites the user's stored ratio, and widening the window back out can't bring it back. The
   /// container being too small is a transient of the CURRENT geometry; the stored ratio outlives it.

@@ -31,7 +31,7 @@ final class AppStore: ObservableObject {
   /// store's code reads it here.
   let lifecycle: WorkroomLifecycle
   /// Marks the saved session dirty on any pane change (issue #46). Hooking the publisher rather than
-  /// the ~12 structural mutators in `TerminalSessions` is deliberate: a thirteenth mutation cannot be
+  /// the ~12 structural mutators in `TerminalPanes` is deliberate: a thirteenth mutation cannot be
   /// forgotten. It fires far more often than the session changes (every live title, every activity
   /// pulse), which the coordinator answers with coalescing plus an equality gate — the excluded
   /// fields make that chatter produce an identical document, so it costs a comparison, not a write.
@@ -583,7 +583,7 @@ final class AppStore: ObservableObject {
   /// rather than in the pane's own state, which goes when the pane's id becomes the workroom's.
   var expandedCreationLogs: [UUID: String] = [:]
 
-  let terminals: TerminalSessions
+  let terminals: TerminalPanes
   /// In-memory notification spine driving the badges + inspector (issue #10); views observe it
   /// directly via `@EnvironmentObject`. Injected, so windows can share one list (ADR 0064).
   let notifications: NotificationCenterStore
@@ -799,7 +799,7 @@ final class AppStore: ObservableObject {
     // Same seam as `commitHistory` above, built by the services (the fixture's serves seeded state
     // and records actions instead of running git).
     self.remoteState = remoteState ?? services.makeRemoteState()
-    let terminals = TerminalSessions()
+    let terminals = TerminalPanes()
     self.terminals = terminals
     self.runCommand = RunCommandController(terminals: terminals)
     self.runCommands = runCommands ?? RunCommands()
@@ -846,7 +846,7 @@ final class AppStore: ObservableObject {
       vcsStatus.endWrite(projectRoot: root)
     }
     pendingRestoreSelection = Defaults[.sidebarSelection].flatMap(TargetID.init(encoded:))
-    // Everything `TerminalSessions` reports comes through one synchronous sink, handled in
+    // Everything `TerminalPanes` reports comes through one synchronous sink, handled in
     // `handleTerminalEvent` (eng review D8).
     terminals.onEvent = { [weak self] event in self?.handleTerminalEvent(event) }
     // A run tab rebuilt from a saved session is a run session of the project's command (#522).
@@ -874,11 +874,11 @@ final class AppStore: ObservableObject {
     loadInspectorState()
   }
 
-  /// Everything `TerminalSessions` reports. `onEvent` calls this inline the moment an event happens,
+  /// Everything `TerminalPanes` reports. `onEvent` calls this inline the moment an event happens,
   /// so an event raised inside a sessions method is handled before that method returns: history
   /// suppression and `select`'s promote-then-focus order depend on that (eng review D8).
   /// `.remoteCloseFailed` arrives later, from the remote close's own task.
-  private func handleTerminalEvent(_ event: TerminalSessions.Event) {
+  private func handleTerminalEvent(_ event: TerminalPanes.Event) {
     switch event {
     // Route each terminal's activity (OSC/bell) through the notification spine, gated on
     // focus, and raise a native banner only when the app is backgrounded.
@@ -1127,7 +1127,7 @@ final class AppStore: ObservableObject {
       // 1450, not 1200: `UITestFixture.applyFixtureDefaults` always forces the right inspector open
       // (300pt) and, since the sidebarVisible fixture override above, the Projects sidebar too
       // (270pt) — together they leave the detail column ~1200-270-300=630pt wide at 1200, right on
-      // `TerminalSessions.fits()`'s floor (2×300pt panes + a 4pt divider = 604pt) with only single-digit
+      // `TerminalPanes.fits()`'s floor (2×300pt panes + a 4pt divider = 604pt) with only single-digit
       // points of margin against real layout overhead. That intermittently refused ⌘D/⇧⌘D splits
       // (`SplitPaneUITests`, `TabActionsUITests`, etc.) — not a focus race, confirmed by the "Split
       // Right" menu item reading enabled the whole time; `fits()` was silently declining the split. At

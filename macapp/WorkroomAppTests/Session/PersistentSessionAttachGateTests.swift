@@ -159,7 +159,7 @@ final class PersistentSessionAttachGateTests: XCTestCase {
       .deletingLastPathComponent()
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("WorkroomApp/Core/Terminal/TerminalSessions.swift")
+      .appendingPathComponent("WorkroomApp/Core/Terminal/TerminalPanes.swift")
     let source = try String(contentsOf: url, encoding: .utf8)
 
     guard let start = source.range(of: "private func assignedSessionID") else {

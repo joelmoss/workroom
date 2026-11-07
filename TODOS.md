@@ -469,10 +469,10 @@ uncommon.
 
 ### Deterministic tab lookup for content panes (macapp) — nav-history follow-up
 
-**What:** `TerminalSessions.contentTab(matching:)` and `previewTabID(in:)` both resolve with
-`.first { … }` over `tabsByTarget`, which is a **Dictionary** — unordered, so which tab they return is
-not deterministic when two match. Resolve through `orderByTarget` (the strip order) instead, so "first"
-means leftmost.
+**What:** `TerminalPanes.contentTab(matching:)` and `previewTabID(in:)` both resolve with
+`.first { … }` over `tabRecords(_:)`, which is a **Dictionary** — unordered, so which tab they return
+is not deterministic when two match. Resolve through the layout's `state.order` (the strip order)
+instead, so "first" means leftmost.
 
 **Why:** `newPaneTab` deliberately bypasses the same-file dedup ("so the same-file dedup doesn't
 collapse it back onto the anchor"), so ⌘D on a diff or changeset pane genuinely creates two tabs with
@@ -481,8 +481,8 @@ flip user-visible: replay could focus the pinned twin instead of the pane you we
 only two things hide it — replay prefers the tab the location was recorded in (step 1 of
 `AppStore.applyLocation`), and the ≤1-preview invariant keeps `previewTabID` incidentally unique.
 
-**How to start:** `previewTabID` and `contentTab(matching:)` in `Core/Terminal/TerminalSessions.swift`; both have
-`orderByTarget` to hand. Pin it with a test that builds twins via `splitFocusedPane` on a diff pane and
+**How to start:** `previewTabID` and `contentTab(matching:)` in `Core/Terminal/TerminalPanes.swift`; both have
+the layout's order to hand. Pin it with a test that builds twins via `splitFocusedPane` on a diff pane and
 asserts *which* tab a lookup returns.
 
 **Depends on:** nothing. Independent of the nav-history fix, which is what made it matter.
@@ -856,7 +856,7 @@ OSC 9/99/777 + bell, not raw output. That's precise but silent for a bare `make 
 nothing. A shell hook closes that gap so the common "my build finished" case just works.
 
 **How to start:** Source a hook into the login shell launched by
-`TerminalSessions.makeTerminal` (`-l`), or document it for the user to add. Decide OSC 133 vs a
+`TerminalPanes.makeTerminalTab` (`-l`), or document it for the user to add. Decide OSC 133 vs a
 `precmd` that emits OSC 9. Keep it opt-in (injecting into the user's shell is invasive). Note the
 OSC 133 *command-finished* marker is already parsed app-side
 (`GhosttyRuntimeAdapter` handles `GHOSTTY_ACTION_COMMAND_FINISHED`, used today to clear the

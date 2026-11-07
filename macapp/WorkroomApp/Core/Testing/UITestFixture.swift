@@ -339,7 +339,7 @@ import WorkroomVCS
       UUID(uuidString: "00000000-0000-0000-0000-000000000358")!)
 
     @MainActor
-    static func seedProgramStatus(in terminals: TerminalSessions, target: TerminalTarget) {
+    static func seedProgramStatus(in terminals: TerminalPanes, target: TerminalTarget) {
       while terminals.tabs(for: target).count < 4 { _ = terminals.addTab(for: target) }
       let tabs = terminals.tabs(for: target)
       func seed(
@@ -366,7 +366,7 @@ import WorkroomVCS
     /// the `WorkroomTabBar` half of issue #129. Clamped to 1...16. Unset keeps the single workroom.
     ///
     /// This is cheap despite the chip count: a workroom chip only needs its target to be active
-    /// (`AppStore.orderedWorkroomTargets` reads `terminals.activeTargetIDs`), and `TerminalSessions.addTab`
+    /// (`AppStore.orderedWorkroomTargets` reads `terminals.activeTargetIDs`), and `TerminalPanes.addTab`
     /// merely registers a tab — the real shell is created by the *view*
     /// (`GhosttySurfaceView.createSurface`, off `viewDidMoveToWindow`), and only the selected workroom
     /// mounts a pane. So `n` chips cost `n` tab models and ONE terminal, not `n` terminals.
