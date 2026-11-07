@@ -31,49 +31,13 @@ struct CommitSheet: View {
   /// EXCLUSIONS, not selections — see `CommitDraft.selected(from:excluding:)`. A file written while
   /// this sheet is open arrives checked; a file the user unticked stays unticked.
   @State private var excluded: Set<String> = []
-  @State private var phase: Phase = .editing
-  @State private var preflightState = CommitPreflightState()
-  /// A parked merge/rebase/cherry-pick/revert/bisect in this worktree, resolved on appear.
-  ///
-  /// The engine refuses one of these outright, so leaving it out of `blockedReason` meant composing a
-  /// whole message and pressing Commit to be told. Read once: finishing a merge is something the user
-  /// does in the terminal, and re-polling for it would be a timer against the filesystem for a state
-  /// that changes at human speed.
-  @State private var sequencer: String?
-  /// The commit `Amend last commit` would rewrite, so the message being replaced is visible BEFORE
-  /// the click rather than recoverable only from the reflog afterwards.
-  @State private var amendTarget: String?
+  /// The phase machine, the preflight and the commit itself. `@State`, so it lives as long as the
+  /// sheet does.
+  @State private var flow = CommitFlow()
   @FocusState private var summaryFocused: Bool
 
-  private enum Phase: Equatable {
-    case editing
-    /// Selected paths whose staged content this commit would discard, awaiting confirmation.
-    case confirmingStagedLoss([String])
-    case committing
-    case failed(VCSFailureDialog)
-    /// The commit LANDED but a later step failed. Terminal: the only honest action left is to close.
-    /// Distinct from `.failed` because retrying here would record the work a second time, and the
-    /// notice says so — so the buttons that would do it are disabled rather than merely discouraged.
-    case landedThenFailed(VCSFailureDialog)
-    /// Contact was lost mid-commit and the ref could not be re-read, so whether the work landed is
-    /// unknown — `VCSCommitFailure.outcomeUnknown`.
-    ///
-    /// Its own case rather than a `.failed`, for `.landedThenFailed`'s exact reason: the button is
-    /// the hazard, not the wording. A `.failed` leaves Commit live, and one click on a commit that
-    /// did land records it twice — the same defect, on the taxonomy that added a case to name it.
-    /// Not folded INTO `.landedThenFailed` either: that one asserts the commit was recorded, and
-    /// asserting the verdict is what this whole state exists to avoid.
-    case outcomeUnknown(VCSFailureDialog)
-  }
-
-  /// Pressing again could duplicate work — either because the commit is on disk, or because nobody
-  /// knows whether it is. Both disable the buttons that would do it.
-  private var isSpent: Bool {
-    switch phase {
-    case .landedThenFailed, .outcomeUnknown: return true
-    default: return false
-    }
-  }
+  private var phase: CommitFlow.Phase { flow.phase }
+  private var isSpent: Bool { flow.isSpent }
 
   /// Hard cap on rendered rows, matching `ChangesPanel`'s. See `fileSection`.
   private static let renderCap = 200
@@ -99,14 +63,14 @@ struct CommitSheet: View {
   private var blockedReason: String? {
     CommitDraft.blockedReason(
       summary: summary, selectedCount: selectedCount,
-      totalCount: files.count, conflicted: status?.conflicted ?? false, sequencer: sequencer)
+      totalCount: files.count, conflicted: status?.conflicted ?? false, sequencer: flow.sequencer)
   }
 
   /// The secondary verb rewrites a message and takes no pathspec, so it answers to the repo-state and
   /// summary rules but not the file-count ones — see `CommitDraft.messageOnlyBlockedReason`.
   private var secondaryBlockedReason: String? {
     CommitDraft.messageOnlyBlockedReason(
-      summary: summary, conflicted: status?.conflicted ?? false, sequencer: sequencer)
+      summary: summary, conflicted: status?.conflicted ?? false, sequencer: flow.sequencer)
   }
 
   var body: some View {
@@ -314,7 +278,7 @@ struct CommitSheet: View {
       if phase == .committing {
         ProgressView().controlSize(.small)
         Text("Running hooks…").font(.caption).foregroundStyle(.secondary)
-      } else if preflightState.isLoading {
+      } else if flow.preflightState.isLoading {
         ProgressView().controlSize(.small)
         Text("Reading repository…").font(.caption).foregroundStyle(.secondary)
           .accessibilityIdentifier("commit.preflight")
@@ -340,7 +304,7 @@ struct CommitSheet: View {
       }
       .sheetDefaultAction()
       .disabled(
-        blockedReason != nil || phase == .committing || isSpent || preflightState.isLoading
+        blockedReason != nil || phase == .committing || isSpent || flow.preflightState.isLoading
       )
       .help("Commit the selected files")
       .accessibilityIdentifier("commit.commit")
@@ -360,10 +324,10 @@ struct CommitSheet: View {
     }
     .disabled(
       secondaryBlockedReason != nil || phase == .committing || isSpent
-        || preflightState.isLoading
+        || flow.preflightState.isLoading
     )
     .help(
-      amendTarget.map {
+      flow.amendTarget.map {
         "Replace the message of \($0). Nothing else about that commit changes."
       }
         ?? "Replace the last commit’s message. Nothing else about that commit changes."
@@ -379,7 +343,7 @@ struct CommitSheet: View {
   /// only through the reflog. Showing the target is the cheapest thing that makes the trade visible
   /// before the click instead of after it.
   @ViewBuilder private var amendTargetNotice: some View {
-    if let amendTarget, phase == .editing {
+    if let amendTarget = flow.amendTarget, phase == .editing {
       Text("“Amend last commit” would replace the message of \(amendTarget)")
         .font(.caption)
         .foregroundStyle(.tertiary)
@@ -392,112 +356,34 @@ struct CommitSheet: View {
 
   // MARK: Actions
 
-  /// Everything the dialog has to read from the repo before it can be honest: the amend target and
-  /// any parked sequencer operation. Once, on appear.
-  private func prefill() {
-    summaryFocused = true
-    guard phase != .committing, !isSpent, preflightState.begin() else { return }
-    // The fixture's paths are not repos, so every read below would fail and the dialog would show
-    // nothing — which is the state these seeds exist to keep testable. Same rationale as
-    // `FixtureVCSWriter`.
-    #if DEBUG
-      if AppEnvironment.current.isFixture {
-        _ = preflightState.finish(succeeded: true)
-        amendTarget = UITestFixture.amendTargetLabel
-        return
-      }
-    #endif
-    // One ask, through the writer. This used to spawn `git` and stat a `.git` directory from
-    // here, which works only for a repo on this Mac — see `VCSWriting.commitPreflight`.
-    store.commitPreflight(on: pending.sid) { result in
-      guard phase != .committing, !isSpent else { return }
-      guard case .success(let preflight) = result else {
-        if case .failure(let error) = result, preflightState.finish(succeeded: false) {
-          phase = .failed(
-            VCSSyncPresenter.commitFailureDialog(.other(error.localizedDescription), mode: .commit))
-        }
-        return
-      }
-      guard preflightState.finish(succeeded: true) else { return }
-      sequencer = preflight.sequencer
-      amendTarget = preflight.amendTarget
-    }
+  /// The flow's asks, over this window's store for the workroom the sheet was opened for. The draft
+  /// is read when the flow asks for it, so a commit started from a completion records what is in
+  /// the fields then.
+  private var flowContext: CommitFlow.Context {
+    .store(
+      store, sid: pending.sid,
+      draft: {
+        CommitFlow.Draft(
+          message: CommitDraft.message(summary: summary, body: messageBody), files: selectedFiles)
+      },
+      dismiss: onDismiss)
   }
 
-  /// Commit, but check first whether doing so would throw away staged work.
-  ///
-  /// Only for the plain commit path: amend takes no pathspec. The check is
-  /// skipped once confirmed so pressing "Commit anyway" cannot re-raise the same warning (that path
-  /// calls `commit` directly, never this).
-  ///
-  /// Deliberately NOT conditioned on `phase == .editing`. It was, and that made the guard skip itself
-  /// on exactly the attempt that needs it most: after a rejected hook the phase is `.failed`, so a
-  /// retry fell through to `commit` unchecked — and anything the user staged with `git add -p` while
-  /// fixing the rejection was discarded with no warning, unrecoverable except as a dangling blob.
+  // A preflight retried from a button focuses the summary as the one on appear does, so the view
+  // checks readiness before handing a press to the flow (which retries without focus).
+  private func prefill() {
+    summaryFocused = true
+    flow.prefill(flowContext)
+  }
+
   private func commitChecking(mode: VCSCommitMode) {
-    guard preflightState.isReady else {
-      prefill()
-      return
-    }
-    guard mode == .commit else { return commit(mode: mode) }
-    let files = selectedFiles
-    store.stagedContentAtRisk(on: pending.sid, files: files) { result in
-      guard phase != .committing, !isSpent else { return }
-      guard case .success(let atRisk) = result else {
-        if case .failure(let error) = result {
-          phase = .failed(
-            VCSSyncPresenter.commitFailureDialog(.other(error.localizedDescription), mode: mode))
-        }
-        return
-      }
-      // The sheet can move on while that `git status` runs — the secondary verb stays pressable
-      // during the round-trip. Without this re-check, a late result would stamp
-      // `.confirmingStagedLoss` over a commit already in flight, re-enabling the primary and letting
-      // a second concurrent commit through on the same repo.
-      if atRisk.isEmpty {
-        commit(mode: mode)
-      } else {
-        phase = .confirmingStagedLoss(atRisk)
-      }
-    }
+    guard flow.preflightState.isReady else { return prefill() }
+    flow.commitChecking(mode: mode, flowContext)
   }
 
   private func commit(mode: VCSCommitMode) {
-    guard preflightState.isReady else {
-      prefill()
-      return
-    }
-    guard phase != .committing else { return }
-    let message = CommitDraft.message(summary: summary, body: messageBody)
-    phase = .committing
-    let request = VCSCommitRequest(
-      message: message,
-      files: mode == .amendMessage ? [] : selectedFiles, mode: mode)
-    store.performCommit(request, on: pending.sid) { result in
-      switch result {
-      case .ok:
-        onDismiss()
-      case .committedThenFailed(_, let detail):
-        // The commit LANDED. Closing would be a lie by omission, and offering a retry would create a
-        // second commit, so the sheet stays up saying exactly that — and `.landedThenFailed` disables
-        // the buttons that would do it, rather than leaving the advice and the affordance in
-        // contradiction.
-        phase = .landedThenFailed(
-          VCSFailureDialog(
-            title: "Committed, but something afterwards failed",
-            message:
-              "The commit was recorded. A step that runs after it — usually a post-commit hook — "
-              + "then failed. Do not commit again; the change is already saved.",
-            details: detail, recovery: nil, lockPath: nil))
-      case .failed(.outcomeUnknown(let reason)):
-        // Routed away from `.failed` so `isSpent` disables Commit: the work may be on disk, and the
-        // notice telling the user to check the history is worth nothing beside a live button.
-        phase = .outcomeUnknown(
-          VCSSyncPresenter.commitFailureDialog(.outcomeUnknown(reason), mode: mode))
-      case .failed(let failure):
-        phase = .failed(VCSSyncPresenter.commitFailureDialog(failure, mode: mode))
-      }
-    }
+    guard flow.preflightState.isReady else { return prefill() }
+    flow.commit(mode: mode, flowContext)
   }
 }
 

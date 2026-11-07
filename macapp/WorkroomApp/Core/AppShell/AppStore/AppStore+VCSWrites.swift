@@ -209,7 +209,7 @@ extension AppStore {
   /// on this Mac (issue #154, Phase 2).
   ///
   /// Failures remain explicit and block the write until preflight succeeds.
-  /// The fixture is NOT short-circuited here — `CommitSheet` seeds its own values.
+  /// The fixture is NOT short-circuited here — `CommitFlow.prefill` seeds its own values.
   func commitPreflight(
     on sid: SidebarID, completion: @escaping (Result<VCSCommitPreflight, Error>) -> Void
   ) {
