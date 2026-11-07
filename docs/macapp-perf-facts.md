@@ -25,8 +25,9 @@ What follows from it in this app:
 
 - `ProjectStore`'s project list (`projects`), `VCSStatusService`'s status collections
   (`workroomStatuses`, `rootRefs`, the commit and write counters and `creatingWorkrooms`),
-  `RunCommandController`'s run-state collections and `WorkroomLifecycle`'s create and delete sets
-  (`creationRunForTarget`, `deletingWorkrooms`, `deletingProjects`, and its `creatingWorkrooms`
+  `RunCommandController`'s `runStates` and `pendingRunStarts` (its other run collections read and
+  write each run tab's own cell, and write only what changes) and `WorkroomLifecycle`'s create and
+  delete sets (`creationRunForTarget`, `deletingWorkrooms`, `deletingProjects`, and its `creatingWorkrooms`
   over the service's) are computed get/set over private stored properties, so even
   `projectStore.projects[i] = p` or `vcsStatus.workroomStatuses[sid] = s` is a whole-value set and
   gets the dedupe. An identical project list (`projects = fresh` on reload) notifies no one. Until
