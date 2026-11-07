@@ -41,6 +41,13 @@ enum FocusedTabSelection: Equatable {
     return Self(content: tab.content)
   }
 
+  /// `current(store:sessions:)` over `store`'s own window panes, which is what both inspector panels
+  /// read. It reads `store.terminals` itself, so whichever body calls it observes the panes.
+  @MainActor
+  static func current(store: AppStore) -> FocusedTabSelection? {
+    current(store: store, sessions: store.terminals)
+  }
+
   /// The focused changeset's commit id, if a changeset tab is focused. What the History rows compare
   /// their own commit against.
   var changesetCommitID: String? {

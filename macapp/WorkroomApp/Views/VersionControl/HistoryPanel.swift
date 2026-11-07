@@ -195,7 +195,7 @@ struct HistoryPanelAdapter: View {
         + "\u{1F}\(store.historySectionShown)",
       // `store.terminals` is read only in here, which the panel calls (see `HistoryPanelInputs`).
       selectedCommitID: { [store] in
-        FocusedTabSelection.current(store: store, sessions: store.terminals)?.changesetCommitID
+        FocusedTabSelection.current(store: store)?.changesetCommitID
       }
     )
   }

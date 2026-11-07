@@ -1,4 +1,5 @@
 import Defaults
+import DesignSystem
 import SwiftUI
 
 /// Everything in the Quick Terminal's window: a workroom's own terminals view (tab strip, pane
@@ -18,7 +19,7 @@ struct QuickTerminalContent: View {
       // Toasts while it is the front window (#573 D2). `.pointerStyle`: the arrow over a toast,
       // not a terminal's cursor rect beneath it (#466).
       .overlay(alignment: .bottomTrailing) {
-        ToastStackAdapter().pointerStyle(.default).padding(8)
+        ToastStackAdapter().pointerStyle(.default).padding(Spacing.m)
       }
       .background(tokens.panel)
       // The tab strip takes the titlebar's place; without this the hosting view insets everything

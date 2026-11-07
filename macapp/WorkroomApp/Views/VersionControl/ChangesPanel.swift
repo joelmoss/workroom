@@ -375,7 +375,7 @@ struct ChangesPanelAdapter: View {
         target: targetID.flatMap { $0.isStatusable ? store.target(for: $0) : nil },
         // `store.terminals` is read only in here, which the panel calls (see `ChangesPanelInputs`).
         selection: { [store] in
-          FocusedTabSelection.current(store: store, sessions: store.terminals)
+          FocusedTabSelection.current(store: store)
         }),
       actions: actions)
   }
