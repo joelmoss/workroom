@@ -615,15 +615,6 @@ enum RemoteProvisioning {
   }
 }
 
-/// What the CLI's `include-archive` wrote (#367): the archived paths, their total size, each file it
-/// couldn't read, as "path: reason", and the symlinks it matched but never copies.
-struct IncludeArchive: Decodable, Equatable {
-  var paths: [String]
-  var bytes: Int64
-  var warnings: [String]
-  var skipped: [String]?
-}
-
 /// How copying the root's included files into a workroom ended (#367), with its log.
 enum IncludeResult: Equatable {
   case copied(log: [String])

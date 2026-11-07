@@ -2,15 +2,17 @@ import Foundation
 import WorkroomDomain
 import XCTest
 
-@testable import Workroom
-
 /// Decodes the CLI's `--json` contract goldens (`testdata/contracts`) with the app's own types.
 /// `cmd/contract_test.go` checks the CLI still prints each file byte for byte, so a change on
-/// either side that the other cannot read fails one of the two tests.
+/// either side that the other cannot read fails one of the two tests. The app's own reading of a
+/// create's events, through `CreationRun`, is `CreationRunContractTests` in the app's tests.
 final class CLIContractTests: XCTestCase {
   /// The repository's `testdata/contracts`, found from this file's own source location.
   private static let contracts = URL(fileURLWithPath: String(describing: #filePath))
-    .deletingLastPathComponent()  // WorkroomAppTests
+    .deletingLastPathComponent()  // WorkroomDomainTests
+    .deletingLastPathComponent()  // Tests
+    .deletingLastPathComponent()  // WorkroomDomain
+    .deletingLastPathComponent()  // Packages
     .deletingLastPathComponent()  // macapp
     .deletingLastPathComponent()  // repository root
     .appendingPathComponent("testdata/contracts")
@@ -238,27 +240,6 @@ final class CLIContractTests: XCTestCase {
     XCTAssertEqual(last.phase, "setup")
     XCTAssertEqual(last.step, "script")
     XCTAssertEqual(last.text, "boom")
-  }
-
-  /// The app's own reading of a create's events (#483): the golden sequences drive a run to the
-  /// states the CLI meant.
-  /// Value: protects=WorkroomCLI step parsing as `CreationRun` applies it, against the CLI's real
-  /// output; fails_when=a step state or a log's step is misread; no_claim=the hop to the main queue
-  @MainActor
-  func testAGoldenCreateDrivesARunToItsStates() throws {
-    let run = CreationRun(
-      project: Project(path: "/p", vcs: "git", workrooms: []), kind: nil, splitAnchor: nil,
-      previousSelection: nil)
-    for event in try events("create-fetch-warning-events.ndjson") { run.apply(event) }
-    XCTAssertEqual(
-      run.steps.map(\.state),
-      [
-        .warning(
-          "Could not fetch origin. The workroom starts from HEAD, which may be out of date."),
-        .done, .skipped(reason: "No setup script"),
-      ])
-    XCTAssertEqual(run.steps[0].log.first, "$ git fetch --prune origin")
-    XCTAssertEqual(run.steps[1].log.count, 3)
   }
 
   func testAddProject() throws {
