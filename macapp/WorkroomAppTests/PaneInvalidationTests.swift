@@ -247,12 +247,14 @@ final class PaneInvalidationTests: XCTestCase {
 
 extension View {
   /// What the terminals view reads from its environment, and nothing more: the counts above are
-  /// of these views' passes alone (`detachedPaneEnvironment` would add the usage monitor too).
+  /// of these views' passes alone (`detachedPaneEnvironment` would add the usage monitor too). The
+  /// theme is injected as every production root injects it.
   fileprivate func invalidationEnvironment(_ store: AppStore) -> some View {
     environmentObject(store)
       .environmentObject(store.modals)
       .environmentObject(store.runCommand)
       .environmentObject(store.notifications)
       .environmentObject(store.terminals.codingAgentManager)
+      .themeTokensRoot()
   }
 }

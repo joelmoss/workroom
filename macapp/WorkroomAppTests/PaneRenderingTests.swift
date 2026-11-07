@@ -37,6 +37,7 @@ final class PaneRenderingTests: XCTestCase {
       .environmentObject(store.modals)
       .environmentObject(store.runCommand)
       .environmentObject(sessions.codingAgentManager)
+      .themeTokensRoot()
     let hosting = NSHostingView(rootView: root)
     hosting.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
     let window = NSWindow(

@@ -254,7 +254,8 @@ final class AvatarImageLoaderTests: XCTestCase {
     NSWindow, NSView
   ) {
     let hosting = NSHostingView(
-      rootView: HostWrapper(controller: controller, loader: loader, onCommit: onCommit))
+      rootView: HostWrapper(controller: controller, loader: loader, onCommit: onCommit)
+        .themeTokensRoot())
     hosting.frame = NSRect(x: 0, y: 0, width: 32, height: 32)
     let window = NSWindow(
       contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)

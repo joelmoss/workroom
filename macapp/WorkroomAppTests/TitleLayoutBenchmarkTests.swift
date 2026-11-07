@@ -44,6 +44,7 @@ final class TitleLayoutBenchmarkTests: XCTestCase {
         .environmentObject(store.runCommand)
         .environmentObject(store.notifications)
         .environmentObject(store.terminals.codingAgentManager)
+        .themeTokensRoot()
         .frame(width: 1_100, height: 700))
     hosting.frame = NSRect(x: 100, y: 100, width: 1_100, height: 700)
     let window = NSWindow(

@@ -97,7 +97,8 @@ final class DiffViewerStaleLoadTests: XCTestCase {
     onCommit: @escaping @MainActor (LoadState<UnifiedDiff>) -> Void
   ) -> (NSWindow, NSView) {
     let hosting = NSHostingView(
-      rootView: HostWrapper(controller: controller, resolve: resolve, onCommit: onCommit))
+      rootView: HostWrapper(controller: controller, resolve: resolve, onCommit: onCommit)
+        .themeTokensRoot())
     hosting.frame = NSRect(x: 0, y: 0, width: 700, height: 500)
     let window = NSWindow(
       contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)

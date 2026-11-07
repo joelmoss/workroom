@@ -35,6 +35,7 @@ final class SidebarBenchmarkTests: XCTestCase {
         .environmentObject(store.vcsStatus)
         .environmentObject(store.lifecycle)
         .environmentObject(store.notifications)
+        .themeTokensRoot()
         .frame(width: 300, height: 700))
     hosting.frame = NSRect(x: 0, y: 0, width: 300, height: 700)
     let window = NSWindow(
@@ -99,6 +100,7 @@ final class SidebarBenchmarkTests: XCTestCase {
         .environmentObject(store.vcsStatus)
         .environmentObject(store.lifecycle)
         .environmentObject(store.notifications)
+        .themeTokensRoot()
         .frame(width: 300, height: 700))
     hosting.frame = NSRect(x: 0, y: 0, width: 300, height: 700)
     let window = NSWindow(
@@ -173,6 +175,7 @@ final class SidebarBenchmarkTests: XCTestCase {
         .environmentObject(store.vcsStatus)
         .environmentObject(store.lifecycle)
         .environmentObject(store.notifications)
+        .themeTokensRoot()
         .frame(width: 300, height: 700)
       let hosting = NSHostingView(rootView: root)
       hosting.frame = NSRect(x: 0, y: 0, width: 300, height: 700)

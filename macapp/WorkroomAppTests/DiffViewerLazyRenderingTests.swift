@@ -41,6 +41,7 @@ final class DiffViewerLazyRenderingTests: XCTestCase {
       find: FileFindModel(), cannedDiffs: AppServices.fixture.cannedDiffs
     )
     .frame(width: 700, height: 500)
+    .themeTokensRoot()
     let hosting = NSHostingView(rootView: root)
     hosting.frame = NSRect(x: 0, y: 0, width: 700, height: 500)
     let window = NSWindow(
