@@ -363,16 +363,16 @@ final class QuickTerminalControllerTests: XCTestCase {
     let host = try XCTUnwrap(controller.host)
     // A test pane never starts, so it counts as running and a close would ask first.
     host.closeFlow.confirmOnCloseOverride = false
-    let sessions = host.terminals
+    let panes = host.terminals
     let target = QuickTerminalController.target()
 
     controller.perform(.splitRight)
     controller.perform(.splitDown)
-    XCTAssertEqual(sessions.split(for: target)?.tabIDs.count, 3)
+    XCTAssertEqual(panes.split(for: target)?.tabIDs.count, 3)
     controller.perform(.newTab)
-    XCTAssertEqual(sessions.tabs(for: target).count, 4)
+    XCTAssertEqual(panes.tabs(for: target).count, 4)
     controller.perform(.selectTab(0))
-    XCTAssertEqual(sessions.activeTab(for: target)?.id, sessions.tabs(for: target).first?.id)
+    XCTAssertEqual(panes.activeTab(for: target)?.id, panes.tabs(for: target).first?.id)
 
     for _ in 0..<4 { controller.perform(.closePane) }
     XCTAssertFalse(controller.hasWindow, "⌘W on the last pane of the last tab closes the window")
@@ -383,17 +383,17 @@ final class QuickTerminalControllerTests: XCTestCase {
     let controller = makeController()
     defer { controller.close() }
     controller.toggle()
-    let sessions = try XCTUnwrap(controller.host).terminals
+    let panes = try XCTUnwrap(controller.host).terminals
     let target = QuickTerminalController.target()
-    let left = try XCTUnwrap(sessions.activeTab(for: target)).id
+    let left = try XCTUnwrap(panes.activeTab(for: target)).id
     controller.perform(.splitRight)
-    let right = try XCTUnwrap(sessions.activeTab(for: target)).id
+    let right = try XCTUnwrap(panes.activeTab(for: target)).id
     XCTAssertNotEqual(left, right)
 
     XCTAssertTrue(controller.perform(.focusPane(.left)))
-    XCTAssertEqual(sessions.activeTab(for: target)?.id, left)
+    XCTAssertEqual(panes.activeTab(for: target)?.id, left)
     XCTAssertFalse(controller.perform(.focusPane(.up)), "no pane above: the key is the terminal's")
-    XCTAssertEqual(sessions.activeTab(for: target)?.id, left)
+    XCTAssertEqual(panes.activeTab(for: target)?.id, left)
   }
 
   /// The app's registry with this controller as its Quick Terminal and an empty list, put back after.
@@ -555,16 +555,16 @@ final class QuickTerminalControllerTests: XCTestCase {
     let controller = makeController()
     defer { controller.close() }
     controller.toggle()
-    let sessions = try XCTUnwrap(controller.host).terminals
+    let panes = try XCTUnwrap(controller.host).terminals
     let target = QuickTerminalController.target()
-    let first = try XCTUnwrap(sessions.activeTab(for: target)).id
+    let first = try XCTUnwrap(panes.activeTab(for: target)).id
     controller.perform(.newTab)
     controller.hide()
     XCTAssertFalse(controller.isVisible)
 
     controller.reveal(tab: first)
     XCTAssertTrue(controller.isVisible)
-    XCTAssertEqual(sessions.activeTab(for: target)?.id, first)
+    XCTAssertEqual(panes.activeTab(for: target)?.id, first)
   }
 
   // Value: protects=the key monitor takes exactly ⌘W/T/D/⇧⌘D/⌘1-9 in the Quick Terminal; fails_when=a chord maps wrong or a stray one is swallowed; why_new=no test calls classify; seam=none; no_claim=the monitor wiring in AppDelegate

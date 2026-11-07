@@ -17,16 +17,16 @@ final class ThemeService {
   /// result computed against the old theme is discarded as stale.
   private(set) var generation: Int = 0
 
-  /// Every window's live terminal sessions (issue #70). Each window registers its `TerminalPanes`
+  /// Every window's live terminal panes (issue #70). Each window registers its `TerminalPanes`
   /// here so a theme change re-themes terminals in *all* windows — the old single `onApplyTerminals`
   /// callback was overwritten by the last window to appear, leaving other windows un-themed (OV #5).
   /// Weak, so a closed window drops out automatically. The surface iteration stays in
   /// `TerminalPanes`; `applyActiveTheme()` remains the single chokepoint every trigger routes through.
   private let terminalSinks = NSHashTable<TerminalPanes>.weakObjects()
 
-  /// Register/unregister a window's terminal sessions for theme sweeps (issue #70).
-  func registerTerminals(_ sessions: TerminalPanes) { terminalSinks.add(sessions) }
-  func unregisterTerminals(_ sessions: TerminalPanes) { terminalSinks.remove(sessions) }
+  /// Register/unregister a window's terminal panes for theme sweeps (issue #70).
+  func registerTerminals(_ panes: TerminalPanes) { terminalSinks.add(panes) }
+  func unregisterTerminals(_ panes: TerminalPanes) { terminalSinks.remove(panes) }
 
   /// The OS appearance flipped while pref = System. Owned HERE, not by each window's
   /// `TerminalPanes`: one observer per window meant a single flip fired the chokepoint N times,

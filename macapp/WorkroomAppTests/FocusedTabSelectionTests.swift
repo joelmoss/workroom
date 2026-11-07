@@ -38,7 +38,7 @@ final class FocusedTabSelectionTests: XCTestCase {
   }
 
   private func current(_ store: AppStore) -> FocusedTabSelection? {
-    FocusedTabSelection.current(store: store, sessions: store.terminals)
+    FocusedTabSelection.current(store: store, panes: store.terminals)
   }
 
   func testNoSelectionResolvesToNil() {

@@ -32,8 +32,8 @@ enum FocusedTabSelection: Equatable {
   /// view that observes `TerminalPanes` (a panel), and making that dependency explicit at the call
   /// site is the whole point.
   @MainActor
-  static func current(store: AppStore, sessions: TerminalPanes) -> FocusedTabSelection? {
-    guard let target = store.selectedTarget, let tab = sessions.focusedTab(for: target) else {
+  static func current(store: AppStore, panes: TerminalPanes) -> FocusedTabSelection? {
+    guard let target = store.selectedTarget, let tab = panes.focusedTab(for: target) else {
       return nil
     }
     // The per-kind switch lives in `init?(content:)`, beside `TabContent` — navigation history reduces
@@ -41,11 +41,11 @@ enum FocusedTabSelection: Equatable {
     return Self(content: tab.content)
   }
 
-  /// `current(store:sessions:)` over `store`'s own window panes, which is what both inspector panels
+  /// `current(store:panes:)` over `store`'s own window panes, which is what both inspector panels
   /// read. It reads `store.terminals` itself, so whichever body calls it observes the panes.
   @MainActor
   static func current(store: AppStore) -> FocusedTabSelection? {
-    current(store: store, sessions: store.terminals)
+    current(store: store, panes: store.terminals)
   }
 
   /// The focused changeset's commit id, if a changeset tab is focused. What the History rows compare
