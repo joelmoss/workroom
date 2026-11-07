@@ -7,8 +7,8 @@ import WorkroomSystem
 /// Dockerfile and its `install.sh` run as root with its options in its environment, one layer per
 /// feature, on any builder (Docker's or Apple's `container build`: COPY and RUN, no BuildKit-only
 /// mounts).
-enum DevContainerFeatures {
-  typealias OptionValue = DevContainerConfig.OptionValue
+public enum DevContainerFeatures {
+  public typealias OptionValue = DevContainerConfig.OptionValue
 
   enum Failure: Error, Equatable, LocalizedError {
     case badReference(String)
@@ -31,20 +31,20 @@ enum DevContainerFeatures {
 
   /// A feature downloaded and unpacked: its metadata, its folder, and the digest it was fetched by
   /// (an OCI manifest's), when it has one.
-  struct Fetched: Sendable {
+  public struct Fetched: Sendable {
     var metadata: Metadata
     var directory: URL
     var digest: String?
   }
 
   /// Where features come from: the registry and the web (`OCISource`), or a test's.
-  protocol Source: Sendable {
+  public protocol Source: Sendable {
     func fetch(_ reference: Reference) async throws -> Fetched
   }
 
   /// A feature to install: as written (or as a dependency named it), with the options it was
   /// given, and what was fetched for it.
-  struct Feature: Sendable {
+  public struct Feature: Sendable {
     var reference: Reference
     var options: [String: OptionValue]
     var fetched: Fetched
@@ -55,7 +55,7 @@ enum DevContainerFeatures {
   /// chosen `installsAfter` installed) of the highest `overrideFeatureInstallOrder` priority, in the
   /// spec's stable order (key, then tag oldest first, then most options). An override naming a
   /// feature that isn't chosen is ignored.
-  static func resolve(
+  public static func resolve(
     _ declared: [String: [String: OptionValue]], override: [String], source: some Source
   ) async throws -> [Feature] {
     var features: [Feature] = []
@@ -145,7 +145,7 @@ enum DevContainerFeatures {
   }
 
   /// Where a feature comes from: the spec's three kinds.
-  enum Reference: Hashable, Sendable {
+  public enum Reference: Hashable, Sendable {
     /// `<registry>/<namespace>/<id>[:tag|@digest]`; `latest` when it names no tag.
     case oci(registry: String, repository: String, tag: String)
     /// An https URL to a `devcontainer-feature-<id>.tgz`.
@@ -196,7 +196,7 @@ enum DevContainerFeatures {
 
   /// A feature's `devcontainer-feature.json`: what it is, its options, and what it adds to the
   /// image and the container.
-  struct Metadata: Equatable, Sendable {
+  public struct Metadata: Equatable, Sendable {
     struct Option: Equatable, Sendable {
       /// `boolean` or `string`.
       var type: String
@@ -315,17 +315,23 @@ enum DevContainerFeatures {
 
   /// Features from their registry (the OCI distribution flow, anonymous), from an https tarball, or
   /// from a folder beside the devcontainer.json. Each is unpacked under `cache`, by digest.
-  struct OCISource: Source {
+  public struct OCISource: Source {
     let session: URLSession
     let cache: URL
     /// The devcontainer.json's folder, for `./` features; nil refuses them.
     var configFolder: URL?
 
+    public init(session: URLSession, cache: URL, configFolder: URL? = nil) {
+      self.session = session
+      self.cache = cache
+      self.configFolder = configFolder
+    }
+
     /// The layer media type the spec gives a feature's tarball.
     static let layerType = "application/vnd.devcontainers.layer.v1+tar"
     static let manifestType = "application/vnd.oci.image.manifest.v1+json"
 
-    func fetch(_ reference: Reference) async throws -> Fetched {
+    public func fetch(_ reference: Reference) async throws -> Fetched {
       switch reference {
       case .local(let path): return try local(path)
       case .tarball(let url):
@@ -532,7 +538,7 @@ enum DevContainerFeatures {
 
   /// The users `install.sh` is told about (`_CONTAINER_USER`, `_REMOTE_USER` and their homes), as
   /// the create finds them in the base image.
-  struct Users: Equatable, Sendable {
+  public struct Users: Equatable, Sendable {
     var container: String
     var remote: String
     var containerHome: String
@@ -577,7 +583,7 @@ enum DevContainerFeatures {
 
   /// Writes the build context for `dockerfile(…)` at `directory`: the Dockerfile, and each
   /// feature's folder with its options' env file under `features/<index>`. Returns the Dockerfile.
-  static func writeContext(
+  public static func writeContext(
     at directory: URL, base: String, features: [Feature], users: Users, imageUser: String
   ) throws -> URL {
     let files = FileManager.default
@@ -598,7 +604,7 @@ enum DevContainerFeatures {
   }
 
   /// What features add to the container they are built into.
-  struct Contributions: Equatable, Sendable {
+  public struct Contributions: Equatable, Sendable {
     var mounts: [DevContainerConfig.Mount] = []
     var capAdd: [String] = []
     var securityOpt: [String] = []
@@ -609,9 +615,11 @@ enum DevContainerFeatures {
       [(feature: String, hook: DevContainerConfig.Hook, command: DevContainerConfig.Command)] =
         []
     /// Features whose entrypoint Workroom can't run (its daemon is the container's entrypoint).
-    var entrypoints: [String] = []
+    public var entrypoints: [String] = []
 
-    static func == (a: Contributions, b: Contributions) -> Bool {
+    public init() {}
+
+    public static func == (a: Contributions, b: Contributions) -> Bool {
       a.mounts == b.mounts && a.capAdd == b.capAdd && a.securityOpt == b.securityOpt
         && a.privileged == b.privileged && a.entrypoints == b.entrypoints
         && a.lifecycle.map(\.feature) == b.lifecycle.map(\.feature)
@@ -622,7 +630,7 @@ enum DevContainerFeatures {
 
   /// `features`' contributions, merged as the spec has it: mounts and capabilities concatenated,
   /// privileged if any one wants it.
-  static func contributions(of features: [Feature]) -> Contributions {
+  public static func contributions(of features: [Feature]) -> Contributions {
     var added = Contributions()
     for feature in features {
       let key = feature.reference.key

@@ -1,6 +1,7 @@
+import CryptoKit
 import XCTest
 
-@testable import Workroom
+@testable import DevContainer
 
 /// Devcontainer features (#308, eng review D2): where each comes from, what its install script is
 /// told, the order they install in, and the image they are built into.
@@ -309,7 +310,7 @@ final class DevContainerFeaturesTests: XCTestCase {
   /// bytes match the digest the manifest gives.
   func testAnOCIFeatureIsFetchedThroughTheRegistrysChallenge() async throws {
     let layer = try featureTar(id: "github-cli")
-    let digest = "sha256:" + DaemonBootstrap.digest(of: layer)
+    let digest = "sha256:" + SHA256.hash(data: layer).map { String(format: "%02x", $0) }.joined()
     let manifest = #"""
       {"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
        "config": {"mediaType": "application/vnd.devcontainers", "digest": "sha256:00", "size": 2},
@@ -441,10 +442,10 @@ final class DevContainerFeaturesTests: XCTestCase {
 
   /// The real thing, by hand: a feature fetched from ghcr.io through `OCISource`, built by Apple's
   /// runtime into the devcontainers base image, and run. Skipped unless
-  /// `TEST_RUNNER_WR_LIVE_FEATURE_TESTS=1` (network, and `container system start` run first).
+  /// `WR_LIVE_FEATURE_TESTS=1` (network, and `container system start` run first).
   func testALiveFeatureBuildsOnApplesRuntime() async throws {
     guard ProcessInfo.processInfo.environment["WR_LIVE_FEATURE_TESTS"] == "1" else {
-      throw XCTSkip("set TEST_RUNNER_WR_LIVE_FEATURE_TESTS=1 to fetch and build a real feature")
+      throw XCTSkip("set WR_LIVE_FEATURE_TESTS=1 to fetch and build a real feature")
     }
     let work = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: work) }

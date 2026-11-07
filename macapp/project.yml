@@ -56,6 +56,10 @@ packages:
   # reads over its VCS service. Both feed one VCSProviding model layer.
   WorkroomGit:
     path: Packages/WorkroomGit
+  # The Dev Containers spec a container workroom is made from (#308): devcontainer.json, its
+  # features and the container spec they make, above HostDrivers.
+  DevContainer:
+    path: Packages/DevContainer
   Sparkle:
     # Auto-update framework: polls the appcast feed and installs EdDSA-signed DMGs.
     # See WorkroomApp/Core/AppShell/Updater.swift and the SU* Info.plist keys below.
@@ -144,6 +148,7 @@ targets:
       - package: WorkroomWire
       - package: TerminalModel
       - package: WorkroomGit
+      - package: DevContainer
       - target: workroom-session
         embed: false
         link: false
@@ -360,6 +365,7 @@ targets:
       - package: WorkroomWire
       - package: TerminalModel
       - package: WorkroomGit
+      - package: DevContainer
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

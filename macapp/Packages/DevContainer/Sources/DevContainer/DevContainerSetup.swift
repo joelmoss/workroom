@@ -7,12 +7,12 @@ import WorkroomSystem
 /// the folders, the environments and the lifecycle commands, from its devcontainer.json
 /// (`DevContainerConfig`), its features' contributions, and the image itself. Pure, so the create
 /// (`WorkroomLifecycle+Create`) only fetches, builds and runs.
-enum DevContainerSetup {
+public enum DevContainerSetup {
   /// The image a project with no devcontainer.json, or one going on the default, is made from (eng
   /// review D8): the devcontainers project's plain Ubuntu (26.04; user `vscode` with passwordless
   /// sudo, git, zsh, curl), by its multi-platform index digest, so Docker on an Intel Mac gets the
   /// amd64 one. Nothing is added to it. Read from the registry 2026-10-23 (tag `ubuntu`).
-  static let pinnedDefaultImage =
+  public static let pinnedDefaultImage =
     "mcr.microsoft.com/devcontainers/base@sha256:"
     + "91eff046d5c12318fc98e59258982b87ba896c467427ed8b5dab5a02107a5db7"
 
@@ -20,7 +20,7 @@ enum DevContainerSetup {
   /// (VS Code's templates write `/workspaces/${localWorkspaceFolderBasename}`), else the spec's
   /// default, `/workspaces/<repository>`. The container's own folder isn't known yet, so
   /// `variables` has none.
-  static func workspaceFolder(
+  public static func workspaceFolder(
     _ config: DevContainerConfig?, repository: String, variables: DevContainerConfig.Variables
   ) -> String {
     // One that substitutes to nothing or a relative path (an unset `${localEnv:…}`) is no folder.
@@ -33,14 +33,14 @@ enum DevContainerSetup {
   /// The spec's `${devcontainerId}`, unique to the container it is made for: each workroom is a
   /// container of its own, so two of one project never share a volume named by it (as
   /// docker-in-docker's `/var/lib/docker`). There is no rebuild for it to survive.
-  static func newDevcontainerID() -> String {
+  public static func newDevcontainerID() -> String {
     UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
   }
 
   /// The users the features' scripts are told about (`_REMOTE_USER` and the rest), and the one the
   /// workroom runs as: the file's, else the image's devcontainer metadata, else its own, else root.
   /// A user's home is guessed as the images lay it out, since the image isn't run to ask.
-  static func users(
+  public static func users(
     _ config: DevContainerConfig?, image: ContainerHostDriver.ImageConfig
   ) -> DevContainerFeatures.Users {
     let container = config?.containerUser ?? image.metadataUser ?? image.user ?? "root"
@@ -61,7 +61,7 @@ enum DevContainerSetup {
   /// The file's `remoteEnv`, its variables substituted, `${containerEnv:…}` reading the image's
   /// environment under the file's `containerEnv`. A variable it unsets (null) is left out: the
   /// login shell's value stands.
-  static func remoteEnvironment(
+  public static func remoteEnvironment(
     _ config: DevContainerConfig?, image: ContainerHostDriver.ImageConfig,
     variables: DevContainerConfig.Variables
   ) -> [String: String] {
@@ -75,7 +75,7 @@ enum DevContainerSetup {
   /// The container to make from `image` (#308). Its environment is `containerEnv` with `remoteEnv`
   /// on top: the daemon is the only process tree in the container, so a pane's shell has both, as
   /// the spec has it for terminals (a login shell's profile can still set a variable over them).
-  static func spec(
+  public static func spec(
     image: String, config: DevContainerConfig?, contributions: DevContainerFeatures.Contributions,
     remoteEnvironment: [String: String], variables: DevContainerConfig.Variables,
     workspaceFolder: String
@@ -108,7 +108,7 @@ enum DevContainerSetup {
 
   /// The container's lifecycle commands to run after the clone, in the spec's order: each hook's
   /// features' commands, in install order, then the file's own. A hook with none is left out.
-  static func hooks(
+  public static func hooks(
     _ config: DevContainerConfig?, contributions: DevContainerFeatures.Contributions
   ) -> [(hook: DevContainerConfig.Hook, commands: [DevContainerConfig.Command])] {
     DevContainerConfig.Hook.inContainer.compactMap { hook in
@@ -123,7 +123,7 @@ enum DevContainerSetup {
   /// of the login shell's environment, each command in turn, stopping at the first that fails. A
   /// string runs in `/bin/sh`, an array without a shell, an object's entries at once, each of
   /// which must succeed (the spec's three forms).
-  static func hookScript(
+  public static func hookScript(
     _ hook: DevContainerConfig.Hook, commands: [DevContainerConfig.Command], checkout: String,
     environment: [String: String]
   ) -> String {
@@ -166,7 +166,7 @@ enum DevContainerSetup {
   /// What a container records of the config it was made from, for the Details pane to say when the
   /// repository's has moved on (eng review D7): the devcontainer.json's bytes, hashed, or the image
   /// it went on without one.
-  static func configDigest(file: Data?, image: String) -> String {
+  public static func configDigest(file: Data?, image: String) -> String {
     guard let file else { return "image:\(image)" }
     return "sha256:" + SHA256.hash(data: file).map { String(format: "%02x", $0) }.joined()
   }
@@ -174,7 +174,7 @@ enum DevContainerSetup {
   /// What the Details pane says when the repository's devcontainer.json (`current`, its digest, nil
   /// when it has none) isn't what the container was made from (`recorded`): a change applies to new
   /// workrooms only (eng review D7). Nil when they agree, or for a container made before #308.
-  static func configNote(recorded: String?, current: String?) -> String? {
+  public static func configNote(recorded: String?, current: String?) -> String? {
     guard let recorded else { return nil }
     let madeFromImage = recorded.hasPrefix("image:")
     switch (madeFromImage, current) {

@@ -15,9 +15,9 @@ import WorkroomVCS
 /// host (a Compose service), which the daemon can't reach, so it is skipped. `portsAttributes`, keyed
 /// by a single port, gives its `label` and `requireLocalPort` (refuse rather than move the forward
 /// when this Mac holds the number). Ranges and patterns in `portsAttributes` are not read.
-struct DevContainerConfig: Equatable, Sendable {
+public struct DevContainerConfig: Equatable, Sendable {
   /// What the container's image comes from.
-  enum Source: Equatable, Sendable {
+  public enum Source: Equatable, Sendable {
     /// An image reference to pull.
     case image(String)
     /// A Dockerfile to build.
@@ -26,20 +26,26 @@ struct DevContainerConfig: Equatable, Sendable {
 
   /// `build`, or the legacy top-level `dockerFile` and `context`. Paths are as written, relative to
   /// the file's own folder, for the caller to resolve.
-  struct Build: Equatable, Sendable {
-    var dockerfile: String
+  public struct Build: Equatable, Sendable {
+    public var dockerfile: String
     /// The spec's default is the file's own folder.
-    var context: String = "."
-    var args: [String: String] = [:]
-    var target: String? = nil
+    public var context: String = "."
+    public var args: [String: String] = [:]
+    public var target: String? = nil
     /// Extra build flags, passed to the runtime's build as written.
-    var options: [String] = []
+    public var options: [String] = []
   }
 
-  struct Port: Equatable, Sendable {
-    let port: UInt16
-    var label: String? = nil
-    var requireLocalPort = false
+  public struct Port: Equatable, Sendable {
+    public let port: UInt16
+    public var label: String? = nil
+    public var requireLocalPort = false
+
+    public init(port: UInt16, label: String? = nil, requireLocalPort: Bool = false) {
+      self.port = port
+      self.label = label
+      self.requireLocalPort = requireLocalPort
+    }
   }
 
   /// One of `mounts`, in either of the spec's forms. Values may hold variables
@@ -54,7 +60,7 @@ struct DevContainerConfig: Equatable, Sendable {
   }
 
   /// A lifecycle command's key.
-  enum Hook: String, CaseIterable, Sendable {
+  public enum Hook: String, CaseIterable, Sendable {
     /// Runs on the Mac, before the image is built.
     case initialize = "initializeCommand"
     case onCreate = "onCreateCommand"
@@ -65,11 +71,11 @@ struct DevContainerConfig: Equatable, Sendable {
     case postAttach = "postAttachCommand"
 
     /// The container's own commands after the clone, in the spec's order (eng review D5, D12).
-    static let inContainer: [Hook] = [.onCreate, .updateContent, .postCreate, .postStart]
+    public static let inContainer: [Hook] = [.onCreate, .updateContent, .postCreate, .postStart]
   }
 
   /// A lifecycle command, in the spec's three forms.
-  indirect enum Command: Equatable, Sendable {
+  public indirect enum Command: Equatable, Sendable {
     /// A string, run in /bin/sh.
     case shell(String)
     /// An array, run without a shell.
@@ -79,7 +85,7 @@ struct DevContainerConfig: Equatable, Sendable {
 
     /// This command with `variables` substituted in its strings, as in the file's other values:
     /// `cd ${containerWorkspaceFolder}` names the checkout, not an empty shell variable.
-    func substituting(_ variables: Variables) -> Command {
+    public func substituting(_ variables: Variables) -> Command {
       switch self {
       case .shell(let text): .shell(variables.substitute(text))
       case .exec(let argv): .exec(argv.map(variables.substitute))
@@ -89,30 +95,30 @@ struct DevContainerConfig: Equatable, Sendable {
     }
   }
 
-  struct Named: Equatable, Sendable {
-    let name: String
+  public struct Named: Equatable, Sendable {
+    public let name: String
     /// A shell or an exec command; never another parallel set.
-    let command: Command
+    public let command: Command
   }
 
   /// A feature option's value: the spec allows strings and booleans.
-  enum OptionValue: Equatable, Sendable {
+  public enum OptionValue: Equatable, Sendable {
     case string(String)
     case bool(Bool)
   }
 
   /// Nil when the file names neither an image nor a Dockerfile.
-  var source: Source?
-  var lifecycle: [Hook: Command] = [:]
+  public var source: Source?
+  public var lifecycle: [Hook: Command] = [:]
   /// Each feature's id (an OCI reference with its tag, a tarball URL, or a path relative to the
   /// file), and its options as written.
-  var features: [String: [String: OptionValue]] = [:]
+  public var features: [String: [String: OptionValue]] = [:]
   /// Feature ids, without a version, to install first, in this order.
-  var overrideFeatureInstallOrder: [String] = []
+  public var overrideFeatureInstallOrder: [String] = []
   /// The file describes Compose services (`dockerComposeFile`), not one container.
-  var usesCompose = false
+  public var usesCompose = false
   /// The ports to forward, in the file's order, each once.
-  var ports: [Port] = []
+  public var ports: [Port] = []
   /// Set on the container, so every process in it has them.
   var containerEnv: [String: String] = [:]
   /// Added to what tools, terminals and commands run with. A nil value unsets the variable.
@@ -131,13 +137,13 @@ struct DevContainerConfig: Equatable, Sendable {
   private(set) var unhonoured: [IgnoredKey] = []
 
   /// A key a workroom leaves out, and why, for the creation pane's warning row (eng review D10).
-  struct IgnoredKey: Equatable, Sendable {
-    let key: String
-    let reason: String
+  public struct IgnoredKey: Equatable, Sendable {
+    public let key: String
+    public let reason: String
   }
 
   /// Every key the file holds that a workroom on `runtime` leaves out, by key.
-  func ignoredKeys(on runtime: ContainerRuntime) -> [IgnoredKey] {
+  public func ignoredKeys(on runtime: ContainerRuntime) -> [IgnoredKey] {
     var keys = unhonoured
     if runtime == .apple {
       let reason = "a Docker setting, which Apple's container runtime doesn't take"
@@ -170,7 +176,7 @@ struct DevContainerConfig: Equatable, Sendable {
 
   /// What the spec's `${…}` variables stand for in one workroom, for the caller to apply to the
   /// values the spec allows them in (mounts, the environments, build args, run flags, commands).
-  struct Variables: Equatable, Sendable {
+  public struct Variables: Equatable, Sendable {
     /// This Mac's environment.
     var localEnv: [String: String]
     /// The container's, once it runs: only `remoteEnv` may refer to it.
@@ -180,11 +186,22 @@ struct DevContainerConfig: Equatable, Sendable {
     var containerWorkspaceFolder: String
     var devcontainerId: String
 
+    public init(
+      localEnv: [String: String], containerEnv: [String: String] = [:],
+      localWorkspaceFolder: String, containerWorkspaceFolder: String, devcontainerId: String
+    ) {
+      self.localEnv = localEnv
+      self.containerEnv = containerEnv
+      self.localWorkspaceFolder = localWorkspaceFolder
+      self.containerWorkspaceFolder = containerWorkspaceFolder
+      self.devcontainerId = devcontainerId
+    }
+
     /// `text` with every variable this knows replaced. `${localEnv:NAME}` (and VS Code's older
     /// `${env:NAME}`) and `${containerEnv:NAME}` take a default after a second colon, used when
     /// the variable is unset; unset without one is blank. Anything else, `${…}` this doesn't know
     /// or an unclosed one, is left as written.
-    func substitute(_ text: String) -> String {
+    public func substitute(_ text: String) -> String {
       var out = ""
       var rest = text[...]
       while let open = rest.range(of: "${") {
@@ -227,17 +244,17 @@ struct DevContainerConfig: Equatable, Sendable {
 
   /// Where the spec looks for the file, in its order. Its third place, one folder per
   /// configuration under `.devcontainer/`, needs a choice of configuration and is not read.
-  static let paths = [".devcontainer/devcontainer.json", ".devcontainer.json"]
+  public static let paths = [".devcontainer/devcontainer.json", ".devcontainer.json"]
 
   /// Far past any real file, which is a page of JSON.
   static let maxBytes = 256 * 1024
 
   /// The most ports one file has forwarded (`PortForwardingModel.forwardDeclared`). A real dev
   /// container declares a handful; each forward holds a listening descriptor for the launch.
-  static let maxForwards = 32
+  public static let maxForwards = 32
 
   /// The first of `paths` that `files` has, and its bytes, or nil when it has none.
-  static func read(_ files: FileProviding) async throws -> (path: String, data: Data)? {
+  public static func read(_ files: FileProviding) async throws -> (path: String, data: Data)? {
     for path in paths {
       do {
         return (
@@ -252,7 +269,7 @@ struct DevContainerConfig: Equatable, Sendable {
 
   /// The file's dev container. The file is JSON with comments and trailing commas allowed, as the
   /// spec has it.
-  static func parse(_ data: Data) throws -> DevContainerConfig {
+  public static func parse(_ data: Data) throws -> DevContainerConfig {
     let decoder = JSONDecoder()
     decoder.allowsJSON5 = true
     let file = try decoder.decode(File.self, from: data)

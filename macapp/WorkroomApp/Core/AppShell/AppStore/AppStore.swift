@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import DaemonConnection
 import Defaults
+import DevContainer
 import Foundation
 import SwiftUI
 import WorkroomDomain
