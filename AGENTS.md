@@ -23,6 +23,7 @@ Run commands from the repository root; `make` lists available targets.
 - `make app-test`: run app unit/integration tests; safe alongside other workrooms' runs. It ends with the run's pass/fail/skip counts and each failing test, read from its `.xcresult`; don't query the bundle by hand.
 - `make app-package-test`: run the tests of the local Swift packages in `macapp/Packages/` with `swift test`; `make app-test` does not run them.
 - `make app-uitest`: run XCUITest in a logged-in GUI session; it takes that session exclusively, so runs from several workrooms queue.
+- `make app-uitest-vm`: the same build and `APP_UITEST_FLAGS`, run in throwaway Tart macOS guests instead of on this Mac's screen; two guests at a time across all workrooms, a third waits. `VM_SHARDS=2` splits one run's classes over both guests. Needs tart and the `wr-uitest-base` image (`docs/designs/parallel-workroom-testing.md`).
 - `make app-test-scripts`: check packaging/helper shell scripts.
 - `make app-scripts-lint`: run shellcheck over `macapp/Scripts/*.sh`.
 - `make app-format`, `make app-lint`: format Swift and enforce strict linting. `make app-check` runs both, in that order.
