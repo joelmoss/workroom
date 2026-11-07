@@ -947,7 +947,7 @@ import WorkroomVCS
     ///
     /// `active` is a parameter, defaulting to the real flag, purely so its unit tests never have to
     /// WRITE `WorkroomUITestFixture`. Production sites still read that key at runtime (behind
-    /// `AppEnvironment.current.isFixture`, such as `AppStore.closeNeedsConfirm`), and
+    /// `AppEnvironment.current.isFixture`, such as `TabCloseFlow.closeNeedsConfirm`), and
     /// `-parallel-testing` workers are separate processes sharing one on-disk defaults domain — so a
     /// class holding the key true for the length of a test body silently changes another class's
     /// behaviour, in a worker whose diff has nothing to do with any of this. That is the same cross-worker hazard
