@@ -5,6 +5,7 @@ import WorkroomVCS
 import XCTest
 
 @testable import Workroom
+@testable import WorkroomGit
 
 /// `CLIVCSWriter.commit` against REAL git repos through the REAL `StatusCommandRunner`.
 ///

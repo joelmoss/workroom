@@ -1,3 +1,4 @@
+import WorkroomGit
 import XCTest
 
 @testable import Workroom

@@ -2,6 +2,7 @@ import WorkroomVCS
 import XCTest
 
 @testable import Workroom
+@testable import WorkroomGit
 
 /// `VCSSyncPresenter` — the toolbar's middle-segment state machine.
 ///

@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomSystem
+import WorkroomVCS
 
 /// Serializes repository WRITES per project (VCS-foundation eng-review). git worktrees of one
 /// project share the backing `.git`, so two writes running at once — a commit in one workroom, a
@@ -33,17 +34,17 @@ import WorkroomSystem
 /// but only in the rare genuine-wedge case, not for routine (fast, bounded) contention, which
 /// `maxChainWait` is sized well above. The app also refuses a second write on a project while one
 /// is running (`ProjectStore`'s writing-project counters), so two writes never queue here together.
-actor RepositoryWriteGate {
+public actor RepositoryWriteGate {
   /// The process-wide gate. Must be process-global, not an `AppStore` property — `AppStore` is
   /// instantiated fresh per window (`WorkroomApp.swift`), so a gate stored there would serialize
   /// nothing across windows even though multiple windows commonly sweep the same projects.
-  static let shared = RepositoryWriteGate()
+  public static let shared = RepositoryWriteGate()
 
   /// Default for `maxChainWait` — how long a new call waits for a same-project predecessor before
   /// giving up on it and running anyway (see the type doc's "genuinely-hung" section). Routine
   /// writes finish well inside it, so this should only ever be hit by a genuine wedge, never by
   /// routine same-project queuing.
-  static let defaultMaxChainWait: TimeInterval = 30
+  public static let defaultMaxChainWait: TimeInterval = 30
 
   private let maxChainWait: TimeInterval
   /// The most recently scheduled call's completion, per project root — the tail of that project's
@@ -53,7 +54,7 @@ actor RepositoryWriteGate {
   /// Non-private so tests construct an isolated gate instead of sharing the process-wide singleton.
   /// `maxChainWait` is injectable (default `defaultMaxChainWait`) so a test can use a short ceiling
   /// to exercise self-healing without a real 30s wait — mirrors `DiffCache(budget:)`.
-  init(maxChainWait: TimeInterval = RepositoryWriteGate.defaultMaxChainWait) {
+  public init(maxChainWait: TimeInterval = RepositoryWriteGate.defaultMaxChainWait) {
     self.maxChainWait = maxChainWait
   }
 
@@ -64,7 +65,7 @@ actor RepositoryWriteGate {
   /// (directly or transitively) — that would wait on its own tail and deadlock that project's queue
   /// for up to `maxChainWait`. No current caller does this; it's a caller invariant, not something
   /// this type can detect or guard against.
-  func run<T: Sendable>(
+  public func run<T: Sendable>(
     projectRoot: String, _ operation: @Sendable @escaping () async throws -> T
   ) async throws -> T {
     let location = try await RepositoryLocation.local(projectRoot)
@@ -73,7 +74,7 @@ actor RepositoryWriteGate {
 
   /// A validated shared identity is the ordering key. Cancellation only cancels the wait;
   /// a started operation retains this tail until its actual completion.
-  func run<T: Sendable>(
+  public func run<T: Sendable>(
     repository: RepositoryLocation, _ operation: @Sendable @escaping () async throws -> T
   ) async throws -> T {
     let previous = tails[repository]

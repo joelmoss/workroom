@@ -1,5 +1,6 @@
 import DaemonConnection
 import Foundation
+import WorkroomGit
 import WorkroomVCS
 
 /// The services on a daemon connection that return the app's own types: repository reads and

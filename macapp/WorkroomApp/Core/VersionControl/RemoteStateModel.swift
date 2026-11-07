@@ -1,6 +1,7 @@
 import Defaults
 import Foundation
 import WorkroomDomain
+import WorkroomGit
 import WorkroomVCS
 
 /// Store-owned state for the VCS toolbar: the selected workroom's branch, its divergence from the

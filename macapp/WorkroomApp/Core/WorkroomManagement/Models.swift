@@ -1,6 +1,7 @@
 import Foundation
 import HostDrivers
 import WorkroomDomain
+import WorkroomVCS
 import WorkroomWire
 
 // Mirrors the `workroom --json` public API (schema_version 1). Decoders are lenient:

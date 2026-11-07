@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomGit
 
 /// File tree for the inspector's **Files** section: list the selected repo's working tree (honoring
 /// VCS ignores), show it as a collapsible tree, and open a file read-only in the main pane. This
@@ -153,10 +154,10 @@ enum FileListing {
 
   /// The executable + args that list the working tree honoring ignore rules: tracked +
   /// untracked-but-not-ignored, NUL-separated (`-z`) so odd filenames survive. `--others` would run a
-  /// repository-configured `core.fsmonitor` command; see `gitHardening`.
+  /// repository-configured `core.fsmonitor` command; see `GitCommand.hardening`.
   static let command: (executable: String, args: [String]) = (
     "git",
-    GitRepositoryProbe.gitHardening + [
+    GitCommand.hardening + [
       "ls-files", "--cached", "--others", "--exclude-standard", "-z",
     ]
   )

@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import Workroom
+@testable import WorkroomGit
 
 /// Tests for character-level (intra-line) diff: the common-prefix/suffix trim that yields the
 /// changed byte range, and the replacement-line pairing across a hunk. Pure — operates on diff text.

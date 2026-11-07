@@ -1,7 +1,8 @@
 import WorkroomSystem
+import WorkroomVCS
 import XCTest
 
-@testable import Workroom
+@testable import WorkroomGit
 
 /// Ordered event log an `actor` so concurrent test operations can append to it race-free.
 private actor EventLog {

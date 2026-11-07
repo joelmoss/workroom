@@ -1,64 +1,8 @@
 import Foundation
 import WorkroomDomain
+import WorkroomGit
 import WorkroomSystem
-import WorkroomVCS
-
-/// Only completed validation can produce a key. Equality and hashing never touch the filesystem.
-struct RepositoryLocation: Hashable, Sendable {
-  let host: HostID
-  let path: String
-
-  private init(host: HostID, path: String) {
-    self.host = host
-    self.path = path
-  }
-
-  static func local(_ path: String) async throws -> Self {
-    guard path.hasPrefix("/"), !path.contains("\0") else {
-      throw RepositoryRoutingError.invalidPath(path)
-    }
-    return try await runBlocking {
-      Self(
-        host: .local,
-        path: URL(fileURLWithPath: path)
-          .standardizedFileURL.resolvingSymlinksInPath().path)
-    }
-  }
-
-  /// POSIX paths on another host: no URL interpretation, case folding, or local symlink lookup.
-  static func remote(host: UUID, path: String) throws -> Self {
-    let components = path.split(separator: "/", omittingEmptySubsequences: true)
-    guard path.hasPrefix("/"), !path.contains("\0"),
-      !components.contains("."), !components.contains("..")
-    else { throw RepositoryRoutingError.invalidPath(path) }
-    return Self(host: .remote(host), path: "/" + components.joined(separator: "/"))
-  }
-
-  func requireLocalURL() throws -> URL {
-    guard host == .local else { throw RepositoryRoutingError.unavailable(host) }
-    return URL(fileURLWithPath: path, isDirectory: true)
-  }
-}
-
-/// Immutable routing decision. Only the router constructs contexts from a captured registry entry.
-struct RepositoryContext: Hashable, Sendable {
-  let location: RepositoryLocation
-  /// Unknown for a fallback read. Never invent ownership from an unregistered workspace's path.
-  let sharedLocation: RepositoryLocation?
-
-  fileprivate init(location: RepositoryLocation, sharedLocation: RepositoryLocation?) throws {
-    guard sharedLocation == nil || sharedLocation?.host == location.host else {
-      throw RepositoryRoutingError.mixedHosts
-    }
-    self.location = location
-    self.sharedLocation = sharedLocation
-  }
-
-  func requireOwnership() throws -> RepositoryLocation {
-    guard let sharedLocation else { throw RepositoryRoutingError.registrationRequired }
-    return sharedLocation
-  }
-}
+@_spi(RepositoryRouting) import WorkroomVCS
 
 /// Local input → async canonicalization ─┐
 /// Remote input → pure validation ────────┴→ location → captured registry entry → bound services

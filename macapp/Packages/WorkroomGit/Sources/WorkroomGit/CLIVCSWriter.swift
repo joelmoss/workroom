@@ -3,18 +3,6 @@ import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 
-/// A VCS remote action queued behind a confirmation. Only a pull over a dirty working tree needs one:
-/// `--autostash` stashes and reapplies, and workroom trees are essentially always dirty, so this fires
-/// most times someone pulls — the copy has to be worth reading rather than a speed bump.
-///
-/// Carries the `SidebarID` it was raised for, and `AppStore.runRemoteAction` verifies it: the dialog is
-/// not modal to the sidebar, so the selection can move while it is open.
-struct PendingVCSAction: Identifiable, Equatable, Sendable {
-  let action: VCSRemoteAction
-  let sid: SidebarID
-  var id: String { "\(action.rawValue)-\(sid.hashValue)" }
-}
-
 /// `LocalVCSWriting` over the real `git` CLI.
 ///
 /// **Why the CLI and not the libraries.** SwiftGitX 0.4.0's `fetch`/`push` pass `NULL` for the options
@@ -42,7 +30,7 @@ struct PendingVCSAction: Identifiable, Equatable, Sendable {
 ///  pull  → root (fetch) + workroom
 ///  abort → workroom
 /// ```
-struct CLIVCSWriter: LocalVCSWriting, Sendable {
+public struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// The executable every write runs, and the name failure copy uses for it.
   static let tool = "git"
   let runner: StatusCommandRunning
@@ -54,10 +42,10 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   let gate: RepositoryWriteGate
   /// The host the repository is on. It keys the write gate (`gated`), so a remote path is never
   /// resolved against this disk, nor shares a queue with a local repository at the same path.
-  var host: HostID = .local
+  public var host: HostID = .local
   /// Where the classifier's disk facts come from for a repository on a remote host: that host's
   /// daemon (`DaemonClient.stat`). Nil for a local repository, which reads this Mac's disk.
-  var stat: (@Sendable (_ paths: [String], _ read: [String]) async throws -> DiskSnapshot)?
+  public var stat: (@Sendable (_ paths: [String], _ read: [String]) async throws -> DiskSnapshot)?
 
   var refTimeout: TimeInterval = 5
   var fetchTimeout: TimeInterval = 120
@@ -73,6 +61,16 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// every status probe until the user removed it by hand. Killing a commit is categorically more
   /// dangerous than killing a fetch.
   var commitTimeout: TimeInterval = 600
+
+  public init(
+    runner: StatusCommandRunning,
+    makeProvider: @escaping @Sendable (URL) throws -> LocalVCSProviding,
+    gate: RepositoryWriteGate
+  ) {
+    self.runner = runner
+    self.makeProvider = makeProvider
+    self.gate = gate
+  }
 
   // MARK: - Placement
 
@@ -144,7 +142,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// there is no picker to fill, so this only ever answers "which remotes exist" and "does my branch
   /// have a counterpart".
   static func gitRemoteRefsArgs() -> [String] {
-    GitRepositoryProbe.gitHardening + [
+    GitCommand.hardening + [
       "for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", "refs/remotes",
     ]
   }
@@ -157,7 +155,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// perfectly well. Config is the authority for "is there a remote"; the refs still answer "does my
   /// branch have a counterpart".
   static func gitRemoteListArgs() -> [String] {
-    GitRepositoryProbe.gitHardening + ["remote"]
+    GitCommand.hardening + ["remote"]
   }
 
   /// Exact two-way divergence, independent of the user's `push.default`.
@@ -172,7 +170,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// `A...B` with `--left-right --count` prints `<only in A>\t<only in B>`, so with `A = HEAD` the
   /// left number is ahead and the right is behind.
   static func gitCountsArgs(remote: String, branch: String) -> [String] {
-    GitRepositoryProbe.gitHardening + [
+    GitCommand.hardening + [
       "rev-list", "--left-right", "--count", "HEAD...refs/remotes/\(remote)/\(branch)",
     ]
   }
@@ -182,7 +180,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// either — `FETCH_HEAD` is exactly what `gitLastFetch` reads.
   /// `--` closes the option list. See `gitPushArgs` for why every builder in this file does that.
   static func gitFetchArgs(remote: String) -> [String] {
-    GitRepositoryProbe.gitHardening + ["fetch", "--", remote]
+    GitCommand.hardening + ["fetch", "--", remote]
   }
 
   /// `--set-upstream` only when there is no counterpart yet; passing it on every push would rewrite
@@ -209,7 +207,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// and it also pins the push to this one ref regardless of `push.default`. `--` alone would fix THIS
   /// builder, but not the pull one (see `gitPullArgs`), so both use refspecs for one rule.
   static func gitPushArgs(branch: String, remote: String, setUpstream: Bool) -> [String] {
-    GitRepositoryProbe.gitHardening + ["push", "--porcelain"]
+    GitCommand.hardening + ["push", "--porcelain"]
       + (setUpstream ? ["--set-upstream"] : [])
       + ["--", remote, "refs/heads/\(branch):refs/heads/\(branch)"]
   }
@@ -240,12 +238,12 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// `fetch -- <remote> <branch>`. So the operand boundary is per-subcommand and cannot be reasoned about
   /// from `--` alone; a `refs/heads/` prefix can never look like an option, so that is the rule used.
   static func gitPullArgs(remote: String, branch: String) -> [String] {
-    GitRepositoryProbe.gitHardening
+    GitCommand.hardening
       + ["pull", "--rebase", "--autostash", "--", remote, "refs/heads/\(branch)"]
   }
 
   static func gitAbortRebaseArgs() -> [String] {
-    GitRepositoryProbe.gitHardening + ["rebase", "--abort"]
+    GitCommand.hardening + ["rebase", "--abort"]
   }
 
   // MARK: - git commit argument builders
@@ -315,7 +313,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// `gitUnstageArgs` when the commit that follows it fails. Tracked files are never staged — see
   /// `gitCommitOnlyArgs`.
   static func gitIntentToAddArgs() -> [String] {
-    GitRepositoryProbe.gitHardening
+    GitCommand.hardening
       + ["add", "--intent-to-add", "--pathspec-from-file=-", "--pathspec-file-nul"]
   }
 
@@ -325,7 +323,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// untracked, exactly as the user left it. `--ignore-unmatch` so a path something else removed in
   /// the meantime cannot turn cleanup into a second error on top of the one being reported.
   static func gitUnstageArgs() -> [String] {
-    GitRepositoryProbe.gitHardening
+    GitCommand.hardening
       + [
         "rm", "--cached", "--quiet", "--ignore-unmatch", "--pathspec-from-file=-",
         "--pathspec-file-nul",
@@ -345,7 +343,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// argument. Note `--cleanup` still applies: git strips trailing whitespace and collapses runs of
   /// blank lines, so what is recorded can differ slightly from what was typed.
   static func gitCommitOnlyArgs(message: String) -> [String] {
-    GitRepositoryProbe.gitHardening
+    GitCommand.hardening
       + ["commit", "--only", "--pathspec-from-file=-", "--pathspec-file-nul", "-m", message]
   }
 
@@ -356,7 +354,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// entire premise is that you choose what gets recorded, an Amend that silently commits whatever
   /// happens to be staged is the same defect wearing a different verb.
   static func gitAmendMessageArgs(message: String) -> [String] {
-    GitRepositoryProbe.gitHardening + ["commit", "--amend", "--only", "-m", message]
+    GitCommand.hardening + ["commit", "--amend", "--only", "-m", message]
   }
 
   /// Porcelain status for the staged-content guard.
@@ -367,7 +365,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// paths as argv is the `E2BIG` problem the commit path avoids. One unfiltered read plus an
   /// in-memory filter is cheaper and cannot fail on an odd name.
   static func gitStatusPorcelainArgs() -> [String] {
-    GitRepositoryProbe.gitHardening + ["status", "--porcelain", "-z"]
+    GitCommand.hardening + ["status", "--porcelain", "-z"]
   }
 
   /// Which of `paths` hold staged content that committing would DISCARD.
@@ -410,12 +408,12 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// Used to tell "the commit didn't happen" from "the commit happened and something after it
   /// failed" — see `VCSCommitResult.committedThenFailed`.
   static func gitHeadArgs() -> [String] {
-    GitRepositoryProbe.gitHardening + ["rev-parse", "--verify", "HEAD"]
+    GitCommand.hardening + ["rev-parse", "--verify", "HEAD"]
   }
 
   /// Exits 1 with no output only when HEAD names no commit yet; any failed read exits 128.
   static func gitUnbornHeadArgs() -> [String] {
-    GitRepositoryProbe.gitHardening + ["rev-parse", "--verify", "-q", "HEAD"]
+    GitCommand.hardening + ["rev-parse", "--verify", "-q", "HEAD"]
   }
 
   /// The subject of the commit an amend would rewrite.
@@ -425,7 +423,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// destroys before the click, not leave it recoverable only from the reflog. `%s` rather than `%B`
   /// deliberately — this is a label, and a multi-line body would wrap the dialog.
   static func gitHeadSubjectArgs() -> [String] {
-    GitRepositoryProbe.gitHardening + ["log", "-1", "--no-color", "--pretty=format:%h %s"]
+    GitCommand.hardening + ["log", "-1", "--no-color", "--pretty=format:%h %s"]
   }
 
   // MARK: - Parsers
@@ -887,7 +885,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
 
   // MARK: - Remote state
 
-  func remoteState(path: String, projectRoot: String) async -> VCSRemoteResolution {
+  public func remoteState(path: String, projectRoot: String) async -> VCSRemoteResolution {
     let root = URL(fileURLWithPath: path, isDirectory: true)
     let current: VCSRef
     do {
@@ -957,7 +955,9 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
 
   // MARK: - Actions
 
-  func fetch(path: String, projectRoot: String, remote: String) async -> VCSRemoteActionResult {
+  public func fetch(path: String, projectRoot: String, remote: String) async
+    -> VCSRemoteActionResult
+  {
     let dir = Self.opDirectory(.fetch, path: path, projectRoot: projectRoot)
     let args = Self.gitFetchArgs(remote: remote)
     guard
@@ -973,7 +973,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     return .ok(summary: "Fetched \(remote)")
   }
 
-  func push(
+  public func push(
     path: String, projectRoot: String, current: VCSRef, remote: String, setUpstream: Bool
   ) async -> VCSRemoteActionResult {
     let dir = Self.opDirectory(.push, path: path, projectRoot: projectRoot)
@@ -994,7 +994,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     return .ok(summary: "Pushed to \(remote)")
   }
 
-  func pullRebase(
+  public func pullRebase(
     path: String, projectRoot: String, current: VCSRef, remote: String,
     tracking: VCSTracking?
   ) async -> VCSRemoteActionResult {
@@ -1042,7 +1042,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     return current.name
   }
 
-  func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult {
+  public func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult {
     let dir = Self.opDirectory(.abortRebase, path: path, projectRoot: projectRoot)
     guard
       let result = await gated(
@@ -1061,7 +1061,8 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
 
   // MARK: - Commit
 
-  func commit(path: String, projectRoot: String, request: VCSCommitRequest) async -> VCSCommitResult
+  public func commit(path: String, projectRoot: String, request: VCSCommitRequest) async
+    -> VCSCommitResult
   {
     // A parked merge/cherry-pick/rebase/bisect makes a path-limited commit outright invalid, and
     // finishing it is the user's call. Checked before the ref snapshot so nothing is spawned at all.
@@ -1227,7 +1228,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// A pre-flight rather than a refusal: a partially-staged file is a legitimate thing to commit from
   /// — the user just has to know that the version on disk is the one that lands. Silence is the only
   /// unacceptable option, because the loss leaves no trace (`git status` is clean afterwards).
-  func stagedContentAtRisk(path: String, files: [ChangedFile]) async throws -> [String] {
+  public func stagedContentAtRisk(path: String, files: [ChangedFile]) async throws -> [String] {
     guard !files.isEmpty else { return [] }
     let result = await run(Self.gitStatusPorcelainArgs(), in: path, timeout: refTimeout)
     guard result.ok else { throw VCSError.io("Could not check staged content: \(result.stderr)") }
@@ -1237,7 +1238,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
 
   /// What the commit dialog shows before it writes. Ungated and read-only: a `rev-parse`-class
   /// read plus a directory listing.
-  func commitPreflight(path: String) async throws -> VCSCommitPreflight {
+  public func commitPreflight(path: String) async throws -> VCSCommitPreflight {
     let head = await run(Self.gitHeadSubjectArgs(), in: path, timeout: refTimeout)
     if !head.ok {
       // An unborn branch is a valid preflight. A missing/corrupt repository or failed runner isn't.
@@ -1283,7 +1284,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     return value.isEmpty ? nil : value
   }
 
-  static func commitSummary(_ mode: VCSCommitMode) -> String {
+  public static func commitSummary(_ mode: VCSCommitMode) -> String {
     switch mode {
     case .commit: return "Committed"
     case .amendMessage: return "Amended the last commit"

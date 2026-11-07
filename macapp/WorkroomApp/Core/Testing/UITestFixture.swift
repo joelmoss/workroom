@@ -5,6 +5,7 @@ import DesignSystem
 import Foundation
 import SyntaxHighlighting
 import WorkroomDomain
+import WorkroomGit
 import WorkroomVCS
 
 // **Debug only, by construction (ADR 0022).** A Release build compiles none of this file, so it

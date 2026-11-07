@@ -1,6 +1,7 @@
 import Defaults
 import SwiftUI
 import SyntaxHighlighting
+import WorkroomGit
 import WorkroomVCS
 
 /// Stable identity for a `UnifiedDiff.Line` within ONE loaded diff (`DiffResolver` always resolves a

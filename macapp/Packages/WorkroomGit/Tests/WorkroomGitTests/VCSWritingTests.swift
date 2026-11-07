@@ -2,7 +2,7 @@ import WorkroomSystem
 import WorkroomVCS
 import XCTest
 
-@testable import Workroom
+@testable import WorkroomGit
 
 /// `CLIVCSWriter`'s pure surface: argument builders, parsers, placement and failure classification.
 ///
@@ -48,7 +48,7 @@ final class VCSWritingTests: XCTestCase {
       CLIVCSWriter.gitAbortRebaseArgs(),
     ] {
       XCTAssertEqual(
-        Array(args.prefix(2)), GitRepositoryProbe.gitHardening,
+        Array(args.prefix(2)), GitCommand.hardening,
         "every git invocation must be hardened: \(args)")
     }
   }
@@ -762,7 +762,7 @@ final class VCSWritingTests: XCTestCase {
   /// commit path makes.
   func testIntentToAddReadsPathsFromStdin() {
     let args = CLIVCSWriter.gitIntentToAddArgs()
-    // `gitHardening` comes first, so the subcommand is not at index 0.
+    // `GitCommand.hardening` comes first, so the subcommand is not at index 0.
     XCTAssertEqual(args.first(where: { !$0.hasPrefix("-") && $0 != "core.fsmonitor=" }), "add")
     XCTAssertTrue(args.contains("--intent-to-add"))
     XCTAssertTrue(args.contains("--pathspec-from-file=-"))
@@ -796,7 +796,7 @@ final class VCSWritingTests: XCTestCase {
   /// reverse a change they never made.
   func testUnstageArgsRemoveOnlyTheIndexEntryNotTheFile() {
     let args = CLIVCSWriter.gitUnstageArgs()
-    XCTAssertEqual(Array(args.prefix(2)), GitRepositoryProbe.gitHardening)
+    XCTAssertEqual(Array(args.prefix(2)), GitCommand.hardening)
     XCTAssertTrue(args.contains("rm"))
     XCTAssertTrue(args.contains("--cached"), "the file itself must survive; only the entry goes")
     XCTAssertTrue(
@@ -810,7 +810,7 @@ final class VCSWritingTests: XCTestCase {
   /// wrap the dialog. Read-only, hardened, and `--no-color` so the label can never carry escapes.
   func testHeadSubjectReadIsAOneLineLabel() {
     let args = CLIVCSWriter.gitHeadSubjectArgs()
-    XCTAssertEqual(Array(args.prefix(2)), GitRepositoryProbe.gitHardening)
+    XCTAssertEqual(Array(args.prefix(2)), GitCommand.hardening)
     XCTAssertTrue(args.contains("-1"), "one commit: the one amend would rewrite")
     XCTAssertTrue(args.contains("--pretty=format:%h %s"))
     XCTAssertTrue(args.contains("--no-color"), "a label must not carry terminal escapes")

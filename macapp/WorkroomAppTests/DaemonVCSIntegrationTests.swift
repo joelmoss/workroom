@@ -1,5 +1,6 @@
 import DaemonConnection
 import WorkroomDomain
+import WorkroomGit
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -692,7 +693,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
   /// a running daemon whose `capabilities` reply has `reads: 9` but no `writes` (or a version the
   /// `writes` count check rejects), so `reader(for:)` resolves through the REAL daemon while
   /// `writer(for:)`'s capability check alone fails — leaving the native `CLIVCSWriter` fallback
-  /// wired to a daemon-sourced `reader`, not a freshly-native one (`RepositoryLocation.swift`'s
+  /// wired to a daemon-sourced `reader`, not a freshly-native one (`RepositoryRouter.swift`'s
   /// `writer(for:)`). A code-review pass flagged that the all-native version above never exercises
   /// this reader/writer-origin mismatch.
   func testWriteCapabilityFallbackWorksWithADaemonSourcedReader() async throws {

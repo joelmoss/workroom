@@ -2,33 +2,51 @@ import Foundation
 
 /// A parsed unified / `--git` diff, broken into hunks. Used by the in-app diff viewer (issue #66)
 /// to render old/new side-by-side or inline, with syntax highlighting applied per line.
-struct UnifiedDiff: Equatable, Sendable {
-  var hunks: [Hunk]
+public struct UnifiedDiff: Equatable, Sendable {
+  public var hunks: [Hunk]
   /// `true` when the line cap was hit and the remainder of the diff was dropped.
-  var truncated: Bool
+  public var truncated: Bool
   /// The old path from a `rename from <path>` header, when present; otherwise `nil`.
-  var renamedFrom: String?
+  public var renamedFrom: String?
 
-  struct Hunk: Equatable, Sendable {
-    /// Verbatim `@@ -a,b +c,d @@ optional section heading` line.
-    var header: String
-    var lines: [Line]
+  public init(hunks: [Hunk], truncated: Bool, renamedFrom: String? = nil) {
+    self.hunks = hunks
+    self.truncated = truncated
+    self.renamedFrom = renamedFrom
   }
 
-  struct Line: Equatable, Sendable {
-    enum Kind: Hashable, Sendable {
+  public struct Hunk: Equatable, Sendable {
+    /// Verbatim `@@ -a,b +c,d @@ optional section heading` line.
+    public var header: String
+    public var lines: [Line]
+
+    public init(header: String, lines: [Line]) {
+      self.header = header
+      self.lines = lines
+    }
+  }
+
+  public struct Line: Equatable, Sendable {
+    public enum Kind: Hashable, Sendable {
       case context
       case addition
       case deletion
     }
 
-    var kind: Kind
+    public var kind: Kind
     /// Content without the leading `+`/`-`/` ` marker; no trailing newline.
-    var text: String
+    public var text: String
     /// 1-based old-file line number; `nil` for additions.
-    var oldLine: Int?
+    public var oldLine: Int?
     /// 1-based new-file line number; `nil` for deletions.
-    var newLine: Int?
+    public var newLine: Int?
+
+    public init(kind: Kind, text: String, oldLine: Int? = nil, newLine: Int? = nil) {
+      self.kind = kind
+      self.text = text
+      self.oldLine = oldLine
+      self.newLine = newLine
+    }
   }
 
   /// Parse unified / `--git` diff text into hunks.
@@ -38,7 +56,7 @@ struct UnifiedDiff: Equatable, Sendable {
   /// lines are reached and sets `truncated = true` (the current structure is finished cleanly). A
   /// `\ No newline at end of file` marker is dropped (not a content line). Multi-file diffs have all
   /// their hunks flattened into one list in document order.
-  static func parse(_ raw: String, lineCap: Int = 2000) -> UnifiedDiff {
+  public static func parse(_ raw: String, lineCap: Int = 2000) -> UnifiedDiff {
     guard !raw.isEmpty else { return UnifiedDiff(hunks: [], truncated: false, renamedFrom: nil) }
 
     var hunks: [Hunk] = []
@@ -162,7 +180,7 @@ struct UnifiedDiff: Equatable, Sendable {
   /// `true` when the diff output is the binary sentinel — either the one-line
   /// `Binary files a/x and b/x differ` message, or a `GIT binary patch` block. When `true`
   /// there are no textual hunks to render.
-  static func isBinary(_ raw: String) -> Bool {
+  public static func isBinary(_ raw: String) -> Bool {
     for rawLine in raw.split(separator: "\n", omittingEmptySubsequences: false) {
       let line = String(rawLine)
       if line.hasPrefix("Binary files") && line.hasSuffix("differ") { return true }
@@ -175,9 +193,14 @@ struct UnifiedDiff: Equatable, Sendable {
 extension UnifiedDiff {
   /// One aligned row of the side-by-side view (issue #66). `left` is the old side (deletions +
   /// context), `right` the new side (additions + context); a `nil` side is an absent/blank cell.
-  struct SideBySideRow: Equatable, Sendable {
-    var left: Line?
-    var right: Line?
+  public struct SideBySideRow: Equatable, Sendable {
+    public var left: Line?
+    public var right: Line?
+
+    public init(left: Line? = nil, right: Line? = nil) {
+      self.left = left
+      self.right = right
+    }
   }
 
   /// Convert a hunk's interleaved lines into aligned old(left)/new(right) rows.
@@ -190,7 +213,7 @@ extension UnifiedDiff {
   ///     -old2          →       left=old2 | right=nil     (uneven: padded)
   ///      ctx                   left=ctx  | right=ctx      (context: both sides)
   ///            +new2           left=nil  | right=new2     (pure addition)
-  static func sideBySideRows(for hunk: Hunk) -> [SideBySideRow] {
+  public static func sideBySideRows(for hunk: Hunk) -> [SideBySideRow] {
     var rows: [SideBySideRow] = []
     var dels: [Line] = []
     var adds: [Line] = []
@@ -219,7 +242,7 @@ extension UnifiedDiff {
   /// Added/removed line counts across every hunk. Pure — callers (DiffViewer) compute this once
   /// per load and cache it, the same as `sideBySideRows`/`IntraLineDiff.emphasis`, rather than
   /// re-walking the diff on every render.
-  static func lineStats(for diff: UnifiedDiff) -> (additions: Int, removals: Int) {
+  public static func lineStats(for diff: UnifiedDiff) -> (additions: Int, removals: Int) {
     var additions = 0
     var removals = 0
     for hunk in diff.hunks {

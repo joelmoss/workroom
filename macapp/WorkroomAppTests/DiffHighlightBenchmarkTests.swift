@@ -1,5 +1,6 @@
 import AppKit
 import SyntaxHighlighting
+import WorkroomGit
 import XCTest
 
 @testable import Workroom

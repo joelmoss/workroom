@@ -5,6 +5,7 @@ import WorkroomVCS
 import XCTest
 
 @testable import Workroom
+@testable import WorkroomGit
 
 /// The replies' own decode contract (older daemons' refs, commits and statuses) is the package's:
 /// `DaemonVCSWireTests`, in DaemonConnection.

@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import Workroom
+@testable import WorkroomGit
 
 final class UnifiedDiffTests: XCTestCase {
 

@@ -1,6 +1,7 @@
 import DesignSystem
 import SwiftUI
 import SyntaxHighlighting
+import WorkroomGit
 
 /// Maps whole-file highlight spans onto a diff's lines, producing one coloured `AttributedString`
 /// per **new-file line number** for the added/context lines. Pure (no I/O, no parse) and the single

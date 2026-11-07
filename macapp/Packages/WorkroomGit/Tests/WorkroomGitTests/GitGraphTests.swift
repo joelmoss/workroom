@@ -1,7 +1,7 @@
 import WorkroomSystem
 import XCTest
 
-@testable import Workroom
+@testable import WorkroomGit
 
 /// `GitGraph` unit tests against REAL throwaway git repos (`GitCommitDiffTests` covers the other raw
 /// libgit2 reader). What matters is not the graph math — libgit2 owns that — but the CONTRACT:

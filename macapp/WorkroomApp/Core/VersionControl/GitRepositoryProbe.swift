@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomGit
 import WorkroomSystem
 
 /// The few facts the app reads from a checkout on this Mac by running `git` itself, rather than
@@ -18,14 +19,6 @@ struct GitRepositoryProbe: Sendable {
     self.timeout = timeout
     self.networkTimeout = networkTimeout
   }
-
-  /// `-c` overrides prepended to every `git` invocation that can read the index or run a diff (the
-  /// origin and remote probes below read only config and refs, so they go without). A workroom can
-  /// be a clone of an *untrusted* repo, and the status sweep runs git automatically on
-  /// load/focus/selection — without this, a repo-local `core.fsmonitor` runs an arbitrary program on a plain `git status`. The diff probe
-  /// additionally passes `--no-ext-diff`/`--no-textconv` (and the runner unsets `GIT_EXTERNAL_DIFF`)
-  /// so `diff.external`/textconv config can't execute either. These flags go before the subcommand.
-  static let gitHardening = ["-c", "core.fsmonitor="]
 
   /// The GitHub repository `dir`'s `origin` remote names, from git alone (#260): for a remote
   /// workroom's create when `gh` can't answer, since a remote provider's workroom needs no `gh`.
@@ -83,7 +76,7 @@ struct GitRepositoryProbe: Sendable {
   /// `nil` ⇒ unresolved ⇒ absent.
   private func ciMatchCommit(path: String) async -> String? {
     let r = await runner.run(
-      "git", Self.gitHardening + ["rev-parse", "HEAD"], in: path, timeout: timeout)
+      "git", GitCommand.hardening + ["rev-parse", "HEAD"], in: path, timeout: timeout)
     guard r.ok else { return nil }
     let sha = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
     return sha.isEmpty ? nil : sha
@@ -97,7 +90,7 @@ struct GitRepositoryProbe: Sendable {
     var branchName = branch
     if branchName == nil {
       let b = await runner.run(
-        "git", Self.gitHardening + ["symbolic-ref", "--quiet", "--short", "HEAD"], in: path,
+        "git", GitCommand.hardening + ["symbolic-ref", "--quiet", "--short", "HEAD"], in: path,
         timeout: timeout)
       branchName = b.ok ? b.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : nil
     }

@@ -11,10 +11,10 @@ import Foundation
 /// intra-line emphasis (the whole line is the change, already shown by its line tint). The changed
 /// range is the middle left after trimming the common prefix + suffix (grapheme-aware, so
 /// multibyte/combining characters are never split).
-enum IntraLineDiff {
+public enum IntraLineDiff {
   /// Line-relative UTF-8 byte ranges that changed, keyed by line number: deletions by `oldLine`,
   /// additions by `newLine` (a number can repeat across the two sides).
-  static func emphasis(for diff: UnifiedDiff)
+  public static func emphasis(for diff: UnifiedDiff)
     -> (deletions: [Int: Range<Int>], additions: [Int: Range<Int>])
   {
     var deletions: [Int: Range<Int>] = [:]

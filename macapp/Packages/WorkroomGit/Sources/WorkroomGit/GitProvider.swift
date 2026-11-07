@@ -17,8 +17,10 @@ import WorkroomVCS
 /// Errors are caught untyped (`catch { … "\(error)" }`) on purpose: binding SwiftGitX's typed-throws
 /// error (`catch let e as SwiftGitXError`) trips a Swift 6 SIL ownership error across the async
 /// boundary.
-struct GitProvider: LocalVCSProviding {
-  func log(root: URL, limit: Int) throws -> VCSHistoryPage {
+public struct GitProvider: LocalVCSProviding {
+  public init() {}
+
+  public func log(root: URL, limit: Int) throws -> VCSHistoryPage {
     do {
       let repo = try Repository.open(at: root)
       // A repo with no commits yet (unborn HEAD) is an empty history, not a failure.
@@ -45,7 +47,7 @@ struct GitProvider: LocalVCSProviding {
     }
   }
 
-  func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
+  public func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
     try await runBlocking {
       do {
         let repo = try Repository.open(at: root)
@@ -78,7 +80,7 @@ struct GitProvider: LocalVCSProviding {
     }
   }
 
-  func currentRef(root: URL) async throws -> VCSRef {
+  public func currentRef(root: URL) async throws -> VCSRef {
     try await runBlocking {
       do {
         let repo = try Repository.open(at: root)
@@ -101,7 +103,7 @@ struct GitProvider: LocalVCSProviding {
     }
   }
 
-  func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
+  public func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
     try await runBlocking {
       do {
         let repo = try Repository.open(at: root)
@@ -125,7 +127,7 @@ struct GitProvider: LocalVCSProviding {
   /// built structurally from libgit2 (no subprocess, no `git diff` shell-out). Per-file by
   /// construction: it fetches the single path's status delta, then builds just that file's `Patch`
   /// (`git_patch_from_blob*`) — never a whole-worktree diff.
-  func workingFileDiff(root: URL, path: String) async throws -> String {
+  public func workingFileDiff(root: URL, path: String) async throws -> String {
     try await runBlocking {
       do {
         let repo = try Repository.open(at: root)
@@ -173,7 +175,7 @@ struct GitProvider: LocalVCSProviding {
   /// commit's tree to the blob (no subprocess). `nil` ⇒ path absent at that commit / not a blob /
   /// over the highlight cap / non-UTF-8 (binary) → the caller renders plain. Offloaded to GCD
   /// (`runBlocking`) so the synchronous libgit2 walk never runs on the fixed-width cooperative pool.
-  func fileContent(root: URL, rev: String, path: String) async throws -> String? {
+  public func fileContent(root: URL, rev: String, path: String) async throws -> String? {
     try await runBlocking {
       do {
         let repo = try Repository.open(at: root)
@@ -186,7 +188,9 @@ struct GitProvider: LocalVCSProviding {
 
   /// Old-side content of `path` at commit `rev`'s first parent (for highlighting deleted lines).
   /// `nil` for a root commit (no parent) / absent-at-parent / binary / over cap. GCD-offloaded.
-  func commitParentFileContent(root: URL, commitID: String, path: String) async throws -> String? {
+  public func commitParentFileContent(root: URL, commitID: String, path: String) async throws
+    -> String?
+  {
     try await runBlocking {
       do {
         let repo = try Repository.open(at: root)
@@ -200,7 +204,7 @@ struct GitProvider: LocalVCSProviding {
   }
 
   /// Old-side content of `path` for a working-copy diff — the file at `HEAD`. GCD-offloaded.
-  func workingBaseFileContent(root: URL, path: String) async throws
+  public func workingBaseFileContent(root: URL, path: String) async throws
     -> String?
   {
     try await runBlocking {
@@ -322,7 +326,7 @@ struct GitProvider: LocalVCSProviding {
   /// libgit2 needs no such flags here: its fsmonitor support is the bool/IPC form (it never spawns a
   /// `core.fsmonitor` hook program), and its status/diff don't honor `diff.external`/textconv — so
   /// there's no config-driven code-execution surface to neutralise.
-  func workingStatus(root: URL) throws -> WorkroomStatus {
+  public func workingStatus(root: URL) throws -> WorkroomStatus {
     do {
       let repo = try Repository.open(at: root)
       var files: [ChangedFile] = []

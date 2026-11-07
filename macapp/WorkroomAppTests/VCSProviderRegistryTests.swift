@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomDomain
+import WorkroomGit
 import WorkroomSystem
 import WorkroomVCS
 import XCTest

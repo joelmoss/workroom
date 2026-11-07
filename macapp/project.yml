@@ -51,19 +51,11 @@ packages:
     path: Packages/SyntaxHighlighting
   TerminalModel:
     path: Packages/TerminalModel
-  # git backend: SwiftGitX (libgit2, pure-Swift). Local repositories are read here; the bundled
-  # workroomd serves the same reads over its VCS service. Both feed one VCSProviding model layer.
-  SwiftGitX:
-    url: https://github.com/ibrahimcetin/SwiftGitX
-    exactVersion: "0.4.0"
-  # Raw libgit2, linked DIRECTLY as well as through SwiftGitX. SwiftGitX cannot express a commit RANGE
-  # (its CommitSequence only calls git_revwalk_push, never git_revwalk_hide) and keeps its repository
-  # pointer internal, so push-state reachability (Core/VersionControl/GitGraph.swift) needs the C API itself. URL and
-  # version match SwiftGitX's own dependency EXACTLY (`.git` suffix included) so SwiftPM resolves one
-  # package identity, not two.
-  libgit2:
-    url: https://github.com/ibrahimcetin/libgit2.git
-    exactVersion: "1.9.2"
+  # The local git engine (SwiftGitX and raw libgit2, ADR 0002). The SwiftGitX and libgit2 pins live
+  # in its Package.swift. Local repositories are read here; the bundled workroomd serves the same
+  # reads over its VCS service. Both feed one VCSProviding model layer.
+  WorkroomGit:
+    path: Packages/WorkroomGit
   Sparkle:
     # Auto-update framework: polls the appcast feed and installs EdDSA-signed DMGs.
     # See WorkroomApp/Core/AppShell/Updater.swift and the SU* Info.plist keys below.
@@ -133,11 +125,6 @@ targets:
         buildPhase: resources
     dependencies:
       - package: Sparkle
-      - package: SwiftGitX
-        product: SwiftGitX
-      # The C API behind SwiftGitX, for the reachability reads it doesn't expose (Core/VersionControl/GitGraph.swift).
-      - package: libgit2
-        product: libgit2
       # libghostty: link the raw C API product (GhosttyKit). Its package links c++ + Carbon;
       # the static Ghostty archive additionally needs these system frameworks at final link
       # (GPU renderer + CoreText font backend + HID).
@@ -156,6 +143,7 @@ targets:
       - package: HostDrivers
       - package: WorkroomWire
       - package: TerminalModel
+      - package: WorkroomGit
       - target: workroom-session
         embed: false
         link: false
@@ -371,6 +359,7 @@ targets:
       - package: HostDrivers
       - package: WorkroomWire
       - package: TerminalModel
+      - package: WorkroomGit
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

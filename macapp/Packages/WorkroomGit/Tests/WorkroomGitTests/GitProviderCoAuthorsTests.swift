@@ -1,7 +1,7 @@
 import WorkroomVCS
 import XCTest
 
-@testable import Workroom
+@testable import WorkroomGit
 
 /// `GitProvider.coAuthors` parses GitHub-style `Co-authored-by:` trailers — git's author field holds
 /// only one person, so co-authored commits need the trailer to show everyone (the rails repro:

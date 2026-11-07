@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import Workroom
+@testable import WorkroomGit
 
 /// Tests for the shared replacement-line pairing rule (deletion *k* ↔ addition *k*, shorter side
 /// padded with `nil`) used by both intra-line emphasis and the side-by-side diff layout.

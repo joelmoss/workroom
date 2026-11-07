@@ -2,7 +2,7 @@ import WorkroomSystem
 import WorkroomVCS
 import XCTest
 
-@testable import Workroom
+@testable import WorkroomGit
 
 /// `GitCommitDiff` unit tests against REAL throwaway git repos, in the shape of `GitGraphTests` (the
 /// other raw-libgit2 reader). What matters isn't the similarity math — libgit2 owns that — but the
