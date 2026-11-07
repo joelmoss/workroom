@@ -1,16 +1,27 @@
 """Regression tests for the path filter that decides which CI jobs a pull request runs."""
 
 import io
+import json
 import re
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from changed_areas import JOBS, areas, main
+from changed_areas import JOBS, RULES, areas, main
 
 ROOT = Path(__file__).resolve().parents[2]
 GITHUB = ROOT / ".github"
+PREGATE = json.loads((ROOT / ".gstack" / "pregate.json").read_text())["dependencies"]
+
+# Trees whose rule here is a catch-all after narrower rules for their subtrees, which pregate maps
+# one subtree at a time instead of with one key for the whole tree.
+CARVED = {
+    "macapp/": "pregate maps the app's sources, tests, packages, resources and scripts each to its "
+               "own gate; one key for all of macapp/ would give the scripts the app's gate",
+    "testdata/": "each fixture table has a rule here and a key there; the catch-all only catches "
+                 "a table neither names yet",
+}
 
 
 def needed(*paths):
@@ -201,6 +212,33 @@ class WorkflowReadersTests(unittest.TestCase):
             if re.search(r"make app-(package-)?test([^-]|$)", path.read_text(), re.M):
                 with self.subTest(workflow=path.name):
                     self.assertIn("scripts", needed(f".github/workflows/{path.name}"))
+
+
+class PregateMapTests(unittest.TestCase):
+    """CI's map is the source of truth: .gstack/pregate.json, the local pre-landing gate's map of
+    path to tests, must name every tree this one sends to a job."""
+
+    def test_pregate_has_a_lane_for_every_tree_ci_tests(self):
+        for patterns, jobs in RULES:
+            for pattern in patterns:
+                if not jobs or not pattern.endswith("/*") or pattern[:-1] in CARVED:
+                    continue
+                tree = pattern[:-1]
+                # The tree itself or one of its parents, as `<dir>/**` with at least one test.
+                parents = {tree[:end + 1] for end, char in enumerate(tree) if char == "/"}
+                with self.subTest(tree=tree):
+                    self.assertTrue(
+                        any(key.endswith("/**") and key[:-2] in parents and tests
+                            for key, tests in PREGATE.items()),
+                        f"pregate.json has no `{tree}**` key with tests, nor one for a parent")
+
+    def test_each_carved_tree_is_a_catch_all_after_narrower_rules(self):
+        for tree in CARVED:
+            with self.subTest(tree=tree):
+                index = next(i for i, (patterns, _) in enumerate(RULES)
+                             if f"{tree}*" in patterns)
+                self.assertTrue(any(pattern.startswith(tree) and pattern != f"{tree}*"
+                                    for patterns, _ in RULES[:index] for pattern in patterns))
 
 
 if __name__ == "__main__":
