@@ -94,6 +94,14 @@ final class RunCommandTests: XCTestCase {
     }
   }
 
+  /// Give the run tab a session where its window's helper gave it none, as a daemon would have.
+  private func giveRunSession(_ store: AppStore, _ target: TerminalTarget) {
+    guard let tab = store.runCommand.runTabID(for: target.id),
+      store.terminals.sessionID(forTab: tab, inTarget: target.id) == nil
+    else { return }
+    store.terminals.giveSession(UUID(), toTab: tab, in: target)
+  }
+
   // MARK: Storage
 
   func testRunConfigRoundTripAndRemoval() {
@@ -1796,7 +1804,7 @@ final class RunCommandTests: XCTestCase {
     store.startRunCommand(for: t)
     let view = try! XCTUnwrap(runView(store, t))
     view.awaitsMountOverrideForTesting = true
-    view.attachment.sessionID = view.attachment.sessionID ?? UUID()
+    giveRunSession(store, t)
 
     XCTAssertTrue(store.runCommand.stopsRunsBeforeClosing)
   }
@@ -1812,7 +1820,7 @@ final class RunCommandTests: XCTestCase {
     let tab = try! XCTUnwrap(store.runCommand.runTabID(for: t.id))
     let view = try! XCTUnwrap(runView(store, t))
     view.awaitsMountOverrideForTesting = true  // never mounted, so no live process
-    view.attachment.sessionID = view.attachment.sessionID ?? UUID()
+    giveRunSession(store, t)
     XCTAssertFalse(view.hasLiveProcess)
 
     XCTAssertTrue(store.runCommand.hasLiveRun, "quit asks about it")

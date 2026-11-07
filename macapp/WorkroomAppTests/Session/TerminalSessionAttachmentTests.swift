@@ -1,3 +1,4 @@
+import DaemonConnection
 import WorkroomDomain
 import XCTest
 
@@ -5,8 +6,8 @@ import XCTest
 
 /// Detached sessions > Active tab (`TerminalSessionAttachment`): the one place besides a tab's
 /// making that points a terminal at a session. The tab's session id is what every reader reads
-/// (saved layout, program status, host cwd, Claude profile), and the surface's attach id is what it
-/// reattaches with, so the two must move together, and a refused attach must move neither.
+/// (saved layout, program status, host cwd, Claude profile), the surface's attach included, which
+/// reads it from the tab; a refused attach moves nothing.
 @MainActor
 final class TerminalSessionAttachmentTests: XCTestCase {
   private let target = TerminalTarget(
@@ -72,5 +73,96 @@ final class TerminalSessionAttachmentTests: XCTestCase {
       TerminalSessionAttachment.attachToActivePane(
         sessionID: UUID(), target: target, sessions: sessions))
     XCTAssertTrue(sessions.ownedSessionIDs(for: target).isEmpty)
+  }
+
+  // Value: protects=a pane pointed at another session stops holding the old one's remote host,
+  // and only its own mark goes (#356); fails_when=the swap no longer clears the old attach, or
+  // clears another pane's; why_new=the swap used to clear it from the surface's own copy of the
+  // id, which is gone; seam=none
+  func testAPanePointedAtAnotherSessionLetsOnlyItsOwnHoldOnTheOldHostGo() throws {
+    let service = isolatedPaneSessionService()
+    let sessions = makeIsolatedPanes(service: service)
+    let old = try registerRemoteSession(on: service, log: "").session
+    let host = try XCTUnwrap(service.remoteHost(of: old))
+    let tab = sessions.addTab(for: target)
+    sessions.giveSession(old, toTab: tab.id, in: target)
+    let surface = try XCTUnwrap(sessions.surface(tab))
+    XCTAssertNotNil(
+      surface.attachment.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false))
+    let bystander = UUID()
+    XCTAssertNotNil(service.attachCommand(forSession: old, by: bystander))
+
+    XCTAssertTrue(
+      TerminalSessionAttachment.attachToActivePane(
+        sessionID: UUID(), target: target, sessions: sessions))
+
+    XCTAssertTrue(service.hasAttachedPane(on: host), "another pane's ssh still holds the host")
+    service.paneDetached(old, by: bystander)
+    XCTAssertFalse(service.hasAttachedPane(on: host), "the swapped pane still holds the old host")
+  }
+
+  // Value: protects=a UI-test fixture pane with seeded program status stays a plain shell, as it
+  // was when the seeded id lived only on the tab; fails_when=the surface attaches with the status
+  // key; why_new=the surface now reads the tab; seam=the fixture's program-status seam and the
+  // attachment's plain-fixture flag (a hosted test is no fixture launch)
+  func testAFixturePanesSeededStatusNamesNoSessionToAttach() throws {
+    let service = isolatedPaneSessionService()
+    let sessions = makeIsolatedPanes(service: service)
+    let tab = sessions.addTab(for: target)
+    let surface = try XCTUnwrap(sessions.surface(tab))
+    surface.attachment.isPlainFixturePane = true
+    sessions.seedProgramStatusForFixture(
+      tab: tab.id, target: target.id, records: [ProgramStatusRecord(id: "", state: .working)])
+    let seeded = try XCTUnwrap(sessions.sessionID(forTab: tab.id, inTarget: target.id))
+    XCTAssertNotNil(sessions.tab(tab.id, for: target)?.terminal?.programStatus, "its status")
+    XCTAssertEqual(surface.attachment.sessionID, seeded, "the surface reads the tab's")
+    // Something that would answer an attach for it, as a fixture's bundled daemon might.
+    service.registerRemoteSession(
+      seeded, on: .remote(UUID()), via: HostDriverRegistry.unreachable, workingDirectory: "/w")
+
+    XCTAssertNil(
+      surface.attachment.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false),
+      "it launches a login shell")
+
+    // Negative control: pointed at that session, the same pane is restored and attaches.
+    XCTAssertTrue(
+      TerminalSessionAttachment.attachToActivePane(
+        sessionID: seeded, target: target, sessions: sessions))
+    XCTAssertNotNil(
+      surface.attachment.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false))
+  }
+
+  // Value: protects=a surface keeps its tab's session while the tab moves between windows, and
+  // a pane whose tab has gone (a window closing frees its surfaces after its tabs) still lets its
+  // host go (#356); fails_when=the surface reads its session through one window's layout, or
+  // clears its attach by the tab's session; why_new=the surface used to keep its own copy;
+  // seam=none
+  func testASurfaceReadsItsTabsSessionInTransitAndLetsItsHostGoOnceTheTabHasGone() throws {
+    let service = isolatedPaneSessionService()
+    let from = makeIsolatedPanes(service: service)
+    let to = makeIsolatedPanes(service: service)
+    let session = try registerRemoteSession(on: service, log: "").session
+    let host = try XCTUnwrap(service.remoteHost(of: session))
+    let tab = from.addTab(for: target)
+    from.giveSession(session, toTab: tab.id, in: target)
+    let surface = try XCTUnwrap(from.surface(tab))
+    addTeardownBlock { surface.tearDown() }
+    XCTAssertNotNil(
+      surface.attachment.launch(workingDirectory: "/tmp", runCommand: nil, isRunSession: false))
+
+    let handOff = try XCTUnwrap(from.handOff(target))
+    XCTAssertEqual(surface.attachment.sessionID, session, "in transit, held by no window")
+    to.adopt(handOff)
+    XCTAssertEqual(surface.attachment.sessionID, session, "in the window that took it")
+    XCTAssertEqual(to.sessionID(forTab: tab.id, inTarget: target.id), session)
+    XCTAssertNil(from.sessionID(forTab: tab.id, inTarget: target.id), "not the old one's")
+
+    // As a window closing does: its tabs go, and its surfaces are freed after, untorn-down.
+    _ = to.handOff(target)
+    TerminalTabs.shared.remove(tab.id)
+    XCTAssertNil(surface.attachment.sessionID, "its tab has gone")
+    XCTAssertTrue(service.hasAttachedPane(on: host), "fixture: its ssh still holds the host")
+    surface.attachment.surfaceGone()
+    XCTAssertFalse(service.hasAttachedPane(on: host), "a freed pane whose tab went holds its host")
   }
 }

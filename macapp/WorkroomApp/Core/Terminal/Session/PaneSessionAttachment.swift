@@ -31,7 +31,7 @@ final class PaneSessionAttachment {
   }
 
   /// Where this pane's session is attached and ended. `TerminalPanes` sets its own
-  /// `sessionService` here when it makes the pane, before the session id.
+  /// `sessionService` here when it makes the pane, before the surface can launch.
   var service: PersistentSessionService
   /// The surface it attaches. Weak: the surface owns its attachment.
   weak var surface: (any PaneSessionSurface)?
@@ -39,15 +39,13 @@ final class PaneSessionAttachment {
   /// Names this pane's attach (`PersistentSessionService.attachCommand(by:)`), so only this pane
   /// clears it. Not its object identity, which a later view can reuse once this one is freed.
   let token = UUID()
-  /// Daemon session this pane attaches to. When set and the helper is available, the surface
-  /// launches `workroom-session attach` instead of a login shell.
-  var sessionID: UUID? {
-    // Pointed at another session (the detached-sessions list): the old one's ssh goes with the
-    // surface it is about to lose, so it no longer counts as attached to its remote host (#356).
-    didSet {
-      if let oldValue, oldValue != sessionID { service.paneDetached(oldValue, by: token) }
-    }
-  }
+  /// Where `sessionID` is read: the pane's tab (`TerminalState.sessionID`), which
+  /// `TerminalPanes` points this at when it makes the tab. Read by the tab's id from the app's tab
+  /// records, so it follows the tab through a move between windows. Nil for a surface no tab owns.
+  var tabSessionID: @MainActor () -> UUID? = { nil }
+  /// Daemon session this pane attaches to: its tab's, never a copy. When set and the helper is
+  /// available, the surface launches `workroom-session attach` instead of a login shell.
+  var sessionID: UUID? { tabSessionID() }
   /// Whether `sessionID` was carried over from a previous launch rather than minted for this pane.
   /// Only a restored id can name a session that has since died, and only a restored id is
   /// re-checked before attaching — asking about a fresh one would refuse every new pane, since no
@@ -80,6 +78,12 @@ final class PaneSessionAttachment {
   /// Test seam: forces `isReattachingAfterLinkLoss`.
   var reattachingOverrideForTesting: Bool?
 
+  #if DEBUG
+    /// Whether this is a plain UI-test fixture pane (`launch`). A seam, so a hosted test, which is
+    /// no fixture launch, can be one.
+    var isPlainFixturePane = TerminalPersistentSessionPolicy.isPlainFixturePane
+  #endif
+
   init(service: PersistentSessionService = .shared) {
     self.service = service
     remoteLinkObserver = NotificationCenter.default.addObserver(
@@ -108,6 +112,12 @@ final class PaneSessionAttachment {
   func launch(workingDirectory: String, runCommand: String?, isRunSession: Bool) -> Launch? {
     // No session was requested for this pane — not a failure, nothing to log.
     guard let sessionID else { return nil }
+    #if DEBUG
+      // A plain UI-test fixture pane is a plain shell (`TerminalPersistentSessionPolicy`), though
+      // its tab may carry an id that only keys seeded program status
+      // (`ProgramStatusBinding.seedForFixture`). One pointed at a session is restored, and attaches.
+      if isPlainFixturePane, !isRestored { return nil }
+    #endif
 
     // Ask the retired Swift helper once more, before committing to an attach, whether it still holds
     // this. It CREATES a session on attach for an id it does not hold, so a cached ownership answer
@@ -161,9 +171,20 @@ final class PaneSessionAttachment {
   }
 
   /// This pane's ssh is gone with its surface (freed, or never made): it no longer counts as
-  /// attached to its remote host (#356).
+  /// attached to its remote host (#356). Cleared by this pane's token, not by the tab's session:
+  /// a window closing frees its surfaces after its tabs have gone, and a tab pointed at another
+  /// session names the new one before the old surface goes.
   func surfaceGone() {
-    if let sessionID { service.paneDetached(sessionID, by: token) }
+    service.paneDetached(by: token)
+  }
+
+  /// Its tab was pointed at another session (the detached-sessions list), one that already
+  /// exists: the old one's ssh goes with the surface it is about to lose, so it no longer counts as
+  /// attached to its remote host (#356), and the pane attaches to the new one.
+  func sessionChanged() {
+    surfaceGone()
+    isRestored = true
+    reattach()
   }
 
   /// The pane closed (`GhosttySurfaceView.tearDown`): a reconnect waiting out its delay never runs,

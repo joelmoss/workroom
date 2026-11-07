@@ -446,7 +446,7 @@ final class GhosttySurfaceView: NSView {
     freeSurfaceCStrings()
     // A window closing frees its panes without a teardown; their ssh goes with them (#356). Only
     // this pane's own mark goes (its attachment's token), so the hop to the main actor cannot undo
-    // a later pane's attach. Nothing else holds the attachment, so its session cannot change first.
+    // a later pane's attach, and it goes by that token, so a tab already gone does not matter.
     if surface != nil {
       let attachment = attachment
       Task { @MainActor in attachment.surfaceGone() }

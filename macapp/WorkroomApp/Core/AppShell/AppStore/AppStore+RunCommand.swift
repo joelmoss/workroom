@@ -661,7 +661,8 @@ extension AppStore {
       return
     }
     // The run's last status, which may have come in after the last one applied.
-    if runCommand.runOutcomes[target.id] == nil, let sessionID = view?.attachment.sessionID,
+    if runCommand.runOutcomes[target.id] == nil,
+      let sessionID = terminals.sessionID(forTab: tab, inTarget: target.id),
       let line = terminals.programStatus.run(for: sessionID)
     {
       applyRunStatus(line, for: target)

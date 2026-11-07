@@ -18,17 +18,12 @@ enum TerminalSessionAttachment {
     if let owner = sessions.owner(of: sessionID, in: target), owner != tab.id {
       return false
     }
-    // The tab's session id and its surface's attach id are written together, here and when the
-    // tab is made (`TerminalPanes.makeTerminalTab`), so readers of the tab's need not ask the view.
     let previous = state.sessionID
     state.sessionID = sessionID
-    view.attachment.sessionID = sessionID
-    // Always restored: this path exists to point a pane at a session that already exists, chosen
-    // by the user from the detached-sessions list.
-    view.attachment.isRestored = true
-    view.attachment.reattach()
     tab.content = .terminal(state)
+    // The tab first: its session is the one the surface reads as it attaches again.
     sessions.replace(tab, for: target)
+    view.attachment.sessionChanged()
     sessions.refreshProgramStatus(tab: tab.id, target: target.id)
     if let previous, previous != sessionID {
       ProgramStatusAlerts.shared.paneLeft(session: previous)

@@ -1953,17 +1953,12 @@ final class RemotePaneFooterTests: XCTestCase {
   }
 
   /// Give `tab` the session `addTab` keeps only where persistent sessions are available, which a CI
-  /// runner's are not: on the tab and as its surface's attach id, as a pane made with one has it.
+  /// runner's are not: on the tab, which its surface attaches with, as a pane made with one has it.
   private func give(
     _ session: UUID, to tab: TerminalTab?, in sessions: TerminalPanes,
     target: TerminalTarget
   ) throws {
-    var tab = try XCTUnwrap(tab)
-    guard case .terminal(var state) = tab.content else { return XCTFail("not a terminal") }
-    state.sessionID = session
-    tab.content = .terminal(state)
-    sessions.replace(tab, for: target)
-    try XCTUnwrap(sessions.surface(tab)).attachment.sessionID = session
+    sessions.giveSession(session, toTab: try XCTUnwrap(tab).id, in: target)
   }
 
   func testTheFooterFollowsTheHostAtTheFirstPromptAndAfterEachCommand() async throws {

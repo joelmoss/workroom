@@ -143,7 +143,7 @@ final class PaneSessionAttachmentTests: XCTestCase {
       on: service, log: log, status: status, provider: provider)
     statusFiles[remote.session] = remote.statusFile
     let pane = attachment()
-    pane.sessionID = remote.session
+    pane.tabSessionID = { remote.session }
     return pane
   }
 
@@ -272,7 +272,8 @@ final class PaneSessionAttachmentTests: XCTestCase {
     unrecorded.childExited()
     XCTAssertNil(unrecorded.pendingReconnect)
     let local = attachment()
-    local.sessionID = UUID()
+    let localSession = UUID()
+    local.tabSessionID = { localSession }
     local.childExited()
     XCTAssertNil(local.pendingReconnect)
   }

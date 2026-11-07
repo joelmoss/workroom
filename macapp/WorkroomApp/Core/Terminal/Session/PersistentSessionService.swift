@@ -571,6 +571,11 @@ final class PersistentSessionService {
     if attachedRemote[sessionID]?.isEmpty == true { attachedRemote[sessionID] = nil }
   }
 
+  /// `pane`'s ssh ended, whichever session it attached to: a pane attaches to one at a time.
+  func paneDetached(by pane: UUID) {
+    for sessionID in attachedRemote.keys { paneDetached(sessionID, by: pane) }
+  }
+
   /// Whether a pane has attached to a session on `host` (#356).
   func hasAttachedPane(on host: HostID) -> Bool {
     attachedRemote.keys.contains { remoteSessions[$0]?.host == host }

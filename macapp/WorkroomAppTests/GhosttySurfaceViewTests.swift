@@ -261,7 +261,7 @@ final class RemotePaneReconnectTests: XCTestCase {
     let session = try registerRemoteSession(on: service, log: log, status: status).session
     let view = GhosttySurfaceView(workingDirectory: "/home/w", spawnsSurface: false)
     view.attachment.service = service
-    view.attachment.sessionID = session
+    view.attachment.tabSessionID = { session }
     addTeardownBlock { view.tearDown() }
     return view
   }
@@ -285,10 +285,13 @@ final class RemotePaneReconnectTests: XCTestCase {
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a pane whose ssh exited holds its host")
 
     XCTAssertNotNil(sessions.attachCommand(forSession: session, by: view.attachment.token))
-    view.attachment.sessionID = UUID()
+    // As `TerminalSessionAttachment` points it: the tab names the other session, then the pane hears.
+    let other = UUID()
+    view.attachment.tabSessionID = { other }
+    view.attachment.sessionChanged()
     XCTAssertFalse(
       sessions.hasAttachedPane(on: host), "a pane pointed at another session holds the old host")
-    view.attachment.sessionID = session
+    view.attachment.tabSessionID = { session }
 
     XCTAssertNotNil(sessions.attachCommand(forSession: session, by: view.attachment.token))
     view.tearDown()

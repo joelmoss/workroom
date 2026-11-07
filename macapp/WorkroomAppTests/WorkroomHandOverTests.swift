@@ -970,8 +970,8 @@ final class WorkroomHandOverTests: XCTestCase {
       return answer
     }
     let session = UUID()
-    quick.terminals.surface(pane)?.attachment.sessionID = session
     let quickTarget = QuickTerminalController.target()
+    quick.terminals.giveSession(session, toTab: pane.id, in: quickTarget)
 
     await quick.moveQuickTerminalPane(pane.id, of: quickTarget, to: window, into: sid)
 
@@ -1154,8 +1154,8 @@ final class WorkroomHandOverTests: XCTestCase {
       if asked.count == 1 { self.shared.projects = [] }
       return true
     }
-    quick.terminals.surface(pane)?.attachment.sessionID = UUID()
     let quickTarget = QuickTerminalController.target()
+    quick.terminals.giveSession(UUID(), toTab: pane.id, in: quickTarget)
     let key = target(window).sessionWorkroomKey
 
     await quick.moveQuickTerminalPane(pane.id, of: quickTarget, to: window, into: sid)

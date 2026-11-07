@@ -359,9 +359,8 @@ final class LiveTitle {
 /// as the surface learns it, so no reader asks the view.
 struct TerminalState {
   /// Daemon session this pane attaches to (separate from `tab.id`, which remints on restore). Set
-  /// when the tab is made and when it is pointed at another session (`TerminalSessionAttachment`),
-  /// each time together with the surface's attach id (`PaneSessionAttachment.sessionID`), so the
-  /// two agree.
+  /// when the tab is made and when it is pointed at another session (`TerminalSessionAttachment`).
+  /// The one copy: the surface's attach reads it (`PaneSessionAttachment.sessionID`).
   var sessionID: UUID?
   /// What the pane's process is (a shell, a command in its own process, or a run session), as its
   /// surface was told when the tab was made. Never changes.
@@ -2455,14 +2454,12 @@ final class TerminalPanes {
     // The surface attaches through the service this window registers and ends its sessions with,
     // whichever factory made it.
     view.attachment.service = sessionService
-    view.attachment.sessionID = assignedSessionID
     // `sessionID` non-nil means this pane is being rebuilt from a restore payload, so its id names
     // a session that may no longer exist. A fresh pane's id was minted a line ago.
     view.attachment.isRestored = sessionID != nil
     view.attachment.metadata = metadata
     // The tab's facts are what the surface was just told, read back once: its launch and start
-    // directory never change, and its session changes with its surface's, through
-    // `TerminalSessionAttachment`.
+    // directory never change. Its session is the tab's alone, which the surface reads below.
     var state = TerminalState(
       defaultTitle: title ?? "Terminal \(count)",
       launch: TerminalLaunch(
@@ -2473,6 +2470,12 @@ final class TerminalPanes {
       state.programStatus = programStatus.rollup(for: assignedSessionID)
     }
     let tab = TerminalTab(content: .terminal(state))
+    // By the tab's id, not through this window's layout: a tab in transit to another window keeps
+    // its session, and the tab's id never changes, so this is set once.
+    let tabID = tab.id
+    view.attachment.tabSessionID = { [tabRegistry] in
+      tabRegistry.record(tabID)?.terminal?.sessionID
+    }
     // Stored, and so this window's, from the moment it is made: every caller puts it in the
     // target's layout in the same call.
     tabRegistry.register(view, for: tab.id)

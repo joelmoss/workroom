@@ -1,4 +1,5 @@
 import WorkroomDomain
+import XCTest
 
 @testable import Workroom
 
@@ -40,4 +41,17 @@ func makeIsolatedPanes(service: PersistentSessionService) -> TerminalPanes {
   panes.recordUnrecognizedTool = { _ in }
   panes.recency = SwitcherRecency()
   return panes
+}
+
+extension TerminalPanes {
+  /// Give terminal tab `tabID` the session `addTab` keeps only where persistent sessions are
+  /// available, which a test's are not: on its tab, which its surface attaches with.
+  func giveSession(_ session: UUID, toTab tabID: TerminalTab.ID, in target: TerminalTarget) {
+    guard var tab = tab(tabID, for: target), case .terminal(var state) = tab.content else {
+      return XCTFail("no terminal tab \(tabID) in \(target.id)")
+    }
+    state.sessionID = session
+    tab.content = .terminal(state)
+    replace(tab, for: target)
+  }
 }

@@ -92,7 +92,7 @@ final class SessionRestoreBenchmarkTests: XCTestCase {
         let view = try XCTUnwrap(sessions.surface(sessions.tabs(for: target).first))
         // Keep the model's recovery identity, but engine creation runs our inert command rather
         // than touching a shared helper. The restore factory and recovery loop are unchanged.
-        view.attachment.sessionID = nil
+        view.attachment.tabSessionID = { nil }
         views.append(view)
         descriptors.append(
           SessionDescriptor(
