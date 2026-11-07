@@ -2,8 +2,8 @@
 
 # The toolchain ci-rust.yml pins for its Rust lint gates. rustfmt's layout and clippy's lints
 # change between releases, so another toolchain can pass here and fail there; the root Makefile's
-# PATH puts Homebrew's cargo first, so the recipe puts this one ahead of it. Keep in step with
-# ci-rust.yml.
+# PATH puts Homebrew's cargo first, so the recipe puts this one ahead of it. ci-rust.yml writes it
+# out again; scripts/ci/test_tool_pins.py fails when the two differ.
 VCS_RUST := 1.96.1
 
 vcs-lint-linux: ## Run the pinned Rust lint gate inside Linux (container, Docker or Podman on macOS)
