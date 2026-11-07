@@ -33,7 +33,7 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
   ]
 
   /// How each type is supplied, since several arrive through an owner rather than by their own name
-  /// (`store.notifications`, `sessions.codingAgentManager`) — matching on the type alone would report those
+  /// (`store.notifications`, `panes.codingAgentManager`) — matching on the type alone would report those
   /// as missing while they are injected. One map per window that hosts panes outside the main one.
   ///
   /// A NEW environment object has no entry here, which fails the test rather than passing silently:
@@ -42,7 +42,7 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
     "ModalState": "store.modals",
     "RunCommandController": "store.runCommand",
     "NotificationCenterStore": "store.notifications",
-    "TerminalCodingAgentManager": "sessions.codingAgentManager",
+    "TerminalCodingAgentManager": "panes.codingAgentManager",
     "CodingAgentUsageMonitor": "CodingAgentUsageMonitor.shared",
     "ClaudeUsageBridge": "ClaudeUsageBridge.shared",
   ]
@@ -170,9 +170,7 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
       let source = try String(
         contentsOf: macappRoot.appendingPathComponent(file), encoding: .utf8)
       // Comments may name the store; only code counts.
-      let code = source.components(separatedBy: "\n")
-        .map { $0.components(separatedBy: "//").first ?? "" }
-        .joined(separator: "\n")
+      let code = Self.code(in: source)
       let range = NSRange(code.startIndex..., in: code)
       XCTAssertNil(
         construction.firstMatch(in: code, range: range), "\(file) builds an AppStore")
@@ -188,6 +186,66 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
     XCTAssertNil(
       stored.firstMatch(
         in: destination, range: NSRange(destination.startIndex..., in: destination)))
+  }
+
+  /// Pins the comment scan `testTheQuickTerminalBuildsNoStore` reads through: a `//` or `/*` inside
+  /// a string literal (a URL) hides none of the code after it, and real comments still go.
+  func testTheCommentScanKeepsCodeAfterASlashInAString() throws {
+    let source = """
+      let url = "https://example.com/*"; let built = AppStore(notifications: list)
+      let quote = "a \\" // still a string"; let kept = AppStore()
+      // let commented = AppStore()
+      let inline = 1 /* AppStore() */ + 2 // AppStore()
+      """
+    let code = Self.code(in: source)
+    let construction = try NSRegularExpression(pattern: #"\bAppStore\s*\("#)
+    let found = construction.matches(in: code, range: NSRange(code.startIndex..., in: code))
+    XCTAssertEqual(found.count, 2, "the two after a string, neither in a comment: \(code)")
+    XCTAssertTrue(code.contains(#""https://example.com/*""#), "the string is kept whole")
+    XCTAssertTrue(code.contains(#""a \" // still a string""#), "an escaped quote ends nothing")
+    XCTAssertTrue(code.contains("let inline = 1  + 2"), "code around a block comment is kept")
+    XCTAssertFalse(code.contains("commented"), "a line comment goes")
+  }
+
+  /// `source` without its `//` and `/* */` comments, keeping every string literal whole, so a
+  /// comment marker inside one (a URL) is not taken for a comment. Knows single-line `"…"`
+  /// literals and their escapes, which is all the scanned files hold.
+  private static func code(in source: String) -> String {
+    let characters = Array(source)
+    var code = ""
+    var index = 0
+    func next(is text: String) -> Bool {
+      let marker = Array(text)
+      return index + marker.count <= characters.count
+        && Array(characters[index..<index + marker.count]) == marker
+    }
+    while index < characters.count {
+      if next(is: "//") {
+        while index < characters.count, characters[index] != "\n" { index += 1 }
+      } else if next(is: "/*") {
+        index += 2
+        while index < characters.count, !next(is: "*/") { index += 1 }
+        index += 2
+      } else if characters[index] == "\"" {
+        // The literal, up to its closing quote; an escape keeps the character after it.
+        repeat {
+          if characters[index] == "\\", index + 1 < characters.count {
+            code.append(characters[index])
+            index += 1
+          }
+          code.append(characters[index])
+          index += 1
+        } while index < characters.count && characters[index] != "\""
+        if index < characters.count {
+          code.append(characters[index])
+          index += 1
+        }
+      } else {
+        code.append(characters[index])
+        index += 1
+      }
+    }
+    return code
   }
 
   /// The views that may take the store from the environment: the main window's chrome, inspector,

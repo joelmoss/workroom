@@ -38,7 +38,7 @@ struct TargetTerminalDetail: View {
           .transition(.opacity)
       } else if target.opensTerminals {
         WorkroomTerminalsView(
-          target: target, sessions: store.terminals, surfaceActive: surfaceActive,
+          target: target, panes: store.terminals, surfaceActive: surfaceActive,
           workroomIsSplit: workroomIsSplit
         )
         .transition(.identity)

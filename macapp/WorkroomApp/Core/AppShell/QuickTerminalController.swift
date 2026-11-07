@@ -240,8 +240,8 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   /// `WindowRegistry` window, so the app's usual notification routing can't find it.
   func reveal(tab tabID: TerminalTab.ID?) {
     let target = Self.target()
-    if let tabID, let sessions = host?.terminals, sessions.tab(tabID, for: target) != nil {
-      sessions.focus(tabID, for: target)
+    if let tabID, let panes = host?.terminals, panes.tab(tabID, for: target) != nil {
+      panes.focus(tabID, for: target)
     }
     show()
   }
@@ -308,20 +308,20 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   private func createWindow() {
     // Its terminals' notifications join the app's one list (ADR 0064).
     let host = QuickTerminalHost(notifications: WindowRegistry.shared.notifications)
-    let sessions = host.terminals
-    sessions.sessionService = sessionService
-    sessions.readsPaneBranches = true
-    sessions.allowsDetach = false
+    let panes = host.terminals
+    panes.sessionService = sessionService
+    panes.readsPaneBranches = true
+    panes.allowsDetach = false
     // Its panes move into a workroom open in any window instead.
-    sessions.moveToWorkroomChoices = { [weak host] tabID, target in
+    panes.moveToWorkroomChoices = { [weak host] tabID, target in
       host?.quickTerminalPaneWorkroomChoices(tabID, of: target) ?? []
     }
-    sessions.dropOutsideWindow = { [weak host] tabID, target in
+    panes.dropOutsideWindow = { [weak host] tabID, target in
       guard let host else { return }
       QuickTerminalPaneDrag.end(
         source: host.terminals, notifications: host.notifications, tabID: tabID, target: target)
     }
-    sessions.makeView = { [weak self] _, directory, command in
+    panes.makeView = { [weak self] _, directory, command in
       let surface =
         self?.makeSurface(directory, command)
         ?? GhosttySurfaceView(workingDirectory: directory, command: command)
@@ -335,7 +335,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     // Its one target is always on screen here, so a watched pane's notification counts as seen.
     host.pinnedTarget = Self.target()
     // `ensureInitialTerminal` opens a project's first tab; this target is no project.
-    _ = sessions.addTab(for: Self.target())
+    _ = panes.addTab(for: Self.target())
     self.host = host
 
     let window = QuickTerminalWindow(
@@ -360,7 +360,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     // The autosave restores the user's last size; `show()` sets the position.
     window.setFrameAutosaveName("QuickTerminal")
     window.contentView = NSHostingView(
-      rootView: QuickTerminalContent(sessions: sessions).quickTerminalEnvironment(host: host))
+      rootView: QuickTerminalContent(panes: panes).quickTerminalEnvironment(host: host))
     host.hostWindow = window
     self.window = window
     applyTheme()
@@ -395,22 +395,22 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   func perform(_ key: QuickTerminalKey) -> Bool {
     guard let host else { return true }
     let target = Self.target()
-    let sessions = host.terminals
-    let active = sessions.activeTab(for: target)
+    let panes = host.terminals
+    let active = panes.activeTab(for: target)
     switch key {
     case .closePane:
       if let active { host.requestCloseTerminalTab(active.id, for: target) }
     case .newTab:
       host.newTerminal(in: target)
     case .splitRight:
-      if let active { sessions.splitTab(active.id, on: .right, for: target) }
+      if let active { panes.splitTab(active.id, on: .right, for: target) }
     case .splitDown:
-      if let active { sessions.splitTab(active.id, on: .bottom, for: target) }
+      if let active { panes.splitTab(active.id, on: .bottom, for: target) }
     case .selectTab(let index):
-      let tabs = sessions.tabs(for: target)
-      if tabs.indices.contains(index) { sessions.focus(tabs[index].id, for: target) }
+      let tabs = panes.tabs(for: target)
+      if tabs.indices.contains(index) { panes.focus(tabs[index].id, for: target) }
     case .focusPane(let direction):
-      return sessions.focusAdjacentPane(direction, for: target)
+      return panes.focusAdjacentPane(direction, for: target)
     }
     return true
   }

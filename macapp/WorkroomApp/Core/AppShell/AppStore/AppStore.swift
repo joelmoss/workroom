@@ -54,9 +54,6 @@ final class AppStore: ObservableObject {
     get { paneNotifier.forwardToast }
     set { paneNotifier.forwardToast = newValue }
   }
-  /// The target this window shows first: its selection. The Quick Terminal's host pins its own
-  /// (`QuickTerminalHost.pinnedTarget`).
-  var primaryTarget: TerminalTarget? { selectedTarget }
   /// This window's display number — the smallest unused positive integer, assigned by `WindowRegistry`
   /// on registration and freed for reuse when the window closes (issue #70, macOS untitled-doc style).
   /// Backs the `windowTitle` fallback for a window with nothing selected ("Window 1", "Window 2", …).
@@ -1339,7 +1336,7 @@ final class AppStore: ObservableObject {
       content: {
         DetachedPaneView(
           tabID: tabID, content: tab.content, surface: surface, target: target,
-          sessions: terminals,
+          panes: terminals,
           onTitleChange: { [weak self] title in
             guard let self else { return }
             let location = self.detachedLocation(for: target)
@@ -1348,7 +1345,7 @@ final class AppStore: ObservableObject {
               glyph: target.workroomGlyph, for: tabID)
           }
         )
-        .detachedPaneEnvironment(store: self, sessions: terminals)
+        .detachedPaneEnvironment(store: self, panes: terminals)
       })
   }
 
@@ -2547,7 +2544,6 @@ final class AppStore: ObservableObject {
   /// The origin line under a title that already names the workroom, or a root's project: only a
   /// workroom's project, since "london" under "Terminal 7 in london needs you" said it twice.
   func placeSource(targetID: TerminalTarget.ID) -> String {
-    if targetID == QuickTerminalController.targetID { return "Quick Terminal" }
     let origin = sidebarID(for: targetID).map { label(for: $0) }
     return origin?.workroom == nil ? "" : origin?.project ?? ""
   }
@@ -2573,7 +2569,7 @@ final class AppStore: ObservableObject {
   /// The program-status session of the terminal focused in this window, for ⇧⌘M. Only with keyboard
   /// focus in it: from an inspector field, ⇧⌘M goes to the selected terminal if it is the one waiting.
   var focusedTerminalSession: UUID? {
-    guard let target = primaryTarget, let tab = terminals.focusedTab(for: target),
+    guard let target = selectedTarget, let tab = terminals.focusedTab(for: target),
       terminals.surface(of: tab.id)?.isEffectivelyFocused == true
     else {
       return nil
@@ -2603,7 +2599,7 @@ final class AppStore: ObservableObject {
   /// (`isWorkroomSplitVisible` + `resolvedSplitLeaves()` would each re-walk every group's leaves) — this
   /// runs per activity event per pane.
   func onScreenTarget(forID targetID: TerminalTarget.ID) -> TerminalTarget? {
-    if let primary = primaryTarget, primary.id == targetID { return primary }
+    if let selected = selectedTarget, selected.id == targetID { return selected }
     guard let group = visibleWorkroomSplit, let leaves = resolvedSplitLeaves(of: group) else {
       return nil
     }

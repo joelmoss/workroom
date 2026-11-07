@@ -3,11 +3,11 @@ import WorkroomDomain
 
 /// A workroom on its way from one window to another (issue #444): everything the window it leaves
 /// knew about it that the window it joins must go on knowing. The terminals themselves never
-/// travel: they are the app's (`TerminalTabs`), and `sessions` carries only their layout, as `run`
+/// travel: they are the app's (`TerminalTabs`), and `panes` carries only their layout, as `run`
 /// carries only which tab is the workroom's run.
 struct WorkroomHandOff {
   let sid: SidebarID
-  var sessions: TerminalPanes.TargetHandOff
+  var panes: TerminalPanes.TargetHandOff
   let run: RunCommands.HandOff
 }
 
@@ -195,15 +195,12 @@ extension AppStore {
     return plan.panes.first { $0.value.contains(local) }?.key
   }
 
-  /// "Move to Workroom" for this store's pane `tabID` in `target`, over every workroom open in
-  /// `windows` (`QuickTerminalPaneMove.choices`). Only a Quick Terminal pane offers it, and those are
-  /// `QuickTerminalHost`'s; a window's own panes never show the menu.
+  /// None: "Move to Workroom" is offered only on the Quick Terminal's target, whose panes are
+  /// `QuickTerminalHost`'s, so a window's own panes never show the menu that asks.
   func quickTerminalPaneWorkroomChoices(
-    _ tabID: TerminalTab.ID, of target: TerminalTarget,
-    windows: [AppStore] = WindowRegistry.shared.allStores
+    _ tabID: TerminalTab.ID, of target: TerminalTarget, windows: [AppStore]
   ) -> [PaneWorkroomGroup] {
-    QuickTerminalPaneMove.choices(
-      tabID, of: target, source: terminals, notifications: notifications, windows: windows)
+    []
   }
 }
 
@@ -250,7 +247,7 @@ extension AppStore {
   }
 
   /// Lift the workroom out of this window. Its run pointer goes first: the `.tabsRemoved` the
-  /// sessions fire would otherwise clear it as for a closed run tab.
+  /// panes fire would otherwise clear it as for a closed run tab.
   private func takeWorkroom(_ sid: SidebarID, target: TerminalTarget) -> WorkroomHandOff? {
     let run = runCommand.takeHandOff(for: target.id)
     // Find belongs to the selected workroom's focused content pane, which is leaving. Its own
@@ -263,19 +260,19 @@ extension AppStore {
       frames[tab.id] = detachedPanes.frame(for: tab.id) ?? .zero
       detachedPanes.close(tabID: tab.id)
     }
-    guard var sessions = terminals.handOff(target) else {
+    guard var panes = terminals.handOff(target) else {
       runCommand.adopt(run, for: target.id)
       return nil
     }
-    for id in sessions.detached.keys { sessions.detached[id] = frames[id] ?? .zero }
-    return WorkroomHandOff(sid: sid, sessions: sessions, run: run)
+    for id in panes.detached.keys { panes.detached[id] = frames[id] ?? .zero }
+    return WorkroomHandOff(sid: sid, panes: panes, run: run)
   }
 
   /// Take in a workroom another window handed over, select it and bring this window forward. Into a
   /// window that already shows the workroom, its terminals join this window's own, and of two run
   /// tabs the running one stays (#444 Q12).
   private func adoptWorkroom(_ handOff: WorkroomHandOff, at index: Int?) {
-    let target = handOff.sessions.target
+    let target = handOff.panes.target
     let id = target.id
     var run = handOff.run
     var closing: TerminalTab.ID?
@@ -294,9 +291,9 @@ extension AppStore {
       }
     }
     let wasAt = displayedWorkroomTargets().firstIndex { $0.target.id == id }
-    terminals.adopt(handOff.sessions)
+    terminals.adopt(handOff.panes)
     if target.remoteHost == nil, !target.isRemoteWorkroom,
-      handOff.sessions.tabIDs.contains(where: {
+      handOff.panes.tabIDs.contains(where: {
         guard let view = terminals.surface(of: $0) else { return false }
         return view.attachment.isRestored
           && terminals.sessionID(forTab: $0, inTarget: id) != nil
@@ -307,7 +304,7 @@ extension AppStore {
       // after it displays, including hidden panes that will not mount with the focused tab.
       scheduleSessionRecoveryAfterDisplay()
     }
-    // Its run's exit and close reach this window through the sessions that adopted its tabs.
+    // Its run's exit and close reach this window through the panes that adopted its tabs.
     runCommand.adopt(run, for: id)
     if let closing { terminals.closeTab(closing, for: target) }
     placeWorkroomTab(id, at: index, wasAt: wasAt)

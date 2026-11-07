@@ -16,7 +16,7 @@ import WorkroomDomain
 struct PaneTreeView: View {
   let layout: TerminalPaneLayout
   let target: TerminalTarget
-  let sessions: TerminalPanes
+  let panes: TerminalPanes
   /// A drag originating outside the tree (a strip tab chip dragged into the content), in content-local
   /// coords — rendered with the same edge preview + ghost as an in-tree pane-handle drag.
   var externalDrag: PaneDragState?
@@ -35,13 +35,13 @@ struct PaneTreeView: View {
   /// "Dim unfocused panes" (issue #162) — read here, at the tree, and passed to every leaf.
   @Default(.dimUnfocusedPanes) private var dimUnfocusedPanes
   @State private var drag: PaneDragState?
-  /// The divider ratio being dragged right now, held here rather than written to the sessions on
+  /// The divider ratio being dragged right now, held here rather than written to the panes on
   /// every mouse-moved tick: a write changes the target's panes, which re-runs every view of the
   /// workroom (its strip, each pane's title and status bar) and marks the saved layout dirty, at
   /// cursor rate. The release commits it once. The workroom divider's pattern
   /// (`WorkroomSplitView.liveRatio`, issue #139), including `stored`: the split's ratio in the
-  /// sessions when the drag began, so a re-even that lands mid-drag (issue #126) drops the override.
-  /// Once committed it clears, and the sessions' own value takes over.
+  /// panes when the drag began, so a re-even that lands mid-drag (issue #126) drops the override.
+  /// Once committed it clears, and the panes' own value takes over.
   @State private var liveRatio: DividerDrag?
   private static let space = "paneContent"
 
@@ -91,7 +91,7 @@ struct PaneTreeView: View {
   }
 
   var body: some View {
-    let focusedID = sessions.focusedTab(for: target)?.id
+    let focusedID = panes.focusedTab(for: target)?.id
     let multiPane = layout.tabIDs.count >= 2
     // The given layout, with the in-flight divider ratio overlaid while a drag is live.
     let shown = layout.showing(liveRatio)
@@ -99,10 +99,10 @@ struct PaneTreeView: View {
       let plan = PaneTreeLayout.plan(shown, in: CGRect(origin: .zero, size: geo.size))
       ZStack(alignment: .topLeading) {
         ForEach(Array(layout.tabIDs.enumerated()), id: \.element) { index, tabID in
-          if let tab = sessions.tab(tabID, for: target), let rect = plan.panes[tabID] {
+          if let tab = panes.tab(tabID, for: target), let rect = plan.panes[tabID] {
             PaneLeafView(
-              tabID: tabID, content: tab.content, surface: sessions.surface(of: tabID),
-              target: target, sessions: sessions,
+              tabID: tabID, content: tab.content, surface: panes.surface(of: tabID),
+              target: target, panes: panes,
               focused: surfaceActive && tabID == focusedID, multiPane: multiPane,
               surfaceActive: surfaceActive, dimUnfocusedPanes: dimUnfocusedPanes,
               workroomIsSplit: workroomIsSplit,
@@ -112,7 +112,7 @@ struct PaneTreeView: View {
                   tabID: tabID, at: $0, plan: plan, contentFrame: geo.frame(in: .global))
               },
               onDragEnded: { commitDrag(plan: plan, contentFrame: geo.frame(in: .global)) },
-              onActivate: { sessions.select(tabID, for: target) }
+              onActivate: { panes.select(tabID, for: target) }
             )
             // Take the new rect as ONE unit. Every `.animation(_:value: focused)` inside the pane
             // — the scrim, the focus ring — animates *all* animatable changes in its subtree when
@@ -130,7 +130,7 @@ struct PaneTreeView: View {
           }
         }
         ForEach(plan.dividers) { d in
-          // The in-flight ratio is parked in `liveRatio`; only the release reaches the sessions.
+          // The in-flight ratio is parked in `liveRatio`; only the release reaches the panes.
           SplitDivider(
             orientation: d.orientation, ratio: d.ratio, total: d.total, noun: "pane",
             identifier: "pane.divider",
@@ -139,7 +139,7 @@ struct PaneTreeView: View {
             },
             onCommit: {
               liveRatio = nil
-              sessions.setRatio($0, forSplit: d.id, for: target)
+              panes.setRatio($0, forSplit: d.id, for: target)
             }
           )
           .frame(width: d.hitRect.width, height: d.hitRect.height)
@@ -158,12 +158,12 @@ struct PaneTreeView: View {
       // actually render evenly here. Same feed, same after-layout write.
       .preference(key: PaneSpaceKey.self, value: CGRect(origin: .zero, size: geo.size))
     }
-    .onPreferenceChange(PaneRectsKey.self) { [target, sessions] rects in
+    .onPreferenceChange(PaneRectsKey.self) { [target, panes] rects in
       // `paneRects` is a plain (non-`@Published`) cache, so this cannot publish into a view update.
-      MainActor.assumeIsolated { sessions.paneRects[target.id] = rects }
+      MainActor.assumeIsolated { panes.paneRects[target.id] = rects }
     }
-    .onPreferenceChange(PaneSpaceKey.self) { [target, sessions] space in
-      MainActor.assumeIsolated { sessions.paneSpace[target.id] = space }
+    .onPreferenceChange(PaneSpaceKey.self) { [target, panes] space in
+      MainActor.assumeIsolated { panes.paneSpace[target.id] = space }
     }
   }
 
@@ -174,7 +174,7 @@ struct PaneTreeView: View {
       let hit = PaneTreeLayout.dropTarget(at: drag.location, panes: plan.panes),
       hit.tab != drag.tabID
         || (externalDrag != nil
-          && sessions.tabStripSplitDestination(
+          && panes.tabStripSplitDestination(
             moving: drag.tabID, over: hit.tab, for: target) != nil),
       let rect = plan.panes[hit.tab]
     {
@@ -186,7 +186,7 @@ struct PaneTreeView: View {
   /// shadow — so it's clear what's being moved and to where.
   @ViewBuilder
   private func dragGhost() -> some View {
-    if let drag = activeDrag, let tab = sessions.tab(drag.tabID, for: target) {
+    if let drag = activeDrag, let tab = panes.tab(drag.tabID, for: target) {
       DragTitleGhost(title: tab.title, at: drag.location)
     }
   }
@@ -219,10 +219,10 @@ struct PaneTreeView: View {
     let outcome = PaneTreeLayout.dragOutcome(
       cursor: location, windowBounds: Self.windowBounds(contentFrame: contentFrame),
       panes: plan.panes, dragging: tabID)
-    guard outcome == .detach, let tab = sessions.tab(tabID, for: target) else {
-      return sessions.hideDragOutside()
+    guard outcome == .detach, let tab = panes.tab(tabID, for: target) else {
+      return panes.hideDragOutside()
     }
-    sessions.showDragOutside(tab)
+    panes.showDragOutside(tab)
   }
 
   private func commitDrag(
@@ -231,7 +231,7 @@ struct PaneTreeView: View {
     defer {
       drag = nil
       // Unconditional: the ghost may never have been shown, and hiding is idempotent.
-      sessions.hideDragOutside()
+      panes.hideDragOutside()
     }
     guard let drag else { return }
     switch PaneTreeLayout.dragOutcome(
@@ -239,15 +239,15 @@ struct PaneTreeView: View {
       panes: plan.panes, dragging: drag.tabID)
     {
     case .move(let tab, let edge):
-      sessions.moveTabIntoSplit(drag.tabID, ontoEdge: edge, of: tab, for: target)
+      panes.moveTabIntoSplit(drag.tabID, ontoEdge: edge, of: tab, for: target)
     case .extract:
       // Dragged up out of the panes (toward the strip) but still inside the window → pop this pane
       // out of the split to solo.
-      sessions.extractFromSplit(drag.tabID, for: target)
+      panes.extractFromSplit(drag.tabID, for: target)
     case .detach:
       // Dragged clear of the window → its own window, at the cursor (issue #172), or for a Quick
       // Terminal pane, the workroom it was let go over.
-      sessions.dropOutside(drag.tabID, for: target)
+      panes.dropOutside(drag.tabID, for: target)
     case .none:
       break
     }
@@ -313,7 +313,7 @@ struct PaneLeafView: View {
   /// The pane's content — a terminal surface or non-terminal content (issue #66). All the pane chrome
   /// (focus ring, dim scrim, drag handle, a11y) wraps *both* kinds; only the centre swaps.
   let content: TabContent
-  /// A terminal pane's surface, read from the sessions by whoever builds this leaf, beside
+  /// A terminal pane's surface, read from the panes by whoever builds this leaf, beside
   /// `content`; nil for a content pane. Passed in rather than looked up here, so a last update
   /// pass after the tab has moved to another window (#444) still holds the surface it rendered,
   /// and `mayHostSurface` is what keeps that pass from taking it back.
@@ -321,7 +321,7 @@ struct PaneLeafView: View {
   /// The target this pane belongs to — its `path` is the workroom directory handed to a diff pane (so
   /// its `DiffResolver` runs against the right repo), and it routes the diff pane's context-menu actions.
   let target: TerminalTarget
-  let sessions: TerminalPanes
+  let panes: TerminalPanes
   /// Routes the diff pane's reused tab context menu (issue #72: "Open File in…", split, close group).
   @Environment(\.paneHost) private var host
   @EnvironmentObject var modals: ModalState
@@ -379,7 +379,7 @@ struct PaneLeafView: View {
   var body: some View {
     // Looked up once per pass, for the title bar, the content's context menu and whether this
     // window still holds the surface: nil once the tab has gone, or moved to another window (#444).
-    let tab = sessions.tab(tabID, for: target)
+    let tab = panes.tab(tabID, for: target)
     // The pane's own title bar (issue #150), a SIBLING above the content — never a wrapper around it.
     // `paneContent` therefore keeps the single structural position that `PaneLeafView` has always
     // guaranteed it: an `if` around the content would swap SwiftUI's `_ConditionalContent` branch and
@@ -478,7 +478,7 @@ struct PaneLeafView: View {
     // between a solo tab and a grouped/split one. Surface identity is held by `.id(tabID)` on the
     // host (not this padding), so no surface is re-parented across the change (issue #3).
     .padding(chromeless ? 0 : 1)
-    .onChange(of: sessions.activityPulses[tabID]) { _, _ in
+    .onChange(of: panes.activityPulses[tabID]) { _, _ in
       // Flash a backgrounded pane on activity — a split-mate, or any pane of a co-displayed
       // backgrounded workroom (`!surfaceActive`), mirroring the dim gate so the pulse lifts the
       // scrim (issue #82). Never the focused pane — you're looking at it.
@@ -533,7 +533,7 @@ struct PaneLeafView: View {
       )
       if let tab {
         contentPanel(
-          diff.tabChipContextMenu(tab: tab, target: target, host: host, sessions: sessions))
+          diff.tabChipContextMenu(tab: tab, target: target, host: host, panes: panes))
       } else {
         contentPanel(diff)
       }
@@ -548,7 +548,7 @@ struct PaneLeafView: View {
       )
       if let tab {
         contentPanel(
-          file.tabChipContextMenu(tab: tab, target: target, host: host, sessions: sessions))
+          file.tabChipContextMenu(tab: tab, target: target, host: host, panes: panes))
       } else {
         contentPanel(file)
       }
@@ -566,7 +566,7 @@ struct PaneLeafView: View {
         })
       if let tab {
         contentPanel(
-          detail.tabChipContextMenu(tab: tab, target: target, host: host, sessions: sessions))
+          detail.tabChipContextMenu(tab: tab, target: target, host: host, panes: panes))
       } else {
         contentPanel(detail)
       }
@@ -574,7 +574,7 @@ struct PaneLeafView: View {
   }
 
   /// A terminal pane's centre: its surface and its status bar. `held`: whether this window's
-  /// sessions still hold the tab.
+  /// panes still hold the tab.
   private func terminalPanel(_ s: TerminalState, surface: GhosttySurfaceView, held: Bool)
     -> some View
   {
@@ -593,10 +593,10 @@ struct PaneLeafView: View {
         view: surface, isFocusedPane: focused && modals.activePicker == nil,
         // Only the host whose kind matches the model may hold the surface (issue #172): the pane
         // tree while the tab is docked, the detached window while it is not. And only in the
-        // window whose sessions own the tab: one moved to another window (#444) leaves this
+        // window whose panes own the tab: one moved to another window (#444) leaves this
         // window's tree a last pass that would otherwise take the surface back. Its own target is
         // the only one that can hold it here: no tab moves between targets inside one window.
-        mayHostSurface: sessions.detachedTabIDs.contains(tabID) == isDetached && held
+        mayHostSurface: panes.detachedTabIDs.contains(tabID) == isDetached && held
       )
       // Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state
       // is per-surface, and only the focused pane can be searched. Nothing until active.
@@ -637,7 +637,7 @@ struct PaneLeafView: View {
   /// one XCUITest can actually drive.
   ///
   /// The bar is store-free, so everything it shows is resolved here — this view already observes
-  /// `sessions` and holds the pane host, and doing it once per pane keeps that churn out of the bar.
+  /// `panes` and holds the pane host, and doing it once per pane keeps that churn out of the bar.
   private func titleBar(_ tab: TerminalTab?) -> some View {
     // The bar reads the changing title only in its text and accessibility leaves, keeping its
     // adaptive toolbar and action closures out of every spinner frame.
@@ -652,20 +652,20 @@ struct PaneLeafView: View {
       multiPane: multiPane,
       help: helpText,
       coordinateSpace: coordinateSpace,
-      onSetDiffMode: { sessions.setDiffViewMode($0, forTab: tabID, in: target) },
-      onSetMarkdownPreview: { sessions.setMarkdownPreview($0, forTab: tabID, in: target) },
+      onSetDiffMode: { panes.setDiffViewMode($0, forTab: tabID, in: target) },
+      onSetMarkdownPreview: { panes.setMarkdownPreview($0, forTab: tabID, in: target) },
       // The pane's OWN target, not `selectedTarget` — see `AppStore.openFilePreview(path:for:)`.
       onOpenFile: {
         if let path = content.filePath { host.openFilePreview(path: path, for: target) }
       },
-      onSplitRight: { sessions.splitTab(tabID, on: .right, for: target) },
-      onSplitDown: { sessions.splitTab(tabID, on: .bottom, for: target) },
+      onSplitRight: { panes.splitTab(tabID, on: .right, for: target) },
+      onSplitDown: { panes.splitTab(tabID, on: .bottom, for: target) },
       onClose: { host.requestCloseTerminalTab(tabID, for: target) },
       onActivate: onActivate,
       // Same screen placement a drag-out would produce, minus the drag: put the window under the
       // pointer rather than somewhere arbitrary.
-      onPopOut: sessions.allowsDetach
-        ? { sessions.detachPane(tabID, for: target, at: NSEvent.mouseLocation) } : nil,
+      onPopOut: panes.allowsDetach
+        ? { panes.detachPane(tabID, for: target, at: NSEvent.mouseLocation) } : nil,
       moveToWorkroom: target.id == QuickTerminalController.targetID
         ? QuickTerminalMoveToWorkroomMenu(
           tabID: tabID, target: target, style: .toolbar) : nil,

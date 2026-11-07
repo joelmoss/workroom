@@ -308,21 +308,21 @@ final class ThemeRepaintTests: XCTestCase {
   /// inside the 8pt inset around the terminals: the panel fill.
   func testQuickTerminalContentRepaintsOnASwitch() throws {
     var opened: [TerminalPanes] = []
-    defer { for sessions in opened { Task { await sessions.reapAll() } } }
+    defer { for panes in opened { Task { await panes.reapAll() } } }
     try assertRepaints(
       "the Quick Terminal", size: NSSize(width: 600, height: 400), at: NSPoint(x: 3, y: 200)
     ) {
       // A host each: a terminal's view can sit in one window only.
       let host = QuickTerminalHost(notifications: NotificationCenterStore())
-      let sessions = host.terminals
-      sessions.makeView = { _, cwd, command in
+      let panes = host.terminals
+      panes.makeView = { _, cwd, command in
         GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
       }
-      sessions.sessionService = PersistentSessionService(
+      panes.sessionService = PersistentSessionService(
         probe: { _ in .notBundled }, ownership: { _ in .notOwned })
-      _ = sessions.addTab(for: QuickTerminalController.target())
-      opened.append(sessions)
-      return QuickTerminalContent(sessions: sessions).quickTerminalEnvironment(host: host)
+      _ = panes.addTab(for: QuickTerminalController.target())
+      opened.append(panes)
+      return QuickTerminalContent(panes: panes).quickTerminalEnvironment(host: host)
     }
   }
 

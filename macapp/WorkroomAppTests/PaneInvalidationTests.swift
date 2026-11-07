@@ -44,7 +44,7 @@ final class PaneInvalidationTests: XCTestCase {
     let surfaceA = try XCTUnwrap(store.terminals.surface(store.terminals.addTab(for: a)))
     let surfaceB = try XCTUnwrap(store.terminals.surface(store.terminals.addTab(for: b)))
     let hosting = NSHostingView(
-      rootView: WorkroomTerminalsView(target: b, sessions: store.terminals)
+      rootView: WorkroomTerminalsView(target: b, panes: store.terminals)
         .invalidationEnvironment(store)
         .frame(width: 900, height: 600))
     hosting.frame = NSRect(x: 100, y: 100, width: 900, height: 600)
@@ -150,7 +150,7 @@ final class PaneInvalidationTests: XCTestCase {
     let hosting = NSHostingView(
       rootView: VStack {
         SwitcherEnablementProbe(registry: registry)
-        WorkroomTerminalsView(target: b, sessions: stores[1].terminals)
+        WorkroomTerminalsView(target: b, panes: stores[1].terminals)
       }
       .invalidationEnvironment(stores[1])
       .frame(width: 900, height: 600))

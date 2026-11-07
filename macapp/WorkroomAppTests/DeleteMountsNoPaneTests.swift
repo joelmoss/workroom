@@ -76,9 +76,11 @@ final class DeleteMountsNoPaneTests: XCTestCase {
 
     let hosting = NSHostingView(
       rootView: Host(store: store)
-        .detachedPaneEnvironment(store: store, sessions: store.terminals)
+        .detachedPaneEnvironment(store: store, panes: store.terminals)
+        // The main window's composition reads these too, which no pane does.
         .environmentObject(store)
         .environmentObject(store.runCommands)
+        .environmentObject(store.lifecycle)
         .themeTokensRoot())
     hosting.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
     let window = NSWindow(

@@ -14,7 +14,7 @@ import WorkroomDomain
 /// The strip is handed those via a binding plus the `chipLocal`/`chipDropTarget` closures.
 struct WorkroomTerminalsView: View {
   let target: TerminalTarget
-  let sessions: TerminalPanes
+  let panes: TerminalPanes
   /// Whether this workroom's terminal may hold keyboard focus — `false` for a co-displayed but
   /// non-focused split member, so it doesn't steal first responder (and the workroom selection) on mount.
   var surfaceActive: Bool = true
@@ -38,8 +38,8 @@ struct WorkroomTerminalsView: View {
   @State private var contentFrame: CGRect = .zero
 
   var body: some View {
-    let tabs = sessions.tabs(for: target)
-    let active = sessions.activeTab(for: target)
+    let tabs = panes.tabs(for: target)
+    let active = panes.activeTab(for: target)
     // The terminal (or empty state) fills the pane; the tab bar rides on safeAreaInset so it only
     // ever takes its natural height — otherwise the tab bar's horizontal ScrollView grabs the
     // vertical slack when there's no terminal below it and balloons.
@@ -50,7 +50,7 @@ struct WorkroomTerminalsView: View {
         // earlier split→solo bug came from two `TerminalContainerView`s (the solo branch and the dying
         // split leaf) fighting over the same surface and stranding it in a detached container (#3).
         PaneTreeView(
-          layout: contentLayout(active: active), target: target, sessions: sessions,
+          layout: contentLayout(active: active), target: target, panes: panes,
           externalDrag: chipPaneDrag, surfaceActive: surfaceActive,
           workroomIsSplit: workroomIsSplit
         )
@@ -100,7 +100,7 @@ struct WorkroomTerminalsView: View {
       // even with zero tabs — so the strip no longer needs to stay alive just to host the ✕.
       if !tabs.isEmpty {
         TerminalTabStrip(
-          tabs: tabs, activeID: active?.id, target: target, sessions: sessions,
+          tabs: tabs, activeID: active?.id, target: target, panes: panes,
           chipPaneDrag: $chipPaneDrag,
           localize: { chipLocal($0) },
           dropTarget: { chipDropTarget(at: $0) }
@@ -124,7 +124,7 @@ struct WorkroomTerminalsView: View {
       // Through the host so a pending auto-run (issue #7) suppresses the default first tab and the
       // run command becomes tab #1 instead of being orphaned beside a stray "Terminal 1".
       host.ensureInitialTerminal(for: target)
-      sessions.reconcileOcclusion(for: target)
+      panes.reconcileOcclusion(for: target)
     }
     // Focusing a terminal dismisses its notifications — but ONLY while this view is the focused one
     // (`surfaceActive`). In a workroom split EVERY member renders through this view, including
@@ -157,7 +157,7 @@ struct WorkroomTerminalsView: View {
   /// solo. `split(for:)` is nil exactly when the focused tab is solo, so the nil-coalesce below is
   /// the whole decision.
   private func contentLayout(active: TerminalTab) -> TerminalPaneLayout {
-    sessions.split(for: target) ?? .leaf(active.id)
+    panes.split(for: target) ?? .leaf(active.id)
   }
 
   /// The content-local point for a chip drag at `global`, or nil when the cursor is outside the pane
@@ -170,7 +170,7 @@ struct WorkroomTerminalsView: View {
   /// Where a chip dropped at `global` lands (pane + edge), using the same pane plan the renderer uses,
   /// or nil if it isn't over a pane.
   private func chipDropTarget(at global: CGPoint) -> (tab: TerminalTab.ID, edge: PaneEdge)? {
-    guard let local = chipLocal(global), let active = sessions.activeTab(for: target) else {
+    guard let local = chipLocal(global), let active = panes.activeTab(for: target) else {
       return nil
     }
     let plan = PaneTreeLayout.plan(

@@ -23,7 +23,7 @@ struct TerminalTabStrip: View {
   let tabs: [TerminalTab]
   let activeID: TerminalTab.ID?
   let target: TerminalTarget
-  let sessions: TerminalPanes
+  let panes: TerminalPanes
   @Environment(\.paneHost) private var host
   @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var notifications: NotificationCenterStore
@@ -82,7 +82,7 @@ struct TerminalTabStrip: View {
     // grouped chip's selected pill insets itself to sit *inside* its split bracket rather than
     // overrunning it, and the separator rules need to tell one group from the next, not merely
     // grouped from solo.
-    let groupOf = sessions.splitGroupIndices(for: target)
+    let groupOf = panes.splitGroupIndices(for: target)
 
     // `spacing` is the gutter between the scroller region and the per-tab toolbar, and it has to be a
     // real gutter rather than leftover slack. `OverflowingTabScroller`'s pinned "+" rides a
@@ -205,15 +205,15 @@ struct TerminalTabStrip: View {
           // tab to persisted (#66) — `persist` no-ops on terminal/persisted tabs, so this is safe
           // for every chip and never delays the select.
           let now = Date()
-          sessions.select(tab.id, for: target)
+          panes.select(tab.id, for: target)
           if let last = lastChipClick, last.id == tab.id, now.timeIntervalSince(last.at) < 0.35 {
-            sessions.persist(tab.id, for: target)
+            panes.persist(tab.id, for: target)
             lastChipClick = nil
           } else {
             lastChipClick = ChipClick(id: tab.id, at: now)
           }
         }
-        .tabChipContextMenu(tab: tab, target: target, host: host, sessions: sessions)
+        .tabChipContextMenu(tab: tab, target: target, host: host, panes: panes)
         // Measure in .global space: a .local drag reads coordinates relative to the
         // chip, which itself moves via .offset(drag.translation) — that feedback loop
         // dampens the translation so the chip lags the cursor. Global space is fixed.
@@ -227,26 +227,26 @@ struct TerminalTabStrip: View {
               // Quick Terminal: show where it goes and stop previewing a drop into the panes.
               if isDragOutsideWindow(value.location) {
                 chipPaneDrag = nil
-                sessions.showDragOutside(tab)
+                panes.showDragOutside(tab)
                 return
               }
-              sessions.hideDragOutside()
+              panes.hideDragOutside()
               // Dragged down over the pane area → preview a drop-into-pane (the strip stops gapping).
               chipPaneDrag = localize(value.location)
                 .map { PaneDragState(tabID: tab.id, location: $0) }
             }
             .onEnded { value in
-              sessions.hideDragOutside()
+              panes.hideDragOutside()
               if isDragOutsideWindow(value.location) {
                 // A chip dragged out of the window does what dragging the pane's own title bar out
                 // does — the chip is the other handle on the same pane.
-                sessions.dropOutside(tab.id, for: target)
+                panes.dropOutside(tab.id, for: target)
                 drag.cancel()
                 chipPaneDrag = nil
                 return
               }
               if let drop = dropTarget(value.location) {
-                sessions.dropTabFromStrip(
+                panes.dropTabFromStrip(
                   tab.id, ontoEdge: drop.edge, of: drop.tab, for: target)
                 drag.cancel()
               } else {
@@ -260,7 +260,7 @@ struct TerminalTabStrip: View {
                     ids: tabs.map(\.id), spacing: tabSpacing,
                     finalTranslation: clampReorder(value.translation.width, index))
                   {
-                    sessions.moveTab(tab.id, toIndex: move.to, for: target)
+                    panes.moveTab(tab.id, toIndex: move.to, for: target)
                   }
                 }
               }
@@ -344,7 +344,7 @@ struct TerminalTabStrip: View {
   private func hiddenWaitingTab(trailing: Bool) -> TerminalTab? {
     let ids = tabs.map(\.id)
     guard let firstVisible = ids.firstIndex(where: visibleTabs.contains) else { return nil }
-    let hidden = sessions.blockedTabs(forTargetID: target.id).map(\.tab).first { id in
+    let hidden = panes.blockedTabs(forTargetID: target.id).map(\.tab).first { id in
       guard !visibleTabs.contains(id), let index = ids.firstIndex(of: id) else { return false }
       return (index > firstVisible) == trailing
     }
@@ -357,7 +357,7 @@ struct TerminalTabStrip: View {
     let sentence = ProgramStatusPresentation.sentence(
       tab.programStatus?.blocked.first?.kind ?? .none)
     return Button {
-      sessions.select(tab.id, for: target)
+      panes.select(tab.id, for: target)
     } label: {
       ProgramStatusGlyph(mark: .blocked, stale: tab.programStatus?.stale == true, size: 10)
         .frame(width: 24, height: 24)
@@ -414,11 +414,11 @@ struct TerminalTabStrip: View {
         state: state,
         onDiagnose: { codingAgentManager.diagnose(tab: tab.id, target: target.id) },
         onInsertFix: { fix in
-          sessions.surface(of: tab.id)?.sendText(fix)
+          panes.surface(of: tab.id)?.sendText(fix)
           codingAgentPopoverTab = nil
         },
         onInvestigate: {
-          host.investigate(state, in: target, surface: sessions.surface(of: tab.id))
+          host.investigate(state, in: target, surface: panes.surface(of: tab.id))
           codingAgentManager.dismiss(tab: tab.id)
           codingAgentPopoverTab = nil
         },
@@ -1042,7 +1042,7 @@ extension View {
   /// group (Close / Close Others / Close All).
   @ViewBuilder
   func tabChipContextMenu(
-    tab: TerminalTab, target: TerminalTarget, host: any PaneHost, sessions: TerminalPanes
+    tab: TerminalTab, target: TerminalTarget, host: any PaneHost, panes: TerminalPanes
   ) -> some View {
     self.contextMenu {
       if host.runTabID(for: target.id) == tab.id {
@@ -1052,7 +1052,7 @@ extension View {
       // The escape hatch for a program that left a request behind (#358).
       if tab.programStatus?.hasReport == true {
         Button {
-          sessions.clearProgramStatus(tab: tab.id, target: target.id)
+          panes.clearProgramStatus(tab: tab.id, target: target.id)
         } label: {
           Label("Clear Status", systemImage: "hand.raised.slash")
         }
@@ -1069,7 +1069,7 @@ extension View {
           "View",
           selection: Binding(
             get: { tab.diffViewModeOverride ?? Defaults[.diffViewMode] },
-            set: { sessions.setDiffViewMode($0, forTab: tab.id, in: target) })
+            set: { panes.setDiffViewMode($0, forTab: tab.id, in: target) })
         ) {
           Label("Unified", systemImage: "text.alignleft").tag(DiffViewMode.unified)
           Label("Side by Side", systemImage: "rectangle.split.2x1").tag(DiffViewMode.sideBySide)
@@ -1099,7 +1099,7 @@ extension View {
         .disabled(descriptor.change == .deleted || target.isMissing)
         if tab.isPreview {
           Button {
-            sessions.persist(tab.id, for: target)
+            panes.persist(tab.id, for: target)
           } label: {
             Label("Keep Open", systemImage: "pin")
           }
@@ -1117,7 +1117,7 @@ extension View {
             "View",
             selection: Binding(
               get: { tab.markdownPreviewOverride ?? true },
-              set: { sessions.setMarkdownPreview($0, forTab: tab.id, in: target) })
+              set: { panes.setMarkdownPreview($0, forTab: tab.id, in: target) })
           ) {
             Label("Rendered Preview", systemImage: "eye").tag(true)
             Label("Source", systemImage: "chevron.left.forwardslash.chevron.right").tag(false)
@@ -1133,7 +1133,7 @@ extension View {
         .disabled(target.isMissing)
         if tab.isPreview {
           Button {
-            sessions.persist(tab.id, for: target)
+            panes.persist(tab.id, for: target)
           } label: {
             Label("Keep Open", systemImage: "pin")
           }
@@ -1144,7 +1144,7 @@ extension View {
       // Open" while previewed (issue #59) — same pin affordance as diff/file panes.
       if case .changeset = tab.content, tab.isPreview {
         Button {
-          sessions.persist(tab.id, for: target)
+          panes.persist(tab.id, for: target)
         } label: {
           Label("Keep Open", systemImage: "pin")
         }
@@ -1152,28 +1152,28 @@ extension View {
       }
       // Membership in ANY group — visible or hidden (a group persists while a solo tab is focused),
       // so "Remove from Split" still works for a member of an off-screen group.
-      let isMember = sessions.split(containing: tab.id, for: target) != nil
+      let isMember = panes.split(containing: tab.id, for: target) != nil
       // Split this tab — never disabled. The old gate refused this for a chip outside the shown
       // split (review D5), because splitting it would have REPLACED that split; groups are disjoint
       // and additive now, so splitting a solo chip seeds a new group and leaves every other alone.
       Group {
         Button {
-          sessions.splitTab(tab.id, on: .right, for: target)
+          panes.splitTab(tab.id, on: .right, for: target)
         } label: {
           Label("Split Right", systemImage: "rectangle.trailinghalf.inset.filled")
         }
         Button {
-          sessions.splitTab(tab.id, on: .left, for: target)
+          panes.splitTab(tab.id, on: .left, for: target)
         } label: {
           Label("Split Left", systemImage: "rectangle.leadinghalf.inset.filled")
         }
         Button {
-          sessions.splitTab(tab.id, on: .bottom, for: target)
+          panes.splitTab(tab.id, on: .bottom, for: target)
         } label: {
           Label("Split Down", systemImage: "rectangle.bottomhalf.inset.filled")
         }
         Button {
-          sessions.splitTab(tab.id, on: .top, for: target)
+          panes.splitTab(tab.id, on: .top, for: target)
         } label: {
           Label("Split Up", systemImage: "rectangle.tophalf.inset.filled")
         }
@@ -1186,14 +1186,14 @@ extension View {
       if isMember {
         Divider()
         Button {
-          sessions.extractFromSplit(tab.id, for: target)
+          panes.extractFromSplit(tab.id, for: target)
         } label: {
           Label("Remove from Split", systemImage: "pip.exit")
         }
       }
       Divider()
       // This pane into a window of its own (#444), as dragging the chip out of the window does.
-      if sessions.allowsDetach {
+      if panes.allowsDetach {
         paneWindowMenuItem(host: host, tabID: tab.id, targetID: target.id)
         Divider()
       } else if target.id == QuickTerminalController.targetID {
@@ -1210,7 +1210,7 @@ extension View {
       } label: {
         Label("Close Others", systemImage: "xmark")
       }
-      .disabled(sessions.tabs(for: target).count <= 1)
+      .disabled(panes.tabs(for: target).count <= 1)
       Button(role: .destructive) {
         host.requestCloseAllTerminalTabs(for: target)
       } label: {
