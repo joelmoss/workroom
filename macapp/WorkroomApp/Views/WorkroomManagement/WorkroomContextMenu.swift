@@ -183,7 +183,9 @@ extension NSImage {
 struct QuickTerminalMoveToWorkroomMenu: View {
   enum Style { case menuItem, toolbar }
 
-  let host: any PaneHost
+  /// From the environment, not an init parameter: the title bar re-creates this on every pane
+  /// update, and comparable stored inputs are what let SwiftUI skip its body then.
+  @Environment(\.paneHost) private var host
   let tabID: TerminalTab.ID
   let target: TerminalTarget
   let style: Style
@@ -192,8 +194,7 @@ struct QuickTerminalMoveToWorkroomMenu: View {
   @State private var windows = WindowRegistry.shared.allStores
   @State private var hovering = false
 
-  init(host: any PaneHost, tabID: TerminalTab.ID, target: TerminalTarget, style: Style) {
-    self.host = host
+  init(tabID: TerminalTab.ID, target: TerminalTarget, style: Style) {
     self.tabID = tabID
     self.target = target
     self.style = style

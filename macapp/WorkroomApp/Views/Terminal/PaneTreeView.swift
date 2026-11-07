@@ -668,7 +668,7 @@ struct PaneLeafView: View {
         ? { sessions.detachPane(tabID, for: target, at: NSEvent.mouseLocation) } : nil,
       moveToWorkroom: target.id == QuickTerminalController.targetID
         ? QuickTerminalMoveToWorkroomMenu(
-          host: host, tabID: tabID, target: target, style: .toolbar) : nil,
+          tabID: tabID, target: target, style: .toolbar) : nil,
       onDragChanged: onDragChanged,
       onDragEnded: onDragEnded
     )

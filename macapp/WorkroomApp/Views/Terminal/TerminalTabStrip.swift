@@ -1197,8 +1197,7 @@ extension View {
         paneWindowMenuItem(host: host, tabID: tab.id, targetID: target.id)
         Divider()
       } else if target.id == QuickTerminalController.targetID {
-        QuickTerminalMoveToWorkroomMenu(
-          host: host, tabID: tab.id, target: target, style: .menuItem)
+        QuickTerminalMoveToWorkroomMenu(tabID: tab.id, target: target, style: .menuItem)
         Divider()
       }
       Button(role: .destructive) {
