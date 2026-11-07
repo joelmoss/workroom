@@ -1,4 +1,5 @@
 import HostDrivers
+import Synchronization
 import XCTest
 
 @testable import Workroom
@@ -45,37 +46,40 @@ final class RemoteSetupTests: XCTestCase {
   // MARK: boxd
 
   /// A command a step started, ending when the test says.
-  private final class FakeCommand: RunningCommand, @unchecked Sendable {
+  private final class FakeCommand: RunningCommand, Sendable {
     let link: URL? = URL(string: "https://app.boxd.sh/?session=s1")
     let lastLine: String?
-    private let lock = NSLock()
-    private var status: Int32?
-    private var waiter: CheckedContinuation<Int32, Never>?
-    private(set) var cancelled = false
+    private struct State {
+      var status: Int32?
+      var waiter: CheckedContinuation<Int32, Never>?
+      var cancelled = false
+    }
+    private let state = Mutex(State())
+    var cancelled: Bool { state.withLock { $0.cancelled } }
 
     init(lastLine: String? = nil) { self.lastLine = lastLine }
 
     func finish(_ code: Int32) {
-      let waiter = lock.withLock { () -> CheckedContinuation<Int32, Never>? in
-        status = code
-        defer { self.waiter = nil }
-        return self.waiter
+      let waiter = state.withLock {
+        $0.status = code
+        defer { $0.waiter = nil }
+        return $0.waiter
       }
       waiter?.resume(returning: code)
     }
 
     func wait() async -> Int32 {
       await withCheckedContinuation { continuation in
-        let done = lock.withLock { () -> Int32? in
-          if status == nil { waiter = continuation }
-          return status
+        let done = state.withLock {
+          if $0.status == nil { $0.waiter = continuation }
+          return $0.status
         }
         if let done { continuation.resume(returning: done) }
       }
     }
 
     func cancel() {
-      lock.withLock { cancelled = true }
+      state.withLock { $0.cancelled = true }
       finish(9)
     }
   }

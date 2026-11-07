@@ -1,5 +1,6 @@
 import DaemonConnection
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -14,26 +15,28 @@ final class HostReachabilityTests: XCTestCase {
 
   /// Counts connects, fails them or not, and holds each until released, for
   /// `HostReachability.ensureConnected`.
-  final class Connects: @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-    private var failing = false
-    private var held = true
-    private var asked = 0
-    private var instant = ContinuousClock.now
-    var calls: Int { lock.withLock { count } }
-    var now: ContinuousClock.Instant { lock.withLock { instant } }
-    func fail(_ on: Bool) { lock.withLock { failing = on } }
-    func advance(_ by: Duration) { lock.withLock { instant += by } }
-    func hold(_ on: Bool) { lock.withLock { held = on } }
+  final class Connects: Sendable {
+    private struct State {
+      var count = 0
+      var failing = false
+      var held = true
+      var asked = 0
+      var instant = ContinuousClock.now
+    }
+    private let state = Mutex(State())
+    var calls: Int { state.withLock { $0.count } }
+    var now: ContinuousClock.Instant { state.withLock { $0.instant } }
+    func fail(_ on: Bool) { state.withLock { $0.failing = on } }
+    func advance(_ by: Duration) { state.withLock { $0.instant += by } }
+    func hold(_ on: Bool) { state.withLock { $0.held = on } }
     /// Callers that have reached `ensureConnected`'s connected check.
-    var arrived: Int { lock.withLock { asked } }
-    func ask() { lock.withLock { asked += 1 } }
+    var arrived: Int { state.withLock { $0.asked } }
+    func ask() { state.withLock { $0.asked += 1 } }
 
     func connect(_ host: HostID) async throws {
-      lock.withLock { count += 1 }
-      while lock.withLock({ held }) { try await Task.sleep(for: .milliseconds(1)) }
-      if lock.withLock({ failing }) { throw HostDriverError.unknownHost(host) }
+      state.withLock { $0.count += 1 }
+      while state.withLock({ $0.held }) { try await Task.sleep(for: .milliseconds(1)) }
+      if state.withLock({ $0.failing }) { throw HostDriverError.unknownHost(host) }
     }
   }
 
@@ -355,17 +358,21 @@ final class HostReachabilityTests: XCTestCase {
     }
   }
 
-  private final class Asleep: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value: HostPresence?
-    private var count = 0
-    var calls: Int { lock.withLock { count } }
-    func set(_ asleep: Bool?) { lock.withLock { value = asleep.map { $0 ? .asleep : .awake } } }
-    func setGone() { lock.withLock { value = .gone } }
+  private final class Asleep: Sendable {
+    private struct State {
+      var value: HostPresence?
+      var count = 0
+    }
+    private let state = Mutex(State())
+    var calls: Int { state.withLock { $0.count } }
+    func set(_ asleep: Bool?) {
+      state.withLock { $0.value = asleep.map { $0 ? .asleep : .awake } }
+    }
+    func setGone() { state.withLock { $0.value = .gone } }
     func answer() -> HostPresence? {
-      lock.withLock {
-        count += 1
-        return value
+      state.withLock {
+        $0.count += 1
+        return $0.value
       }
     }
   }

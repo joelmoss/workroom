@@ -1,3 +1,4 @@
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -26,14 +27,13 @@ final class HistoryLiveRefreshTests: XCTestCase {
 
   // MARK: harness
 
-  /// Counts `log` calls (the observable "a load fired" signal). Lock-guarded + `@unchecked Sendable`
-  /// because `log` runs off-main via `runBlocking`; tests serialize with `awaitCurrentLoad`.
-  private final class CountingProvider: LocalVCSProviding, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _count = 0
-    var logCount: Int { lock.withLock { _count } }
+  /// Counts `log` calls (the observable "a load fired" signal). Behind a `Mutex` because `log` runs
+  /// off-main via `runBlocking`; tests serialize with `awaitCurrentLoad`.
+  private final class CountingProvider: LocalVCSProviding, Sendable {
+    private let count = Mutex(0)
+    var logCount: Int { count.withLock { $0 } }
     func log(root: URL, limit: Int) throws -> VCSHistoryPage {
-      lock.withLock { _count += 1 }
+      count.withLock { $0 += 1 }
       return VCSHistoryPage(commits: [], reachedEnd: true)
     }
     func changeset(root: URL, commitID: String) async throws -> VCSChangeset {

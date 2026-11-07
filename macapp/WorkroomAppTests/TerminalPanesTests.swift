@@ -1,5 +1,6 @@
 import Combine
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -2101,28 +2102,26 @@ final class RemotePaneFooterTests: XCTestCase {
 }
 
 /// A host connection that answers only the session list, with `directory` for every session.
-private final class HostCwdConnection: HostServiceConnection, @unchecked Sendable {
+private final class HostCwdConnection: HostServiceConnection, Sendable {
   let disconnection = AsyncStream<Void> { _ in }
-  private let lock = NSLock()
-  private var _directory: String?
-  private var _asked: [UUID] = []
+  private let state: Mutex<(directory: String?, asked: [UUID])>
 
-  init(directory: String?) { _directory = directory }
+  init(directory: String?) { state = Mutex((directory, [])) }
 
   var directory: String? {
-    get { lock.withLock { _directory } }
-    set { lock.withLock { _directory = newValue } }
+    get { state.withLock { $0.directory } }
+    set { state.withLock { $0.directory = newValue } }
   }
-  var asked: [UUID] { lock.withLock { _asked } }
+  var asked: [UUID] { state.withLock { $0.asked } }
 
   func reader(context: RepositoryContext) throws -> VCSProviding { throw VCSError.io("unused") }
   func writer(context: RepositoryContext, reader: VCSProviding) throws -> VCSWriting {
     throw VCSError.io("unused")
   }
   func workingDirectory(of session: UUID) async throws -> String? {
-    lock.withLock {
-      _asked.append(session)
-      return _directory
+    state.withLock {
+      $0.asked.append(session)
+      return $0.directory
     }
   }
   func close() async {}

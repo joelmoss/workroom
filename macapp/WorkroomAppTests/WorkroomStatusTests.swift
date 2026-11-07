@@ -1,4 +1,5 @@
 import Defaults
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -1108,23 +1109,18 @@ private struct StubPRRunner: StatusCommandRunning {
 /// before the test cancels it isn't the thing under test, so it shouldn't cost the test suite any
 /// wall-clock time. `release()` is a no-op until `run()` has actually stored the continuation —
 /// callers must poll `enteredGHProbe` first, same as the old sleep-based version required.
-private final class GatedGHRunner: StatusCommandRunning, @unchecked Sendable {
-  private let lock = NSLock()
-  private var entered = false
-  private var continuation: CheckedContinuation<Void, Never>?
+private final class GatedGHRunner: StatusCommandRunning, Sendable {
+  private let state = Mutex<(entered: Bool, continuation: CheckedContinuation<Void, Never>?)>(
+    (false, nil))
 
-  var enteredGHProbe: Bool {
-    lock.lock()
-    defer { lock.unlock() }
-    return entered
-  }
+  var enteredGHProbe: Bool { state.withLock { $0.entered } }
 
   /// Lets `run()` return. No-op if the probe hasn't reached the await yet.
   func release() {
-    lock.lock()
-    let cont = continuation
-    continuation = nil
-    lock.unlock()
+    let cont = state.withLock {
+      defer { $0.continuation = nil }
+      return $0.continuation
+    }
     cont?.resume()
   }
 
@@ -1134,13 +1130,9 @@ private final class GatedGHRunner: StatusCommandRunning, @unchecked Sendable {
     guard executable == "gh", args.contains("auth") else {
       return CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
     }
-    lock.lock()
-    entered = true
-    lock.unlock()
+    state.withLock { $0.entered = true }
     await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-      lock.lock()
-      continuation = cont
-      lock.unlock()
+      state.withLock { $0.continuation = cont }
     }
     return CommandResult(stdout: #"{"hosts":{}}"#, stderr: "", exitCode: 0, timedOut: false)
   }

@@ -2,6 +2,7 @@ import DaemonConnection
 import DaemonConnectionTestSupport
 import Foundation
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -13,11 +14,13 @@ import XCTest
 /// Opt-in, on a server explicitly supplied for this check. Uses only uniquely named, marked
 /// checkout folders and a separate daemon state directory; never stops a host or daemon.
 final class SSHHostLiveTests: XCTestCase {
-  private final class Records: @unchecked Sendable {
-    private let lock = NSLock()
-    private var available = ["one", "two", "other"]
-    private var saved: [String: HostDescriptor] = [:]
-    var descriptors: [String: HostDescriptor] { lock.withLock { saved } }
+  private final class Records: Sendable {
+    private struct State {
+      var available = ["one", "two", "other"]
+      var saved: [String: HostDescriptor] = [:]
+    }
+    private let state = Mutex(State())
+    var descriptors: [String: HostDescriptor] { state.withLock { $0.saved } }
     var recorder: RemoteWorkrooms.Recorder {
       .init(
         reserve: { _, _ in
@@ -25,27 +28,28 @@ final class SSHHostLiveTests: XCTestCase {
           return ""
         },
         record: { name, descriptor in
-          if let name { self.lock.withLock { self.saved[name] = descriptor } }
+          if let name { self.state.withLock { $0.saved[name] = descriptor } }
         },
-        forget: { name in _ = self.lock.withLock { self.saved.removeValue(forKey: name) } },
+        forget: { name in _ = self.state.withLock { $0.saved.removeValue(forKey: name) } },
         reserveInParent: { parent, descriptor in
-          self.lock.withLock {
-            let name = self.available.removeFirst()
+          self.state.withLock {
+            let name = $0.available.removeFirst()
             var descriptor = descriptor
             descriptor.path = parent + "/" + name
-            self.saved[name] = descriptor
+            $0.saved[name] = descriptor
             return name
           }
         },
-        hasWorkrooms: { id in self.lock.withLock { self.saved.values.contains { $0.id == id } } })
+        hasWorkrooms: { id in
+          self.state.withLock { state in state.saved.values.contains { $0.id == id } }
+        })
     }
   }
 
-  private final class Lines: @unchecked Sendable {
-    private let lock = NSLock()
-    private var saved: [String] = []
-    func add(_ line: String) { lock.withLock { saved.append(line) } }
-    var all: [String] { lock.withLock { saved } }
+  private final class Lines: Sendable {
+    private let saved = Mutex<[String]>([])
+    func add(_ line: String) { saved.withLock { $0.append(line) } }
+    var all: [String] { saved.withLock { $0 } }
   }
 
   @discardableResult

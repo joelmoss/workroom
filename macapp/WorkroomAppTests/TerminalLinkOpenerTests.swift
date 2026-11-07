@@ -1,4 +1,5 @@
 import DaemonConnection
+import Synchronization
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -898,11 +899,10 @@ final class TerminalLinkOpenerTests: XCTestCase {
     XCTAssertEqual(asked.count, 1, "the click did not ask the host")
   }
 
-  private final class Counter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = 0
-    func bump() { lock.withLock { value += 1 } }
-    var count: Int { lock.withLock { value } }
+  private final class Counter: Sendable {
+    private let value = Mutex(0)
+    func bump() { value.withLock { $0 += 1 } }
+    var count: Int { value.withLock { $0 } }
   }
 
   /// A newer remote ⌘-click replaces the one before it (#254): the host can take seconds, and a

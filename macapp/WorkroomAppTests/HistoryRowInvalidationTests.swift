@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -38,19 +39,18 @@ final class HistoryRowInvalidationTests: XCTestCase {
 
   // MARK: harness
 
-  /// Serves a fixed page. `@unchecked Sendable` + lock because `HistoryModel` reads it off-main via
+  /// Serves a fixed page. Behind a `Mutex` because `HistoryModel` reads it off-main via
   /// `runBlocking`; the tests serialize on `awaitCurrentLoad`.
-  private final class FixedPageProvider: LocalVCSProviding, @unchecked Sendable {
-    private let lock = NSLock()
-    private var page: VCSHistoryPage
+  private final class FixedPageProvider: LocalVCSProviding, Sendable {
+    private let page: Mutex<VCSHistoryPage>
     init(commits: [VCSCommit]) {
-      page = VCSHistoryPage(commits: commits, reachedEnd: true)
+      page = Mutex(VCSHistoryPage(commits: commits, reachedEnd: true))
     }
     func replace(commits: [VCSCommit]) {
-      lock.withLock { page = VCSHistoryPage(commits: commits, reachedEnd: true) }
+      page.withLock { $0 = VCSHistoryPage(commits: commits, reachedEnd: true) }
     }
     func log(root: URL, limit: Int) throws -> VCSHistoryPage {
-      lock.withLock { page }
+      page.withLock { $0 }
     }
     func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
       throw VCSError.io("unused")

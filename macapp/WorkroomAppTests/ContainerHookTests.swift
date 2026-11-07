@@ -1,6 +1,7 @@
 import DaemonConnection
 import DevContainer
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import XCTest
 
@@ -23,11 +24,10 @@ final class ContainerHookTests: XCTestCase {
     }
   }
 
-  private final class Lines: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lines: [String] = []
-    var all: [String] { lock.withLock { lines } }
-    func add(_ line: String) { lock.withLock { lines.append(line) } }
+  private final class Lines: Sendable {
+    private let lines = Mutex<[String]>([])
+    var all: [String] { lines.withLock { $0 } }
+    func add(_ line: String) { lines.withLock { $0.append(line) } }
   }
 
   func testAHookIsWrittenRunAndAPostStartMarkedDoneEitherWay() async throws {

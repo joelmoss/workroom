@@ -2,6 +2,7 @@ import DaemonConnection
 import DaemonConnectionTestSupport
 import Foundation
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -10,14 +11,12 @@ import XCTest
 @testable import Workroom
 
 final class SSHWorkroomTests: XCTestCase {
-  private final class Calls: @unchecked Sendable {
-    private let lock = NSLock()
-    private var saved: [String] = []
-    private var hosts: [HostDescriptor] = []
-    var all: [String] { lock.withLock { saved } }
-    var descriptors: [HostDescriptor] { lock.withLock { hosts } }
-    func add(_ text: String) { lock.withLock { saved.append(text) } }
-    func record(_ host: HostDescriptor) { lock.withLock { hosts.append(host) } }
+  private final class Calls: Sendable {
+    private let saved = Mutex<(texts: [String], hosts: [HostDescriptor])>(([], []))
+    var all: [String] { saved.withLock { $0.texts } }
+    var descriptors: [HostDescriptor] { saved.withLock { $0.hosts } }
+    func add(_ text: String) { saved.withLock { $0.texts.append(text) } }
+    func record(_ host: HostDescriptor) { saved.withLock { $0.hosts.append(host) } }
     var recorder: RemoteWorkrooms.Recorder {
       .init(
         reserve: { _, _ in
@@ -192,11 +191,10 @@ final class SSHWorkroomTests: XCTestCase {
     }
   }
 
-  private final class Requests: @unchecked Sendable {
-    private let lock = NSLock()
-    private var made: [RemoteWorkrooms.ScriptRequest] = []
-    var all: [RemoteWorkrooms.ScriptRequest] { lock.withLock { made } }
-    func add(_ request: RemoteWorkrooms.ScriptRequest) { lock.withLock { made.append(request) } }
+  private final class Requests: Sendable {
+    private let made = Mutex<[RemoteWorkrooms.ScriptRequest]>([])
+    var all: [RemoteWorkrooms.ScriptRequest] { made.withLock { $0 } }
+    func add(_ request: RemoteWorkrooms.ScriptRequest) { made.withLock { $0.append(request) } }
   }
 
   // Value: protects=an SSH workroom's teardown runs in its folder as its SSH host, and a failed one

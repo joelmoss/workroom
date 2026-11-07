@@ -2,6 +2,7 @@ import DaemonConnection
 import DaemonConnectionTestSupport
 import Darwin
 import DevContainer
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -458,23 +459,21 @@ final class PortForwardingModelTests: XCTestCase {
       model.forwards.first?.failure, "Could not reconnect to the host; a connection was refused.")
   }
 
-  private final class Made: @unchecked Sendable {
-    private let lock = NSLock()
-    private var connections: [DaemonClient] = []
+  private final class Made: Sendable {
+    private let connections = Mutex<[DaemonClient]>([])
     func keep(_ connection: DaemonClient?) {
       guard let connection else { return }
-      lock.withLock { connections.append(connection) }
+      connections.withLock { $0.append(connection) }
     }
     func close() async {
-      for connection in lock.withLock({ connections }) { await connection.close() }
+      for connection in connections.withLock({ $0 }) { await connection.close() }
     }
   }
 
-  private final class Counter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = 0
-    func bump() { lock.withLock { value += 1 } }
-    var count: Int { lock.withLock { value } }
+  private final class Counter: Sendable {
+    private let value = Mutex(0)
+    func bump() { value.withLock { $0 += 1 } }
+    var count: Int { value.withLock { $0 } }
   }
 
   /// An `add()` that resumes after the watch consumed a disconnect must not leave a row for a
@@ -1010,11 +1009,10 @@ final class PortForwardingModelTests: XCTestCase {
 
 /// Holds a transport's answer until the test lets it through, so the test can act while `add()` is
 /// suspended.
-final class CurrentLease: @unchecked Sendable {
-  private let lock = NSLock()
-  private var lease: HostConnectionManager.Lease?
-  func set(_ lease: HostConnectionManager.Lease?) { lock.withLock { self.lease = lease } }
-  func get() -> HostConnectionManager.Lease? { lock.withLock { lease } }
+final class CurrentLease: Sendable {
+  private let lease = Mutex<HostConnectionManager.Lease?>(nil)
+  func set(_ lease: HostConnectionManager.Lease?) { self.lease.withLock { $0 = lease } }
+  func get() -> HostConnectionManager.Lease? { lease.withLock { $0 } }
 }
 
 actor Gate {
@@ -1042,31 +1040,32 @@ actor Gate {
 }
 
 /// Counts `current()` reads, which arrive from the watch's task and `add()` alike.
-final class Reads: @unchecked Sendable {
-  private let lock = NSLock()
-  private var calls = 0
-  var count: Int { lock.withLock { calls } }
+final class Reads: Sendable {
+  private let calls = Mutex(0)
+  var count: Int { calls.withLock { $0 } }
   func next() -> Int {
-    lock.withLock {
-      calls += 1
-      return calls
+    calls.withLock {
+      $0 += 1
+      return $0
     }
   }
 }
 
 /// Refusals collected off the forward's event callback, which fires on whichever thread noticed.
-final class Failures: @unchecked Sendable {
-  private let lock = NSLock()
-  private var values: [String] = []
-  private var openedCount = 0
+final class Failures: Sendable {
+  private struct State {
+    var values: [String] = []
+    var openedCount = 0
+  }
+  private let state = Mutex(State())
   func add(_ event: PortForward.Event) {
-    lock.withLock {
+    state.withLock {
       switch event {
-      case .opened: openedCount += 1
-      case .failed(let detail), .stopped(let detail): values.append(detail)
+      case .opened: $0.openedCount += 1
+      case .failed(let detail), .stopped(let detail): $0.values.append(detail)
       }
     }
   }
-  var all: [String] { lock.withLock { values } }
-  var opened: Int { lock.withLock { openedCount } }
+  var all: [String] { state.withLock { $0.values } }
+  var opened: Int { state.withLock { $0.openedCount } }
 }

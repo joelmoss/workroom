@@ -1,5 +1,6 @@
 import DaemonConnection
 import DaemonConnectionTestSupport
+import Synchronization
 import WorkroomDomain
 import WorkroomGit
 import WorkroomSystem
@@ -533,19 +534,10 @@ final class DaemonVCSIntegrationTests: XCTestCase {
   /// touching the real per-bundle Application Support socket a live Workroom Dev instance might
   /// already own.
   func testConcurrentReadersCoalesceOntoOneConnectAttempt() async throws {
-    final class Counter: @unchecked Sendable {
-      private let lock = NSLock()
-      private var count = 0
-      func increment() {
-        lock.lock()
-        count += 1
-        lock.unlock()
-      }
-      func value() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return count
-      }
+    final class Counter: Sendable {
+      private let count = Mutex(0)
+      func increment() { count.withLock { $0 += 1 } }
+      func value() -> Int { count.withLock { $0 } }
     }
     let root = try gitRepo()
     let daemon = try DaemonHarness.start(environment: environment)

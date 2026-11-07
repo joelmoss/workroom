@@ -1,3 +1,4 @@
+import Synchronization
 import WorkroomVCS
 import XCTest
 
@@ -11,26 +12,16 @@ private final class StubDiffProvider: LocalVCSProviding, @unchecked Sendable {
   var commitText: (@Sendable (_ commitID: String, _ path: String) throws -> String)?
   var workingText: (@Sendable (_ path: String) throws -> String)?
 
-  private let lock = NSLock()
-  private var _commitCalls = 0
-  private var _workingCalls: [String] = []
-  private var _lastCommit: (commitID: String, path: String)?
+  private struct Calls {
+    var commit = 0
+    var working: [String] = []
+    var lastCommit: (commitID: String, path: String)?
+  }
+  private let calls = Mutex(Calls())
 
-  var commitCalls: Int {
-    lock.lock()
-    defer { lock.unlock() }
-    return _commitCalls
-  }
-  var workingCalls: [String] {
-    lock.lock()
-    defer { lock.unlock() }
-    return _workingCalls
-  }
-  var lastCommit: (commitID: String, path: String)? {
-    lock.lock()
-    defer { lock.unlock() }
-    return _lastCommit
-  }
+  var commitCalls: Int { calls.withLock { $0.commit } }
+  var workingCalls: [String] { calls.withLock { $0.working } }
+  var lastCommit: (commitID: String, path: String)? { calls.withLock { $0.lastCommit } }
 
   func log(root: URL, limit: Int) throws -> VCSHistoryPage {
     .init(commits: [], reachedEnd: true)
@@ -41,17 +32,15 @@ private final class StubDiffProvider: LocalVCSProviding, @unchecked Sendable {
   func currentRef(root: URL) async throws -> VCSRef { .none }
 
   func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
-    lock.lock()
-    _commitCalls += 1
-    _lastCommit = (commitID, path)
-    lock.unlock()
+    calls.withLock {
+      $0.commit += 1
+      $0.lastCommit = (commitID, path)
+    }
     return try commitText?(commitID, path) ?? ""
   }
 
   func workingFileDiff(root: URL, path: String) async throws -> String {
-    lock.lock()
-    _workingCalls.append(path)
-    lock.unlock()
+    calls.withLock { $0.working.append(path) }
     return try workingText?(path) ?? ""
   }
 

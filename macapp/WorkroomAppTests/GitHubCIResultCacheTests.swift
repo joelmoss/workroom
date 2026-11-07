@@ -1,13 +1,13 @@
+import Synchronization
 import WorkroomSystem
 import XCTest
 
 @testable import Workroom
 
-private final class CIClock: @unchecked Sendable {
-  private let lock = NSLock()
-  private var instant = ContinuousClock.now
-  func now() -> ContinuousClock.Instant { lock.withLock { instant } }
-  func advance(_ duration: Duration) { lock.withLock { instant = instant.advanced(by: duration) } }
+private final class CIClock: Sendable {
+  private let instant = Mutex(ContinuousClock.now)
+  func now() -> ContinuousClock.Instant { instant.withLock { $0 } }
+  func advance(_ duration: Duration) { instant.withLock { $0 = $0.advanced(by: duration) } }
 }
 
 private actor CICommandProbe: StatusCommandRunning {

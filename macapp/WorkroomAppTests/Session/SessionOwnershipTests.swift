@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 import WorkroomWire
 import XCTest
 
@@ -769,39 +770,28 @@ final class HelperSessionSubstitutionTests: XCTestCase {
 }
 
 /// Answers a scripted sequence of ownership results, then repeats the last one.
-private final class OwnershipScript: @unchecked Sendable {
-  private let lock = NSLock()
-  private var answers: [SessionOwnership]
-  private var index = 0
+private final class OwnershipScript: Sendable {
+  private let answers: [SessionOwnership]
+  private let index = Mutex(0)
 
   init(_ answers: [SessionOwnership]) {
     self.answers = answers
   }
 
   func next() -> SessionOwnership {
-    lock.lock()
-    defer { lock.unlock() }
-    let answer = answers[min(index, answers.count - 1)]
-    index += 1
-    return answer
+    index.withLock {
+      defer { $0 += 1 }
+      return answers[min($0, answers.count - 1)]
+    }
   }
 }
 
 /// A plain counter rather than a captured `var`: the closure is `@escaping` and stored on the
 /// service, so it cannot capture a local mutable.
-private final class Counter: @unchecked Sendable {
-  private let lock = NSLock()
-  private var count = 0
+private final class Counter: Sendable {
+  private let count = Mutex(0)
 
-  func increment() {
-    lock.lock()
-    count += 1
-    lock.unlock()
-  }
+  func increment() { count.withLock { $0 += 1 } }
 
-  var value: Int {
-    lock.lock()
-    defer { lock.unlock() }
-    return count
-  }
+  var value: Int { count.withLock { $0 } }
 }

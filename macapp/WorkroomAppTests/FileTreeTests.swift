@@ -1,3 +1,4 @@
+import Synchronization
 import SyntaxHighlighting
 import WorkroomSystem
 import WorkroomVCS
@@ -370,24 +371,23 @@ final class FileTreeTests: XCTestCase {
 }
 
 /// Holds every listing open until `release()`, and counts how many were started.
-private final class GatedRunner: StatusCommandRunning, @unchecked Sendable {
-  private let lock = NSLock()
-  private var waiters: [CheckedContinuation<Void, Never>] = []
-  private var started = 0
-  var calls: Int { lock.withLock { started } }
+private final class GatedRunner: StatusCommandRunning, Sendable {
+  private let waiters = Mutex<[CheckedContinuation<Void, Never>]>([])
+  private let started = Mutex(0)
+  var calls: Int { started.withLock { $0 } }
 
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
   {
-    lock.withLock { started += 1 }
+    started.withLock { $0 += 1 }
     await withCheckedContinuation { continuation in
-      lock.withLock { waiters.append(continuation) }
+      waiters.withLock { $0.append(continuation) }
     }
     return CommandResult(stdout: "a.txt\0", stderr: "", exitCode: 0, timedOut: false)
   }
 
   func release() {
-    let next = lock.withLock { waiters.isEmpty ? nil : waiters.removeFirst() }
+    let next = waiters.withLock { $0.isEmpty ? nil : $0.removeFirst() }
     next?.resume()
   }
 }

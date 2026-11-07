@@ -1,3 +1,4 @@
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -9,22 +10,17 @@ import XCTest
 /// `AppStore.runLocalSweep`'s `cap`-bounded `withTaskGroup` fan-out must hold, and had ZERO test
 /// coverage before this file (confirmed by grep: no hits for `runLocalSweep`/`localConcurrency` in
 /// this test target). Shared by any status double that needs to prove it never over-runs.
-private final class InFlightCounter: @unchecked Sendable {
-  private let lock = NSLock()
-  private var current = 0
-  private(set) var peak = 0
+private final class InFlightCounter: Sendable {
+  private let counts = Mutex<(current: Int, peak: Int)>((0, 0))
+  var peak: Int { counts.withLock { $0.peak } }
 
   func enter() {
-    lock.lock()
-    current += 1
-    peak = max(peak, current)
-    lock.unlock()
+    counts.withLock {
+      $0.current += 1
+      $0.peak = max($0.peak, $0.current)
+    }
   }
-  func leave() {
-    lock.lock()
-    current -= 1
-    lock.unlock()
-  }
+  func leave() { counts.withLock { $0.current -= 1 } }
 }
 
 /// A local reader that holds briefly in `workingStatus` while counting concurrent callers — long
@@ -76,13 +72,11 @@ private struct MissingToolRunner: StatusCommandRunning {
 /// enough for the CI stage to run: `gh auth` available, a branch, a sha, and a repository named after
 /// the directory the lookup ran in — so a test can tell WHICH project a CI query was built for.
 /// `lookupResult` replaces the lookup's answer (e.g. a timeout).
-private final class LookupCountingRunner: StatusCommandRunning, @unchecked Sendable {
-  private let lock = NSLock()
-  private var _lookups = 0
-  private var _queries: [String] = []
+private final class LookupCountingRunner: StatusCommandRunning, Sendable {
+  private let recorded = Mutex<(lookups: Int, queries: [String])>((0, []))
   private let lookupResult: CommandResult?
-  var lookups: Int { lock.withLock { _lookups } }
-  var queries: [String] { lock.withLock { _queries } }
+  var lookups: Int { recorded.withLock { $0.lookups } }
+  var queries: [String] { recorded.withLock { $0.queries } }
 
   init(lookupResult: CommandResult? = nil) { self.lookupResult = lookupResult }
 
@@ -98,13 +92,14 @@ private final class LookupCountingRunner: StatusCommandRunning, @unchecked Senda
     if args.contains("symbolic-ref") { return ok("main") }
     if args.contains("rev-parse") { return ok(String(repeating: "a", count: 40)) }
     if executable == "gh", args.prefix(2) == ["repo", "view"] {
-      lock.withLock { _lookups += 1 }
+      recorded.withLock { $0.lookups += 1 }
       if let lookupResult { return lookupResult }
       let name = (directory as NSString).lastPathComponent
       return ok("https://github.com/acme/\(name)")
     }
     if executable == "gh", args.contains("graphql") {
-      lock.withLock { _queries.append(args.first { $0.hasPrefix("query=") } ?? "") }
+      let query = args.first { $0.hasPrefix("query=") } ?? ""
+      recorded.withLock { $0.queries.append(query) }
       return ok("")
     }
     return ok("")

@@ -1,4 +1,5 @@
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -167,23 +168,22 @@ final class ExeDevIntegrationTests: ProviderParityTestCase {
 
   /// The lobby, except that the command named in `failing` fails once. Named with a `+`, it runs
   /// and THEN fails, as an ssh cut off after exe.dev took the request does.
-  private final class FailingLobby: StatusCommandRunning, @unchecked Sendable {
-    private let lock = NSLock()
-    private var failing: String?
+  private final class FailingLobby: StatusCommandRunning, Sendable {
+    private let failing = Mutex<String?>(nil)
     private let real = StatusCommandRunner()
 
-    func fail(_ step: String) { lock.withLock { failing = step } }
-    var pending: Bool { lock.withLock { failing != nil } }
+    func fail(_ step: String) { failing.withLock { $0 = step } }
+    var pending: Bool { failing.withLock { $0 != nil } }
 
     func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
       async -> CommandResult
     {
       let lobby = args.firstIndex(of: ExeDevHostDriver.lobby)
       let command = lobby.map { args.count > $0 + 1 ? args[$0 + 1] : "" } ?? ""
-      let step = lock.withLock { () -> String? in
-        guard let failing, failing == command || failing == command + "+" else { return nil }
-        self.failing = nil
-        return failing
+      let step = failing.withLock { failing -> String? in
+        guard let step = failing, step == command || step == command + "+" else { return nil }
+        failing = nil
+        return step
       }
       let injected = CommandResult(
         stdout: #"{"error":"injected failure"}"#, stderr: "", exitCode: 1, timedOut: false)

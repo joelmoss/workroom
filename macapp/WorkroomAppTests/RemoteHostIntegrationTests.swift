@@ -2,6 +2,7 @@ import DaemonConnection
 import DaemonConnectionTestSupport
 import Darwin
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import WorkroomWire
@@ -247,14 +248,14 @@ final class RemoteHostIntegrationTests: XCTestCase {
   /// Run through `/bin/sh -c`, as libghostty runs a pane's command. No local terminal, so ssh
   /// allocates none on the host either, and the attach there relays over pipes, as the Rust
   /// harnesses' do.
+  // Unchecked for the `Process` and `Pipe`, which are set up in `init` and only read after.
   final class Pane: @unchecked Sendable {
     let process = Process()
     private let input = Pipe()
-    private let lock = NSLock()
-    private var seen = ""
+    private let seen = Mutex("")
     /// From `terminationHandler`: `waitUntilExit`/`isRunning` are not reliable for a process
     /// launched from an async test (see `HostStream.spawn`).
-    private var exited: Int32?
+    private let exited = Mutex<Int32?>(nil)
 
     init(command: String) throws {
       process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -270,10 +271,10 @@ final class RemoteHostIntegrationTests: XCTestCase {
           handle.readabilityHandler = nil
           return
         }
-        self?.lock.withLock { self?.seen += String(decoding: data, as: UTF8.self) }
+        self?.seen.withLock { $0 += String(decoding: data, as: UTF8.self) }
       }
       process.terminationHandler = { [weak self] finished in
-        self?.lock.withLock { self?.exited = finished.terminationStatus }
+        self?.exited.withLock { $0 = finished.terminationStatus }
       }
       try process.run()
     }
@@ -282,16 +283,16 @@ final class RemoteHostIntegrationTests: XCTestCase {
 
     func read(until needle: String, within seconds: TimeInterval = 20) -> String {
       let deadline = Date().addingTimeInterval(seconds)
-      while Date() < deadline, !lock.withLock({ seen.contains(needle) }) {
+      while Date() < deadline, !seen.withLock({ $0.contains(needle) }) {
         Thread.sleep(forTimeInterval: 0.05)
       }
-      return lock.withLock { seen }
+      return seen.withLock { $0 }
     }
 
     /// The link dropping hard: ssh killed, with no goodbye to the host.
     func dropLink() {
       // Never a pid already reaped, which may be someone else's by now.
-      guard lock.withLock({ exited == nil }) else { return }
+      guard exited.withLock({ $0 == nil }) else { return }
       kill(process.processIdentifier, SIGKILL)
       _ = exitCode(within: 10)
     }
@@ -300,10 +301,10 @@ final class RemoteHostIntegrationTests: XCTestCase {
     /// lost link. Nil while it is still running at the deadline.
     func exitCode(within seconds: TimeInterval) -> Int32? {
       let deadline = Date().addingTimeInterval(seconds)
-      while lock.withLock({ exited }) == nil, Date() < deadline {
+      while exited.withLock({ $0 }) == nil, Date() < deadline {
         Thread.sleep(forTimeInterval: 0.05)
       }
-      return lock.withLock { exited }
+      return exited.withLock { $0 }
     }
   }
 

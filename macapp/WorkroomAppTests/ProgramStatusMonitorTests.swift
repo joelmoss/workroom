@@ -1,4 +1,5 @@
 import DaemonConnection
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -7,18 +8,17 @@ import XCTest
 
 /// A host connection that only speaks program status: events are pushed by the test, `seen` and
 /// `clear` are recorded.
-final class FakeProgramStatusConnection: HostServiceConnection, @unchecked Sendable {
+final class FakeProgramStatusConnection: HostServiceConnection, Sendable {
   let disconnection = AsyncStream<Void> { _ in }
-  private let lock = NSLock()
-  private var handler: (@Sendable (ProgramStatusEvent) -> Void)?
-  private var _requests: [String] = []
+  private let handler = Mutex<(@Sendable (ProgramStatusEvent) -> Void)?>(nil)
+  private let recorded = Mutex<[String]>([])
   let availability: ProgramStatusAvailability
 
   init(availability: ProgramStatusAvailability = .available) { self.availability = availability }
 
-  var requests: [String] { lock.withLock { _requests } }
+  var requests: [String] { recorded.withLock { $0 } }
 
-  func push(_ event: ProgramStatusEvent) { lock.withLock { handler }?(event) }
+  func push(_ event: ProgramStatusEvent) { handler.withLock { $0 }?(event) }
 
   func reader(context: RepositoryContext) throws -> VCSProviding { throw VCSError.io("unused") }
   func writer(context: RepositoryContext, reader: VCSProviding) throws -> VCSWriting {
@@ -27,14 +27,14 @@ final class FakeProgramStatusConnection: HostServiceConnection, @unchecked Senda
   func subscribeProgramStatus(
     onEvent: @escaping @Sendable (ProgramStatusEvent) -> Void
   ) async throws -> ProgramStatusAvailability {
-    lock.withLock { handler = onEvent }
+    handler.withLock { $0 = onEvent }
     return availability
   }
   func programStatusSeen(session: UUID, revision: UInt64, states: [String]?) async throws {
-    lock.withLock { _requests.append("seen \(revision) \(states ?? [])") }
+    recorded.withLock { $0.append("seen \(revision) \(states ?? [])") }
   }
   func programStatusClear(session: UUID) async throws {
-    lock.withLock { _requests.append("clear") }
+    recorded.withLock { $0.append("clear") }
   }
   func close() async {}
 }
@@ -450,30 +450,28 @@ final class ProgramStatusMonitorTests: XCTestCase {
 
 /// Holds every sleep handed to `wait` until the test releases them.
 /// How many times a monitor tried to connect, from its `connect` closure.
-private final class Attempts: @unchecked Sendable {
-  private let lock = NSLock()
-  private var value = 0
-  var count: Int { lock.withLock { value } }
+private final class Attempts: Sendable {
+  private let value = Mutex(0)
+  var count: Int { value.withLock { $0 } }
   func next() -> Int {
-    lock.withLock {
-      value += 1
-      return value
+    value.withLock {
+      $0 += 1
+      return $0
     }
   }
 }
 
-private final class SleepGate: @unchecked Sendable {
-  private let lock = NSLock()
-  private var waiters: [CheckedContinuation<Void, Never>] = []
+private final class SleepGate: Sendable {
+  private let waiters = Mutex<[CheckedContinuation<Void, Never>]>([])
 
-  var isWaiting: Bool { lock.withLock { !waiters.isEmpty } }
+  var isWaiting: Bool { waiters.withLock { !$0.isEmpty } }
 
   func wait() async {
-    await withCheckedContinuation { continuation in lock.withLock { waiters.append(continuation) } }
+    await withCheckedContinuation { continuation in waiters.withLock { $0.append(continuation) } }
   }
 
   func release() {
-    let held = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+    let held = waiters.withLock { waiters in
       defer { waiters = [] }
       return waiters
     }
@@ -482,15 +480,14 @@ private final class SleepGate: @unchecked Sendable {
 }
 
 /// Connections handed to a monitor's `connect` one at a time, as the test releases them.
-private final class ConnectionQueue: @unchecked Sendable {
-  private let lock = NSLock()
-  private var items: [any HostServiceConnection] = []
+private final class ConnectionQueue: Sendable {
+  private let items = Mutex<[any HostServiceConnection]>([])
 
-  func yield(_ connection: any HostServiceConnection) { lock.withLock { items.append(connection) } }
+  func yield(_ connection: any HostServiceConnection) { items.withLock { $0.append(connection) } }
 
   func next() async throws -> any HostServiceConnection {
     while true {
-      if let item = lock.withLock({ items.isEmpty ? nil : items.removeFirst() }) { return item }
+      if let item = items.withLock({ $0.isEmpty ? nil : $0.removeFirst() }) { return item }
       try await Task.sleep(for: .milliseconds(10))
     }
   }

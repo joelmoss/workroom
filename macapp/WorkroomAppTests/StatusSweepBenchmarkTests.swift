@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -7,22 +8,21 @@ import XCTest
 @testable import Workroom
 
 /// Counts real status-probe subprocesses, with a hermetic gh script instead of network traffic.
-private final class StatusProbeRecorder: StatusCommandRunning, @unchecked Sendable {
+private final class StatusProbeRecorder: StatusCommandRunning, Sendable {
   private let script: String
-  private let lock = NSLock()
-  private var calls: [(String, Int32)] = []
+  private let calls = Mutex<[(String, Int32)]>([])
 
   init(script: String) { self.script = script }
 
-  func reset() { lock.withLock { calls.removeAll() } }
+  func reset() { calls.withLock { $0.removeAll() } }
 
   var counts: [String: Int] {
-    lock.withLock {
-      calls.reduce(into: [:]) { result, call in result[call.0, default: 0] += 1 }
+    calls.withLock {
+      $0.reduce(into: [:]) { result, call in result[call.0, default: 0] += 1 }
     }
   }
 
-  var failures: Int { lock.withLock { calls.filter { $0.1 != 0 }.count } }
+  var failures: Int { calls.withLock { $0.filter { $0.1 != 0 }.count } }
 
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
@@ -36,7 +36,7 @@ private final class StatusProbeRecorder: StatusCommandRunning, @unchecked Sendab
     }
     let command = executable == "git" && args.first == "-c" ? Array(args.dropFirst(2)) : args
     let key = ([executable] + command.prefix(executable == "gh" ? 2 : 1)).joined(separator: " ")
-    lock.withLock { calls.append((key, result.exitCode)) }
+    calls.withLock { $0.append((key, result.exitCode)) }
     return result
   }
 }

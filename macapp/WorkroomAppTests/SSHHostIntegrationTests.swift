@@ -2,6 +2,7 @@ import DaemonConnection
 import DaemonConnectionTestSupport
 import Foundation
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -26,10 +27,9 @@ final class SSHHostIntegrationTests: XCTestCase {
   private var directory: URL!
   private var connections: [DaemonClient] = []
 
-  private final class Records: @unchecked Sendable {
-    private let lock = NSLock()
-    private var names: Set<String>
-    init(_ names: [String]) { self.names = Set(names) }
+  private final class Records: Sendable {
+    private let names: Mutex<Set<String>>
+    init(_ names: [String]) { self.names = Mutex(Set(names)) }
     var recorder: RemoteWorkrooms.Recorder {
       .init(
         reserve: { _, _ in
@@ -37,17 +37,19 @@ final class SSHHostIntegrationTests: XCTestCase {
           return ""
         },
         record: { _, _ in XCTFail("SSH delete recorded a failed machine") },
-        forget: { name in _ = self.lock.withLock { self.names.remove(name) } },
-        hasWorkrooms: { _ in self.lock.withLock { !self.names.isEmpty } })
+        forget: { name in _ = self.names.withLock { $0.remove(name) } },
+        hasWorkrooms: { _ in self.names.withLock { !$0.isEmpty } })
     }
   }
 
-  private final class CreationRecords: @unchecked Sendable {
-    private let lock = NSLock()
-    private var available: [String]
-    private var saved: [String: HostDescriptor] = [:]
-    init(_ names: [String]) { available = names }
-    var descriptors: [String: HostDescriptor] { lock.withLock { saved } }
+  private final class CreationRecords: Sendable {
+    private struct State {
+      var available: [String]
+      var saved: [String: HostDescriptor] = [:]
+    }
+    private let state: Mutex<State>
+    init(_ names: [String]) { state = Mutex(State(available: names)) }
+    var descriptors: [String: HostDescriptor] { state.withLock { $0.saved } }
     var recorder: RemoteWorkrooms.Recorder {
       .init(
         reserve: { _, _ in
@@ -55,19 +57,21 @@ final class SSHHostIntegrationTests: XCTestCase {
           return ""
         },
         record: { name, descriptor in
-          if let name { self.lock.withLock { self.saved[name] = descriptor } }
+          if let name { self.state.withLock { $0.saved[name] = descriptor } }
         },
-        forget: { name in _ = self.lock.withLock { self.saved.removeValue(forKey: name) } },
+        forget: { name in _ = self.state.withLock { $0.saved.removeValue(forKey: name) } },
         reserveInParent: { parent, descriptor in
-          self.lock.withLock {
-            let name = self.available.removeFirst()
+          self.state.withLock {
+            let name = $0.available.removeFirst()
             var descriptor = descriptor
             descriptor.path = parent + "/" + name
-            self.saved[name] = descriptor
+            $0.saved[name] = descriptor
             return name
           }
         },
-        hasWorkrooms: { id in self.lock.withLock { self.saved.values.contains { $0.id == id } } })
+        hasWorkrooms: { id in
+          self.state.withLock { state in state.saved.values.contains { $0.id == id } }
+        })
     }
   }
 

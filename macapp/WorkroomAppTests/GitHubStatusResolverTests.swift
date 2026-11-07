@@ -1,3 +1,4 @@
+import Synchronization
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -17,15 +18,10 @@ private struct MockStatusRunner: StatusCommandRunning {
 
 /// Like `MockStatusRunner` but records every (exe, args, dir) call, so a test can assert *where* a
 /// probe ran and what it named — e.g. that a `gh` probe runs in the neutral directory with `--repo`.
-private final class RecordingStatusRunner: StatusCommandRunning, @unchecked Sendable {
+private final class RecordingStatusRunner: StatusCommandRunning, Sendable {
   private let handler: @Sendable (_ executable: String, _ args: [String]) -> CommandResult
-  private let lock = NSLock()
-  private var _calls: [(exe: String, args: [String], dir: String)] = []
-  var calls: [(exe: String, args: [String], dir: String)] {
-    lock.lock()
-    defer { lock.unlock() }
-    return _calls
-  }
+  private let recorded = Mutex<[(exe: String, args: [String], dir: String)]>([])
+  var calls: [(exe: String, args: [String], dir: String)] { recorded.withLock { $0 } }
 
   init(_ handler: @escaping @Sendable (_ executable: String, _ args: [String]) -> CommandResult) {
     self.handler = handler
@@ -34,9 +30,7 @@ private final class RecordingStatusRunner: StatusCommandRunning, @unchecked Send
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
   {
-    lock.lock()
-    _calls.append((executable, args, directory))
-    lock.unlock()
+    recorded.withLock { $0.append((executable, args, directory)) }
     return handler(executable, args)
   }
 }

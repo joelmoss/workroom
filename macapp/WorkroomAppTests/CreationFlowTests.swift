@@ -2,6 +2,7 @@ import DaemonConnection
 import DaemonConnectionTestSupport
 import Foundation
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -218,16 +219,14 @@ final class CreationFlowTests: XCTestCase {
   }
 
   /// A local create whose worktree fails the first time and succeeds the second.
-  private final class WorktreeFailsOnceCLI: WorkroomCLIProtocol, @unchecked Sendable {
+  private final class WorktreeFailsOnceCLI: WorkroomCLIProtocol, Sendable {
     let projectPath: String
-    private let lock = NSLock()
-    private var calls = 0
-    private var made: [String] = []
+    private let state = Mutex<(calls: Int, made: [String])>((0, []))
     init(projectPath: String) { self.projectPath = projectPath }
-    var createCalls: Int { lock.withLock { calls } }
+    var createCalls: Int { state.withLock { $0.calls } }
 
     func list(warnings: String, project: String?) async throws -> ListResponse {
-      let names = lock.withLock { made }
+      let names = state.withLock { $0.made }
       return ListResponse(
         projects: [
           Project(
@@ -242,9 +241,9 @@ final class CreationFlowTests: XCTestCase {
     func create(project: String, onEvent: @escaping @Sendable (StreamEvent) -> Void) async throws
       -> CreateResponse
     {
-      let first = lock.withLock {
-        calls += 1
-        return calls == 1
+      let first = state.withLock {
+        $0.calls += 1
+        return $0.calls == 1
       }
       let path = "\(projectPath)/.workrooms/wr"
       onEvent(CreateEvents.step("fetch", "skipped", "No remote to fetch from"))
@@ -256,7 +255,7 @@ final class CreationFlowTests: XCTestCase {
         throw WorkroomCLIError.cli(kind: "VCSError", message: "git worktree add failed")
       }
       onEvent(CreateEvents.step("worktree", "done"))
-      lock.withLock { made.append("wr") }
+      state.withLock { $0.made.append("wr") }
       onEvent(CreateEvents.created(name: "wr", path: path, setup: false))
       onEvent(CreateEvents.step("script", "skipped", "No setup script"))
       return CreateResponse(name: "wr", path: path, vcs: "git", project: project)
@@ -347,7 +346,7 @@ final class CreationFlowTests: XCTestCase {
 
   /// A local create the CLI refuses for its setup script (#363) until that script is approved, and,
   /// with `localWork`, for that work on a first try (`--start ask`) until a start is chosen.
-  private final class UntrustedSetupCLI: WorkroomCLIProtocol, @unchecked Sendable {
+  private final class UntrustedSetupCLI: WorkroomCLIProtocol, Sendable {
     let projectPath: String
     static let script = ScriptTrust(
       name: "workroom_setup", origin: "base", sha256: String(repeating: "a", count: 64),
@@ -359,11 +358,13 @@ final class CreationFlowTests: XCTestCase {
         + "committed")
     /// The start point a first try's create questions are asked at, as its refusals report it.
     static let asked = String(repeating: "c", count: 40)
-    private let lock = NSLock()
-    private var approvals: [String] = []
-    private var made = false
-    private var startsAsked: [CreationStart?] = []
-    private var pinsAsked: [String?] = []
+    private struct State {
+      var approvals: [String] = []
+      var made = false
+      var startsAsked: [CreationStart?] = []
+      var pinsAsked: [String?] = []
+    }
+    private let state = Mutex(State())
     let untrusted: Bool
     let localWork: LocalWork?
     /// The warning a first try's fetch ends with, or nil for no remote (skipped).
@@ -380,14 +381,14 @@ final class CreationFlowTests: XCTestCase {
       self.fetchWarning = fetchWarning
       self.unusablePin = unusablePin
     }
-    var approved: [String] { lock.withLock { approvals } }
+    var approved: [String] { state.withLock { $0.approvals } }
     /// The start each create asked for.
-    var starts: [CreationStart?] { lock.withLock { startsAsked } }
+    var starts: [CreationStart?] { state.withLock { $0.startsAsked } }
     /// The `--start-commit` each create passed.
-    var pins: [String?] { lock.withLock { pinsAsked } }
+    var pins: [String?] { state.withLock { $0.pinsAsked } }
 
     func list(warnings: String, project: String?) async throws -> ListResponse {
-      let names = lock.withLock { made } ? ["anchor", "wr"] : ["anchor"]
+      let names = state.withLock { $0.made } ? ["anchor", "wr"] : ["anchor"]
       return ListResponse(
         projects: [
           Project(
@@ -409,9 +410,9 @@ final class CreationFlowTests: XCTestCase {
       project: String, skipSetup: Bool, start: CreationStart?, startCommit: String?,
       onEvent: @escaping @Sendable (StreamEvent) -> Void
     ) async throws -> CreateResponse {
-      lock.withLock {
-        startsAsked.append(start)
-        pinsAsked.append(startCommit)
+      state.withLock {
+        $0.startsAsked.append(start)
+        $0.pinsAsked.append(startCommit)
       }
       if startCommit != nil, unusablePin {
         throw WorkroomCLIError.cli(kind: "StartCommitUnusable", message: "no longer on origin/main")
@@ -442,7 +443,7 @@ final class CreationFlowTests: XCTestCase {
       let path = "\(projectPath)/.workrooms/wr"
       onEvent(CreateEvents.step("worktree", "running"))
       onEvent(CreateEvents.step("worktree", "done"))
-      lock.withLock { made = true }
+      state.withLock { $0.made = true }
       onEvent(CreateEvents.created(name: "wr", path: path, setup: false))
       if start == .localWithChanges {
         onEvent(CreateEvents.step("changes", "running"))
@@ -455,7 +456,7 @@ final class CreationFlowTests: XCTestCase {
       return CreateResponse(name: "wr", path: path, vcs: "git", project: project)
     }
     func trustScript(_ name: String, text: Data, project: String) async throws {
-      lock.withLock { approvals.append("\(name) \(String(decoding: text, as: UTF8.self))") }
+      state.withLock { $0.approvals.append("\(name) \(String(decoding: text, as: UTF8.self))") }
     }
     func create(
       project: String, onLog: ((String) -> Void)?, onReady: ((String, String, Bool) -> Void)?
@@ -990,16 +991,14 @@ final class CreationFlowTests: XCTestCase {
 
   // MARK: - Remote
 
-  private final class RemoteFakeCLI: WorkroomCLIProtocol, @unchecked Sendable {
+  private final class RemoteFakeCLI: WorkroomCLIProtocol, Sendable {
     let projectPath: String
-    private let lock = NSLock()
-    private var reserved: [String] = []
-    private var log: [String] = []
-    var calls: [String] { lock.withLock { log } }
+    private let state = Mutex<(reserved: [String], log: [String])>(([], []))
+    var calls: [String] { state.withLock { $0.log } }
     init(projectPath: String) { self.projectPath = projectPath }
 
     func list(warnings: String, project: String?) async throws -> ListResponse {
-      let names = lock.withLock { ["anchor"] + reserved }
+      let names = state.withLock { ["anchor"] + $0.reserved }
       return ListResponse(
         projects: [
           Project(
@@ -1012,27 +1011,27 @@ final class CreationFlowTests: XCTestCase {
     func createRemote(project: String, hostPath: String, descriptor: Data) async throws
       -> CreateResponse
     {
-      lock.withLock {
-        reserved.append("calm-river")
-        log.append("reserve")
+      state.withLock {
+        $0.reserved.append("calm-river")
+        $0.log.append("reserve")
       }
       return CreateResponse(name: "calm-river", path: hostPath, vcs: "git", project: project)
     }
     func setHost(project: String, workroom: String?, descriptor: Data?) async throws {
-      let state = try descriptor.map { try JSONDecoder().decode(HostDescriptor.self, from: $0) }
-      lock.withLock { log.append("host \(state?.state ?? "serving")") }
+      let host = try descriptor.map { try JSONDecoder().decode(HostDescriptor.self, from: $0) }
+      state.withLock { $0.log.append("host \(host?.state ?? "serving")") }
     }
     func trustScript(_ name: String, text: Data, project: String) async throws {
-      lock.withLock { log.append("trust \(name) \(String(decoding: text, as: UTF8.self))") }
+      state.withLock { $0.log.append("trust \(name) \(String(decoding: text, as: UTF8.self))") }
     }
     func addProject(_ path: String, create: Bool) async throws -> String { path }
     func create(
       project: String, onLog: ((String) -> Void)?, onReady: ((String, String, Bool) -> Void)?
     ) async throws -> CreateResponse { throw WorkroomCLIError.timedOut }
     func delete(name: String, project: String, onLog: ((String) -> Void)?) async throws {
-      lock.withLock {
-        reserved.removeAll { $0 == name }
-        log.append("delete \(name)")
+      state.withLock {
+        $0.reserved.removeAll { $0 == name }
+        $0.log.append("delete \(name)")
       }
     }
     func deleteProject(
@@ -1040,17 +1039,16 @@ final class CreationFlowTests: XCTestCase {
     ) async throws -> [URL] { [] }
   }
 
-  private final class FakeDriver: HostTerminalDriver, ProvisioningHostDriver, @unchecked Sendable {
+  private final class FakeDriver: HostTerminalDriver, ProvisioningHostDriver, Sendable {
     let destroyFails: Bool
-    private let lock = NSLock()
-    private var destroyed = 0
-    var destroys: Int { lock.withLock { destroyed } }
+    private let destroyed = Mutex(0)
+    var destroys: Int { destroyed.withLock { $0 } }
     init(destroyFails: Bool = false) { self.destroyFails = destroyFails }
 
     var daemonSocket: String { "/home/boxd/.workroom/workroomd.sock" }
     func create() async throws -> HostID { .remote(UUID()) }
     func destroy(_ host: HostID) async throws {
-      lock.withLock { destroyed += 1 }
+      destroyed.withLock { $0 += 1 }
       if destroyFails { throw HostDriverError.provisioning("remove failed") }
     }
     func openStream(to host: HostID) async throws -> HostStream {
@@ -1073,19 +1071,17 @@ final class CreationFlowTests: XCTestCase {
     func cancel() {}
   }
 
-  private final class Counter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = 0
-    var count: Int { lock.withLock { value } }
-    func add() { lock.withLock { value += 1 } }
+  private final class Counter: Sendable {
+    private let value = Mutex(0)
+    var count: Int { value.withLock { $0 } }
+    func add() { value.withLock { $0 += 1 } }
   }
 
   /// What a fake closure was called with, from any thread.
-  private final class Calls<Value>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var values: [Value] = []
-    var all: [Value] { lock.withLock { values } }
-    func add(_ value: Value) { lock.withLock { values.append(value) } }
+  private final class Calls<Value: Sendable>: Sendable {
+    private let values = Mutex<[Value]>([])
+    var all: [Value] { values.withLock { $0 } }
+    func add(_ value: Value) { values.withLock { $0.append(value) } }
   }
 
   private static let gitFails =
@@ -1133,12 +1129,11 @@ final class CreationFlowTests: XCTestCase {
   }
 
   /// Settings' host options, changed between tries as a user fixing them would.
-  private final class Levels: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: HostOptions?
+  private final class Levels: Sendable {
+    private let stored = Mutex<HostOptions?>(nil)
     var settings: HostOptions? {
-      get { lock.withLock { stored } }
-      set { lock.withLock { stored = newValue } }
+      get { stored.withLock { $0 } }
+      set { stored.withLock { $0 = newValue } }
     }
   }
 

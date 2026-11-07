@@ -1,4 +1,5 @@
 import HostDrivers
+import Synchronization
 import WorkroomSystem
 import XCTest
 
@@ -7,11 +8,10 @@ import XCTest
 /// The Mac's end of a local container workroom's git credential relay (#309): who is answered, for
 /// what, and with what.
 final class CredentialRelayTests: XCTestCase {
-  private final class Asked: @unchecked Sendable {
-    private let lock = NSLock()
-    private var requests: [String] = []
-    var all: [String] { lock.withLock { requests } }
-    func add(_ request: String) { lock.withLock { requests.append(request) } }
+  private final class Asked: Sendable {
+    private let requests = Mutex<[String]>([])
+    var all: [String] { requests.withLock { $0 } }
+    func add(_ request: String) { requests.withLock { $0.append(request) } }
   }
 
   /// A known secret asking for github.com over https gets gh's username and password, and nothing

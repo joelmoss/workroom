@@ -1,5 +1,6 @@
 import DaemonConnection
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -539,10 +540,9 @@ class ContainerIntegrationTestCase: XCTestCase {
     try await driver.destroy(host)
   }
 
-  final class Lines: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lines: [String] = []
-    var all: [String] { lock.withLock { lines } }
-    func add(_ line: String) { lock.withLock { lines.append(line) } }
+  final class Lines: Sendable {
+    private let lines = Mutex<[String]>([])
+    var all: [String] { lines.withLock { $0 } }
+    func add(_ line: String) { lines.withLock { $0.append(line) } }
   }
 }

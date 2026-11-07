@@ -1,5 +1,6 @@
 import DaemonConnection
 import DaemonConnectionTestSupport
+import Synchronization
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -193,11 +194,10 @@ final class DaemonFileIntegrationTests: XCTestCase {
       ContinuousClock.now - started, .seconds(1), "must fail at once, not queue behind the send")
   }
 
-  private final class Flag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-    func set() { lock.withLock { value = true } }
-    var isSet: Bool { lock.withLock { value } }
+  private final class Flag: Sendable {
+    private let value = Mutex(false)
+    func set() { value.withLock { $0 = true } }
+    var isSet: Bool { value.withLock { $0 } }
   }
 
   func testARequestStuckBehindAPeerThatStoppedReadingRetiresTheConnection() async throws {
@@ -591,13 +591,12 @@ final class DaemonFileIntegrationTests: XCTestCase {
 
   // MARK: Watching
 
-  private final class Deliveries: @unchecked Sendable {
-    private let lock = NSLock()
-    private var items: [(paths: [String], overflow: Bool)] = []
+  private final class Deliveries: Sendable {
+    private let items = Mutex<[(paths: [String], overflow: Bool)]>([])
     func add(_ paths: [String], _ overflow: Bool) {
-      lock.withLock { items.append((paths, overflow)) }
+      items.withLock { $0.append((paths, overflow)) }
     }
-    var all: [(paths: [String], overflow: Bool)] { lock.withLock { items } }
+    var all: [(paths: [String], overflow: Bool)] { items.withLock { $0 } }
     func touched(_ name: String) -> Bool {
       all.contains { $0.paths.contains { $0.hasSuffix(name) } }
     }
@@ -729,10 +728,9 @@ final class DaemonFileIntegrationTests: XCTestCase {
     XCTAssertTrue(seen.all.allSatisfy { !$0.overflow })
   }
 
-  private final class ConnectionBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value: DaemonClient?
-    func set(_ connection: DaemonClient) { lock.withLock { value = connection } }
-    var connection: DaemonClient? { lock.withLock { value } }
+  private final class ConnectionBox: Sendable {
+    private let value = Mutex<DaemonClient?>(nil)
+    func set(_ connection: DaemonClient) { value.withLock { $0 = connection } }
+    var connection: DaemonClient? { value.withLock { $0 } }
   }
 }

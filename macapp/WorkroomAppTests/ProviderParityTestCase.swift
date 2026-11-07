@@ -1,5 +1,6 @@
 import DaemonConnection
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -409,11 +410,10 @@ class ProviderParityTestCase: XCTestCase {
   }
 
   /// A run's state lines as its host's daemon publishes them, in order.
-  final class RunLines: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lines: [String] = []
-    func add(_ line: String) { lock.withLock { lines.append(line) } }
-    var all: [String] { lock.withLock { lines } }
+  final class RunLines: Sendable {
+    private let lines = Mutex<[String]>([])
+    func add(_ line: String) { lines.withLock { $0.append(line) } }
+    var all: [String] { lines.withLock { $0 } }
     var last: String? { all.last }
   }
 
@@ -483,23 +483,25 @@ class ProviderParityTestCase: XCTestCase {
     XCTAssertEqual(try provider.leftovers(), [])
   }
 
-  final class Records: @unchecked Sendable {
-    private let lock = NSLock()
-    private var base: HostDescriptor?
-    private var named: [String: HostDescriptor] = [:]
-    private var reserved: String?
-    var project: HostDescriptor? { lock.withLock { base } }
+  final class Records: Sendable {
+    private struct State {
+      var base: HostDescriptor?
+      var named: [String: HostDescriptor] = [:]
+      var reserved: String?
+    }
+    private let state = Mutex(State())
+    var project: HostDescriptor? { state.withLock { $0.base } }
     /// Where the workroom's clone is on its host, as its entry was reserved.
     var path: String? {
-      get { lock.withLock { reserved } }
-      set { lock.withLock { reserved = newValue } }
+      get { state.withLock { $0.reserved } }
+      set { state.withLock { $0.reserved = newValue } }
     }
-    var workrooms: [String: HostDescriptor] { lock.withLock { named } }
+    var workrooms: [String: HostDescriptor] { state.withLock { $0.named } }
     func set(_ name: String?, _ descriptor: HostDescriptor, as reserved: String? = nil) {
-      lock.withLock {
-        if let name = name ?? reserved { named[name] = descriptor } else { base = descriptor }
+      state.withLock {
+        if let name = name ?? reserved { $0.named[name] = descriptor } else { $0.base = descriptor }
       }
     }
-    func forget(_ name: String) { _ = lock.withLock { named.removeValue(forKey: name) } }
+    func forget(_ name: String) { _ = state.withLock { $0.named.removeValue(forKey: name) } }
   }
 }

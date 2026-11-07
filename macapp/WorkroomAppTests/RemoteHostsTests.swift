@@ -2,6 +2,7 @@ import DaemonConnection
 import DaemonConnectionTestSupport
 import Defaults
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -369,11 +370,10 @@ final class RemoteHostsTests: XCTestCase {
       calls.dropFirst(2).first { $0 != "image inspect" }, "create --pull=never")
   }
 
-  private final class Fractions: @unchecked Sendable {
-    private let lock = NSLock()
-    private var heard: [Double?] = []
-    var all: [Double?] { lock.withLock { heard } }
-    func add(_ fraction: Double?) { lock.withLock { heard.append(fraction) } }
+  private final class Fractions: Sendable {
+    private let heard = Mutex<[Double?]>([])
+    var all: [Double?] { heard.withLock { $0 } }
+    func add(_ fraction: Double?) { heard.withLock { $0.append(fraction) } }
   }
 
   /// A pull's progress reaches the create that asked for it as it goes, rising to the whole, then
@@ -905,11 +905,10 @@ final class RemoteHostsTests: XCTestCase {
   /// create there, and a grant is for the repository being created.
   func testTheRepositoryIsGrantedBeforeAnythingIsMade() async throws {
     struct Refused: Error {}
-    final class Grants: @unchecked Sendable {
-      private let lock = NSLock()
-      private var asked: [GitHubRepository] = []
-      var all: [GitHubRepository] { lock.withLock { asked } }
-      func add(_ repository: GitHubRepository) { lock.withLock { asked.append(repository) } }
+    final class Grants: Sendable {
+      private let asked = Mutex<[GitHubRepository]>([])
+      var all: [GitHubRepository] { asked.withLock { $0 } }
+      func add(_ repository: GitHubRepository) { asked.withLock { $0.append(repository) } }
     }
     let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
     for refuses in [true, false] {
@@ -1112,34 +1111,30 @@ final class RemoteHostsTests: XCTestCase {
     func lastAttach(of session: UUID, on host: HostID) -> LastAttach { .finished }
   }
 
-  private final class Recorded: @unchecked Sendable {
-    private let lock = NSLock()
-    private var made: [HostDescriptor] = []
-    private var under: [String?] = []
-    var all: [HostDescriptor] { lock.withLock { made } }
+  private final class Recorded: Sendable {
+    private let made = Mutex<(descriptors: [HostDescriptor], names: [String?])>(([], []))
+    var all: [HostDescriptor] { made.withLock { $0.descriptors } }
     /// The entry name each descriptor was recorded under, in step with `all`.
-    var names: [String?] { lock.withLock { under } }
+    var names: [String?] { made.withLock { $0.names } }
     func add(_ descriptor: HostDescriptor, as name: String? = nil) {
-      lock.withLock {
-        made.append(descriptor)
-        under.append(name)
+      made.withLock {
+        $0.descriptors.append(descriptor)
+        $0.names.append(name)
       }
     }
   }
 
-  private final class Asked: @unchecked Sendable {
-    private let lock = NSLock()
-    private var made: [RemoteHosts.DriverKey] = []
-    var keys: [RemoteHosts.DriverKey] { lock.withLock { made } }
-    func add(_ key: RemoteHosts.DriverKey) { lock.withLock { made.append(key) } }
+  private final class Asked: Sendable {
+    private let made = Mutex<[RemoteHosts.DriverKey]>([])
+    var keys: [RemoteHosts.DriverKey] { made.withLock { $0 } }
+    func add(_ key: RemoteHosts.DriverKey) { made.withLock { $0.append(key) } }
   }
 
-  final class Swept: @unchecked Sendable {
-    private let lock = NSLock()
-    private var made: [(context: String?, known: Set<UUID>)] = []
-    var calls: [(context: String?, known: Set<UUID>)] { lock.withLock { made } }
+  final class Swept: Sendable {
+    private let made = Mutex<[(context: String?, known: Set<UUID>)]>([])
+    var calls: [(context: String?, known: Set<UUID>)] { made.withLock { $0 } }
     func add(_ context: String?, _ known: Set<UUID>) {
-      lock.withLock { made.append((context, known)) }
+      made.withLock { $0.append((context, known)) }
     }
   }
 

@@ -1,3 +1,4 @@
+import Synchronization
 import SyntaxHighlighting
 import WorkroomVCS
 import XCTest
@@ -15,13 +16,8 @@ final class DiffResolverFileContentTests: XCTestCase {
   /// `LocalVCSProviding` members are unused stubs.
   private final class StubContentProvider: LocalVCSProviding, @unchecked Sendable {
     var result: Result<String?, Error> = .success(nil)
-    private let lock = NSLock()
-    private var _calls: [(rev: String, path: String)] = []
-    var calls: [(rev: String, path: String)] {
-      lock.lock()
-      defer { lock.unlock() }
-      return _calls
-    }
+    private let recorded = Mutex<[(rev: String, path: String)]>([])
+    var calls: [(rev: String, path: String)] { recorded.withLock { $0 } }
 
     func log(root: URL, limit: Int) throws -> VCSHistoryPage {
       .init(commits: [], reachedEnd: true)
@@ -35,9 +31,7 @@ final class DiffResolverFileContentTests: XCTestCase {
     }
     func currentRef(root: URL) async throws -> VCSRef { .none }
     func fileContent(root: URL, rev: String, path: String) async throws -> String? {
-      lock.lock()
-      _calls.append((rev, path))
-      lock.unlock()
+      recorded.withLock { $0.append((rev, path)) }
       switch result {
       case .success(let s): return s
       case .failure(let e): throw e

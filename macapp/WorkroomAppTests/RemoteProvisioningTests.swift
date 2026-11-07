@@ -1,6 +1,7 @@
 import DaemonConnection
 import DaemonConnectionTestSupport
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -336,26 +337,24 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
   }
 }
 
-private final class CheckpointLog: @unchecked Sendable {
-  private let lock = NSLock()
-  private var seen: [HostID] = []
-  var all: [HostID] { lock.withLock { seen } }
-  func add(_ host: HostID) { lock.withLock { seen.append(host) } }
+private final class CheckpointLog: Sendable {
+  private let seen = Mutex<[HostID]>([])
+  var all: [HostID] { seen.withLock { $0 } }
+  func add(_ host: HostID) { seen.withLock { $0.append(host) } }
 }
 
 /// Makes a host for every create, and counts what it makes and takes down.
-private final class CountingDriver: ProvisioningHostDriver, @unchecked Sendable {
-  private let lock = NSLock()
-  private var made = 0
-  private var removed = 0
-  var creates: Int { lock.withLock { made } }
-  var destroys: Int { lock.withLock { removed } }
+private final class CountingDriver: ProvisioningHostDriver, Sendable {
+  private let made = Mutex(0)
+  private let removed = Mutex(0)
+  var creates: Int { made.withLock { $0 } }
+  var destroys: Int { removed.withLock { $0 } }
 
   func create() async throws -> HostID {
-    lock.withLock { made += 1 }
+    made.withLock { $0 += 1 }
     return .remote(UUID())
   }
-  func destroy(_ host: HostID) async throws { lock.withLock { removed += 1 } }
+  func destroy(_ host: HostID) async throws { removed.withLock { $0 += 1 } }
   func openStream(to host: HostID) async throws -> HostStream {
     throw HostDriverError.notImplemented("openStream")
   }
@@ -364,25 +363,23 @@ private final class CountingDriver: ProvisioningHostDriver, @unchecked Sendable 
   }
 }
 
-private final class StepLog: @unchecked Sendable {
-  private let lock = NSLock()
-  private var seen: [ProvisioningProgress.Step] = []
-  func add(_ step: ProvisioningProgress.Step) { lock.withLock { seen.append(step) } }
+private final class StepLog: Sendable {
+  private let seen = Mutex<[ProvisioningProgress.Step]>([])
+  func add(_ step: ProvisioningProgress.Step) { seen.withLock { $0.append(step) } }
   func take() -> [ProvisioningProgress.Step] {
-    lock.withLock {
+    seen.withLock { seen in
       defer { seen = [] }
       return seen
     }
   }
 }
 
-private final class LineLog: @unchecked Sendable {
-  private let lock = NSLock()
-  private var seen: [(ProvisioningProgress.Step, String)] = []
+private final class LineLog: Sendable {
+  private let seen = Mutex<[(ProvisioningProgress.Step, String)]>([])
   func add(_ step: ProvisioningProgress.Step, _ line: String) {
-    lock.withLock { seen.append((step, line)) }
+    seen.withLock { $0.append((step, line)) }
   }
-  var all: [(ProvisioningProgress.Step, String)] { lock.withLock { seen } }
+  var all: [(ProvisioningProgress.Step, String)] { seen.withLock { $0 } }
 }
 
 /// Copying the root's included files into a remote workroom's checkout (#367): the CLI's archive,
@@ -565,14 +562,12 @@ final class RemoteScriptTests: XCTestCase {
     }
   }
 
-  private final class Lines: @unchecked Sendable {
-    private let lock = NSLock()
-    private var all: [String] = []
-    private var started = 0
-    var lines: [String] { lock.withLock { all } }
-    var starts: Int { lock.withLock { started } }
-    func add(_ line: String) { lock.withLock { all.append(line) } }
-    func start() { lock.withLock { started += 1 } }
+  private final class Lines: Sendable {
+    private let heard = Mutex<(lines: [String], starts: Int)>(([], 0))
+    var lines: [String] { heard.withLock { $0.lines } }
+    var starts: Int { heard.withLock { $0.starts } }
+    func add(_ line: String) { heard.withLock { $0.lines.append(line) } }
+    func start() { heard.withLock { $0.starts += 1 } }
   }
 
   private static let contract = URL(fileURLWithPath: String(describing: #filePath))
@@ -649,15 +644,14 @@ final class RemoteScriptTests: XCTestCase {
   }
 
   /// A Mac that has approved `approved` alone, recording each judgement.
-  private final class Approving: @unchecked Sendable {
-    private let lock = NSLock()
-    private var seen: [Data] = []
+  private final class Approving: Sendable {
+    private let seen = Mutex<[Data]>([])
     let approved: Data
     init(_ approved: String) { self.approved = Data(approved.utf8) }
-    var judged: [Data] { lock.withLock { seen } }
+    var judged: [Data] { seen.withLock { $0 } }
     var judge: RemoteProvisioning.ScriptJudge {
       { text in
-        self.lock.withLock { self.seen.append(text) }
+        self.seen.withLock { $0.append(text) }
         return RemoteScriptTests.judged(text, trusted: text == self.approved)
       }
     }

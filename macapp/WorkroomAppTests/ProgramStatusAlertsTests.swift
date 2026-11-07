@@ -1,4 +1,5 @@
 import DaemonConnection
+import Synchronization
 import WorkroomDomain
 import XCTest
 
@@ -619,28 +620,27 @@ final class ProgramStatusAlertsTests: XCTestCase {
 }
 
 /// A notifier whose permission prompt stays up until the test grants it.
-private final class GatedNotifier: SystemNotifying, @unchecked Sendable {
-  private let lock = NSLock()
-  private var gate: CheckedContinuation<Bool, Never>?
-  private var _posted: [String] = []
+private final class GatedNotifier: SystemNotifying, Sendable {
+  private let gate = Mutex<CheckedContinuation<Bool, Never>?>(nil)
+  private let titles = Mutex<[String]>([])
 
-  var isAsking: Bool { lock.withLock { gate != nil } }
-  var posted: [String] { lock.withLock { _posted } }
+  var isAsking: Bool { gate.withLock { $0 != nil } }
+  var posted: [String] { titles.withLock { $0 } }
 
   func ensureAuthorized() async -> Bool {
-    await withCheckedContinuation { continuation in lock.withLock { gate = continuation } }
+    await withCheckedContinuation { continuation in gate.withLock { $0 = continuation } }
   }
 
   func grant() {
-    let gate = lock.withLock { () -> CheckedContinuation<Bool, Never>? in
-      defer { self.gate = nil }
-      return self.gate
+    let gate = self.gate.withLock { gate in
+      defer { gate = nil }
+      return gate
     }
     gate?.resume(returning: true)
   }
 
   func post(_ notification: WorkroomNotification) {
-    lock.withLock { _posted.append(notification.title) }
+    titles.withLock { $0.append(notification.title) }
   }
 
   func withdraw(tabIDs: [TerminalTab.ID]) {}
@@ -648,23 +648,24 @@ private final class GatedNotifier: SystemNotifying, @unchecked Sendable {
 
 /// A notifier that is always allowed to post, and records each banner's identifier as the native
 /// request would carry it, and each identifier withdrawn.
-private final class RecordingNotifier: SystemNotifying, @unchecked Sendable {
-  private let lock = NSLock()
-  private var _posted: [String] = []
-  private var _withdrawn: [String] = []
+private final class RecordingNotifier: SystemNotifying, Sendable {
+  private let identifiers = Mutex<(posted: [String], withdrawn: [String])>(([], []))
 
-  var posted: [String] { lock.withLock { _posted } }
-  var withdrawn: [String] { lock.withLock { _withdrawn } }
+  var posted: [String] { identifiers.withLock { $0.posted } }
+  var withdrawn: [String] { identifiers.withLock { $0.withdrawn } }
 
   func ensureAuthorized() async -> Bool { true }
 
   func post(_ notification: WorkroomNotification) {
-    lock.withLock { _posted.append(SystemNotifier.payload(for: notification).identifier) }
+    let identifier = SystemNotifier.payload(for: notification).identifier
+    identifiers.withLock { $0.posted.append(identifier) }
   }
 
   func withdraw(tabIDs: [TerminalTab.ID]) {}
 
-  func withdraw(identifiers: [String]) { lock.withLock { _withdrawn += identifiers } }
+  func withdraw(identifiers: [String]) {
+    self.identifiers.withLock { $0.withdrawn += identifiers }
+  }
 }
 
 /// A window that is key whatever the test host's activation state.

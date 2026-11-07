@@ -1,3 +1,4 @@
+import Synchronization
 import WorkroomVCS
 import XCTest
 
@@ -15,19 +16,13 @@ final class DiffResolverOldFileContentTests: XCTestCase {
   /// configurable result. The two recorded methods override `LocalVCSProviding`'s nil-returning defaults.
   private final class StubOldContentProvider: LocalVCSProviding, @unchecked Sendable {
     var result: Result<String?, Error> = .success(nil)
-    private let lock = NSLock()
-    private var _parentCalls: [(commitID: String, path: String)] = []
-    private var _baseCalls: [String] = []
-    var parentCalls: [(commitID: String, path: String)] {
-      lock.lock()
-      defer { lock.unlock() }
-      return _parentCalls
+    private struct Calls {
+      var parent: [(commitID: String, path: String)] = []
+      var base: [String] = []
     }
-    var baseCalls: [String] {
-      lock.lock()
-      defer { lock.unlock() }
-      return _baseCalls
-    }
+    private let calls = Mutex(Calls())
+    var parentCalls: [(commitID: String, path: String)] { calls.withLock { $0.parent } }
+    var baseCalls: [String] { calls.withLock { $0.base } }
 
     func log(root: URL, limit: Int) throws -> VCSHistoryPage {
       .init(commits: [], reachedEnd: true)
@@ -44,17 +39,13 @@ final class DiffResolverOldFileContentTests: XCTestCase {
 
     func commitParentFileContent(root: URL, commitID: String, path: String) async throws -> String?
     {
-      lock.lock()
-      _parentCalls.append((commitID, path))
-      lock.unlock()
+      calls.withLock { $0.parent.append((commitID, path)) }
       return try resolved()
     }
     func workingBaseFileContent(root: URL, path: String) async throws
       -> String?
     {
-      lock.lock()
-      _baseCalls.append(path)
-      lock.unlock()
+      calls.withLock { $0.base.append(path) }
       return try resolved()
     }
 

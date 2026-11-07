@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -163,7 +164,7 @@ private final class SilentNotifier: SystemNotifying {
 /// `list` reports `existing` plus every workroom reported so far, so each landing's reload
 /// resolves. With `holdsFirstListAfterReady`, the first `list` after a workroom exists waits for
 /// `releaseList()`: the landing's reload, held open between the name arriving and the landing.
-final class GatedFakeCLI: WorkroomCLIProtocol, @unchecked Sendable {
+final class GatedFakeCLI: WorkroomCLIProtocol, Sendable {
   enum Gate {
     case beforeReady
     case afterReady
@@ -179,14 +180,16 @@ final class GatedFakeCLI: WorkroomCLIProtocol, @unchecked Sendable {
   /// creates at DIFFERENT points. A name absent from this map never stops.
   private let gates: [String: Gate]
   private let names: [String]
-  private let lock = NSLock()
-  private var callIndex = 0
-  private var ready: [String] = []
-  private var waiting: [String: CheckedContinuation<Void, Never>] = [:]
-  private var released: Set<String> = []
-  private var listHold: CheckedContinuation<Void, Never>?
-  private var listHeld = false
-  private var listReleased = false
+  private struct State {
+    var callIndex = 0
+    var ready: [String] = []
+    var waiting: [String: CheckedContinuation<Void, Never>] = [:]
+    var released: Set<String> = []
+    var listHold: CheckedContinuation<Void, Never>?
+    var listHeld = false
+    var listReleased = false
+  }
+  private let state = Mutex(State())
 
   init(
     projectPath: String, names: [String], hasSetup: Bool, gate: Gate = .afterReady,
@@ -204,70 +207,60 @@ final class GatedFakeCLI: WorkroomCLIProtocol, @unchecked Sendable {
 
   /// Let the named create past its gate (idempotent, and safe to call before it reaches the gate).
   func release(_ name: String) {
-    lock.lock()
-    released.insert(name)
-    let pending = waiting.removeValue(forKey: name)
-    lock.unlock()
+    let pending = state.withLock {
+      $0.released.insert(name)
+      return $0.waiting.removeValue(forKey: name)
+    }
     pending?.resume()
   }
 
   /// Whether the held `list` is waiting.
-  var isListHeld: Bool { lock.withLock { listHold != nil } }
+  var isListHeld: Bool { state.withLock { $0.listHold != nil } }
 
   func releaseList() {
-    lock.lock()
-    listReleased = true
-    let pending = listHold
-    listHold = nil
-    lock.unlock()
+    let pending = state.withLock {
+      $0.listReleased = true
+      defer { $0.listHold = nil }
+      return $0.listHold
+    }
     pending?.resume()
   }
 
   /// How many creates have taken a name. `create` is nonisolated, so two `createWorkroom` tasks
   /// reach it in whatever order the executor picks — a test that needs task A to own `names[0]` must
   /// wait for this to reach 1 before starting B, or A and B can swap gates and the test deadlocks.
-  var assignedCount: Int {
-    lock.lock()
-    defer { lock.unlock() }
-    return callIndex
-  }
+  var assignedCount: Int { state.withLock { $0.callIndex } }
 
   private func path(_ name: String) -> String { "\(projectPath)/.workrooms/\(name)" }
 
   private func hold(_ name: String) async {
     await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-      lock.lock()
-      if released.contains(name) {
-        lock.unlock()
-        continuation.resume()
-        return
+      let isReleased = state.withLock {
+        if $0.released.contains(name) { return true }
+        $0.waiting[name] = continuation
+        return false
       }
-      waiting[name] = continuation
-      lock.unlock()
+      if isReleased { continuation.resume() }
     }
   }
 
   func list(warnings: String, project: String?) async throws -> ListResponse {
-    let shouldHold = lock.withLock {
-      guard holdsFirstListAfterReady, !ready.isEmpty, !listHeld else { return false }
-      listHeld = true
+    let shouldHold = state.withLock {
+      guard holdsFirstListAfterReady, !$0.ready.isEmpty, !$0.listHeld else { return false }
+      $0.listHeld = true
       return true
     }
     if shouldHold {
       await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-        lock.lock()
-        if listReleased {
-          lock.unlock()
-          continuation.resume()
-          return
+        let isReleased = state.withLock {
+          if $0.listReleased { return true }
+          $0.listHold = continuation
+          return false
         }
-        listHold = continuation
-        lock.unlock()
+        if isReleased { continuation.resume() }
       }
     }
-    lock.lock()
-    let names = existing + ready
-    lock.unlock()
+    let names = existing + state.withLock { $0.ready }
     return ListResponse(
       projects: [
         Project(
@@ -284,16 +277,14 @@ final class GatedFakeCLI: WorkroomCLIProtocol, @unchecked Sendable {
   func create(project: String, onEvent: @escaping @Sendable (StreamEvent) -> Void) async throws
     -> CreateResponse
   {
-    lock.lock()
-    let name = names[min(callIndex, names.count - 1)]
-    callIndex += 1
-    lock.unlock()
+    let name = state.withLock {
+      defer { $0.callIndex += 1 }
+      return names[min($0.callIndex, names.count - 1)]
+    }
 
     let stop = gates[name]
     if stop == .beforeReady { await hold(name) }
-    lock.lock()
-    ready.append(name)
-    lock.unlock()
+    state.withLock { $0.ready.append(name) }
     CreateEvents.untilCreated(name: name, path: path(name), setup: hasSetup, onEvent)
     if hasSetup { onEvent(CreateEvents.step("script", "running")) }
     if stop == .afterReady { await hold(name) }

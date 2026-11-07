@@ -1,4 +1,5 @@
 import DaemonConnection
+import Synchronization
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -132,12 +133,11 @@ final class LocalFileFallbackTests: XCTestCase {
     XCTAssertLessThan(Date().timeIntervalSince(started), 0.5)
   }
 
-  private final class Attempts: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = 0
+  private final class Attempts: Sendable {
+    private let value = Mutex(0)
     var count: Int {
-      get { lock.withLock { value } }
-      set { lock.withLock { value = newValue } }
+      get { value.withLock { $0 } }
+      set { value.withLock { $0 = newValue } }
     }
   }
 }

@@ -1,5 +1,6 @@
 import DaemonConnection
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -11,11 +12,10 @@ import XCTest
 /// (`RemoteProvisioningIntegrationTests`).
 final class RemoteWorkroomDeletionTests: XCTestCase {
   /// What the delete sequence wrote to config, in place of the CLI.
-  private final class Calls: @unchecked Sendable {
-    private let lock = NSLock()
-    private var log: [String] = []
-    var all: [String] { lock.withLock { log } }
-    func add(_ call: String) { lock.withLock { log.append(call) } }
+  private final class Calls: Sendable {
+    private let log = Mutex<[String]>([])
+    var all: [String] { log.withLock { $0 } }
+    func add(_ call: String) { log.withLock { $0.append(call) } }
 
     var recorder: RemoteWorkrooms.Recorder {
       RemoteWorkrooms.Recorder(
@@ -377,11 +377,10 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
 /// A remote workroom's teardown script, run on its host before the host goes
 /// (`docs/designs/scripts-on-every-workroom.md`: D3, R1).
 final class RemoteTeardownTests: XCTestCase {
-  private final class Log: @unchecked Sendable {
-    private let lock = NSLock()
-    private var entries: [String] = []
-    var all: [String] { lock.withLock { entries } }
-    func add(_ entry: String) { lock.withLock { entries.append(entry) } }
+  private final class Log: Sendable {
+    private let entries = Mutex<[String]>([])
+    var all: [String] { entries.withLock { $0 } }
+    func add(_ entry: String) { entries.withLock { $0.append(entry) } }
   }
 
   private final class Driver: HostTerminalDriver, ProvisioningHostDriver, @unchecked Sendable {

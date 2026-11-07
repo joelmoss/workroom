@@ -1,6 +1,7 @@
 import DaemonConnection
 import Defaults
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -204,30 +205,28 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
   // MARK: Creating from the app (#253)
 
   /// What `RemoteWorkrooms.create` wrote to config, in order, in place of the CLI.
-  private final class Recorded: @unchecked Sendable {
+  private final class Recorded: Sendable {
     enum Call: Equatable {
       case reserve(path: String, HostDescriptor)
       case record(workroom: String?, HostDescriptor)
       case forget(String)
     }
-    private let lock = NSLock()
-    private var log: [Call] = []
-    private var next = 0
-    var calls: [Call] { lock.withLock { log } }
+    private let log = Mutex<(calls: [Call], next: Int)>(([], 0))
+    var calls: [Call] { log.withLock { $0.calls } }
 
     var recorder: RemoteWorkrooms.Recorder {
       RemoteWorkrooms.Recorder(
         reserve: { path, descriptor in
-          self.lock.withLock {
-            self.log.append(.reserve(path: path, descriptor))
-            self.next += 1
-            return "w\(self.next)"
+          self.log.withLock {
+            $0.calls.append(.reserve(path: path, descriptor))
+            $0.next += 1
+            return "w\($0.next)"
           }
         },
         record: { workroom, descriptor in
-          self.lock.withLock { self.log.append(.record(workroom: workroom, descriptor)) }
+          self.log.withLock { $0.calls.append(.record(workroom: workroom, descriptor)) }
         },
-        forget: { workroom in self.lock.withLock { self.log.append(.forget(workroom)) } })
+        forget: { workroom in self.log.withLock { $0.calls.append(.forget(workroom)) } })
     }
   }
 
@@ -535,11 +534,10 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertTrue(output.contains("timed out after 1 s"), output)
   }
 
-  private final class Lines: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lines: [String] = []
-    var all: [String] { lock.withLock { lines } }
-    func add(_ line: String) { lock.withLock { lines.append(line) } }
+  private final class Lines: Sendable {
+    private let lines = Mutex<[String]>([])
+    var all: [String] { lines.withLock { $0 } }
+    func add(_ line: String) { lines.withLock { $0.append(line) } }
   }
 
   // MARK: Workrooms
@@ -838,11 +836,10 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertEqual(head.trimmingCharacters(in: .whitespacesAndNewlines), develop.get())
   }
 
-  private final class Develop: @unchecked Sendable {
-    private let lock = NSLock()
-    private var commit: String?
-    func set(_ value: String) { lock.withLock { commit = value } }
-    func get() -> String? { lock.withLock { commit } }
+  private final class Develop: Sendable {
+    private let commit = Mutex<String?>(nil)
+    func set(_ value: String) { commit.withLock { $0 = value } }
+    func get() -> String? { commit.withLock { $0 } }
   }
 
   /// A base an older build made goes, and its record only once it is gone (`BaseRetirement`).
@@ -886,11 +883,10 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertEqual(forgotten.all, ["forgot"])
   }
 
-  private final class Forgotten: @unchecked Sendable {
-    private let lock = NSLock()
-    private var said: [String] = []
-    func add(_ what: String) { lock.withLock { said.append(what) } }
-    var all: [String] { lock.withLock { said } }
+  private final class Forgotten: Sendable {
+    private let said = Mutex<[String]>([])
+    func add(_ what: String) { said.withLock { $0.append(what) } }
+    var all: [String] { said.withLock { $0 } }
   }
 
   /// A teardown whose removal fails names the box still up.

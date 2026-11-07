@@ -1,4 +1,5 @@
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import XCTest
@@ -13,15 +14,14 @@ final class ExeDevSetupTests: XCTestCase {
 
   /// Answers each lobby command from `answers` by its name, as `whoami` for `email`, or, unless
   /// ssh `signsIn`, as ssh refused by the gateway. Records every command and ssh's arguments.
-  private final class StubExeDev: StatusCommandRunning, @unchecked Sendable {
-    private let lock = NSLock()
-    private var calls: [(command: String, ssh: [String], arguments: [String])] = []
-    private var answers: [String: CommandResult]
+  private final class StubExeDev: StatusCommandRunning, Sendable {
+    private let calls = Mutex<[(command: String, ssh: [String], arguments: [String])]>([])
+    private let answers: Mutex<[String: CommandResult]>
     let signsIn: Bool
     let email: String
 
     init(_ answers: [String: CommandResult], signsIn: Bool = true, email: String = "me@x.dev") {
-      self.answers = answers
+      self.answers = Mutex(answers)
       self.signsIn = signsIn
       self.email = email
     }
@@ -29,16 +29,16 @@ final class ExeDevSetupTests: XCTestCase {
     /// Every command but the account checks, in order.
     /// Changes what `command` answers from now on, as when the user finishes a step on the website.
     func answer(_ command: String, _ result: CommandResult) {
-      lock.withLock { answers[command] = result }
+      answers.withLock { $0[command] = result }
     }
     var commands: [String] {
-      lock.withLock { calls.map(\.command) }.filter { $0 != "whoami" }
+      calls.withLock { $0.map(\.command) }.filter { $0 != "whoami" }
     }
     func arguments(of command: String) -> [String]? {
-      lock.withLock { calls.last { $0.command == command }?.arguments }
+      calls.withLock { calls in calls.last { $0.command == command }?.arguments }
     }
     /// ssh's own arguments for the last lobby command, up to and including the destination.
-    var ssh: [String] { lock.withLock { calls.last?.ssh ?? [] } }
+    var ssh: [String] { calls.withLock { $0.last?.ssh ?? [] } }
 
     /// Only `runNetwork` answers: it is the runner that brings the login shell's ssh agent to an
     /// app launched from Finder, so a lobby command run without it is a failure.
@@ -54,9 +54,9 @@ final class ExeDevSetupTests: XCTestCase {
     ) async -> CommandResult {
       let lobby = args.firstIndex(of: ExeDevHostDriver.lobby) ?? args.endIndex - 1
       let command = args[lobby + 1]
-      let answers = lock.withLock { self.answers }
-      lock.withLock {
-        calls.append((command, Array(args[...lobby]), Array(args[(lobby + 2)...])))
+      let answers = self.answers.withLock { $0 }
+      calls.withLock {
+        $0.append((command, Array(args[...lobby]), Array(args[(lobby + 2)...])))
       }
       guard signsIn else {
         return CommandResult(
@@ -94,12 +94,11 @@ final class ExeDevSetupTests: XCTestCase {
       directory: root, runner: exe)
   }
 
-  private final class Lines: @unchecked Sendable {
-    private let lock = NSLock()
-    private var heard: [(ProvisioningProgress.Step, String)] = []
-    var all: [(ProvisioningProgress.Step, String)] { lock.withLock { heard } }
+  private final class Lines: Sendable {
+    private let heard = Mutex<[(ProvisioningProgress.Step, String)]>([])
+    var all: [(ProvisioningProgress.Step, String)] { heard.withLock { $0 } }
     func add(_ step: ProvisioningProgress.Step, _ line: String) {
-      lock.withLock { heard.append((step, line)) }
+      heard.withLock { $0.append((step, line)) }
     }
   }
 

@@ -1,3 +1,4 @@
+import Synchronization
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -5,7 +6,7 @@ import XCTest
 @testable import Workroom
 
 /// Counts and records every command, optionally delaying each so concurrent probes overlap.
-private final class GHRunner: StatusCommandRunning, @unchecked Sendable {
+private final class GHRunner: StatusCommandRunning, Sendable {
   struct Call: Equatable {
     let exe: String
     let args: [String]
@@ -14,17 +15,12 @@ private final class GHRunner: StatusCommandRunning, @unchecked Sendable {
 
   private let handler: @Sendable (_ exe: String, _ args: [String]) -> CommandResult
   private let delay: UInt64
-  private let lock = NSLock()
-  private var _calls: [Call] = []
-  private var _cancelled = 0
+  private let recorded = Mutex<[Call]>([])
+  private let cancelled = Mutex(0)
   /// Calls whose task was cancelled while they were running — what the real runner turns into a
   /// SIGKILL of the child.
-  var cancelledCalls: Int { lock.withLock { _cancelled } }
-  var calls: [Call] {
-    lock.lock()
-    defer { lock.unlock() }
-    return _calls
-  }
+  var cancelledCalls: Int { cancelled.withLock { $0 } }
+  var calls: [Call] { recorded.withLock { $0 } }
   /// `gh repo view` — the repository lookup.
   var lookups: [Call] { calls.filter { $0.exe == "gh" && $0.args.prefix(2) == ["repo", "view"] } }
 
@@ -39,14 +35,12 @@ private final class GHRunner: StatusCommandRunning, @unchecked Sendable {
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
   {
-    lock.lock()
-    _calls.append(Call(exe: executable, args: args, dir: directory))
-    lock.unlock()
+    recorded.withLock { $0.append(Call(exe: executable, args: args, dir: directory)) }
     if delay > 0 {
       // The real runner SIGKILLs a child whose task is cancelled and returns a signalled result; a
       // double that swallowed cancellation would pass a test whose whole point is cancellation.
       do { try await Task.sleep(nanoseconds: delay) } catch {
-        lock.withLock { _cancelled += 1 }
+        cancelled.withLock { $0 += 1 }
         return CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
       }
     }

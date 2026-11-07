@@ -1,3 +1,4 @@
+import Synchronization
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -174,9 +175,8 @@ final class GitHubAuthCacheTests: XCTestCase {
 
 /// Counts `gh auth status` invocations so single-flight and TTL behaviour are asserted on the number
 /// of real probes, not just on the returned value.
-private final class CountingGHRunner: StatusCommandRunning, @unchecked Sendable {
-  private let lock = NSLock()
-  private var count = 0
+private final class CountingGHRunner: StatusCommandRunning, Sendable {
+  private let count = Mutex(0)
   private let stdout: String
   private let delay: Duration?
   private let signalled: Bool
@@ -187,11 +187,7 @@ private final class CountingGHRunner: StatusCommandRunning, @unchecked Sendable 
     self.signalled = signalled
   }
 
-  var authCallCount: Int {
-    lock.lock()
-    defer { lock.unlock() }
-    return count
-  }
+  var authCallCount: Int { count.withLock { $0 } }
 
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
@@ -199,9 +195,7 @@ private final class CountingGHRunner: StatusCommandRunning, @unchecked Sendable 
     guard executable == "gh", args.contains("auth") else {
       return CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
     }
-    lock.lock()
-    count += 1
-    lock.unlock()
+    count.withLock { $0 += 1 }
     if let delay { try? await Task.sleep(for: delay) }
     if signalled {
       return CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
@@ -212,25 +206,19 @@ private final class CountingGHRunner: StatusCommandRunning, @unchecked Sendable 
 
 /// Like `CountingGHRunner` but can flip to returning killed results mid-test, so "a good verdict
 /// survives a later blip" is exercised in one cache instance.
-private final class SwitchableGHRunner: StatusCommandRunning, @unchecked Sendable {
-  private let lock = NSLock()
-  private var count = 0
-  private var signalled = false
+private final class SwitchableGHRunner: StatusCommandRunning, Sendable {
+  private struct State {
+    var count = 0
+    var signalled = false
+  }
+  private let state = Mutex(State())
   private let stdout: String
 
   init(stdout: String) { self.stdout = stdout }
 
-  var authCallCount: Int {
-    lock.lock()
-    defer { lock.unlock() }
-    return count
-  }
+  var authCallCount: Int { state.withLock { $0.count } }
 
-  func becomeSignalled() {
-    lock.lock()
-    signalled = true
-    lock.unlock()
-  }
+  func becomeSignalled() { state.withLock { $0.signalled = true } }
 
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
@@ -238,10 +226,10 @@ private final class SwitchableGHRunner: StatusCommandRunning, @unchecked Sendabl
     guard executable == "gh", args.contains("auth") else {
       return CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
     }
-    lock.lock()
-    count += 1
-    let killed = signalled
-    lock.unlock()
+    let killed = state.withLock {
+      $0.count += 1
+      return $0.signalled
+    }
     if killed {
       return CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
     }

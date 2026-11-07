@@ -1,3 +1,4 @@
+import Synchronization
 import WorkroomDomain
 import XCTest
 
@@ -9,11 +10,10 @@ final class BaseRetirementTests: XCTestCase {
   private let mine = RemoteWorkrooms.provisioner
 
   /// What the effects did, in order.
-  private final class Log: @unchecked Sendable {
-    private let lock = NSLock()
-    private var entries: [String] = []
-    var all: [String] { lock.withLock { entries } }
-    func add(_ entry: String) { lock.withLock { entries.append(entry) } }
+  private final class Log: Sendable {
+    private let entries = Mutex<[String]>([])
+    var all: [String] { entries.withLock { $0 } }
+    func add(_ entry: String) { entries.withLock { $0.append(entry) } }
   }
 
   private func effects(_ log: Log, failing: Set<UUID> = []) -> BaseRetirement.Effects {
