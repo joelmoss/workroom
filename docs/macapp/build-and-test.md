@@ -55,7 +55,10 @@ app by name, since every workroom's app, test host and XCUITest app is called "W
   `make app-test`. A file that names a package's type imports that package itself; nothing
   re-exports one. A package depends on Foundation (AppKit and SwiftUI too, for `DesignSystem`), its
   own pins and lower packages, never on the app. `WorkroomWire` is the frozen session codec: see
-  its `Package.swift` before changing it.
+  its `Package.swift` before changing it. Test fixtures that a package's tests and the app's
+  hosted tests share live in a test-support library of that package, imported by tests only:
+  `DaemonConnectionTestSupport` (`FakeDaemon`, `EchoServer`, `TCPClient`). It imports nothing of
+  its own package, so the hosted test bundle never holds a second copy of the package's types.
 
 - **The Swift module is `Workroom`** (the target is `WorkroomApp`; `PRODUCT_MODULE_NAME` is pinned
   to `Workroom` in `project.yml`). Tests use `@testable import Workroom`. The pin matters because

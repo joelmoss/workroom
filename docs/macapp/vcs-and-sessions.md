@@ -151,6 +151,11 @@ the daemon's socket, and hands the running daemon off to it; the far side is
 connect pushes Ghostty's terminfo and shell integration beside the daemon (#239), so a remote pane
 runs as `xterm-ghostty` with the integration. See the "As built
 (#231)" section of the design doc, and `vcs/scripts/ssh-fixture/run.sh` for running its tests.
+`DaemonBootstrap` lives in `Packages/HostDrivers` and takes what the app bundles (the daemons, the
+Ghostty set and the scripts) from its caller; the app's own entry points, which pass the bundle,
+are `Core/Terminal/Session/DaemonBootstrap+Bundle.swift`. Its stub-driver tests run under
+`swift test`; the real-script tests (`DaemonBootstrapScriptTests`) stay hosted, since they push the
+bundled Ghostty set.
 
 The Zig toolchain and the pinned Ghostty engine come from `vcs/scripts/build-ghostty-vt.sh`
 (cached per `(engine sha, Zig version, target)` outside the repo). The same script builds the
