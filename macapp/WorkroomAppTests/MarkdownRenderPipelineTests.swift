@@ -477,9 +477,9 @@ final class MarkdownRenderPipelineTests: XCTestCase {
 /// `MarkdownWebView.Coordinator` uses in production).
 ///
 /// Bounded by an `XCTestExpectation` rather than a bare continuation: CI runs these on a hosted
-/// runner (`make app-test` in `.github/workflows/ci.yml`), and if WebKit never starts or the
-/// WebContent process dies, an unbounded continuation would stall the whole test target instead of
-/// failing this one test.
+/// runner (`make app-test` in `.github/workflows/ci-app.yml`), and if WebKit never starts or
+/// the WebContent process dies, an unbounded continuation would stall the whole test target
+/// instead of failing this one test.
 private final class TemplateLoader: NSObject, WKNavigationDelegate {
   private let loaded = XCTestExpectation(description: "markdown template finished loading")
   private var outcome: Result<Void, Error>?

@@ -307,7 +307,7 @@ app-check: ## Format Swift in place, then lint it strictly (app-format + app-lin
 # release and nightly runners import a Developer ID certificate ONLY, and pass no APP_SIGN_FLAGS —
 # so making it a prerequisite fails provisioning on a fresh runner before anything is archived.
 # The xcodebuild suite runs as an explicit gate step in release.yml / nightly.yml instead, with the
-# same ad-hoc overrides ci.yml uses.
+# same ad-hoc overrides ci-app.yml uses.
 app-release: app-test-scripts ## Build, notarize, staple + package a DMG installer (macapp/Scripts/release.sh)
 	cd macapp && Scripts/release.sh
 

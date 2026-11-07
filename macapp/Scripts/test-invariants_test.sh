@@ -38,8 +38,9 @@ fi
 # --- app-test still wired into CI ------------------------------------------------------------
 # Pin the workflows' actual invocation of the xcodebuild suite, not the Makefile's dependency
 # graph (which deliberately excludes app-test from app-release). `([^-]|$)` excludes
-# `app-test-scripts`/`app-test-supervisor`, which are different targets entirely.
-for wf in ci.yml release.yml nightly.yml; do
+# `app-test-scripts`/`app-test-supervisor`, which are different targets entirely. CI's app jobs
+# live in ci-app.yml, which ci.yml calls.
+for wf in ci-app.yml release.yml nightly.yml; do
   path="$WORKFLOWS_DIR/$wf"
   if [ ! -f "$path" ]; then
     echo "FAIL: workflow $wf not found at $path"

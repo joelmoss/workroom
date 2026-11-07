@@ -1,0 +1,59 @@
+name: CI (Go)
+
+# Called by ci.yml, never on its own; `run` is its path filter (scripts/ci/changed_areas.py).
+on:
+  workflow_call:
+    inputs:
+      run:
+        description: false skips the job, which then reports as skipped
+        type: boolean
+        required: true
+
+permissions: {}
+
+jobs:
+  cli:
+    if: inputs.run
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Uses a prebuilt linter instead of compiling it and downloading its Go toolchain per runner.
+      #
+      # The pin must stay on golangci-lint /v2: v1 rejects the v2-format .golangci.yml and its
+      # vendored go/types cannot analyze a Go 1.27 stdlib at all. The constraint when bumping is
+      # *directional* — the linter's typechecker must be at least as new as the Go whose code it
+      # reads (older cannot decode newer export data; that is what killed v1 here), so a linter
+      # built by a NEWER Go than the module targets is correct, not a mismatch.
+      - name: Lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.13.2
+
+      # v2 moved formatters out of `run`, so `run` alone reports NO gofmt/goimports findings and
+      # the formatting gate would be silently lost. Keep in step with the Makefile's cli-lint.
+      - name: Format
+        run: golangci-lint fmt --diff
+
+      # Includes the native Linux build; no separate unused binary is necessary.
+      #
+      # Why this gate exists: releases (goreleaser) and the nightly archives ship windows/linux
+      # builds, but this job only ever compiled for the runner. A unix-only syscall (Setpgid,
+      # syscall.Kill) therefore passed CI and broke the nightly + the next tag.
+      - name: Cross-compile check
+        run: |
+          for os in windows linux darwin; do
+            GOOS="$os" GOARCH=amd64 go build -o /dev/null .
+          done
+
+      - name: Test
+        run: go test ./...

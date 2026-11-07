@@ -13,6 +13,12 @@ inputs:
   sha256:
     description: Expected SHA-256 of the tarball
     required: true
+  cache:
+    description: >-
+      'false' downloads the tarball without the cache. Every job whose output is published passes
+      it: the checksum would catch a poisoned tarball, but such a job restores no cache at all.
+      A tag's run never uses the cache either way, as a tag publishes a release.
+    default: "true"
 
 runs:
   using: composite
@@ -21,6 +27,7 @@ runs:
     # 36744716901), which was the largest single step in three jobs. The key carries the checksum,
     # so a re-cut tarball cannot be served from an old entry.
     - name: Cache Zig tarball
+      if: inputs.cache == 'true' && github.ref_type != 'tag'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.cache/zig-download

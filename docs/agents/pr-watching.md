@@ -3,8 +3,12 @@
 Start one background watcher from the repository root:
 
 ```sh
-python3 scripts/ci/watch_pr_checks.py --expect rust --expect daemon-terminal-state --expect app
+python3 scripts/ci/watch_pr_checks.py --expect 'rust / rust' \
+  --expect 'rust / daemon-terminal-state' --expect 'app / app'
 ```
+
+CI's jobs are called from `ci.yml`, so each check is named `<call> / <job>`. A job a PR's changes
+do not need reports as skipped, under the same name, so these always register.
 
 It discovers and pins this branch's PR through `gh`, so a later checkout does not switch the watch.
 Pass a PR number or URL and `--repo OWNER/REPO` to

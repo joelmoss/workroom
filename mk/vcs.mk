@@ -2,9 +2,10 @@
 
 .PHONY: vcs-lint vcs-lint-linux vcs-test
 
-# The toolchain ci.yml pins for its Rust lint gates. rustfmt's layout and clippy's lints change
-# between releases, so another toolchain can pass here and fail there; the root Makefile's PATH
-# puts Homebrew's cargo first, so the recipe puts this one ahead of it. Keep in step with ci.yml.
+# The toolchain ci-rust.yml pins for its Rust lint gates. rustfmt's layout and clippy's lints
+# change between releases, so another toolchain can pass here and fail there; the root Makefile's
+# PATH puts Homebrew's cargo first, so the recipe puts this one ahead of it. Keep in step with
+# ci-rust.yml.
 VCS_RUST := 1.96.1
 
 vcs-lint-linux: ## Run the pinned Rust lint gate inside Linux (container, Docker or Podman on macOS)
@@ -25,7 +26,7 @@ vcs-lint: ## Lint the Rust workspace: rustfmt, clippy and rustdoc, each with and
 # filter, e.g. `make vcs-test VCS_TEST_FLAGS="-p workroomd --test attach_survives_detach"`.
 VCS_TEST_FLAGS ?=
 
-# ci.yml's two Rust test steps, on its pinned toolchain: the whole workspace (`rust`), then workroomd
+# ci-rust.yml's two Rust test steps, on its pinned toolchain: the whole workspace (`rust`), then workroomd
 # with terminal-state (`daemon-terminal-state`). WORKROOMD_HAS_TERMINAL_STATE makes the repaint and
 # scrollback tests run instead of skipping. The second run needs Zig, which build-ghostty-vt.sh
 # gets from mise.

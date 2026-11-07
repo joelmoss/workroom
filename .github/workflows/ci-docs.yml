@@ -1,0 +1,35 @@
+name: CI (docs)
+
+# Called by ci.yml, never on its own, and only for a green master push: ci.yml's `needs` is what
+# keeps a red master from publishing.
+on:
+  workflow_call:
+    secrets:
+      CODASET_DISPATCH_TOKEN:
+        required: false
+
+permissions: {}
+
+jobs:
+  # Publishes docs-site/ once master's CI is green: asks Codaset's CI to test the docs at this commit
+  # and, if it passes, deploy them to codaset.dev/workroom/docs (docs/designs/docs-site.md, D32).
+  # Every green push publishes, docs change or not: a docs change whose own run went red publishes
+  # with the next green one, instead of waiting for another docs change.
+  docs-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Ask Codaset to publish the docs
+        env:
+          SHA: ${{ github.sha }}
+          TOKEN: ${{ secrets.CODASET_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::warning::CODASET_DISPATCH_TOKEN is not set, so the docs were not published."
+            exit 0
+          fi
+          curl -fsS -X POST https://api.github.com/repos/joelmoss/codaset/dispatches \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -d "{\"event_type\":\"workroom-docs\",\"client_payload\":{\"sha\":\"$SHA\"}}"

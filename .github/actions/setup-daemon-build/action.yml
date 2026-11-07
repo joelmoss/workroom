@@ -1,0 +1,58 @@
+name: Set up the daemon build
+description: >-
+  Prepare a macOS runner to build the workroomd the app bundles, the Linux daemons included: the
+  pinned Zig, the stable toolchain's targets, and cargo-zigbuild. Shared by CI, the nightly and the
+  release, so the Zig pin and the cargo-zigbuild version live in one place.
+
+inputs:
+  targets:
+    description: rustup targets to add to the stable toolchain, space-separated
+    required: true
+  cache:
+    description: >-
+      'false' uses no cache: Zig is downloaded and cargo-zigbuild built from source. Every job
+      whose output is published passes it: a restored entry could be poisoned. A tag's run never
+      uses the cache either way, as a tag publishes a release.
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # The bundled `workroomd` links libghostty-vt so a reattaching pane can be repainted — see
+    # macapp/Scripts/build-daemon.sh. That needs Zig, pinned by version AND checksum for the same
+    # reason the Linux daemon jobs pin it: an unpinned toolchain silently changes the terminal
+    # emulator the app ships against. The tarball's checksum is verified on every run, cache hit
+    # or not.
+    - name: Install Zig
+      uses: ./.github/actions/install-zig
+      with:
+        version: "0.17.0"
+        archive: aarch64-macos
+        sha256: "b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
+        cache: ${{ inputs.cache }}
+
+    # The app bundle carries a static Linux workroomd per arch for remote hosts (issue #227),
+    # cross-built by build-daemon.sh with cargo-zigbuild and the Zig above. `--toolchain stable`
+    # explicitly, because that is the toolchain build-daemon.sh builds on and the one
+    # build-daemon_test.sh's `rustup target list --installed --toolchain stable` query checks: a
+    # bare `rustup target add` installs into the DEFAULT toolchain.
+    - name: Add rustup targets
+      shell: bash
+      env:
+        TARGETS: ${{ inputs.targets }}
+      run: echo "$TARGETS" | xargs rustup target add --toolchain stable
+
+    # `cargo install` compiles cargo-zigbuild from source on every run (~1 minute). The binary is
+    # all that is installed, so cache it on the pinned version.
+    - name: Cache cargo-zigbuild
+      id: zigbuild
+      if: inputs.cache == 'true' && github.ref_type != 'tag'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cargo/bin/cargo-zigbuild
+        key: cargo-zigbuild-${{ runner.os }}-${{ runner.arch }}-0.23.4
+
+    - name: Install cargo-zigbuild
+      if: steps.zigbuild.outputs.cache-hit != 'true'
+      shell: bash
+      run: cargo install cargo-zigbuild --locked --version 0.23.4

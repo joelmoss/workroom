@@ -95,7 +95,7 @@ On Linux it runs the canonical gate natively, with its normal Rust/Zig prerequis
 `mise use -g github:jdx/jactionlint@2.1.0`), with `shellcheck` on `PATH` so `run:` blocks are
 checked too. It runs every actionlint check plus security rules: pinned action SHAs, job-level
 `permissions`, `timeout-minutes` on every job, no restored caches in publishing jobs. CI's
-`workflows` job runs the same version, checked by the release archive's sha256: bump the version
+`workflows` job (`ci-actions.yml`) runs the same version, checked by the release archive's sha256: bump the version
 and the hash there together. That job
 installs `shellcheck` 0.11.0 the same way (`SHELLCHECK_VERSION` and `SHELLCHECK_SHA256`), because the
 runner's own is older, and also lints `macapp/Scripts/*.sh` through `make app-scripts-lint`.
@@ -553,8 +553,22 @@ For a background watcher that reports check transitions and failures promptly, s
 [PR watching](docs/agents/pr-watching.md), including the separate review checks before merge.
 
 `.github/workflows/ci.yml` runs on every push to `master` or a `release/**` maintenance branch,
-and every PR against either:
+and every PR against either. It calls one workflow per language, each holding that language's jobs:
+`ci-actions.yml` (`workflows`), `ci-go.yml` (`cli`), `ci-rust.yml` (`rust`,
+`daemon-terminal-state`, `daemon-linux`), `ci-app.yml` (`app-packages`, `app`, `app-scripts`) and
+`ci-docs.yml` (`docs-deploy`, master pushes only). Each check is named `<call> / <job>`, such as
+`app / app`.
 
+A push runs every job. On a PR, the `changes` job reads the diff and skips the jobs it does not
+need, so a Go-only change runs no macOS job. The rules are in `scripts/ci/changed_areas.py`: each
+path runs the jobs whose tests or build read it, a path no rule names runs every job, and a skipped
+job still reports, as skipped. When a test starts reading a file outside its own tree, add that path
+to the rules. The build steps the three workflows share (Xcode, Go and Homebrew; Zig, the rustup
+targets and cargo-zigbuild; the signing certificate) are composite actions under
+`.github/actions/`.
+
+- **`workflows` job** (`ubuntu-latest`): `make actions-lint`, `make app-scripts-lint`, the
+  `scripts/ci/` tests and `daemon-name_test.sh`. Never skipped.
 - **`cli` job** (`ubuntu-latest`): sets up Go from `go.mod`, runs `golangci-lint` (subsumes `go vet`
   / `gofmt`), `go build`, and `go test ./...`.
 - **`rust` job** (`ubuntu-latest`): `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo doc` with

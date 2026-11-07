@@ -105,7 +105,7 @@ class LinuxLintTests(unittest.TestCase):
         image = (ROOT / "vcs/scripts/linux-lint/Dockerfile").read_text()
         for arch in ("aarch64", "x86_64"):
             self.assertIn(f"{version}/{arch})", image)
-        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        ci = (ROOT / ".github/workflows/ci-rust.yml").read_text()
         checksum = re.search(r'archive: x86_64-linux\s+sha256: "([a-f0-9]{64})"', ci)[1]
         self.assertIn(checksum, image)
 

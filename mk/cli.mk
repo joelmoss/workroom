@@ -17,7 +17,7 @@ cli-lint: ## Lint Go with golangci-lint (analyzers + formatters)
 	# golangci-lint v2 split formatters out of `run` — gofmt/goimports findings are NOT reported
 	# by `run` any more (verified: a mangled file yields govet/unused hits and zero gofmt hits).
 	# `fmt --diff` reports them without rewriting and exits non-zero, so the formatting gate v1
-	# enforced via the gofmt/goimports linters stays enforced. Keep both here and in ci.yml.
+	# enforced via the gofmt/goimports linters stays enforced. Keep both here and in ci-go.yml.
 	golangci-lint fmt --diff
 
 cli-clean: ## Remove the built binary

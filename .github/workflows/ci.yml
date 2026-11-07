@@ -18,778 +18,95 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# The jobs live in one workflow per language (ci-actions, ci-go, ci-rust, ci-app, ci-docs), called
+# from here so that a pull request runs only the jobs its changes need: `changes` decides, from the
+# diff. A push runs every job, so every commit a release can be cut from has the full signal, and
+# so does the master push docs-deploy waits on.
+#
+# Filtered per job, not with `on.pull_request.paths`: a workflow that path filter skips never
+# reports, and a required check waits on it forever, while a job skipped by its `if` reports as
+# skipped, which a required check accepts. One workflow also keeps docs-deploy's `needs` on every
+# job. So each call below always runs, and passes its jobs their filter as inputs: the checks keep
+# their names, as "<call> / <job>" (`app / app`), whatever a change touches.
+#
+# The filter fails open. Each input is "not false", so if `changes` fails or reports nothing, every
+# job runs.
 jobs:
-  # Every workflow, shellchecked `run:` blocks included. The pin moves with the Makefile's
-  # `actions-lint` (CONTRIBUTING). The release archive is checked against its pinned sha256 before
-  # it runs, so a replaced asset or tag fails here instead of running.
-  workflows:
+  changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
-    env:
-      JACTIONLINT_VERSION: 2.1.0
-      JACTIONLINT_SHA256: baebfc5792135438fb3bb5ea266c3bf2538a089753616f1988ef618e4c0c3cb1
-      SHELLCHECK_VERSION: 0.11.0
-      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+    outputs:
+      cli: ${{ steps.areas.outputs.cli }}
+      rust: ${{ steps.areas.outputs.rust }}
+      packages: ${{ steps.areas.outputs.packages }}
+      app: ${{ steps.areas.outputs.app }}
+      scripts: ${{ steps.areas.outputs.scripts }}
     steps:
+      # A pull request's run checks out GitHub's merge commit: its first parent is the base
+      # branch's tip, so the diff between the two is exactly what merging the PR would change.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2
 
-      # The runner's own shellcheck (0.9.0 on ubuntu-24.04) is older than the one developers run, so
-      # the same script could lint clean locally and fail here. Pinned by checksum like jactionlint;
-      # /usr/local/bin comes before /usr/bin, so both jactionlint and `make app-scripts-lint` use it.
-      - name: Install shellcheck
+      # `--no-renames`, so a file moved between trees names both sides: a rename shows only its
+      # new path otherwise, and a file moved out of macapp/ would skip the app that lost it.
+      - name: Classify the changed paths
+        id: areas
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
         run: |
-          archive="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-          curl -fsSLO "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/$archive"
-          echo "$SHELLCHECK_SHA256  $archive" | sha256sum --check --strict
-          tar -xJf "$archive" --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
-          sudo install shellcheck /usr/local/bin/shellcheck
-          shellcheck --version
+          paths=""
+          if [ "$EVENT" = pull_request ] && paths="$(git diff --name-only --no-renames HEAD^1 HEAD)"; then
+            printf 'Changed paths:\n%s\n' "$paths"
+          else
+            echo "Not a pull request, or no diff to read: every job runs."
+            paths=""
+          fi
+          printf '%s\n' "$paths" | python3 scripts/ci/changed_areas.py | tee -a "$GITHUB_OUTPUT"
 
-      - name: Lint the workflows
-        run: |
-          archive="jactionlint_${JACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          curl -fsSLO "https://github.com/jdx/jactionlint/releases/download/v${JACTIONLINT_VERSION}/$archive"
-          echo "$JACTIONLINT_SHA256  $archive" | sha256sum --check --strict
-          tar -xzf "$archive" jactionlint
-          sudo install jactionlint /usr/local/bin/jactionlint
-          make actions-lint
-
-      # Here, not in the macOS `app` job: this job already installs the pinned shellcheck.
-      - name: Lint the macapp shell scripts
-        run: make app-scripts-lint
-
-      # Named file, not `unittest discover -s scripts/ci`: discover exits 0 when it finds NO
-      # tests, so a deleted or renamed suite would report green while proving nothing.
-      - name: Test the download stats report
-        run: python3 scripts/ci/test_download_stats.py
-
-      - name: Test the Linux lint launcher
-        run: |
-          shellcheck vcs/scripts/lint-linux.sh
-          python3 scripts/ci/test_linux_lint.py
-
-      - name: Test the PR check watcher
-        run: python3 scripts/ci/test_watch_pr_checks.py
-
-  cli:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  actions:
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+    uses: ./.github/workflows/ci-actions.yml
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
+  go:
+    needs: changes
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-go.yml
+    with:
+      run: ${{ needs.changes.outputs.cli != 'false' }}
 
-      # Uses a prebuilt linter instead of compiling it and downloading its Go toolchain per runner.
-      #
-      # The pin must stay on golangci-lint /v2: v1 rejects the v2-format .golangci.yml and its
-      # vendored go/types cannot analyze a Go 1.27 stdlib at all. The constraint when bumping is
-      # *directional* — the linter's typechecker must be at least as new as the Go whose code it
-      # reads (older cannot decode newer export data; that is what killed v1 here), so a linter
-      # built by a NEWER Go than the module targets is correct, not a mismatch.
-      - name: Lint
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
-        with:
-          version: v2.13.2
-
-      # v2 moved formatters out of `run`, so `run` alone reports NO gofmt/goimports findings and
-      # the formatting gate would be silently lost. Keep in step with the Makefile's cli-lint.
-      - name: Format
-        run: golangci-lint fmt --diff
-
-      # Includes the native Linux build; no separate unused binary is necessary.
-      #
-      # Why this gate exists: releases (goreleaser) and the nightly archives ship windows/linux
-      # builds, but this job only ever compiled for the runner. A unix-only syscall (Setpgid,
-      # syscall.Kill) therefore passed CI and broke the nightly + the next tag.
-      - name: Cross-compile check
-        run: |
-          for os in windows linux darwin; do
-            GOOS="$os" GOARCH=amd64 go build -o /dev/null .
-          done
-
-      - name: Test
-        run: go test ./...
-
-  # The whole Rust workspace's format, lint and test gates — the only job that runs them for every
-  # crate (the daemon jobs below cover workroomd alone). Its own Linux job rather than a step in
-  # `app`: off the macOS critical path, Linux minutes are 10x cheaper, and it tests the daemon away
-  # from Apple targets.
   rust:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    needs: changes
+    if: ${{ !cancelled() }}
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      # Pinned for the lint gates below, unlike the `app` job (which deliberately tracks the runner's
-      # rustc so a toolchain bump invalidates its output cache). rustfmt's layout and clippy's lint set
-      # both change between releases, so an unpinned toolchain makes `--check` and `-D warnings` fail
-      # when GitHub rolls its image rather than when someone's code is wrong. Same reasoning as the
-      # pinned golangci-lint in `cli`. Keep in step with the local toolchain.
-      - name: Install Rust 1.96.1
-        run: |
-          rustup toolchain install 1.96.1 --profile minimal --component rustfmt,clippy
-          rustup default 1.96.1
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          workspaces: vcs
-
-      # Ordered cheapest-first so a formatting nit doesn't wait on the crate graph.
-      - name: Format
-        run: cargo fmt --manifest-path vcs/Cargo.toml --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --manifest-path vcs/Cargo.toml --workspace --all-targets -- -D warnings
-
-      # rustdoc's warnings as errors, chiefly a public doc linking to a private or moved item.
-      # `make vcs-lint` runs the same check, plus its terminal-state half, which needs Zig.
-      - name: Docs
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc --manifest-path vcs/Cargo.toml --workspace --no-deps
-
-      # This already covers workroomd, and covers it on LINUX — the workspace has no
-      # `default-members`, so every member's unit and integration tests run here. That matters
-      # because the daemon's pty, /proc introspection and socket code are the parts most likely to
-      # differ between Darwin and Linux, and a bug that only shows up on one of them has already
-      # happened once (an output pump that never noticed a closed socket, which macOS hid).
-      - name: Test
-        run: cargo test --manifest-path vcs/Cargo.toml
-
-  # The shadow terminal, which is what makes a reattaching client see its screen. Separate from
-  # `rust` because it is the only thing in the repo that needs a Zig toolchain and a Ghostty
-  # checkout, and the rest of the workspace should not wait on either.
-  daemon-terminal-state:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install Rust
-        run: |
-          rustup toolchain install 1.96.1 --profile minimal --component clippy
-          rustup default 1.96.1
-
-      # Pinned by version AND checksum. An unpinned toolchain would silently change the emulator
-      # this links, and the snapshot format it produces carries no compatibility guarantee.
-      - name: Install Zig
-        uses: ./.github/actions/install-zig
-        with:
-          version: "0.17.0"
-          archive: x86_64-linux
-          sha256: "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
-
-      # Keyed on the pinned engine sha, so a bump refetches and rebuilds and nothing else does.
-      # Without this every run clones Ghostty and spends ~75s building the emulator.
-      - name: Cache libghostty-vt
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          workspaces: vcs
-
-      - name: Clippy
-        run: |
-          cargo clippy --manifest-path vcs/Cargo.toml -p workroomd \
-            --features terminal-state --all-targets -- -D warnings
-
-      # WORKROOMD_HAS_TERMINAL_STATE tells the integration tests the daemon under test was built
-      # with the feature, so the repaint and scrollback assertions run instead of skipping. Without
-      # it they would pass by skipping and this job would prove nothing.
-      - name: Test
-        env:
-          WORKROOMD_HAS_TERMINAL_STATE: "1"
-        run: cargo test --manifest-path vcs/Cargo.toml -p workroomd --features terminal-state
-
-  # The Linux daemons Workroom.app ships for remote hosts (issue #227), built the way the app bundle
-  # builds them (cargo-zigbuild, static musl, terminal-state) and then RUN. The Mac-side check in
-  # build-daemon_test.sh can only see that each ELF is static and the right arch, not that it starts.
-  # aarch64 runs under qemu-user, which needs no sysroot for a static binary.
-  daemon-linux:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x86_64, aarch64]
-    env:
-      TARGET: ${{ matrix.arch }}-unknown-linux-musl
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install Rust
-        run: |
-          rustup toolchain install 1.96.1 --profile minimal --target "$TARGET"
-          rustup default 1.96.1
-
-      # Pinned by version AND checksum, as in `daemon-terminal-state`. cargo-zigbuild links with it
-      # and libghostty-vt is built with it.
-      - name: Install Zig
-        uses: ./.github/actions/install-zig
-        with:
-          version: "0.17.0"
-          archive: x86_64-linux
-          sha256: "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
-
-      # Its own key per arch. Sharing `daemon-terminal-state`'s key would restore that job's glibc
-      # prefix, count as a hit, never save the musl one, and rebuild it on every run.
-      - name: Cache libghostty-vt
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ env.TARGET }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          workspaces: vcs
-          key: ${{ env.TARGET }}
-
-      # `cargo install` compiles cargo-zigbuild from source on every run; the binary is all that is
-      # installed, so cache it on the pinned version.
-      - name: Cache cargo-zigbuild
-        id: zigbuild
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin/cargo-zigbuild
-          key: cargo-zigbuild-${{ runner.os }}-${{ runner.arch }}-0.23.4
-
-      - name: Install cargo-zigbuild
-        if: steps.zigbuild.outputs.cache-hit != 'true'
-        run: cargo install cargo-zigbuild --locked --version 0.23.4
-
-      - name: Install qemu
-        if: matrix.arch == 'aarch64'
-        # `qemu-user`, not `qemu-user-static`: Ubuntu 26.04 (ubuntu-latest from 2026-10) dropped the
-        # latter. Running one static binary needs no static qemu.
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user
-
-      - name: Build
-        run: |
-          cargo zigbuild --manifest-path vcs/Cargo.toml --release -p workroomd \
-            --features terminal-state --target "$TARGET"
-
-      - name: Check
-        run: |
-          bin="vcs/target/$TARGET/release/workroomd"
-          file "$bin"
-          file -b "$bin" | grep -q 'statically linked'
-          run=""
-          if [ "${{ matrix.arch }}" = aarch64 ]; then run=qemu-aarch64; fi
-          out="$($run "$bin" protocol)"
-          echo "$out"
-          echo "$out" | grep -q '^protocol '
-          echo "$out" | grep -qx 'terminal-state yes'
-
-      # The fixture image's apt layer, cached in the Actions cache. A `run` step cannot reach that
-      # cache on its own: buildx needs a docker-container builder, and the runtime token that the
-      # second action exports.
-      - name: Set up Docker Buildx (ssh fixture)
-        id: buildx
-        if: matrix.arch == 'x86_64'
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
-      - name: Expose the Actions cache to buildx (ssh fixture)
-        if: matrix.arch == 'x86_64'
-        uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4
-
-      # The persistent remote path over real ssh (issue #228): this ELF, supervised in a container
-      # with sshd, driven from the runner by the ignored `over_ssh_*` tests in remote_transport.rs.
-      # x86_64 only, because the runner is x86_64: the aarch64 ELF would need an emulated container.
-      # Bounded, because a daemon that wedges mid-reply would hang an ssh call with no deadline of
-      # its own, and the job's default timeout is six hours. BUILDX_BUILDER, because a plain
-      # `docker build` keeps the default `docker` driver, which cannot export a cache, even after the
-      # step above created a docker-container builder. `--load`, because that builder does not put
-      # the image where `docker run` looks otherwise.
-      - name: ssh fixture
-        if: matrix.arch == 'x86_64'
-        timeout-minutes: 15
-        env:
-          BUILDX_BUILDER: ${{ steps.buildx.outputs.name }}
-          WR_FIXTURE_BUILD_FLAGS: >-
-            --load --cache-from type=gha,scope=ssh-fixture
-            --cache-to type=gha,mode=max,scope=ssh-fixture
-        run: vcs/scripts/ssh-fixture/run.sh "vcs/target/$TARGET/release/workroomd"
-
-  # The local packages' tests (macapp/Packages) run with plain `swift test`, outside the app host,
-  # so `make app-test` never sees them. Their own job, beside `app` rather than a step of it: the
-  # step took 8 of that job's 21 minutes (measured 2026-10-18) and needs nothing the app build
-  # makes. A cold SyntaxHighlighting run fetches its 16 tree-sitter repos (~4 min) and
-  # compiles them (~1 min; its 1.5GB .build is too big to cache), and the target retries each
-  # package's resolve.
-  app-packages:
-    runs-on: xcode-27
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
-        with:
-          xcode-version: "27.1"
-
-      - name: Test (Swift packages)
-        run: make app-package-test
+    uses: ./.github/workflows/ci-rust.yml
+    with:
+      run: ${{ needs.changes.outputs.rust != 'false' }}
 
   app:
-    runs-on: xcode-27
-    timeout-minutes: 60
+    needs: changes
+    if: ${{ !cancelled() }}
     permissions:
       contents: read
-    steps:
-      # The whole history, for restore-mtime.py below: it needs each file's last commit.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
+    uses: ./.github/workflows/ci-app.yml
+    with:
+      packages: ${{ needs.changes.outputs.packages != 'false' }}
+      app: ${{ needs.changes.outputs.app != 'false' }}
+      scripts: ${{ needs.changes.outputs.scripts != 'false' }}
 
-      # Xcode 16+ bundles swift-format (used by `make app-lint`) and builds for macOS 14+.
-      # Pinned to the Xcode the app is developed with; xcode-27 is the only runner image that has it.
-      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
-        with:
-          xcode-version: "27.1"
-
-      # Scripts/build-helper.sh compiles + embeds the workroom CLI during the test build.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-
-      # XcodeGen generates the (gitignored) .xcodeproj. aws/tap ships pre-tapped but untrusted on
-      # the runner image, which makes every `brew install` on this job emit a "tap trust" warning
-      # annotation unrelated to our formulae.
-      - name: Install XcodeGen
-        run: |
-          brew untap aws/tap
-          brew install xcodegen
-
-      - name: Lint (swift-format --strict)
-        run: make app-lint
-
-      # The app bundles `workroomd`, and the bundled build links libghostty-vt so a reattaching
-      # pane can be repainted — see macapp/Scripts/build-daemon.sh. That needs a Zig toolchain on
-      # this runner too, pinned by version AND checksum for the same reason the Linux daemon job
-      # pins it: an unpinned toolchain silently changes the emulator the app ships against.
-      - name: Install Zig
-        uses: ./.github/actions/install-zig
-        with:
-          version: "0.17.0"
-          archive: aarch64-macos
-          sha256: "b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
-
-      # The Debug build bundles the Linux daemons too (#227), cross-built by build-daemon.sh with
-      # cargo-zigbuild and the Zig above.
-      - name: Add rustup targets (Linux daemons)
-        run: rustup target add --toolchain stable aarch64-unknown-linux-musl x86_64-unknown-linux-musl
-
-      - name: Cache cargo-zigbuild
-        id: zigbuild
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin/cargo-zigbuild
-          key: cargo-zigbuild-${{ runner.os }}-${{ runner.arch }}-0.23.4
-
-      - name: Install cargo-zigbuild
-        if: steps.zigbuild.outputs.cache-hit != 'true'
-        run: cargo install cargo-zigbuild --locked --version 0.23.4
-
-      # Keyed on the pinned engine sha, as in `daemon-terminal-state`: a bump refetches and
-      # rebuilds, nothing else does. `kit` because this job's cache also holds GhosttyKit, which
-      # `app-scripts`, on the same OS and script, never builds: sharing a key would restore that.
-      - name: Cache libghostty-vt and GhosttyKit
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-kit-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
-
-      # Xcode builds the bundled workroomd (Scripts/build-daemon.sh) on the stable toolchain, the
-      # macOS tests below build it again in debug, and all of it is cached here, the workspace's
-      # own artifacts included: without them workroomd was rebuilt in release for all three targets
-      # on every run, 38s + 1m41 + 1m44 one after another (measured 2026-10-18, run 39115663007).
-      # Cargo's fingerprints then find it up to date on a run that touched nothing under vcs/, and
-      # rebuild what a commit did touch. That needs the build script's inputs stable too:
-      # WORKROOMD_BUILD on the Test step below. vcs/.built-from is the index of the checkout the
-      # artifacts were built from, written after the tests (see the Restore source mtimes step).
-      #
-      # Restore and save are split, and the key ends in the commit, so each master push saves the
-      # build it just made and every later run, a PR's included, restores the newest one through
-      # the prefix: a key without the commit is saved once and then read for weeks, and every
-      # commit since that save rebuilds on every run. Only master pushes save (the last step of
-      # this job), so a PR never fills the cache with builds no one else can read. The fallback
-      # crosses Cargo.lock changes (cargo rebuilds what moved) but not a toolchain change, after
-      # which nothing in target/ is reusable; it also bounds how far target/ can grow with stale
-      # dependency versions, since nothing here prunes them. The prefixes are built in a step
-      # because the ship pregate's secret scanner reads a long literal `key:` line as a credential
-      # (and `app-daemon-v<N>` as entropy, hence no `v`).
-      - name: Cargo cache key
-        id: rust
-        env:
-          CARGO_LOCK: ${{ hashFiles('vcs/Cargo.lock') }}
-        shell: bash
-        run: |
-          toolchain="app-daemon-8-$RUNNER_OS-$RUNNER_ARCH-$(rustc +stable -V | awk '{print $2}')"
-          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
-          echo "lock=$toolchain-$CARGO_LOCK" >> "$GITHUB_OUTPUT"
-
-      # `path` must stay identical to the save step's: it is part of the cache's version.
-      - name: Restore cargo cache (daemon)
-        id: cargo-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            vcs/target
-            vcs/.built-from
-          key: ${{ steps.rust.outputs.lock }}-${{ github.sha }}
-          restore-keys: |
-            ${{ steps.rust.outputs.lock }}-
-            ${{ steps.rust.outputs.toolchain }}-
-
-      # SPM resolves ~15 packages (Sparkle, Sentry, libghostty, the tree-sitter grammars, and
-      # swift-syntax pulled transitively) by cloning them from GitHub on every run. Cache the
-      # resolved checkouts keyed on project.yml AND the tracked Package.resolved (checkout already
-      # places this one file — the rest of the gitignored .xcodeproj doesn't exist yet) so an
-      # unchanged set skips the network entirely. Package.resolved is in the key, not just
-      # project.yml, because a pin can be re-reviewed to a different revision under the SAME
-      # version string — keying on project.yml alone let a stale cache silently keep serving the old
-      # revision after such a bump until the cache aged out.
-      #
-      # Deliberately NO restore-keys fallback: a fuzzy prefix match can restore an older cache whose
-      # checked-out `workspace-state.json` disagrees with the CURRENT Package.resolved — and SPM
-      # trusts that already-resolved state over reconciling against the file, so a exact-key miss
-      # silently re-served the stale revision anyway (reproduced on run 33511971205, right after
-      # adding Package.resolved to the key above got this far). Paying the network cost in full on
-      # every exact-key miss is the correct tradeoff: it's rare (only a real dependency change), and
-      # it's exactly the situation this cache must not paper over.
-      - name: Cache SPM packages
-        id: spm
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: macapp/DerivedData/SourcePackages
-          key: >-
-            spm-${{ runner.os }}-${{
-            hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved')
-            }}
-
-      # Compiling the dependency graph — libgit2 (429 tasks), SwiftGitX, the tree-sitter grammars,
-      # Sentry, Sparkle, swift-syntax — is ~60% of the build's work and none of it changes between
-      # runs. Caching the build dir lets xcodebuild's incremental check reuse those objects, and with
-      # the sources' mtimes restored to their landing times (the step below) our own objects too:
-      # only what commits since the save touched, and its dependents, rebuilds. (The restored dep
-      # checkouts keep their original mtimes, so the dependency objects were always up to date.)
-      #
-      # Restore and save are split, and the key ends in the commit, as for the cargo cache above:
-      # each master push saves (~150MB) and every later run restores the newest build for the same
-      # compiler and dependency set through the prefix. The fallback stops at that set, which is
-      # what the dep objects depend on: a change to it rebuilds them in full, as it always has. The
-      # `v5` leaves behind every dir saved under an older key, whose objects were built against
-      # checkout-time or author-time mtimes.
-      - name: Xcode version (cache key input)
-        id: xcode
-        run: |
-          # e.g. "Xcode 26.0" + "Build version 17A324" → "26.0-17A324".
-          echo "version=$(xcodebuild -version | awk 'NR==1{v=$2} NR==2{b=$NF} END{print v "-" b}')" >> "$GITHUB_OUTPUT"
-
-      - name: Restore Xcode build dir
-        id: xcbuild
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: macapp/DerivedData/Build
-          key: >-
-            xcbuild-v5-${{ runner.os }}-${{ steps.xcode.outputs.version }}-${{
-            hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'vcs/scripts/build-ghostty-vt.sh') }}-${{
-            github.sha }}
-          restore-keys: >-
-            xcbuild-v5-${{ runner.os }}-${{ steps.xcode.outputs.version }}-${{
-            hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'vcs/scripts/build-ghostty-vt.sh') }}-
-
-      # xcodebuild's incremental check keys on mtimes, and a checkout stamps every file with now, so
-      # against the restored build dir above every one of our own sources read as changed and the
-      # app and test targets recompiled in full on every run (~5 min of this job, measured
-      # 2026-10-18; locally, touching the sources without changing them costs 602 Swift compile
-      # tasks, 44s against 16s for a no-op). Landing times are the same on every runner.
-      #
-      # Except what under vcs/ differs from the checkout the cargo cache was built from, which
-      # stays at now: cargo reuses a cached artifact whenever the source's mtime is older than it,
-      # content unseen, and a cache is read by runs it was not built for: a PR's, a release
-      # branch's, a master push after one whose run failed. The step after the tests records that
-      # checkout's index (path, mode and blob of every file) in the cached directory. An index, not
-      # a commit: a PR run builds GitHub's merge commit, which the next push's checkout does not
-      # have. No record means no cargo cache was restored (every app-daemon-8 entry carries one), so
-      # there is nothing stale to guard and landing times alone are safe. Only vcs/, cargo's inputs:
-      # the Xcode build dir this run saves is built against these mtimes, and a Swift file left at
-      # now would be recompiled by every later run, which gives it its landing time again.
-      - name: Restore source mtimes
-        run: |
-          if [ -f vcs/.built-from/index ]; then
-            python3 macapp/Scripts/restore-mtime.py --fresh vcs/.built-from/index vcs
-          else
-            python3 macapp/Scripts/restore-mtime.py
-          fi
-
-      # Resolve up front with retries so a transient github.com blip mid-clone can't fail the whole
-      # run (it did: swift-syntax clone hit "Couldn't connect to server"). The subsequent app-test
-      # build reuses these checkouts via the same -clonedSourcePackagesDirPath, so it won't re-clone.
-      #
-      # Skipped on an exact cache hit: there's nothing to clone, so the whole step (~25s, including an
-      # xcodegen run that `make app-test` does again anyway) is pure overhead. A restore-keys-only
-      # (partial) restore reports no cache-hit, so a dependency change still resolves here, retries
-      # and all.
-      - name: Resolve SPM packages (retry on network flake)
-        if: steps.spm.outputs.cache-hit != 'true'
-        working-directory: macapp
-        run: |
-          xcodegen generate
-          for attempt in 1 2 3; do
-            xcodebuild -project WorkroomApp.xcodeproj -scheme WorkroomApp \
-              -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages \
-              -resolvePackageDependencies && exit 0
-            echo "::warning::SPM resolve attempt $attempt failed; retrying in 15s"
-            sleep 15
-          done
-          echo "::error::SPM resolve failed after 3 attempts"; exit 1
-
-      # Hosted runners have no signing cert / dev team: ad-hoc sign, clear the team, manual
-      # style so xcodebuild won't provision against Apple's servers. Lets the non-sandboxed
-      # app build and the unit tests launch their host app. (`make app-test` also builds.)
-      #
-      # WORKROOMD_BUILD: the daemon's build number, normally the commit's own time, read by its
-      # build.rs from .git/HEAD; a constant here so that script's inputs don't change with every
-      # commit, which rebuilt workroomd for all three targets on every run (~3 min, measured
-      # 2026-10-18) however warm the cargo cache. Nothing in these tests reads the built daemon's
-      # number (DaemonBootstrapTests parses fixture strings), and no host ever sees a CI build.
-      # As an xcodebuild build setting, not a step `env:`: the build service that runs the script
-      # phases does not get this step's environment (run 39133476315 showed none of it), while
-      # every build setting is exported to them.
-      #
-      # APP_TEST_DIAGNOSTICS= keeps xcodebuild's diagnostics (~10.5s) that `make app-test` skips
-      # locally: a failure's uploaded xcresult needs the system log archive, which holds
-      # ReportCrash's EXC_GUARD line for a test host that crashed (#350).
-      - name: Test
-        run: >-
-          make app-test APP_TEST_DIAGNOSTICS=
-          APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM= WORKROOMD_BUILD=1"
-
-      # What the cargo cache was built from, saved with it by the last step: the Restore source
-      # mtimes step diffs the next checkout against it.
-      - name: Record the checkout the daemon cache was built from
-        run: mkdir -p vcs/.built-from && git ls-files -s -z > vcs/.built-from/index
-
-      # Parallel xcodebuild prints NO assertion text — just a `Failing tests:` list — so a red run
-      # here says WHICH test failed and nothing about why. The message only exists in the xcresult,
-      # which is why diagnosing nightly 33955949260's failure needed a local repro instead of a read.
-      - name: Upload test results (xcresult)
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: xcresult-ci
-          path: macapp/DerivedData/Logs/Test/*.xcresult
-          retention-days: 7
-
-      # The supervisor PTY integration test (issue #7) drives workroomd's run_supervisor.sh under a pty with
-      # a fake server — the only gate on the no-orphan / no-"already running" behaviour the Swift unit
-      # tests (mocked seam) can't see. python3 is preinstalled on the macOS runner.
-      - name: Test (run-command supervisor)
-        run: make app-test-supervisor
-
-      # The Rust tests run on Linux (`rust` above), where std creates a socket close-on-exec in one
-      # call. macOS sets the flag in a second call, and a child spawned in between inherits the
-      # socket: the race behind the stale-socket fixture and the stray descriptors a session's shell
-      # could inherit. Their tests prove nothing on Linux, so these alone run here; the rest of the
-      # crate stays on the cheaper Linux runner. `exception_ports` is macOS-only (Mach exception
-      # ports, #329), so Linux compiles it out and this is its only run. `process::tests` covers the
-      # macOS process table, which Linux reads from /proc instead (#430). `shell::tests` and
-      # `apple_bash_is_not_left_in_posix_mode` cover the Apple `/bin/bash` skip, which exists only
-      # on macOS. These filters are an allowlist: a new macOS-only test must be added here.
-      # CARGO_INCREMENTAL=0: incremental state would only bloat the cached target/ (rust-cache,
-      # which cached it before, set the same for the whole job). WORKROOMD_BUILD as on the Test
-      # step, or build.rs reruns for every commit and the debug crate rebuilds each run; none of
-      # these tests reads the build number (only the hand-off tests do, on Linux).
-      - name: Test (daemon descriptor inheritance, macOS)
-        env:
-          CARGO_INCREMENTAL: "0"
-          WORKROOMD_BUILD: "1"
-        run: |
-          cargo test --manifest-path vcs/Cargo.toml -p workroomd --lib -- pty::tests process::tests shell::tests
-          cargo test --manifest-path vcs/Cargo.toml -p workroomd --test attach_falls_back_to_a_shell -- --exact \
-            apple_bash_is_not_left_in_posix_mode
-          cargo test --manifest-path vcs/Cargo.toml -p workroomd --test remote_transport -- --exact \
-            a_stale_socket_stays_stale_while_children_are_spawned \
-            a_relay_with_no_daemon_fails_fast_and_says_so
-          cargo test --manifest-path vcs/Cargo.toml -p workroomd --test exception_ports
-
-      # Last, so only a green job saves; master pushes only (see the restore steps). Under the key
-      # the restore computed, as Package.resolved and Cargo.lock may be rewritten by the build. An
-      # exact hit is a rerun of a commit already saved, and a key cannot be saved twice.
-      - name: Save Xcode build dir
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.xcbuild.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: macapp/DerivedData/Build
-          key: ${{ steps.xcbuild.outputs.cache-primary-key }}
-
-      - name: Save cargo cache (daemon)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.cargo-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            vcs/target
-            vcs/.built-from
-          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
-
-  # The script tests run beside `app` rather than at the end of it: they were 920-1060s of a ~2400s
-  # job and need none of its Xcode build, so on a separate runner the two chains overlap and the
-  # slower one sets the wall time. `app` still runs `make app-test-supervisor` and the unit tests.
-  # If required status checks are ever configured for master, list this job beside `app`: the script
-  # tests no longer run inside `app`, so requiring only `app` would stop them gating a merge.
-  app-scripts:
-    runs-on: xcode-27
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      # Full history, for the tags: daemon-protocol_test.sh reads the latest stable release's app
-      # protocol at its tag, and fails in a clone without them.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-
-      # Catch infrastructure drift before installing tools or cross-compiling packaging fixtures.
-      # The headless benchmark check needs only the runner's existing Swift toolchain.
-      - name: Test infrastructure preflight
-        run: make app-test-preflight
-
-      # The script tests run xcrun, lipo and codesign; the image's default Xcode is 27.0, not the app job's 27.1.
-      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
-        with:
-          xcode-version: "27.1"
-
-      # build-helper_test.sh cross-compiles the workroom CLI.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-
-      - name: Install Zig
-        uses: ./.github/actions/install-zig
-        with:
-          version: "0.17.0"
-          archive: aarch64-macos
-          sha256: "b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
-
-      - name: Cache libghostty-vt
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
-
-      # The target directory build-daemon_test.sh builds into (BUILD_DAEMON_TEST_TARGET_DIR on the test
-      # step below); without one the test compiles from scratch in vcs/target/build-daemon-test. Not
-      # `vcs/target` itself, for the reason the test gives. The key changed with the directory: an exact hit
-      # on the old entry would never save the new one.
-      - name: Cache cargo (daemon)
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          workspaces: vcs -> build-daemon-target
-          key: app-scripts-build-agent
-
-      # `build-daemon_test.sh`'s universal cases need BOTH darwin targets installed and skip
-      # themselves otherwise — and the step still prints OK, so the skip is invisible. Measured on
-      # run 34783566140: "SKIP universal cases (rustup targets not installed)" followed by
-      # "build-daemon_test: OK". The workroomd half of the guard below had therefore never run on a
-      # PR, only on nightly/release, which install these before `make app-release`.
-      #
-      # Its Go sibling has no such gate (Go cross-compiles with no extra install), which is why the
-      # asymmetry went unnoticed: `build-helper_test.sh` really was exercising the multi-arch path
-      # on every PR while `build-daemon_test.sh` quietly was not.
-      #
-      # `--toolchain stable` explicitly, because that is the toolchain the test's own
-      # `rustup target list --installed --toolchain stable` query checks. A bare `rustup target add`
-      # installs into the DEFAULT toolchain, which would leave the query — and so the skip —
-      # unchanged if the default is ever not `stable`.
-      #
-      # The musl targets and cargo-zigbuild are the same gap for the Linux daemons (#227): without
-      # them the Linux case skips, and build-daemon.sh's Linux branch would first run on a nightly.
-      # `daemon-linux` does not cover it, because it calls `cargo zigbuild` directly.
-      - name: Add rustup targets (for the universal-arch and Linux-daemon script tests)
-        run: |
-          rustup target add --toolchain stable x86_64-apple-darwin aarch64-apple-darwin \
-            aarch64-unknown-linux-musl x86_64-unknown-linux-musl
-
-      # `cargo install` compiles cargo-zigbuild from source on every run (~1 minute). The binary is
-      # all that is installed, so cache it on the pinned version.
-      - name: Cache cargo-zigbuild
-        id: zigbuild
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin/cargo-zigbuild
-          key: cargo-zigbuild-${{ runner.os }}-${{ runner.arch }}-0.23.4
-
-      - name: Install cargo-zigbuild
-        if: steps.zigbuild.outputs.cache-hit != 'true'
-        run: cargo install cargo-zigbuild --locked --version 0.23.4
-
-      # Shell-script tests. `make app-test` builds Debug with a single native arch, so it can never
-      # exercise build-helper.sh's / build-daemon.sh's multi-arch path — the branch whose absence
-      # shipped an arm64-only CLI inside every universal .app. These run them directly with
-      # ARCHS="arm64 x86_64".
-      - name: Test (build + channel helper scripts)
-        env:
-          BUILD_DAEMON_TEST_TARGET_DIR: ${{ github.workspace }}/vcs/build-daemon-target
-        run: make app-test-scripts
-
-  # Publishes docs-site/ once master's CI is green: asks Codaset's CI to test the docs at this commit
-  # and, if it passes, deploy them to codaset.dev/workroom/docs (docs/designs/docs-site.md, D32).
-  # `needs` lists every other job, so a red master never publishes; add a new job here too. Every
-  # green push publishes, docs change or not: a docs change whose own run went red publishes with
-  # the next green one, instead of waiting for another docs change.
-  docs-deploy:
+  # `needs` lists every other call, so a red master never publishes; add a new one here too.
+  docs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: [workflows, cli, rust, daemon-terminal-state, daemon-linux, app-packages, app, app-scripts]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    needs: [changes, actions, go, rust, app]
     permissions: {}
-    steps:
-      - name: Ask Codaset to publish the docs
-        env:
-          SHA: ${{ github.sha }}
-          TOKEN: ${{ secrets.CODASET_DISPATCH_TOKEN }}
-        run: |
-          if [ -z "$TOKEN" ]; then
-            echo "::warning::CODASET_DISPATCH_TOKEN is not set, so the docs were not published."
-            exit 0
-          fi
-          curl -fsS -X POST https://api.github.com/repos/joelmoss/codaset/dispatches \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -d "{\"event_type\":\"workroom-docs\",\"client_payload\":{\"sha\":\"$SHA\"}}"
+    uses: ./.github/workflows/ci-docs.yml
+    secrets:
+      CODASET_DISPATCH_TOKEN: ${{ secrets.CODASET_DISPATCH_TOKEN }}
