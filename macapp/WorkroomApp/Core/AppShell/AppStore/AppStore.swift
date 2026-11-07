@@ -1340,7 +1340,7 @@ final class AppStore: ObservableObject {
       content: {
         DetachedPaneView(
           tabID: tabID, content: tab.content, surface: surface, target: target,
-          sessions: terminals, store: self,
+          sessions: terminals,
           onTitleChange: { [weak self] title in
             guard let self else { return }
             let location = self.detachedLocation(for: target)
@@ -1349,6 +1349,7 @@ final class AppStore: ObservableObject {
               glyph: target.workroomGlyph, for: tabID)
           }
         )
+        .detachedPaneEnvironment(store: self, sessions: terminals)
       })
   }
 

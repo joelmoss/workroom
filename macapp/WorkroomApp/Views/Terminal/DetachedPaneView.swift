@@ -12,8 +12,10 @@ import SwiftUI
 ///
 /// **Environment is re-injected by hand** because it does not cross the `NSHostingView` the window
 /// hosts this in, exactly as `RightInspector` re-injects per inspector section and
-/// `RootView.accessoryBarContent` does for the title-bar accessory. The theme is the exception: the
-/// window's host injects it (`themeTokensRoot()`), since this view's own body reads it.
+/// `RootView.accessoryBarContent` does for the title-bar accessory. Whoever builds this view applies
+/// `detachedPaneEnvironment` to it (`AppStore.openDetachedPane`), so this view names no store; the
+/// pane inside it still reads that environment. The window's host injects the theme
+/// (`themeTokensRoot()`), since this view's own body reads it.
 ///
 /// **One structural slot, load-bearing.** `PaneLeafView` must not be wrapped in an `if` here: SwiftUI
 /// would swap a `_ConditionalContent` branch and re-parent the libghostty view, blanking the pane —
@@ -25,7 +27,6 @@ struct DetachedPaneView: View {
   let surface: GhosttySurfaceView?
   let target: TerminalTarget
   let sessions: TerminalPanes
-  let store: AppStore
   /// Push the pane's live title onto the window, so a terminal that renames itself renames its window
   /// (the pane's own title bar used to carry this).
   let onTitleChange: (String) -> Void
@@ -58,7 +59,6 @@ struct DetachedPaneView: View {
         Color.clear.onChange(of: title, initial: true) { _, new in onTitleChange(new) }
       }
     )
-    .detachedPaneEnvironment(store: store, sessions: sessions)
   }
 }
 
