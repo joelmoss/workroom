@@ -75,14 +75,8 @@ final class QuickTerminalPaneMoveTests: XCTestCase {
   private func makeMove() throws -> (
     source: TerminalPanes, pane: TerminalTab, window: AppStore, target: TerminalTarget
   ) {
-    let source = TerminalPanes()
-    source.makeView = { _, cwd, command in
-      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
-    }
-    source.recordUnrecognizedTool = { _ in }
+    let source = makeIsolatedPanes()
     source.allowsDetach = false
-    source.sessionService = PersistentSessionService(
-      probe: { _ in .unhealthy(reason: "isolated") }, ownership: { _ in .notOwned })
     let pane = source.addTab(for: QuickTerminalController.target())
     let window = AppStore(projectStore: projects, notifications: registry.notifications)
     window.services.notifier = SilentNotifier()
@@ -94,12 +88,4 @@ final class QuickTerminalPaneMoveTests: XCTestCase {
     window.selectedTargetID = sid
     return (source, pane, window, target)
   }
-}
-
-/// Posts nothing.
-private final class SilentNotifier: SystemNotifying, @unchecked Sendable {
-  func ensureAuthorized() async -> Bool { false }
-  func post(_ notification: WorkroomNotification) {}
-  func withdraw(tabIDs: [TerminalTab.ID]) {}
-  func withdraw(identifiers: [String]) {}
 }

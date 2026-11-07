@@ -33,6 +33,13 @@ func makeIsolatedPanes() -> TerminalPanes {
 @MainActor
 func makeIsolatedPanes(service: PersistentSessionService) -> TerminalPanes {
   let panes = TerminalPanes()
+  isolate(panes, service: service)
+  return panes
+}
+
+/// Make `panes`, which their owner built, touch nothing app-wide, as `makeIsolatedPanes` does.
+@MainActor
+func isolate(_ panes: TerminalPanes, service: PersistentSessionService) {
   panes.makeView = { _, cwd, _ in
     GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
   }
@@ -40,7 +47,23 @@ func makeIsolatedPanes(service: PersistentSessionService) -> TerminalPanes {
   panes.programStatus = ProgramStatusMonitor()
   panes.recordUnrecognizedTool = { _ in }
   panes.recency = SwitcherRecency()
-  return panes
+}
+
+/// A Quick Terminal host over the controller's target, wired as `QuickTerminalController` wires
+/// it (no pane leaves for a window of its own), with isolated panes (`isolate`), closes that never
+/// prompt and banners that post nowhere unless the test hands in its own `notifier`.
+@MainActor
+func makeQuickTerminalHost(
+  notifications: NotificationCenterStore, service: PersistentSessionService? = nil,
+  notifier: SystemNotifying = SilentNotifier()
+) -> QuickTerminalHost {
+  let host = QuickTerminalHost(
+    notifications: notifications, target: QuickTerminalController.target())
+  isolate(host.terminals, service: service ?? isolatedPaneSessionService())
+  host.terminals.allowsDetach = false
+  host.closeFlow.confirmOnCloseOverride = false
+  host.services.notifier = notifier
+  return host
 }
 
 extension TerminalPanes {

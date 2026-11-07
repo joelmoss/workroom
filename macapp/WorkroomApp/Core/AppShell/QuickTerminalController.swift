@@ -307,7 +307,8 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
 
   private func createWindow() {
     // Its terminals' notifications join the app's one list (ADR 0064).
-    let host = QuickTerminalHost(notifications: WindowRegistry.shared.notifications)
+    let host = QuickTerminalHost(
+      notifications: WindowRegistry.shared.notifications, target: Self.target())
     let panes = host.terminals
     panes.sessionService = sessionService
     panes.readsPaneBranches = true
@@ -332,10 +333,8 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     host.onTargetEmptied = { [weak self] _ in self?.close() }
     // Toasts show in the front window, this one while it is key (#573 D2).
     host.forwardToast = { WindowRegistry.shared.showToast($0) }
-    // Its one target is always on screen here, so a watched pane's notification counts as seen.
-    host.pinnedTarget = Self.target()
     // `ensureInitialTerminal` opens a project's first tab; this target is no project.
-    _ = panes.addTab(for: Self.target())
+    _ = panes.addTab(for: host.target)
     self.host = host
 
     let window = QuickTerminalWindow(

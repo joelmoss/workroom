@@ -13,7 +13,7 @@ import WorkroomVCS
 /// notifications join the app's one list (ADR 0064), named live from the app's projects.
 @MainActor
 @Observable
-final class QuickTerminalHost: PaneHost, NotifyingHost, PaneNotifierHost {
+final class QuickTerminalHost: PaneHost, PaneNotifierHost {
   let terminals: TerminalPanes
   /// Its Investigate tabs, and the graceful close a run-command tab's "press any key" goes through.
   let runCommand: RunCommandController
@@ -34,25 +34,16 @@ final class QuickTerminalHost: PaneHost, NotifyingHost, PaneNotifierHost {
   @ObservationIgnored var onTargetEmptied: ((TerminalTarget.ID) -> Void)?
   /// Its one target, always on screen in its window with no selection to say so: its panes count as
   /// seen and focused as a selected workroom's do (#573).
-  @ObservationIgnored var pinnedTarget: TerminalTarget?
+  let target: TerminalTarget
 
   /// Its notifications and toast queue. Lazy only because its records' origin is this host's
   /// identity, which init can't name until every stored property is set.
   @ObservationIgnored private(set) lazy var paneNotifier = PaneNotifier(
     host: self, terminals: terminals, notifications: notifications)
-  /// Where its in-app toasts go instead of its own `toasts` (`PaneNotifier.forwardToast`).
-  var forwardToast: ((WorkroomNotification) -> Void)? {
-    get { paneNotifier.forwardToast }
-    set { paneNotifier.forwardToast = newValue }
-  }
-  /// Whether the app is frontmost (`PaneNotifier.isAppActive`), a test seam.
-  var isAppActive: () -> Bool {
-    get { paneNotifier.isAppActive }
-    set { paneNotifier.isAppActive = newValue }
-  }
 
-  init(notifications: NotificationCenterStore) {
+  init(notifications: NotificationCenterStore, target: TerminalTarget) {
     self.notifications = notifications
+    self.target = target
     let terminals = TerminalPanes()
     self.terminals = terminals
     let runCommand = RunCommandController(terminals: terminals)
@@ -207,9 +198,6 @@ final class QuickTerminalHost: PaneHost, NotifyingHost, PaneNotifierHost {
 
   // MARK: PaneHost: toasts
 
-  /// Its toast queue (issue #31): a read registers with the notifier's Observation.
-  var toasts: [WorkroomNotification] { paneNotifier.toasts }
-  func dismissToast(_ id: UUID) { paneNotifier.dismissToast(id) }
   /// A run's toast is a project's run command's.
   var runToastItems: [RunCommandController.RunToastItem] { [] }
   /// A run's toast is a project's run command's.
@@ -229,53 +217,22 @@ final class QuickTerminalHost: PaneHost, NotifyingHost, PaneNotifierHost {
   var systemNotifier: SystemNotifying { services.notifier }
 
   /// The program-status session of the focused terminal, for ⇧⌘M. Only with keyboard focus in it.
-  var focusedTerminalSession: UUID? {
-    guard let target = pinnedTarget, let tab = terminals.focusedTab(for: target),
-      terminals.surface(of: tab.id)?.isEffectivelyFocused == true
-    else {
-      return nil
-    }
-    return terminals.sessionID(forTab: tab.id, inTarget: target.id)
-  }
-
-  func raiseNeedsYou(
-    targetID: TerminalTarget.ID, tabID: TerminalTab.ID, episode: String,
-    record: ProgramStatusRecord, detail: String? = nil, stillWanted: @escaping () -> Bool
-  ) {
-    paneNotifier.raiseNeedsYou(
-      targetID: targetID, tabID: tabID, episode: episode, record: record, detail: detail,
-      stillWanted: stillWanted)
-  }
-
-  func raiseFinished(
-    targetID: TerminalTarget.ID, tabID: TerminalTab.ID, record: ProgramStatusRecord,
-    detail: String? = nil
-  ) {
-    paneNotifier.raiseFinished(targetID: targetID, tabID: tabID, record: record, detail: detail)
-  }
-
-  func mergeIntoNeedsYou(episode: String, body: String?) {
-    paneNotifier.mergeIntoNeedsYou(episode: episode, body: body)
-  }
-
-  func withdrawNeedsYou(episode: String) { paneNotifier.withdrawNeedsYou(episode: episode) }
+  var focusedTerminalSession: UUID? { terminals.focusedTerminalSession(in: target) }
 
   /// A terminal's own name: its target is no workroom to say it is in.
   func terminalPlace(targetID: TerminalTarget.ID, tabID: TerminalTab.ID) -> String {
     terminals.defaultTitle(ofTab: tabID, inTarget: targetID) ?? "A terminal"
   }
 
-  func enqueueToast(_ note: WorkroomNotification) { paneNotifier.enqueueToast(note) }
-
   // MARK: PaneNotifierHost
 
   var isHostWindowKey: Bool { hostWindow?.isKeyWindow == true }
 
-  var primaryTargetID: TerminalTarget.ID? { pinnedTarget?.id }
+  var primaryTargetID: TerminalTarget.ID? { target.id }
 
-  /// Its pinned target is its window's only one.
+  /// Its target is its window's only one.
   func onScreenTarget(forID targetID: TerminalTarget.ID) -> TerminalTarget? {
-    pinnedTarget?.id == targetID ? pinnedTarget : nil
+    target.id == targetID ? target : nil
   }
 
   /// No pane is popped out into a window of its own.
@@ -283,6 +240,6 @@ final class QuickTerminalHost: PaneHost, NotifyingHost, PaneNotifierHost {
 
   /// The origin line under an alert's title: its target's name.
   func placeSource(targetID: TerminalTarget.ID) -> String {
-    targetID == QuickTerminalController.targetID ? "Quick Terminal" : ""
+    targetID == target.id ? "Quick Terminal" : ""
   }
 }

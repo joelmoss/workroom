@@ -37,24 +37,24 @@ final class ConfirmOnCloseTerminalTests: XCTestCase {
   /// drop it (`?? false`) and the entire unit suite stays green while the shipped checkbox does
   /// nothing. This is the one test that notices.
   ///
-  /// Driven through the pure static rather than an `AppStore` on purpose: this class is the sole
-  /// writer of the shared key (saved and restored above), which is what keeps the parallel test
-  /// workers off each other — see `AppStore.confirmOnCloseOverrideForTesting`.
+  /// Driven through `TabCloseFlow`'s pure static rather than an `AppStore` on purpose: this class
+  /// is the sole writer of the shared key (saved and restored above), which is what keeps the
+  /// parallel test workers off each other — see `AppStore.confirmOnCloseOverrideForTesting`.
   func testTheCloseConfirmFallsBackToTheStoredSetting() {
     Defaults[.confirmOnCloseTerminal] = true
-    XCTAssertTrue(AppStore.resolveConfirmOnClose(override: nil), "on → the close must prompt")
+    XCTAssertTrue(TabCloseFlow.resolveConfirmOnClose(override: nil), "on → the close must prompt")
 
     Defaults[.confirmOnCloseTerminal] = false
-    XCTAssertFalse(AppStore.resolveConfirmOnClose(override: nil), "off → it must not")
+    XCTAssertFalse(TabCloseFlow.resolveConfirmOnClose(override: nil), "off → it must not")
   }
 
   /// …and the override still wins over the setting in both directions, which is what the
   /// close-behaviour tests depend on.
   func testTheTestOverrideWinsOverTheStoredSetting() {
     Defaults[.confirmOnCloseTerminal] = true
-    XCTAssertFalse(AppStore.resolveConfirmOnClose(override: false))
+    XCTAssertFalse(TabCloseFlow.resolveConfirmOnClose(override: false))
 
     Defaults[.confirmOnCloseTerminal] = false
-    XCTAssertTrue(AppStore.resolveConfirmOnClose(override: true))
+    XCTAssertTrue(TabCloseFlow.resolveConfirmOnClose(override: true))
   }
 }

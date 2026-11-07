@@ -171,13 +171,6 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
   ) async throws -> [URL] { [] }
 }
 
-/// Records banners instead of posting them, so no test raises the real permission prompt.
-private final class SilentNotifier: SystemNotifying {
-  func ensureAuthorized() async -> Bool { false }
-  func post(_ notification: WorkroomNotification) {}
-  func withdraw(tabIDs: [TerminalTab.ID]) {}
-}
-
 /// A fake CLI that lets a test control the INTERLEAVING of real `createWorkroom` calls (issue
 /// #167). `create` hands out the next name in `names`, and suspends on a continuation — either just
 /// before it reports the workroom (`.beforeReady`, so the create stays unnamed) or just after
