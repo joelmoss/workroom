@@ -7,7 +7,7 @@ extension AppStore: NotifyingHost, PaneNotifierHost {
 
   var isHostWindowKey: Bool { hostWindow?.isKeyWindow == true }
 
-  var primaryTargetID: TerminalTarget.ID? { primaryTarget?.id }
+  var primaryTargetID: TerminalTarget.ID? { selectedTarget?.id }
 
   func detachedWindowIsKey(forTab tabID: TerminalTab.ID) -> Bool? {
     detachedPanes.window(for: tabID)?.isKeyWindow

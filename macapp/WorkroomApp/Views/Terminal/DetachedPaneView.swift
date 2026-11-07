@@ -26,7 +26,7 @@ struct DetachedPaneView: View {
   /// The pane's terminal surface, nil for a content pane (`PaneLeafView.surface`).
   let surface: GhosttySurfaceView?
   let target: TerminalTarget
-  let sessions: TerminalPanes
+  let panes: TerminalPanes
   /// Push the pane's live title onto the window, so a terminal that renames itself renames its window
   /// (the pane's own title bar used to carry this).
   let onTitleChange: (String) -> Void
@@ -37,7 +37,7 @@ struct DetachedPaneView: View {
 
   var body: some View {
     PaneLeafView(
-      tabID: tabID, content: content, surface: surface, target: target, sessions: sessions,
+      tabID: tabID, content: content, surface: surface, target: target, panes: panes,
       focused: true, multiPane: false, surfaceActive: true,
       dimUnfocusedPanes: false, workroomIsSplit: false,
       paneIndex: 1, paneCount: 1, coordinateSpace: Self.space,
@@ -71,20 +71,20 @@ extension View {
   /// that wants it renders. It cost a crash when the pane's status bar reached for
   /// `claudeUsageBridge` and `codingAgentUsage`, which are scene-level in `WorkroomApp` and so were absent
   /// here. If a pane ever grows a dependency on `updater`, `whatsNew`, `remoteState`,
-  /// `projectStore`, `vcsStatus` or `runCommands` (today purely `RootView` chrome, and the only six
-  /// of the app's fourteen environment objects left out), add it here. The pane's sessions are not
-  /// one: views reach them as `host.terminals` or a parameter, and observe them per target.
+  /// `projectStore`, `vcsStatus`, `runCommands` or `lifecycle` (today purely main-window chrome,
+  /// and the only seven of the app's fourteen environment objects left out, besides the store),
+  /// add it here. The window's `TerminalPanes` are not one: views reach them as `host.terminals`
+  /// or a parameter, and observe them per target.
   ///
   /// The store itself is not injected: pane views ask the window through its pane host
   /// (`PaneHost`), and only the main window's chrome takes the store from the environment.
-  func detachedPaneEnvironment(store: AppStore, sessions: TerminalPanes) -> some View {
+  func detachedPaneEnvironment(store: AppStore, panes: TerminalPanes) -> some View {
     self
       .paneHost(store)
       .environmentObject(store.modals)
       .environmentObject(store.runCommand)
-      .environmentObject(store.lifecycle)
       .environmentObject(store.notifications)
-      .environmentObject(sessions.codingAgentManager)
+      .environmentObject(panes.codingAgentManager)
       .environmentObject(CodingAgentUsageMonitor.shared)
       .environmentObject(ClaudeUsageBridge.shared)
   }

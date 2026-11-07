@@ -80,6 +80,59 @@ final class QuickTerminalHostTests: XCTestCase {
     XCTAssertEqual(emptied, [target.id])
   }
 
+  /// Value: protects=focusing a terminal here reading its notifications, so its unread mark and its
+  /// menu-bar entry go (#358); fails_when=`.terminalSeen` stops dismissing, or dismisses another
+  /// tab's; why_new=the host handles its own events; seam=the event its program-status binding
+  /// raises; no_claim=what counts as focused.
+  func testSeeingATerminalDismissesItsNotifications() {
+    let host = makeHost()
+    let seen = host.terminals.addTab(for: target)
+    let other = host.terminals.addTab(for: target)
+    host.terminals.onEvent?(.activity(target.id, seen.id, .osc(title: "Build done", body: nil)))
+    host.terminals.onEvent?(.activity(target.id, other.id, .osc(title: "Tests done", body: nil)))
+    XCTAssertEqual(
+      Set(registry.notifications.items.map(\.tabID)), [seen.id, other.id],
+      "fixture: both recorded")
+
+    host.terminals.onEvent?(.terminalSeen(target.id, seen.id))
+
+    XCTAssertEqual(registry.notifications.items.map(\.tabID), [other.id])
+  }
+
+  /// Value: protects="press any key to close" on an Investigate tab here closing it and ending its
+  /// session; fails_when=`.closeRequested` stops reaching `closingRunTab` and the close;
+  /// why_new=the host handles its own events; seam=the event the surface's keyDown raises, sent
+  /// without a live libghostty surface; no_claim=keyDown itself.
+  func testAKeyAtTheClosePromptClosesAnInvestigateTab() {
+    let host = makeHost()
+    _ = host.terminals.addTab(for: target)
+    let banner = CodingAgentBannerState.awaitingDiagnose(
+      FailedCommand(
+        command: "npm test", cwd: target.path, exitCode: 1, shell: nil, output: "",
+        isRunTab: false, isRemote: false))
+    let tab = host.investigate(banner, in: target, surface: nil)
+    XCTAssertNotNil(host.terminals.tab(tab.id, for: target), "fixture: the Investigate tab")
+
+    host.terminals.surface(tab)?.onEvent?(.closeRequested)
+
+    XCTAssertNil(host.terminals.tab(tab.id, for: target))
+    XCTAssertNil(host.runCommand.investigateTabs[tab.id])
+  }
+
+  /// Value: protects=find closing when focus leaves the content pane it searches; fails_when=
+  /// `.focusChanged` stops closing it; why_new=the host handles its own events; seam=none;
+  /// no_claim=which pane find searches.
+  func testAFocusChangeClosesFind() {
+    let host = makeHost()
+    let first = host.terminals.addTab(for: target)
+    _ = host.terminals.addTab(for: target)
+    host.contentFind.open()
+
+    host.terminals.focus(first.id, for: target)
+
+    XCTAssertFalse(host.contentFind.isOpen)
+  }
+
   /// Value: protects=every notification the host raises carrying the host's own identity, never its
   /// notifier's, so closing the Quick Terminal drops each one (risk 1 of the QuickTerminalHost
   /// plan); fails_when=any raise path stamps another identity; why_new=the host replaced a store;

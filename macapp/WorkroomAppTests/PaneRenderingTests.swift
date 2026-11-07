@@ -30,14 +30,14 @@ final class PaneRenderingTests: XCTestCase {
   }
 
   /// Host the content (the same layout decision `WorkroomTerminalsView` makes) in a window.
-  private func host(_ sessions: TerminalPanes) -> (NSWindow, NSView) {
+  private func host(_ panes: TerminalPanes) -> (NSWindow, NSView) {
     let store = AppStore()
-    let root = TestPaneHost(target: target, sessions: sessions)
+    let root = TestPaneHost(target: target, panes: panes)
       .environmentObject(store)
       .paneHost(store)
       .environmentObject(store.modals)
       .environmentObject(store.runCommand)
-      .environmentObject(sessions.codingAgentManager)
+      .environmentObject(panes.codingAgentManager)
       .themeTokensRoot()
     let hosting = NSHostingView(rootView: root)
     hosting.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
@@ -265,7 +265,7 @@ final class PaneRenderingTests: XCTestCase {
     // Stand in for `DetachedPaneWindows`: a second window hosting the same surface under the same
     // model-driven gate the real detached window uses.
     let detachedHost = NSHostingView(
-      rootView: TestDetachedHost(tabID: detached, surface: surface, sessions: s))
+      rootView: TestDetachedHost(tabID: detached, surface: surface, panes: s))
     detachedHost.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
     let detachedWindow = NSWindow(
       contentRect: detachedHost.frame, styleMask: [.titled], backing: .buffered, defer: false)
@@ -323,12 +323,12 @@ final class PaneRenderingTests: XCTestCase {
 private struct TestDetachedHost: View {
   let tabID: TerminalTab.ID
   let surface: GhosttySurfaceView
-  let sessions: TerminalPanes
+  let panes: TerminalPanes
 
   var body: some View {
     TerminalContainerView(
       view: surface, isFocusedPane: true,
-      mayHostSurface: sessions.detachedTabIDs.contains(tabID))
+      mayHostSurface: panes.detachedTabIDs.contains(tabID))
   }
 }
 
@@ -336,13 +336,13 @@ private struct TestDetachedHost: View {
 /// so the harness drives the exact rendering path that produced the blank bug.
 private struct TestPaneHost: View {
   let target: TerminalTarget
-  let sessions: TerminalPanes
+  let panes: TerminalPanes
 
   var body: some View {
-    if let active = sessions.activeTab(for: target) {
+    if let active = panes.activeTab(for: target) {
       PaneTreeView(
-        layout: sessions.split(for: target) ?? .leaf(active.id),
-        target: target, sessions: sessions
+        layout: panes.split(for: target) ?? .leaf(active.id),
+        target: target, panes: panes
       )
     }
   }
