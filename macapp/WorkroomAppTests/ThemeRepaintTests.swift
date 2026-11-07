@@ -313,14 +313,9 @@ final class ThemeRepaintTests: XCTestCase {
       "the Quick Terminal", size: NSSize(width: 600, height: 400), at: NSPoint(x: 3, y: 200)
     ) {
       // A host each: a terminal's view can sit in one window only.
-      let host = QuickTerminalHost(notifications: NotificationCenterStore())
+      let host = makeQuickTerminalHost(notifications: NotificationCenterStore())
       let panes = host.terminals
-      panes.makeView = { _, cwd, command in
-        GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
-      }
-      panes.sessionService = PersistentSessionService(
-        probe: { _ in .notBundled }, ownership: { _ in .notOwned })
-      _ = panes.addTab(for: QuickTerminalController.target())
+      _ = panes.addTab(for: host.target)
       opened.append(panes)
       return QuickTerminalContent(panes: panes).quickTerminalEnvironment(host: host)
     }

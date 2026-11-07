@@ -986,19 +986,14 @@ final class WorkroomHandOverTests: XCTestCase {
   private func makeQuickTerminalMove(
     retag: ((UUID, String) async -> Bool)? = nil
   ) -> (quick: QuickTerminalHost, pane: TerminalTab, window: AppStore) {
-    let quick = QuickTerminalHost(notifications: notifications)
-    quick.services.notifier = notifier
-    quick.closeFlow.confirmOnCloseOverride = false
-    quick.terminals.makeView = { _, cwd, command in
-      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
-    }
-    quick.terminals.recordUnrecognizedTool = { _ in }
-    quick.terminals.recency = SwitcherRecency()
-    quick.terminals.allowsDetach = false
+    let quick = makeQuickTerminalHost(
+      notifications: notifications,
+      service: PersistentSessionService(
+        probe: { _ in .unhealthy(reason: "isolated") }, ownership: { _ in .notOwned },
+        retag: retag),
+      notifier: notifier)
     quick.terminals.moveToWorkroomChoices = { _, _ in [] }
-    quick.terminals.sessionService = PersistentSessionService(
-      probe: { _ in .unhealthy(reason: "isolated") }, ownership: { _ in .notOwned }, retag: retag)
-    let pane = quick.terminals.addTab(for: QuickTerminalController.target())
+    let pane = quick.terminals.addTab(for: quick.target)
     let window = makeStore()
     _ = window.terminals.addTab(for: target(window))
     window.selectedTargetID = sid

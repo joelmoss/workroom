@@ -49,11 +49,6 @@ final class AppStore: ObservableObject {
   /// The `NSWindow` hosting this store, resolved once the view tree is in a window (issue #70). Weak:
   /// the window outlives the store's need for it, and the registry holds the authoritative mapping.
   weak var hostWindow: NSWindow?
-  /// Where this store's in-app toasts go instead of its own `toasts` (`PaneNotifier.forwardToast`).
-  var forwardToast: ((WorkroomNotification) -> Void)? {
-    get { paneNotifier.forwardToast }
-    set { paneNotifier.forwardToast = newValue }
-  }
   /// This window's display number — the smallest unused positive integer, assigned by `WindowRegistry`
   /// on registration and freed for reuse when the window closes (issue #70, macOS untitled-doc style).
   /// Backs the `windowTitle` fallback for a window with nothing selected ("Window 1", "Window 2", …).
@@ -527,7 +522,7 @@ final class AppStore: ObservableObject {
     Self.resolveInspectorVisible(override: inspectorVisibleOverrideForTesting)
   }
   /// The override-or-setting half of `inspectorIsVisible`, lifted out as a pure static for the same
-  /// reason `resolveConfirmOnClose` is one: once the History classes inject the override, no test
+  /// reason `TabCloseFlow.resolveConfirmOnClose` is one: once the History classes inject the override, no test
   /// reaches the `Defaults` side, so hard-coding this `true` would leave the suite green while the
   /// live-History refresh quietly started reading VCS behind a closed pane. `nonisolated` because it
   /// touches no actor state — just its argument and a `Defaults` read.
@@ -592,14 +587,6 @@ final class AppStore: ObservableObject {
   /// store's identity, which init can't name until every stored property is set.
   @ObservationIgnored private(set) lazy var paneNotifier = PaneNotifier(
     host: self, terminals: terminals, notifications: notifications)
-  /// The window's toast queue (issue #31), `PaneNotifier.toasts`: a read here registers with the
-  /// notifier's Observation, so a view reading it re-renders as toasts come and go.
-  var toasts: [WorkroomNotification] { paneNotifier.toasts }
-  /// Whether the app is frontmost (`PaneNotifier.isAppActive`), a test seam.
-  var isAppActive: () -> Bool {
-    get { paneNotifier.isAppActive }
-    set { paneNotifier.isAppActive = newValue }
-  }
 
   /// Branch names from the VCS toolbar's remote-state read, keyed by `SidebarID`.
   ///
@@ -2313,11 +2300,6 @@ final class AppStore: ObservableObject {
     set { closeFlow.confirmOnCloseOverride = newValue }
   }
 
-  /// The override-or-setting half of a close's confirm; see `TabCloseFlow.resolveConfirmOnClose`.
-  nonisolated static func resolveConfirmOnClose(override: Bool?) -> Bool {
-    TabCloseFlow.resolveConfirmOnClose(override: override)
-  }
-
   /// Focus the terminal tab at `index` (0-based, left-to-right across solo + split panes) in the
   /// selected target (⌘1…⌘9). No-ops if there's no tab at that position.
   func focusTerminalTab(at index: Int) {
@@ -2522,25 +2504,6 @@ final class AppStore: ObservableObject {
 
   // MARK: Program status alerts (#358)
 
-  /// Raise the alert for a request a program in `tabID` waits on (`PaneNotifier.raiseNeedsYou`).
-  func raiseNeedsYou(
-    targetID: TerminalTarget.ID, tabID: TerminalTab.ID, episode: String,
-    record: ProgramStatusRecord, detail: String? = nil, stillWanted: @escaping () -> Bool
-  ) {
-    paneNotifier.raiseNeedsYou(
-      targetID: targetID, tabID: tabID, episode: episode, record: record, detail: detail,
-      stillWanted: stillWanted)
-  }
-
-  /// Alert that the program in `tabID` finished its turn while nobody was looking
-  /// (`PaneNotifier.raiseFinished`).
-  func raiseFinished(
-    targetID: TerminalTarget.ID, tabID: TerminalTab.ID, record: ProgramStatusRecord,
-    detail: String? = nil
-  ) {
-    paneNotifier.raiseFinished(targetID: targetID, tabID: tabID, record: record, detail: detail)
-  }
-
   /// The origin line under a title that already names the workroom, or a root's project: only a
   /// workroom's project, since "london" under "Terminal 7 in london needs you" said it twice.
   func placeSource(targetID: TerminalTarget.ID) -> String {
@@ -2558,23 +2521,10 @@ final class AppStore: ObservableObject {
     return place.isEmpty ? name : "\(name) in \(place)"
   }
 
-  /// The program's own text for a request already raised (see `ProgramStatusAlerts.programNotified`).
-  func mergeIntoNeedsYou(episode: String, body: String?) {
-    paneNotifier.mergeIntoNeedsYou(episode: episode, body: body)
-  }
-
-  /// The request was answered, or its program ended: its alert and banner go.
-  func withdrawNeedsYou(episode: String) { paneNotifier.withdrawNeedsYou(episode: episode) }
-
   /// The program-status session of the terminal focused in this window, for ⇧⌘M. Only with keyboard
   /// focus in it: from an inspector field, ⇧⌘M goes to the selected terminal if it is the one waiting.
   var focusedTerminalSession: UUID? {
-    guard let target = selectedTarget, let tab = terminals.focusedTab(for: target),
-      terminals.surface(of: tab.id)?.isEffectivelyFocused == true
-    else {
-      return nil
-    }
-    return terminals.sessionID(forTab: tab.id, inTarget: target.id)
+    selectedTarget.flatMap { terminals.focusedTerminalSession(in: $0) }
   }
 
   /// Tell the user a new workroom doesn't start where they'd expect: its create couldn't fetch, the
@@ -2582,13 +2532,6 @@ final class AppStore: ObservableObject {
   func noticeStaleStart(of id: TerminalTarget.ID, _ warning: String) {
     paneNotifier.raiseNotice(targetID: id, title: "Check where this workroom starts", body: warning)
   }
-
-  /// Append a toast to this window's queue, dropping the oldest once past the cap (issue #31).
-  func enqueueToast(_ note: WorkroomNotification) { paneNotifier.enqueueToast(note) }
-
-  /// Remove a toast by id — on tap (after `openTerminal`), on auto-dismiss, or when its underlying
-  /// notification is dismissed elsewhere (`ToastStack` prunes those).
-  func dismissToast(_ id: UUID) { paneNotifier.dismissToast(id) }
 
   /// The on-screen target for `targetID`, ignoring app/window activation (so it's unit-testable): the
   /// selected target, or — when a workroom split is shown — any co-displayed split member. The focused

@@ -18,15 +18,9 @@ final class TabCloseFlowTests: XCTestCase {
 
   override func setUp() {
     super.setUp()
-    terminals = TerminalPanes()
     // A test surface never spawns, so it has no process and reads as live (`processHasExited`
     // is false before a surface exists), which is what a confirm needs to be asked for.
-    terminals.makeView = { _, cwd, command in
-      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
-    }
-    terminals.recordUnrecognizedTool = { _ in }
-    terminals.sessionService = PersistentSessionService(
-      probe: { _ in .notBundled }, ownership: { _ in .notOwned })
+    terminals = makeIsolatedPanes()
     runCommand = RunCommandController(terminals: terminals)
   }
 

@@ -3,7 +3,8 @@ import Foundation
 
 /// A host whose terminals raise notifications: what `ProgramStatusAlerts` and `WindowRegistry` ask
 /// of it, so a host need not be a whole window's `AppStore` (#358, #573). Each window's store is
-/// one.
+/// one. A host whose own `PaneNotifier` raises them is a `PaneNotifierHost`, which forwards these
+/// to it.
 ///
 /// The host's own identity is the origin on every notification it raises, so dropping what a
 /// closing host raised (`WindowRegistry.dropNotifications(raisedBy:)`) finds them by

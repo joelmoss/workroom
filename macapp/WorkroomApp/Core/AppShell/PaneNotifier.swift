@@ -6,7 +6,9 @@ import Foundation
 /// host names its terminals. Read on each use, never kept, so a host that changes its window,
 /// selection or system notifier (tests stand a fake in after init) is answered live.
 @MainActor
-protocol PaneNotifierHost: AnyObject {
+protocol PaneNotifierHost: NotifyingHost {
+  /// The host's notifications and toast queue, which its notifying members forward to.
+  var paneNotifier: PaneNotifier { get }
   /// Whether the host's window is the key window: the user is looking at it.
   var isHostWindowKey: Bool { get }
   /// The target the host's window shows first: its pinned one, else its selection.
@@ -15,17 +17,68 @@ protocol PaneNotifierHost: AnyObject {
   func onScreenTarget(forID targetID: TerminalTarget.ID) -> TerminalTarget?
   /// Whether the window `tabID` is popped out into is key; nil for a docked pane (issue #172).
   func detachedWindowIsKey(forTab tabID: TerminalTab.ID) -> Bool?
-  var systemNotifier: SystemNotifying { get }
   /// The origin line of an ordinary notification.
   func notificationSource(forTargetID id: TerminalTarget.ID) -> String
   /// The origin line under an alert's title, which already names the workroom.
   func placeSource(targetID: TerminalTarget.ID) -> String
-  func terminalPlace(targetID: TerminalTarget.ID, tabID: TerminalTab.ID) -> String
+}
+
+/// A host's notifying members, answered by its `paneNotifier`.
+extension PaneNotifierHost {
+  /// Raise the alert for a request a program in `tabID` waits on (`PaneNotifier.raiseNeedsYou`).
+  func raiseNeedsYou(
+    targetID: TerminalTarget.ID, tabID: TerminalTab.ID, episode: String,
+    record: ProgramStatusRecord, detail: String? = nil, stillWanted: @escaping () -> Bool
+  ) {
+    paneNotifier.raiseNeedsYou(
+      targetID: targetID, tabID: tabID, episode: episode, record: record, detail: detail,
+      stillWanted: stillWanted)
+  }
+
+  /// Alert that the program in `tabID` finished its turn while nobody was looking
+  /// (`PaneNotifier.raiseFinished`).
+  func raiseFinished(
+    targetID: TerminalTarget.ID, tabID: TerminalTab.ID, record: ProgramStatusRecord,
+    detail: String? = nil
+  ) {
+    paneNotifier.raiseFinished(targetID: targetID, tabID: tabID, record: record, detail: detail)
+  }
+
+  /// The program's own text for a request already raised (see `ProgramStatusAlerts.programNotified`).
+  func mergeIntoNeedsYou(episode: String, body: String?) {
+    paneNotifier.mergeIntoNeedsYou(episode: episode, body: body)
+  }
+
+  /// The request was answered, or its program ended: its alert and banner go.
+  func withdrawNeedsYou(episode: String) { paneNotifier.withdrawNeedsYou(episode: episode) }
+
+  /// Append a toast to this host's queue, dropping the oldest once past the cap (issue #31).
+  func enqueueToast(_ note: WorkroomNotification) { paneNotifier.enqueueToast(note) }
+
+  /// The host's toast queue (issue #31), `PaneNotifier.toasts`: a read here registers with the
+  /// notifier's Observation, so a view reading it re-renders as toasts come and go.
+  var toasts: [WorkroomNotification] { paneNotifier.toasts }
+
+  /// Remove a toast by id — on tap (after `openTerminal`), on auto-dismiss, or when its underlying
+  /// notification is dismissed elsewhere (`ToastStack` prunes those).
+  func dismissToast(_ id: UUID) { paneNotifier.dismissToast(id) }
+
+  /// Where this host's in-app toasts go instead of its own `toasts` (`PaneNotifier.forwardToast`).
+  var forwardToast: ((WorkroomNotification) -> Void)? {
+    get { paneNotifier.forwardToast }
+    set { paneNotifier.forwardToast = newValue }
+  }
+
+  /// Whether the app is frontmost (`PaneNotifier.isAppActive`), a test seam.
+  var isAppActive: () -> Bool {
+    get { paneNotifier.isAppActive }
+    set { paneNotifier.isAppActive = newValue }
+  }
 }
 
 /// One host's notifications: it records its terminals' activity and program-status alerts in the
 /// shared list, surfaces each as a toast or a banner, and keeps the host's toast queue (issue #31).
-/// Each host owns one; `AppStore` forwards to its own.
+/// Each host owns one and forwards to it (`PaneNotifierHost`).
 ///
 /// Records carry `origin`, the host's identity, never this object's: a closing host drops what it
 /// raised by its own `ObjectIdentifier` (`WindowRegistry.dropNotifications(raisedBy:)`), and a

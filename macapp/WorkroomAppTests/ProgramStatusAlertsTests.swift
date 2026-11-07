@@ -13,7 +13,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
   private var monitor: ProgramStatusMonitor!
   private var alerts: ProgramStatusAlerts!
   private var store: AppStore!
-  private var notifier: QuietNotifier!
+  private var notifier: SilentNotifier!
   private var enabled = true
   private var finishEnabled = true
   private var clock = Date(timeIntervalSince1970: 1000)
@@ -22,7 +22,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
     monitor = ProgramStatusMonitor()
     monitor.now = { [unowned self] in clock }
     store = AppStore()
-    notifier = QuietNotifier()
+    notifier = SilentNotifier()
     store.services.notifier = notifier
     store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     store.terminals.programStatus = monitor
@@ -349,7 +349,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
 
   /// A reporting program's notification that announces no request is shown after the hold, and
   /// the alert of a request that comes after all replaces it (a lagging remote link).
-  /// Value: protects=a held notification is never lost, and a late request still makes one notification; fails_when=the hold never releases or the backstop is missing; why_new=the hold is new (#481); seam=none; no_claim=real banner withdrawal (QuietNotifier)
+  /// Value: protects=a held notification is never lost, and a late request still makes one notification; fails_when=the hold never releases or the backstop is missing; why_new=the hold is new (#481); seam=none; no_claim=real banner withdrawal (SilentNotifier)
   func testAHeldNotificationShowsAndALateRequestReplacesIt() async {
     alerts.sleep = { _ in }
     alerts.start()
@@ -596,7 +596,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
   func testASessionInTwoWindowsCountsOnceAndGoesWithItsLastWindow() {
     alerts.start()
     let other = AppStore()
-    other.services.notifier = QuietNotifier()
+    other.services.notifier = SilentNotifier()
     other.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     other.terminals.programStatus = monitor
     var open = [store!, other]
@@ -658,7 +658,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
 private final class RecordingHost: NotifyingHost {
   let terminals = TerminalPanes()
   var focusedTerminalSession: UUID?
-  let systemNotifier: SystemNotifying = QuietNotifier()
+  let systemNotifier: SystemNotifying = SilentNotifier()
   private(set) var needsYou: [(tab: TerminalTab.ID, episode: String)] = []
   private(set) var finished: [(tab: TerminalTab.ID, message: String?)] = []
   private(set) var merged: [(episode: String, body: String?)] = []
@@ -738,12 +738,4 @@ private final class RecordingNotifier: SystemNotifying, Sendable {
 /// A window that is key whatever the test host's activation state.
 private final class AlwaysKeyWindow: NSWindow {
   override var isKeyWindow: Bool { true }
-}
-
-/// Posts nothing; keeps the tabs whose banners were withdrawn.
-private final class QuietNotifier: SystemNotifying, @unchecked Sendable {
-  var withdrawnTabs: [TerminalTab.ID] = []
-  func ensureAuthorized() async -> Bool { false }
-  func post(_ notification: WorkroomNotification) {}
-  func withdraw(tabIDs: [TerminalTab.ID]) { withdrawnTabs += tabIDs }
 }

@@ -188,8 +188,8 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
         in: destination, range: NSRange(destination.startIndex..., in: destination)))
   }
 
-  /// Pins the comment scan `testTheQuickTerminalBuildsNoStore` reads through: a `//` or `/*` inside
-  /// a string literal (a URL) hides none of the code after it, and real comments still go.
+  /// Pins the comment scan the source guards here read through: a `//` or `/*` inside a string
+  /// literal (a URL) hides none of the code after it, and real comments still go.
   func testTheCommentScanKeepsCodeAfterASlashInAString() throws {
     let source = """
       let url = "https://example.com/*"; let built = AppStore(notifications: list)
@@ -208,8 +208,8 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
   }
 
   /// `source` without its `//` and `/* */` comments, keeping every string literal whole, so a
-  /// comment marker inside one (a URL) is not taken for a comment. Knows single-line `"…"`
-  /// literals and their escapes, which is all the scanned files hold.
+  /// comment marker inside one (a URL) is not taken for a comment. Knows `"…"` literals and their
+  /// escapes; a `"""` literal reads as an empty one, then its body as a literal, so it stays whole.
   private static func code(in source: String) -> String {
     let characters = Array(source)
     var code = ""
@@ -324,8 +324,8 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
   }
 
   /// The types in `source` that declare `@EnvironmentObject … : AppStore`, each attributed to the
-  /// innermost type whose braces enclose it. Line-based brace counting, with `//` comments dropped:
-  /// enough for the app's sources, and a wrong attribution shows up as a failure above.
+  /// innermost type whose braces enclose it. Line-based brace counting over `code(in:)`: enough for
+  /// the app's sources, and a wrong attribution shows up as a failure above.
   static func typesTakingTheStoreFromTheEnvironment(in source: String) throws -> [String] {
     let declaration = try NSRegularExpression(
       pattern:
@@ -339,8 +339,7 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
     var depth = 0
     var pending: String?
     var found: [String] = []
-    for rawLine in source.components(separatedBy: "\n") {
-      let line = rawLine.components(separatedBy: "//").first ?? ""
+    for line in Self.code(in: source).components(separatedBy: "\n") {
       let range = NSRange(line.startIndex..., in: line)
       if let match = declaration.firstMatch(in: line, range: range),
         let name = Range(match.range(at: 1), in: line)

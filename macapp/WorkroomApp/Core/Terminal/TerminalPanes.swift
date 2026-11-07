@@ -2594,6 +2594,14 @@ final class TerminalPanes {
     terminalState(tabID, in: targetID)?.sessionID
   }
 
+  /// The program-status session of `target`'s focused terminal, only while it has keyboard focus:
+  /// what ⇧⌘M starts from in the host showing `target`.
+  func focusedTerminalSession(in target: TerminalTarget) -> UUID? {
+    guard let tab = focusedTab(for: target), surface(of: tab.id)?.isEffectivelyFocused == true
+    else { return nil }
+    return sessionID(forTab: tab.id, inTarget: target.id)
+  }
+
   /// Every tab attached to `session`, and whether the user is looking at it now.
   func attachments(of session: UUID) -> [(
     target: TerminalTarget.ID, tab: TerminalTab.ID, focused: Bool

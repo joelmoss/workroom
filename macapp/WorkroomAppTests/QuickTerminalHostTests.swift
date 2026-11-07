@@ -10,24 +10,12 @@ import XCTest
 @MainActor
 final class QuickTerminalHostTests: XCTestCase {
   private let registry = WindowRegistry()
-  private let notifier = SilentNotifier()
   private let target = QuickTerminalController.target()
 
   /// A host whose panes never spawn a shell or open a background session, wired as the controller
   /// wires it.
   private func makeHost() -> QuickTerminalHost {
-    let host = QuickTerminalHost(notifications: registry.notifications)
-    host.services.notifier = notifier
-    host.closeFlow.confirmOnCloseOverride = false
-    host.terminals.makeView = { _, cwd, command in
-      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
-    }
-    host.terminals.recordUnrecognizedTool = { _ in }
-    host.terminals.sessionService = PersistentSessionService(
-      probe: { _ in .unhealthy(reason: "isolated") }, ownership: { _ in .notOwned })
-    host.terminals.allowsDetach = false
-    host.pinnedTarget = target
-    return host
+    makeQuickTerminalHost(notifications: registry.notifications)
   }
 
   /// Value: protects=the pane views' "open the first terminal" opening none here, where the
@@ -178,12 +166,4 @@ final class QuickTerminalHostTests: XCTestCase {
     paneHost.dismissToast(toast.id)
     XCTAssertTrue(went.happened, "a toast going")
   }
-}
-
-/// Posts nothing.
-private final class SilentNotifier: SystemNotifying, @unchecked Sendable {
-  func ensureAuthorized() async -> Bool { false }
-  func post(_ notification: WorkroomNotification) {}
-  func withdraw(tabIDs: [TerminalTab.ID]) {}
-  func withdraw(identifiers: [String]) {}
 }
