@@ -1,8 +1,8 @@
 # Design: testing the app from several workrooms at once
 
 Repo: joelmoss/workroom
-Status: host-side isolation shipped in #261 (merged 2026-09-29, 13202838); one VM guest per
-UI-test run is live: proposed and reviewed, not built
+Status: host-side isolation shipped in #261 (merged 2026-09-29, 13202838); UI tests in Tart
+guests, two at a time, built as `make app-uitest-vm` (issue #274, 2026-11-07)
 
 > **Note:** Workroom dropped Jujutsu (jj) support in #266. Passages here that describe jj
 > behaviour are a record of the design as it stood then, not of the current code.
@@ -153,7 +153,8 @@ per workroom; Xcode's build-database lock rejects a second concurrent build ther
 
 - **UI tests still own the Mac while they run.** One XCUITest run at a time per Mac, and nothing
   else should take focus during it — a dev app you launch by hand, a notification, you typing. The
-  lock covers what `make` starts, not the person at the keyboard. See the VM route below.
+  lock covers what `make` starts, not the person at the keyboard. `make app-uitest-vm` (below)
+  runs them in Tart guests instead.
 - **Xcode-driven builds** (⌘R/⌘U) don't go through the Makefile and always build the plain id, so a
   workroom opened in Xcode collides with the project checkout's dev app as before.
 - **TCC asks again per workroom.** macOS keys permissions to the signing identity, so a workroom's
@@ -188,88 +189,129 @@ per workroom; Xcode's build-database lock rejects a second concurrent build ther
   `rm -rf ~/Library/Application\ Support/<id> ~/Library/Application\ Support/Workroom/<id>
   /tmp/workroom-$(id -u)-<id>`, and `tccutil reset All <id>` clear them (stop its dev app first).
 
-## UI tests off the host screen: a VM per run (proposed, reviewed 2026-09-30)
+## UI tests off the host screen: Tart guests, two at a time (built 2026-11-07, issue #274)
 
 Only a separate GUI session lets a UI-test run leave the Mac alone, so the person using it can keep
 typing. On Apple silicon that means a macOS guest. Virtualization.framework caps a Mac at two
-running macOS guests (a kernel limit from the macOS licence), but on a 16 GB / 10-core M1 Pro one
-guest is the realistic ceiling: tart's default guest is 2 CPUs / 4 GB, and a guest running Xcode's
-test runner plus the app likely wants ~4 CPUs / 8 GB (unmeasured). So the goal is **one UI-test
-run in a guest, off the host screen**, not two in parallel.
+running macOS guests (a kernel limit from the macOS licence). On this Mac (48 GB, 18 cores) two
+guests of 4 CPUs / 8 GB each fit with room to spare, so `make app-uitest-vm` runs **up to two
+UI-test guests at once**, from any mix of checkouts, or one run split across both (`VM_SHARDS=2`).
 
 ```
-HOST                                          GUEST (APFS clone, one at a time)
+HOST                                          GUEST (APFS clone, 0.04 s)
 make app-uitest-vm
  ├─ build-for-testing: app-uitest's line
- │    (Makefile:136, Apple Development, APP_ID_FLAGS)
- ├─ cp -c -R Debug/ + SDK-matched .xctestrun
- │    into a per-run snapshot dir
- └─ gui-lock.py exclusive --fail-closed,
-    own WR_GUI_LOCK_DIR (the one guest slot)
-     ├─ tart clone wr-uitest-base wr-uitest-<id>
-     ├─ tart run --no-graphics
-     │    --dir=products:<snapshot>:ro
-     │    --dir=results:<host dir>  ───────►  auto-login Aqua session,
-     │                                        automation mode on
-     ├─ bounded wait: tart ip, then ssh
-     ├─ ssh ───────────────────────────────►  ditto products → ~/products
-     │                                        xcodebuild test-without-building
-     │                                          $(APP_UITEST_FLAGS)
-     │                                          -xctestrun <SDK-matched file>
-     │                                          -resultBundlePath <results dir>
-     ├─ trap (success, failure, INT/TERM):
-     │    tart stop; tart delete; rm snapshot
-     └─ exit with the guest's xcodebuild status;
-        results/*.xcresult stays on the host
+ │    (Apple Development, APP_ID_FLAGS)
+ └─ Scripts/uitest-vm.sh
+     ├─ tar Build/Products → <run dir>/products.tar
+     │    (DerivedData/Logs/TestVM/<run>)
+     ├─ split -only-testing: classes over VM_SHARDS
+     └─ per shard: gui-lock.py vm-slot (fail-closed,
+        VM_SLOTS=2 counting lock, WR_VM_LOCK_DIR)
+         └─ Scripts/uitest-vm-guest.sh
+             ├─ tart clone wr-uitest-base wr-uitest-<slot>-<pid>
+             │    tart set --random-mac
+             ├─ tart run --no-graphics
+             │    --dir=results:<run dir>  ──────►  admin auto-logged in at the console,
+             │                                      Automation Mode allowed without auth
+             ├─ bounded wait for `tart exec` (Tart Guest Agent; VM_BOOT_TIMEOUT=180)
+             ├─ tart exec: xcodebuild -version ──►  must equal the host's
+             ├─ tart exec ───────────────────────►  tar -xf products.tar -C ~/products
+             │                                      xcodebuild test-without-building
+             │                                        $(APP_UITEST_FLAGS) (this shard's)
+             │                                        -xctestrun <SDK-matched file>
+             │                                        -resultBundlePath <share>/<shard>.xcresult
+             └─ trap (success, failure, INT/TERM/HUP):
+                  tart stop; tart delete
+     ├─ wait for every shard; rm products.tar
+     └─ Tests: summary per shard, then of the merged bundle
+        (xcresulttool merge); exit with the first failing xcodebuild status
 ```
 
 - **Build once, on the host.** The guest tests the products `make app-uitest` builds, signed Apple
-  Development. The only entitlements are `com.apple.security.automation.apple-events` and
-  `com.apple.security.device.audio-input`, both hardened-runtime keys that need no provisioning
-  profile, so a dev-signed runner should launch in the guest; the first pass checks this, and
-  falls back to an ad-hoc build in its own `-derivedDataPath DerivedData-vm` if it does not. Never build ad-hoc into the shared `DerivedData`: that replaces the signed dev
-  products the dev app and TCC grants depend on.
-- **Snapshot before queueing.** The run clones its products right after the build, because the
+  Development (team B898J443L9). The dev-signed runner and app launch in the guest unchanged
+  (measured 2026-11-07), so there is no ad-hoc fallback. Never build ad-hoc into the shared
+  `DerivedData`: that replaces the signed dev products the dev app and TCC grants depend on.
+- **Snapshot before queueing.** The run tars its products right after the build, because the
   person keeps working while it waits, and a `make app-run` in the same workroom rebuilds `Debug/`.
-- **Pick one `.xctestrun`.** `Build/Products` can hold several (`_macosx26.5-` and `_macosx27.0-`
-  here); choose the one matching `xcrun --show-sdk-version`. Its `__PLATFORMS__`,
-  `__SHAREDFRAMEWORKS__` and `__DEVELOPERUSRLIB__` resolve against the guest's Xcode, so the
-  guest's Xcode must match the host's.
-- **Same test selection.** Pass `$(APP_UITEST_FLAGS)` to the guest run (`Makefile:102`), so the
-  default skips and a caller's `-only-testing` behave as they do on the host.
-- **The lock fails closed.** Unlike the host GUI lock, which runs unlocked when its directory is
-  unusable (`gui-lock.py` `run_locked`), the VM slot lock exits 75 with the reason, and the VM
-  target ignores `WR_GUI_LOCK=off`. A second guest on this Mac would swap it.
-- **Results come home.** The result bundle is written to a read-write shared folder; a bundle
-  inside the guest is deleted with the guest.
+  A tar, unpacked on the guest's own disk, because the virtiofs share breaks the symlinks inside
+  framework and app bundles ("Too many levels of symbolic links"): tests cannot run from the share,
+  and `ditto` from it fails the same way. The tar is ~540 MB and takes ~1 s each way.
+- **`tart exec`, not ssh.** Cirrus images run the Tart Guest Agent, so the host runs commands in the
+  guest's logged-in session over vsock: no IP lookup, password or ssh key. Arguments reach the guest
+  verbatim and the exit status comes back. It answers 17-30 s after `tart run` for a guest booting
+  alone, up to 40 s when two boot at once (measured). The guest `PATH` is
+  `/bin:/usr/bin:/usr/sbin:/usr/local/bin:/opt/homebrew/bin`.
+- **Pick one `.xctestrun`.** `Build/Products` can hold several, one per SDK built against; the run
+  takes `WorkroomAppUITests_macosx<xcrun --show-sdk-version>-<arch>.xctestrun`. Its
+  `__PLATFORMS__`, `__SHAREDFRAMEWORKS__` and `__DEVELOPERUSRLIB__` resolve against the guest's
+  Xcode, so the guest's `xcodebuild -version` must equal the host's; a guest that differs fails
+  the run with both versions named.
+- **Same test selection.** `$(APP_UITEST_FLAGS)` reaches the guest run, so the default skips and a
+  caller's `-only-testing:` behave as they do on the host.
+- **Two slots, failing closed.** Each guest boots holding one of `VM_SLOTS` (default 2) slots of
+  `gui-lock.py vm-slot`: a flock per slot under `WR_VM_LOCK_DIR` (default
+  `~/.cache/workroom/vm-locks`), shared by every checkout. A third run waits and says who holds
+  the slots (`python3 macapp/Scripts/gui-lock.py vm-status`). Unlike the host GUI lock, which runs
+  unlocked when its directory is unusable, the slot lock exits 75 with the reason, and it ignores
+  `WR_GUI_LOCK=off`: a third `tart run` would fail to boot. The guests take no GUI lock, so host
+  unit-test and UI-test runs carry on beside them. The slots count only this target's guests: a
+  macOS guest started another way (a hand-run `tart run wr-uitest-base` while updating the image,
+  or a UTM or Parallels VM) takes one of the Mac's two without a slot, and a run that boots beside
+  two of them fails ("the guest stopped before it answered") and deletes its clone.
+- **Clone names carry the slot and the pid** (`wr-uitest-<slot>-<pid>`), so two runs never pick one
+  name, and a clone a SIGKILLed run left behind (its trap never ran) is recognisable: the next guest
+  run deletes any such clone whose pid is gone. Nothing else is ever deleted, and the base is only
+  cloned from. `tart set --random-mac` on each clone keeps two guests off one MAC address, and
+  `TART_NO_AUTO_PRUNE=1` stops a clone from pruning Tart's image cache.
+- **Sharding.** `VM_SHARDS=2` with `-only-testing:` classes deals the classes round-robin over two
+  guests that run at once, each in its own slot. Without a class list each guest lists the suite
+  itself (`xcodebuild -enumerate-tests` against the `.xctestrun`, ~3 s) and takes every second
+  class of the sorted list; both list the same products with the same flags, so they agree without
+  talking. Enumerating launches the test runner app, which is why it runs in the guest and never
+  on the host. Each shard's bundle is reported, then `xcrun xcresulttool merge` combines them.
+- **Results come home.** Each guest writes its result bundle into the read-write share, the run
+  directory `macapp/DerivedData/Logs/TestVM/<run>/`; a bundle inside the guest is deleted with
+  the guest. The snapshot tar is deleted when the run ends, however it ends.
 
-Prerequisites on this Mac (checked 2026-09-30): **~100 GB free disk** (33 GB free now; a Sonoma
-Xcode image is a 54 GB compressed pull, a Tahoe Xcode image reports a 92 GB minimum disk) and
-[tart](https://tart.run) (`brew install cirruslabs/cli/tart`; Fair Source, royalty-free on a
-personal workstation). A one-time base image, provisioned with what the suite needs:
+Prerequisites: **disk** for the image (the Xcode 27.2 image reports 140 GB disk / 90 GB used;
+clones are copy-on-write) and [tart](https://tart.run) 2.41.1 or later (Fair Source, royalty-free on
+a personal workstation). Install tart from its notarized GitHub release, since the
+`cirruslabs/cli` Homebrew tap's formula is broken on current Homebrew: download `tart.tar.gz` from
+<https://github.com/cirruslabs/tart/releases>, move `tart.app` to `/Applications`, and link
+`/Applications/tart.app/Contents/MacOS/tart` onto `PATH`. A one-time base image:
 
 ```sh
-# Host: macOS 27.0.1, Xcode 27.0 (27A266a). Use the image whose Xcode matches
-# `xcodebuild -version`.
-tart clone ghcr.io/cirruslabs/macos-tahoe-xcode:27 wr-uitest-base   # or macos-golden-gate-xcode:27
+# Use the image whose Xcode matches `xcodebuild -version` (host: macOS 27.2, Xcode 27.2 27B52).
+tart clone ghcr.io/cirruslabs/macos-golden-gate-xcode:27.2 wr-uitest-base
 tart set wr-uitest-base --cpu 4 --memory 8192 --display 1920x1200   # fixture windows are 1450x780,
                                                                     # one test needs 1650 wide
-tart run wr-uitest-base --no-graphics &
-ssh admin@"$(tart ip wr-uitest-base)"   # password: admin. Then, in the guest:
-  brew install jj    # the app shells out to `jj` by name; match the host's `jj --version`
-  sudo shutdown -h now
 ```
 
-Cirrus images already enable Automation Mode (`templates/base.pkr.hcl` runs
-`automationmodetool enable-automationmode-without-authentication`), so XCUITest needs no password
-in the guest. Default login is admin/admin; `--dir=name:path[:ro]` mounts at
+Nothing else to provision: Cirrus images log `admin` in at the console, already allow Automation
+Mode without authentication (`templates/base.pkr.hcl` runs
+`automationmodetool enable-automationmode-without-authentication`), and run the guest agent. The
+app no longer shells out to `jj` (#266). `--dir=name:path[:ro]` mounts at
 `/Volumes/My Shared Files/<name>`.
 
-Still open, for the first manual pass: whether the dev-signed runner launches in the guest; the
-guest's real memory use during a run; whether `/opt/homebrew/bin` reaches the guest xcodebuild's
-`PATH` over ssh (the app finds `jj` through it); whether tests can run straight from the shared
-folder, skipping the copy; and how long a fresh clone takes to reach a logged-in session. Tracked
-in issue #274.
+Two timeouts bound a guest: `VM_BOOT_TIMEOUT` (default 180 s) for the guest agent to answer, and
+`VM_RUN_TIMEOUT` (default 3600 s) for everything after that (unpacking, listing the suite, the
+tests), after which the guest is stopped and the run exits 124. A guest can stall without a word: in the first full-suite run one sat 75 minutes in a test's
+Set Up until its VM stopped.
+
+Measured on this Mac, 2026-11-07 (macOS 27.2, 48 GB / 18 cores; tart 2.41.1; guests 4 CPU / 8 GB):
+
+| Run | Result |
+| --- | --- |
+| `SplitPaneUITests` alone | guest answered in 17 s; 14/14 in 126 s; 3m36s for the whole `make`, build included |
+| Two runs at once (SplitPane, TabActions), then a third (ActivityBar) | both booted at once (35 s and 40 s); the third waited 1m27s ("waiting for a VM slot", `vm-status` 2 of 2, exit 1), took the freed slot; 14/14, 2/2, 1/1 |
+| `VM_SHARDS=2` over four classes | 15 + 5 tests, merged `Tests: Passed - 20 passed, 0 failed, 0 skipped (of 20)`; 3m39s with the build |
+| `VM_SHARDS=2`, whole suite (enumerated in the guests) | 49 classes, 25 / 24; guest 1 54/54 in 885 s; guest 2 52 passed and 5 failed (`ProgramStatusLiveDaemonUITests` ×2, `TerminalCodingAgentUITests` ×3), then stalled in `ThemePickerUITests` (above) |
+| Memory, two guests running tests | host 58-68% free; each guest 72-84% of its 8 GB free |
+| SIGTERM mid-test; SIGKILL of the run | clone stopped and deleted, snapshot removed, within 5 s (the run watchdog polls every 5 s); the killed run's clone removed by the next run |
+
+The guest-2 failures and the stall are not yet triaged: whether they also fail on the host, or come
+from something the guest lacks, is open (issue #274).
 
 ## Validation
 

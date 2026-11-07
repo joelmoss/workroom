@@ -41,6 +41,15 @@ you touch the Makefile or the test launch paths:
   `make app-uitest` exclusively, and only the test step is locked (`build-for-testing`, then
   `test-without-building`). A waiting run says who it is waiting for;
   `python3 macapp/Scripts/gui-lock.py status` shows the holders. `WR_GUI_LOCK=off` is for runs inside a VM.
+- **UI tests in Tart guests.** `make app-uitest-vm` builds as `make app-uitest` does, then runs the
+  tests in throwaway macOS guests cloned from `wr-uitest-base` (`Scripts/uitest-vm.sh`), so they
+  leave the screen, pointer and keyboard alone and take no GUI lock. A Mac runs at most two macOS
+  guests, so each guest holds one of two slots (`gui-lock.py vm-slot`, shared by every checkout,
+  failing closed; `python3 macapp/Scripts/gui-lock.py vm-status` shows the holders). `VM_SHARDS=2`
+  splits one run across both: its `-only-testing:` classes round-robin, or, with none, the whole
+  suite by class. Results land in `macapp/DerivedData/Logs/TestVM/<run>/`, summarised with the usual
+  `Tests:` line. Setup (tart, the base image) and measurements are in
+  `docs/designs/parallel-workroom-testing.md`.
 
 Within one workroom it is still one `make app-*` at a time: they share its DerivedData. And
 `make app-run` stops only copies of its own identity (`Scripts/stop-dev-app.sh`) — never kill the
