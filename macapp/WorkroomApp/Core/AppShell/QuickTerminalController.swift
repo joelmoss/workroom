@@ -372,7 +372,6 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
         .environmentObject(store.runCommand)
         .environmentObject(store.lifecycle)
         .environmentObject(store.notifications)
-        .environmentObject(sessions)
         .environmentObject(sessions.codingAgentManager)
         .environmentObject(CodingAgentUsageMonitor.shared)
         .environmentObject(ClaudeUsageBridge.shared))

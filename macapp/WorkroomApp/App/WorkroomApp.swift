@@ -257,7 +257,6 @@ struct RootWindow: View {
       .environmentObject(store.vcsStatus)
       .environmentObject(store.lifecycle)
       .environmentObject(store.notifications)
-      .environmentObject(store.terminals)
       .environmentObject(store.terminals.codingAgentManager)
       .environmentObject(store.remoteState)
       .focusedSceneValue(store)

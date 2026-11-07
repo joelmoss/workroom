@@ -12,9 +12,6 @@ struct RootView: View {
   @EnvironmentObject var lifecycle: WorkroomLifecycle
   @EnvironmentObject var notifications: NotificationCenterStore
   @ObservedObject private var programStatusAlerts = ProgramStatusAlerts.shared
-  // Observed so the detail's workroom tab bar re-renders as terminals open/close (a tab appears when a
-  // workroom gains its first terminal and disappears when it loses its last) — issue #23.
-  @EnvironmentObject var terminals: TerminalSessions
   // Observed so the Room menu's Fetch/Push/Pull items follow `canFetch`/`canPush`/`canPull`, which
   // the store's Observation tracking cannot see.
   @EnvironmentObject var remoteState: RemoteStateModel
@@ -101,7 +98,6 @@ struct RootView: View {
     .environmentObject(store.vcsStatus)
     .environmentObject(lifecycle)
     .environmentObject(notifications)
-    .environmentObject(terminals)
     .environmentObject(updater)
     // The accessory is a window-level AppKit hosting tree, so the dialog's own backdrop — an overlay
     // on the content below — can never cover it. Left alone, the workroom tab strip's New/Open buttons

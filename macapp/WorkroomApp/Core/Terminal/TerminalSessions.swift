@@ -22,10 +22,10 @@ typealias TerminalPaneLayout = PaneLayout<TerminalTab.ID>
 /// tab's `id`, so a content tab is a first-class peer of a terminal tab with no special casing — a
 /// split can mix a terminal pane and a diff pane. Terminal-only state lives INSIDE the `.terminal`
 /// payload, so a content tab carries none of it. `TerminalTab` stays a value type on purpose: a
-/// live-title/progress/preview update mutates a copy and reassigns the dict, which is what drives
-/// `@Published` (a reference type would not). It holds no view: a terminal tab's surface is its
-/// window's, in `TerminalSessions`' `SurfaceRegistry`, and `teardown(_:)` frees it (a no-op for
-/// content tabs — they have no surface).
+/// live-title/progress/preview update mutates a copy and reassigns the record in its target's
+/// `TargetPanes`, which is what its observers see (a reference type would not). It holds no
+/// view: a terminal tab's surface is its window's, in `TerminalSessions`' `SurfaceRegistry`, and
+/// `teardown(_:)` frees it (a no-op for content tabs — they have no surface).
 struct TerminalTab: Identifiable {
   let id = UUID()
   var content: TabContent
@@ -484,8 +484,15 @@ enum PaneIndicator: Equatable {
 ///   STRIP:  A  [ B │ C ]  D  [ E │ F ]    focused == C  →  CONTENT renders B│C.
 ///              └ bracket ┘     └ bracket ┘    focused == A  →  CONTENT renders just A; both groups persist.
 /// ```
+///
+/// Observed through Observation, per target: a view reads a target's panes through its
+/// `TargetPanes`, so a change to one workroom's tabs re-runs only the views that read that
+/// workroom (plan step 3.5). What views may observe here is the target dictionary, which changes
+/// only when a target is added or removed, `activityPulses` and `detachedTabIDs`. Everything else
+/// is bookkeeping, measurement or wiring, and is `@ObservationIgnored`, as it was never published.
 @MainActor
-final class TerminalSessions: ObservableObject {
+@Observable
+final class TerminalSessions {
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "TerminalSessions")
 
@@ -507,7 +514,7 @@ final class TerminalSessions: ObservableObject {
       panesByTarget = newValue
     }
   }
-  @Published private var panesByTarget: [TerminalTarget.ID: TargetPanes<TerminalTab>] = [:]
+  private var panesByTarget: [TerminalTarget.ID: TargetPanes<TerminalTab>] = [:]
 
   /// Sent synchronously BEFORE every change to the panes: a tab's record or a target's arrangement
   /// (each `TargetPanes` is wired to it in `openPanes`), a target added or removed, an activity
@@ -516,12 +523,18 @@ final class TerminalSessions: ObservableObject {
   /// that wants the new state schedules its read rather than taking it inline.
   let paneWillChange = PassthroughSubject<Void, Never>()
 
-  /// The surface of every terminal tab in `targets`, by tab id. Not `@Published`: an entry comes
-  /// and goes in the same call as its tab's record, which publishes.
-  private var surfaces = SurfaceRegistry()
+  /// The surface of every terminal tab in `targets`, by tab id. Not observed: an entry comes and
+  /// goes in the same call as its tab's record, which is.
+  @ObservationIgnored private var surfaces = SurfaceRegistry()
   /// Bumped when a *visible but non-focused* pane reports activity (D3): the renderer flashes that
   /// pane's border instead of badging it (you can see it, so no banner/badge — just a glance cue).
   /// Keyed by tab id; the value is an opaque counter the leaf view watches for changes.
+  ///
+  /// Observed window-wide, as `detachedTabIDs` below is: a pulse re-runs every leaf in the window,
+  /// not only its target's. Both change on discrete events (a bell or notification from a pane you
+  /// can see but are not in; a pop-out or dock), never with a program's output. Neither is layout,
+  /// so neither goes into `TargetPanes`, which step 3.9 cuts down to a layout over tab ids. Each is
+  /// a whole-value set over its storage, so a write that changes nothing notifies no view.
   private(set) var activityPulses: [TerminalTab.ID: Int] {
     get { pulseCounts }
     set {
@@ -529,7 +542,7 @@ final class TerminalSessions: ObservableObject {
       pulseCounts = newValue
     }
   }
-  @Published private var pulseCounts: [TerminalTab.ID: Int] = [:]
+  private var pulseCounts: [TerminalTab.ID: Int] = [:]
   /// The tabs currently living in their own window (issue #172). Membership only — the windows
   /// themselves are owned by `AppStore`'s `DetachedPaneWindows`, and the two are kept in step by
   /// `detachPane`/`dockPane` firing `.paneDetached`/`.paneDocked`. The invariant every reader may
@@ -545,35 +558,35 @@ final class TerminalSessions: ObservableObject {
       detachedIDs = newValue
     }
   }
-  @Published private var detachedIDs: Set<TerminalTab.ID> = []
+  private var detachedIDs: Set<TerminalTab.ID> = []
   /// The pane rects the renderer last laid out, per target — the only measurement a CONTENT pane
   /// (diff / file / changeset) has, since it owns no `GhosttySurfaceView` whose bounds could be
   /// read. Fed by `PaneTreeView` through a preference (so it is written after layout, never during
   /// body evaluation) and consumed only by `fits`.
   ///
-  /// Deliberately **not** `@Published`: it is written from a layout callback on every resize, and
+  /// Deliberately **not** observed: it is written from a layout callback on every resize, and
   /// publishing from there would both churn the view graph and risk "Publishing changes from within
   /// view updates". Nothing renders from it — it is a measurement cache, not model state.
-  var paneRects: [TerminalTarget.ID: [TerminalTab.ID: CGRect]] = [:]
+  @ObservationIgnored var paneRects: [TerminalTarget.ID: [TerminalTab.ID: CGRect]] = [:]
 
   /// The rect `PaneTreeView` lays a target's whole split out in — the container those `paneRects`
-  /// tile. Same feed, same posture (written after layout, never `@Published`), but a different
+  /// tile. Same feed, same posture (written after layout, never observed), but a different
   /// question: the per-pane rects answer "can THIS pane be halved", while auto-even (issue #126)
   /// has to ask "can the GROUP hold another pane" and "would evening actually render evenly here".
   /// Neither is derivable from the pane rects alone once a divider has been dragged.
   ///
   /// Absent (no layout pass yet) means unmeasured, which every reader treats as permissive — the
   /// same posture `PaneTreeLayout.canSplit` takes for a zero rect.
-  var paneSpace: [TerminalTarget.ID: CGRect] = [:]
+  @ObservationIgnored var paneSpace: [TerminalTarget.ID: CGRect] = [:]
 
   /// Issue #126's auto-even pref, read live so the Settings toggle applies to the very next split
   /// without a relaunch. Injected rather than read inline so tests can drive both states: a parallel
   /// test worker shares (and wipes) the `Defaults` domain cross-process, which is why
   /// `AppStoreCreateWorkroomTests` stopped arming auto-run through `Defaults[.runCommands]`.
-  var autoEvenSplits: () -> Bool = { Defaults[.autoResizeSplitsEvenly] }
+  @ObservationIgnored var autoEvenSplits: () -> Bool = { Defaults[.autoResizeSplitsEvenly] }
   /// The app-wide most-recently-focused pane order (issue #132), written by `setFocused` and read by
   /// `closeSuccessor`. Injectable like `makeView` so a test never mutates the singleton's order.
-  var recency: SwitcherRecency = .shared
+  @ObservationIgnored var recency: SwitcherRecency = .shared
   /// What these sessions tell their owner, `AppStore`, through `onEvent`. One synchronous channel:
   /// each event is a plain call at the moment it happens, in the order things happen, never deferred
   /// through a `Task`, queue or `AsyncStream`. So an event raised inside a sessions method (`focus`,
@@ -664,23 +677,25 @@ final class TerminalSessions: ObservableObject {
   /// axes that changed, whatever changed them: a split, a close, or a tab switch between a split and
   /// a solo tab, so the workroom split keeps the visible terminals the same size. A restart that
   /// puts the same pane back, or a rearrange that keeps every row, announces nothing.
+  @ObservationIgnored
   private var announcedShownSlots: [TerminalTarget.ID: [SplitOrientation: Int]] = [:]
 
   /// Set while `respawnRunTab` closes a run tab and puts its replacement back, so the close's own
   /// `reconcileOcclusion` doesn't announce a pane the respawn is about to restore.
-  private var holdingPaneCountChanges = false
+  @ObservationIgnored private var holdingPaneCountChanges = false
 
   /// The project's run command for a target, for a run tab rebuilt from a saved session (#522). Set
   /// by `AppStore`, which owns the run configs.
-  var runCommandForTarget: (TerminalTarget) -> String? = { _ in nil }
+  @ObservationIgnored var runCommandForTarget: (TerminalTarget) -> String? = { _ in nil }
 
   /// Set once by `AppStore`. A closure, not a store reference, so sessions stay ignorant of
   /// `AppStore`.
-  var onEvent: ((Event) -> Void)?
+  @ObservationIgnored var onEvent: ((Event) -> Void)?
 
   /// Factory seam (plan T1): how a surface view is created for a target at a working directory.
   /// Overridable in tests so the lifecycle can be exercised without a real window/shell. The cwd
   /// argument lets a ⌘D split inherit the focused pane's directory.
+  @ObservationIgnored
   var makeView: (TerminalTarget, String, String?) -> GhosttySurfaceView = { _, cwd, command in
     GhosttySurfaceView(workingDirectory: cwd, command: command)
   }
@@ -691,7 +706,7 @@ final class TerminalSessions: ObservableObject {
 
   /// Where panes' persistent sessions are registered and ended. Settable for tests; the pane
   /// collaborators that ask it get the same one.
-  var sessionService: PersistentSessionService = .shared {
+  @ObservationIgnored var sessionService: PersistentSessionService = .shared {
     didSet {
       liveState.sessionService = sessionService
       programStatusBinding.sessionService = sessionService
@@ -705,12 +720,13 @@ final class TerminalSessions: ObservableObject {
 
   /// The titles, agents, tools, Claude profiles, cwds, branches, host cwds and progress the
   /// surfaces report (issue #2).
-  private lazy var liveState = PaneLiveState(
+  @ObservationIgnored private lazy var liveState = PaneLiveState(
     access: tabAccess, codingAgentManager: codingAgentManager, sessionService: sessionService)
   /// Program status on the tabs (#358).
-  private lazy var programStatusBinding = ProgramStatusBinding(
+  @ObservationIgnored private lazy var programStatusBinding = ProgramStatusBinding(
     access: tabAccess, sessionService: sessionService)
   /// ⌘-click in a remote pane (#254, C7).
+  @ObservationIgnored
   private lazy var remoteLinks = RemotePaneLinks(access: tabAccess) { [weak self] file, target in
     _ = self?.openFilePreview(file, for: target)
   }
@@ -764,13 +780,14 @@ final class TerminalSessions: ObservableObject {
 
   /// False for the Quick Terminal's sessions: none of its panes moves to a window of its own, by
   /// menu, title-bar button or dragging out.
-  var allowsDetach = true
+  @ObservationIgnored var allowsDetach = true
   /// The Quick Terminal's: the open workrooms its pane can move into, for the terminal's
   /// right-click menu. Nil elsewhere, so a pane that moved on loses the item when it is rewired.
+  @ObservationIgnored
   var moveToWorkroomChoices: ((TerminalTab.ID, TerminalTarget) -> [PaneWorkroomGroup])?
   /// The Quick Terminal's: a pane dragged out of its window and let go, by its tab or its title bar,
   /// in place of `detachPane` (`QuickTerminalPaneDrag.end`).
-  var dropOutsideWindow: ((TerminalTab.ID, TerminalTarget) -> Void)?
+  @ObservationIgnored var dropOutsideWindow: ((TerminalTab.ID, TerminalTarget) -> Void)?
 
   init() {
     // Under the UI-test agent fixture, drive a stub backend (no network) with the feature + auto on
@@ -908,8 +925,8 @@ final class TerminalSessions: ObservableObject {
   /// The set of target ids that currently own at least one terminal — the "active" targets backing
   /// the Workrooms View tab bar (issue #23). Filtered on **non-empty** because `closeTab` leaves an
   /// emptied target's entry in place while `reap` removes it entirely; both must read as inactive.
-  /// Every pane change sends `objectWillChange`, so observers re-render as targets gain/lose
-  /// terminals.
+  /// It reads every target's tabs, so a view that reads it re-renders on any target's tab change,
+  /// including as targets gain or lose terminals.
   var activeTargetIDs: Set<TerminalTarget.ID> {
     Set(targets.compactMap { $0.value.tabs.isEmpty ? nil : $0.key })
   }
@@ -2243,10 +2260,7 @@ final class TerminalSessions: ObservableObject {
   /// where each is wired to send `paneWillChange` before its every change.
   private func openPanes(_ targetID: TerminalTarget.ID) -> TargetPanes<TerminalTab> {
     if let panes = targets[targetID] { return panes }
-    let panes = TargetPanes<TerminalTab> { [weak self] in
-      self?.paneWillChange.send()
-      self?.objectWillChange.send()
-    }
+    let panes = TargetPanes<TerminalTab> { [weak self] in self?.paneWillChange.send() }
     targets[targetID] = panes
     return panes
   }

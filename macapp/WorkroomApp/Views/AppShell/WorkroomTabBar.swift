@@ -390,9 +390,10 @@ private struct WorkroomTabChip: View {
   @EnvironmentObject var vcsStatus: VCSStatusService
   @EnvironmentObject var lifecycle: WorkroomLifecycle
   @EnvironmentObject var notifications: NotificationCenterStore
-  @EnvironmentObject var terminals: TerminalSessions
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private let theme = ThemeService.shared
+  /// Read through Observation: this chip re-renders when its own workroom's panes change.
+  private var terminals: TerminalSessions { store.terminals }
 
   private var isRoot: Bool {
     if case .root = sid { return true }

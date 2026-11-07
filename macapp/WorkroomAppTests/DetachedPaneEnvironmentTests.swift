@@ -37,7 +37,6 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
     "RunCommandController": "store.runCommand",
     "WorkroomLifecycle": "store.lifecycle",
     "NotificationCenterStore": "store.notifications",
-    "TerminalSessions": ".environmentObject(sessions)",
     "TerminalCodingAgentManager": "sessions.codingAgentManager",
     "CodingAgentUsageMonitor": "CodingAgentUsageMonitor.shared",
     "ClaudeUsageBridge": "ClaudeUsageBridge.shared",

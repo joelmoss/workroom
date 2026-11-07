@@ -37,10 +37,10 @@ struct HistoryPanel: View {
   /// `store.commitHistory` read only refreshed when some *unrelated* store change happened to publish
   /// (a status refresh, a reselection, an app refocus) — leaving the loader stuck until then.
   @ObservedObject var model: HistoryModel
-  /// Observed HERE, deliberately, and nowhere below: this is the one view that needs to know which
-  /// content tab is focused, and `TerminalSessions` republishes per terminal title/activity write. One
-  /// panel body pass per publish is affordable; N row bodies was not (see the diagram above).
-  @ObservedObject var sessions: TerminalSessions
+  /// Read HERE, deliberately, and nowhere below: this is the one view that needs to know which
+  /// content tab is focused. It reads the selected target's panes through Observation, so one panel
+  /// body pass per change there is the cost; N row bodies was not (see the diagram above).
+  let sessions: TerminalSessions
   private let theme = ThemeService.shared
 
   var body: some View {

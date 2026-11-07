@@ -54,7 +54,6 @@ final class NoProjectsChromeTests: XCTestCase {
     .environmentObject(store.vcsStatus)
     .environmentObject(store.lifecycle)
     .environmentObject(store.notifications)
-    .environmentObject(store.terminals)
     let hosting = NSHostingView(rootView: root)
     hosting.frame = NSRect(x: 0, y: 0, width: 900, height: 400)
     let window = NSWindow(

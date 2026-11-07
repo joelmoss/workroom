@@ -321,7 +321,7 @@ final class PaneRenderingTests: XCTestCase {
 private struct TestDetachedHost: View {
   let tabID: TerminalTab.ID
   let surface: GhosttySurfaceView
-  @ObservedObject var sessions: TerminalSessions
+  let sessions: TerminalSessions
 
   var body: some View {
     TerminalContainerView(
@@ -334,7 +334,7 @@ private struct TestDetachedHost: View {
 /// so the harness drives the exact rendering path that produced the blank bug.
 private struct TestPaneHost: View {
   let target: TerminalTarget
-  @ObservedObject var sessions: TerminalSessions
+  let sessions: TerminalSessions
 
   var body: some View {
     if let active = sessions.activeTab(for: target) {

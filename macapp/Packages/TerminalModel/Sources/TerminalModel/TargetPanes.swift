@@ -5,11 +5,12 @@ import Observation
 /// changes only when a target is added or removed, so a change here is this target's alone (eng
 /// review D3).
 ///
+/// Views observe it through Observation: a view that reads one target's tabs or arrangement
+/// re-renders when they change, and not when another target's do (plan step 3.5).
+///
 /// Every write goes through the methods below, and each calls `willChange` first. That is how the
-/// sessions' `objectWillChange` still fires BEFORE every pane mutation, as it did when this state
-/// was `@Published` dictionaries on the sessions: `AppStore`'s saved-layout dirty mark, the
-/// `@ObservedObject` views and the menu commands all hang off it, until the sessions move to
-/// `@Observable` (plan step 3.5).
+/// sessions' `paneWillChange` fires BEFORE every pane mutation, which `AppStore`'s saved-layout
+/// dirty mark hangs off.
 ///
 /// Generic over the tab record, which is the app's (`TerminalTab`): a record is a value whose id is
 /// the one `PaneState` arranges, and these rules need nothing else of it.

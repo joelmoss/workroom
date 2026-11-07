@@ -3,8 +3,9 @@ import SwiftUI
 import WorkroomDomain
 
 /// The detail pane's terminals for one target (a workroom or a project root): a horizontal
-/// tab strip below the title bar plus the active terminal. Observes `TerminalSessions` so
-/// adding, closing, and switching tabs all update live.
+/// tab strip below the title bar plus the active terminal. Reads its target's panes through
+/// Observation, so adding, closing, and switching tabs all update live, and another workroom's
+/// pane changes re-run none of it.
 ///
 /// This view coordinates the tab strip (`TerminalTabStrip`) and the pane content
 /// (`PaneTreeView`), owning the cross-component drag-into-pane wiring: `chipPaneDrag` (the live
@@ -13,7 +14,7 @@ import WorkroomDomain
 /// The strip is handed those via a binding plus the `chipLocal`/`chipDropTarget` closures.
 struct WorkroomTerminalsView: View {
   let target: TerminalTarget
-  @ObservedObject var sessions: TerminalSessions
+  let sessions: TerminalSessions
   /// Whether this workroom's terminal may hold keyboard focus — `false` for a co-displayed but
   /// non-focused split member, so it doesn't steal first responder (and the workroom selection) on mount.
   var surfaceActive: Bool = true

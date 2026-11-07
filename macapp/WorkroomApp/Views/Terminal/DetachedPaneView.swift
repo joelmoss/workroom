@@ -23,7 +23,7 @@ struct DetachedPaneView: View {
   /// The pane's terminal surface, nil for a content pane (`PaneLeafView.surface`).
   let surface: GhosttySurfaceView?
   let target: TerminalTarget
-  @ObservedObject var sessions: TerminalSessions
+  let sessions: TerminalSessions
   let store: AppStore
   /// Push the pane's live title onto the window, so a terminal that renames itself renames its window
   /// (the pane's own title bar used to carry this).
@@ -69,7 +69,8 @@ extension View {
   /// `claudeUsageBridge` and `codingAgentUsage`, which are scene-level in `WorkroomApp` and so were absent
   /// here. If a pane ever grows a dependency on `updater`, `whatsNew`, `remoteState`,
   /// `projectStore`, `vcsStatus` or `runCommands` (today purely `RootView` chrome, and the only six
-  /// of the app's fifteen environment objects left out), add it here.
+  /// of the app's fourteen environment objects left out), add it here. The pane's sessions are not
+  /// one: views reach them as `store.terminals` or a parameter, and observe them per target.
   func detachedPaneEnvironment(store: AppStore, sessions: TerminalSessions) -> some View {
     self
       .environmentObject(store)
@@ -77,7 +78,6 @@ extension View {
       .environmentObject(store.runCommand)
       .environmentObject(store.lifecycle)
       .environmentObject(store.notifications)
-      .environmentObject(sessions)
       .environmentObject(sessions.codingAgentManager)
       .environmentObject(CodingAgentUsageMonitor.shared)
       .environmentObject(ClaudeUsageBridge.shared)

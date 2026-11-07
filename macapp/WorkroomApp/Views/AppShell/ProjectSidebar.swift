@@ -22,8 +22,10 @@ struct ProjectSidebar: View {
   @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var vcsStatus: VCSStatusService
   @EnvironmentObject var lifecycle: WorkroomLifecycle
-  @EnvironmentObject var terminals: TerminalSessions
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// Read through Observation: the sidebar shows every workroom's terminals, so it re-renders on a
+  /// pane change in any of them.
+  private var terminals: TerminalSessions { store.terminals }
 
   /// Live drag of a root/workroom row into the detail content to form a workroom split (issue #101) —
   /// the same pipeline the title-bar tab bar uses (`WorkroomTabBar`). Bound to `RootView`'s

@@ -13,9 +13,6 @@ struct ToastStack: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var notifications: NotificationCenterStore
-  // Observed because `store.runToastItems` hides a run's toast while its tab is on screen, read from
-  // `terminals`, which the store's Observation tracking cannot see.
-  @EnvironmentObject private var terminals: TerminalSessions
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   /// Toasts to render. Notifications no longer live in the right inspector (moved to the left

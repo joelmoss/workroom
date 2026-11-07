@@ -3,7 +3,7 @@ import TerminalModel
 import XCTest
 
 /// `TargetPanes`: every write announces itself before it lands, which is what the app's sessions
-/// turn into `objectWillChange`, and the records follow the arrangement's order.
+/// turn into `paneWillChange`, and the records follow the arrangement's order.
 @MainActor
 final class TargetPanesTests: XCTestCase {
   private struct Tab: Identifiable, Equatable {

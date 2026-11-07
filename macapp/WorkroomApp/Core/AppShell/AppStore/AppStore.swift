@@ -199,8 +199,8 @@ final class AppStore: ObservableObject {
   /// Request) reflects the *active* workspace, so closing all tabs of the selected workroom empties
   /// it even though the sidebar row stays selected (the detail pane likewise drops to its "No
   /// terminal" placeholder — this keeps the two in sync). Maintained at selection changes + the tab
-  /// add/remove hooks: a plain `terminals.tabCount` read in a view wouldn't re-render on a tab close,
-  /// because AppStore doesn't forward `terminals`' `objectWillChange` (only `ProjectStore`'s).
+  /// add/remove hooks, so the inspector re-renders when the answer flips rather than on every
+  /// change to the selected target's tabs, which a `terminals.tabCount` read would observe.
   private(set) var selectionHasTabs = false
   /// Project paths the user has collapsed in the sidebar (issue #14). Held here as `@Published`
   /// rather than read via `@Default` in the view: a `@Default` change does not reliably re-evaluate

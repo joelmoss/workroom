@@ -22,7 +22,7 @@ struct TerminalTabStrip: View {
   let tabs: [TerminalTab]
   let activeID: TerminalTab.ID?
   let target: TerminalTarget
-  @ObservedObject var sessions: TerminalSessions
+  let sessions: TerminalSessions
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var notifications: NotificationCenterStore

@@ -16,7 +16,7 @@ import WorkroomDomain
 struct PaneTreeView: View {
   let layout: TerminalPaneLayout
   let target: TerminalTarget
-  @ObservedObject var sessions: TerminalSessions
+  let sessions: TerminalSessions
   /// A drag originating outside the tree (a strip tab chip dragged into the content), in content-local
   /// coords — rendered with the same edge preview + ghost as an in-tree pane-handle drag.
   var externalDrag: PaneDragState?
@@ -305,7 +305,7 @@ struct PaneLeafView: View {
   /// The target this pane belongs to — its `path` is the workroom directory handed to a diff pane (so
   /// its `DiffResolver` runs against the right repo), and it routes the diff pane's context-menu actions.
   let target: TerminalTarget
-  @ObservedObject var sessions: TerminalSessions
+  let sessions: TerminalSessions
   /// Routes the diff pane's reused tab context menu (issue #72: "Open File in…", split, close group).
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var modals: ModalState
@@ -568,9 +568,10 @@ struct PaneLeafView: View {
         // Only the host whose kind matches the model may hold the surface (issue #172): the pane
         // tree while the tab is docked, the detached window while it is not. And only in the
         // window whose sessions own the tab: one moved to another window (#444) leaves this
-        // window's tree a last pass that would otherwise take the surface back.
+        // window's tree a last pass that would otherwise take the surface back. Its own target
+        // is asked first, so a leaf observes the other targets' tabs only once the tab has left it.
         mayHostSurface: sessions.detachedTabIDs.contains(tabID) == isDetached
-          && sessions.containsTab(tabID)
+          && (sessions.tab(tabID, for: target) != nil || sessions.containsTab(tabID))
       )
       // Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state
       // is per-surface, and only the focused pane can be searched. Nothing until active.

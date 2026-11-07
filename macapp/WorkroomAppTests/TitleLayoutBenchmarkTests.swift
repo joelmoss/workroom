@@ -43,7 +43,6 @@ final class TitleLayoutBenchmarkTests: XCTestCase {
         .environmentObject(store.modals)
         .environmentObject(store.runCommand)
         .environmentObject(store.notifications)
-        .environmentObject(store.terminals)
         .environmentObject(store.terminals.codingAgentManager)
         .frame(width: 1_100, height: 700))
     hosting.frame = NSRect(x: 100, y: 100, width: 1_100, height: 700)

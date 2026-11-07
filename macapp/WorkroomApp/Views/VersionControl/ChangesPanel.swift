@@ -221,12 +221,12 @@ struct ChangedFileRow: View, Equatable {
 struct ChangesPanel: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var vcsStatus: VCSStatusService
-  /// Observed HERE so the rows don't have to be. `TerminalSessions` republishes per terminal
-  /// title/activity write, and while each `ChangedFileRow` observed it directly, every one of those
-  /// publishes rebuilt all `renderCap` rows — the same defect that produced the WORKROOM-2B App Hang
-  /// in the History pane (see `HistoryPanel`'s invalidation diagram). Now a burst of publishes costs
-  /// one panel pass, and no row rebuilds (`ChangedFileRowInvalidationTests`).
-  @ObservedObject var sessions: TerminalSessions
+  /// Read HERE so the rows don't have to. While each `ChangedFileRow` observed `TerminalSessions`
+  /// directly, every terminal title/activity write rebuilt all `renderCap` rows — the same defect
+  /// that produced the WORKROOM-2B App Hang in the History pane (see `HistoryPanel`'s invalidation
+  /// diagram). The panel reads the selected target's focused tab through Observation, so only that
+  /// target's pane changes re-run it, and no row rebuilds (`ChangedFileRowInvalidationTests`).
+  let sessions: TerminalSessions
   /// Hard cap on rendered rows so a huge change set can't blow up the list (the underlying
   /// output is already byte-capped by `StatusCommandRunner`).
   private let renderCap = 200
