@@ -270,7 +270,7 @@ Symbols, not line numbers: grep for the name. Paths under `macapp/` drop the pre
 | The ✋ and ✓ glyphs, the clock | `WorkroomApp/Views/Terminal/ProgramStatusGlyph.swift` (`ProgramStatusGlyph`, `NeedsYouButton`); drawn by `TerminalTabStrip`, `ProjectSidebar`, `WorkroomTabBar`, `SwitcherRailView` |
 | Unread dot, and when a mark hides it | `TerminalTabStrip.swift` (`markSaysIt`) |
 | Requests, badge count, ⇧⌘M, holding a program's own notification (#481) | `WorkroomApp/Core/Terminal/ProgramStatusAlerts.swift` (`ProgramStatusAlerts.shared`, `goToNextWaiting`) |
-| Posting and withdrawing alerts | `WorkroomApp/Core/AppShell/AppStore/AppStore.swift`: `raiseNeedsYou`, `raiseFinished`, `mergeIntoNeedsYou`, `withdrawNeedsYou`; a program's own notification enters at `handleActivity` |
+| Posting and withdrawing alerts | `WorkroomApp/Core/AppShell/PaneNotifier.swift`: `raiseNeedsYou`, `raiseFinished`, `mergeIntoNeedsYou`, `withdrawNeedsYou`, each host's own (`NotifyingHost`, which `AppStore` forwards); a program's own notification enters at `handleActivity` |
 | Notification list and banners | `NotificationCenterStore.swift` (`recordNeedsYou`), `SystemNotifier.swift` |
 | Dock badge, menu bar | `DockBadge.swift` (applied from `WindowRegistry`), `MenuBarController.swift`, `WorkroomApp/Views/AppShell/MenuBarNotificationsView.swift` |
 | Clear Status | `clearProgramStatus` in `TerminalPanes.swift`; menu items in `TerminalTabStrip` and `ProjectSidebar` |

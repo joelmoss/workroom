@@ -864,7 +864,7 @@ running-command title) — so this task is about *emitting* OSC 9 on completion,
 
 **Depends on:** the notifications feature (#10) — **now landed**; the OSC 9 desktop-notification
 handler exists to receive it (`GhosttyRuntimeAdapter` `GHOSTTY_ACTION_DESKTOP_NOTIFICATION` →
-`AppStore.handleActivity`).
+`PaneNotifier.handleActivity`).
 
 **Priority:** P3 (amplifies the shipped feature; the feature is useful without it for tools that
 already emit OSC/bell).

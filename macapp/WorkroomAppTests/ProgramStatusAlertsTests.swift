@@ -617,6 +617,73 @@ final class ProgramStatusAlertsTests: XCTestCase {
     XCTAssertEqual(alerts.countedWaiting, 0)
     XCTAssertTrue(alerts.waiting.isEmpty, "no window holds it: no row")
   }
+
+  /// Value: protects=alerts reaching a host that is not a window's store (the Quick Terminal's
+  /// host will be one): its request alerts, folds in the program's own text, names its place,
+  /// withdraws when answered, and its finish alerts; fails_when=ProgramStatusAlerts reaches past
+  /// NotifyingHost to an AppStore; why_new=every other case's host is an AppStore; seam=a recording
+  /// NotifyingHost; no_claim=what an AppStore does with each call (the cases above).
+  func testAlertsReachAHostThatIsNotAWindowsStore() throws {
+    let host = RecordingHost()
+    host.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    host.terminals.programStatus = monitor
+    alerts.stores = { [host] }
+    alerts.start()
+    let tab = host.terminals.addTab(for: target)
+    let id = try XCTUnwrap(host.terminals.sessionID(forTab: tab.id, inTarget: target.id))
+
+    monitor.seed(id, records: [blocked()])
+    XCTAssertEqual(host.needsYou.map(\.tab), [tab.id])
+    let episode = try XCTUnwrap(host.needsYou.first?.episode)
+    XCTAssertEqual(alerts.waiting.map(\.id), [episode])
+    XCTAssertEqual(alerts.place(of: try XCTUnwrap(alerts.waiting.first)), "Terminal X in fake")
+
+    programNotified(id, "needs permission", title: "Claude Code")
+    XCTAssertEqual(host.merged.map(\.episode), [episode], "folded into the raised request")
+    XCTAssertEqual(shown, [], "not shown apart")
+
+    monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
+    XCTAssertEqual(host.withdrawn, [episode], "answered: its alert goes")
+    XCTAssertTrue(alerts.waiting.isEmpty)
+
+    monitor.seed(id, records: [done(message: "Fixed it")])
+    XCTAssertEqual(host.finished.map(\.tab), [tab.id])
+    XCTAssertEqual(host.finished.first?.message, "Fixed it")
+    XCTAssertTrue(store.notifications.items.isEmpty, "the store is not one of the hosts")
+  }
+}
+
+/// A `NotifyingHost` that is no window's store: it records each call `ProgramStatusAlerts` makes.
+@MainActor
+private final class RecordingHost: NotifyingHost {
+  let terminals = TerminalPanes()
+  var focusedTerminalSession: UUID?
+  let systemNotifier: SystemNotifying = QuietNotifier()
+  private(set) var needsYou: [(tab: TerminalTab.ID, episode: String)] = []
+  private(set) var finished: [(tab: TerminalTab.ID, message: String?)] = []
+  private(set) var merged: [(episode: String, body: String?)] = []
+  private(set) var withdrawn: [String] = []
+
+  func raiseNeedsYou(
+    targetID: TerminalTarget.ID, tabID: TerminalTab.ID, episode: String,
+    record: ProgramStatusRecord, detail: String?, stillWanted: @escaping () -> Bool
+  ) {
+    needsYou.append((tabID, episode))
+  }
+
+  func raiseFinished(
+    targetID: TerminalTarget.ID, tabID: TerminalTab.ID, record: ProgramStatusRecord,
+    detail: String?
+  ) {
+    finished.append((tabID, record.message))
+  }
+
+  func mergeIntoNeedsYou(episode: String, body: String?) { merged.append((episode, body)) }
+  func withdrawNeedsYou(episode: String) { withdrawn.append(episode) }
+  func terminalPlace(targetID: TerminalTarget.ID, tabID: TerminalTab.ID) -> String {
+    "Terminal X in fake"
+  }
+  func enqueueToast(_ note: WorkroomNotification) {}
 }
 
 /// A notifier whose permission prompt stays up until the test grants it.

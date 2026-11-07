@@ -489,6 +489,39 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertTrue(notifier.withdrawn.contains(open.id.uuidString), "its banners go too")
   }
 
+  /// Value: protects=every notification a window raises carrying the window's own identity, though
+  /// its PaneNotifier raises it, so the window dropping what it raised finds each one (risk 1 of
+  /// the QuickTerminalHost plan); fails_when=any raise path stamps the notifier's identity, or none;
+  /// why_new=the raise paths moved from AppStore into PaneNotifier; seam=none;
+  /// no_claim=UNUserNotificationCenter.
+  func testAWindowsNotificationsCarryItsIdentityAndGoWhenItDropsThem() {
+    let a = makeOrigin()
+    let b = makeStore()
+    registry.register(window: NSWindow(), store: a)
+    registry.register(window: NSWindow(), store: b)
+    let t = target(a)
+    let tab = a.terminals.addTab(for: t)
+    // Every raise path: a terminal's own notification, a request, a finish and a notice.
+    a.terminals.onEvent?(.activity(t.id, UUID(), .osc(title: "Build done", body: nil)))
+    a.raiseNeedsYou(
+      targetID: t.id, tabID: tab.id, episode: "boot/s/r/1",
+      record: .init(id: "", state: .blocked, kind: .permission, message: "Apply?", episode: 1),
+      stillWanted: { true })
+    a.raiseFinished(targetID: t.id, tabID: UUID(), record: .init(id: "", state: .idle))
+    a.noticeStaleStart(of: t.id, "fetch failed")
+    b.raiseFinished(
+      targetID: target(b, otherSid).id, tabID: UUID(), record: .init(id: "", state: .idle))
+    XCTAssertEqual(notifications.items.count, 5, "fixture: every path recorded")
+    let raisedByA = notifications.items.filter { $0.targetID == t.id }.map(\.origin)
+    XCTAssertEqual(raisedByA, Array(repeating: ObjectIdentifier(a), count: 4))
+    XCTAssertFalse(raisedByA.contains(ObjectIdentifier(a.paneNotifier)), "never the notifier's")
+
+    registry.dropNotifications(raisedBy: a)
+
+    XCTAssertEqual(notifications.items.count, 1, "only the other window's notification stays")
+    XCTAssertEqual(notifications.items.first?.origin, ObjectIdentifier(b))
+  }
+
   /// Value: protects=windows closing during a quit leaving the list and delivered banners alone;
   /// fails_when=dropNotifications loses its isTerminating guard; why_new=the close test runs only
   /// outside a quit; seam=none; no_claim=UNUserNotificationCenter.

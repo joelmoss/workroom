@@ -428,7 +428,7 @@ final class QuickTerminalControllerTests: XCTestCase {
     let note = try XCTUnwrap(registry.notifications.items.first)
     XCTAssertEqual(note.source, "Quick Terminal")
     XCTAssertEqual(registry.aggregateUnread, 1, "it counts in the one count")
-    XCTAssertTrue(registry.notifyingStores.contains { $0 === store }, "its needs-you alerts too")
+    XCTAssertTrue(registry.notifyingHosts.contains { $0 === store }, "its needs-you alerts too")
 
     controller.hide()
     registry.open(note)
@@ -439,7 +439,7 @@ final class QuickTerminalControllerTests: XCTestCase {
 
   /// Value: protects=a Quick Terminal agent's own notification, "needs you" request and finished turn
   /// each landing in the app's list as a workroom terminal's do, and a request opening the Quick
-  /// Terminal on its pane (#573); fails_when=its sessions, its store in notifyingStores or its route
+  /// Terminal on its pane (#573); fails_when=its sessions, its store in notifyingHosts or its route
   /// in WindowRegistry.open go; why_new=the parts were tested apart, never as one agent's run;
   /// seam=none; no_claim=a real Claude Code or Codex (the daemon's status and the OSC are simulated).
   func testAQuickTerminalAgentsNotificationsWorkAsAnyTerminals() throws {
@@ -452,7 +452,7 @@ final class QuickTerminalControllerTests: XCTestCase {
     store.terminals.programStatus = monitor
     let alerts = ProgramStatusAlerts()
     alerts.monitor = monitor
-    alerts.stores = { registry.notifyingStores }
+    alerts.stores = { registry.notifyingHosts }
     alerts.isEnabled = { true }
     alerts.isFinishEnabled = { true }
     alerts.sleep = { _ in try await Task.sleep(for: .seconds(3600)) }
@@ -516,7 +516,7 @@ final class QuickTerminalControllerTests: XCTestCase {
 
   /// Value: protects=a toast showing in the Quick Terminal while it is the front window (#573 D2);
   /// fails_when=it goes to the workroom window behind it; why_new=new; seam=WindowRegistry.keyWindow
-  /// (production caller: keyStore and frontStore, defaulting to NSApp.keyWindow); no_claim=rendering.
+  /// (production caller: keyStore and frontHost, defaulting to NSApp.keyWindow); no_claim=rendering.
   func testAToastShowsInTheQuickTerminalWhileItIsInFront() throws {
     let controller = makeController()
     defer { controller.close() }
