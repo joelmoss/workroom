@@ -26,15 +26,15 @@ hits="$(git -C "$ROOT" grep --no-color -n -I -E 'wr-agen|wr_agen|WR_AGEN|WR-AGEN
   ':!macapp/Scripts/daemon-protocol_test.sh' \
   ':!macapp/Scripts/stop-dev-app.sh' \
   ':!macapp/Scripts/stop-dev-app_test.sh' \
+  ':!macapp/Packages/HostDrivers/Sources/HostDrivers/DaemonBootstrap.swift' \
   ':!macapp/Packages/HostDrivers/Sources/HostDrivers/DaemonInstall.swift' \
   ':!macapp/Packages/HostDrivers/Sources/HostDrivers/SSHTransport.swift' \
+  ':!macapp/Packages/HostDrivers/Tests/HostDriversTests/DaemonBootstrapTests.swift' \
   ':!macapp/Resources/daemon-bootstrap/probe.sh' \
-  ':!macapp/WorkroomApp/Core/Terminal/Session/DaemonBootstrap.swift' \
   ':!macapp/WorkroomApp/Core/Terminal/Session/PersistentSessionPaths.swift' \
   ':!macapp/WorkroomApp/Core/Terminal/Session/SessionBackend.swift' \
   ':!macapp/WorkroomAppTests/HostStreamTests.swift' \
   ':!macapp/WorkroomAppTests/Session/DaemonBootstrapScriptTests.swift' \
-  ':!macapp/WorkroomAppTests/Session/DaemonBootstrapTests.swift' \
   ':!macapp/WorkroomAppTests/Session/DaemonUpdateCompatibilityTests.swift' \
   ':!macapp/WorkroomAppTests/Fixtures/wr-agent-v2.1.0' |
   grep -v -E '^[^:]+:[0-9]+:- #[0-9]+: "')"

@@ -1,10 +1,8 @@
 import CryptoKit
 import DaemonConnection
 import Foundation
-import HostDrivers
 import WorkroomDomain
 import WorkroomSystem
-import WorkroomVCS
 import os
 
 /// Puts the Linux daemon this app bundles on a remote host, and replaces the one running there
@@ -40,9 +38,13 @@ import os
 /// probe asks for a hand-off only when the installed file IS the bundled one, so the app never
 /// hands off to a binary it does not recognise: a different one is replaced by the install first,
 /// which does its own hand-off.
-enum DaemonBootstrap {
-  struct Outcome: Equatable, Sendable {
-    enum Daemon: Equatable, Sendable {
+///
+/// What the app bundles is the app's to find, and each entry point takes it: `daemon` (the Linux
+/// daemon for an architecture), `resources` (the Ghostty set) and `scripts` (a far-side script by
+/// name). The app's own entry points pass its bundle (`DaemonBootstrap+Bundle.swift`).
+public enum DaemonBootstrap {
+  public struct Outcome: Equatable, Sendable {
+    public enum Daemon: Equatable, Sendable {
       /// The daemon runs this app's binary.
       case current
       /// Nothing was running, and this app's binary is installed. The supervisor starts it on a
@@ -61,7 +63,7 @@ enum DaemonBootstrap {
       case keptNewer(String)
     }
     /// Ghostty's terminfo and shell integration beside the daemon (#239), for the host's panes.
-    enum Resources: Equatable, Sendable {
+    public enum Resources: Equatable, Sendable {
       /// The host holds this build's set; nothing crossed.
       case current
       case pushed
@@ -69,17 +71,28 @@ enum DaemonBootstrap {
       /// the integration: the remote attach checks for the set when it starts.
       case notPushed(String)
     }
-    let architecture: String
+    public let architecture: String
     /// Whether the binary crossed the transport. False for a host already holding this build.
-    let pushed: Bool
-    let daemon: Daemon
+    public let pushed: Bool
+    public let daemon: Daemon
     /// Nil when this build had no set to push (a test's).
-    var resources: Resources? = nil
+    public var resources: Resources? = nil
     /// A daemon this connect started on an unsupervised host, recorded in the bootstrap log.
-    var startedPID: Int32? = nil
+    public var startedPID: Int32? = nil
+
+    public init(
+      architecture: String, pushed: Bool, daemon: Daemon, resources: Resources? = nil,
+      startedPID: Int32? = nil
+    ) {
+      self.architecture = architecture
+      self.pushed = pushed
+      self.daemon = daemon
+      self.resources = resources
+      self.startedPID = startedPID
+    }
   }
 
-  enum Error: Swift.Error, Equatable, LocalizedError {
+  public enum Error: Swift.Error, Equatable, LocalizedError {
     /// The probe said `uname -s -m`, and it is not a Linux this app has a daemon for.
     case unsupportedHost(String)
     /// The host has no daemon, and this build bundles none for its architecture.
@@ -97,7 +110,7 @@ enum DaemonBootstrap {
     /// to be made again (eng review D3).
     case olderLayout
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
       switch self {
       case .unsupportedHost(let host): return "No daemon for this host: \(host)."
       case .noBundledDaemon(let arch):
@@ -122,14 +135,13 @@ enum DaemonBootstrap {
     subsystem: "com.developwithstyle.workroom", category: "PersistentSession")
 
   /// The bootstrap, then the connection: the one way to a remote host's services.
-  static func connect(
-    host: HostID, driver: any HostDriver, socket: String,
-    daemon: (String) -> URL? = PersistentSessionPaths.linuxDaemonURL(architecture:),
-    handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL
+  public static func connect(
+    host: HostID, driver: any HostDriver, socket: String, daemon: (String) -> URL?,
+    handOff: Bool = true, resources: URL?, scripts: (String) -> URL?
   ) async throws -> DaemonClient {
     let outcome = try await ensure(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
-      resources: resources)
+      resources: resources, scripts: scripts)
     logger.notice("daemon bootstrap: \(String(describing: outcome), privacy: .public)")
     return try await DaemonClient.connect(
       host: host, stream: try await driver.openStream(to: host))
@@ -140,31 +152,32 @@ enum DaemonBootstrap {
   ///
   /// `daemon` finds the bundled binary for an architecture (the bundle's, or a test's), and
   /// `resources` is the bundled Ghostty tree whose terminfo and shell integration go beside it.
+  /// `scripts` finds a far-side script by name (`script(named:in:)`).
   /// `handOff` is on in every build, as the local hand-off (`DaemonHandOff`) is: off, a
   /// remote host keeps its first daemon until the box restarts, since its supervisor never lets it
   /// idle out, and so never gets a newer build's services.
-  static func ensure(
-    host: HostID, driver: any HostDriver, socket: String,
-    daemon: (String) -> URL? = PersistentSessionPaths.linuxDaemonURL(architecture:),
-    handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL
+  public static func ensure(
+    host: HostID, driver: any HostDriver, socket: String, daemon: (String) -> URL?,
+    handOff: Bool = true, resources: URL?, scripts: (String) -> URL?
   ) async throws -> Outcome {
     var outcome = try await prepare(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
-      resources: resources)
+      resources: resources, scripts: scripts)
     guard driver.startsDaemon else { return outcome }
     switch outcome.daemon {
     case .current, .handedOff: break
     case .installed, .keptOlder, .keptNewer:
       // A retained newer build must be started too: an older Mac can be the first to reconnect
       // after the server reboots. start.sh first checks for a listener, so a live daemon is kept.
-      outcome.startedPID = try await start(host: host, driver: driver, socket: socket)
+      outcome.startedPID = try await start(
+        host: host, driver: driver, socket: socket, scripts: scripts)
     }
     return outcome
   }
 
   private static func prepare(
     host: HostID, driver: any HostDriver, socket: String, daemon: (String) -> URL?,
-    handOff: Bool, resources: URL?
+    handOff: Bool, resources: URL?, scripts: (String) -> URL?
   ) async throws -> Outcome {
     // A container's driver places its daemon itself (#308), outside the socket's folder.
     let placing = driver as? any DaemonPlacingDriver
@@ -182,7 +195,7 @@ enum DaemonBootstrap {
         })
     }
     let probe = try await run(
-      script: "probe", on: host, driver: driver, input: nil,
+      script: "probe", in: scripts, on: host, driver: driver, input: nil,
       arguments: [binary, socket, handOff ? "1" : "0"]
         + architectures.map { bundled[$0]?.digest ?? "-" } + [
           DaemonInstall.resources(besideSocket: socket),
@@ -212,7 +225,7 @@ enum DaemonBootstrap {
       : await ensureResources(
         resources, installed: report.resources,
         directory: DaemonInstall.resources(besideSocket: socket),
-        on: host, driver: driver)
+        on: host, driver: driver, scripts: scripts)
     guard
       let (url, digest, build) = bundled[architecture].map({ ($0.url, $0.digest, $0.build) })
     else {
@@ -258,7 +271,7 @@ enum DaemonBootstrap {
     if let placing, placed != nil {
       let daemon = try await place(
         url, on: host, driver: placing, socket: socket, handOff: handOff,
-        hasDaemon: report.installed != nil)
+        hasDaemon: report.installed != nil, scripts: scripts)
       return Outcome(architecture: architecture, pushed: true, daemon: daemon, resources: set)
     }
 
@@ -266,7 +279,7 @@ enum DaemonBootstrap {
     let install: (status: Int32, output: String)
     do {
       install = try await run(
-        script: "install", on: host, driver: driver, input: elf,
+        script: "install", in: scripts, on: host, driver: driver, input: elf,
         arguments: [binary, socket, handOff ? "1" : "0", digest]
           + (driver.startsDaemon ? ["1"] : []))
     } catch Error.transportFailed(let detail) {
@@ -287,13 +300,13 @@ enum DaemonBootstrap {
 
   /// SSH hosts have no supervisor. Once the start exchange has ended, a separate exec proves the
   /// daemon survived that ssh login closing: some servers' logind policy kills its whole scope.
-  private static func start(host: HostID, driver: any HostDriver, socket: String) async throws
-    -> Int32?
-  {
+  private static func start(
+    host: HostID, driver: any HostDriver, socket: String, scripts: (String) -> URL?
+  ) async throws -> Int32? {
     let binary = DaemonInstall.binary(besideSocket: socket)
     let directory = (socket as NSString).deletingLastPathComponent
     let result = try await run(
-      script: "start", on: host, driver: driver, input: nil,
+      script: "start", in: scripts, on: host, driver: driver, input: nil,
       arguments: [binary, socket, directory + "/screens", "never"])
     guard result.status == 0, reports(in: result.output)["serving"]?.first == "yes" else {
       let reason = reports(in: result.output)["error"]?.joined(separator: " ")
@@ -353,7 +366,7 @@ enum DaemonBootstrap {
   /// and one with none fails.
   private static func place(
     _ url: URL, on host: HostID, driver: any DaemonPlacingDriver, socket: String, handOff: Bool,
-    hasDaemon: Bool
+    hasDaemon: Bool, scripts: (String) -> URL?
   ) async throws -> Outcome.Daemon {
     let placed: (path: String, staged: Bool)
     do {
@@ -365,7 +378,7 @@ enum DaemonBootstrap {
     let check: (status: Int32, output: String)
     do {
       check = try await run(
-        script: "placed", on: host, driver: driver, input: nil,
+        script: "placed", in: scripts, on: host, driver: driver, input: nil,
         arguments: [placed.path, socket, handOff ? "1" : "0"])
     } catch {
       if placed.staged { try? await driver.settleDaemon(placed.path, keep: false, on: host) }
@@ -394,7 +407,7 @@ enum DaemonBootstrap {
   /// changes with the files, so a Ghostty pin bump that changes them pushes them again.
   private static func ensureResources(
     _ bundle: URL?, installed: String?, directory: String, on host: HostID,
-    driver: any HostDriver
+    driver: any HostDriver, scripts: (String) -> URL?
   ) async -> Outcome.Resources? {
     guard let bundle else { return nil }
     if installed == "unknown" { return .notPushed("the host has no sha256sum") }
@@ -411,7 +424,7 @@ enum DaemonBootstrap {
       }
       if installed == digest { return .current }
       let result = try await run(
-        script: "resources", on: host, driver: driver,
+        script: "resources", in: scripts, on: host, driver: driver,
         input: files.reduce(into: Data()) { $0 += $1.1 },
         arguments: [directory] + files.flatMap { [String($0.1.count), $0.0] })
       let outcome = parseInstall(result.output).outcome
@@ -500,7 +513,7 @@ enum DaemonBootstrap {
 
   /// The install's outcome words, and whether the supervisor started the daemon (nil when that was
   /// not in question).
-  static func parseInstall(_ output: String) -> (outcome: [String], serving: Bool?) {
+  public static func parseInstall(_ output: String) -> (outcome: [String], serving: Bool?) {
     let fields = reports(in: output)
     let serving: Bool? = fields["serving"].map { $0.first == "yes" }
     return (fields["outcome"] ?? [], serving)
@@ -518,10 +531,10 @@ enum DaemonBootstrap {
 
   /// Runs a bundled script on the host through the driver, as `sh -c '<script>' <name> <args>`.
   private static func run(
-    script name: String, on host: HostID, driver: any HostDriver, input: Data?,
-    arguments: [String]
+    script name: String, in scripts: (String) -> URL?, on host: HostID, driver: any HostDriver,
+    input: Data?, arguments: [String]
   ) async throws -> (status: Int32, output: String) {
-    let command = (["sh", "-c", try script(named: name), name] + arguments)
+    let command = (["sh", "-c", try script(named: name, in: scripts), name] + arguments)
       .map(PosixShell.quoted).joined(separator: " ")
     // The daemon's start must outlive its own login, whatever else shares a connection.
     let stream =
@@ -545,21 +558,20 @@ enum DaemonBootstrap {
     return result
   }
 
-  static func script(named name: String) throws -> String {
-    guard
-      let url = Bundle.main.url(
-        forResource: name, withExtension: "sh", subdirectory: "daemon-bootstrap")
-    else { throw Error.missingScript(name) }
+  /// The far-side script `name` (`probe`, `install`, `placed`, `resources`, `start`), found by
+  /// `scripts`: the app's bundle holds them under `daemon-bootstrap`.
+  public static func script(named name: String, in scripts: (String) -> URL?) throws -> String {
+    guard let url = scripts(name) else { throw Error.missingScript(name) }
     return try String(contentsOf: url, encoding: .utf8)
   }
 
   /// SHA-256 of a bundled binary, as the host's `sha256sum` prints it. Not cached: an update
   /// swaps the bundle under a running app, and 11 MB hashes in a few milliseconds.
-  static func digest(of url: URL) throws -> String {
+  public static func digest(of url: URL) throws -> String {
     digest(of: try Data(contentsOf: url))
   }
 
-  static func digest(of data: Data) -> String {
+  public static func digest(of data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
   }
 
@@ -568,7 +580,7 @@ enum DaemonBootstrap {
   /// marker `WORKROOMD-BUILD:<number>;` (`handoff::BUILD_MARKER`). The first match that reads as one
   /// counts: the prefix alone can sit ahead of it in a linked binary. 0 when there is none, which
   /// orders below every numbered build.
-  static func buildNumber(in data: Data) -> UInt64 {
+  public static func buildNumber(in data: Data) -> UInt64 {
     let marker = Data("WORKROOMD-BUILD:".utf8)
     var searched = data.startIndex..<data.endIndex
     while let found = data.range(of: marker, in: searched) {

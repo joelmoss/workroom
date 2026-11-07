@@ -116,8 +116,9 @@ targets:
         buildPhase: resources
       # The daemon bootstrap's far-side scripts (issue #231): what the app runs on a remote host to
       # probe for, install and hand off to the Linux workroomd it bundles. Folder reference → copied
-      # to Contents/Resources/daemon-bootstrap; DaemonBootstrap loads them from Bundle.main. Files
-      # rather than Swift strings so the Rust ssh-fixture test can run the same ones.
+      # to Contents/Resources/daemon-bootstrap; the app hands them to DaemonBootstrap (HostDrivers)
+      # from Bundle.main (DaemonBootstrap+Bundle.swift). Files rather than Swift strings so the Rust
+      # ssh-fixture test can run the same ones.
       - path: Resources/daemon-bootstrap
         type: folder
         buildPhase: resources

@@ -1,16 +1,15 @@
 import DaemonConnection
-import Defaults
-import HostDrivers
 import WorkroomDomain
 import WorkroomSystem
-import WorkroomVCS
 import XCTest
 
-@testable import Workroom
+@testable import HostDrivers
 
 /// The app's half of the daemon bootstrap (#231), against a driver whose host is a local `sh`
 /// answering as the far-side scripts would. What the scripts themselves do on a Linux host is the
-/// fixture's to prove (`RemoteHostIntegrationTests`, and the Rust `over_ssh_*` tests in CI).
+/// fixture's to prove (`RemoteHostIntegrationTests`, and the Rust `over_ssh_*` tests in CI). The
+/// scripts are read from the checkout (`scripts`), as the app reads them from its bundle; that the
+/// bundle holds them is the app's `DaemonBootstrapBundleTests`.
 final class DaemonBootstrapTests: XCTestCase {
   /// A driver whose `exec` runs a local shell that swallows stdin and prints a canned answer.
   private class StubDriver: HostDriver, @unchecked Sendable {
@@ -94,6 +93,18 @@ final class DaemonBootstrapTests: XCTestCase {
     architecture == "aarch64" ? agentFile : nil
   }
 
+  /// The far-side scripts in this checkout, `macapp/Resources/daemon-bootstrap`, which the app
+  /// bundles. The stubs answer in their place, so only their being found matters here.
+  private static let scriptsDirectory = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    .deletingLastPathComponent().deletingLastPathComponent()
+    .appendingPathComponent("Resources/daemon-bootstrap")
+
+  private static func scripts(_ name: String) -> URL? {
+    let url = scriptsDirectory.appendingPathComponent("\(name).sh")
+    return FileManager.default.fileExists(atPath: url.path) ? url : nil
+  }
+
   /// The bootstrap with no Ghostty resource set, so each stub answers the daemon's exchanges only;
   /// the set's own tests pass one.
   private func ensure(
@@ -102,7 +113,7 @@ final class DaemonBootstrapTests: XCTestCase {
   ) async throws -> DaemonBootstrap.Outcome {
     try await DaemonBootstrap.ensure(
       host: host, driver: driver, socket: socket, daemon: daemon ?? bundled(_:), handOff: handOff,
-      resources: resources)
+      resources: resources, scripts: Self.scripts(_:))
   }
 
   private func probe(installed: String, handOff: String) -> StubDriver.Answer {
@@ -423,9 +434,12 @@ final class DaemonBootstrapTests: XCTestCase {
     // Nor its terminfo and shell integration, which the newer daemon's panes share.
     let withResources = StubDriver([probe(installed: String(repeating: "0", count: 64), build: 200)]
     )
+    // A set that is never read: a newer host is not pushed one, so any set's location does. Were it
+    // read, this one's missing `CHECKSUMS` would say so in the outcome.
     let kept = try await ensure(
       withResources, daemon: { $0 == "aarch64" ? daemon : nil },
-      resources: try XCTUnwrap(GhosttyResources.bundledURL))
+      resources: FileManager.default.temporaryDirectory.appendingPathComponent(
+        "wr-set-\(UUID().uuidString.prefix(8))"))
     XCTAssertEqual(kept.resources, .notPushed("the host runs a newer build"))
     XCTAssertEqual(withResources.commands.count, 1, "the resource set was pushed")
   }
@@ -583,7 +597,7 @@ final class DaemonBootstrapTests: XCTestCase {
     do {
       _ = try await DaemonBootstrap.connect(
         host: host, driver: mac, socket: socket, daemon: bundled(_:), handOff: true,
-        resources: nil)
+        resources: nil, scripts: Self.scripts(_:))
       XCTFail("connected to a Mac")
     } catch DaemonBootstrap.Error.unsupportedHost {}
     XCTAssertEqual(mac.commands.count, 1)
@@ -591,7 +605,7 @@ final class DaemonBootstrapTests: XCTestCase {
     do {
       _ = try await DaemonBootstrap.connect(
         host: host, driver: current, socket: socket, daemon: bundled(_:), handOff: true,
-        resources: nil)
+        resources: nil, scripts: Self.scripts(_:))
       XCTFail("the stub's openStream answered")
     } catch HostDriverError.notImplemented(let what) {
       XCTAssertEqual(what, "openStream")
@@ -652,19 +666,6 @@ final class DaemonBootstrapTests: XCTestCase {
     XCTAssertEqual(failed.daemon, .current)
   }
 
-  /// The bundled binary's digest is the one `sha256sum` prints (the SHA-256 of "abc", FIPS 180-2),
-  /// and an architecture this build has no daemon for finds none.
-  func testTheDigestIsSha256sumsAndAnUnknownArchitectureHasNoAgent() throws {
-    let abc = FileManager.default.temporaryDirectory.appendingPathComponent(
-      "abc-\(UUID().uuidString.prefix(8))")
-    defer { try? FileManager.default.removeItem(at: abc) }
-    try Data("abc".utf8).write(to: abc)
-    XCTAssertEqual(
-      try DaemonBootstrap.digest(of: abc),
-      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
-    XCTAssertNil(PersistentSessionPaths.linuxDaemonURL(architecture: "riscv64"))
-  }
-
   /// A far side that closes its output but never exits (a child of its own holding on, say) is
   /// waited for a bounded time, then ended, and the exchange throws.
   // Value: protects=a carrier that closes its output and ignores SIGTERM, with no silence or
@@ -700,17 +701,6 @@ final class DaemonBootstrapTests: XCTestCase {
         return XCTFail("\($0)")
       }
       XCTAssertTrue(detail.contains("Host key verification failed"), detail)
-    }
-  }
-
-  /// The scripts ship in the bundle, and parse.
-  func testTheFarSideScriptsAreBundledAndParse() throws {
-    for name in ["probe", "install", "placed", "resources", "start"] {
-      let script = try DaemonBootstrap.script(named: name)
-      XCTAssertTrue(script.hasPrefix("#!/bin/sh\n"), name)
-      let (status, output) = try SessionBackendProbe.run(
-        URL(fileURLWithPath: "/bin/sh"), arguments: ["-n", "-c", script], timeout: 5)
-      XCTAssertEqual(status, 0, "\(name): \(output)")
     }
   }
 
