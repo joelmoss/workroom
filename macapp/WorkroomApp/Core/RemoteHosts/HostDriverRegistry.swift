@@ -418,13 +418,14 @@ final class HostDriverRegistry: @unchecked Sendable {
       cli: URL(fileURLWithPath: cli), org: org, account: account,
       sshConfig: RemoteHosts.boxdHome.appendingPathComponent(".ssh/config"),
       knownHosts: RemoteHosts.boxdHome.appendingPathComponent(".ssh/known_hosts"),
-      home: RemoteHosts.boxdHome)
+      home: RemoteHosts.boxdHome, hostSetup: .bundled)
   }
 
   /// An exe.dev driver acting for `account`. With none, the one a setup or a create asks who the
   /// user's ssh signs in as.
   static func exeDev(account: String? = nil) -> ExeDevHostDriver {
-    ExeDevHostDriver(configuration: .init(account: account), directory: RemoteHosts.hosts)
+    ExeDevHostDriver(
+      configuration: .init(account: account, hostSetup: .bundled), directory: RemoteHosts.hosts)
   }
 
   /// An SSH host's driver, its home not yet known: a key's, or the one the host check makes.

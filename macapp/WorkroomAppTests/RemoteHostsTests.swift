@@ -216,10 +216,13 @@ final class RemoteHostsTests: XCTestCase {
     let directory = FileManager.default.temporaryDirectory
     XCTAssertEqual(
       BoxdHostDriver(
-        configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")), directory: directory
+        configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd"), hostSetup: .bundled),
+        directory: directory
       ).name(of: id), name)
     XCTAssertEqual(
-      ExeDevHostDriver(configuration: .init(), directory: directory).name(of: id), name)
+      ExeDevHostDriver(configuration: .init(hostSetup: .bundled), directory: directory).name(
+        of: id),
+      name)
     XCTAssertNil(HostDescriptor(state: "destroyed", driver: "boxd", id: id).machineName)
     let local = Workroom(name: "w", path: "/tmp/w", vcsName: "workroom/w", warnings: [])
       .target(inProject: "/proj")
@@ -684,14 +687,15 @@ final class RemoteHostsTests: XCTestCase {
           driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
           org: "acme", account: "usr_1"),
         .boxd(org: "acme", account: "usr_1"),
-        BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket
+        BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd"), hostSetup: .bundled)
+          .daemonSocket
       ),
       (
         HostDescriptor(
           driver: HostKind.exeDev.driver, provisioner: RemoteWorkrooms.provisioner,
           id: UUID(), account: "me@x.dev"),
         .exeDev(account: "me@x.dev"),
-        ExeDevHostDriver.Configuration().daemonSocket
+        ExeDevHostDriver.Configuration(hostSetup: .bundled).daemonSocket
       ),
     ]
     for row in rows {
@@ -700,11 +704,11 @@ final class RemoteHostsTests: XCTestCase {
         asked.add(key)
         if case .exeDev(let account) = key {
           return ExeDevHostDriver(
-            configuration: .init(account: account),
+            configuration: .init(account: account, hostSetup: .bundled),
             directory: FileManager.default.temporaryDirectory)
         }
         return BoxdHostDriver(
-          configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")),
+          configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd"), hostSetup: .bundled),
           directory: FileManager.default.temporaryDirectory)
       }).registry
       let deletion = try XCTUnwrap(try remote.environment(toDelete: [row.host]))
@@ -866,7 +870,9 @@ final class RemoteHostsTests: XCTestCase {
     let key = RemoteHosts.DriverKey.boxd(org: "acme", account: "usr_1")
     let environment = RemoteProvisioning.Environment(
       driver: driver,
-      daemonSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket,
+      daemonSocket: BoxdHostDriver.Configuration(
+        cli: URL(fileURLWithPath: "/boxd"), hostSetup: .bundled
+      ).daemonSocket,
       connect: { _ in throw HostDriverError.provisioning("stop after the checkpoint") })
     let recorded = Recorded()
     let recorder = RemoteWorkrooms.Recorder(
@@ -956,7 +962,9 @@ final class RemoteHostsTests: XCTestCase {
     defer { fake.stop() }
     let environment = RemoteProvisioning.Environment(
       driver: driver,
-      daemonSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket,
+      daemonSocket: BoxdHostDriver.Configuration(
+        cli: URL(fileURLWithPath: "/boxd"), hostSetup: .bundled
+      ).daemonSocket,
       gitHubToken: { "gho_mac" },
       connect: { host in
         try await DaemonClient.connect(host: host, socketPath: fake.socketPath)
@@ -997,7 +1005,9 @@ final class RemoteHostsTests: XCTestCase {
     let key = RemoteHosts.DriverKey.boxd(org: "acme", account: "usr_1")
     let environment = RemoteProvisioning.Environment(
       driver: driver,
-      daemonSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket)
+      daemonSocket: BoxdHostDriver.Configuration(
+        cli: URL(fileURLWithPath: "/boxd"), hostSetup: .bundled
+      ).daemonSocket)
     let recorded = Recorded()
     let forgot = Recorded()
     let recorder = RemoteWorkrooms.Recorder(
@@ -1034,7 +1044,9 @@ final class RemoteHostsTests: XCTestCase {
     let driver = MachineDriver(made: made, destroyFails: true)
     let environment = RemoteProvisioning.Environment(
       driver: driver,
-      daemonSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket,
+      daemonSocket: BoxdHostDriver.Configuration(
+        cli: URL(fileURLWithPath: "/boxd"), hostSetup: .bundled
+      ).daemonSocket,
       connect: { _ in throw HostDriverError.provisioning("no daemon") })
     let recorded = Recorded()
     let recorder = RemoteWorkrooms.Recorder(

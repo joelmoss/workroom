@@ -134,7 +134,7 @@ final class ModalShortcutRoutingTests: XCTestCase {
             place: .exeDev,
             setup: ExeDevSetup(
               driver: ExeDevHostDriver(
-                configuration: .init(),
+                configuration: .init(hostSetup: .bundled),
                 directory: FileManager.default.temporaryDirectory)))
         }
       ),

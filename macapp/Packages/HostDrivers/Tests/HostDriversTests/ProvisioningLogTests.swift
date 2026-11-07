@@ -68,7 +68,8 @@ final class ProvisioningLogTests: XCTestCase {
     try Data(#"{"token":"boxd-secret-token"}"#.utf8).write(to: credentials)
     defer { try? FileManager.default.removeItem(at: home) }
     let driver = BoxdHostDriver(
-      configuration: .init(cli: URL(fileURLWithPath: "/usr/local/bin/boxd"), home: home),
+      configuration: .init(
+        cli: URL(fileURLWithPath: "/usr/local/bin/boxd"), home: home, hostSetup: .checkout),
       directory: home,
       runner: Canned(
         result: CommandResult(

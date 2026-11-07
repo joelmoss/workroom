@@ -1,12 +1,12 @@
-import HostDrivers
 import WorkroomDomain
 import WorkroomSystem
 import XCTest
 
-@testable import Workroom
+@testable import HostDrivers
 
 /// `BoxdHostDriver` without boxd (#256): how it reads the CLI's ssh blocks and answers, and what
-/// it undoes when a step fails, with the CLI stubbed. `BoxdIntegrationTests` runs it on boxd.
+/// it undoes when a step fails, with the CLI stubbed. `BoxdIntegrationTests` runs it on boxd. The
+/// host-setup script comes from the checkout (`HostSetup.checkout`).
 final class BoxdHostDriverTests: XCTestCase {
   // What the CLI writes (measured, boxd 0.2.x), around a user's own config.
   private static let sshConfig = """
@@ -78,11 +78,6 @@ final class BoxdHostDriverTests: XCTestCase {
         "\n  A new version of boxd is available (v0.2.20). Update with:\n"
           + "error: VM 'x' not found\n"),
       "error: VM 'x' not found")
-  }
-
-  func testTheSetupScriptShipsInTheBundle() throws {
-    let script = try HostSetup.systemdScript()
-    XCTAssertTrue(script.contains("workroom-daemon.service"))
   }
 
   // MARK: Failures, with the CLI stubbed
@@ -170,7 +165,7 @@ final class BoxdHostDriverTests: XCTestCase {
     return BoxdHostDriver(
       configuration: .init(
         cli: URL(fileURLWithPath: "/nonexistent/boxd"), sshConfig: empty, knownHosts: empty,
-        home: home ?? signedInHome()),
+        home: home ?? signedInHome(), hostSetup: .checkout),
       directory: empty, runner: cli)
   }
 
@@ -366,7 +361,8 @@ final class BoxdHostDriverTests: XCTestCase {
     // The same org, named: it goes ahead.
     let named = BoxdHostDriver(
       configuration: .init(
-        cli: URL(fileURLWithPath: "/nonexistent/boxd"), org: "acme", home: signedInHome()),
+        cli: URL(fileURLWithPath: "/nonexistent/boxd"), org: "acme", home: signedInHome(),
+        hostSetup: .checkout),
       directory: FileManager.default.temporaryDirectory, runner: cli)
     try await named.destroy(.remote(UUID()))
     XCTAssertEqual(cli.commands, ["machine remove", "snapshots remove"])
@@ -397,7 +393,8 @@ final class BoxdHostDriverTests: XCTestCase {
     ])
     let mine = BoxdHostDriver(
       configuration: .init(
-        cli: URL(fileURLWithPath: "/nonexistent/boxd"), account: "usr_mine", home: signedInHome()),
+        cli: URL(fileURLWithPath: "/nonexistent/boxd"), account: "usr_mine", home: signedInHome(),
+        hostSetup: .checkout),
       directory: FileManager.default.temporaryDirectory, runner: cli)
     do {
       try await mine.destroy(.remote(UUID()))
@@ -410,7 +407,7 @@ final class BoxdHostDriverTests: XCTestCase {
     let other = BoxdHostDriver(
       configuration: .init(
         cli: URL(fileURLWithPath: "/nonexistent/boxd"), account: "usr_other",
-        home: signedInHome()),
+        home: signedInHome(), hostSetup: .checkout),
       directory: FileManager.default.temporaryDirectory, runner: cli)
     try await other.destroy(.remote(UUID()))
     XCTAssertEqual(cli.commands, ["machine remove", "snapshots remove"])

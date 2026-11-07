@@ -57,6 +57,8 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
     /// The home the CLI runs with, which holds its sign-in (`credentialsFile`). The user's own,
     /// except in the fresh-user harness (`make app-run-boxd-fresh`).
     public var home: URL
+    /// The host-setup scripts the app bundles, which `create` runs on each new machine.
+    public var hostSetup: HostSetup
 
     public init(
       cli: URL, prefix: String = "workroom", org: String? = nil, account: String? = nil,
@@ -66,7 +68,7 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
         ".ssh/config"),
       knownHosts: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
         ".ssh/known_hosts"),
-      home: URL = FileManager.default.homeDirectoryForCurrentUser
+      home: URL = FileManager.default.homeDirectoryForCurrentUser, hostSetup: HostSetup
     ) {
       self.cli = cli
       self.prefix = prefix
@@ -77,6 +79,7 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
       self.sshConfig = sshConfig
       self.knownHosts = knownHosts
       self.home = home
+      self.hostSetup = hostSetup
     }
   }
 
@@ -147,7 +150,7 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
         _ = try await cli(["machine", "new", name] + flags)
       }
       try await ProvisioningProgress.step(.setup) {
-        let script = try HostSetup.systemdScript()
+        let script = try configuration.hostSetup.systemdScript()
         let user = try ssh(id).user
         let command =
           "sudo sh -s -- "

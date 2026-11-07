@@ -47,18 +47,21 @@ public final class ExeDevHostDriver: HostTerminalDriver, OptionedProvisioningDri
     public var screens: String
     /// The user's ssh-agent socket, or nil for none. Their `IdentityAgent`, if set, wins.
     public var sshAgent: String?
+    /// The host-setup scripts the app bundles, which `create` runs on each new VM.
+    public var hostSetup: HostSetup
 
     public init(
       prefix: String = "workroom", account: String? = nil,
       daemonSocket: String = "\(ExeDevHostDriver.stateDirectory)/daemon/workroomd.sock",
       screens: String = "\(ExeDevHostDriver.stateDirectory)/screens",
-      sshAgent: String? = ExeDevHostDriver.userSSHAgent()
+      sshAgent: String? = ExeDevHostDriver.userSSHAgent(), hostSetup: HostSetup
     ) {
       self.prefix = prefix
       self.account = account
       self.daemonSocket = daemonSocket
       self.screens = screens
       self.sshAgent = sshAgent
+      self.hostSetup = hostSetup
     }
   }
 
@@ -153,12 +156,12 @@ public final class ExeDevHostDriver: HostTerminalDriver, OptionedProvisioningDri
           + [Self.user, configuration.daemonSocket, configuration.screens]
           .map(PosixShell.quoted).joined(separator: " ")
         try await setUp(
-          command, on: .remote(id), stdin: Data(try HostSetup.systemdScript().utf8),
+          command, on: .remote(id), stdin: Data(try configuration.hostSetup.systemdScript().utf8),
           timeout: 120, failure: Self.setupFailure(name: name, image: options.image))
         // git and gh reach GitHub through exe.dev's integration, never with a token on the VM.
         try await setUp(
           "sudo sh -s -- /etc/profile.d", on: .remote(id),
-          stdin: Data(try HostSetup.exeDevGitHubScript().utf8), timeout: 30,
+          stdin: Data(try configuration.hostSetup.exeDevGitHubScript().utf8), timeout: 30,
           failure: "setting up git on \(name) failed")
         try await awaitIdentity(of: id, named: name)
       }

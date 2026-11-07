@@ -48,7 +48,9 @@ final class ExeDevIntegrationTests: ProviderParityTestCase {
   private func driver(runner: any StatusCommandRunning = StatusCommandRunner())
     -> ExeDevHostDriver
   {
-    ExeDevHostDriver(configuration: .init(prefix: prefix), directory: directory, runner: runner)
+    ExeDevHostDriver(
+      configuration: .init(prefix: prefix, hostSetup: .bundled), directory: directory,
+      runner: runner)
   }
 
   private func provider(_ driver: ExeDevHostDriver? = nil, key: RemoteHosts.DriverKey? = nil)

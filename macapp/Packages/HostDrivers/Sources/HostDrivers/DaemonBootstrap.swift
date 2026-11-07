@@ -137,7 +137,7 @@ public enum DaemonBootstrap {
   /// The bootstrap, then the connection: the one way to a remote host's services.
   public static func connect(
     host: HostID, driver: any HostDriver, socket: String, daemon: (String) -> URL?,
-    handOff: Bool = true, resources: URL?, scripts: (String) -> URL?
+    handOff: Bool = true, resources: URL?, scripts: ScriptLocator
   ) async throws -> DaemonClient {
     let outcome = try await ensure(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
@@ -158,7 +158,7 @@ public enum DaemonBootstrap {
   /// idle out, and so never gets a newer build's services.
   public static func ensure(
     host: HostID, driver: any HostDriver, socket: String, daemon: (String) -> URL?,
-    handOff: Bool = true, resources: URL?, scripts: (String) -> URL?
+    handOff: Bool = true, resources: URL?, scripts: ScriptLocator
   ) async throws -> Outcome {
     var outcome = try await prepare(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
@@ -177,7 +177,7 @@ public enum DaemonBootstrap {
 
   private static func prepare(
     host: HostID, driver: any HostDriver, socket: String, daemon: (String) -> URL?,
-    handOff: Bool, resources: URL?, scripts: (String) -> URL?
+    handOff: Bool, resources: URL?, scripts: ScriptLocator
   ) async throws -> Outcome {
     // A container's driver places its daemon itself (#308), outside the socket's folder.
     let placing = driver as? any DaemonPlacingDriver
@@ -301,7 +301,7 @@ public enum DaemonBootstrap {
   /// SSH hosts have no supervisor. Once the start exchange has ended, a separate exec proves the
   /// daemon survived that ssh login closing: some servers' logind policy kills its whole scope.
   private static func start(
-    host: HostID, driver: any HostDriver, socket: String, scripts: (String) -> URL?
+    host: HostID, driver: any HostDriver, socket: String, scripts: ScriptLocator
   ) async throws -> Int32? {
     let binary = DaemonInstall.binary(besideSocket: socket)
     let directory = (socket as NSString).deletingLastPathComponent
@@ -366,7 +366,7 @@ public enum DaemonBootstrap {
   /// and one with none fails.
   private static func place(
     _ url: URL, on host: HostID, driver: any DaemonPlacingDriver, socket: String, handOff: Bool,
-    hasDaemon: Bool, scripts: (String) -> URL?
+    hasDaemon: Bool, scripts: ScriptLocator
   ) async throws -> Outcome.Daemon {
     let placed: (path: String, staged: Bool)
     do {
@@ -407,7 +407,7 @@ public enum DaemonBootstrap {
   /// changes with the files, so a Ghostty pin bump that changes them pushes them again.
   private static func ensureResources(
     _ bundle: URL?, installed: String?, directory: String, on host: HostID,
-    driver: any HostDriver, scripts: (String) -> URL?
+    driver: any HostDriver, scripts: ScriptLocator
   ) async -> Outcome.Resources? {
     guard let bundle else { return nil }
     if installed == "unknown" { return .notPushed("the host has no sha256sum") }
@@ -531,7 +531,7 @@ public enum DaemonBootstrap {
 
   /// Runs a bundled script on the host through the driver, as `sh -c '<script>' <name> <args>`.
   private static func run(
-    script name: String, in scripts: (String) -> URL?, on host: HostID, driver: any HostDriver,
+    script name: String, in scripts: ScriptLocator, on host: HostID, driver: any HostDriver,
     input: Data?, arguments: [String]
   ) async throws -> (status: Int32, output: String) {
     let command = (["sh", "-c", try script(named: name, in: scripts), name] + arguments)
@@ -560,7 +560,7 @@ public enum DaemonBootstrap {
 
   /// The far-side script `name` (`probe`, `install`, `placed`, `resources`, `start`), found by
   /// `scripts`: the app's bundle holds them under `daemon-bootstrap`.
-  public static func script(named name: String, in scripts: (String) -> URL?) throws -> String {
+  public static func script(named name: String, in scripts: ScriptLocator) throws -> String {
     guard let url = scripts(name) else { throw Error.missingScript(name) }
     return try String(contentsOf: url, encoding: .utf8)
   }

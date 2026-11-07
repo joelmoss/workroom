@@ -58,7 +58,8 @@ final class BoxdIntegrationTests: ProviderParityTestCase {
 
   private func driver(cli override: URL? = nil) -> BoxdHostDriver {
     BoxdHostDriver(
-      configuration: .init(cli: override ?? cli, prefix: prefix), directory: directory)
+      configuration: .init(cli: override ?? cli, prefix: prefix, hostSetup: .bundled),
+      directory: directory)
   }
 
   /// The real CLI, run from here rather than through the driver, so a check is never the thing

@@ -95,15 +95,7 @@ final class DaemonBootstrapTests: XCTestCase {
 
   /// The far-side scripts in this checkout, `macapp/Resources/daemon-bootstrap`, which the app
   /// bundles. The stubs answer in their place, so only their being found matters here.
-  private static let scriptsDirectory = URL(fileURLWithPath: #filePath)
-    .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-    .deletingLastPathComponent().deletingLastPathComponent()
-    .appendingPathComponent("Resources/daemon-bootstrap")
-
-  private static func scripts(_ name: String) -> URL? {
-    let url = scriptsDirectory.appendingPathComponent("\(name).sh")
-    return FileManager.default.fileExists(atPath: url.path) ? url : nil
-  }
+  private static let scripts = checkoutScripts(in: "daemon-bootstrap")
 
   /// The bootstrap with no Ghostty resource set, so each stub answers the daemon's exchanges only;
   /// the set's own tests pass one.
@@ -113,7 +105,7 @@ final class DaemonBootstrapTests: XCTestCase {
   ) async throws -> DaemonBootstrap.Outcome {
     try await DaemonBootstrap.ensure(
       host: host, driver: driver, socket: socket, daemon: daemon ?? bundled(_:), handOff: handOff,
-      resources: resources, scripts: Self.scripts(_:))
+      resources: resources, scripts: Self.scripts)
   }
 
   private func probe(installed: String, handOff: String) -> StubDriver.Answer {
@@ -597,7 +589,7 @@ final class DaemonBootstrapTests: XCTestCase {
     do {
       _ = try await DaemonBootstrap.connect(
         host: host, driver: mac, socket: socket, daemon: bundled(_:), handOff: true,
-        resources: nil, scripts: Self.scripts(_:))
+        resources: nil, scripts: Self.scripts)
       XCTFail("connected to a Mac")
     } catch DaemonBootstrap.Error.unsupportedHost {}
     XCTAssertEqual(mac.commands.count, 1)
@@ -605,7 +597,7 @@ final class DaemonBootstrapTests: XCTestCase {
     do {
       _ = try await DaemonBootstrap.connect(
         host: host, driver: current, socket: socket, daemon: bundled(_:), handOff: true,
-        resources: nil, scripts: Self.scripts(_:))
+        resources: nil, scripts: Self.scripts)
       XCTFail("the stub's openStream answered")
     } catch HostDriverError.notImplemented(let what) {
       XCTAssertEqual(what, "openStream")

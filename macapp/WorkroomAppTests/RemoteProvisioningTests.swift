@@ -316,9 +316,9 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
     let boxd = BoxdHostDriver(
       configuration: .init(
         cli: URL(fileURLWithPath: "/nonexistent/boxd"), sshConfig: directory,
-        knownHosts: directory, home: directory),
+        knownHosts: directory, home: directory, hostSetup: .bundled),
       directory: directory)
-    let exeDev = ExeDevHostDriver(configuration: .init(), directory: directory)
+    let exeDev = ExeDevHostDriver(configuration: .init(hostSetup: .bundled), directory: directory)
     func wired(_ options: ResolvedHostOptions, _ driver: any HostDriver) -> (Bool, Bool) {
       var env = environment(gitHubToken: nil, driver: driver)
       env.made(with: options, by: driver)

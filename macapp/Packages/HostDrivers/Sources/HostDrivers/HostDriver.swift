@@ -99,19 +99,30 @@ extension HostDriver {
   }
 }
 
-/// What a provider driver runs on a new host to set it up.
-public enum HostSetup {
+/// Finds a shell script the app bundles by its name, without `.sh`, or nil when this build has
+/// none. The app answers from its bundle and a package test from the checkout, so the package
+/// never reads `Bundle.main`. `HostSetup` and `DaemonBootstrap` each look in a folder of their own.
+public typealias ScriptLocator = @Sendable (String) -> URL?
+
+/// What a provider driver runs on a new host to set it up: the scripts the app bundles under
+/// `host-setup`, found by `scripts`.
+public struct HostSetup: Sendable {
+  public let scripts: ScriptLocator
+
+  public init(scripts: @escaping ScriptLocator) {
+    self.scripts = scripts
+  }
+
   /// `Resources/host-setup/systemd.sh`: the identity unit and the daemon's supervisor, for a machine
   /// that runs systemd (boxd, exe.dev).
-  public static func systemdScript() throws -> String { try script("systemd") }
+  public func systemdScript() throws -> String { try script("systemd") }
 
   /// `Resources/host-setup/exedev-github.sh`: points an exe.dev VM's git and gh at exe.dev's
   /// GitHub integration.
-  public static func exeDevGitHubScript() throws -> String { try script("exedev-github") }
+  public func exeDevGitHubScript() throws -> String { try script("exedev-github") }
 
-  public static func script(_ name: String) throws -> String {
-    guard
-      let url = Bundle.main.url(forResource: name, withExtension: "sh", subdirectory: "host-setup")
+  public func script(_ name: String) throws -> String {
+    guard let url = scripts(name)
     else { throw HostDriverError.invalidConfiguration("this build has no host-setup/\(name).sh") }
     return try String(contentsOf: url, encoding: .utf8)
   }

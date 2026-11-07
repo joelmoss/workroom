@@ -88,7 +88,8 @@ extension XCTestCase {
     let driver: any HostTerminalDriver =
       provider
       ? ExeDevHostDriver(
-        configuration: .init(account: nil, sshAgent: "/agent.sock"), directory: directory)
+        configuration: .init(account: nil, sshAgent: "/agent.sock", hostSetup: .bundled),
+        directory: directory)
       : ContainerHostDriver(
         hosts: [
           host: .init(

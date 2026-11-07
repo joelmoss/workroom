@@ -1,16 +1,15 @@
 import CryptoKit
 import DaemonConnection
-import HostDrivers
 import WorkroomDomain
 import WorkroomSystem
-import WorkroomVCS
 import XCTest
 
-@testable import Workroom
+@testable import HostDrivers
 
 /// The exe.dev driver (#259) with exe.dev's ssh API stubbed: the user's own ssh it runs, its account
 /// guard, and how it reads `rm`. What it runs on a VM (setup, the readiness waits) goes over real
-/// ssh, so the live suite covers it.
+/// ssh, so the live suite covers it. The host-setup scripts come from the checkout
+/// (`HostSetup.checkout`); the app's side (`ExeDevSetup`, the create's log) is `ExeDevSetupTests`.
 final class ExeDevHostDriverTests: XCTestCase {
   /// Both of exe.dev's not-found answers, matched whole: anything else is not a removal.
   func testNotFoundIsExeDevsAnswerMatchedWhole() {
@@ -19,15 +18,6 @@ final class ExeDevHostDriverTests: XCTestCase {
     XCTAssertFalse(ExeDevHostDriver.isNotFound("not found"))
     XCTAssertFalse(ExeDevHostDriver.isNotFound(#"VM "a" is fine, "b" not found"#))
     XCTAssertFalse(ExeDevHostDriver.isNotFound("ssh: Could not resolve hostname: not found"))
-  }
-
-  // Value: protects=every exe.dev create can set up the VM's git; fails_when=the script is renamed,
-  // moved out of host-setup, or the name it is loaded by drifts; why_new=exedev-github_test.sh reads
-  // the source tree, not the app bundle, and the live suite is not run in CI; seam=none;
-  // no_claim=what the script does on a VM
-  /// The git setup a create runs on each VM ships in the app's bundle.
-  func testTheGitHubSetupScriptShipsInTheBundle() throws {
-    XCTAssertTrue(try HostSetup.exeDevGitHubScript().contains("github.int.exe.xyz"))
   }
 
   /// The ssh-agent is the app's own when it was launched with one, else the login shell's.
@@ -121,8 +111,8 @@ final class ExeDevHostDriverTests: XCTestCase {
       "wr-exedev-\(UUID().uuidString)")
     addTeardownBlock { try? FileManager.default.removeItem(at: root) }
     return ExeDevHostDriver(
-      configuration: .init(account: account, sshAgent: "/agent.sock"), directory: root,
-      runner: exe)
+      configuration: .init(account: account, sshAgent: "/agent.sock", hostSetup: .checkout),
+      directory: root, runner: exe)
   }
 
   /// The driver's ssh is the user's own, as `ssh exe.dev` in Terminal: no configuration of its own
@@ -249,55 +239,6 @@ final class ExeDevHostDriverTests: XCTestCase {
     XCTAssertEqual(elsewhere.commands, [])
   }
 
-  private final class Lines: @unchecked Sendable {
-    private let lock = NSLock()
-    private var heard: [(ProvisioningProgress.Step, String)] = []
-    var all: [(ProvisioningProgress.Step, String)] { lock.withLock { heard } }
-    func add(_ step: ProvisioningProgress.Step, _ line: String) {
-      lock.withLock { heard.append((step, line)) }
-    }
-  }
-
-  private struct Stop: Error {}
-
-  /// Value: protects=#483's command log, the repository grant a create runs first logs its exe.dev
-  /// commands under the `repository` step, without announcing a step of its own; fails_when=the
-  /// grant's commands are lost from the log, filed under another step, or restart the repository
-  /// row; no_claim=exe.dev's real answers (a stubbed lobby stands in)
-  func testACreatesRepositoryGrantIsLoggedUnderItsRepositoryStep() async throws {
-    let exe = StubExeDev([
-      "integrations list": Self.ok("[]"), "integrations add": Self.ok(""),
-    ])
-    let driver = driver(exe)
-    let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
-    let environment = RemoteProvisioning.Environment(
-      driver: driver, daemonSocket: driver.daemonSocket,
-      grantRepository: { repository in
-        try await driver.grantGitHub(
-          host: repository.host, owner: repository.owner, name: repository.name)
-      },
-      connect: { _ in throw Stop() })
-    let lines = Lines()
-    let steps = Lines()
-    let log: @Sendable (ProvisioningProgress.Step, String) -> Void = { lines.add($0, $1) }
-    let report: @Sendable (ProvisioningProgress.Step) -> Void = { steps.add($0, "") }
-    await ProvisioningProgress.$reportStep.withValue(report) {
-      await ProvisioningProgress.$log.withValue(log) {
-        _ = try? await RemoteWorkrooms.create(
-          repository: repository, cloneURL: "https://github.com/o/r.git",
-          key: .exeDev(account: "me@x.dev"), driver: driver, environment: environment,
-          recorder: RemoteWorkrooms.Recorder(
-            reserve: { _, _ in throw Stop() }, record: { _, _ in }, forget: { _ in }),
-          pendingIn: nil)
-      }
-    }
-    XCTAssertTrue(
-      lines.all.contains { $0.1.hasPrefix("$ ssh") && $0.1.contains("integrations add") },
-      "the grant's commands aren't logged: \(lines.all.map(\.1))")
-    XCTAssertTrue(lines.all.allSatisfy { $0.0 == .repository }, "\(lines.all.map(\.0))")
-    XCTAssertTrue(steps.all.isEmpty, "the grant announced a step: \(steps.all.map(\.0))")
-  }
-
   /// A repository exe.dev won't add an integration for (its owner hasn't installed exe.dev's
   /// GitHub App, as for a public upstream) is left to the clone: exe.dev serves public ones anyway.
   func testARepositoryExeDevWontGrantIsLeftToTheClone() async throws {
@@ -408,96 +349,6 @@ final class ExeDevHostDriverTests: XCTestCase {
       "echo 'ssh: connect to host exe.dev port 22: Connection refused' >&2; exit 255")
     let said = await refused.submit("me@x.dev")
     XCTAssertEqual(said, .said("ssh: connect to host exe.dev port 22: Connection refused"))
-  }
-
-  /// An account already ready goes straight to its create, checked once a launch; one that isn't
-  /// gets the setup, already read from the account.
-  @MainActor
-  func testOnlyAnAccountNotYetReadyHoldsTheCreate() async throws {
-    ExeDevSetup.confirmedThisLaunch = false
-    defer { ExeDevSetup.confirmedThisLaunch = false }
-    let ready = StubExeDev([
-      "billing plan": Self.ok(#"{"max_vms":5}"#), "integrations setup": Self.ok("  me ✓"),
-    ])
-    let none = await ExeDevSetup.needed(driver: driver(ready))
-    XCTAssertNil(none)
-    XCTAssertTrue(ExeDevSetup.confirmedThisLaunch)
-    let unchecked = StubExeDev([:])
-    let again = await ExeDevSetup.needed(driver: driver(unchecked))
-    XCTAssertNil(again)
-    XCTAssertEqual(unchecked.commands, [], "checked again in the same launch")
-
-    ExeDevSetup.confirmedThisLaunch = false
-    let unpaid = StubExeDev([
-      "billing plan": Self.ok(#"{"max_vms":0}"#), "integrations setup": Self.ok("  me ✓"),
-    ])
-    let setup = await ExeDevSetup.needed(driver: driver(unpaid))
-    XCTAssertEqual(setup?.plan, .needed)
-    XCTAssertFalse(ExeDevSetup.confirmedThisLaunch)
-  }
-
-  /// A check that fails says so under its step, rather than reading as a step not done; and a
-  /// link that answers after the sheet is gone opens nothing.
-  @MainActor
-  func testAFailedCheckSaysSoAndACancelledSheetOpensNothing() async throws {
-    var opened: [URL] = []
-    let exe = StubExeDev(
-      [
-        "billing plan": CommandResult(
-          stdout: #"{"error":"billing is down"}"#, stderr: "", exitCode: 1, timedOut: false),
-        "integrations setup": Self.ok("  me ✓"),
-        "browser": Self.ok(#"{"magic_link":"https://exe.dev/auth/verify?token=T"}"#),
-      ])
-    let setup = ExeDevSetup(driver: driver(exe), open: { opened.append($0) })
-    await setup.refresh()
-    XCTAssertEqual(setup.plan, .needed)
-    XCTAssertTrue(setup.planError?.contains("billing is down") == true, "\(setup.planError ?? "")")
-    // A check that couldn't answer doesn't hold the create back: exe.dev's own error decides.
-    XCTAssertTrue(setup.isReady)
-
-    // Check Again keeps a step the user is still finishing waiting, rather than "needed" again.
-    let unpaid = ExeDevSetup(
-      driver: driver(
-        StubExeDev([
-          "billing plan": Self.ok(#"{"max_vms":0}"#), "integrations setup": Self.ok("  me ✓"),
-          "browser": Self.ok(#"{"magic_link":"https://exe.dev/auth/verify?token=T"}"#),
-        ])),
-      open: { _ in })
-    await unpaid.refresh()
-    await unpaid.choosePlan()
-    XCTAssertEqual(unpaid.plan, .waiting)
-    await unpaid.checkAgain()
-    XCTAssertEqual(unpaid.plan, .waiting)
-    XCTAssertEqual(unpaid.account, .done("me@x.dev"))
-    unpaid.cancel()
-    setup.cancel()
-    await setup.choosePlan()
-    XCTAssertEqual(opened, [])
-    XCTAssertNotEqual(setup.plan, .waiting)
-  }
-
-  // Value: protects=Check Again turns a website step the user finished to done, enabling Create
-  // Workroom; fails_when=checkAgain keeps any step that was waiting waiting; why_new=only the
-  // still-undone case was tested; seam=none; no_claim=the polling that does the same unasked
-  /// Check Again after the user picked a plan finishes that step, and the sheet is ready.
-  @MainActor
-  func testCheckAgainFinishesAStepTheUserDid() async throws {
-    ExeDevSetup.confirmedThisLaunch = false
-    defer { ExeDevSetup.confirmedThisLaunch = false }
-    let exe = StubExeDev([
-      "billing plan": Self.ok(#"{"max_vms":0}"#), "integrations setup": Self.ok("  me ✓"),
-      "browser": Self.ok(#"{"magic_link":"https://exe.dev/auth/verify?token=T"}"#),
-    ])
-    let setup = ExeDevSetup(driver: driver(exe), open: { _ in })
-    await setup.refresh()
-    await setup.choosePlan()
-    XCTAssertEqual(setup.plan, .waiting)
-    XCTAssertFalse(setup.isReady)
-    exe.answer("billing plan", Self.ok(#"{"max_vms":5}"#))
-    await setup.checkAgain()
-    XCTAssertEqual(setup.plan, .done)
-    XCTAssertTrue(setup.isReady)
-    setup.cancel()
   }
 
   /// A key exe.dev doesn't know yet is answered in plain text on stdout, exit 1 (spike): that, like
@@ -641,8 +492,10 @@ final class ExeDevHostDriverTests: XCTestCase {
         CommandResult(stdout: scan, stderr: stderr, exitCode: 0, timedOut: false),
         knownHosts: knownHosts)
       do {
-        try await ExeDevHostDriver(configuration: .init(), directory: root, runner: runner)
-          .trustGatewayKey()
+        try await ExeDevHostDriver(
+          configuration: .init(hostSetup: .checkout), directory: root, runner: runner
+        )
+        .trustGatewayKey()
         return nil
       } catch {
         return error.localizedDescription
@@ -706,69 +559,6 @@ final class ExeDevHostDriverTests: XCTestCase {
       let result = try await driver(exe).planAllowsVMs()
       XCTAssertEqual(result, allows)
     }
-  }
-
-  /// A ready account goes straight to its create; a new one is asked for its email, with the
-  /// website steps after it; and a website step opens a link signed in to the account, then waits.
-  @MainActor
-  func testSetupAsksOnlyForWhatTheAccountLacks() async throws {
-    defer { ExeDevSetup.confirmedThisLaunch = false }
-    let ready = ExeDevSetup(
-      driver: driver(
-        StubExeDev([
-          "billing plan": Self.ok(#"{"max_vms":5}"#),
-          "integrations setup": Self.ok("  me ✓"),
-        ])))
-    await ready.refresh()
-    XCTAssertTrue(ready.isReady)
-
-    let new = ExeDevSetup(
-      driver: driver(
-        StubExeDev([
-          "whoami": CommandResult(
-            stdout: "Please complete registration by running: ssh exe.dev\r\n", stderr: "",
-            exitCode: 1, timedOut: false)
-        ])))
-    await new.refresh()
-    XCTAssertEqual(new.account, .needsEmail(error: nil))
-    XCTAssertFalse(new.isReady)
-
-    var opened: [URL] = []
-    let unpaid = ExeDevSetup(
-      driver: driver(
-        StubExeDev([
-          "billing plan": Self.ok(#"{"max_vms":0}"#),
-          "integrations setup": Self.ok("No GitHub accounts connected."),
-          "browser": Self.ok(#"{"magic_link":"https://exe.dev/auth/verify?token=T"}"#),
-        ])),
-      open: { opened.append($0) })
-    await unpaid.refresh()
-    XCTAssertEqual(unpaid.account, .done("me@x.dev"))
-    XCTAssertEqual([unpaid.plan, unpaid.gitHub], [.needed, .needed])
-    await unpaid.connectGitHub()
-    XCTAssertEqual(
-      opened.map(\.absoluteString),
-      ["https://exe.dev/auth/verify?token=T&redirect=%2Fintegrations%23github"])
-    XCTAssertEqual(unpaid.gitHub, .waiting)
-    unpaid.cancel()
-  }
-
-  /// A sign-up finished by hand runs the user's own `ssh exe.dev` in the sheet, with the agent the
-  /// driver's ssh uses, and the step waits on the account.
-  @MainActor
-  func testASignUpByHandRunsTheUsersOwnSSH() async {
-    let exe = StubExeDev([
-      "whoami": CommandResult(
-        stdout: "Please complete registration by running: ssh exe.dev\r\n", stderr: "",
-        exitCode: 1, timedOut: false)
-    ])
-    let setup = ExeDevSetup(driver: driver(exe))
-    await setup.refresh()
-    setup.useTerminal()
-    XCTAssertEqual(setup.account, .inTerminal)
-    XCTAssertEqual(
-      setup.signInCommand, "'/usr/bin/env' 'SSH_AUTH_SOCK=/agent.sock' '/usr/bin/ssh' 'exe.dev'")
-    setup.cancel()
   }
 
   /// A VM is made with no tag: a tag marked a base, which nothing makes any more.
