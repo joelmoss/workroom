@@ -240,7 +240,8 @@ struct CreationPaneActions {
 /// Its inputs are the pane's own (the run and whether it is active), so it re-runs exactly when the
 /// pane did; it reads nothing from the store in its body (the binding reads it in the pane's).
 struct CreationPaneAdapter: View {
-  @ObservedObject var run: CreationRun
+  /// Not observed here: the pane observes the run, and this body reads none of it.
+  let run: CreationRun
   var isActive = true
   @EnvironmentObject private var store: AppStore
 

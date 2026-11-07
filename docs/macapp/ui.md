@@ -78,11 +78,13 @@ A hosted test that renders a themed view injects a root too, as production does.
 `ThemeService.shared` stays for AppKit drawing, for picking a theme, and for `generation`, which
 keys the syntax highlighting.
 
-The pane views (everything under `Views/Terminal` but `TargetTerminalDetail`, and the toasts) ask
-their window through `@Environment(\.paneHost)`, a `PaneHost`, not `@EnvironmentObject AppStore`:
-the Quick Terminal's and a detached pane's windows inject no store. Every root that renders pane
-views injects one with `.paneHost(_:)`, as it injects the theme; reading it with none traps, as a
-missing environment object does. `DetachedPaneEnvironmentTests` holds the rule. Other views that
+The pane views (everything under `Views/Terminal` but `TargetTerminalDetail`, the content panes, the
+coding-agent views, the title bar's controls and the toasts) ask their window through
+`@Environment(\.paneHost)`, a `PaneHost`, not `@EnvironmentObject AppStore`: the Quick Terminal's
+and a detached pane's windows inject no store. Only main-window chrome may take the store from the
+environment, and `DetachedPaneEnvironmentTests` lists those types. Every root that renders pane
+views injects a host with `.paneHost(_:)`, as it injects the theme; reading it with none traps, as
+a missing environment object does. Other views that
 leave the store (the History and Changes panels, the toasts, the creation pane, the status bar) take
 a value read model and an `Actions` struct, built by a small `<Name>Adapter` view beside them that
 reads the store, so Observation stays where the view's reads were.
