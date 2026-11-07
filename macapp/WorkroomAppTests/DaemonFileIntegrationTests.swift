@@ -251,7 +251,7 @@ final class DaemonFileIntegrationTests: XCTestCase {
     let (connection, _) = try await connect()
     let reply = try await connection.fileRequest(DaemonFileRequest(method: "capabilities"))
     let capabilities = try DaemonFileReply<DaemonFileCapabilities>.decode(reply)
-    XCTAssertEqual(capabilities.maxReadBytes, PlainFileViewer.maxBytes)
+    XCTAssertEqual(capabilities.maxReadBytes, FileContentLoader.maxBytes)
     XCTAssertEqual(capabilities.version, 1)
   }
 

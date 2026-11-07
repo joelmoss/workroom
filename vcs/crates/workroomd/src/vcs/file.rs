@@ -44,7 +44,7 @@ pub const FILE_SERVICE_VERSION: u32 = 1;
 
 /// The largest read the service performs. A request for more is REJECTED, not clamped: a clamped
 /// read would hand the caller a silently short file, and the viewer's "too large" state is a
-/// decision the caller has to make itself. 8 MiB is `PlainFileViewer.maxBytes`; its base64 form
+/// decision the caller has to make itself. 8 MiB is `FileContentLoader.maxBytes`; its base64 form
 /// (10.7 MiB) stays under the 16 MiB reply ceiling, which is what lets `send`'s oversize branch be
 /// unreachable for this service.
 pub const MAX_READ_BYTES: u64 = 8 * 1024 * 1024;

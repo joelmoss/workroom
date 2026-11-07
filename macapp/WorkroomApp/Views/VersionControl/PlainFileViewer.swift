@@ -25,35 +25,12 @@ struct PlainFileViewer: View {
   /// The shared in-file find state (owned by `AppStore`). The focused viewer feeds it its lines.
   @ObservedObject var find: FileFindModel
 
-  @State private var state: LoadState = .loading
-  /// The id of whichever `.task(id:)` invocation most recently started a load at this
-  /// view-identity slot — a generation token, held ALONGSIDE `Task.isCancelled` rather than
-  /// instead of it. Retargeting this pane swaps the id value at a stable slot (the view instance is
-  /// reused, not recreated), and cancellation delivery for that shape does not measure the same
-  /// way everywhere: `AvatarView` measured `Task.isCancelled == false` throughout the outgoing
-  /// invocation in the live app (2026-08-13), while this view measured it DELIVERED in a hosted-view harness
-  /// (`DiffViewerStaleLoadTests`). The harness is not the app's view tree and the flag's delivery is
-  /// an unspecified SwiftUI detail, so the flag is the guard the test proves and the token is the
-  /// belt. `@State` survives the slot being reused, so whichever invocation started LAST wins.
-  @State private var activePath: String?
-  /// The displayed lines (capped — see `lineCap`), the always-available plain fallback.
-  @State private var lines: [String] = []
-  /// The (possibly line-capped) content the highlight task parses; kept so a theme change recolours
-  /// without re-reading the file.
-  @State private var content = ""
-  /// True when the file was longer than `lineCap` and only the head is shown.
-  @State private var truncated = false
+  /// The read, its stale-load guard and its classification. `@State`, so it lives as long as this
+  /// view's identity: a retarget to another file reuses it, a reopened tab starts a fresh one.
+  @State private var loader = FileContentLoader()
   /// Whether the Markdown preview has painted its first render. Until `__render` has run and WebKit
   /// has painted, the `WKWebView` is an empty rectangle, so the preview covers it with a themed panel.
   @State private var previewRendered = false
-  /// The themed, (optionally) syntax-highlighted content the `NSTextView` renders. Plain immediately
-  /// on load, upgraded when highlighting arrives / the theme changes.
-  @State private var attributed = NSAttributedString()
-  /// Bumped whenever `attributed` is replaced, so `CodeTextView` resets its text storage only then.
-  @State private var version = 0
-  /// Bumped when a file finishes loading, so the highlight task (keyed on it) re-runs against the
-  /// freshly loaded content without re-reading on every theme change.
-  @State private var loadToken = 0
   @Environment(\.themeTokens) private var tokens
   /// The theme's apply count, which keys the highlight and the Markdown render: a re-apply of the
   /// same theme still recolours them.
@@ -71,34 +48,11 @@ struct PlainFileViewer: View {
     SyntaxLanguage.grammar(forPath: path) == .markdown
   }
 
-  /// Files at or over this size aren't loaded (open them in an editor instead). Comfortably above
-  /// the 2 MB syntax-highlight cap, so a big-but-readable file still shows (plain).
-  static let maxBytes = 8 * 1024 * 1024
-  /// Most lines rendered. Bounds the highlight work; the head is shown with a note past it.
-  static let lineCap = 5000
   /// The code font, shared by the text view and the line-number ruler's alignment.
   static let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
 
-  enum LoadState: Equatable {
-    case loading
-    case text
-    case empty
-    case binary
-    case tooLarge
-    case failed(String)
-  }
-
-  /// The read outcome, classified purely from the file's bytes (no I/O) so the gating is
-  /// unit-testable. `.text` carries the decoded UTF-8 string.
-  enum Outcome: Equatable {
-    case empty
-    case binary
-    case tooLarge
-    case text(String)
-  }
-
   var body: some View {
-    content(for: state)
+    content(for: loader.state)
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       // Find bar (source mode only — preview has no in-text find), top-trailing over a focused pane.
       .overlay(alignment: .topTrailing) {
@@ -106,11 +60,15 @@ struct PlainFileViewer: View {
       }
       .background(tokens.bg)
       .task(id: descriptor.path) {
-        let myPath = descriptor.path
-        activePath = myPath
-        await load(path: myPath)
+        previewRendered = false  // a new file means a new render to wait for
+        let loaded = await loader.load(
+          path: descriptor.path, directory: directory, location: repositoryLocation,
+          tokens: tokens, font: Self.font)
+        if let loaded, isFocused { find.setSource(loaded) }  // search this file once it's on screen
       }
-      .task(id: highlightKey) { await applyHighlight() }
+      .task(id: highlightKey) {
+        await loader.applyHighlight(path: descriptor.path, tokens: tokens, font: Self.font)
+      }
       // Feed the find model this file's lines when focus arrives (or the file/content changes), so a
       // search runs against what's actually on screen.
       .onChange(of: isFocused) { _, focused in if focused { find.setSource(lines) } }
@@ -122,118 +80,23 @@ struct PlainFileViewer: View {
   /// Identity of the current highlight: file + theme generation + which load it's for. Any change
   /// cancels the in-flight highlight and starts a fresh, correctly-keyed one.
   private var highlightKey: String {
-    "\(descriptor.path)\u{1F}\(themeGeneration)\u{1F}\(loadToken)"
+    "\(descriptor.path)\u{1F}\(themeGeneration)\u{1F}\(loader.loadToken)"
   }
 
-  // MARK: Loading
-
-  private func load(path: String) async {
-    state = .loading
-    lines = []
-    attributed = NSAttributedString()
-    content = ""
-    truncated = false
-    previewRendered = false  // a new file means a new render to wait for
-    let outcome = await Self.loadOutcome(
-      directory: directory, location: repositoryLocation, relative: descriptor.path)
-    // Stale-write guard (see `activePath`): a slow read of the file this pane USED to show must
-    // never paint file A's text into file B's slot.
-    guard !Task.isCancelled, activePath == path else { return }
-    switch outcome {
-    case .none: state = .failed("File unavailable")
-    case .empty: state = .empty
-    case .binary: state = .binary
-    case .tooLarge: state = .tooLarge
-    case .text(let full):
-      var split = PlainFileViewer.splitLines(full)
-      if split.count > Self.lineCap {
-        split = Array(split.prefix(Self.lineCap))
-        truncated = true
-      }
-      lines = split
-      content = split.joined(separator: "\n")
-      // Show the content plain immediately; `applyHighlight` upgrades it with syntax colours.
-      attributed = FileHighlightMapper.nsAttributedString(
-        content: content, spans: [], tokens: tokens, font: Self.font)
-      version &+= 1
-      state = .text
-      loadToken &+= 1
-      if isFocused { find.setSource(split) }  // search this file once it's on screen
-    }
-  }
-
-  /// Build syntax highlighting for the loaded file, off-main and cancellable. Any miss (no grammar,
-  /// parse failure, stale/cancelled) leaves the file rendering plain — highlighting can never block
-  /// or break the viewer.
-  private func applyHighlight() async {
-    guard state == .text, !content.isEmpty else { return }
-    // Detect by path, then by the shebang on the first line — so an extension-less script
-    // (`#!/usr/bin/env bash`) still highlights. No grammar ⇒ keep the plain (already-shown) string.
-    guard let grammar = SyntaxLanguage.grammar(forPath: descriptor.path, firstLine: lines.first)
-    else { return }
-    let source = content
-    let highlighted = await FileHighlightMapper.highlighted(
-      content: source, grammar: grammar, tokens: tokens, font: Self.font)
-    guard !Task.isCancelled, source == content, let highlighted else { return }
-    attributed = highlighted
-    version &+= 1
-  }
-
-  // MARK: Pure helpers (unit-tested)
-
-  /// Read `relative` under `directory` through the file service and classify it, or `nil` when it
-  /// cannot be shown (`.failed`).
-  ///
-  /// The read runs on whichever host holds the file, and CONTAINMENT is enforced there, on the opened
-  /// descriptor: a committed symlink like `notes -> ~/.ssh/id_rsa` (the Files tree lists repo files)
-  /// is refused rather than showing the target's contents, and a FIFO or a file swapped for a link
-  /// mid-read cannot hang or escape. In-repo links are followed. This used to be a client-side
-  /// path check followed by a separate open, which a remote host would have lost entirely.
-  static func loadOutcome(
-    directory: String, location supplied: RepositoryLocation? = nil, relative: String,
-    router: RepositoryRouter = .shared
-  ) async -> Outcome? {
-    let resolved: RepositoryLocation? =
-      if let supplied { supplied } else { try? await RepositoryLocation.local(directory) }
-    guard let location = resolved else { return nil }
-    do {
-      let files = try await router.files(for: location)
-      let data = try await files.read(
-        path: relative, symlinks: .followWithinRoot, maxBytes: maxBytes)
-      return classify(data: data)
-    } catch FileServiceError.tooLarge {
-      return .tooLarge
-    } catch {
-      return nil
-    }
-  }
-
-  /// Classify a file's bytes into a render outcome. Empty → `.empty`; over `byteCap` → `.tooLarge`;
-  /// a NUL byte in the first 8 KB or non-UTF-8 → `.binary`; else the decoded text.
-  static func classify(data: Data, byteCap: Int = maxBytes) -> Outcome {
-    if data.isEmpty { return .empty }
-    if data.count > byteCap { return .tooLarge }
-    if data.prefix(8192).contains(0) { return .binary }
-    guard let string = String(data: data, encoding: .utf8) else { return .binary }
-    return .text(string)
-  }
-
-  /// Split into display lines, dropping the phantom empty line a trailing newline would add (so the
-  /// line count matches an editor's and `FileHighlightMapper`'s).
-  static func splitLines(_ text: String) -> [String] {
-    var lines = text.components(separatedBy: "\n")
-    if lines.count > 1, lines.last == "" { lines.removeLast() }
-    return lines
+  /// The displayed lines (capped — see `FileContentLoader.lineCap`), empty until a text file loads.
+  private var lines: [String] {
+    if case .loaded(let text) = loader.state { return text.lines }
+    return []
   }
 
   // MARK: Body
 
-  @ViewBuilder private func content(for state: LoadState) -> some View {
+  @ViewBuilder private func content(for state: LoadState<FileContentLoader.Text>) -> some View {
     switch state {
     case .loading:
       centered { ProgressView().controlSize(.small) }
-    case .text:
-      fileBody
+    case .loaded(let text):
+      fileBody(text)
     case .empty:
       MessageState("Empty file", systemImage: "doc")
     case .binary:
@@ -247,13 +110,13 @@ struct PlainFileViewer: View {
     }
   }
 
-  @ViewBuilder private var fileBody: some View {
+  @ViewBuilder private func fileBody(_ text: FileContentLoader.Text) -> some View {
     Group {
       if showingPreview {
         // Rendered Markdown in a themed WKWebView — GFM tables, task lists, and mermaid diagrams,
         // all bundled/offline. Read-only, selectable, with externally-opening links.
         MarkdownWebView(
-          markdown: content, tokens: tokens, generation: themeGeneration,
+          markdown: text.content, tokens: tokens, generation: themeGeneration,
           onFirstRender: {
             // The UI-test seam pins the loading state on screen; the real loader is far too
             // short-lived for XCUITest to catch reliably (see UITestFixture.holdPreviewLoader).
@@ -278,7 +141,7 @@ struct PlainFileViewer: View {
         // Source: an NSTextView (CodeTextView) — read-only, fully selectable across lines, with a
         // line-number gutter and find-match highlighting.
         CodeTextView(
-          attributed: attributed, version: version, tokens: tokens, find: find,
+          attributed: loader.attributed, version: loader.version, tokens: tokens, find: find,
           isFocused: isFocused
         )
       }
@@ -286,8 +149,8 @@ struct PlainFileViewer: View {
     // The line cap applies to `content`, which feeds BOTH modes — so the notice belongs to both.
     // Preview used to cut off at `lineCap` silently, with no cue that anything was missing.
     .overlay(alignment: .bottomLeading) {
-      if truncated {
-        Text("File truncated — showing the first \(Self.lineCap) lines.")
+      if text.truncated {
+        Text("File truncated — showing the first \(FileContentLoader.lineCap) lines.")
           .font(.footnote)
           .foregroundStyle(.secondary)
           .padding(.horizontal, 8).padding(.vertical, 4)

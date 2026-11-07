@@ -5,21 +5,6 @@ import SyntaxHighlighting
 import WorkroomGit
 import WorkroomVCS
 
-/// Stable identity for a `UnifiedDiff.Line` within ONE loaded diff (`DiffResolver` always resolves a
-/// single file's diff, so `UnifiedDiff.parse`'s own multi-file generality never actually applies here)
-/// — line numbers only increase across a file's hunks, so `(kind, oldLine, newLine)` is unique without
-/// needing a hunk/offset index. Used to map a `FileFindModel` match (an index into a flat line array)
-/// back to the specific rendered row, in both the unified and side-by-side layouts.
-struct DiffLineID: Hashable {
-  let kind: UnifiedDiff.Line.Kind
-  let oldLine: Int?
-  let newLine: Int?
-
-  static func id(for line: UnifiedDiff.Line) -> DiffLineID {
-    DiffLineID(kind: line.kind, oldLine: line.oldLine, newLine: line.newLine)
-  }
-}
-
 /// `unifiedBody`'s `ForEach` element — `Identifiable` by `DiffLineID` directly, so that identity is
 /// the ONE thing driving both the `List` row's diffing identity and its `ScrollViewReader` scroll-to
 /// target (see the doc comment at that `ForEach` for why a second, separate `.id()` modifier broke
@@ -75,7 +60,7 @@ struct DiffViewer: View {
   /// and changeset panes.
   @ObservedObject var find: FileFindModel
   /// The diff fetch, injectable so a test can hold one file's load open while the pane is retargeted
-  /// to another (the stale-write race `activeFetchKey` guards). Defaults to the real resolver.
+  /// to another (the stale-write race `DiffLoader` guards). Defaults to the real resolver.
   var resolveDiff: (DiffDescriptor, String) async -> DiffResult = {
     await DiffResolver().resolve($0, in: $1)
   }
@@ -88,62 +73,13 @@ struct DiffViewer: View {
     /// not a shared static, for the same reason `AvatarView.onCommit` is: the macOS XCTest host runs
     /// the real, fully-live app alongside the test's hosted view, so a global seam would also catch
     /// commits from unrelated `DiffViewer`s already on screen.
-    var onCommit: (@MainActor (LoadState) -> Void)? = nil
+    var onCommit: (@MainActor (LoadState<UnifiedDiff>) -> Void)? = nil
   #endif
 
-  @State private var state: LoadState = .loading
-  /// The file identity (`fetchKey`) the current diff was loaded for — so a spurious `.task` re-run
-  /// for the SAME file no-ops instead of re-entering `load()` (see the load task's comment).
-  @State private var loadedKey: FetchKey?
-  /// The id of whichever `.task(id:)` invocation most recently started a load at this
-  /// view-identity slot — a generation token, held ALONGSIDE `Task.isCancelled` rather than
-  /// instead of it. Retargeting this pane swaps the id value at a stable slot (the view instance is
-  /// reused, not recreated), and cancellation delivery for that shape does not measure the same
-  /// way everywhere: `AvatarView` measured `Task.isCancelled == false` throughout the outgoing
-  /// invocation in the live app (2026-08-13), while this view measured it DELIVERED in a hosted-view harness
-  /// (`DiffViewerStaleLoadTests`). The harness is not the app's view tree and the flag's delivery is
-  /// an unspecified SwiftUI detail, so the flag is the guard the test proves and the token is the
-  /// belt. `@State` survives the slot being reused, so whichever invocation started LAST wins.
-  @State private var activeFetchKey: FetchKey?
-  /// The same generation token for the highlight task (`.task(id: highlightKey)`), tracked
-  /// separately because the two tasks have independent keys and lifetimes.
-  @State private var activeHighlightKey: HighlightKey?
-  /// Syntax-highlighted new-side lines, keyed by 1-based new-file line number. Empty ⇒ render plain
-  /// (the always-available fallback). Built asynchronously off the diff render — highlighting can
-  /// never block or break the diff.
-  @State private var highlightedLines: [Int: AttributedString] = [:]
-  /// Syntax-highlighted OLD-side lines, keyed by 1-based old-file line number — for the diff's
-  /// DELETED lines (the new-side `highlightedLines` can't cover them). Built from the pre-image file
-  /// in `applyHighlight`; empty ⇒ deletions render plain (no pre-image / binary / add-only diff).
-  @State private var highlightedOldLines: [Int: AttributedString] = [:]
-  /// Bumped when a diff finishes loading, so the highlight task (keyed on it) re-runs against the
-  /// freshly loaded diff without re-fetching the diff on every theme change.
-  @State private var loadToken = 0
-  /// Intra-line change emphasis (line-relative byte ranges) for replaced lines — deletions by
-  /// `oldLine`, additions by `newLine`. Computed synchronously from the diff in `load()`.
-  @State private var emphasis: (deletions: [Int: Range<Int>], additions: [Int: Range<Int>]) =
-    ([:], [:])
-  /// Per-hunk side-by-side rows, paired once in `load()` (mirroring `emphasis`) so the layout isn't
-  /// re-derived on every render (highlight arrival, theme change). Empty unless a diff is loaded;
-  /// index-aligned with the loaded diff's `hunks`. Only consumed by `sideBySideBody`.
-  ///
-  /// Boxed in a non-`Equatable` reference type rather than stored as a bare array: a plain
-  /// `@State` array is a genuine AttributeGraph-tracked value, and every file switch reassigns it
-  /// against the PREVIOUS file's unrelated rows, forcing AG to structurally walk two nested
-  /// `Equatable` arrays (`_ArrayBuffer.count.getter` twice — outer hunks, inner rows) whose "equal
-  /// → skip" result is never useful (a different file's diff should never read as unchanged). A
-  /// near-cap (2000-line) diff with long lines made that walk run long enough to trip a Sentry App
-  /// Hang (WORKROOM-2S). The box makes AG's compare an O(1) reference check instead.
-  @State private var sbsRows: SideBySideRows?
-  /// Added/removed line counts of the loaded diff, paired once in `load()` (same pattern as
-  /// `emphasis`/`sbsRows`) rather than recomputed by walking every hunk/line on each render
-  /// (`fileHeader` reads it on every highlight/theme/mode-flip re-render). `nil` until loaded, or
-  /// when there's no line diff.
-  @State private var loadedStats: (additions: Int, removals: Int)?
-  /// The find source + line-identity index for the loaded diff (both the unified and side-by-side
-  /// orderings — see `FindIndex`'s doc). Boxed for the same AttributeGraph reason as `SideBySideRows`.
-  /// `nil` until a diff is loaded.
-  @State private var findIndex: FindIndex?
+  /// The load pipeline: its keys, stale-result guard, classification, and what is derived from the
+  /// loaded diff. `@State`, so it lives as long as this view's identity: a retarget to another file
+  /// reuses it (and its load-once guard), a reopened tab starts a fresh one.
+  @State private var loader = DiffLoader()
   /// Which layout is CURRENTLY on screen, tracked explicitly (not read inline from `showSideBySide`)
   /// so a flip can be observed and re-feed `find` with the newly-active ordering — unified and
   /// side-by-side show the same lines in a different visual order (see `FindIndex`), so `⌘G` must
@@ -158,71 +94,6 @@ struct DiffViewer: View {
   /// Below this content width a side-by-side diff's two half-width columns wrap code into tall
   /// blocks that ruin line comparison, so we render unified even when side-by-side is selected.
   private static let sideBySideMinWidth: CGFloat = 700
-
-  enum LoadState: Equatable {
-    case loading
-    case loaded(UnifiedDiff)
-    case binary
-    case empty
-    case tooLarge
-    case failed(String)
-  }
-
-  /// Reference-type box for `sbsRows` (see its doc) — deliberately not `Equatable`, so storing it
-  /// in `@State` makes AttributeGraph's write-time compare an identity check rather than a walk of
-  /// the wrapped arrays.
-  private final class SideBySideRows {
-    let rows: [[UnifiedDiff.SideBySideRow]]
-    init(_ rows: [[UnifiedDiff.SideBySideRow]]) { self.rows = rows }
-  }
-
-  /// Find source + line-identity index for a loaded diff, boxed for the same AttributeGraph reason as
-  /// `SideBySideRows` (rebuilt once per `load()`, not per render). Holds BOTH visual orderings: unified
-  /// (document order — one line per row) and side-by-side (row-major, left-then-right — rows pair a
-  /// deletion run with the addition run that follows it, so row count ≠ line count and the visual
-  /// order differs from document order). `⌘G` must step through whichever ordering is on screen.
-  private final class FindIndex {
-    let unifiedLines: [String]
-    let unifiedIDs: [DiffLineID]
-    let unifiedIndexByID: [DiffLineID: Int]
-    let sideBySideLines: [String]
-    let sideBySideIDs: [DiffLineID]
-    let sideBySideIndexByID: [DiffLineID: Int]
-
-    init(_ diff: UnifiedDiff, sbsRows: [[UnifiedDiff.SideBySideRow]]) {
-      let unified = DiffViewer.findSource(for: diff)
-      unifiedLines = unified.lines
-      unifiedIDs = unified.ids
-      #if DEBUG
-        precondition(
-          !DiffViewer.hasDuplicateIDs(unified.ids),
-          "DiffLineID collision in unified ordering — (kind,oldLine,newLine) invariant violated")
-      #endif
-      // `uniquingKeysWith` (not `Dictionary(uniqueKeysWithValues:)`): a collision — which the debug
-      // precondition above already asserts can't happen for any current call path — degrades to
-      // "first line wins" in RELEASE rather than crashing.
-      unifiedIndexByID = Dictionary(
-        zip(unifiedIDs, unifiedIDs.indices), uniquingKeysWith: { first, _ in first })
-
-      let sideBySide = DiffViewer.findSourceSideBySide(sbsRows: sbsRows)
-      sideBySideLines = sideBySide.lines
-      sideBySideIDs = sideBySide.ids
-      #if DEBUG
-        precondition(
-          !DiffViewer.hasDuplicateIDs(sideBySide.ids),
-          "DiffLineID collision in side-by-side ordering — (kind,oldLine,newLine) invariant violated"
-        )
-      #endif
-      sideBySideIndexByID = Dictionary(
-        zip(sideBySideIDs, sideBySideIDs.indices), uniquingKeysWith: { first, _ in first })
-    }
-
-    func lines(sideBySide: Bool) -> [String] { sideBySide ? sideBySideLines : unifiedLines }
-    func ids(sideBySide: Bool) -> [DiffLineID] { sideBySide ? sideBySideIDs : unifiedIDs }
-    func indexByID(sideBySide: Bool) -> [DiffLineID: Int] {
-      sideBySide ? sideBySideIndexByID : unifiedIndexByID
-    }
-  }
 
   var body: some View {
     Group {
@@ -244,61 +115,50 @@ struct DiffViewer: View {
     // Feed the find model this diff's lines (in whichever ordering is on screen) when focus arrives,
     // mirroring `PlainFileViewer.swift`'s equivalent `onChange`.
     .onChange(of: isFocused) { _, focused in
-      if focused { find.setSource(findIndex?.lines(sideBySide: isSideBySideActive) ?? []) }
+      if focused { find.setSource(findLines(sideBySide: isSideBySideActive)) }
     }
     // Re-fetch whenever the file or its source revision changes (preview retarget, tab switch).
     // Load ONCE per file identity: SwiftUI re-runs this `.task` on the same view instance when the
-    // body re-renders after `applyHighlight` populates `highlightedLines` (even though `fetchKey`
-    // is unchanged). Without this guard each such re-run re-enters `load()`, which resets
+    // body re-renders after `applyHighlight` populates `highlightedLines` (even though the fetch
+    // key is unchanged). Without this guard each such re-run re-enters `load`, which resets
     // `state = .loading`, which re-renders, which re-highlights… a ~150ms feedback loop that leaves
     // the diff pane stuck on its loader forever. Latent until commit-diff highlighting (issue #59)
     // made `applyHighlight` actually populate lines for a History file diff. A genuine file switch
-    // changes `fetchKey`; a tab reopen recreates the view (so `@State` resets) — both re-run.
-    .task(id: fetchKey) {
-      guard Self.shouldLoad(loadedKey: loadedKey, fetchKey: fetchKey) else { return }
-      let myKey = fetchKey
-      loadedKey = myKey
-      activeFetchKey = myKey
-      await load(key: myKey)
+    // changes the key; a tab reopen recreates the view (so the `@State` loader resets) — both
+    // re-run. The guard itself is `DiffLoader.loadIfNeeded`'s.
+    .task(id: loadRequest.key) {
+      guard await loader.loadIfNeeded(loadRequest) else { return }
+      if isFocused { find.setSource(findLines(sideBySide: isSideBySideActive)) }
+      #if DEBUG
+        onCommit?(loader.state)
+      #endif
     }
     // Build (or rebuild) highlighting once a diff is loaded, and re-colour on theme change. Keyed
     // on source+path+theme-generation+load-token so a superseded run is cancelled and a stale
     // result (wrong file or old theme) is never applied.
     .task(id: highlightKey) {
-      let myKey = highlightKey
-      activeHighlightKey = myKey
-      await applyHighlight(key: myKey)
+      await loader.applyHighlight(loadRequest, key: highlightKey, tokens: tokens)
     }
   }
 
-  /// Identity of the file+revision this diff is for — the load task's key and the re-load guard.
-  struct FetchKey: Hashable {
-    let location: RepositoryLocation?
-    let localDirectory: String
-    let source: DiffSource
-    let path: String
-  }
-  struct HighlightKey: Hashable {
-    let fetch: FetchKey
-    let theme: Int
-    let load: Int
-  }
-  private var fetchKey: FetchKey {
-    FetchKey(
-      location: repositoryLocation, localDirectory: directory,
-      source: descriptor.source, path: descriptor.path)
+  /// This view's inputs as the loader takes them.
+  private var loadRequest: DiffLoader.Request {
+    DiffLoader.Request(
+      descriptor: descriptor, directory: directory, repositoryLocation: repositoryLocation,
+      cannedDiffs: cannedDiffs, resolveDiff: resolveDiff)
   }
 
-  static func shouldLoad<Key: Equatable>(loadedKey: Key?, fetchKey: Key) -> Bool {
-    loadedKey != fetchKey
+  private var highlightKey: DiffLoader.HighlightKey {
+    loader.highlightKey(for: loadRequest.key, theme: ThemeService.shared.generation)
   }
 
-  private var highlightKey: HighlightKey {
-    HighlightKey(fetch: fetchKey, theme: ThemeService.shared.generation, load: loadToken)
+  /// The loaded diff's find source in the given ordering; empty until a diff is loaded.
+  private func findLines(sideBySide: Bool) -> [String] {
+    loader.findIndex?.lines(sideBySide: sideBySide) ?? []
   }
 
   @ViewBuilder private var content: some View {
-    switch state {
+    switch loader.state {
     case .loading:
       centered { ProgressView().controlSize(.small) }
     case .loaded(let diff):
@@ -334,7 +194,7 @@ struct DiffViewer: View {
           .font(.system(.caption, design: .monospaced))
           .lineLimit(1).truncationMode(.middle)
         Spacer(minLength: 8)
-        if let stats = loadedStats {
+        if let stats = loader.loadedStats {
           HStack(spacing: 6) {
             if stats.additions > 0 {
               Text("+\(stats.additions)").foregroundStyle(tokens.success)
@@ -365,145 +225,6 @@ struct DiffViewer: View {
   private var headerPathText: Text {
     let name = (descriptor.path as NSString).lastPathComponent
     return panePathText(prefix: String(descriptor.path.dropLast(name.count)), name: name)
-  }
-
-  private func resolveRepositoryDiff() async -> DiffResult {
-    if let repositoryLocation {
-      return await DiffResolver().resolve(descriptor, in: repositoryLocation)
-    }
-    return await resolveDiff(descriptor, directory)
-  }
-
-  private func repositoryFileContent(old: Bool) async -> String? {
-    let location: RepositoryLocation
-    if let repositoryLocation {
-      location = repositoryLocation
-    } else {
-      guard let local = try? await RepositoryLocation.local(directory) else { return nil }
-      location = local
-    }
-    return old
-      ? await DiffResolver().oldFileContent(for: descriptor, in: location)
-      : await DiffResolver().fileContent(for: descriptor, in: location)
-  }
-
-  private func load(key: FetchKey) async {
-    state = .loading
-    highlightedLines = [:]  // drop any previous file's colours immediately (no stale flash)
-    highlightedOldLines = [:]
-    // Canned diffs (the UI-test fixture's workroom path is a fake temp dir with no repo) are served
-    // instead of shelling out to git (issue #66 UI tests).
-    let result: DiffResult
-    if let cannedDiffs {
-      result = cannedDiffs.diff(descriptor)
-    } else {
-      result = await resolveRepositoryDiff()
-    }
-    // Stale-write guard. This path had NO staleness check at all, so a slow diff for the file this
-    // pane USED to show could land after a retarget and paint file A's diff, stats and find index
-    // into file B's slot — reproduced red/green by `DiffViewerStaleLoadTests`. The token half is the
-    // belt; see `activeFetchKey` for why both are here.
-    guard !Task.isCancelled, activeFetchKey == key else { return }
-    switch result {
-    case .diff(let diff): state = diff.hunks.isEmpty ? .empty : .loaded(diff)
-    case .binary: state = .binary
-    case .empty: state = .empty
-    case .tooLarge: state = .tooLarge
-    case .failed(let reason): state = .failed(reason)
-    }
-    // Intra-line (character-level) change emphasis is computed straight from the diff (no fetch),
-    // so it's available for the immediate render — additions/context get it folded into their
-    // syntax-highlighted run later, deletions and pre-parse lines use it directly in `lineRow`.
-    if case .loaded(let diff) = state {
-      emphasis = IntraLineDiff.emphasis(for: diff)
-      // Pair the side-by-side rows once here (same place/pattern as `emphasis`) — bounded by the
-      // line cap, so the layout never re-pairs on a render-only update (highlight, theme).
-      let pairedRows = diff.hunks.map(UnifiedDiff.sideBySideRows(for:))
-      sbsRows = SideBySideRows(pairedRows)
-      loadedStats = UnifiedDiff.lineStats(for: diff)
-      findIndex = FindIndex(diff, sbsRows: pairedRows)
-    } else {
-      emphasis = ([:], [:])
-      sbsRows = nil
-      loadedStats = nil
-      findIndex = nil
-    }
-    if isFocused { find.setSource(findIndex?.lines(sideBySide: isSideBySideActive) ?? []) }
-    loadToken &+= 1  // signal the highlight task to (re)build against this diff
-    #if DEBUG
-      onCommit?(state)
-    #endif
-  }
-
-  /// Build syntax highlighting for the loaded diff, off-main and cancellable. Any miss (no grammar,
-  /// no/blocked content, parse failure, stale/cancelled) leaves the diff rendering plain — this can
-  /// never block or break the diff. Only additions + context are coloured; deletions stay plain.
-  private func applyHighlight(key: HighlightKey) async {
-    guard case .loaded(let diff) = state else {
-      highlightedLines = [:]
-      return
-    }
-    // Resolve a grammar from the new path, falling back to the old (rename/delete) path.
-    let pathGrammar =
-      SyntaxLanguage.grammar(forPath: descriptor.path)
-      ?? diff.renamedFrom.flatMap { SyntaxLanguage.grammar(forPath: $0) }
-    // An extension-less file may still be detectable via its shebang, which needs the content — so
-    // don't bail before fetching in that case. A file with a known-but-unsupported extension still
-    // short-circuits to plain (no wasted content fetch).
-    let extensionless =
-      (descriptor.path as NSString).pathExtension.isEmpty
-      && (diff.renamedFrom.map { ($0 as NSString).pathExtension.isEmpty } ?? true)
-    guard pathGrammar != nil || extensionless else {
-      highlightedLines = [:]
-      return
-    }
-    // New-side content: canned with canned diffs, else the guarded VCS fetch folded into
-    // DiffResolver.
-    let content: String?
-    if let cannedDiffs {
-      content = cannedDiffs.fileContent(descriptor)
-    } else {
-      content = await repositoryFileContent(old: false)
-    }
-    guard !Task.isCancelled, activeHighlightKey == key else { return }
-    guard let content else {
-      highlightedLines = [:]
-      return
-    }
-    // Path detection first, then the shebang on the first line (extension-less scripts).
-    let firstLine = String(content.prefix { $0 != "\n" && $0 != "\r" })
-    guard let grammar = pathGrammar ?? SyntaxLanguage.grammar(forShebang: firstLine) else {
-      highlightedLines = [:]
-      return
-    }
-    // Parse, resolve captures and build the per-line strings off the main actor — CPU-bound,
-    // bounded by the byte cap and the diff's line cap.
-    let tokens = self.tokens
-    let additionEmphasis = emphasis.additions
-    let lines = await Task.detached(priority: .utility) {
-      let spans = SyntaxHighlighter.shared.spans(for: content, grammar: grammar)
-      return DiffHighlightMapper.attributedLines(
-        diff: diff, content: content, spans: spans, tokens: tokens,
-        additionEmphasis: additionEmphasis)
-    }.value
-    guard !Task.isCancelled, activeHighlightKey == key else { return }
-    highlightedLines = lines
-
-    // Old side: highlight the DELETED lines from the pre-image file (the new-side pass can't — they
-    // aren't in the new file). Only when the diff actually has deletions, and not with canned diffs
-    // (no pre-image source there → deletions render plain). Reuses the same grammar (same file).
-    guard diff.hunks.contains(where: { $0.lines.contains { $0.kind == .deletion } }) else { return }
-    let oldContent = cannedDiffs == nil ? await repositoryFileContent(old: true) : nil
-    guard !Task.isCancelled, activeHighlightKey == key, let oldContent else { return }
-    let deletionEmphasis = emphasis.deletions
-    let oldLines = await Task.detached(priority: .utility) {
-      let oldSpans = SyntaxHighlighter.shared.spans(for: oldContent, grammar: grammar)
-      return DiffHighlightMapper.attributedLines(
-        diff: diff, content: oldContent, spans: oldSpans, tokens: tokens,
-        side: .old, deletionEmphasis: deletionEmphasis)
-    }.value
-    guard !Task.isCancelled, activeHighlightKey == key else { return }
-    highlightedOldLines = oldLines
   }
 
   // MARK: Diff body
@@ -543,7 +264,7 @@ struct DiffViewer: View {
       .onChange(of: active, initial: true) { _, newValue in
         guard isSideBySideActive != newValue else { return }
         isSideBySideActive = newValue
-        if isFocused { find.setSource(findIndex?.lines(sideBySide: newValue) ?? []) }
+        if isFocused { find.setSource(findLines(sideBySide: newValue)) }
       }
     }
   }
@@ -598,7 +319,7 @@ struct DiffViewer: View {
   }
 
   /// Side-by-side body (issue #66): same `List` shell as `unifiedBody` (see its comment for why `List`,
-  /// WORKROOM-2T), but each hunk's rows come from the memoized `sbsRows` and render as a
+  /// WORKROOM-2T), but each hunk's rows come from the loader's memoized `sbsRows` and render as a
   /// left(old) | divider | right(new) `HStack`.
   private func sideBySideBody(_ diff: UnifiedDiff) -> some View {
     ScrollViewReader { proxy in
@@ -612,7 +333,9 @@ struct DiffViewer: View {
             .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
           // See the matching comment in `unifiedBody`: `Identifiable`-based, not a second `.id()`.
           ForEach(
-            rows(forHunk: index).map { IdentifiedSideBySideRow(id: Self.rowID(for: $0), row: $0) }
+            loader.rows(forHunk: index).map {
+              IdentifiedSideBySideRow(id: Self.rowID(for: $0), row: $0)
+            }
           ) { item in
             sideBySideRow(item.row)
               .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
@@ -640,7 +363,7 @@ struct DiffViewer: View {
   /// match's line id must be resolved to whichever ROW contains it — rows ≠ lines there (a deletion run
   /// pairs with the addition run that follows it into shared rows).
   private func scrollToMatch(_ proxy: ScrollViewProxy, sideBySide: Bool) {
-    guard isFocused, let findIndex else { return }
+    guard isFocused, let findIndex = loader.findIndex else { return }
     guard
       let id = Self.matchedLineID(
         match: find.currentMatch, ids: findIndex.ids(sideBySide: sideBySide))
@@ -650,7 +373,7 @@ struct DiffViewer: View {
       // The matched line's id may be the row's RIGHT side while the row's own `.id()` (`rowID(for:)`,
       // left-else-right) is keyed by its LEFT side — so check both sides for containment, then
       // resolve to the row's actual scroll-id, not the matched line's id directly.
-      scrollID = sbsRows?.rows.lazy.flatMap { $0 }.first(where: {
+      scrollID = loader.sbsRows?.rows.lazy.flatMap { $0 }.first(where: {
         $0.left.map(DiffLineID.id(for:)) == id || $0.right.map(DiffLineID.id(for:)) == id
       }).map(Self.rowID(for:))
     } else {
@@ -662,70 +385,7 @@ struct DiffViewer: View {
     }
   }
 
-  /// The memoized side-by-side rows for a hunk index (empty if out of range — should not happen, as
-  /// `sbsRows` is built from the same diff in `load()`).
-  private func rows(forHunk index: Int) -> [UnifiedDiff.SideBySideRow] {
-    Self.rows(in: sbsRows?.rows, forHunk: index)
-  }
-
-  /// Bounds-checked lookup into paired side-by-side rows for a hunk index — pulled out as a pure
-  /// static func (mirrors `shouldLoad`) so the boxed-`sbsRows` refactor (WORKROOM-2S: an AppHang
-  /// from AttributeGraph deep-comparing the array on every file switch) stays regression-tested
-  /// without needing a live view. A `nil` box (no diff loaded) or an out-of-range/negative index
-  /// reads empty rather than trapping.
-  static func rows(in rows: [[UnifiedDiff.SideBySideRow]]?, forHunk index: Int)
-    -> [UnifiedDiff.SideBySideRow]
-  {
-    guard let rows, index >= 0, index < rows.count else { return [] }
-    return rows[index]
-  }
-
   // MARK: Find
-
-  /// The unified find source: every line's text + identity, in document order across all hunks.
-  /// Excludes chrome that isn't rendered via `styledText` (hunk headers, the renamed-from note, the
-  /// truncated footer) — nothing there has a natural `DiffLineID`. Pure — unit-tested.
-  nonisolated static func findSource(for diff: UnifiedDiff) -> (lines: [String], ids: [DiffLineID])
-  {
-    let flat = diff.hunks.flatMap { $0.lines }
-    return (flat.map(\.text), flat.map(DiffLineID.id(for:)))
-  }
-
-  /// The side-by-side find source: row-major, left-then-right (reading order), so `⌘G` steps through
-  /// matches top-to-bottom the way the eye reads a two-column diff — NOT document order (which would
-  /// step through every deletion on the left, then jump back to the top for every addition on the
-  /// right, since `sideBySideRows` pairs a deletion run with the addition run that follows it into
-  /// shared rows). A context row's `left`/`right` are the SAME line (see `sideBySideRows`'s doc), so
-  /// it contributes exactly one entry, not two. Pure — unit-tested.
-  nonisolated static func findSourceSideBySide(sbsRows: [[UnifiedDiff.SideBySideRow]])
-    -> (lines: [String], ids: [DiffLineID])
-  {
-    var lines: [String] = []
-    var ids: [DiffLineID] = []
-    for hunkRows in sbsRows {
-      for row in hunkRows {
-        let leftID = row.left.map(DiffLineID.id(for:))
-        if let left = row.left, let leftID {
-          lines.append(left.text)
-          ids.append(leftID)
-        }
-        if let right = row.right {
-          let rightID = DiffLineID.id(for: right)
-          guard rightID != leftID else { continue }  // context row: left/right are the same line
-          lines.append(right.text)
-          ids.append(rightID)
-        }
-      }
-    }
-    return (lines, ids)
-  }
-
-  /// Whether `ids` contains a duplicate — the debug-only guard on the `(kind, oldLine, newLine)`
-  /// identity invariant (verified true for every current call path: a single file's diff). Kept as a
-  /// plain function rather than an inline `precondition` so it's unit-testable directly.
-  nonisolated static func hasDuplicateIDs(_ ids: [DiffLineID]) -> Bool {
-    Set(ids).count != ids.count
-  }
 
   /// A side-by-side row's scroll-to identity — its left line's id, or its right's if left is absent.
   /// Non-optional (`.id()` and `ScrollViewProxy.scrollTo` must agree on the SAME concrete `ID` type —
@@ -907,8 +567,8 @@ struct DiffViewer: View {
   private func styledAttributed(_ line: UnifiedDiff.Line, sideBySide: Bool) -> AttributedString {
     let highlighted: AttributedString? =
       line.kind == .deletion
-      ? line.oldLine.flatMap { highlightedOldLines[$0] }
-      : line.newLine.flatMap { highlightedLines[$0] }
+      ? line.oldLine.flatMap { loader.highlightedOldLines[$0] }
+      : line.newLine.flatMap { loader.highlightedLines[$0] }
     var base: AttributedString
     if let highlighted {
       base = highlighted  // syntax foreground + intra-line emphasis background
@@ -935,7 +595,7 @@ struct DiffViewer: View {
   private func findHits(for line: UnifiedDiff.Line, sideBySide: Bool) -> [(
     range: Range<Int>, isCurrent: Bool
   )] {
-    guard isFocused, let findIndex,
+    guard isFocused, let findIndex = loader.findIndex,
       let idx = findIndex.indexByID(sideBySide: sideBySide)[DiffLineID.id(for: line)]
     else { return [] }
     return find.highlights(onLine: idx)
@@ -974,8 +634,10 @@ struct DiffViewer: View {
   /// Whether `line` renders with a syntax-highlighted run — its new-side line (add/context) or its
   /// old-side line (deletion) was coloured. Drives the test-observable `accessibilityValue`.
   private func isHighlighted(_ line: UnifiedDiff.Line) -> Bool {
-    if line.kind == .deletion { return line.oldLine.flatMap { highlightedOldLines[$0] } != nil }
-    return line.newLine.flatMap { highlightedLines[$0] } != nil
+    if line.kind == .deletion {
+      return line.oldLine.flatMap { loader.highlightedOldLines[$0] } != nil
+    }
+    return line.newLine.flatMap { loader.highlightedLines[$0] } != nil
   }
 
   /// The intra-line-emphasised text for a replaced line (deeper tint behind the changed bytes), or
@@ -986,10 +648,10 @@ struct DiffViewer: View {
     let bg: Color
     switch line.kind {
     case .deletion:
-      range = line.oldLine.flatMap { emphasis.deletions[$0] }
+      range = line.oldLine.flatMap { loader.emphasis.deletions[$0] }
       bg = tokens.diffRemoveEmphasisBg
     case .addition:
-      range = line.newLine.flatMap { emphasis.additions[$0] }
+      range = line.newLine.flatMap { loader.emphasis.additions[$0] }
       bg = tokens.diffAddEmphasisBg
     case .context:
       return nil

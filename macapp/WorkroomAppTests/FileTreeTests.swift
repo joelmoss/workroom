@@ -127,37 +127,37 @@ final class FileTreeTests: XCTestCase {
     XCTAssertEqual(result, .interrupted)
   }
 
-  // MARK: PlainFileViewer.classify (read gating)
+  // MARK: FileContentLoader.classify (read gating)
 
   func testClassifyEmpty() {
-    XCTAssertEqual(PlainFileViewer.classify(data: Data()), .empty)
+    XCTAssertEqual(FileContentLoader.classify(data: Data()), .empty)
   }
 
   func testClassifyTooLarge() {
-    XCTAssertEqual(PlainFileViewer.classify(data: Data(count: 100), byteCap: 10), .tooLarge)
+    XCTAssertEqual(FileContentLoader.classify(data: Data(count: 100), byteCap: 10), .tooLarge)
   }
 
   func testClassifyBinaryFromNulByte() {
-    XCTAssertEqual(PlainFileViewer.classify(data: Data([0x41, 0x00, 0x42])), .binary)
+    XCTAssertEqual(FileContentLoader.classify(data: Data([0x41, 0x00, 0x42])), .binary)
   }
 
   func testClassifyBinaryFromInvalidUTF8() {
     // 0xFF/0xFE are not valid UTF-8 and contain no NUL → still binary (decode fails).
-    XCTAssertEqual(PlainFileViewer.classify(data: Data([0xFF, 0xFE, 0x41])), .binary)
+    XCTAssertEqual(FileContentLoader.classify(data: Data([0xFF, 0xFE, 0x41])), .binary)
   }
 
   func testClassifyText() {
     let data = Data("let x = 1\n".utf8)
-    XCTAssertEqual(PlainFileViewer.classify(data: data), .text("let x = 1\n"))
+    XCTAssertEqual(FileContentLoader.classify(data: data), .text("let x = 1\n"))
   }
 
-  // MARK: PlainFileViewer.splitLines
+  // MARK: FileContentLoader.splitLines
 
   func testSplitLinesDropsTrailingNewlinePhantom() {
-    XCTAssertEqual(PlainFileViewer.splitLines("a\nb\n"), ["a", "b"])
-    XCTAssertEqual(PlainFileViewer.splitLines("a\nb"), ["a", "b"])
-    XCTAssertEqual(PlainFileViewer.splitLines("a\n"), ["a"])
-    XCTAssertEqual(PlainFileViewer.splitLines(""), [""])
+    XCTAssertEqual(FileContentLoader.splitLines("a\nb\n"), ["a", "b"])
+    XCTAssertEqual(FileContentLoader.splitLines("a\nb"), ["a", "b"])
+    XCTAssertEqual(FileContentLoader.splitLines("a\n"), ["a"])
+    XCTAssertEqual(FileContentLoader.splitLines(""), [""])
   }
 
   // MARK: FileHighlightMapper.nsAttributedString (the string CodeTextView actually renders)
@@ -245,12 +245,12 @@ final class FileTreeTests: XCTestCase {
     XCTAssertEqual(roots.map(\.name), ["apple.txt", "File.txt", "file.txt", "Zebra.txt"])
   }
 
-  // MARK: PlainFileViewer.classify (boundary cases)
+  // MARK: FileContentLoader.classify (boundary cases)
 
   func testClassifyAtExactByteCapIsText() {
     // Only strictly over the cap is `.tooLarge`; exactly at the cap still loads.
     let data = Data("abcdefghij".utf8)  // 10 bytes
-    XCTAssertEqual(PlainFileViewer.classify(data: data, byteCap: 10), .text("abcdefghij"))
+    XCTAssertEqual(FileContentLoader.classify(data: data, byteCap: 10), .text("abcdefghij"))
   }
 
   func testClassifyNulPastScanWindowIsText() {
@@ -258,7 +258,7 @@ final class FileTreeTests: XCTestCase {
     // otherwise-valid-UTF-8 file still classifies as text (documented, bounded-scan behaviour).
     var bytes = [UInt8](repeating: 0x41, count: 9000)  // 'A' × 9000, past the 8 KB scan
     bytes[8500] = 0x00
-    guard case .text = PlainFileViewer.classify(data: Data(bytes)) else {
+    guard case .text = FileContentLoader.classify(data: Data(bytes)) else {
       return XCTFail("a NUL past the 8 KB scan window must not trip the binary probe")
     }
   }

@@ -26,7 +26,7 @@ final class FileHighlightBenchmarkTests: XCTestCase {
   // highlights to nothing (the walk would then time an early return); why_new=no repeatable
   // mapper timing existed; seam=none; no_claim=any speed threshold.
   func testMapperTimings() throws {
-    let content = BenchmarkFixtures.swiftSource(lines: PlainFileViewer.lineCap)
+    let content = BenchmarkFixtures.swiftSource(lines: FileContentLoader.lineCap)
     let spans = SyntaxHighlighter.shared.spans(for: content, grammar: .swift)
     XCTAssertGreaterThan(spans.count, 0, "the fixture highlighted to nothing")
     let tokens = ThemeService.shared.tokens
@@ -46,7 +46,7 @@ final class FileHighlightBenchmarkTests: XCTestCase {
     let sorted = elapsed.sorted()
     let line = String(
       format: "nsAttributedString, %d lines, %d spans: median %.1f ms (min %.1f, max %.1f, n=%d)",
-      PlainFileViewer.lineCap, spans.count, sorted[sorted.count / 2], sorted.first!,
+      FileContentLoader.lineCap, spans.count, sorted[sorted.count / 2], sorted.first!,
       sorted.last!, elapsed.count)
     print("\n=== File highlight mapper benchmark (Debug) ===\n\(line)")
     try BenchmarkFixtures.write(
@@ -54,7 +54,7 @@ final class FileHighlightBenchmarkTests: XCTestCase {
         "date": ISO8601DateFormatter().string(from: Date()),
         "os": ProcessInfo.processInfo.operatingSystemVersionString,
         "configuration": "Debug",
-        "lines": PlainFileViewer.lineCap, "spans": spans.count,
+        "lines": FileContentLoader.lineCap, "spans": spans.count,
         "median_ms": BenchmarkFixtures.round(sorted[sorted.count / 2]),
         "min_ms": BenchmarkFixtures.round(sorted.first!),
         "max_ms": BenchmarkFixtures.round(sorted.last!),

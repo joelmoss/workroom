@@ -26,7 +26,7 @@ struct ScriptCodeView: View {
   /// taller than it is. A long line that wraps adds rows this leaves out; the view scrolls then.
   static func contentHeight(of text: String) -> CGFloat {
     let lineHeight = NSLayoutManager().defaultLineHeight(for: PlainFileViewer.font)
-    return CGFloat(PlainFileViewer.splitLines(text).count) * lineHeight + 16
+    return CGFloat(FileContentLoader.splitLines(text).count) * lineHeight + 16
   }
 
   /// Plain at once, then with syntax colours worked out off-main, as `PlainFileViewer` does; a
@@ -36,7 +36,7 @@ struct ScriptCodeView: View {
     attributed = FileHighlightMapper.nsAttributedString(
       content: source, spans: [], tokens: tokens, font: PlainFileViewer.font)
     version &+= 1
-    let firstLine = PlainFileViewer.splitLines(source).first
+    let firstLine = FileContentLoader.splitLines(source).first
     guard let grammar = SyntaxLanguage.grammar(forPath: name, firstLine: firstLine) else { return }
     let highlighted = await FileHighlightMapper.highlighted(
       content: source, grammar: grammar, tokens: tokens, font: PlainFileViewer.font)

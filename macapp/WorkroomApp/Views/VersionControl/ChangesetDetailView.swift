@@ -103,7 +103,7 @@ struct ChangesetDetailView: View {
     Self.diffPaneHasContent(state: state, selectedPath: selectedPath)
   }
 
-  /// Pure form of `hasSearchableDiff` (mirrors `DiffViewer.shouldLoad`'s "extract the bounds-checked
+  /// Pure form of `hasSearchableDiff` (mirrors `DiffLoader.shouldLoad`'s "extract the bounds-checked
   /// logic" pattern) — unit-testable without hosting a live view. `false` for loading/failed/empty
   /// states, or a `selectedPath` that doesn't match any current file (a stale selection after a
   /// retarget) — every case where `diffPane` falls back to its "no file" message instead of a
