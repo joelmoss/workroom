@@ -903,8 +903,12 @@ final class GhosttySurfaceView: NSView {
   /// open). Lets the host skip the "stops any running process" close confirmation — there's nothing
   /// left running to lose (issue #7). False before the surface exists.
   var processHasExited: Bool {
-    surface.map { ghostty_surface_process_exited($0) } ?? false
+    if let processExitedOverrideForTesting { return processExitedOverrideForTesting }
+    return surface.map { ghostty_surface_process_exited($0) } ?? false
   }
+
+  /// Test seam: forces `processHasExited` (a test surface never spawns, so it never exits).
+  var processExitedOverrideForTesting: Bool?
 
   /// Test seam: forces `hasLiveProcess` (tests run with `spawnsSurface: false`, so there's no real
   /// PTY to report a live child). Production leaves this nil and reads libghostty.
