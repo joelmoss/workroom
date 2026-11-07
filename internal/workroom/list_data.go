@@ -43,12 +43,15 @@ type WorkroomInfo struct {
 }
 
 // ProjectInfo describes a project and its workrooms in the JSON contract. Host is the project's
-// host descriptor, verbatim; a project with one is still a local repository.
+// host descriptor, verbatim; a project with one is still a local repository. HasInclude is
+// whether the root has an include file (HasIncludeFile), so the app need not look for one itself;
+// it is absent at WarningsNone, which reads nothing but the config.
 type ProjectInfo struct {
 	Path       string         `json:"path"`
 	VCS        string         `json:"vcs"`
 	Host       any            `json:"host,omitempty"`
 	BaseBranch string         `json:"base_branch,omitempty"`
+	HasInclude *bool          `json:"has_include,omitempty"`
 	Workrooms  []WorkroomInfo `json:"workrooms"`
 }
 
@@ -120,6 +123,10 @@ func (s *Service) projectInfo(path string, project config.Project, level Warning
 	}
 
 	pinfo := ProjectInfo{Path: path, VCS: vcsType, Host: project.Host, BaseBranch: project.BaseBranch, Workrooms: []WorkroomInfo{}}
+	if checksDir {
+		hasInclude := HasIncludeFile(path)
+		pinfo.HasInclude = &hasInclude
+	}
 	for _, name := range names {
 		wr := project.Workrooms[name]
 		wi := WorkroomInfo{Name: name, Path: wr.Path, VCSName: "workroom/" + name, Host: wr.Host, Warnings: []Warning{}}

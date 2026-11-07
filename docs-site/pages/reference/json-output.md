@@ -38,7 +38,7 @@ The schema is versioned with `schema_version`, currently `1`. Adding a field is 
 
 - `create` returns `name`, `path`, `vcs` and `project`. On Nightly it adds a `warning` string when the new workroom starts from out-of-date refs or from a fallback base.
 - `delete` returns `name`.
-- `list` returns `projects`, `workrooms_dir` and `config_path`. Each project has `path`, `vcs` and `workrooms`, and each workroom has `name`, `path`, `vcs_name` and `warnings`. On Nightly, a workroom or project on another host also has a `host` object. On Nightly, `list` adds `base_branch` at the top level for the global default, and to each project that sets its own. Without a setting the field is absent.
+- `list` returns `projects`, `workrooms_dir` and `config_path`. Each project has `path`, `vcs` and `workrooms`, and each workroom has `name`, `path`, `vcs_name` and `warnings`. On Nightly, a workroom or project on another host also has a `host` object. On Nightly, `list` adds `base_branch` at the top level for the global default, and to each project that sets its own. Without a setting the field is absent. On Nightly, each project also has `has_include`, true when its root has a `.worktreeinclude`. It is absent with `--warnings none`, which reads only the config.
 - On Nightly, `base set` and `base clear` return `{"project": …, "base_branch": …}`, or `{"global": true, "base_branch": …}` with `--global`.
 
 The `warnings` on a workroom have a `kind` and a `message`. The kinds are `DirectoryMissing` and `VCSWorkroomMissing`. On Nightly there is a third, `HostDestroyed`, for a remote workroom whose host its provider destroyed. A remote workroom never gets the first two.

@@ -232,7 +232,7 @@ func (s *Service) base(dir string) (base string, global bool, err error) {
 // skipped.
 func (s *Service) copyIncluded(root, wrPath string) (string, []string) {
 	// Announced before the listing, which takes a second or so in a root with a large ignored tree.
-	if _, err := os.Stat(filepath.Join(root, IncludeFile)); err != nil {
+	if !HasIncludeFile(root) {
 		return "", nil
 	}
 	s.step("include", "running", "")

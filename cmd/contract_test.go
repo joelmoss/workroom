@@ -257,6 +257,10 @@ func TestContractList(t *testing.T) {
 	if err := cfg.AddProject(empty, "git"); err != nil {
 		t.Fatal(err)
 	}
+	// app has an include file and empty has none, so has_include is in the golden both ways.
+	if err := os.WriteFile(filepath.Join(app, ".worktreeinclude"), []byte(".env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	run := runCLI(t, "list", "--json", "--warnings=full")
 	if run.code != 0 {
