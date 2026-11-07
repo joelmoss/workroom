@@ -226,11 +226,13 @@ final class HistoryRowInvalidationTests: XCTestCase {
   /// The equality gate must not swallow a THEME repaint.
   ///
   /// This is the one regression `.equatable()` could plausibly cause, and the reasoning that says it
-  /// can't is subtle enough to be worth pinning: rows read `ThemeService.shared.tokens`, and Observation
-  /// registers that dependency per body evaluation against the body attribute itself — so an
-  /// observation-driven invalidation re-runs the body regardless of the row values comparing equal.
-  /// If SwiftUI ever changed that, every History row would keep its old colours after a theme switch
-  /// until something else happened to change a row value.
+  /// can't is subtle enough to be worth pinning: rows read `\.themeTokens`, and a changed environment
+  /// value re-runs a body that declares it regardless of the row values comparing equal, and
+  /// regardless of whether its last pass read it (an unselected, unhovered row's token reads sit in
+  /// untaken ternary branches). The rows carry no theme input of their own, so this is the only
+  /// path: measured at 8 of the 8 realized rows rebuilt. If SwiftUI
+  /// ever changed that, every History row would keep its old colours after a theme switch until
+  /// something else happened to change a row value.
   func testThemeChangeRebuildsRows() async throws {
     let provider = FixedPageProvider(commits: commits(20))
     let store = await makeStore(provider)

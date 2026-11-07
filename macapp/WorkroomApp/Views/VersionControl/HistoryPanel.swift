@@ -19,11 +19,11 @@ import WorkroomVCS
 /// EVERY HistoryRow (@ObservedObject)         HistoryPanel.body — ONE pass
 ///   │                                          │ LazyVStack: ForEach builds REALIZED rows only
 ///   ▼                                          ▼
-/// N × body: MD5 + 16×String(format:)         HistoryRow == (commit, pushScope,
-///         + URL parse + AsyncImage                          isSelected, themeGeneration)
-///   = 2000 ms                                  │ equal → body SKIPPED
-///                                              ▼
-///                                            selection/theme moved → affected rows rebuild
+/// N × body: MD5 + 16×String(format:)         HistoryRow == (commit, pushScope, isSelected)
+///         + URL parse + AsyncImage             │ equal → body SKIPPED
+///   = 2000 ms                                  ▼
+///                                            selection moved → affected rows rebuild
+///                                            theme switch → \.themeTokens rebuilds every row
 /// ```
 ///
 /// So: the panel owns the `TerminalPanes` dependency and resolves the focused tab **once**
@@ -86,7 +86,6 @@ struct HistoryPanel: View {
     // Resolved once per panel body pass, and only here, while the list shows; handed to the rows as
     // a value (see the type doc's invalidation diagram).
     let selected = inputs.selectedCommitID()
-    let themeGeneration = inputs.themeGeneration
     return ScrollView {
       // `LazyVStack`, so a 1000-commit page costs the ~8 rows on screen rather than all of them. Safe
       // here and NOT in `DiffViewer` (which documents rejecting it at `unifiedBody`): these rows are
@@ -101,7 +100,6 @@ struct HistoryPanel: View {
             pushScope: model.pushScope,
             // Resolved once above, not per row: rows must not reach the stores for this.
             selectedCommitID: selected,
-            themeGeneration: themeGeneration,
             // Behaviour-constant (see `HistoryPanelActions.open`), which is what lets `HistoryRow.==`
             // exclude it.
             open: actions.open
@@ -163,16 +161,6 @@ struct HistoryPanelInputs {
   /// reads (the selected target's panes, which a terminal pulses many times a second) are the panel's
   /// Observation dependency only then, and are never its builder's.
   var selectedCommitID: () -> String?
-  /// `ThemeService.generation`, handed to the rows so their equality gate can see a theme change.
-  ///
-  /// Why this is not belt-and-braces: a row reads `tokens` only inside ternaries
-  /// (`isSelected ? accent : …`, `hovering ? rowHover : .clear`), and Swift evaluates just the taken
-  /// branch — so an unselected, unhovered row reads NO token and therefore registers no observation.
-  /// It used to repaint anyway, by accident: applying a theme also re-themes live terminals, which
-  /// republished `TerminalPanes`, which every row observed. Removing that observation (the App Hang
-  /// fix) removed the accidental repaint with it, and the unpushed badge's warning tint would have
-  /// stayed stale until something else invalidated the row.
-  var themeGeneration: Int
 }
 
 /// What `HistoryPanel` does.
@@ -190,8 +178,7 @@ struct HistoryPanelActions {
 ///
 /// It reads the inspector's target and whether the History section shows; the focused tab and the
 /// model's state are read by the panel, as before. The store is observed through Observation, so
-/// this re-evaluates only when those reads (and the theme generation) change, which are the
-/// panel's inputs, so the panel needs no equality gate of its own; a terminal pulse reaches the
+/// this re-evaluates only when those reads change, which are the panel's inputs, so the panel needs no equality gate of its own; a terminal pulse reaches the
 /// panel and not this.
 struct HistoryPanelAdapter: View {
   @EnvironmentObject var store: AppStore
@@ -209,8 +196,7 @@ struct HistoryPanelAdapter: View {
       // `store.terminals` is read only in here, which the panel calls (see `HistoryPanelInputs`).
       selectedCommitID: { [store] in
         FocusedTabSelection.current(store: store, sessions: store.terminals)?.changesetCommitID
-      },
-      themeGeneration: ThemeService.shared.generation
+      }
     )
   }
 
@@ -272,10 +258,6 @@ struct HistoryRow: View, Equatable {
   /// `@ObservedObject TerminalPanes` just to compute the comparison below, which is what made a
   /// terminal title/activity pulse rebuild every row in the pane (WORKROOM-2B).
   let selectedCommitID: String?
-  /// `ThemeService.generation`, so a theme change makes this row's equality gate report "changed".
-  /// Load-bearing: the row's token reads sit inside ternaries, so an unselected, unhovered row reads no
-  /// token and registers no Observation dependency of its own (see `HistoryPanelInputs`).
-  let themeGeneration: Int
   /// Open the commit's changeset detail as a tab. `persist` false previews (single click), true
   /// persists (quick double-click).
   let open: (_ commit: VCSCommit, _ persist: Bool) -> Void
@@ -292,13 +274,15 @@ struct HistoryRow: View, Equatable {
   /// `[store]` capture list over a `static` title helper, so two instances differing only in closure
   /// identity are behaviourally identical. If that closure ever captures per-pass state, this `==` must start
   /// comparing it — or go away. `@State` and the theme environment invalidate the body directly, past
-  /// this gate, so hover and theme repaints are unaffected.
+  /// this gate, so hover and theme repaints are unaffected. The theme needs no input here: a changed
+  /// `\.themeTokens` rebuilds every row, even one whose body reads no token (its token reads sit in
+  /// ternaries), as `HistoryRowInvalidationTests.testThemeChangeRebuildsRows` measures.
   /// Compares the DERIVED `isSelected`, not the raw `selectedCommitID`: when selection moves from one
   /// row to another, only the two rows whose own selected-ness changed compare unequal — the rest of
   /// the realized page stays elided.
   nonisolated static func == (lhs: HistoryRow, rhs: HistoryRow) -> Bool {
     lhs.commit == rhs.commit && lhs.pushScope == rhs.pushScope
-      && lhs.isSelected == rhs.isSelected && lhs.themeGeneration == rhs.themeGeneration
+      && lhs.isSelected == rhs.isSelected
   }
 
   #if DEBUG
@@ -474,8 +458,7 @@ struct HistoryRefChips: View {
     HistoryPanel(
       model: model,
       inputs: HistoryPanelInputs(
-        hasTarget: true, activationKey: "preview", selectedCommitID: { "fixturecommit2" },
-        themeGeneration: 0),
+        hasTarget: true, activationKey: "preview", selectedCommitID: { "fixturecommit2" }),
       actions: HistoryPanelActions(
         activate: { model.activate(target: target) }, open: { _, _ in })
     )
