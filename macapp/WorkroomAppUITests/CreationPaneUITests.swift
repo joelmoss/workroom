@@ -82,7 +82,7 @@ final class CreationPaneUITests: XCTestCase {
     let (app, log) = finishedCreateWithLogOpen()
     let width = log.frame.width
     let origin = log.coordinate(withNormalizedOffset: .zero)
-    origin.withOffset(CGVector(dx: 11, dy: 16)).press(
+    origin.withOffset(CGVector(dx: 11, dy: 16)).click(
       forDuration: 0.3, thenDragTo: origin.withOffset(CGVector(dx: width - 4, dy: 30)))
     let copied = copiedText(app)
     XCTAssertTrue(copied?.contains("\nDone.") == true, "copied \(copied ?? "nothing")")
