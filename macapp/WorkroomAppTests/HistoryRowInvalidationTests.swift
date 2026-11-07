@@ -119,7 +119,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
   /// section, ~8 rows' worth) so "how many rows does it build" is a meaningful question.
   private func host(_ store: AppStore) -> (NSWindow, NSView) {
     // Rooted as the inspector roots it (`InspectorPaneViewController.setContent`).
-    let root = HistoryPanel(model: store.commitHistory, sessions: store.terminals)
+    let root = HistoryPanelAdapter(model: store.commitHistory, sessions: store.terminals)
       .themeTokensRoot()
       .environmentObject(store)
       .environmentObject(store.notifications)

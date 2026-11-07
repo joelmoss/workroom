@@ -199,7 +199,7 @@ struct RightInspector: View {
       // `sessions:` is injected, not read from the store inside the panel, because the panel must
       // OBSERVE it (that is what replaced every row observing it — see `HistoryPanel`'s type doc).
       return AnyView(
-        HistoryPanel(model: store.commitHistory, sessions: store.terminals)
+        HistoryPanelAdapter(model: store.commitHistory, sessions: store.terminals)
           .environmentObject(store).environmentObject(notifications))
     }
   }

@@ -27,25 +27,24 @@ import WorkroomVCS
 /// ```
 ///
 /// So: the panel owns the `TerminalPanes` dependency and resolves the focused tab **once**
-/// (`FocusedTabSelection`); rows receive plain values and observe nothing. Measured by
+/// (`inputs.selectedCommitID`); rows receive plain values and observe nothing. Measured by
 /// `HistoryRowInvalidationTests` — a pulse burst must rebuild zero rows, and a selection or content
 /// change must still rebuild the affected ones.
+///
+/// Store-free: `HistoryPanelAdapter` builds `inputs` and `actions` from the window's `AppStore`.
 struct HistoryPanel: View {
-  @EnvironmentObject var store: AppStore
   /// Injected + `@ObservedObject` (mirrors `FilesPanel`), NOT read via `store.commitHistory`: the
   /// panel must subscribe to the model's own `@Published` state so its `.loading → .loaded` flip
   /// re-renders the pane. `AppStore` doesn't forward `commitHistory`'s `objectWillChange`, so a plain
   /// `store.commitHistory` read only refreshed when some *unrelated* store change happened to publish
   /// (a status refresh, a reselection, an app refocus) — leaving the loader stuck until then.
   @ObservedObject var model: HistoryModel
-  /// Read HERE, deliberately, and nowhere below: this is the one view that needs to know which
-  /// content tab is focused. It reads the selected target's panes through Observation, so one panel
-  /// body pass per change there is the cost; N row bodies was not (see the diagram above).
-  let sessions: TerminalPanes
+  let inputs: HistoryPanelInputs
+  let actions: HistoryPanelActions
 
   var body: some View {
     Group {
-      if store.inspectorTargetID == nil {
+      if !inputs.hasTarget {
         // No active workspace (nothing selected, or the selected workroom has no open tabs) — empty
         // out to match the detail pane's "No terminal" state rather than show a stale last workroom.
         InlineMessage("No open terminal", systemImage: "clock", glyphStyle: .secondary)
@@ -78,52 +77,16 @@ struct HistoryPanel: View {
     // Point the model at the inspector's active target (nil once all its tabs close → History
     // clears), only while the History section is showing (its pane active and the section expanded).
     // Mirrors FilesPanel; `focus` no-ops when already on the path.
-    .task(id: activationKey) {
-      guard store.historySectionShown else { return }
-      // `activate` (not `focus`): on re-entry with the same workroom it pulls fresh (and retries a
-      // prior failure), so switching away and back after a terminal commit shows the new log — where
-      // `focus` would no-op on the unchanged root. The store's eager `focus` on selection still fires
-      // first; `activate`'s settled-state guard means this won't double that fresh load.
-      model.activate(target: store.inspectorTarget)
-    }
-  }
-
-  private var activationKey: String {
-    "\(store.inspectorTargetID?.targetID?.encoded ?? "")"
-      + "\u{1F}\(store.historySectionShown)"
-  }
-
-  /// The commit id of the focused changeset tab, or `nil`. Resolved once per panel body pass and handed
-  /// to the rows as a value — the row-level `isSelected` this replaced is what made every row observe
-  /// `AppStore` + `TerminalPanes` (see the type doc's invalidation diagram).
-  private var selectedCommitID: String? {
-    FocusedTabSelection.current(store: store, sessions: sessions)?.changesetCommitID
-  }
-
-  /// The changeset tab's title for a commit — its summary, or the short id when it has none.
-  ///
-  /// `static` so the `open:` closure below can be written with an explicit `[store]` capture list and
-  /// provably capture nothing per-pass: `HistoryRow`'s hand-written `==` excludes that closure, and the
-  /// exclusion is only sound while the closure is behaviour-constant.
-  private static func title(_ commit: VCSCommit) -> String {
-    commit.summary.isEmpty ? commit.shortID : commit.summary
+    .task(id: inputs.activationKey) { actions.activate() }
   }
 
   /// The commit rows in a SwiftUI `ScrollView` (the History pane hosts its body in fill mode, so this
   /// owns the scrolling rather than the AppKit `NSScrollView`).
   private var list: some View {
-    let selected = selectedCommitID
-    // Read HERE so the panel itself has an Observation dependency on the theme, and pass it down so the
-    // rows' equality gate can see a theme change.
-    //
-    // Why this is not belt-and-braces: a row reads `tokens` only inside ternaries
-    // (`isSelected ? accent : …`, `hovering ? rowHover : .clear`), and Swift evaluates just the taken
-    // branch — so an unselected, unhovered row reads NO token and therefore registers no observation.
-    // It used to repaint anyway, by accident: applying a theme also re-themes live terminals, which
-    // republished `TerminalPanes`, which every row observed. Removing that observation (the App Hang
-    // fix) removed the accidental repaint with it, and the unpushed badge's warning tint would have
-    // stayed stale until something else invalidated the row.
-    let themeGeneration = ThemeService.shared.generation
+    // Resolved once per panel body pass, and only here, while the list shows; handed to the rows as
+    // a value (see the type doc's invalidation diagram).
+    let selected = inputs.selectedCommitID()
+    let themeGeneration = inputs.themeGeneration
     return ScrollView {
       // `LazyVStack`, so a 1000-commit page costs the ~8 rows on screen rather than all of them. Safe
       // here and NOT in `DiffViewer` (which documents rejecting it at `unifiedBody`): these rows are
@@ -139,17 +102,9 @@ struct HistoryPanel: View {
             // Resolved once above, not per row: rows must not reach the stores for this.
             selectedCommitID: selected,
             themeGeneration: themeGeneration,
-            // Open the commit's changeset. Preview on a single click, persist on a quick
-            // double-click. `[store]` + `Self.title` on purpose: the capture list is what makes this
-            // closure behaviour-constant, which is what lets `HistoryRow.==` exclude it.
-            open: { [store] target, persist in
-              if persist {
-                store.openChangesetPersistent(
-                  commitID: target.commitID, title: Self.title(target))
-              } else {
-                store.openChangesetPreview(commitID: target.commitID, title: Self.title(target))
-              }
-            }
+            // Behaviour-constant (see `HistoryPanelActions.open`), which is what lets `HistoryRow.==`
+            // exclude it.
+            open: actions.open
           ).equatable()
         }
         if !model.reachedEnd, model.atWindowCap {
@@ -194,6 +149,103 @@ struct HistoryPanel: View {
   }
 }
 
+/// What `HistoryPanel` reads from outside its model.
+struct HistoryPanelInputs {
+  /// Whether the inspector has a target. Without one (nothing selected, or the selected workroom has
+  /// no open tabs) the pane empties out.
+  var hasTarget: Bool
+  /// Changes when the inspector's target changes or the History section shows or hides; the panel
+  /// re-runs `HistoryPanelActions.activate` on each.
+  var activationKey: String
+  /// The commit id of the focused changeset tab, or `nil`.
+  ///
+  /// A closure, not a value: the panel calls it only while the list is showing, so the focused tab's
+  /// reads (the selected target's panes, which a terminal pulses many times a second) are the panel's
+  /// Observation dependency only then, and are never its builder's.
+  var selectedCommitID: () -> String?
+  /// `ThemeService.generation`, handed to the rows so their equality gate can see a theme change.
+  ///
+  /// Why this is not belt-and-braces: a row reads `tokens` only inside ternaries
+  /// (`isSelected ? accent : …`, `hovering ? rowHover : .clear`), and Swift evaluates just the taken
+  /// branch — so an unselected, unhovered row reads NO token and therefore registers no observation.
+  /// It used to repaint anyway, by accident: applying a theme also re-themes live terminals, which
+  /// republished `TerminalPanes`, which every row observed. Removing that observation (the App Hang
+  /// fix) removed the accidental repaint with it, and the unpushed badge's warning tint would have
+  /// stayed stale until something else invalidated the row.
+  var themeGeneration: Int
+}
+
+/// What `HistoryPanel` does.
+struct HistoryPanelActions {
+  /// Point the model at the inspector's target, if the History section is showing.
+  var activate: () -> Void
+  /// Open a commit's changeset: preview on a single click, persist on a quick double-click.
+  ///
+  /// Must be behaviour-constant, capturing nothing that changes between body passes:
+  /// `HistoryRow.==` excludes it.
+  var open: (_ commit: VCSCommit, _ persist: Bool) -> Void
+}
+
+/// Builds `HistoryPanel`'s inputs and actions from the window's `AppStore`.
+///
+/// It reads the inspector's target and whether the History section shows; the focused tab and the
+/// model's state are read by the panel, as before. So this re-evaluates when the History pane's
+/// target or visibility change, and a terminal pulse reaches the panel and not this.
+struct HistoryPanelAdapter: View {
+  @EnvironmentObject var store: AppStore
+  /// Passed through, not observed here: the panel observes it.
+  let model: HistoryModel
+  /// Read only inside `inputs.selectedCommitID`, which the panel calls (see `HistoryPanelInputs`).
+  let sessions: TerminalPanes
+
+  var body: some View {
+    HistoryPanel(model: model, inputs: inputs, actions: actions)
+  }
+
+  private var inputs: HistoryPanelInputs {
+    HistoryPanelInputs(
+      hasTarget: store.inspectorTargetID != nil,
+      activationKey: "\(store.inspectorTargetID?.targetID?.encoded ?? "")"
+        + "\u{1F}\(store.historySectionShown)",
+      selectedCommitID: { [store, sessions] in
+        FocusedTabSelection.current(store: store, sessions: sessions)?.changesetCommitID
+      },
+      themeGeneration: ThemeService.shared.generation
+    )
+  }
+
+  private var actions: HistoryPanelActions {
+    HistoryPanelActions(
+      activate: { [store, model] in
+        guard store.historySectionShown else { return }
+        // `activate` (not `focus`): on re-entry with the same workroom it pulls fresh (and retries
+        // a prior failure), so switching away and back after a terminal commit shows the new log —
+        // where `focus` would no-op on the unchanged root. The store's eager `focus` on selection
+        // still fires first; `activate`'s settled-state guard means this won't double that fresh
+        // load.
+        model.activate(target: store.inspectorTarget)
+      },
+      // `[store]` + `Self.title` on purpose: the capture list is what makes this closure
+      // behaviour-constant, which is what lets `HistoryRow.==` exclude it.
+      open: { [store] commit, persist in
+        if persist {
+          store.openChangesetPersistent(commitID: commit.commitID, title: Self.title(commit))
+        } else {
+          store.openChangesetPreview(commitID: commit.commitID, title: Self.title(commit))
+        }
+      }
+    )
+  }
+
+  /// The changeset tab's title for a commit — its summary, or the short id when it has none.
+  ///
+  /// `static` so the `open:` closure above can be written with an explicit `[store]` capture list and
+  /// provably capture nothing per-pass.
+  private static func title(_ commit: VCSCommit) -> String {
+    commit.summary.isEmpty ? commit.shortID : commit.summary
+  }
+}
+
 /// The abbreviated relative-time formatter shared by every History row. One instance, not one per
 /// row: `RelativeDateTimeFormatter` is not cheap to construct, and no row keeps formatter state.
 // `nonisolated(unsafe)`: configured once here and only read after; Foundation's formatters are
@@ -222,7 +274,7 @@ struct HistoryRow: View, Equatable {
   let selectedCommitID: String?
   /// `ThemeService.generation`, so a theme change makes this row's equality gate report "changed".
   /// Load-bearing: the row's token reads sit inside ternaries, so an unselected, unhovered row reads no
-  /// token and registers no Observation dependency of its own (see `HistoryPanel.list`).
+  /// token and registers no Observation dependency of its own (see `HistoryPanelInputs`).
   let themeGeneration: Int
   /// Open the commit's changeset detail as a tab. `persist` false previews (single click), true
   /// persists (quick double-click).
@@ -236,9 +288,9 @@ struct HistoryRow: View, Equatable {
   /// two `@State`s, an environment value and a closure), so this lists what the body actually reads
   /// from its inputs: the commit, the page's push scope, and whether this row is the selected one.
   ///
-  /// `open` is EXCLUDED. That is sound only because `HistoryPanel` builds it with an explicit `[store]`
-  /// capture list over a `static` title helper, so two instances differing only in closure identity are
-  /// behaviourally identical. If that closure ever captures per-pass state, this `==` must start
+  /// `open` is EXCLUDED. That is sound only because `HistoryPanelAdapter` builds it with an explicit
+  /// `[store]` capture list over a `static` title helper, so two instances differing only in closure
+  /// identity are behaviourally identical. If that closure ever captures per-pass state, this `==` must start
   /// comparing it — or go away. `@State` and the theme environment invalidate the body directly, past
   /// this gate, so hover and theme repaints are unaffected.
   /// Compares the DERIVED `isSelected`, not the raw `selectedCommitID`: when selection moves from one
@@ -411,3 +463,22 @@ struct HistoryRefChips: View {
       .background(.quaternary, in: Capsule())
   }
 }
+
+#if DEBUG
+  #Preview("History") {
+    // The UI-test fixture's four seeded commits, the second of them open as a changeset.
+    let model = HistoryModel(debounce: 0, resolve: { _ in UITestFixture.vcsProvider })
+    let target = TerminalTarget(
+      id: .workroom(project: "/tmp/platform", name: "fix-auth"), title: "fix-auth",
+      path: "/tmp/platform/fix-auth", unavailability: nil)
+    HistoryPanel(
+      model: model,
+      inputs: HistoryPanelInputs(
+        hasTarget: true, activationKey: "preview", selectedCommitID: { "fixturecommit2" },
+        themeGeneration: 0),
+      actions: HistoryPanelActions(
+        activate: { model.activate(target: target) }, open: { _, _ in })
+    )
+    .frame(width: 320, height: 360)
+  }
+#endif
