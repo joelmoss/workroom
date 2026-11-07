@@ -31,6 +31,7 @@ struct DetachedSessionsButton: View {
           popover(detached)
             .frame(minWidth: 280, maxWidth: 360)
             .padding(12)
+            .themeTokensRoot()
         }
       }
     }

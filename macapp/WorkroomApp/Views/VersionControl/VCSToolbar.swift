@@ -84,7 +84,7 @@ struct VCSToolbar: View {
   /// hairlines stale. Same pattern as `ActivityBar`.
   @State private var themeTick = 0
 
-  private var theme: ThemeTokens { ThemeService.shared.tokens }
+  @Environment(\.themeTokens) private var theme
 
   /// The toolbar's whole state, resolved in one place so the three segments can't disagree.
   private func presentation(now: Date) -> VCSSyncPresentation {
@@ -215,7 +215,7 @@ private struct VCSBranchSegment: View {
   @State private var copyAnchor: NSView?
 
   private let caption = "Current Branch"
-  private var theme: ThemeTokens { ThemeService.shared.tokens }
+  @Environment(\.themeTokens) private var theme
 
   var body: some View {
     HStack(spacing: VCSToolbarMetrics.glyphSpacing) {
@@ -300,7 +300,7 @@ private struct VCSSyncSegment: View {
   @State private var hovering = false
   @State private var copyAnchor: NSView?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  private var theme: ThemeTokens { ThemeService.shared.tokens }
+  @Environment(\.themeTokens) private var theme
 
   private var toneColor: Color {
     switch presentation.tone {
@@ -437,7 +437,7 @@ private struct VCSFetchSegment: View {
 
   @State private var hovering = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  private var theme: ThemeTokens { ThemeService.shared.tokens }
+  @Environment(\.themeTokens) private var theme
 
   var body: some View {
     Button(action: onFetch) {
@@ -473,7 +473,7 @@ private struct VCSFetchSegment: View {
 /// direction (shape, not colour) and a count is a quantity, not a severity.
 private struct VCSCountPill: View {
   let badge: VCSSyncPresentation.Badge
-  private var theme: ThemeTokens { ThemeService.shared.tokens }
+  @Environment(\.themeTokens) private var theme
 
   var body: some View {
     HStack(spacing: 2) {
@@ -501,10 +501,20 @@ extension View {
   /// reads as a mistake. Opacity is animated, never the view tree: an implicit tree animation
   /// interpolates a glyph's 1pt pixel re-round into a visible slide (see `ToolbarIconButtonStyle`).
   fileprivate func vcsToolbarSegment(hovering: Bool, reduceMotion: Bool) -> some View {
-    self
+    modifier(VCSToolbarSegmentChrome(hovering: hovering, reduceMotion: reduceMotion))
+  }
+}
+
+private struct VCSToolbarSegmentChrome: ViewModifier {
+  let hovering: Bool
+  let reduceMotion: Bool
+  @Environment(\.themeTokens) private var tokens
+
+  func body(content: Content) -> some View {
+    content
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
       .background(
-        ThemeService.shared.tokens.hover
+        tokens.hover
           .opacity(hovering ? 1 : 0)
           .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
       )

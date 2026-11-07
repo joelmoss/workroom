@@ -17,6 +17,7 @@ struct RightInspector: View {
   @EnvironmentObject var vcsStatus: VCSStatusService
   @EnvironmentObject var notifications: NotificationCenterStore
   @Environment(\.openURL) private var openURL
+  @Environment(\.themeTokens) private var tokens
   /// A PR action awaiting confirmation (close), surfaced via a confirmation dialog.
   @State private var pendingConfirm: PendingPRAction?
 
@@ -224,8 +225,7 @@ struct RightInspector: View {
       // Failing checks only recolor an *open* PR — a merged (purple) / closed (red) badge shouldn't
       // be repainted by stale check history.
       let failing = pr.state == .open && PRPresentation.isFailing(status)
-      let tokens = ThemeService.shared.tokens
-      let tint: Color = failing ? tokens.failure : badge.semantic.color
+      let tint: Color = failing ? tokens.failure : badge.semantic.color(tokens)
       // The traffic-light states draw their number over a wash of the same colour, so it is made
       // readable on that wash; merged (purple) and draft (secondary) keep their colour.
       let text = PRNumberBadge.trafficColor(badge.semantic, failing: failing, tokens).map {
@@ -288,7 +288,7 @@ struct RightInspector: View {
 
   /// A 1px rule between sections so adjacent (especially collapsed) header bars stay separated.
   private var sectionRule: some View {
-    ThemeService.shared.tokens.border.frame(height: 1)
+    tokens.border.frame(height: 1)
   }
 
   /// The selected workroom's status, or nil when a non-target (project) or nothing is selected —
@@ -328,18 +328,19 @@ struct RightInspector: View {
       HStack(spacing: 5) {
         if s.conflicted {
           Image(systemName: "exclamationmark.triangle.fill")
-            .font(.system(size: 9)).foregroundStyle(ThemeService.shared.tokens.failure)
+            .font(.system(size: 9)).foregroundStyle(tokens.failure)
         }
         if files > 0 { ChangedFileCountBadge(count: files) }
         if let countsHelp {
           HStack(spacing: 5) {
-            if ins > 0 { Text("+\(ins)").foregroundStyle(ThemeService.shared.tokens.success) }
-            if del > 0 { Text("-\(del)").foregroundStyle(ThemeService.shared.tokens.failure) }
+            if ins > 0 { Text("+\(ins)").foregroundStyle(tokens.success) }
+            if del > 0 { Text("-\(del)").foregroundStyle(tokens.failure) }
           }
           .help(countsHelp)
         }
         if let dot {
-          Image(systemName: dot.symbol).font(.system(size: 9)).foregroundStyle(dot.semantic.color)
+          Image(systemName: dot.symbol).font(.system(size: 9))
+            .foregroundStyle(dot.semantic.color(tokens))
             .help(dot.accessibility)
         }
       }
@@ -460,13 +461,13 @@ struct InspectorHeaderButton: View {
   var compact: Bool = false
   let action: () -> Void
   @State private var hovering = false
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Button(action: action) {
       Image(systemName: systemImage)
         .font(.system(size: compact ? 9 : 11))
-        .foregroundStyle(destructive && hovering ? theme.tokens.failure : theme.tokens.fgMuted)
+        .foregroundStyle(destructive && hovering ? tokens.failure : tokens.fgMuted)
         .inspectorHeaderButtonChrome(hovering: hovering, destructive: destructive, compact: compact)
     }
     .buttonStyle(.plain)
@@ -487,12 +488,24 @@ extension View {
   fileprivate func inspectorHeaderButtonChrome(
     hovering: Bool, destructive: Bool = false, compact: Bool = false
   ) -> some View {
-    self
+    modifier(
+      InspectorHeaderButtonChrome(hovering: hovering, destructive: destructive, compact: compact))
+  }
+}
+
+private struct InspectorHeaderButtonChrome: ViewModifier {
+  let hovering: Bool
+  let destructive: Bool
+  let compact: Bool
+  @Environment(\.themeTokens) private var tokens
+
+  func body(content: Content) -> some View {
+    content
       .frame(width: compact ? 16 : 22, height: compact ? 16 : 22)
       .background(
         RoundedRectangle(cornerRadius: compact ? 4 : 5)
           .fill(
-            (destructive ? ThemeService.shared.tokens.failure : ThemeService.shared.tokens.hover)
+            (destructive ? tokens.failure : tokens.hover)
               .opacity(hovering ? (destructive ? 0.18 : 1) : 0))
       )
       .frame(width: compact ? 20 : 28, height: compact ? 18 : 26)

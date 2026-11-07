@@ -29,8 +29,7 @@ struct TerminalStatusBar: View {
   @ObservedObject private var sessionsStore = DetachedSessionList.shared
   @State private var showingDiagnosis = false
   @Environment(\.isQuickTerminal) private var isQuickTerminal
-
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   /// This pane's live cwd (a remote pane's host path, else the shell's last report); nil for a diff
   /// pane. The surface is the live read for a detached pane, whose `state` is the copy taken when
@@ -113,7 +112,7 @@ struct TerminalStatusBar: View {
       Image(systemName: run.icon)
     }
     .labelStyle(.titleAndIcon)
-    .foregroundStyle(run.color ?? AnyShapeStyle(theme.tokens.fgMuted))
+    .foregroundStyle(run.color ?? AnyShapeStyle(tokens.fgMuted))
     .help("Run command: \(run.text)")
     .accessibilityLabel("Run command \(run.text)")
   }
@@ -132,25 +131,25 @@ struct TerminalStatusBar: View {
       return nil
     case .running(_, true):
       return RunPresentation(
-        icon: "stop.fill", text: "Stopping…", color: AnyShapeStyle(theme.tokens.warning))
+        icon: "stop.fill", text: "Stopping…", color: AnyShapeStyle(tokens.warning))
     case .running(_, false):
       return RunPresentation(
-        icon: "play.fill", text: "Running", color: AnyShapeStyle(theme.tokens.accent))
+        icon: "play.fill", text: "Running", color: AnyShapeStyle(tokens.accent))
     case .restarting:
       return RunPresentation(
-        icon: "arrow.clockwise", text: "Restarting…", color: AnyShapeStyle(theme.tokens.warning))
+        icon: "arrow.clockwise", text: "Restarting…", color: AnyShapeStyle(tokens.warning))
     case .stopped:
       switch runCommand.runOutcomes[target.id] {
       case .exited(let code) where code != 0:
         return RunPresentation(
           icon: "xmark.octagon.fill", text: "Failed (exit \(code))",
-          color: AnyShapeStyle(theme.tokens.failure))
+          color: AnyShapeStyle(tokens.failure))
       case .exited:
         return RunPresentation(icon: "checkmark.circle", text: "Exited", color: nil)
       case .failedToStart:
         return RunPresentation(
           icon: "xmark.octagon.fill", text: "Failed to start",
-          color: AnyShapeStyle(theme.tokens.failure))
+          color: AnyShapeStyle(tokens.failure))
       case .stoppedByUser, .none:
         return RunPresentation(icon: "stop.fill", text: "Stopped", color: nil)
       }
@@ -196,6 +195,7 @@ struct TerminalStatusBar: View {
         }
       )
       .frame(width: 380)
+      .themeTokensRoot()
     }
   }
 
@@ -203,8 +203,8 @@ struct TerminalStatusBar: View {
   /// because a command failed), muted for the transient/neutral ones.
   private func diagnosisTint(_ style: CodingAgentBannerViewModel.Style) -> AnyShapeStyle {
     switch style {
-    case .ready, .awaiting, .failure: return AnyShapeStyle(theme.tokens.failure)
-    case .loading, .remote: return AnyShapeStyle(theme.tokens.fgMuted)
+    case .ready, .awaiting, .failure: return AnyShapeStyle(tokens.failure)
+    case .loading, .remote: return AnyShapeStyle(tokens.fgMuted)
     }
   }
 
@@ -228,13 +228,18 @@ struct TerminalStatusBar: View {
 
 extension View {
   /// The status bar's own chrome, so every footer reads alike.
-  func statusBarChrome() -> some View {
-    let theme = ThemeService.shared
+  func statusBarChrome() -> some View { modifier(StatusBarChrome()) }
+}
+
+private struct StatusBarChrome: ViewModifier {
+  @Environment(\.themeTokens) private var tokens
+
+  func body(content: Content) -> some View {
     // `.subheadline` (11pt) — the middle of the two sizes this bar has worn. `.caption` (10pt) was
     // too small to read at a glance for what the bar carries (a pane's live state: branch, run
     // state); `.callout` (12pt) read as content rather than chrome.
-    return self.font(.subheadline)
-      .foregroundStyle(theme.tokens.fgMuted)
+    content.font(.subheadline)
+      .foregroundStyle(tokens.fgMuted)
       .lineLimit(1)
       .padding(.horizontal, 10)
       // Fixed, not vertical padding: the bar's height must not vary with its content (an icon, a
@@ -243,7 +248,7 @@ extension View {
       .frame(height: TerminalPanelMetrics.chromeRowHeight)
       .frame(maxWidth: .infinity)
       .background { SidebarBackground() }
-      .overlay(alignment: .top) { theme.tokens.border.frame(height: 1) }
+      .overlay(alignment: .top) { tokens.border.frame(height: 1) }
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("terminal.statusBar")
   }
@@ -252,7 +257,9 @@ extension View {
 /// A thin vertical rule between two segments, shorter than the 28pt bar so it reads as a
 /// separator rather than a full-height rail.
 struct StatusBarDivider: View {
-  var body: some View { ThemeService.shared.tokens.border.frame(width: 1, height: 14) }
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View { tokens.border.frame(width: 1, height: 14) }
 }
 
 /// The current branch. Middle-truncates: a long branch name's ends are the informative part. The
@@ -293,6 +300,7 @@ struct StatusBarCwdSegment: View {
   let onHost: Bool
   /// The AppKit view the cwd menu pops out of — see `MenuAnchor`.
   @State private var menuAnchor: NSView?
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Button {
@@ -307,7 +315,7 @@ struct StatusBarCwdSegment: View {
       .labelStyle(.titleAndIcon)
       // Explicit, not inherited: a `Button`'s label doesn't pick up the bar's ambient
       // `foregroundStyle`, so without this the segment reads brighter than its neighbours.
-      .foregroundStyle(ThemeService.shared.tokens.fgMuted)
+      .foregroundStyle(tokens.fgMuted)
     }
     .buttonStyle(StatusBarSegmentButtonStyle())
     .background(MenuAnchor(view: $menuAnchor))
@@ -406,13 +414,14 @@ struct StatusBarSegmentButtonStyle: ButtonStyle {
     let configuration: ButtonStyle.Configuration
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.themeTokens) private var tokens
 
     var body: some View {
       configuration.label
         .background(
           RoundedRectangle(cornerRadius: 4)
             .fill(
-              ThemeService.shared.tokens.hover
+              tokens.hover
                 .opacity(hovering || configuration.isPressed ? 1 : 0)
             )
             .padding(EdgeInsets(top: -3, leading: -5, bottom: -3, trailing: -5))

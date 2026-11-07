@@ -29,6 +29,7 @@ struct TerminalTabStrip: View {
   @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.isQuickTerminal) private var isQuickTerminal
+  @Environment(\.themeTokens) private var tokens
   /// The tab whose ✦ agent popover is open.
   @State private var codingAgentPopoverTab: TerminalTab.ID?
   /// The live drop-into-pane preview, shared with `PaneTreeView` via the coordinator.
@@ -192,7 +193,7 @@ struct TerminalTabStrip: View {
             get: { codingAgentPopoverTab == tab.id },
             set: { if !$0 { codingAgentPopoverTab = nil } })
         ) {
-          codingAgentPopover(for: tab)
+          codingAgentPopover(for: tab).themeTokensRoot()
         }
         .onHover { inside in
           if inside { hoveredTab = tab.id } else if hoveredTab == tab.id { hoveredTab = nil }
@@ -286,7 +287,7 @@ struct TerminalTabStrip: View {
       // the inter-tab dividers.
       if !tabs.isEmpty {
         Rectangle()
-          .fill(ThemeService.shared.tokens.border)
+          .fill(tokens.border)
           .frame(width: 1, height: 14)
           .padding(.leading, -2)
           .padding(.trailing, 4)
@@ -324,7 +325,7 @@ struct TerminalTabStrip: View {
         .padding(4)
         .background(
           RoundedRectangle(cornerRadius: 5)
-            .fill(ThemeService.shared.tokens.hover.opacity(addHovering ? 1 : 0))
+            .fill(tokens.hover.opacity(addHovering ? 1 : 0))
         )
         // The whole padded glyph (the hover well's area) is clickable/hoverable, not just the "+" —
         // the transparent padding wouldn't hit-test on its own.
@@ -359,7 +360,7 @@ struct TerminalTabStrip: View {
     } label: {
       ProgramStatusGlyph(mark: .blocked, stale: tab.programStatus?.stale == true, size: 10)
         .frame(width: 24, height: 24)
-        .background(Circle().fill(ThemeService.shared.tokens.panel))
+        .background(Circle().fill(tokens.panel))
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -459,16 +460,16 @@ private struct TerminalTabChip: View {
   var statusLines: [String] = []
   let onClose: () -> Void
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   /// Glyph + colour + a11y/help word for the run-state chip icon. Failure is carried by BOTH the
   /// glyph (octagon vs play) and the colour, so it survives red/green colourblindness (#79).
   private func runIconSpec(_ state: RunState) -> (glyph: String, color: Color, label: String) {
     switch state {
-    case .running: return ("play.circle.fill", theme.tokens.success, "running")
-    case .stopping: return ("stop.circle.fill", theme.tokens.warning, "stopping")
-    case .stopped: return ("play.circle.fill", theme.tokens.fgMuted, "stopped")
-    case .failed: return ("xmark.octagon.fill", theme.tokens.failure, "failed")
+    case .running: return ("play.circle.fill", tokens.success, "running")
+    case .stopping: return ("stop.circle.fill", tokens.warning, "stopping")
+    case .stopped: return ("play.circle.fill", tokens.fgMuted, "stopped")
+    case .failed: return ("xmark.octagon.fill", tokens.failure, "failed")
     }
   }
 
@@ -516,8 +517,8 @@ private struct TerminalTabChip: View {
   /// command sweeps.
   @ViewBuilder private var underline: some View {
     switch tab.indicator {
-    case .blocked: StatusUnderline(color: theme.tokens.warning)
-    case .error: StatusUnderline(color: theme.tokens.failure)
+    case .blocked: StatusUnderline(color: tokens.warning)
+    case .error: StatusUnderline(color: tokens.failure)
     case .running(let failed): RunningUnderline(failed: failed)
     case .done, .none: EmptyView()
     }
@@ -532,7 +533,7 @@ private struct TerminalTabChip: View {
         Button(action: onCodingAgentTap) {
           Image(systemName: "sparkles")
             .font(.system(size: 10))
-            .foregroundStyle(theme.tokens.accent)
+            .foregroundStyle(tokens.accent)
         }
         .buttonStyle(.plain)
         .help("Show the diagnosis for this command")
@@ -567,7 +568,7 @@ private struct TerminalTabChip: View {
       if let glyph = tab.content.glyph {
         Image(systemName: glyph)
           .font(.system(size: 9, weight: .semibold))
-          .foregroundStyle(theme.tokens.fgMuted)
+          .foregroundStyle(tokens.fgMuted)
           .accessibilityHidden(true)
       }
       // A recognized CLI/TUI's real brand favicon (issue #141). `tab.recognizedTool` is nil for a
@@ -594,7 +595,7 @@ private struct TerminalTabChip: View {
         || (tab.indicator == .done && tab.programStatus?.done?.exitCode == nil)
       if hasActivity, !markSaysIt {
         Circle()
-          .fill(theme.tokens.accent)
+          .fill(tokens.accent)
           .frame(width: 6, height: 6)
           .accessibilityHidden(true)
       }
@@ -616,7 +617,7 @@ private struct TerminalTabChip: View {
           // re-measures the title and nudges the chips sideways. Unread activity (accent) overrides
           // either, on any tab.
           .foregroundStyle(
-            hasActivity ? theme.tokens.accent : (isActive ? Color.primary : theme.tokens.fgMuted)
+            hasActivity ? tokens.accent : (isActive ? Color.primary : tokens.fgMuted)
           )
           // A preview tab's name is italic until it's persisted (VS-Code semantics, #66).
           .italic(tab.isPreview)
@@ -646,7 +647,7 @@ private struct TerminalTabChip: View {
     // grouped chip insets its pill so it nests inside the split bracket instead of overrunning it.
     .background {
       RoundedRectangle(cornerRadius: 6, style: .continuous)
-        .fill(isActive ? theme.tokens.bg : (isHovered ? theme.tokens.hover : Color.clear))
+        .fill(isActive ? tokens.bg : (isHovered ? tokens.hover : Color.clear))
         .padding(isGrouped ? EdgeInsets(top: 2, leading: 3, bottom: 2, trailing: 3) : EdgeInsets())
         // Fade the hover wash in/out instead of snapping it on.
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isHovered)
@@ -656,7 +657,7 @@ private struct TerminalTabChip: View {
         .fill(.thickMaterial)
         .overlay(
           RoundedRectangle(cornerRadius: 6)
-            .strokeBorder(theme.tokens.border, lineWidth: 1)
+            .strokeBorder(tokens.border, lineWidth: 1)
         )
         .opacity(isDragging ? 1 : 0)
     }
@@ -673,7 +674,7 @@ private struct TerminalTabChip: View {
     .overlay {
       if !isGrouped && isActive {
         RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .strokeBorder(theme.tokens.fgDim, lineWidth: 1)
+          .strokeBorder(tokens.fgDim, lineWidth: 1)
       }
     }
     // Hairline centred in the gap between this chip and its left neighbour, so it sits cleanly between
@@ -684,7 +685,7 @@ private struct TerminalTabChip: View {
     .overlay(alignment: .leading) {
       if showLeadingSeparator {
         Rectangle()
-          .fill(theme.tokens.border)
+          .fill(tokens.border)
           .frame(width: 1, height: 14)
           .offset(x: -2.5)
       }
@@ -770,8 +771,8 @@ struct RunningUnderline: View {
   /// The program reported OSC 9;4 ERROR: same sweep, in the failure colour.
   var failed = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  private let theme = ThemeService.shared
-  private var color: Color { failed ? theme.tokens.failure : theme.tokens.accent }
+  @Environment(\.themeTokens) private var tokens
+  private var color: Color { failed ? tokens.failure : tokens.accent }
 
   var body: some View {
     Capsule()
@@ -886,7 +887,7 @@ private struct TabCloseButton: View {
   let action: () -> Void
   @State private var hovering = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Button(action: action) {
@@ -897,7 +898,7 @@ private struct TabCloseButton: View {
         // A circular hover well behind the ✕ (matches a round close affordance), faded in/out.
         .background(
           Circle()
-            .fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
+            .fill(tokens.hover.opacity(hovering ? 1 : 0))
         )
     }
     .buttonStyle(.plain)
@@ -915,7 +916,7 @@ struct DiffModeSwitch: View {
   /// The currently effective mode (this tab's override, or the global default) — the lit segment.
   let mode: DiffViewMode
   let select: (DiffViewMode) -> Void
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     HStack(spacing: 0) {
@@ -923,7 +924,7 @@ struct DiffModeSwitch: View {
       segment(.sideBySide, help: "Side-by-side diff", identifier: "tab.toolbar.diffSideBySide")
     }
     .padding(1.5)
-    .background(RoundedRectangle(cornerRadius: 6).fill(theme.tokens.surface))
+    .background(RoundedRectangle(cornerRadius: 6).fill(tokens.surface))
   }
 
   @ViewBuilder
@@ -939,7 +940,7 @@ struct DiffModeSwitch: View {
         .foregroundStyle(active ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
-        .background(RoundedRectangle(cornerRadius: 5).fill(active ? theme.tokens.bg : .clear))
+        .background(RoundedRectangle(cornerRadius: 5).fill(active ? tokens.bg : .clear))
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -959,7 +960,7 @@ struct MarkdownModeSwitch: View {
   /// lit segment.
   let preview: Bool
   let select: (Bool) -> Void
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     HStack(spacing: 0) {
@@ -971,7 +972,7 @@ struct MarkdownModeSwitch: View {
         identifier: "tab.toolbar.markdownSource")
     }
     .padding(1.5)
-    .background(RoundedRectangle(cornerRadius: 6).fill(theme.tokens.surface))
+    .background(RoundedRectangle(cornerRadius: 6).fill(tokens.surface))
   }
 
   @ViewBuilder
@@ -987,7 +988,7 @@ struct MarkdownModeSwitch: View {
         .foregroundStyle(active ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
-        .background(RoundedRectangle(cornerRadius: 5).fill(active ? theme.tokens.bg : .clear))
+        .background(RoundedRectangle(cornerRadius: 5).fill(active ? tokens.bg : .clear))
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)

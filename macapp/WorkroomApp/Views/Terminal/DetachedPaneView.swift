@@ -12,7 +12,8 @@ import SwiftUI
 ///
 /// **Environment is re-injected by hand** because it does not cross the `NSHostingView` the window
 /// hosts this in, exactly as `RightInspector` re-injects per inspector section and
-/// `RootView.accessoryBarContent` does for the title-bar accessory.
+/// `RootView.accessoryBarContent` does for the title-bar accessory. The theme is the exception: the
+/// window's host injects it (`themeTokensRoot()`), since this view's own body reads it.
 ///
 /// **One structural slot, load-bearing.** `PaneLeafView` must not be wrapped in an `if` here: SwiftUI
 /// would swap a `_ConditionalContent` branch and re-parent the libghostty view, blanking the pane —
@@ -28,6 +29,8 @@ struct DetachedPaneView: View {
   /// Push the pane's live title onto the window, so a terminal that renames itself renames its window
   /// (the pane's own title bar used to carry this).
   let onTitleChange: (String) -> Void
+  /// Injected by `DetachedPaneWindows.open`, which hosts this view.
+  @Environment(\.themeTokens) private var tokens
 
   private static let space = "detachedPaneContent"
 
@@ -44,7 +47,7 @@ struct DetachedPaneView: View {
     )
     .coordinateSpace(.named(Self.space))
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(ThemeService.shared.tokens.panel)
+    .background(tokens.panel)
     // `takesOverTitlebar: false` — unlike the main window, this one keeps a normal title bar so the
     // pane has a name and a place to drag from; the themer only paints its background.
     .background(WindowBackgroundThemer(takesOverTitlebar: false))

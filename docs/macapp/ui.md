@@ -65,8 +65,16 @@ A token replaces a literal only where the value is the same. A value the scale l
 literal: never round a view's metric to fit the scale. Many views still use literals; convert
 them when you touch them.
 
+Views read the theme colours from the environment, `@Environment(\.themeTokens) private var
+tokens`, not from `ThemeService.shared`. Every SwiftUI root injects them with
+`themeTokensRoot()`: each scene's root view, every `NSHostingView` or `NSHostingController`
+(the environment does not cross one), and the content of each `.sheet` and `.popover`, as the
+environment objects are re-injected there. A new hosting view that skips it keeps the old theme
+after a switch. `ThemeService.shared` stays for AppKit drawing, for
+picking a theme, and for `generation`, which keys the syntax highlighting.
+
 Shared components (the warning components and the row styles take the theme as
-`tokens: ThemeService.shared.tokens`; the message and sheet components take none):
+`tokens: tokens`; the message and sheet components take none):
 
 - `MessageState`: an empty or failed pane, centred. `InlineMessage`: the one-line version at the
   top of a list.

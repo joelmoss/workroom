@@ -18,7 +18,7 @@ struct ActivityBar: View {
   // Bumped on `.themeDidChange` so the flat panel fill repaints live on a theme switch (tokens are
   // read from the `ThemeService` singleton, which SwiftUI doesn't observe on its own).
   @State private var themeTick = 0
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
   /// The rail's width. Not private: it's the trailing-most column of the window, so the title bar's
   /// trailing controls centre their last button over this rail's icon column
   /// (`TrailingTitlebarBar.trailingInset`) — the two are directly above one another and a hand-copied
@@ -47,7 +47,7 @@ struct ActivityBar: View {
       SettingsLink {
         Image(systemName: "gearshape")
           .font(.system(size: 18))
-          .foregroundStyle(theme.tokens.fgMuted)
+          .foregroundStyle(tokens.fgMuted)
           .frame(width: 36, height: 36)
       }
       .buttonStyle(ToolbarIconButtonStyle(wellSize: 36, horizontalPadding: 0))
@@ -60,7 +60,7 @@ struct ActivityBar: View {
     .frame(maxHeight: .infinity)
     // Not under the title bar: a fill there leaves the bar out of the window's drag region — see
     // `RootView.detail`.
-    .background(theme.tokens.panel, ignoresSafeAreaEdges: [])
+    .background(tokens.panel, ignoresSafeAreaEdges: [])
     .onReceive(NotificationCenter.default.publisher(for: .themeDidChange)) { _ in themeTick += 1 }
   }
 
@@ -85,20 +85,20 @@ private struct ActivityBarButton: View {
   var badged: Bool = false
   let action: () -> Void
   @State private var hovering = false
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Button(action: action) {
       section.image
         .font(.system(size: 18, weight: .regular))
-        .foregroundStyle(active ? theme.tokens.fg : theme.tokens.fgMuted)
+        .foregroundStyle(active ? tokens.fg : tokens.fgMuted)
         .frame(width: 44, height: 40)
         .overlay(alignment: .bottomLeading) {
           if badged {
             // A11y-hidden — the state is announced once on the button's accessibility value ("has
             // changes"), which the UITest reads. Low corner so it never crowds the glyph.
             Circle()
-              .fill(theme.tokens.warning)
+              .fill(tokens.warning)
               .frame(width: 7, height: 7)
               .padding(.bottom, 8)
               .padding(.leading, 9)
@@ -111,11 +111,11 @@ private struct ActivityBarButton: View {
     .background {
       ZStack(alignment: .leading) {
         RoundedRectangle(cornerRadius: 6)
-          .fill(active ? theme.tokens.accentSoft : (hovering ? theme.tokens.hover : Color.clear))
+          .fill(active ? tokens.accentSoft : (hovering ? tokens.hover : Color.clear))
           .padding(.horizontal, 4)
           .padding(.vertical, 2)
         if active {
-          theme.tokens.accent
+          tokens.accent
             .frame(width: 2)
             .clipShape(Capsule())
             .padding(.vertical, 8)
@@ -155,7 +155,7 @@ struct NotificationsBarButton: View {
   @ObservedObject private var registry = WindowRegistry.shared
   @State private var hovering = false
   @State private var showPopover = false
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Button {
@@ -167,7 +167,7 @@ struct NotificationsBarButton: View {
     } label: {
       Image(systemName: "bell")
         .font(.system(size: 13, weight: .regular))
-        .foregroundStyle(theme.tokens.fgMuted)
+        .foregroundStyle(tokens.fgMuted)
         .frame(width: ActivityBar.width, height: WindowFooter.height)
         .overlay(alignment: .topTrailing) {
           UnreadBadge(count: registry.aggregateUnread)
@@ -179,7 +179,7 @@ struct NotificationsBarButton: View {
     .buttonStyle(.plain)
     .background {
       RoundedRectangle(cornerRadius: 6)
-        .fill(hovering ? theme.tokens.hover : Color.clear)
+        .fill(hovering ? tokens.hover : Color.clear)
         .padding(.horizontal, 4)
         .padding(.vertical, 2)
     }
@@ -200,6 +200,7 @@ struct NotificationsBarButton: View {
     .accessibilityIdentifier("activityBar.notifications")
     .popover(isPresented: $showPopover, arrowEdge: .bottom) {
       NotificationsPopover(onActivate: { showPopover = false })
+        .themeTokensRoot()
         .environmentObject(store)
         .environmentObject(notifications)
         .frame(width: 320, height: 360)

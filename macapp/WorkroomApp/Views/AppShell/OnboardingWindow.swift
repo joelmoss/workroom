@@ -124,7 +124,7 @@ struct OnboardingWindow: View {
   @State private var isAdding = false
   @State private var addProjectError: String?
 
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
   @Default(.theme) private var themePreference
 
   var body: some View {
@@ -135,7 +135,7 @@ struct OnboardingWindow: View {
       footer
     }
     .frame(width: 560, height: 480)
-    .background(theme.tokens.panel)
+    .background(tokens.panel)
     .background(
       WindowAccessor { window in
         // See the type doc comment — deliberately NOT `WindowRegistry.shared.register`.
@@ -176,7 +176,7 @@ struct OnboardingWindow: View {
       // may never have happened yet. Without it, `NSApp.appearance` stays at the system default,
       // so any text left to SwiftUI's own `.primary` (every heading here) resolves against the OS's
       // light/dark setting while this window's background is already painted in the user's chosen
-      // theme (`theme.tokens.panel`, resolved independently) — on a light-system/dark-theme machine
+      // theme (`tokens.panel`, resolved independently) — on a light-system/dark-theme machine
       // that's black text on a dark panel. `NSApp.appearance` is app-wide, so setting it here fixes
       // this window and costs nothing once `RootView` later re-applies the same value.
       NSApp.appearance = themePreference.nsAppearance
@@ -273,7 +273,7 @@ struct OnboardingWindow: View {
   private var stepDots: some View {
     HStack(spacing: 6) {
       ForEach(OnboardingStep.allCases, id: \.self) { s in
-        Circle().fill(s == step ? theme.tokens.accent : theme.tokens.fgDim)
+        Circle().fill(s == step ? tokens.accent : tokens.fgDim)
           .frame(width: 6, height: 6)
       }
     }
@@ -310,7 +310,7 @@ struct OnboardingWindow: View {
 }
 
 private struct OnboardingWelcomeStep: View {
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     VStack(spacing: 16) {
@@ -330,7 +330,7 @@ private struct OnboardingWelcomeStep: View {
 }
 
 private struct OnboardingTourStep: View {
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
@@ -344,12 +344,12 @@ private struct OnboardingTourStep: View {
             HStack(alignment: .top, spacing: 12) {
               Image(systemName: feature.icon)
                 .font(.system(size: 20))
-                .foregroundStyle(theme.tokens.accent)
+                .foregroundStyle(tokens.accent)
                 .frame(width: 28)
                 .accessibilityHidden(true)
               VStack(alignment: .leading, spacing: 2) {
                 Text(feature.title).font(.headline)
-                Text(feature.subtitle).font(.callout).foregroundStyle(theme.tokens.fgMuted)
+                Text(feature.subtitle).font(.callout).foregroundStyle(tokens.fgMuted)
               }
             }
           }
@@ -368,20 +368,20 @@ private struct OnboardingAddProjectStep: View {
   var pathFieldFocused: FocusState<Bool>.Binding
   let errorText: String?
 
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       Text("Add your first project").font(.title2.bold())
       Text("Add an existing repository, or create a new project directory.")
         .font(.callout)
-        .foregroundStyle(theme.tokens.fgMuted)
+        .foregroundStyle(tokens.fgMuted)
       AddProjectFields(
         mode: $mode, path: $path, showChooser: $showChooser, pathFieldFocused: pathFieldFocused)
       if let errorText {
         Text(errorText)
           .font(.callout)
-          .foregroundStyle(theme.tokens.failure)
+          .foregroundStyle(tokens.failure)
           .accessibilityIdentifier("onboarding.addProjectError")
       }
     }
@@ -393,19 +393,19 @@ private struct OnboardingAddProjectStep: View {
 
 private struct OnboardingDoneStep: View {
   let onFinish: () -> Void
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     VStack(spacing: 16) {
       Spacer()
       Image(systemName: "checkmark.circle.fill")
         .font(.system(size: 48))
-        .foregroundStyle(theme.tokens.accent)
+        .foregroundStyle(tokens.accent)
         .accessibilityHidden(true)
       Text("You're all set").font(.largeTitle.bold())
       Text("Open a project from the sidebar whenever you're ready.")
         .font(.callout)
-        .foregroundStyle(theme.tokens.fgMuted)
+        .foregroundStyle(tokens.fgMuted)
       Spacer()
       Button("Get Started", action: onFinish)
         .buttonStyle(.borderedProminent)

@@ -42,7 +42,6 @@ struct HistoryPanel: View {
   /// content tab is focused. It reads the selected target's panes through Observation, so one panel
   /// body pass per change there is the cost; N row bodies was not (see the diagram above).
   let sessions: TerminalPanes
-  private let theme = ThemeService.shared
 
   var body: some View {
     Group {
@@ -117,14 +116,14 @@ struct HistoryPanel: View {
     // Read HERE so the panel itself has an Observation dependency on the theme, and pass it down so the
     // rows' equality gate can see a theme change.
     //
-    // Why this is not belt-and-braces: a row reads `theme.tokens` only inside ternaries
+    // Why this is not belt-and-braces: a row reads `tokens` only inside ternaries
     // (`isSelected ? accent : …`, `hovering ? rowHover : .clear`), and Swift evaluates just the taken
     // branch — so an unselected, unhovered row reads NO token and therefore registers no observation.
     // It used to repaint anyway, by accident: applying a theme also re-themes live terminals, which
     // republished `TerminalPanes`, which every row observed. Removing that observation (the App Hang
     // fix) removed the accidental repaint with it, and the unpushed badge's warning tint would have
     // stayed stale until something else invalidated the row.
-    let themeGeneration = theme.generation
+    let themeGeneration = ThemeService.shared.generation
     return ScrollView {
       // `LazyVStack`, so a 1000-commit page costs the ~8 rows on screen rather than all of them. Safe
       // here and NOT in `DiffViewer` (which documents rejecting it at `unifiedBody`): these rows are
@@ -231,17 +230,17 @@ struct HistoryRow: View, Equatable {
   @State private var hovering = false
   /// Timestamp of the last plain click, for the manual double-click gate (mirrors `ChangesPanel`).
   @State private var lastClick: Date?
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   /// The equality gate behind `.equatable()` at the use site. Synthesis is impossible (the row stores
-  /// two `@State`s, a `ThemeService` handle and a closure), so this lists what the body actually reads
+  /// two `@State`s, an environment value and a closure), so this lists what the body actually reads
   /// from its inputs: the commit, the page's push scope, and whether this row is the selected one.
   ///
   /// `open` is EXCLUDED. That is sound only because `HistoryPanel` builds it with an explicit `[store]`
   /// capture list over a `static` title helper, so two instances differing only in closure identity are
   /// behaviourally identical. If that closure ever captures per-pass state, this `==` must start
-  /// comparing it — or go away. `@State` and `ThemeService`'s Observation invalidate the body directly,
-  /// past this gate, so hover and theme repaints are unaffected.
+  /// comparing it — or go away. `@State` and the theme environment invalidate the body directly, past
+  /// this gate, so hover and theme repaints are unaffected.
   /// Compares the DERIVED `isSelected`, not the raw `selectedCommitID`: when selection moves from one
   /// row to another, only the two rows whose own selected-ness changed compare unequal — the rest of
   /// the realized page stays elided.
@@ -273,7 +272,7 @@ struct HistoryRow: View, Equatable {
             .font(.callout)
             .lineLimit(1)
             .foregroundStyle(
-              isSelected ? theme.tokens.accent : (commit.summary.isEmpty ? .secondary : .primary))
+              isSelected ? tokens.accent : (commit.summary.isEmpty ? .secondary : .primary))
           Spacer(minLength: 0)
         }
         .accessibilityElement(children: .combine)
@@ -330,7 +329,7 @@ struct HistoryRow: View, Equatable {
         // hover/selection highlight fills the inspector width edge-to-edge (mirrors `ChangedFileRow`).
         Rectangle()
           .fill(
-            isSelected ? theme.tokens.rowSelection : (hovering ? theme.tokens.rowHover : .clear)
+            isSelected ? tokens.rowSelection : (hovering ? tokens.rowHover : .clear)
           )
           .padding(.horizontal, -12)
       )
@@ -359,8 +358,8 @@ struct HistoryRow: View, Equatable {
     Image(systemName: "arrow.up")
       .font(.system(size: 9, weight: .semibold))
       .padding(.horizontal, 5).padding(.vertical, 1)
-      .background(theme.tokens.warning.opacity(0.18), in: Capsule())
-      .foregroundStyle(theme.tokens.warning)
+      .background(tokens.warning.opacity(0.18), in: Capsule())
+      .foregroundStyle(tokens.warning)
       .help(VCSPushScope.unpushedHelp(pushScope))
       .accessibilityLabel("Not pushed")
       .accessibilityIdentifier("HistoryRowUnpushed")

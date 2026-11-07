@@ -46,7 +46,7 @@ struct CodingAgentUsageSegment: View {
   @State private var usageDetailPinned = false
   @State private var confirmingClaudeUsage = false
   @State private var claudeBridgeError: String?
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     segment
@@ -103,7 +103,7 @@ struct CodingAgentUsageSegment: View {
       // at the wider bar widths; never narrower than its own label.
       .frame(minWidth: 18 + barWidth * 2 + 8, alignment: .leading)
       .buttonStyle(StatusBarSegmentButtonStyle())
-      .foregroundStyle(theme.tokens.accent)
+      .foregroundStyle(tokens.accent)
       .help("Enable Claude usage")
       .accessibilityElement(children: .ignore)
       .accessibilityLabel("Enable Claude usage")
@@ -122,7 +122,7 @@ struct CodingAgentUsageSegment: View {
               let shown = Self.displayed(window, now: now)
               QuotaBar(
                 usedPercentage: shown.usedPercentage, markerPercentage: shown.marker ?? 0,
-                fill: QuotaBar.fill(for: window.pace(at: now).severity, theme.tokens),
+                fill: QuotaBar.fill(for: window.pace(at: now).severity, tokens),
                 width: barWidth, compact: true, showsMarker: shown.marker != nil)
             }
           }
@@ -148,9 +148,9 @@ struct CodingAgentUsageSegment: View {
           Image(systemName: "exclamationmark.circle")
             .imageScale(.small)
           // One empty track standing in for both bars, so recovery changes nothing's width.
-          Capsule().fill(theme.tokens.fgDim.opacity(0.35)).frame(width: barWidth * 2 - 6, height: 5)
+          Capsule().fill(tokens.fgDim.opacity(0.35)).frame(width: barWidth * 2 - 6, height: 5)
         }
-        .foregroundStyle(theme.tokens.fgDim)
+        .foregroundStyle(tokens.fgDim)
       }
       .buttonStyle(StatusBarSegmentButtonStyle())
       .help("\(label) usage unavailable")
@@ -167,6 +167,7 @@ struct CodingAgentUsageSegment: View {
     CodingAgentUsagePopover(item: item, now: now)
       .frame(width: CodingAgentUsageDetailView.popoverWidth)
       .onAppear { codingAgentUsage.poll() }
+      .themeTokensRoot()
   }
 
   // MARK: Presentation rules
@@ -402,12 +403,12 @@ struct CodingAgentUsageOverflowChip: View {
   let now: Date
   @EnvironmentObject var codingAgentUsage: CodingAgentUsageMonitor
   @State private var open = false
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Button("+\(hidden.count)") { open.toggle() }
       .buttonStyle(StatusBarSegmentButtonStyle())
-      .foregroundStyle(theme.tokens.fgMuted)
+      .foregroundStyle(tokens.fgMuted)
       .help("\(hidden.count) more Claude accounts")
       .accessibilityLabel("\(hidden.count) more Claude accounts")
       .accessibilityIdentifier("terminal.statusBar.codingAgentUsage.more")
@@ -423,6 +424,7 @@ struct CodingAgentUsageOverflowChip: View {
         .frame(width: CodingAgentUsageDetailView.popoverWidth)
         .frame(maxHeight: 480)
         .onAppear { codingAgentUsage.poll() }
+        .themeTokensRoot()
       }
   }
 }
@@ -435,7 +437,7 @@ struct CodingAgentUsagePopover: View {
   @EnvironmentObject var codingAgentUsage: CodingAgentUsageMonitor
   @EnvironmentObject var claudeUsageBridge: ClaudeUsageBridge
   @State private var removeError: String?
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -450,14 +452,14 @@ struct CodingAgentUsagePopover: View {
               .compactMap { $0 }.joined(separator: " · ")
           )
           .font(.caption)
-          .foregroundStyle(theme.tokens.fgMuted)
+          .foregroundStyle(tokens.fgMuted)
         }
         .padding([.horizontal, .top], 14)
       }
       if let reason {
         Label(reason, systemImage: "exclamationmark.circle")
           .font(.callout)
-          .foregroundStyle(theme.tokens.warning)
+          .foregroundStyle(tokens.warning)
           .padding([.horizontal, .top], 14)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -467,7 +469,7 @@ struct CodingAgentUsagePopover: View {
       HStack {
         Text(status)
           .font(.caption)
-          .foregroundStyle(theme.tokens.fgMuted)
+          .foregroundStyle(tokens.fgMuted)
         Spacer()
         if isBridgeReading, claudeUsageBridge.state == .needsRepair {
           // Workroom's command is installed but its saved metadata is gone (or stale); repairing

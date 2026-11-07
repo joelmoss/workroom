@@ -24,7 +24,7 @@ struct CommitSheet: View {
 
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var vcsStatus: VCSStatusService
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   @State private var summary = ""
   @State private var messageBody = ""
@@ -210,7 +210,7 @@ struct CommitSheet: View {
   /// `git status` afterwards and no other trace. This is not a refusal (committing from a partly
   /// staged file is legitimate), it is the difference between an informed choice and a silent loss.
   private func stagedLossNotice(_ paths: [String]) -> some View {
-    Notice(tokens: ThemeService.shared.tokens) {
+    Notice(tokens: tokens) {
       Text(
         paths.count == 1
           ? "1 file has staged changes that differ from the file on disk"
@@ -294,7 +294,7 @@ struct CommitSheet: View {
           .accessibilityIdentifier("commit.description")
       }
       .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.4)))
-      .overlay(RoundedRectangle(cornerRadius: 6).stroke(theme.tokens.border, lineWidth: 1))
+      .overlay(RoundedRectangle(cornerRadius: 6).stroke(tokens.border, lineWidth: 1))
     }
   }
 
@@ -512,7 +512,7 @@ private struct CommitFileRow: View {
   let isIncluded: Bool
   let toggle: () -> Void
   let only: () -> Void
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -534,7 +534,7 @@ private struct CommitFileRow: View {
       HStack(alignment: .firstTextBaseline, spacing: 6) {
         Text(ChangeBadge.letter(file.change))
           .font(.system(.caption, design: .monospaced))
-          .foregroundStyle(ChangeBadge.color(file.change, theme.tokens))
+          .foregroundStyle(ChangeBadge.color(file.change, tokens))
           .frame(width: 14)
         let parts = ChangesPanel.splitPath(file.path)
         Text(parts.name).font(.callout).lineLimit(1).truncationMode(.middle)
@@ -571,9 +571,10 @@ private struct CommitFileRow: View {
 private struct CommitFailureNotice: View {
   let dialog: VCSFailureDialog
   @State private var showDetails = false
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
-    Notice(tokens: ThemeService.shared.tokens) {
+    Notice(tokens: tokens) {
       Text(dialog.title).font(FontRole.noticeTitle)
       Text(dialog.message)
         .font(FontRole.noticeBody).foregroundStyle(.secondary)

@@ -171,9 +171,10 @@ struct WorkroomSplitView: View {
 /// they can't drift apart.
 struct DropAccent: View {
   let cornerRadius: CGFloat
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
-    let accent = ThemeService.shared.tokens.accent
+    let accent = tokens.accent
     RoundedRectangle(cornerRadius: cornerRadius)
       .fill(accent.opacity(0.25))
       .strokeBorder(accent, lineWidth: 2)
@@ -407,13 +408,13 @@ private struct WorkroomPaneLeaf: View {
 struct WorkroomPaneCardBackground: View {
   let highlighted: Bool
   @Environment(\.controlActiveState) private var activeState
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     ZStack {
-      theme.tokens.panel
+      tokens.panel
       activeState == .inactive || !highlighted
-        ? theme.tokens.splitGroupFill : theme.tokens.splitGroupFocusedFill
+        ? tokens.splitGroupFill : tokens.splitGroupFocusedFill
     }
   }
 }
@@ -423,11 +424,11 @@ struct WorkroomPaneCardBackground: View {
 /// `WorkroomPaneCardBackground`'s isolation of the libghostty surface below it from this layer's
 /// re-renders.
 struct WorkroomPaneCardBorder: View {
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     RoundedRectangle(cornerRadius: 8, style: .continuous)
-      .strokeBorder(theme.tokens.border, lineWidth: 1.5)
+      .strokeBorder(tokens.border, lineWidth: 1.5)
       .allowsHitTesting(false)
   }
 
@@ -552,7 +553,7 @@ private struct WorkroomPaneTitleBar: View {
   /// the setting gates it too (see `PaneTreeView.shouldRecede`). The focus *colours* above are not
   /// gated: they emphasise the focused pane rather than dimming the others, like the accent ring.
   @Default(.dimUnfocusedPanes) private var dimUnfocusedPanes
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     HStack(spacing: 6) {
@@ -560,10 +561,10 @@ private struct WorkroomPaneTitleBar: View {
       // (`workroomName` is nil only for a root). Accent on the focused pane, muted otherwise.
       Image(systemName: workroomName == nil ? "house" : target.workroomGlyph)
         .font(.system(size: 10))
-        .foregroundStyle(focused ? theme.tokens.accent : theme.tokens.fgMuted)
+        .foregroundStyle(focused ? tokens.accent : tokens.fgMuted)
         .help(workroomName == nil ? "" : target.hostTooltip)
       if let reason = target.terminalUnavailability {
-        WarningGlyph(tokens: theme.tokens)
+        WarningGlyph(tokens: tokens)
           .font(.system(size: 10))
           .help(reason.title)
       }
@@ -571,11 +572,11 @@ private struct WorkroomPaneTitleBar: View {
       // member, muted otherwise — the brighter header is the in-content "this is the active pane" cue.
       HStack(alignment: .firstTextBaseline, spacing: 4) {
         Text(projectLabel)
-          .foregroundStyle(focused ? Color.primary : theme.tokens.fgMuted)
+          .foregroundStyle(focused ? Color.primary : tokens.fgMuted)
         if let workroomName {
           Text("/").foregroundStyle(.tertiary)
           Text(workroomName)
-            .foregroundStyle(focused ? Color.primary : theme.tokens.fgMuted)
+            .foregroundStyle(focused ? Color.primary : tokens.fgMuted)
         }
       }
       .font(.subheadline)

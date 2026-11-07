@@ -9,6 +9,7 @@ struct ScriptLogContent: View {
   @ObservedObject var session: ScriptLogSession
   var onClose: (() -> Void)?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     VStack(spacing: 0) {
@@ -25,7 +26,7 @@ struct ScriptLogContent: View {
       if let message = session.failureMessage {
         Text("— \(message)")
           .font(.callout)
-          .foregroundStyle(ThemeService.shared.tokens.failure)
+          .foregroundStyle(tokens.failure)
           .lineLimit(1)
           .truncationMode(.tail)
       }
@@ -49,10 +50,10 @@ struct ScriptLogContent: View {
     if !session.isFinished {
       ProgressView().controlSize(.small)
     } else if session.failureMessage != nil {
-      Image(systemName: "xmark.octagon.fill").foregroundStyle(ThemeService.shared.tokens.failure)
+      Image(systemName: "xmark.octagon.fill").foregroundStyle(tokens.failure)
     } else {
       Image(systemName: "checkmark.circle.fill").foregroundStyle(
-        ThemeService.shared.tokens.success)
+        tokens.success)
     }
   }
 

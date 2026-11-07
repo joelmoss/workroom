@@ -12,7 +12,8 @@ import SwiftUI
 ///
 /// Pattern per `github/CopilotForXcode` (`NSHostingView` as the accessory view). We keep a single
 /// `NSHostingController` and refresh its `rootView` each SwiftUI update so environment/bindings stay
-/// live; the accessory is installed once per window.
+/// live; the accessory is installed once per window. The hosted tree is a SwiftUI root of its own, so
+/// the theme is injected here.
 struct TitlebarAccessoryHost<Content: View>: NSViewRepresentable {
   private let content: Content
 
@@ -20,13 +21,13 @@ struct TitlebarAccessoryHost<Content: View>: NSViewRepresentable {
 
   func makeNSView(context: Context) -> NSView {
     let probe = NSView(frame: .zero)
-    context.coordinator.hosting.rootView = AnyView(content)
+    context.coordinator.hosting.rootView = AnyView(content.themeTokensRoot())
     DispatchQueue.main.async { [weak probe] in context.coordinator.install(on: probe?.window) }
     return probe
   }
 
   func updateNSView(_ nsView: NSView, context: Context) {
-    context.coordinator.hosting.rootView = AnyView(content)
+    context.coordinator.hosting.rootView = AnyView(content.themeTokensRoot())
     context.coordinator.install(on: nsView.window)
     // Re-assert transparency: NSHostingController resets its view's backing to opaque when the content
     // re-renders (e.g. adding a workroom tab), which brought back the solid block. Reapply each update.

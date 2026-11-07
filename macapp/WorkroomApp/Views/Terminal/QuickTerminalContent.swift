@@ -9,6 +9,8 @@ struct QuickTerminalContent: View {
   @Default(.quickTerminalDirectory) private var directory
   /// The surrounding window isn't SwiftUI, so nothing else redraws this on a theme switch.
   @State private var themeTick = 0
+  /// Injected by `QuickTerminalController`, which hosts this view.
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     let _ = directory
@@ -20,7 +22,7 @@ struct QuickTerminalContent: View {
       .overlay(alignment: .bottomTrailing) {
         ToastStack().pointerStyle(.default).padding(8)
       }
-      .background(ThemeService.shared.tokens.panel)
+      .background(tokens.panel)
       // The tab strip takes the titlebar's place; without this the hosting view insets everything
       // below the (hidden) titlebar and leaves an empty strip above the tabs.
       .ignoresSafeArea()

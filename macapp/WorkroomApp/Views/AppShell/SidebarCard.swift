@@ -2,9 +2,11 @@ import SwiftUI
 
 /// Shared themed material for sidebar cards and pane footers.
 struct SidebarBackground: View {
+  @Environment(\.themeTokens) private var tokens
+
   var body: some View {
     VisualEffectView()
-      .overlay(ThemeService.shared.tokens.panel.opacity(0.7))
+      .overlay(tokens.panel.opacity(0.7))
   }
 }
 
@@ -29,9 +31,27 @@ extension View {
   )
     -> some View
   {
-    let tokens = ThemeService.shared.tokens
-    return
-      self
+    modifier(
+      SidebarCard(
+        cornerRadius: cornerRadius, margin: margin, topMargin: topMargin,
+        bottomMargin: bottomMargin, leadingMargin: leadingMargin, trailingMargin: trailingMargin,
+        vibrant: vibrant, elevated: elevated))
+  }
+}
+
+private struct SidebarCard: ViewModifier {
+  let cornerRadius: CGFloat
+  let margin: CGFloat
+  let topMargin: CGFloat?
+  let bottomMargin: CGFloat?
+  let leadingMargin: CGFloat?
+  let trailingMargin: CGFloat?
+  let vibrant: Bool
+  let elevated: Bool
+  @Environment(\.themeTokens) private var tokens
+
+  func body(content: Content) -> some View {
+    content
       .background {
         if vibrant {
           SidebarBackground()

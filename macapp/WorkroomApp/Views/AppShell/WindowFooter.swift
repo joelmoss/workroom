@@ -11,7 +11,7 @@ struct WindowFooter: View {
   @State private var themeTick = 0
   /// The free space between the usage row and the notifications button.
   @State private var gap: CGFloat = .infinity
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     HStack(spacing: 20) {
@@ -22,7 +22,7 @@ struct WindowFooter: View {
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { gap = $0 }
       // Always laid out, so showing it moves nothing; visible only once the usage row runs close.
       HStack(spacing: 10) {
-        theme.tokens.border.frame(width: 1, height: 14)
+        tokens.border.frame(width: 1, height: 14)
           .opacity(showsUsage && gap <= Self.dividerGap ? 1 : 0)
           .accessibilityHidden(true)
         NotificationsBarButton()
@@ -30,11 +30,11 @@ struct WindowFooter: View {
     }
     .padding(.leading, 10)
     .font(.subheadline)
-    .foregroundStyle(theme.tokens.fgMuted)
+    .foregroundStyle(tokens.fgMuted)
     .lineLimit(1)
     .frame(height: Self.height)
     .padding(.bottom, 4)
-    .background(theme.tokens.panel)
+    .background(tokens.panel)
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("window.footer")
     .onReceive(NotificationCenter.default.publisher(for: .themeDidChange)) { _ in themeTick += 1 }

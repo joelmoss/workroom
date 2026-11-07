@@ -181,12 +181,12 @@ final class SwitcherRailModel: ObservableObject {
 /// *what kind of thing it is* (so it gets a drawn miniature of its type).
 struct SwitcherRailView: View {
   @ObservedObject var model: SwitcherRailModel
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   /// Re-resolved per render. `model.themeVersion` is read in `body` so a theme change actually
   /// repaints — this is a static view inside a panel that is only ever ordered in and out, so nothing
   /// else would invalidate it.
-  private var palette: SwitcherRailLayout.Palette { SwitcherRailLayout.palette(for: theme.tokens) }
+  private var palette: SwitcherRailLayout.Palette { SwitcherRailLayout.palette(for: tokens) }
 
   /// No `accessibilityReduceMotion` here on purpose: nothing in the rail animates. The cursor ring and
   /// the scroll offset both snap (a 0.32s spring per step would still be travelling toward card 2 when
@@ -213,7 +213,7 @@ struct SwitcherRailView: View {
           // D14's last resort: a theme whose foreground cannot clear the text floor against a
           // translucent surface gets an opaque one instead. Legibility outranks the material — and
           // without this the glass would keep washing text that already failed its contrast check.
-          if palette.needsOpaqueFill { theme.tokens.panel }
+          if palette.needsOpaqueFill { tokens.panel }
         }
       }
       .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
@@ -327,7 +327,7 @@ private struct SwitcherCardView: View {
   let isCursor: Bool
   let width: CGFloat
   let palette: SwitcherRailLayout.Palette
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   /// The cursor fill and ring share it, and it sits inside the rail's own 20pt so the two curves nest
   /// rather than fight.
@@ -343,7 +343,7 @@ private struct SwitcherCardView: View {
     .frame(width: width, height: SwitcherRailLayout.cardHeight)
     .background(
       RoundedRectangle(cornerRadius: Self.cursorRadius, style: .continuous)
-        .fill(isCursor ? theme.tokens.accentSoft : Color.clear)
+        .fill(isCursor ? tokens.accentSoft : Color.clear)
     )
     .overlay(
       // Only the cursor is outlined. On glass, giving every card its own border produced a row of
@@ -388,7 +388,7 @@ private struct SwitcherCardView: View {
           // `diffRemove` is the rail's contrast-corrected ANSI red, the slot `failure` reads.
           .fill(card.isFailed ? palette.diffRemove : palette.dot)
           .frame(width: 7, height: 7)
-          .overlay(Circle().strokeBorder(theme.tokens.panel, lineWidth: 1.5))
+          .overlay(Circle().strokeBorder(tokens.panel, lineWidth: 1.5))
           .offset(x: 3, y: -3)
           .help(card.isFailed ? "Reported an error" : "Running")
           .accessibilityLabel(card.isFailed ? "reported an error" : "running")
@@ -401,7 +401,7 @@ private struct SwitcherCardView: View {
         ProgramStatusGlyph(mark: .blocked, stale: card.waitingStale, size: 10)
           // caption2's 13 pt line plus the badge's 1 pt padding each side.
           .frame(width: 15, height: 15)
-          .background(Circle().fill(theme.tokens.panel))
+          .background(Circle().fill(tokens.panel))
           .offset(x: 5, y: 4)
           .help(card.waitingLabel ?? "")
           .accessibilityHidden(true)
@@ -466,10 +466,10 @@ private struct MarkWell: View {
   /// ladder × brightness steps, each rung allocating an NSColor and measuring a contrast ratio — so
   /// running it from `body` re-ran it on every render of every card.
   let tile: NSColor?
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
-    let tile = tile ?? SwitcherMark.tileColor(hue: mark.hue, tokens: theme.tokens)
+    let tile = tile ?? SwitcherMark.tileColor(hue: mark.hue, tokens: tokens)
     RoundedRectangle(cornerRadius: 8, style: .continuous)
       .fill(Color(nsColor: tile))
       .frame(width: SwitcherRailLayout.wellSize.width, height: SwitcherRailLayout.wellSize.height)
@@ -485,11 +485,11 @@ private struct MarkWell: View {
 private struct MiniatureWell: View {
   let miniature: PaneMiniature
   let palette: SwitcherRailLayout.Palette
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     RoundedRectangle(cornerRadius: 8, style: .continuous)
-      .fill(theme.tokens.surface)
+      .fill(tokens.surface)
       .frame(width: SwitcherRailLayout.wellSize.width, height: SwitcherRailLayout.wellSize.height)
       .overlay { shape }
       .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -545,7 +545,7 @@ private struct MiniatureWell: View {
     case .renamed:
       return [(palette.subtitle, 26), (add, 18), (remove, 12)]
     case .conflicted:
-      return [(Color(nsColor: theme.tokens.nsFg), 24), (remove, 24), (add, 24)]
+      return [(Color(nsColor: tokens.nsFg), 24), (remove, 24), (add, 24)]
     }
   }
 

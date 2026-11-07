@@ -54,7 +54,10 @@ struct PlainFileViewer: View {
   /// Bumped when a file finishes loading, so the highlight task (keyed on it) re-runs against the
   /// freshly loaded content without re-reading on every theme change.
   @State private var loadToken = 0
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
+  /// The theme's apply count, which keys the highlight and the Markdown render: a re-apply of the
+  /// same theme still recolours them.
+  private var themeGeneration: Int { ThemeService.shared.generation }
 
   /// Whether this file is Markdown (preview mode is offered only then).
   private var isMarkdown: Bool { PlainFileViewer.isMarkdown(descriptor.path) }
@@ -101,7 +104,7 @@ struct PlainFileViewer: View {
       .overlay(alignment: .topTrailing) {
         if isFocused && !showingPreview { FileFindBar(model: find) }
       }
-      .background(theme.tokens.bg)
+      .background(tokens.bg)
       .task(id: descriptor.path) {
         let myPath = descriptor.path
         activePath = myPath
@@ -119,7 +122,7 @@ struct PlainFileViewer: View {
   /// Identity of the current highlight: file + theme generation + which load it's for. Any change
   /// cancels the in-flight highlight and starts a fresh, correctly-keyed one.
   private var highlightKey: String {
-    "\(descriptor.path)\u{1F}\(theme.generation)\u{1F}\(loadToken)"
+    "\(descriptor.path)\u{1F}\(themeGeneration)\u{1F}\(loadToken)"
   }
 
   // MARK: Loading
@@ -151,7 +154,7 @@ struct PlainFileViewer: View {
       content = split.joined(separator: "\n")
       // Show the content plain immediately; `applyHighlight` upgrades it with syntax colours.
       attributed = FileHighlightMapper.nsAttributedString(
-        content: content, spans: [], tokens: theme.tokens, font: Self.font)
+        content: content, spans: [], tokens: tokens, font: Self.font)
       version &+= 1
       state = .text
       loadToken &+= 1
@@ -170,7 +173,7 @@ struct PlainFileViewer: View {
     else { return }
     let source = content
     let highlighted = await FileHighlightMapper.highlighted(
-      content: source, grammar: grammar, tokens: theme.tokens, font: Self.font)
+      content: source, grammar: grammar, tokens: tokens, font: Self.font)
     guard !Task.isCancelled, source == content, let highlighted else { return }
     attributed = highlighted
     version &+= 1
@@ -250,7 +253,7 @@ struct PlainFileViewer: View {
         // Rendered Markdown in a themed WKWebView — GFM tables, task lists, and mermaid diagrams,
         // all bundled/offline. Read-only, selectable, with externally-opening links.
         MarkdownWebView(
-          markdown: content, tokens: theme.tokens, generation: theme.generation,
+          markdown: content, tokens: tokens, generation: themeGeneration,
           onFirstRender: {
             // The UI-test seam pins the loading state on screen; the real loader is far too
             // short-lived for XCUITest to catch reliably (see UITestFixture.holdPreviewLoader).
@@ -266,7 +269,7 @@ struct PlainFileViewer: View {
         .overlay {
           if !previewRendered {
             centered { DelayedSpinner() }
-              .background(theme.tokens.bg)
+              .background(tokens.bg)
               .transition(.opacity)
           }
         }
@@ -275,7 +278,7 @@ struct PlainFileViewer: View {
         // Source: an NSTextView (CodeTextView) — read-only, fully selectable across lines, with a
         // line-number gutter and find-match highlighting.
         CodeTextView(
-          attributed: attributed, version: version, tokens: theme.tokens, find: find,
+          attributed: attributed, version: version, tokens: tokens, find: find,
           isFocused: isFocused
         )
       }

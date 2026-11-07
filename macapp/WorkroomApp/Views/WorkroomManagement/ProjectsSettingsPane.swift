@@ -11,6 +11,7 @@ struct ProjectsSettingsPane: View {
   /// Opens a project's settings, as a step the window's back button undoes.
   let open: (String) -> Void
   @ObservedObject private var catalog = HostOptionsCatalog.shared
+  @Environment(\.themeTokens) private var tokens
 
   private var projects: [Project] { ProjectStore.shared.projects }
 
@@ -26,7 +27,7 @@ struct ProjectsSettingsPane: View {
         .id(project.path)
     } else if projects.isEmpty {
       Text("No projects yet. Add one from a workroom window's sidebar.")
-        .foregroundStyle(ThemeService.shared.tokens.fgMuted)
+        .foregroundStyle(tokens.fgMuted)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     } else {
       Form {
@@ -40,13 +41,13 @@ struct ProjectsSettingsPane: View {
                   Text(project.displayName)
                   Text((project.path as NSString).abbreviatingWithTildeInPath)
                     .font(.caption)
-                    .foregroundStyle(ThemeService.shared.tokens.fgMuted)
+                    .foregroundStyle(tokens.fgMuted)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 }
                 Spacer()
                 Image(systemName: "chevron.right")
-                  .foregroundStyle(ThemeService.shared.tokens.fgMuted)
+                  .foregroundStyle(tokens.fgMuted)
               }
               .contentShape(Rectangle())
             }
@@ -144,6 +145,7 @@ private struct ProjectSettingsForm: View {
   /// The base-branch save under way, which the next one waits for.
   @State private var branchSave: Task<Void, Never>?
   @FocusState private var focused: Field?
+  @Environment(\.themeTokens) private var tokens
 
   private enum Field { case command, baseBranch }
 
@@ -162,7 +164,7 @@ private struct ProjectSettingsForm: View {
             "No run command is defined yet — you can't run this workroom until you set one.",
             systemImage: "exclamationmark.triangle.fill"
           )
-          .foregroundStyle(ThemeService.shared.tokens.warning)
+          .foregroundStyle(tokens.warning)
           // Stable identifier so the XCUITest doesn't match on the exact warning string.
           .accessibilityIdentifier("projectSettings.runWarning")
         }
@@ -198,7 +200,7 @@ private struct ProjectSettingsForm: View {
           .accessibilityIdentifier("projectSettings.baseBranch")
           // In the row, so a refusal moves nothing below it; the message is its tooltip.
           if let refused = draft.branchError {
-            WarningGlyph(tokens: ThemeService.shared.tokens)
+            WarningGlyph(tokens: tokens)
               .help("Not saved: \(refused)")
               .accessibilityLabel("Base branch not saved: \(refused)")
               .accessibilityIdentifier("projectSettings.baseBranchError")

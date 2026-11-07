@@ -49,6 +49,7 @@ final class MenuBarController {
       rootView: MenuBarNotificationsView(registry: registry) { [weak self] in
         self?.popover.performClose(nil)
       }
+      .themeTokensRoot()
     )
 
     // Live count → button label. `aggregateUnread` is `@Published` on the main-actor registry.

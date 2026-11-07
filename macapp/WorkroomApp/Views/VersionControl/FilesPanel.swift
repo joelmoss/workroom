@@ -9,7 +9,7 @@ import SwiftUI
 struct FilesPanel: View {
   @EnvironmentObject var store: AppStore
   @ObservedObject var model: FileTreeModel
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Group {
@@ -112,7 +112,7 @@ struct FileTreeRowView: View, Equatable {
   /// Tracks the previous click time so a quick second click promotes the preview to a persisted tab
   /// (same manual double-click handling the Changes panel uses).
   @State private var lastClick: Date?
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   private var node: FileNode { row.node }
 
@@ -143,7 +143,7 @@ struct FileTreeRowView: View, Equatable {
         .opacity(node.isDirectory ? 1 : 0)
       Image(systemName: node.isDirectory ? "folder" : "doc")
         .font(.system(size: 11))
-        .foregroundStyle(node.isDirectory ? theme.tokens.accent : theme.tokens.fgMuted)
+        .foregroundStyle(node.isDirectory ? tokens.accent : tokens.fgMuted)
         .frame(width: 15, alignment: .center)
       Text(node.name)
         .font(.callout)
@@ -155,7 +155,7 @@ struct FileTreeRowView: View, Equatable {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       Rectangle()
-        .fill(hovering ? theme.tokens.rowHover : .clear)
+        .fill(hovering ? tokens.rowHover : .clear)
         .padding(.horizontal, -12)
     )
     .contentShape(Rectangle())

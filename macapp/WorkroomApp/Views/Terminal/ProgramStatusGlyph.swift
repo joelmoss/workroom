@@ -11,18 +11,18 @@ struct ProgramStatusGlyph: View {
   let mark: Mark
   var stale = false
   var size: CGFloat = 11
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Image(systemName: mark == .blocked ? "hand.raised.fill" : "checkmark.circle.fill")
       .font(.system(size: size))
-      .foregroundStyle(mark == .blocked ? theme.tokens.warning : theme.tokens.success)
+      .foregroundStyle(mark == .blocked ? tokens.warning : tokens.success)
       .overlay(alignment: .bottomTrailing) {
         if stale {
           Image(systemName: "clock.fill")
             .font(.system(size: max(6, (size * 0.6).rounded())))
-            .foregroundStyle(theme.tokens.fg)
-            .background(Circle().fill(theme.tokens.panel).padding(-1))
+            .foregroundStyle(tokens.fg)
+            .background(Circle().fill(tokens.panel).padding(-1))
             .offset(x: 3, y: 2)
         }
       }

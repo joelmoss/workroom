@@ -164,7 +164,7 @@ struct SidebarNotificationStrip: View {
   @State private var showExtras = false
   @State private var plusHovering = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     VStack(spacing: 0) {
@@ -207,7 +207,7 @@ struct SidebarNotificationStrip: View {
         .padding(.vertical, 2)
         // The count button carries its own hover: a base pill that intensifies when hovered, so it
         // reads as a distinct control even while the whole row is also highlighted.
-        .background(Capsule().fill(theme.tokens.hover.opacity(plusHovering ? 1 : 0.5)))
+        .background(Capsule().fill(tokens.hover.opacity(plusHovering ? 1 : 0.5)))
     }
     .buttonStyle(.plain)
     .onHover { plusHovering = $0 }
@@ -217,6 +217,7 @@ struct SidebarNotificationStrip: View {
     .accessibilityIdentifier("sidebar.notifications.plus")
     .popover(isPresented: $showExtras, arrowEdge: .top) {
       NotificationsPopover(dropFirst: true, onActivate: { showExtras = false })
+        .themeTokensRoot()
         .environmentObject(store)
         .environmentObject(notifications)
     }
@@ -243,7 +244,7 @@ private struct NotificationRow: View {
   /// hover background; the accessory paints its own on top.
   var trailingAccessory: AnyView?
   @State private var hovering = false
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     HStack(spacing: 6) {
@@ -263,7 +264,7 @@ private struct NotificationRow: View {
     // The hover fill covers the ENTIRE row — content and the trailing accessory — so hovering anywhere
     // on the row (including over the `+N` badge) highlights the whole thing.
     .background(
-      RoundedRectangle(cornerRadius: 5).fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
+      RoundedRectangle(cornerRadius: 5).fill(tokens.hover.opacity(hovering ? 1 : 0))
     )
     .contentShape(Rectangle())
     .onHover {

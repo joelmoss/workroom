@@ -15,6 +15,7 @@ struct PullRequestPanel: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var vcsStatus: VCSStatusService
   @Environment(\.openURL) private var openURL
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Group {
@@ -85,7 +86,7 @@ struct PullRequestPanel: View {
     let copy = Self.ghWarningCopy(for: status)
     return VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 6) {
-        WarningGlyph(tokens: ThemeService.shared.tokens)
+        WarningGlyph(tokens: tokens)
           .accessibilityHidden(true)
         Text(copy.title)
           .fontWeight(.medium)
@@ -206,7 +207,7 @@ struct PullRequestPanel: View {
         subject: AvatarSubject(
           reviewer: reviewer.identity, displayName: reviewer.displayName, pixelSize: 54),
         size: 18)
-      Image(systemName: reviewer.symbol).foregroundStyle(reviewer.semantic.color)
+      Image(systemName: reviewer.symbol).foregroundStyle(reviewer.semantic.color(tokens))
       Text(reviewer.displayName).font(.footnote).lineLimit(1).truncationMode(.tail)
       Text(reviewer.stateLabel).font(.footnote).foregroundStyle(.secondary)
       Spacer(minLength: 0)
@@ -250,7 +251,7 @@ struct PullRequestPanel: View {
   /// tap target. VoiceOver still gets the state via the row's `accessibilityLabel`.
   private func checkRow(_ check: PRPresentation.CheckBadge) -> some View {
     HStack(spacing: 6) {
-      Image(systemName: check.symbol).foregroundStyle(check.semantic.color)
+      Image(systemName: check.symbol).foregroundStyle(check.semantic.color(tokens))
       Text(check.name).font(.footnote).lineLimit(1).truncationMode(.tail)
       Spacer(minLength: 0)
     }
@@ -276,7 +277,7 @@ struct PullRequestPanel: View {
         openURL(checksURL)
       } label: {
         HStack(spacing: 5) {
-          Image(systemName: ci.symbol).foregroundStyle(ci.semantic.color)
+          Image(systemName: ci.symbol).foregroundStyle(ci.semantic.color(tokens))
           Text(ci.accessibility).foregroundStyle(.secondary)
           Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(.secondary)
           Spacer(minLength: 0)
@@ -289,7 +290,7 @@ struct PullRequestPanel: View {
       .accessibilityLabel("\(ci.accessibility), open checks in browser")
     } else {
       HStack(spacing: 5) {
-        Image(systemName: ci.symbol).foregroundStyle(ci.semantic.color)
+        Image(systemName: ci.symbol).foregroundStyle(ci.semantic.color(tokens))
         Text(ci.accessibility).foregroundStyle(.secondary)
       }
       .font(.callout)
@@ -419,8 +420,7 @@ private struct MergeButton: View {
 extension PRPresentation.Semantic {
   /// Semantic → SwiftUI color for the PR state badge. Mirrors GitHub: open green, merged purple,
   /// closed red, draft a quiet gray. Green and red are the theme's traffic-light tokens.
-  @MainActor var color: Color {
-    let tokens = ThemeService.shared.tokens
+  @MainActor func color(_ tokens: ThemeTokens) -> Color {
     switch self {
     case .open: return tokens.success
     case .draft: return .secondary
@@ -433,8 +433,7 @@ extension PRPresentation.Semantic {
 extension PRPresentation.ReviewSemantic {
   /// Semantic → SwiftUI color for a per-reviewer row glyph. Mirrors GitHub: approved green,
   /// changes-requested red, pending yellow; commented/dismissed stay quiet (the glyph carries it).
-  @MainActor var color: Color {
-    let tokens = ThemeService.shared.tokens
+  @MainActor func color(_ tokens: ThemeTokens) -> Color {
     switch self {
     case .approved: return tokens.success
     case .changesRequested: return tokens.failure
@@ -449,8 +448,7 @@ extension PRPresentation.CheckSemantic {
   /// Semantic → SwiftUI color for a per-check row glyph. Mirrors GitHub: passing green, failing red,
   /// pending yellow; skipped/cancelled stay quiet (the glyph carries it). The same traffic-light
   /// tokens as the reviewer rows, so the two row kinds read consistently.
-  @MainActor var color: Color {
-    let tokens = ThemeService.shared.tokens
+  @MainActor func color(_ tokens: ThemeTokens) -> Color {
     switch self {
     case .passing: return tokens.success
     case .failing: return tokens.failure

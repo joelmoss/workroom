@@ -36,7 +36,7 @@ struct ToolbarIconButtonStyle: ButtonStyle {
     let horizontalPadding: CGFloat
     @Environment(\.isEnabled) private var isEnabled
     @State private var hovering = false
-    private let theme = ThemeService.shared
+    @Environment(\.themeTokens) private var tokens
 
     var body: some View {
       configuration.label
@@ -54,7 +54,7 @@ struct ToolbarIconButtonStyle: ButtonStyle {
           // to the fill keeps the glyph out of every animation transaction, so any re-round snaps
           // instantly and imperceptibly while the well still fades in.
           RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(theme.tokens.hover)
+            .fill(tokens.hover)
             .opacity(hovering && isEnabled ? 1 : 0)
             .animation(.easeOut(duration: 0.12), value: hovering)
         )

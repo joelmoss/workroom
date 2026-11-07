@@ -104,11 +104,12 @@ final class InspectorPaneViewController: NSViewController {
   }
 
   /// Swap the hosted header + body. The body is hidden when collapsed so only the header shows (the
-  /// enclosing split also pins a collapsed pane to the header height).
+  /// enclosing split also pins a collapsed pane to the header height). Each is a hosting root, so
+  /// each gets the theme here rather than from every caller.
   func setContent(header: AnyView, body: AnyView, collapsed: Bool) {
     _ = view  // ensure loaded
-    headerHost.rootView = header
-    bodyHost.rootView = body
+    headerHost.rootView = AnyView(header.themeTokensRoot())
+    bodyHost.rootView = AnyView(body.themeTokensRoot())
     (fillsBody ? bodyHost.view : bodyScroll).isHidden = collapsed
   }
 }
@@ -481,6 +482,7 @@ struct SectionHeader<Accessory: View>: View {
   /// discoverability. Nil for sections with no command equivalent.
   var shortcut: String? = nil
   @ViewBuilder var accessory: () -> Accessory
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Group {
@@ -509,7 +511,7 @@ struct SectionHeader<Accessory: View>: View {
     }
     .accessibilityIdentifier("inspector.header.\(title)")
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(ThemeService.shared.tokens.surface)
+    .background(tokens.surface)
     .overlay(alignment: .trailing) {
       accessory().padding(.trailing, 12)
     }

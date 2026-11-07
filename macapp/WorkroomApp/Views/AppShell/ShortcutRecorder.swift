@@ -10,13 +10,14 @@ struct ShortcutRecorder: View {
   @State private var recording = false
   @State private var monitor: Any?
   @State private var problem: String?
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     HStack {
       if let problem {
         Text(problem)
           .font(.caption)
-          .foregroundStyle(ThemeService.shared.tokens.failure)
+          .foregroundStyle(tokens.failure)
           .accessibilityIdentifier("settings.control.quickTerminalShortcutProblem")
       }
       if shortcut != defaultShortcut, !recording {

@@ -131,6 +131,48 @@ final class ThemeService {
   }
 }
 
+// MARK: The SwiftUI environment
+
+/// The default an un-injected tree reads: the live tokens, so a view hosted without
+/// `themeTokensRoot()` (a unit test's bare `NSHostingView`) still draws the active theme. It is not
+/// how production stays current: SwiftUI need not track the `ThemeService` read made here, so a
+/// tree that relies on it can keep the old theme after a switch. Every root injects instead.
+private struct ThemeTokensKey: EnvironmentKey {
+  static var defaultValue: ThemeTokens {
+    // SwiftUI resolves the environment on the main thread; the guard keeps an off-main read from
+    // trapping in `assumeIsolated`.
+    guard Thread.isMainThread else { return ThemeTokens(preview: nil) }
+    return MainActor.assumeIsolated { ThemeService.shared.tokens }
+  }
+}
+
+extension EnvironmentValues {
+  /// The active theme's chrome colours. Views read this, not `ThemeService.shared`; every SwiftUI
+  /// root (window, scene, hosting view or controller) injects it with `themeTokensRoot()`.
+  var themeTokens: ThemeTokens {
+    get { self[ThemeTokensKey.self] }
+    set { self[ThemeTokensKey.self] = newValue }
+  }
+}
+
+/// Injects the live `ThemeService` tokens at a SwiftUI root. This body is the only place a theme
+/// switch reaches SwiftUI: it reads the `@Observable` service, so it re-runs and re-injects when
+/// the theme changes, and only then, since it holds nothing a parent's update could change.
+struct ThemeTokensRoot: ViewModifier {
+  func body(content: Content) -> some View {
+    content.environment(\.themeTokens, ThemeService.shared.tokens)
+  }
+}
+
+/// A root view with the theme injected, named so a typed `NSHostingView` can hold one.
+typealias ThemeRooted<Root: View> = ModifiedContent<Root, ThemeTokensRoot>
+
+extension View {
+  /// Inject the live theme. Apply it at every SwiftUI root: the environment does not cross an
+  /// `NSHostingView` or `NSHostingController`, so a hosted tree without it never sees a switch.
+  func themeTokensRoot() -> ThemeRooted<Self> { modifier(ThemeTokensRoot()) }
+}
+
 extension Notification.Name {
   /// Posted by `ThemeService.applyActiveTheme` after tokens + terminals are re-themed, so AppKit
   /// sites that read `ThemeService.shared.tokens` outside a SwiftUI body can refresh.

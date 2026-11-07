@@ -56,11 +56,11 @@ struct WindowMovableController: NSViewRepresentable {
 
 /// A hairline group separator shared by the title-bar bars.
 struct TitlebarDivider: View {
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Rectangle()
-      .fill(theme.tokens.border)
+      .fill(tokens.border)
       .frame(width: 1, height: 14)
       .padding(.horizontal, 4)
   }
@@ -202,7 +202,9 @@ struct TrailingTitlebarBar: View {
       .help("Theme (⌘⇧K)")
       .accessibilityLabel("Theme")
       .accessibilityIdentifier("toolbar.theme")
-      .popover(isPresented: $showThemePicker, arrowEdge: .bottom) { ThemePicker() }
+      .popover(isPresented: $showThemePicker, arrowEdge: .bottom) {
+        ThemePicker().themeTokensRoot()
+      }
 
       // Quick Terminal (⌥§ by default) — a shell in its own slide-in window, always at the trailing
       // edge.

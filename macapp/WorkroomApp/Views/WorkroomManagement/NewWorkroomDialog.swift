@@ -34,7 +34,7 @@ struct NewWorkroomDialog: View {
   /// Whether this dialog was raised in split mode (⌥⌘N) — consumed once by the presenter, so a
   /// cancelled raise can't leak into the next one. In split mode a plain pick already splits.
   var splitIntent = false
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   @State private var query = ""
   /// Index into `filtered` of the keyboard-highlighted row (↑/↓ move it, ⏎ / click pick it).
@@ -104,7 +104,7 @@ struct NewWorkroomDialog: View {
       if let blocked = store.lifecycle.createBlockedReason(in: project) {
         Text(blocked.prefix(1).uppercased() + blocked.dropFirst())
           .font(.footnote)
-          .foregroundStyle(theme.tokens.fgMuted)
+          .foregroundStyle(tokens.fgMuted)
           .padding(.horizontal, 8)
           .padding(.bottom, 6)
           .accessibilityIdentifier("newWorkroom.placesBlocked")
@@ -253,7 +253,7 @@ struct NewWorkroomDialog: View {
           if filtered.isEmpty {
             Text("No projects match “\(query)”")
               .font(.footnote)
-              .foregroundStyle(theme.tokens.fgMuted)
+              .foregroundStyle(tokens.fgMuted)
               .frame(maxWidth: .infinity)
               .padding(.vertical, 16)
           } else {
@@ -276,7 +276,7 @@ struct NewWorkroomDialog: View {
 
   private var searchField: some View {
     HStack(spacing: 6) {
-      Image(systemName: "magnifyingglass").foregroundStyle(theme.tokens.fgDim)
+      Image(systemName: "magnifyingglass").foregroundStyle(tokens.fgDim)
       TextField("Filter projects", text: $query)
         .textFieldStyle(.plain)
         .focused($searchFocused)
@@ -289,7 +289,7 @@ struct NewWorkroomDialog: View {
         } label: {
           Image(systemName: "xmark.circle.fill")
         }
-        .buttonStyle(.plain).foregroundStyle(theme.tokens.fgDim)
+        .buttonStyle(.plain).foregroundStyle(tokens.fgDim)
         .help("Clear filter")
       }
     }
@@ -297,9 +297,9 @@ struct NewWorkroomDialog: View {
     .padding(.vertical, 6)
     .background(
       RoundedRectangle(cornerRadius: 8)
-        .fill(theme.tokens.surface)
+        .fill(tokens.surface)
         .overlay(
-          RoundedRectangle(cornerRadius: 8).strokeBorder(theme.tokens.border, lineWidth: 0.5))
+          RoundedRectangle(cornerRadius: 8).strokeBorder(tokens.border, lineWidth: 0.5))
     )
     .padding(10)
   }
@@ -386,7 +386,7 @@ enum WorkroomPlace: Hashable {
 /// same-named directories, or what a place is. Highlight + hover styling mirrors `ThemePicker`'s
 /// `FamilyRow`.
 private struct PickerRow: View {
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
   let icon: String
   let title: String
   let detail: String
@@ -401,17 +401,17 @@ private struct PickerRow: View {
     HStack(spacing: 8) {
       Image(systemName: icon)
         .font(.system(size: 12))
-        .foregroundStyle(theme.tokens.fgDim)
+        .foregroundStyle(tokens.fgDim)
         .frame(width: 16)
       VStack(alignment: .leading, spacing: 1) {
         Text(title)
           .font(.system(size: 12, weight: .medium))
-          .foregroundStyle(dimmed ? theme.tokens.fgMuted : theme.tokens.fg)
+          .foregroundStyle(dimmed ? tokens.fgMuted : tokens.fg)
           .lineLimit(1)
           .truncationMode(.tail)
         Text(detail)
           .font(.system(size: 10))
-          .foregroundStyle(theme.tokens.fgMuted)
+          .foregroundStyle(tokens.fgMuted)
           .lineLimit(1)
           .truncationMode(detailTruncation)
       }
@@ -420,7 +420,7 @@ private struct PickerRow: View {
     .padding(.horizontal, 8)
     .padding(.vertical, 6)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .pickerRowChrome(tokens: theme.tokens, highlighted: isHighlighted, hovered: hovered)
+    .pickerRowChrome(tokens: tokens, highlighted: isHighlighted, hovered: hovered)
     .contentShape(Rectangle())
     .help(help)
     .onHover { hovered = $0 }

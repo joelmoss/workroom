@@ -40,7 +40,7 @@ struct ChangedFileRow: View, Equatable {
   /// the user changes Settings → "Open file paths in" (issue #93); otherwise it'd be stale until an
   /// unrelated redraw.
   @Default(.filePathEditor) private var filePathEditorID
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     #if DEBUG
@@ -56,7 +56,7 @@ struct ChangedFileRow: View, Equatable {
         .frame(width: 14, alignment: .leading)
       Text(name)
         .font(.callout)
-        .foregroundStyle(isSelected ? theme.tokens.accent : .primary)
+        .foregroundStyle(isSelected ? tokens.accent : .primary)
         .lineLimit(1).truncationMode(.middle)
         .layoutPriority(1)
       if !dir.isEmpty {
@@ -84,7 +84,7 @@ struct ChangedFileRow: View, Equatable {
       // Square, full-width band (no corner radius): bleed past the section's 12pt inset so the
       // hover/selection highlight fills the inspector width edge-to-edge (issue #93 feedback).
       Rectangle()
-        .fill(isSelected ? theme.tokens.rowSelection : (hovering ? theme.tokens.rowHover : .clear))
+        .fill(isSelected ? tokens.rowSelection : (hovering ? tokens.rowHover : .clear))
         .padding(.horizontal, -12)
     )
     // The row's tooltip describes its click action (open the diff). Applied BEFORE the hover overlay
@@ -161,7 +161,7 @@ struct ChangedFileRow: View, Equatable {
         // The same opaque token the row fills its highlight with — solid (occludes the path text) and
         // identical in colour to the row by construction.
         RoundedRectangle(cornerRadius: 5)
-          .fill(isSelected ? theme.tokens.rowSelection : theme.tokens.rowHover)
+          .fill(isSelected ? tokens.rowSelection : tokens.rowHover)
       )
       .fixedSize()
     }
@@ -189,8 +189,8 @@ struct ChangedFileRow: View, Equatable {
   /// file, group or selected-ness actually changed get a body. `@EnvironmentObject`/`@State`/
   /// `@Default` still invalidate past this gate, so hover, the editor-preference label and
   /// store-driven updates are unaffected. A theme change needs no input here, unlike `HistoryRow`'s:
-  /// every row reads `theme.tokens` outside any ternary (the change letter's `color`), so
-  /// Observation repaints each row past the gate.
+  /// every row reads `tokens` outside any ternary (the change letter's `color`), so the theme
+  /// environment repaints each row past the gate.
   nonisolated static func == (lhs: ChangedFileRow, rhs: ChangedFileRow) -> Bool {
     lhs.file == rhs.file && lhs.source == rhs.source && lhs.isSelected == rhs.isSelected
   }
@@ -198,7 +198,7 @@ struct ChangedFileRow: View, Equatable {
   // Letter / colour / word live in `ChangeBadge` (Core) so the mapping is unit-testable — see its
   // doc for why `.conflicted` is `"!"` in its own colour rather than `"C"` in deletion's red.
   private var letter: String { ChangeBadge.letter(file.change) }
-  private var color: Color { ChangeBadge.color(file.change, theme.tokens) }
+  private var color: Color { ChangeBadge.color(file.change, tokens) }
   private var changeWord: String { ChangeBadge.word(file.change) }
   /// `old → new`, for the tooltip and accessibility label of a moved file.
   private var renamePath: String {

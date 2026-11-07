@@ -26,6 +26,7 @@ struct WorkroomTerminalsView: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var modals: ModalState
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.themeTokens) private var tokens
   /// "Dim unfocused panes" (issue #162) — the strip's fade is in lockstep with the pane scrim, so the
   /// setting gates it too (see `PaneTreeView.shouldRecede`).
   @Default(.dimUnfocusedPanes) private var dimUnfocusedPanes
@@ -78,7 +79,7 @@ struct WorkroomTerminalsView: View {
           Button("New Terminal") { store.newTerminal(in: target) }
             .buttonStyle(.borderedProminent)
             // Use the active theme accent rather than the system blue (issue #36).
-            .tint(ThemeService.shared.tokens.accent)
+            .tint(tokens.accent)
             .accessibilityIdentifier("NewTerminal")
         }
       }

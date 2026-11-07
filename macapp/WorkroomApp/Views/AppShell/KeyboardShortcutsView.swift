@@ -12,7 +12,7 @@ import SwiftUI
 ///
 /// Glyph legend: ⌘ command · ⇧ shift · ⌥ option · ⌃ control · ←→↑↓ arrows · § section.
 struct KeyboardShortcutsView: View {
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
   @Environment(\.dismiss) private var dismiss
   @Default(.quickTerminalShortcut) private var quickTerminalShortcut
 
@@ -33,7 +33,7 @@ struct KeyboardShortcutsView: View {
               Text(group.title)
                 .font(.system(size: 11, weight: .semibold))
                 .textCase(.uppercase)
-                .foregroundStyle(theme.tokens.fgMuted)
+                .foregroundStyle(tokens.fgMuted)
                 .padding(.horizontal, 4)
               ForEach(group.items) { item in
                 ShortcutRow(label: item.label, keys: keys(for: item))
@@ -51,7 +51,7 @@ struct KeyboardShortcutsView: View {
 
 /// One label-left, keycap-right row.
 private struct ShortcutRow: View {
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
   let label: String
   let keys: String
 
@@ -59,18 +59,18 @@ private struct ShortcutRow: View {
     HStack(spacing: 12) {
       Text(label)
         .font(.system(size: 12))
-        .foregroundStyle(theme.tokens.fg)
+        .foregroundStyle(tokens.fg)
       Spacer(minLength: 0)
       Text(keys)
         .font(.system(size: 12, weight: .medium, design: .monospaced))
-        .foregroundStyle(theme.tokens.fg)
+        .foregroundStyle(tokens.fg)
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
         .background(
           RoundedRectangle(cornerRadius: 6)
-            .fill(theme.tokens.surface)
+            .fill(tokens.surface)
             .overlay(
-              RoundedRectangle(cornerRadius: 6).strokeBorder(theme.tokens.border, lineWidth: 0.5))
+              RoundedRectangle(cornerRadius: 6).strokeBorder(tokens.border, lineWidth: 0.5))
         )
     }
     .padding(.horizontal, 4)

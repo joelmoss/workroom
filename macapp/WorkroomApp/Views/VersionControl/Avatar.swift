@@ -217,7 +217,7 @@ final class AvatarImageLoader {
 struct AvatarView: View {
   let subject: AvatarSubject
   var size: CGFloat = 16
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
   /// Privacy gate: when off, no avatar image is ever requested (the initials chip shows instead), so
   /// viewing an untrusted repo's history can't beacon the viewer to Gravatar/GitHub. See the key doc.
   @Default(.loadRemoteAvatars) private var loadRemoteAvatars
@@ -261,7 +261,7 @@ struct AvatarView: View {
     }
     .frame(width: size, height: size)
     .clipShape(Circle())
-    .overlay(Circle().strokeBorder(theme.tokens.border, lineWidth: 0.5))
+    .overlay(Circle().strokeBorder(tokens.border, lineWidth: 0.5))
     .help(subject.displayName)
     .accessibilityHidden(true)
     .task(id: taskKey) {
@@ -310,13 +310,13 @@ struct AvatarView: View {
 struct AvatarStack: View {
   let subjects: [AvatarSubject]
   var size: CGFloat = 16
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     HStack(spacing: -size * 0.35) {
       ForEach(Array(subjects.enumerated()), id: \.offset) { _, subject in
         AvatarView(subject: subject, size: size)
-          .overlay(Circle().strokeBorder(theme.tokens.panel, lineWidth: 1.5))
+          .overlay(Circle().strokeBorder(tokens.panel, lineWidth: 1.5))
       }
     }
     .accessibilityHidden(true)

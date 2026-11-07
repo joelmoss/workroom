@@ -21,6 +21,7 @@ struct WorkroomLabelSheet: View {
 
   @State private var typedLabel: String
   @FocusState private var fieldFocused: Bool
+  @Environment(\.themeTokens) private var tokens
 
   init(
     workroom: Workroom, project: Project, onSet: @escaping (String) -> Void,
@@ -76,7 +77,7 @@ struct WorkroomLabelSheet: View {
         if validation.collides {
           WarningLabel(
             "Another workroom in this project already shows that name.",
-            tokens: ThemeService.shared.tokens
+            tokens: tokens
           )
           .font(.caption)
         }

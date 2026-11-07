@@ -12,6 +12,7 @@ struct TabToolbarButton: View {
   let identifier: String
   let action: () -> Void
   @State private var hovering = false
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Button(action: action) {
@@ -21,7 +22,7 @@ struct TabToolbarButton: View {
         .padding(4)
         .background(
           RoundedRectangle(cornerRadius: 5)
-            .fill(ThemeService.shared.tokens.hover.opacity(hovering ? 1 : 0))
+            .fill(tokens.hover.opacity(hovering ? 1 : 0))
         )
         // The whole padded glyph — the hover well the user aims at — is hoverable/clickable, not just
         // the SF Symbol: transparent padding doesn't hit-test on its own, so without this the button's

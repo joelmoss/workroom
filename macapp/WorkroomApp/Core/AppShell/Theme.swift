@@ -5,7 +5,8 @@ import SwiftUI
 // The terminal focus-border and dim-scrim colours moved to `ThemeTokens` (issue #36): they now
 // derive from the active theme's palette (focus = a fixed-alpha foreground, dim = the theme
 // background) rather than fixed system colours, so they track the chosen theme. SwiftUI sites read
-// `theme.tokens.focused` / `theme.tokens.terminalDim`; AppKit sites read `ThemeService.shared`.
+// `tokens.focused` / `tokens.terminalDim` from `@Environment(\.themeTokens)`; AppKit sites read
+// `ThemeService.shared`.
 
 /// The user's appearance choice. Persisted via `Defaults[.theme]`; `.system` (the default)
 /// follows the OS appearance, while `.light`/`.dark` force a scheme. `PreferRawRepresentable`

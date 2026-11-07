@@ -25,7 +25,7 @@ struct CreationPane: View {
   @State private var headerHeight: CGFloat = 0
   @State private var rowHeights: [String: CGFloat] = [:]
   @State private var noticeHeight: CGFloat = 0
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   private typealias P = CreationPanePresentation
   /// Below this a pane is narrow (design D15): tighter insets and a stacked footer.
@@ -55,7 +55,7 @@ struct CreationPane: View {
       }
       .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: run.outcome)
     }
-    .background(theme.tokens.panel)
+    .background(tokens.panel)
     // Return and Escape reach the footer only while focus is inside this pane (D16): another pane's
     // failed create never answers them, as a window-wide `.keyboardShortcut` would.
     // Return answers the primary. Approving a script is never a keypress away: that is the
@@ -171,7 +171,7 @@ struct CreationPane: View {
         .truncationMode(.tail)
       Text(P.subtitle(of: run))
         .font(.callout)
-        .foregroundStyle(theme.tokens.fgDim)
+        .foregroundStyle(tokens.fgDim)
         .lineLimit(1)
         .truncationMode(.tail)
     }
@@ -257,7 +257,7 @@ private struct CreationStepRow: View {
   let isExpanded: Bool
   let toggle: () -> Void
   @State private var hovering = false
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   /// Where a row's title starts, which an open log lines up with.
   static let titleInset: CGFloat = glyphWidth + spacing
@@ -298,7 +298,7 @@ private struct CreationStepRow: View {
       // Its slot is always laid out, so the chevron showing on hover never moves the row.
       Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
         .font(.caption.weight(.semibold))
-        .foregroundStyle(theme.tokens.fgDim)
+        .foregroundStyle(tokens.fgDim)
         .frame(width: Self.chevronWidth, height: 17)
         .opacity(hovering && isExpandable ? 1 : 0)
         .accessibilityHidden(true)
@@ -336,7 +336,7 @@ private struct CreationStepRow: View {
   @ViewBuilder private var glyph: some View {
     switch step.state {
     case .pending:
-      Image(systemName: "circle").foregroundStyle(theme.tokens.fgDim)
+      Image(systemName: "circle").foregroundStyle(tokens.fgDim)
     case .running:
       if let pullFraction {
         // The host image's download, as far as it has got (#309).
@@ -346,15 +346,15 @@ private struct CreationStepRow: View {
       }
     case .waitingForUser:
       Image(systemName: "person.crop.circle.badge.questionmark")
-        .foregroundStyle(theme.tokens.accent)
+        .foregroundStyle(tokens.accent)
     case .done:
-      Image(systemName: "checkmark.circle.fill").foregroundStyle(theme.tokens.success)
+      Image(systemName: "checkmark.circle.fill").foregroundStyle(tokens.success)
     case .warning:
-      Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(theme.tokens.warning)
+      Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(tokens.warning)
     case .failed:
-      Image(systemName: "xmark.octagon.fill").foregroundStyle(theme.tokens.failure)
+      Image(systemName: "xmark.octagon.fill").foregroundStyle(tokens.failure)
     case .skipped:
-      Image(systemName: "minus.circle").foregroundStyle(theme.tokens.fgDim)
+      Image(systemName: "minus.circle").foregroundStyle(tokens.fgDim)
     }
   }
 
@@ -364,27 +364,27 @@ private struct CreationStepRow: View {
       // Ticks every second; the row's label never carries it (D17).
       TimelineView(.periodic(from: step.startedAt ?? .now, by: 1)) { context in
         Text(CreationPanePresentation.trailing(for: step, now: context.date) ?? "")
-          .foregroundStyle(theme.tokens.accent)
+          .foregroundStyle(tokens.accent)
       }
     case .waitingForUser:
-      Text("Waiting for you").foregroundStyle(theme.tokens.accent).fixedSize()
+      Text("Waiting for you").foregroundStyle(tokens.accent).fixedSize()
     default:
       Text(CreationPanePresentation.trailing(for: step, now: .now) ?? "")
-        .foregroundStyle(isSkipped ? theme.tokens.fgDim : theme.tokens.fgMuted)
+        .foregroundStyle(isSkipped ? tokens.fgDim : tokens.fgMuted)
     }
   }
 
   private var titleColor: Color {
     switch step.state {
-    case .pending, .skipped: theme.tokens.fgDim
-    case .failed: theme.tokens.failure
+    case .pending, .skipped: tokens.fgDim
+    case .failed: tokens.failure
     default: .primary
     }
   }
 
   private var captionColor: Color {
-    if case .warning = step.state { return theme.tokens.warning }
-    return theme.tokens.fgDim
+    if case .warning = step.state { return tokens.warning }
+    return tokens.fgDim
   }
 }
 
@@ -397,12 +397,12 @@ private struct CreationLogView: View {
   let lines: ArraySlice<String>
   let onContentHeight: (CGFloat) -> Void
   @StateObject private var log = LogTextController(padding: Self.padding)
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   static let padding: CGFloat = 10
 
   var body: some View {
-    LogTextView(controller: log, tokens: theme.tokens)
+    LogTextView(controller: log, tokens: tokens)
       .onChange(of: lines.count, initial: true) { log.show(lines) }
       .onChange(of: log.contentHeight) { onContentHeight(log.contentHeight) }
       .overlay(alignment: .bottomTrailing) {
@@ -412,7 +412,7 @@ private struct CreationLogView: View {
           } label: {
             Image(systemName: "arrow.down.circle.fill")
               .font(.title2)
-              .foregroundStyle(theme.tokens.accent)
+              .foregroundStyle(tokens.accent)
           }
           .buttonStyle(.plain)
           .help("Jump to latest")
@@ -420,11 +420,11 @@ private struct CreationLogView: View {
           .padding(8)
         }
       }
-      .background(theme.tokens.surface)
+      .background(tokens.surface)
       .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .strokeBorder(theme.tokens.border, lineWidth: 1)
+          .strokeBorder(tokens.border, lineWidth: 1)
       )
   }
 }
@@ -434,7 +434,7 @@ private struct CreationLogView: View {
 private struct CreationFailureNotice: View {
   let footer: CreationPanePresentation.Footer
   let perform: (CreationPanePresentation.Action) -> Void
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -442,7 +442,7 @@ private struct CreationFailureNotice: View {
       // said why.
       Text(footer.reason)
         .font(.callout)
-        .foregroundStyle(theme.tokens.failure)
+        .foregroundStyle(tokens.failure)
         .fixedSize(horizontal: false, vertical: true)
         .textSelection(.enabled)
       buttons
@@ -515,7 +515,7 @@ private struct CreationDoneFooter: View {
   let isDone: Bool
   let done: () -> Void
   @Default(.closeCreationPaneWhenDone) private var closeWhenDone
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     VStack(spacing: 0) {
@@ -538,6 +538,6 @@ private struct CreationDoneFooter: View {
       .padding(.horizontal, inset)
       .padding(.vertical, 12)
     }
-    .background(theme.tokens.panel)
+    .background(tokens.panel)
   }
 }

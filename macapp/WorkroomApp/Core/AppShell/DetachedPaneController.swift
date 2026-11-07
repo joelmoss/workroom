@@ -201,7 +201,7 @@ final class DetachedPaneWindows {
     // Nothing recovered it either: the occlusion observer only fires on a CHANGE, and the surface
     // had already recorded "not visible" before the window ever appeared.
     window.makeKeyAndOrderFront(nil)
-    window.contentView = NSHostingView(rootView: content())
+    window.contentView = NSHostingView(rootView: content().themeTokensRoot())
   }
 
   /// Close a detached pane's window WITHOUT closing its tab — a dock, or a teardown where the tab is

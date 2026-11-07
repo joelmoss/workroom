@@ -37,7 +37,7 @@ struct DialogOverlay<Content: View>: View {
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorScheme) private var colorScheme
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
   @State private var shown = false
 
   var body: some View {
@@ -50,11 +50,11 @@ struct DialogOverlay<Content: View>: View {
         .onTapGesture(perform: onDismiss)
 
       content
-        .background(theme.tokens.panel)
+        .background(tokens.panel)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
           RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(theme.tokens.border, lineWidth: 1)
+            .strokeBorder(tokens.border, lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.28), radius: 22, y: 10)
         .scaleEffect(shown ? 1 : 0.96)

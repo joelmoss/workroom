@@ -153,7 +153,7 @@ struct DiffViewer: View {
   /// The global default diff layout (issue #66), used when this tab has no `viewModeOverride`. A
   /// narrow pane additionally falls back to unified (see `sideBySideMinWidth`).
   @Default(.diffViewMode) private var diffViewMode
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   /// Below this content width a side-by-side diff's two half-width columns wrap code into tall
   /// blocks that ruin line comparison, so we render unified even when side-by-side is selected.
@@ -237,7 +237,7 @@ struct DiffViewer: View {
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(theme.tokens.bg)
+    .background(tokens.bg)
     // Find bar (⌘F), top-trailing over the focused pane only — search state is shared across every
     // file/diff/changeset pane (`AppStore.contentFind`), so only the focused one shows/feeds it.
     .overlay(alignment: .topTrailing) { if isFocused { FileFindBar(model: find) } }
@@ -294,7 +294,7 @@ struct DiffViewer: View {
   }
 
   private var highlightKey: HighlightKey {
-    HighlightKey(fetch: fetchKey, theme: theme.generation, load: loadToken)
+    HighlightKey(fetch: fetchKey, theme: ThemeService.shared.generation, load: loadToken)
   }
 
   @ViewBuilder private var content: some View {
@@ -328,7 +328,7 @@ struct DiffViewer: View {
       HStack(spacing: 8) {
         Text(ChangeBadge.letter(descriptor.change))
           .font(.system(.caption2, design: .monospaced).weight(.bold))
-          .foregroundStyle(ChangeBadge.color(descriptor.change, theme.tokens))
+          .foregroundStyle(ChangeBadge.color(descriptor.change, tokens))
           .frame(width: 14)
         headerPathText
           .font(.system(.caption, design: .monospaced))
@@ -337,10 +337,10 @@ struct DiffViewer: View {
         if let stats = loadedStats {
           HStack(spacing: 6) {
             if stats.additions > 0 {
-              Text("+\(stats.additions)").foregroundStyle(theme.tokens.success)
+              Text("+\(stats.additions)").foregroundStyle(tokens.success)
             }
             if stats.removals > 0 {
-              Text("−\(stats.removals)").foregroundStyle(theme.tokens.failure)
+              Text("−\(stats.removals)").foregroundStyle(tokens.failure)
             }
             if stats.additions == 0 && stats.removals == 0 {
               Text("0").foregroundStyle(.secondary)
@@ -357,7 +357,7 @@ struct DiffViewer: View {
     }
     .padding(.horizontal, 10).padding(.vertical, 5)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(theme.tokens.panel)
+    .background(tokens.panel)
   }
 
   /// The header path with its leading directories dimmed and the file name in the primary colour.
@@ -478,7 +478,7 @@ struct DiffViewer: View {
     }
     // Parse, resolve captures and build the per-line strings off the main actor — CPU-bound,
     // bounded by the byte cap and the diff's line cap.
-    let tokens = theme.tokens
+    let tokens = self.tokens
     let additionEmphasis = emphasis.additions
     let lines = await Task.detached(priority: .utility) {
       let spans = SyntaxHighlighter.shared.spans(for: content, grammar: grammar)
@@ -806,16 +806,16 @@ struct DiffViewer: View {
   /// even when this side is shorter than a wrapping neighbour). `nil` (absent side) → a faint fill
   /// derived from the muted token (no new theme/palette entry); context → clear.
   private func cellFill(_ line: UnifiedDiff.Line?) -> Color {
-    line.map { rowBackground($0.kind) } ?? theme.tokens.fgMuted.opacity(0.05)
+    line.map { rowBackground($0.kind) } ?? tokens.fgMuted.opacity(0.05)
   }
 
   private func hunkHeader(_ header: String) -> some View {
     Text(header)
       .font(.system(.caption, design: .monospaced))
-      .foregroundStyle(theme.tokens.diffHunkFg)
+      .foregroundStyle(tokens.diffHunkFg)
       .padding(.horizontal, 8).padding(.vertical, 3)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(theme.tokens.diffHunkBg)
+      .background(tokens.diffHunkBg)
       .accessibilityLabel("Hunk \(header)")
   }
 
@@ -868,13 +868,13 @@ struct DiffViewer: View {
       unifiedGutterNumber(new)
     }
     .frame(width: Self.gutterWidth)
-    .overlay(alignment: .trailing) { Rectangle().fill(theme.tokens.border).frame(width: 1) }
+    .overlay(alignment: .trailing) { Rectangle().fill(tokens.border).frame(width: 1) }
   }
 
   private func unifiedGutterNumber(_ number: Int?) -> some View {
     Text(number.map(String.init) ?? "")
       .font(.system(.caption2, design: .monospaced))
-      .foregroundStyle(theme.tokens.fgMuted)
+      .foregroundStyle(tokens.fgMuted)
       .frame(width: 32, alignment: .trailing)
       .padding(.leading, 6).padding(.trailing, 6)
   }
@@ -883,9 +883,9 @@ struct DiffViewer: View {
   /// over the row background so the gutter reads deeper than the code, GitHub-style).
   private func gutterFill(_ kind: UnifiedDiff.Line.Kind) -> Color {
     switch kind {
-    case .context: return theme.tokens.fgMuted.opacity(0.06)
-    case .addition: return theme.tokens.diffAddFg.opacity(0.13)
-    case .deletion: return theme.tokens.diffRemoveFg.opacity(0.13)
+    case .context: return tokens.fgMuted.opacity(0.06)
+    case .addition: return tokens.diffAddFg.opacity(0.13)
+    case .deletion: return tokens.diffRemoveFg.opacity(0.13)
     }
   }
 
@@ -925,7 +925,7 @@ struct DiffViewer: View {
     guard !hits.isEmpty else { return base }
     return Self.applyFindHighlight(
       base, hits: hits,
-      currentBg: theme.tokens.accent.opacity(0.55), otherBg: theme.tokens.accent.opacity(0.28))
+      currentBg: tokens.accent.opacity(0.55), otherBg: tokens.accent.opacity(0.28))
   }
 
   /// This line's find-match ranges (character offsets), or empty when there's nothing to highlight.
@@ -987,10 +987,10 @@ struct DiffViewer: View {
     switch line.kind {
     case .deletion:
       range = line.oldLine.flatMap { emphasis.deletions[$0] }
-      bg = theme.tokens.diffRemoveEmphasisBg
+      bg = tokens.diffRemoveEmphasisBg
     case .addition:
       range = line.newLine.flatMap { emphasis.additions[$0] }
-      bg = theme.tokens.diffAddEmphasisBg
+      bg = tokens.diffAddEmphasisBg
     case .context:
       return nil
     }
@@ -1001,7 +1001,7 @@ struct DiffViewer: View {
   /// The default code foreground for diff text (matches the syntax mapper's uncaptured runs). Changed
   /// lines use this, not the add/remove colour, so syntax highlighting stays visible — the row
   /// background and the `+`/`−` marker carry the add/remove signal (GitHub-style).
-  private var codeTextColor: Color { Color(nsColor: theme.tokens.nsFg) }
+  private var codeTextColor: Color { Color(nsColor: tokens.nsFg) }
 
   /// Build a single-colour line with `bg` drawn behind the `range` (line-relative UTF-8 bytes).
   static func emphasizedPlain(_ text: String, fg: Color, range: Range<Int>, bg: Color)
@@ -1031,7 +1031,7 @@ struct DiffViewer: View {
   /// `sideHalfFill` as a full-height strip (mirroring the unified row's strip).
   private func sideGutter(_ number: Int?) -> some View {
     unifiedGutterNumber(number)
-      .overlay(alignment: .trailing) { Rectangle().fill(theme.tokens.border).frame(width: 1) }
+      .overlay(alignment: .trailing) { Rectangle().fill(tokens.border).frame(width: 1) }
   }
 
   /// The full-height background for one side of a side-by-side row: the cell tint, plus a deeper
@@ -1069,16 +1069,16 @@ struct DiffViewer: View {
 
   private func foreground(_ kind: UnifiedDiff.Line.Kind) -> Color {
     switch kind {
-    case .addition: return theme.tokens.diffAddFg
-    case .deletion: return theme.tokens.diffRemoveFg
+    case .addition: return tokens.diffAddFg
+    case .deletion: return tokens.diffRemoveFg
     case .context: return .primary
     }
   }
 
   private func rowBackground(_ kind: UnifiedDiff.Line.Kind) -> Color {
     switch kind {
-    case .addition: return theme.tokens.diffAddBg
-    case .deletion: return theme.tokens.diffRemoveBg
+    case .addition: return tokens.diffAddBg
+    case .deletion: return tokens.diffRemoveBg
     case .context: return .clear
     }
   }

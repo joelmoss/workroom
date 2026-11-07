@@ -16,7 +16,7 @@ struct RemoteSetupSheet<Steps: View>: View {
   let onCancel: () -> Void
   @ViewBuilder var steps: Steps
 
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -42,7 +42,7 @@ struct RemoteSetupSheet<Steps: View>: View {
     .padding(24)
     .frame(width: 520)
     .frame(minHeight: 460)
-    .background(theme.tokens.panel)
+    .background(tokens.panel)
     .onDisappear { setup.cancel() }
   }
 }
@@ -58,7 +58,7 @@ struct SetupStep<Content: View>: View {
   let state: SetupStepState
   @ViewBuilder var content: Content
 
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     HStack(alignment: .top, spacing: 12) {
@@ -78,19 +78,19 @@ struct SetupStep<Content: View>: View {
   @ViewBuilder private var indicator: some View {
     switch state {
     case .done:
-      Image(systemName: "checkmark.circle.fill").foregroundStyle(theme.tokens.success)
+      Image(systemName: "checkmark.circle.fill").foregroundStyle(tokens.success)
         .font(.system(size: 17))
         .accessibilityLabel("Done")
     case .waiting:
       ProgressView().controlSize(.small)
         .accessibilityLabel("Waiting")
     case .current:
-      Image(systemName: "circle.fill").foregroundStyle(theme.tokens.accent)
+      Image(systemName: "circle.fill").foregroundStyle(tokens.accent)
         .font(.system(size: 9))
         .frame(width: 17, height: 17)
         .accessibilityLabel("To do")
     case .locked:
-      Image(systemName: "circle").foregroundStyle(theme.tokens.fgDim)
+      Image(systemName: "circle").foregroundStyle(tokens.fgDim)
         .font(.system(size: 9))
         .frame(width: 17, height: 17)
         .accessibilityLabel("Not yet")
@@ -114,10 +114,11 @@ struct SetupDetail: View {
 /// What went wrong with a step.
 struct SetupProblem: View {
   let text: String
+  @Environment(\.themeTokens) private var tokens
   init(_ text: String) { self.text = text }
 
   var body: some View {
-    WarningLabel(text, tokens: ThemeService.shared.tokens)
+    WarningLabel(text, tokens: tokens)
       .font(FontRole.body)
       .fixedSize(horizontal: false, vertical: true)
   }

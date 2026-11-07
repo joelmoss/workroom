@@ -67,7 +67,7 @@ struct ChangesetDetailView: View {
   @State private var descriptionTruncatable = false
   /// The file-list row under the pointer, for its hover highlight.
   @State private var hoveredPath: String?
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   private static let minListWidth: CGFloat = 180
   private static let maxListWidth: CGFloat = 400
@@ -81,7 +81,7 @@ struct ChangesetDetailView: View {
   var body: some View {
     content
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-      .background(theme.tokens.bg)
+      .background(tokens.bg)
       // Fetch on appear + whenever the tab is retargeted to another commit (preview reuse).
       .task(id: loadKey) {
         let myCommitID = descriptor.commitID
@@ -227,7 +227,7 @@ struct ChangesetDetailView: View {
           // the header's `ChangesetDetail` id: the container id below propagates onto every leaf and
           // overrides any id set here (measured 2026-10-06), so tests match it by that id + label.
           Label("Not pushed", systemImage: "arrow.up")
-            .foregroundStyle(theme.tokens.warning)
+            .foregroundStyle(tokens.warning)
             .help(VCSPushScope.unpushedHelp(changeset.pushScope))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Not pushed")
@@ -270,8 +270,8 @@ struct ChangesetDetailView: View {
   @ViewBuilder private func diffStat(_ changeset: VCSChangeset) -> some View {
     if let insertions = changeset.insertions, let deletions = changeset.deletions {
       HStack(spacing: 5) {
-        Text("+\(insertions)").foregroundStyle(theme.tokens.success)
-        Text("−\(deletions)").foregroundStyle(theme.tokens.failure)
+        Text("+\(insertions)").foregroundStyle(tokens.success)
+        Text("−\(deletions)").foregroundStyle(tokens.failure)
       }
       .font(.system(.caption, design: .monospaced))
       // Combine the +/- into one element with a spoken label. No a11y identifier: the header's
@@ -339,7 +339,7 @@ struct ChangesetDetailView: View {
     return HStack(alignment: .firstTextBaseline, spacing: 6) {
       Text(Self.badge(file.kind))
         .font(.system(.caption2, design: .monospaced).weight(.bold))
-        .foregroundStyle(ChangeBadge.color(Self.change(file.kind), theme.tokens))
+        .foregroundStyle(ChangeBadge.color(Self.change(file.kind), tokens))
         .frame(width: 14)
       VStack(alignment: .leading, spacing: 1) {
         // File name on top, the full relative path dimmed beneath it — so a row reads even when the
@@ -360,7 +360,7 @@ struct ChangesetDetailView: View {
     .background(
       isSelected
         ? Color.accentColor.opacity(0.18)
-        : (hoveredPath == file.path ? theme.tokens.rowHover : Color.clear)
+        : (hoveredPath == file.path ? tokens.rowHover : Color.clear)
     )
     .contentShape(Rectangle())
     .onHover { inside in
@@ -389,7 +389,7 @@ struct ChangesetDetailView: View {
   /// smooth as those; a SwiftUI `DragGesture` here was janky. The width commits to `listWidth` on end.
   private var resizeHandle: some View {
     Rectangle()
-      .fill(theme.tokens.border)
+      .fill(tokens.border)
       .frame(width: 1)
       .frame(maxHeight: .infinity)
       .overlay {

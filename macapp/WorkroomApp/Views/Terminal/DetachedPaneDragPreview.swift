@@ -20,7 +20,7 @@ final class DetachedPaneDragPreview {
   private static let shadowMargin: CGFloat = 24
 
   private var panel: NSPanel?
-  private var host: NSHostingView<DetachedPaneGhost>?
+  private var host: NSHostingView<ThemeRooted<DetachedPaneGhost>>?
 
   /// The ghost's own window, which a drop under the cursor must look past (#444).
   var windowNumber: Int? { panel?.windowNumber }
@@ -34,7 +34,7 @@ final class DetachedPaneDragPreview {
     let panelSize = NSSize(
       width: size.width + 2 * Self.shadowMargin, height: size.height + 2 * Self.shadowMargin)
     let panel = existingPanel(size: panelSize)
-    host?.rootView = DetachedPaneGhost(title: title, glyph: glyph, size: size)
+    host?.rootView.content = DetachedPaneGhost(title: title, glyph: glyph, size: size)
     panel.setFrameTopLeftPoint(
       CGPoint(x: screenPoint.x - Self.shadowMargin, y: screenPoint.y + Self.shadowMargin))
     if !panel.isVisible { panel.orderFront(nil) }
@@ -67,7 +67,8 @@ final class DetachedPaneDragPreview {
     panel.ignoresMouseEvents = true
     panel.setAccessibilityIdentifier("detachedPane.dragPreview")
 
-    let host = NSHostingView(rootView: DetachedPaneGhost(title: "", glyph: nil, size: size))
+    let host = NSHostingView(
+      rootView: DetachedPaneGhost(title: "", glyph: nil, size: size).themeTokensRoot())
     host.autoresizingMask = [.width, .height]
     panel.contentView = host
     self.host = host
@@ -95,7 +96,7 @@ struct DetachedPaneGhost: View {
   let glyph: String?
   let size: CGSize
 
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -104,7 +105,7 @@ struct DetachedPaneGhost: View {
         if let glyph {
           Image(systemName: glyph)
             .font(.system(size: 10))
-            .foregroundStyle(theme.tokens.fgMuted)
+            .foregroundStyle(tokens.fgMuted)
         }
         Text(title)
           .font(.subheadline)
@@ -114,15 +115,15 @@ struct DetachedPaneGhost: View {
       }
       .padding(.horizontal, 12)
       .frame(height: PaneTitleBarMetrics.height)
-      .background(theme.tokens.panel)
-      Rectangle().fill(theme.tokens.border).frame(height: 1)
+      .background(tokens.panel)
+      Rectangle().fill(tokens.border).frame(height: 1)
       // The body is deliberately empty: this is the window you are about to get, not a live preview
       // of its contents — the pane itself has not moved yet.
-      theme.tokens.bg
+      tokens.bg
     }
     .frame(width: size.width, height: size.height)
     .clipShape(shape)
-    .overlay(shape.strokeBorder(theme.tokens.accent.opacity(0.9), lineWidth: 2))
+    .overlay(shape.strokeBorder(tokens.accent.opacity(0.9), lineWidth: 2))
     // Drawn, not `panel.hasShadow`: a borderless non-opaque panel casts no system shadow.
     .shadow(color: .black.opacity(0.45), radius: 16, y: 6)
     .opacity(0.92)

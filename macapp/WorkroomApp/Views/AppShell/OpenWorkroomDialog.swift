@@ -39,7 +39,7 @@ struct OpenWorkroomDialog: View {
   /// Whether this dialog was raised in split mode (⌥⌘O) — consumed once by the presenter, so a
   /// cancelled raise can't leak into the next one. In split mode a plain pick already splits.
   var splitIntent = false
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   @State private var query = ""
   /// Index into `filtered` of the keyboard-highlighted row (↑/↓ move it, ⏎ / click open it).
@@ -104,14 +104,14 @@ struct OpenWorkroomDialog: View {
             if filtered.isEmpty {
               Text(emptyMessage)
                 .font(.footnote)
-                .foregroundStyle(theme.tokens.fgMuted)
+                .foregroundStyle(tokens.fgMuted)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 16)
             } else {
               ForEach(groups) { group in
                 Text(group.projectName)
                   .font(.system(size: 10, weight: .semibold))
-                  .foregroundStyle(theme.tokens.fgMuted)
+                  .foregroundStyle(tokens.fgMuted)
                   .textCase(.uppercase)
                   .padding(.horizontal, 8)
                   .padding(.top, 8)
@@ -171,7 +171,7 @@ struct OpenWorkroomDialog: View {
 
   private var searchField: some View {
     HStack(spacing: 6) {
-      Image(systemName: "magnifyingglass").foregroundStyle(theme.tokens.fgDim)
+      Image(systemName: "magnifyingglass").foregroundStyle(tokens.fgDim)
       TextField("Filter workrooms", text: $query)
         .textFieldStyle(.plain)
         .focused($searchFocused)
@@ -184,7 +184,7 @@ struct OpenWorkroomDialog: View {
         } label: {
           Image(systemName: "xmark.circle.fill")
         }
-        .buttonStyle(.plain).foregroundStyle(theme.tokens.fgDim)
+        .buttonStyle(.plain).foregroundStyle(tokens.fgDim)
         .help("Clear filter")
       }
     }
@@ -192,9 +192,9 @@ struct OpenWorkroomDialog: View {
     .padding(.vertical, 6)
     .background(
       RoundedRectangle(cornerRadius: 8)
-        .fill(theme.tokens.surface)
+        .fill(tokens.surface)
         .overlay(
-          RoundedRectangle(cornerRadius: 8).strokeBorder(theme.tokens.border, lineWidth: 0.5))
+          RoundedRectangle(cornerRadius: 8).strokeBorder(tokens.border, lineWidth: 0.5))
     )
     .padding(10)
   }
@@ -236,7 +236,7 @@ struct OpenWorkroomPresenter: ViewModifier {
 /// `house` for a root, `cube` for a workroom — then the title. Highlight + hover styling mirrors
 /// `NewWorkroomDialog`'s `ProjectRow`.
 private struct OpenTargetRow: View {
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
   let target: OpenTarget
   var isHighlighted = false
   @State private var hovered = false
@@ -246,11 +246,11 @@ private struct OpenTargetRow: View {
       // Same SF Symbols the sidebar uses for root / workroom rows (ProjectSidebar.leadingSlot).
       Image(systemName: target.isRoot ? "house" : "cube")
         .font(.system(size: 11))
-        .foregroundStyle(theme.tokens.fgDim)
+        .foregroundStyle(tokens.fgDim)
         .frame(width: 14, alignment: .center)
       Text(target.title)
         .font(.system(size: 12, weight: .medium))
-        .foregroundStyle(theme.tokens.fg)
+        .foregroundStyle(tokens.fg)
         .lineLimit(1)
         .truncationMode(.middle)
       Spacer(minLength: 0)
@@ -260,7 +260,7 @@ private struct OpenTargetRow: View {
     // Slight indent so rows sit beneath their project header.
     .padding(.leading, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .pickerRowChrome(tokens: theme.tokens, highlighted: isHighlighted, hovered: hovered)
+    .pickerRowChrome(tokens: tokens, highlighted: isHighlighted, hovered: hovered)
     .help(target.path)
     .onHover { hovered = $0 }
   }

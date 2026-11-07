@@ -38,6 +38,7 @@ struct WorkroomTabBar: View {
   @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.themeTokens) private var tokens
 
   @State private var hoveredID: SidebarID?
   @State private var addHovering = false
@@ -222,7 +223,7 @@ struct WorkroomTabBar: View {
       // transitions. Negative leading trims the gap to the last tab to ~2pt (HStack `tabSpacing` 4 − 2),
       // matching the inter-chip dividers.
       Rectangle()
-        .fill(ThemeService.shared.tokens.border)
+        .fill(tokens.border)
         .frame(width: 1, height: 16)
         .padding(.leading, -2)
         .padding(.trailing, 4)
@@ -355,7 +356,7 @@ struct WorkroomTabBar: View {
         .padding(4)
         .background(
           RoundedRectangle(cornerRadius: 5)
-            .fill(ThemeService.shared.tokens.hover.opacity(hovering ? 1 : 0))
+            .fill(tokens.hover.opacity(hovering ? 1 : 0))
         )
         // The whole padded glyph (the hover well's area) is clickable/hoverable, not just the symbol —
         // the transparent padding wouldn't hit-test on its own.
@@ -392,7 +393,7 @@ private struct WorkroomTabChip: View {
   @EnvironmentObject var lifecycle: WorkroomLifecycle
   @EnvironmentObject var notifications: NotificationCenterStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
   /// Read through Observation: this chip re-renders when its own workroom's panes change.
   private var terminals: TerminalPanes { store.terminals }
 
@@ -478,11 +479,11 @@ private struct WorkroomTabChip: View {
       Image(systemName: isRoot ? "house" : target.workroomGlyph)
         .font(.system(size: 10))
         .foregroundStyle(
-          VCSStatusPresentation.iconTint(vcsStatus.workroomStatuses[sid] ?? .unresolved)
+          VCSStatusPresentation.iconTint(vcsStatus.workroomStatuses[sid] ?? .unresolved, tokens)
         )
         .help(isRoot ? "" : target.hostTooltip)
       if let reason = target.terminalUnavailability {
-        WarningGlyph(tokens: theme.tokens)
+        WarningGlyph(tokens: tokens)
           .font(.system(size: 10))
           .help(reason.title)
       }
@@ -501,7 +502,7 @@ private struct WorkroomTabChip: View {
       }
       HStack(alignment: .firstTextBaseline, spacing: 4) {
         Text(primaryLabel)
-          .foregroundStyle(hasActivity ? theme.tokens.accent : Color.primary)
+          .foregroundStyle(hasActivity ? tokens.accent : Color.primary)
         if let workroomName {
           Text("/").foregroundStyle(.tertiary)
           Text(workroomName).foregroundStyle(isActive ? Color.primary : .secondary)
@@ -530,13 +531,13 @@ private struct WorkroomTabChip: View {
         if runRunning {
           Image(systemName: "play.circle.fill")
             .font(.system(size: 10))
-            .foregroundStyle(theme.tokens.success)
+            .foregroundStyle(tokens.success)
             .help("Run command running")
             .accessibilityLabel("run running")
         } else if runCommand.runFailed(for: target.id) {
           Image(systemName: "xmark.octagon.fill")
             .font(.system(size: 10))
-            .foregroundStyle(theme.tokens.failure)
+            .foregroundStyle(tokens.failure)
             .help("Run command failed")
             .accessibilityLabel("run failed")
         }
@@ -556,7 +557,7 @@ private struct WorkroomTabChip: View {
       // behind it.
       .background {
         RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .fill(isActive ? theme.tokens.bg : (isHovered ? theme.tokens.hover : Color.clear))
+          .fill(isActive ? tokens.bg : (isHovered ? tokens.hover : Color.clear))
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isHovered)
       }
       // A solid lifted chip while dragging.
@@ -565,7 +566,7 @@ private struct WorkroomTabChip: View {
           .fill(.thickMaterial)
           .overlay(
             RoundedRectangle(cornerRadius: 6)
-              .strokeBorder(theme.tokens.border, lineWidth: 1)
+              .strokeBorder(tokens.border, lineWidth: 1)
           )
           .opacity(isDragging ? 1 : 0)
       }
@@ -574,7 +575,7 @@ private struct WorkroomTabChip: View {
       .overlay {
         if isActive {
           RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .strokeBorder(theme.tokens.fgDim, lineWidth: 1)
+            .strokeBorder(tokens.fgDim, lineWidth: 1)
         }
       }
       // A flowing accent underline along the chip's base while any of this workroom's terminals is
@@ -584,9 +585,9 @@ private struct WorkroomTabChip: View {
       .overlay(alignment: .bottom) {
         Group {
           if terminals.needsAttention(forTargetID: target.id) {
-            StatusUnderline(color: theme.tokens.warning)
+            StatusUnderline(color: tokens.warning)
           } else if terminals.hasProgramError(forTargetID: target.id) {
-            StatusUnderline(color: theme.tokens.failure)
+            StatusUnderline(color: tokens.failure)
           } else if terminals.isRunning(forTargetID: target.id) {
             RunningUnderline(failed: terminals.isProgressFailed(forTargetID: target.id))
           }
@@ -607,7 +608,7 @@ private struct WorkroomTabChip: View {
       .overlay(alignment: .leading) {
         if showLeadingSeparator {
           Rectangle()
-            .fill(theme.tokens.border)
+            .fill(tokens.border)
             .frame(width: 1, height: 16)
             .offset(x: -2)
         }

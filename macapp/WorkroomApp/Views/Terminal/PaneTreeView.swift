@@ -372,9 +372,9 @@ struct PaneLeafView: View {
   /// the tree changing shape. Recorded after the body runs, which is what makes the comparison
   /// during a structural update see the previous value.
   @State private var lastPaneCount: Int?
-  // The shared @Observable service; reading `theme.tokens` in a body still tracks changes via the
-  // Observation framework (no environment injection required, so view-rendering tests don't need it).
-  private let theme = ThemeService.shared
+  // A view-rendering test that hosts this without `themeTokensRoot()` gets the key's default, the
+  // live tokens, so it needs no injection of its own.
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     // Looked up once per pass, for the title bar, the content's context menu and whether this
@@ -432,7 +432,7 @@ struct PaneLeafView: View {
     .overlay {
       RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius)
         .fill(
-          theme.tokens.terminalDim.opacity(
+          tokens.terminalDim.opacity(
             PaneTreeView.shouldDim(
               multiPane: multiPane, surfaceActive: surfaceActive, focused: focused,
               flashing: flashing, enabled: dimUnfocusedPanes) ? 0.3 : 0)
@@ -701,7 +701,7 @@ struct PaneLeafView: View {
     // highlights.
     WorkroomPaneCardBorder.tint(
       highlighted: (multiPane || workroomIsSplit) && (focused || flashing),
-      active: activeState != .inactive, tokens: theme.tokens)
+      active: activeState != .inactive, tokens: tokens)
   }
 }
 

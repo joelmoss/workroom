@@ -25,7 +25,7 @@ struct PaneNoticeToast: View {
   @State private var dismissTask: Task<Void, Never>?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.controlActiveState) private var controlActiveState
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     HStack(alignment: .top, spacing: 10) {
@@ -38,8 +38,8 @@ struct PaneNoticeToast: View {
     .padding(.vertical, 10)
     .frame(width: width, alignment: .leading)
     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-    .overlay(RoundedRectangle(cornerRadius: 12).fill(theme.tokens.hover.opacity(hovering ? 1 : 0)))
-    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.tokens.border, lineWidth: 0.5))
+    .overlay(RoundedRectangle(cornerRadius: 12).fill(tokens.hover.opacity(hovering ? 1 : 0)))
+    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(tokens.border, lineWidth: 0.5))
     .overlay(alignment: .topTrailing) { closeButton }
     .shadow(
       color: .black.opacity(hovering ? 0.34 : 0.28), radius: hovering ? 22 : 18,
@@ -69,7 +69,7 @@ struct PaneNoticeToast: View {
         .foregroundStyle(.secondary)
         .frame(width: 18, height: 18)
         .background(.regularMaterial, in: Circle())
-        .overlay(Circle().strokeBorder(theme.tokens.border, lineWidth: 0.5))
+        .overlay(Circle().strokeBorder(tokens.border, lineWidth: 0.5))
         .contentShape(Circle())
     }
     .buttonStyle(.plain)
@@ -95,7 +95,7 @@ struct PaneNoticeToast: View {
 
 /// Hosts a `PaneNoticeToast` over a terminal, passing clicks in its transparent shadow room through
 /// to the terminal beneath.
-final class PaneNoticeHost: NSHostingView<PaneNoticeToast> {
+final class PaneNoticeHost: NSHostingView<ThemeRooted<PaneNoticeToast>> {
   override func hitTest(_ point: NSPoint) -> NSView? {
     let local = convert(point, from: superview)
     let room = PaneNoticeToast.shadowRoom

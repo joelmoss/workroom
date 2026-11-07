@@ -18,6 +18,7 @@ struct ErrorSheet: View {
   /// creation pane draws a setup script, with a button in its top right corner to open it in a
   /// window of its own, and no Copy or Details.
   var scriptName: String? = nil
+  @Environment(\.themeTokens) private var tokens
   /// With `approval`, what Cancel and Escape also do, under its label (Cancel Creation).
   var cancel: ErrorAction? = nil
   let onDismiss: () -> Void
@@ -34,7 +35,7 @@ struct ErrorSheet: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: Spacing.xl) {
-      WarningHeader(tokens: ThemeService.shared.tokens) {
+      WarningHeader(tokens: tokens) {
         VStack(alignment: .leading, spacing: Spacing.s) {
           Text(title)
             .font(FontRole.title)

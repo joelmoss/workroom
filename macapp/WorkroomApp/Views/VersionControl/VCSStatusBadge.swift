@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 import WorkroomVCS
 
@@ -5,8 +6,7 @@ import WorkroomVCS
 /// already carries the meaning (so color-blind users and the issue-#43 window-blur dimming
 /// don't lose the signal). Unknown/neutral stay muted (`.secondary`), never alarming.
 extension VCSStatusPresentation.Semantic {
-  @MainActor var color: Color {
-    let tokens = ThemeService.shared.tokens
+  @MainActor func color(_ tokens: ThemeTokens) -> Color {
     switch self {
     case .dirty: return tokens.warning
     case .conflict: return tokens.failure
@@ -23,8 +23,8 @@ extension VCSStatusPresentation {
   /// Tint for a leading identity glyph (the sidebar/tab house or workroom cube) that now carries the
   /// dirty/conflict signal in place of a separate status dot: orange when dirty, red on conflict,
   /// otherwise the default `.secondary` (clean/unknown read as no change).
-  @MainActor static func iconTint(_ s: WorkroomStatus) -> Color {
-    dot(s)?.semantic.color ?? ThemeService.shared.tokens.fgMuted
+  @MainActor static func iconTint(_ s: WorkroomStatus, _ tokens: ThemeTokens) -> Color {
+    dot(s)?.semantic.color(tokens) ?? tokens.fgMuted
   }
 }
 
@@ -33,11 +33,13 @@ extension VCSStatusPresentation {
 /// nothing.
 struct VCSAggregateDot: View {
   let status: WorkroomStatus
+  @Environment(\.themeTokens) private var tokens
+
   var body: some View {
     if let dot = VCSStatusPresentation.dot(status) {
       Image(systemName: dot.symbol)
         .font(.system(size: 7))
-        .foregroundStyle(dot.semantic.color)
+        .foregroundStyle(dot.semantic.color(tokens))
         .accessibilityLabel("project \(dot.accessibility)")
         .help("Project: \(dot.accessibility)")
     }

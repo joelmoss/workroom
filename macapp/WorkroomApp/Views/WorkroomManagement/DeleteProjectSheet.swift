@@ -97,6 +97,7 @@ struct DeleteProjectSheet: View {
   let onCancel: () -> Void
 
   @State private var typedName = ""
+  @Environment(\.themeTokens) private var tokens
   @State private var scope: DeleteProjectScope = .configOnly
   @FocusState private var nameFieldFocused: Bool
 
@@ -127,7 +128,7 @@ struct DeleteProjectSheet: View {
     // the grouped Form right-aligned the field's value, which broke that alignment.
     VStack(alignment: .leading, spacing: Spacing.xl) {
       // Title + full path, led by a prominent warning glyph.
-      WarningHeader(tokens: ThemeService.shared.tokens) {
+      WarningHeader(tokens: tokens) {
         VStack(alignment: .leading, spacing: Spacing.xs) {
           Text("Delete project “\(project.displayName)”?")
             .font(FontRole.title)
@@ -144,14 +145,14 @@ struct DeleteProjectSheet: View {
       if let investigateWarning {
         Text(investigateWarning)
           .font(.callout.weight(.semibold))
-          .foregroundStyle(ThemeService.shared.tokens.warning)
+          .foregroundStyle(tokens.warning)
           .accessibilityIdentifier("deleteProject.investigateWarning")
       }
 
       if let remoteWarning {
         Text(remoteWarning)
           .font(.callout.weight(.semibold))
-          .foregroundStyle(ThemeService.shared.tokens.warning)
+          .foregroundStyle(tokens.warning)
           .accessibilityIdentifier("deleteProject.remoteWarning")
       }
 

@@ -142,6 +142,7 @@ struct WorkroomApp: App {
 
     Settings {
       SettingsView()
+        .themeTokensRoot()
         .environmentObject(updater)
         .environmentObject(codingAgentUsage)
         .environmentObject(claudeUsageBridge)
@@ -166,6 +167,7 @@ struct WorkroomApp: App {
     // reopening it is still possible via the explicit `openWindow(value:)` calls above, unaffected.
     Window("Welcome to Workroom", id: OnboardingWindow.sceneID) {
       OnboardingWindow()
+        .themeTokensRoot()
         .background(WindowDisplayObserver { didDisplayWindow() })
     }
     .windowResizability(.contentSize)
@@ -248,6 +250,7 @@ struct RootWindow: View {
 
   var body: some View {
     RootView()
+      .themeTokensRoot()
       .background(WindowDisplayObserver { store.windowDidDisplay() })
       .environmentObject(store)
       .environmentObject(store.modals)

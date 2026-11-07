@@ -13,13 +13,13 @@ struct ScriptCodeView: View {
   @StateObject private var find = FileFindModel()
   @State private var attributed = NSAttributedString()
   @State private var version = 0
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     CodeTextView(
-      attributed: attributed, version: version, tokens: theme.tokens, find: find, isFocused: false
+      attributed: attributed, version: version, tokens: tokens, find: find, isFocused: false
     )
-    .task(id: "\(theme.generation)\u{1F}\(text)") { await render() }
+    .task(id: "\(ThemeService.shared.generation)\u{1F}\(text)") { await render() }
   }
 
   /// How tall the script's lines are, with the text view's insets, so a short script is drawn no
@@ -34,12 +34,12 @@ struct ScriptCodeView: View {
   private func render() async {
     let source = text
     attributed = FileHighlightMapper.nsAttributedString(
-      content: source, spans: [], tokens: theme.tokens, font: PlainFileViewer.font)
+      content: source, spans: [], tokens: tokens, font: PlainFileViewer.font)
     version &+= 1
     let firstLine = PlainFileViewer.splitLines(source).first
     guard let grammar = SyntaxLanguage.grammar(forPath: name, firstLine: firstLine) else { return }
     let highlighted = await FileHighlightMapper.highlighted(
-      content: source, grammar: grammar, tokens: theme.tokens, font: PlainFileViewer.font)
+      content: source, grammar: grammar, tokens: tokens, font: PlainFileViewer.font)
     guard !Task.isCancelled, let highlighted else { return }
     attributed = highlighted
     version &+= 1
@@ -54,7 +54,7 @@ struct ScriptBox: View {
   let name: String
   /// The box's accessibility identifier; its button's adds ".openInWindow".
   let id: String
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   private static let maxHeight: CGFloat = 240
 
@@ -64,7 +64,7 @@ struct ScriptBox: View {
       .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .strokeBorder(theme.tokens.border, lineWidth: 1)
+          .strokeBorder(tokens.border, lineWidth: 1)
       )
       .accessibilityIdentifier(id)
       .overlay(alignment: .topTrailing) {
@@ -78,10 +78,10 @@ struct ScriptBox: View {
             horizontalPadding: PaneTitleBarMetrics.wellPadding)
         )
         .font(.system(size: PaneTitleBarMetrics.glyph))
-        .background(theme.tokens.panel, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .background(tokens.panel, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
         .overlay(
           RoundedRectangle(cornerRadius: 5, style: .continuous)
-            .strokeBorder(theme.tokens.border, lineWidth: 1)
+            .strokeBorder(tokens.border, lineWidth: 1)
         )
         .padding(6)
       }
@@ -101,7 +101,8 @@ final class ScriptWindow: NSWindow {
       defer: false)
     window.title = "scripts/\(name)"
     window.isReleasedWhenClosed = false
-    window.contentView = NSHostingView(rootView: ScriptCodeView(text: text, name: name))
+    window.contentView = NSHostingView(
+      rootView: ScriptCodeView(text: text, name: name).themeTokensRoot())
     window.center()
     shown.insert(window)
     window.makeKeyAndOrderFront(nil)

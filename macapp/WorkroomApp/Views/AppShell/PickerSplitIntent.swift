@@ -65,11 +65,12 @@ enum PickerSplitIntent {
 struct PickerHintFooter: View {
   let open: Bool
   let split: Bool
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Text(PickerSplitIntent.hint(open: open, split: split))
       .font(.system(size: 10))
-      .foregroundStyle(ThemeService.shared.tokens.fgMuted)
+      .foregroundStyle(tokens.fgMuted)
       .frame(maxWidth: .infinity, alignment: .center)
       // Its own band, so it doesn't read as floating against the last list row — the header row
       // above the list gets `.padding(12)` + a Divider for the same reason.

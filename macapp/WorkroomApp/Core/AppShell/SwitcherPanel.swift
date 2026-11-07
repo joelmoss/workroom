@@ -71,7 +71,7 @@ final class SwitcherPanelController {
     panel.setAccessibilityIdentifier("switcher.panel")
 
     let content = HaloContentView()
-    let host = NSHostingView(rootView: SwitcherRailView(model: model))
+    let host = NSHostingView(rootView: SwitcherRailView(model: model).themeTokensRoot())
     host.autoresizingMask = [.width, .height]
     content.addSubview(host)
     panel.contentView = content

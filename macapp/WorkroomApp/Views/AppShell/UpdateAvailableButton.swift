@@ -11,7 +11,7 @@ import SwiftUI
 struct UpdateAvailableButton: View {
   @EnvironmentObject private var updater: Updater
   @State private var hovering = false
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   /// A check already in flight elsewhere blocks a new one; a download blocks a redundant click on an
   /// already-shown Sparkle progress window (`canCheckForUpdates` alone doesn't catch this — Sparkle
@@ -52,7 +52,7 @@ struct UpdateAvailableButton: View {
         UpdateReassurance()
         pill(version: version)
       }
-      .background(Capsule().fill(theme.tokens.accentSoft))
+      .background(Capsule().fill(tokens.accentSoft))
     }
   }
 
@@ -70,14 +70,14 @@ struct UpdateAvailableButton: View {
         }
       }
       .font(.system(size: 11, weight: .semibold))
-      .foregroundStyle(Color(nsColor: Self.ink(panel: theme.tokens.nsPanel, dimmed: isDimmed)))
+      .foregroundStyle(Color(nsColor: Self.ink(panel: tokens.nsPanel, dimmed: isDimmed)))
       .padding(.horizontal, 8)
       .frame(height: 20)
       .background(
         Capsule().fill(
           Color(
             nsColor: Self.fill(
-              accent: theme.tokens.nsAccent, panel: theme.tokens.nsPanel,
+              accent: tokens.nsAccent, panel: tokens.nsPanel,
               hovering: hovering && !isBusy, dimmed: isDimmed)))
       )
       .contentShape(Capsule())
@@ -111,17 +111,17 @@ private struct UpdateReassurance: View {
   static let message =
     "Safe to update: workroom terminals and run commands keep running. The Quick Terminal stops."
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Group {
       if reduceMotion {
         Text("Terminals keep running")
           .font(.system(size: MarqueeView.font.pointSize))
-          .foregroundStyle(theme.tokens.fg)
+          .foregroundStyle(tokens.fg)
           .lineLimit(1)
       } else {
-        Marquee(text: Self.message, color: theme.tokens.nsFg)
+        Marquee(text: Self.message, color: tokens.nsFg)
       }
     }
     .padding(.leading, 8)

@@ -9,7 +9,7 @@ import WorkroomDomain
 /// workroom on this Mac reaches its ports directly, so neither shows one.
 struct DetailsPanel: View {
   @EnvironmentObject var store: AppStore
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Group {
@@ -149,7 +149,7 @@ extension DetailsPanel {
       // A link ends the value ("Remote workroom on boxd"), with the external-link mark after it.
       if let link, value.hasSuffix(link.text) {
         HStack(spacing: 0) {
-          Text(value.dropLast(link.text.count)).foregroundStyle(theme.tokens.fg)
+          Text(value.dropLast(link.text.count)).foregroundStyle(tokens.fg)
           Link(destination: link.url) {
             HStack(spacing: 2) {
               Text(link.text)
@@ -161,7 +161,7 @@ extension DetailsPanel {
         }
       } else {
         Text(value)
-          .foregroundStyle(theme.tokens.fg)
+          .foregroundStyle(tokens.fg)
           .textSelection(.enabled)
           .lineLimit(3)
           .truncationMode(.middle)
@@ -176,7 +176,7 @@ extension DetailsPanel {
 /// workroom they aren't showing.
 struct InspectorWorkroomHeader: View {
   @EnvironmentObject var store: AppStore
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     HStack(spacing: 6) {
@@ -188,18 +188,18 @@ struct InspectorWorkroomHeader: View {
           let workroom = WorkroomSplitTitlePresentation.workroomName(sid: sid, target: target)
           HStack(alignment: .firstTextBaseline, spacing: 4) {
             Image(systemName: workroom == nil ? "house" : target.workroomGlyph)
-              .foregroundStyle(theme.tokens.fgMuted)
+              .foregroundStyle(tokens.fgMuted)
             Text(store.project(forTargetID: target.id)?.displayName ?? target.title)
             if let workroom {
               Text("/").foregroundStyle(.tertiary)
               Text(workroom)
             }
           }
-          .foregroundStyle(theme.tokens.fg)
+          .foregroundStyle(tokens.fg)
           .lineLimit(1)
           .truncationMode(.tail)
         } else {
-          Text("No open workroom").foregroundStyle(theme.tokens.fgMuted)
+          Text("No open workroom").foregroundStyle(tokens.fgMuted)
         }
       }
       .font(.callout)
@@ -256,7 +256,7 @@ private struct PortsSection: View {
   /// A new row's port field is showing, after `+`.
   @State private var adding = false
   @FocusState private var fieldFocused: Bool
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -282,7 +282,7 @@ private struct PortsSection: View {
         .font(.caption2).foregroundStyle(.secondary)
       }
       if let message = model.message {
-        Text(message).font(.caption2).foregroundStyle(theme.tokens.failure).lineLimit(3)
+        Text(message).font(.caption2).foregroundStyle(tokens.failure).lineLimit(3)
       }
       ForEach(model.forwards) { forward in
         row(forward)
@@ -336,7 +336,7 @@ private struct PortsSection: View {
         // Mac first, arrow the way a connection goes: from the address here into the container.
         Text("\(address) → container \(String(forward.remotePort))")
           .font(.system(.caption, design: .monospaced))
-          .foregroundStyle(theme.tokens.fgMuted)
+          .foregroundStyle(tokens.fgMuted)
           .textSelection(.enabled)
         if let label = forward.label {
           Text(label).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -351,7 +351,7 @@ private struct PortsSection: View {
         }
       }
       if let failure = forward.failure {
-        Text(failure).font(.caption2).foregroundStyle(theme.tokens.failure).lineLimit(3)
+        Text(failure).font(.caption2).foregroundStyle(tokens.failure).lineLimit(3)
       }
     }
     .accessibilityIdentifier("ports.row.\(forward.remotePort)")

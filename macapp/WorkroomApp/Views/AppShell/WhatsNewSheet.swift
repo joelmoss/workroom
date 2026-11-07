@@ -16,7 +16,6 @@ struct WhatsNewSheet: View {
   let onClose: () -> Void
 
   @Environment(\.openURL) private var openURL
-  private let theme = ThemeService.shared
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {

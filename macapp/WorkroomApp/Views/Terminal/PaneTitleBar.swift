@@ -165,7 +165,7 @@ struct PaneTitleBar: View {
   var moveToWorkroom: QuickTerminalMoveToWorkroomMenu? = nil
   let onDragChanged: (CGPoint) -> Void
   let onDragEnded: () -> Void
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     #if DEBUG
@@ -189,8 +189,8 @@ struct PaneTitleBar: View {
     // `panel` (not the terminal's own background) so the bar reads as chrome, mirroring
     // `TerminalStatusBar` at the pane's other end — which puts its hairline on top, so this one puts
     // its hairline on the bottom and the pair bracket the content.
-    .background(theme.tokens.panel)
-    .overlay(alignment: .bottom) { theme.tokens.border.frame(height: 1) }
+    .background(tokens.panel)
+    .overlay(alignment: .bottom) { tokens.border.frame(height: 1) }
     // No unfocused fade of its own: this bar is INSIDE the pane, so `PaneLeafView`'s 0.3 dim scrim
     // already covers it — exactly as it covers `TerminalStatusBar`. The strip above and the workroom
     // header above that each carry a 0.45 `shouldRecede` fade precisely because they sit OUTSIDE the
@@ -239,7 +239,7 @@ struct PaneTitleBar: View {
       if let glyph {
         Image(systemName: glyph)
           .font(.system(size: 10))
-          .foregroundStyle(focused ? theme.tokens.accent : theme.tokens.fgMuted)
+          .foregroundStyle(focused ? tokens.accent : tokens.fgMuted)
           // The title carries the same information to VoiceOver; a second announcement of "document"
           // before every file name is noise.
           .accessibilityHidden(true)
@@ -253,7 +253,7 @@ struct PaneTitleBar: View {
             let title = PaneTitlePresentation.title(for: content, tabTitle: text)
             panePathText(prefix: title.prefix, name: title.name)
               .font(.subheadline)
-              .foregroundStyle(focused ? Color.primary : theme.tokens.fgMuted)
+              .foregroundStyle(focused ? Color.primary : tokens.fgMuted)
               .lineLimit(1)
               .truncationMode(title.truncation)
               .frame(maxWidth: .infinity, alignment: .leading)

@@ -742,7 +742,8 @@ final class GhosttySurfaceView: NSView {
       rootView: PaneNoticeToast(message: message, width: paneNoticeWidth) { [weak self] in
         self?.paneNotice?.removeFromSuperview()
         self?.paneNotice = nil
-      })
+      }
+      .themeTokensRoot())
     addSubview(host, positioned: .above, relativeTo: nil)
     paneNotice = host
     layoutPaneNotice()
@@ -757,8 +758,8 @@ final class GhosttySurfaceView: NSView {
 
   private func layoutPaneNotice() {
     guard let paneNotice else { return }
-    if paneNotice.rootView.width != paneNoticeWidth {
-      paneNotice.rootView.width = paneNoticeWidth
+    if paneNotice.rootView.content.width != paneNoticeWidth {
+      paneNotice.rootView.content.width = paneNoticeWidth
     }
     // The card sits as far in from the top-right as the go-to-bottom button does from the
     // bottom-right; its shadow room may run past the pane's edge (non-flipped: y is from the bottom).

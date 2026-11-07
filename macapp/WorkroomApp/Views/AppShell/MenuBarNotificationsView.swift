@@ -68,13 +68,14 @@ private struct WaitingRow: View {
   let request: WaitingRequest
   let place: String?
   let onOpen: () -> Void
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     let kind = ProgramStatusPresentation.sentence(request.record.kind)
     let title = place ?? "Terminal"
     Button(action: onOpen) {
       HStack(alignment: .top, spacing: 8) {
-        Image(systemName: "hand.raised.fill").foregroundStyle(ThemeService.shared.tokens.warning)
+        Image(systemName: "hand.raised.fill").foregroundStyle(tokens.warning)
         VStack(alignment: .leading, spacing: 2) {
           Text(title).font(.callout).lineLimit(1)
           Text(kind).font(.caption).foregroundStyle(.secondary).lineLimit(1)

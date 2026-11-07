@@ -10,6 +10,7 @@ struct TerminalCodingAgentBanner: View {
   var onDismiss: () -> Void
 
   @State private var confirmingDestructiveFix = false
+  @Environment(\.themeTokens) private var tokens
 
   private var model: CodingAgentBannerViewModel { CodingAgentBannerViewModel(state: state) }
 
@@ -58,7 +59,7 @@ struct TerminalCodingAgentBanner: View {
       Image(systemName: "sparkles").foregroundStyle(.tint)
     case .failure:
       Image(systemName: "exclamationmark.triangle.fill")
-        .foregroundStyle(ThemeService.shared.tokens.warning)
+        .foregroundStyle(tokens.warning)
     case .awaiting:
       Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
     case .remote:
@@ -70,7 +71,7 @@ struct TerminalCodingAgentBanner: View {
     HStack(spacing: 6) {
       if model.fixIsDestructive {
         Image(systemName: "exclamationmark.octagon.fill")
-          .foregroundStyle(ThemeService.shared.tokens.failure)
+          .foregroundStyle(tokens.failure)
           .help("This command is destructive — review it carefully before running.")
       }
       Text(fix)
@@ -137,7 +138,7 @@ struct TerminalCodingAgentBanner: View {
   private var borderColor: Color {
     switch model.style {
     case .ready: return .accentColor.opacity(0.4)
-    case .failure: return ThemeService.shared.tokens.warning.opacity(0.4)
+    case .failure: return tokens.warning.opacity(0.4)
     default: return Color.primary.opacity(0.12)
     }
   }

@@ -361,6 +361,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     // The same environment a detached pane's window gives its pane (`DetachedPaneView`).
     window.contentView = NSHostingView(
       rootView: QuickTerminalContent(sessions: sessions)
+        .themeTokensRoot()
         .environment(\.isQuickTerminal, true)
         .environmentObject(store)
         .environmentObject(store.modals)

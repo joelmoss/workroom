@@ -10,7 +10,7 @@ struct ThemePicker: View {
   /// The size this picker frames itself to; both popovers size themselves from the rendered frame.
   static let contentSize = CGSize(width: 300, height: 420)
 
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
   @Environment(\.dismiss) private var dismiss
   @Default(.themeFamily) private var familyName
 
@@ -37,7 +37,7 @@ struct ThemePicker: View {
       light: ThemeService.themePreview(named: family.light)
     )
     .contentShape(Rectangle())
-    .onTapGesture { theme.applyFamily(family.name) }
+    .onTapGesture { ThemeService.shared.applyFamily(family.name) }
   }
 
   /// Move the highlight by `delta` (clamped) and apply that family live — ↑/↓ change the theme
@@ -45,7 +45,7 @@ struct ThemePicker: View {
   private func moveHighlight(_ delta: Int) {
     guard !filteredFamilies.isEmpty else { return }
     highlighted = min(max(highlighted + delta, 0), filteredFamilies.count - 1)
-    theme.applyFamily(filteredFamilies[highlighted].name)
+    ThemeService.shared.applyFamily(filteredFamilies[highlighted].name)
   }
 
   var body: some View {
@@ -58,7 +58,7 @@ struct ThemePicker: View {
             if filteredFamilies.isEmpty {
               Text("No themes match “\(query)”")
                 .font(.footnote)
-                .foregroundStyle(theme.tokens.fgMuted)
+                .foregroundStyle(tokens.fgMuted)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 16)
             } else {
@@ -117,7 +117,7 @@ struct ThemePicker: View {
 
   private var searchField: some View {
     HStack(spacing: 6) {
-      Image(systemName: "magnifyingglass").foregroundStyle(theme.tokens.fgDim)
+      Image(systemName: "magnifyingglass").foregroundStyle(tokens.fgDim)
       TextField("Search themes", text: $query)
         .textFieldStyle(.plain)
         .focused($searchFocused)
@@ -129,7 +129,7 @@ struct ThemePicker: View {
         } label: {
           Image(systemName: "xmark.circle.fill")
         }
-        .buttonStyle(.plain).foregroundStyle(theme.tokens.fgDim)
+        .buttonStyle(.plain).foregroundStyle(tokens.fgDim)
         .help("Clear search")
       }
     }
@@ -137,9 +137,9 @@ struct ThemePicker: View {
     .padding(.vertical, 6)
     .background(
       RoundedRectangle(cornerRadius: 8)
-        .fill(theme.tokens.surface)
+        .fill(tokens.surface)
         .overlay(
-          RoundedRectangle(cornerRadius: 8).strokeBorder(theme.tokens.border, lineWidth: 0.5))
+          RoundedRectangle(cornerRadius: 8).strokeBorder(tokens.border, lineWidth: 0.5))
     )
     .padding(10)
   }
@@ -150,7 +150,7 @@ struct ThemePicker: View {
 /// Deliberately `internal`, not `private` (same reason as `HistoryRow`/`FileTreeRowView`):
 /// `ThemePickerInvalidationTests` measures its rebuild cost directly.
 struct FamilyRow: View {
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
   let family: ThemeFamily
   let isActive: Bool
   var isHighlighted = false
@@ -172,7 +172,7 @@ struct FamilyRow: View {
       HStack(spacing: 6) {
         Text(family.name)
           .font(.system(size: 12, weight: isActive ? .semibold : .medium))
-          .foregroundStyle(isActive ? theme.tokens.accent : theme.tokens.fg)
+          .foregroundStyle(isActive ? tokens.accent : tokens.fg)
           .lineLimit(1)
           .truncationMode(.tail)
           .help(family.name)
@@ -180,7 +180,7 @@ struct FamilyRow: View {
         if isActive {
           Image(systemName: "checkmark.circle.fill")
             .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(theme.tokens.accent)
+            .foregroundStyle(tokens.accent)
         }
       }
       HStack(spacing: 4) {
@@ -194,7 +194,7 @@ struct FamilyRow: View {
     // Accent ring on the selected family; a fainter ring on the keyboard-highlighted row so ↑/↓
     // focus is visible even when it isn't the selected one.
     .pickerRowChrome(
-      tokens: theme.tokens, highlighted: isHighlighted, hovered: hovered, active: isActive
+      tokens: tokens, highlighted: isHighlighted, hovered: hovered, active: isActive
     )
     .onHover { hovered = $0 }
     // Queryable by `ThemePickerUITests`. Two things here are load-bearing and were both found by
@@ -214,7 +214,7 @@ struct FamilyRow: View {
 /// A single variant preview: the background with an "Ab" sample over a strip of the 16 palette
 /// colours — the muxy swatch pattern.
 private struct Swatch: View {
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
   let preview: ThemePreview?
   /// The variant's theme-file name. Carried purely so the swatch can report, through accessibility,
   /// *which* file it is drawing and whether that file resolved — the visible symptom of a registry
@@ -224,11 +224,11 @@ private struct Swatch: View {
   var body: some View {
     HStack(spacing: 0) {
       Rectangle()
-        .fill(preview.map { Color(nsColor: $0.background) } ?? theme.tokens.surface)
+        .fill(preview.map { Color(nsColor: $0.background) } ?? tokens.surface)
         .overlay(
           Text("Ab")
             .font(.system(size: 9, weight: .medium, design: .monospaced))
-            .foregroundStyle(preview.map { Color(nsColor: $0.foreground) } ?? theme.tokens.fgMuted)
+            .foregroundStyle(preview.map { Color(nsColor: $0.foreground) } ?? tokens.fgMuted)
         )
         .frame(width: 26)
       ForEach(Array((preview?.palette ?? []).enumerated()), id: \.offset) { _, c in
@@ -236,7 +236,7 @@ private struct Swatch: View {
       }
     }
     .clipShape(RoundedRectangle(cornerRadius: 3))
-    .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(theme.tokens.border, lineWidth: 0.5))
+    .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(tokens.border, lineWidth: 0.5))
     .accessibilityElement()
     // Resolution state rides the IDENTIFIER, not `accessibilityValue`: a value set on a
     // non-control element like this one comes back empty through XCUIElement (measured), while

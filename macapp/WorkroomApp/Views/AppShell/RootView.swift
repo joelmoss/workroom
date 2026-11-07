@@ -23,6 +23,8 @@ struct RootView: View {
   @Environment(\.openSettings) private var openSettings
   /// Drives the title-bar accessory's dim while a dialog is up, matched to `DialogOverlay`'s backdrop.
   @Environment(\.colorScheme) private var colorScheme
+  /// Injected by `RootWindow` (`themeTokensRoot()`), above this view.
+  @Environment(\.themeTokens) private var tokens
   @Default(.theme) private var theme
   /// Whether the right-hand inspector (Changes / Files / Pull Request) is open. `@Default` (not
   /// `@State`) so the View-menu command (WorkroomCommands) toggles the same value.
@@ -221,7 +223,9 @@ struct RootView: View {
           log: modals.errorLog, details: modals.errorDetails, action: modals.errorAction,
           approval: modals.errorApproval, scriptName: modals.errorScriptName,
           cancel: modals.errorCancel,
-          onDismiss: { modals.clearError() })
+          onDismiss: { modals.clearError() }
+        )
+        .themeTokensRoot()
       }
       // Add-project importer + delete confirmation, re-homed here from ProjectSidebar (issue #23 OV1) so
       // the ⌘O / ⌘⌫ menu commands present reliably even when the sidebar is collapsed in Workrooms View.
@@ -239,7 +243,9 @@ struct RootView: View {
             showAddProject = false
             Task { await store.addProject(path, create: create) }
           },
-          onCancel: { showAddProject = false })
+          onCancel: { showAddProject = false }
+        )
+        .themeTokensRoot()
       }
       // VCS failure dialog. Hosted here rather than on the inspector because ⌥⇧⌘P and the rest of the
       // Room menu work with the inspector hidden, and a failure they raise still has to be
@@ -335,7 +341,9 @@ struct RootView: View {
             modals.pendingProjectDeletion = nil
             lifecycle.deleteProject(pending.project, scope: scope, from: store)
           },
-          onCancel: { modals.pendingProjectDeletion = nil })
+          onCancel: { modals.pendingProjectDeletion = nil }
+        )
+        .themeTokensRoot()
       }
       // Set/edit a workroom's display label (issue #41). Same `.sheet(item:)` bridge as project
       // deletion above — the id-keyed item rebuilds the sheet per workroom, resetting its field.
@@ -347,7 +355,9 @@ struct RootView: View {
             modals.pendingWorkroomLabel = nil
             store.setWorkroomLabel(pending.workroom, in: pending.project, to: label)
           },
-          onCancel: { modals.pendingWorkroomLabel = nil })
+          onCancel: { modals.pendingWorkroomLabel = nil }
+        )
+        .themeTokensRoot()
       }
       // A project's settings open in Settings ▸ Projects (issue #7; #127 adds the no-command Run).
       // Cleared at once: the request is handed on, and no sheet holds this window's shortcuts.
@@ -360,7 +370,7 @@ struct RootView: View {
       }
       // One boxd or exe.dev create's host options (#575), from the New Workroom dialog or menu.
       .sheet(item: $modals.pendingHostOptions) { pending in
-        HostOptionsPanel(pending: pending).environmentObject(store)
+        HostOptionsPanel(pending: pending).themeTokensRoot().environmentObject(store)
       }
       // The commit dialog. Presented on the ROOT for `VCSFailureSheet`'s reason: it can be opened
       // from the Changes header, and a dialog that only survives while a particular pane happens to
@@ -368,6 +378,7 @@ struct RootView: View {
       // `hasModalPresentation`, so the Room menu's Fetch/Push/Pull shortcuts are inert behind it.
       .sheet(item: $modals.pendingCommit) { pending in
         CommitSheet(pending: pending, onDismiss: { modals.pendingCommit = nil })
+          .themeTokensRoot()
           .environmentObject(store)
           .environmentObject(store.vcsStatus)
       }
@@ -378,7 +389,7 @@ struct RootView: View {
           get: { modals.pendingRemoteSetup },
           set: { if $0 == nil { lifecycle.resolveRemoteSetup(carryOn: false, in: store.modals) } })
       ) { pending in
-        remoteSetupSheet(pending)
+        remoteSetupSheet(pending).themeTokensRoot()
       }
   }
 
@@ -439,7 +450,7 @@ struct RootView: View {
         showKeyboardShortcuts = true
       }
       .sheet(isPresented: $showKeyboardShortcuts) {
-        KeyboardShortcutsView()
+        KeyboardShortcutsView().themeTokensRoot()
       }
       // "What's New" auto-check: only the launch/restore window runs it, so restored ⌘N windows don't
       // each pop the dialog. Silent — opens straight to the notes when there are any to show.
@@ -450,7 +461,7 @@ struct RootView: View {
         }
       }
       .sheet(item: $whatsNewContent) { content in
-        WhatsNewSheet(content: content) { whatsNewContent = nil }
+        WhatsNewSheet(content: content) { whatsNewContent = nil }.themeTokensRoot()
       }
   }
 
@@ -636,7 +647,7 @@ struct RootView: View {
     // Not under the title bar (`ignoresSafeAreaEdges: []`): SwiftUI counts a fill there as not-the-drag
     // region, and AppKit only zooms the window on a title-bar double-click inside the drag region. The
     // window background behind the bar is already this colour (`WindowBackgroundThemer`).
-    .background(ThemeService.shared.tokens.panel, ignoresSafeAreaEdges: [])
+    .background(tokens.panel, ignoresSafeAreaEdges: [])
   }
 
   /// The content-local point for a chip drag at `global`, or nil when the cursor is still over the bar

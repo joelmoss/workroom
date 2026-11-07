@@ -24,6 +24,7 @@ struct ProjectSidebar: View {
   @EnvironmentObject var vcsStatus: VCSStatusService
   @EnvironmentObject var lifecycle: WorkroomLifecycle
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.themeTokens) private var tokens
   /// Read through Observation: the sidebar shows every workroom's terminals, so it re-renders on a
   /// pane change in any of them.
   private var terminals: TerminalPanes { store.terminals }
@@ -443,7 +444,7 @@ struct ProjectSidebar: View {
       Spacer(minLength: 0)
       SidebarUnreadDot(source: .target(target.id))
       if target.isMissing {
-        WarningGlyph(tokens: ThemeService.shared.tokens)
+        WarningGlyph(tokens: tokens)
           .help("Project folder not found")
       }
       // OSC-9;4 spinner (any terminal's agent activity), to the LEFT of the run button — mirroring
@@ -519,7 +520,7 @@ struct ProjectSidebar: View {
       Spacer()
       SidebarUnreadDot(source: .target(targetID))
       ForEach(workroom.warnings, id: \.kind) { warning in
-        WarningGlyph(tokens: ThemeService.shared.tokens)
+        WarningGlyph(tokens: tokens)
           .help(warning.message)
       }
       // Spinner/delete slot: a progress spinner while the workroom's setup runs (issue #116) or a
@@ -795,7 +796,7 @@ struct ProjectSidebar: View {
         .padding(.horizontal, Spacing.m)
         .padding(.vertical, 1)
     } else {
-      RowHighlight(tokens: ThemeService.shared.tokens, selected: false, hovered: hovered)
+      RowHighlight(tokens: tokens, selected: false, hovered: hovered)
     }
   }
 
@@ -805,7 +806,6 @@ struct ProjectSidebar: View {
     // Lighter than the root/workroom selection fill (0.13): the selected workroom is the primary
     // selection, the focused terminal a secondary "active within" cue — so the two don't read as two
     // equal selections when a subtree is open (issue #30 design pass).
-    let tokens = ThemeService.shared.tokens
     let fill: Color =
       selected ? tokens.hover : (hovered ? tokens.hover.opacity(0.5) : .clear)
     RoundedRectangle(cornerRadius: Radius.s)
@@ -836,7 +836,7 @@ struct ProjectSidebar: View {
   /// inset reserves their height, keeping list rows from scrolling underneath.
   private var footer: some View {
     VStack(spacing: 0) {
-      ThemeService.shared.tokens.border.frame(height: 1)
+      tokens.border.frame(height: 1)
       SidebarNotificationStrip()
       bottomBar
     }
@@ -873,6 +873,7 @@ private struct SidebarHoverRegion<Content: View>: View {
 private struct SidebarAddProjectButton: View {
   @EnvironmentObject private var store: AppStore
   @State private var hovering = false
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     // Add Project, bottom-right. No key equivalent — File ▸ New Project… lost ⌘O to Open Workroom…
@@ -887,7 +888,7 @@ private struct SidebarAddProjectButton: View {
         .frame(width: 24, height: 24)
         .background(
           RoundedRectangle(cornerRadius: 6)
-            .fill(ThemeService.shared.tokens.hover.opacity(hovering ? 1 : 0))
+            .fill(tokens.hover.opacity(hovering ? 1 : 0))
         )
     }
     .buttonStyle(.plain)
@@ -930,6 +931,7 @@ private struct SidebarUnreadDot: View {
 /// the entire List, including offscreen rows and unrelated notification badges (#534).
 private struct SidebarStatusGlyph: View {
   @EnvironmentObject private var vcsStatus: VCSStatusService
+  @Environment(\.themeTokens) private var tokens
   let id: SidebarID
   let symbol: String
 
@@ -937,7 +939,7 @@ private struct SidebarStatusGlyph: View {
     Image(systemName: symbol)
       .font(.system(size: 10))
       .foregroundStyle(
-        VCSStatusPresentation.iconTint(vcsStatus.workroomStatuses[id] ?? .unresolved))
+        VCSStatusPresentation.iconTint(vcsStatus.workroomStatuses[id] ?? .unresolved, tokens))
   }
 }
 
@@ -987,12 +989,12 @@ private struct RootLabelTint: ViewModifier {
 /// the row reads as failed at a glance rather than as one more busy spinner.
 private struct RunningSpinner: View {
   var failed = false
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     if failed {
       Image(systemName: "exclamationmark.circle.fill")
-        .foregroundStyle(theme.tokens.failure)
+        .foregroundStyle(tokens.failure)
         .help("A command reported an error")
         .accessibilityLabel("A command reported an error")
     } else {
@@ -1010,7 +1012,7 @@ private struct RunningSpinner: View {
 private struct CreateStepCircle: View {
   /// Observed here: a run's steps change without the store (read through Observation) changing.
   @ObservedObject var run: CreationRun
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     let step = WorkroomLifecycle.CreateStep(run)
@@ -1018,7 +1020,7 @@ private struct CreateStepCircle: View {
       EmptyView()
     } else if step.failed {
       Image(systemName: "xmark.octagon.fill")
-        .foregroundStyle(theme.tokens.failure)
+        .foregroundStyle(tokens.failure)
         .help("Couldn't create the workroom: \(step.label) failed")
         .accessibilityLabel("Couldn't create the workroom: \(step.label) failed")
     } else {
@@ -1037,7 +1039,7 @@ private struct CreateRowButton<Places: View>: View {
   let help: String
   @ViewBuilder let places: () -> Places
   @State private var hovering = false
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   private var glyph: some View {
     Image(systemName: "plus")
@@ -1046,7 +1048,7 @@ private struct CreateRowButton<Places: View>: View {
       .padding(4)
       .background(
         RoundedRectangle(cornerRadius: 5)
-          .fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
+          .fill(tokens.hover.opacity(hovering ? 1 : 0))
       )
   }
 
@@ -1072,13 +1074,13 @@ private struct RowRunButton: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var runCommand: RunCommandController
   @State private var hovering = false
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     let running = runCommand.isRunCommandRunning(for: target.id)
     let stopping = runCommand.runStates[target.id]?.isStopping == true
     // The action's color: red to stop (like delete), green to start. Drives the hover icon tint AND
     // the rounded hover background, matching the row's other buttons (new-workroom / delete).
-    let tokens = ThemeService.shared.tokens
     let tint = running ? tokens.failure : tokens.success
     Button {
       store.toggleRunCommand(for: target)
@@ -1120,7 +1122,7 @@ private struct SettingsRowButton: View {
   let visible: Bool
   let action: () -> Void
   @State private var hovering = false
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Button(action: action) {
@@ -1130,7 +1132,7 @@ private struct SettingsRowButton: View {
         .padding(4)
         .background(
           RoundedRectangle(cornerRadius: 5)
-            .fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
+            .fill(tokens.hover.opacity(hovering ? 1 : 0))
         )
     }
     .buttonStyle(.plain)
@@ -1150,16 +1152,17 @@ private struct DeleteRowButton: View {
   let visible: Bool
   let action: () -> Void
   @State private var hovering = false
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Button(action: action) {
       Image(systemName: "trash")
         .font(.system(size: 11))
-        .foregroundStyle(hovering ? ThemeService.shared.tokens.failure : .secondary)
+        .foregroundStyle(hovering ? tokens.failure : .secondary)
         .padding(4)
         .background(
           RoundedRectangle(cornerRadius: 5)
-            .fill(ThemeService.shared.tokens.failure.opacity(hovering ? 0.18 : 0))
+            .fill(tokens.failure.opacity(hovering ? 0.18 : 0))
         )
     }
     .buttonStyle(.plain)
@@ -1182,7 +1185,7 @@ private struct TerminalDisclosureButton: View {
   let width: CGFloat
   let action: () -> Void
   @State private var hovering = false
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Button(action: action) {
@@ -1196,7 +1199,7 @@ private struct TerminalDisclosureButton: View {
         .frame(width: width, height: 18, alignment: .center)
         .background {
           RoundedRectangle(cornerRadius: 5)
-            .fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
+            .fill(tokens.hover.opacity(hovering ? 1 : 0))
             .frame(width: 18, height: 18)
         }
         .contentShape(Rectangle())
@@ -1216,7 +1219,7 @@ private struct CloseTerminalRowButton: View {
   let visible: Bool
   let action: () -> Void
   @State private var hovering = false
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Button(action: action) {
@@ -1226,7 +1229,7 @@ private struct CloseTerminalRowButton: View {
         .padding(4)
         .background(
           RoundedRectangle(cornerRadius: 5)
-            .fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
+            .fill(tokens.hover.opacity(hovering ? 1 : 0))
         )
     }
     .buttonStyle(.plain)

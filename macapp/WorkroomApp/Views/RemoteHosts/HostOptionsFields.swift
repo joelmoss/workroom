@@ -168,6 +168,7 @@ struct HostOptionsSection: View {
 /// linking to how host options work.
 struct HostOptionsHeader: View {
   let provider: HostKind
+  @Environment(\.themeTokens) private var tokens
 
   private static let subtitle: AttributedString = {
     var text = AttributedString("Override the default options used during creation - ")
@@ -184,7 +185,7 @@ struct HostOptionsHeader: View {
       Text(Self.subtitle)
         .font(.caption)
         .fontWeight(.regular)
-        .foregroundStyle(ThemeService.shared.tokens.fgMuted)
+        .foregroundStyle(tokens.fgMuted)
     }
     .textCase(nil)
   }
@@ -264,6 +265,7 @@ struct HostOptionsFields: View {
   /// What this level inherits from the levels below it, or nil at Settings.
   let inherited: HostOptions.Resolution?
   @ObservedObject var catalog: HostOptionsCatalog
+  @Environment(\.themeTokens) private var tokens
 
   /// exe.dev's disk sizes, in GB, up to the plan's maximum.
   private static let diskSizes = [10, 25, 50, 100, 250, 500, 1024]
@@ -319,7 +321,7 @@ struct HostOptionsFields: View {
     if case .value(let name)? = options.image, let snapshots, !snapshots.contains(name) {
       Text(Self.missingSnapshot)
         .font(.footnote)
-        .foregroundStyle(ThemeService.shared.tokens.warning)
+        .foregroundStyle(tokens.warning)
     }
   }
 
@@ -348,7 +350,7 @@ struct HostOptionsFields: View {
     if snapshot {
       Text("A snapshot keeps its own size.")
         .font(.footnote)
-        .foregroundStyle(ThemeService.shared.tokens.fgMuted)
+        .foregroundStyle(tokens.fgMuted)
     }
   }
 

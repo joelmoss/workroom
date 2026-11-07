@@ -123,11 +123,11 @@ private struct ToolWarningToastView: View {
 
   @State private var hovering = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     HStack(alignment: .top, spacing: 10) {
-      WarningGlyph(tokens: theme.tokens)
+      WarningGlyph(tokens: tokens)
       VStack(alignment: .leading, spacing: 2) {
         Text(warning.title).font(.callout).fontWeight(.semibold).lineLimit(2)
         Text(warning.detail).font(.caption).foregroundStyle(.secondary).lineLimit(4)
@@ -138,7 +138,7 @@ private struct ToolWarningToastView: View {
     .padding(.vertical, 10)
     .frame(width: 300, alignment: .leading)
     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.tokens.border, lineWidth: 0.5))
+    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(tokens.border, lineWidth: 0.5))
     .overlay(alignment: .topLeading) { closeButton }
     .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
     .onHover { hovering = $0 }
@@ -154,7 +154,7 @@ private struct ToolWarningToastView: View {
         .foregroundStyle(.secondary)
         .frame(width: 18, height: 18)
         .background(.regularMaterial, in: Circle())
-        .overlay(Circle().strokeBorder(theme.tokens.border, lineWidth: 0.5))
+        .overlay(Circle().strokeBorder(tokens.border, lineWidth: 0.5))
         .contentShape(Circle())
     }
     .buttonStyle(.plain)
@@ -182,7 +182,7 @@ private struct ToastView: View {
   @State private var hovering = false
   @State private var dismissTask: Task<Void, Never>?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     content
@@ -192,11 +192,11 @@ private struct ToastView: View {
       .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
       // Faint fill + a touch more border on hover so the card reads as the clickable target it is.
       .overlay(
-        RoundedRectangle(cornerRadius: 12).fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
+        RoundedRectangle(cornerRadius: 12).fill(tokens.hover.opacity(hovering ? 1 : 0))
       )
       .overlay(
         RoundedRectangle(cornerRadius: 12)
-          .strokeBorder(theme.tokens.border, lineWidth: 0.5)
+          .strokeBorder(tokens.border, lineWidth: 0.5)
       )
       .overlay(alignment: .topTrailing) { closeButton }
       // Lift on hover: a deeper, wider shadow.
@@ -238,7 +238,7 @@ private struct ToastView: View {
         .foregroundStyle(.secondary)
         .frame(width: 18, height: 18)
         .background(.regularMaterial, in: Circle())
-        .overlay(Circle().strokeBorder(theme.tokens.border, lineWidth: 0.5))
+        .overlay(Circle().strokeBorder(tokens.border, lineWidth: 0.5))
         .contentShape(Circle())
     }
     .buttonStyle(.plain)
@@ -309,7 +309,7 @@ private struct RunToastView: View {
 
   @State private var hovering = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     HStack(spacing: 10) {
@@ -329,8 +329,8 @@ private struct RunToastView: View {
     .padding(.vertical, 10)
     .frame(width: 300, alignment: .leading)
     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-    .overlay(RoundedRectangle(cornerRadius: 12).fill(theme.tokens.hover.opacity(hovering ? 1 : 0)))
-    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.tokens.border, lineWidth: 0.5))
+    .overlay(RoundedRectangle(cornerRadius: 12).fill(tokens.hover.opacity(hovering ? 1 : 0)))
+    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(tokens.border, lineWidth: 0.5))
     .overlay(alignment: .topLeading) { closeButton }
     .shadow(
       color: .black.opacity(hovering ? 0.34 : 0.28), radius: hovering ? 22 : 18,
@@ -358,7 +358,7 @@ private struct RunToastView: View {
     case .exited:
       Image(systemName: "checkmark.circle").foregroundStyle(.secondary)
     case .failed, .failedToStart:
-      Image(systemName: "xmark.octagon.fill").foregroundStyle(theme.tokens.failure)
+      Image(systemName: "xmark.octagon.fill").foregroundStyle(tokens.failure)
     }
   }
 
@@ -387,7 +387,7 @@ private struct RunToastView: View {
         .foregroundStyle(.secondary)
         .frame(width: 18, height: 18)
         .background(.regularMaterial, in: Circle())
-        .overlay(Circle().strokeBorder(theme.tokens.border, lineWidth: 0.5))
+        .overlay(Circle().strokeBorder(tokens.border, lineWidth: 0.5))
         .contentShape(Circle())
     }
     .buttonStyle(.plain)

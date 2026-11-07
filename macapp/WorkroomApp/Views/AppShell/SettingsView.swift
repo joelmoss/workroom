@@ -37,6 +37,7 @@ struct SettingsView: View {
   // switches theme in the Appearance pane (the tokens are read from the `ThemeService` singleton,
   // which SwiftUI doesn't observe on its own here).
   @State private var themeTick = 0
+  @Environment(\.themeTokens) private var tokens
 
   /// The header strip's height, level with the window's traffic lights, as System Settings' is.
   private static let headerHeight: CGFloat = 52
@@ -56,7 +57,7 @@ struct SettingsView: View {
     // Opens at its smallest, and the panes grow with the window.
     .frame(minWidth: 621, maxWidth: .infinity, minHeight: 432, maxHeight: .infinity)
     .ignoresSafeArea(.container, edges: .top)
-    .background(ThemeService.shared.tokens.panel.ignoresSafeArea())
+    .background(tokens.panel.ignoresSafeArea())
     .background(SettingsWindowThemer())
     .onReceive(NotificationCenter.default.publisher(for: .themeDidChange)) { _ in themeTick += 1 }
     .onAppear {
@@ -187,7 +188,7 @@ struct SettingsView: View {
   // selection. Settings rows inset by 6 (vs the project sidebar's 8).
   @ViewBuilder private func rowHighlight(_ pane: SettingsPane) -> some View {
     RowHighlight(
-      tokens: ThemeService.shared.tokens, selected: selection == pane, hovered: hovered == pane,
+      tokens: tokens, selected: selection == pane, hovered: hovered == pane,
       horizontalPadding: Spacing.s)
   }
 }
@@ -395,6 +396,7 @@ private struct NewWorkroomsSection: View {
   @State private var saved = ""
   @State private var failure: String?
   @FocusState private var focused: Bool
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Section {
@@ -406,7 +408,7 @@ private struct NewWorkroomsSection: View {
         .onDisappear(perform: save)
         .accessibilityIdentifier("settings.control.baseBranch")
       if let failure {
-        Text(failure).font(.footnote).foregroundStyle(ThemeService.shared.tokens.failure)
+        Text(failure).font(.footnote).foregroundStyle(tokens.failure)
       }
       Toggle("Close the checklist automatically when done", isOn: $closeCreationPaneWhenDone)
         .help(
@@ -568,7 +570,7 @@ private struct AppearanceSettingsPane: View {
           .frame(width: 160, alignment: .trailing)
         }
         .popover(isPresented: $showThemePopover, arrowEdge: .bottom) {
-          ThemePicker()
+          ThemePicker().themeTokensRoot()
         }
       }
       .help("Choose the color theme family (its light or dark variant follows Appearance).")

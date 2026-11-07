@@ -22,6 +22,7 @@ struct TabStripSplitBrackets: View {
   let runs: [(x: CGFloat, width: CGFloat)]
   /// Bracket `i`'s accessibility identifier is `"\(identifierPrefix).\(i)"`.
   let identifierPrefix: String
+  @Environment(\.themeTokens) private var tokens
 
   /// The brackets of the strip whose chips are `ids` in display order (`TabStripSplitRun.rects`).
   init<ID: Hashable>(
@@ -36,7 +37,7 @@ struct TabStripSplitBrackets: View {
     ZStack(alignment: .leading) {
       ForEach(Array(runs.enumerated()), id: \.offset) { index, run in
         RoundedRectangle(cornerRadius: 7)
-          .strokeBorder(ThemeService.shared.tokens.border, lineWidth: 1)
+          .strokeBorder(tokens.border, lineWidth: 1)
           .frame(width: run.width)
           .offset(x: run.x)
           // A frame XCUITest can read, so the misalignment above is testable at all — a stroked

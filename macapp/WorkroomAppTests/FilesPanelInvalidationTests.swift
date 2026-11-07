@@ -99,7 +99,9 @@ final class FilesPanelInvalidationTests: XCTestCase {
 
   /// Host the real `FilesPanel` offscreen, directly over the given model (not `store.fileTree`).
   private func host(_ store: AppStore, _ model: FileTreeModel) -> (NSWindow, NSView) {
+    // Rooted as the inspector roots it (`InspectorPaneViewController.setContent`).
     let root = FilesPanel(model: model)
+      .themeTokensRoot()
       .environmentObject(store)
       .environmentObject(store.notifications)
       .frame(width: 280, height: 400)

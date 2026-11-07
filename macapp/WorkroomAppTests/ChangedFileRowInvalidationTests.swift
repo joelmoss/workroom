@@ -62,7 +62,9 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
   }
 
   private func host(_ store: AppStore) -> (NSWindow, NSView) {
+    // Rooted as the inspector roots it (`InspectorPaneViewController.setContent`).
     let root = ChangesPanel(sessions: store.terminals)
+      .themeTokensRoot()
       .environmentObject(store)
       .environmentObject(store.vcsStatus)
       .environmentObject(store.notifications)
@@ -149,7 +151,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
   /// A theme change must repaint the rows, every one of them, selected or not.
   ///
   /// Unlike `HistoryRow`, this row needs no theme input to its equality gate: its change letter's
-  /// colour reads `theme.tokens` outside any ternary, so each row repaints by Observation. This test
+  /// colour reads `tokens` outside any ternary, so each row repaints with the theme environment. This test
   /// pins that read: a row whose only theme reads sat inside its hover/selection ternaries would keep
   /// the old theme's colours.
   func testThemeChangeRebuildsChangedFileRows() throws {

@@ -22,7 +22,7 @@ struct CodingAgentUsageDetailView: View {
   /// without a live clock its "resets in" text and pace marker would freeze at whatever moment it
   /// happened to open.
   @State private var currentTime: Date
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
   private var barWidth: CGFloat { Self.popoverWidth - Self.horizontalPadding * 2 }
 
   init(snapshot: CodingAgentQuotaSnapshot, now: Date) {
@@ -64,18 +64,18 @@ struct CodingAgentUsageDetailView: View {
         if fresh {
           Text(capitalizedResetDescription(window))
             .font(.caption)
-            .foregroundStyle(theme.tokens.fgMuted)
+            .foregroundStyle(tokens.fgMuted)
         }
       }
 
       QuotaBar(
         usedPercentage: shown.usedPercentage, markerPercentage: shown.marker ?? 0,
-        fill: QuotaBar.fill(for: pace.severity, theme.tokens), width: barWidth,
+        fill: QuotaBar.fill(for: pace.severity, tokens), width: barWidth,
         showsMarker: shown.marker != nil)
 
       Text(fresh ? caption(for: pace) : "Nothing read since the reset")
         .font(.caption)
-        .foregroundStyle(theme.tokens.fgMuted)
+        .foregroundStyle(tokens.fgMuted)
         .fixedSize(horizontal: false, vertical: true)
     }
     .accessibilityElement(children: .combine)
@@ -167,7 +167,7 @@ struct QuotaBar: View {
     }
   }
 
-  private let theme = ThemeService.shared
+  @Environment(\.themeTokens) private var tokens
   private let trackHeight: CGFloat = 6
   /// Taller than the track, so the marker reads as a pin planted on it rather than another band of
   /// the bar's own color.
@@ -180,7 +180,7 @@ struct QuotaBar: View {
 
   var body: some View {
     ZStack(alignment: .leading) {
-      Capsule().fill(theme.tokens.border).frame(width: width, height: trackHeight)
+      Capsule().fill(tokens.border).frame(width: width, height: trackHeight)
       Capsule()
         .fill(fill)
         .frame(width: width * CGFloat(usedPercentage / 100), height: trackHeight)
@@ -199,7 +199,7 @@ struct QuotaBar: View {
     .overlay(alignment: .leading) {
       if showsMarker {
         Capsule()
-          .fill(theme.tokens.fgMuted)
+          .fill(tokens.fgMuted)
           .frame(width: markerLineWidth, height: markerHeight)
           .offset(x: max(0, markerCenter - markerLineWidth / 2))
       }
