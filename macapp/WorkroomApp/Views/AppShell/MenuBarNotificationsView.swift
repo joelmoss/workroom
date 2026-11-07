@@ -2,14 +2,14 @@ import SwiftUI
 
 /// The menu bar item's popover (issue #33): requests waiting on the user, app-wide (#358), then the
 /// shared `NotificationsList`. The `MenuBarController` only opens this when there is something to
-/// list (an empty click focuses the app instead), but it still falls back to a "No notifications"
-/// state for the brief window where the list drains while the popover is open. No header or Clear
+/// list (an empty click focuses the app instead); the list's own "No notifications" state covers
+/// the brief window where it drains while the popover is open. No header or Clear
 /// button (clearing lives in the in-app inspector); tapping a row opens its terminal (which
 /// activates the app) and then closes the popover via `onClose` — passed in by the controller,
 /// since `@Environment(\.dismiss)` is inert in a hand-hosted `NSPopover`.
 struct MenuBarNotificationsView: View {
-  /// The app-level registry (issue #70). The unread list is the active window's notifications and
-  /// routes taps within that window; the menu-bar/Dock *count* aggregates across all windows.
+  /// The app-level registry (issue #70). Its `notifications` is the one list every window shares
+  /// (ADR 0064); a tap opens the terminal in whichever window holds it (`WindowRegistry.open`).
   @ObservedObject var registry: WindowRegistry
   @ObservedObject var alerts: ProgramStatusAlerts = .shared
   /// Closes the hosting popover (wired to `NSPopover.performClose` by `MenuBarController`).
@@ -28,21 +28,10 @@ struct MenuBarNotificationsView: View {
           }
           WaitingSectionHeader(title: "Unread notifications")
         }
-        // With every workroom window closed, the Quick Terminal's store still lists the shared list.
-        if let store = registry.lastActiveStore ?? registry.quickTerminal?.store {
-          NotificationsList(hidesRequests: true, onActivate: onClose)
-            .environmentObject(store)
-            .environmentObject(store.notifications)
-        } else {
-          HStack(spacing: 6) {
-            Image(systemName: "bell.slash").font(.callout).foregroundStyle(.tertiary)
-            Text("No notifications").font(.callout).foregroundStyle(.secondary)
-            Spacer(minLength: 0)
-          }
-          .padding(.horizontal, 12)
-          .padding(.vertical, 8)
-          .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        // App-wide, not a window's: it lists with no window or Quick Terminal open.
+        NotificationsList(hidesRequests: true, onActivate: onClose)
+          .environmentObject(ProjectStore.shared)
+          .environmentObject(registry.notifications)
       }
     }
     .frame(width: 320, height: 360, alignment: .top)

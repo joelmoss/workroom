@@ -136,8 +136,7 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
     "LeadingTitlebarBar", "TrailingTitlebarBar", "WorkroomTabBar", "WorkroomTabChip", "RunControls",
     // The sidebar and activity bar.
     "ProjectSidebar", "SidebarAddProjectButton", "RowRunButton", "ActivityBar",
-    "NotificationsBarButton", "NotificationsList", "NotificationsPopover",
-    "SidebarNotificationStrip",
+    "NotificationsBarButton",
     // The inspector and its panels.
     "RightInspector", "DetailsPanel", "InspectorWorkroomHeader", "ChangesPanelAdapter",
     "HistoryPanelAdapter", "FilesPanel", "PullRequestPanel", "ReadyForReviewButton", "MergeButton",
@@ -177,6 +176,23 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
         The Quick Terminal and detached-pane windows inject no store, so it traps there: read \
         `\\.paneHost` or take values and actions instead.
         """)
+    }
+  }
+
+  /// The menu bar's popover lists the app-wide notifications with no window or Quick Terminal open,
+  /// so it must not borrow a window's store to show them: with none open it would list nothing.
+  func testTheMenuBarListsNotificationsWithoutAWindowsStore() throws {
+    let source = try String(
+      contentsOf: macappRoot.appendingPathComponent(
+        "WorkroomApp/Views/AppShell/MenuBarNotificationsView.swift"),
+      encoding: .utf8)
+    XCTAssertTrue(
+      source.contains("ProjectStore.shared") && source.contains("registry.notifications"),
+      "parse looks wrong — the popover lists the shared notifications with the shared projects")
+    for borrowed in ["quickTerminal?.store", "lastActiveStore"] {
+      XCTAssertFalse(
+        source.contains(borrowed),
+        "MenuBarNotificationsView reads `\(borrowed)`: list the shared notifications instead")
     }
   }
 
