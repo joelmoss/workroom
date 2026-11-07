@@ -129,11 +129,6 @@ enum QuickTerminalPaneDrag {
     }
   }
 
-  /// `end(source:notifications:tabID:target:)` for a store's own panes.
-  static func end(store: AppStore, tabID: TerminalTab.ID, target: TerminalTarget) {
-    end(source: store.terminals, notifications: store.notifications, tabID: tabID, target: target)
-  }
-
   /// The Workroom window under the pointer and its workroom there, when that can take the pane.
   private static func destination() -> (window: AppStore, workroom: SidebarID)? {
     let point = NSEvent.mouseLocation
@@ -200,25 +195,15 @@ extension AppStore {
     return plan.panes.first { $0.value.contains(local) }?.key
   }
 
-  /// "Move to Workroom" for this store's pane `tabID` in `target` (the Quick Terminal's), over
-  /// every workroom open in `windows` (`QuickTerminalPaneMove.choices`).
+  /// "Move to Workroom" for this store's pane `tabID` in `target`, over every workroom open in
+  /// `windows` (`QuickTerminalPaneMove.choices`). Only a Quick Terminal pane offers it, and those are
+  /// `QuickTerminalHost`'s; a window's own panes never show the menu.
   func quickTerminalPaneWorkroomChoices(
     _ tabID: TerminalTab.ID, of target: TerminalTarget,
     windows: [AppStore] = WindowRegistry.shared.allStores
   ) -> [PaneWorkroomGroup] {
     QuickTerminalPaneMove.choices(
       tabID, of: target, source: terminals, notifications: notifications, windows: windows)
-  }
-
-  /// Move this store's pane `tabID`, in `target` (the Quick Terminal's), live into `destination`'s
-  /// workroom `workroom` (`QuickTerminalPaneMove.move`).
-  func moveQuickTerminalPane(
-    _ tabID: TerminalTab.ID, of target: TerminalTarget, to destination: AppStore,
-    into workroom: SidebarID
-  ) async {
-    await QuickTerminalPaneMove.move(
-      tabID, of: target, source: terminals, notifications: notifications, to: destination,
-      into: workroom)
   }
 }
 

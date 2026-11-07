@@ -605,7 +605,7 @@ final class TerminalPanes {
   /// `select`, `closeTab`, `detachPane`, …) is handled before that method returns, which
   /// `AppStore.withHistorySuppressed` and `select` depend on (eng review D8). `.remoteCloseFailed`
   /// happens later: the remote close's own task raises it once the host has answered. `AppStore`
-  /// switches over every case, so a new case cannot go unhandled.
+  /// and `QuickTerminalHost` each switch over every case, so a new case cannot go unhandled.
   enum Event: Equatable {
     /// A terminal's notification-worthy activity (OSC), for the notification spine.
     case activity(TerminalTarget.ID, TerminalTab.ID, TerminalActivity)

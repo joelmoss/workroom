@@ -27,3 +27,24 @@ struct QuickTerminalContent: View {
       .ignoresSafeArea()
   }
 }
+
+extension View {
+  /// The environment the Quick Terminal's window gives its content, as a detached pane's window
+  /// gives its pane (`detachedPaneEnvironment`): the theme root, the pane host and every environment
+  /// object a pane view can reach. `DetachedPaneEnvironmentTests` checks it against the views'
+  /// declarations, so a pane view that wants a new one fails a test, not the window.
+  ///
+  /// No `WorkroomLifecycle`: only the main window's views read it, and this target is no workroom.
+  func quickTerminalEnvironment(host: QuickTerminalHost) -> some View {
+    self
+      .themeTokensRoot()
+      .environment(\.isQuickTerminal, true)
+      .paneHost(host)
+      .environmentObject(host.modals)
+      .environmentObject(host.runCommand)
+      .environmentObject(host.notifications)
+      .environmentObject(host.terminals.codingAgentManager)
+      .environmentObject(CodingAgentUsageMonitor.shared)
+      .environmentObject(ClaudeUsageBridge.shared)
+  }
+}

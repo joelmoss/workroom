@@ -348,9 +348,9 @@ final class QuickTerminalControllerTests: XCTestCase {
     let controller = makeController()
     defer { controller.close() }
     controller.toggle()
-    let store = try XCTUnwrap(controller.store)
-    XCTAssertTrue(store.terminals.readsPaneBranches, "each pane reads its own branch")
-    XCTAssertFalse(store.terminals.allowsDetach, "no pane moves to a window of its own")
+    let host = try XCTUnwrap(controller.host)
+    XCTAssertTrue(host.terminals.readsPaneBranches, "each pane reads its own branch")
+    XCTAssertFalse(host.terminals.allowsDetach, "no pane moves to a window of its own")
     XCTAssertNil(
       WindowRegistry.shared.store(for: try XCTUnwrap(controller.currentWindow)),
       "never registered, so never saved or restored")
@@ -360,10 +360,10 @@ final class QuickTerminalControllerTests: XCTestCase {
     let controller = makeController()
     defer { controller.close() }
     controller.toggle()
-    let store = try XCTUnwrap(controller.store)
+    let host = try XCTUnwrap(controller.host)
     // A test pane never starts, so it counts as running and a close would ask first.
-    store.confirmOnCloseOverrideForTesting = false
-    let sessions = store.terminals
+    host.closeFlow.confirmOnCloseOverride = false
+    let sessions = host.terminals
     let target = QuickTerminalController.target()
 
     controller.perform(.splitRight)
@@ -379,11 +379,11 @@ final class QuickTerminalControllerTests: XCTestCase {
   }
 
   func testArrowKeysMoveFocusBetweenItsPanes() throws {
-    // Its store is in no WindowRegistry, so the workroom ⌃⌘arrow handler can't reach it (PR #571).
+    // Its host is no WindowRegistry window, so the workroom ⌃⌘arrow handler can't reach it (PR #571).
     let controller = makeController()
     defer { controller.close() }
     controller.toggle()
-    let sessions = try XCTUnwrap(controller.store).terminals
+    let sessions = try XCTUnwrap(controller.host).terminals
     let target = QuickTerminalController.target()
     let left = try XCTUnwrap(sessions.activeTab(for: target)).id
     controller.perform(.splitRight)
@@ -410,7 +410,7 @@ final class QuickTerminalControllerTests: XCTestCase {
   }
 
   /// Value: protects=its notifications joining the app's one list, named "Quick Terminal", opening
-  /// it on their pane (ADR 0064); fails_when=its store keeps a list of its own, the source is blank
+  /// it on their pane (ADR 0064); fails_when=its host keeps a list of its own, the source is blank
   /// or open goes to a workroom window; why_new=#571 bridged only the toast; seam=none;
   /// no_claim=the slide-in animation.
   func testItsNotificationsJoinTheListAndOpenItsPane() throws {
@@ -418,28 +418,28 @@ final class QuickTerminalControllerTests: XCTestCase {
     defer { controller.close() }
     let registry = joinRegistry(controller)
     controller.toggle()
-    let store = try XCTUnwrap(controller.store)
+    let host = try XCTUnwrap(controller.host)
     let target = QuickTerminalController.target()
-    let first = try XCTUnwrap(store.terminals.activeTab(for: target)).id
+    let first = try XCTUnwrap(host.terminals.activeTab(for: target)).id
     controller.perform(.newTab)
 
-    store.raiseFinished(
+    host.raiseFinished(
       targetID: target.id, tabID: first, record: ProgramStatusRecord(id: "", state: .idle))
     let note = try XCTUnwrap(registry.notifications.items.first)
     XCTAssertEqual(note.source, "Quick Terminal")
     XCTAssertEqual(registry.aggregateUnread, 1, "it counts in the one count")
-    XCTAssertTrue(registry.notifyingHosts.contains { $0 === store }, "its needs-you alerts too")
+    XCTAssertTrue(registry.notifyingHosts.contains { $0 === host }, "its needs-you alerts too")
 
     controller.hide()
     registry.open(note)
     XCTAssertTrue(controller.isVisible)
-    XCTAssertEqual(store.terminals.activeTab(for: target)?.id, first)
+    XCTAssertEqual(host.terminals.activeTab(for: target)?.id, first)
     XCTAssertTrue(registry.notifications.items.isEmpty, "opening dismisses it")
   }
 
   /// Value: protects=a Quick Terminal agent's own notification, "needs you" request and finished turn
   /// each landing in the app's list as a workroom terminal's do, and a request opening the Quick
-  /// Terminal on its pane (#573); fails_when=its sessions, its store in notifyingHosts or its route
+  /// Terminal on its pane (#573); fails_when=its sessions, its host in notifyingHosts or its route
   /// in WindowRegistry.open go; why_new=the parts were tested apart, never as one agent's run;
   /// seam=none; no_claim=a real Claude Code or Codex (the daemon's status and the OSC are simulated).
   func testAQuickTerminalAgentsNotificationsWorkAsAnyTerminals() throws {
@@ -447,9 +447,9 @@ final class QuickTerminalControllerTests: XCTestCase {
     defer { controller.close() }
     let registry = joinRegistry(controller)
     controller.toggle()
-    let store = try XCTUnwrap(controller.store)
+    let host = try XCTUnwrap(controller.host)
     let monitor = ProgramStatusMonitor()
-    store.terminals.programStatus = monitor
+    host.terminals.programStatus = monitor
     let alerts = ProgramStatusAlerts()
     alerts.monitor = monitor
     alerts.stores = { registry.notifyingHosts }
@@ -460,14 +460,14 @@ final class QuickTerminalControllerTests: XCTestCase {
     // A pane opened under the simulated daemon, so its status reaches it.
     controller.perform(.newTab)
     let target = QuickTerminalController.target()
-    let tab = try XCTUnwrap(store.terminals.activeTab(for: target))
-    let session = try XCTUnwrap(store.terminals.sessionID(forTab: tab.id, inTarget: target.id))
+    let tab = try XCTUnwrap(host.terminals.activeTab(for: target))
+    let session = try XCTUnwrap(host.terminals.sessionID(forTab: tab.id, inTarget: target.id))
 
     // An agent's own OSC notification, from a pane nobody is watching: the first tab, behind the one
     // just opened. Not the open tab: whether that counts as watched turns on whether the Quick
     // Terminal's window got key, which parallel test processes racing for the front decide.
-    let behind = try XCTUnwrap(store.terminals.allTabs(for: target).first { $0.id != tab.id })
-    store.terminals.onEvent?(
+    let behind = try XCTUnwrap(host.terminals.allTabs(for: target).first { $0.id != tab.id })
+    host.terminals.onEvent?(
       .activity(target.id, behind.id, .osc(title: "Build done", body: nil)))
     XCTAssertTrue(registry.notifications.items.contains { $0.title == "Build done" })
 
@@ -486,7 +486,7 @@ final class QuickTerminalControllerTests: XCTestCase {
     controller.hide()
     alerts.open(try XCTUnwrap(alerts.waiting.first))
     XCTAssertTrue(controller.isVisible)
-    XCTAssertEqual(store.terminals.activeTab(for: target)?.id, tab.id)
+    XCTAssertEqual(host.terminals.activeTab(for: target)?.id, tab.id)
 
     // It carries on and finishes its turn.
     monitor.seed(session, records: [ProgramStatusRecord(id: "", state: .working)])
@@ -503,9 +503,9 @@ final class QuickTerminalControllerTests: XCTestCase {
     let controller = makeController()
     let registry = joinRegistry(controller)
     controller.toggle()
-    let store = try XCTUnwrap(controller.store)
-    let tab = try XCTUnwrap(store.terminals.activeTab(for: QuickTerminalController.target())).id
-    store.raiseFinished(
+    let host = try XCTUnwrap(controller.host)
+    let tab = try XCTUnwrap(host.terminals.activeTab(for: QuickTerminalController.target())).id
+    host.raiseFinished(
       targetID: QuickTerminalController.targetID, tabID: tab,
       record: ProgramStatusRecord(id: "", state: .idle))
     XCTAssertEqual(registry.notifications.items.count, 1)
@@ -522,14 +522,14 @@ final class QuickTerminalControllerTests: XCTestCase {
     defer { controller.close() }
     let registry = joinRegistry(controller)
     controller.toggle()
-    let store = try XCTUnwrap(controller.store)
+    let host = try XCTUnwrap(controller.host)
     registry.keyWindow = { controller.currentWindow }
-    store.isAppActive = { true }
+    host.isAppActive = { true }
 
-    store.raiseFinished(
+    host.raiseFinished(
       targetID: QuickTerminalController.targetID, tabID: UUID(),
       record: ProgramStatusRecord(id: "", state: .idle))
-    XCTAssertEqual(store.toasts.count, 1)
+    XCTAssertEqual(host.toasts.count, 1)
   }
 
   /// Value: protects=a notification from the Quick Terminal pane you are watching counting as seen,
@@ -541,21 +541,21 @@ final class QuickTerminalControllerTests: XCTestCase {
     defer { controller.close() }
     let registry = joinRegistry(controller)
     controller.toggle()
-    let store = try XCTUnwrap(controller.store)
-    let tab = try XCTUnwrap(store.terminals.activeTab(for: QuickTerminalController.target())).id
-    store.hostWindow = AlwaysKeyWindow()
+    let host = try XCTUnwrap(controller.host)
+    let tab = try XCTUnwrap(host.terminals.activeTab(for: QuickTerminalController.target())).id
+    host.hostWindow = AlwaysKeyWindow()
 
-    store.terminals.onEvent?(
+    host.terminals.onEvent?(
       .activity(QuickTerminalController.targetID, tab, .osc(title: "done", body: nil)))
     XCTAssertTrue(registry.notifications.items.isEmpty, "you were looking at it")
   }
 
   func testANotificationClickSlidesInOnItsPane() throws {
-    // The app's notification routing finds stores through WindowRegistry, which this one is not in.
+    // The app's notification routing finds stores through WindowRegistry, which this host is not.
     let controller = makeController()
     defer { controller.close() }
     controller.toggle()
-    let sessions = try XCTUnwrap(controller.store).terminals
+    let sessions = try XCTUnwrap(controller.host).terminals
     let target = QuickTerminalController.target()
     let first = try XCTUnwrap(sessions.activeTab(for: target)).id
     controller.perform(.newTab)

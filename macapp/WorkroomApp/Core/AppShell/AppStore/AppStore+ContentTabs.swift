@@ -105,7 +105,7 @@ extension AppStore {
   /// section), reusing the shared editor path. No-op if nothing's selected.
   func openFileInEditor(path: String) {
     guard let target = selectedTarget else { return }
-    openWorkroomFile(relativePath: path, for: target)
+    Self.openWorkroomFile(relativePath: path, for: target)
   }
 
   /// Open a workroom-relative file in the configured "Open file paths in" editor — the single path
@@ -113,8 +113,9 @@ extension AppStore {
   /// `TerminalLinkOpener`, so it honours `Defaults[.filePathEditor]`; for a folder-capable editor CLI
   /// (VS Code/Zed/Xcode) the file opens *inside* the workroom folder window, while the default-app
   /// fallback just opens the file (no folder/window targeting). Fire-and-forget; a missing file
-  /// no-ops in `openFilePath`.
-  private func openWorkroomFile(relativePath: String, for target: TerminalTarget) {
+  /// no-ops in `openFilePath`. Static: it reads only `target`, so the Quick Terminal's host opens
+  /// its files the same way.
+  static func openWorkroomFile(relativePath: String, for target: TerminalTarget) {
     // A remote workroom's path is a path on its host: on this Mac it is nothing, or another file.
     guard !target.isMissing else { return }
     let absPath = (target.path as NSString).appendingPathComponent(relativePath)
@@ -126,7 +127,7 @@ extension AppStore {
   /// is gone — `DiffDescriptor.change == .deleted`); for a commit diff it opens the working copy,
   /// which may differ from the displayed revision (editing the live file is the useful action).
   func openDiffTabFile(_ descriptor: DiffDescriptor, for target: TerminalTarget) {
-    openWorkroomFile(relativePath: descriptor.path, for: target)
+    Self.openWorkroomFile(relativePath: descriptor.path, for: target)
   }
 
   /// Open a changed file's working copy in the configured editor — the Changes-panel row's ⌘-click
@@ -134,7 +135,7 @@ extension AppStore {
   /// file was deleted (no working file to open — see `resolveOpenTarget`).
   func openChangedFileInEditor(_ file: ChangedFile) {
     guard let target = selectedTarget, let rel = Self.resolveOpenTarget(file: file) else { return }
-    openWorkroomFile(relativePath: rel, for: target)
+    Self.openWorkroomFile(relativePath: rel, for: target)
   }
 
   /// Open a changed file's working copy in the in-app viewer as a preview tab — the Changes-panel

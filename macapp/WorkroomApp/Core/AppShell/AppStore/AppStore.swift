@@ -49,18 +49,14 @@ final class AppStore: ObservableObject {
   /// The `NSWindow` hosting this store, resolved once the view tree is in a window (issue #70). Weak:
   /// the window outlives the store's need for it, and the registry holds the authoritative mapping.
   weak var hostWindow: NSWindow?
-  /// Called when a target's last tab closes. The Quick Terminal's own store closes its window on it.
-  var onTargetEmptied: ((TerminalTarget.ID) -> Void)?
   /// Where this store's in-app toasts go instead of its own `toasts` (`PaneNotifier.forwardToast`).
   var forwardToast: ((WorkroomNotification) -> Void)? {
     get { paneNotifier.forwardToast }
     set { paneNotifier.forwardToast = newValue }
   }
-  /// A target always on screen in this store's window, with no selection to say so: the Quick
-  /// Terminal's. Its panes count as seen and focused as a selected workroom's do (#573).
-  var pinnedTarget: TerminalTarget?
-  /// The target this window shows first: its pinned one, else its selection.
-  var primaryTarget: TerminalTarget? { pinnedTarget ?? selectedTarget }
+  /// The target this window shows first: its selection. The Quick Terminal's host pins its own
+  /// (`QuickTerminalHost.pinnedTarget`).
+  var primaryTarget: TerminalTarget? { selectedTarget }
   /// This window's display number — the smallest unused positive integer, assigned by `WindowRegistry`
   /// on registration and freed for reuse when the window closes (issue #70, macOS untitled-doc style).
   /// Backs the `windowTitle` fallback for a window with nothing selected ("Window 1", "Window 2", …).
@@ -598,8 +594,7 @@ final class AppStore: ObservableObject {
   /// This window's notifications and toast queue. Lazy only because its records' origin is this
   /// store's identity, which init can't name until every stored property is set.
   @ObservationIgnored private(set) lazy var paneNotifier = PaneNotifier(
-    origin: ObjectIdentifier(self), host: self, terminals: terminals,
-    notifications: notifications)
+    host: self, terminals: terminals, notifications: notifications)
   /// The window's toast queue (issue #31), `PaneNotifier.toasts`: a read here registers with the
   /// notifier's Observation, so a view reading it re-renders as toasts come and go.
   var toasts: [WorkroomNotification] { paneNotifier.toasts }
@@ -954,7 +949,6 @@ final class AppStore: ObservableObject {
       self.refreshSelectionHasTabs()
       // A closed pane's waiting requests stop counting.
       WindowRegistry.shared.recomputeBadge()
-      if self.terminals.tabCount(forTargetID: targetID) == 0 { self.onTargetEmptied?(targetID) }
     // A click into a co-displayed split pane's terminal focuses that workroom (issue #23 follow-up),
     // so commands target it. History-suppressed (the routing method) — glancing between panes isn't
     // navigation.
