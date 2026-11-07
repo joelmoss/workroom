@@ -1,6 +1,6 @@
 # Architecture review and cleanup plan (November 2026)
 
-Status: live. Accepted 2026-11-05 (decisions D1–D8 below). Reviewed at `65f01f1fa`. Phases 0–3 are built (rows with a "Landed shape" note record where the built code differs from the row), except 3.7, which waits for the shim to retire, and 3.9's `RunCommands` part. Phase 4 is built except 4.9's `PaneHost` slice. Phase 5 is not.
+Status: live. Accepted 2026-11-05 (decisions D1–D8 below). Reviewed at `65f01f1fa`. Phases 0–3 are built (rows with a "Landed shape" note record where the built code differs from the row), except 3.7, which waits for the shim to retire, and 3.9's `RunCommands` part. Phase 4 is built except 4.9's `PaneHost` slice. Phase 5 is built.
 
 Since the last cleanup (2026-10-10, Lanes A–C, Go and Rust lanes), 686 commits have added 48k lines and removed 22k. This review asks what a top-tier Swift, Rust and Go architect would complain about, with the goal that people can work on separate parts of the app in parallel.
 
@@ -139,11 +139,11 @@ After phase 2, creation, run commands, VCS status, remote lifecycle, terminal an
 
 | # | Step | WS | Size |
 |---|---|---|---|
-| 5.1 | Shared fixture tables for the cross-language twins: login-shell invocation (Go, Swift, Rust), channel raw names (Swift against `channel_cases.tsv`), and the base-branch split (Go and Swift). Do not unify the code (ADR 0005's spirit). | G | S |
-| 5.2 | The app stops hard-coding the config path and the `.worktreeinclude` check: `list --json` reports `has_include`, and the path lives in one place | G, R | S |
-| 5.3 | `Makefile` uses `include mk/*.mk`; the `_test.sh` invocations become a glob; the CLI builds to `bin/` | G | S–M |
-| 5.4 | CI: composite actions for build-app and build-daemon shared by `ci`, `nightly` and `release`; split `ci.yml` (795 lines) by language with path filters | G | M |
-| 5.5 | Docs per D7: design-doc status lines, three docs to `docs/archive/`, the `CONTRIBUTING.md` split. Add a `CODEOWNERS`-style ownership table keyed to the new folders, which is what makes the parallel-work goal enforceable. | G | M |
+| 5.1 | Shared fixture tables for the cross-language twins: login-shell invocation (Go, Swift, Rust), channel raw names (Swift against `channel_cases.tsv`), and the base-branch split (Go and Swift). Do not unify the code (ADR 0005's spirit). Landed shape: the tables are `testdata/twins/login_shell.tsv` and `split_base.tsv`, and every implementation agrees on every row. One input is left out: `$SHELL` with a trailing slash, where Rust falls back to `/bin/sh`. | G | S |
+| 5.2 | The app stops hard-coding the config path and the `.worktreeinclude` check: `list --json` reports `has_include`, and the path lives in one place. Landed shape: `has_include` is reported and decoded, but the create flow keeps its live disk check (owner's decision, 2026-11-07). The listed value can be stale, and a stale `false` would silently skip copying the include files to a remote host. The path is one Swift constant (`CLIConfig.defaultPath`) held to Go by the list golden, because a Dev build's `list` reports its own config, not the shared one. | G, R | S |
+| 5.3 | `Makefile` uses `include mk/*.mk`; the `_test.sh` invocations become a glob; the CLI builds to `bin/`. Landed shape: the `include` names its five files in order, so `make help` keeps its listing, which is unchanged. The benchmarks stay in `mk/app.mk`. | G | S–M |
+| 5.4 | CI: composite actions for build-app and build-daemon shared by `ci`, `nightly` and `release`; split `ci.yml` (795 lines) by language with path filters. Landed shape: `ci.yml` orchestrates a `changes` job (`scripts/ci/changed_areas.py`) and reusable per-language workflows, skipping a job by `if:` so every check still reports. Check names become `<workflow> / <job>`; `master` has no required checks. The composites are `setup-app-build`, `setup-daemon-build` and `import-signing-certificate`. | G | M |
+| 5.5 | Docs per D7: design-doc status lines, three docs to `docs/archive/`, the `CONTRIBUTING.md` split. Add a `CODEOWNERS`-style ownership table keyed to the new folders, which is what makes the parallel-work goal enforceable. Landed shape: the split is `docs/contributing/architecture.md` and `releasing.md`, with CONTRIBUTING keeping pointer headings. The ownership table is `docs/contributing/ownership.md`, naming the owner from the existing `.github/CODEOWNERS`. `v3-screencast` is marked status unknown, for the owner. | G | M |
 
 ## Order of attack and risk
 
