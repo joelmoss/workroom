@@ -404,7 +404,7 @@ final class TerminalSessionsTests: XCTestCase {
     s.addTab(for: target)
     let view = s.surface(s.tabs(for: target).first)!
     var publishes = 0
-    let watching = s.objectWillChange.sink { _ in publishes += 1 }
+    let watching = s.paneWillChange.sink { _ in publishes += 1 }
     // Titles no registry recognises: a newly recognised tool or agent republishes, by design.
     view.handleTitleChange("⠋ thinking")
     view.handleTitleChange("⠙ thinking")
@@ -450,15 +450,15 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertNil(surface, "freed once the session's end is answered")
   }
 
-  /// A target's panes live in their own object, but every change to them still publishes the
-  /// sessions' `objectWillChange` BEFORE it lands: the saved-layout dirty mark and the observing
-  /// views depend on both halves, until the sessions move to `@Observable` (plan step 3.5).
+  /// A target's panes live in their own object, but every change to them still sends the
+  /// sessions' `paneWillChange` BEFORE it lands: the saved-layout dirty mark depends on both
+  /// halves, as it schedules its capture rather than taking one inline.
   func testEveryPaneChangePublishesBeforeItLands() {
     let s = makeSessions()
     let first = s.addTab(for: target)
     let second = s.addTab(for: target)
     var seen: [TerminalTab.ID?] = []
-    let watching = s.objectWillChange.sink { _ in seen.append(s.focusedTab(for: self.target)?.id) }
+    let watching = s.paneWillChange.sink { _ in seen.append(s.focusedTab(for: self.target)?.id) }
 
     s.focus(first.id, for: target)
     XCTAssertEqual(seen.first, second.id, "published while the old focus was still in place")
@@ -475,6 +475,39 @@ final class TerminalSessionsTests: XCTestCase {
     seen = []
     s.closeTab(second.id, for: target)
     XCTAssertFalse(seen.isEmpty, "a close publishes")
+    watching.cancel()
+  }
+
+  /// The window-level pane writes (a target opened or reaped, an activity pulse, a detach) send
+  /// the same signal before they land, as their `@Published` writes did. A missing one would let a
+  /// detach go unsaved until something else marked the layout dirty.
+  func testWindowLevelPaneChangesSendTheSignalBeforeTheyLand() async {
+    let s = makeSessions()
+    let first = s.addTab(for: target)
+    let second = s.addTab(for: target)
+    var seen: [(pulse: Int?, detached: Bool, held: Bool)] = []
+    let watching = s.paneWillChange.sink { _ in
+      seen.append(
+        (s.activityPulses[first.id], s.detachedTabIDs.contains(second.id), s.containsTab(first.id))
+      )
+    }
+
+    s.pulsePaneActivity(first.id)
+    XCTAssertEqual(seen.count, 1, "a pulse sends it once")
+    XCTAssertNil(seen.first?.pulse, "sent before the pulse landed")
+    XCTAssertEqual(s.activityPulses[first.id], 1)
+
+    seen = []
+    s.detachPane(second.id, for: target, at: .zero)
+    XCTAssertFalse(seen.isEmpty, "a detach sends it")
+    XCTAssertEqual(seen.first?.detached, false, "sent before the detach landed")
+    XCTAssertTrue(s.detachedTabIDs.contains(second.id))
+
+    seen = []
+    await s.reap(target.id)
+    XCTAssertFalse(seen.isEmpty, "a reap sends it")
+    XCTAssertEqual(seen.last?.held, true, "the last one is sent before the target goes")
+    XCTAssertFalse(s.containsTab(first.id))
     watching.cancel()
   }
 

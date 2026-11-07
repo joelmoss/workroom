@@ -803,9 +803,9 @@ final class AppStore: ObservableObject {
     self.terminals = terminals
     self.runCommand = RunCommandController(terminals: terminals)
     self.runCommands = runCommands ?? RunCommands()
-    // Any pane change marks the saved session dirty (issue #46). `objectWillChange` fires BEFORE the
+    // Any pane change marks the saved session dirty (issue #46). `paneWillChange` fires BEFORE the
     // mutation, so the coordinator must always schedule a capture — never take one inline here.
-    sessionObservation = terminals.objectWillChange.sink { [weak self] _ in
+    sessionObservation = terminals.paneWillChange.sink { [weak self] _ in
       self?.markSessionDirty()
     }
     // Wired post-init (the `workroomFileWatcher` idiom) so `RemoteStateModel` needs no `AppStore` to be

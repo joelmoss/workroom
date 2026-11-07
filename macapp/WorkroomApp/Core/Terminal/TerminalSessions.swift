@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import DaemonConnection
 import Defaults
 import HostDrivers
@@ -498,15 +499,37 @@ final class TerminalSessions: ObservableObject {
   /// The dictionary itself changes only when a target is added (its first tab, or the first
   /// terminal number it hands out) or removed (`reap`). A target whose tabs all closed or moved
   /// away keeps its entry, emptied, so `ensureTab` does not read it as never opened. Every change
-  /// inside an entry sends this object's `objectWillChange` first (`TargetPanes`).
-  @Published private var targets: [TerminalTarget.ID: TargetPanes<TerminalTab>] = [:]
+  /// inside an entry sends `paneWillChange` first (`TargetPanes`), and so does every write here.
+  private var targets: [TerminalTarget.ID: TargetPanes<TerminalTab>] {
+    get { panesByTarget }
+    set {
+      paneWillChange.send()
+      panesByTarget = newValue
+    }
+  }
+  @Published private var panesByTarget: [TerminalTarget.ID: TargetPanes<TerminalTab>] = [:]
+
+  /// Sent synchronously BEFORE every change to the panes: a tab's record or a target's arrangement
+  /// (each `TargetPanes` is wired to it in `openPanes`), a target added or removed, an activity
+  /// pulse, a pane detached or docked. The saved layout's dirty mark hangs off it, and so does
+  /// the window list's coding-agent count. It fires before the change lands, so a subscriber
+  /// that wants the new state schedules its read rather than taking it inline.
+  let paneWillChange = PassthroughSubject<Void, Never>()
+
   /// The surface of every terminal tab in `targets`, by tab id. Not `@Published`: an entry comes
   /// and goes in the same call as its tab's record, which publishes.
   private var surfaces = SurfaceRegistry()
   /// Bumped when a *visible but non-focused* pane reports activity (D3): the renderer flashes that
   /// pane's border instead of badging it (you can see it, so no banner/badge — just a glance cue).
   /// Keyed by tab id; the value is an opaque counter the leaf view watches for changes.
-  @Published private(set) var activityPulses: [TerminalTab.ID: Int] = [:]
+  private(set) var activityPulses: [TerminalTab.ID: Int] {
+    get { pulseCounts }
+    set {
+      paneWillChange.send()
+      pulseCounts = newValue
+    }
+  }
+  @Published private var pulseCounts: [TerminalTab.ID: Int] = [:]
   /// The tabs currently living in their own window (issue #172). Membership only — the windows
   /// themselves are owned by `AppStore`'s `DetachedPaneWindows`, and the two are kept in step by
   /// `detachPane`/`dockPane` firing `.paneDetached`/`.paneDocked`. The invariant every reader may
@@ -515,7 +538,14 @@ final class TerminalSessions: ObservableObject {
   /// A detached tab is deliberately absent from its target's split groups (detaching runs the same
   /// removal `extractFromSplit` does), so the split/divider/auto-even machinery needs no awareness
   /// of it.
-  @Published private(set) var detachedTabIDs: Set<TerminalTab.ID> = []
+  private(set) var detachedTabIDs: Set<TerminalTab.ID> {
+    get { detachedIDs }
+    set {
+      paneWillChange.send()
+      detachedIDs = newValue
+    }
+  }
+  @Published private var detachedIDs: Set<TerminalTab.ID> = []
   /// The pane rects the renderer last laid out, per target — the only measurement a CONTENT pane
   /// (diff / file / changeset) has, since it owns no `GhosttySurfaceView` whose bounds could be
   /// read. Fed by `PaneTreeView` through a preference (so it is written after layout, never during
@@ -2210,10 +2240,13 @@ final class TerminalSessions: ObservableObject {
   }
 
   /// `targetID`'s panes, made (empty) when it has none yet. The one place an entry is added, and
-  /// where each is wired to send this object's `objectWillChange` before its every change.
+  /// where each is wired to send `paneWillChange` before its every change.
   private func openPanes(_ targetID: TerminalTarget.ID) -> TargetPanes<TerminalTab> {
     if let panes = targets[targetID] { return panes }
-    let panes = TargetPanes<TerminalTab> { [weak self] in self?.objectWillChange.send() }
+    let panes = TargetPanes<TerminalTab> { [weak self] in
+      self?.paneWillChange.send()
+      self?.objectWillChange.send()
+    }
     targets[targetID] = panes
     return panes
   }

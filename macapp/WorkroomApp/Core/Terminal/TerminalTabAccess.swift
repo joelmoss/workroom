@@ -1,7 +1,7 @@
 /// What `TerminalSessions`' pane collaborators (`PaneLiveState`, `ProgramStatusBinding`,
 /// `RemotePaneLinks`) may do with one window's tabs: read a terminal tab's state, change it, find
 /// its surface, and raise one of the sessions' events. The sessions build it over their own
-/// `TargetPanes`, so every write still sends `objectWillChange` before it lands, and every event
+/// `TargetPanes`, so every write still sends `paneWillChange` before it lands, and every event
 /// still goes out through their one synchronous `onEvent` channel (ADR 0021). A collaborator holds
 /// these closures, never the sessions, so a test can drive one over a plain dictionary.
 @MainActor

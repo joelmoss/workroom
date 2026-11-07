@@ -200,8 +200,8 @@ final class WindowRegistry: ObservableObject {
       existing.store = store
     } else {
       let entry = Entry(window: window, store: store)
-      entry.sessionObservation = store.terminals.objectWillChange.sink { [weak self] _ in
-        // Published terminal state is still the old value during objectWillChange.
+      entry.sessionObservation = store.terminals.paneWillChange.sink { [weak self] _ in
+        // The panes still hold the old value while `paneWillChange` runs.
         Task { @MainActor in self?.recomputeActiveCodingAgents() }
       }
       entries.append(entry)

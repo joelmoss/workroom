@@ -122,7 +122,7 @@ final class SavedLayoutCoordinator {
     // Past the ceiling, write on the next turn rather than pushing the deadline out again.
     //
     // Scheduled at zero delay rather than called inline, because the loudest dirty source is
-    // `terminals.objectWillChange`, which fires BEFORE the mutation lands: capturing inline would
+    // `terminals.paneWillChange`, which fires BEFORE the mutation lands: capturing inline would
     // snapshot the state the change was about to replace. Zero delay keeps the ceiling's guarantee
     // (this run loop turn) while letting the mutation complete first.
     pending?.cancel()
