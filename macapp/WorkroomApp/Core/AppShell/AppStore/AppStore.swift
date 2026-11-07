@@ -1437,7 +1437,8 @@ final class AppStore: ObservableObject {
   ///
   /// `order` defaults to the `@Published workroomTabOrder`, so a view observing the store re-renders
   /// when a drag-reorder rewrites it. Reads `projectStore.projects` + `terminals.activeTargetIDs`
-  /// (which publishes on every pane change) too — so the bar updates as terminals open/close.
+  /// (observed per target, changing only when a workroom gains its first terminal or loses its
+  /// last) too — so the bar updates as terminals open/close.
   /// `order:` is for tests.
   func orderedWorkroomTargets(order: [TerminalTarget.ID]? = nil)
     -> [(sid: SidebarID, target: TerminalTarget)]

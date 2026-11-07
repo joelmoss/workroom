@@ -1,6 +1,6 @@
 //! Sessions: a pty plus the identity a client reattaches by.
 //!
-//! **Identity is client-minted**, as it already is today — `TerminalSessions.swift` stores a
+//! **Identity is client-minted**, as it already is today — `TerminalPanes.swift` stores a
 //! 16-byte UUID per pane and hands it over on attach. The daemon does not invent ids; it only
 //! remembers which pty belongs to which one, which is what lets a client that quit and came back
 //! find the same shell.

@@ -1933,7 +1933,6 @@ final class TerminalPanes {
       detached: Dictionary(
         uniqueKeysWithValues: ids.filter(detachedTabIDs.contains).map { ($0, NSRect.zero) }),
       agent: Dictionary(uniqueKeysWithValues: ids.map { ($0, codingAgentManager.handOff($0)) }))
-    tabRegistry.release(ids, by: holder)
     for id in ids {
       detachedTabIDs.remove(id)
       forgetPerTabWork(id)
@@ -1943,6 +1942,9 @@ final class TerminalPanes {
     targets[target.id]?.empty()
     paneRects[target.id] = nil
     paneSpace[target.id] = nil
+    // Let go only once the layout no longer names them, so no write in between can claim a tab
+    // back from the window `adopt` is about to give it to.
+    tabRegistry.release(ids, by: holder)
     onEvent?(.tabsRemoved(target.id, ids))
     return handOff
   }
@@ -1964,7 +1966,6 @@ final class TerminalPanes {
     let handOff = TargetHandOff(
       target: destination, layout: PaneState(order: [tabID], focused: tabID, counter: 0),
       detached: [:], agent: [tabID: codingAgentManager.handOff(tabID)])
-    tabRegistry.release([tabID], by: holder)
     if let view {
       let project = destination.id.projectPath ?? destination.path
       view.attachment.metadata = view.attachment.metadata.map { entry in
@@ -1977,6 +1978,8 @@ final class TerminalPanes {
     }
     remove(tabID, from: target.id)
     forgetPerTabWork(tabID)
+    // After the layout drops it, as `handOff` does.
+    tabRegistry.release([tabID], by: holder)
     if wasFocused { setFocused(successor, for: target.id) }
     reconcileOcclusion(for: target)
     onEvent?(.tabsRemoved(target.id, [tabID]))

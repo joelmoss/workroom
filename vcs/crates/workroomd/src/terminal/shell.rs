@@ -10,7 +10,7 @@
 //!    LOGIN shell — there is no flag for it — so without it the login profile never runs.
 //! 2. **Ghostty's shell integration is wired in through the environment.** For zsh that means
 //!    pointing `ZDOTDIR` at the bundled integration directory, whose config then sources the
-//!    user's own. What it adds is the OSC 133 prompt marks: `TerminalSessions` clears a pane's
+//!    user's own. What it adds is the OSC 133 prompt marks: `TerminalPanes` clears a pane's
 //!    live title back to `Terminal N` when it sees the command-finished mark, so without the
 //!    integration a title the user's own prompt sets — `user@host:~/dir` on this machine — latches
 //!    as the pane's title and never clears. The shell sets that title either way; the integration
