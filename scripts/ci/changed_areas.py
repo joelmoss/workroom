@@ -10,7 +10,7 @@ is written in: the shared tables under `testdata/` are read by several languages
 bundles the daemon, the Rust tests read the daemon bootstrap scripts, and the Go and app tests both
 read `docs-site/`. A path no rule names runs every job, as does an empty diff, so a file a new test
 starts to read is over-tested until a rule says otherwise, never skipped; each narrow rule sits
-ahead of a catch-all for its tree (`.github/`, `mk/`, `testdata/`) that runs everything. Add a rule
+ahead of a catch-all for its tree (`.github/`, `testdata/`) that runs everything. Add a rule
 here when a test reads a new path outside its own tree. The master push runs everything whatever
 this says.
 """
@@ -44,12 +44,11 @@ RULES = (
       ".github/actions/import-signing-certificate/*", ".github/dependabot.yml",
       ".github/CODEOWNERS", ".github/PULL_REQUEST_TEMPLATE.md", ".github/ISSUE_TEMPLATE/*"),
      frozenset()),
-    # Only the macOS jobs run `make`, and their targets live in mk/app.mk. The cli and Rust jobs
-    # call go and cargo directly, and the `workflows` job parses every mk file through
-    # `make actions-lint`, so a broken include fails there.
-    (("Makefile", "mk/app.mk"), {"packages", "app", "scripts"}),
-    (("mk/cli.mk", "mk/docs.mk", "mk/vcs.mk", "mk/actions.mk"), frozenset()),
-    ((".github/*", "mk/*"), ALL),
+    # Only the macOS jobs run `make` (the cli and Rust jobs call go and cargo directly), and every
+    # make parses every mk file: a setting in any of them reaches the app targets, and
+    # test-invariants_test.sh (app-scripts) reads every file make reads.
+    (("Makefile", "mk/*"), {"packages", "app", "scripts"}),
+    ((".github/*",), ALL),
     # The shared fixture tables, each with the jobs whose tests read it. The tables a Rust unit
     # test include_str!s count the app too: its macOS `cargo test --lib` compiles those tests.
     (("testdata/contracts/frames.tsv",), {"rust", "packages"}),

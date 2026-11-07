@@ -17,11 +17,28 @@ PREGATE = json.loads((ROOT / ".gstack" / "pregate.json").read_text())["dependenc
 # Trees whose rule here is a catch-all after narrower rules for their subtrees, which pregate maps
 # one subtree at a time instead of with one key for the whole tree.
 CARVED = {
+    ".github/": "each workflow and composite has a rule here; pregate lints them all with one key, "
+                "and the composites the app jobs use have keys of their own",
     "macapp/": "pregate maps the app's sources, tests, packages, resources and scripts each to its "
                "own gate; one key for all of macapp/ would give the scripts the app's gate",
     "testdata/": "each fixture table has a rule here and a key there; the catch-all only catches "
                  "a table neither names yet",
 }
+
+# The pregate test that runs what each CI job runs. The cli job is `go test ./...`, so any Go test
+# file stands for it (pregate's runner tests that file's package).
+GATES = {
+    "rust": "macapp/Tests/pregate/rust_gate_test.py",
+    "packages": "macapp/Tests/pregate/package_gate_test.py",
+    "app": "macapp/Tests/pregate/app_gate_test.py",
+    "scripts": "macapp/Tests/pregate/scripts_gate_test.py",
+}
+
+
+def gated_jobs(tests):
+    """The CI jobs a pregate key's tests stand for."""
+    jobs = {job for job, gate in GATES.items() if gate in tests}
+    return jobs | ({"cli"} if any(test.endswith("_test.go") for test in tests) else set())
 
 
 def needed(*paths):
@@ -116,17 +133,16 @@ class ChangedAreasTests(unittest.TestCase):
                                 ".github/PULL_REQUEST_TEMPLATE.md",
                                 ".github/ISSUE_TEMPLATE/bug_report.yml"), set())
 
-    def test_the_makefile_and_the_app_targets_run_the_macos_jobs(self):
-        for path in ("Makefile", "mk/app.mk"):
+    def test_every_make_file_runs_the_macos_jobs(self):
+        # Every make parses every mk file, and test-invariants_test.sh reads each one make reads.
+        for path in ("Makefile", "mk/app.mk", "mk/cli.mk", "mk/docs.mk", "mk/vcs.mk",
+                     "mk/actions.mk", "mk/new.mk"):
             with self.subTest(path=path):
                 self.assertEqual(needed(path), {"packages", "app", "scripts"})
 
-    def test_the_other_areas_make_targets_run_nothing_filtered(self):
-        self.assertEqual(needed("mk/cli.mk", "mk/docs.mk", "mk/vcs.mk", "mk/actions.mk"), set())
-
     def test_new_plumbing_runs_everything(self):
         for path in (".github/workflows/ci-new.yml", ".github/actions/new/action.yml",
-                     ".github/new.yml", "mk/new.mk"):
+                     ".github/new.yml"):
             with self.subTest(path=path):
                 self.assertEqual(needed(path), set(JOBS))
 
@@ -216,21 +232,27 @@ class WorkflowReadersTests(unittest.TestCase):
 
 class PregateMapTests(unittest.TestCase):
     """CI's map is the source of truth: .gstack/pregate.json, the local pre-landing gate's map of
-    path to tests, must name every tree this one sends to a job."""
+    path to tests, must give every tree this one sends to jobs the gates of those jobs. Trees only;
+    a single-file rule here (go.mod, a workflow) is not checked."""
 
-    def test_pregate_has_a_lane_for_every_tree_ci_tests(self):
+    def test_pregate_gates_every_tree_with_the_jobs_ci_runs_for_it(self):
         for patterns, jobs in RULES:
             for pattern in patterns:
                 if not jobs or not pattern.endswith("/*") or pattern[:-1] in CARVED:
                     continue
                 tree = pattern[:-1]
-                # The tree itself or one of its parents, as `<dir>/**` with at least one test.
+                # Every `<dir>/**` key for the tree itself or one of its parents.
                 parents = {tree[:end + 1] for end, char in enumerate(tree) if char == "/"}
+                tests = {test for key, keyed in PREGATE.items()
+                         if key.endswith("/**") and key[:-2] in parents for test in keyed}
                 with self.subTest(tree=tree):
-                    self.assertTrue(
-                        any(key.endswith("/**") and key[:-2] in parents and tests
-                            for key, tests in PREGATE.items()),
-                        f"pregate.json has no `{tree}**` key with tests, nor one for a parent")
+                    self.assertEqual(set(jobs) - gated_jobs(tests), set(),
+                                     f"pregate.json's keys for `{tree}**` lack these jobs' gates")
+
+    def test_each_gate_exists(self):
+        for gate in GATES.values():
+            with self.subTest(gate=gate):
+                self.assertTrue((ROOT / gate).is_file())
 
     def test_each_carved_tree_is_a_catch_all_after_narrower_rules(self):
         for tree in CARVED:

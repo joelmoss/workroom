@@ -42,6 +42,19 @@ def passed_inputs(action, name):
                     yield path.relative_to(ROOT).as_posix(), found[1].strip("\"'")
 
 
+def installs_cargo_zigbuild(line):
+    """Whether a workflow line installs cargo-zigbuild itself: `cargo install` or `cargo binstall`
+    with any flags, `pip install … cargo-zigbuild`, or an installer action's `tool:` list. Step
+    names, comments and the call to the composite only name it."""
+    text = line.strip()
+    if "cargo-zigbuild" not in text or text.startswith("#"):
+        return False
+    if re.match(r"-?\s*(name:|uses: \./\.github/actions/install-cargo-zigbuild$)", text):
+        return False
+    installer = r"\b(?:cargo|pip3?|pipx|uv|brew)\s+(?:\S+\s+)*?(?:install|binstall)(?![-\w])"
+    return bool(re.search(installer, text) or re.match(r"-?\s*tools?:", text))
+
+
 class ToolPinTests(unittest.TestCase):
     def test_zig_is_the_version_libghostty_vt_builds_with(self):
         pin = input_default("install-zig", "version")
@@ -58,18 +71,25 @@ class ToolPinTests(unittest.TestCase):
             with self.subTest(where=where):
                 self.assertEqual(version, pin)
         own = ACTIONS / "install-cargo-zigbuild" / "action.yml"
-        for path in CI_FILES:
-            if path != own:
-                with self.subTest(path=path.relative_to(ROOT).as_posix()):
-                    self.assertNotRegex(path.read_text(), r"cargo install cargo-zigbuild")
+        others = [(path.relative_to(ROOT).as_posix(), line.strip())
+                  for path in CI_FILES if path != own
+                  for line in path.read_text().splitlines() if installs_cargo_zigbuild(line)]
+        self.assertEqual(others, [], "cargo-zigbuild installed outside install-cargo-zigbuild")
 
     def test_rust_is_the_toolchain_the_makefile_lints_with(self):
         pin = make_value("VCS_RUST")
         self.assertRegex(pin, r"^\d+\.\d+\.\d+$")
         # Every numbered toolchain a workflow names; `stable`, which the app's daemon build tracks
         # on purpose, is not a pin.
-        pattern = (r"rustup (?:toolchain install|default|run|target add --toolchain) (\d[\w.-]*)"
-                   r"|Install Rust (\d[\w.-]*)|\+(\d+\.\d+\.\d+)\b")
+        version = r"(\d+\.\d+(?:\.\d+)?)"
+        pattern = "|".join((
+            rf"rustup (?:toolchain install|install|default|run|override set) {version}",
+            rf"--toolchain[ =]{version}",
+            rf"Install Rust {version}",
+            rf"rust-toolchain@{version}",
+            rf"toolchain:\s*[\"']?{version}",
+            rf"\+{version}\b",
+        ))
         found = []
         for path in CI_FILES:
             for match in re.finditer(pattern, path.read_text()):
