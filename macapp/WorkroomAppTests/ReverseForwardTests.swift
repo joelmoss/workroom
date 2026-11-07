@@ -1,6 +1,9 @@
 import DaemonConnection
+import DaemonConnectionTestSupport
 import Darwin
 import HostDrivers
+import Synchronization
+import WorkroomDomain
 import WorkroomVCS
 import XCTest
 
@@ -16,7 +19,7 @@ import XCTest
 /// target is a server only the app's side of the forward knows about.
 final class ReverseForwardTests: XCTestCase {
   private var daemons: [DaemonHarness] = []
-  private var connections: [DaemonVCSConnection] = []
+  private var connections: [DaemonClient] = []
   private var reverses: [ReverseForward] = []
   private var echoes: [EchoServer] = []
   private var clients: [TCPClient] = []
@@ -45,8 +48,12 @@ final class ReverseForwardTests: XCTestCase {
     return daemon
   }
 
-  private func connection(to daemon: DaemonHarness) async throws -> DaemonVCSConnection {
-    let connection = try await DaemonVCSConnection.connect(
+  /// In its caller's isolation, so a main-actor test can call it without handing the test case or
+  /// its daemon to another executor.
+  nonisolated(nonsending) private func connection(to daemon: DaemonHarness) async throws
+    -> DaemonClient
+  {
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     connections.append(connection)
     return connection
@@ -68,7 +75,7 @@ final class ReverseForwardTests: XCTestCase {
 
   /// A reverse forward to `target`, started, and the port the daemon bound.
   private func listening(
-    _ connection: DaemonVCSConnection, target: UInt16, remotePort: UInt16 = 0,
+    _ connection: DaemonClient, target: UInt16, remotePort: UInt16 = 0,
     events: ReverseEvents
   ) async throws -> (ReverseForward, UInt16) {
     let reverse = try connection.forwarding().reverse(remotePort: remotePort, target: target) {
@@ -290,43 +297,35 @@ final class ReverseForwardTests: XCTestCase {
 }
 
 /// The connection a registry's transport hands out, switched by the test to simulate a reconnect.
-private final class Current: @unchecked Sendable {
-  private let lock = NSLock()
-  private var lease: HostConnectionManager.Lease
-  private var connection: DaemonVCSConnection
-  init(lease: HostConnectionManager.Lease, connection: DaemonVCSConnection) {
-    self.lease = lease
-    self.connection = connection
+private final class Current: Sendable {
+  private let value: Mutex<(lease: HostConnectionManager.Lease, connection: DaemonClient)>
+  init(lease: HostConnectionManager.Lease, connection: DaemonClient) {
+    value = Mutex((lease, connection))
   }
-  func get() -> (lease: HostConnectionManager.Lease, connection: DaemonVCSConnection) {
-    lock.withLock { (lease, connection) }
+  func get() -> (lease: HostConnectionManager.Lease, connection: DaemonClient) {
+    value.withLock { $0 }
   }
-  func set(_ lease: HostConnectionManager.Lease, _ connection: DaemonVCSConnection) {
-    lock.withLock {
-      self.lease = lease
-      self.connection = connection
-    }
+  func set(_ lease: HostConnectionManager.Lease, _ connection: DaemonClient) {
+    value.withLock { $0 = (lease, connection) }
   }
 }
 
-private final class Target: @unchecked Sendable {
-  private let lock = NSLock()
-  private var port: UInt16
-  init(_ port: UInt16) { self.port = port }
-  func get() -> UInt16 { lock.withLock { port } }
-  func set(_ port: UInt16) { lock.withLock { self.port = port } }
+private final class Target: Sendable {
+  private let port: Mutex<UInt16>
+  init(_ port: UInt16) { self.port = Mutex(port) }
+  func get() -> UInt16 { port.withLock { $0 } }
+  func set(_ port: UInt16) { self.port.withLock { $0 = port } }
 }
 
 /// A reverse forward's events, with the first answer to its `listen` awaitable.
-final class ReverseEvents: @unchecked Sendable {
-  private let lock = NSLock()
-  private var values: [ReverseForward.Event] = []
+final class ReverseEvents: Sendable {
+  private let values = Mutex<[ReverseForward.Event]>([])
 
-  func add(_ event: ReverseForward.Event) { lock.withLock { values.append(event) } }
+  func add(_ event: ReverseForward.Event) { values.withLock { $0.append(event) } }
 
   var failures: [String] {
-    lock.withLock {
-      values.compactMap { if case .failed(let detail) = $0 { detail } else { nil } }
+    values.withLock {
+      $0.compactMap { if case .failed(let detail) = $0 { detail } else { nil } }
     }
   }
 
@@ -334,7 +333,7 @@ final class ReverseEvents: @unchecked Sendable {
   func listening(timeout: Duration = .seconds(5)) async throws -> UInt16 {
     let deadline = ContinuousClock.now + timeout
     while ContinuousClock.now < deadline {
-      for event in lock.withLock({ values }) {
+      for event in values.withLock({ $0 }) {
         switch event {
         case .listening(let port): return port
         case .stopped(let detail): throw ReverseForward.Refusal(detail)

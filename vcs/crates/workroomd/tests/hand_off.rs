@@ -917,7 +917,7 @@ fn a_daemon_whose_stderr_is_read_writes_no_log_file() {
 /// Asks the daemon at `socket` to kill `session`, which it does not hold, and waits for the answer:
 /// the refusal is kept before it is given.
 fn kill_absent(socket: &Path, session: &str) {
-    let id = workroomd::serve::parse_session_id(std::ffi::OsStr::new(session))
+    let id = wr_protocol::terminal::parse_session_id(std::ffi::OsStr::new(session))
         .expect("a session id")
         .0
         .to_vec();

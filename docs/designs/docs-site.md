@@ -1,6 +1,6 @@
 # Workroom documentation site
 
-Status: built (2026-10-20) in workroom PR #512 and Codaset PR #58, not yet merged or deployed.
+Status: shipped in #512 and Codaset PR #58, both merged 2026-10-20.
 Every decision below was made by the owner in a grilling session (Q1–Q32); "As built" notes record
 where the build differs.
 
@@ -33,7 +33,7 @@ the Codaset app at `codaset.dev/workroom/docs`, with the content kept in this re
 - **Codaset's CI** (`.github/workflows/ci.yml`) runs on PRs and pushes to master. It has no deploy
   job.
 - **This repo is public.** The CLI is built on cobra v1.10.2 (`go.mod`). The canonical shortcut list
-  is `macapp/WorkroomApp/Views/KeyboardShortcutsView.swift`. The app has no Help menu entries of
+  is `macapp/WorkroomApp/Views/AppShell/KeyboardShortcutsView.swift`. The app has no Help menu entries of
   its own.
 
 ## Decisions

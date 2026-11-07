@@ -1,6 +1,8 @@
 import DaemonConnection
+import DaemonConnectionTestSupport
 import Foundation
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -9,14 +11,12 @@ import XCTest
 @testable import Workroom
 
 final class SSHWorkroomTests: XCTestCase {
-  private final class Calls: @unchecked Sendable {
-    private let lock = NSLock()
-    private var saved: [String] = []
-    private var hosts: [HostDescriptor] = []
-    var all: [String] { lock.withLock { saved } }
-    var descriptors: [HostDescriptor] { lock.withLock { hosts } }
-    func add(_ text: String) { lock.withLock { saved.append(text) } }
-    func record(_ host: HostDescriptor) { lock.withLock { hosts.append(host) } }
+  private final class Calls: Sendable {
+    private let saved = Mutex<(texts: [String], hosts: [HostDescriptor])>(([], []))
+    var all: [String] { saved.withLock { $0.texts } }
+    var descriptors: [HostDescriptor] { saved.withLock { $0.hosts } }
+    func add(_ text: String) { saved.withLock { $0.texts.append(text) } }
+    func record(_ host: HostDescriptor) { saved.withLock { $0.hosts.append(host) } }
     var recorder: RemoteWorkrooms.Recorder {
       .init(
         reserve: { _, _ in
@@ -75,7 +75,7 @@ final class SSHWorkroomTests: XCTestCase {
       runner: ControlRunner(calls: calls))
     let id = SSHHostDriver.id(for: destination)
     let hosts = RemoteHosts(makeDriver: { _ in driver }, pendingIn: nil)
-    hosts.adopt(
+    hosts.reachability.adopt(
       [
         Project(
           path: "/ssh-wake-test", vcs: "git",
@@ -87,7 +87,7 @@ final class SSHWorkroomTests: XCTestCase {
                 sshDestination: destination, sshHome: "/home/joel"))
           ])
       ], sweep: false)
-    let unanswering = await hosts.unansweringProviderHosts()
+    let unanswering = await hosts.reachability.unansweringProviderHosts()
     XCTAssertEqual(unanswering, [.remote(id)])
     XCTAssertEqual(calls.all.count, 1)
     XCTAssertTrue(calls.all[0].contains("-O exit \(destination)"))
@@ -105,7 +105,7 @@ final class SSHWorkroomTests: XCTestCase {
 
   private func create(
     _ driver: SSHHostDriver, calls: Calls,
-    connect: @escaping @Sendable (HostID) async throws -> DaemonVCSConnection = { _ in
+    connect: @escaping @Sendable (HostID) async throws -> DaemonClient = { _ in
       XCTFail("The rejected create connected to a daemon")
       throw HostDriverError.provisioning("unexpected connect")
     }
@@ -151,7 +151,7 @@ final class SSHWorkroomTests: XCTestCase {
     defer { fake.stop() }
     do {
       _ = try await create(driver, calls: calls) { host in
-        try await DaemonVCSConnection.connect(host: host, socketPath: fake.socketPath)
+        try await DaemonClient.connect(host: host, socketPath: fake.socketPath)
       }
       XCTFail("failed clone was accepted")
     } catch RemoteProvisioning.Failure.git {}
@@ -161,8 +161,81 @@ final class SSHWorkroomTests: XCTestCase {
     XCTAssertTrue(calls.all.contains("forget quiet-river"))
     XCTAssertFalse(calls.all.contains { $0.contains("sudo") || $0.contains("systemctl") })
     XCTAssertTrue(PendingMachines.entries(in: driver.directory).isEmpty)
+    // `serving` is the create's last record: never written before the checkout exists.
+    XCTAssertFalse(
+      calls.descriptors.contains { $0.lifecycle == .serving }, "recorded serving before the clone")
     let reacher: any HostDriver = driver
     XCTAssertFalse(reacher is any ProvisioningHostDriver)
+  }
+
+  // Value: protects=a failed SSH clone ends with how to give the host GitHub access;
+  // fails_when=the SSH create stops giving the shared clone the SSH hint (its environment carries
+  // none); why_new=the failed-clone test above never reads the message; seam=none
+  /// A clone that fails on an SSH host says git's own words, then how to set up its credentials.
+  func testAFailedSSHCloneSaysHowToSetUpCredentialsOnTheHost() async throws {
+    let calls = Calls()
+    let fake = try FakeDaemon(
+      version: 4,
+      execResult:
+        #"{"stdout":"","stderr":"denied","exit_code":128,"timed_out":false,"signaled":false}"#)
+    defer { fake.stop() }
+    let hint = try XCTUnwrap(HostKind.ssh.credentialHint)
+    do {
+      _ = try await create(driver(calls), calls: calls) { host in
+        try await DaemonClient.connect(host: host, socketPath: fake.socketPath)
+      }
+      XCTFail("failed clone was accepted")
+    } catch RemoteProvisioning.Failure.git(let command, let detail) {
+      XCTAssertEqual(command, "clone")
+      XCTAssertEqual(detail, "denied\n\n" + hint)
+    }
+  }
+
+  private final class Requests: Sendable {
+    private let made = Mutex<[RemoteWorkrooms.ScriptRequest]>([])
+    var all: [RemoteWorkrooms.ScriptRequest] { made.withLock { $0 } }
+    func add(_ request: RemoteWorkrooms.ScriptRequest) { made.withLock { $0.append(request) } }
+  }
+
+  // Value: protects=an SSH workroom's teardown runs in its folder as its SSH host, and a failed one
+  // removes nothing and keeps the entry; fails_when=the SSH delete gives the shared teardown another
+  // key, host, path or name, or goes on past its failure; why_new=only the fixture-backed
+  // SSHHostIntegrationTests ran an SSH teardown; seam=Teardown.run
+  /// An SSH workroom's teardown runs as its host, and one that fails stops the delete.
+  func testAnSSHTeardownRunsAsItsHostAndAFailedOneKeepsTheFolder() async throws {
+    let calls = Calls()
+    let driver = driver(calls)
+    let id = SSHHostDriver.id(for: "myserver")
+    let descriptor = HostDescriptor(
+      driver: "ssh", provisioner: RemoteWorkrooms.provisioner, id: id, workroomID: UUID(),
+      path: "/home/joel/workrooms/w", sshDestination: "myserver", sshHome: "/home/joel")
+    let requests = Requests()
+    let teardown = RemoteWorkrooms.Teardown(
+      path: "/home/joel/workrooms/w", rootScript: nil,
+      judge: { _ in throw HostDriverError.provisioning("unexpected judge") },
+      onLine: { calls.add($0) },
+      run: { request in
+        requests.add(request)
+        return .failed("teardown script failed: boom")
+      })
+    do {
+      try await RemoteWorkrooms.delete(
+        "w", host: descriptor,
+        environment: .init(driver: driver, daemonSocket: driver.daemonSocket),
+        recorder: calls.recorder, teardown: teardown, onForgotten: { _ in })
+      XCTFail("a failed teardown deleted the workroom")
+    } catch RemoteWorkrooms.Failure.teardownScriptFailed(let why) {
+      XCTAssertEqual(why, "teardown script failed: boom")
+    }
+    let request = try XCTUnwrap(requests.all.first)
+    XCTAssertEqual(requests.all.count, 1)
+    XCTAssertEqual(request.script, .teardown)
+    XCTAssertEqual(request.workroom, "w")
+    XCTAssertEqual(request.path, "/home/joel/workrooms/w")
+    XCTAssertEqual(request.host, .remote(id))
+    XCTAssertEqual(request.key, .ssh(destination: "myserver"))
+    XCTAssertFalse(calls.all.contains("forget w"))
+    XCTAssertFalse(calls.all.contains { $0.contains("rm -rf") })
   }
 
   func testSSHCloneKeepsTheHostsChosenCredentialScheme() throws {
@@ -201,14 +274,14 @@ final class SSHWorkroomTests: XCTestCase {
     do {
       try await RemoteWorkrooms.delete(
         "w", host: descriptor, environment: environment, recorder: calls.recorder,
-        teardown: teardown)
+        teardown: teardown, onForgotten: { _ in })
       XCTFail("unverified folder was deleted")
     } catch SSHHostDriver.Failure.markerMismatch {}
     XCTAssertFalse(calls.all.contains("forget w"))
     teardown.skip = true
     try await RemoteWorkrooms.delete(
       "w", host: descriptor, environment: environment, recorder: calls.recorder,
-      teardown: teardown)
+      teardown: teardown, onForgotten: { _ in })
     XCTAssertTrue(calls.all.contains("forget w"))
     XCTAssertTrue(calls.all.contains { $0.hasPrefix("Left /home/joel/workrooms/w on myserver:") })
     XCTAssertFalse(calls.all.contains { $0.contains("rm -rf") })
@@ -238,13 +311,15 @@ final class SSHWorkroomTests: XCTestCase {
       onLine: { calls.add($0) })
     do {
       try await RemoteWorkrooms.delete(
-        "w", host: host, environment: environment, recorder: calls.recorder, teardown: teardown)
+        "w", host: host, environment: environment, recorder: calls.recorder, teardown: teardown,
+        onForgotten: { _ in })
       XCTFail("unreachable workroom was forgotten")
     } catch SSHHostDriver.Failure.unreachable {}
     XCTAssertFalse(calls.all.contains("forget w"))
     teardown.skip = true
     try await RemoteWorkrooms.delete(
-      "w", host: host, environment: environment, recorder: calls.recorder, teardown: teardown)
+      "w", host: host, environment: environment, recorder: calls.recorder, teardown: teardown,
+      onForgotten: { _ in })
     XCTAssertTrue(calls.all.contains("forget w"))
     XCTAssertTrue(calls.all.contains { $0.hasPrefix("Left /home/joel/workrooms/w on myserver:") })
   }

@@ -1,0 +1,221 @@
+name: CI (Rust)
+
+# Called by ci.yml, never on its own; `run` is its path filter (scripts/ci/changed_areas.py).
+on:
+  workflow_call:
+    inputs:
+      run:
+        description: false skips every job, which then reports as skipped
+        type: boolean
+        required: true
+
+permissions: {}
+
+jobs:
+  # The whole Rust workspace's format, lint and test gates — the only job that runs them for every
+  # crate (the daemon jobs below cover workroomd alone). Its own Linux job rather than a step in
+  # `app`: off the macOS critical path, Linux minutes are 10x cheaper, and it tests the daemon away
+  # from Apple targets.
+  rust:
+    if: inputs.run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned for the lint gates below, unlike the `app` job (which deliberately tracks the runner's
+      # rustc so a toolchain bump invalidates its output cache). rustfmt's layout and clippy's lint set
+      # both change between releases, so an unpinned toolchain makes `--check` and `-D warnings` fail
+      # when GitHub rolls its image rather than when someone's code is wrong. Same reasoning as the
+      # pinned golangci-lint in `cli`. The same as mk/vcs.mk's VCS_RUST, here and in the jobs below
+      # (scripts/ci/test_tool_pins.py).
+      - name: Install Rust 1.96.1
+        run: |
+          rustup toolchain install 1.96.1 --profile minimal --component rustfmt,clippy
+          rustup default 1.96.1
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: vcs
+
+      # Ordered cheapest-first so a formatting nit doesn't wait on the crate graph.
+      - name: Format
+        run: cargo fmt --manifest-path vcs/Cargo.toml --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --manifest-path vcs/Cargo.toml --workspace --all-targets -- -D warnings
+
+      # rustdoc's warnings as errors, chiefly a public doc linking to a private or moved item.
+      # `make vcs-lint` runs the same check, plus its terminal-state half, which needs Zig.
+      - name: Docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --manifest-path vcs/Cargo.toml --workspace --no-deps
+
+      # This already covers workroomd, and covers it on LINUX — the workspace has no
+      # `default-members`, so every member's unit and integration tests run here. That matters
+      # because the daemon's pty, /proc introspection and socket code are the parts most likely to
+      # differ between Darwin and Linux, and a bug that only shows up on one of them has already
+      # happened once (an output pump that never noticed a closed socket, which macOS hid).
+      - name: Test
+        run: cargo test --manifest-path vcs/Cargo.toml
+
+  # The shadow terminal, which is what makes a reattaching client see its screen. Separate from
+  # `rust` because it is the only thing in the repo that needs a Zig toolchain and a Ghostty
+  # checkout, and the rest of the workspace should not wait on either.
+  daemon-terminal-state:
+    if: inputs.run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.96.1 --profile minimal --component clippy
+          rustup default 1.96.1
+
+      # Pinned by version (install-zig's) AND checksum. An unpinned toolchain would silently change
+      # the emulator this links, and the snapshot format it produces carries no compatibility
+      # guarantee.
+      - name: Install Zig
+        uses: ./.github/actions/install-zig
+        with:
+          archive: x86_64-linux
+          sha256: "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
+
+      # Keyed on the pinned engine sha, so a bump refetches and rebuilds and nothing else does.
+      # Without this every run clones Ghostty and spends ~75s building the emulator.
+      - name: Cache libghostty-vt
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/workroom/ghostty-vt
+          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: vcs
+
+      - name: Clippy
+        run: |
+          cargo clippy --manifest-path vcs/Cargo.toml -p workroomd \
+            --features terminal-state --all-targets -- -D warnings
+
+      # WORKROOMD_HAS_TERMINAL_STATE tells the integration tests the daemon under test was built
+      # with the feature, so the repaint and scrollback assertions run instead of skipping. Without
+      # it they would pass by skipping and this job would prove nothing.
+      - name: Test
+        env:
+          WORKROOMD_HAS_TERMINAL_STATE: "1"
+        run: cargo test --manifest-path vcs/Cargo.toml -p workroomd --features terminal-state
+
+  # The Linux daemons Workroom.app ships for remote hosts (issue #227), built the way the app bundle
+  # builds them (cargo-zigbuild, static musl, terminal-state) and then RUN. The Mac-side check in
+  # build-daemon_test.sh can only see that each ELF is static and the right arch, not that it starts.
+  # aarch64 runs under qemu-user, which needs no sysroot for a static binary.
+  daemon-linux:
+    if: inputs.run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    env:
+      TARGET: ${{ matrix.arch }}-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.96.1 --profile minimal --target "$TARGET"
+          rustup default 1.96.1
+
+      # Pinned by version AND checksum, as in `daemon-terminal-state`. cargo-zigbuild links with it
+      # and libghostty-vt is built with it.
+      - name: Install Zig
+        uses: ./.github/actions/install-zig
+        with:
+          archive: x86_64-linux
+          sha256: "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
+
+      # Its own key per arch. Sharing `daemon-terminal-state`'s key would restore that job's glibc
+      # prefix, count as a hit, never save the musl one, and rebuild it on every run.
+      - name: Cache libghostty-vt
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/workroom/ghostty-vt
+          key: ghostty-vt-${{ runner.os }}-${{ env.TARGET }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: vcs
+          key: ${{ env.TARGET }}
+
+      # The version the app's daemon build uses, cached on it.
+      - name: Install cargo-zigbuild
+        uses: ./.github/actions/install-cargo-zigbuild
+
+      - name: Install qemu
+        if: matrix.arch == 'aarch64'
+        # `qemu-user`, not `qemu-user-static`: Ubuntu 26.04 (ubuntu-latest from 2026-10) dropped the
+        # latter. Running one static binary needs no static qemu.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user
+
+      - name: Build
+        run: |
+          cargo zigbuild --manifest-path vcs/Cargo.toml --release -p workroomd \
+            --features terminal-state --target "$TARGET"
+
+      - name: Check
+        run: |
+          bin="vcs/target/$TARGET/release/workroomd"
+          file "$bin"
+          file -b "$bin" | grep -q 'statically linked'
+          run=""
+          if [ "${{ matrix.arch }}" = aarch64 ]; then run=qemu-aarch64; fi
+          out="$($run "$bin" protocol)"
+          echo "$out"
+          echo "$out" | grep -q '^protocol '
+          echo "$out" | grep -qx 'terminal-state yes'
+
+      # The fixture image's apt layer, cached in the Actions cache. A `run` step cannot reach that
+      # cache on its own: buildx needs a docker-container builder, and the runtime token that the
+      # second action exports.
+      - name: Set up Docker Buildx (ssh fixture)
+        id: buildx
+        if: matrix.arch == 'x86_64'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Expose the Actions cache to buildx (ssh fixture)
+        if: matrix.arch == 'x86_64'
+        uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4
+
+      # The persistent remote path over real ssh (issue #228): this ELF, supervised in a container
+      # with sshd, driven from the runner by the ignored `over_ssh_*` tests in remote_transport.rs.
+      # x86_64 only, because the runner is x86_64: the aarch64 ELF would need an emulated container.
+      # Bounded, because a daemon that wedges mid-reply would hang an ssh call with no deadline of
+      # its own, and the job's default timeout is six hours. BUILDX_BUILDER, because a plain
+      # `docker build` keeps the default `docker` driver, which cannot export a cache, even after the
+      # step above created a docker-container builder. `--load`, because that builder does not put
+      # the image where `docker run` looks otherwise.
+      - name: ssh fixture
+        if: matrix.arch == 'x86_64'
+        timeout-minutes: 15
+        env:
+          BUILDX_BUILDER: ${{ steps.buildx.outputs.name }}
+          WR_FIXTURE_BUILD_FLAGS: >-
+            --load --cache-from type=gha,scope=ssh-fixture
+            --cache-to type=gha,mode=max,scope=ssh-fixture
+        run: vcs/scripts/ssh-fixture/run.sh "vcs/target/$TARGET/release/workroomd"

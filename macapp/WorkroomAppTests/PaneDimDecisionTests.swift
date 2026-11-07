@@ -6,6 +6,7 @@ import XCTest
 /// border flash are SwiftUI overlays absent from the accessibility tree, so XCUITest can't assert
 /// them — these helpers are the automated guard. The focused-never-dims / cursor-never-pulses cases
 /// are the regression guards (a future gate edit must not dim the active pane).
+@MainActor
 final class PaneDimDecisionTests: XCTestCase {
 
   // MARK: PaneTreeView.shouldDim — enabled && (multiPane || !surfaceActive) && !focused && !flashing

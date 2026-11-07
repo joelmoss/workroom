@@ -25,7 +25,7 @@ final class WorkroomLabelTests: XCTestCase {
   private func makeStore(_ projects: [Project], shared: ProjectStore? = nil) -> AppStore {
     let store = AppStore(projectStore: shared)
     store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
-    store.projects = projects
+    store.projectStore.projects = projects
     return store
   }
 
@@ -38,7 +38,7 @@ final class WorkroomLabelTests: XCTestCase {
   }
 
   private func key(_ project: String, _ name: String) -> String {
-    TerminalTarget.workroomID(project: project, name: name)
+    TargetID.workroom(project: project, name: name).encoded
   }
 
   // MARK: Model — displayName / normalizedLabel
@@ -81,7 +81,7 @@ final class WorkroomLabelTests: XCTestCase {
     wr.label = "Auth"
     XCTAssertEqual(wr.target(inProject: "/p").title, "Auth")
     XCTAssertEqual(
-      wr.target(inProject: "/p").id, key("/p", "fox"), "id stays keyed on the real name")
+      wr.target(inProject: "/p").id.encoded, key("/p", "fox"), "id stays keyed on the real name")
   }
 
   // MARK: View presentation — split title bar name source (issue #113 regression)
@@ -109,7 +109,8 @@ final class WorkroomLabelTests: XCTestCase {
   func testStoreDisplayNameLookup() {
     let store = makeStore([project("/p", workrooms: ["fox"])])
     XCTAssertEqual(store.displayName(forWorkroom: "fox", inProject: "/p"), "fox")
-    store.setWorkroomLabel(store.projects[0].workrooms[0], in: store.projects[0], to: "Auth")
+    store.setWorkroomLabel(
+      store.projectStore.projects[0].workrooms[0], in: store.projectStore.projects[0], to: "Auth")
     XCTAssertEqual(store.displayName(forWorkroom: "fox", inProject: "/p"), "Auth")
   }
 
@@ -126,30 +127,35 @@ final class WorkroomLabelTests: XCTestCase {
   func testSetWorkroomLabelWritesNormalizedDefaultsAndUpdatesProjects() {
     let store = makeStore([project("/p", workrooms: ["fox"])])
     store.setWorkroomLabel(
-      store.projects[0].workrooms[0], in: store.projects[0], to: "  Auth refactor  ")
+      store.projectStore.projects[0].workrooms[0], in: store.projectStore.projects[0],
+      to: "  Auth refactor  ")
     XCTAssertEqual(
       Defaults[.workroomLabels][key("/p", "fox")], "Auth refactor", "trimmed at the write boundary")
     XCTAssertEqual(
-      store.projects[0].workrooms[0].label, "Auth refactor", "the live model is updated")
-    XCTAssertEqual(store.projects[0].workrooms[0].displayName, "Auth refactor")
+      store.projectStore.projects[0].workrooms[0].label, "Auth refactor",
+      "the live model is updated")
+    XCTAssertEqual(store.projectStore.projects[0].workrooms[0].displayName, "Auth refactor")
   }
 
   func testSetBlankLabelRemovesIt() {
     let store = makeStore([project("/p", workrooms: ["fox"])])
-    let wr = store.projects[0].workrooms[0]
-    store.setWorkroomLabel(wr, in: store.projects[0], to: "Auth")
-    store.setWorkroomLabel(store.projects[0].workrooms[0], in: store.projects[0], to: "   ")
+    let wr = store.projectStore.projects[0].workrooms[0]
+    store.setWorkroomLabel(wr, in: store.projectStore.projects[0], to: "Auth")
+    store.setWorkroomLabel(
+      store.projectStore.projects[0].workrooms[0], in: store.projectStore.projects[0], to: "   ")
     XCTAssertNil(
       Defaults[.workroomLabels][key("/p", "fox")], "blank removes the key, never stores ''")
-    XCTAssertEqual(store.projects[0].workrooms[0].displayName, "fox")
+    XCTAssertEqual(store.projectStore.projects[0].workrooms[0].displayName, "fox")
   }
 
   func testRemoveWorkroomLabelRestoresName() {
     let store = makeStore([project("/p", workrooms: ["fox"])])
-    store.setWorkroomLabel(store.projects[0].workrooms[0], in: store.projects[0], to: "Auth")
-    store.removeWorkroomLabel(store.projects[0].workrooms[0], in: store.projects[0])
+    store.setWorkroomLabel(
+      store.projectStore.projects[0].workrooms[0], in: store.projectStore.projects[0], to: "Auth")
+    store.removeWorkroomLabel(
+      store.projectStore.projects[0].workrooms[0], in: store.projectStore.projects[0])
     XCTAssertNil(Defaults[.workroomLabels][key("/p", "fox")])
-    XCTAssertEqual(store.projects[0].workrooms[0].displayName, "fox")
+    XCTAssertEqual(store.projectStore.projects[0].workrooms[0].displayName, "fox")
   }
 
   // MARK: Store — enrichment + prune-on-load
@@ -178,8 +184,10 @@ final class WorkroomLabelTests: XCTestCase {
 
   func testWorkroomDeleteForgetsLabel() {
     let store = makeStore([project("/p", workrooms: ["fox", "owl"])])
-    store.setWorkroomLabel(store.projects[0].workrooms[0], in: store.projects[0], to: "Auth")
-    store.removeWorkroomLocally(store.projects[0].workrooms[0], in: store.projects[0])
+    store.setWorkroomLabel(
+      store.projectStore.projects[0].workrooms[0], in: store.projectStore.projects[0], to: "Auth")
+    store.removeWorkroomLocally(
+      store.projectStore.projects[0].workrooms[0], in: store.projectStore.projects[0])
     XCTAssertNil(
       Defaults[.workroomLabels][key("/p", "fox")], "deleting the workroom clears its label")
   }
@@ -188,10 +196,13 @@ final class WorkroomLabelTests: XCTestCase {
     let store = makeStore([
       project("/p", workrooms: ["fox", "owl"]), project("/q", workrooms: ["cat"]),
     ])
-    store.setWorkroomLabel(store.projects[0].workrooms[0], in: store.projects[0], to: "A")
-    store.setWorkroomLabel(store.projects[0].workrooms[1], in: store.projects[0], to: "B")
-    store.setWorkroomLabel(store.projects[1].workrooms[0], in: store.projects[1], to: "C")
-    let p = store.projects.first { $0.id == "/p" }!
+    store.setWorkroomLabel(
+      store.projectStore.projects[0].workrooms[0], in: store.projectStore.projects[0], to: "A")
+    store.setWorkroomLabel(
+      store.projectStore.projects[0].workrooms[1], in: store.projectStore.projects[0], to: "B")
+    store.setWorkroomLabel(
+      store.projectStore.projects[1].workrooms[0], in: store.projectStore.projects[1], to: "C")
+    let p = store.projectStore.projects.first { $0.id == "/p" }!
     _ = store.removeProjectLocally(p)
     XCTAssertNil(Defaults[.workroomLabels][key("/p", "fox")])
     XCTAssertNil(Defaults[.workroomLabels][key("/p", "owl")])
@@ -206,12 +217,14 @@ final class WorkroomLabelTests: XCTestCase {
     fox.label = "Auth"
     let projects = [Project(path: "/p", vcs: "git", workrooms: [fox])]
     XCTAssertEqual(
-      AppStore.notificationSource(forTargetID: key("/p", "fox"), in: projects), "p / Auth")
+      AppStore.notificationSource(
+        forTargetID: .workroom(project: "/p", name: "fox"), in: projects), "p / Auth")
     XCTAssertEqual(
-      AppStore.notificationSource(forTargetID: TerminalTarget.rootID(project: "/p"), in: projects),
+      AppStore.notificationSource(forTargetID: TargetID.root(project: "/p"), in: projects),
       "p")
     XCTAssertEqual(
-      AppStore.notificationSource(forTargetID: key("/p", "ghost"), in: projects), "",
+      AppStore.notificationSource(
+        forTargetID: .workroom(project: "/p", name: "ghost"), in: projects), "",
       "a since-deleted target resolves empty so callers fall back to the stored snapshot")
   }
 
@@ -243,7 +256,8 @@ final class WorkroomLabelTests: XCTestCase {
     let store = makeStore([project("/Users/me/proj", workrooms: ["fox"])])
     store.selectedTargetID = .workroom(project: "/Users/me/proj", name: "fox")
     XCTAssertEqual(store.windowTitle, "proj — fox", "REGRESSION: unlabelled title unchanged")
-    store.setWorkroomLabel(store.projects[0].workrooms[0], in: store.projects[0], to: "Auth")
+    store.setWorkroomLabel(
+      store.projectStore.projects[0].workrooms[0], in: store.projectStore.projects[0], to: "Auth")
     XCTAssertEqual(store.windowTitle, "proj — Auth")
   }
 
@@ -274,8 +288,9 @@ final class WorkroomLabelTests: XCTestCase {
     let b = AppStore(projectStore: shared)
     a.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     // Seed once via the shared store (don't re-init b's projects — that would clobber it).
-    a.projects = [project("/p", workrooms: ["fox"])]
-    a.setWorkroomLabel(a.projects[0].workrooms[0], in: a.projects[0], to: "Auth")
+    a.projectStore.projects = [project("/p", workrooms: ["fox"])]
+    a.setWorkroomLabel(
+      a.projectStore.projects[0].workrooms[0], in: a.projectStore.projects[0], to: "Auth")
     XCTAssertEqual(
       b.displayName(forWorkroom: "fox", inProject: "/p"), "Auth",
       "the other window sees the label via the shared ProjectStore")

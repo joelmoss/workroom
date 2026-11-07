@@ -7,11 +7,9 @@ import XCTest
 /// exactly the shortcuts `KeyboardShortcutsView.groups` shows, under the same groups' headings, so the two
 /// can't drift: a shortcut added, changed, renamed or removed in the app fails here until the page
 /// says the same.
+@MainActor
 final class KeyboardShortcutsDocsTests: XCTestCase {
-  private static let page = URL(fileURLWithPath: String(describing: #filePath))
-    .deletingLastPathComponent()  // WorkroomAppTests
-    .deletingLastPathComponent()  // macapp
-    .deletingLastPathComponent()  // repository root
+  private static let page = SharedFixture.repositoryRoot
     .appendingPathComponent("docs-site/pages/reference/keyboard-shortcuts.md")
 
   func testThePageListsExactlyTheShortcutsTheAppShows() throws {

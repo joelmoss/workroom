@@ -44,7 +44,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
     store.inspectorVisibleOverrideForTesting = visible
     store.isolatesInspectorSectionForTesting = true
     store.isolatesInspectorLayoutForTesting = true
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: [Workroom(name: "feat", path: "/p/feat", vcsName: "workroom/feat", warnings: [])]
@@ -135,7 +135,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
   /// A write under another project's `.git` says nothing about this workroom.
   func testMetadataChangeForAnotherProjectIsIgnored() async {
     let (store, writer) = makeStore(visible: true, section: .changes)
-    store.projects.append(Project(path: "/other", vcs: "git", workrooms: []))
+    store.projectStore.projects.append(Project(path: "/other", vcs: "git", workrooms: []))
     await select(store, .workroom(project: "/p", name: "feat"))
     let before = await writer.stateReads
     store.handleRootBranchChange(projectID: "/other")
@@ -212,7 +212,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
   // MARK: The dirty-tree confirmation gate
 
   private func markDirty(_ store: AppStore, _ sid: SidebarID) {
-    store.workroomStatuses[sid] = WorkroomStatus(dirty: true, lastChecked: Date())
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(dirty: true, lastChecked: Date())
   }
 
   /// **The gate must live in the STORE, not the toolbar.** It used to sit in `VCSToolbar.perform`, so the
@@ -228,8 +228,8 @@ final class VCSRemoteTriggerTests: XCTestCase {
     store.performRemoteAction(.pull)
     await store.remoteState.awaitCurrentLoad()
 
-    XCTAssertEqual(store.pendingRemoteConfirm?.action, .pull)
-    XCTAssertEqual(store.pendingRemoteConfirm?.sid, sid)
+    XCTAssertEqual(store.modals.pendingRemoteConfirm?.action, .pull)
+    XCTAssertEqual(store.modals.pendingRemoteConfirm?.sid, sid)
     XCTAssertNil(store.remoteState.inFlight, "nothing may run until the user answers")
     let pulls = await writer.pulls
     XCTAssertEqual(pulls, 0, "the engine must not be reached before confirmation")
@@ -240,12 +240,12 @@ final class VCSRemoteTriggerTests: XCTestCase {
     let (store, writer) = makeStore(visible: true, section: .changes)
     let sid = SidebarID.workroom(project: "/p", name: "feat")
     await select(store, sid)
-    store.workroomStatuses[sid] = WorkroomStatus(dirty: false, lastChecked: Date())
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(dirty: false, lastChecked: Date())
 
     store.performRemoteAction(.pull)
     await store.remoteState.awaitCurrentLoad()
 
-    XCTAssertNil(store.pendingRemoteConfirm)
+    XCTAssertNil(store.modals.pendingRemoteConfirm)
     let pulls = await writer.pulls
     XCTAssertEqual(pulls, 1)
   }
@@ -255,7 +255,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
   /// about a specific workroom.
   func testAConfirmedPullIsRejectedIfTheSelectionMoved() async {
     let (store, writer) = makeStore(visible: true, section: .changes)
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: [
@@ -268,7 +268,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
     await select(store, first)
     markDirty(store, first)
     store.performRemoteAction(.pull)
-    let pending = try? XCTUnwrap(store.pendingRemoteConfirm)
+    let pending = try? XCTUnwrap(store.modals.pendingRemoteConfirm)
     XCTAssertEqual(pending?.sid, first)
 
     await select(store, second)
@@ -283,7 +283,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
   /// And the stale dialog is dismissed rather than left asking about a workroom nobody is looking at.
   func testChangingSelectionDismissesAPendingConfirmation() async {
     let (store, _) = makeStore(visible: true, section: .changes)
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: [
@@ -295,10 +295,10 @@ final class VCSRemoteTriggerTests: XCTestCase {
     await select(store, first)
     markDirty(store, first)
     store.performRemoteAction(.pull)
-    XCTAssertNotNil(store.pendingRemoteConfirm)
+    XCTAssertNotNil(store.modals.pendingRemoteConfirm)
 
     await select(store, .workroom(project: "/p", name: "other"))
-    XCTAssertNil(store.pendingRemoteConfirm)
+    XCTAssertNil(store.modals.pendingRemoteConfirm)
   }
 
   /// A confirmation up means the Room menu's Fetch/Push/Pull shortcuts must be inert, or ⌥⇧⌘P could
@@ -308,9 +308,9 @@ final class VCSRemoteTriggerTests: XCTestCase {
     let sid = SidebarID.workroom(project: "/p", name: "feat")
     await select(store, sid)
     markDirty(store, sid)
-    XCTAssertFalse(store.hasModalPresentation)
+    XCTAssertFalse(store.modals.hasModalPresentation)
     store.performRemoteAction(.pull)
-    XCTAssertTrue(store.hasModalPresentation)
+    XCTAssertTrue(store.modals.hasModalPresentation)
   }
 }
 

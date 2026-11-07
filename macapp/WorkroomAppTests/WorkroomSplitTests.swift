@@ -20,7 +20,7 @@ final class WorkroomSplitTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.projects = projects
+    store.projectStore.projects = projects
     return store
   }
 
@@ -102,7 +102,7 @@ final class WorkroomSplitTests: XCTestCase {
   /// A pane too narrow to yield two floor-width halves must refuse the drop outright, rather than
   /// nesting a split that trips `lengths`' even-split fallback and leaves two 172pt panes. The width
   /// floor is set by the toolbar furniture a pane must render — since issue #150 that is the pane's
-  /// own `PaneTitleBar` (~190pt of controls on a diff pane); see `TerminalSessions.minPaneWidth`.
+  /// own `PaneTitleBar` (~190pt of controls on a diff pane); see `PaneMetrics.minPaneWidth`.
   private func tooNarrow() -> CGRect { CGRect(x: 0, y: 0, width: 348, height: 800) }
   private func roomy() -> CGRect { CGRect(x: 0, y: 0, width: 1200, height: 800) }
 
@@ -123,7 +123,7 @@ final class WorkroomSplitTests: XCTestCase {
 
   func testRearrangingWithinAGroupIsNotBlockedByTheFloor() {
     // Moving a member that is ALREADY in the group leaves the pane count unchanged, so the floor
-    // must not apply — the same policy `TerminalSessions.moveTabIntoSplit` applies via `addsAMember`.
+    // must not apply — the same policy `TerminalPanes.moveTabIntoSplit` applies via `addsAMember`.
     let store = store3()
     store.insertWorkroomSplit(
       wr("feature"), beside: wr("main"), edge: .right, destinationRect: roomy())
@@ -293,12 +293,12 @@ final class WorkroomSplitTests: XCTestCase {
   func testRaiseWorkroomPickerSetsTheMatchingRequestFlag() {
     let store = store3()
     store.raiseWorkroomPicker(.new, split: true)
-    XCTAssertTrue(store.requestNewWorkroomPicker)
-    XCTAssertFalse(store.requestOpenWorkroomPicker)
-    store.requestNewWorkroomPicker = false
+    XCTAssertTrue(store.modals.requestNewWorkroomPicker)
+    XCTAssertFalse(store.modals.requestOpenWorkroomPicker)
+    store.modals.requestNewWorkroomPicker = false
     store.raiseWorkroomPicker(.open)
-    XCTAssertTrue(store.requestOpenWorkroomPicker)
-    XCTAssertFalse(store.requestNewWorkroomPicker)
+    XCTAssertTrue(store.modals.requestOpenWorkroomPicker)
+    XCTAssertFalse(store.modals.requestNewWorkroomPicker)
   }
 
   func testConsumingTheSplitIntentReturnsItOnce() {
@@ -315,7 +315,7 @@ final class WorkroomSplitTests: XCTestCase {
     let store = store3()
     store.raiseWorkroomPicker(.new, split: true)
     _ = store.consumePickerSplitIntent()  // the picker goes up…
-    store.requestNewWorkroomPicker = false  // …and is cancelled without a pick
+    store.modals.requestNewWorkroomPicker = false  // …and is cancelled without a pick
     store.raiseWorkroomPicker(.new)  // the title bar's + button
     XCTAssertFalse(store.consumePickerSplitIntent(), "the plain raise must not inherit split mode")
   }
@@ -477,7 +477,8 @@ final class WorkroomSplitTests: XCTestCase {
     let store = store3()
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)  // 3 leaves
-    store.projects = [project("/a", workrooms: ["main", "bugfix"])]  // "feature" deleted
+    // "feature" deleted
+    store.projectStore.projects = [project("/a", workrooms: ["main", "bugfix"])]
     let layout = store.visibleWorkroomLayout(for: wr("main"))
     XCTAssertEqual(
       Set(layout.tabIDs), [wr("main"), wr("bugfix")],
@@ -487,7 +488,8 @@ final class WorkroomSplitTests: XCTestCase {
   func testVisibleWorkroomLayoutFallsToLeafWhenPruneLeavesOne() {
     let store = store3()
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)  // [main, feature]
-    store.projects = [project("/a", workrooms: ["main"])]  // delete "feature" → one live leaf
+    // delete "feature" → one live leaf
+    store.projectStore.projects = [project("/a", workrooms: ["main"])]
     XCTAssertEqual(
       store.visibleWorkroomLayout(for: wr("main")), .leaf(wr("main")),
       "a lone surviving leaf renders solo, not a one-pane split")
@@ -498,9 +500,9 @@ final class WorkroomSplitTests: XCTestCase {
     // into a contiguous run at main's slot: [main, bugfix, feature].
     let store = makeStore([project("/a", workrooms: ["main", "feature", "bugfix"])])
     store.workroomTabOrder = [
-      TerminalTarget.workroomID(project: "/a", name: "main"),
-      TerminalTarget.workroomID(project: "/a", name: "feature"),
-      TerminalTarget.workroomID(project: "/a", name: "bugfix"),
+      TargetID.workroom(project: "/a", name: "main"),
+      TargetID.workroom(project: "/a", name: "feature"),
+      TargetID.workroom(project: "/a", name: "bugfix"),
     ]
     for name in ["main", "feature", "bugfix"] {
       store.terminals.addTab(for: store.target(for: wr(name))!)  // make all three active in the bar
@@ -527,7 +529,7 @@ final class WorkroomSplitTests: XCTestCase {
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     XCTAssertEqual(store.resolvedSplitLeaves()?.count, 2)
     // Remove "feature" from the project list → only "main" resolves → <2 live → nil.
-    store.projects = [project("/a", workrooms: ["main", "bugfix"])]
+    store.projectStore.projects = [project("/a", workrooms: ["main", "bugfix"])]
     XCTAssertNil(store.resolvedSplitLeaves())
     XCTAssertFalse(store.workroomSplitActive)
   }
@@ -536,7 +538,8 @@ final class WorkroomSplitTests: XCTestCase {
     let store = store3()
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)  // → 3 leaves
-    store.projects = [project("/a", workrooms: ["main", "bugfix"])]  // delete "feature"
+    // delete "feature"
+    store.projectStore.projects = [project("/a", workrooms: ["main", "bugfix"])]
     store.pruneWorkroomSplitToLiveLeaves()
     XCTAssertEqual(Set(onlySplit(store)?.tabIDs ?? []), [wr("main"), wr("bugfix")])
   }
@@ -545,7 +548,7 @@ final class WorkroomSplitTests: XCTestCase {
     let store = store3()
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     store.selectedTargetID = nil  // mimic apply() having nilled a dead selection before prune
-    store.projects = [project("/a", workrooms: ["main"])]  // only "main" survives
+    store.projectStore.projects = [project("/a", workrooms: ["main"])]  // only "main" survives
     store.pruneWorkroomSplitToLiveLeaves()
     XCTAssertNil(onlySplit(store))
     XCTAssertEqual(store.selectedTargetID, wr("main"), "dissolve re-selects the live survivor")
@@ -690,7 +693,7 @@ final class WorkroomSplitTests: XCTestCase {
   private func store4() -> AppStore {
     let names = ["main", "feature", "docs", "review"]
     let store = makeStore([project("/a", workrooms: names)])
-    store.workroomTabOrder = names.map { TerminalTarget.workroomID(project: "/a", name: $0) }
+    store.workroomTabOrder = names.map { TargetID.workroom(project: "/a", name: $0) }
     for name in names { store.terminals.addTab(for: store.target(for: wr(name))!) }
     return store
   }
@@ -747,7 +750,7 @@ final class WorkroomSplitTests: XCTestCase {
     // Each group is pulled into a contiguous run at its own earliest member's slot.
     let store = store4()
     store.workroomTabOrder = ["main", "docs", "feature", "review"].map {
-      TerminalTarget.workroomID(project: "/a", name: $0)
+      TargetID.workroom(project: "/a", name: $0)
     }
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     store.insertWorkroomSplit(wr("review"), beside: wr("docs"), edge: .right)
@@ -789,7 +792,7 @@ final class WorkroomSplitTests: XCTestCase {
     store.insertWorkroomSplit(wr("review"), beside: wr("docs"), edge: .right)  // group B
     // Delete "feature" and "review" out of the project list: BOTH groups drop to one live leaf, so both
     // dissolve — the prune walks every group, not just the visible one.
-    store.projects = [project("/a", workrooms: ["main", "docs"])]
+    store.projectStore.projects = [project("/a", workrooms: ["main", "docs"])]
     store.selectedTargetID = nil  // mimic apply() nilling a dead selection before the prune
     store.pruneWorkroomSplitToLiveLeaves()
     XCTAssertTrue(store.workroomSplits.isEmpty, "both groups dissolved to a lone live leaf")
@@ -810,7 +813,7 @@ final class WorkroomSplitTests: XCTestCase {
       "precondition: a 3-member group and a pair")
 
     // "feature" (in A) and "review" (in B) deleted out of band.
-    store.projects = [project("/a", workrooms: ["main", "spike", "docs"])]
+    store.projectStore.projects = [project("/a", workrooms: ["main", "spike", "docs"])]
     store.selectedTargetID = nil  // mimic apply() nilling a dead selection before the prune
     store.pruneWorkroomSplitToLiveLeaves()
     XCTAssertEqual(
@@ -830,7 +833,8 @@ final class WorkroomSplitTests: XCTestCase {
     let former = store.selectedTargetID
     XCTAssertEqual(former, wr("review"), "precondition: viewing group B")
 
-    store.projects = [project("/a", workrooms: ["main", "docs"])]  // feature + review deleted
+    // feature + review deleted
+    store.projectStore.projects = [project("/a", workrooms: ["main", "docs"])]
     store.selectedTargetID = nil  // apply() nils the dead selection before pruning
     store.pruneWorkroomSplitToLiveLeaves(formerSelection: former)
     XCTAssertEqual(
@@ -851,7 +855,7 @@ final class WorkroomSplitTests: XCTestCase {
     XCTAssertEqual(former, wr("review"), "precondition: viewing group B")
 
     // Kill B's selected member (B keeps feature + spike) and one of A's (A dissolves to docs).
-    store.projects = [project("/a", workrooms: ["feature", "spike", "docs"])]
+    store.projectStore.projects = [project("/a", workrooms: ["feature", "spike", "docs"])]
     store.selectedTargetID = nil
     store.pruneWorkroomSplitToLiveLeaves(formerSelection: former)
     XCTAssertEqual(
@@ -867,7 +871,8 @@ final class WorkroomSplitTests: XCTestCase {
     // survivor — is still the right answer.
     let store = store4()
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
-    store.projects = [project("/a", workrooms: ["main", "docs", "review"])]  // feature deleted
+    // feature deleted
+    store.projectStore.projects = [project("/a", workrooms: ["main", "docs", "review"])]
     store.selectedTargetID = nil
     store.pruneWorkroomSplitToLiveLeaves()
     XCTAssertEqual(store.selectedTargetID, wr("main"))
@@ -960,7 +965,9 @@ final class WorkroomSplitTests: XCTestCase {
 
 /// Auto-even on add/remove (issue #126). The gate is INTENT — each of these functions already knows
 /// whether it is adding a member, removing one, or merely rearranging — so these tests drive the
-/// real store functions rather than the pure transform, which `PaneGroupFitTests` covers.
+/// real store functions: which edit each makes, and the policy it passes (the setting, the measured
+/// space, the ghost-leaf prune). The axis rules themselves, shared with the terminal split, are
+/// `PaneSplitGroupsTests`' in the WorkroomDomain package, and the fit math `PaneGroupFitTests`'.
 ///
 /// `autoEvenSplits` is set directly rather than through `Defaults`: a parallel test worker shares
 /// (and wipes) that domain cross-process, which is how `Defaults`-driven assertions turn flaky.
@@ -972,7 +979,7 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/a", vcs: "git",
         workrooms: names.map {
@@ -1008,26 +1015,6 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     return store
   }
 
-  /// `main | (feature / bugfix)`: a top/bottom split divides height only, so the left/right divider
-  /// the user dragged stays where it was. The skew is what makes this discriminate — at 0.5 it
-  /// would pass whether or not the split touched the other axis.
-  func testATopBottomSplitKeepsTheLeftRightDividers() {
-    let store = makeStore(["main", "feature", "bugfix"])
-    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
-    store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store)!)
-    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
-    XCTAssertEqual(rootRatio(store) ?? -1, 0.8, accuracy: 0.0001)
-  }
-
-  /// The other way round: `main / (feature | bugfix)` keeps the top/bottom divider the user dragged.
-  func testALeftRightSplitKeepsTheTopBottomDividers() {
-    let store = makeStore(["main", "feature", "bugfix"])
-    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .bottom)
-    store.setWorkroomSplitRatio(0.3, forSplit: rootSplitID(store)!)
-    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right)
-    XCTAssertEqual(rootRatio(store) ?? -1, 0.3, accuracy: 0.0001)
-  }
-
   func testAThirdMemberOnTheSameAxisSplitsIntoThirds() {
     let store = makeStore(["main", "feature", "bugfix"])
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
@@ -1053,16 +1040,6 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001, "two survivors split evenly")
   }
 
-  /// `main | (feature / bugfix)`: removing bugfix frees height only, so the left/right divider the
-  /// user dragged stays.
-  func testRemovingAMemberKeepsTheOtherAxisDividers() {
-    let store = threePaneStore()
-    store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store)!)
-    store.removeWorkroomSplitMember(wr("bugfix"))
-    XCTAssertEqual(store.workroomSplits.first?.tabIDs, [wr("main"), wr("feature")])
-    XCTAssertEqual(rootRatio(store) ?? -1, 0.8, accuracy: 0.0001)
-  }
-
   /// `main | feature | bugfix` with bugfix dragged left of main rebuilds the tree as
   /// `(bugfix | main) | feature`; left alone that is ¼, ¼, ½. Must be tested with THREE members: a
   /// two-member same-group move dissolves and re-appends at 0.5 regardless, so it would pass
@@ -1077,35 +1054,6 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(Set(panes.keys), [wr("main"), wr("feature"), wr("bugfix")])
     let widths = panes.values.map(\.width)
     XCTAssertLessThanOrEqual(widths.max()! - widths.min()!, 1, "three even columns: \(widths)")
-  }
-
-  /// `main | (feature / bugfix)`: moving feature below bugfix rearranges top/bottom only, so the
-  /// left/right divider the user dragged stays.
-  func testASameGroupRearrangeAlongOneAxisKeepsTheOtherAxisDividers() {
-    let store = threePaneStore()
-    store.setWorkroomSplitRatio(0.7, forSplit: rootSplitID(store)!)
-    store.insertWorkroomSplit(wr("feature"), beside: wr("bugfix"), edge: .bottom)
-    XCTAssertEqual(store.workroomSplits.first?.tabIDs, [wr("main"), wr("bugfix"), wr("feature")])
-    XCTAssertEqual(rootRatio(store) ?? -1, 0.7, accuracy: 0.0001)
-  }
-
-  /// `main | (feature / bugfix / docs)` rows at thirds. Dragging bugfix beside main leaves
-  /// `feature / docs` at the old third, so evening only the axis bugfix joined keeps feature short.
-  func testASameGroupRearrangeAcrossAxesEvensBoth() {
-    let store = makeStore(["main", "feature", "bugfix", "docs"])
-    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
-    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
-    store.insertWorkroomSplit(wr("docs"), beside: wr("bugfix"), edge: .bottom)
-    store.insertWorkroomSplit(wr("bugfix"), beside: wr("main"), edge: .right)
-    XCTAssertEqual(store.workroomSplits.count, 1)
-    let panes = PaneTreeLayout.plan(
-      store.workroomSplits[0], in: CGRect(x: 0, y: 0, width: 1800, height: 1000)
-    ).panes
-    let widths = [wr("main"), wr("bugfix"), wr("feature")].map { panes[$0]!.width }
-    XCTAssertLessThanOrEqual(widths.max()! - widths.min()!, 1, "three even columns: \(widths)")
-    XCTAssertEqual(
-      panes[wr("feature")]!.height, panes[wr("docs")]!.height, accuracy: 1,
-      "feature and docs split the height evenly")
   }
 
   func testPrefOffKeepsARearrangeAsBuilt() {
@@ -1134,16 +1082,6 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     XCTAssertGreaterThan(widths.max()! - widths.min()!, 100, "not evened: \(widths)")
   }
 
-  func testAnInsertEvensOnlyItsOwnGroup() {
-    let store = makeStore(["main", "feature", "docs", "review"])
-    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)  // group A
-    store.insertWorkroomSplit(wr("review"), beside: wr("docs"), edge: .right)  // group B
-    store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store, group: 0)!)
-    store.insertWorkroomSplit(wr("review"), beside: wr("docs"), edge: .bottom)  // rearrange in B
-    XCTAssertEqual(
-      rootRatio(store, group: 0) ?? -1, 0.9, accuracy: 0.0001, "group A is untouched")
-  }
-
   func testAGhostLeafIsPrunedBeforeEvening() {
     // A group still holding a leaf for a deleted workroom: the renderer hides it, but evening the
     // raw tree would budget a third of the width for a pane nobody can see.
@@ -1165,7 +1103,7 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     let store = threeColumnStore()
     store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store)!)  // or 0.5 would hold either way
     store.selectedTargetID = wr("main")
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/a", vcs: "git",
         workrooms: ["main", "feature"].map {
@@ -1181,7 +1119,7 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     let store = threePaneStore()  // main | (feature / bugfix)
     store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store)!)
     store.selectedTargetID = wr("main")
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/a", vcs: "git",
         workrooms: ["main", "feature"].map {
@@ -1275,19 +1213,6 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
       "the survivors of the group it LEFT are evened, exactly as the ✕ would")
   }
 
-  func testACrossGroupMoveKeepsTheSourceGroupsOtherAxisDividers() {
-    let store = makeStore(["main", "feature", "bugfix", "docs"])
-    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
-    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
-    store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store, group: 0)!)
-
-    store.insertWorkroomSplit(wr("bugfix"), beside: wr("docs"), edge: .right)
-
-    let groupA = store.workroomSplits.first { Set($0.tabIDs) == [wr("main"), wr("feature")] }
-    guard case .split(_, _, let ratio, _, _) = groupA else { return XCTFail("expected a split") }
-    XCTAssertEqual(ratio, 0.8, accuracy: 0.0001, "bugfix left a top/bottom split: no width changes")
-  }
-
   func testAGroupWithNoRoomStillRefuses() {
     let store = makeStore(["main", "feature", "bugfix"])
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 700, height: 900)
@@ -1299,24 +1224,11 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
       "three 300pt panes cannot fit in 700pt, however the space is shared out")
     XCTAssertEqual(store.workroomSplits.first?.tabIDs.count, 2)
   }
-
-  /// The right column, asked for 0.2 of 1000pt, renders at the 300pt floor. Evening only the rows
-  /// must not be vetoed by that untouched, clamped divider: three ~199pt rows fit in 600pt.
-  func testAClampedOtherAxisDividerDoesNotBlockTheSplit() {
-    let store = makeStore(["main", "feature", "bugfix", "docs"])
-    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1000, height: 600)
-    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
-    store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store)!)
-    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
-    XCTAssertTrue(store.insertWorkroomSplit(wr("docs"), beside: wr("bugfix"), edge: .bottom))
-    XCTAssertEqual(store.workroomSplits.first?.tabIDs.count, 4)
-    XCTAssertEqual(rootRatio(store) ?? -1, 0.8, accuracy: 0.0001, "and no width changed")
-  }
 }
 
 /// Workroom evening weighted by each workroom's terminal panes: with `main | feature` side by side,
 /// splitting a terminal in `feature` gives it two thirds, so all three terminals are the same width.
-/// Drives real terminal splits through `TerminalSessions` and its `.paneCountChanged` event.
+/// Drives real terminal splits through `TerminalPanes` and its `.paneCountChanged` event.
 @MainActor
 final class WorkroomSplitPaneWeightTests: XCTestCase {
 
@@ -1327,7 +1239,7 @@ final class WorkroomSplitPaneWeightTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/a", vcs: "git",
         workrooms: names.map {

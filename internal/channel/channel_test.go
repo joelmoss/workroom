@@ -1,11 +1,10 @@
 package channel
 
 import (
-	"bufio"
-	"os"
 	"reflect"
-	"strings"
 	"testing"
+
+	"github.com/joelmoss/workroom/internal/testtable"
 )
 
 type classifyCase struct {
@@ -20,31 +19,14 @@ type classifyCase struct {
 // which had already silently drifted apart (see the dangling-hyphen and -nightly-suffix cases).
 func loadClassifyCases(t *testing.T) []classifyCase {
 	t.Helper()
-	f, err := os.Open("testdata/channel_cases.tsv")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-
 	var cases []classifyCase
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		tag, want, found := strings.Cut(line, "\t")
-		if !found {
-			t.Fatalf("malformed fixture line (no tab): %q", line)
-		}
+	for _, fields := range testtable.Rows(t, "testdata/channel_cases.tsv", 2) {
+		tag, want := fields[0], fields[1]
 		if want == "EXCLUDED" {
 			cases = append(cases, classifyCase{tag, "", false})
 		} else {
 			cases = append(cases, classifyCase{tag, Channel(want), true})
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatal(err)
 	}
 	return cases
 }

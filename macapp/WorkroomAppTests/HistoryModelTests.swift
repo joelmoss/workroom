@@ -1,3 +1,4 @@
+import Synchronization
 import WorkroomVCS
 import XCTest
 
@@ -54,24 +55,27 @@ final class HistoryModelTests: XCTestCase {
   }
 
   /// A provider that counts `log` calls and can be toggled to fail — so `activate`'s branch behaviour
-  /// (does it reload? how many times?) is observable, and its failure-retry can be driven. Lock-guarded
-  /// + `@unchecked Sendable` because `log` runs off-main via `runBlocking`; the tests serialize access
-  /// with `awaitCurrentLoad`, so there's no real contention.
-  private final class CountingProvider: LocalVCSProviding, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _count = 0
-    private var _all: [VCSCommit]
-    private var _fail = false
-    var logCount: Int { lock.withLock { _count } }
-    init(_ all: [VCSCommit]) { _all = all }
-    func setFail(_ f: Bool) { lock.withLock { _fail = f } }
+  /// (does it reload? how many times?) is observable, and its failure-retry can be driven. Behind a
+  /// `Mutex` because `log` runs off-main via `runBlocking`; the tests serialize access with
+  /// `awaitCurrentLoad`, so there's no real contention.
+  private final class CountingProvider: LocalVCSProviding, Sendable {
+    private struct State {
+      var count = 0
+      var fail = false
+    }
+    private let state = Mutex(State())
+    private let all: [VCSCommit]
+    var logCount: Int { state.withLock { $0.count } }
+    init(_ all: [VCSCommit]) { self.all = all }
+    func setFail(_ f: Bool) { state.withLock { $0.fail = f } }
     func log(root: URL, limit: Int) throws -> VCSHistoryPage {
-      try lock.withLock {
-        _count += 1
-        if _fail { throw VCSError.io("boom") }
-        let slice = Array(_all.prefix(limit))
-        return VCSHistoryPage(commits: slice, reachedEnd: slice.count >= _all.count)
+      let fail = state.withLock {
+        $0.count += 1
+        return $0.fail
       }
+      if fail { throw VCSError.io("boom") }
+      let slice = Array(all.prefix(limit))
+      return VCSHistoryPage(commits: slice, reachedEnd: slice.count >= all.count)
     }
     func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
       throw VCSError.io("x")

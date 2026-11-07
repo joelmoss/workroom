@@ -5,13 +5,14 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use super::{DAEMON_UNAVAILABLE, flag, handshake};
-use crate::pty::Size;
-use crate::serve;
+use crate::daemon::serve;
+use crate::terminal::pty::Size;
 use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
 use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
+use wr_protocol::terminal::{AttachRequest, encode_resize};
 
 /// What a restored pane (`--no-create`) shows when its session has ended and the daemon kept no
-/// record of it (`crate::screens`), if it cannot be given a new session instead.
+/// record of it (`crate::terminal::screens`), if it cannot be given a new session instead.
 ///
 /// On this Mac, a new shell in its place. Reached only when the session exits between the daemon's
 /// check and its attach; a plain refusal gets a new session (`run_attach`). On a remote host
@@ -23,8 +24,8 @@ use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
 /// A run session's pane is never given a shell, here or remotely: it would run the run command,
 /// starting a dev server nobody asked for (#522, D2). It says the run ended and holds, and the app,
 /// which knows the run, offers to start it again.
-fn ended(request: &serve::AttachRequest, no_spawn: bool) -> ExitCode {
-    let run = crate::run::is_requested(&request.env);
+fn ended(request: &AttachRequest, no_spawn: bool) -> ExitCode {
+    let run = crate::terminal::run::is_requested(&request.env);
     if !no_spawn && !run {
         return fall_back_to_shell(
             request,
@@ -48,10 +49,10 @@ const RUN_ENDED_NOTICE: &str = "The run command that was running here has ended.
 /// Become an ordinary shell, because this relay could not deliver a persistent session.
 ///
 /// **Why the relay and not the app.** The app decides whether a pane gets a session before it
-/// forks anything: `applyPersistentSession` either hands libghostty `workroomd attach` as its
-/// `config.command` or lets it open a plain shell, and by the time this process exists that choice
-/// is spent. `config.wait_after_command` is false, so a relay that exits leaves a dead pane — no
-/// shell, no prompt, nothing the user can type into. The only place left that can still turn a
+/// forks anything: `PaneSessionAttachment.launch` either hands libghostty `workroomd attach` as
+/// its `config.command` or lets it open a plain shell, and by the time this process exists that
+/// choice is spent. `config.wait_after_command` is false, so a relay that exits leaves a dead pane
+/// — no shell, no prompt, nothing the user can type into. The only place left that can still turn a
 /// failed attach into a working terminal is this process, by replacing itself with the shell the
 /// pane would have run anyway.
 ///
@@ -66,13 +67,13 @@ const RUN_ENDED_NOTICE: &str = "The run command that was running here has ended.
 ///
 /// Never returns on success — `exec` replaces this process, so the shell inherits the pty, the
 /// window title, the exit status, everything. Returns only when `exec` itself fails.
-fn fall_back_to_shell(request: &serve::AttachRequest, reason: &str) -> ExitCode {
+fn fall_back_to_shell(request: &AttachRequest, reason: &str) -> ExitCode {
     use std::os::unix::process::CommandExt;
 
     // A run command runs only in a daemon session, whose supervisor the app can stop, restart and
     // reattach to (#522, D5). Run here it would be none of those, and on a remote host it would
     // run on the wrong machine's terms. So it is not run at all, and the pane says why.
-    if crate::run::is_requested(&request.env) {
+    if crate::terminal::run::is_requested(&request.env) {
         eprintln!("workroomd: could not start the run command: {reason}\r");
         return ExitCode::from(DAEMON_UNAVAILABLE);
     }
@@ -115,10 +116,10 @@ fn fall_back_to_shell(request: &serve::AttachRequest, reason: &str) -> ExitCode 
     let shell = if requested_shell.contains('/') {
         requested_shell
     } else {
-        crate::shell::DEFAULT_SHELL.to_string()
+        crate::terminal::shell::DEFAULT_SHELL.to_string()
     };
 
-    let invocation = crate::shell::invocation(
+    let invocation = crate::terminal::shell::invocation(
         &text(&request.command),
         &shell,
         &text(&request.resources),
@@ -182,6 +183,13 @@ fn candidate_directories(requested: Option<&std::ffi::OsString>) -> Vec<PathBuf>
     .collect()
 }
 
+/// The attach request this process's environment makes (`AttachRequest::from_vars`): the
+/// variables `PersistentSessionService.launchEnvironment` sets, and the environment the child is
+/// given.
+fn request_from_env() -> AttachRequest {
+    AttachRequest::from_vars(|name| std::env::var_os(name), std::env::vars_os().collect())
+}
+
 pub fn run_attach(args: &[String]) -> ExitCode {
     // **Only a relay falls back**, and this is read BEFORE anything can write to it. `attach` is
     // also a documented subcommand someone can type, and answering a typo by silently opening a
@@ -209,7 +217,7 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // Parsed BEFORE the socket is resolved, so a misconfigured invocation can still fall back to a
     // shell: `fall_back_to_shell` reads the shell, cwd and resources the app exported, and those
     // arrive in the same environment.
-    let mut request = serve::AttachRequest::from_env();
+    let mut request = request_from_env();
     // `--no-create`: attach only if the session exists (see `AttachRequest::existing_only`).
     request.existing_only = args.iter().any(|arg| arg == "--no-create");
     // `--no-spawn`: never start a daemon. On a remote host that is the supervisor's job, and a
@@ -260,7 +268,7 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // `Err`'s flag: nothing is listening yet, the one failure a supervisor starting the daemon heals
     // (see `unreachable`). A peer that answers and fails the handshake is not a daemon that will
     // work if asked again.
-    let run = crate::run::is_requested(&request.env);
+    let run = crate::terminal::run::is_requested(&request.env);
     let open = || -> Result<std::os::unix::net::UnixStream, (&str, bool)> {
         let mut stream = match serve::connect(&socket) {
             Some(stream) => stream,
@@ -314,7 +322,7 @@ pub fn run_attach(args: &[String]) -> ExitCode {
             fall_back_to_shell(&request, reason)
         }
     };
-    let encode = |request: &serve::AttachRequest| {
+    let encode = |request: &AttachRequest| {
         let attach = Frame::new(FrameKind::Attach, request.encode());
         Envelope::new(Service::Terminal, 1, attach.encode()).encode()
     };
@@ -327,13 +335,13 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // The attach is answered before raw mode and the relay threads. A restored pane's
     // (`--no-create`) session that ended is attached again to create it locally, or becomes the
     // notice a remote pane holds on, which has to start from a cooked terminal with nothing else
-    // running. When the daemon kept a record of the session (`crate::screens`), it answers
-    // `Attached` and the record instead.
+    // running. When the daemon kept a record of the session (`crate::terminal::screens`), it
+    // answers `Attached` and the record instead.
     //
     // A daemon that closes before answering at all is most likely handing off to a new program
-    // (`crate::handoff`). Its listener stays open across the exec, so the attach is sent again,
-    // and the program that answers next attaches it, or creates it if it never existed. Only a
-    // close with no answer is retried, for up to 10s; a peer that stays open and silent is waited
+    // (`crate::daemon::handoff`). Its listener stays open across the exec, so the attach is sent
+    // again, and the program that answers next attaches it, or creates it if it never existed. Only
+    // a close with no answer is retried, for up to 10s; a peer that stays open and silent is waited
     // on, as an attach always has been. Whatever follows `Attached` stays in `decoder`.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let (mut stream, mut decoder) = loop {
@@ -366,7 +374,7 @@ pub fn run_attach(args: &[String]) -> ExitCode {
                     && !run =>
             {
                 replaced = true;
-                attach = encode(&serve::AttachRequest {
+                attach = encode(&AttachRequest {
                     existing_only: false,
                     ..request.clone()
                 });
@@ -594,7 +602,7 @@ fn relay_resizes(mut stream: std::os::unix::net::UnixStream, initial: Size) {
         };
         size = next;
 
-        let frame = Frame::new(FrameKind::Resize, serve::encode_resize(size));
+        let frame = Frame::new(FrameKind::Resize, encode_resize(size));
         if stream
             .write_all(&Envelope::new(Service::Terminal, 1, frame.encode()).encode())
             .is_err()
@@ -679,32 +687,4 @@ fn relay_stdin(mut stream: std::os::unix::net::UnixStream) {
 }
 
 #[cfg(test)]
-mod size_tests {
-    use super::*;
-
-    const WINDOW: Size = Size {
-        columns: 100,
-        rows: 30,
-        x_pixels: 1000,
-        y_pixels: 600,
-    };
-
-    /// Value: protects=moving a window between displays reaches the daemon (#551);
-    /// fails_when=only rows and columns are compared; why_new=the poll loop had no test;
-    /// seam=size_to_send; no_claim=the kernel's report (pty tests cover it)
-    #[test]
-    fn a_change_of_pixels_alone_is_sent() {
-        let moved = Size {
-            x_pixels: 2000,
-            y_pixels: 1200,
-            ..WINDOW
-        };
-        assert_eq!(size_to_send(WINDOW, moved), Some(moved));
-    }
-
-    #[test]
-    fn no_change_and_no_terminal_send_nothing() {
-        assert_eq!(size_to_send(WINDOW, WINDOW), None);
-        assert_eq!(size_to_send(WINDOW, Size::default()), None);
-    }
-}
+mod size_tests;

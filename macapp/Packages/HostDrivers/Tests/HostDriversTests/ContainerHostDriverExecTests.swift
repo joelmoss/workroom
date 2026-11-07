@@ -45,7 +45,7 @@ final class ContainerHostDriverExecTests: XCTestCase {
     }
   }
 
-  private func driver(_ runtime: URL, dialect: ContainerHostDriver.Dialect = .docker)
+  private func driver(_ runtime: URL, dialect: ContainerRuntime = .docker)
     throws -> ContainerHostDriver
   {
     let daemon = directory.appendingPathComponent("workroomd-linux")

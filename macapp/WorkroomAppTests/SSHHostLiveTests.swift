@@ -1,6 +1,8 @@
 import DaemonConnection
+import DaemonConnectionTestSupport
 import Foundation
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -12,11 +14,13 @@ import XCTest
 /// Opt-in, on a server explicitly supplied for this check. Uses only uniquely named, marked
 /// checkout folders and a separate daemon state directory; never stops a host or daemon.
 final class SSHHostLiveTests: XCTestCase {
-  private final class Records: @unchecked Sendable {
-    private let lock = NSLock()
-    private var available = ["one", "two", "other"]
-    private var saved: [String: HostDescriptor] = [:]
-    var descriptors: [String: HostDescriptor] { lock.withLock { saved } }
+  private final class Records: Sendable {
+    private struct State {
+      var available = ["one", "two", "other"]
+      var saved: [String: HostDescriptor] = [:]
+    }
+    private let state = Mutex(State())
+    var descriptors: [String: HostDescriptor] { state.withLock { $0.saved } }
     var recorder: RemoteWorkrooms.Recorder {
       .init(
         reserve: { _, _ in
@@ -24,37 +28,38 @@ final class SSHHostLiveTests: XCTestCase {
           return ""
         },
         record: { name, descriptor in
-          if let name { self.lock.withLock { self.saved[name] = descriptor } }
+          if let name { self.state.withLock { $0.saved[name] = descriptor } }
         },
-        forget: { name in _ = self.lock.withLock { self.saved.removeValue(forKey: name) } },
+        forget: { name in _ = self.state.withLock { $0.saved.removeValue(forKey: name) } },
         reserveInParent: { parent, descriptor in
-          self.lock.withLock {
-            let name = self.available.removeFirst()
+          self.state.withLock {
+            let name = $0.available.removeFirst()
             var descriptor = descriptor
             descriptor.path = parent + "/" + name
-            self.saved[name] = descriptor
+            $0.saved[name] = descriptor
             return name
           }
         },
-        hasWorkrooms: { id in self.lock.withLock { self.saved.values.contains { $0.id == id } } })
+        hasWorkrooms: { id in
+          self.state.withLock { state in state.saved.values.contains { $0.id == id } }
+        })
     }
   }
 
-  private final class Lines: @unchecked Sendable {
-    private let lock = NSLock()
-    private var saved: [String] = []
-    func add(_ line: String) { lock.withLock { saved.append(line) } }
-    var all: [String] { lock.withLock { saved } }
-  }
-
+  // The async helpers run in their caller's isolation, so the main-actor test can call them without
+  // handing the test case to another executor.
   @discardableResult
-  private func shell(_ command: String, driver: SSHHostDriver) async throws -> String {
+  nonisolated(nonsending) private func shell(_ command: String, driver: SSHHostDriver)
+    async throws -> String
+  {
     let result = try await driver.exec(command, on: driver.hostID).communicate(nil, timeout: 30)
     guard result.status == 0 else { throw VCSError.io("\(command): \(result.output)") }
     return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  private func upload(_ text: String, to path: String, driver: SSHHostDriver) async throws {
+  nonisolated(nonsending) private func upload(
+    _ text: String, to path: String, driver: SSHHostDriver
+  ) async throws {
     let q = PosixShell.quoted
     let parent = (path as NSString).deletingLastPathComponent
     let command =
@@ -110,7 +115,7 @@ final class SSHHostLiveTests: XCTestCase {
         try await DaemonBootstrap.connect(
           host: host, driver: driver, socket: driver.daemonSocket)
       }, pendingIn: nil)
-    var connections: [DaemonVCSConnection] = []
+    var connections: [DaemonClient] = []
     var panes: [RemoteHostIntegrationTests.Pane] = []
     defer {
       for pane in panes { pane.dropLink() }
@@ -121,7 +126,7 @@ final class SSHHostLiveTests: XCTestCase {
       let entries = records.descriptors.map { name, descriptor in
         Workroom(name: name, path: descriptor.path!, vcsName: "git", warnings: [], host: descriptor)
       }
-      hosts.adopt(
+      hosts.reachability.adopt(
         [
           Project(
             path: "/ssh-live/project-one", vcs: "git",
@@ -138,7 +143,7 @@ final class SSHHostLiveTests: XCTestCase {
         do {
           try await RemoteWorkrooms.delete(
             name, host: descriptor, environment: environment, recorder: records.recorder,
-            hosts: hosts)
+            reachability: hosts.reachability, onForgotten: WorkroomLifecycle.forgetRemote)
         } catch { failures.append("\(descriptor.path ?? name): \(error.localizedDescription)") }
       }
       for connection in connections { await connection.close() }
@@ -201,7 +206,7 @@ final class SSHHostLiveTests: XCTestCase {
           setupText, to: item.instance.path + "/scripts/workroom_setup", driver: driver)
         try await upload(
           teardownText, to: item.instance.path + "/scripts/workroom_teardown", driver: driver)
-        let lines = Lines()
+        let lines = Calls<String>()
         let setup = await RemoteProvisioning.runScript(
           .setup, workroom: item.name, at: item.instance.path, hostKind: "ssh", rootScript: nil,
           daemonBinary: binary, on: driver.hostID, driver: driver, judge: judge,
@@ -220,7 +225,7 @@ final class SSHHostLiveTests: XCTestCase {
         XCTAssertTrue(pane.read(until: "LIVE_READY").contains(item.instance.path))
       }
       adopt()
-      try await hosts.ensureConnected(driver.hostID, wake: true)
+      try await hosts.reachability.ensureConnected(driver.hostID, wake: true)
       let originalLease = await HostConnectionManager.shared.snapshot(for: driver.hostID).lease
       let firstDescriptor = try XCTUnwrap(records.descriptors[created[0].name])
       let firstID = try XCTUnwrap(firstDescriptor.workroomID)
@@ -271,12 +276,14 @@ final class SSHHostLiveTests: XCTestCase {
       }
       for (index, item) in created.enumerated() {
         let descriptor = try XCTUnwrap(records.descriptors[item.name])
-        let lines = Lines()
+        let lines = Calls<String>()
         try await RemoteWorkrooms.delete(
           item.name, host: descriptor, environment: environment, recorder: records.recorder,
           teardown: .init(
             path: item.instance.path, rootScript: nil, judge: judge, onLine: { lines.add($0) },
-            run: { await RemoteWorkrooms.runScript($0, hosts: hosts) }), hosts: hosts)
+            run: { await RemoteWorkrooms.runScript($0, reachability: hosts.reachability) }),
+          reachability: hosts.reachability,
+          onForgotten: WorkroomLifecycle.forgetRemote)
         XCTAssertTrue(lines.all.contains("SSH_TEARDOWN:ssh:\(item.name)"), lines.all.description)
         if index == 0 {
           let snapshot = await HostConnectionManager.shared.snapshot(for: driver.hostID)

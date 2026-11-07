@@ -13,7 +13,7 @@ import XCTest
 /// (⌥⌘←/→ terminal, ⇧⌥⌘←/→ workroom, issue #29 — `AppStore.cycleTerminalTab`/`cycleWorkroomTab`) have
 /// no such ceiling and wrap at the ends, so cycling BACKWARD from the first tab wraps straight to the
 /// last one in a single keypress — landing on the same offscreen chip a digit shortcut can't reach,
-/// through the exact same write (`TerminalSessions.setFocused` / `AppStore.selectedTargetID`) ⌘1-9
+/// through the exact same write (`TerminalPanes.setFocused` / `AppStore.selectedTargetID`) ⌘1-9
 /// uses, just via a different entry point.
 ///
 /// Shares its geometry/fixture idioms with `TabStripOverflowUITests` (`launchedApp`, `terminalChips`,
@@ -89,9 +89,9 @@ final class TabStripScrollIntoViewUITests: XCTestCase {
   ///    out of sight. Launch is the easiest way to reproduce it, but it is not the interesting case —
   ///    switching workrooms mounts a fresh terminal strip whose focused tab is whatever you left
   ///    focused there, and a second window mounts a workroom bar with `selectedTargetID` already set.
-  ///    The fixture reproduces it directly: `AppStore` seeds tabs 2…N with `TerminalSessions.addTab`
+  ///    The fixture reproduces it directly: `AppStore` seeds tabs 2…N with `TerminalPanes.addTab`
   ///    (`AppStore.swift:1981`), which focuses every tab it creates (pinned by
-  ///    `TerminalSessionsTests.testAddTabAppendsAndActivates`), so tab N is focused before the strip
+  ///    `TerminalPanesTests.testAddTabAppendsAndActivates`), so tab N is focused before the strip
   ///    ever appears. The chip's focused-ness is asserted by position, not by the accessibility
   ///    `selected` trait: the chips do carry `.accessibilityAddTraits(.isSelected)`, but on macOS that
   ///    does not surface as a queryable AX selected attribute for these elements — a `selected == YES`

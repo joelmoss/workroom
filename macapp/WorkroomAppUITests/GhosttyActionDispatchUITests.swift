@@ -32,7 +32,7 @@ import XCTest
 ///
 /// Each test drives a REAL terminal in the fixture workroom (a temp dir) and emits the escape
 /// sequence from the shell, so the whole path is exercised: PTY → libghostty parse → `action_cb` →
-/// `handleAction` → `GhosttySurfaceView` → `TerminalSessions` → SwiftUI.
+/// `handleAction` → `GhosttySurfaceView` → `TerminalPanes` → SwiftUI.
 final class GhosttyActionDispatchUITests: XCTestCase {
   override func setUp() {
     super.setUp()
@@ -90,7 +90,7 @@ final class GhosttyActionDispatchUITests: XCTestCase {
   /// One launch, two commands run strictly one after the other in the same shell.
   ///
   /// 1. **A running command retitles the tab (issue #2).** Proves `SET_TITLE` → `handleTitleChange`
-  ///    → `TerminalSessions.updateTitle` → `tab.liveTitle` → the chip identifier.
+  ///    → `PaneLiveState.updateTitle` → `tab.liveTitle` → the chip identifier.
   ///
   ///    Driven through shell integration (which emits OSC 0/2 per command) rather than a
   ///    hand-written `printf '\033]0;…'`: a hand-set title IS delivered, but the shell's own prompt
@@ -127,7 +127,7 @@ final class GhosttyActionDispatchUITests: XCTestCase {
     let chip = anyTabChip(app)
     XCTAssertTrue(chip.waitForExistence(timeout: 20), "the tab is addressable")
 
-    // Both edges inside ONE command line, deliberately. `TerminalSessions.handleCommandFinished`
+    // Both edges inside ONE command line, deliberately. `TerminalPanes.handleCommandFinished`
     // clears `progressActive` the moment a command exits ("so the indicator stops the moment the
     // command exits") — so a one-shot `printf` would set the state and have it cleared by its own
     // completion, and the test would pass or fail on a race rather than on the action. Holding the

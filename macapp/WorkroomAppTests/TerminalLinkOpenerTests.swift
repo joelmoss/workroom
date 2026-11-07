@@ -604,9 +604,9 @@ final class TerminalLinkOpenerTests: XCTestCase {
   @MainActor
   func testARemoteParentTraversalIsResolvedOnTheHost() async throws {
     let target = TerminalTarget(
-      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
-      remoteHost: UUID())
-    let sessions = TerminalSessions()
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
+      unavailability: .remote, remoteHost: UUID())
+    let sessions = TerminalPanes()
     func provider(resolved: [String: String] = [:], failing: [String: Error] = [:])
       -> (RepositoryLocation) async throws -> FileProviding
     {
@@ -721,9 +721,10 @@ final class TerminalLinkOpenerTests: XCTestCase {
 
     let host = UUID()
     let target = TerminalTarget(
-      id: "remote", title: "remote", path: root.path, unavailability: .remote, remoteHost: host)
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: root.path,
+      unavailability: .remote, remoteHost: host)
     let location = try XCTUnwrap(target.remoteLocation)
-    let sessions = TerminalSessions()
+    let sessions = TerminalPanes()
     sessions.remoteFiles = { location in
       HostFiles(
         context: FileContext(location: location, sharedLocation: nil),
@@ -742,9 +743,9 @@ final class TerminalLinkOpenerTests: XCTestCase {
   @MainActor
   func testCmdClickInARemotePaneOpensTheHostsFileInTheViewer() async throws {
     let target = TerminalTarget(
-      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
-      remoteHost: UUID())
-    let sessions = TerminalSessions()
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
+      unavailability: .remote, remoteHost: UUID())
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     sessions.remoteFiles = { location in
@@ -754,7 +755,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     }
     let tab = sessions.addTab(for: target)
     let view = try XCTUnwrap(sessions.view(forTab: tab.id, inTarget: target.id))
-    view.onCmdClickFile?("lib/user.rb:1")
+    view.onEvent?(.cmdClickFile("lib/user.rb:1", cwd: nil))
     func opened() -> FileDescriptor? {
       for tab in sessions.tabs(for: target) {
         if case .file(let file) = tab.content { return file }
@@ -775,9 +776,9 @@ final class TerminalLinkOpenerTests: XCTestCase {
   @MainActor
   func testTheRemoteProbeSkipsRefusedCandidatesAndStopsOnAHostFailure() async throws {
     let target = TerminalTarget(
-      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
-      remoteHost: UUID())
-    let sessions = TerminalSessions()
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
+      unavailability: .remote, remoteHost: UUID())
+    let sessions = TerminalPanes()
     let files: [String: Data] = ["a.rb": Data("x\n".utf8)]
     func provider(failing: [String: Error]) -> (RepositoryLocation) async throws
       -> FileProviding
@@ -822,9 +823,9 @@ final class TerminalLinkOpenerTests: XCTestCase {
   @MainActor
   func testAnOpenURLLinkInARemotePaneOpensTheHostsFile() async throws {
     let target = TerminalTarget(
-      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
-      remoteHost: UUID())
-    let sessions = TerminalSessions()
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
+      unavailability: .remote, remoteHost: UUID())
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     sessions.remoteFiles = { location in
@@ -874,14 +875,14 @@ final class TerminalLinkOpenerTests: XCTestCase {
   @MainActor
   func testARemotePanesGateNeverAsksTheHost() async throws {
     let target = TerminalTarget(
-      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
-      remoteHost: UUID())
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
+      unavailability: .remote, remoteHost: UUID())
     let asked = Counter()
-    let sessions = TerminalSessions()
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     sessions.remoteFiles = { location in
-      asked.bump()
+      asked.add()
       return HostFiles(
         context: FileContext(location: location, sharedLocation: nil),
         files: ["a.rb": Data("x\n".utf8)])
@@ -892,16 +893,9 @@ final class TerminalLinkOpenerTests: XCTestCase {
     XCTAssertEqual(view.resolveCmdHoverFile?("hello"), false)
     try await Task.sleep(for: .milliseconds(100))
     XCTAssertEqual(asked.count, 0, "a hover asked the host")
-    view.onCmdClickFile?("a.rb")
+    view.onEvent?(.cmdClickFile("a.rb", cwd: nil))
     for _ in 0..<200 where asked.count == 0 { try await Task.sleep(for: .milliseconds(5)) }
     XCTAssertEqual(asked.count, 1, "the click did not ask the host")
-  }
-
-  private final class Counter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = 0
-    func bump() { lock.withLock { value += 1 } }
-    var count: Int { lock.withLock { value } }
   }
 
   /// A newer remote ⌘-click replaces the one before it (#254): the host can take seconds, and a
@@ -910,9 +904,9 @@ final class TerminalLinkOpenerTests: XCTestCase {
   @MainActor
   func testARemoteClickIsReplacedByTheNextAndDroppedForAClosedPane() async throws {
     let target = TerminalTarget(
-      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
-      remoteHost: UUID())
-    let sessions = TerminalSessions()
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: "/home/workroom/repo",
+      unavailability: .remote, remoteHost: UUID())
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     sessions.remoteFiles = { location in
@@ -929,15 +923,15 @@ final class TerminalLinkOpenerTests: XCTestCase {
       }
       return nil
     }
-    view.onCmdClickFile?("slow.rb")
-    view.onCmdClickFile?("fast.rb")
+    view.onEvent?(.cmdClickFile("slow.rb", cwd: nil))
+    view.onEvent?(.cmdClickFile("fast.rb", cwd: nil))
     try await Task.sleep(for: .milliseconds(800))
     XCTAssertEqual(opened(), "fast.rb", "a slower, older click retargeted the preview")
 
     // The pane that asked closes while the host is still answering, with another pane still
     // open in the workroom: nothing opens there.
     let other = sessions.addTab(for: target)
-    view.onCmdClickFile?("slow.rb")
+    view.onEvent?(.cmdClickFile("slow.rb", cwd: nil))
     sessions.closeTab(tab.id, for: target)
     try await Task.sleep(for: .milliseconds(800))
     XCTAssertNotEqual(opened(), "slow.rb", "a closed pane's click opened a preview")

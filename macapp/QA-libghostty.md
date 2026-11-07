@@ -153,7 +153,8 @@ bump is worthless.
 2026-10-11, see git history):**
 - Bump `GHOSTTY_SHA` in `vcs/scripts/build-ghostty-vt.sh`, and `ZIG_VERSION` to `build.zig.zon`'s
   `minimum_zig_version` at that sha. Both the app and the daemon's shadow terminal build from that one
-  pin. A new Zig also means its checksums in `ci.yml`, `nightly.yml`, `release.yml` and
+  pin. A new Zig also means its checksums in `.github/workflows/ci-rust.yml` (Linux),
+  `.github/actions/setup-daemon-build/action.yml` (macOS, for CI, the nightly and the release) and
   `vcs/scripts/linux-lint/Dockerfile`, from ziglang.org/download/index.json.
 - Sweep the whole of `include/ghostty.h` with `diff -u` between the two refs, then grep `WorkroomApp*`
   for every removed or changed symbol. The 1.5.20260903 bump rewrote the clipboard API wholesale.

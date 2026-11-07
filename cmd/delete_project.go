@@ -71,15 +71,11 @@ func runDeleteProject(svc *workroom.Service, jsonMode bool, confirm string, with
 	}
 
 	if fromDisk {
-		return writeJSONSuccess(stdout, "delete-project", map[string]any{
-			"path":        res.Path,
-			"from_disk":   true,
-			"trash_paths": res.TrashPaths,
+		return writeJSONSuccess(stdout, "delete-project", deleteProjectFromDiskPayload{
+			FromDisk: true, Path: res.Path, TrashPaths: res.TrashPaths,
 		})
 	}
-	return writeJSONSuccess(stdout, "delete-project", map[string]any{
-		"path": res.Path, "with_workrooms": withWorkrooms,
-	})
+	return writeJSONSuccess(stdout, "delete-project", deleteProjectPayload{Path: res.Path, WithWorkrooms: withWorkrooms})
 }
 
 func init() {

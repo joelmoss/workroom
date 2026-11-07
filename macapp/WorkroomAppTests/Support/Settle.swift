@@ -37,3 +37,11 @@ extension XCTestCase {
     }
   }
 }
+
+/// Async sibling of `settle(_:until:)`, for a condition another task makes true: checks it up to
+/// `tries` times, 10 ms apart. It does not fail when the condition never holds; the assertion after
+/// it says what was expected.
+@MainActor
+func waitFor(tries: Int = 300, _ condition: () -> Bool) async throws {
+  for _ in 0..<tries where !condition() { try await Task.sleep(for: .milliseconds(10)) }
+}

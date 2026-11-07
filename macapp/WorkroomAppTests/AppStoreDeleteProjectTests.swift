@@ -27,14 +27,15 @@ final class AppStoreDeleteProjectTests: XCTestCase {
 
     let targets = store.removeProjectLocally(p)
 
-    XCTAssertFalse(store.projects.contains { $0.id == "/a" }, "project not removed")
-    XCTAssertTrue(store.projects.contains { $0.id == "/b" }, "unrelated project disturbed")
+    XCTAssertFalse(store.projectStore.projects.contains { $0.id == "/a" }, "project not removed")
+    XCTAssertTrue(
+      store.projectStore.projects.contains { $0.id == "/b" }, "unrelated project disturbed")
     XCTAssertEqual(
       Set(targets),
       [
-        TerminalTarget.rootID(project: "/a"),
-        TerminalTarget.workroomID(project: "/a", name: "feat"),
-        TerminalTarget.workroomID(project: "/a", name: "bug"),
+        TargetID.root(project: "/a"),
+        TargetID.workroom(project: "/a", name: "feat"),
+        TargetID.workroom(project: "/a", name: "bug"),
       ], "should return the root + every workroom target id")
   }
 
@@ -67,14 +68,15 @@ final class AppStoreDeleteProjectTests: XCTestCase {
   func testRemoveProjectLocallyDropsStatuses() {
     let p = project("/a", workrooms: ["feat"])
     let store = makeStore([p])
-    store.workroomStatuses[.root(project: "/a")] = .unresolved
-    store.workroomStatuses[.workroom(project: "/a", name: "feat")] = .unresolved
+    store.vcsStatus.workroomStatuses[.root(project: "/a")] = .unresolved
+    store.vcsStatus.workroomStatuses[.workroom(project: "/a", name: "feat")] = .unresolved
 
     store.removeProjectLocally(p)
 
-    XCTAssertNil(store.workroomStatuses[.root(project: "/a")], "root status must drop")
+    XCTAssertNil(store.vcsStatus.workroomStatuses[.root(project: "/a")], "root status must drop")
     XCTAssertNil(
-      store.workroomStatuses[.workroom(project: "/a", name: "feat")], "workroom status must drop")
+      store.vcsStatus.workroomStatuses[.workroom(project: "/a", name: "feat")],
+      "workroom status must drop")
   }
 
   /// A pending workroom-label sheet targeting the deleted project must clear (issue #41's pending
@@ -82,12 +84,12 @@ final class AppStoreDeleteProjectTests: XCTestCase {
   func testRemoveProjectLocallyClearsPendingWorkroomLabelForTheDeletedProject() {
     let p = project("/a", workrooms: ["feat"])
     let store = makeStore([p])
-    store.pendingWorkroomLabel = PendingWorkroomLabel(workroom: p.workrooms[0], project: p)
+    store.modals.pendingWorkroomLabel = PendingWorkroomLabel(workroom: p.workrooms[0], project: p)
 
     store.removeProjectLocally(p)
 
     XCTAssertNil(
-      store.pendingWorkroomLabel, "pending label sheet for the deleted project must clear")
+      store.modals.pendingWorkroomLabel, "pending label sheet for the deleted project must clear")
   }
 
   // MARK: - Cross-window deletion (adversarial review: removeProjectLocally only covers the
@@ -100,14 +102,14 @@ final class AppStoreDeleteProjectTests: XCTestCase {
     let store = AppStore(cli: fake)
     store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     await store.reload()
-    store.pendingWorkroomLabel = PendingWorkroomLabel(workroom: p.workrooms[0], project: p)
+    store.modals.pendingWorkroomLabel = PendingWorkroomLabel(workroom: p.workrooms[0], project: p)
 
     // Simulate another window deleting the "feat" workroom.
     fake.projectsToList = [project("/a", workrooms: [])]
     await store.reload()
 
     XCTAssertNil(
-      store.pendingWorkroomLabel,
+      store.modals.pendingWorkroomLabel,
       "pending label sheet must clear once its workroom is gone from a reload")
   }
 
@@ -193,10 +195,10 @@ final class AppStoreDeleteProjectTests: XCTestCase {
   func testTrashToBinMovesEveryPathWhenAllSucceed() {
     let store = makeStore([])
     let fake = FakeTrasher()
-    store.trasher = fake
+    store.services.trasher = fake
     let urls = [URL(fileURLWithPath: "/a"), URL(fileURLWithPath: "/b/c")]
 
-    let failed = store.trashToBin(urls)
+    let failed = store.lifecycle.trashToBin(urls, from: store)
 
     XCTAssertEqual(fake.trashed, urls, "every path must be sent to the Bin, in order")
     XCTAssertTrue(failed.isEmpty, "no failures expected")
@@ -207,10 +209,10 @@ final class AppStoreDeleteProjectTests: XCTestCase {
     let fake = FakeTrasher()
     let bad = URL(fileURLWithPath: "/locked")
     fake.failURLs = [bad]
-    store.trasher = fake
+    store.services.trasher = fake
     let urls = [URL(fileURLWithPath: "/ok"), bad, URL(fileURLWithPath: "/ok2")]
 
-    let failed = store.trashToBin(urls)
+    let failed = store.lifecycle.trashToBin(urls, from: store)
 
     XCTAssertEqual(fake.trashed, urls, "all paths attempted even after a failure")
     XCTAssertEqual(failed, [bad], "only the failing path is reported back")
@@ -220,10 +222,11 @@ final class AppStoreDeleteProjectTests: XCTestCase {
     let store = makeStore([])
     let p = project("/Users/me/dev/app", workrooms: [])
 
-    store.presentTrashFailure(p, failedPaths: [URL(fileURLWithPath: "/Users/me/dev/app")])
+    store.lifecycle.presentTrashFailure(
+      p, failedPaths: [URL(fileURLWithPath: "/Users/me/dev/app")], in: store.modals)
 
-    XCTAssertEqual(store.errorTitle, "Some files of ‘app’ could not be moved to the Bin")
-    let message = store.errorMessage ?? ""
+    XCTAssertEqual(store.modals.errorTitle, "Some files of ‘app’ could not be moved to the Bin")
+    let message = store.modals.errorMessage ?? ""
     XCTAssertTrue(message.contains("/Users/me/dev/app"), "must name the leftover dir")
     XCTAssertTrue(message.contains("removed from Workroom"), "must clarify the project IS gone")
   }

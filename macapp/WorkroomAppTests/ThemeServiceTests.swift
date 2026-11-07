@@ -16,14 +16,16 @@ final class ThemeServiceTests: XCTestCase {
   private var savedFamily: String!
   private var savedAppearance: ThemePreference!
 
-  override func setUp() {
+  override func setUp() async throws {
+    try await super.setUp()
     savedFamily = Defaults[.themeFamily]
     savedAppearance = Defaults[.theme]
   }
 
-  override func tearDown() {
+  override func tearDown() async throws {
     Defaults[.themeFamily] = savedFamily
     Defaults[.theme] = savedAppearance
+    try await super.tearDown()
   }
 
   // MARK: parseHex
@@ -247,28 +249,29 @@ final class ThemeServiceTests: XCTestCase {
   // MARK: observer ownership (WORKROOM-3R)
 
   /// The OS-appearance `DistributedNotificationCenter` observer must be owned by `ThemeService`
-  /// (one process-wide instance) and NOT re-added to `TerminalSessions` (one per window) — a
+  /// (one process-wide instance) and NOT re-added to `TerminalPanes` (one per window) — a
   /// per-window observer is exactly the N-observers-N-sweeps regression this diff fixes (a single
   /// flip would fire the chokepoint N times, each already sweeping all N windows). A behavioural
   /// assertion would need a real DistributedNotificationCenter round-trip through distnoted, which
   /// is flaky in a test host; the declaration is the only place this is reliably observable — same
-  /// reasoning as `TerminalSessionsTests.testIsDirectoryTitleDefaultsToTheCachedHomeDirectory`.
-  func testAppearanceObserverIsOwnedByThemeServiceNotTerminalSessions() throws {
+  /// reasoning as `TerminalPanesTests.testIsDirectoryTitleDefaultsToTheCachedHomeDirectory`.
+  func testAppearanceObserverIsOwnedByThemeServiceNotTerminalPanes() throws {
     let coreDir = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()  // WorkroomAppTests
       .deletingLastPathComponent()  // macapp
       .appendingPathComponent("WorkroomApp/Core")
     let themeService = try String(
-      contentsOf: coreDir.appendingPathComponent("ThemeService.swift"), encoding: .utf8)
+      contentsOf: coreDir.appendingPathComponent("AppShell/ThemeService.swift"), encoding: .utf8)
     let terminalSessions = try String(
-      contentsOf: coreDir.appendingPathComponent("TerminalSessions.swift"), encoding: .utf8)
+      contentsOf: coreDir.appendingPathComponent("Terminal/TerminalPanes.swift"),
+      encoding: .utf8)
 
     XCTAssertTrue(
       themeService.contains("AppleInterfaceThemeChangedNotification"),
       "ThemeService must own the OS-appearance observer")
     XCTAssertFalse(
       terminalSessions.contains("AppleInterfaceThemeChangedNotification"),
-      "TerminalSessions must not re-add a per-window observer — that reopens WORKROOM-3R's "
+      "TerminalPanes must not re-add a per-window observer — that reopens WORKROOM-3R's "
         + "N-observers-N-sweeps stall")
   }
 }

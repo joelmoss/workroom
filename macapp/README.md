@@ -121,7 +121,7 @@ as a Run Script phase **after Compile Sources**.
 ## Auto-update (Sparkle)
 
 The app self-updates via [Sparkle](https://sparkle-project.org): it polls an *appcast* feed and
-installs newer, EdDSA-signed DMGs. Wiring lives in `Core/Updater.swift` (the "Check for
+installs newer, EdDSA-signed DMGs. Wiring lives in `Core/AppShell/Updater.swift` (the "Check for
 Updates…" menu item and the Settings toggle); the `SU*` keys in `project.yml` set the feed URL,
 the public key, and automatic checks (on by default). The update artifact is the same notarized
 DMG we ship, signed with an Ed25519 key whose **public** half is embedded as `SUPublicEDKey`.
@@ -131,7 +131,7 @@ The appcast is hosted as `appcast.xml` on a fixed **`appcast`** GitHub release
 `Scripts/appcast.sh`. **Workroom Nightly reads its own feed**, `appcast-nightly.xml`, on the same
 release — Sparkle always offers untagged (stable) items to every client whatever `allowedChannels`
 says, so a shared feed offered the Nightly app the main Workroom DMG and it failed the
-code-signing check with *"The update is improperly signed"* (see CONTRIBUTING → Auto-update).
+code-signing check with *"The update is improperly signed"* (see [Auto-update](../docs/contributing/releasing.md#auto-update-sparkle-appcast)).
 `project.yml` templates `SUFeedURL` on `$(WORKROOM_APPCAST)` and the `Nightly` config overrides it. Versioning is tag-driven: `release.sh` sets `CFBundleShortVersionString`
 from the tag and `CFBundleVersion` to the commit count (monotonic, so Sparkle always sees a newer
 release as an upgrade).
@@ -161,18 +161,24 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
 
 ## Architecture
 
-- `WorkroomApp.swift` — `@main`; sets `PATH` at launch so the helper/terminals find git.
-- `Core/WorkroomCLI.swift` — `Process` wrapper over the bundled binary: locates it in the
+- `Core/<Context>/` and `Views/<Context>/` — one folder per `CONTEXT.md` context (`AppShell`,
+  `WorkroomManagement`, `VersionControl`, `Terminal`, `RemoteHosts`, `DaemonConnection`,
+  `CodingAgents`); a new file goes in the folder of the context that owns it.
+- `App/WorkroomApp.swift` — `@main`; sets `PATH` at launch so the helper/terminals find git.
+  `App/AppDelegate.swift` holds the launch sequence and the key monitor,
+  `App/FocusedValues.swift` the menu's focused values, and `App/Menus/` the menu bar commands.
+- `Core/WorkroomManagement/WorkroomCLI.swift` — `Process` wrapper over the bundled binary: locates it in the
   bundle, overlays `PATH` onto the inherited env, drains stdout/stderr concurrently,
   enforces per-command timeouts, and decodes the JSON envelope (`ok` / `error.kind`).
-- `Core/AppStore.swift` — `@MainActor` store; loads via `list --json` (config-only first,
+- `Core/AppShell/AppStore/AppStore.swift` — `@MainActor` store; loads via `list --json` (config-only first,
   then `--warnings=fast`), and mutates via `add-project` / `create` / `delete`.
-- `Core/TerminalSessions.swift` — caches one live terminal **per workroom** for the app
-  session so switching doesn't kill running shells (decision D2).
+- `Core/Terminal/TerminalPanes.swift` — each window's layout of its live terminals **per workroom**,
+  over the app's tabs in `TerminalTabs.swift`, kept for the app session so switching doesn't kill
+  running shells (ADR 0069).
 - `Views/` — `NavigationSplitView`: projects sidebar · workroom list · terminal detail,
   with empty/error states, a destructive delete confirmation, and a detail toolbar.
-- `Core/Models.swift` — `Codable` mirrors of the `--json` contract (lenient decoding).
-- `Core/SessionSnapshot.swift` / `SessionStore.swift` / `SessionCoordinator.swift` — the saved
+- `Core/WorkroomManagement/Models.swift` — `Codable` mirrors of the `--json` contract (lenient decoding).
+- `Core/Terminal/SavedLayout.swift` / `SavedLayoutStore.swift` / `SavedLayoutCoordinator.swift` — the saved
   session (issue #46): open panels, split layouts, selection and window frames, restored on the next
   launch. Stored as
   `~/Library/Application Support/Workroom/<bundle id>/session.json` — scoped by bundle id so
@@ -182,15 +188,15 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
   for anything created since the migration, and the older `workroom-session` for sessions that
   helper is still holding, resolved per session so nothing is taken away mid-use. A pane whose
   session has ended opens a new one in its remembered directory, says so in a toast over the pane, and
-  survives quitting from then on. Run tabs are
-  deliberately never restored.
+  survives quitting from then on. Run tabs survive quit too (#522, ADR 0058): a restored run tab
+  reattaches to its still-running server.
 
 ## Things to verify on first build (marked `TODO` in code)
 
 1. **libghostty pin**: the `GhosttyKit` xcframework, built from one upstream commit because the
    embedding C API is not yet stable. `GHOSTTY_SHA` in `vcs/scripts/build-ghostty-vt.sh` is the
    single source of truth for the engine — don't restate it here. ✓ the app builds + links.
-2. **Terminal teardown** (`TerminalSessions` → `GhosttySurfaceView.tearDown`): ✓ frees the
+2. **Terminal teardown** (`TerminalPanes` → `GhosttySurfaceView.tearDown`): ✓ frees the
    surface via `ghostty_surface_free` (callbacks cleared first). Still worth a runtime check:
    switch/delete workrooms repeatedly and confirm no orphaned shells in `ps`.
 3. **Signing/notarization**: ✓ configured (Developer ID for Release, team B898J443L9;

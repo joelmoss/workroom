@@ -3,7 +3,6 @@ import DaemonConnection
 import Foundation
 import WorkroomDomain
 import WorkroomSystem
-import WorkroomVCS
 import os
 
 /// The second real provider driver (#259): exe.dev VMs, driven through exe.dev's ssh API
@@ -31,7 +30,8 @@ import os
 ///
 /// exe.dev has no stop, start or idle timer, and its VMs were never put to sleep while idle
 /// (spike), so nothing here reads presence or keeps a box awake.
-public final class ExeDevHostDriver: HostTerminalDriver, ProvisioningHostDriver, @unchecked Sendable
+public final class ExeDevHostDriver: HostTerminalDriver, OptionedProvisioningDriver,
+  RepositoryGranting, HostOptionsReading, @unchecked Sendable
 {
   public struct Configuration: Sendable {
     /// What every VM this driver makes is named after.
@@ -47,23 +47,26 @@ public final class ExeDevHostDriver: HostTerminalDriver, ProvisioningHostDriver,
     public var screens: String
     /// The user's ssh-agent socket, or nil for none. Their `IdentityAgent`, if set, wins.
     public var sshAgent: String?
+    /// The host-setup scripts the app bundles, which `create` runs on each new VM.
+    public var hostSetup: HostSetup
 
     public init(
       prefix: String = "workroom", account: String? = nil,
       daemonSocket: String = "\(ExeDevHostDriver.stateDirectory)/daemon/workroomd.sock",
       screens: String = "\(ExeDevHostDriver.stateDirectory)/screens",
-      sshAgent: String? = ExeDevHostDriver.userSSHAgent()
+      sshAgent: String? = ExeDevHostDriver.userSSHAgent(), hostSetup: HostSetup
     ) {
       self.prefix = prefix
       self.account = account
       self.daemonSocket = daemonSocket
       self.screens = screens
       self.sshAgent = sshAgent
+      self.hostSetup = hostSetup
     }
   }
 
   /// The host descriptor's `driver` for this provider's hosts.
-  public static let driverName = "exedev"
+  public static let driverName = HostKind.exeDev.driver
   /// The user every exe.dev VM logs in as (exeuntu's `exe.dev/login-user`).
   public static let user = "exedev"
   public static let stateDirectory = "/home/\(user)/.local/state/workroom"
@@ -153,12 +156,12 @@ public final class ExeDevHostDriver: HostTerminalDriver, ProvisioningHostDriver,
           + [Self.user, configuration.daemonSocket, configuration.screens]
           .map(PosixShell.quoted).joined(separator: " ")
         try await setUp(
-          command, on: .remote(id), stdin: Data(try HostSetup.systemdScript().utf8),
+          command, on: .remote(id), stdin: Data(try configuration.hostSetup.systemdScript().utf8),
           timeout: 120, failure: Self.setupFailure(name: name, image: options.image))
         // git and gh reach GitHub through exe.dev's integration, never with a token on the VM.
         try await setUp(
           "sudo sh -s -- /etc/profile.d", on: .remote(id),
-          stdin: Data(try HostSetup.exeDevGitHubScript().utf8), timeout: 30,
+          stdin: Data(try configuration.hostSetup.exeDevGitHubScript().utf8), timeout: 30,
           failure: "setting up git on \(name) failed")
         try await awaitIdentity(of: id, named: name)
       }
@@ -427,6 +430,9 @@ public final class ExeDevHostDriver: HostTerminalDriver, ProvisioningHostDriver,
       throw HostDriverError.provisioning(failure.localizedDescription)
     }
   }
+
+  /// The plan's limits, which the option fields offer sizes within.
+  public func readHostOptions() async throws -> HostOptionsFacts { .exeDev(try await planLimits()) }
 
   /// How long a read for the host option fields waits: ssh's own handshake allows 20 s.
   public static let readTimeout: TimeInterval = 20

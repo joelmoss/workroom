@@ -13,7 +13,7 @@
 # its `pkill -f "Workroom Dev.app/Contents/MacOS/workroomd"` ended every workroom's terminal sessions.
 #
 # SIGTERM throughout, as before: the app's SIGTERM handler is what flushes its session and stops its
-# run commands gracefully (WorkroomApp.swift, installSigtermHandler).
+# run commands gracefully (App/AppDelegate.swift, installSigtermHandler).
 #
 # For tests: STOP_DEV_APP_PS names a FILE holding a process table to read instead of running `ps`,
 # and STOP_DEV_APP_DRY_RUN=1 prints `stop <pid>` for each process instead of signalling it.

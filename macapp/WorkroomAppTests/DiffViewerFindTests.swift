@@ -1,13 +1,15 @@
 import SwiftUI
+import WorkroomGit
 import XCTest
 
 @testable import Workroom
 
 /// Unit tests for the pure helpers behind ⌘F on diff/changeset panes: the two find-source orderings
-/// (`findSource`/`findSourceSideBySide`), the `DiffLineID` identity + its debug collision guard, the
-/// `AttributedString` highlight compositor (`applyFindHighlight`), and the row/match lookup helpers
-/// (`rowID`, `matchedLineID`). Rendering + scroll-to-match integration is manual QA, matching this
+/// (`DiffLoader.findSource`/`findSourceSideBySide`), the `DiffLineID` identity + its debug collision
+/// guard, the `AttributedString` highlight compositor (`applyFindHighlight`), and the row/match
+/// lookup helpers (`rowID`, `matchedLineID`). Rendering + scroll-to-match integration is manual QA, matching this
 /// feature's established convention (`FileFindTests.swift`'s doc comment on `PlainFileViewer`).
+@MainActor
 final class DiffViewerFindTests: XCTestCase {
 
   // MARK: Fixtures
@@ -22,7 +24,7 @@ final class DiffViewerFindTests: XCTestCase {
 
   func testFindSourceEmptyDiffIsEmpty() {
     let diff = UnifiedDiff(hunks: [], truncated: false, renamedFrom: nil)
-    let (lines, ids) = DiffViewer.findSource(for: diff)
+    let (lines, ids) = DiffLoader.findSource(for: diff)
     XCTAssertTrue(lines.isEmpty)
     XCTAssertTrue(ids.isEmpty)
   }
@@ -34,7 +36,7 @@ final class DiffViewerFindTests: XCTestCase {
       header: "@@ -1,1 +1,1 @@ findMeIfBuggy",
       lines: [line(.context, "unchanged", old: 1, new: 1)])
     let diff = UnifiedDiff(hunks: [hunk], truncated: true, renamedFrom: "old/path.swift")
-    let (lines, _) = DiffViewer.findSource(for: diff)
+    let (lines, _) = DiffLoader.findSource(for: diff)
     XCTAssertEqual(lines, ["unchanged"])
   }
 
@@ -44,7 +46,7 @@ final class DiffViewerFindTests: XCTestCase {
     let hunk2 = UnifiedDiff.Hunk(
       header: "@@ -5,1 +5,2 @@", lines: [line(.addition, "new5", new: 5)])
     let diff = UnifiedDiff(hunks: [hunk1, hunk2], truncated: false, renamedFrom: nil)
-    let (lines, ids) = DiffViewer.findSource(for: diff)
+    let (lines, ids) = DiffLoader.findSource(for: diff)
     XCTAssertEqual(lines, ["old1", "new5"])
     XCTAssertEqual(
       ids,
@@ -59,7 +61,7 @@ final class DiffViewerFindTests: XCTestCase {
   func testFindSourceSideBySideContextRowContributesOneEntry() {
     let ctx = line(.context, "same", old: 1, new: 1)
     let row = UnifiedDiff.SideBySideRow(left: ctx, right: ctx)
-    let (lines, ids) = DiffViewer.findSourceSideBySide(sbsRows: [[row]])
+    let (lines, ids) = DiffLoader.findSourceSideBySide(sbsRows: [[row]])
     XCTAssertEqual(lines, ["same"])
     XCTAssertEqual(ids, [DiffLineID(kind: .context, oldLine: 1, newLine: 1)])
   }
@@ -70,7 +72,7 @@ final class DiffViewerFindTests: XCTestCase {
     let del = line(.deletion, "old text", old: 3)
     let add = line(.addition, "new text", new: 3)
     let row = UnifiedDiff.SideBySideRow(left: del, right: add)
-    let (lines, ids) = DiffViewer.findSourceSideBySide(sbsRows: [[row]])
+    let (lines, ids) = DiffLoader.findSourceSideBySide(sbsRows: [[row]])
     XCTAssertEqual(lines, ["old text", "new text"])
     XCTAssertEqual(
       ids,
@@ -83,7 +85,7 @@ final class DiffViewerFindTests: XCTestCase {
   func testFindSourceSideBySideAbsentCellsSkipped() {
     let add = line(.addition, "added only", new: 9)
     let row = UnifiedDiff.SideBySideRow(left: nil, right: add)
-    let (lines, ids) = DiffViewer.findSourceSideBySide(sbsRows: [[row]])
+    let (lines, ids) = DiffLoader.findSourceSideBySide(sbsRows: [[row]])
     XCTAssertEqual(lines, ["added only"])
     XCTAssertEqual(ids, [DiffLineID(kind: .addition, oldLine: nil, newLine: 9)])
   }
@@ -95,12 +97,12 @@ final class DiffViewerFindTests: XCTestCase {
       DiffLineID(kind: .context, oldLine: 1, newLine: 1),
       DiffLineID(kind: .addition, oldLine: nil, newLine: 2),
     ]
-    XCTAssertFalse(DiffViewer.hasDuplicateIDs(ids))
+    XCTAssertFalse(DiffLoader.hasDuplicateIDs(ids))
   }
 
   func testHasDuplicateIDsTrueForDeliberateDuplicate() {
     let dup = DiffLineID(kind: .context, oldLine: 1, newLine: 1)
-    XCTAssertTrue(DiffViewer.hasDuplicateIDs([dup, dup]))
+    XCTAssertTrue(DiffLoader.hasDuplicateIDs([dup, dup]))
   }
 
   // MARK: rowID

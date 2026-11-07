@@ -14,16 +14,16 @@ final class AppStoreSessionRestoreTests: XCTestCase {
   private var directory: URL!
   private var url: URL!
 
-  override func setUpWithError() throws {
-    try super.setUpWithError()
+  override func setUp() async throws {
+    try await super.setUp()
     directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("session-store-restore-\(UUID().uuidString)", isDirectory: true)
     url = directory.appendingPathComponent("session.json")
   }
 
-  override func tearDownWithError() throws {
+  override func tearDown() async throws {
     try? FileManager.default.removeItem(at: directory)
-    try super.tearDownWithError()
+    try await super.tearDown()
   }
 
   private func project(_ path: String, workrooms: [String] = []) -> Project {
@@ -55,10 +55,10 @@ final class AppStoreSessionRestoreTests: XCTestCase {
     projects: [Project], session: WindowSession?, isLaunchWindow: Bool = true
   ) -> AppStore {
     let projectStore = ProjectStore()
-    projectStore.sessionCoordinator = SessionCoordinator(
-      store: SessionStore(url: url), debounce: 0.05, ceiling: 0.2, capture: { [] })
+    projectStore.sessionCoordinator = SavedLayoutCoordinator(
+      store: SavedLayoutStore(url: url), debounce: 0.05, ceiling: 0.2, capture: { [] })
     if let session {
-      SessionStore(url: url).writeSynchronously(
+      SavedLayoutStore(url: url).writeSynchronously(
         SessionFile(savedAt: Date(timeIntervalSince1970: 0), windows: [session]))
     }
     projectStore.projects = projects
@@ -107,7 +107,8 @@ final class AppStoreSessionRestoreTests: XCTestCase {
 
     store.claimSessionIfNeeded()
     XCTAssertNotNil(store.pendingSessionRestore)
-    XCTAssertEqual(store.pendingRestoreSelection, "wr|/p|calm-otter", "the session owns selection")
+    XCTAssertEqual(
+      store.pendingRestoreSelection?.encoded, "wr|/p|calm-otter", "the session owns selection")
 
     // Idempotent: `WindowAccessor` can resolve the same window more than once.
     let claimed = store.pendingSessionRestore
@@ -155,7 +156,7 @@ final class AppStoreSessionRestoreTests: XCTestCase {
   /// `bootstrap` gates on `consumeInitialRestore()`, which is app-wide and one-shot: the launch window
   /// consumes it, so every sibling reaches the clear with `shouldRestore == false`. Clearing there
   /// wiped what `claimSessionIfNeeded` had just written from the window's own session — so window 2
-  /// came back with its panes restored into `TerminalSessions` but nothing selected, i.e. visibly
+  /// came back with its panes restored into `TerminalPanes` but nothing selected, i.e. visibly
   /// empty. Only the window COUNT was asserted end to end, so nothing caught it.
   func testRestoredSiblingKeepsItsOwnSelectionThroughBootstrap() async throws {
     let projects = [project("/p", workrooms: ["calm-otter"])]
@@ -168,12 +169,12 @@ final class AppStoreSessionRestoreTests: XCTestCase {
     XCTAssertTrue(store.projectStore.consumeInitialRestore())
 
     store.claimSessionIfNeeded()
-    XCTAssertEqual(store.pendingRestoreSelection, "wr|/p|calm-otter")
+    XCTAssertEqual(store.pendingRestoreSelection?.encoded, "wr|/p|calm-otter")
 
     await store.bootstrap(restore: true)
 
     XCTAssertEqual(
-      AppStore.targetIDString(for: store.selectedTargetID), "wr|/p|calm-otter",
+      store.selectedTargetID?.targetID?.encoded, "wr|/p|calm-otter",
       "a sibling restored from the session must not open blank")
   }
 
@@ -200,7 +201,7 @@ final class AppStoreSessionRestoreTests: XCTestCase {
     saved.selectedTargetID = nil
     let store = makeStore(projects: projects, session: saved)
     // As `AppStore.init` seeds it from `Defaults[.sidebarSelection]`.
-    store.pendingRestoreSelection = "wr|/p|calm-otter"
+    store.pendingRestoreSelection = TargetID(encoded: "wr|/p|calm-otter")
 
     store.claimSessionIfNeeded()
 
@@ -341,7 +342,7 @@ final class AppStoreSessionRestoreTests: XCTestCase {
     XCTAssertEqual(
       store.workroomSplits.first?.tabIDs,
       [.workroom(project: "/p", name: "one"), .workroom(project: "/p", name: "two")])
-    XCTAssertEqual(store.expandedTerminalTargets, ["wr|/p|one"])
+    XCTAssertEqual(store.expandedTerminalTargets, [.workroom(project: "/p", name: "one")])
   }
 
   /// A group whose second workroom was deleted is not a group any more.

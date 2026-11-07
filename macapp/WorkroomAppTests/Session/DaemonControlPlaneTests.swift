@@ -1,4 +1,5 @@
 import Darwin
+import WorkroomDomain
 import XCTest
 
 @testable import Workroom
@@ -83,7 +84,7 @@ final class DaemonControlPlaneTests: XCTestCase {
 
     let client = DaemonControlClient(socketPath: harness.socketPath)
     let identifier = UUID()
-    let workroom = TerminalTarget.workroomID(project: "/Users/me/dev/app", name: "cyan-brush")
+    let workroom = TargetID.workroom(project: "/Users/me/dev/app", name: "cyan-brush").encoded
     try harness.startSession(
       identifier: identifier,
       metadata: [
@@ -127,11 +128,11 @@ final class DaemonControlPlaneTests: XCTestCase {
     try harness.startSession(
       identifier: identifier,
       metadata: [
-        (SessionMetadataKey.workroom, QuickTerminalController.targetID),
+        (SessionMetadataKey.workroom, QuickTerminalController.targetID.encoded),
         (SessionMetadataKey.title, "Terminal 1"),
       ])
     XCTAssertTrue(harness.wait { client.list().count == 1 })
-    let workroom = TerminalTarget.workroomID(project: "/Users/me/dev/app", name: "cyan-brush")
+    let workroom = TargetID.workroom(project: "/Users/me/dev/app", name: "cyan-brush").encoded
 
     XCTAssertEqual(client.retag(session: identifier, workroom: workroom), true)
     let listed = try XCTUnwrap(client.list().first)

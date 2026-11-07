@@ -91,7 +91,7 @@ final class SwitcherRecencyTests: XCTestCase {
     XCTAssertEqual(a.windowToken, a.windowToken, "and it is stable for that store")
   }
 
-  /// The same workroom open in two windows is two switchable places, because `TerminalSessions` is
+  /// The same workroom open in two windows is two switchable places, because `TerminalPanes` is
   /// per-window and each may be showing a different tab.
   func testSameWorkroomInTwoWindowsIsTwoSlots() {
     let a = AppStore()
@@ -154,7 +154,7 @@ final class SwitcherRecencyTests: XCTestCase {
       WorkroomSlot(
         store: visible, sid: sid,
         target: TerminalTarget(
-          id: TerminalTarget.workroomID(project: "/p", name: "w"), title: "w", path: "/p/w",
+          id: TargetID.workroom(project: "/p", name: "w"), title: "w", path: "/p/w",
           isMissing: false))
     ])
     XCTAssertEqual(

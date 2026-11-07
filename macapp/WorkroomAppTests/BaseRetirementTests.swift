@@ -9,12 +9,7 @@ final class BaseRetirementTests: XCTestCase {
   private let mine = RemoteWorkrooms.provisioner
 
   /// What the effects did, in order.
-  private final class Log: @unchecked Sendable {
-    private let lock = NSLock()
-    private var entries: [String] = []
-    var all: [String] { lock.withLock { entries } }
-    func add(_ entry: String) { lock.withLock { entries.append(entry) } }
-  }
+  private typealias Log = Calls<String>
 
   private func effects(_ log: Log, failing: Set<UUID> = []) -> BaseRetirement.Effects {
     BaseRetirement.Effects(

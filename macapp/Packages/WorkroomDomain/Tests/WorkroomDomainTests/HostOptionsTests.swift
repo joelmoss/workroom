@@ -5,14 +5,14 @@ import XCTest
 final class HostOptionsTests: XCTestCase {
   /// Each key resolves on its own: this create, then the project, then Settings, then the
   /// provider's default. Provider default at a level stops the walk with no value.
-  func testEachKeyResolvesFromTheMostSpecificLevelThatSetsIt() {
+  func testEachKeyResolvesFromTheMostSpecificLevelThatSetsIt() throws {
     let settings = HostOptions(
       image: .value("settings/image"), cpu: .value(2), memory: .value("4GB"), disk: .value("20GB"))
     let project = HostOptions(image: .value("project/image"), memory: .providerDefault)
     let create = HostOptions(cpu: .value(8))
 
-    let resolved = HostOptions.resolve(
-      for: .exeDev, create: create, project: project, settings: settings)
+    let resolved = try XCTUnwrap(
+      HostOptions.resolve(for: .exeDev, create: create, project: project, settings: settings))
 
     XCTAssertEqual(resolved.image, .init(value: "project/image", source: .project))
     XCTAssertEqual(resolved.cpu, .init(value: 8, source: .create))
@@ -22,8 +22,9 @@ final class HostOptionsTests: XCTestCase {
       resolved.options, ResolvedHostOptions(image: "project/image", cpu: 8, disk: "20GB"))
   }
 
-  func testNothingSetAnywhereIsTheProvidersDefault() {
-    let resolved = HostOptions.resolve(for: .exeDev, create: nil, project: nil, settings: nil)
+  func testNothingSetAnywhereIsTheProvidersDefault() throws {
+    let resolved = try XCTUnwrap(
+      HostOptions.resolve(for: .exeDev, create: nil, project: nil, settings: nil))
     XCTAssertEqual(resolved.image, .init(value: nil, source: nil))
     XCTAssertEqual(resolved.options, ResolvedHostOptions())
     XCTAssertTrue(resolved.options.isProviderDefault)
@@ -31,12 +32,12 @@ final class HostOptionsTests: XCTestCase {
 
   /// boxd refuses a size with a snapshot, and has no memory or disk of its own to choose. The
   /// size below is still what a level above inherits, should it override the snapshot.
-  func testABoxdSnapshotResolvesSizeToNothing() {
+  func testABoxdSnapshotResolvesSizeToNothing() throws {
     let settings = HostOptions(cpu: .value(4), memory: .value("16G"), disk: .value("50GB"))
     let project = HostOptions(image: .value("prepared"))
 
-    let resolved = HostOptions.resolve(
-      for: .boxd, create: nil, project: project, settings: settings)
+    let resolved = try XCTUnwrap(
+      HostOptions.resolve(for: .boxd, create: nil, project: project, settings: settings))
 
     XCTAssertEqual(resolved.options, ResolvedHostOptions(image: "prepared"))
     XCTAssertEqual(resolved.cpu, .init(value: 4, source: .settings))
@@ -47,24 +48,25 @@ final class HostOptionsTests: XCTestCase {
   /// send; fails_when=the snapshot's level hides the size below, so the picker shows the
   /// provider's default while the create sends a larger paid size; why_new=review finding (Codex);
   /// seam=none; no_claim=the picker's rendering
-  func testOverridingASnapshotShowsTheSizeTheCreateSends() {
+  func testOverridingASnapshotShowsTheSizeTheCreateSends() throws {
     let settings = HostOptions(cpu: .value(8))
     let project = HostOptions(image: .value("prepared"))
-    let below = HostOptions.resolve(
-      for: .boxd, create: nil, project: project, settings: settings)
+    let below = try XCTUnwrap(
+      HostOptions.resolve(for: .boxd, create: nil, project: project, settings: settings))
 
     let create = HostOptions(image: .providerDefault)
-    let sent = HostOptions.resolve(
-      for: .boxd, create: create, project: project, settings: settings)
+    let sent = try XCTUnwrap(
+      HostOptions.resolve(for: .boxd, create: create, project: project, settings: settings))
 
     XCTAssertEqual(sent.options.cpu, 8)
     XCTAssertEqual(below.cpu.value, sent.options.cpu, "the size shown isn't the size sent")
   }
 
-  func testABoxdFreshMachineTakesOnlyItsSize() {
+  func testABoxdFreshMachineTakesOnlyItsSize() throws {
     let settings = HostOptions(cpu: .value(4), memory: .value("16G"), disk: .value("50GB"))
-    let resolved = HostOptions.resolve(
-      for: .boxd, create: HostOptions(image: .providerDefault), project: nil, settings: settings)
+    let resolved = try XCTUnwrap(
+      HostOptions.resolve(
+        for: .boxd, create: HostOptions(image: .providerDefault), project: nil, settings: settings))
     XCTAssertEqual(resolved.options, ResolvedHostOptions(cpu: 4))
     XCTAssertFalse(resolved.sizeTakenBySnapshot)
   }

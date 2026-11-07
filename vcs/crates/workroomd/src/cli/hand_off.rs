@@ -5,8 +5,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use super::{DAEMON_UNAVAILABLE, flag, handshake};
-use crate::handoff;
-use crate::serve;
+use crate::daemon::handoff;
+use crate::daemon::serve;
 use wr_protocol::envelope::{Envelope, EnvelopeDecoder, MIN_HANDOFF_VERSION, Service};
 use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
 

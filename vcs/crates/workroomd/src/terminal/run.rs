@@ -1,0 +1,227 @@
+//! Run sessions (#522): a project's run command in a daemon session of its own, so it survives the
+//! app quitting and runs the same way on this Mac and on a host.
+//!
+//! A run session's pty runs `workroomd run-supervisor` (`cli::run_supervisor`), which writes the
+//! run's state to a status file the daemon names by session id, beside its socket, so a hand-off
+//! needs to carry nothing to find it again. The daemon reads that file and publishes it with the
+//! session's program status, so an app sees how a run ended even when it was closed at the time.
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+use crate::terminal::session::{SessionId, SessionStore};
+use crate::util::Wake;
+
+/// The runs watcher's side of a session store, which the store reaches through its hooks
+/// (`session::Hooks`): where run sessions keep their status files, when this store serves a socket
+/// (`keep`), and what the watcher sleeps on. A store without a directory refuses run sessions.
+#[derive(Default)]
+pub struct Runs {
+    dir: OnceLock<PathBuf>,
+    /// Raised when a run session is created, signalled or ended: what the watcher sleeps on while
+    /// no run session has a status left to publish.
+    wake: Wake,
+}
+
+impl Runs {
+    /// Keeps run sessions' status files in `dir`, made private to this user if it is new. A
+    /// directory that cannot be made leaves the store refusing run sessions.
+    pub fn keep(&self, dir: PathBuf) {
+        use std::os::unix::fs::DirBuilderExt;
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => {
+                crate::note!("not keeping run sessions in {}: {e}", dir.display());
+                return;
+            }
+        }
+        let _ = self.dir.set(dir);
+    }
+
+    /// Where run session `id` keeps its status, or None when this store keeps no run sessions.
+    pub fn status_path(&self, id: SessionId) -> Option<PathBuf> {
+        self.dir.get().map(|dir| status_file(dir, id))
+    }
+
+    /// The directory `keep` was given.
+    pub fn dir(&self) -> Option<&Path> {
+        self.dir.get().map(PathBuf::as_path)
+    }
+
+    /// How often a run session has been created, signalled or ended so far. Read before looking
+    /// at the runs, so `wait_for_wake` cannot miss one in between.
+    pub(crate) fn wake(&self) -> u64 {
+        self.wake.seen()
+    }
+
+    /// Blocks until a run session is created, signalled or ended after `wake` returned `seen`.
+    pub(crate) fn wait_for_wake(&self, seen: u64) {
+        self.wake.wait_past(seen);
+    }
+
+    pub(crate) fn raise(&self) {
+        self.wake.raise();
+    }
+}
+
+/// How often the watcher reads each run session's status file: the app polled it this often when
+/// it read the file itself, and a stop or a crash should show at once. A run's file is one short
+/// line, and a Mac or a host runs a handful.
+const POLL: Duration = Duration::from_millis(150);
+
+/// How long the watcher keeps polling after a wake with every run finished: the status a create or
+/// a signal leads to is written within a moment, but not before the wake.
+const WAKE_GRACE: Duration = Duration::from_secs(5);
+
+/// Set in the attach environment, to `1`, for a session that is a run command rather than a
+/// shell. One of the session's own variables, so its shell never sees it.
+pub const REQUEST_VARIABLE: &str = "WORKROOM_SESSION_RUN";
+
+/// The metadata a run session is listed with, so any app can tell a workroom's run from its
+/// shells (#522, D7).
+pub const KIND_KEY: &str = "kind";
+pub const RUN_KIND: &str = "run";
+
+/// Where a socket's run sessions keep their status files, in the daemon's own directory.
+pub fn dir_beside(socket: &Path) -> PathBuf {
+    socket.with_extension("runs")
+}
+
+/// The status file of run session `id` in `dir`.
+pub fn status_file(dir: &Path, id: SessionId) -> PathBuf {
+    dir.join(format!("{}.status", id.to_hyphenated()))
+}
+
+/// Whether an attach environment asks for a run session.
+pub fn is_requested(env: &[(OsString, OsString)]) -> bool {
+    env.iter()
+        .any(|(key, value)| key == REQUEST_VARIABLE && value == "1")
+}
+
+/// Whether a session's metadata says it is a run session.
+pub fn is_run(metadata: &[(String, String)]) -> bool {
+    metadata
+        .iter()
+        .any(|(key, value)| key == KIND_KEY && value == RUN_KIND)
+}
+
+/// Publishes each run session's status as its supervisor writes it, and removes a status file once
+/// its session has gone. A store that keeps no run sessions starts nothing.
+pub fn spawn_watcher(sessions: SessionStore) {
+    let Some(dir) = sessions.hooks().runs.dir().map(Path::to_path_buf) else {
+        return;
+    };
+    // Before the first tick, after any hand-off adopted its sessions: a file whose session is not
+    // here was left by a daemon that died or a host that rebooted, and must never be read as a run's.
+    remove_stale(&dir, &sessions.run_session_ids());
+    let spawned = std::thread::Builder::new()
+        .name("runs".into())
+        .spawn(move || {
+            let mut published = HashMap::new();
+            let mut grace = Grace {
+                counted: sessions.hooks().runs.wake(),
+                until: Instant::now(),
+            };
+            loop {
+                // Counted before the tick looks, so a run created or signalled between the look
+                // and the wait still wakes it.
+                let seen = sessions.hooks().runs.wake();
+                grace.count(seen, Instant::now());
+                let running = tick(&sessions, &dir, &mut published);
+                if running || grace.polling(Instant::now()) {
+                    std::thread::sleep(POLL);
+                } else {
+                    // Every run has finished, or there is none: sleep until one is created or
+                    // signalled, rather than read finished runs' files seven times a second (an
+                    // idle daemon's whole cost with a stopped run tab open, 2026-10-23).
+                    sessions.hooks().runs.wait_for_wake(seen);
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("workroomd: run sessions' state will not be published: no thread for it: {e}");
+    }
+}
+
+/// How long the watcher polls whatever the statuses say: `WAKE_GRACE` after the last create or
+/// signal it counted, since that run has a new status on its way that its file does not show yet.
+/// Counted on every pass, not only after a wait: a restart while the watcher is still polling
+/// for the one before must get its own grace, or the watcher can sleep on the old "stopped".
+struct Grace {
+    counted: u64,
+    until: Instant,
+}
+
+impl Grace {
+    fn count(&mut self, seen: u64, now: Instant) {
+        if seen != self.counted {
+            self.counted = seen;
+            self.until = now + WAKE_GRACE;
+        }
+    }
+
+    fn polling(&self, now: Instant) -> bool {
+        now < self.until
+    }
+}
+
+/// One pass: each live run's status, published when it changed, and the files of runs that ended.
+/// Whether any live run is still running, or has no status yet, so the next pass is owed soon.
+fn tick(sessions: &SessionStore, dir: &Path, published: &mut HashMap<SessionId, String>) -> bool {
+    let live = sessions.run_session_ids();
+    for &id in &live {
+        let Ok(raw) = std::fs::read_to_string(status_file(dir, id)) else {
+            continue;
+        };
+        let line = raw.trim();
+        if line.is_empty() || published.get(&id).map(String::as_str) == Some(line) {
+            continue;
+        }
+        let line = line.to_string();
+        if sessions.update_program_status(id, |status| status.set_run(line.clone())) {
+            published.insert(id, line);
+        }
+    }
+    published.retain(|id, _| {
+        let alive = live.contains(id);
+        if !alive {
+            let _ = std::fs::remove_file(status_file(dir, *id));
+        }
+        alive
+    });
+    live.iter()
+        .any(|id| published.get(id).is_none_or(|status| still_running(status)))
+}
+
+/// Whether a supervisor's status line can still change on its own: `running <pid>` or
+/// `restarting …` can, `exited …` and `stopped …` only after a signal (`run_supervisor.sh`).
+fn still_running(status: &str) -> bool {
+    !matches!(
+        status.split_whitespace().next(),
+        Some("exited") | Some("stopped")
+    )
+}
+
+/// Removes every status file in `dir`, and every temporary one its supervisor left, whose session
+/// is not in `live`.
+fn remove_stale(dir: &Path, live: &[SessionId]) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let kept: Vec<String> = live
+        .iter()
+        .map(|id| format!("{}.status", id.to_hyphenated()))
+        .collect();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !kept.contains(&name) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -1,3 +1,4 @@
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -26,14 +27,13 @@ final class HistoryLiveRefreshTests: XCTestCase {
 
   // MARK: harness
 
-  /// Counts `log` calls (the observable "a load fired" signal). Lock-guarded + `@unchecked Sendable`
-  /// because `log` runs off-main via `runBlocking`; tests serialize with `awaitCurrentLoad`.
-  private final class CountingProvider: LocalVCSProviding, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _count = 0
-    var logCount: Int { lock.withLock { _count } }
+  /// Counts `log` calls (the observable "a load fired" signal). Behind a `Mutex` because `log` runs
+  /// off-main via `runBlocking`; tests serialize with `awaitCurrentLoad`.
+  private final class CountingProvider: LocalVCSProviding, Sendable {
+    private let count = Mutex(0)
+    var logCount: Int { count.withLock { $0 } }
     func log(root: URL, limit: Int) throws -> VCSHistoryPage {
-      lock.withLock { _count += 1 }
+      count.withLock { $0 += 1 }
       return VCSHistoryPage(commits: [], reachedEnd: true)
     }
     func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
@@ -75,7 +75,7 @@ final class HistoryLiveRefreshTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.projects = projects
+    store.projectStore.projects = projects
     store.inspectorVisibleOverrideForTesting = true
     store.isolatesInspectorSectionForTesting = true
     store.isolatesInspectorLayoutForTesting = true
@@ -97,7 +97,7 @@ final class HistoryLiveRefreshTests: XCTestCase {
     XCTAssertEqual(store.inspectorTargetID, wr("solo", in: "/a"))
     let before = provider.logCount
 
-    store.handleRootBranchChange(projectID: store.projects[0].id)
+    store.handleRootBranchChange(projectID: store.projectStore.projects[0].id)
     await store.commitHistory.awaitCurrentLoad()
 
     XCTAssertEqual(
@@ -111,7 +111,7 @@ final class HistoryLiveRefreshTests: XCTestCase {
       projects: [project("/a", workrooms: ["solo"]), project("/b", workrooms: ["other"])],
       select: "/a", workroom: "solo")
     let before = provider.logCount
-    let otherProject = store.projects.first { $0.path == "/b" }!
+    let otherProject = store.projectStore.projects.first { $0.path == "/b" }!
 
     store.handleRootBranchChange(projectID: otherProject.id)
     await store.commitHistory.awaitCurrentLoad()
@@ -126,7 +126,7 @@ final class HistoryLiveRefreshTests: XCTestCase {
     store.inspectorVisibleOverrideForTesting = false  // still on .history, but the pane is hidden
     let before = provider.logCount
 
-    store.handleRootBranchChange(projectID: store.projects[0].id)
+    store.handleRootBranchChange(projectID: store.projectStore.projects[0].id)
     await store.commitHistory.awaitCurrentLoad()
 
     XCTAssertEqual(
@@ -141,7 +141,7 @@ final class HistoryLiveRefreshTests: XCTestCase {
     store.activeInspectorSection = .files  // a pane that doesn't stack History
     let before = provider.logCount
 
-    store.handleRootBranchChange(projectID: store.projects[0].id)
+    store.handleRootBranchChange(projectID: store.projectStore.projects[0].id)
     await store.commitHistory.awaitCurrentLoad()
 
     XCTAssertEqual(provider.logCount, before, "a pane without History must not refresh the log")
@@ -151,7 +151,7 @@ final class HistoryLiveRefreshTests: XCTestCase {
     await store.commitHistory.awaitCurrentLoad()
     let beforeCollapsed = provider.logCount
 
-    store.handleRootBranchChange(projectID: store.projects[0].id)
+    store.handleRootBranchChange(projectID: store.projectStore.projects[0].id)
     await store.commitHistory.awaitCurrentLoad()
 
     XCTAssertEqual(

@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 import WorkroomWire
 import XCTest
 
@@ -411,17 +412,13 @@ final class SessionShimCompatibilityTests: XCTestCase {
     // path — it becomes a shell, which inherits the held-open stdin and waits forever — so the
     // observable is the message arriving in time, not the process ending. Reading to EOF here is
     // what made this test sit until its own watchdog fired.
-    let collected = NSMutableData()
-    let lock = NSLock()
+    let collected = CollectedOutput()
     let sawNotice = XCTestExpectation(description: "the client reports giving up")
     let sawFallback = XCTestExpectation(description: "the client becomes a shell")
     output.fileHandleForReading.readabilityHandler = { handle in
       let data = handle.availableData
       guard !data.isEmpty else { return }
-      lock.lock()
-      collected.append(data)
-      let seen = String(decoding: collected as Data, as: UTF8.self)
-      lock.unlock()
+      let seen = collected.appendAndRead(data)
       if seen.contains("did not answer the attach request") { sawNotice.fulfill() }
       if seen.contains("will not survive quitting") { sawFallback.fulfill() }
     }
@@ -442,9 +439,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
     process.waitUntilExit()
     watchdog.cancel()
     output.fileHandleForReading.readabilityHandler = nil
-    lock.lock()
-    let text = String(decoding: collected as Data, as: UTF8.self)
-    lock.unlock()
+    let text = collected.text
 
     XCTAssertEqual(
       outcome, .completed,
@@ -563,30 +558,25 @@ final class SessionShimCompatibilityTests: XCTestCase {
 
     // Read on a background queue: the client streams until its stdin closes, and reading to EOF on
     // this thread would deadlock against our own write end being open.
-    let collected = NSMutableData()
-    let lock = NSLock()
+    let collected = CollectedOutput()
     output.fileHandleForReading.readabilityHandler = { handle in
       let data = handle.availableData
       guard !data.isEmpty else { return }
-      lock.lock()
       collected.append(data)
-      lock.unlock()
     }
 
     // Wait for the reattach to actually produce something, then for it to stop producing, rather
     // than for a fixed three seconds. A flat sleep is wrong in both directions: it is three seconds
     // of test time on every run, and on a loaded machine it is still not enough — the helper has to
     // accept, look the session up and replay its buffer before a single byte is due.
-    let settled = Self.waitForOutputToSettle(collected, lock: lock)
+    let settled = Self.waitForOutputToSettle(collected)
     XCTAssertTrue(
       settled, "the shipped helper sent nothing within \(Self.attachCeiling)s of the attach")
     input.fileHandleForWriting.closeFile()
     process.waitUntilExit()
     output.fileHandleForReading.readabilityHandler = nil
 
-    lock.lock()
-    defer { lock.unlock() }
-    return String(decoding: collected as Data, as: UTF8.self)
+    return collected.text
   }
 
   /// How long a reattach gets before we call it a failure. Generous on purpose: this bounds a
@@ -599,15 +589,13 @@ final class SessionShimCompatibilityTests: XCTestCase {
   /// Quiescence, not just non-empty: the replay arrives in several writes and asserting on the
   /// first of them would read a prefix of the screen.
   private static func waitForOutputToSettle(
-    _ collected: NSMutableData, lock: NSLock, quiet: TimeInterval = 0.25
+    _ collected: CollectedOutput, quiet: TimeInterval = 0.25
   ) -> Bool {
     let deadline = Date().addingTimeInterval(attachCeiling)
     var lastLength = 0
     var lastChange = Date()
     while Date() < deadline {
-      lock.lock()
       let length = collected.length
-      lock.unlock()
       if length != lastLength {
         lastLength = length
         lastChange = Date()
@@ -682,7 +670,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
     // handshake are relayed into a socket the helper is not reading yet, and the test would be
     // measuring the race rather than the feature.
     XCTAssertTrue(
-      Self.waitForOutputToSettle(client.collected, lock: client.lock),
+      Self.waitForOutputToSettle(client.collected),
       "the shipped helper sent nothing within \(Self.attachCeiling)s of the attach")
     return client
   }
@@ -690,8 +678,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
   /// Owns the pipes for the lifetime of one attached client, so a test can type at it, read what
   /// came back, and clean it up without three locals and a `defer` each time.
   final class AttachedClient {
-    let collected = NSMutableData()
-    let lock = NSLock()
+    let collected = CollectedOutput()
     private let process: Process
     private let input: Pipe
     private let output: Pipe
@@ -701,13 +688,10 @@ final class SessionShimCompatibilityTests: XCTestCase {
       self.input = input
       self.output = output
       let collected = self.collected
-      let lock = self.lock
       output.fileHandleForReading.readabilityHandler = { handle in
         let data = handle.availableData
         guard !data.isEmpty else { return }
-        lock.lock()
         collected.append(data)
-        lock.unlock()
       }
     }
 
@@ -725,11 +709,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
       }
     }
 
-    func text() -> String {
-      lock.lock()
-      defer { lock.unlock() }
-      return String(decoding: collected as Data, as: UTF8.self)
-    }
+    func text() -> String { collected.text }
 
     func waitUntilExit(within seconds: TimeInterval) -> Bool {
       let deadline = Date().addingTimeInterval(seconds)
@@ -900,4 +880,24 @@ private struct SessionTestClient {
   func closeConnection() {
     Darwin.close(descriptor)
   }
+}
+
+/// A client's output so far, appended from its pipe's readability handler and read by the test.
+final class CollectedOutput: Sendable {
+  private let data = Mutex(Data())
+
+  func append(_ chunk: Data) { data.withLock { $0.append(chunk) } }
+
+  /// Appends `chunk` and returns everything collected, as text.
+  func appendAndRead(_ chunk: Data) -> String {
+    let all = data.withLock {
+      $0.append(chunk)
+      return $0
+    }
+    return String(decoding: all, as: UTF8.self)
+  }
+
+  var length: Int { data.withLock { $0.count } }
+
+  var text: String { String(decoding: data.withLock { $0 }, as: UTF8.self) }
 }

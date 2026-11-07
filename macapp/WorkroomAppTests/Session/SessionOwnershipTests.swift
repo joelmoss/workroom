@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 import WorkroomWire
 import XCTest
 
@@ -209,7 +210,7 @@ final class PersistentSessionRoutingTests: XCTestCase {
   ///
   /// **This is NOT a control for the view's guard, and an earlier version of this comment claimed
   /// it was.** Measured: restoring `PersistentSessionService.shared.isAvailable` to the guard in
-  /// `GhosttySurfaceView.applyPersistentSession` leaves all three tests here green, because they
+  /// `PaneSessionAttachment.launch` leaves all three tests here green, because they
   /// drive the service directly and never reach the view. What they prove is the service-level
   /// contract — that the state is reachable and answers correctly. The call site is pinned
   /// separately by `PersistentSessionAttachGateTests`.
@@ -256,8 +257,8 @@ final class PersistentSessionRoutingTests: XCTestCase {
     let started = expectation(description: "first background probe")
     let service = PersistentSessionService(
       probe: { _ in
-        probeCount.increment()
-        if probeCount.value == 1 { started.fulfill() }
+        probeCount.add()
+        if probeCount.count == 1 { started.fulfill() }
         Thread.sleep(forTimeInterval: 0.2)
         return .ready(version: "protocol 1")
       }, ownership: { _ in .notOwned })
@@ -267,7 +268,7 @@ final class PersistentSessionRoutingTests: XCTestCase {
     await first.value
     await second.value
     XCTAssertEqual(service.backend, .daemon)
-    XCTAssertEqual(probeCount.value, 1, "restoring another window must share the initial probe")
+    XCTAssertEqual(probeCount.count, 1, "restoring another window must share the initial probe")
   }
 
   @MainActor
@@ -275,7 +276,7 @@ final class PersistentSessionRoutingTests: XCTestCase {
     let probeCount = Counter()
     let service = PersistentSessionService(
       probe: { _ in
-        probeCount.increment()
+        probeCount.add()
         return .unhealthy(reason: "fixture failure")
       }, ownership: { _ in .notOwned }, now: { 1000 })
     await service.prepareBackend()
@@ -284,7 +285,7 @@ final class PersistentSessionRoutingTests: XCTestCase {
       XCTAssertNil(service.backend)
       XCTAssertFalse(service.isAvailable)
     }
-    XCTAssertEqual(probeCount.value, 1, "failed preparation must not repeat once per pane")
+    XCTAssertEqual(probeCount.count, 1, "failed preparation must not repeat once per pane")
   }
 
   /// The probe runs ONCE even when its answer is nil.
@@ -299,7 +300,7 @@ final class PersistentSessionRoutingTests: XCTestCase {
     let probeCount = Counter()
     let service = PersistentSessionService(
       probe: { _ in
-        probeCount.increment()
+        probeCount.add()
         return .unhealthy(reason: "hung")
       },
       ownership: { _ in .notOwned })
@@ -312,7 +313,7 @@ final class PersistentSessionRoutingTests: XCTestCase {
     }
 
     XCTAssertEqual(
-      probeCount.value, 1,
+      probeCount.count, 1,
       "a nil answer must cache; re-probing costs 2s of frozen main actor per access")
   }
 
@@ -330,19 +331,19 @@ final class PersistentSessionRoutingTests: XCTestCase {
     var clock = 1000.0
     let service = PersistentSessionService(
       probe: { _ in
-        probeCount.increment()
-        return probeCount.value == 1
+        probeCount.add()
+        return probeCount.count == 1
           ? .unhealthy(reason: "transient") : .ready(version: "protocol 1")
       },
       ownership: { _ in .notOwned },
       now: { clock })
 
     XCTAssertNil(service.backend)
-    XCTAssertEqual(probeCount.value, 1)
+    XCTAssertEqual(probeCount.count, 1)
 
     clock += PersistentSessionService.probeRetryInterval - 1
     XCTAssertNil(service.backend, "still inside the cooldown")
-    XCTAssertEqual(probeCount.value, 1, "the cooldown is what keeps the main actor free")
+    XCTAssertEqual(probeCount.count, 1, "the cooldown is what keeps the main actor free")
 
     // Past the cooldown the daemon gets another chance — but the caller does not wait for it. The
     // retry is the whole reason this cannot be synchronous: the first probe is paid once at launch,
@@ -359,7 +360,7 @@ final class PersistentSessionRoutingTests: XCTestCase {
 
     XCTAssertEqual(
       service.backend, .daemon, "the background answer lands and is cached from then on")
-    XCTAssertEqual(probeCount.value, 2)
+    XCTAssertEqual(probeCount.count, 2)
   }
 
   /// One retry in flight at a time.
@@ -375,10 +376,10 @@ final class PersistentSessionRoutingTests: XCTestCase {
     var clock = 1000.0
     let service = PersistentSessionService(
       probe: { _ in
-        probeCount.increment()
+        probeCount.add()
         // Only the retries block. The first probe is synchronous, so waiting there would freeze
         // the main actor this whole change exists to keep free.
-        if probeCount.value == 1 { return .unhealthy(reason: "transient") }
+        if probeCount.count == 1 { return .unhealthy(reason: "transient") }
         released.wait()
         return .ready(version: "protocol 1")
       },
@@ -386,7 +387,7 @@ final class PersistentSessionRoutingTests: XCTestCase {
       now: { clock })
 
     XCTAssertNil(service.backend)
-    XCTAssertEqual(probeCount.value, 1)
+    XCTAssertEqual(probeCount.count, 1)
 
     clock += PersistentSessionService.probeRetryInterval + 1
     XCTAssertNil(service.backend, "arms a retry, which has not answered yet")
@@ -394,10 +395,10 @@ final class PersistentSessionRoutingTests: XCTestCase {
     // Wait for that retry to actually be running: if the next read arrived first it would be
     // arming the only background probe, and the guard would never come into it.
     let startedAt = Date()
-    while probeCount.value < 2 && Date().timeIntervalSince(startedAt) < 5 {
+    while probeCount.count < 2 && Date().timeIntervalSince(startedAt) < 5 {
       await Task.yield()
     }
-    XCTAssertEqual(probeCount.value, 2, "the retry reached the probe")
+    XCTAssertEqual(probeCount.count, 2, "the retry reached the probe")
 
     clock += PersistentSessionService.probeRetryInterval + 1
     XCTAssertNil(service.backend, "the cooldown has lapsed again while the probe is still out")
@@ -410,7 +411,7 @@ final class PersistentSessionRoutingTests: XCTestCase {
 
     XCTAssertEqual(service.backend, .daemon)
     XCTAssertEqual(
-      probeCount.value, 2, "a second read past the cooldown must not start a second probe")
+      probeCount.count, 2, "a second read past the cooldown must not start a second probe")
   }
 
   /// **A wedged helper costs the window one timeout, not one per pane.**
@@ -429,17 +430,17 @@ final class PersistentSessionRoutingTests: XCTestCase {
     let service = PersistentSessionService(
       probe: { _ in .ready(version: "protocol 1") },
       ownership: { _ in
-        probes.increment()
+        probes.add()
         return .unreachable
       },
       now: { clock })
 
     XCTAssertNil(service.backend(forSession: UUID()), "an unanswered probe resolves to neither")
-    XCTAssertEqual(probes.value, 2, "the helper, then the daemon")
+    XCTAssertEqual(probes.count, 2, "the helper, then the daemon")
 
     for _ in 0..<5 { XCTAssertNil(service.backend(forSession: UUID())) }
     XCTAssertEqual(
-      probes.value, 2,
+      probes.count, 2,
       """
       five more panes each waited out a helper that had just been proved silent. That is ~2s of \
       frozen main actor per pane, during terminal restore, when the answer was already known.
@@ -448,7 +449,7 @@ final class PersistentSessionRoutingTests: XCTestCase {
     clock += PersistentSessionService.probeRetryInterval + 1
     XCTAssertNil(service.backend(forSession: UUID()))
     XCTAssertEqual(
-      probes.value, 4,
+      probes.count, 4,
       "past the cooldown the helper is asked for real again; a wedge is not permanent")
   }
 
@@ -460,7 +461,7 @@ final class PersistentSessionRoutingTests: XCTestCase {
     var clock = 1000.0
     let service = PersistentSessionService(
       probe: { _ in
-        probeCount.increment()
+        probeCount.add()
         return .ready(version: "protocol 1")
       },
       ownership: { _ in .notOwned },
@@ -469,7 +470,7 @@ final class PersistentSessionRoutingTests: XCTestCase {
     XCTAssertEqual(service.backend, .daemon)
     clock += PersistentSessionService.probeRetryInterval * 10
     XCTAssertEqual(service.backend, .daemon)
-    XCTAssertEqual(probeCount.value, 1)
+    XCTAssertEqual(probeCount.count, 1)
   }
 }
 
@@ -561,8 +562,8 @@ final class PersistentSessionPairTests: XCTestCase {
       probe: { _ in .ready(version: "protocol 1") },
       // Owned, then not owned, then owned… the worst case, not a random one.
       ownership: { _ in
-        answers.increment()
-        return answers.value.isMultiple(of: 2) ? .notOwned : .owned
+        answers.add()
+        return answers.count.isMultiple(of: 2) ? .notOwned : .owned
       })
     let sessionID = UUID()
 
@@ -572,7 +573,7 @@ final class PersistentSessionPairTests: XCTestCase {
         sessionID: sessionID, workingDirectory: NSTemporaryDirectory()))
 
     XCTAssertEqual(
-      answers.value, 1, "the session was resolved twice; the two answers need not agree")
+      answers.count, 1, "the session was resolved twice; the two answers need not agree")
 
     let socket = environment["WORKROOM_SESSION_SOCKET"]
     let usesHelperBinary = command?.contains("workroom-session") == true
@@ -656,14 +657,14 @@ final class HelperSessionSubstitutionTests: XCTestCase {
     let service = PersistentSessionService(
       probe: { _ in .ready(version: "protocol 1") },
       ownership: { _ in
-        probes.increment()
+        probes.add()
         return .notOwned
       })
 
     XCTAssertEqual(
       service.confirmBeforeAttach(sessionID: UUID(), wasRestored: false), .attachable,
       "a pane opening a brand new session must not be refused because nobody holds its id yet")
-    XCTAssertEqual(probes.value, 0, "a fresh id is not worth a round trip to anyone")
+    XCTAssertEqual(probes.count, 0, "a fresh id is not worth a round trip to anyone")
   }
 
   /// The daemon is not re-checked: it is asked in the attach itself. A restored id it no longer
@@ -676,16 +677,16 @@ final class HelperSessionSubstitutionTests: XCTestCase {
     let service = PersistentSessionService(
       probe: { _ in .ready(version: "protocol 1") },
       ownership: { _ in
-        probes.increment()
+        probes.add()
         return .notOwned
       })
     let sessionID = UUID()
     XCTAssertEqual(service.backend(forSession: sessionID), .daemon)
-    let afterResolve = probes.value
+    let afterResolve = probes.count
 
     XCTAssertEqual(
       service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .attachable)
-    XCTAssertEqual(probes.value, afterResolve, "the attach answers this; a separate ask is stale")
+    XCTAssertEqual(probes.count, afterResolve, "the attach answers this; a separate ask is stale")
     XCTAssertEqual(
       service.attachCommand(forSession: sessionID, restored: true)?.hasSuffix(
         " attach --no-create"),
@@ -741,7 +742,7 @@ final class HelperSessionSubstitutionTests: XCTestCase {
   ///
   /// This test used to assert that a daemon-owned session is NOT re-checked — "the daemon refuses an
   /// id it does not hold, so there is no substitution to prevent". That premise was false:
-  /// `serve.rs` creates on first attach guarded only by `sessions.contains(id)`, exactly as the
+  /// `terminal/dispatch.rs` creates on first attach guarded only by `sessions.contains(id)`, as the
   /// helper does. Checking only the retired backend closed the hole on the one being drained and
   /// left it open on the one that owns every new session — and, once the drain finishes, on the
   /// only one left. The daemon is now asked in the attach itself
@@ -753,55 +754,34 @@ final class HelperSessionSubstitutionTests: XCTestCase {
     let service = PersistentSessionService(
       probe: { _ in .ready(version: "protocol 1") },
       ownership: { _ in
-        probes.increment()
+        probes.add()
         return .owned
       })
     let sessionID = UUID()
     _ = service.backend(forSession: sessionID)
-    let afterResolve = probes.value
+    let afterResolve = probes.count
 
     XCTAssertEqual(
       service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .attachable)
     XCTAssertEqual(
-      probes.value, afterResolve + 1,
+      probes.count, afterResolve + 1,
       "confirming must cost exactly one ask — it runs on the main actor during pane creation")
   }
 }
 
 /// Answers a scripted sequence of ownership results, then repeats the last one.
-private final class OwnershipScript: @unchecked Sendable {
-  private let lock = NSLock()
-  private var answers: [SessionOwnership]
-  private var index = 0
+private final class OwnershipScript: Sendable {
+  private let answers: [SessionOwnership]
+  private let index = Mutex(0)
 
   init(_ answers: [SessionOwnership]) {
     self.answers = answers
   }
 
   func next() -> SessionOwnership {
-    lock.lock()
-    defer { lock.unlock() }
-    let answer = answers[min(index, answers.count - 1)]
-    index += 1
-    return answer
-  }
-}
-
-/// A plain counter rather than a captured `var`: the closure is `@escaping` and stored on the
-/// service, so it cannot capture a local mutable.
-private final class Counter: @unchecked Sendable {
-  private let lock = NSLock()
-  private var count = 0
-
-  func increment() {
-    lock.lock()
-    count += 1
-    lock.unlock()
-  }
-
-  var value: Int {
-    lock.lock()
-    defer { lock.unlock() }
-    return count
+    index.withLock {
+      defer { $0 += 1 }
+      return answers[min($0, answers.count - 1)]
+    }
   }
 }

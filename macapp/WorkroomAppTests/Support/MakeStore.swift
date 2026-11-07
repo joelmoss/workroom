@@ -1,4 +1,5 @@
 import WorkroomDomain
+import XCTest
 
 @testable import Workroom
 
@@ -9,6 +10,48 @@ import WorkroomDomain
 func makeStore(_ projects: [Project]) -> AppStore {
   let store = AppStore()
   store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
-  store.projects = projects
+  store.projectStore.projects = projects
   return store
+}
+
+/// A session service that answers no helper, so only what a test registers on it attaches.
+@MainActor
+func isolatedPaneSessionService() -> PersistentSessionService {
+  PersistentSessionService(
+    probe: { _ in .unhealthy(reason: "isolated") }, ownership: { _ in .notOwned })
+}
+
+/// A window's panes that touch nothing app-wide: no helper (so a new pane gets no session of its
+/// own unless `service` registers one), an inert surface (so nothing spawns), and their own
+/// program status monitor and recency, so no test writes into the app's singletons.
+@MainActor
+func makeIsolatedPanes() -> TerminalPanes {
+  makeIsolatedPanes(service: isolatedPaneSessionService())
+}
+
+/// `makeIsolatedPanes()` over a service the test holds, to register sessions on.
+@MainActor
+func makeIsolatedPanes(service: PersistentSessionService) -> TerminalPanes {
+  let panes = TerminalPanes()
+  panes.makeView = { _, cwd, _ in
+    GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+  }
+  panes.sessionService = service
+  panes.programStatus = ProgramStatusMonitor()
+  panes.recordUnrecognizedTool = { _ in }
+  panes.recency = SwitcherRecency()
+  return panes
+}
+
+extension TerminalPanes {
+  /// Give terminal tab `tabID` the session `addTab` keeps only where persistent sessions are
+  /// available, which a test's are not: on its tab, which its surface attaches with.
+  func giveSession(_ session: UUID, toTab tabID: TerminalTab.ID, in target: TerminalTarget) {
+    guard var tab = tab(tabID, for: target), case .terminal(var state) = tab.content else {
+      return XCTFail("no terminal tab \(tabID) in \(target.id)")
+    }
+    state.sessionID = session
+    tab.content = .terminal(state)
+    replace(tab, for: target)
+  }
 }

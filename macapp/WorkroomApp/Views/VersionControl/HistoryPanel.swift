@@ -1,0 +1,467 @@
+import DesignSystem
+import SwiftUI
+import WorkroomVCS
+
+/// The inspector's **History** section body (issue #59): a newest-first commit log for the selected
+/// workroom, read via `VCSProviding` through the store-owned `HistoryModel`. Lives inside the
+/// inspector's scroll view, so it renders a flat stack of rows (like `ChangesPanel`/`FilesPanel`)
+/// rather than a `List`. Single-click a row opens the commit's `ChangesetDetailView` as a preview
+/// content tab; a quick double-click persists it (the same gate the Changes panel uses).
+///
+/// **Invalidation — read this before adding a dependency to a row** (WORKROOM-2B, a ≥2000 ms App Hang
+/// sampled inside `HistoryRow.body`):
+///
+/// ```
+/// BEFORE                                     AFTER
+/// TerminalPanes.updateTitle / pulse       TerminalPanes.updateTitle / pulse
+///   │ @Published tabsByTarget/activityPulses   │
+///   ▼                                          ▼
+/// EVERY HistoryRow (@ObservedObject)         HistoryPanel.body — ONE pass
+///   │                                          │ LazyVStack: ForEach builds REALIZED rows only
+///   ▼                                          ▼
+/// N × body: MD5 + 16×String(format:)         HistoryRow == (commit, pushScope, isSelected)
+///         + URL parse + AsyncImage             │ equal → body SKIPPED
+///   = 2000 ms                                  ▼
+///                                            selection moved → affected rows rebuild
+///                                            theme switch → \.themeTokens rebuilds every row
+/// ```
+///
+/// So: the panel owns the `TerminalPanes` dependency and resolves the focused tab **once**
+/// (`inputs.selectedCommitID`); rows receive plain values and observe nothing. Measured by
+/// `HistoryRowInvalidationTests` — a pulse burst must rebuild zero rows, and a selection or content
+/// change must still rebuild the affected ones.
+///
+/// Store-free: `HistoryPanelAdapter` builds `inputs` and `actions` from the window's `AppStore`.
+struct HistoryPanel: View {
+  /// Injected + `@ObservedObject` (mirrors `FilesPanel`), NOT read via `store.commitHistory`: the
+  /// panel must subscribe to the model's own `@Published` state so its `.loading → .loaded` flip
+  /// re-renders the pane. `AppStore` doesn't forward `commitHistory`'s `objectWillChange`, so a plain
+  /// `store.commitHistory` read only refreshed when some *unrelated* store change happened to publish
+  /// (a status refresh, a reselection, an app refocus) — leaving the loader stuck until then.
+  @ObservedObject var model: HistoryModel
+  let inputs: HistoryPanelInputs
+  let actions: HistoryPanelActions
+
+  var body: some View {
+    Group {
+      if !inputs.hasTarget {
+        // No active workspace (nothing selected, or the selected workroom has no open tabs) — empty
+        // out to match the detail pane's "No terminal" state rather than show a stale last workroom.
+        InlineMessage("No open terminal", systemImage: "clock", glyphStyle: .secondary)
+      } else {
+        switch model.state {
+        case .idle:
+          // A workroom is selected (the outer guard handled the nil case), so `.idle` is only the
+          // brief pre-focus state before the model loads — show the loader, never "Select a
+          // workroom" (which would wrongly imply no selection).
+          loadingIndicator
+        case .loading where model.commits.isEmpty:
+          loadingIndicator
+        case .failed(let message):
+          InlineMessage(message, systemImage: "exclamationmark.triangle", glyphStyle: .secondary)
+        default:
+          if model.commits.isEmpty {
+            InlineMessage("No history", systemImage: "clock", glyphStyle: .secondary)
+          } else {
+            list
+          }
+        }
+      }
+    }
+    // Fill the pane (hosted in fill mode) so the inner `ScrollView` has bounded height and scrolls
+    // itself — SwiftUI owns the scrolling (see `list`).
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    // No container-level `accessibilityIdentifier` here: SwiftUI propagates a container id onto the
+    // combined `HistoryRow` leaves, clobbering their own id. The rows carry "HistoryRow"; that the
+    // pane is showing is asserted via `inspector.header.History` (the canonical section marker).
+    // Point the model at the inspector's active target (nil once all its tabs close → History
+    // clears), only while the History section is showing (its pane active and the section expanded).
+    // Mirrors FilesPanel; `focus` no-ops when already on the path.
+    .task(id: inputs.activationKey) { actions.activate() }
+  }
+
+  /// The commit rows in a SwiftUI `ScrollView` (the History pane hosts its body in fill mode, so this
+  /// owns the scrolling rather than the AppKit `NSScrollView`).
+  private var list: some View {
+    // Resolved once per panel body pass, and only here, while the list shows; handed to the rows as
+    // a value (see the type doc's invalidation diagram).
+    let selected = inputs.selectedCommitID()
+    return ScrollView {
+      // `LazyVStack`, so a 1000-commit page costs the ~8 rows on screen rather than all of them. Safe
+      // here and NOT in `DiffViewer` (which documents rejecting it at `unifiedBody`): these rows are
+      // single-line `lineLimit(1)` fixed-height, so the height estimate a lazy stack caches is right,
+      // where a soft-wrapping diff row's is not.
+      LazyVStack(alignment: .leading, spacing: 0) {
+        ForEach(model.commits) { commit in
+          HistoryRow(
+            commit: commit,
+            // Page-level, so an unpushed row's tooltip can name the origin branch it was measured
+            // against instead of saying "origin" generically.
+            pushScope: model.pushScope,
+            // Resolved once above, not per row: rows must not reach the stores for this.
+            selectedCommitID: selected,
+            // Behaviour-constant (see `HistoryPanelActions.open`), which is what lets `HistoryRow.==`
+            // exclude it.
+            open: actions.open
+          ).equatable()
+        }
+        if !model.reachedEnd, model.atWindowCap {
+          // Older history exists but the window is capped, so say so instead of leaving a "Load more"
+          // that does nothing. Same shape as the other panes' cap notices (`FilesPanel`'s "+N more",
+          // `ChangesPanel`'s "Showing first N of M").
+          Text("Showing the newest \(model.windowCap) commits")
+            .font(.footnote).foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 8)
+            .accessibilityIdentifier("HistoryWindowCapNotice")
+        } else if !model.reachedEnd {
+          Button {
+            model.loadMore()
+          } label: {
+            HStack(spacing: 6) {
+              if case .loading = model.state {
+                ProgressView().controlSize(.small)
+              } else {
+                Image(systemName: "arrow.down.circle")
+              }
+              Text("Load more").font(.callout)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 8)
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("HistoryLoadMore")
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  private var loadingIndicator: some View {
+    HStack(spacing: 6) {
+      ProgressView().controlSize(.small)
+      Text("Loading history…").font(.callout).foregroundStyle(.secondary)
+    }
+    .padding(.vertical, 6).padding(.horizontal, 8)
+  }
+}
+
+/// What `HistoryPanel` reads from outside its model.
+struct HistoryPanelInputs {
+  /// Whether the inspector has a target. Without one (nothing selected, or the selected workroom has
+  /// no open tabs) the pane empties out.
+  var hasTarget: Bool
+  /// Changes when the inspector's target changes or the History section shows or hides; the panel
+  /// re-runs `HistoryPanelActions.activate` on each.
+  var activationKey: String
+  /// The commit id of the focused changeset tab, or `nil`.
+  ///
+  /// A closure, not a value: the panel calls it only while the list is showing, so the focused tab's
+  /// reads (the selected target's panes, which a terminal pulses many times a second) are the panel's
+  /// Observation dependency only then, and are never its builder's.
+  var selectedCommitID: () -> String?
+}
+
+/// What `HistoryPanel` does.
+struct HistoryPanelActions {
+  /// Point the model at the inspector's target, if the History section is showing.
+  var activate: () -> Void
+  /// Open a commit's changeset: preview on a single click, persist on a quick double-click.
+  ///
+  /// Must be behaviour-constant, capturing nothing that changes between body passes:
+  /// `HistoryRow.==` excludes it.
+  var open: (_ commit: VCSCommit, _ persist: Bool) -> Void
+}
+
+/// Builds `HistoryPanel`'s inputs and actions from the window's `AppStore`.
+///
+/// It reads the inspector's target and whether the History section shows; the focused tab and the
+/// model's state are read by the panel, as before. The store is observed through Observation, so
+/// this re-evaluates only when those reads change, which are the panel's inputs, so the panel needs no equality gate of its own; a terminal pulse reaches the
+/// panel and not this.
+struct HistoryPanelAdapter: View {
+  @EnvironmentObject var store: AppStore
+
+  var body: some View {
+    // `commitHistory` is a `let`, so reading it here subscribes to nothing: the panel observes it.
+    HistoryPanel(model: store.commitHistory, inputs: inputs, actions: actions)
+  }
+
+  private var inputs: HistoryPanelInputs {
+    HistoryPanelInputs(
+      hasTarget: store.inspectorTargetID != nil,
+      activationKey: (store.inspectorTargetID?.targetID?.encoded ?? "")
+        + "\u{1F}\(store.historySectionShown)",
+      // `store.terminals` is read only in here, which the panel calls (see `HistoryPanelInputs`).
+      selectedCommitID: { [store] in
+        FocusedTabSelection.current(store: store)?.changesetCommitID
+      }
+    )
+  }
+
+  private var actions: HistoryPanelActions {
+    HistoryPanelActions(
+      activate: { [store] in
+        guard store.historySectionShown else { return }
+        // `activate` (not `focus`): on re-entry with the same workroom it pulls fresh (and retries
+        // a prior failure), so switching away and back after a terminal commit shows the new log —
+        // where `focus` would no-op on the unchanged root. The store's eager `focus` on selection
+        // still fires first; `activate`'s settled-state guard means this won't double that fresh
+        // load.
+        store.commitHistory.activate(target: store.inspectorTarget)
+      },
+      // `[store]` + `Self.title` on purpose: the capture list is what makes this closure
+      // behaviour-constant, which is what lets `HistoryRow.==` exclude it.
+      open: { [store] commit, persist in
+        if persist {
+          store.openChangesetPersistent(commitID: commit.commitID, title: Self.title(commit))
+        } else {
+          store.openChangesetPreview(commitID: commit.commitID, title: Self.title(commit))
+        }
+      }
+    )
+  }
+
+  /// The changeset tab's title for a commit — its summary, or the short id when it has none.
+  ///
+  /// `static` so the `open:` closure above can be written with an explicit `[store]` capture list and
+  /// provably capture nothing per-pass.
+  private static func title(_ commit: VCSCommit) -> String {
+    commit.summary.isEmpty ? commit.shortID : commit.summary
+  }
+}
+
+/// The abbreviated relative-time formatter shared by every History row. One instance, not one per
+/// row: `RelativeDateTimeFormatter` is not cheap to construct, and no row keeps formatter state.
+// `nonisolated(unsafe)`: configured once here and only read after; Foundation's formatters are
+// thread-safe for formatting.
+nonisolated(unsafe) private let historyRelativeFormatter: RelativeDateTimeFormatter = {
+  let f = RelativeDateTimeFormatter()
+  f.unitsStyle = .abbreviated
+  return f
+}()
+
+/// One commit row: first line of the message, then a metadata line (short id · author · relative
+/// time) with any branch/tag refs.
+///
+/// Deliberately `internal`, not `private`: the row's
+/// invalidation behaviour is the regression net for the WORKROOM-2B App Hang, and
+/// `HistoryRowInvalidationTests` reads `bodyPasses` to assert it. XCUITest can only see that rows
+/// exist, not how many times they were rebuilt.
+struct HistoryRow: View, Equatable {
+  let commit: VCSCommit
+  /// What this page's push states were compared against, for the unpushed badge's tooltip.
+  let pushScope: VCSPushScope?
+  /// The focused changeset tab's commit id, resolved ONCE by `HistoryPanel` and passed down as a plain
+  /// value. This row observes nothing: it used to hold `@EnvironmentObject AppStore` +
+  /// `@ObservedObject TerminalPanes` just to compute the comparison below, which is what made a
+  /// terminal title/activity pulse rebuild every row in the pane (WORKROOM-2B).
+  let selectedCommitID: String?
+  /// Open the commit's changeset detail as a tab. `persist` false previews (single click), true
+  /// persists (quick double-click).
+  let open: (_ commit: VCSCommit, _ persist: Bool) -> Void
+  @State private var hovering = false
+  /// Timestamp of the last plain click, for the manual double-click gate (mirrors `ChangesPanel`).
+  @State private var lastClick: Date?
+  @Environment(\.themeTokens) private var tokens
+
+  /// The equality gate behind `.equatable()` at the use site. Synthesis is impossible (the row stores
+  /// two `@State`s, an environment value and a closure), so this lists what the body actually reads
+  /// from its inputs: the commit, the page's push scope, and whether this row is the selected one.
+  ///
+  /// `open` is EXCLUDED. That is sound only because `HistoryPanelAdapter` builds it with an explicit
+  /// `[store]` capture list over a `static` title helper, so two instances differing only in closure
+  /// identity are behaviourally identical. If that closure ever captures per-pass state, this `==` must start
+  /// comparing it — or go away. `@State` and the theme environment invalidate the body directly, past
+  /// this gate, so hover and theme repaints are unaffected. The theme needs no input here: a changed
+  /// `\.themeTokens` rebuilds every row, even one whose body reads no token (its token reads sit in
+  /// ternaries), as `HistoryRowInvalidationTests.testThemeChangeRebuildsRows` measures.
+  /// Compares the DERIVED `isSelected`, not the raw `selectedCommitID`: when selection moves from one
+  /// row to another, only the two rows whose own selected-ness changed compare unequal — the rest of
+  /// the realized page stays elided.
+  nonisolated static func == (lhs: HistoryRow, rhs: HistoryRow) -> Bool {
+    lhs.commit == rhs.commit && lhs.pushScope == rhs.pushScope
+      && lhs.isSelected == rhs.isSelected
+  }
+
+  #if DEBUG
+    /// How many times ANY row's body has been evaluated this process — the measurement behind the
+    /// WORKROOM-2B regression tests. A terminal title/activity publish must move this by ZERO, and a
+    /// 200-commit page must move it by far less than 200. Debug-only: it exists for
+    /// `HistoryRowInvalidationTests`, not for the shipping app.
+    static var bodyPasses = 0
+  #endif
+
+  var body: some View {
+    #if DEBUG
+      Self.bodyPasses += 1
+    #endif
+    // Explicit `return` on purpose: it opts this body out of the `@ViewBuilder` transform so the
+    // debug counter above can be a plain statement. The `VStack` closure is still builder-built.
+    return VStack(alignment: .leading, spacing: 0) {
+      VStack(alignment: .leading, spacing: 3) {
+        // Line one — the commit summary — is the row's combined accessibility leaf (id `HistoryRow`),
+        // so the row reads and selects as a unit behind one queryable identifier.
+        HStack(spacing: 6) {
+          Text(commit.summary.isEmpty ? "(no description)" : commit.summary)
+            .font(.callout)
+            .lineLimit(1)
+            .foregroundStyle(
+              isSelected ? tokens.accent : (commit.summary.isEmpty ? .secondary : .primary))
+          Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityIdentifier("HistoryRow")
+        // The short id leads the spoken label so a UI test can name the COMMIT it means instead of
+        // indexing by position. That distinction became load-bearing when this list went lazy: offscreen
+        // rows leave the accessibility tree, so `element(boundBy: 2)` no longer reliably means "the
+        // third commit" — and a test that quietly indexes a different row than it intends still passes.
+        // An element carries only one identifier (`HistoryRow`, which the tests also count), so identity
+        // rides in the label. VoiceOver gains the id too, which the row never announced before.
+        .accessibilityLabel(
+          "\(commit.shortID), \(commit.summary.isEmpty ? "(no description)" : commit.summary)")
+
+        // Line two — short id, author avatars, relative time (its full date and time on hover), then
+        // any branch/tag refs right of the timestamp, then the unpushed marker. Refs live here (not
+        // line one) so a long branch never wraps: the short id and the time are fixed width
+        // (`.fixedSize()`), and the refs show as whole chips while they fit, then "+N"
+        // (`HistoryRefChips`). The unpushed chip is a fixed ~16pt, so it never gives way.
+        //
+        // Authors are avatars ONLY here — the names would crowd the narrow sidebar row and push the
+        // refs out. Each avatar tooltips its own name, the changeset detail spells the names out, and
+        // the timestamp carries them as its accessibility label for VoiceOver.
+        HStack(spacing: 6) {
+          let relative = historyRelativeFormatter.localizedString(
+            for: commit.timestamp, relativeTo: Date())
+          // Styled as the changeset detail's header writes it: monospaced, blue.
+          Text(commit.shortID)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(.blue)
+            .lineLimit(1)
+            .fixedSize()
+          if !commit.authors.isEmpty {
+            AvatarStack(
+              subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 48) }, size: 16)
+          }
+          let names = commit.authorNamesDisplay
+          Text(relative)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .fixedSize()
+            .help(commit.timestamp.formatted(date: .complete, time: .shortened))
+            .accessibilityLabel(names.isEmpty ? relative : "\(names), \(relative)")
+          if !commit.refs.isEmpty { HistoryRefChips(refs: commit.refs) }
+          if commit.showsUnpushedBadge { unpushedBadge }
+          Spacer(minLength: 6)
+        }
+      }
+      .padding(.vertical, 6).padding(.horizontal, 8)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(
+        // Square, full-width band (no corner radius): bleed past the section's 12pt inset so the
+        // hover/selection highlight fills the inspector width edge-to-edge (mirrors `ChangedFileRow`).
+        Rectangle()
+          .fill(
+            isSelected ? tokens.rowSelection : (hovering ? tokens.rowHover : .clear)
+          )
+          .padding(.horizontal, -12)
+      )
+      .contentShape(Rectangle())
+      .onHover { hovering = $0 }
+      // Eager single-click preview, quick second click (< 0.35s) persists — the same manual
+      // double-click gate the Changes panel uses (avoids SwiftUI's count:2 delay).
+      .onTapGesture {
+        let now = Date()
+        if let last = lastClick, now.timeIntervalSince(last) < 0.35 {
+          open(commit, true)
+          lastClick = nil
+        } else {
+          open(commit, false)
+          lastClick = now
+        }
+      }
+    }
+  }
+
+  /// The "not on origin yet" marker: an arrow-up in a warning-tinted capsule, padded exactly like the
+  /// ref chips beside it so line two reads as one row of chips. Same glyph and weight as the sidebar's
+  /// "ahead" marker (`ProjectSidebar`), so "ahead of the remote" looks the same in both surfaces. Shown
+  /// only for a definite `.unpushed` — that rule lives in `showsUnpushedBadge`.
+  private var unpushedBadge: some View {
+    Image(systemName: "arrow.up")
+      .font(.system(size: 9, weight: .semibold))
+      .padding(.horizontal, 5).padding(.vertical, 1)
+      .background(tokens.warning.opacity(0.18), in: Capsule())
+      .foregroundStyle(tokens.warning)
+      .help(VCSPushScope.unpushedHelp(pushScope))
+      .accessibilityLabel("Not pushed")
+      .accessibilityIdentifier("HistoryRowUnpushed")
+  }
+
+  /// True when the focused content tab is this commit's changeset — so the row showing in the pane
+  /// reads as selected. Now a comparison against a value the panel resolved, not a store read.
+  nonisolated fileprivate var isSelected: Bool { selectedCommitID == commit.commitID }
+}
+
+/// A row's branch/tag chips: as many whole ones as fit, then "+N" for the rest (its tooltip names
+/// them). A chip is never shortened, which left a row of empty capsules when there were many.
+struct HistoryRefChips: View {
+  let refs: [String]
+
+  /// The most chips a row ever shows: more never fit the inspector's width. It bounds the layouts
+  /// `ViewThatFits` builds, which would otherwise be every count from all of them down to none,
+  /// quadratic in a commit's refs (Codex measured 2.8 s on the main thread for 200).
+  static let maxShown = 6
+
+  /// The chip counts tried, most first: all of them while that's at most `maxShown`, down to none
+  /// ("+N" alone).
+  static func shownCounts(for refs: Int) -> [Int] {
+    Array(stride(from: min(refs, maxShown), through: 0, by: -1))
+  }
+
+  var body: some View {
+    // The first option that fits wins; the last, "+N" alone, is shown even when nothing fits.
+    ViewThatFits(in: .horizontal) {
+      ForEach(Self.shownCounts(for: refs.count), id: \.self) { shown in
+        HStack(spacing: 6) {
+          ForEach(refs.prefix(shown), id: \.self) { chip($0).help("Branch / tag") }
+          if shown < refs.count {
+            chip("+\(refs.count - shown)")
+              .help(refs.dropFirst(shown).joined(separator: "\n"))
+              .accessibilityLabel(refs.dropFirst(shown).joined(separator: ", "))
+          }
+        }
+        .fixedSize()
+      }
+    }
+  }
+
+  private func chip(_ text: String) -> some View {
+    Text(text)
+      .font(.caption2)
+      .lineLimit(1)
+      .padding(.horizontal, 5).padding(.vertical, 1)
+      .background(.quaternary, in: Capsule())
+  }
+}
+
+#if DEBUG
+  #Preview("History") {
+    // The UI-test fixture's four seeded commits, the second of them open as a changeset.
+    let model = HistoryModel(debounce: 0, resolve: { _ in UITestFixture.vcsProvider })
+    let target = TerminalTarget(
+      id: .workroom(project: "/tmp/platform", name: "fix-auth"), title: "fix-auth",
+      path: "/tmp/platform/fix-auth", unavailability: nil)
+    HistoryPanel(
+      model: model,
+      inputs: HistoryPanelInputs(
+        hasTarget: true, activationKey: "preview", selectedCommitID: { "fixturecommit2" }),
+      actions: HistoryPanelActions(
+        activate: { model.activate(target: target) }, open: { _, _ in })
+    )
+    .frame(width: 320, height: 360)
+  }
+#endif

@@ -1,3 +1,4 @@
+import WorkroomDomain
 import XCTest
 
 @testable import HostDrivers
@@ -36,7 +37,7 @@ final class ContainerExecTransportTests: XCTestCase {
     }
   }
 
-  private func target(_ runtime: URL, dialect: ContainerHostDriver.Dialect = .docker)
+  private func target(_ runtime: URL, dialect: ContainerRuntime = .docker)
     -> ContainerExecTransport.Target
   {
     ContainerExecTransport.Target(

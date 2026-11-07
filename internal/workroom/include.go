@@ -17,6 +17,13 @@ import (
 // workroom's branch, so a feature branch can't change which of the root's files are copied.
 const IncludeFile = ".worktreeinclude"
 
+// HasIncludeFile is whether root has an include file: anything at its path that stat resolves. A
+// create copies the root's included files only when it has one, and list reports it (has_include).
+func HasIncludeFile(root string) bool {
+	_, err := os.Stat(filepath.Join(root, IncludeFile))
+	return err == nil
+}
+
 // Included is what a root's include file matches: the files to copy, and the symlinks that matched
 // but are never copied, so a step can say why a symlinked .env didn't arrive. Both are relative,
 // slash-separated and sorted, as vcs.Included returns them.

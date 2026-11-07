@@ -65,7 +65,7 @@ func setBase(branch string) error {
 			}
 		}
 		if jsonOutput {
-			return writeJSONSuccess(os.Stdout, "base", map[string]any{"global": true, "base_branch": branch})
+			return writeJSONSuccess(os.Stdout, "base", basePayload{BaseBranch: branch, Global: true})
 		}
 		return nil
 	}
@@ -95,7 +95,7 @@ func setBase(branch string) error {
 		}
 	}
 	if jsonOutput {
-		return writeJSONSuccess(os.Stdout, "base", map[string]any{"project": dir, "base_branch": branch})
+		return writeJSONSuccess(os.Stdout, "base", basePayload{BaseBranch: branch, Project: dir})
 	}
 	return nil
 }

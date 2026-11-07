@@ -13,23 +13,28 @@ one Swift layer (the app is growing into a VCS-first IDE — issue #59 is the fi
   `LocalVCSProviding`. No Rust bridge or xcframework. (An all-Rust core with gix was tried and
   dropped: gix bought no real unification and libgit2 is the more complete git engine.)
 - **Daemon-routed reads and writes → `workroomd`.** The `vcs/` Rust workspace holds the `workroomd`
-  daemon (terminal sessions, VCS and File services) and its git read crates (`wr-vcs-git`,
+  daemon (terminal sessions and its Control, VCS, File, Forward, Layout and ProgramStatus
+  services) and its git read crates (`wr-vcs-git`,
   `wr-vcs-model`); see "Terminal sessions" below. The app talks to it through `DaemonVCSReader` /
-  `DaemonVCSConnection`.
+  `DaemonClient`.
+
+The local git engine is the `WorkroomGit` package (`macapp/Packages/WorkroomGit`): `GitProvider`,
+the four libgit2 files below, `UnifiedDiff` and its line algorithms, `CLIVCSWriter` and
+`RepositoryWriteGate`. Its tests run under `swift test` (`make app-package-test`).
 
 **Three reads reach past SwiftGitX**, all linking the `libgit2` C API **directly** (its own SPM package
-in `project.yml`, URL + version identical to SwiftGitX's own dependency so SwiftPM sees one package
-identity). `Core/LibGit2.swift` owns the single `git_libgit2_init` and hands out raw `git_repository`
-handles (SwiftGitX inits inside `Repository.open`, which a direct C caller can't rely on); these four
-files are the only ones in the app touching raw libgit2:
+in `WorkroomGit`'s `Package.swift`, URL + version identical to SwiftGitX's own dependency so SwiftPM
+sees one package identity). `LibGit2.swift` owns the single `git_libgit2_init` and hands out raw
+`git_repository` handles (SwiftGitX inits inside `Repository.open`, which a direct C caller can't
+rely on); these four files are the only ones touching raw libgit2 (ADR 0002):
 
-- **Push state — `Core/GitGraph.swift`.** SwiftGitX cannot express a commit *range*: its
+- **Push state — `GitGraph.swift`.** SwiftGitX cannot express a commit *range*: its
   `CommitSequence` only calls `git_revwalk_push`, never `git_revwalk_hide`, it exposes no
   merge-base/graph helper, and its repository pointer is `internal` — so "which commits aren't on
   `origin` yet" (`HEAD --not refs/remotes/origin/*`) needs the C API. Push state is
   **origin-scoped** and any unreadable ref degrades the WHOLE page to "unknown" (no badge) rather than
   a partial answer.
-- **Commit diffs — `Core/GitCommitDiff.swift`.** Rename detection is `git_diff_find_similar` run over a
+- **Commit diffs — `GitCommitDiff.swift`.** Rename detection is `git_diff_find_similar` run over a
   live `git_diff`, and a SwiftGitX `Diff` materializes its deltas/patches in an `internal` init and
   frees the `git_diff` before returning, so there's nothing left to detect on. Without it a committed
   rename read as delete + add while `git show` showed one rename row (git defaults to
@@ -40,7 +45,7 @@ files are the only ones in the app touching raw libgit2:
   (`GIT_DIFF_INCLUDE_TYPECHANGE`); without it libgit2 splits a file↔symlink change into delete + add
   on the SAME path, giving the file list two rows with one `id`. `GitProvider.changeset`/`.fileDiff`
   both read through it, so the History file list and the patch text can't disagree.
-- **Working-tree ± line counts — `Core/GitDiffStats.swift`**, via `git_diff_get_stats`. SwiftGitX
+- **Working-tree ± line counts — `GitDiffStats.swift`**, via `git_diff_get_stats`. SwiftGitX
   surfaces no diffstat, and its `Diff` is **eager**: `Diff.init` builds a `Patch` per delta and
   materializes every hunk line into a Swift `String` before the caller sees it. Summing those for the
   badge cost one `String` per changed line of the whole worktree on **every** status refresh, so the
@@ -55,15 +60,21 @@ files are the only ones in the app touching raw libgit2:
   a staged rename rendered as one "renamed" row badged `+N −N` while `git diff HEAD --shortstat`
   reported `0 insertions(+), 0 deletions(-)`.
 
-**Read surface & routing.** `Core/RepositoryServices.swift` defines the context-bound `VCSProviding`
-protocol. `RepositoryRouter` captures the shared ownership for a validated host/path identity;
+**Read surface & routing.** `WorkroomVCS` defines the context-bound `VCSProviding` and
+`VCSWriting` protocols and the validated `RepositoryLocation` / `RepositoryContext` they bind to;
+only `RepositoryRouter` (`Core/VersionControl/RepositoryRouter.swift`) builds a context, through an
+SPI initializer. `RepositoryRouter` captures the shared ownership for a validated host/path identity;
 native engines implement `LocalVCSProviding` behind its local adapter, and `GitProvider` wraps
-SwiftGitX. `WorkroomStatusResolver` and `BranchResolver` read through this layer — no CLI text
-parsing. Reads never take a repository lock and are not gated.
+SwiftGitX. `WorkingStatusResolver` and `BranchResolver` read through this layer — no CLI text
+parsing. Reads never take a repository lock and are not gated. The exceptions run `git` themselves
+and live in one place, `GitRepositoryProbe`: a checkout's origin and remotes, whether origin has a
+branch, and the branch and commit a local CI probe keys off. `gh` runs in `GitHubStatusResolver`.
+The app-wide `VCSStatusService` holds every workroom's status and runs the sweep; each window keeps
+only the probes that follow its selection.
 
 **Writes are serialized per project.** git worktrees of one project share the backing `.git`, so a
 commit in one workroom and a fetch or pull in another contend for the same `index.lock` /
-`packed-refs.lock`. `RepositoryWriteGate` (`Core/RepositoryWriteGate.swift`) is a per-project
+`packed-refs.lock`. `RepositoryWriteGate` (in `WorkroomGit`) is a per-project
 serializer that every commit, fetch, push and pull goes through (`CLIVCSWriter.gated`); callers pass
 the raw, untimed call as the operation and wrap the gate in `withTimeout`, never the reverse (see the
 type's doc comment). Swift coverage: `RepositoryWriteGateTests`.
@@ -82,7 +93,7 @@ attaches to older Swift helpers that are still running (issue #154):
   0062). A newer app does not kill a running daemon: it asks it to replace its
   own program with the bundled binary in place, keeping its pid and every session
   (`DaemonHandOff.start()`, protocol 6, `workroomd hand-off`, #230), in every build; see
-  the module comment in `vcs/crates/workroomd/src/handoff.rs` for the mechanics, and ADR 0009 for
+  the module comment in `vcs/crates/workroomd/src/daemon/handoff.rs` for the mechanics, and ADR 0009 for
   why.
 - **`workroom-session`** (`macapp/WorkroomSession/`, Swift) — attach-only now. The `daemon`
   subcommand is gone, so this build cannot start one; the tool only attaches to Swift helpers an app at or
@@ -94,7 +105,7 @@ supervisor opts in (`workroomd serve --screens <dir>`), the daemon keeps each se
 disk and, after a reboot kills the shells, answers a reattach for a session it no longer holds with
 that screen plus a bottom-row notice rather than the usual fresh shell. The app needs no code for
 this: the notice arrives as ordinary VT bytes over the same reattach path `terminal-state` already
-repaints from. See the module comment in `vcs/crates/workroomd/src/screens.rs` for the
+repaints from. See the module comment in `vcs/crates/workroomd/src/terminal/screens.rs` for the
 write/prune/restore mechanics, and ADR 0031 for why. The supervisor boxd and exe.dev hosts run
 (`Resources/host-setup/systemd.sh`) passes `--screens`, as does the ssh fixture's.
 
@@ -140,6 +151,11 @@ the daemon's socket, and hands the running daemon off to it; the far side is
 connect pushes Ghostty's terminfo and shell integration beside the daemon (#239), so a remote pane
 runs as `xterm-ghostty` with the integration. See the "As built
 (#231)" section of the design doc, and `vcs/scripts/ssh-fixture/run.sh` for running its tests.
+`DaemonBootstrap` lives in `Packages/HostDrivers` and takes what the app bundles (the daemons, the
+Ghostty set and the scripts) from its caller; the app's own entry points, which pass the bundle,
+are `Core/Terminal/Session/DaemonBootstrap+Bundle.swift`. Its stub-driver tests run under
+`swift test`; the real-script tests (`DaemonBootstrapScriptTests`) stay hosted, since they push the
+bundled Ghostty set.
 
 The Zig toolchain and the pinned Ghostty engine come from `vcs/scripts/build-ghostty-vt.sh`
 (cached per `(engine sha, Zig version, target)` outside the repo). The same script builds the

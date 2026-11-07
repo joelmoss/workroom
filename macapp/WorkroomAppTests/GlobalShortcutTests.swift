@@ -46,7 +46,7 @@ final class GlobalShortcutTests: XCTestCase {
     XCTAssertEqual(try JSONDecoder().decode(GlobalShortcut.self, from: data), shortcut)
   }
 
-  func testRecorderVerdicts() {
+  @MainActor func testRecorderVerdicts() {
     let current = GlobalShortcut.quickTerminalDefault
     let other = GlobalShortcut(keyCode: kVK_ANSI_K, carbonModifiers: optionKey, key: "k")
     let free: (GlobalShortcut) -> Bool = { _ in true }

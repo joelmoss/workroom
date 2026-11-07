@@ -5,6 +5,7 @@ import XCTest
 /// The quota segment's spoken label (`CodingAgentUsageSegment.quotaAccessibilityLabel`). Every
 /// `CodingAgentUsageUITests` assertion reads this string; these pin the zero-usage branch, which used to
 /// need an app launch of its own.
+@MainActor
 final class CodingAgentUsageSegmentLabelTests: XCTestCase {
   private let now = Date(timeIntervalSince1970: 1_800_000_000)
 

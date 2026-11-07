@@ -33,18 +33,29 @@ notify = "8"
 # which cargo-zigbuild handles for the musl targets.
 ring = "0.17"
 wr-protocol = { path = "../wr-protocol" }
+# Ending child processes and their trees, draining their output, descriptor flags.
+wr-exec = { path = "../wr-exec" }
 wr-vcs-git = { path = "../wr-vcs-git" }
 wr-vcs-model = { path = "../wr-vcs-model" }
 # Kitty images: the decoder libghostty-vt needs to store a PNG, and what a reattach re-sends them
 # as (#551). Pure Rust, and only with terminal-state.
 png = { version = "0.18", optional = true }
+# libghostty-vt's bindings, safe wrapper and build, only with terminal-state.
+ghostty-vt = { path = "../ghostty-vt", optional = true }
 
 [dev-dependencies]
 # The raw-mode test reads the pty's line discipline directly. `libc` is already a runtime
 # dependency, so this adds nothing to the graph — it only makes it visible to `tests/`.
 libc = "0.2"
+# Itself, with `test-support`, so `cargo test` builds the library with the test-only API that
+# `tests/` reaches through `workroomd::testing`, and no build needs a flag for it.
+workroomd = { path = ".", features = ["test-support"] }
 
 [features]
+# The test-only API (`workroomd::testing` and the methods only tests call). Not for production
+# builds: it exists so the rest of the crate can be private and rustc reports what nothing uses.
+test-support = []
+
 # Links libghostty-vt so the daemon keeps a shadow copy of each session's screen, which is what
 # lets a reattaching client be repainted rather than arriving at a blank terminal.
 #
@@ -52,11 +63,8 @@ libc = "0.2"
 # (for bindgen) into the build. Everything else in this crate builds with cargo alone, and that
 # stays true for anyone who is not working on terminal state. Turn it on with
 # `cargo build -p workroomd --features terminal-state`; scripts/build-ghostty-vt.sh supplies the
-# library and is invoked by build.rs.
-terminal-state = ["dep:bindgen", "dep:png"]
-
-[build-dependencies]
-bindgen = { version = "0.72", optional = true }
+# library and is invoked by the ghostty-vt crate's build.rs (its `link` feature).
+terminal-state = ["dep:ghostty-vt", "ghostty-vt/link", "dep:png"]
 
 [[bin]]
 name = "workroomd"

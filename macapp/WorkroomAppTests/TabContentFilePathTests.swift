@@ -67,9 +67,7 @@ final class TabContentFilePathTests: XCTestCase {
 
   func testTerminalHasNoFooterPath() {
     let content = TabContent.terminal(
-      TerminalState(
-        view: GhosttySurfaceView(workingDirectory: "/tmp", spawnsSurface: false),
-        defaultTitle: "zsh"))
+      TerminalState(defaultTitle: "zsh", launch: .shell, launchDirectory: "/tmp"))
     XCTAssertNil(content.filePath, "a terminal's footer shows its cwd, not a file")
   }
 
@@ -87,9 +85,9 @@ final class TabContentFilePathTests: XCTestCase {
 
   /// `TerminalTab.filePath` is a forward to the content's — a terminal tab has none.
   func testTerminalTabForwardsNoPath() {
-    let tab = TerminalTab.terminal(
-      view: GhosttySurfaceView(workingDirectory: "/tmp", spawnsSurface: false),
-      defaultTitle: "zsh")
+    let tab = TerminalTab(
+      content: .terminal(
+        TerminalState(defaultTitle: "zsh", launch: .shell, launchDirectory: "/tmp")))
     XCTAssertNil(tab.filePath)
   }
 }

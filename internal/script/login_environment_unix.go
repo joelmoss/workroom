@@ -106,7 +106,8 @@ func readLoginShell(dir, shell string) (map[string]string, string) {
 }
 
 // loginShellInvocation is `shell -lic` when it is a shell known to take that, else a login /bin/sh, as
-// ShellEnvironment.posixShells and workroomd's probe_invocation decide it.
+// ShellEnvironment.posixShells and workroomd's probe_invocation decide it. All three are tested
+// against testdata/twins/login_shell.tsv.
 func loginShellInvocation(shell string) (program, flag string) {
 	switch filepath.Base(shell) {
 	case "zsh", "bash", "sh", "dash", "ksh":

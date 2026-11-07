@@ -23,10 +23,32 @@ observers, equal dictionary assignment 0, equal dictionary subscript write 1.
 
 What follows from it in this app:
 
-- `AppStore.projects` and `AppStore.workroomStatuses` are computed get/set proxies to
-  `ProjectStore`'s stored properties, so even `store.workroomStatuses[sid] = s` is a whole-value
-  set and gets the dedupe. An identical project list (`projects = fresh` on reload) already
-  notifies no one.
+- `ProjectStore`'s project list (`projects`), `VCSStatusService`'s status collections
+  (`workroomStatuses`, `rootRefs`, the commit and write counters and `creatingWorkrooms`),
+  `RunCommandController`'s `runStates` and `pendingRunStarts` (its other run collections read and
+  write each run tab's own cell, and write only what changes) and `WorkroomLifecycle`'s create and
+  delete sets (`creationRunForTarget`, `deletingWorkrooms`, `deletingProjects`, and its `creatingWorkrooms`
+  over the service's) are computed get/set over private stored properties, so even
+  `projectStore.projects[i] = p` or `vcsStatus.workroomStatuses[sid] = s` is a whole-value set and
+  gets the dedupe. An identical project list (`projects = fresh` on reload) notifies no one. Until
+  step 2.1 of the architecture cleanup, `AppStore`'s forwarding proxies gave them this; the status
+  collections moved from `ProjectStore` to `VCSStatusService` in step 2.4, and the create and
+  delete sets to `WorkroomLifecycle` in step 2.5, with that shape; the creating set moved on to
+  `VCSStatusService`, whose probes read it, in the Phase 2 cleanups. Whatever owns these
+  collections next keeps that shape, or an unchanged status sweep or relabel redraws the sidebar
+  again
+  (`testAnUnchangedLocalStatusMergeNotifiesNoOneButKeepsItsClocks`,
+  `testARunStateWriteThatChangesNothingNotifiesNoOne`,
+  `testAProjectListWriteThatChangesNothingNotifiesNoOne`,
+  `testACreateOrDeleteSetWriteThatChangesNothingNotifiesNoOne`).
+- `ModalState` keeps its modals as `ActiveModal` values (step 2.2): the command-palette picker in
+  a stored slot of its own, every other kind in one stored dictionary, and writing into either in
+  place always notifies. Its setters therefore skip a write that changes nothing: raising the
+  dialog already up, the error message already shown, or dismissing what isn't up
+  (`testAModalWriteThatChangesNothingNotifiesNoOne`). A change to any modal but the picker still
+  notifies every reader of the dictionary's modals, which the separate stored optionals before it
+  did not; the picker has its own slot because every pane leaf reads `activePicker`, so a sheet
+  going up would otherwise redraw them all.
 - A field that changes on every write defeats the dedupe for the whole value. `WorkroomStatus`'s
   clocks (`lastChecked` and the rest) compare by presence through `PresenceEquatable` for this
   reason (#503). A view that needs a clock's time to redraw would not refresh under that rule.
@@ -45,8 +67,8 @@ comparison before these calls (`GhosttySurfaceView.updateMetalLayerSize`) saves 
 
 Ghostty raises `GHOSTTY_ACTION_SET_TITLE` for every OSC 0/2 it receives, with no dedupe
 (`Surface.zig`, `.set_title`). A coding agent's spinner changes the title on every frame
-("✳ Working", then "✻ Working"; see the fixtures in `TerminalSessionsTests.swift`), so an
-"unchanged title" early-out in `TerminalSessions.updateTitle` never fires for an agent. The
+("✳ Working", then "✻ Working"; see the fixtures in `TerminalPanesTests.swift`), so an
+"unchanged title" early-out in `PaneLiveState.updateTitle` never fires for an agent. The
 foreground-process read (`ghostty_surface_foreground_pid`, then `proc_name`) is skipped for a title
 equal to the one shown; a changed title is stored in its own observable (`LiveTitle`), so a repaint
 re-renders only the views that show it and does not republish the tab map.

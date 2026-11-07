@@ -40,8 +40,8 @@ Everything else, from your first workroom to the CLI reference, is at
 
 ## Contributing
 
-Issues and PRs are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the architecture, the local dev
-setup, the test and lint gates, and the release process.
+Issues and PRs are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the local dev setup and the
+test and lint gates, and for links to the architecture and the release process.
 
 ## License
 

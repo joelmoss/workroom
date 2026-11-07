@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/joelmoss/workroom/internal/testtable"
 )
 
 // loginShellWith makes bash the user's shell, with `profile` as its login profile in a fresh HOME.
@@ -99,6 +101,17 @@ func TestRunStillRunsTheScriptWhenTheLoginShellMisbehaves(t *testing.T) {
 				t.Fatalf("the log doesn't say why: %q", streamed.String())
 			}
 		})
+	}
+}
+
+// The cases are shared with the app's ShellEnvironment and workroomd's probe_invocation, which read
+// the same table, so the three copies of the rule can't drift.
+func TestLoginShellInvocation(t *testing.T) {
+	table := filepath.Join(fixturesDir(), "..", "twins", "login_shell.tsv")
+	for _, fields := range testtable.Rows(t, table, 3) {
+		if program, flag := loginShellInvocation(fields[0]); program != fields[1] || flag != fields[2] {
+			t.Errorf("loginShellInvocation(%q) = %q, %q; want %q, %q", fields[0], program, flag, fields[1], fields[2])
+		}
 	}
 }
 

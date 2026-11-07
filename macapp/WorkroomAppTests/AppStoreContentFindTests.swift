@@ -33,7 +33,7 @@ final class AppStoreContentFindTests: XCTestCase {
     let target = store.target(for: a)!
     addTerminal(store, a)
 
-    let surface = store.terminals.focusedTab(for: target)!.surface!
+    let surface = store.terminals.surface(store.terminals.focusedTab(for: target))!
     XCTAssertFalse(surface.searchModel.isActive)
     store.startFindInFocusedPane()
     XCTAssertTrue(surface.searchModel.isActive)

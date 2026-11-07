@@ -2,7 +2,7 @@ import Foundation
 
 /// The greeting `workroomd` and its clients exchange before any envelope, and the protocol versions
 /// that greeting negotiates. Shared by the control-plane client (`DaemonControlClient`, in the app)
-/// and the service connection (`DaemonVCSConnection`); cut out of `DaemonControlClient`, whose session
+/// and the service connection (`DaemonClient`); cut out of `DaemonControlClient`, whose session
 /// plumbing stays in the app.
 public enum DaemonHandshake {
   /// Matches `PROTOCOL_VERSION` in the daemon's `wr_protocol::envelope`. Bumped together. `negotiate`

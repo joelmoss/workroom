@@ -232,7 +232,7 @@ final class SessionBackendTests: XCTestCase {
         .deletingLastPathComponent()
         .deletingLastPathComponent()
         .deletingLastPathComponent()
-        .appendingPathComponent("WorkroomApp/Core/DefaultsKeys.swift"),
+        .appendingPathComponent("WorkroomApp/Core/AppShell/DefaultsKeys.swift"),
       encoding: .utf8)
     XCTAssertFalse(
       source.contains("sessionBackend"),
@@ -308,7 +308,7 @@ final class SessionBackendTests: XCTestCase {
   /// pane mounts. Waiting must not run the main queue: a selected workroom's pane mounted mid-wait
   /// opened a fresh shell, and the restore then skipped that workroom's saved session. The helper
   /// closes its output first, so the wait for its exit is what this measures, not the read.
-  func testRunningAHelperDoesNotRunTheMainQueueWhileItWaits() throws {
+  @MainActor func testRunningAHelperDoesNotRunTheMainQueueWhileItWaits() throws {
     XCTAssertTrue(Thread.isMainThread)
     var ranDuringRun = false
     DispatchQueue.main.async { ranDuringRun = true }

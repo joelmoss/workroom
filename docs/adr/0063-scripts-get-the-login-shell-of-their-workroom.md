@@ -14,4 +14,4 @@ The read shows no prompt, so hooks that only run at one, such as a zsh `precmd`,
 
 The local read starts its shell in a new session, not just a new process group: under a real terminal, interactive zsh in a background group is stopped by SIGTTOU, which would hang `workroom create`. That also keeps it from a terminal's Ctrl-C, so a signal to the CLI during the read ends the shell before the CLI goes. `workroomd run-script` has no terminal (`RequestTTY no`), so it keeps its process group.
 
-Source: [`internal/script/login_environment_unix.go`](../../internal/script/login_environment_unix.go), [`vcs/crates/workroomd/src/cli/run_script.rs`](../../vcs/crates/workroomd/src/cli/run_script.rs), #560.
+Source: [`internal/script/login_environment_unix.go`](../../internal/script/login_environment_unix.go), [`vcs/crates/workroomd/src/cli/run_script.rs`](../../vcs/crates/workroomd/src/cli/run_script.rs), [`vcs/crates/workroomd/src/host/environment.rs`](../../vcs/crates/workroomd/src/host/environment.rs) (the read itself, shared with remote git), #560.

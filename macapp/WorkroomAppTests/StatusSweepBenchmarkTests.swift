@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -7,22 +8,21 @@ import XCTest
 @testable import Workroom
 
 /// Counts real status-probe subprocesses, with a hermetic gh script instead of network traffic.
-private final class StatusProbeRecorder: StatusCommandRunning, @unchecked Sendable {
+private final class StatusProbeRecorder: StatusCommandRunning, Sendable {
   private let script: String
-  private let lock = NSLock()
-  private var calls: [(String, Int32)] = []
+  private let calls = Mutex<[(String, Int32)]>([])
 
   init(script: String) { self.script = script }
 
-  func reset() { lock.withLock { calls.removeAll() } }
+  func reset() { calls.withLock { $0.removeAll() } }
 
   var counts: [String: Int] {
-    lock.withLock {
-      calls.reduce(into: [:]) { result, call in result[call.0, default: 0] += 1 }
+    calls.withLock {
+      $0.reduce(into: [:]) { result, call in result[call.0, default: 0] += 1 }
     }
   }
 
-  var failures: Int { lock.withLock { calls.filter { $0.1 != 0 }.count } }
+  var failures: Int { calls.withLock { $0.filter { $0.1 != 0 }.count } }
 
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
@@ -36,7 +36,7 @@ private final class StatusProbeRecorder: StatusCommandRunning, @unchecked Sendab
     }
     let command = executable == "git" && args.first == "-c" ? Array(args.dropFirst(2)) : args
     let key = ([executable] + command.prefix(executable == "gh" ? 2 : 1)).joined(separator: " ")
-    lock.withLock { calls.append((key, result.exitCode)) }
+    calls.withLock { $0.append((key, result.exitCode)) }
     return result
   }
 }
@@ -106,19 +106,19 @@ final class StatusSweepBenchmarkTests: XCTestCase {
       probe: { _ in .unhealthy(reason: "no sessions in status benchmark") },
       ownership: { _ in .notOwned })
     let recorder = StatusProbeRecorder(script: script.path)
-    store.statusResolver = WorkroomStatusResolver(runner: recorder)
+    store.vcsStatus.statusResolver = WorkroomStatusResolver(runner: recorder)
     return Fixture(directory: directory, store: store, recorder: recorder, project: project)
   }
 
-  private func cleanUp(_ fixture: Fixture) async {
+  private static func cleanUp(_ fixture: Fixture) async {
     let store = fixture.store
-    store.statusSweepTask?.cancel()
+    store.vcsStatus.statusSweepTask?.cancel()
     store.selectionStatusTask?.cancel()
     store.watchRefreshTask?.cancel()
     store.workroomFileWatcher.stop()
-    store.projects = []
-    store.updateRootBranchWatches()
-    await store.statusSweepTask?.value
+    store.projectStore.projects = []
+    store.lifecycle.updateRootBranchWatches()
+    await store.vcsStatus.statusSweepTask?.value
     await store.selectionStatusTask?.value
     await store.watchRefreshTask?.value
     await store.terminals.reapAll()
@@ -127,10 +127,11 @@ final class StatusSweepBenchmarkTests: XCTestCase {
 
   func testSelectionsReuseFreshCIForTheSameCommit() async throws {
     let fixture = try await fixture(workrooms: 1)
-    addTeardownBlock { await self.cleanUp(fixture) }
+    addTeardownBlock { await Self.cleanUp(fixture) }
     let store = fixture.store
-    store.projects = [fixture.project]
-    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+    store.projectStore.projects = [fixture.project]
+    RepositoryRouter.shared.replaceLocal(
+      try await RepositoryRouter.prepare(store.projectStore.projects))
     var firstCheckedAt: Date?
     for sid in [
       SidebarID.root(project: fixture.project.path),
@@ -138,14 +139,14 @@ final class StatusSweepBenchmarkTests: XCTestCase {
     ] {
       store.selectedTargetID = sid
       await store.selectionStatusTask?.value
-      XCTAssertEqual(store.workroomStatuses[sid]?.ci, .passing)
-      XCTAssertEqual(store.workroomStatuses[sid]?.pr?.number, 9)
+      XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.ci, .passing)
+      XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr?.number, 9)
       if let firstCheckedAt {
         XCTAssertEqual(
-          store.workroomStatuses[sid]?.ciCheckedAt, firstCheckedAt,
+          store.vcsStatus.workroomStatuses[sid]?.ciCheckedAt, firstCheckedAt,
           "selecting a row must not extend the original CI result's five-minute lifetime")
       } else {
-        firstCheckedAt = store.workroomStatuses[sid]?.ciCheckedAt
+        firstCheckedAt = store.vcsStatus.workroomStatuses[sid]?.ciCheckedAt
       }
     }
     XCTAssertEqual(
@@ -160,7 +161,7 @@ final class StatusSweepBenchmarkTests: XCTestCase {
       ProcessInfo.processInfo.environment["WORKROOM_BENCH"] == "1",
       "benchmark: run make app-bench-status")
     let fixture = try await fixture(workrooms: 20)
-    addTeardownBlock { await self.cleanUp(fixture) }
+    addTeardownBlock { await Self.cleanUp(fixture) }
     let store = fixture.store
     let recorder = fixture.recorder
     let output = BenchmarkFixtures.reportURL(named: "status-sweep")
@@ -168,16 +169,16 @@ final class StatusSweepBenchmarkTests: XCTestCase {
     let start = ContinuousClock.now
     await store.bootstrap(restore: false)
     try await Task.sleep(until: start.advanced(by: .seconds(10)), clock: .continuous)
-    await store.statusSweepTask?.value
+    await store.vcsStatus.statusSweepTask?.value
     phases.append([
       "phase": "launch_first_10_seconds", "commands": recorder.counts,
       "nonzero_exits": recorder.failures,
       "listing_generations": store.projectStore.latestLoad?.generation ?? 0,
-      "resolved_items": store.workroomStatuses.count,
+      "resolved_items": store.vcsStatus.workroomStatuses.count,
     ])
     recorder.reset()
     await store.reloadIfStale()
-    await store.statusSweepTask?.value
+    await store.vcsStatus.statusSweepTask?.value
     phases.append(["phase": "focus_at_10_seconds", "commands": recorder.counts])
     for index in [0, 1, 0] {
       recorder.reset()
@@ -188,7 +189,7 @@ final class StatusSweepBenchmarkTests: XCTestCase {
         "nonzero_exits": recorder.failures,
       ])
       XCTAssertEqual(
-        store.selectedTargetID.flatMap { store.workroomStatuses[$0]?.pr?.number }, 9)
+        store.selectedTargetID.flatMap { store.vcsStatus.workroomStatuses[$0]?.pr?.number }, 9)
     }
     try BenchmarkFixtures.write(
       ["configuration": "Debug", "items": 21, "gh": "local subprocess fixture", "phases": phases],
@@ -197,10 +198,11 @@ final class StatusSweepBenchmarkTests: XCTestCase {
 
   func testNewCommitsAndManualRefreshStillQueryCI() async throws {
     let fixture = try await fixture(workrooms: 1)
-    addTeardownBlock { await self.cleanUp(fixture) }
+    addTeardownBlock { await Self.cleanUp(fixture) }
     let store = fixture.store
-    store.projects = [fixture.project]
-    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+    store.projectStore.projects = [fixture.project]
+    RepositoryRouter.shared.replaceLocal(
+      try await RepositoryRouter.prepare(store.projectStore.projects))
     store.selectedTargetID = .root(project: fixture.project.path)
     await store.selectionStatusTask?.value
     XCTAssertEqual(fixture.recorder.counts["gh api graphql"], 1)
@@ -219,8 +221,8 @@ final class StatusSweepBenchmarkTests: XCTestCase {
       fixture.recorder.counts["gh api graphql"], 2,
       "a new HEAD on the same branch must never reuse the old commit's CI")
 
-    store.refreshWorkroomStatuses(force: true)
-    await store.statusSweepTask?.value
+    store.vcsStatus.refreshWorkroomStatuses(force: true)
+    await store.vcsStatus.statusSweepTask?.value
     XCTAssertEqual(
       fixture.recorder.counts["gh api graphql"], 4,
       "manual Refresh must query both root and workroom even with cached CI")
@@ -228,12 +230,13 @@ final class StatusSweepBenchmarkTests: XCTestCase {
 
   func testIgnoredFileBatchesDoNotSpawnStatusCommandsLocally() async throws {
     let fixture = try await fixture(workrooms: 1)
-    addTeardownBlock { await self.cleanUp(fixture) }
+    addTeardownBlock { await Self.cleanUp(fixture) }
     let store = fixture.store
     try "ignored/\n".write(
       toFile: fixture.project.path + "/.git/info/exclude", atomically: true, encoding: .utf8)
-    store.projects = [fixture.project]
-    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+    store.projectStore.projects = [fixture.project]
+    RepositoryRouter.shared.replaceLocal(
+      try await RepositoryRouter.prepare(store.projectStore.projects))
     let sid = SidebarID.workroom(project: fixture.project.path, name: "room-0")
     store.selectedTargetID = sid
     await store.selectionStatusTask?.value
@@ -248,13 +251,15 @@ final class StatusSweepBenchmarkTests: XCTestCase {
       store.handleWorkroomFileChange([path])
       await store.watchRefreshTask?.value
     }
-    XCTAssertEqual(store.workroomStatuses[sid]?.dirty, false, "Git ignores the generated output")
+    XCTAssertEqual(
+      store.vcsStatus.workroomStatuses[sid]?.dirty, false, "Git ignores the generated output")
     let visible = fixture.project.workrooms[0].path + "/source.txt"
     try "visible edit\n".write(toFile: visible, atomically: true, encoding: .utf8)
     store.handleWorkroomFileChange([visible])
     await store.watchRefreshTask?.value
     XCTAssertEqual(
-      store.workroomStatuses[sid]?.dirty, true, "the native refresh must still detect real edits")
+      store.vcsStatus.workroomStatuses[sid]?.dirty, true,
+      "the native refresh must still detect real edits")
     XCTAssertTrue(
       fixture.recorder.counts.isEmpty,
       "local filesystem refreshes must stay on the native read path and never query GitHub")

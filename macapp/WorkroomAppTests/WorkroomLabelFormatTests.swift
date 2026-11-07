@@ -38,7 +38,7 @@ final class WorkroomLabelFormatTests: XCTestCase {
     // origin line must be one format. Before T7 the chip rendered "p/Auth" and this rendered "p / Auth".
     XCTAssertEqual(
       AppStore.notificationSource(
-        forTargetID: TerminalTarget.workroomID(project: "/p", name: "fox"), in: projects),
+        forTargetID: TargetID.workroom(project: "/p", name: "fox"), in: projects),
       WorkroomLabel(project: "p", workroom: "Auth").full)
   }
 
@@ -92,7 +92,8 @@ final class WorkroomLabelFormatTests: XCTestCase {
     let sid = SidebarID.workroom(project: "/Users/me/platform", name: "fox")
     XCTAssertEqual(store.label(for: sid), WorkroomLabel(project: "platform", workroom: "fox"))
     // A relabel (issue #41) must show through — the resolver reads displayName, not the sid's name.
-    store.setWorkroomLabel(store.projects[0].workrooms[0], in: store.projects[0], to: "Auth")
+    store.setWorkroomLabel(
+      store.projectStore.projects[0].workrooms[0], in: store.projectStore.projects[0], to: "Auth")
     XCTAssertEqual(store.label(for: sid).workroom, "Auth")
     XCTAssertEqual(store.label(for: sid).full, "platform / Auth")
   }
@@ -103,7 +104,7 @@ final class WorkroomLabelFormatTests: XCTestCase {
     // Unresolved: RootPresentation.make renders "root" as a PLACEHOLDER — it must not pose as a branch.
     XCTAssertNil(store.label(for: sid).branch, "an unresolved ref has no branch")
     XCTAssertEqual(store.label(for: sid).full, "platform")
-    store.rootRefs["/Users/me/platform"] = RootRef(branch: "main", kind: .branch)
+    store.vcsStatus.rootRefs["/Users/me/platform"] = RootRef(branch: "main", kind: .branch)
     XCTAssertEqual(store.label(for: sid).branch, "main")
     XCTAssertNil(store.label(for: sid).workroom)
     XCTAssertEqual(store.label(for: sid).full, "platform", "branch stays out of the title")

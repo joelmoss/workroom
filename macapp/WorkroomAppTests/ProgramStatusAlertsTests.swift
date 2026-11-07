@@ -1,4 +1,5 @@
 import DaemonConnection
+import Synchronization
 import WorkroomDomain
 import XCTest
 
@@ -7,7 +8,8 @@ import XCTest
 /// Alerts, merges and the waiting count for terminals that need the user (#358).
 @MainActor
 final class ProgramStatusAlertsTests: XCTestCase {
-  private let target = TerminalTarget(id: "wr|/p|al", title: "al", path: "/tmp", isMissing: false)
+  private let target = TerminalTarget(
+    id: .workroom(project: "/p", name: "al"), title: "al", path: "/tmp", isMissing: false)
   private var monitor: ProgramStatusMonitor!
   private var alerts: ProgramStatusAlerts!
   private var store: AppStore!
@@ -21,7 +23,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
     monitor.now = { [unowned self] in clock }
     store = AppStore()
     notifier = QuietNotifier()
-    store.systemNotifier = notifier
+    store.services.notifier = notifier
     store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     store.terminals.programStatus = monitor
     alerts = ProgramStatusAlerts()
@@ -234,8 +236,8 @@ final class ProgramStatusAlertsTests: XCTestCase {
     let window = AlwaysKeyWindow(
       contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled],
       backing: .buffered, defer: false)
-    window.contentView?.addSubview(tab.surface!)
-    window.makeFirstResponder(tab.surface)
+    window.contentView?.addSubview(store.terminals.surface(tab)!)
+    window.makeFirstResponder(store.terminals.surface(tab))
     let id = session(tab)
     monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
     monitor.seed(id, records: [done()])
@@ -245,7 +247,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
     monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
     monitor.seed(id, records: [done()])
     XCTAssertEqual(finishes.count, 1, "control: the same pane alerts once nobody is looking")
-    tab.surface?.removeFromSuperview()
+    store.terminals.surface(tab)?.removeFromSuperview()
   }
 
   /// Once the program that finished has gone, the next one's notifications are its own (a build
@@ -450,7 +452,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
   /// activation reads that terminal's notifications.
   func testActivationReadsTheKeyWindowsFocusedTerminal() {
     let sid = SidebarID.workroom(project: "/p", name: "al")
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: [Workroom(name: "al", path: "/p/al", vcsName: "git", warnings: [])])
@@ -464,10 +466,10 @@ final class ProgramStatusAlertsTests: XCTestCase {
     let window = AlwaysKeyWindow(
       contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled],
       backing: .buffered, defer: false)
-    window.contentView?.addSubview(tab.surface!)
+    window.contentView?.addSubview(store.terminals.surface(tab)!)
     // ⇧⌘M's "current" terminal is the selected one only once it has keyboard focus.
     XCTAssertNil(store.focusedTerminalSession, "selected, without keyboard focus")
-    window.makeFirstResponder(tab.surface)
+    window.makeFirstResponder(store.terminals.surface(tab))
     XCTAssertEqual(
       store.focusedTerminalSession,
       store.terminals.sessionID(forTab: tab.id, inTarget: target.id))
@@ -479,13 +481,13 @@ final class ProgramStatusAlertsTests: XCTestCase {
 
     store.dismissFocusedTerminalNotifications()
     XCTAssertEqual(store.notifications.items.count, 0)
-    tab.surface?.removeFromSuperview()
+    store.terminals.surface(tab)?.removeFromSuperview()
   }
 
   /// The title names the workroom, or a root's project, so the origin line never repeats it: a
   /// workroom alert adds just its project, a root's adds nothing.
   func testANeedsYouAlertNamesItsPlaceOnce() {
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: [Workroom(name: "al", path: "/p/al", vcsName: "git", warnings: [])])
@@ -556,7 +558,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
     try? await setUp()
     enabled = true
     let notifier = GatedNotifier()
-    store.systemNotifier = notifier
+    store.services.notifier = notifier
     store.isAppActive = { false }
     alerts.start()
     let tab = store.terminals.addTab(for: target)
@@ -574,7 +576,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
   /// banner, and only it.
   func testAnsweringARequestWithdrawsItsOwnBanner() async {
     let notifier = RecordingNotifier()
-    store.systemNotifier = notifier
+    store.services.notifier = notifier
     store.isAppActive = { false }
     alerts.start()
     let id = session(store.terminals.addTab(for: target))
@@ -594,7 +596,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
   func testASessionInTwoWindowsCountsOnceAndGoesWithItsLastWindow() {
     alerts.start()
     let other = AppStore()
-    other.systemNotifier = QuietNotifier()
+    other.services.notifier = QuietNotifier()
     other.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     other.terminals.programStatus = monitor
     var open = [store!, other]
@@ -618,28 +620,27 @@ final class ProgramStatusAlertsTests: XCTestCase {
 }
 
 /// A notifier whose permission prompt stays up until the test grants it.
-private final class GatedNotifier: SystemNotifying, @unchecked Sendable {
-  private let lock = NSLock()
-  private var gate: CheckedContinuation<Bool, Never>?
-  private var _posted: [String] = []
+private final class GatedNotifier: SystemNotifying, Sendable {
+  private let gate = Mutex<CheckedContinuation<Bool, Never>?>(nil)
+  private let titles = Mutex<[String]>([])
 
-  var isAsking: Bool { lock.withLock { gate != nil } }
-  var posted: [String] { lock.withLock { _posted } }
+  var isAsking: Bool { gate.withLock { $0 != nil } }
+  var posted: [String] { titles.withLock { $0 } }
 
   func ensureAuthorized() async -> Bool {
-    await withCheckedContinuation { continuation in lock.withLock { gate = continuation } }
+    await withCheckedContinuation { continuation in gate.withLock { $0 = continuation } }
   }
 
   func grant() {
-    let gate = lock.withLock { () -> CheckedContinuation<Bool, Never>? in
-      defer { self.gate = nil }
-      return self.gate
+    let gate = self.gate.withLock { gate in
+      defer { gate = nil }
+      return gate
     }
     gate?.resume(returning: true)
   }
 
   func post(_ notification: WorkroomNotification) {
-    lock.withLock { _posted.append(notification.title) }
+    titles.withLock { $0.append(notification.title) }
   }
 
   func withdraw(tabIDs: [TerminalTab.ID]) {}
@@ -647,23 +648,24 @@ private final class GatedNotifier: SystemNotifying, @unchecked Sendable {
 
 /// A notifier that is always allowed to post, and records each banner's identifier as the native
 /// request would carry it, and each identifier withdrawn.
-private final class RecordingNotifier: SystemNotifying, @unchecked Sendable {
-  private let lock = NSLock()
-  private var _posted: [String] = []
-  private var _withdrawn: [String] = []
+private final class RecordingNotifier: SystemNotifying, Sendable {
+  private let identifiers = Mutex<(posted: [String], withdrawn: [String])>(([], []))
 
-  var posted: [String] { lock.withLock { _posted } }
-  var withdrawn: [String] { lock.withLock { _withdrawn } }
+  var posted: [String] { identifiers.withLock { $0.posted } }
+  var withdrawn: [String] { identifiers.withLock { $0.withdrawn } }
 
   func ensureAuthorized() async -> Bool { true }
 
   func post(_ notification: WorkroomNotification) {
-    lock.withLock { _posted.append(SystemNotifier.payload(for: notification).identifier) }
+    let identifier = SystemNotifier.payload(for: notification).identifier
+    identifiers.withLock { $0.posted.append(identifier) }
   }
 
   func withdraw(tabIDs: [TerminalTab.ID]) {}
 
-  func withdraw(identifiers: [String]) { lock.withLock { _withdrawn += identifiers } }
+  func withdraw(identifiers: [String]) {
+    self.identifiers.withLock { $0.withdrawn += identifiers }
+  }
 }
 
 /// A window that is key whatever the test host's activation state.

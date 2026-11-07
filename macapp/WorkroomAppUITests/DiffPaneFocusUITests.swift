@@ -6,7 +6,7 @@ import XCTest
 /// Why this can only be a UI test: the defect lives at the AppKit first-responder layer. Focusing a
 /// diff pane is pure SwiftUI and claims no responder, so the terminal surface stayed the window's
 /// first responder while the diff was logically focused. A later `makeFirstResponder(self)` on the
-/// terminal then short-circuited (already first responder) — `becomeFirstResponder`/`onFocused` never
+/// terminal then short-circuited (already first responder) — `becomeFirstResponder`/`.focused` never
 /// fired, so the click couldn't refocus the terminal. The model's focus state was never wrong; only
 /// the responder chain was, which a real window exercises. The fix resigns the terminal's first
 /// responder when it stops being the focused pane.

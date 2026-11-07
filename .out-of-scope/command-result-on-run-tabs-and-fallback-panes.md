@@ -4,7 +4,7 @@ A command result (see `CONTEXT.md`) shows only on daemon-backed panes, where wor
 
 ## Why this is out of scope
 
-Run tabs already report how their command ended, by a different route. A Run tab `exec`s over the shell, so it emits no OSC 133 marks and GhosttyKit's command-finished action never fires for it. Instead the run supervisor reports the exit status (`macapp/WorkroomApp/Core/AppStore+RunCommand.swift`), and the app acts on it with the same rules a command result uses:
+Run tabs already report how their command ended, by a different route. A Run tab `exec`s over the shell, so it emits no OSC 133 marks and GhosttyKit's command-finished action never fires for it. Instead the run supervisor reports the exit status (`macapp/WorkroomApp/Core/AppShell/AppStore/AppStore+RunCommand.swift`), and the app acts on it with the same rules a command result uses:
 
 - exit 0 shows a passed run toast, any other code a failed toast with that code;
 - 130 (^C) and 143 count as stopped by the user and show nothing;

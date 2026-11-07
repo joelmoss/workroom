@@ -33,16 +33,19 @@ final class TitleLayoutBenchmarkTests: XCTestCase {
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
     let project = Project(path: NSTemporaryDirectory(), vcs: "git", workrooms: [])
-    store.projects = [project]
+    store.projectStore.projects = [project]
     let target = try XCTUnwrap(store.target(for: .root(project: project.path)))
     let tab = store.terminals.addTab(for: target)
-    let surface = try XCTUnwrap(tab.surface)
+    let surface = try XCTUnwrap(store.terminals.surface(tab))
     let hosting = NSHostingView(
       rootView: WorkroomTerminalsView(target: target, sessions: store.terminals)
         .environmentObject(store)
+        .paneHost(store)
+        .environmentObject(store.modals)
+        .environmentObject(store.runCommand)
         .environmentObject(store.notifications)
-        .environmentObject(store.terminals)
         .environmentObject(store.terminals.codingAgentManager)
+        .themeTokensRoot()
         .frame(width: 1_100, height: 700))
     hosting.frame = NSRect(x: 100, y: 100, width: 1_100, height: 700)
     let window = NSWindow(

@@ -3,7 +3,9 @@
 CLAUDE.local.md
 /.claude/settings.local.json
 
-# Go
+# Go: `make cli-build` writes bin/workroom; /workroom is where it used to write, still in older
+# checkouts.
+/bin/
 /workroom
 *.exe
 

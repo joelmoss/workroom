@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WorkroomGit
 import XCTest
 
 @testable import Workroom
@@ -8,13 +9,14 @@ import XCTest
 /// `.task(id:)` cancellation on an in-place value swap).
 ///
 /// A content pane is REUSED when the user picks another file — `DiffViewer` keeps its view identity
-/// and only `descriptor` changes — and `DiffViewer.load` had NO staleness guard at all, so a slow
+/// and only `descriptor` changes — and its diff load had NO staleness guard at all, so a slow
 /// diff for the file the pane USED to show could resolve after the pane was retargeted and paint
 /// file A's diff, plus its stats and find index, into file B's slot. This test reproduces exactly
 /// that: it fails with the guard removed and passes with it restored.
 ///
-/// **What it does NOT pin, deliberately.** The guard is `!Task.isCancelled, activeFetchKey == key`,
-/// and only the first half is falsifiable here: measured in this harness, SwiftUI DOES deliver
+/// **What it does NOT pin, deliberately.** The guard is `DiffLoader`'s `!Task.isCancelled,
+/// activeFetchKey == key`, and only the first half is falsifiable here: measured in this harness,
+/// SwiftUI DOES deliver
 /// cancellation for an in-place id swap, so removing the `activeFetchKey` token alone still passes.
 /// The token stays because `AvatarView` measured the opposite in the live app (2026-08-13), and a hosted `NSHostingView`
 /// is not the app's real view tree — the flag is the guard this test proves, the token is the belt.
@@ -59,7 +61,7 @@ final class DiffViewerStaleLoadTests: XCTestCase {
     @ObservedObject var controller: DescriptorController
     let find = FileFindModel()
     let resolve: (DiffDescriptor, String) async -> DiffResult
-    let onCommit: (@MainActor (DiffViewer.LoadState) -> Void)?
+    let onCommit: (@MainActor (LoadState<UnifiedDiff>) -> Void)?
     var body: some View {
       var view = DiffViewer(
         descriptor: controller.descriptor, directory: "/diff-stale-load",
@@ -80,7 +82,7 @@ final class DiffViewerStaleLoadTests: XCTestCase {
     """
   }
 
-  private func marker(of state: DiffViewer.LoadState?) -> String? {
+  private func marker(of state: LoadState<UnifiedDiff>?) -> String? {
     guard case .loaded(let diff) = state else { return nil }
     return diff.hunks.first?.lines.first { $0.kind == .addition }?.text
   }
@@ -92,10 +94,11 @@ final class DiffViewerStaleLoadTests: XCTestCase {
   private func host(
     _ controller: DescriptorController,
     resolve: @escaping (DiffDescriptor, String) async -> DiffResult,
-    onCommit: @escaping @MainActor (DiffViewer.LoadState) -> Void
+    onCommit: @escaping @MainActor (LoadState<UnifiedDiff>) -> Void
   ) -> (NSWindow, NSView) {
     let hosting = NSHostingView(
-      rootView: HostWrapper(controller: controller, resolve: resolve, onCommit: onCommit))
+      rootView: HostWrapper(controller: controller, resolve: resolve, onCommit: onCommit)
+        .themeTokensRoot())
     hosting.frame = NSRect(x: 0, y: 0, width: 700, height: 500)
     let window = NSWindow(
       contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
@@ -111,7 +114,7 @@ final class DiffViewerStaleLoadTests: XCTestCase {
     let gateA = Gate()
     let requests = Requests()
     let controller = DescriptorController(descriptor(Self.pathA))
-    var lastCommitted: DiffViewer.LoadState?
+    var lastCommitted: LoadState<UnifiedDiff>?
 
     let (window, view) = host(
       controller,

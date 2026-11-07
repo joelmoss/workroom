@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import WorkroomDomain
 import XCTest
 
@@ -8,15 +9,32 @@ import XCTest
 /// (issue #103, the WorkroomCLIProtocol seam). Records add-project calls and lists
 /// a controlled project set so post-add selection can be asserted.
 final class FakeWorkroomCLI: WorkroomCLIProtocol {
-  private(set) var addProjectCalls: [(path: String, create: Bool)] = []
-  var canonicalToReturn: String
-  var projectsToList: [Project]
+  // Set by the test, read by the store's calls off the main actor.
+  private struct State {
+    var addProjectCalls: [(path: String, create: Bool)] = []
+    var canonicalToReturn: String
+    var projectsToList: [Project]
+    var addProjectError: Error?
+  }
+  private let state: Mutex<State>
+
+  var addProjectCalls: [(path: String, create: Bool)] { state.withLock { $0.addProjectCalls } }
+  var canonicalToReturn: String {
+    get { state.withLock { $0.canonicalToReturn } }
+    set { state.withLock { $0.canonicalToReturn = newValue } }
+  }
+  var projectsToList: [Project] {
+    get { state.withLock { $0.projectsToList } }
+    set { state.withLock { $0.projectsToList = newValue } }
+  }
   /// When set, `addProject` throws this instead of succeeding — for the `Result` failure case.
-  var addProjectError: Error?
+  var addProjectError: Error? {
+    get { state.withLock { $0.addProjectError } }
+    set { state.withLock { $0.addProjectError = newValue } }
+  }
 
   init(canonical: String, projects: [Project]) {
-    self.canonicalToReturn = canonical
-    self.projectsToList = projects
+    state = Mutex(State(canonicalToReturn: canonical, projectsToList: projects))
   }
 
   func list(warnings: String, project: String?) async throws -> ListResponse {
@@ -24,9 +42,12 @@ final class FakeWorkroomCLI: WorkroomCLIProtocol {
   }
 
   func addProject(_ path: String, create: Bool) async throws -> String {
-    addProjectCalls.append((path, create))
-    if let addProjectError { throw addProjectError }
-    return canonicalToReturn
+    let (error, canonical) = state.withLock {
+      $0.addProjectCalls.append((path, create))
+      return ($0.addProjectError, $0.canonicalToReturn)
+    }
+    if let error { throw error }
+    return canonical
   }
 
   func create(
@@ -112,6 +133,7 @@ final class AppStoreAddProjectTests: XCTestCase {
       return XCTFail("expected .failure, got \(result)")
     }
     XCTAssertEqual((error as? WorkroomCLIError)?.errorDescription, "denied")
-    XCTAssertNotNil(store.errorMessage, "present(error) should still fire on the store, unchanged")
+    XCTAssertNotNil(
+      store.modals.errorMessage, "present(error) should still fire on the store, unchanged")
   }
 }

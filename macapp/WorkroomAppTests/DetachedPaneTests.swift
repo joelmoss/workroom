@@ -5,20 +5,22 @@ import XCTest
 /// Popping a detail panel out into its own window (issue #172).
 ///
 /// The design is "the tab never leaves its owning store": a detached pane's `TerminalTab` stays in
-/// `TerminalSessions` and only its host view moves, so what these tests pin is that the *model* now
+/// `TerminalPanes` and only its host view moves, so what these tests pin is that the *model* now
 /// answers three different questions three different ways about the same tab.
 @MainActor
 final class DetachedPaneTests: XCTestCase {
-  private let target = TerminalTarget(id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
-  private let other = TerminalTarget(id: "wr|/p|bar", title: "bar", path: "/tmp", isMissing: false)
+  private let target = TerminalTarget(
+    id: .workroom(project: "/p", name: "foo"), title: "foo", path: "/tmp", isMissing: false)
+  private let other = TerminalTarget(
+    id: .workroom(project: "/p", name: "bar"), title: "bar", path: "/tmp", isMissing: false)
 
-  private func rootSplitID(_ s: TerminalSessions) -> UUID? {
+  private func rootSplitID(_ s: TerminalPanes) -> UUID? {
     guard case .split(let id, _, _, _, _) = s.split(for: target) else { return nil }
     return id
   }
 
-  private func makeSessions() -> TerminalSessions {
-    let sessions = TerminalSessions()
+  private func makeSessions() -> TerminalPanes {
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     sessions.recency = SwitcherRecency()
@@ -250,7 +252,7 @@ final class DetachedPaneTests: XCTestCase {
     detached.detachedFrame = NSStringFromRect(frame)
     _ = s.restore(
       TargetSession(
-        targetID: target.id, tabs: [terminalTab("a", title: "Terminal 1"), detached]),
+        targetID: target.id.encoded, tabs: [terminalTab("a", title: "Terminal 1"), detached]),
       for: target)
 
     XCTAssertEqual(restored.count, 1, "the saved window must be rebuilt")
@@ -271,7 +273,7 @@ final class DetachedPaneTests: XCTestCase {
 
     var detached = terminalTab("a", title: "Terminal 1")
     detached.detachedFrame = "not a rect"
-    _ = s.restore(TargetSession(targetID: target.id, tabs: [detached]), for: target)
+    _ = s.restore(TargetSession(targetID: target.id.encoded, tabs: [detached]), for: target)
 
     XCTAssertEqual(restored, 0, "a zero frame must not open a zero-size window")
     XCTAssertTrue(s.detachedTabIDs.isEmpty)

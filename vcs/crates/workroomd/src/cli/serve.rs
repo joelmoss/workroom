@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use crate::handoff;
-use crate::serve::{self, BUILD, DEFAULT_IDLE_TIMEOUT, Daemon};
+use crate::daemon::handoff;
+use crate::daemon::serve::{self, BUILD, DEFAULT_IDLE_TIMEOUT, Daemon};
 
 /// Serves exactly one connection over stdin/stdout, then exits.
 ///
@@ -19,15 +19,17 @@ use crate::serve::{self, BUILD, DEFAULT_IDLE_TIMEOUT, Daemon};
 /// `serve --idle-timeout never` through `relay` instead (see `run_relay`), because a remote session
 /// must survive a dropped link and these die with it.
 pub fn run_serve_stdio() -> ExitCode {
-    let sessions = crate::session::SessionStore::new();
-    let result =
-        crate::serve::handle_connection(crate::transport::StdioTransport, sessions.clone());
+    let sessions = crate::terminal::session::SessionStore::new();
+    let result = crate::daemon::serve::handle_connection(
+        crate::daemon::transport::StdioTransport,
+        sessions.clone(),
+    );
     // Nothing else can reach these sessions: the stream was their only route in.
     sessions.kill_all();
     // A kill still on its own thread took its session out of the store before `kill_all` looked,
     // and exiting now would cut it off between its SIGHUP and its SIGKILL. Waited for after
     // `kill_all`, so no other session's SIGHUP waits on it.
-    sessions.wait_for_kills(std::time::Instant::now() + crate::session::KILL_EXIT_WAIT);
+    sessions.wait_for_kills(std::time::Instant::now() + crate::terminal::session::KILL_EXIT_WAIT);
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -56,24 +58,24 @@ pub fn run_serve(
     // This is Workroom's existing local/remote lifetime distinction: every remote driver starts
     // `serve --idle-timeout never`, while the Mac's app and attach client use the idle default.
     // Choose before any request threads start, and reselect from the carried argv after hand-off.
-    crate::vcs::configure_read_environment(timeout == Ok(Duration::MAX));
+    crate::host::environment::configure_read_environment(timeout == Ok(Duration::MAX));
     // Before anything is made, so all of it is the user's: a container's entrypoint starts as root.
     if let Some(user) = as_user.user {
-        let account = match crate::account::lookup(&user) {
+        let account = match crate::host::account::lookup(&user) {
             Ok(account) => account,
             Err(e) => {
                 eprintln!("error: serve --user {user}: {e}");
                 return ExitCode::FAILURE;
             }
         };
-        screens = screens.map(|dir| crate::account::expand_home(&dir, &account.home));
+        screens = screens.map(|dir| crate::host::account::expand_home(&dir, &account.home));
         let mut folders: Vec<(PathBuf, bool)> = socket
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .map(|parent| vec![(parent.to_path_buf(), true)])
             .unwrap_or_default();
         folders.extend(as_user.own.into_iter().map(|dir| (dir, false)));
-        if let Err(e) = crate::account::become_user(&account, &folders) {
+        if let Err(e) = crate::host::account::become_user(&account, &folders) {
             eprintln!("error: serve could not become {user}: {e}");
             return ExitCode::FAILURE;
         }
@@ -81,10 +83,10 @@ pub fn run_serve(
     // Before anything can fail, so every line below and every session's end has somewhere to go.
     // The log lives beside the socket, so its folder comes first; the lock reports a failure.
     let _ = serve::make_socket_folder(&socket);
-    crate::log::redirect_stderr(&socket);
+    crate::daemon::log::redirect_stderr(&socket);
     // Every way out from here writes a line: a return below, a panic, or a signal that ends it.
-    crate::log::note_panics();
-    crate::log::note_fatal_signals();
+    crate::daemon::log::note_panics();
+    crate::daemon::log::note_fatal_signals();
     let timeout = match timeout {
         Ok(timeout) => timeout,
         Err(e) => {
@@ -147,13 +149,13 @@ pub fn run_serve(
     // A directory that cannot be used costs the records, never the daemon: a supervisor with a bad
     // path must still get terminals. The flag is in `arguments` below, so a hand-off keeps it.
     if let Some(dir) = screens {
-        match crate::screens::Screens::open(&dir) {
+        match crate::terminal::screens::Screens::open(&dir) {
             Ok(screens) => {
-                daemon.sessions.keep_screens(screens);
+                daemon.sessions.hooks().screens.keep(screens);
                 // Each workroom's layout (#255), on the same disk as the screens.
-                let layouts = crate::layout::dir_beside(&dir);
-                match crate::layout::Layouts::open(&layouts) {
-                    Ok(layouts) => crate::layout::keep(layouts),
+                let layouts = crate::host::layout::dir_beside(&dir);
+                match crate::host::layout::Layouts::open(&layouts) {
+                    Ok(layouts) => crate::host::layout::keep(layouts),
                     Err(e) => eprintln!(
                         "workroomd: not keeping layouts in {}: {e}",
                         layouts.display()
@@ -167,15 +169,19 @@ pub fn run_serve(
         }
     }
     // Every daemon, with screens or without: the same thread compresses every shadow's history
-    // (#463). After `keep_screens`, so a daemon with screens writes them from its first tick.
-    crate::screens::spawn(daemon.sessions.clone());
+    // (#463). After `KeptScreens::keep`, so a daemon with screens writes them from its first tick.
+    crate::terminal::screens::spawn(daemon.sessions.clone());
     // In both cases: the program handed off, or one that idled out or crashed, left its refusals
     // here, and an attach still on its way to it must not start a session it was told to end.
     daemon
         .sessions
-        .keep_refusals(crate::session::refusals_path(&socket));
-    daemon.sessions.keep_runs(crate::run::dir_beside(&socket));
-    crate::run::spawn_watcher(daemon.sessions.clone());
+        .keep_refusals(crate::terminal::session::refusals_path(&socket));
+    daemon
+        .sessions
+        .hooks()
+        .runs
+        .keep(crate::terminal::run::dir_beside(&socket));
+    crate::terminal::run::spawn_watcher(daemon.sessions.clone());
     handoff::install(handoff::Context {
         socket: socket.clone(),
         listener: listener.as_raw_fd(),
@@ -198,7 +204,7 @@ pub fn run_serve(
 }
 
 /// Takes over what the program a hand-off replaced was holding: its lock, its listening socket
-/// and its sessions (`crate::handoff`). A session that cannot be adopted is reported and
+/// and its sessions (`crate::daemon::handoff`). A session that cannot be adopted is reported and
 /// dropped, which closes its pty and hangs up its shell; the rest carry on.
 fn adopt(
     daemon: &Daemon,
@@ -210,14 +216,14 @@ fn adopt(
     let lock = unsafe { serve::InstanceLock::adopt(table.lock) };
     // SAFETY: as above; the listening socket is one of those descriptors.
     let listener = unsafe { UnixListener::from_raw_fd(table.listener) };
-    crate::pty::set_cloexec(table.listener, true);
+    wr_exec::set_cloexec(table.listener, true);
     // The same store of program status, so the app keeps what it knows (#358). A table from
     // before version 3 has none, and the fresh boot tells the app it starts over.
     if let Some(boot) = table.boot {
-        daemon.sessions.program_status().set_boot(boot);
+        daemon.sessions.hooks().program_status.set_boot(boot);
     }
     for session in table.sessions {
-        let pty = crate::pty::Pty::adopt(session.master, session.pid);
+        let pty = crate::terminal::pty::Pty::adopt(session.master, session.pid);
         let id = session.id;
         if let Err(e) = daemon.sessions.adopt(pty, session) {
             crate::note!(
@@ -247,16 +253,4 @@ fn idle_timeout(value: Option<&str>) -> Result<Duration, String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn idle_timeout_takes_seconds_or_never_and_rejects_anything_else() {
-        assert_eq!(idle_timeout(None), Ok(DEFAULT_IDLE_TIMEOUT));
-        assert_eq!(idle_timeout(Some("60")), Ok(Duration::from_secs(60)));
-        assert_eq!(idle_timeout(Some("never")), Ok(Duration::MAX));
-        for bad in ["", "-1", "1.5", "Never", "forever"] {
-            assert!(idle_timeout(Some(bad)).is_err(), "{bad:?}");
-        }
-    }
-}
+mod tests;

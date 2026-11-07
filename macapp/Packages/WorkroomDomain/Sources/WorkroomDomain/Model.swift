@@ -82,10 +82,15 @@ public struct ContainerHostRecord: Codable, Hashable, Sendable {
 /// only presence and `state`. Decoded as leniently as the CLI reads it: any non-null value counts
 /// as present, and each field that does not decode is nil, so a malformed descriptor still keeps a
 /// remote workroom away from every local action instead of failing the whole listing.
+///
+/// `driver` and `state` stay strings, as config.json and the CLI carry them (ADR 0014); code reads
+/// them through `kind` and `lifecycle` (ADR 0066), never by comparing the strings.
 public struct HostDescriptor: Codable, Hashable, Sendable {
+  /// Where the host is in its life (`lifecycle`): nil while serving.
   public var state: String? = nil
-  /// Which `HostDriver` made the host: `container` or `apple-container` (`ContainerHostDriver`),
-  /// or `boxd` (`BoxdHostDriver`, #356).
+  /// Which `HostDriver` made the host (`kind`): `container` or `apple-container`
+  /// (`ContainerHostDriver`), `boxd` (`BoxdHostDriver`, #356), `exedev` (`ExeDevHostDriver`, #259)
+  /// or `ssh` (`SSHHostDriver`, #378). nil on a record from before the field, which is Docker's.
   public var driver: String? = nil
   /// The bundle ID of the build that made the host, whose key and labels it carries: a Dev and a
   /// Nightly app share config but not keys, so each adopts only its own hosts.
@@ -126,7 +131,18 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
   /// Whether git's credentials on this host come through the Mac's relay (#309).
   public var isRelayed: Bool { credentials == "relay" }
 
-  public var isDestroyed: Bool { state == "destroyed" }
+  public var isDestroyed: Bool { lifecycle == .destroyed }
+
+  /// The kind of host `driver` names, or nil for a driver this build doesn't know and for a record
+  /// naming none (which `HostDriverRegistry.deletionKey` alone takes for Docker's).
+  public var kind: HostKind? { driver.flatMap(HostKind.init(driver:)) }
+
+  /// `state`, typed. Setting it writes the string, so an unknown state read here is written back
+  /// as it was.
+  public var lifecycle: HostLifecycle {
+    get { HostLifecycle(state: state) }
+    set { state = newValue.state }
+  }
 
   enum CodingKeys: String, CodingKey {
     case state, driver, provisioner, id, repository, path, container, bases, credentials, org
@@ -246,21 +262,26 @@ public struct Project: Codable, Identifiable, Hashable, Sendable {
   public var host: HostDescriptor? = nil
   /// The branch new workrooms start from, origin's copy first; nil means origin's default branch.
   public var baseBranch: String? = nil
+  /// Whether the root has a `.worktreeinclude`, as the CLI's `HasIncludeFile` sees it. Nil from a
+  /// `list --warnings=none`, which reads nothing but the config.
+  public var hasInclude: Bool? = nil
 
   public init(
     path: String, vcs: String, workrooms: [Workroom], host: HostDescriptor? = nil,
-    baseBranch: String? = nil
+    baseBranch: String? = nil, hasInclude: Bool? = nil
   ) {
     self.path = path
     self.vcs = vcs
     self.workrooms = workrooms
     self.host = host
     self.baseBranch = baseBranch
+    self.hasInclude = hasInclude
   }
 
   enum CodingKeys: String, CodingKey {
     case path, vcs, workrooms, host
     case baseBranch = "base_branch"
+    case hasInclude = "has_include"
   }
 
   public var id: String { path }
@@ -425,6 +446,98 @@ public struct CLIErrorBody: Codable, Sendable {
 
 }
 
+/// Errors surfaced from running the bundled `workroom` binary.
+public enum WorkroomCLIError: LocalizedError {
+  case binaryMissing
+  case timedOut
+  case decodeFailed(raw: String)
+  /// A structured error from the CLI's --json contract.
+  case cli(kind: String, message: String)
+  /// Non-zero exit without a decodable JSON error envelope.
+  case nonzero(code: Int32, stderr: String)
+  /// `ScriptNotTrusted`: the CLI refused to run `script`, which this Mac has not approved (#363). A
+  /// create's refusal names the start point it was asked at (ADR 0059).
+  case scriptNotTrusted(ScriptTrust, message: String, startCommit: String? = nil)
+  /// `LocalWorkLeftOut`: `create --start ask` stopped, before making anything, on work the main
+  /// checkout has that the create would leave out, at the start point `startCommit`.
+  case localWorkLeftOut(LocalWork, message: String, startCommit: String? = nil)
+
+  public var errorDescription: String? {
+    switch self {
+    case .binaryMissing:
+      return "The bundled 'workroom' helper was not found in the app bundle."
+    case .timedOut:
+      return "The workroom command timed out."
+    case .decodeFailed(let raw):
+      return "Could not parse the workroom response: \(raw.prefix(200))"
+    case .cli(_, let message), .scriptNotTrusted(_, let message, _),
+      .localWorkLeftOut(_, let message, _):
+      return message
+    case .nonzero(let code, let stderr):
+      return stderr.isEmpty ? "workroom exited with code \(code)." : stderr
+    }
+  }
+
+  /// The stable machine `error.kind` when available (for UI branching).
+  public var kind: String? {
+    switch self {
+    case .cli(let kind, _): kind
+    case .scriptNotTrusted: "ScriptNotTrusted"
+    case .localWorkLeftOut: "LocalWorkLeftOut"
+    default: nil
+    }
+  }
+
+  /// The error an error envelope carries, or nil for a success.
+  public init?(envelope: Envelope) {
+    guard let body = envelope.error else { return nil }
+    if body.kind == "ScriptNotTrusted", let script = envelope.script {
+      self = .scriptNotTrusted(script, message: body.message, startCommit: envelope.startCommit)
+    } else if body.kind == "LocalWorkLeftOut", let work = envelope.localWork {
+      self = .localWorkLeftOut(work, message: body.message, startCommit: envelope.startCommit)
+    } else {
+      self = .cli(kind: body.kind, message: body.message)
+    }
+  }
+
+  /// The refused script, for a `ScriptNotTrusted` error.
+  public static func untrustedScript(_ error: any Error) -> ScriptTrust? {
+    if case WorkroomCLIError.scriptNotTrusted(let script, _, _) = error { return script }
+    return nil
+  }
+
+  /// The work a `LocalWorkLeftOut` error says a create would leave out.
+  public static func leftOutWork(_ error: any Error) -> LocalWork? {
+    if case WorkroomCLIError.localWorkLeftOut(let work, _, _) = error { return work }
+    return nil
+  }
+
+  /// The start point a create question was asked at, for its answer to continue from (ADR 0059).
+  public static func startCommit(_ error: any Error) -> String? {
+    switch error {
+    case WorkroomCLIError.scriptNotTrusted(_, _, let commit),
+      WorkroomCLIError.localWorkLeftOut(_, _, let commit):
+      commit
+    default: nil
+    }
+  }
+
+  /// `StartCommitUnusable`: the start point an answer pinned is no longer where the create starts
+  /// (the base branch changed in between), so it starts over as a Try Again.
+  public static func isUnusableStartCommit(_ error: any Error) -> Bool {
+    (error as? WorkroomCLIError)?.kind == "StartCommitUnusable"
+  }
+}
+
+/// Where the CLI keeps its config when nothing names another (`WORKROOM_CONFIG`): the one Release
+/// and Nightly share. Go's `config.New` owns the layout; `CLIContractTests` holds this copy to it
+/// through `list.json`'s `config_path`, which the CLI wrote under the home `/Users/dev`.
+public enum CLIConfig {
+  public static func defaultPath(home: String) -> String {
+    home + "/.config/workroom/config.json"
+  }
+}
+
 public struct ListResponse: Codable, Sendable {
   public let projects: [Project]
   public let workroomsDir: String?
@@ -494,6 +607,22 @@ public struct DeleteProjectResponse: Codable, Sendable {
 
   enum CodingKeys: String, CodingKey {
     case trashPaths = "trash_paths"
+  }
+}
+
+/// What the CLI's `include-archive` wrote (#367): the archived paths, their total size, each file it
+/// couldn't read, as "path: reason", and the symlinks it matched but never copies.
+public struct IncludeArchive: Decodable, Equatable, Sendable {
+  public var paths: [String]
+  public var bytes: Int64
+  public var warnings: [String]
+  public var skipped: [String]?
+
+  public init(paths: [String], bytes: Int64, warnings: [String], skipped: [String]? = nil) {
+    self.paths = paths
+    self.bytes = bytes
+    self.warnings = warnings
+    self.skipped = skipped
   }
 }
 

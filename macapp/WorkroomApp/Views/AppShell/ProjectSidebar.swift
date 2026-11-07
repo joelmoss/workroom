@@ -1,0 +1,1242 @@
+import DesignSystem
+import SwiftUI
+import UniformTypeIdentifiers
+import WorkroomDomain
+import os
+
+/// The sidebar: a collapsible tree with projects at the root and their workrooms nested
+/// one level below, each of which can reveal its terminals one level deeper. Selecting a
+/// workroom (or a project root) opens its terminal in the detail pane; selecting a project
+/// makes it the target for "New Workroom". Projects disclose via a chevron after their name; roots
+/// and workrooms carry their terminal-disclosure chevron in a shared leading column (shown only at
+/// ≥2 terminals) that lines up with the terminal rows' glyphs.
+struct ProjectSidebar: View {
+  private static let signposter = OSSignposter(
+    subsystem: "com.developwithstyle.workroom", category: "Sidebar")
+  #if DEBUG
+    static var rowEvaluations = 0
+    static var menuEvaluations = 0
+    static var didRenderHover: ((SidebarID, Binding<Bool>) -> Void)?
+  #endif
+  @EnvironmentObject var store: AppStore
+  @EnvironmentObject var runCommand: RunCommandController
+  @EnvironmentObject var projectStore: ProjectStore
+  @EnvironmentObject var vcsStatus: VCSStatusService
+  @EnvironmentObject var lifecycle: WorkroomLifecycle
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.themeTokens) private var tokens
+  /// Read through Observation: the sidebar shows every workroom's terminals, so it re-renders on a
+  /// pane change in any of them.
+  private var terminals: TerminalPanes { store.terminals }
+
+  /// Live drag of a root/workroom row into the detail content to form a workroom split (issue #101) —
+  /// the same pipeline the title-bar tab bar uses (`WorkroomTabBar`). Bound to `RootView`'s
+  /// `workroomChipDrag` so `WorkroomSplitView.externalDrag` highlights the drop edge while dragging.
+  /// The defaults make the gesture an inert no-op for previews / any host that doesn't wire it.
+  var paneDrag: Binding<WorkroomPaneDrag?> = .constant(nil)
+  /// Maps a global drag point into detail-content-local coords, or nil when it's outside the detail
+  /// area (→ not a drop). Owned by `RootView` (it knows the content frame).
+  var localize: (CGPoint) -> CGPoint? = { _ in nil }
+  /// Where a drop at a global point lands (workroom pane + edge), or nil if it isn't over a pane.
+  var dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge, rect: CGRect)? = { _ in nil }
+
+  /// Each host's program-status link (#358), for the "Program status: …" tooltip line: observed so
+  /// a host that connects repaints the line.
+  @ObservedObject private var programStatus = ProgramStatusMonitor.shared
+
+  /// Width of the shared leading icon column on the root/workroom/terminal rows — it holds the
+  /// disclosure caret (root/workroom, only at ≥2 terminals) or the terminal glyph, and is always
+  /// reserved so the labels beside it line up whether or not a caret is shown.
+  private let caretWidth: CGFloat = 14
+  /// Per-level leading indent so the tree reads as a hierarchy: projects sit at `rowInsets.leading`,
+  /// their root/workroom children one `levelIndent` deeper (`childRowInsets`), and a target's terminal
+  /// rows deeper again — the terminal base matches its root/workroom, then the in-row `caretWidth`
+  /// glyph column carries the final step (so the terminal glyph lines up under the root/workroom
+  /// label). Vertical insets are unchanged: 4 for the selectable rows, a tighter 2 for the smaller
+  /// terminal rows. (`6 + 12`: the base sidebar margin plus one 12pt level step.)
+  private let rowInsets = EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 0)
+  private let childRowInsets = EdgeInsets(top: 2, leading: 6 + 6, bottom: 2, trailing: 0)
+  private let terminalRowInsets = EdgeInsets(top: 3, leading: 6 + 6, bottom: 3, trailing: 0)
+  /// Fixed content height shared by the project row and its root/workroom children so every row in
+  /// the tree is the same height regardless of which trailing controls (run/delete/spinner) it shows
+  /// (issue: uniform row sizing). Paired with the matching top/bottom insets above. Terminal rows are
+  /// a deliberately more compact tier (their own glyph + footnote) and keep `terminalRowInsets`.
+  private let rowHeight: CGFloat = 20
+
+  /// Select a target (root or workroom) on tap — sets the store's selected target id and follows the
+  /// New-Workroom context project. Selection is driven by tap rather than the `List`'s own
+  /// `selection:` because the plain list style (needed to size the compact terminal rows) draws its
+  /// own full-width selection bar that would double up with the rows' custom rounded `rowHighlight`.
+  private func selectTarget(_ id: SidebarID) {
+    store.selectedTargetID = id
+    switch id {
+    case .root(let path), .workroom(let path, _):
+      store.selectedProjectID = path
+    default:
+      break
+    }
+  }
+
+  /// The drag-to-split gesture for a root/workroom row (issue #101). Mirrors the tab-bar chip
+  /// (`WorkroomTabBar`), minus the reorder math: while dragging into the detail content it previews the
+  /// drop edge (driving the shared `paneDrag`), and on release over a pane it forms/extends the
+  /// workroom split via the same `insertWorkroomSplit` the chip uses. Attached with
+  /// `.simultaneousGesture` so it coexists with the List's vertical scroll; `minimumDistance` keeps a
+  /// plain click selecting the row (a zero-translation tap never starts the drag).
+  private func rowSplitDrag(_ id: SidebarID) -> some Gesture {
+    DragGesture(minimumDistance: 6, coordinateSpace: .global)
+      .onChanged { value in
+        paneDrag.wrappedValue = localize(value.location).map {
+          WorkroomPaneDrag(sid: id, location: $0)
+        }
+      }
+      .onEnded { value in
+        if let drop = dropTarget(value.location) {
+          store.insertWorkroomSplit(
+            id, beside: drop.sid, edge: drop.edge, destinationRect: drop.rect)
+        }
+        paneDrag.wrappedValue = nil
+      }
+  }
+
+  /// Whether `id`'s row is the one currently being dragged into a split — drives a light dim cue
+  /// (the primary affordance is the detail-side accent drop band via `externalDrag`).
+  private func isDraggingForSplit(_ id: SidebarID) -> Bool {
+    paneDrag.wrappedValue?.sid == id
+  }
+
+  var body: some View {
+    Group {
+      if projectStore.projects.isEmpty {
+        ContentUnavailableView {
+          Label("No projects yet", systemImage: "folder.badge.plus")
+        } description: {
+          Text("Add your first project!")
+        } actions: {
+          Button("Add Project…") { store.modals.requestAddProject = true }
+            .buttonStyle(.borderedProminent)
+        }
+      } else {
+        tree
+      }
+    }
+    // Reserve the footer's height so the list scrolls above its shared sidebar background.
+    .safeAreaInset(edge: .bottom, spacing: 0) { footer }
+    // Breathing room above the first project so it doesn't jam against the card's top edge (the card
+    // sits flush under the title bar via `SidebarColumn`'s `topMargin: 0`). A solid `safeAreaInset`
+    // like the footer — reserves an 8pt strip of the card surface, matching the card's side margin.
+    .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: 8) }
+    // A project's settings (issue #7) open in Settings ▸ Projects through
+    // `store.modals.pendingProjectSettings`, which ⌘R (a global shortcut) sets too (issue #127).
+    // The add-project importer and the delete confirmation are re-homed to RootView (issue #23 OV1)
+    // so the ⌘O / ⌘⌫ menu commands present reliably even when this sidebar is collapsed in
+    // Workrooms View. Local buttons here route through `store.modals` (`requestAddProject` /
+    // `pendingDeletion`).
+  }
+
+  /// Flat list of rows (project, then its root + workrooms when expanded, then their terminals). All
+  /// rows are flush; the hierarchy is conveyed by each row's icons/buttons (project chevron, root
+  /// house, workroom caret, terminal glyph), not indentation. A flat structure also keeps List
+  /// selection and keyboard navigation simple across the levels.
+  private var tree: some View {
+    let interval = Self.signposter.beginInterval("Sidebar tree")
+    defer { Self.signposter.endInterval("Sidebar tree", interval) }
+    return List {
+      ForEach(projectStore.projects) { project in
+        SidebarHoverRegion(id: .project(project.path)) { hovered in
+          projectRow(project, hovered: hovered)
+            .listRowInsets(rowInsets)
+            .listRowSeparator(.hidden)
+            .listRowBackground(rowHighlight(hovered: hovered, selected: false))
+        }
+        if isExpanded(project.path) {
+          // The root is always the first child, before any workrooms; each selectable row is
+          // followed by its terminal subtree (rendered only when expanded with ≥2 terminals).
+          let rid = SidebarID.root(project: project.path)
+          SidebarHoverRegion(id: rid) { hovered in
+            rootRow(project, hovered: hovered)
+              .listRowInsets(childRowInsets)
+              .listRowSeparator(.hidden)
+              .listRowBackground(
+                rowHighlight(hovered: hovered, selected: store.selectedTargetID == rid))
+          }
+          terminalSubtree(for: project.rootTarget, parent: rid)
+          ForEach(project.workrooms) { workroom in
+            let wid = SidebarID.workroom(project: project.path, name: workroom.name)
+            SidebarHoverRegion(id: wid) { hovered in
+              workroomRow(workroom, in: project, hovered: hovered)
+                .listRowInsets(childRowInsets)
+                .listRowSeparator(.hidden)
+                .listRowBackground(
+                  rowHighlight(hovered: hovered, selected: store.selectedTargetID == wid))
+            }
+            terminalSubtree(for: workroom.target(inProject: project.path), parent: wid)
+          }
+          // A create with no workroom row yet (R5): before its name lands, or after a failed remote
+          // create dropped its record.
+          ForEach(lifecycle.provisionalCreationRows(inProject: project.path)) { row in
+            provisionalCreationRow(row)
+              .listRowInsets(childRowInsets)
+              .listRowSeparator(.hidden)
+              .listRowBackground(
+                rowHighlight(hovered: false, selected: store.selectedTargetID == row.id))
+          }
+        }
+      }
+      // No trailing spacer needed: the footer is a solid `safeAreaInset` (see `body`) that reserves
+      // its own height, so the list already scrolls clear of it (issue #118 feedback).
+    }
+    // Plain style (not the NavigationSplitView sidebar default): the `.sidebar` style forces a
+    // comfortable ~28pt row-height floor and ignores small `listRowInsets` + `defaultMinListRowHeight`,
+    // so the compact terminal rows couldn't shrink. Plain sizes each row by its content + insets.
+    // Selection/hover are already hand-rolled via `listRowBackground`, so no native sidebar styling is
+    // lost; `scrollContentBackground(.hidden)` keeps the window's sidebar material showing through.
+    .listStyle(.plain)
+    // Hide the List's own background so the `sidebarCard` (applied at the use site, for both the
+    // docked column and the edge-reveal panel) shows through — its `tokens.bg` replaces
+    // NavigationSplitView's native sidebar material, so pinned and unpinned share one card style.
+    .scrollContentBackground(.hidden)
+    .environment(\.defaultMinListRowHeight, 1)
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.collapsedProjects)
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.expandedTerminalTargets)
+  }
+
+  /// The terminal rows for a target, shown only when it has ≥2 terminals and the user has expanded
+  /// its disclosure (issue #30). One row per tab, in the same display order as the detail-pane strip.
+  @ViewBuilder
+  private func terminalSubtree(for target: TerminalTarget, parent: SidebarID) -> some View {
+    let tabs = terminals.tabs(for: target)
+    if tabs.count >= 2, store.isTerminalsExpanded(target.id) {
+      // Read once for every row, and only for the selected target.
+      let selectedID =
+        store.selectedTargetID == parent ? terminals.focusedTab(for: target)?.id : nil
+      ForEach(tabs) { tab in
+        let selected = selectedID == tab.id
+        SidebarHoverRegion { hovered in
+          terminalRow(tab, target: target, parent: parent, hovered: hovered)
+            .listRowInsets(terminalRowInsets)
+            .listRowSeparator(.hidden)
+            .listRowBackground(terminalHighlight(hovered: hovered, selected: selected))
+        }
+      }
+    }
+  }
+
+  // MARK: Rows
+
+  /// Where a new workroom of `project` can go (#309), for both doors to it: the row's "+" and its
+  /// context menu's New Workroom.
+  @ViewBuilder
+  private func newWorkroomPlaces(in project: Project) -> some View {
+    if let blocked = lifecycle.createBlockedReason(in: project) {
+      // Said once for every entry, rather than after each.
+      Text(blocked.prefix(1).uppercased() + blocked.dropFirst())
+      Divider()
+    }
+    newLocalWorkroomButton(Text("This Mac"), in: project)
+    Section("Local containers") {
+      ForEach(ContainerRuntime.allCases, id: \.self) { runtime in
+        newRemoteWorkroomButton(at: .container(runtime), in: project)
+      }
+    }
+    Section("Remote") {
+      ForEach(HostKind.remoteProviders, id: \.self) { place in
+        if place.takesHostOptions {
+          hostOptionsPlaceMenu(at: place, in: project)
+        } else {
+          newRemoteWorkroomButton(at: place, in: project)
+        }
+      }
+    }
+  }
+
+  /// boxd or exe.dev (#575): a submenu with Create, at once with the resolved host options, and
+  /// Configure…, which opens one create's host options first.
+  private func hostOptionsPlaceMenu(at place: HostKind, in project: Project)
+    -> some View
+  {
+    let reason = RemoteWorkrooms.unavailability(of: place)
+    return Menu(reason.map { "\(place.displayName) — \($0)" } ?? place.displayName) {
+      newRemoteWorkroomButton(at: place, in: project, title: "Create")
+      Button("Configure…") {
+        store.modals.pendingHostOptions = PendingHostOptions(project: project, place: place)
+      }
+      .help("Choose the image and size for this \(place.displayName) workroom first")
+    }
+    .help(
+      reason.map { "\(place.displayName) can't be used: \($0)" }
+        ?? "A workroom of \(project.displayName) in \(place.hostPhrase)"
+    )
+    .disabled(reason != nil || !lifecycle.canCreateRemoteWorkroom(in: project))
+  }
+
+  /// New Workroom on this Mac. Creates in one project may overlap, each in its own pane (#483).
+  private func newLocalWorkroomButton(_ label: some View, in project: Project) -> some View {
+    Button {
+      Task { await lifecycle.createWorkroom(in: project, from: store) }
+    } label: {
+      label
+    }
+    .help("A workroom of \(project.displayName) on this Mac")
+    .disabled(lifecycle.createBlockedReason(in: project) != nil)
+  }
+
+  /// New Workroom at `place` (#309, #356): a local container, or a boxd machine, cloned from the
+  /// project's GitHub origin. One that can't be used now says why in its title. `title` replaces
+  /// the place's name, as Create does inside a place's own submenu.
+  private func newRemoteWorkroomButton(
+    at place: HostKind, in project: Project, title: String? = nil
+  ) -> some View {
+    #if DEBUG
+      Self.menuEvaluations += 1
+    #endif
+    // The place's own reason only: one that holds the whole project (a create in flight) is said
+    // once, above the entries.
+    let reason = RemoteWorkrooms.unavailability(of: place)
+    return Button {
+      Task { await lifecycle.createRemoteWorkroom(in: project, place: place, from: store) }
+    } label: {
+      Text(title ?? reason.map { "\(place.displayName) — \($0)" } ?? place.displayName)
+    }
+    .help(
+      reason.map { "\(place.displayName) can't be used: \($0)" }
+        ?? "A workroom of \(project.displayName) in \(place.hostPhrase)"
+    )
+    .disabled(reason != nil || !lifecycle.canCreateRemoteWorkroom(in: project))
+  }
+
+  @ViewBuilder
+  private func projectRow(_ project: Project, hovered: Bool) -> some View {
+    #if DEBUG
+      let _ = { Self.rowEvaluations += 1 }()
+    #endif
+    HStack(spacing: 6) {
+      // The whole caret/name area toggles expansion; clicking anywhere on it (including the
+      // trailing empty space) collapses or expands the project.
+      Button {
+        toggle(project.path)
+      } label: {
+        HStack(spacing: 6) {
+          // The project chevron sits to the right of the project name — projects keep their own
+          // disclosure idiom, distinct from the leading caret column the root/workroom/terminal rows
+          // share. Always shown (every project has at least the root as a child).
+          Text(project.displayName).font(.callout).fontWeight(.medium)
+            .foregroundStyle(.secondary)
+          Image(systemName: isExpanded(project.path) ? "chevron.down" : "chevron.right")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+          Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityHint(isExpanded(project.path) ? "Collapse project" : "Expand project")
+
+      // Aggregate dot so notifications are visible even when the project is collapsed.
+      SidebarUnreadDot(source: .project(project))
+      // A collapsed project still says a terminal waits on you (#358), in a slot reserved while
+      // collapsed so the dots beside it never move when one starts or stops waiting.
+      if !isExpanded(project.path) {
+        let ids = project.targetIDs
+        let waiting = ids.reduce(0) { $0 + terminals.blockedTerminalCount(forTargetID: $1) }
+        ZStack {
+          if waiting > 0 {
+            NeedsYouButton(
+              count: waiting, stale: ids.contains { terminals.isWaitingStale(forTargetID: $0) },
+              showsCount: false
+            ) {
+              showWaiting(in: ids)
+            }
+            .accessibilityIdentifier("sidebar.project.\(project.displayName).needsYou")
+          }
+        }
+        .frame(width: 24)
+      }
+      // Aggregate VCS status (worst child) when collapsed — so collapsing a project doesn't
+      // hide the command-center signal (issue #24). Only when collapsed: expanded projects show
+      // each row's own dot. Visually distinct from the UnreadDot above (different concern).
+      if !isExpanded(project.path) {
+        SidebarAggregateStatus(projectPath: project.path)
+      }
+
+      // Project settings (run command, etc.), revealed on hover to the left of the new-workroom
+      // button (issue #7). Laid out always (opacity-gated) so the row size is stable.
+      SettingsRowButton(
+        help: "Project settings for \(project.displayName)", visible: hovered
+      ) {
+        store.modals.pendingProjectSettings = PendingProjectSettings(project: project)
+      }
+      // "+" asks where, as the context menu does (#309). A create shows its progress in its own pane
+      // and row, never here (#483).
+      CreateRowButton(
+        help:
+          "New workroom in \(project.displayName), on this Mac, in a local container or on "
+          + HostKind.remoteProviders.map(\.displayName).joined(separator: " or "),
+        places: { newWorkroomPlaces(in: project) }
+      )
+    }
+    .frame(height: rowHeight)
+    .contentShape(Rectangle())
+    .accessibilityIdentifier("sidebar.project.\(project.displayName)")
+    .accessibilityActions {
+      if !isExpanded(project.path),
+        project.targetIDs.contains(where: { terminals.needsAttention(forTargetID: $0) })
+      {
+        Button(ProgramStatusPresentation.showWaitingAction) {
+          showWaiting(in: project.targetIDs)
+        }
+      }
+    }
+    .contextMenu {
+      // New Workroom asks where: this Mac, a local container or boxd (#253, #309, #356).
+      Menu {
+        newWorkroomPlaces(in: project)
+      } label: {
+        Label("New Workroom", systemImage: "plus")
+      }
+      // No tooltip here: a submenu's parent shows it on top of the submenu, over This Mac. Each
+      // entry has its own.
+      Divider()
+      runCommandMenuItems(host: store, target: project.rootTarget)
+      Divider()
+      Button {
+        store.modals.pendingProjectSettings = PendingProjectSettings(project: project)
+      } label: {
+        Label("Project Settings…", systemImage: "gearshape")
+      }
+      Divider()
+      Button(role: .destructive) {
+        store.modals.pendingProjectDeletion = PendingProjectDeletion(project: project)
+      } label: {
+        Label("Delete Project…", systemImage: "trash")
+      }
+    }
+  }
+
+  /// The always-present project-root row: the first child under each project. Reads like a workroom
+  /// (a leading house glyph marking it as the root, then the current branch) — so roots and
+  /// workrooms share one left edge. Selectable (opens a terminal at the project directory); never
+  /// deletable.
+  @ViewBuilder
+  private func rootRow(_ project: Project, hovered: Bool) -> some View {
+    #if DEBUG
+      let _ = { Self.rowEvaluations += 1 }()
+    #endif
+    let id = SidebarID.root(project: project.path)
+    let target = project.rootTarget
+    let style = RootPresentation.make(vcsStatus.rootRefs[project.id] ?? .unresolved)
+    let waiting = terminals.blockedTerminalCount(forTargetID: target.id)
+    let failed =
+      terminals.isProgressFailed(forTargetID: target.id)
+      || terminals.hasProgramError(forTargetID: target.id)
+    HStack(spacing: 6) {
+      leadingSlot(for: target, id: id, root: true, hovered: hovered)
+      Text(style.label)
+        .font(.callout)
+        .lineLimit(1)
+        .truncationMode(.tail)
+        // A healthy root must apply NO foreground color so it inherits the sidebar's default
+        // (vibrant) foreground and dims with every other row when the window goes inactive — exactly
+        // like the workroom rows. Pinning a color here (even `.foregroundColor(nil)`) opts the text
+        // out of that vibrancy dimming, which left roots bright on blur (issue #43). Only the
+        // de-emphasized detached/none states take an explicit `.secondary`.
+        .modifier(RootLabelTint(dim: style.dim))
+      Spacer(minLength: 0)
+      SidebarUnreadDot(source: .target(target.id))
+      if target.isMissing {
+        WarningGlyph()
+          .help("Project folder not found")
+      }
+      // OSC-9;4 spinner (any terminal's agent activity), to the LEFT of the run button — mirroring
+      // the workroom rows' spinner/delete-then-run order.
+      // One mark (#358): waiting beats a stopped error beats running.
+      if waiting > 0 {
+        needsYouButton(for: target.id, identifier: "sidebar.root.\(project.displayName).needsYou")
+      } else if failed || terminals.isRunning(forTargetID: target.id) {
+        RunningSpinner(failed: failed)
+      }
+      // Only an active run gets a control on the project root: click it to stop the command.
+      if store.canRunCommand(for: target, inProject: project.path),
+        runCommand.isRunCommandRunning(for: target.id)
+      {
+        RowRunButton(target: target)
+      }
+    }.frame(height: rowHeight)
+      .contentShape(Rectangle())
+      .opacity(isDraggingForSplit(id) ? 0.5 : 1)
+      .onTapGesture { selectTarget(id) }
+      // Drag this root onto a displayed workroom pane to split them (issue #101). Simultaneous so the
+      // List still scrolls vertically; the tap above still selects.
+      .simultaneousGesture(rowSplitDrag(id))
+      .help(style.tooltip)
+      .accessibilityElement(children: .ignore)
+      .accessibilityAddTraits(.isButton)
+      .modifier(
+        SidebarRootStatusLabel(
+          id: id,
+          rootLabel: target.isMissing
+            ? "\(style.accessibility), folder not found" : style.accessibility,
+          // The marks' spoken twins: this row ignores its children, so their own labels are lost.
+          programLabels: [
+            waiting > 0
+              ? ProgramStatusPresentation.waitingLabel(
+                count: waiting, stale: terminals.isWaitingStale(forTargetID: target.id)) : "",
+            failed && waiting == 0 ? "a command reported an error" : "",
+          ])
+      )
+      .accessibilityActions {
+        if waiting > 0 {
+          Button(ProgramStatusPresentation.showWaitingAction) { showWaiting(in: [target.id]) }
+        }
+      }
+      .contextMenu {
+        runCommandMenuItems(host: store, target: target)
+      }
+  }
+
+  @ViewBuilder
+  private func workroomRow(_ workroom: Workroom, in project: Project, hovered: Bool) -> some View {
+    #if DEBUG
+      let _ = { Self.rowEvaluations += 1 }()
+    #endif
+    let id = SidebarID.workroom(project: project.path, name: workroom.name)
+    let target = workroom.target(inProject: project.path)
+    let targetID = target.id
+    // A remote workroom still being made: its row opens its creation pane (#483), but has nothing to
+    // drag, label or delete yet.
+    let pending = workroom.host != nil && lifecycle.isCreatingWorkroom(workroom, in: project)
+    let waiting = terminals.blockedTerminalCount(forTargetID: targetID)
+    let failed =
+      terminals.isProgressFailed(forTargetID: targetID)
+      || terminals.hasProgramError(forTargetID: targetID)
+    HStack(spacing: 6) {
+      // Leading identity glyph (a cube for a workroom), swapped for the expand/collapse chevron on
+      // hover when the row has ≥2 terminals — the same left edge as the root row, so roots and
+      // workrooms read as aligned siblings.
+      leadingSlot(for: target, id: id, root: false, hovered: hovered)
+      // lineLimit so a long name yields to the VCS badges — truncation priority: name first (#24).
+      // Shows the display label when one is set (issue #41), else the real workroom name.
+      Text(workroom.displayName).font(.callout).lineLimit(1).truncationMode(.tail)
+      Spacer()
+      SidebarUnreadDot(source: .target(targetID))
+      ForEach(workroom.warnings, id: \.kind) { warning in
+        WarningGlyph()
+          .help(warning.message)
+      }
+      // Spinner/delete slot: a progress spinner while the workroom's setup runs (issue #116) or a
+      // command runs (issue #28), swapped for the delete button on hover — so a workroom stays
+      // deletable even mid-run. The delete button is always laid out (it reveals via opacity), so it
+      // fixes the slot's size and the smaller spinner can't shift the row. Trailing, so the spinner
+      // lines up with the root row's, which has no slot.
+      ZStack(alignment: .trailing) {
+        // A create's progress, for every kind, while its run lasts (#483).
+        if let run = lifecycle.creationRun(for: id) {
+          CreateStepCircle(run: run)
+        } else if waiting == 0, failed || terminals.isRunning(forTargetID: targetID),
+          !hovered
+        {
+          RunningSpinner(failed: failed)
+        }
+        // Hidden while the workroom's setup is still running — it can't be deleted mid-setup (#116).
+        DeleteRowButton(
+          name: workroom.displayName,
+          visible: hovered && !lifecycle.isCreatingWorkroom(workroom, in: project)
+        ) {
+          store.modals.pendingDeletion = PendingWorkroomDeletion(
+            workroom: workroom, project: project)
+        }
+      }
+      // A waiting terminal (#358) takes the mark's place and stays on hover: the delete button
+      // appears in its own slot, on the glyph's leading side, so nothing moves.
+      needsYouButton(for: targetID, identifier: "sidebar.workroom.\(workroom.name).needsYou")
+      // The run's stop control is only present while its command is running, as on the root row.
+      if store.canRunCommand(for: target, inProject: project.path),
+        runCommand.isRunCommandRunning(for: targetID)
+      {
+        RowRunButton(target: target)
+          .accessibilityIdentifier("sidebar.workroom.\(workroom.name).run")
+      }
+    }.frame(height: rowHeight)
+      .contentShape(Rectangle())
+      .opacity(isDraggingForSplit(id) ? 0.5 : 1)
+      .onTapGesture { selectTarget(id) }
+      // Drag this workroom onto a displayed pane to split them (issue #101). Simultaneous so the List
+      // still scrolls vertically; the tap above still selects.
+      .simultaneousGesture(rowSplitDrag(id), including: pending ? .none : .all)
+      .accessibilityIdentifier("sidebar.workroom.\(workroom.name)")
+      .accessibilityAddTraits(.isButton)
+      .accessibilityActions {
+        if waiting > 0 {
+          Button(ProgramStatusPresentation.showWaitingAction) { showWaiting(in: [targetID]) }
+        }
+      }
+      .contextMenu {
+        // A workroom still being made has nothing to open, label or delete yet.
+        if !pending {
+          runCommandMenuItems(host: store, target: target)
+          Divider()
+          // Open this workroom beside the current one (issue #163) — the same shared item the tab
+          // chip and split pane title bar get from `workroomContextMenu`. Called directly because
+          // this row's menu is its own inline list, not that shared builder; migrating it wholesale
+          // would silently add a "Close" item and reorder the menu.
+          openInSplitMenuItem(store: store, sid: id)
+          // Into a window of its own (#444), when it has terminals here to move.
+          moveToNewWindowMenuItem(store: store, sid: id)
+          if canOpenInSplit(store: store, sid: id) || showsMoveToNewWindow(store: store, sid: id) {
+            Divider()
+          }
+          workroomLabelMenuItems(store: store, workroom: workroom, project: project)
+          Divider()
+          deleteWorkroomMenuItem(store: store, workroom: workroom, project: project)
+        }
+      }
+  }
+
+  /// A create's provisional row (R5, design D18): "New workroom · <destination>", with its step
+  /// circle. Selecting it shows the create's pane in this window. It has no menu: there is nothing
+  /// to label, open or delete yet.
+  private func provisionalCreationRow(_ row: WorkroomLifecycle.ProvisionalCreationRow) -> some View
+  {
+    HStack(spacing: 6) {
+      Image(systemName: "cube")
+        .font(.system(size: 10))
+        .foregroundStyle(.secondary)
+        .frame(width: caretWidth, height: 18, alignment: .center)
+      Text(row.label).font(.callout).lineLimit(1).truncationMode(.tail)
+      Spacer()
+      if let run = lifecycle.creationRun(for: row.id) { CreateStepCircle(run: run) }
+    }
+    .frame(height: rowHeight)
+    .contentShape(Rectangle())
+    .onTapGesture { selectTarget(row.id) }
+    .help(row.label)
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isButton)
+    .accessibilityIdentifier("sidebar.creation.\(row.label)")
+  }
+
+  /// The leading icon column for a root/workroom row (issue #30): the identity glyph — a house for the
+  /// project root, a cube for a workroom. When the row owns ≥2 terminals it's expandable, and
+  /// hovering the row swaps the glyph for the expand/collapse chevron — so the chevron shows only when
+  /// it's both usable and the row is the pointer's focus. The chevron's own `Button` toggles expansion
+  /// without selecting the row (a button inside a selectable `List` row swallows the tap). Both occupy
+  /// `caretWidth` (centered), so sibling rows share one left edge and the glyph/chevron sit on the same
+  /// vertical axis as the terminal-row glyph below.
+  @ViewBuilder
+  private func leadingSlot(for target: TerminalTarget, id: SidebarID, root: Bool, hovered: Bool)
+    -> some View
+  {
+    if terminals.tabs(for: target).count >= 2, hovered {
+      TerminalDisclosureButton(
+        expanded: store.isTerminalsExpanded(target.id), width: caretWidth
+      ) {
+        store.toggleTerminals(for: target.id)
+      }
+    } else {
+      // The glyph's tint carries the VCS dirty signal (orange) in place of a separate status dot. A
+      // workroom on a host wears the network, with the host's kind as its tooltip (#309).
+      SidebarStatusGlyph(id: id, symbol: root ? "house" : target.workroomGlyph)
+        .frame(width: caretWidth, height: 18, alignment: .center)
+        .help(root ? "" : target.hostTooltip)
+        .accessibilityLabel(root ? "Project root" : target.hostKind ?? "Workroom")
+    }
+  }
+
+  /// One terminal in a target's expanded subtree (issue #30): a terminal glyph centered in the shared
+  /// caret column (sharing the chevron's vertical axis, and keeping the title in the same column as
+  /// the root/workroom labels above it), the tab's live
+  /// title, a per-tab unread dot, and — swapped on hover like the workroom row — a running spinner or
+  /// a close button. The row mirrors the workroom row's layout exactly (no `Button` wrapper, which
+  /// would inset the title and break the shared label column); the tap is a gesture that selects the
+  /// target and focuses this terminal — it never becomes the `List` selection, so `selectedTargetID`
+  /// stays a root/workroom.
+  @ViewBuilder
+  private func terminalRow(
+    _ tab: TerminalTab, target: TerminalTarget, parent: SidebarID, hovered: Bool
+  )
+    -> some View
+  {
+    // A content tab gets the same glyph the tab strip and the pane title bar use (#66), so a glance
+    // at the row says "this isn't a terminal". `TabContent.glyph` is that one source; it returns nil
+    // for a terminal (the unmarked default elsewhere), and this row is the one place that wants an
+    // explicit terminal glyph instead, since every row here carries one.
+    let glyph = tab.content.glyph ?? "terminal"
+    HStack(spacing: 6) {
+      // Leading glyph centered in the shared caret slot, same size/weight as the root house and the
+      // workroom chevron so the leading-icon column reads as one set. The fixed-width frame keeps the
+      // title in the same column as the root/workroom labels regardless of the symbol's intrinsic width.
+      Image(systemName: glyph)
+        .font(.system(size: 10))
+        .foregroundStyle(.secondary)
+        .frame(width: caretWidth, alignment: .center)
+      // The title is read in a leaf (`TabTitleReader`): a terminal's changes many times a second,
+      // and the sidebar's body must not re-run for each one.
+      TabTitleReader(content: tab.content) { title in
+        Text(title)
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      }
+      Spacer(minLength: 0)
+
+      SidebarUnreadDot(source: .tab(tab.id))
+
+      // Same swapped slot as the workroom row: a spinner while a command runs, replaced by the close
+      // button on hover. The close button is always laid out (revealed via opacity) so the row size
+      // is stable and the smaller spinner can't shift it.
+      ZStack {
+        if tab.isRunning || tab.indicator == .error, !hovered {
+          RunningSpinner(failed: tab.isProgressFailed || tab.indicator == .error)
+        }
+        TabTitleReader(content: tab.content) { title in
+          CloseTerminalRowButton(title: title, visible: hovered) {
+            store.requestCloseTerminalTab(tab.id, for: target)
+          }
+        }
+      }
+      // A waiting or finished program (#358) takes the spinner's place and stays on hover, with the
+      // close button in its own slot on the glyph's leading side.
+      if tab.indicator == .blocked || tab.indicator == .done {
+        ProgramStatusGlyph(
+          mark: tab.indicator == .blocked ? .blocked : .done,
+          stale: tab.programStatus?.stale == true
+        )
+        .frame(width: 16)
+        .accessibilityHidden(true)
+      }
+    }
+    // A small indent so the expanded terminal rows read as children of their root/workroom row.
+    .padding(.leading, 8)
+    .contentShape(Rectangle())
+    .onTapGesture { store.revealTerminal(tab.id, at: parent) }
+    .accessibilityAddTraits(.isButton)
+    .accessibilityAction { store.revealTerminal(tab.id, at: parent) }
+    .withTabTitle(tab.content) { row, title in
+      row
+        .help(terminalTooltip(tab, target: target, title: title))
+        .accessibilityLabel(
+          ([title]
+            + ProgramStatusPresentation.accessibilityParts(
+              indicator: tab.indicator, rollup: tab.programStatus)).joined(separator: ", ")
+        )
+        .accessibilityIdentifier("sidebar.terminal.\(title)")
+    }
+    .contextMenu {
+      if runCommand.runTabID(for: target.id) == tab.id {
+        runCommandMenuItems(host: store, target: target)
+        Divider()
+      }
+      // The escape hatch for a program that left a request behind (#358).
+      if tab.programStatus?.hasReport == true {
+        Button {
+          terminals.clearProgramStatus(tab: tab.id, target: target.id)
+        } label: {
+          Label("Clear Status", systemImage: "hand.raised.slash")
+        }
+        // Unreachable, the daemon never hears the clear and the reconnect puts the mark back.
+        .disabled(tab.programStatus?.stale == true)
+        Divider()
+      }
+      paneWindowMenuItem(host: store, tabID: tab.id, targetID: target.id)
+      Divider()
+      Button(role: .destructive) {
+        store.requestCloseTerminalTab(tab.id, for: target)
+      } label: {
+        // Built when the menu opens, so this read is not in the row's body.
+        Label("Close \(tab.title)", systemImage: "xmark")
+      }
+    }
+  }
+
+  // MARK: Program status (#358)
+
+  /// Focuses the terminal that has waited longest among `targetIDs` (a workroom row's, or a whole
+  /// collapsed project's). Only ⇧⌘M looks further.
+  private func showWaiting(in targetIDs: [TerminalTarget.ID]) {
+    let oldest = targetIDs.flatMap { targetID in
+      terminals.blockedTabs(forTargetID: targetID).map { (targetID, $0.tab, $0.since) }
+    }
+    .min { $0.2 < $1.2 }
+    guard let oldest else { return }
+    store.openTerminal(targetID: oldest.0, tabID: oldest.1)
+  }
+
+  /// The glyph slot of a root or workroom row: the waiting glyph and its count, as a button.
+  @ViewBuilder
+  private func needsYouButton(for targetID: TerminalTarget.ID, identifier: String) -> some View {
+    let count = terminals.blockedTerminalCount(forTargetID: targetID)
+    if count > 0 {
+      NeedsYouButton(count: count, stale: terminals.isWaitingStale(forTargetID: targetID)) {
+        showWaiting(in: [targetID])
+      }
+      .accessibilityIdentifier(identifier)
+    }
+  }
+
+  /// A terminal row's tooltip: its title, then what its program reports or why nothing does.
+  private func terminalTooltip(_ tab: TerminalTab, target: TerminalTarget, title: String)
+    -> String
+  {
+    let lines = ProgramStatusPresentation.tooltipLines(
+      for: tab, of: target, hosts: programStatus.hosts)
+    return ([title] + lines).joined(separator: "\n")
+  }
+
+  /// Row highlight drawn at the row-background level so hover and selection share the
+  /// same (smaller, inset) geometry. The selected row wears the focused workroom card's fill, as
+  /// the right sidebar's header does (`InspectorWorkroomHeader`), so the row, the pane and the
+  /// header read as one workroom; hovered rows a subtle one. Drawn ourselves so we control the size
+  /// rather than the full-row system selection highlight.
+  @ViewBuilder
+  private func rowHighlight(hovered: Bool, selected: Bool) -> some View {
+    if selected {
+      WorkroomPaneCardBackground(highlighted: true)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.s))
+        .padding(.horizontal, Spacing.m)
+        .padding(.vertical, 1)
+    } else {
+      RowHighlight(selected: false, hovered: hovered)
+    }
+  }
+
+  /// Row highlight for a terminal row — the same geometry with its own row-local hover state.
+  @ViewBuilder
+  private func terminalHighlight(hovered: Bool, selected: Bool) -> some View {
+    // Lighter than the root/workroom selection fill (0.13): the selected workroom is the primary
+    // selection, the focused terminal a secondary "active within" cue — so the two don't read as two
+    // equal selections when a subtree is open (issue #30 design pass).
+    let fill: Color =
+      selected ? tokens.hover : (hovered ? tokens.hover.opacity(0.5) : .clear)
+    RoundedRectangle(cornerRadius: Radius.s)
+      .fill(fill)
+      .padding(.horizontal, Spacing.m)
+      .padding(.vertical, 1)
+  }
+
+  // MARK: Expansion
+
+  private func isExpanded(_ path: String) -> Bool { !store.collapsedProjects.contains(path) }
+
+  /// Expand or collapse a project. Mutating `store.collapsedProjects` (a `@Published` on the observed
+  /// store) re-evaluates the sidebar synchronously, so the tree commits on the click — see the
+  /// property's note for why a `@Default` here only updated after the pointer moved. The reveal is
+  /// animated by the `List`'s `.animation(value: store.collapsedProjects)`.
+  private func toggle(_ path: String) {
+    if store.collapsedProjects.contains(path) {
+      store.collapsedProjects.remove(path)
+    } else {
+      store.collapsedProjects.insert(path)
+    }
+  }
+
+  // MARK: Chrome
+
+  /// The notification band and Add Project bar share the sidebar's background. The safe-area
+  /// inset reserves their height, keeping list rows from scrolling underneath.
+  private var footer: some View {
+    VStack(spacing: 0) {
+      tokens.border.frame(height: 1)
+      SidebarNotificationStrip()
+      bottomBar
+    }
+    .background { SidebarBackground() }
+  }
+
+  /// The sidebar's bottom bar: "Add Project" on the right.
+  private var bottomBar: some View {
+    HStack {
+      Spacer()
+
+      SidebarAddProjectButton()
+    }
+    .padding(.horizontal, 8)
+    .padding(.vertical, 6)
+    // The enclosing footer provides the shared sidebar background.
+  }
+}
+
+/// Hover belongs to a row: changing it must not invalidate the sidebar's List (#534).
+private struct SidebarHoverRegion<Content: View>: View {
+  var id: SidebarID? = nil
+  @ViewBuilder let content: (Bool) -> Content
+  @State private var hovered = false
+
+  var body: some View {
+    #if DEBUG
+      if let id { ProjectSidebar.didRenderHover?(id, $hovered) }
+    #endif
+    return content(hovered).onHover { hovered = $0 }
+  }
+}
+
+private struct SidebarAddProjectButton: View {
+  @EnvironmentObject private var store: AppStore
+  @State private var hovering = false
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    // Add Project, bottom-right. No key equivalent — File ▸ New Project… lost ⌘O to Open Workroom…
+    // (issue #94). Routes through the store's request flag so the importer (re-homed to RootView,
+    // issue #23 OV1) can present even when this sidebar is collapsed in Workrooms View.
+    Button {
+      store.modals.requestAddProject = true
+    } label: {
+      Image(systemName: "plus")
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .frame(width: 24, height: 24)
+        .background(
+          RoundedRectangle(cornerRadius: 6)
+            .fill(tokens.hover.opacity(hovering ? 1 : 0))
+        )
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering = $0 }
+    .help("Add a project folder")
+    .accessibilityLabel("Add Project")
+    .accessibilityIdentifier("AddProject")
+  }
+}
+
+/// Notifications invalidate badge views, not the project/workroom row tree (#534).
+private struct SidebarUnreadDot: View {
+  enum Source {
+    case project(Project)
+    case target(TerminalTarget.ID)
+    case tab(TerminalTab.ID)
+  }
+
+  @EnvironmentObject private var notifications: NotificationCenterStore
+  let source: Source
+
+  var body: some View { UnreadDot(count: count) }
+
+  private var count: Int {
+    switch source {
+    case .project(let project):
+      var total = notifications.count(target: TargetID.root(project: project.path))
+      for workroom in project.workrooms {
+        total += notifications.count(
+          target: TargetID.workroom(project: project.path, name: workroom.name))
+      }
+      return total
+    case .target(let target): return notifications.count(target: target)
+    case .tab(let tab): return notifications.count(tab: tab)
+    }
+  }
+}
+
+/// Only the glyph needs the VCS dictionary. Reading it in the row builder made every sweep rebuild
+/// the entire List, including offscreen rows and unrelated notification badges (#534).
+private struct SidebarStatusGlyph: View {
+  @EnvironmentObject private var vcsStatus: VCSStatusService
+  @Environment(\.themeTokens) private var tokens
+  let id: SidebarID
+  let symbol: String
+
+  var body: some View {
+    Image(systemName: symbol)
+      .font(.system(size: 10))
+      .foregroundStyle(
+        VCSStatusPresentation.iconTint(vcsStatus.workroomStatuses[id] ?? .unresolved, tokens))
+  }
+}
+
+private struct SidebarRootStatusLabel: ViewModifier {
+  @EnvironmentObject private var vcsStatus: VCSStatusService
+  let id: SidebarID
+  let rootLabel: String
+  let programLabels: [String]
+
+  func body(content: Content) -> some View {
+    let label =
+      ([
+        rootLabel,
+        VCSStatusPresentation.accessibilityLabel(vcsStatus.workroomStatuses[id] ?? .unresolved),
+      ]
+      + programLabels).filter { !$0.isEmpty }.joined(separator: ", ")
+    return content.accessibilityLabel(label)
+  }
+}
+
+private struct SidebarAggregateStatus: View {
+  @EnvironmentObject private var vcsStatus: VCSStatusService
+  let projectPath: String
+
+  var body: some View {
+    if let status = vcsStatus.aggregateStatus(forProject: projectPath) {
+      VCSAggregateDot(status: status)
+    }
+  }
+}
+
+/// The root row's label tint (issue #43). A detached/none root takes an explicit `.secondary`; a
+/// healthy root applies NO foreground color so it keeps the inherited (vibrant) foreground and dims
+/// along with the rest of the sidebar when the window is inactive — pinning any color here (including
+/// `.foregroundColor(nil)`) opts the text out of that dimming and leaves it bright on blur. A
+/// modifier rather than an inline `if` keeps the row's other label modifiers in one chain.
+private struct RootLabelTint: ViewModifier {
+  let dim: Bool
+  @ViewBuilder func body(content: Content) -> some View {
+    if dim { content.foregroundColor(.secondary) } else { content }
+  }
+}
+
+/// The small indeterminate spinner shown on a root/workroom row while one of its terminals is
+/// running a command (issue #28). Matches the project row's create/delete spinner so the sidebar
+/// has one progress idiom. A command that reported OSC 9;4 ERROR shows the failure mark instead, so
+/// the row reads as failed at a glance rather than as one more busy spinner.
+private struct RunningSpinner: View {
+  var failed = false
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    if failed {
+      Image(systemName: "exclamationmark.circle.fill")
+        .foregroundStyle(tokens.failure)
+        .help("A command reported an error")
+        .accessibilityLabel("A command reported an error")
+    } else {
+      ProgressView()
+        .controlSize(.small)
+        .help("Running a command")
+        .accessibilityLabel("Running a command")
+    }
+  }
+}
+
+/// How far a create has got (#356, #483), on its row: complete steps out of all of them, with the
+/// step it is on as its tooltip, the failed mark once it has failed, and nothing once it has
+/// succeeded, while its checklist waits for Done.
+private struct CreateStepCircle: View {
+  /// Observed here: a run's steps change without the store (read through Observation) changing.
+  @ObservedObject var run: CreationRun
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    let step = WorkroomLifecycle.CreateStep(run)
+    if run.outcome == .succeeded {
+      EmptyView()
+    } else if step.failed {
+      Image(systemName: "xmark.octagon.fill")
+        .foregroundStyle(tokens.failure)
+        .help("Couldn't create the workroom: \(step.label) failed")
+        .accessibilityLabel("Couldn't create the workroom: \(step.label) failed")
+    } else {
+      ProgressView(value: step.fraction)
+        .progressViewStyle(.circular)
+        .controlSize(.small)
+        .help(step.label)
+        .accessibilityLabel(step.label)
+    }
+  }
+}
+
+/// The always-visible "new workroom" button on a project row: a menu of the places a workroom can
+/// go (#309). Its own hover paints a subtle neutral background to read as an actionable control.
+private struct CreateRowButton<Places: View>: View {
+  let help: String
+  @ViewBuilder let places: () -> Places
+  @State private var hovering = false
+  @Environment(\.themeTokens) private var tokens
+
+  private var glyph: some View {
+    Image(systemName: "plus")
+      .font(.system(size: 11))
+      .foregroundStyle(.secondary)
+      .padding(4)
+      .background(
+        RoundedRectangle(cornerRadius: 5)
+          .fill(tokens.hover.opacity(hovering ? 1 : 0))
+      )
+  }
+
+  var body: some View {
+    // A menu that looks exactly like a button: drawn by SwiftUI as a plain button, so the glyph
+    // keeps its size, weight and colour, with no arrow.
+    Menu(content: places) { glyph.accessibilityLabel(help) }
+      .menuStyle(.button)
+      .buttonStyle(.plain)
+      .menuIndicator(.hidden)
+      .fixedSize()
+      .onHover { hovering = $0 }
+      .help(help)
+      .accessibilityLabel(help)
+  }
+}
+
+/// Per-row run/stop toggle for a root or workroom whose project has a run command (issue #7). Reads
+/// the run state off `RunCommandController` (green = running) and toggles start/stop on click — without selecting
+/// the row. Running hovers red (the stop action); stopped hovers green (the start action).
+private struct RowRunButton: View {
+  let target: TerminalTarget
+  @EnvironmentObject var store: AppStore
+  @EnvironmentObject var runCommand: RunCommandController
+  @State private var hovering = false
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    let running = runCommand.isRunCommandRunning(for: target.id)
+    let stopping = runCommand.runStates[target.id]?.isStopping == true
+    // The action's color: red to stop (like delete), green to start. Drives the hover icon tint AND
+    // the rounded hover background, matching the row's other buttons (new-workroom / delete).
+    let tint = running ? tokens.failure : tokens.success
+    Button {
+      store.toggleRunCommand(for: target)
+    } label: {
+      Group {
+        if stopping {
+          ProgressView().controlSize(.mini)
+            .tint(tokens.warning)
+            .frame(width: 12, height: 12)
+        } else {
+          Image(systemName: running ? "stop.circle.fill" : "play.circle.fill")
+            .font(.system(size: 12))
+            .foregroundStyle(
+              running
+                ? (hovering ? tokens.failure : tokens.success)
+                : (hovering ? tokens.success : Color.secondary)
+            )
+        }
+      }
+      .padding(4)
+      .background(
+        RoundedRectangle(cornerRadius: 5)
+          .fill(tint.opacity(hovering ? 0.18 : 0))
+      )
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering = $0 }
+    .help(stopping ? "Stopping run command…" : (running ? "Stop run command" : "Start run command"))
+    .accessibilityLabel(
+      stopping ? "Stopping run command" : (running ? "Stop run command" : "Start run command"))
+  }
+}
+
+/// The gear button on a project row, revealed on hover to the left of the new-workroom button,
+/// opening Project Settings (issue #7). Laid out always (so the row size is stable) and only made
+/// visible via `visible`; its own hover paints a subtle neutral background like the new-workroom one.
+private struct SettingsRowButton: View {
+  let help: String
+  let visible: Bool
+  let action: () -> Void
+  @State private var hovering = false
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: "gearshape")
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .padding(4)
+        .background(
+          RoundedRectangle(cornerRadius: 5)
+            .fill(tokens.hover.opacity(hovering ? 1 : 0))
+        )
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering = $0 }
+    .help(help)
+    .accessibilityLabel(help)
+    .opacity(visible ? 1 : 0)
+    .allowsHitTesting(visible)
+  }
+}
+
+/// The trash button revealed when a workroom row is hovered. It is always laid out (so
+/// the row's size doesn't change on hover) and only made visible via `visible`. Its own
+/// hover paints a soft pastel-red background to flag the destructive action.
+private struct DeleteRowButton: View {
+  let name: String
+  let visible: Bool
+  let action: () -> Void
+  @State private var hovering = false
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: "trash")
+        .font(.system(size: 11))
+        .foregroundStyle(hovering ? tokens.failure : .secondary)
+        .padding(4)
+        .background(
+          RoundedRectangle(cornerRadius: 5)
+            .fill(tokens.failure.opacity(hovering ? 0.18 : 0))
+        )
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering = $0 }
+    // An ellipsis, as it asks before it deletes (`RootView`'s confirmation). The tooltip matches the
+    // menus' item; VoiceOver keeps the name, as it reads the button away from its row.
+    .help("Delete Workroom…")
+    .accessibilityLabel("Delete \(name)…")
+    .opacity(visible ? 1 : 0)
+    .allowsHitTesting(visible)
+  }
+}
+
+/// The terminal-subtree disclosure chevron on a root/workroom row (issue #30). Hover paints a subtle
+/// rounded background — the same idiom as the row's other inline buttons (new-workroom, delete). The
+/// chevron itself stays at the shared caret-column width, leading-aligned, so it keeps lining up with
+/// the terminal rows' glyphs; the hover fill is a non-layout background that can't shift it.
+private struct TerminalDisclosureButton: View {
+  let expanded: Bool
+  let width: CGFloat
+  let action: () -> Void
+  @State private var hovering = false
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    Button(action: action) {
+      // Center the chevron in the caret slot. Centring pins its *center* to the slot center regardless
+      // of which chevron is shown — so the glyph doesn't jump on toggle and the hover fill (also
+      // centered on the slot) sits symmetrically around it. The terminal-row glyph centers in the same
+      // slot, so the two share one vertical axis.
+      Image(systemName: expanded ? "chevron.down" : "chevron.right")
+        .font(.system(size: 10))
+        .foregroundStyle(.secondary)
+        .frame(width: width, height: 18, alignment: .center)
+        .background {
+          RoundedRectangle(cornerRadius: 5)
+            .fill(tokens.hover.opacity(hovering ? 1 : 0))
+            .frame(width: 18, height: 18)
+        }
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering = $0 }
+    .help(expanded ? "Hide terminals" : "Show terminals")
+    .accessibilityLabel(expanded ? "Hide terminals" : "Show terminals")
+  }
+}
+
+/// The ✕ revealed when a terminal row is hovered (issue #30). Mirrors `DeleteRowButton`'s
+/// reveal-on-hover layout, but neutral rather than red — closing a terminal is gated by the same
+/// confirmation as ⌘W (`requestCloseTerminalTab`), not the harder workroom deletion.
+private struct CloseTerminalRowButton: View {
+  let title: String
+  let visible: Bool
+  let action: () -> Void
+  @State private var hovering = false
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: "xmark")
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(.secondary)
+        .padding(4)
+        .background(
+          RoundedRectangle(cornerRadius: 5)
+            .fill(tokens.hover.opacity(hovering ? 1 : 0))
+        )
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering = $0 }
+    .help("Close \(title)")
+    .accessibilityLabel("Close \(title)")
+    .opacity(visible ? 1 : 0)
+    .allowsHitTesting(visible)
+  }
+}

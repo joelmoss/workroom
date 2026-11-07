@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import WorkroomSystem
 import XCTest
 
@@ -150,19 +151,18 @@ final class CswapUsageTests: XCTestCase {
   }
 }
 
-private final class CswapRunner: StatusCommandRunning, @unchecked Sendable {
+private final class CswapRunner: StatusCommandRunning, Sendable {
   private let result: CommandResult
-  private let lock = NSLock()
-  private var _args: [String] = []
-  private var _environment: [String: String] = [:]
+  private let lastArgs = Mutex<[String]>([])
+  private let lastEnvironment = Mutex<[String: String]>([:])
   init(_ result: CommandResult) { self.result = result }
-  var args: [String] { lock.withLock { _args } }
-  var environment: [String: String] { lock.withLock { _environment } }
+  var args: [String] { lastArgs.withLock { $0 } }
+  var environment: [String: String] { lastEnvironment.withLock { $0 } }
 
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
   {
-    lock.withLock { _args = args }
+    lastArgs.withLock { $0 = args }
     return result
   }
 
@@ -170,7 +170,7 @@ private final class CswapRunner: StatusCommandRunning, @unchecked Sendable {
     _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
     environment: [String: String]
   ) async -> CommandResult {
-    lock.withLock { _environment = environment }
+    lastEnvironment.withLock { $0 = environment }
     return await run(executable, args, in: directory, timeout: timeout)
   }
 }

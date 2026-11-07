@@ -1,5 +1,5 @@
 import Foundation
-import WorkroomVCS
+import WorkroomDomain
 
 /// Where the daemon is installed on a host: its socket, and beside it its binary and Ghostty's
 /// resources (#239).
@@ -15,7 +15,7 @@ public enum DaemonInstall {
 
   /// What a host with the old layout tells the user, wherever it is met: the bootstrap, and a
   /// pane's attach.
-  public static let formerLayoutMessage = RepositoryRoutingError.olderLayoutMessage
+  public static let formerLayoutMessage = HostID.olderLayoutMessage
 
   /// Where a host made before the daemon was renamed (#525) has it: `wr-agent`, in `agent/` where
   /// the new layout has `daemon/`, else beside the socket (a container's `/run/workroom`). Only

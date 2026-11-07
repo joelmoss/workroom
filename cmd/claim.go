@@ -35,7 +35,7 @@ var claimCmd = &cobra.Command{
 			return err
 		}
 		if jsonOutput {
-			return writeJSONSuccess(os.Stdout, "claim-provisioned", map[string]any{"moved": moved})
+			return writeJSONSuccess(os.Stdout, "claim-provisioned", claimPayload{Moved: moved})
 		}
 		return nil
 	},

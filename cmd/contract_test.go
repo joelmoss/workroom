@@ -20,8 +20,9 @@ import (
 
 // The --json contract's goldens live in testdata/contracts: each file is what one command prints
 // as the app runs it, byte for byte, with the temporary HOME and the random workroom name replaced
-// so the files stay stable. macapp/WorkroomAppTests/CLIContractTests.swift decodes the same files
-// with the app's own types, so a change on either side that breaks the other fails a test. A
+// so the files stay stable. CLIContractTests.swift (macapp/Packages/WorkroomDomain/Tests) decodes
+// the same files with the app's own types, so a change on either side that breaks the other fails
+// a test. A
 // deliberate contract change rewrites them:
 //
 //	go test ./cmd -run TestContract -update
@@ -84,7 +85,7 @@ func resetCLI() {
 		}
 	}
 	walk(rootCmd)
-	currentCommand, jsonErrorExtra = "", nil
+	currentCommand, jsonErrorCreated = "", nil
 	rootCmd.SetArgs(nil)
 }
 
@@ -254,6 +255,10 @@ func TestContractList(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := cfg.AddProject(empty, "git"); err != nil {
+		t.Fatal(err)
+	}
+	// app has an include file and empty has none, so has_include is in the golden both ways.
+	if err := os.WriteFile(filepath.Join(app, ".worktreeinclude"), []byte(".env\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

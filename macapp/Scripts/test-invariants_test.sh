@@ -17,16 +17,28 @@ set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$DIR/../.." && pwd)"
 # Overridable so the suite can be pointed at modified copies — used to confirm these cases
-# actually FAIL against a drifted Makefile/workflow rather than passing vacuously.
+# actually FAIL against a drifted Makefile/workflow rather than passing vacuously. MAKEFILE is a
+# root Makefile; its includes resolve against its own directory.
 MAKEFILE="${TEST_INVARIANTS_MAKEFILE:-$ROOT/Makefile}"
 WORKFLOWS_DIR="${TEST_INVARIANTS_WORKFLOWS_DIR:-$ROOT/.github/workflows}"
+MAKE_DIR="$(cd "$(dirname "$MAKEFILE")" && pwd)"
 fails=0
+
+# A variable's value as make has it (the root Makefile's `print-%`), wherever the line that sets
+# it lives. A clean environment, so neither the caller's environment nor the overrides of a make
+# that runs this test (`make app-test-preflight APP_UITEST_FLAGS=…`) stand in for the Makefile's.
+make_value() {
+  env -i PATH="$PATH" HOME="$HOME" \
+    make -s --no-print-directory -C "$MAKE_DIR" -f "$MAKEFILE" "print-$1"
+}
+# Every file make reads, so a recipe is found in whichever one holds it.
+MAKEFILES="$(make_value MAKEFILE_LIST)"
 
 # --- APP_UITEST_FLAGS skip list -------------------------------------------------------------
 # Pinned literally: a refactor that silently drops or adds an entry re-enables (or newly skips) a
 # flaky/expensive UI test in the default local `make app-uitest` run without anyone deciding to.
 want_flags='-skip-testing:WorkroomAppUITests/SessionRestoreUITests -skip-testing:WorkroomAppUITests/HistoryStressUITests/testLargeHistoryStaysInteractive -skip-testing:WorkroomAppUITests/WindowDragUITests/testDraggingWorkroomTabReordersTwoChips'
-got_flags="$(sed -n 's/^APP_UITEST_FLAGS ?= //p' "$MAKEFILE")"
+got_flags="$(make_value APP_UITEST_FLAGS)"
 if [ "$got_flags" != "$want_flags" ]; then
   echo "FAIL: Makefile's APP_UITEST_FLAGS skip list changed."
   echo "  want: $want_flags"
@@ -37,24 +49,44 @@ fi
 # --- app-test still wired into CI ------------------------------------------------------------
 # Pin the workflows' actual invocation of the xcodebuild suite, not the Makefile's dependency
 # graph (which deliberately excludes app-test from app-release). `([^-]|$)` excludes
-# `app-test-scripts`/`app-test-supervisor`, which are different targets entirely.
-for wf in ci.yml release.yml nightly.yml; do
-  path="$WORKFLOWS_DIR/$wf"
-  if [ ! -f "$path" ]; then
-    echo "FAIL: workflow $wf not found at $path"
+# `app-test-scripts`/`app-test-supervisor`, which are different targets entirely, and `^[^#]*`
+# the comments that name the target without running it. The local packages' tests run outside
+# the app host, so app-test alone misses them. CI is ci.yml and every workflow it calls, wherever
+# its jobs live; the release and the nightly each run both themselves.
+#
+# $1 = what runs them, $2.. = its workflow files; one of them invoking each target is enough.
+check_runs_tests() {
+  what="$1"
+  shift
+  runs_app_test=no
+  runs_package_test=no
+  for path in "$@"; do
+    if [ ! -f "$path" ]; then
+      echo "FAIL: workflow $(basename "$path") not found at $path"
+      fails=$((fails + 1))
+      continue
+    fi
+    if grep -Eq '^[^#]*make app-test([^-]|$)' "$path"; then runs_app_test=yes; fi
+    if grep -q '^[^#]*make app-package-test' "$path"; then runs_package_test=yes; fi
+  done
+  if [ "$runs_app_test" != yes ]; then
+    echo "FAIL: $what no longer invokes 'make app-test' — the unit-test safety net may be gone"
     fails=$((fails + 1))
-    continue
   fi
-  if ! grep -Eq 'make app-test([^-]|$)' "$path"; then
-    echo "FAIL: $wf no longer invokes 'make app-test' — the unit-test safety net may be gone"
+  if [ "$runs_package_test" != yes ]; then
+    echo "FAIL: $what no longer invokes 'make app-package-test' — the package tests would run nowhere"
     fails=$((fails + 1))
   fi
-  # The local packages' tests run outside the app host, so app-test alone misses them.
-  if ! grep -q 'make app-package-test' "$path"; then
-    echo "FAIL: $wf no longer invokes 'make app-package-test' — the package tests would run nowhere"
-    fails=$((fails + 1))
-  fi
-done
+}
+set -- "$WORKFLOWS_DIR/ci.yml"
+while IFS= read -r called; do
+  if [ -n "$called" ]; then set -- "$@" "$WORKFLOWS_DIR/$called"; fi
+done <<EOF
+$(sed -n 's|^ *uses: \./\.github/workflows/\([^ ]*\).*|\1|p' "$WORKFLOWS_DIR/ci.yml" 2>/dev/null)
+EOF
+check_runs_tests CI "$@"
+check_runs_tests release.yml "$WORKFLOWS_DIR/release.yml"
+check_runs_tests nightly.yml "$WORKFLOWS_DIR/nightly.yml"
 
 # --- the appcast's minimum system version stays derived, never restated ---------------------
 # appcast.sh hardcoded MIN_OS="14.0" and went stale when the app's minimum rose to 15.0
@@ -119,7 +151,15 @@ fi
 # docs/designs/parallel-workroom-testing.md. Each half hangs on a single Makefile or project.yml
 # token that a refactor could drop with every build still green and every test still passing —
 # just no longer safely alongside another workroom's run, which no test here can see.
-recipe() { sed -n "/^$1:/,/^\$/p" "$MAKEFILE"; }
+recipe() {
+  for file in $MAKEFILES; do
+    case "$file" in
+      /*) ;;
+      *) file="$MAKE_DIR/$file" ;;
+    esac
+    sed -n "/^$1:/,/^\$/p" "$file"
+  done
+}
 for target in app-build app-test app-uitest; do
   if ! recipe "$target" | grep -Eq 'build(-for-testing)? .*\$\(APP_ID_FLAGS\)'; then
     echo "FAIL: $target no longer passes \$(APP_ID_FLAGS) where it builds — every workroom's Debug"
@@ -129,7 +169,7 @@ for target in app-build app-test app-uitest; do
 done
 # Benchmarks can request exclusive access; normal tests must still default to shared access.
 # Check the default and its use, so an unused shared default cannot conceal a missing lock.
-app_test_gui_mode="$(sed -n 's/^APP_TEST_GUI_MODE ?= //p' "$MAKEFILE")"
+app_test_gui_mode="$(make_value APP_TEST_GUI_MODE)"
 if [ "$app_test_gui_mode" != shared ] \
   || ! recipe app-test | grep -q '[$](call gui_lock,[$](APP_TEST_GUI_MODE),app-test)'; then
   echo "FAIL: app-test no longer runs its tests under the shared GUI lock — a unit run's host windows"

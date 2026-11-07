@@ -6,7 +6,7 @@ import XCTest
 
 @testable import Workroom
 
-/// The regression net for the WORKROOM-2B candidate in `Views/FilesPanel.swift`:
+/// The regression net for the WORKROOM-2B candidate in `Views/VersionControl/FilesPanel.swift`:
 /// `FileTreeRowView` used to hold BOTH `@EnvironmentObject var store: AppStore` (read only inside
 /// tap/menu closures, never in the rendered body) and `@ObservedObject var model: FileTreeModel`,
 /// over an eager `VStack` capped at 4000 rows — the same shape that turned per-row avatar work into a
@@ -39,10 +39,10 @@ final class FilesPanelInvalidationTests: XCTestCase {
 
   private var tempDirs: [String] = []
 
-  override func tearDown() {
+  override func tearDown() async throws {
     for d in tempDirs { try? FileManager.default.removeItem(atPath: d) }
     tempDirs = []
-    super.tearDown()
+    try await super.tearDown()
   }
 
   /// A real throwaway directory holding a `.git` with a `HEAD` — `FileTreeModel.activate` requires the
@@ -80,7 +80,7 @@ final class FilesPanelInvalidationTests: XCTestCase {
     let store = AppStore()
     store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     let projectPath = "/files-invalidation"
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: projectPath, vcs: "git",
         workrooms: [
@@ -99,7 +99,9 @@ final class FilesPanelInvalidationTests: XCTestCase {
 
   /// Host the real `FilesPanel` offscreen, directly over the given model (not `store.fileTree`).
   private func host(_ store: AppStore, _ model: FileTreeModel) -> (NSWindow, NSView) {
+    // Rooted as the inspector roots it (`InspectorPaneViewController.setContent`).
     let root = FilesPanel(model: model)
+      .themeTokensRoot()
       .environmentObject(store)
       .environmentObject(store.notifications)
       .frame(width: 280, height: 400)

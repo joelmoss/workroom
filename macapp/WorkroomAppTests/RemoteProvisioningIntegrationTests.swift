@@ -1,6 +1,7 @@
 import DaemonConnection
 import Defaults
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -88,7 +89,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
   @MainActor
   private func environment(
     _ fixture: Fixture, driver: ContainerHostDriver,
-    connect: (@Sendable (HostID) async throws -> DaemonVCSConnection)? = nil
+    connect: (@Sendable (HostID) async throws -> DaemonClient)? = nil
   ) -> RemoteProvisioning.Environment {
     let daemon = fixture.daemon
     var environment = RemoteProvisioning.Environment(
@@ -166,14 +167,16 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
   }
 
   /// A shell command on the host and its exit status: through the driver's ssh, never the daemon.
-  private func onHost(_ driver: ContainerHostDriver, _ host: HostID, _ command: String)
-    async throws -> (status: Int32, output: String)
-  {
+  /// This and `provision` run in their caller's isolation, so a main-actor test can call them
+  /// without handing the test case to another executor.
+  nonisolated(nonsending) private func onHost(
+    _ driver: ContainerHostDriver, _ host: HostID, _ command: String
+  ) async throws -> (status: Int32, output: String) {
     let (status, output) = try await driver.exec(command, on: host).communicate(nil, timeout: 30)
     return (status, output.trimmingCharacters(in: .whitespacesAndNewlines))
   }
 
-  private func provision(
+  nonisolated(nonsending) private func provision(
     _ environment: RemoteProvisioning.Environment, branch: String,
     cloneURL: String = "/srv/origin.git", startBranch: String? = nil,
     checkpoint: @Sendable (_ host: HostID) async throws -> Void = { _ in }
@@ -204,30 +207,28 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
   // MARK: Creating from the app (#253)
 
   /// What `RemoteWorkrooms.create` wrote to config, in order, in place of the CLI.
-  private final class Recorded: @unchecked Sendable {
+  private final class Recorded: Sendable {
     enum Call: Equatable {
       case reserve(path: String, HostDescriptor)
       case record(workroom: String?, HostDescriptor)
       case forget(String)
     }
-    private let lock = NSLock()
-    private var log: [Call] = []
-    private var next = 0
-    var calls: [Call] { lock.withLock { log } }
+    private let log = Mutex<(calls: [Call], next: Int)>(([], 0))
+    var calls: [Call] { log.withLock { $0.calls } }
 
     var recorder: RemoteWorkrooms.Recorder {
       RemoteWorkrooms.Recorder(
         reserve: { path, descriptor in
-          self.lock.withLock {
-            self.log.append(.reserve(path: path, descriptor))
-            self.next += 1
-            return "w\(self.next)"
+          self.log.withLock {
+            $0.calls.append(.reserve(path: path, descriptor))
+            $0.next += 1
+            return "w\($0.next)"
           }
         },
         record: { workroom, descriptor in
-          self.lock.withLock { self.log.append(.record(workroom: workroom, descriptor)) }
+          self.log.withLock { $0.calls.append(.record(workroom: workroom, descriptor)) }
         },
-        forget: { workroom in self.lock.withLock { self.log.append(.forget(workroom)) } })
+        forget: { workroom in self.log.withLock { $0.calls.append(.forget(workroom)) } })
     }
   }
 
@@ -265,7 +266,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertNotNil(hostMade.container)
     XCTAssertTrue(RemoteWorkrooms.isLive(hostMade))
     XCTAssertNil(workroom.state, "a serving workroom's descriptor has a state")
-    XCTAssertEqual(workroom.driver, RemoteWorkrooms.containerDriver)
+    XCTAssertEqual(workroom.driver, HostKind.container(.docker).driver)
     XCTAssertNil(workroom.credentials, "a provider's host was relayed")
     XCTAssertEqual(workroom.workroomID, creating.workroomID)
     XCTAssertEqual(workroom.repository, "o/r")
@@ -333,7 +334,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
 
     try await RemoteWorkrooms.delete(
       "w1", host: try XCTUnwrap(made["w1"]), environment: environment,
-      recorder: recorded.recorder)
+      recorder: recorded.recorder, onForgotten: { _ in })
     XCTAssertEqual(recorded.calls.last, .forget("w1"))
     XCTAssertEqual(try leftovers("ps", label: label).count, 1, "the workroom's box was kept")
 
@@ -341,7 +342,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     do {
       try await RemoteWorkrooms.delete(
         "w2", host: try XCTUnwrap(made["w2"]), environment: environment,
-        recorder: recorded.recorder)
+        recorder: recorded.recorder, onForgotten: { _ in })
       XCTFail("a failed removal was swallowed")
     } catch RemoteProvisioning.Failure.rollbackIncomplete {}
     guard case .record("w2", let left) = recorded.calls.last else {
@@ -353,7 +354,8 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
 
     try FileManager.default.removeItem(at: failing)
     try await RemoteWorkrooms.delete(
-      "w2", host: left, environment: environment, recorder: recorded.recorder)
+      "w2", host: left, environment: environment, recorder: recorded.recorder,
+      onForgotten: { _ in })
     XCTAssertEqual(recorded.calls.last, .forget("w2"))
     XCTAssertEqual(try leftovers("ps", label: label), [], "the second box was kept")
   }
@@ -420,6 +422,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
   /// kept (#367); fails_when=`-p` or `-k` is dropped, or the stream never reaches tar;
   /// no_claim=boxd's and exe.dev's images (Debian here), and the CLI's own archive (a ustar the
   /// test makes stands in)
+  @MainActor
   func testIncludedFilesLandInTheCheckoutOnALinuxHost() async throws {
     let fixture = try fixture()
     let driver = ContainerHostDriver(
@@ -467,18 +470,17 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
   /// `descendants`); fails_when=the Linux daemon probes or kills differently from the macOS one the
   /// unit tests drive; no_claim=boxd's and exe.dev's own images and users (Debian here), and a
   /// hangup when the Mac side ends
+  @MainActor
   func testAWorkroomScriptRunsOnALinuxHostAsTheContractSays() async throws {
     let fixture = try fixture()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
-    let environment = await environment(fixture, driver: driver)
+    let environment = environment(fixture, driver: driver)
     let instance = try await provision(environment, branch: "wr-script")
     await instance.connection.close()
     cleanups.append { try? await driver.destroy(instance.host) }
 
-    let contract = URL(fileURLWithPath: String(describing: #filePath))
-      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-      .appendingPathComponent("testdata/script-env")
+    let contract = SharedFixture.repositoryRoot.appendingPathComponent("testdata/script-env")
     let script = try Data(contentsOf: contract.appendingPathComponent("workroom_script"))
     let setup = "\(Self.path)/scripts/workroom_setup"
     let (written, said) = try await driver.exec(
@@ -490,7 +492,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     ).communicate(script, timeout: 30)
     XCTAssertEqual(written, 0, said)
 
-    let lines = Lines()
+    let lines = Calls<String>()
     let result = await RemoteProvisioning.runScript(
       .setup, workroom: "contract", at: Self.path, hostKind: "boxd", rootScript: nil,
       daemonBinary: environment.daemonBinary(on: instance.host), on: instance.host, driver: driver,
@@ -502,7 +504,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertEqual(lines.all, want.split(separator: "\n").map(String.init))
 
     // The login shell's profile reaches the script, as a terminal's shell gets it.
-    let profile = Lines()
+    let profile = Calls<String>()
     let teardown = await RemoteProvisioning.runScript(
       .teardown, workroom: "contract", at: Self.path, hostKind: "boxd", rootScript: nil,
       daemonBinary: environment.daemonBinary(on: instance.host), on: instance.host, driver: driver,
@@ -532,13 +534,6 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertTrue(output.contains("gone"), output)
     XCTAssertFalse(output.contains("alive"), output)
     XCTAssertTrue(output.contains("timed out after 1 s"), output)
-  }
-
-  private final class Lines: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lines: [String] = []
-    var all: [String] { lock.withLock { lines } }
-    func add(_ line: String) { lock.withLock { lines.append(line) } }
   }
 
   // MARK: Workrooms
@@ -767,7 +762,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       answer: { _ in "username=x-access-token\npassword=\(token)\n" },
       transport: .init(
         forwarding: { host in
-          let connection = try await DaemonVCSConnection.connect(
+          let connection = try await DaemonClient.connect(
             host: host, stream: try await driver.openStream(to: host))
           return (.init(host: host, generation: generation), try connection.forwarding())
         },
@@ -837,11 +832,10 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertEqual(head.trimmingCharacters(in: .whitespacesAndNewlines), develop.get())
   }
 
-  private final class Develop: @unchecked Sendable {
-    private let lock = NSLock()
-    private var commit: String?
-    func set(_ value: String) { lock.withLock { commit = value } }
-    func get() -> String? { lock.withLock { commit } }
+  private final class Develop: Sendable {
+    private let commit = Mutex<String?>(nil)
+    func set(_ value: String) { commit.withLock { $0 = value } }
+    func get() -> String? { commit.withLock { $0 } }
   }
 
   /// A base an older build made goes, and its record only once it is gone (`BaseRetirement`).
@@ -854,7 +848,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let project = Project(
       path: "/p", vcs: "git", workrooms: [],
       host: HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: host))
-    let forgotten = Forgotten()
+    let forgotten = Calls<String>()
     let effects = { (driver: ContainerHostDriver, forget: @escaping @Sendable () throws -> Void) in
       BaseRetirement.Effects(
         setHost: { _, _, _ in try forget() },
@@ -883,13 +877,6 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       XCTFail("an unknown base was destroyed")
     } catch HostDriverError.unknownHost {}
     XCTAssertEqual(forgotten.all, ["forgot"])
-  }
-
-  private final class Forgotten: @unchecked Sendable {
-    private let lock = NSLock()
-    private var said: [String] = []
-    func add(_ what: String) { lock.withLock { said.append(what) } }
-    var all: [String] { lock.withLock { said } }
   }
 
   /// A teardown whose removal fails names the box still up.

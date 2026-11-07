@@ -1,6 +1,8 @@
 import DaemonConnection
+import DaemonConnectionTestSupport
 import Foundation
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -23,12 +25,11 @@ final class SSHHostIntegrationTests: XCTestCase {
   }
 
   private var directory: URL!
-  private var connections: [DaemonVCSConnection] = []
+  private var connections: [DaemonClient] = []
 
-  private final class Records: @unchecked Sendable {
-    private let lock = NSLock()
-    private var names: Set<String>
-    init(_ names: [String]) { self.names = Set(names) }
+  private final class Records: Sendable {
+    private let names: Mutex<Set<String>>
+    init(_ names: [String]) { self.names = Mutex(Set(names)) }
     var recorder: RemoteWorkrooms.Recorder {
       .init(
         reserve: { _, _ in
@@ -36,17 +37,19 @@ final class SSHHostIntegrationTests: XCTestCase {
           return ""
         },
         record: { _, _ in XCTFail("SSH delete recorded a failed machine") },
-        forget: { name in _ = self.lock.withLock { self.names.remove(name) } },
-        hasWorkrooms: { _ in self.lock.withLock { !self.names.isEmpty } })
+        forget: { name in _ = self.names.withLock { $0.remove(name) } },
+        hasWorkrooms: { _ in self.names.withLock { !$0.isEmpty } })
     }
   }
 
-  private final class CreationRecords: @unchecked Sendable {
-    private let lock = NSLock()
-    private var available: [String]
-    private var saved: [String: HostDescriptor] = [:]
-    init(_ names: [String]) { available = names }
-    var descriptors: [String: HostDescriptor] { lock.withLock { saved } }
+  private final class CreationRecords: Sendable {
+    private struct State {
+      var available: [String]
+      var saved: [String: HostDescriptor] = [:]
+    }
+    private let state: Mutex<State>
+    init(_ names: [String]) { state = Mutex(State(available: names)) }
+    var descriptors: [String: HostDescriptor] { state.withLock { $0.saved } }
     var recorder: RemoteWorkrooms.Recorder {
       .init(
         reserve: { _, _ in
@@ -54,19 +57,21 @@ final class SSHHostIntegrationTests: XCTestCase {
           return ""
         },
         record: { name, descriptor in
-          if let name { self.lock.withLock { self.saved[name] = descriptor } }
+          if let name { self.state.withLock { $0.saved[name] = descriptor } }
         },
-        forget: { name in _ = self.lock.withLock { self.saved.removeValue(forKey: name) } },
+        forget: { name in _ = self.state.withLock { $0.saved.removeValue(forKey: name) } },
         reserveInParent: { parent, descriptor in
-          self.lock.withLock {
-            let name = self.available.removeFirst()
+          self.state.withLock {
+            let name = $0.available.removeFirst()
             var descriptor = descriptor
             descriptor.path = parent + "/" + name
-            self.saved[name] = descriptor
+            $0.saved[name] = descriptor
             return name
           }
         },
-        hasWorkrooms: { id in self.lock.withLock { self.saved.values.contains { $0.id == id } } })
+        hasWorkrooms: { id in
+          self.state.withLock { state in state.saved.values.contains { $0.id == id } }
+        })
     }
   }
 
@@ -102,8 +107,12 @@ final class SSHHostIntegrationTests: XCTestCase {
       directory: directory)
   }
 
+  // The async helpers run in their caller's isolation, so a main-actor test can call them without
+  // handing the test case to another executor.
   @discardableResult
-  private func onHost(_ fixture: Fixture, _ command: String) async throws -> String {
+  nonisolated(nonsending) private func onHost(_ fixture: Fixture, _ command: String) async throws
+    -> String
+  {
     let result = await StatusCommandRunner().run(
       "/usr/bin/ssh", ["-F", fixture.config, "fixture", command], in: NSHomeDirectory(), timeout: 30
     )
@@ -114,7 +123,7 @@ final class SSHHostIntegrationTests: XCTestCase {
     return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  private func ensure(
+  nonisolated(nonsending) private func ensure(
     _ driver: SSHHostDriver, daemon: URL
   ) async throws -> DaemonBootstrap.Outcome {
     try await DaemonBootstrap.ensure(
@@ -122,8 +131,10 @@ final class SSHHostIntegrationTests: XCTestCase {
       daemon: { _ in daemon }, resources: nil)
   }
 
-  private func connect(_ driver: SSHHostDriver) async throws -> DaemonVCSConnection {
-    let connection = try await DaemonVCSConnection.connect(
+  nonisolated(nonsending) private func connect(_ driver: SSHHostDriver) async throws
+    -> DaemonClient
+  {
+    let connection = try await DaemonClient.connect(
       host: driver.hostID, stream: try await driver.openStream(to: driver.hostID))
     connections.append(connection)
     return connection
@@ -390,12 +401,12 @@ final class SSHHostIntegrationTests: XCTestCase {
       Workroom(
         name: name, path: paths[index], vcsName: "git", warnings: [], host: descriptors[index])
     }
-    hosts.adopt(
+    hosts.reachability.adopt(
       [
         Project(path: "/fixture-project-one", vcs: "git", workrooms: Array(entries.prefix(2))),
         Project(path: "/fixture-project-two", vcs: "git", workrooms: Array(entries.suffix(1))),
       ], sweep: false)
-    try await hosts.ensureConnected(host, wake: true)
+    try await hosts.reachability.ensureConnected(host, wake: true)
     let before = await HostConnectionManager.shared.snapshot(for: host)
     let lease = try XCTUnwrap(before.lease)
     // Use the product registry, with ephemeral Mac ports so forwarding the fixture's sshd
@@ -421,7 +432,7 @@ final class SSHHostIntegrationTests: XCTestCase {
       driver: driver, daemonSocket: driver.daemonSocket)
     try await RemoteWorkrooms.delete(
       names[0], host: descriptors[0], environment: environment, recorder: records.recorder,
-      hosts: hosts)
+      reachability: hosts.reachability, onForgotten: WorkroomLifecycle.forgetRemote)
     let afterOne = await HostConnectionManager.shared.snapshot(for: host)
     XCTAssertEqual(afterOne.lease, lease)
     XCTAssertNotNil(ProgramStatusMonitor.shared.hosts[host])
@@ -447,7 +458,7 @@ final class SSHHostIntegrationTests: XCTestCase {
       try await RemoteWorkrooms.delete(
         names[index], host: descriptors[index], environment: environment,
         recorder: records.recorder,
-        hosts: hosts)
+        reachability: hosts.reachability, onForgotten: WorkroomLifecycle.forgetRemote)
     }
     let afterLast = await HostConnectionManager.shared.snapshot(for: host)
     XCTAssertEqual(afterLast.status, .disconnected)
@@ -688,7 +699,7 @@ final class SSHHostIntegrationTests: XCTestCase {
           host: host, driver: driver, socket: driver.daemonSocket,
           daemon: { _ in fixture.daemon }, resources: nil)
       }, pendingIn: nil)
-    hosts.adopt(
+    hosts.reachability.adopt(
       [
         Project(
           path: "/fixture-created", vcs: "git",
@@ -704,8 +715,10 @@ final class SSHHostIntegrationTests: XCTestCase {
         recorder: records.recorder,
         teardown: .init(
           path: workroom.instance.path, rootScript: teardown, judge: judge, onLine: { _ in },
-          run: { request in await RemoteWorkrooms.runScript(request, hosts: hosts) }),
-        hosts: hosts)
+          run: { request in
+            await RemoteWorkrooms.runScript(request, reachability: hosts.reachability)
+          }),
+        reachability: hosts.reachability, onForgotten: WorkroomLifecycle.forgetRemote)
       let teardownOutput = try await onHost(
         fixture, "cat \(PosixShell.quoted(parent + "/teardown-" + workroom.name))")
       XCTAssertEqual(teardownOutput, "ssh \(workroom.name)")

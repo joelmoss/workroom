@@ -1,8 +1,8 @@
 # Design: testing the app from several workrooms at once
 
 Repo: joelmoss/workroom
-Status: host-side isolation IMPLEMENTED on master (13202838); one VM guest per UI-test run
-PROPOSED and reviewed, not built
+Status: host-side isolation shipped in #261 (merged 2026-09-29, 13202838); one VM guest per
+UI-test run is live: proposed and reviewed, not built
 
 > **Note:** Workroom dropped Jujutsu (jj) support in #266. Passages here that describe jj
 > behaviour are a record of the design as it stood then, not of the current code.

@@ -1,8 +1,9 @@
 import DaemonConnection
 import XCTest
 
-/// Pins the `Signal` frame (#522) against the daemon's reading of it (`serve.rs`, `FrameKind::Signal`
-/// and `RunSignal`): the literals are the daemon's numbers, not a round trip through this encoder.
+/// Pins the `Signal` frame (#522) against the daemon's reading of it (`terminal/dispatch.rs`,
+/// `FrameKind::Signal` and `RunSignal`): the literals are the daemon's numbers, not a round trip
+/// through this encoder.
 final class RunSignalTests: XCTestCase {
   private let session = UUID(uuidString: "5A1E0F7E-0D6C-4C9F-9C3E-2B7F1D0A8E11")!
 
@@ -21,15 +22,17 @@ final class RunSignalTests: XCTestCase {
   /// "no session …" is the one refusal the app may answer by starting the run again: the daemon
   /// holds nothing under that id, so a new session cannot double a server.
   func testRepliesSayWhetherTheRunIsGone() {
-    XCTAssertEqual(RunSignalReply.decode([0x32, 0, 0, 0, 0]), .delivered)
+    XCTAssertEqual(reply([0x32, 0, 0, 0, 0]), .delivered)
     let gone = Array("no session 5a1e0f7e".utf8)
-    XCTAssertEqual(
-      RunSignalReply.decode([0x14, 0, 0, 0, UInt8(gone.count)] + gone), .noSuchSession)
+    XCTAssertEqual(reply([0x14, 0, 0, 0, UInt8(gone.count)] + gone), .noSuchSession)
     let shell = Array("not a run session: 5a1e".utf8)
     XCTAssertEqual(
-      RunSignalReply.decode([0x14, 0, 0, 0, UInt8(shell.count)] + shell),
-      .refused("not a run session: 5a1e"))
-    XCTAssertNil(
-      RunSignalReply.decode([0x31, 0, 0, 0, 0]), "a session list is no reply to a signal")
+      reply([0x14, 0, 0, 0, UInt8(shell.count)] + shell), .refused("not a run session: 5a1e"))
+    XCTAssertNil(reply([0x31, 0, 0, 0, 0]), "a session list is no reply to a signal")
+  }
+
+  /// A Control envelope's payload, read as the remote client reads it.
+  private func reply(_ payload: [UInt8]) -> RunSignalReply? {
+    (try? DaemonControl.firstFrame(of: Data(payload))).flatMap(RunSignalReply.init(frame:))
   }
 }

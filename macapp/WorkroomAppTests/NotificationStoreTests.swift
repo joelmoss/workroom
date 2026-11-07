@@ -1,4 +1,5 @@
 import AppKit
+import WorkroomDomain
 import XCTest
 
 @testable import Workroom
@@ -9,8 +10,8 @@ import XCTest
 /// with the libghostty migration — the bell is no longer a recorded activity; see C1.)
 @MainActor
 final class NotificationStoreTests: XCTestCase {
-  private let target = "wr|/p|foo"
-  private let otherTarget = "root|/p"
+  private let target = TargetID.workroom(project: "/p", name: "foo")
+  private let otherTarget = TargetID.root(project: "/p")
 
   private func makeStore(cap: Int = 500) -> NotificationCenterStore {
     NotificationCenterStore(cap: cap, now: { Date(timeIntervalSince1970: 0) })

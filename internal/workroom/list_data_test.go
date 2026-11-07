@@ -294,3 +294,48 @@ func TestListShowsHostDestroyed(t *testing.T) {
 		t.Fatalf("expected the destroyed state in the human listing, got %q", out)
 	}
 }
+
+func TestListDataReportsWhetherEachRootHasAnIncludeFile(t *testing.T) {
+	svc, _, cfg := newTestService(t, &vcs.Git{Executor: &mockExecutor{}})
+	with, without, dangling := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(with, IncludeFile), []byte(".env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink to nothing is no include file, as a create's copy step reads it.
+	if err := os.Symlink(filepath.Join(dangling, "gone"), filepath.Join(dangling, IncludeFile)); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{with, without, dangling} {
+		if err := cfg.AddProject(p, "git"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, level := range []WarningsLevel{WarningsFast, WarningsFull} {
+		res, err := svc.ListData(level)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]bool{}
+		for _, p := range res.Projects {
+			if p.HasInclude == nil {
+				t.Fatalf("%s: %s has no has_include", level, p.Path)
+			}
+			got[p.Path] = *p.HasInclude
+		}
+		if !got[with] || got[without] || got[dangling] {
+			t.Fatalf("%s: has_include = %v, want true only for %s", level, got, with)
+		}
+	}
+
+	// WarningsNone reads only the config, so it leaves has_include out.
+	res, err := svc.ListData(WarningsNone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range res.Projects {
+		if p.HasInclude != nil {
+			t.Fatalf("none: %s reports has_include %v", p.Path, *p.HasInclude)
+		}
+	}
+}

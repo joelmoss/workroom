@@ -2,14 +2,14 @@
 
 Paths beginning `Core/`, `Packages/`, `Resources/` and `Scripts/` are relative to `macapp/`.
 Release channels and Sparkle feeds are documented in
-[CONTRIBUTING](../../CONTRIBUTING.md#release-channels); `project.yml` owns the live settings.
+[the release process](../contributing/releasing.md#release-channels); `project.yml` owns the live settings.
 
 - **Debug builds run side by side with the release build.** The Debug config has a distinct
   identity — bundle id `com.developwithstyle.workroom.dev`, product/display name `Workroom Dev`,
   and the orange-badged `AppIcon-Dev` icon set — so a local build doesn't fight the installed release
   `Workroom` for activation, the key window, preferences (separate UserDefaults domain via the
   bundle id), or the system-wide ⌘§ hotkey. The Debug build deliberately **doesn't register ⌘§**
-  and **doesn't run Sparkle scheduled checks** (`#if DEBUG` in `WorkroomApp.swift` / `Updater.swift`)
+  and **doesn't run Sparkle scheduled checks** (`#if !DEBUG` in `App/AppDelegate.swift`, `#if DEBUG` in `Updater.swift`)
   so it can't grab the global hotkey or try to "update" itself to the release DMG. Release and
   Nightly share the CLI config at `~/.config/workroom/config.json`. A Dev build
   keeps its own config, at `Application Support/Workroom/<bundle id>/config.json`, so what it makes
@@ -25,7 +25,7 @@ Release channels and Sparkle feeds are documented in
   DECLARATION and falls back to `UserDefaults.standard`, and `WorkroomAppTests` is *app-hosted*
   (`TEST_HOST` is `Workroom Dev.app`) — so one key declared without the suite makes `make app-test`
   rewrite the developer's own theme, release channel, inspector layout and run commands.
-  `Core/DefaultsSuite.swift` defines `UserDefaults.app`: the real domain normally, a throwaway
+  `Core/AppShell/DefaultsSuite.swift` defines `UserDefaults.app`: the real domain normally, a throwaway
   `com.developwithstyle.workroom.tests*` suite under XCTest or an XCUITest launch (per-pid and
   wiped for hosted unit runs, since `make app-test` shards across parallel workers; one stable
   name, never wiped, for XCUITest so a quit-and-relaunch test still sees what it left). The whole
@@ -56,7 +56,7 @@ Release channels and Sparkle feeds are documented in
   the app and the daemon ship** — read it there rather than trusting a version quoted anywhere else.
   Bumping it is not a one-line change (see the procedure under §N of `macapp/QA-libghostty.md`). The
   build needs Zig and Xcode's Metal toolchain; `xcodegen generate` runs it. The terminal surface
-  (`Core/GhosttySurfaceView.swift`) + runtime (`GhosttyApp`/`GhosttyRuntimeAdapter`) are ours; the
+  (`Core/Terminal/GhosttySurfaceView.swift`) + runtime (`GhosttyApp`/`GhosttyRuntimeAdapter`) are ours; the
   bundled `Resources/ghostty` (terminfo + shell-integration) must ship for the engine to start.
 
 - **The child environment has two layers, and only one of them is reliable** (`WorkroomSystem/ShellEnvironment.swift`).

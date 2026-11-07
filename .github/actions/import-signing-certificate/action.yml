@@ -1,0 +1,35 @@
+name: Import the signing certificate
+description: >-
+  Import the Developer ID certificate the nightly and the release sign Workroom.app with into a
+  keychain of its own, unlocked for the rest of the job.
+
+inputs:
+  certificate:
+    description: The base64 .p12 (secrets.MACOS_CERTIFICATE)
+    required: true
+  certificate-password:
+    description: The .p12's password (secrets.MACOS_CERTIFICATE_PWD)
+    required: true
+  keychain-password:
+    description: A password for the job's keychain (secrets.KEYCHAIN_PASSWORD)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Import Developer ID signing certificate
+      shell: bash
+      env:
+        MACOS_CERTIFICATE: ${{ inputs.certificate }}
+        MACOS_CERTIFICATE_PWD: ${{ inputs.certificate-password }}
+        KEYCHAIN_PASSWORD: ${{ inputs.keychain-password }}
+      run: |
+        CERT="$RUNNER_TEMP/dev-id.p12"
+        KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
+        echo "$MACOS_CERTIFICATE" | openssl base64 -d -A > "$CERT"
+        security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+        security set-keychain-settings -lut 21600 "$KEYCHAIN"
+        security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+        security import "$CERT" -P "$MACOS_CERTIFICATE_PWD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+        security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+        security list-keychain -d user -s "$KEYCHAIN" login.keychain

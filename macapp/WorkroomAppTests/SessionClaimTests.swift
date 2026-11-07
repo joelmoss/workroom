@@ -15,16 +15,16 @@ final class SessionClaimTests: XCTestCase {
   private var directory: URL!
   private var url: URL!
 
-  override func setUpWithError() throws {
-    try super.setUpWithError()
+  override func setUp() async throws {
+    try await super.setUp()
     directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("session-claim-\(UUID().uuidString)", isDirectory: true)
     url = directory.appendingPathComponent("session.json")
   }
 
-  override func tearDownWithError() throws {
+  override func tearDown() async throws {
     try? FileManager.default.removeItem(at: directory)
-    try super.tearDownWithError()
+    try await super.tearDown()
   }
 
   private func window(key: UUID, isKey: Bool = false, selected: String? = nil) -> WindowSession {
@@ -46,12 +46,12 @@ final class SessionClaimTests: XCTestCase {
     windows: [WindowSession], capture: @escaping () -> [WindowSession] = { [] }
   ) -> ProjectStore {
     if !windows.isEmpty {
-      SessionStore(url: url).writeSynchronously(
+      SavedLayoutStore(url: url).writeSynchronously(
         SessionFile(savedAt: Date(timeIntervalSince1970: 0), windows: windows))
     }
     let store = ProjectStore()
-    store.sessionCoordinator = SessionCoordinator(
-      store: SessionStore(url: url), debounce: 0.05, ceiling: 0.2, capture: capture)
+    store.sessionCoordinator = SavedLayoutCoordinator(
+      store: SavedLayoutStore(url: url), debounce: 0.05, ceiling: 0.2, capture: capture)
     return store
   }
 
@@ -64,7 +64,7 @@ final class SessionClaimTests: XCTestCase {
   }
 
   private func savedWindows() -> [WindowSession]? {
-    guard case .restored(let file, _) = SessionStore(url: url).read() else { return nil }
+    guard case .restored(let file, _) = SavedLayoutStore(url: url).read() else { return nil }
     return file.windows
   }
 
@@ -148,7 +148,7 @@ final class SessionClaimTests: XCTestCase {
   /// Corrupt input on the launch path must never cost more than the restore itself: the launch window
   /// claims nothing (so it opens its one ordinary pane), nothing is left to dispatch, saving is not
   /// suspended, and the unreadable file is quarantined rather than silently deleted. Each hop has its
-  /// own test (`SessionStoreTests.testCorruptFileIsQuarantinedOnce`, the no-session test above); this
+  /// own test (`SavedLayoutStoreTests.testCorruptFileIsQuarantinedOnce`, the no-session test above); this
   /// is the glue between them, which used to need an app launch.
   func testACorruptSessionFileClaimsNothingAndIsQuarantined() throws {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

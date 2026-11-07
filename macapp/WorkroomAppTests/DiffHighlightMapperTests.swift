@@ -2,6 +2,7 @@ import AppKit
 import DesignSystem
 import SwiftUI
 import SyntaxHighlighting
+import WorkroomGit
 import XCTest
 
 @testable import Workroom

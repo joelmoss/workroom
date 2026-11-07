@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/joelmoss/workroom/internal/errs"
+	"github.com/joelmoss/workroom/internal/testtable"
 	"github.com/joelmoss/workroom/internal/vcs/vcstest"
 )
 
@@ -349,18 +350,13 @@ func TestGitCreateDoesNotFallBackWhenTheFetchFailed(t *testing.T) {
 	}
 }
 
+// The cases are shared with the app's RemoteWorkrooms.splitBase (TerminalTargetTests), which reads
+// the same table, so the two copies of the rule can't drift.
 func TestSplitBase(t *testing.T) {
-	remotes := []string{"origin", "upstream"}
-	for _, c := range []struct{ base, remote, branch string }{
-		{"develop", "origin", "develop"},
-		{"origin/main", "origin", "main"},
-		{"upstream/main", "upstream", "main"},
-		{"upstream/release/1.0", "upstream", "release/1.0"},
-		{"release/1.0", "origin", "release/1.0"},
-		{"upstream/", "origin", "upstream/"},
-	} {
-		if remote, branch := SplitBase(c.base, remotes); remote != c.remote || branch != c.branch {
-			t.Errorf("SplitBase(%q) = %q, %q; want %q, %q", c.base, remote, branch, c.remote, c.branch)
+	for _, fields := range testtable.Rows(t, "../../testdata/twins/split_base.tsv", 4) {
+		remotes, base, wantRemote, wantBranch := strings.Split(fields[0], ","), fields[1], fields[2], fields[3]
+		if remote, branch := SplitBase(base, remotes); remote != wantRemote || branch != wantBranch {
+			t.Errorf("SplitBase(%q, %q) = %q, %q; want %q, %q", base, remotes, remote, branch, wantRemote, wantBranch)
 		}
 	}
 }

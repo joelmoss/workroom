@@ -94,7 +94,7 @@ final class OrphanedSessionTests: XCTestCase {
   func testHeldSessionsIncludeADeferredTarget() {
     let store = AppStore()
     let held = UUID()
-    store.deferredTargetSessions["wr|/p|remote"] = TargetSession(
+    store.deferredTargetSessions[.workroom(project: "/p", name: "remote")] = TargetSession(
       targetID: "wr|/p|remote",
       tabs: [
         TabSession(
@@ -145,8 +145,8 @@ final class OrphanedSessionTests: XCTestCase {
   /// that (ADR 0064); fails_when=its tag resolves, an attached (live) one is ended, or a workroom's is
   /// touched; why_new=the workroom sweep needs a project list; seam=none; no_claim=a real crash.
   func testTheQuickTerminalSweepEndsOnlyItsDetachedSessions() async {
-    let orphan = session(workroom: QuickTerminalController.targetID)
-    let live = session(workroom: QuickTerminalController.targetID, attached: true)
+    let orphan = session(workroom: QuickTerminalController.targetID.encoded)
+    let live = session(workroom: QuickTerminalController.targetID.encoded, attached: true)
     let workroom = session(workroom: "wr|/p|gone")
     var ended: [UUID] = []
     _ = await PersistentSessionService.endOrphans(
@@ -172,8 +172,9 @@ final class OrphanedSessionTests: XCTestCase {
   func testATestLaunchNeverSweeps() {
     let projects = UITestFixture.projects()
     XCTAssertFalse(projects.isEmpty, "the empty-listing guard would make this pass vacuously")
-    let before = AppStore.sweptOrphanedSessions
-    AppStore().endOrphanedSessionsOnce(in: projects, isTestProcess: true)
-    XCTAssertEqual(AppStore.sweptOrphanedSessions, before)
+    let store = AppStore()
+    let before = store.lifecycle.sweptOrphanedSessions
+    store.endOrphanedSessionsOnce(in: projects, isTestProcess: true)
+    XCTAssertEqual(store.lifecycle.sweptOrphanedSessions, before)
   }
 }

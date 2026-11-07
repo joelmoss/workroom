@@ -1,116 +1,20 @@
 import DaemonConnection
+import DaemonConnectionTestSupport
 import Defaults
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
 
 @testable import Workroom
 
-/// Guards on remote workrooms that need no Docker (#253): connecting a host once for every caller,
-/// backing off a dead one, the image IDs `destroy` removes with `--force`, a base reused only for
-/// its own repository, the client key's repair, the create guard, and re-reading a remote tree.
+/// Guards on remote workrooms that need no Docker (#253): which driver holds each recorded host
+/// (`HostDriverRegistry`), adopting and sweeping, the image IDs `destroy` removes with `--force`, a
+/// base reused only for its own repository, the client key's repair, the create guard, and
+/// re-reading a remote tree. Reaching a host is `HostReachabilityTests`'.
 final class RemoteHostsTests: XCTestCase {
-  /// Counts connects, fails them or not, and holds each until released, for
-  /// `RemoteHosts.ensureConnected`.
-  private final class Connects: @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-    private var failing = false
-    private var held = true
-    private var asked = 0
-    private var instant = ContinuousClock.now
-    var calls: Int { lock.withLock { count } }
-    var now: ContinuousClock.Instant { lock.withLock { instant } }
-    func fail(_ on: Bool) { lock.withLock { failing = on } }
-    func advance(_ by: Duration) { lock.withLock { instant += by } }
-    func hold(_ on: Bool) { lock.withLock { held = on } }
-    /// Callers that have reached `ensureConnected`'s connected check.
-    var arrived: Int { lock.withLock { asked } }
-    func ask() { lock.withLock { asked += 1 } }
-
-    func connect(_ host: HostID) async throws {
-      lock.withLock { count += 1 }
-      while lock.withLock({ held }) { try await Task.sleep(for: .milliseconds(1)) }
-      if lock.withLock({ failing }) { throw HostDriverError.unknownHost(host) }
-    }
-  }
-
-  private func hosts(_ connects: Connects) -> RemoteHosts {
-    RemoteHosts(
-      connectHost: { try await connects.connect($0) },
-      isConnected: { _ in
-        connects.ask()
-        return false
-      },
-      startHost: { _ in }, now: { connects.now })
-  }
-
-  /// The inspector's panels ask together when a remote workroom is selected: one connect serves
-  /// them all, where a second would be refused while the first is running.
-  func testCallersAtOnceShareOneConnect() async throws {
-    let connects = Connects()
-    let remote = hosts(connects)
-    let host = HostID.remote(UUID())
-
-    try await withThrowingTaskGroup(of: Void.self) { group in
-      for _ in 0..<5 { group.addTask { try await remote.ensureConnected(host) } }
-      // Every caller is in before the one connect finishes: it is held until all five have asked
-      // whether the host is up, past which each joins the running connect without suspending.
-      while connects.arrived < 5 { try await Task.sleep(for: .milliseconds(1)) }
-      try await Task.sleep(for: .milliseconds(20))
-      connects.hold(false)
-      try await group.waitForAll()
-    }
-    XCTAssertEqual(connects.calls, 1)
-  }
-
-  /// A host that is down answers for `retryAfter` without another connect, each of which would wait
-  /// out ssh's timeout, and is tried again after it.
-  func testADeadHostIsRetriedOnlyAfterItsWindow() async throws {
-    let connects = Connects()
-    let remote = hosts(connects)
-    let host = HostID.remote(UUID())
-    connects.fail(true)
-    connects.hold(false)
-
-    for _ in 0..<2 {
-      do {
-        try await remote.ensureConnected(host)
-        XCTFail("a dead host connected")
-      } catch {
-        XCTAssertEqual(error as? RepositoryRoutingError, .unavailable(host))
-      }
-    }
-    XCTAssertEqual(connects.calls, 1, "a dead host was tried again inside its window")
-
-    connects.fail(false)
-    connects.advance(RemoteHosts.retryAfter)
-    try await remote.ensureConnected(host)
-    XCTAssertEqual(connects.calls, 2)
-  }
-
-  /// A host an older Nightly made before the daemon was renamed (#525) is refused by the bootstrap,
-  /// and the refusal keeps its words through the connect, so the workroom says to recreate it
-  /// rather than "Repository service unavailable" (eng review D3), and the status sweep's reads
-  /// inside the backoff keep saying so rather than flip to "unavailable" between probes.
-  func testAnOldLayoutHostSaysToRecreateTheWorkroom() async throws {
-    let host = HostID.remote(UUID())
-    let instant = ContinuousClock.now
-    let remote = RemoteHosts(
-      connectHost: { _ in throw DaemonBootstrap.Error.olderLayout }, isConnected: { _ in false },
-      startHost: { _ in }, now: { instant })
-    for attempt in ["the probe", "a read inside the backoff"] {
-      do {
-        try await remote.ensureConnected(host)
-        XCTFail("an old-layout host connected (\(attempt))")
-      } catch {
-        XCTAssertEqual(error as? RepositoryRoutingError, .olderLayout(host), attempt)
-        XCTAssertEqual(
-          (error as? LocalizedError)?.errorDescription, DaemonInstall.formerLayoutMessage, attempt)
-      }
-    }
-  }
+  private typealias Connects = HostReachabilityTests.Connects
 
   // Value: protects=a container workroom made before #308 says to recreate it, and its delete still takes the container down;
   // fails_when=the connect's catch stops keeping olderContainer's words, or adopt stops taking such a record on for its destroy;
@@ -121,34 +25,33 @@ final class RemoteHostsTests: XCTestCase {
   func testAContainerMadeBeforeExecSaysToRecreateTheWorkroom() async throws {
     let (runtime, log) = try stubRuntime()
     let remote = RemoteHosts(
-      makeDriver: { Self.driver(runtime: runtime, context: $0.context) },
+      makeContainerDriver: { Self.driver(runtime: runtime, context: $0.context) },
       sweepDriver: { _, _, _, _ in [] })
     let id = UUID()
     let host = HostID.remote(id)
-    remote.adopt([
+    remote.reachability.adopt([
       Project(
         path: "/proj", vcs: "git",
         workrooms: [
           Workroom(
             name: "w", path: "/home/workroom/r", vcsName: "workroom/w", warnings: [],
             host: HostDescriptor(
-              driver: RemoteWorkrooms.containerDriver, provisioner: RemoteWorkrooms.provisioner,
+              driver: HostKind.container(.docker).driver, provisioner: RemoteWorkrooms.provisioner,
               id: id, container: Self.sshRecord(context: nil)))
         ])
     ])
 
     for attempt in ["the connect", "a read inside the backoff"] {
       do {
-        try await remote.ensureConnected(host)
+        try await remote.reachability.ensureConnected(host)
         XCTFail("a container made before #308 connected (\(attempt))")
       } catch {
         XCTAssertEqual(error as? RepositoryRoutingError, .olderLayout(host), attempt)
         XCTAssertEqual(
-          (error as? LocalizedError)?.errorDescription, HostDriverError.olderContainerMessage,
-          attempt)
+          (error as? LocalizedError)?.errorDescription, HostID.olderLayoutMessage, attempt)
       }
     }
-    let driver = try XCTUnwrap(remote.existingDriver(holding: id) as? ContainerHostDriver)
+    let driver = try XCTUnwrap(remote.registry.existingDriver(holding: id) as? ContainerHostDriver)
     XCTAssertThrowsError(
       try driver.attachCommand(
         to: host, session: UUID(), workingDirectory: "/w", restored: false, metadata: [],
@@ -160,87 +63,6 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertTrue(
       calls.contains("rm --force --volumes \(ContainerHostDriver.containerName(id))"),
       calls.joined(separator: "\n"))
-  }
-
-  /// A background read never connects to a boxd box boxd says is asleep: the ssh login would wake
-  /// it, and every status sweep would keep every box awake and billing (#356). boxd is asked once a
-  /// `retryAfter`; opening the workroom connects and wakes it; when boxd can't say, the read leaves
-  /// the box be too, so a broken CLI cannot wake every box, and asks again only after a
-  /// `retryAfter`; and when it says it's awake, the read goes ahead as before.
-  func testABackgroundReadLeavesAnAsleepBoxdBoxAsleep() async throws {
-    let connects = Connects()
-    connects.hold(false)
-    let asked = Asleep()
-    let remote = RemoteHosts(
-      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
-      startHost: { _ in }, now: { connects.now },
-      presence: { _ in asked.answer() })
-    let id = UUID()
-    let host = HostID.remote(id)
-    remote.adopt([
-      Project(
-        path: "/proj", vcs: "git",
-        workrooms: [
-          Workroom(
-            name: "w", path: "/home/boxd/r", vcsName: "workroom/w", warnings: [],
-            host: HostDescriptor(
-              driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id,
-              account: "usr_1"))
-        ])
-    ])
-
-    asked.set(true)
-    for _ in 0..<2 {
-      do {
-        try await remote.ensureConnected(host)
-        XCTFail("a background read connected to an asleep box")
-      } catch {
-        XCTAssertEqual(error as? RepositoryRoutingError, .asleep(host))
-      }
-    }
-    XCTAssertEqual(connects.calls, 0)
-    XCTAssertEqual(asked.calls, 1, "boxd was asked again inside the window")
-
-    // Opening the workroom wakes it.
-    remote.activate(host)
-    try await remote.ensureConnected(host)
-    XCTAssertEqual(connects.calls, 1)
-
-    // boxd can't say: the read leaves the box be, and boxd isn't asked again inside the window.
-    asked.set(nil)
-    connects.advance(RemoteHosts.retryAfter)
-    let unsure = asked.calls
-    for _ in 0..<2 {
-      do {
-        try await remote.ensureConnected(host)
-        XCTFail("a background read connected to a box boxd could not say about")
-      } catch {
-        XCTAssertEqual(error as? RepositoryRoutingError, .asleep(host))
-      }
-    }
-    XCTAssertEqual(connects.calls, 1)
-    XCTAssertEqual(
-      asked.calls, unsure + 1, "boxd was asked again inside the window after no answer")
-    // boxd says it's running: the read connects as it always did.
-    asked.set(false)
-    connects.advance(RemoteHosts.retryAfter)
-    try await remote.ensureConnected(host)
-    XCTAssertEqual(connects.calls, 2)
-
-    // A machine boxd says is gone is reported as gone, not asleep, and then left for the window.
-    asked.setGone()
-    connects.advance(RemoteHosts.retryAfter)
-    let before = asked.calls
-    for expected in [RepositoryRoutingError.gone(host), .unavailable(host)] {
-      do {
-        try await remote.ensureConnected(host)
-        XCTFail("a gone machine was connected to")
-      } catch {
-        XCTAssertEqual(error as? RepositoryRoutingError, expected)
-      }
-    }
-    XCTAssertEqual(asked.calls, before + 1, "boxd was asked again inside the window")
-    XCTAssertEqual(connects.calls, 2)
   }
 
   /// Which panes the app counts as attached to a host: a pane attaching reconnects its host
@@ -272,395 +94,10 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a forgotten pane still holds the box")
     sessions.forgetRemoteSession(session)
     sessions.registerRemoteSession(
-      session, on: host, via: ContainerHostDriver(hosts: [:], directory: RemoteHosts.directory),
-      workingDirectory: "/home/boxd/r")
+      session, on: host, via: HostDriverRegistry.unreachable, workingDirectory: "/home/boxd/r")
     XCTAssertNotNil(sessions.attachCommand(forSession: session, by: UUID()))
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a pane that can't reach its host holds it")
     sessions.forgetRemoteSession(session)
-  }
-
-  // Value: protects=a wake or network change asks the boxd and exe.dev hosts only, and a host it
-  // can't ask counts as silent; fails_when=the provider filter is dropped (a container's loopback
-  // link is asked too) or a host with no link reads as answering; why_new=new behaviour;
-  // seam=none
-  /// `RemoteLinkMonitor`'s question goes to a recorded provider host, not a container's, and one
-  /// with no link to ask is among those that didn't answer.
-  func testOnlyAProviderHostIsAskedAfterANetworkChange() async {
-    let boxd = UUID()
-    let container = UUID()
-    func workroom(_ name: String, _ host: HostDescriptor) -> Workroom {
-      Workroom(
-        name: name, path: "/home/w/\(name)", vcsName: "workroom/\(name)", warnings: [], host: host)
-    }
-    let remote = RemoteHosts()
-    remote.adopt(
-      [
-        Project(
-          path: "/proj", vcs: "git",
-          workrooms: [
-            workroom(
-              "b",
-              HostDescriptor(
-                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
-                id: boxd, account: "usr_1")),
-            workroom(
-              "c",
-              HostDescriptor(
-                driver: RemoteWorkrooms.Runtime.docker.rawValue,
-                provisioner: RemoteWorkrooms.provisioner, id: container)),
-          ])
-      ], sweep: false)
-
-    let unanswering = await remote.unansweringProviderHosts()
-    XCTAssertEqual(unanswering, [.remote(boxd)])
-  }
-
-  /// A click reaches a boxd host a background read would leave alone (#356): closing a pane (to
-  /// end its session there) wakes a box that is asleep, where a status read is refused.
-  @MainActor
-  func testAClickWakesABoxdHostABackgroundReadLeavesAlone() async throws {
-    let connects = Connects()
-    connects.hold(false)
-    let asked = Asleep()
-    asked.set(true)
-    let remote = RemoteHosts(
-      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
-      startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() })
-    let id = UUID()
-    let host = HostID.remote(id)
-    remote.adopt(
-      [
-        Project(
-          path: "/proj", vcs: "git",
-          workrooms: [
-            Workroom(
-              name: "b", path: "/home/boxd/r", vcsName: "workroom/b", warnings: [],
-              host: HostDescriptor(
-                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
-                id: id, account: "usr_1"))
-          ])
-      ], sweep: false)
-
-    do {
-      try await remote.ensureConnected(host)
-      XCTFail("a background read woke an asleep box")
-    } catch {
-      XCTAssertEqual(error as? RepositoryRoutingError, .asleep(host))
-    }
-    try await remote.ensureConnected(host, wake: true)
-    XCTAssertEqual(connects.calls, 1)
-
-    // A click right after one that failed is still tried: waking a box can fail once while it
-    // resumes, and the retry must not wait out the failure window.
-    connects.fail(true)
-    do {
-      try await remote.ensureConnected(host, wake: true)
-      XCTFail("the failing connect succeeded")
-    } catch {}
-    connects.fail(false)
-    try await remote.ensureConnected(host, wake: true)
-    XCTAssertEqual(connects.calls, 3, "a second click inside the window was refused")
-  }
-
-  /// A selected workroom's box is reached by a background read, even asleep (#356): after
-  /// the Mac sleeps, the open workroom must not read as asleep until it is selected again.
-  @MainActor
-  func testASelectedWorkroomsBoxIsReachedEvenAsleep() async throws {
-    let connects = Connects()
-    connects.hold(false)
-    let asked = Asleep()
-    asked.set(true)
-    let remote = RemoteHosts(
-      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
-      startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() })
-    let id = UUID()
-    let host = HostID.remote(id)
-    remote.adopt(
-      [
-        Project(
-          path: "/proj", vcs: "git",
-          workrooms: [
-            Workroom(
-              name: "b", path: "/home/boxd/r", vcsName: "workroom/b", warnings: [],
-              host: HostDescriptor(
-                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
-                id: id, account: "usr_1"))
-          ])
-      ], sweep: false)
-    remote.select(host, in: "window")
-    try await remote.ensureConnected(host)
-    XCTAssertEqual(connects.calls, 1)
-    XCTAssertEqual(asked.calls, 0, "boxd was asked about the selected workroom's box")
-  }
-
-  /// Each window has its own selection (one AppStore per window): a host selected in any window is
-  /// reconnected by a background read, even one boxd says is asleep, whatever another window
-  /// selects.
-  @MainActor
-  func testAHostSelectedInAnyWindowIsReconnected() async throws {
-    let connects = Connects()
-    connects.hold(false)
-    let asked = Asleep()
-    asked.set(false)
-    let remote = RemoteHosts(
-      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
-      startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() })
-    let id = UUID()
-    let host = HostID.remote(id)
-    remote.adopt(
-      [
-        Project(
-          path: "/proj", vcs: "git",
-          workrooms: [
-            Workroom(
-              name: "b", path: "/home/boxd/r", vcsName: "workroom/b", warnings: [],
-              host: HostDescriptor(
-                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
-                id: id, account: "usr_1"))
-          ])
-      ], sweep: false)
-
-    asked.set(true)
-    remote.select(host, in: "window A")
-    remote.select(nil, in: "window B")
-    try await remote.ensureConnected(host)
-    XCTAssertEqual(connects.calls, 1, "another window's selection left window A's host alone")
-    remote.select(nil, in: "window A")
-    do {
-      try await remote.ensureConnected(host)
-      XCTFail("an unselected asleep host was reconnected")
-    } catch {
-      XCTAssertEqual(error as? RepositoryRoutingError, .asleep(host))
-    }
-  }
-
-  private final class Asleep: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value: BoxdHostDriver.Presence?
-    private var count = 0
-    var calls: Int { lock.withLock { count } }
-    func set(_ asleep: Bool?) { lock.withLock { value = asleep.map { $0 ? .asleep : .awake } } }
-    func setGone() { lock.withLock { value = .gone } }
-    func answer() -> BoxdHostDriver.Presence? {
-      lock.withLock {
-        count += 1
-        return value
-      }
-    }
-  }
-
-  /// Only a host whose workroom the user opened has its container started before connecting: the
-  /// status sweep connects to every remote workroom, and must not start them all (#309).
-  func testOnlyAnOpenedHostIsStartedBeforeItsConnect() async throws {
-    let connects = Connects()
-    connects.hold(false)
-    let started = Swept()
-    let remote = RemoteHosts(
-      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
-      startHost: { host in
-        guard case .remote(let id) = host else { return }
-        started.add(nil, [id])
-      })
-    let (probed, opened) = (UUID(), UUID())
-
-    try await remote.ensureConnected(.remote(probed))
-    XCTAssertTrue(started.calls.isEmpty, "a probe of an unopened host started it")
-
-    remote.activate(.remote(opened))
-    try await remote.ensureConnected(.remote(opened))
-    XCTAssertEqual(started.calls.map(\.known), [[opened]])
-    XCTAssertEqual(connects.calls, 2)
-  }
-
-  /// Opening a workroom whose host just failed a probe tries it again at once, starting it: the
-  /// probe's failure was the container being stopped, which opening is about to fix.
-  func testOpeningAHostLiftsItsRetryWindow() async throws {
-    let connects = Connects()
-    connects.hold(false)
-    connects.fail(true)
-    let remote = hosts(connects)
-    let host = HostID.remote(UUID())
-    do { try await remote.ensureConnected(host) } catch {}
-    connects.fail(false)
-    remote.activate(host)
-    try await remote.ensureConnected(host)
-    XCTAssertEqual(connects.calls, 2)
-  }
-
-  /// Opening a workroom while a status probe of its stopped container is under way starts it: joined,
-  /// the probe would fail and hold the workroom back for `retryAfter`.
-  func testOpeningDuringAProbeStartsTheHost() async throws {
-    let connects = Connects()
-    connects.fail(true)
-    let started = Swept()
-    let remote = RemoteHosts(
-      connectHost: { try await connects.connect($0) },
-      isConnected: { _ in
-        connects.ask()
-        return false
-      },
-      startHost: { host in
-        guard case .remote(let id) = host else { return }
-        started.add(nil, [id])
-        connects.fail(false)
-      }, now: { connects.now })
-    let id = UUID()
-
-    let probe = Task { try await remote.ensureConnected(.remote(id)) }
-    while connects.calls < 1 { try await Task.sleep(for: .milliseconds(1)) }
-    remote.activate(.remote(id))
-    let opened = Task { try await remote.ensureConnected(.remote(id)) }
-    while connects.arrived < 2 { try await Task.sleep(for: .milliseconds(1)) }
-    try await Task.sleep(for: .milliseconds(20))
-    connects.hold(false)
-    _ = try? await probe.value
-    try await opened.value
-    XCTAssertEqual(started.calls.map(\.known), [[id]], "the opened workroom's host wasn't started")
-  }
-
-  /// Opening starts a container once: one the user stops afterwards is not started again by the
-  /// status sweep's next probe.
-  func testOpeningStartsTheHostOnce() async throws {
-    let connects = Connects()
-    connects.hold(false)
-    let started = Swept()
-    let remote = RemoteHosts(
-      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
-      startHost: { host in
-        guard case .remote(let id) = host else { return }
-        started.add(nil, [id])
-      })
-    let id = UUID()
-    remote.activate(.remote(id))
-    try await remote.ensureConnected(.remote(id))
-    try await remote.ensureConnected(.remote(id))
-    XCTAssertEqual(started.calls.count, 1, "a later probe started the container again")
-    remote.activate(.remote(id))
-    try await remote.ensureConnected(.remote(id))
-    XCTAssertEqual(started.calls.count, 2, "opening it again didn't start it")
-  }
-
-  /// An opening whose start fails is spent too: the status sweep's later probes neither start the
-  /// container again nor skip its backoff.
-  func testAFailedOpeningIsSpent() async throws {
-    let connects = Connects()
-    connects.hold(false)
-    let starts = Connects()
-    starts.hold(false)
-    starts.fail(true)
-    let remote = RemoteHosts(
-      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
-      startHost: { try await starts.connect($0) }, now: { connects.now })
-    let host = HostID.remote(UUID())
-    remote.activate(host)
-    do { try await remote.ensureConnected(host) } catch {}
-    XCTAssertEqual(starts.calls, 1)
-    do { try await remote.ensureConnected(host) } catch {}
-    XCTAssertEqual(starts.calls, 1, "a probe started the container again")
-    XCTAssertEqual(connects.calls, 0, "a probe skipped the backoff")
-  }
-
-  /// A workroom opened while its container runs has nothing to start, and the opening is spent:
-  /// stopped later, the status sweep's probe doesn't start it.
-  func testOpeningARunningHostLeavesItStoppedLater() async throws {
-    let connects = Connects()
-    connects.hold(false)
-    let running = Connects()
-    let started = Swept()
-    let remote = RemoteHosts(
-      connectHost: { try await connects.connect($0) },
-      isConnected: { _ in
-        // Up the first time it's asked, stopped after.
-        defer { running.ask() }
-        return running.arrived == 0
-      },
-      startHost: { host in
-        guard case .remote(let id) = host else { return }
-        started.add(nil, [id])
-      })
-    let id = UUID()
-    remote.activate(.remote(id))
-    try await remote.ensureConnected(.remote(id))
-    try await remote.ensureConnected(.remote(id))
-    XCTAssertTrue(started.calls.isEmpty, "a probe started a container opened while it ran")
-  }
-
-  /// A probe of the stopped container that fails after the workroom was opened doesn't hold it back:
-  /// the opened workroom's next connect starts it at once.
-  func testAProbeFailingAfterTheOpeningDoesNotHoldItBack() async throws {
-    let connects = Connects()
-    connects.fail(true)
-    let remote = RemoteHosts(
-      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
-      startHost: { _ in connects.fail(false) }, now: { connects.now })
-    let host = HostID.remote(UUID())
-    let probe = Task { try await remote.ensureConnected(host) }
-    while connects.calls < 1 { try await Task.sleep(for: .milliseconds(1)) }
-    remote.activate(host)
-    connects.hold(false)
-    _ = try? await probe.value
-    try await remote.ensureConnected(host)
-    XCTAssertEqual(connects.calls, 2)
-  }
-
-  /// A relay that didn't take on a connection is tried again by a later connection check, at most
-  /// once a `retryAfter`, until it does; nothing else would try before a reconnect.
-  func testARelayThatDidNotTakeIsTriedAgain() async throws {
-    let connects = Connects()
-    connects.fail(true)
-    let relays = Connects()
-    relays.hold(false)
-    relays.fail(true)
-    let remote = RemoteHosts(
-      connectHost: { _ in }, isConnected: { _ in true }, startHost: { _ in },
-      now: { connects.now }, relayHost: { try await relays.connect($0) })
-    let host = HostID.remote(UUID())
-
-    await remote.installRelay(host, attempts: 1)
-    XCTAssertEqual(relays.calls, 1)
-    try await remote.ensureConnected(host)
-    XCTAssertEqual(relays.calls, 1, "tried again inside its window")
-
-    relays.fail(false)
-    connects.advance(RemoteHosts.retryAfter)
-    try await remote.ensureConnected(host)
-    XCTAssertEqual(relays.calls, 2, "a later check didn't try again")
-    connects.advance(RemoteHosts.retryAfter)
-    try await remote.ensureConnected(host)
-    XCTAssertEqual(relays.calls, 2, "tried again once it had taken")
-  }
-
-  // Value: protects=a workroom first recorded as relayed while its connection is up (its create
-  // opened the connection before it was recorded) gets its relay at the next check;
-  // fails_when=adopt marks the host relayed with no pending relay; why_new=the retry test starts
-  // from a failed install, never from adopt; seam=none
-  /// A workroom first recorded as relayed while its host is connected already gets its relay at
-  /// the next connection check: nothing else would install it before a reconnect.
-  func testARelayedWorkroomAdoptedWhileConnectedGetsItsRelay() async throws {
-    let clock = Connects()
-    let relays = Connects()
-    relays.hold(false)
-    let remote = RemoteHosts(
-      connectHost: { _ in }, isConnected: { _ in true }, startHost: { _ in },
-      now: { clock.now }, relayHost: { try await relays.connect($0) })
-    let id = UUID()
-    remote.adopt([
-      Project(
-        path: "/proj", vcs: "git",
-        workrooms: [
-          Workroom(
-            name: "w", path: "/home/exedev/r", vcsName: "workroom/w", warnings: [],
-            host: HostDescriptor(
-              driver: RemoteWorkrooms.exeDevDriver, provisioner: RemoteWorkrooms.provisioner,
-              id: id, credentials: "relay", account: "me@x.dev"))
-        ])
-    ])
-
-    try await remote.ensureConnected(.remote(id))
-    XCTAssertEqual(relays.calls, 1, "the relay was never installed")
-    clock.advance(RemoteHosts.retryAfter)
-    try await remote.ensureConnected(.remote(id))
-    XCTAssertEqual(relays.calls, 1, "installed again once it had taken")
   }
 
   /// `destroy` removes a host's image with `--force`, so a record's image must be a commit's ID.
@@ -679,7 +116,7 @@ final class RemoteHostsTests: XCTestCase {
   /// next, and only one call ever runs it. One whose runtime could not list is owed again (#284),
   /// and one still running is never claimed twice.
   func testTheSweepIsHeldUntilAllowedThenRunsOnce() {
-    let remote = RemoteHosts()
+    let remote = RemoteHosts().registry
     let (docker, apple) = (RemoteHosts.DriverKey(), RemoteHosts.DriverKey(runtime: .apple))
     XCTAssertFalse(remote.sweepHeld, "nothing has reached the sweep, so nothing is owed")
     XCTAssertEqual(remote.claimSweep([docker, apple], allowed: false), [])
@@ -702,11 +139,12 @@ final class RemoteHostsTests: XCTestCase {
   func testARemoteCreateIsOffOnlyWhileItsProjectIsDeleted() {
     let store = AppStore()
     let project = Project(path: "/proj", vcs: "git", workrooms: [])
-    store.creationRuns[UUID()] = CreationRun(
+    store.lifecycle.creationRuns[UUID()] = CreationRun(
       project: project, kind: .boxd, splitAnchor: nil, previousSelection: nil)
-    XCTAssertTrue(store.canCreateRemoteWorkroom(in: project), "a running create doesn't block")
-    store.deletingProjects.insert("/proj")
-    XCTAssertFalse(store.canCreateRemoteWorkroom(in: project))
+    XCTAssertTrue(
+      store.lifecycle.canCreateRemoteWorkroom(in: project), "a running create doesn't block")
+    store.lifecycle.deletingProjects.insert("/proj")
+    XCTAssertFalse(store.lifecycle.canCreateRemoteWorkroom(in: project))
   }
 
   /// A workroom in a container wears the network glyph on its tab and pane in place of the cube, and
@@ -730,7 +168,7 @@ final class RemoteHostsTests: XCTestCase {
       host: HostDescriptor(state: "destroyed", driver: "apple-container")
     ).target(inProject: "/proj")
     XCTAssertEqual(destroyed.workroomGlyph, "network")
-    for driver in [RemoteWorkrooms.boxdDriver, RemoteWorkrooms.exeDevDriver] {
+    for driver in [HostKind.boxd.driver, HostKind.exeDev.driver] {
       let cloud = Workroom(
         name: "c", path: "/home/boxd/r", vcsName: "workroom/c", warnings: [],
         host: HostDescriptor(driver: driver, provisioner: RemoteWorkrooms.provisioner, id: UUID())
@@ -752,7 +190,7 @@ final class RemoteHostsTests: XCTestCase {
     func host(_ driver: String?, by provisioner: String) -> HostDescriptor {
       HostDescriptor(driver: driver, provisioner: provisioner, id: UUID())
     }
-    for driver in [RemoteWorkrooms.boxdDriver, RemoteWorkrooms.exeDevDriver] {
+    for driver in [HostKind.boxd.driver, HostKind.exeDev.driver] {
       XCTAssertTrue(RemoteWorkrooms.ownsHost(host(driver, by: nightly), as: release), driver)
       XCTAssertTrue(RemoteWorkrooms.ownsHost(host(driver, by: release), as: nightly), driver)
       XCTAssertFalse(RemoteWorkrooms.ownsHost(host(driver, by: release), as: dev), driver)
@@ -779,10 +217,13 @@ final class RemoteHostsTests: XCTestCase {
     let directory = FileManager.default.temporaryDirectory
     XCTAssertEqual(
       BoxdHostDriver(
-        configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")), directory: directory
+        configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd"), hostSetup: .bundled),
+        directory: directory
       ).name(of: id), name)
     XCTAssertEqual(
-      ExeDevHostDriver(configuration: .init(), directory: directory).name(of: id), name)
+      ExeDevHostDriver(configuration: .init(hostSetup: .bundled), directory: directory).name(
+        of: id),
+      name)
     XCTAssertNil(HostDescriptor(state: "destroyed", driver: "boxd", id: id).machineName)
     let local = Workroom(name: "w", path: "/tmp/w", vcsName: "workroom/w", warnings: [])
       .target(inProject: "/proj")
@@ -813,7 +254,7 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertTrue(workroom("container").isContainer)
     XCTAssertTrue(workroom("apple-container").isContainer)
     XCTAssertFalse(workroom("boxd").isContainer)
-    XCTAssertFalse(workroom(RemoteWorkrooms.exeDevDriver).isContainer)
+    XCTAssertFalse(workroom(HostKind.exeDev.driver).isContainer)
     XCTAssertFalse(workroom(nil).isContainer)
   }
 
@@ -825,12 +266,13 @@ final class RemoteHostsTests: XCTestCase {
   func testACreateBlockedProjectSaysWhy() {
     let store = AppStore()
     let project = Project(path: "/proj", vcs: "git", workrooms: [])
-    XCTAssertNil(store.createBlockedReason(in: project))
-    store.creationRuns[UUID()] = CreationRun(
-      project: project, kind: .local, splitAnchor: nil, previousSelection: nil)
-    XCTAssertNil(store.createBlockedReason(in: project), "a create in flight blocks nothing")
-    store.deletingProjects.insert("/proj")
-    XCTAssertEqual(store.createBlockedReason(in: project), "the project is being deleted")
+    XCTAssertNil(store.lifecycle.createBlockedReason(in: project))
+    store.lifecycle.creationRuns[UUID()] = CreationRun(
+      project: project, kind: nil, splitAnchor: nil, previousSelection: nil)
+    XCTAssertNil(
+      store.lifecycle.createBlockedReason(in: project), "a create in flight blocks nothing")
+    store.lifecycle.deletingProjects.insert("/proj")
+    XCTAssertEqual(store.lifecycle.createBlockedReason(in: project), "the project is being deleted")
   }
 
   /// No watcher refreshes a remote tree, so coming back to it reads it again; the same local path
@@ -928,11 +370,10 @@ final class RemoteHostsTests: XCTestCase {
       calls.dropFirst(2).first { $0 != "image inspect" }, "create --pull=never")
   }
 
-  private final class Fractions: @unchecked Sendable {
-    private let lock = NSLock()
-    private var heard: [Double?] = []
-    var all: [Double?] { lock.withLock { heard } }
-    func add(_ fraction: Double?) { lock.withLock { heard.append(fraction) } }
+  private final class Fractions: Sendable {
+    private let heard = Mutex<[Double?]>([])
+    var all: [Double?] { heard.withLock { $0 } }
+    func add(_ fraction: Double?) { heard.withLock { $0.append(fraction) } }
   }
 
   /// A pull's progress reaches the create that asked for it as it goes, rising to the whole, then
@@ -995,7 +436,7 @@ final class RemoteHostsTests: XCTestCase {
   func testARuntimeThatIsNotRunningSaysSo() async throws {
     for (dialect, said, expected) in [
       (
-        ContainerHostDriver.Dialect.docker,
+        ContainerRuntime.docker,
         "Cannot connect to the Docker daemon at unix:///x. Is the docker daemon running?",
         "Docker didn't answer"
       ),
@@ -1021,7 +462,7 @@ final class RemoteHostsTests: XCTestCase {
   }
 
   private static func driver(
-    runtime: URL, context: String?, dialect: ContainerHostDriver.Dialect = .docker,
+    runtime: URL, context: String?, dialect: ContainerRuntime = .docker,
     directory: URL? = nil
   ) -> ContainerHostDriver {
     // A directory of its own: a sweep writes down what it found unknown there (#284), which another
@@ -1103,15 +544,17 @@ final class RemoteHostsTests: XCTestCase {
   func testANewWorkroomWantsTheCurrentDockerContext() async throws {
     for (current, expected) in [("orbstack", "orbstack"), ("default", nil)] as [(String, String?)] {
       let (runtime, log) = try stubRuntime(output: current + "\n")
-      let remote = RemoteHosts(makeDriver: { Self.driver(runtime: runtime, context: $0.context) })
+      let remote = RemoteHosts(
+        makeContainerDriver: { Self.driver(runtime: runtime, context: $0.context) }
+      ).registry
       let key = try await remote.key(for: .docker)
       XCTAssertEqual(key, RemoteHosts.DriverKey(runtime: .docker, context: expected), current)
       XCTAssertEqual(try String(contentsOf: log, encoding: .utf8), "context show\n")
     }
-    let remote = RemoteHosts(makeDriver: { _ in
+    let remote = RemoteHosts(makeContainerDriver: { _ in
       XCTFail("Apple's key asked a runtime")
       throw RemoteWorkrooms.Failure.noDocker
-    })
+    }).registry
     let apple = try await remote.key(for: .apple)
     XCTAssertEqual(apple, RemoteHosts.DriverKey(runtime: .apple))
   }
@@ -1120,13 +563,13 @@ final class RemoteHostsTests: XCTestCase {
   /// a key is found, a base made before #309 (no context) still serves Docker, and removing one
   /// keeps the others.
   func testAnOlderProjectsBasesAreFoundAndRemovedOneByOne() throws {
-    let base = { (runtime: RemoteWorkrooms.Runtime, context: String?) in
+    let base = { (runtime: ContainerRuntime, context: String?) in
       HostDescriptor(
         driver: runtime.rawValue, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
         container: Self.record(context: context))
     }
     let old = base(.docker, nil)
-    let key = { (runtime: RemoteWorkrooms.Runtime, context: String?) in
+    let key = { (runtime: ContainerRuntime, context: String?) in
       RemoteHosts.DriverKey(runtime: runtime, context: context)
     }
     // The one-base form a project before #309 has serves Docker on any context, and not Apple.
@@ -1162,7 +605,7 @@ final class RemoteHostsTests: XCTestCase {
     let (runtime, _) = try stubRuntime()
     let swept = Swept()
     let remote = RemoteHosts(
-      makeDriver: { Self.driver(runtime: runtime, context: $0.context) },
+      makeContainerDriver: { Self.driver(runtime: runtime, context: $0.context) },
       sweepDriver: { driver, known, _, _ in
         swept.add(driver.provisioning?.context, known)
         return []
@@ -1170,7 +613,8 @@ final class RemoteHostsTests: XCTestCase {
     let (base, pinned) = (UUID(), UUID())
     let descriptor = { (id: UUID, context: String?) in
       HostDescriptor(
-        driver: RemoteWorkrooms.containerDriver, provisioner: RemoteWorkrooms.provisioner, id: id,
+        driver: HostKind.container(.docker).driver, provisioner: RemoteWorkrooms.provisioner,
+        id: id,
         container: Self.record(context: context))
     }
     let project = Project(
@@ -1181,13 +625,14 @@ final class RemoteHostsTests: XCTestCase {
           host: descriptor(pinned, "orbstack"))
       ], host: descriptor(base, nil))
 
-    remote.adopt([project])
+    remote.reachability.adopt([project])
 
     XCTAssertNil(
-      try XCTUnwrap(remote.existingDriver(holding: base) as? ContainerHostDriver).provisioning?
-        .context)
+      try XCTUnwrap(remote.registry.existingDriver(holding: base) as? ContainerHostDriver)
+        .provisioning?.context)
     XCTAssertEqual(
-      (remote.existingDriver(holding: pinned) as? ContainerHostDriver)?.provisioning?.context,
+      (remote.registry.existingDriver(holding: pinned) as? ContainerHostDriver)?.provisioning?
+        .context,
       "orbstack")
     for _ in 0..<500 where swept.calls.count < 2 { try await Task.sleep(for: .milliseconds(2)) }
     XCTAssertEqual(Set(swept.calls.map(\.context)), [nil, "orbstack"])
@@ -1199,21 +644,23 @@ final class RemoteHostsTests: XCTestCase {
   /// this build doesn't know is refused rather than taken down with another.
   func testABoxdHostIsItsOwnDriverKeyNeverDockers() throws {
     let boxd = HostDescriptor(
-      driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+      driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
       org: "acme", account: "usr_1")
     let key = RemoteHosts.DriverKey(boxd)
     XCTAssertEqual(key, .boxd(org: "acme", account: "usr_1"))
     XCTAssertNil(key?.runtime)
-    XCTAssertEqual(key?.place, .boxd)
+    XCTAssertEqual(key?.kind, .boxd)
     // A boxd machine logs in as `boxd`, so the clone goes in its home, not the container user's.
     let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
     XCTAssertEqual(
       RemoteWorkrooms.clonePath(for: repository, on: try XCTUnwrap(key)), "/home/boxd/r")
     XCTAssertEqual(RemoteWorkrooms.clonePath(for: repository), "/home/workroom/r")
-    XCTAssertEqual(try RemoteHosts.deletionKey(boxd), .boxd(org: "acme", account: "usr_1"))
+    XCTAssertEqual(try HostDriverRegistry.deletionKey(boxd), .boxd(org: "acme", account: "usr_1"))
     // A descriptor from before the `driver` field is Docker's, as it always was.
-    XCTAssertEqual(try RemoteHosts.deletionKey(HostDescriptor(id: UUID())), RemoteHosts.DriverKey())
-    XCTAssertThrowsError(try RemoteHosts.deletionKey(HostDescriptor(driver: "exe.dev", id: UUID())))
+    XCTAssertEqual(
+      try HostDriverRegistry.deletionKey(HostDescriptor(id: UUID())), RemoteHosts.DriverKey())
+    XCTAssertThrowsError(
+      try HostDriverRegistry.deletionKey(HostDescriptor(driver: "exe.dev", id: UUID())))
     // A boxd base serves only its own org and account; there is no unpinned form to fall back to.
     XCTAssertEqual(
       BaseRetirement.base(
@@ -1237,17 +684,18 @@ final class RemoteHostsTests: XCTestCase {
     let rows: [(host: HostDescriptor, key: RemoteHosts.DriverKey, socket: String)] = [
       (
         HostDescriptor(
-          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+          driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
           org: "acme", account: "usr_1"),
         .boxd(org: "acme", account: "usr_1"),
-        BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket
+        BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd"), hostSetup: .bundled)
+          .daemonSocket
       ),
       (
         HostDescriptor(
-          driver: RemoteWorkrooms.exeDevDriver, provisioner: RemoteWorkrooms.provisioner,
+          driver: HostKind.exeDev.driver, provisioner: RemoteWorkrooms.provisioner,
           id: UUID(), account: "me@x.dev"),
         .exeDev(account: "me@x.dev"),
-        ExeDevHostDriver.Configuration().daemonSocket
+        ExeDevHostDriver.Configuration(hostSetup: .bundled).daemonSocket
       ),
     ]
     for row in rows {
@@ -1256,29 +704,29 @@ final class RemoteHostsTests: XCTestCase {
         asked.add(key)
         if case .exeDev(let account) = key {
           return ExeDevHostDriver(
-            configuration: .init(account: account),
+            configuration: .init(account: account, hostSetup: .bundled),
             directory: FileManager.default.temporaryDirectory)
         }
         return BoxdHostDriver(
-          configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")),
+          configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd"), hostSetup: .bundled),
           directory: FileManager.default.temporaryDirectory)
-      })
+      }).registry
       let deletion = try XCTUnwrap(try remote.environment(toDelete: [row.host]))
-      XCTAssertEqual(asked.keys, [row.key], "\(row.key)")
+      XCTAssertEqual(asked.all, [row.key], "\(row.key)")
       let environment = try XCTUnwrap(deletion.environment(for: row.host))
       XCTAssertEqual(environment.daemonSocket, row.socket, "\(row.key)")
       XCTAssertNotEqual(environment.daemonSocket, RemoteWorkrooms.daemonSocket, "\(row.key)")
       XCTAssertNil(
         environment.gitHubToken, "\(row.key): a remote host's git never borrows the Mac's gh")
       // Value: protects=a provider's failed clone says how to give its host GitHub access;
-      // fails_when=RemoteHosts.environment stops passing its place's credentialHint;
+      // fails_when=HostDriverRegistry.environment stops passing its place's credentialHint;
       // why_new=the provisioning test hands its hint in itself; seam=none; no_claim=the wording
       let (_, creating) = try remote.environment(row.key)
       XCTAssertNotNil(creating.credentialHint, "\(row.key)")
-      XCTAssertEqual(creating.credentialHint, row.key.place.credentialHint, "\(row.key)")
+      XCTAssertEqual(creating.credentialHint, row.key.kind.credentialHint, "\(row.key)")
       // Only exe.dev's create adds the repository's integration before the VM.
       XCTAssertEqual(
-        creating.grantRepository != nil, row.key.place == .exeDev, "\(row.key)")
+        creating.grantRepository != nil, row.key.kind == .exeDev, "\(row.key)")
     }
   }
 
@@ -1310,13 +758,13 @@ final class RemoteHostsTests: XCTestCase {
   /// A remote provider's failed clone says how that provider gives a host GitHub access, the
   /// command included; a container's is Workroom's own relay, which says so itself.
   func testOnlyARemoteProviderSaysHowToGiveItsHostGitHubAccess() {
-    XCTAssertNil(RemoteWorkrooms.Place.container(.docker).credentialHint)
-    XCTAssertNil(RemoteWorkrooms.Place.container(.apple).credentialHint)
+    XCTAssertNil(HostKind.container(.docker).credentialHint)
+    XCTAssertNil(HostKind.container(.apple).credentialHint)
     XCTAssertTrue(
-      RemoteWorkrooms.Place.boxd.credentialHint?.contains("boxd manage integrations connect git")
+      HostKind.boxd.credentialHint?.contains("boxd manage integrations connect git")
         == true)
     XCTAssertTrue(
-      RemoteWorkrooms.Place.exeDev.credentialHint?.contains("exe.dev/integrations") == true)
+      HostKind.exeDev.credentialHint?.contains("exe.dev/integrations") == true)
   }
 
   /// The Details pane's link to a host: each provider's own page for the machine, as its web app
@@ -1324,12 +772,12 @@ final class RemoteHostsTests: XCTestCase {
   func testADashboardURLIsTheProvidersPageForTheMachine() {
     let machine = "workroom-8a13f76f-01f4-45d1-9065-c14b5cbd86e1"
     XCTAssertEqual(
-      RemoteWorkrooms.Place.boxd.dashboardURL(machine: machine)?.absoluteString,
+      HostKind.boxd.dashboardURL(machine: machine)?.absoluteString,
       "https://app.boxd.sh/machines?m=\(machine)")
     XCTAssertEqual(
-      RemoteWorkrooms.Place.exeDev.dashboardURL(machine: machine)?.absoluteString,
+      HostKind.exeDev.dashboardURL(machine: machine)?.absoluteString,
       "https://exe.dev/vm/\(machine)")
-    XCTAssertNil(RemoteWorkrooms.Place.container(.docker).dashboardURL(machine: machine))
+    XCTAssertNil(HostKind.container(.docker).dashboardURL(machine: machine))
   }
 
   /// After a relaunch a boxd workroom is reached without Docker: its driver is made by name, with
@@ -1344,19 +792,19 @@ final class RemoteHostsTests: XCTestCase {
         Workroom(
           name: "w", path: "/home/boxd/r", vcsName: "workroom/w", warnings: [],
           host: HostDescriptor(
-            driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id,
+            driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: id,
             org: "acme", account: "usr_1"))
       ])
 
-    remote.adopt([project])
+    remote.reachability.adopt([project])
 
-    let driver = try XCTUnwrap(remote.existingDriver(holding: id) as? BoxdHostDriver)
+    let driver = try XCTUnwrap(remote.registry.existingDriver(holding: id) as? BoxdHostDriver)
     XCTAssertEqual(driver.configuration.org, "acme")
     XCTAssertEqual(driver.configuration.account, "usr_1")
     // Discriminates only where no container runtime is installed (CI's runners): on a Mac with
     // Docker, `runtimeIsMissing` is false for any host, and no seam-free way picks the runtime
     // lookup (`RemoteHosts.executable`, fixed paths). Kept for CI; eng review D6.
-    XCTAssertFalse(remote.runtimeIsMissing(for: .remote(id)))
+    XCTAssertFalse(remote.registry.runtimeIsMissing(for: .remote(id)))
   }
 
   /// An exe.dev host (#259) is its own driver key, keyed by its account: never Docker's or boxd's.
@@ -1364,18 +812,18 @@ final class RemoteHostsTests: XCTestCase {
   /// account, and its descriptor round-trips through config.
   func testAnExeDevHostIsItsOwnDriverKey() throws {
     let host = HostDescriptor(
-      driver: RemoteWorkrooms.exeDevDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+      driver: HostKind.exeDev.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
       account: "me@x.dev")
     let key = try XCTUnwrap(RemoteHosts.DriverKey(host))
     XCTAssertEqual(key, .exeDev(account: "me@x.dev"))
     XCTAssertTrue(key.isRemoteProvider)
-    XCTAssertEqual(key.place, .exeDev)
+    XCTAssertEqual(key.kind, .exeDev)
     XCTAssertEqual(key.account, "me@x.dev")
     XCTAssertNil(key.org)
-    XCTAssertEqual(RemoteWorkrooms.driverName(key), "exedev")
+    XCTAssertEqual(key.kind.driver, "exedev")
     let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
     XCTAssertEqual(RemoteWorkrooms.clonePath(for: repository, on: key), "/home/exedev/r")
-    XCTAssertEqual(try RemoteHosts.deletionKey(host), key)
+    XCTAssertEqual(try HostDriverRegistry.deletionKey(host), key)
     XCTAssertEqual(BaseRetirement.base(in: BaseRetirement.bases(of: host), for: key)?.id, host.id)
     XCTAssertNil(
       BaseRetirement.base(in: BaseRetirement.bases(of: host), for: .exeDev(account: "other@x.dev")))
@@ -1393,20 +841,20 @@ final class RemoteHostsTests: XCTestCase {
   func testAnExeDevWorkroomIsReachedAfterARelaunchWithoutDocker() throws {
     let remote = RemoteHosts()
     let id = UUID()
-    remote.adopt([
+    remote.reachability.adopt([
       Project(
         path: "/proj", vcs: "git",
         workrooms: [
           Workroom(
             name: "w", path: "/home/exedev/r", vcsName: "workroom/w", warnings: [],
             host: HostDescriptor(
-              driver: RemoteWorkrooms.exeDevDriver, provisioner: RemoteWorkrooms.provisioner,
+              driver: HostKind.exeDev.driver, provisioner: RemoteWorkrooms.provisioner,
               id: id, account: "me@x.dev"))
         ])
     ])
-    let driver = try XCTUnwrap(remote.existingDriver(holding: id) as? ExeDevHostDriver)
+    let driver = try XCTUnwrap(remote.registry.existingDriver(holding: id) as? ExeDevHostDriver)
     XCTAssertEqual(driver.configuration.account, "me@x.dev")
-    XCTAssertFalse(remote.runtimeIsMissing(for: .remote(id)))
+    XCTAssertFalse(remote.registry.runtimeIsMissing(for: .remote(id)))
   }
 
   /// A workroom created on boxd records `driver: "boxd"` with its org and account, and no
@@ -1418,11 +866,13 @@ final class RemoteHostsTests: XCTestCase {
     // the sweep can never take a machine config names, whatever a later config read says.
     let pending = try hostsDirectory()
     try PendingMachines.add(
-      .init(id: made, driver: RemoteWorkrooms.boxdDriver, account: "usr_1"), in: pending)
+      .init(id: made, driver: HostKind.boxd.driver, account: "usr_1"), in: pending)
     let key = RemoteHosts.DriverKey.boxd(org: "acme", account: "usr_1")
     let environment = RemoteProvisioning.Environment(
       driver: driver,
-      daemonSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket,
+      daemonSocket: BoxdHostDriver.Configuration(
+        cli: URL(fileURLWithPath: "/boxd"), hostSetup: .bundled
+      ).daemonSocket,
       connect: { _ in throw HostDriverError.provisioning("stop after the checkpoint") })
     let recorded = Recorded()
     let recorder = RemoteWorkrooms.Recorder(
@@ -1439,12 +889,12 @@ final class RemoteHostsTests: XCTestCase {
     } catch {}
     XCTAssertEqual(PendingMachines.entries(in: pending), [], "a recorded machine stayed pending")
     let live = try XCTUnwrap(recorded.all.last { $0.id == made })
-    XCTAssertEqual(live.driver, RemoteWorkrooms.boxdDriver)
+    XCTAssertEqual(live.driver, HostKind.boxd.driver)
     XCTAssertEqual(live.org, "acme")
     XCTAssertEqual(live.account, "usr_1")
     XCTAssertNil(live.container)
     XCTAssertTrue(
-      recorded.all.allSatisfy { $0.driver == RemoteWorkrooms.boxdDriver && $0.account == "usr_1" })
+      recorded.all.allSatisfy { $0.driver == HostKind.boxd.driver && $0.account == "usr_1" })
   }
 
   // Value: protects=a repository the provider won't grant fails the create before a name is
@@ -1455,11 +905,10 @@ final class RemoteHostsTests: XCTestCase {
   /// create there, and a grant is for the repository being created.
   func testTheRepositoryIsGrantedBeforeAnythingIsMade() async throws {
     struct Refused: Error {}
-    final class Grants: @unchecked Sendable {
-      private let lock = NSLock()
-      private var asked: [GitHubRepository] = []
-      var all: [GitHubRepository] { lock.withLock { asked } }
-      func add(_ repository: GitHubRepository) { lock.withLock { asked.append(repository) } }
+    final class Grants: Sendable {
+      private let asked = Mutex<[GitHubRepository]>([])
+      var all: [GitHubRepository] { asked.withLock { $0 } }
+      func add(_ repository: GitHubRepository) { asked.withLock { $0.append(repository) } }
     }
     let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
     for refuses in [true, false] {
@@ -1512,10 +961,12 @@ final class RemoteHostsTests: XCTestCase {
     defer { fake.stop() }
     let environment = RemoteProvisioning.Environment(
       driver: driver,
-      daemonSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket,
+      daemonSocket: BoxdHostDriver.Configuration(
+        cli: URL(fileURLWithPath: "/boxd"), hostSetup: .bundled
+      ).daemonSocket,
       gitHubToken: { "gho_mac" },
       connect: { host in
-        try await DaemonVCSConnection.connect(host: host, socketPath: fake.socketPath)
+        try await DaemonClient.connect(host: host, socketPath: fake.socketPath)
       })
     let recorded = Recorded()
     let recorder = RemoteWorkrooms.Recorder(
@@ -1553,7 +1004,9 @@ final class RemoteHostsTests: XCTestCase {
     let key = RemoteHosts.DriverKey.boxd(org: "acme", account: "usr_1")
     let environment = RemoteProvisioning.Environment(
       driver: driver,
-      daemonSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket)
+      daemonSocket: BoxdHostDriver.Configuration(
+        cli: URL(fileURLWithPath: "/boxd"), hostSetup: .bundled
+      ).daemonSocket)
     let recorded = Recorded()
     let forgot = Recorded()
     let recorder = RemoteWorkrooms.Recorder(
@@ -1590,7 +1043,9 @@ final class RemoteHostsTests: XCTestCase {
     let driver = MachineDriver(made: made, destroyFails: true)
     let environment = RemoteProvisioning.Environment(
       driver: driver,
-      daemonSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).daemonSocket,
+      daemonSocket: BoxdHostDriver.Configuration(
+        cli: URL(fileURLWithPath: "/boxd"), hostSetup: .bundled
+      ).daemonSocket,
       connect: { _ in throw HostDriverError.provisioning("no daemon") })
     let recorded = Recorded()
     let recorder = RemoteWorkrooms.Recorder(
@@ -1656,34 +1111,26 @@ final class RemoteHostsTests: XCTestCase {
     func lastAttach(of session: UUID, on host: HostID) -> LastAttach { .finished }
   }
 
-  private final class Recorded: @unchecked Sendable {
-    private let lock = NSLock()
-    private var made: [HostDescriptor] = []
-    private var under: [String?] = []
-    var all: [HostDescriptor] { lock.withLock { made } }
+  private final class Recorded: Sendable {
+    private let made = Mutex<(descriptors: [HostDescriptor], names: [String?])>(([], []))
+    var all: [HostDescriptor] { made.withLock { $0.descriptors } }
     /// The entry name each descriptor was recorded under, in step with `all`.
-    var names: [String?] { lock.withLock { under } }
+    var names: [String?] { made.withLock { $0.names } }
     func add(_ descriptor: HostDescriptor, as name: String? = nil) {
-      lock.withLock {
-        made.append(descriptor)
-        under.append(name)
+      made.withLock {
+        $0.descriptors.append(descriptor)
+        $0.names.append(name)
       }
     }
   }
 
-  private final class Asked: @unchecked Sendable {
-    private let lock = NSLock()
-    private var made: [RemoteHosts.DriverKey] = []
-    var keys: [RemoteHosts.DriverKey] { lock.withLock { made } }
-    func add(_ key: RemoteHosts.DriverKey) { lock.withLock { made.append(key) } }
-  }
+  private typealias Asked = Calls<RemoteHosts.DriverKey>
 
-  private final class Swept: @unchecked Sendable {
-    private let lock = NSLock()
-    private var made: [(context: String?, known: Set<UUID>)] = []
-    var calls: [(context: String?, known: Set<UUID>)] { lock.withLock { made } }
+  final class Swept: Sendable {
+    private let made = Mutex<[(context: String?, known: Set<UUID>)]>([])
+    var calls: [(context: String?, known: Set<UUID>)] { made.withLock { $0 } }
     func add(_ context: String?, _ known: Set<UUID>) {
-      lock.withLock { made.append((context, known)) }
+      made.withLock { $0.append((context, known)) }
     }
   }
 
@@ -1873,7 +1320,7 @@ final class RemoteHostsTests: XCTestCase {
     let swept = Swept()
     let make = {
       RemoteHosts(
-        makeDriver: {
+        makeContainerDriver: {
           Self.driver(
             runtime: runtime, context: $0.context,
             dialect: $0.runtime == .apple ? .apple : .docker, directory: directory)
@@ -1886,7 +1333,7 @@ final class RemoteHostsTests: XCTestCase {
         }, pendingIn: directory)
     }
 
-    make().adopt([])
+    make().reachability.adopt([])
     try await Task.sleep(for: .milliseconds(50))
     XCTAssertTrue(swept.calls.isEmpty, "a launch with nothing pending swept")
 
@@ -1894,15 +1341,15 @@ final class RemoteHostsTests: XCTestCase {
       try JSONEncoder().encode(["workroom-x"]).write(to: directory.appendingPathComponent(name))
     }
     try Data().write(to: directory.appendingPathComponent("unrelated"))
-    make().adopt([])
+    make().reachability.adopt([])
     for _ in 0..<500 where swept.calls.count < 2 { try await Task.sleep(for: .milliseconds(2)) }
     XCTAssertEqual(
       Set(swept.calls.compactMap(\.context)), ["docker orbstack pending", "apple nil pending"])
 
     let boxd = HostDescriptor(
-      driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+      driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
       account: "usr_1")
-    make().adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: boxd)])
+    make().reachability.adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: boxd)])
     for _ in 0..<500 where swept.calls.count < 4 { try await Task.sleep(for: .milliseconds(2)) }
     XCTAssertTrue(
       swept.calls.dropFirst(2).allSatisfy { $0.context?.hasSuffix("pending") == true },
@@ -1910,18 +1357,18 @@ final class RemoteHostsTests: XCTestCase {
 
     let id = UUID()
     let recorded = HostDescriptor(
-      driver: RemoteWorkrooms.containerDriver, provisioner: RemoteWorkrooms.provisioner, id: id,
+      driver: HostKind.container(.docker).driver, provisioner: RemoteWorkrooms.provisioner, id: id,
       container: Self.record(context: "orbstack"))
     let remote = make()
-    remote.adopt([Project(path: "/proj", vcs: "git", workrooms: [], host: recorded)])
+    remote.reachability.adopt([Project(path: "/proj", vcs: "git", workrooms: [], host: recorded)])
     for _ in 0..<500 where swept.calls.count < 6 { try await Task.sleep(for: .milliseconds(2)) }
     XCTAssertTrue(
       swept.calls.dropFirst(4).allSatisfy { $0.context?.hasSuffix("pending") == false },
       "a launch that records a host swept only what was pending")
     try JSONEncoder().encode([ContainerHostDriver.containerName(id), "workroom-x"]).write(
       to: directory.appendingPathComponent("pending-containers-docker@orbstack.json"))
-    remote.adopt([Project(path: "/proj", vcs: "git", workrooms: [], host: recorded)])
-    let pinned = try XCTUnwrap(remote.existingDriver(holding: id) as? ContainerHostDriver)
+    remote.reachability.adopt([Project(path: "/proj", vcs: "git", workrooms: [], host: recorded)])
+    let pinned = try XCTUnwrap(remote.registry.existingDriver(holding: id) as? ContainerHostDriver)
     XCTAssertEqual(pinned.pendingContainers, ["workroom-x"], "a recorded host stayed pending")
   }
 
@@ -1938,7 +1385,7 @@ final class RemoteHostsTests: XCTestCase {
     let ids = (0..<5).map { _ in UUID() }
     for id in ids {
       try PendingMachines.add(
-        .init(id: id, driver: RemoteWorkrooms.boxdDriver, account: "usr_1"), in: directory)
+        .init(id: id, driver: HostKind.boxd.driver, account: "usr_1"), in: directory)
     }
     let (first, second, third) = (UUID(), UUID(), UUID())
     var gone: [UUID] = []
@@ -1971,9 +1418,9 @@ final class RemoteHostsTests: XCTestCase {
     let (old, new) = (UUID(), UUID())
     try PendingMachines.add(
       .init(
-        id: old, driver: RemoteWorkrooms.boxdDriver, unrecordedIn: UUID(), made: .distantPast),
+        id: old, driver: HostKind.boxd.driver, unrecordedIn: UUID(), made: .distantPast),
       in: directory)
-    try PendingMachines.add(.init(id: new, driver: RemoteWorkrooms.boxdDriver), in: directory)
+    try PendingMachines.add(.init(id: new, driver: HostKind.boxd.driver), in: directory)
     try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
     defer {
       try? FileManager.default.setAttributes(
@@ -1996,14 +1443,14 @@ final class RemoteHostsTests: XCTestCase {
     let (earlier, fresh, recorded) = (UUID(), UUID(), UUID())
     try PendingMachines.add(
       .init(
-        id: earlier, driver: RemoteWorkrooms.boxdDriver, account: "usr_1", unrecordedIn: UUID(),
+        id: earlier, driver: HostKind.boxd.driver, account: "usr_1", unrecordedIn: UUID(),
         made: .distantPast),
       in: directory)
     try PendingMachines.add(
-      .init(id: fresh, driver: RemoteWorkrooms.exeDevDriver, account: "me@x.dev"), in: directory)
+      .init(id: fresh, driver: HostKind.exeDev.driver, account: "me@x.dev"), in: directory)
     try PendingMachines.add(
       .init(
-        id: recorded, driver: RemoteWorkrooms.boxdDriver, account: "usr_1", unrecordedIn: UUID(),
+        id: recorded, driver: HostKind.boxd.driver, account: "usr_1", unrecordedIn: UUID(),
         made: .distantPast),
       in: directory)
     let destroyed = Swept()
@@ -2012,11 +1459,13 @@ final class RemoteHostsTests: XCTestCase {
         MachineDriver(made: UUID(), onDestroy: { destroyed.add("\(key) \($0)", []) })
       }, pendingIn: directory)
     let host = HostDescriptor(
-      driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: recorded,
+      driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: recorded,
       account: "usr_1")
 
-    remote.adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: host)])
-    for _ in 0..<500 where remote.sweepsRunning > 0 { try await Task.sleep(for: .milliseconds(2)) }
+    remote.reachability.adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: host)])
+    for _ in 0..<500 where remote.registry.sweepsRunning > 0 {
+      try await Task.sleep(for: .milliseconds(2))
+    }
 
     XCTAssertEqual(
       destroyed.calls.map(\.context),
@@ -2036,7 +1485,7 @@ final class RemoteHostsTests: XCTestCase {
     let id = UUID()
     try PendingMachines.add(
       .init(
-        id: id, driver: RemoteWorkrooms.boxdDriver, account: "usr_1", unrecordedIn: UUID(),
+        id: id, driver: HostKind.boxd.driver, account: "usr_1", unrecordedIn: UUID(),
         made: .distantPast), in: directory)
     try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
     defer {
@@ -2049,11 +1498,13 @@ final class RemoteHostsTests: XCTestCase {
         MachineDriver(made: UUID(), onDestroy: { destroyed.add("\($0)", []) })
       }, pendingIn: directory)
     let host = HostDescriptor(
-      driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id,
+      driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: id,
       account: "usr_1")
 
-    remote.adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: host)])
-    for _ in 0..<500 where remote.sweepsRunning > 0 { try await Task.sleep(for: .milliseconds(2)) }
+    remote.reachability.adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: host)])
+    for _ in 0..<500 where remote.registry.sweepsRunning > 0 {
+      try await Task.sleep(for: .milliseconds(2))
+    }
     try await Task.sleep(for: .milliseconds(50))
 
     XCTAssertTrue(destroyed.calls.isEmpty, "a recorded machine was swept: \(destroyed.calls)")
@@ -2069,15 +1520,15 @@ final class RemoteHostsTests: XCTestCase {
     let (runtime, _) = try stubRuntime()
     let swept = Swept()
     let remote = RemoteHosts(
-      makeDriver: { Self.driver(runtime: runtime, context: $0.context) },
+      makeContainerDriver: { Self.driver(runtime: runtime, context: $0.context) },
       sweepDriver: { driver, known, _, _ in
         swept.add(driver.provisioning?.context, known)
         return swept.calls.count == 1 ? [ContainerHostDriver.listingFailed + "daemon down"] : []
       }, pendingIn: directory)
     func reload(expecting calls: Int) async throws {
-      remote.adopt([])
+      remote.reachability.adopt([])
       // Until the sweep this reload started, if any, has ended (`finishSweep`).
-      for _ in 0..<500 where swept.calls.count < calls || remote.sweepsRunning > 0 {
+      for _ in 0..<500 where swept.calls.count < calls || remote.registry.sweepsRunning > 0 {
         try await Task.sleep(for: .milliseconds(2))
       }
     }
@@ -2301,12 +1752,12 @@ final class RemoteHostsTests: XCTestCase {
   func testHostsAreAdoptedIntoTheirRuntimesDrivers() throws {
     let (runtime, _) = try stubRuntime()
     let remote = RemoteHosts(
-      makeDriver: { key in
+      makeContainerDriver: { key in
         Self.driver(
           runtime: runtime, context: key.context, dialect: key.runtime == .apple ? .apple : .docker)
       }, sweepDriver: { _, _, _, _ in [] })
     let (docker, apple) = (UUID(), UUID())
-    let host = { (id: UUID, runtime: RemoteWorkrooms.Runtime) in
+    let host = { (id: UUID, runtime: ContainerRuntime) in
       HostDescriptor(
         driver: runtime.rawValue, provisioner: RemoteWorkrooms.provisioner, id: id,
         container: Self.record(context: nil))
@@ -2318,19 +1769,21 @@ final class RemoteHostsTests: XCTestCase {
           name: "w", path: "/home/workroom/r", vcsName: "workroom/w", warnings: [],
           host: host(apple, .apple))
       ], host: host(docker, .docker))
-    remote.adopt([project])
+    remote.reachability.adopt([project])
     XCTAssertEqual(
-      (remote.existingDriver(holding: docker) as? ContainerHostDriver)?.provisioning?.dialect,
+      (remote.registry.existingDriver(holding: docker) as? ContainerHostDriver)?.provisioning?
+        .dialect,
       .docker)
     XCTAssertEqual(
-      (remote.existingDriver(holding: apple) as? ContainerHostDriver)?.provisioning?.dialect,
+      (remote.registry.existingDriver(holding: apple) as? ContainerHostDriver)?.provisioning?
+        .dialect,
       .apple)
   }
 
   /// Why a container runtime's New Workroom entry is off, in the order a user has to fix it:
   /// Apple's needs Apple silicon and macOS 26 before installing it means anything (#309).
   func testARuntimeEntrySaysWhyItIsOff() {
-    let ready = { (runtime: RemoteWorkrooms.Runtime) in
+    let ready = { (runtime: ContainerRuntime) in
       RemoteWorkrooms.unavailability(
         of: runtime, installed: true, appleSilicon: true, macOS26: true, signedIn: true)
     }
@@ -2368,7 +1821,7 @@ final class RemoteHostsTests: XCTestCase {
     let run = CreationRun(
       project: Project(path: "/proj", vcs: "git", workrooms: []), kind: .boxd, splitAnchor: nil,
       previousSelection: nil)
-    store.register(run)
+    store.lifecycle.register(run)
     let pane = SidebarID.creation(project: "/proj", id: run.id)
     run.begin("repository")
     run.begin("machine")
@@ -2403,7 +1856,7 @@ final class RemoteHostsTests: XCTestCase {
       RemoteHosts.DriverKey(runtime: .docker, context: "orbstack"),
       RemoteHosts.DriverKey(runtime: .apple),
     ]
-    let deletion = RemoteHosts.Deletion(
+    let deletion = HostDriverRegistry.Deletion(
       environments: Dictionary(uniqueKeysWithValues: keys.map { ($0, environment($0)) }))
     for key in keys {
       let host = HostDescriptor(

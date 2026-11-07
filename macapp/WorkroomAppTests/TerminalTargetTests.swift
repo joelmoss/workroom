@@ -12,13 +12,13 @@ final class TerminalTargetTests: XCTestCase {
     let a = Workroom(name: "sunny", path: "/wr/a/sunny", vcsName: "workroom/sunny", warnings: [])
     let b = Workroom(name: "sunny", path: "/wr/b/sunny", vcsName: "workroom/sunny", warnings: [])
     XCTAssertNotEqual(a.target(inProject: "/proj-a").id, b.target(inProject: "/proj-b").id)
-    XCTAssertEqual(a.target(inProject: "/proj-a").id, "wr|/proj-a|sunny")
+    XCTAssertEqual(a.target(inProject: "/proj-a").id.encoded, "wr|/proj-a|sunny")
   }
 
   func testRootTargetID() {
     let p = Project(path: "/proj-a", vcs: "git", workrooms: [])
-    XCTAssertEqual(p.rootTarget.id, "root|/proj-a")
-    XCTAssertNotEqual(p.rootTarget.id, "wr|/proj-a|sunny")
+    XCTAssertEqual(p.rootTarget.id.encoded, "root|/proj-a")
+    XCTAssertNotEqual(p.rootTarget.id.encoded, "wr|/proj-a|sunny")
   }
 
   func testWorkroomMissingFlagFromBlockingWarning() {
@@ -85,16 +85,14 @@ final class TerminalTargetTests: XCTestCase {
   }
 
   /// A base names another remote only when the part before the slash is one, as the CLI reads it.
-  func testSplitBaseMatchesTheCLIsRule() {
-    let remotes = ["origin", "upstream"]
-    XCTAssertTrue(RemoteWorkrooms.splitBase("develop", remotes: remotes) == ("origin", "develop"))
-    XCTAssertTrue(RemoteWorkrooms.splitBase("origin/main", remotes: remotes) == ("origin", "main"))
-    XCTAssertTrue(
-      RemoteWorkrooms.splitBase("upstream/main", remotes: remotes) == ("upstream", "main"))
-    XCTAssertTrue(
-      RemoteWorkrooms.splitBase("release/1.0", remotes: remotes) == ("origin", "release/1.0"))
-    XCTAssertTrue(
-      RemoteWorkrooms.splitBase("upstream/", remotes: remotes) == ("origin", "upstream/"))
+  /// The cases are `testdata/twins/split_base.tsv`, which the CLI's `TestSplitBase` also reads, so
+  /// the two copies of the rule can't drift.
+  func testSplitBaseMatchesTheCLIsRule() throws {
+    for fields in try SharedFixture.rows("testdata/twins/split_base.tsv", columns: 4) {
+      let remotes = fields[0].split(separator: ",").map(String.init)
+      let split = RemoteWorkrooms.splitBase(fields[1], remotes: remotes)
+      XCTAssertTrue(split == (fields[2], fields[3]), "\(fields[1]) with \(remotes) gave \(split)")
+    }
   }
 
   /// The project's base branch arrives under the CLI's snake_case key.

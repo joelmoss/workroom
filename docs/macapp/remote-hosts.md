@@ -6,14 +6,18 @@ Read [host states](../remote-host-states.md) before performing an action on a ho
 ## Creating a workroom (#483)
 
 Every create, local, container or remote, and from any door (sidebar, context menu, File ▸ New
-Workroom…), is a `CreationRun` (`Core/CreationRun.swift`) in `ProjectStore.creationRuns`, shared by
-every window. Its pane opens on the click, before any work: beside the split anchor, or as the
+Workroom…), is a `CreationRun` (`Core/WorkroomManagement/CreationRun.swift`) in the app's one
+`WorkroomLifecycle` (`creationRuns`, ADR 0068), shared by every window. Its pane opens on the
+click, before any work, in the window it was started from: beside the split anchor, or as the
 selection, as a `.creation(project:id:)` target that becomes the workroom's
-`.workroom(project:name:)` in place once it has a name (`creationRunForTarget` records it before
-the reload that publishes it, so no window mounts a terminal there early). While a run lasts, its
-pane draws `Views/CreationPane.swift` bare (no title bar, so no ✕ or menu) and
+`.workroom(project:name:)` in place, in every window, once it has a name (`creationRunForTarget`
+records it before the reload that publishes it, so no window mounts a terminal there early). The
+lifecycle hands each window what a create or delete does to the panes it shows as a synchronous
+`WorkroomLifecycle.Event`. The flows are the lifecycle's (`WorkroomLifecycle+Create`), and the
+window that started a create, its `LifecycleWindow`, shows its questions and sheets. While a run lasts, its
+pane draws `Views/WorkroomManagement/CreationPane.swift` bare (no title bar, so no ✕ or menu) and
 `removeWorkroomSplitMember` refuses a running one. The pane lists the kind's plan of steps
-(`CreationKind.plan`; a local create leaves out the setup script's row when the project has no
+(`CreationRun.plan(for:)`; a local create leaves out the setup script's row when the project has no
 `scripts/workroom_setup`, and `CreationRun.begin` puts it back if a script runs anyway), fed by
 the CLI's NDJSON `step` and `log` events for a local create and by
 `ProvisioningProgress.$reportStep` and `$log` for the others; what it says lives in
@@ -26,8 +30,8 @@ beside the shell the terminal opens on. On failure the run stays for its footer 
 delete guard, is released when the create's process ends, not when the run goes. Creates in one
 project may overlap; only a project being deleted blocks one. A provider's setup sheet holds the run
 on its `account` step and Create Workroom carries the same run on (`RemoteSetupWait`). VoiceOver
-hears three moments only, from the store: the sheet, a failure and a success
-(`AppStore.announceCreation`). `-WorkroomUITestScriptedCreate 1` plays a local create in fixture
+hears three moments only, once for the app: the sheet, a failure and a success
+(`WorkroomLifecycle.announceCreation`). `-WorkroomUITestScriptedCreate 1` plays a local create in fixture
 mode (`ScriptedCreateCLI`), for UI tests.
 
 ## Git credentials on a host
@@ -37,16 +41,17 @@ user's boxd `git` integration, and an exe.dev VM an exe.dev GitHub integration p
 `ExeDevHostDriver.grantGitHub` adds before the VM when none names the repository. The integration
 answers only at `github.int.exe.xyz`, so `ExeDevHostDriver.create` runs
 `Resources/host-setup/exedev-github.sh` to rewrite GitHub remotes there and set `GH_HOST`. A clone
-that fails says the provider's fix (`RemoteWorkrooms.Place.credentialHint`). A local container's git
+that fails says the provider's fix (`HostKind.credentialHint`). A local container's git
 asks the Mac's own `gh` through `CredentialRelay` (#309), whose daemon side is `workroomd credential`
-(`vcs/crates/workroomd/src/credential.rs`). A new user's first exe.dev create walks them through
+(`vcs/crates/workroomd/src/host/credential.rs`). A new user's first exe.dev create walks them through
 exe.dev's own setup first (`ExeDevSetupSheet`); try it as a user exe.dev has never seen with
 `make app-run-exedev-fresh`.
 
 An SSH host uses the credentials its user set up on the server, with the origin's GitHub URL
 scheme retained (ADR 0056); it gets no Mac credential relay. For every remote kind, the daemon
 builds the app's git environment from a cached, bounded login-shell probe, then applies the
-existing scrub and pins (`vcs/crates/workroomd/src/vcs.rs`).
+existing scrub and pins (`vcs/crates/workroomd/src/host/environment.rs`, over
+`wr_vcs_git::diff::SCRUBBED` and `PINS`).
 
 ## SSH driver (#378)
 
@@ -58,7 +63,11 @@ destination determines a shared UUIDv5 host id across projects. An SSH create ha
 `PendingMachines` entry. Preserve the marker guard on folder removal and end sessions by the
 workroom UUID tag; per-host cleanup belongs only to the last workroom, including creating entries.
 Port-forward lists belong to host plus workroom. The daemon stays running after deletion.
-Before changing this lifecycle, read [remote host states](../remote-host-states.md) and
+A create on either kind of host makes its `Placement` (`ProvisionedHostPlacement`, or
+`SSHFolderPlacement` for the marked folder) and clones through the one `RemoteProvisioning.place`
+and `cloneAndCheckOut`; both deletes run the one `RemoteWorkrooms.runTeardown`, and say what they
+let go of through `onForgotten`, which `WorkroomLifecycle.forgetRemote` hands to the port-forward
+and program-status models. Before changing this lifecycle, read [remote host states](../remote-host-states.md) and
 [ADR 0056](../adr/0056-ssh-hosts-are-the-users.md) for its safety and parity rules.
 
 ## boxd driver (#256)
@@ -78,7 +87,11 @@ CLI (`--json`) and reached over `SSHTransport` (its `exec`,
 `attachCommand` and `writeConfiguration` statics). Its ssh details come only from the blocks the
 CLI manages in `~/.ssh/config` and `~/.ssh/known_hosts` (`SSHDetails`). A host is set up by
 `Resources/host-setup/systemd.sh` (an identity unit and the daemon's supervisor, both systemd; shared
-with every provider driver whose machines run systemd, #259). Each provider workroom is a fresh
+with every provider driver whose machines run systemd, #259). The package never reads the app's
+bundle for it: each driver's `Configuration.hostSetup` finds the scripts, and the app passes
+`HostSetup.bundled` (`Core/RemoteHosts/HostSetup+Bundle.swift`). So the boxd and exe.dev driver
+tests run under `swift test` with the checkout's scripts, and `HostSetupBundleTests` checks the
+bundle holds them. Each provider workroom is a fresh
 machine of its own: `RemoteProvisioning.provision` has the driver `create()` it, then
 clones and checks out the branch, and no driver derives a host from another. The identity unit
 stays: every fresh boxd machine boots with the image's machine-id and ssh host key (measured,
@@ -90,8 +103,16 @@ another is active (#356). Machines are named
 snapshot an older build's derive may have left under that name. Bases older builds recorded stay
 until a follow-up retires them (`TODOS.md`); Delete Project still takes them down. `BoxdIntegrationTests`
 make real machines: they run only with `TEST_RUNNER_WR_BOXD_TESTS=1`
-and the sandbox off. The app reaches it from New Workroom › Remote › boxd (#356): `RemoteHosts`
-holds any driver by `DriverKey` (a container runtime or a boxd org and account), a background read
+and the sandbox off. The app reaches it from New Workroom › Remote › boxd (#356):
+`HostDriverRegistry`, the only place the app makes a driver, holds any driver by `DriverKey` (a
+host's `HostKind`, ADR 0066, with who its driver acts for: a Docker context, a boxd org and
+account, an exe.dev account or an SSH destination). The app reaches what one provider does (boxd's
+presence, a container's start, SSH's shared connection) through the capability protocols in
+`HostDrivers`, never by casting to a concrete driver (ADR 0067). The registry also records which
+driver holds each host config names, and runs the launch's sweep (`adopt`). Connecting to a host,
+its backoff, waking and starting it, and its credential relay are `HostReachability`'s; the app has
+one of each, on `RemoteHosts.shared`. A reload's `HostReachability.adopt` records the hosts in the
+registry and marks which are relayed. A background read
 of a boxd host asks boxd first and leaves an asleep box asleep, and nothing lets go of an idle
 connection: a box an open app holds awake is the user's to free, by deleting its workroom (#380).
 Signed out, every boxd command that needs an account opens boxd's browser sign-in and waits
@@ -109,7 +130,9 @@ ADR 0049 (hosts bring their own git credentials).
 A workroom or project entry in `config.json` can carry a `"host"` object, which `list --json`
 passes through as `host`. The app owns its schema (`HostDescriptor` in
 `Packages/WorkroomDomain/Sources/WorkroomDomain/Model.swift`); the CLI reads only whether a
-workroom has one (remote) and `state == "destroyed"`. `workroom host set|clear` (#252) writes one
+workroom has one (remote) and `state == "destroyed"`. The app reads `driver` and `state` through
+`HostDescriptor.kind` and `.lifecycle` (ADR 0066), never by comparing the strings, and keeps them
+as strings on disk. `workroom host set|clear` (#252) writes one
 verbatim on an existing entry, and the app calls it through `WorkroomCLI.setHost`.
 Every CLI config write preserves an existing one, so a change to a config writer must keep `host`,
 or a remote workroom silently turns local. What the app relies on:
@@ -129,5 +152,6 @@ or a remote workroom silently turns local. What the app relies on:
   is held in `deferredTargetSessions` until its first pane opens.
 - Doing something on a host (a connect, an exec, a script, a delete): read
   `docs/remote-host-states.md` first. It lists the states a host can be in (stopped, asleep, gone,
-  connecting, an older daemon), the call that reaches it in each (`activate`, then
-  `ensureConnected(wake: true)` for what the user asked for), and what an exit status means over ssh.
+  connecting, an older daemon), the `HostReachability` call that reaches it in each (`activate`,
+  then `ensureConnected(wake: true)` for what the user asked for), and what an exit status means
+  over ssh.

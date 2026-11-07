@@ -1,5 +1,6 @@
 import DaemonConnection
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -36,7 +37,7 @@ struct LiveProvider {
 /// parity criterion). A provider's suite subclasses this, makes its `LiveProvider`, and calls each
 /// case from a `test…` method of its own; none of these is a test by itself.
 class ProviderParityTestCase: XCTestCase {
-  var connections: [DaemonVCSConnection] = []
+  var connections: [DaemonClient] = []
 
   override func tearDown() async throws {
     for connection in connections { await connection.close() }
@@ -44,8 +45,10 @@ class ProviderParityTestCase: XCTestCase {
     try await super.tearDown()
   }
 
+  // The async helpers run in their caller's isolation, so a main-actor test can call them without
+  // handing the test case to another executor.
   @discardableResult
-  func onHost(_ driver: any HostDriver, _ host: HostID, _ command: String)
+  nonisolated(nonsending) func onHost(_ driver: any HostDriver, _ host: HostID, _ command: String)
     async throws -> String
   {
     let (status, output) = try await driver.exec(command, on: host).communicate(nil, timeout: 30)
@@ -55,7 +58,9 @@ class ProviderParityTestCase: XCTestCase {
 
   /// The machine identity open question 9 lists (Phase 0, item 6): the sshd host key the machine
   /// presents, its machine-id, and its boot_id.
-  func identity(_ provider: LiveProvider, _ host: HostID) async throws -> [String] {
+  nonisolated(nonsending) func identity(_ provider: LiveProvider, _ host: HostID) async throws
+    -> [String]
+  {
     [
       try await onHost(provider.driver, host, "cut -d' ' -f1,2 \(provider.sshHostKey)"),
       try await onHost(provider.driver, host, "cat /etc/machine-id"),
@@ -63,7 +68,9 @@ class ProviderParityTestCase: XCTestCase {
     ]
   }
 
-  func connect(_ provider: LiveProvider, _ host: HostID) async throws -> DaemonVCSConnection {
+  nonisolated(nonsending) func connect(_ provider: LiveProvider, _ host: HostID) async throws
+    -> DaemonClient
+  {
     let connection = try await DaemonBootstrap.connect(
       host: host, driver: provider.driver, socket: provider.socket, handOff: false)
     connections.append(connection)
@@ -339,7 +346,8 @@ class ProviderParityTestCase: XCTestCase {
     addTeardownBlock { try? await driver.destroy(host) }
     let connection = try await connect(provider, host)
     XCTAssertGreaterThanOrEqual(connection.helloVersion, DaemonHandshake.minRunVersion)
-    let runs = RunLines()
+    // The run's state lines as its host's daemon publishes them, in order.
+    let runs = Calls<String>()
     let session = UUID()
     let availability = try await connection.subscribeProgramStatus { event in
       if case .status(_, let reported, _, _, _, let run?) = event, reported == session {
@@ -366,16 +374,16 @@ class ProviderParityTestCase: XCTestCase {
       XCTFail("the run command never ran on the host: \(seen)")
       return
     }
-    try await until("the run reports running") { runs.last?.hasPrefix("running ") == true }
+    try await until("the run reports running") { runs.all.last?.hasPrefix("running ") == true }
 
     // Stop parks it in its session; Restart runs it again there.
     let stop = try await connection.signalSession(session, .stop)
     XCTAssertEqual(stop, .delivered)
-    try await until("the run parks on Stop") { runs.last == "stopped 1" }
+    try await until("the run parks on Stop") { runs.all.last == "stopped 1" }
     let restart = try await connection.signalSession(session, .restart)
     XCTAssertEqual(restart, .delivered)
     try await until("the run starts again on Restart") {
-      runs.last?.hasPrefix("running ") == true && runs.all.contains("stopped 1")
+      runs.all.last?.hasPrefix("running ") == true && runs.all.contains("stopped 1")
     }
     let restarted = pane.read(until: "RUN-42", within: 20)
     let allLeaves = Self.numbers(after: "LEAF=", in: restarted)
@@ -386,7 +394,7 @@ class ProviderParityTestCase: XCTestCase {
     // The link drops and comes back: the run carried on.
     pane.dropLink()
     try await Task.sleep(for: .seconds(2))
-    XCTAssertEqual(runs.last?.hasPrefix("running "), true, "the run ended with its link")
+    XCTAssertEqual(runs.all.last?.hasPrefix("running "), true, "the run ended with its link")
     let again = try attach(true)
     defer { again.dropLink() }
     let reattached = again.read(until: "RUN-42", within: 30)
@@ -408,18 +416,9 @@ class ProviderParityTestCase: XCTestCase {
     XCTAssertEqual(try provider.leftovers(), [])
   }
 
-  /// A run's state lines as its host's daemon publishes them, in order.
-  final class RunLines: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lines: [String] = []
-    func add(_ line: String) { lock.withLock { lines.append(line) } }
-    var all: [String] { lock.withLock { lines } }
-    var last: String? { all.last }
-  }
-
   /// Polls `condition` for up to `seconds`, and fails the test there if it never holds: the steps
   /// after it would only wait out their own timeouts on a paid host.
-  func until(
+  nonisolated(nonsending) func until(
     _ what: String, within seconds: Double = 60, _ condition: () async throws -> Bool
   ) async throws {
     let deadline = Date().addingTimeInterval(seconds)
@@ -468,7 +467,7 @@ class ProviderParityTestCase: XCTestCase {
     XCTAssertNil(records.project, "the project recorded a base")
     let workroom = try XCTUnwrap(records.workrooms["w"])
     XCTAssertEqual(records.path, "\(provider.home)/r")
-    XCTAssertEqual(workroom.driver, RemoteWorkrooms.driverName(key))
+    XCTAssertEqual(workroom.driver, key.kind.driver)
     XCTAssertEqual(workroom.org, key.org)
     XCTAssertEqual(workroom.account, key.account)
     XCTAssertEqual(workroom.repository, "o/r")
@@ -477,28 +476,31 @@ class ProviderParityTestCase: XCTestCase {
     XCTAssertEqual(RemoteHosts.DriverKey(workroom), key)
 
     try await RemoteWorkrooms.delete(
-      "w", host: workroom, environment: environment, recorder: recorder)
+      "w", host: workroom, environment: environment, recorder: recorder,
+      onForgotten: WorkroomLifecycle.forgetRemote)
     XCTAssertNil(records.workrooms["w"], "the workroom's entry was kept")
     XCTAssertEqual(try provider.leftovers(), [])
   }
 
-  final class Records: @unchecked Sendable {
-    private let lock = NSLock()
-    private var base: HostDescriptor?
-    private var named: [String: HostDescriptor] = [:]
-    private var reserved: String?
-    var project: HostDescriptor? { lock.withLock { base } }
+  final class Records: Sendable {
+    private struct State {
+      var base: HostDescriptor?
+      var named: [String: HostDescriptor] = [:]
+      var reserved: String?
+    }
+    private let state = Mutex(State())
+    var project: HostDescriptor? { state.withLock { $0.base } }
     /// Where the workroom's clone is on its host, as its entry was reserved.
     var path: String? {
-      get { lock.withLock { reserved } }
-      set { lock.withLock { reserved = newValue } }
+      get { state.withLock { $0.reserved } }
+      set { state.withLock { $0.reserved = newValue } }
     }
-    var workrooms: [String: HostDescriptor] { lock.withLock { named } }
+    var workrooms: [String: HostDescriptor] { state.withLock { $0.named } }
     func set(_ name: String?, _ descriptor: HostDescriptor, as reserved: String? = nil) {
-      lock.withLock {
-        if let name = name ?? reserved { named[name] = descriptor } else { base = descriptor }
+      state.withLock {
+        if let name = name ?? reserved { $0.named[name] = descriptor } else { $0.base = descriptor }
       }
     }
-    func forget(_ name: String) { _ = lock.withLock { named.removeValue(forKey: name) } }
+    func forget(_ name: String) { _ = state.withLock { $0.named.removeValue(forKey: name) } }
   }
 }

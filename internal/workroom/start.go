@@ -30,9 +30,18 @@ const (
 // Starts are the values --start takes.
 var Starts = []Start{StartOrigin, StartLocal, StartLocalWithChanges, StartAsk}
 
+// LocalWork is the work a create from a remote's copy of the base branch would leave out of the
+// main checkout, as a create question, LocalWorkError and ProjectScripts report it. Callers name
+// it here, not in vcs.
+type LocalWork = vcs.LocalWork
+
+// QuestionError is a create stopped by a create question before anything exists; its StartCommit
+// is the start point asked about, for the answer to pass back as Service.StartCommit (ADR 0059).
+type QuestionError = vcs.QuestionError
+
 // LocalWorkError refuses a create that would leave local work out, before anything exists, so the
 // caller can choose where it starts. It is ErrLocalWork.
-type LocalWorkError struct{ Work vcs.LocalWork }
+type LocalWorkError struct{ Work LocalWork }
 
 func (e *LocalWorkError) Error() string {
 	behind := ""

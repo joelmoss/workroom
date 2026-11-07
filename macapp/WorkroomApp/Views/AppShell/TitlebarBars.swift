@@ -1,0 +1,262 @@
+import AppKit
+import Defaults
+import SwiftUI
+
+/// Layout constants for the custom title bar. The bar is drawn as the top strip of the window's
+/// (full-size) content rather than in an `NSTitlebarAccessoryViewController` — a leading accessory
+/// is clamped to the native ~32pt title-bar height and can't be made taller (verified), so the
+/// Chrome/Arc approach is used instead: `.fullSizeContentView` + draw the bar in content at any
+/// height. Tune `height` to taste.
+enum WorkroomTitlebar {
+  /// Standard title-bar height. The custom bar is now a `.left` titlebar accessory, which AppKit
+  /// clamps to the standard title-bar height; this constant is used as the reorder-vs-drop threshold
+  /// in `RootView.workroomChipLocal` (a chip drag staying within the bar strip is a reorder). ~28pt.
+  static let height: CGFloat = 28
+  /// Leading inset so the bar's first control clears the traffic-light cluster.
+  static let trafficLightInset: CGFloat = 80
+  /// The accessory row's own outer inset (`RootView.accessoryBarContent`), charged against the window
+  /// edges. Shared because the trailing bar has to subtract it to line its last button up with the
+  /// activity bar below — see `TrailingTitlebarBar.trailingInset`.
+  static let outerInset: CGFloat = 8
+}
+
+/// Toggles the window's `isMovable` to gate AppKit's automatic title-bar drag. The custom title bar
+/// (issue #23) is drawn in the window's full-size content, where AppKit's title-bar drag ignores the
+/// content views' `mouseDownCanMoveWindow` (verified) — so a drag anywhere in the bar, including on a
+/// workroom tab chip, moves the whole *window* and steals the chip's reorder `DragGesture`. `isMovable`
+/// is the one lever that actually disables that drag, but it's window-wide, so we flip it by hover:
+/// the bar passes `movable = false` only while the cursor is over (or dragging) a chip, and `true`
+/// otherwise — so the chips reorder while the empty bar still drags the window. Hover fires before the
+/// press, so the flag is already set when the drag begins.
+struct WindowMovableController: NSViewRepresentable {
+  let movable: Bool
+
+  func makeNSView(context: Context) -> NSView {
+    let view = NSView(frame: .zero)
+    DispatchQueue.main.async { [weak view] in view?.window?.isMovable = movable }
+    return view
+  }
+
+  func updateNSView(_ nsView: NSView, context: Context) {
+    nsView.window?.isMovable = movable
+  }
+}
+
+/// The single unified title-bar toolbar, split into a leading and a trailing half hosted as
+/// `NSTitlebarAccessoryViewController`s (see `TitlebarAccessory`). They sit in the window's *one*
+/// title-bar row — the leading half right after the traffic lights, the trailing half at the
+/// window's true trailing edge — so together they span the full width with the draggable title-bar
+/// gap between them.
+///
+/// Why accessories rather than `.toolbar`: SwiftUI's `.toolbar` placement is column-scoped in a
+/// `NavigationSplitView` (`.primaryAction` docks to a column, not the window edge), and `.toolbar`
+/// items render with the framework's own chrome. Hosting plain SwiftUI `HStack`s in title-bar
+/// accessories instead gives every control one shared `.borderless` style and exact placement,
+/// independent of the split's columns.
+
+/// A hairline group separator shared by the title-bar bars.
+struct TitlebarDivider: View {
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    Rectangle()
+      .fill(tokens.border)
+      .frame(width: 1, height: 14)
+      .padding(.horizontal, 4)
+  }
+}
+
+/// Leading title-bar controls: sidebar toggle + history nav (issue #26). Our
+/// own sidebar toggle (leftmost, right after the traffic lights) replaces NavigationSplitView's auto
+/// one. `.toolbar(removing:)` is meant to drop it, but doesn't fully take, so the window toolbar is
+/// hidden outright in `WindowBackgroundThemer` to kill its "more toolbar items" overflow chevron.
+struct LeadingTitlebarBar: View {
+  @EnvironmentObject var store: AppStore
+  @EnvironmentObject var projectStore: ProjectStore
+
+  var body: some View {
+    HStack(spacing: 6) {
+      // No projects: no sidebar to show, so no button for it.
+      if !projectStore.projects.isEmpty {
+        Button {
+          store.toggleSidebar()
+        } label: {
+          Image(systemName: "sidebar.left")
+        }
+        .help(store.sidebarVisible ? "Hide sidebar (⌃⌘S)" : "Show sidebar (⌃⌘S)")
+        .accessibilityLabel("Toggle sidebar")
+        .accessibilityIdentifier("toolbar.toggleSidebar")
+        // Hovering this button (while the sidebar is collapsed) peeks the sidebar via the edge-reveal
+        // overlay (issue #74) — the trigger is the button alone, never the toolbar strip that used to
+        // sit above the workroom tabs. Only report while collapsed so a hover with the sidebar pinned
+        // doesn't churn reveal state.
+        .onHover { hovering in
+          if !store.sidebarVisible { store.hoveringLeftToggle = hovering }
+        }
+
+        TitlebarDivider()
+      }
+
+      // The two identifiers below are a deliberate hook with no test behind them yet: the nav UI test
+      // drives ⌘[/⌘] instead, because these buttons live in an AppKit titlebar accessory that no
+      // XCUITest has ever queried, and a tap on a `.disabled` one fails silently (a green test proving
+      // nothing). Kept so a future titlebar test has a handle. `accessibilityLabel` is what assistive
+      // tech actually reads.
+      Button {
+        store.navigateBack()
+      } label: {
+        Image(systemName: "chevron.left")
+      }
+      .help("Back (⌘[)")
+      .accessibilityLabel("Back")
+      .accessibilityIdentifier("toolbar.navigateBack")
+      .disabled(!store.canGoBack)
+
+      Button {
+        store.navigateForward()
+      } label: {
+        Image(systemName: "chevron.right")
+      }
+      .help("Forward (⌘])")
+      .accessibilityLabel("Forward")
+      .accessibilityIdentifier("toolbar.navigateForward")
+      .disabled(!store.canGoForward)
+    }
+    .buttonStyle(ToolbarIconButtonStyle())
+    .padding(.horizontal, 10)
+    // The titlebar accessory host is the full title-bar height (52pt — NOT 28), and NSHostingView
+    // top-aligns a fixed-height root inside it, so the icons sat high. Fill the host and let the HStack
+    // centre its buttons on the traffic-light line (the close button centres at y=26 of the 52pt host).
+    .frame(maxHeight: .infinity)
+  }
+}
+
+/// Trailing title-bar controls: the update pill, appearance, theme picker, and quick terminal — all
+/// **window-level**, which is now the whole point. Everything workroom-scoped has left: notifications
+/// and inspector visibility moved to the activity bar, and issue #139 moved the selected target's
+/// run/open-in actions into each workroom pane's own title bar, where a co-displayed split member's
+/// are reachable too.
+struct TrailingTitlebarBar: View {
+  @EnvironmentObject var updater: Updater
+  @EnvironmentObject var store: AppStore
+  @EnvironmentObject var modals: ModalState
+
+  @Default(.theme) private var theme
+  @Default(.quickTerminalShortcut) private var quickTerminalShortcut
+
+  /// The theme dropdown (issue #36), anchored to its own toolbar button.
+  ///
+  /// Window-local `@State`, like the sheets `RootView` owns: the `Theme…` command's notification is
+  /// broadcast to every window, and the key-window guard below is what decides which one opens.
+  @State private var showThemePicker = false
+
+  /// The row's trailing inset — DERIVED, not chosen: the activity bar (always present, flush to the
+  /// window's trailing edge) is directly below this row, so the last control's well is centred on that
+  /// rail's icon column. Anything else reads as a random gap between the last button and the window
+  /// edge, which is what a hand-set 10pt gave: the button sat ~10pt inboard of the rail's centre line.
+  ///
+  /// = half the rail, less the accessory row's own outer inset and half the well's footprint. `max(0,)`
+  /// so a future narrower rail can only close the gap, never push the button off the row.
+  private static var trailingInset: CGFloat {
+    max(
+      0,
+      ActivityBar.width / 2 - WorkroomTitlebar.outerInset - ToolbarIconButtonStyle.footprint / 2)
+  }
+
+  var body: some View {
+    HStack(spacing: 6) {
+      // A newer version is waiting (Sparkle gentle reminder) — the accent pill leads the trailing
+      // controls. Self-hides when no update is pending; the divider matches. It lives here, not in the
+      // leading bar, because there it overran the sidebar and sat on the NavigationSplitView's
+      // sidebar/detail divider, whose full-height resize grab zone stole the cursor (and a drag
+      // resized the sidebar). At the window's trailing edge it's nowhere near that divider.
+      if updater.availableVersionString != nil {
+        UpdateAvailableButton()
+        TitlebarDivider()
+      }
+
+      Button {
+        theme = theme.next
+      } label: {
+        Image(systemName: theme.symbol)
+      }
+      .help("Theme: \(theme.label) — click to switch to \(theme.next.label)")
+      .accessibilityLabel("Theme: \(theme.label)")
+      .accessibilityIdentifier("toolbar.appearance")
+
+      // Theme (⌘⇧K) — a dropdown anchored here rather than a sheet or a window of its own, because
+      // picking a theme is a live-preview gesture: ↑/↓ apply families as you move through them, so the
+      // app behind the dropdown IS the preview. A sheet made that impossible twice over (measured on
+      // the real build): its modality had AppKit render the whole window inactive — traffic lights
+      // greyed, the sidebar's VCS dot badges orange → dull brown — and being anchored under the title
+      // bar it sat on top of the content whose colours you were choosing, with nothing to drag.
+      //
+      // A popover is transient, so it needs no dismiss affordance and no modal bookkeeping: clicking
+      // anywhere else closes it, and anything that raises a dialog closes it too (below). It is
+      // therefore deliberately absent from `ModalState.hasModalPresentation`.
+      Button {
+        showThemePicker.toggle()
+      } label: {
+        Image(systemName: "paintpalette")
+      }
+      .help("Theme (⌘⇧K)")
+      .accessibilityLabel("Theme")
+      .accessibilityIdentifier("toolbar.theme")
+      .popover(isPresented: $showThemePicker, arrowEdge: .bottom) {
+        ThemePicker()
+      }
+
+      // Quick Terminal (⌥§ by default) — a shell in its own slide-in window, always at the trailing
+      // edge.
+      Button {
+        NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
+      } label: {
+        // The `.badge.plus` extends this glyph's box upward, so a plain centre sits ~0.5pt high vs the
+        // other icons; nudge it down to sit on the same line.
+        Image(systemName: "macwindow.badge.plus")
+          .offset(y: 0.5)
+      }
+      .help("Quick Terminal (\(quickTerminalShortcut.label))")
+      .accessibilityLabel("Quick Terminal")
+      .accessibilityIdentifier("toolbar.quickTerminal")
+    }
+    .buttonStyle(ToolbarIconButtonStyle())
+    // Trailing gap, sized so the last control's well centres over the activity bar's icon column
+    // directly below it rather than floating in dead space short of the window edge.
+    .padding(.trailing, Self.trailingInset)
+    // Fill the full-height (52pt) accessory host so the HStack centres its buttons — see LeadingTitlebarBar.
+    .frame(maxHeight: .infinity)
+    // The `Theme…` command (⌘⇧K) can't anchor a popover from a menu, so it posts and this bar — which
+    // owns the anchor — presents. Guarded on the key window because the post reaches every window's
+    // accessory; toggling means the shortcut closes the dropdown as well as opening it.
+    //
+    // The guard and the toggle only compose because a popover does NOT take key from the window it is
+    // attached to — measured: with the dropdown open and its search field holding first responder,
+    // ⌘⇧K still closes it, so `isKeyWindow` was still true. If that ever changed, the shortcut could
+    // open the dropdown and then never close it, which is why `ThemePickerUITests` presses ⌘⇧K twice.
+    .onReceive(NotificationCenter.default.publisher(for: .showThemePicker)) { _ in
+      guard store.hostWindow?.isKeyWindow ?? false else { return }
+      showThemePicker.toggle()
+    }
+    // A popover dismisses itself on a click outside, but a *keyboard* command never sends that click, so
+    // the two window-level changes a command can make close it explicitly: a dialog or sheet coming up
+    // (a dropdown hanging over a modal is confusing and unreachable past), and the selection moving
+    // (⌥⌘digit, the quick switchers), which a stale dropdown would be sitting on top of.
+    //
+    // Deliberately NOT exhaustive, so don't read it as "any keystroke closes it": ⌘⇧L (flip light/dark)
+    // and ⌘1–9 (focus a terminal tab) change neither value and leave the dropdown up. ⌘⇧L especially is
+    // the point — flipping appearance with the picker still open is how you check a family's other
+    // variant.
+    .onChange(of: modals.hasModalPresentation) { _, blocked in
+      if blocked { showThemePicker = false }
+    }
+    // Only a real navigation BETWEEN two targets closes it. Both transitions involving nil are
+    // background events that would otherwise yank away a dropdown the user just opened: `selectedTargetID`
+    // is nil until the project list resolves and is then filled from the persisted selection
+    // (`AppStore` — "a restore that loses the race to a user click"), and a reload that finds the selected
+    // workroom gone nils it back out. Neither is the user navigating.
+    .onChange(of: store.selectedTargetID) { old, new in
+      if old != nil, new != nil { showThemePicker = false }
+    }
+  }
+}

@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomDomain
+import WorkroomGit
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -80,7 +81,7 @@ final class RepositoryRoutingTests: XCTestCase {
           XCTFail("constructed local writer for remote")
         } catch { XCTAssertEqual(error as? RepositoryRoutingError, .unavailable(.remote(host))) }
       }
-      let failed = await WorkroomStatusResolver(router: router).resolve(location: remote)
+      let failed = await WorkingStatusResolver(router: router).resolve(location: remote)
       XCTAssertNil(failed.dirty)
       XCTAssertEqual(failed.failure, .unavailable)
       let context = try await router.context(for: remote)
@@ -386,24 +387,25 @@ extension RepositoryRoutingTests {
     try RepositoryRouter.shared.register(
       .init(location: local, sharedLocation: local))
     let store = AppStore()
-    store.projects = [Project(path: path, vcs: "git", workrooms: [])]
+    store.projectStore.projects = [Project(path: path, vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: path)
     let prior = PullRequestInfo(
       number: 1, title: "t", state: .open, isDraft: false,
       url: "u", reviewDecision: nil, reviewers: [])
-    store.workroomStatuses[sid] = WorkroomStatus(dirty: false, pr: prior)
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(dirty: false, pr: prior)
     let runner = HostCountingRunner()
-    store.statusResolver = WorkroomStatusResolver(runner: runner)
+    store.vcsStatus.statusResolver = WorkroomStatusResolver(runner: runner)
     for host in [UUID(), UUID()] {
       let remote = try RepositoryLocation.remote(host: host, path: path)
-      let item = AppStore.StatusWorkItem(
+      let item = VCSStatusService.StatusWorkItem(
         sid: sid, path: path, projectRoot: path,
         location: remote)
       store.performPRAction(.convertToDraft, number: 1, on: item)
-      XCTAssertEqual(store.workroomStatuses[sid]?.pr, prior)
+      XCTAssertEqual(store.vcsStatus.workroomStatuses[sid]?.pr, prior)
       XCTAssertFalse(store.prActionInFlight)
       XCTAssertEqual(
-        store.errorMessage, RepositoryRoutingError.unavailable(remote.host).localizedDescription)
+        store.modals.errorMessage,
+        RepositoryRoutingError.unavailable(remote.host).localizedDescription)
     }
     let calls = await runner.calls
     XCTAssertEqual(calls, 0)
@@ -416,7 +418,7 @@ extension RepositoryRoutingTests {
     try RepositoryRouter.shared.register(
       .init(location: location, sharedLocation: location))
     let store = AppStore()
-    store.projects = [Project(path: path, vcs: "git", workrooms: [])]
+    store.projectStore.projects = [Project(path: path, vcs: "git", workrooms: [])]
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
@@ -473,7 +475,7 @@ extension RepositoryRoutingTests {
 
   func testMissingPathStatusKeepsCompletionTimestamp() async throws {
     let location = try await RepositoryLocation.local("/private/tmp/missing-\(UUID().uuidString)")
-    let status = await WorkroomStatusResolver(router: RepositoryRouter()).resolve(
+    let status = await WorkingStatusResolver(router: RepositoryRouter()).resolve(
       location: location)
     XCTAssertEqual(status.failure, .missingPath)
     XCTAssertNotNil(status.localReadAt)

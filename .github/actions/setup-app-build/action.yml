@@ -1,0 +1,46 @@
+name: Set up the app build
+description: >-
+  Prepare a macOS runner to build and test Workroom.app: the pinned Xcode, Go for the CLI the app
+  embeds, and the Homebrew tools the build needs. Shared by CI, the nightly and the release, so the
+  Xcode pin and the Homebrew workaround live in one place.
+
+inputs:
+  go:
+    description: "'false' skips Go, for a job that builds no CLI"
+    default: "true"
+  go-cache:
+    description: >-
+      'false' turns off Go's module cache. Every job whose output is published passes it: a
+      restored entry could be poisoned.
+    default: "true"
+  formulae:
+    description: Homebrew formulae to install, space-separated; empty installs none
+    default: xcodegen
+
+runs:
+  using: composite
+  steps:
+    # Xcode 16+ bundles swift-format (used by `make app-lint`) and builds for macOS 14+.
+    # Pinned to the Xcode the app is developed with; xcode-27 is the only runner image that has it.
+    - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+      with:
+        xcode-version: "27.1"
+
+    # Scripts/build-helper.sh compiles + embeds the workroom CLI into the app bundle.
+    - if: inputs.go == 'true'
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: go.mod
+        cache: ${{ inputs.go-cache }}
+
+    # XcodeGen generates the (gitignored) .xcodeproj. aws/tap ships pre-tapped but untrusted on
+    # the runner image, which makes every `brew install` emit a "tap trust" warning annotation
+    # unrelated to our formulae.
+    - name: Install Homebrew tools
+      if: inputs.formulae != ''
+      shell: bash
+      env:
+        FORMULAE: ${{ inputs.formulae }}
+      run: |
+        brew untap aws/tap
+        echo "$FORMULAE" | xargs brew install

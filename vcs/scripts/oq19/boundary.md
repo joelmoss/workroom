@@ -16,7 +16,7 @@ The wakefulness verdict is **per machine**: the provider's idle timers are per m
 
 ## What counts as work (BUSY may be raised by)
 
-1. **An agent-owned operation in flight**: an exec-service command (`run_exec_with`, start to completion,
+1. **An agent-owned operation in flight**: an exec-service command (`run_exec`, start to completion,
    including its timeout). Signal S9; policy P5 (F8). Exact by construction, no heuristics.
 2. **A live process in the tree of an agent-created pty session** (session leader and its descendants, by
    the `/proc/<pid>/stat` PPid walk that mirrors `process::descendants`), whose activity or state is not the

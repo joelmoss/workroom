@@ -14,7 +14,7 @@ import XCTest
 final class DeleteMountsNoPaneTests: XCTestCase {
   private let projectPath = "/private/var/tmp/wr-delete-pane"
   private var goneID: TerminalTarget.ID {
-    TerminalTarget.workroomID(project: projectPath, name: "gone")
+    TargetID.workroom(project: projectPath, name: "gone")
   }
 
   /// `RootView.workroomSplitBody`, without the window chrome.
@@ -45,7 +45,7 @@ final class DeleteMountsNoPaneTests: XCTestCase {
     let project: Project
     let cli: FakeWorkroomCLI
     let window: NSWindow
-    let opened: () -> [String]
+    let opened: () -> [TerminalTarget.ID]
   }
 
   /// `gone`'s create failed, so its terminal is withheld behind the create's pane, and it is selected.
@@ -56,27 +56,30 @@ final class DeleteMountsNoPaneTests: XCTestCase {
     let project = Project(path: projectPath, vcs: "git", workrooms: workrooms)
     let cli = FakeWorkroomCLI(canonical: projectPath, projects: [project])
     let store = AppStore(cli: cli)
-    var opened: [String] = []
+    var opened: [TerminalTarget.ID] = []
     store.terminals.makeView = { target, cwd, _ in
       opened.append(target.id)
       return GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
     store.terminals.recency = SwitcherRecency()
-    store.projects = [project]
+    store.projectStore.projects = [project]
     store.terminals.addTab(for: workrooms[1].target(inProject: projectPath))
 
     let run = CreationRun(
-      project: Project(path: projectPath, vcs: "git", workrooms: []), kind: .local,
+      project: Project(path: projectPath, vcs: "git", workrooms: []), kind: nil,
       splitAnchor: nil, previousSelection: nil)
     run.setName("gone")
     run.fail(.setupScriptFailed(message: "exit 1"))
-    store.creationRuns[run.id] = run
-    store.creationRunForTarget[goneID] = run.id
+    store.lifecycle.creationRuns[run.id] = run
+    store.lifecycle.creationRunForTarget[goneID] = run.id
     store.selectedTargetID = .workroom(project: projectPath, name: "gone")
 
     let hosting = NSHostingView(
       rootView: Host(store: store)
-        .detachedPaneEnvironment(store: store, sessions: store.terminals))
+        .detachedPaneEnvironment(store: store, sessions: store.terminals)
+        .environmentObject(store)
+        .environmentObject(store.runCommands)
+        .themeTokensRoot())
     hosting.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
     let window = NSWindow(
       contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
@@ -104,7 +107,8 @@ final class DeleteMountsNoPaneTests: XCTestCase {
         workrooms: fixture.project.workrooms.filter { $0.name != "gone" })
     ]
 
-    fixture.store.deleteWorkroom(fixture.project.workrooms[0], in: fixture.project)
+    fixture.store.lifecycle.deleteWorkroom(
+      fixture.project.workrooms[0], in: fixture.project, from: fixture.store)
     await settle()
 
     XCTAssertFalse(fixture.opened().contains(goneID), "opened: \(fixture.opened())")
@@ -117,7 +121,8 @@ final class DeleteMountsNoPaneTests: XCTestCase {
     defer { fixture.window.close() }
     fixture.cli.projectsToList = []
 
-    fixture.store.deleteProject(fixture.project, scope: .configOnly)
+    fixture.store.lifecycle.deleteProject(
+      fixture.project, scope: .configOnly, from: fixture.store)
     await settle()
 
     XCTAssertFalse(fixture.opened().contains(goneID), "opened: \(fixture.opened())")

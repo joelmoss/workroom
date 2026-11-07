@@ -254,10 +254,10 @@ func (s *Service) RootScript(dir, name string) (Script, bool, error) {
 // ProjectScripts judges the scripts project dir would run next: the setup script a create would
 // run, at the base it resolves and fetches as a create does, and the root's teardown copy. A
 // script that is nowhere is left out. A base that cannot be resolved is an error.
-func (s *Service) ProjectScripts(dir string) ([]Script, vcs.LocalWork, error) {
+func (s *Service) ProjectScripts(dir string) ([]Script, LocalWork, error) {
 	base, global, err := s.base(dir)
 	if err != nil {
-		return nil, vcs.LocalWork{}, err
+		return nil, LocalWork{}, err
 	}
 	scripts, work, _, err := s.projectScripts(dir, base, global)
 	return scripts, work, err
@@ -267,7 +267,7 @@ func (s *Service) ProjectScripts(dir string) ([]Script, vcs.LocalWork, error) {
 // default branch) rather than the project's: what a remote create checks out, which may differ.
 // The local work is what that start leaves out of the main checkout, as a create would find it.
 // With devcontainer, the devcontainer.json a container create would use is judged too.
-func (s *Service) ProjectScriptsFrom(dir, base string, devcontainer bool) ([]Script, vcs.LocalWork, string, error) {
+func (s *Service) ProjectScriptsFrom(dir, base string, devcontainer bool) ([]Script, LocalWork, string, error) {
 	scripts, work, start, err := s.projectScripts(dir, base, false)
 	if err != nil {
 		return scripts, work, "", err

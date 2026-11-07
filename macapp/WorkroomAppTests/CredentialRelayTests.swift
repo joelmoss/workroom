@@ -7,12 +7,7 @@ import XCTest
 /// The Mac's end of a local container workroom's git credential relay (#309): who is answered, for
 /// what, and with what.
 final class CredentialRelayTests: XCTestCase {
-  private final class Asked: @unchecked Sendable {
-    private let lock = NSLock()
-    private var requests: [String] = []
-    var all: [String] { lock.withLock { requests } }
-    func add(_ request: String) { lock.withLock { requests.append(request) } }
-  }
+  private typealias Asked = Calls<String>
 
   /// A known secret asking for github.com over https gets gh's username and password, and nothing
   /// else gh said; gh is asked for github.com only, whatever else the request carried.

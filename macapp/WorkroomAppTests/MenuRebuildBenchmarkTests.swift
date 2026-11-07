@@ -51,19 +51,27 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
 
   private func menuStateWhileOpen(_ title: String, window: NSWindow) -> [String: Bool]? {
     guard let menu = item(title, in: NSApp.mainMenu)?.submenu else { return nil }
-    var state: [String: Bool]?
+    // The timer's block is `@Sendable`. It runs on the main run loop, so it reaches the menu and
+    // keeps what it saw through a main-actor object.
+    @MainActor final class Reading {
+      let menu: NSMenu
+      var state: [String: Bool]?
+      init(_ menu: NSMenu) { self.menu = menu }
+    }
+    let reading = Reading(menu)
     let timer = Timer(timeInterval: 0.1, repeats: false) { _ in
       MainActor.assumeIsolated {
-        state = Dictionary(
-          menu.items.filter { !$0.isSeparatorItem }.map { ($0.title, $0.isEnabled) },
+        reading.state = Dictionary(
+          reading.menu.items.filter { !$0.isSeparatorItem }.map { ($0.title, $0.isEnabled) },
           uniquingKeysWith: { _, new in new })
-        menu.cancelTracking()
+        reading.menu.cancelTracking()
       }
     }
     RunLoop.main.add(timer, forMode: .eventTracking)
     defer { timer.invalidate() }
-    menu.popUp(positioning: nil, at: NSPoint(x: window.frame.midX, y: window.frame.midY), in: nil)
-    return state
+    reading.menu.popUp(
+      positioning: nil, at: NSPoint(x: window.frame.midX, y: window.frame.midY), in: nil)
+    return reading.state
   }
 
   private func commitEnabledWhileOpen(_ window: NSWindow) -> Bool? {
@@ -84,7 +92,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.projects = (0..<32).map { index in
+    store.projectStore.projects = (0..<32).map { index in
       let path = index == 0 ? directory.path : "/menu-benchmark/project-\(index)"
       return Project(
         path: path, vcs: "git",
@@ -94,13 +102,13 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
         })
     }
     let selected = SidebarID.root(project: directory.path)
-    let other = SidebarID.root(project: store.projects[1].path)
+    let other = SidebarID.root(project: store.projectStore.projects[1].path)
     let target = try XCTUnwrap(store.target(for: selected))
     _ = store.terminals.addTab(for: target)
     store.selectedTargetID = selected
     store.selectionStatusTask?.cancel()
     store.refreshSelectionHasTabs()
-    store.workroomStatuses[selected] = WorkroomStatus(dirty: false)
+    store.vcsStatus.workroomStatuses[selected] = WorkroomStatus(dirty: false)
     XCTAssertEqual(store.inspectorTargetID, selected)
 
     let flags = Flags()
@@ -134,7 +142,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     }
     await flush(hosting)
     XCTAssertNotNil(item("Commit…", in: NSApp.mainMenu), "must host the real Room menu")
-    store.mergeLocalStatus(WorkroomStatus(dirty: true), into: selected)
+    store.vcsStatus.mergeLocalStatus(WorkroomStatus(dirty: true), into: selected)
     XCTAssertTrue(store.canCommit(selected), "fixture must have committable changes")
     await flush(hosting)
     guard commitEnabledWhileOpen(window) == true else {
@@ -142,11 +150,11 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
         "menu did not enable Commit; active=\(NSApp.isActive), key=\(window.isKeyWindow), "
           + "visible=\(window.isVisible), canBecomeKey=\(window.canBecomeKey), "
           + "policy=\(NSApp.activationPolicy().rawValue), policyChanged=\(policyChanged), activation=\(activationRequested), "
-          + "canCommit=\(store.canCommit(selected)), modal=\(store.hasModalPresentation), "
+          + "canCommit=\(store.canCommit(selected)), modal=\(store.modals.hasModalPresentation), "
           + "inspected=\(String(describing: store.inspectorTargetID)), passes=\(WorkroomCommands.bodyPasses), "
           + "nativeItems=\(items("Commit…", in: NSApp.mainMenu).map { $0.isEnabled })")
     }
-    store.mergeLocalStatus(WorkroomStatus(dirty: false), into: selected)
+    store.vcsStatus.mergeLocalStatus(WorkroomStatus(dirty: false), into: selected)
     await flush(hosting)
     XCTAssertEqual(
       commitEnabledWhileOpen(window), false,
@@ -155,7 +163,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     let pr = PullRequestInfo(
       number: 12, title: "A change", state: .open, isDraft: true,
       url: "https://github.com/example/repo/pull/12", reviewDecision: nil, reviewers: [])
-    store.workroomStatuses[selected] = WorkroomStatus(dirty: true, pr: pr)
+    store.vcsStatus.workroomStatuses[selected] = WorkroomStatus(dirty: true, pr: pr)
     await flush(hosting)
     var room = try XCTUnwrap(menuStateWhileOpen("Room", window: window))
     XCTAssertEqual(room["Go to Pull Request"], true)
@@ -165,16 +173,16 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     room = try XCTUnwrap(menuStateWhileOpen("Room", window: window))
     XCTAssertEqual(room[PRAction.markReady.label], false)
     store.prActionInFlight = false
-    store.auxSheetPresented = true
+    store.modals.auxSheetPresented = true
     await flush(hosting)
     room = try XCTUnwrap(menuStateWhileOpen("Room", window: window))
     XCTAssertEqual(room["Commit…"], false)
     XCTAssertNil(room["Go to Pull Request"], "a modal hides inspected PR actions")
-    store.auxSheetPresented = false
+    store.modals.auxSheetPresented = false
     await flush(hosting)
     room = try XCTUnwrap(menuStateWhileOpen("Room", window: window))
     XCTAssertEqual(room[PRAction.markReady.label], true)
-    store.workroomStatuses[selected] = WorkroomStatus(dirty: false)
+    store.vcsStatus.workroomStatuses[selected] = WorkroomStatus(dirty: false)
     await flush(hosting)
     XCTAssertEqual(commitEnabledWhileOpen(window), false)
     await flush(hosting)
@@ -197,7 +205,7 @@ final class MenuRebuildBenchmarkTests: XCTestCase {
     for sample in 0..<3 {
       WorkroomCommands.bodyPasses = 0
       let start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
-      store.mergeLocalStatus(WorkroomStatus(dirty: sample.isMultiple(of: 2)), into: other)
+      store.vcsStatus.mergeLocalStatus(WorkroomStatus(dirty: sample.isMultiple(of: 2)), into: other)
       await flush(hosting)
       samples.append(Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - start) / 1_000_000)
       passes.append(WorkroomCommands.bodyPasses)

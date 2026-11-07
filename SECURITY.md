@@ -4,7 +4,7 @@
 
 Security fixes ship in the latest stable release and the latest Nightly build. Older releases are not
 patched separately; update to the current release to get a fix. Release channels are described in
-[CONTRIBUTING.md](CONTRIBUTING.md#release-channels).
+[the release process](docs/contributing/releasing.md#release-channels).
 
 ## Reporting a vulnerability
 

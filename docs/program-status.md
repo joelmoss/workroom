@@ -258,22 +258,23 @@ Symbols, not line numbers: grep for the name. Paths under `macapp/` drop the pre
 
 | What | Where |
 |---|---|
-| Answering the probe | `vcs/crates/workroomd/src/terminal.rs` (`PROBE_REPLY`): the shadow terminal answers it |
-| Record rules, command results (#473), unprobed programs | `vcs/crates/workroomd/src/program_status.rs`: `Store` (incl. `promote_unprobed`), `limits` |
+| Answering the probe | `vcs/crates/workroomd/src/terminal/vt.rs` (`PROBE_REPLY`): the shadow terminal answers it |
+| Record rules, command results (#473), unprobed programs | `vcs/crates/workroomd/src/terminal/program_status.rs`: `Store` (incl. `promote_unprobed`), `limits` |
 | The service: subscribe, `seen`, `clear` | `program_status.rs`: `Hub` publishes, `dispatch` answers |
 | `workroomd program-status` | `vcs/crates/workroomd/src/cli/program_status.rs` |
-| Wire records, app side | `Packages/DaemonConnection/Sources/DaemonConnection/ProgramStatusWire.swift`; requests in `DaemonVCSConnection.swift`; shared fixtures in `testdata/program-status/` |
-| Per-host subscriptions, stale clock, reconnect, rollup per session | `WorkroomApp/Core/ProgramStatusMonitor.swift` (`ProgramStatusMonitor.shared`, `ProgramStatusRollup`, `seen`) |
-| Which mark a tab shows | `WorkroomApp/Core/TerminalSessions.swift` (`programStatus`, the tab's `indicator`) |
-| Tooltip and VoiceOver wording | `WorkroomApp/Core/ProgramStatusPresentation.swift` |
-| The ✋ and ✓ glyphs, the clock | `WorkroomApp/Views/ProgramStatusGlyph.swift` (`ProgramStatusGlyph`, `NeedsYouButton`); drawn by `TerminalTabStrip`, `ProjectSidebar`, `WorkroomTabBar`, `SwitcherRailView` |
+| Wire records, app side | `Packages/DaemonConnection/Sources/DaemonConnection/ProgramStatusWire.swift`; requests in `DaemonClient.swift`; shared fixtures in `testdata/program-status/` |
+| Per-host subscriptions, stale clock, reconnect, rollup per session | `WorkroomApp/Core/Terminal/ProgramStatusMonitor.swift` (`ProgramStatusMonitor.shared`, `ProgramStatusRollup`, `seen`) |
+| Which mark a tab shows | `WorkroomApp/Core/Terminal/TerminalPanes.swift` (`programStatus`, the tab's `indicator`) |
+| Rollups onto a window's tabs, seen on focus, run tab states (#522) | `WorkroomApp/Core/Terminal/ProgramStatusBinding.swift` |
+| Tooltip and VoiceOver wording | `WorkroomApp/Core/Terminal/ProgramStatusPresentation.swift` |
+| The ✋ and ✓ glyphs, the clock | `WorkroomApp/Views/Terminal/ProgramStatusGlyph.swift` (`ProgramStatusGlyph`, `NeedsYouButton`); drawn by `TerminalTabStrip`, `ProjectSidebar`, `WorkroomTabBar`, `SwitcherRailView` |
 | Unread dot, and when a mark hides it | `TerminalTabStrip.swift` (`markSaysIt`) |
-| Requests, badge count, ⇧⌘M, holding a program's own notification (#481) | `WorkroomApp/Core/ProgramStatusAlerts.swift` (`ProgramStatusAlerts.shared`, `goToNextWaiting`) |
-| Posting and withdrawing alerts | `WorkroomApp/Core/AppStore.swift`: `raiseNeedsYou`, `raiseFinished`, `mergeIntoNeedsYou`, `withdrawNeedsYou`; a program's own notification enters at `handleActivity` |
+| Requests, badge count, ⇧⌘M, holding a program's own notification (#481) | `WorkroomApp/Core/Terminal/ProgramStatusAlerts.swift` (`ProgramStatusAlerts.shared`, `goToNextWaiting`) |
+| Posting and withdrawing alerts | `WorkroomApp/Core/AppShell/AppStore/AppStore.swift`: `raiseNeedsYou`, `raiseFinished`, `mergeIntoNeedsYou`, `withdrawNeedsYou`; a program's own notification enters at `handleActivity` |
 | Notification list and banners | `NotificationCenterStore.swift` (`recordNeedsYou`), `SystemNotifier.swift` |
-| Dock badge, menu bar | `DockBadge.swift` (applied from `WindowRegistry`), `MenuBarController.swift`, `WorkroomApp/Views/MenuBarNotificationsView.swift` |
-| Clear Status | `clearProgramStatus` in `TerminalSessions.swift`; menu items in `TerminalTabStrip` and `ProjectSidebar` |
-| Settings | `DefaultsKeys.swift` (`notifyWhenTerminalNeedsMe`, `notifyWhenTurnFinishes`), `WorkroomApp/Views/SettingsView.swift` |
+| Dock badge, menu bar | `DockBadge.swift` (applied from `WindowRegistry`), `MenuBarController.swift`, `WorkroomApp/Views/AppShell/MenuBarNotificationsView.swift` |
+| Clear Status | `clearProgramStatus` in `TerminalPanes.swift`; menu items in `TerminalTabStrip` and `ProjectSidebar` |
+| Settings | `DefaultsKeys.swift` (`notifyWhenTerminalNeedsMe`, `notifyWhenTurnFinishes`), `WorkroomApp/Views/AppShell/SettingsView.swift` |
 | Tests | Rust: `vcs/crates/workroomd/tests/program_status.rs`. App: `ProgramStatusMonitorTests`, `ProgramStatusAlertsTests`, `ProgramStatusConnectionTests`, `ProgramStatusPresentationTests`, `NotificationRoutingTests`, `NotificationStoreTests`. UI: `ProgramStatusUITests`, `ProgramStatusLiveDaemonUITests` |
 
 ## Troubleshooting

@@ -58,7 +58,7 @@ final class SessionRestoreBenchmarkTests: XCTestCase {
       try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
       defer { try? FileManager.default.removeItem(at: directory) }
       let launches = directory.appendingPathComponent("children")
-      let sessions = TerminalSessions()
+      let sessions = TerminalPanes()
       sessions.recency = SwitcherRecency()
       sessions.sessionService = PersistentSessionService(
         probe: { _ in .unhealthy(reason: "owned restore benchmark") },
@@ -77,22 +77,22 @@ final class SessionRestoreBenchmarkTests: XCTestCase {
       let restoreStart = DispatchTime.now().uptimeNanoseconds
       for index in 0..<count {
         let target = TerminalTarget(
-          id: "root|\(directory.path)/\(index)", title: "Fixture \(index)",
+          id: .root(project: "\(directory.path)/\(index)"), title: "Fixture \(index)",
           path: directory.path, isMissing: false)
         let id = UUID()
         sessions.restore(
           TargetSession(
-            targetID: target.id,
+            targetID: target.id.encoded,
             tabs: [
               TabSession(
                 key: "pane", kind: TabSession.terminalKind,
                 terminal: TerminalPayload(defaultTitle: "Terminal 1", sessionID: id.uuidString))
             ]),
           for: target)
-        let view = try XCTUnwrap(sessions.tabs(for: target).first?.surface)
+        let view = try XCTUnwrap(sessions.surface(sessions.tabs(for: target).first))
         // Keep the model's recovery identity, but engine creation runs our inert command rather
         // than touching a shared helper. The restore factory and recovery loop are unchanged.
-        view.persistentSessionID = nil
+        view.attachment.tabSessionID = { nil }
         views.append(view)
         descriptors.append(
           SessionDescriptor(
@@ -146,7 +146,14 @@ final class SessionRestoreBenchmarkTests: XCTestCase {
       if count > 1, let hiddenView = views.last {
         XCTAssertNil(hiddenView.window)
         var notifications: [TerminalActivity] = []
-        hiddenView.onActivity = { notifications.append($0) }
+        let wired = hiddenView.onEvent
+        hiddenView.onEvent = { event in
+          if case .activity(let activity) = event {
+            notifications.append(activity)
+          } else {
+            wired?(event)
+          }
+        }
         // The engine rate-limits desktop notifications globally. Each owned sample emits one.
         try await Task.sleep(for: .milliseconds(1_100))
         hiddenView.sendText("notify\r")

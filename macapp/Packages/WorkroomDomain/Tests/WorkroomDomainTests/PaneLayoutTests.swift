@@ -97,6 +97,35 @@ final class PaneLayoutTests: XCTestCase {
       XCTFail("inner split not found")
     }
   }
+  /// A divider drag draws its in-flight ratio over the tree, and only while its node still holds
+  /// the ratio the drag began from: a node that moved underneath it (a re-even, issue #126) or
+  /// went away is drawn as it is, so the divider re-anchors.
+  func testShowingDragOverlaysOnlyWhileItsNodeIsUnmoved() {
+    let id = UUID()
+    let tree = PaneLayout.split(
+      id: id, orientation: .horizontal, ratio: 0.5, first: .leaf(a), second: .leaf(b))
+    XCTAssertEqual(
+      tree.showingDrag(0.7, forSplit: id, from: 0.5).ratio(forSplit: id) ?? 0, 0.7,
+      accuracy: 0.0001, "the live ratio is drawn")
+    XCTAssertEqual(
+      tree.showingDrag(0.7, forSplit: id, from: 0.4), tree, "a moved node is drawn as stored")
+    XCTAssertEqual(
+      tree.showingDrag(0.7, forSplit: UUID(), from: 0.5), tree, "a gone node changes nothing")
+  }
+  /// The drag a divider view holds starts from its node's stored ratio, and draws as
+  /// `showingDrag` does; none draws the tree as it is.
+  func testADividerDragIsMeasuredFromItsNodesStoredRatio() {
+    let id = UUID()
+    let tree = PaneLayout.split(
+      id: id, orientation: .horizontal, ratio: 0.5, first: .leaf(a), second: .leaf(b))
+    let drag = DividerDrag(split: id, ratio: 0.7, over: tree, fallback: 0.3)
+    XCTAssertEqual(drag.stored, 0.5, "the stored ratio, not the divider's fallback")
+    XCTAssertEqual(tree.showing(drag), tree.showingDrag(0.7, forSplit: id, from: 0.5))
+    XCTAssertEqual(tree.showing(nil), tree)
+    XCTAssertEqual(
+      DividerDrag(split: UUID(), ratio: 0.7, over: tree, fallback: 0.3).stored, 0.3,
+      "a node the tree no longer has falls back")
+  }
   func testContainsSplitFindsRootAndNestedNodesOnly() {
     // The lookup a holder of SEVERAL trees uses to find which one owns a dragged divider
     // (`AppStore.setWorkroomSplitRatio` over `workroomSplits`).

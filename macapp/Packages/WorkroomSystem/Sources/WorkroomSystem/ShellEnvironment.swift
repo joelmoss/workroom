@@ -35,7 +35,8 @@ public enum ShellEnvironment {
   /// Shells whose `-lic` we trust to mean "login + interactive". Anything else (fish, nushell,
   /// csh) falls back to a login `/bin/sh -lc`, whose interactive rc won't load — a documented
   /// limitation (issue #7, fold #7). That fallback still sources `/etc/profile`, so `path_helper`
-  /// runs and those users get the same floor everyone else does.
+  /// runs and those users get the same floor everyone else does. The CLI and workroomd keep their
+  /// own copies of this rule; all three are tested against `testdata/twins/login_shell.tsv`.
   private static let posixShells: Set<String> = ["zsh", "bash", "sh", "dash", "ksh"]
 
   /// The shell we'll actually exec: `$SHELL` when we recognise it, `/bin/sh` otherwise.

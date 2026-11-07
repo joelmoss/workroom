@@ -16,10 +16,10 @@ import XCTest
 @MainActor
 final class PaneRenderingTests: XCTestCase {
   private let target = TerminalTarget(
-    id: "wr|/p|panes", title: "panes", path: "/tmp", isMissing: false)
+    id: .workroom(project: "/p", name: "panes"), title: "panes", path: "/tmp", isMissing: false)
 
-  private func makeSessions() -> TerminalSessions {
-    let s = TerminalSessions()
+  private func makeSessions() -> TerminalPanes {
+    let s = TerminalPanes()
     // Mount real `GhosttySurfaceView`s (so the AppKit hierarchy assertions below are meaningful) but
     // with `spawnsSurface: false` — no libghostty Metal renderer / login shell. Hosting live surfaces
     // in the headless CI unit-test host crashed XCTest's post-test memory checker on teardown; the
@@ -30,10 +30,15 @@ final class PaneRenderingTests: XCTestCase {
   }
 
   /// Host the content (the same layout decision `WorkroomTerminalsView` makes) in a window.
-  private func host(_ sessions: TerminalSessions) -> (NSWindow, NSView) {
+  private func host(_ sessions: TerminalPanes) -> (NSWindow, NSView) {
+    let store = AppStore()
     let root = TestPaneHost(target: target, sessions: sessions)
-      .environmentObject(AppStore())
+      .environmentObject(store)
+      .paneHost(store)
+      .environmentObject(store.modals)
+      .environmentObject(store.runCommand)
       .environmentObject(sessions.codingAgentManager)
+      .themeTokensRoot()
     let hosting = NSHostingView(rootView: root)
     hosting.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
     let window = NSWindow(
@@ -226,10 +231,10 @@ final class PaneRenderingTests: XCTestCase {
     let mounted = waitForSurfaces(in: view, count: 1)
     XCTAssertEqual(mounted.count, 1, "the origin renders only the pane it still owns")
     XCTAssertNotNil(
-      s.tab(detached, for: target)?.surface,
+      s.surface(s.tab(detached, for: target)),
       "the detached tab keeps its surface — it moved windows, it did not die")
     XCTAssertEqual(
-      s.tab(stay.id, for: target)?.surface, mounted.first,
+      s.surface(s.tab(stay.id, for: target)), mounted.first,
       "and the one still mounted is the one that stayed")
 
   }
@@ -248,7 +253,7 @@ final class PaneRenderingTests: XCTestCase {
     s.addTab(for: target)
     s.splitFocusedPane(for: target, orientation: .horizontal)
     let detached = s.focusedTab(for: target)!.id
-    let surface = s.tab(detached, for: target)!.surface!
+    let surface = s.surface(s.tab(detached, for: target))!
 
     let (origin, originView) = host(s)
     defer {
@@ -296,7 +301,7 @@ final class PaneRenderingTests: XCTestCase {
     let s = makeSessions()
     s.addTab(for: target)
     let second = s.addTab(for: target)
-    let surface = s.tab(second.id, for: target)?.surface
+    let surface = s.surface(s.tab(second.id, for: target))
     s.detachPane(second.id, for: target, at: .zero)
     let (window, view) = host(s)
     defer {
@@ -318,7 +323,7 @@ final class PaneRenderingTests: XCTestCase {
 private struct TestDetachedHost: View {
   let tabID: TerminalTab.ID
   let surface: GhosttySurfaceView
-  @ObservedObject var sessions: TerminalSessions
+  let sessions: TerminalPanes
 
   var body: some View {
     TerminalContainerView(
@@ -331,7 +336,7 @@ private struct TestDetachedHost: View {
 /// so the harness drives the exact rendering path that produced the blank bug.
 private struct TestPaneHost: View {
   let target: TerminalTarget
-  @ObservedObject var sessions: TerminalSessions
+  let sessions: TerminalPanes
 
   var body: some View {
     if let active = sessions.activeTab(for: target) {

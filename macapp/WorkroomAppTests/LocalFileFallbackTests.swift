@@ -106,11 +106,11 @@ final class LocalFileFallbackTests: XCTestCase {
   /// acquisition, the FILE service fails fast for the cooldown (VCS reads and writes are unaffected —
   /// they never consult it).
   func testAFailedAcquisitionMakesFilesFailFastForTheCooldown() async throws {
-    let attempts = Attempts()
+    let attempts = Counter()
     let daemon = LocalDaemonVCS(
       manager: HostConnectionManager(),
       resolveSocketPath: {
-        attempts.count += 1
+        attempts.add()
         return "/private/tmp/definitely-not-a-socket-\(UUID().uuidString)"
       },
       binaryURL: { nil })
@@ -130,14 +130,5 @@ final class LocalFileFallbackTests: XCTestCase {
     } catch { XCTAssertEqual(error as? RepositoryRoutingError, .unavailable(.local)) }
     XCTAssertEqual(attempts.count, 1, "inside the cooldown nothing is attempted")
     XCTAssertLessThan(Date().timeIntervalSince(started), 0.5)
-  }
-
-  private final class Attempts: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = 0
-    var count: Int {
-      get { lock.withLock { value } }
-      set { lock.withLock { value = newValue } }
-    }
   }
 }

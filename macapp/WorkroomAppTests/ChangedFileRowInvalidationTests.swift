@@ -8,7 +8,7 @@ import XCTest
 
 /// The Changes panel's half of the WORKROOM-2B fix.
 ///
-/// `ChangedFileRow` had the identical defect the History rows did — `@ObservedObject TerminalSessions`
+/// `ChangedFileRow` had the identical defect the History rows did — `@ObservedObject TerminalPanes`
 /// held purely to compute `isSelected` — just bounded at `renderCap` (200) instead of the whole commit
 /// log, which is why it never crossed the 2-second app-hang threshold on its own. The lookup now lives
 /// in the panel, and the file list is an eager `VStack`, so the row's equality gate is what keeps a
@@ -24,7 +24,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: projectPath, vcs: "git",
         workrooms: [
@@ -51,8 +51,9 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     store.selectionStatusTask?.cancel()
     // `lastChecked` is load-bearing, not decoration: `ChangesPanel.content(for:)` renders "Checking…"
     // (and therefore NO rows) while it is nil, which would make every assertion here vacuously true.
-    store.workroomStatuses[.workroom(project: projectPath, name: workroomName)] = WorkroomStatus(
-      dirty: true, changedFiles: changedFiles, lastChecked: Date())
+    store.vcsStatus.workroomStatuses[.workroom(project: projectPath, name: workroomName)] =
+      WorkroomStatus(
+        dirty: true, changedFiles: changedFiles, lastChecked: Date())
     return store
   }
 
@@ -61,8 +62,11 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
   }
 
   private func host(_ store: AppStore) -> (NSWindow, NSView) {
-    let root = ChangesPanel(sessions: store.terminals)
+    // Rooted as the inspector roots it (`InspectorPaneViewController.setContent`).
+    let root = ChangesPanelAdapter()
+      .themeTokensRoot()
       .environmentObject(store)
+      .environmentObject(store.vcsStatus)
       .environmentObject(store.notifications)
       .frame(width: 320, height: 420)
     let hosting = NSHostingView(rootView: root)
@@ -90,7 +94,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
       ChangedFileRow.bodyPasses, 0, "the fixture must actually render changed-file rows")
 
     ChangedFileRow.bodyPasses = 0
-    store.mergeLocalStatus(
+    store.vcsStatus.mergeLocalStatus(
       WorkroomStatus(dirty: true, changedFiles: files(61)),
       into: .workroom(project: projectPath, name: workroomName))
     settle(view)
@@ -107,7 +111,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
   /// re-renders once per burst, yet SwiftUI never asks a row's `==` (measured for #538: zero calls,
   /// and no rebuilds with `==` forced false). The gate is pinned by
   /// `testStatusChangeRebuildsOnlyTheChangedFileRow`; this test pins the original WORKROOM-2B defect,
-  /// a row that observes `TerminalSessions` itself and so rebuilds on every pulse, gate or not.
+  /// a row that observes `TerminalPanes` itself and so rebuilds on every pulse, gate or not.
   func testTerminalPulseBurstRebuildsNoChangedFileRows() throws {
     let store = makeStore(changedFiles: files(60))
     let (window, view) = host(store)
@@ -135,7 +139,8 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     // Still listed after the burst: a status that emptied the panel before or during it would turn
     // "0 rebuilds" into "there were no rows".
     XCTAssertNotNil(
-      store.workroomStatuses[.workroom(project: projectPath, name: workroomName)]?.changedFiles,
+      store.vcsStatus.workroomStatuses[.workroom(project: projectPath, name: workroomName)]?
+        .changedFiles,
       "the fixture's changed files must still be listed through the pulse burst")
 
     XCTAssertEqual(
@@ -146,7 +151,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
   /// A theme change must repaint the rows, every one of them, selected or not.
   ///
   /// Unlike `HistoryRow`, this row needs no theme input to its equality gate: its change letter's
-  /// colour reads `theme.tokens` outside any ternary, so each row repaints by Observation. This test
+  /// colour reads `tokens` outside any ternary, so each row repaints with the theme environment. This test
   /// pins that read: a row whose only theme reads sat inside its hover/selection ternaries would keep
   /// the old theme's colours.
   func testThemeChangeRebuildsChangedFileRows() throws {

@@ -107,7 +107,7 @@ final class TerminalFocusReconciliationTests: XCTestCase {
     store.terminals.makeView = { _, cwd, _ in
       GhosttySurfaceView(workingDirectory: cwd, command: nil, spawnsSurface: false)
     }
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/focus-reconcile", vcs: "git",
         workrooms: [
@@ -119,7 +119,7 @@ final class TerminalFocusReconciliationTests: XCTestCase {
     store.selectedTargetID = sid
     store.newTerminalInSelectedTarget()
     let target = store.target(for: sid)!
-    return (store, target, store.terminals.focusedTab(for: target)!.surface!)
+    return (store, target, store.terminals.surface(store.terminals.focusedTab(for: target))!)
   }
 
   private func registeredWindow(_ store: AppStore, _ surface: GhosttySurfaceView) -> NSWindow {

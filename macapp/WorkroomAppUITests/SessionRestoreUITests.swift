@@ -154,7 +154,7 @@ final class SessionRestoreUITests: XCTestCase {
   /// `testEveryWindowSurvivesRelaunch` asserts only the window count, and that is exactly how this
   /// shipped broken: `bootstrap` gates on an app-wide one-shot the launch window consumes, so every
   /// sibling cleared the selection its own session had just supplied. The panes were restored into
-  /// `TerminalSessions` and then rendered by nothing — window 2 came back empty.
+  /// `TerminalPanes` and then rendered by nothing — window 2 came back empty.
   ///
   /// The second window is made by duplicating what the app itself wrote, rather than by driving the
   /// sidebar: it needs a window with a real selection, and the app's own ids are the only ones

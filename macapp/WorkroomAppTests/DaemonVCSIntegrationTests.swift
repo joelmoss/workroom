@@ -1,4 +1,7 @@
 import DaemonConnection
+import DaemonConnectionTestSupport
+import WorkroomDomain
+import WorkroomGit
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -59,10 +62,10 @@ final class DaemonVCSIntegrationTests: XCTestCase {
     }
     return text.trimmingCharacters(in: .whitespacesAndNewlines)
   }
-  private func connect(host: HostID = .local) async throws -> DaemonVCSConnection {
+  private func connect(host: HostID = .local) async throws -> DaemonClient {
     let daemon = try DaemonHarness.start(environment: environment)
     daemons.append(daemon)
-    return try await DaemonVCSConnection.connect(host: host, socketPath: daemon.socketPath)
+    return try await DaemonClient.connect(host: host, socketPath: daemon.socketPath)
   }
   private func gitRepo() throws -> URL {
     let root = try root()
@@ -75,7 +78,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
     return root
   }
   private func router(
-    root: URL, connection: DaemonVCSConnection
+    root: URL, connection: DaemonClient
   ) async throws -> (RepositoryRouter, RepositoryLocation) {
     let location = try await RepositoryLocation.local(root.path)
     let router = RepositoryRouter(localReader: { try connection.reader(context: $0) })
@@ -85,7 +88,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
   /// As `router(root:connection:)`, but also wires `localWriter` — the write-path tests'
   /// analogue of `reader(for:)`'s existing coverage.
   private func writingRouter(
-    root: URL, connection: DaemonVCSConnection
+    root: URL, connection: DaemonClient
   ) async throws -> (RepositoryRouter, RepositoryLocation) {
     let location = try await RepositoryLocation.local(root.path)
     let router = RepositoryRouter(
@@ -170,7 +173,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
   func testTheServiceConnectionAnswersASessionsWorkingDirectory() async throws {
     let daemon = try DaemonHarness.start(environment: environment)
     daemons.append(daemon)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     let session = UUID()
     try daemon.startSession(identifier: session)
@@ -195,9 +198,9 @@ final class DaemonVCSIntegrationTests: XCTestCase {
   func testTheServiceConnectionAnswersAPing() async throws {
     let daemon = try DaemonHarness.start(environment: environment)
     daemons.append(daemon)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
-    try await withTimeout(seconds: RemoteHosts.answerDeadline) { try await connection.ping() }
+    try await withTimeout(seconds: HostReachability.answerDeadline) { try await connection.ping() }
     await connection.close()
   }
 
@@ -209,7 +212,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
   func testAPingCountsAnyDataFromTheHostAsAnAnswer() async throws {
     let fake = try FakeDaemon(version: 2, stallAfterCapabilities: true)
     defer { fake.stop() }
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: fake.socketPath)
     do {
       try await withTimeout(seconds: 0.3) { try await connection.ping() }
@@ -217,7 +220,9 @@ final class DaemonVCSIntegrationTests: XCTestCase {
     } catch is VCSTimeoutError {}
 
     let ping = Task {
-      try await withTimeout(seconds: RemoteHosts.answerDeadline) { try await connection.ping() }
+      try await withTimeout(seconds: HostReachability.answerDeadline) {
+        try await connection.ping()
+      }
     }
     // Control on stream 0 is never a reply: it stands in for bytes of another reply arriving.
     for _ in 0..<10 {
@@ -234,7 +239,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
   func testTheServiceConnectionEndsASession() async throws {
     let daemon = try DaemonHarness.start(environment: environment)
     daemons.append(daemon)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     let session = UUID()
     try daemon.startSession(identifier: session)
@@ -262,7 +267,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
   func testAnUnaskedControlEnvelopeDoesNotFailTheConnection() async throws {
     let fake = try FakeDaemon(version: 5)
     defer { fake.stop() }
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: fake.socketPath)
     for stream: UInt32 in [7, 0] {
       fake.push(service: 0, stream: stream, payload: Data([0x31, 0, 0, 0, 4, 0, 0, 0, 0]))
@@ -277,7 +282,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
   func testAStatusEnvelopeFromAnOlderDaemonDoesNotFailTheConnection() async throws {
     let fake = try FakeDaemon(version: 7)
     defer { fake.stop() }
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: fake.socketPath)
     let verdict = #"{"version":2,"event":"status","status":{"running":true,"busy":true}}"#
     fake.push(service: 4, stream: 0, payload: Data([1]) + Data(verdict.utf8))
@@ -291,7 +296,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
   func testAControlEnvelopeDoesNotAnswerAnotherServicesRequest() async throws {
     let fake = try FakeDaemon(version: 2, stallAfterCapabilities: true)
     defer { fake.stop() }
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: fake.socketPath)
     // The fake stopped reading after the handshake, so this one is never answered.
     let waiting = Task {
@@ -321,7 +326,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
       _ = try await reader.workingStatus()
       XCTFail("closed channel returned status")
     } catch is HostConnectionError {}
-    let status = await WorkroomStatusResolver(router: router).resolve(location: location)
+    let status = await WorkingStatusResolver(router: router).resolve(location: location)
     XCTAssertNil(status.dirty)
     XCTAssertEqual(status.failure, .unavailable)
   }
@@ -353,7 +358,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
   /// A single overdue reply must fail only its own waiter, never the shared connection: the daemon's
   /// own bounded waits (lock contention, subprocess timeout) can legitimately run at or above
   /// the client's per-request timeout, so treating one slow reply as "the channel is unusable" would
-  /// make every other in-flight window's read fail too — see `DaemonVCSConnection.request`/`fail`.
+  /// make every other in-flight window's read fail too — see `DaemonClient.request`/`fail`.
   func testOneRequestTimingOutDoesNotDisconnectAnUnrelatedInFlightRequest() async throws {
     let root = try gitRepo()
     try "next\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
@@ -392,7 +397,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
     env["SHELL"] = "/nonexistent/workroom-test-shell/zsh"
     let daemon = try DaemonHarness.start(environment: env)
     daemons.append(daemon)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     let (router, location) = try await router(root: root, connection: connection)
     let reader = try await router.reader(for: location)
@@ -470,7 +475,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
     env["SHELL"] = "/nonexistent/workroom-test-shell/zsh"
     let daemon = try DaemonHarness.start(environment: env)
     daemons.append(daemon)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .local, socketPath: daemon.socketPath)
     let (router, location) = try await router(root: root, connection: connection)
     let reader = try await router.reader(for: location)
@@ -506,7 +511,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
   }
 
   /// A still-running pre-upgrade daemon (kept alive because it may own terminals) truthfully
-  /// reports its own lower `Hello` version and has no VCS service at all — `DaemonVCSConnection`
+  /// reports its own lower `Hello` version and has no VCS service at all — `DaemonClient`
   /// surfaces that as `VCSError.backendVersion`. The router must serve the read natively rather
   /// than leaving the repository unavailable until the daemon is manually restarted.
   func testDaemonPredatingVCSSupportFallsBackToNativeReads() async throws {
@@ -528,29 +533,16 @@ final class DaemonVCSIntegrationTests: XCTestCase {
   /// touching the real per-bundle Application Support socket a live Workroom Dev instance might
   /// already own.
   func testConcurrentReadersCoalesceOntoOneConnectAttempt() async throws {
-    final class Counter: @unchecked Sendable {
-      private let lock = NSLock()
-      private var count = 0
-      func increment() {
-        lock.lock()
-        count += 1
-        lock.unlock()
-      }
-      func value() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return count
-      }
-    }
     let root = try gitRepo()
     let daemon = try DaemonHarness.start(environment: environment)
     daemons.append(daemon)
     let attempts = Counter()
+    let socketPath = daemon.socketPath
     let localDaemon = LocalDaemonVCS(
       manager: HostConnectionManager(),
       resolveSocketPath: {
-        attempts.increment()
-        return daemon.socketPath
+        attempts.add()
+        return socketPath
       },
       binaryURL: { try? DaemonHarness.binaryURL() })
     let location = try await RepositoryLocation.local(root.path)
@@ -566,7 +558,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
     XCTAssertEqual(refs.2.name, "main")
     XCTAssertEqual(refs.3.name, "main")
     XCTAssertEqual(
-      attempts.value(), 1, "four concurrent callers must coalesce onto one connect attempt")
+      attempts.count, 1, "four concurrent callers must coalesce onto one connect attempt")
   }
 
   // MARK: - Writes (#205)
@@ -689,7 +681,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
   /// a running daemon whose `capabilities` reply has `reads: 9` but no `writes` (or a version the
   /// `writes` count check rejects), so `reader(for:)` resolves through the REAL daemon while
   /// `writer(for:)`'s capability check alone fails — leaving the native `CLIVCSWriter` fallback
-  /// wired to a daemon-sourced `reader`, not a freshly-native one (`RepositoryLocation.swift`'s
+  /// wired to a daemon-sourced `reader`, not a freshly-native one (`RepositoryRouter.swift`'s
   /// `writer(for:)`). A code-review pass flagged that the all-native version above never exercises
   /// this reader/writer-origin mismatch.
   func testWriteCapabilityFallbackWorksWithADaemonSourcedReader() async throws {
@@ -877,7 +869,7 @@ final class DaemonVCSIntegrationTests: XCTestCase {
     }
 
     do {
-      _ = try await DaemonVCSConnection.connect(host: .local, socketPath: path)
+      _ = try await DaemonClient.connect(host: .local, socketPath: path)
       XCTFail("a connection was negotiated against a socket that hung up")
     } catch {
       XCTAssertEqual(

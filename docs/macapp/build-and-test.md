@@ -20,7 +20,7 @@ the test fail for unrelated reasons. Run with the command sandbox disabled.
 
 Release artifacts are gated by `app-test-scripts`. `app-release` deliberately does not depend on
 Debug-hosted `app-test`; the release/nightly workflows invoke app and package tests explicitly.
-Read the Makefile's release-target comment before changing this relationship.
+Read the release-target comment in `mk/app.mk` before changing this relationship.
 
 `make app-format` rewrites the Swift paths selected by the Makefile; `make app-lint` enforces strict
 formatting. The Xcode pre-build formatting warnings are non-fatal and do not replace that gate.
@@ -48,13 +48,32 @@ app by name, since every workroom's app, test host and XCUITest app is called "W
 
 ## Packages and build troubleshooting
 
-- **Local packages live in `macapp/Packages/`** (`WorkroomDomain`, `WorkroomVCS`, `WorkroomWire`,
-  `WorkroomSystem`, `DaemonConnection`, `HostDrivers`, `DesignSystem`, `SyntaxHighlighting`), each in
+- **Local packages live in `macapp/Packages/`** (`WorkroomDomain`, `WorkroomVCS`, `WorkroomGit`,
+  `WorkroomWire`, `WorkroomSystem`, `DaemonConnection`, `HostDrivers`, `DevContainer`,
+  `DesignSystem`, `SyntaxHighlighting`, `TerminalModel`), each in
   Swift 6 language mode with its own tests, run by `make app-package-test` rather than
   `make app-test`. A file that names a package's type imports that package itself; nothing
   re-exports one. A package depends on Foundation (AppKit and SwiftUI too, for `DesignSystem`), its
   own pins and lower packages, never on the app. `WorkroomWire` is the frozen session codec: see
-  its `Package.swift` before changing it.
+  its `Package.swift` before changing it. Test fixtures that a package's tests and the app's
+  hosted tests share live in a test-support library of that package, imported by tests only:
+  `DaemonConnectionTestSupport` (`FakeDaemon`, `EchoServer`, `TCPClient`). It imports nothing of
+  its own package, so the hosted test bundle never holds a second copy of the package's types.
+  A fixture that needs its package's types can't go in such a library, so it is copied into the
+  hosted test that uses it (as `ExeDevSetupTests` copies `StubExeDev`). Measured with a
+  `HostDriversTestSupport` that imported `HostDrivers` (Xcode 27.2): a package the app links
+  is linked into the app and the test bundle as one shared framework, but a test-support library
+  is linked into WorkroomAppTests alone, so Xcode links it statically, and with it its
+  same-package target dependency as that target's own object (`HostDrivers.o`). Its other
+  packages' dependencies (`WorkroomSystem`) still came from the shared framework. The test bundle
+  then held a second `HostDrivers`: 86 type descriptors of its own, eight classes the ObjC
+  runtime reported as "implemented in both", task-locals (`ProvisioningProgress.$log`) the app
+  never read, and a SIGSEGV when the framework's `ExeDevHostDriver.run` ran on an instance built
+  by the test's copy. An `is`/`as?` on a value the app made still passed. To check a change to
+  these libraries, `nm -U` the bundle
+  (`Workroom Dev.app/Contents/PlugIns/WorkroomAppTests.xctest/Contents/MacOS/WorkroomAppTests`)
+  must define no `$s<length><Module>…Mn` descriptor of a package the app links, and the test log
+  must have no "is implemented in both" line.
 
 - **The Swift module is `Workroom`** (the target is `WorkroomApp`; `PRODUCT_MODULE_NAME` is pinned
   to `Workroom` in `project.yml`). Tests use `@testable import Workroom`. The pin matters because

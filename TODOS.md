@@ -32,7 +32,7 @@ release-tarball habit) builds a container missing those files, silently or with 
 (2) an `initializeCommand` that needs a shell-managed tool fails on every create; (3) a regression
 would leak docker-in-docker-sized volumes on Apple after interrupted creates.
 
-**How to start:** (1) and (2) are in `macapp/WorkroomApp/Core/ContainerCreate.swift`; give each a
+**How to start:** (1) and (2) are in `macapp/WorkroomApp/Core/RemoteHosts/ContainerCreate.swift`; give each a
 test in `ContainerCreateTests` (a repo with an export-ignore line; an initializeCommand that reads a
 variable only the login environment has). (3) mirror the Docker sweep test in the Apple sweep tests in
 `RemoteHostsTests`, then run `container volume rm <missing>` on a running Apple runtime.
@@ -67,7 +67,7 @@ with `BaseRetirement`.
 
 **What:** A test that a config-only project delete with a remote workroom runs that workroom's
 teardown before its machine is destroyed (R2), and keeps a log for it. The behaviour is built
-(`AppStore.deleteProject`'s loop over `remoteWorkrooms`, `remoteTeardown(of:in:log:skip:)`), and
+(`WorkroomLifecycle.deleteProject`'s loop over `remoteWorkrooms`, `remoteTeardown(of:in:log:skip:)`), and
 `RemoteTeardownTests` pins `RemoteWorkrooms.delete`'s side, but nothing pins that the app's
 config-only path reaches it.
 
@@ -75,9 +75,9 @@ config-only path reaches it.
 teardowns everywhere; for a remote workroom that destroys the host without its teardown, which can
 leave the script's external resources running.
 
-**How to start:** `AppStore.deleteProject` builds each workroom's `RemoteWorkrooms.Teardown` with
-`remoteTeardown(of:in:log:skip:)`, whose `run` is always the live `RemoteWorkrooms.runScript`, and
-takes its hosts' environment from `RemoteHosts.Deletion`. Give `AppStore` a seam for the teardown's
+**How to start:** `WorkroomLifecycle.deleteProject` builds each workroom's `RemoteWorkrooms.Teardown`
+with `remoteTeardown(of:in:log:skip:)`, whose `run` is nil (the live `RemoteWorkrooms.runScript` over the delete's reachability), and
+takes its hosts' environment from `HostDriverRegistry.Deletion`. Give the lifecycle a seam for the teardown's
 `run` (and a fake `Deletion`), then assert the teardown runs and the log exists for `.configOnly`.
 
 **Effort:** S
@@ -283,7 +283,7 @@ and branch management.
 **Where the write seam actually is — this changed.** The original plan put write methods on
 `VCSProviding` with a `CLIVCSProvider` fallback. That is **not** what shipped, and new work should not
 follow it. Writes live behind a **separate**, context-bound `VCSWriting` protocol
-(`Core/RepositoryServices.swift`), constructed by `RepositoryRouter.writer(for:)`. Its local adapter
+(`Packages/WorkroomVCS`), constructed by `RepositoryRouter.writer(for:)`. Its local adapter
 delegates to `CLIVCSWriter`, which implements `LocalVCSWriting`. Three properties hold it there:
 
 - **Context binding.** `RepositoryRouter.reader(for:)` and `writer(for:)` each capture one
@@ -325,19 +325,19 @@ match loses the whole failure taxonomy for a non-English user. `StatusCommandRun
 as a backstop; it is not the plan.
 
 *Filed, not planned:* bundling our own `git` the way `dugite` does would delete all of
-`Core/VCSToolVersions.swift` — floor, probe, notification, per-VCS scoping. Real cost (universal
+`Core/VersionControl/VCSToolVersions.swift` — floor, probe, notification, per-VCS scoping. Real cost (universal
 binary, notarization, ~40MB, and the Go CLI would want the same binary), so revisit only if the
 version floor actually bites a user.
 
 **Why:** This is a roadmap phase, not a tactical follow-up. The authoritative scope + sequencing live
 in the issue #59 plan; this entry is the pointer that makes it discoverable.
 
-**How to start:** Read `Core/VCSWriting.swift` — its doc comment carries the routing diagram, the
+**How to start:** Read `Packages/WorkroomGit/Sources/WorkroomGit/CLIVCSWriter.swift` — its doc comment carries the routing diagram, the
 per-backend command table and the placement rules (fetch always runs at the project root). The read
 layer blocks nothing. What's left of the error taxonomy is that git still flattens to `.io`.
 
 **Depends on:** the VCS read foundation (shipped, Phase 1) and the write seam (shipped with the
-toolbar). Spans `Core/VCSWriting.swift`, possibly `vcs/` (Rust), and new write-flow UI.
+toolbar). Spans `Packages/WorkroomGit` (`CLIVCSWriter`), possibly `vcs/` (Rust), and new write-flow UI.
 
 **Priority:** P2 (the product direction; large — see the plan for the real breakdown).
 
@@ -363,7 +363,7 @@ starting point instead of requiring a manual create-then-checkout.
 **Cons:** needs a branch list (the toolbar deliberately stopped enumerating refs when the picker was
 cut), and a naming policy for the new workroom.
 
-**Context / how to start:** `Views/OpenWorkroomDialog.swift` is the searchable, project-grouped picker
+**Context / how to start:** `Views/AppShell/OpenWorkroomDialog.swift` is the searchable, project-grouped picker
 to clone; the Go CLI's `create` already accepts a branch. `CLIVCSWriter.gitRemoteRefsArgs` shows how to
 enumerate remote refs cheaply, and its doc explains why the symref row must be dropped.
 
@@ -390,8 +390,8 @@ to the bundled daemon (on for Nightly and Dev only, commit 26b9d881) is on for s
 
 **Context / how to start:** #266 kept them deliberately (`Request`/`ExecRequest` are
 `deny_unknown_fields`; older apps decode the Commit fields non-optionally); each is marked with a
-`ponytail:` comment. Start at `vcs/crates/workroomd/src/vcs.rs` `Request`/`ExecRequest`,
-`vcs/crates/workroomd/src/file.rs` `Request`, `macapp/WorkroomApp/Core/DaemonVCSReader.swift`
+`ponytail:` comment. Start at `vcs/crates/workroomd/src/vcs/service.rs` `Request`/`ExecRequest`,
+`vcs/crates/workroomd/src/vcs/file.rs` `Request`, `macapp/WorkroomApp/Core/DaemonConnection/DaemonVCSReader.swift`
 `DaemonCommit`, and `vcs/crates/wr-vcs-model/src/lib.rs` `Commit`.
 
 **Depends on / blocked by:** #266 landing; stable hand-off or a protocol version gate.
@@ -403,10 +403,10 @@ to the bundled daemon (on for Nightly and Dev only, commit 26b9d881) is on for s
 **What:** share one OS watcher per canonical root across subscriptions and connections, fanning events
 into per-subscription coalescers.
 
-**Why:** #211 creates one `notify` watcher per subscription. `AppStore` is per window, so N windows on
-the same workroom, plus one `.git` watch per project per window, duplicate identical recursive
-watches. Cheap on macOS FSEvents; on Linux inotify needs one watch per directory per watcher and
-duplicates multiply toward `fs.inotify.max_user_watches`.
+**Why:** #211 creates one `notify` watcher per subscription, so subscriptions to the same tree, from
+N windows on the same workroom or from several connections, duplicate identical recursive watches.
+Cheap on macOS FSEvents; on Linux inotify needs one watch per directory per watcher and duplicates
+multiply toward `fs.inotify.max_user_watches`.
 
 **Pros:** correct on both platforms with one OS watch per tree. **Cons:** a cross-connection registry
 (refcounts, canonical-path keys, start/stop races) in the daemon that owns terminals, and a
@@ -469,10 +469,10 @@ uncommon.
 
 ### Deterministic tab lookup for content panes (macapp) — nav-history follow-up
 
-**What:** `TerminalSessions.contentTab(matching:)` and `previewTabID(in:)` both resolve with
-`.first { … }` over `tabsByTarget`, which is a **Dictionary** — unordered, so which tab they return is
-not deterministic when two match. Resolve through `orderByTarget` (the strip order) instead, so "first"
-means leftmost.
+**What:** `TerminalPanes.contentTab(matching:)` and `previewTabID(in:)` both resolve with
+`.first { … }` over `tabRecords(_:)`, which is a **Dictionary** — unordered, so which tab they return
+is not deterministic when two match. Resolve through the layout's `state.order` (the strip order)
+instead, so "first" means leftmost.
 
 **Why:** `newPaneTab` deliberately bypasses the same-file dedup ("so the same-file dedup doesn't
 collapse it back onto the anchor"), so ⌘D on a diff or changeset pane genuinely creates two tabs with
@@ -481,8 +481,8 @@ flip user-visible: replay could focus the pinned twin instead of the pane you we
 only two things hide it — replay prefers the tab the location was recorded in (step 1 of
 `AppStore.applyLocation`), and the ≤1-preview invariant keeps `previewTabID` incidentally unique.
 
-**How to start:** `previewTabID` and `contentTab(matching:)` in `Core/TerminalSessions.swift`; both have
-`orderByTarget` to hand. Pin it with a test that builds twins via `splitFocusedPane` on a diff pane and
+**How to start:** `previewTabID` and `contentTab(matching:)` in `Core/Terminal/TerminalPanes.swift`; both have
+the layout's order to hand. Pin it with a test that builds twins via `splitFocusedPane` on a diff pane and
 asserts *which* tab a lookup returns.
 
 **Depends on:** nothing. Independent of the nav-history fix, which is what made it matter.
@@ -512,9 +512,9 @@ rewrite touches the whole diff UI (regression surface).
 `maxDiffBytes` gate. Rewrite `DiffViewer` (and `IntraLineDiff`/side-by-side pairing) to consume hunks.
 
 **Depends on:** the shipped Option-1 diff pipeline (`VCSProviding.fileDiff`/`workingFileDiff` +
-`DiffResolver` + `DiffViewer`). Touches `VCSProviding` (`Core/RepositoryServices.swift`),
-`LocalVCSProviding` (`Packages/WorkroomVCS`), `GitProvider`,
-`Core/DiffResolver.swift`, `Views/DiffViewer.swift`.
+`DiffResolver` + `DiffViewer`). Touches `VCSProviding` and `LocalVCSProviding` (`Packages/WorkroomVCS`), `GitProvider`
+(`Packages/WorkroomGit`),
+`Core/VersionControl/DiffResolver.swift`, `Views/VersionControl/DiffViewer.swift`.
 
 **Priority:** P3 (build when a feature — ignore-whitespace / word-diff / staging / diff-edit — needs it).
 
@@ -548,7 +548,7 @@ unaffected.
 **Context:** `--rcfile` does not apply to a login shell, so a fix needs another way in, such as a
 `PROMPT_COMMAND` hook set from the environment. Probed 2026-10-14: `ghostty.bash` sourced from an
 rcfile under bash 3.2 does report correct `133;D` exit codes, so the script itself works there.
-Start at `vcs/crates/workroomd/src/shell.rs` (`bash_integration`). Upstream declines it, so the
+Start at `vcs/crates/workroomd/src/terminal/shell.rs` (`bash_integration`). Upstream declines it, so the
 libghostty path would stay without it.
 
 **Priority:** P3, effort M.
@@ -604,7 +604,7 @@ works, notification does not.
 observed — no `@Default`, no `Defaults.observe`, no `Defaults.publisher`. All are read/written
 imperatively, which is unaffected.
 
-**What was done instead:** a rule at the top of `Core/DefaultsKeys.swift` — never attach `@Default`,
+**What was done instead:** a rule at the top of `Core/AppShell/DefaultsKeys.swift` — never attach `@Default`,
 `observe` or `publisher` to a dotted key; it compiles, runs, and silently never updates. Rename plus
 a stored-value migration first, or the user loses that setting on upgrade.
 
@@ -648,7 +648,7 @@ lost with it.
 ### Unify foreground-process detection onto argv0 (macapp) — issue #141 eng-review follow-up, filed 2026-08-17
 
 **What:** `GhosttySurfaceView.foregroundExecutableName` resolves a live pane's foreground process via
-`proc_name`, and `TerminalSessions.updateTitle` derives both the coding agent (issue #49 inline diagnosis
+`proc_name`, and `PaneLiveState.updateTitle` derives both the coding agent (issue #49 inline diagnosis
 badge) and the curated tool (issue #141 favicon) from that one read (#503). Port the
 argv0/`KERN_PROCARGS2` logic of the retired Swift helper's `SessionPTY.executableName(processID:)` (already
 correct; the original is `git show 9ce6201f^:macapp/WorkroomSession/SessionPTY.swift`, and the Rust
@@ -681,14 +681,14 @@ scope-reduction) to keep that PR single-purpose; this session's review confirmed
 was the first candidate but has no functionality yet, so it was dropped from the initial bar (v1
 shipped Changes + Files) to avoid a visibly-empty icon reading as unfinished.
 
-**How to start:** Add a `.search` case to `Core/ActivitySection.swift` (label +
+**How to start:** Add a `.search` case to `Core/AppShell/ActivitySection.swift` (label +
 `systemImage: "magnifyingglass"` + its `subSections`) and a real Search pane body, wired into
 `RightInspector.sectionBody(for:)`. A new `InspectorSectionKind` may be needed for the sub-section
 identity. The DEBUG-only feature-flag staging pattern (considered and rejected for v1) is one option
 to ship the scaffold before the search is real.
 
-**Depends on:** the right activity bar (shipped). Touches `Core/ActivitySection.swift`,
-`Views/ChangesPanel.swift` (`RightInspector`), a new `Views/SearchPanel.swift`.
+**Depends on:** the right activity bar (shipped). Touches `Core/AppShell/ActivitySection.swift`,
+`Views/VersionControl/ChangesPanel.swift` (`RightInspector`), a new `Views/SearchPanel.swift`.
 
 **Priority:** P3 (new feature; not blocking).
 
@@ -706,7 +706,7 @@ private `NSSplitView` subclass refused `setDelegate:`/`setHoldingPriority:`. Tha
 each column with its own min/max and its own persisted `Defaults` width. The sidebar holds its floor
 and only the detail yields, so a wider inspector is now a one-constant change.
 
-**How to start:** raise or drop `maxWidth` (`Views/InspectorColumn.swift:23`) and check the widest
+**How to start:** raise or drop `maxWidth` (`Views/AppShell/InspectorColumn.swift:23`) and check the widest
 panes at the new size (`DiffViewer` side-by-side, `ChangesetDetailView`, `HistoryPanel`) against the
 detail column's own floor — a usable terminal width is the real constraint now, not the sidebar.
 
@@ -722,7 +722,7 @@ default and the squeeze that made it load-bearing is fixed).
 move keyboard focus into the panel when it reveals, restore focus when it hides, and post a
 VoiceOver announcement on reveal/hide.
 
-**Current state:** The reveal ships pointer-first (`Views/EdgeRevealSidebar.swift`). Escape-to-dismiss
+**Current state:** The reveal ships pointer-first (`Views/AppShell/EdgeRevealSidebar.swift`). Escape-to-dismiss
 is wired (`.onExitCommand`) and the panels carry `sidebar.reveal.{leading,trailing}` accessibility
 identifiers, but there's no focus management or VO announce. Persistent keyboard/AX access already
 exists via the View-menu toggles (`View ▸ Projects`, `View ▸ Notifications`) and the toolbar
@@ -752,7 +752,7 @@ from the picker (ghostty still resolves them for the *terminal* when a bundled n
 `themePreview`/resolution favour `~/.config`, but they aren't selectable). Inferring families from
 user files would make them first-class.
 
-**How to start:** In `Core/ThemeService.swift`, add discovery of `~/.config/ghostty/themes` and
+**How to start:** In `Core/AppShell/ThemeService.swift`, add discovery of `~/.config/ghostty/themes` and
 infer families from loose user files — e.g. name-suffix heuristics (`X` / `X Light`, `X Dark` /
 `X Light`), or read an optional user manifest. Merge inferred families into the picker's family
 list. Handle the ambiguous cases: a single-variant user theme (no obvious partner); a name that
@@ -815,7 +815,7 @@ already reads at a glance.
 
 **How to start:** the blocker is data freshness — the PR (and thus `reviewDecision`) is resolved
 **only on selection** (`scheduleSelectedStatusRefresh`), not in the bounded background sweep
-(`refreshWorkroomStatuses` / `runCISweep` in `Core/AppStore+WorkroomStatus.swift`). A sidebar glyph
+(`refreshWorkroomStatuses` / `runCISweep` in `Core/AppShell/AppStore/AppStore+WorkroomStatus.swift`). A sidebar glyph
 needs PR resolution added to the sweep (a third probe stage, bounded like CI, with its own TTL), then
 a `VCSStatusPresentation`-style mapper for the review glyph reused by the sidebar row + collapsed
 header (`ChangesPanel.prIndicator`).
@@ -856,7 +856,7 @@ OSC 9/99/777 + bell, not raw output. That's precise but silent for a bare `make 
 nothing. A shell hook closes that gap so the common "my build finished" case just works.
 
 **How to start:** Source a hook into the login shell launched by
-`TerminalSessions.makeTerminal` (`-l`), or document it for the user to add. Decide OSC 133 vs a
+`TerminalPanes.makeTerminalTab` (`-l`), or document it for the user to add. Decide OSC 133 vs a
 `precmd` that emits OSC 9. Keep it opt-in (injecting into the user's shell is invasive). Note the
 OSC 133 *command-finished* marker is already parsed app-side
 (`GhosttyRuntimeAdapter` handles `GHOSTTY_ACTION_COMMAND_FINISHED`, used today to clear the
@@ -881,12 +881,12 @@ per-workroom mute is app logic.
 
 **How to start:** A mute set keyed on `TerminalTarget.ID`, checked in
 `NotificationCenterStore.record(...)` before creating an item / posting. Persist with a
-`Defaults.Keys` entry in `Core/DefaultsKeys.swift` (the app uses `sindresorhus/Defaults` now —
+`Defaults.Keys` entry in `Core/AppShell/DefaultsKeys.swift` (the app uses `sindresorhus/Defaults` now —
 consistent with `theme` / `copyOnSelect`, not `@AppStorage`). A sound toggle gates `content.sound`
 in `SystemNotifier.post()` (today hardcoded to `.default`).
 
 **Depends on:** the notifications feature (#10) — **now landed**
-(`macapp/WorkroomApp/Core/NotificationCenterStore.swift`, `Core/SystemNotifier.swift`).
+(`macapp/WorkroomApp/Core/AppShell/NotificationCenterStore.swift`, `Core/AppShell/SystemNotifier.swift`).
 
 **Priority:** P3 (the feature is usable without it; add when a real terminal proves too chatty).
 
@@ -906,7 +906,7 @@ the stall.
 
 **Verify FIRST, before implementing anything:** whether Sentry's continuous profile chunks actually
 attach to macOS **app-hang** events. If they don't, profiling buys nothing for this use case and the
-signpost/breadcrumb options win. `Core/SentryConfig.swift` already configures profiling with
+signpost/breadcrumb options win. `Core/AppShell/SentryConfig.swift` already configures profiling with
 `.trace` lifecycle and `sessionSampleRate = 1.0`, but the app opens no transactions, so it never runs —
 that is why the option looked free and isn't.
 

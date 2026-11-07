@@ -52,9 +52,9 @@ func runAddProject(svc *workroom.Service, path string, create bool, out io.Write
 	if err != nil {
 		return err
 	}
-	payload := map[string]any{"path": res.Path, "vcs": res.VCS}
+	payload := addProjectPayload{Path: res.Path, VCS: res.VCS}
 	if svc.Pretend {
-		payload["would_create"] = res.WouldCreate
+		payload.WouldCreate = &res.WouldCreate
 	}
 	return writeJSONSuccess(out, "add-project", payload)
 }

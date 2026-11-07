@@ -9,9 +9,11 @@ import sys
 import tempfile
 import unittest
 
+from makevars import make_value
+
 
 ROOT = Path(__file__).resolve().parents[2]
-RUST = re.search(r"^VCS_RUST := (.+)$", (ROOT / "Makefile").read_text(), re.M)[1]
+RUST = make_value("VCS_RUST")
 STUB = '''#!{python}
 import hashlib, json, os, pathlib, sys
 name = pathlib.Path(sys.argv[0]).name
@@ -105,9 +107,13 @@ class LinuxLintTests(unittest.TestCase):
         image = (ROOT / "vcs/scripts/linux-lint/Dockerfile").read_text()
         for arch in ("aarch64", "x86_64"):
             self.assertIn(f"{version}/{arch})", image)
-        ci = (ROOT / ".github/workflows/ci.yml").read_text()
-        checksum = re.search(r'archive: x86_64-linux\s+sha256: "([a-f0-9]{64})"', ci)[1]
-        self.assertIn(checksum, image)
+        # Every workflow that installs the x86_64 Linux Zig, wherever its jobs live.
+        checksums = {checksum for path in (ROOT / ".github/workflows").glob("*.yml")
+                     for checksum in re.findall(r'archive: x86_64-linux\s+sha256: "([a-f0-9]{64})"',
+                                                path.read_text())}
+        self.assertTrue(checksums, "no workflow installs the x86_64 Linux Zig")
+        for checksum in checksums:
+            self.assertIn(checksum, image)
 
     def test_discovery_ceiling_handles_host_only_worktree_metadata(self):
         with tempfile.TemporaryDirectory(prefix="linux-lint-git-") as directory:

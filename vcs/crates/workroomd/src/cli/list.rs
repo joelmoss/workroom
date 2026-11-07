@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use super::{DAEMON_UNAVAILABLE, flag, handshake};
-use crate::serve;
+use crate::daemon::serve;
 use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
 use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
 
@@ -45,7 +45,9 @@ pub fn run_list(args: &[String]) -> ExitCode {
             frames.push(&envelope.payload);
             while let Ok(Some(frame)) = frames.next_frame() {
                 if frame.kind == FrameKind::Sessions {
-                    for (id, attached, command) in serve::decode_descriptor_list(&frame.payload) {
+                    for (id, attached, command) in
+                        wr_protocol::terminal::decode_descriptor_list(&frame.payload)
+                    {
                         println!(
                             "{id} {} {command}",
                             if attached { "attached" } else { "detached" }

@@ -9,10 +9,9 @@ mod common;
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
-use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
+use wr_protocol::envelope::Service;
 
 const OPEN: u8 = 0x01;
 const REPLY: u8 = 0x02;
@@ -81,33 +80,19 @@ impl Echo {
 
 // MARK: The client half of the multiplex
 
-struct Client {
-    stream: UnixStream,
-    decoder: EnvelopeDecoder,
-    /// Envelopes read while looking for something on another stream.
-    pending: Vec<(u32, u8, Vec<u8>)>,
-}
+struct Client(common::RpcClient);
 
 impl Client {
     fn connect() -> Client {
-        let (stream, _server) = common::connect_in_process("forward-test");
-        stream
-            .set_read_timeout(Some(Duration::from_millis(50)))
-            .unwrap();
-        Client {
-            stream,
-            decoder: EnvelopeDecoder::new(),
-            pending: Vec::new(),
-        }
+        let (rpc, _server) = common::RpcClient::connect("forward-test", Duration::from_millis(50));
+        Client(rpc)
     }
 
     fn send(&mut self, stream: u32, opcode: u8, body: &[u8]) {
         let mut payload = Vec::with_capacity(1 + body.len());
         payload.push(opcode);
         payload.extend_from_slice(body);
-        self.stream
-            .write_all(&Envelope::new(Service::Forward, stream, payload).encode())
-            .unwrap();
+        self.0.send_payload(Service::Forward, stream, payload);
     }
 
     fn open(&mut self, stream: u32, host: &str, port: u16) -> Value {
@@ -130,38 +115,14 @@ impl Client {
     }
 
     fn next_within(&mut self, stream: u32, wait: Duration) -> Option<(u8, Vec<u8>)> {
-        let deadline = Instant::now() + wait;
-        loop {
-            if let Some(index) = self.pending.iter().position(|(s, _, _)| *s == stream) {
-                let (_, opcode, body) = self.pending.remove(index);
-                return Some((opcode, body));
-            }
-            if Instant::now() >= deadline {
-                return None;
-            }
-            match self.decoder.next_envelope().unwrap() {
-                Some(envelope) => {
-                    assert_eq!(envelope.service, Service::Forward);
-                    let (opcode, body) = envelope.payload.split_first().expect("an opcode");
-                    self.pending.push((envelope.stream, *opcode, body.to_vec()));
-                }
-                None => self.fill(),
-            }
+        let envelope = self.0.next_on(Service::Forward, stream, wait);
+        // What was set aside for another stream is still the Forward service's.
+        for other in &self.0.other {
+            assert_eq!(other.service, Service::Forward);
         }
-    }
-
-    fn fill(&mut self) {
-        let mut bytes = [0u8; 65536];
-        match self.stream.read(&mut bytes) {
-            Ok(0) => panic!("the daemon closed the connection"),
-            Ok(count) => self.decoder.push(&bytes[..count]),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(error) => panic!("read failed: {error}"),
-        }
+        let envelope = envelope?;
+        let (opcode, body) = envelope.payload.split_first().expect("an opcode");
+        Some((*opcode, body.to_vec()))
     }
 
     /// Read exactly `want` bytes of DATA off `stream`, failing on anything else.
@@ -664,7 +625,7 @@ fn an_unclaimed_connection_is_closed_after_the_pending_timeout() {
 
     assert!(ended(&mut waiting), "never closed");
     let waited = started.elapsed();
-    let timeout = workroomd::forward::PENDING_TIMEOUT;
+    let timeout = workroomd::testing::PENDING_TIMEOUT;
     assert!(waited >= timeout, "closed early, after {waited:?}");
     assert!(
         waited < timeout + Duration::from_secs(2),
@@ -682,7 +643,7 @@ fn connections_past_the_pending_limit_are_closed_at_once() {
     let mut client = Client::connect();
     let port = client.listening(1);
     let mut held = Vec::new();
-    for _ in 0..workroomd::forward::MAX_PENDING {
+    for _ in 0..workroomd::testing::MAX_PENDING {
         held.push(connected_to(port));
         assert_eq!(client.next(1), Some((ACCEPTED, vec![])));
     }
@@ -712,7 +673,7 @@ fn the_connection_ending_ends_its_listeners() {
 #[test]
 fn the_fifth_listener_on_a_connection_is_refused() {
     let mut client = Client::connect();
-    for stream in 1..=workroomd::forward::MAX_LISTENERS as u32 {
+    for stream in 1..=workroomd::testing::MAX_LISTENERS as u32 {
         client.listening(stream);
     }
     let reply = client.ask(99, json!({"method": "listen", "port": 0}));

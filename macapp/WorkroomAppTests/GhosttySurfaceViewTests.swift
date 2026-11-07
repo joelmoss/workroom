@@ -1,5 +1,6 @@
 import AppKit
 import HostDrivers
+import WorkroomDomain
 import WorkroomVCS
 import XCTest
 
@@ -9,6 +10,7 @@ import XCTest
 /// as function-key private-use scalars (U+F700–U+F8FF), which must NOT be forwarded as text (else
 /// they insert a stray glyph), while DEL (U+007F, the Backspace key) stays as text, matching upstream
 /// (it encodes to the same `\x7f` either way). See `GhosttySurfaceView.filterSpecialCharacters`.
+@MainActor
 final class TerminalKeyTextFilterTests: XCTestCase {
   private func filter(_ s: String) -> String { GhosttySurfaceView.filterSpecialCharacters(s) }
 
@@ -45,6 +47,7 @@ final class TerminalKeyTextFilterTests: XCTestCase {
 /// Guards the overlay-scrollbar geometry (the indicator restored after the SwiftTerm → libghostty
 /// migration). Pure math over libghostty's `total`/`offset`/`len` (rows). Bottom-left origin: the
 /// live position sits at the bottom of the track. See `GhosttySurfaceView.scrollbarThumbRect`.
+@MainActor
 final class ScrollbarGeometryTests: XCTestCase {
   // 200pt track: bounds height 204 minus 2*inset(2).
   private let bounds = CGRect(x: 0, y: 0, width: 100, height: 204)
@@ -245,201 +248,22 @@ final class GhosttyUnshiftedCodepointTests: XCTestCase {
   }
 }
 
-/// When a remote pane reattaches after its ssh exits 255 (#241).
-final class RemoteReconnectBackoffTests: XCTestCase {
-  /// A host rebooting for two minutes, whatever it answers meanwhile (refused, timed out, closed
-  /// before its banner, or sshd up before the daemon): the pane backs off to the ceiling and never
-  /// gives up on it.
-  func testAHostThatIsGoneForMinutesIsWaitedFor() throws {
-    var backoff = RemoteReconnectBackoff()
-    // The link drops out of an attach that had been up a while.
-    XCTAssertEqual(backoff.next(attachedFor: 3600, refused: false), 1)
-    var waited: TimeInterval = 1
-    var delays: [TimeInterval] = []
-    while waited < 600 {
-      let delay = try XCTUnwrap(backoff.next(attachedFor: 10, refused: false))
-      delays.append(delay)
-      waited += delay
-    }
-    XCTAssertEqual(Array(delays.prefix(6)), [2, 4, 8, 16, 30, 30])
-    XCTAssertEqual(delays.last, 30)
-  }
-
-  /// A host that refuses for good (a changed host key) stops the pane after the same budget as
-  /// before: five quick refusals, which leaves ssh's message on screen.
-  func testARefusalStopsAfterFive() {
-    var backoff = RemoteReconnectBackoff()
-    XCTAssertEqual(backoff.next(attachedFor: .infinity, refused: false), 1)
-    XCTAssertEqual(backoff.next(attachedFor: 1, refused: true), 2)
-    XCTAssertEqual(backoff.next(attachedFor: 1, refused: true), 4)
-    XCTAssertEqual(backoff.next(attachedFor: 1, refused: true), 8)
-    XCTAssertEqual(backoff.next(attachedFor: 1, refused: true), 16)
-    XCTAssertNil(backoff.next(attachedFor: 1, refused: true))
-  }
-
-  /// Failures that heal, in between, do not restart the count: a refusal alternating with a host
-  /// that is briefly unreachable still stops.
-  func testARefusalBetweenFailuresThatHealStillStops() {
-    var backoff = RemoteReconnectBackoff()
-    for _ in 1..<RemoteReconnectBackoff.maxRefusals {
-      XCTAssertNotNil(backoff.next(attachedFor: 1, refused: true))
-      XCTAssertNotNil(backoff.next(attachedFor: 1, refused: false))
-    }
-    XCTAssertNil(backoff.next(attachedFor: 1, refused: true))
-  }
-
-  /// An attach that stayed up past the ceiling was a working link: its drop starts over.
-  func testALinkThatWasUpStartsTheBackoffAgain() {
-    var backoff = RemoteReconnectBackoff()
-    for _ in 1..<RemoteReconnectBackoff.maxRefusals {
-      _ = backoff.next(attachedFor: 1, refused: true)
-    }
-    XCTAssertEqual(backoff.next(attachedFor: 60, refused: false), 1)
-    XCTAssertEqual(backoff.refusals, 0)
-  }
-}
-
-/// The pane's side of #241: a remote pane whose ssh exits 255 schedules a restored reattach, and
-/// closing it cancels one that is waiting. The backoff's decisions are `RemoteReconnectBackoffTests`;
-/// what the attach itself does is the fixture's (`RemoteHostIntegrationTests`).
+/// The surface's side of #241: closing a remote pane cancels a reconnect that is waiting, and its
+/// ssh's exit, a session swap or its close lets its host go. What the attachment decides is
+/// `PaneSessionAttachmentTests`.
 @MainActor
 final class RemotePaneReconnectTests: XCTestCase {
+  private let service = isolatedPaneSessionService()
+
   /// A pane for a session on a host whose last attach left `log` behind, and `status` as the
   /// attach wrapper's record of ssh's exit status (none when nil).
-  /// `provider`: on an exe.dev host, whose ssh leaves the Mac, rather than a container's loopback.
-  private func remotePane(
-    log: String, status: String? = nil, provider: Bool = false
-  ) throws -> GhosttySurfaceView {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-      "wr-reconnect-\(UUID().uuidString.prefix(8))")
-    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-    let host = UUID()
-    let session = UUID()
-    let driver: any HostTerminalDriver =
-      provider
-      ? ExeDevHostDriver(
-        configuration: .init(account: nil, sshAgent: "/agent.sock"), directory: directory)
-      : ContainerHostDriver(
-        hosts: [
-          host: .init(
-            address: "127.0.0.1", port: 1, user: "workroom", identityFile: "/keys/id",
-            hostKey: "ssh-ed25519 AAAA", daemonSocket: "/s")
-        ], directory: directory)
-    let hostDirectory = directory.appendingPathComponent(host.uuidString)
-    try FileManager.default.createDirectory(at: hostDirectory, withIntermediateDirectories: true)
-    statusFiles[session] = SSHTransport.attachStatus(session, in: hostDirectory)
-    try log.write(
-      to: SSHTransport.attachLog(session, in: hostDirectory), atomically: true,
-      encoding: .utf8)
-    if let status {
-      try status.write(
-        to: SSHTransport.attachStatus(session, in: hostDirectory), atomically: true,
-        encoding: .utf8)
-    }
-    PersistentSessionService.shared.registerRemoteSession(
-      session, on: .remote(host), via: driver, workingDirectory: "/home/w")
+  private func remotePane(log: String, status: String? = nil) throws -> GhosttySurfaceView {
+    let session = try registerRemoteSession(on: service, log: log, status: status).session
     let view = GhosttySurfaceView(workingDirectory: "/home/w", spawnsSurface: false)
-    view.persistentSessionID = session
+    view.attachment.service = service
+    view.attachment.tabSessionID = { session }
     addTeardownBlock { view.tearDown() }
     return view
-  }
-
-  private func spin(_ seconds: TimeInterval) {
-    RunLoop.main.run(until: Date().addingTimeInterval(seconds))
-  }
-
-  /// Each `remotePane`'s record of ssh's status, by session.
-  private var statusFiles: [UUID: URL] = [:]
-
-  /// The pane's attach ends with no status recorded: its wrapper removed the last one and was
-  /// killed before ssh exited, as by a Ctrl-C typed while ssh was still connecting (#507).
-  private func exitBeforeSshRecords(_ view: GhosttySurfaceView) throws {
-    let status = try XCTUnwrap(statusFiles[XCTUnwrap(view.persistentSessionID)])
-    try? FileManager.default.removeItem(at: status)
-    view.handleChildExited(exitCode: 0)
-  }
-
-  // Value: protects=a remote pane the app is reconnecting coming back after a Ctrl-C lands in the
-  // second before its ssh connects; fails_when=a missing status on the app's own reconnect reads
-  // as a finished attach again; why_new=#507, which #506's reattach on wake made easy to hit;
-  // seam=none
-  /// A Ctrl-C typed while the app's own reconnect is still connecting kills it, as it would kill
-  /// any ssh, before the wrapper records a status (#507). The pane reads that as the lost link it
-  /// was reconnecting and keeps trying, again and again if the next attempts are killed too, after
-  /// a backoff or a network change alike.
-  func testAReconnectKilledBeforeSshConnectsKeepsTrying() throws {
-    let view = try remotePane(log: "", status: "255\n")
-    view.handleChildExited(exitCode: 0)
-    try XCTUnwrap(view.pendingReconnect).perform()
-    for attempt in 1...2 {
-      try exitBeforeSshRecords(view)
-      let retry = try XCTUnwrap(view.pendingReconnect, "attempt \(attempt) was left stopped")
-      retry.perform()
-    }
-    XCTAssertTrue(view.persistentSessionIsRestored)
-    // A status the reconnect did record is its answer: a session that ended there stays ended.
-    try "0\n".write(
-      to: XCTUnwrap(statusFiles[XCTUnwrap(view.persistentSessionID)]), atomically: true,
-      encoding: .utf8)
-    view.handleChildExited(exitCode: 0)
-    XCTAssertNil(view.pendingReconnect, "a reconnect that ended its session was tried again")
-
-    let live = try remotePane(log: "", provider: true)
-    live.liveProcessOverrideForTesting = true
-    let host = try XCTUnwrap(
-      PersistentSessionService.shared.remoteHost(of: XCTUnwrap(live.persistentSessionID)))
-    postLinksStale([host])
-    XCTAssertTrue(live.persistentSessionIsRestored, "the network change did not reattach")
-    try exitBeforeSshRecords(live)
-    XCTAssertNotNil(live.pendingReconnect, "a reattach after a network change was left stopped")
-  }
-
-  // Value: protects=Ctrl-C stopping an attach the user started, as it stops any ssh;
-  // fails_when=every missing status reads as a lost link, or the app's reconnect outlives an
-  // attach the user chose; why_new=#507 reads a missing status as lost only on the app's own
-  // reconnect; seam=none
-  /// An attach the user chose (from the detached-sessions list) that a Ctrl-C kills stays stopped,
-  /// even on a pane the app was reconnecting a moment before.
-  func testAnAttachTheUserChoseStaysStoppedWhenKilled() throws {
-    let view = try remotePane(log: "", status: "255\n")
-    view.handleChildExited(exitCode: 0)
-    try XCTUnwrap(view.pendingReconnect).perform()
-    view.reattachPersistentSession()
-    try exitBeforeSshRecords(view)
-    XCTAssertNil(view.pendingReconnect)
-  }
-
-  // Value: protects=a pane restored at launch whose host was unreachable keeping the retry
-  // notice's promise when a Ctrl-C kills one of its retries; fails_when=only a link that was up in
-  // this run keeps trying again; why_new=a #507 review found restored sessions' retries left out;
-  // seam=none
-  /// A pane restored at launch is a session the host already has, though its link was never up in
-  /// this run: a Ctrl-C that kills one of the app's retries leaves it trying, as the notice on
-  /// screen promised.
-  func testARestoredPanesRetryKilledBeforeSshConnectsKeepsTrying() throws {
-    let view = try remotePane(log: "", status: "255\n")
-    view.persistentSessionIsRestored = true  // as launch restore marks it
-    view.reattachPersistentSession()  // its first attach, which just failed, began now
-    view.handleChildExited(exitCode: 0)
-    try XCTUnwrap(view.pendingReconnect).perform()
-    try exitBeforeSshRecords(view)
-    XCTAssertNotNil(view.pendingReconnect, "a restored pane's killed retry was left stopped")
-  }
-
-  // Value: protects=a remote pane reattaching after its host restarts; fails_when=the reconnect is
-  // gated on the pane's exit status again, which macOS `login` always reports as 0;
-  // why_new=the old test passed 255 straight in, which no real pane ever sees (#392); seam=none
-  /// The pane's exit status is `login`'s 0 (#392): the wrapper's record of ssh's 255 is what says
-  /// the link dropped.
-  func testALostLinkReattachesAsARestoredPane() throws {
-    let view = try remotePane(
-      log: "ssh: connect to host 127.0.0.1 port 1: Connection refused\n", status: "255\n")
-    view.handleChildExited(exitCode: 0)
-    XCTAssertNotNil(view.pendingReconnect)
-    XCTAssertFalse(view.persistentSessionIsRestored)
-    spin(1.5)
-    XCTAssertNil(view.pendingReconnect, "the reconnect did not run")
-    XCTAssertTrue(view.persistentSessionIsRestored)
   }
 
   // Value: protects=a pane holds its remote host only while its ssh lives, so a dead link, a closed
@@ -451,122 +275,37 @@ final class RemotePaneReconnectTests: XCTestCase {
   /// reached here: a window freeing a live surface without a teardown (`deinit`), which needs one.
   func testAPaneHoldsItsHostOnlyWhileItsSshLives() throws {
     let view = try remotePane(log: "")
-    let sessions = PersistentSessionService.shared
-    let session = try XCTUnwrap(view.persistentSessionID)
+    let sessions = service
+    let session = try XCTUnwrap(view.attachment.sessionID)
     let host = try XCTUnwrap(sessions.remoteHost(of: session))
-    addTeardownBlock { PersistentSessionService.shared.forgetRemoteSession(session) }
-    XCTAssertNotNil(sessions.attachCommand(forSession: session, by: view.attachToken))
+    XCTAssertNotNil(sessions.attachCommand(forSession: session, by: view.attachment.token))
     XCTAssertTrue(sessions.hasAttachedPane(on: host))
 
     view.handleChildExited(exitCode: 1)
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a pane whose ssh exited holds its host")
 
-    XCTAssertNotNil(sessions.attachCommand(forSession: session, by: view.attachToken))
-    view.persistentSessionID = UUID()
+    XCTAssertNotNil(sessions.attachCommand(forSession: session, by: view.attachment.token))
+    // As `TerminalSessionAttachment` points it: the tab names the other session, then the pane hears.
+    let other = UUID()
+    view.attachment.tabSessionID = { other }
+    view.attachment.sessionChanged()
     XCTAssertFalse(
       sessions.hasAttachedPane(on: host), "a pane pointed at another session holds the old host")
-    view.persistentSessionID = session
+    view.attachment.tabSessionID = { session }
 
-    XCTAssertNotNil(sessions.attachCommand(forSession: session, by: view.attachToken))
+    XCTAssertNotNil(sessions.attachCommand(forSession: session, by: view.attachment.token))
     view.tearDown()
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a closed pane holds its host")
-  }
-
-  // Value: protects=a new remote pane opened offline (or before its daemon is installed) getting a
-  // working shell once its host answers, and a Ctrl-C still stopping its retries; fails_when=every
-  // reconnect is marked restored again, so its retry carries `--no-create` and the never-created
-  // session reads as ended, or a new pane's killed retry keeps trying too (#507);
-  // why_new=the reconnect only started firing with #392, which exposed it (Codex review); seam=none
-  /// A pane whose first attach never came up retries as a fresh attach: it has no session on the
-  /// host yet, and a restored attach (`--no-create`) would show it ended instead of creating it.
-  /// Its link was never up, so a Ctrl-C that kills the retry stops it, as it stops any ssh.
-  func testAPaneThatNeverConnectedRetriesAsAFreshAttach() throws {
-    let view = try remotePane(log: "", status: "255\n")
-    view.reattachPersistentSession()  // the attach that just failed began now
-    view.handleChildExited(exitCode: 0)
-    XCTAssertNotNil(view.pendingReconnect)
-    spin(1.5)
-    XCTAssertNil(view.pendingReconnect, "the reconnect did not run")
-    XCTAssertFalse(view.persistentSessionIsRestored)
-    try exitBeforeSshRecords(view)
-    XCTAssertNil(view.pendingReconnect, "a Ctrl-C did not stop a link that was never up")
   }
 
   func testClosingThePaneCancelsAReconnectThatIsWaiting() throws {
     let view = try remotePane(log: "", status: "255\n")
     view.handleChildExited(exitCode: 0)
-    let pending = try XCTUnwrap(view.pendingReconnect)
+    let pending = try XCTUnwrap(view.attachment.pendingReconnect)
     view.tearDown()
     XCTAssertTrue(pending.isCancelled)
-    spin(1.5)
-    XCTAssertFalse(view.persistentSessionIsRestored)
-  }
-
-  /// Only ssh's own failure is a lost link: a session that ended with any other status is left
-  /// alone, as is a pane with no record of one (an exit status alone never decides, #392), and a
-  /// pane whose session is not remote.
-  func testOnlyARemotePanesLostLinkReconnects() throws {
-    let remote = try remotePane(log: "", status: "1\n")
-    remote.handleChildExited(exitCode: 0)
-    XCTAssertNil(remote.pendingReconnect)
-    let unrecorded = try remotePane(log: "")
-    unrecorded.handleChildExited(exitCode: 255)
-    XCTAssertNil(unrecorded.pendingReconnect)
-    let local = GhosttySurfaceView(workingDirectory: "/tmp", spawnsSurface: false)
-    local.persistentSessionID = UUID()
-    local.handleChildExited(exitCode: 255)
-    XCTAssertNil(local.pendingReconnect)
-  }
-
-  private func postLinksStale(_ stale: Set<HostID> = []) {
-    NotificationCenter.default.post(
-      name: RemoteLinkMonitor.linksStale, object: nil,
-      userInfo: [RemoteLinkMonitor.staleHostsKey: stale])
-    spin(0.05)
-  }
-
-  // Value: protects=a remote pane coming back within a second of the Mac waking or changing
-  // networks, not after ssh's ~57 s keepalive or a 30 s backoff; fails_when=the pane stops
-  // observing the monitor, runs its waiting reconnect without the restored mark, or treats a
-  // container's loopback link as one a network change breaks; why_new=new behaviour; seam=none
-  /// A pane waiting out its backoff attaches at once, as the restored pane its reconnect would
-  /// have made. A container's pane is left to its backoff: its ssh never leaves the Mac.
-  func testAWaitingPaneAttachesAtOnceWhenTheNetworkChanges() throws {
-    let provider = try remotePane(log: "", status: "255\n", provider: true)
-    provider.handleChildExited(exitCode: 0)
-    let container = try remotePane(log: "", status: "255\n")
-    container.handleChildExited(exitCode: 0)
-    let waiting = try XCTUnwrap(container.pendingReconnect)
-    XCTAssertNotNil(provider.pendingReconnect)
-
-    postLinksStale()
-    XCTAssertNil(provider.pendingReconnect, "the waiting reconnect did not run")
-    XCTAssertTrue(provider.persistentSessionIsRestored)
-    XCTAssertTrue(container.pendingReconnect === waiting)
-    XCTAssertFalse(container.persistentSessionIsRestored)
-  }
-
-  // Value: protects=a live link whose host still answers keeping its screen after a wake, and one
-  // whose host went silent reattaching; fails_when=every live pane blinks on every wake again, or
-  // a pane stays on a link its host no longer answers on; why_new=new behaviour;
-  // seam=liveProcessOverrideForTesting (non-test caller: hasLiveProcess's libghostty read)
-  /// A pane whose ssh still runs attaches again only when its own host didn't answer.
-  func testALivePaneAttachesAgainOnlyWhenItsHostDidNotAnswer() throws {
-    let view = try remotePane(log: "", provider: true)
-    view.liveProcessOverrideForTesting = true
-    let session = try XCTUnwrap(view.persistentSessionID)
-    let host = try XCTUnwrap(PersistentSessionService.shared.remoteHost(of: session))
-    postLinksStale([.remote(UUID())])
-    XCTAssertFalse(
-      view.persistentSessionIsRestored, "a live link was replaced though its host answered")
-    // A pane that stopped (no live ssh, nothing waiting) stays stopped, whatever its host did.
-    let stopped = try remotePane(log: "", provider: true)
-    let stoppedHost = try XCTUnwrap(
-      PersistentSessionService.shared.remoteHost(of: XCTUnwrap(stopped.persistentSessionID)))
-    postLinksStale([host, stoppedHost])
-    XCTAssertTrue(
-      view.persistentSessionIsRestored, "a live link was kept though its host was silent")
-    XCTAssertFalse(stopped.persistentSessionIsRestored, "a stopped pane was attached again")
+    settle(1.5)
+    XCTAssertFalse(view.attachment.isRestored)
   }
 }
 

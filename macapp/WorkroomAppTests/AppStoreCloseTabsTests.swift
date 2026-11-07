@@ -14,7 +14,8 @@ import XCTest
 /// classes under parallel workers.
 @MainActor
 final class AppStoreCloseTabsTests: XCTestCase {
-  private let target = TerminalTarget(id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
+  private let target = TerminalTarget(
+    id: .workroom(project: "/p", name: "foo"), title: "foo", path: "/tmp", isMissing: false)
 
   private func makeStore(confirmOnClose: Bool = false) -> AppStore {
     let store = AppStore()
@@ -85,7 +86,7 @@ final class AppStoreCloseTabsTests: XCTestCase {
 
   private func remoteWorkroomStore(_ names: [String]) -> AppStore {
     let store = makeStore()
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: names.map { Workroom(name: $0, path: "/p/\($0)", vcsName: "main", warnings: []) }
@@ -95,43 +96,43 @@ final class AppStoreCloseTabsTests: XCTestCase {
   }
 
   private func failed(_ name: String) -> (TerminalTarget.ID, String) {
-    (TerminalTarget.workroomID(project: "/p", name: name), name)
+    (TargetID.workroom(project: "/p", name: name), name)
   }
 
-  /// Value: protects=a closed remote pane whose host kept its session shows an alert naming the workroom, but not once a quit has begun; fails_when=AppStore drops the handler or ignores isTerminating; why_new=RemotePaneCloseTests stops at TerminalSessions' .remoteCloseFailed event; seam=none
+  /// Value: protects=a closed remote pane whose host kept its session shows an alert naming the workroom, but not once a quit has begun; fails_when=AppStore drops the handler or ignores isTerminating; why_new=RemotePaneCloseTests stops at TerminalPanes' .remoteCloseFailed event; seam=none
   func testAFailedRemoteCloseAlertsUnlessTheAppIsQuitting() {
     let store = remoteWorkroomStore(["remote"])
     let (id, title) = failed("remote")
     store.terminals.onEvent?(.remoteCloseFailed(id, title: title))
-    XCTAssertEqual(store.errorTitle, "Couldn't stop the terminal in remote")
-    XCTAssertTrue(store.errorMessage?.contains("tries again when it next connects") == true)
+    XCTAssertEqual(store.modals.errorTitle, "Couldn't stop the terminal in remote")
+    XCTAssertTrue(store.modals.errorMessage?.contains("tries again when it next connects") == true)
 
-    store.clearError()
+    store.modals.clearError()
     WindowRegistry.shared.isTerminating = true
     defer { WindowRegistry.shared.isTerminating = false }
     store.terminals.onEvent?(.remoteCloseFailed(id, title: title))
-    XCTAssertNil(store.errorTitle, "a quit has stopped waiting; an alert would hold it up")
-    XCTAssertNil(store.errorMessage)
+    XCTAssertNil(store.modals.errorTitle, "a quit has stopped waiting; an alert would hold it up")
+    XCTAssertNil(store.modals.errorMessage)
   }
 
   /// Value: protects=a failed remote close never replaces an error already on screen, and the other panes of a workroom whose host is down add no alert of their own; fails_when=the notice overwrites errorMessage; why_new=the test above starts with no error showing; seam=none
   func testAFailedRemoteCloseNeverReplacesAnErrorShowing() {
     let store = remoteWorkroomStore(["remote"])
-    store.errorTitle = "Couldn't delete it"
-    store.errorMessage = "The teardown failed."
+    store.modals.errorTitle = "Couldn't delete it"
+    store.modals.errorMessage = "The teardown failed."
     let (id, title) = failed("remote")
     store.terminals.onEvent?(.remoteCloseFailed(id, title: title))
-    XCTAssertEqual(store.errorTitle, "Couldn't delete it", "the error being read is kept")
-    XCTAssertEqual(store.errorMessage, "The teardown failed.")
+    XCTAssertEqual(store.modals.errorTitle, "Couldn't delete it", "the error being read is kept")
+    XCTAssertEqual(store.modals.errorMessage, "The teardown failed.")
 
-    store.clearError()
+    store.modals.clearError()
     store.terminals.onEvent?(.remoteCloseFailed(id, title: title))
-    XCTAssertEqual(store.errorTitle, "Couldn't stop the terminal in remote")
+    XCTAssertEqual(store.modals.errorTitle, "Couldn't stop the terminal in remote")
     // Another pane of the same workroom fails too. Showing it again would reset the details,
     // which only a new error does, so this marks whether the notice was shown a second time.
-    store.errorDetails = "first notice"
+    store.modals.errorDetails = "first notice"
     store.terminals.onEvent?(.remoteCloseFailed(id, title: title))
-    XCTAssertEqual(store.errorDetails, "first notice", "shown only once")
+    XCTAssertEqual(store.modals.errorDetails, "first notice", "shown only once")
   }
 
   /// Value: protects=a failed remote close is not shown for a workroom that has been deleted or is being deleted, which it would tell the user to delete; fails_when=the notice ignores deletingWorkrooms or the project list; why_new=the tests above keep their workrooms; seam=none
@@ -139,11 +140,11 @@ final class AppStoreCloseTabsTests: XCTestCase {
     let store = remoteWorkroomStore(["going"])
     let (gone, goneTitle) = failed("gone")
     store.terminals.onEvent?(.remoteCloseFailed(gone, title: goneTitle))
-    XCTAssertNil(store.errorTitle, "a workroom no longer listed")
+    XCTAssertNil(store.modals.errorTitle, "a workroom no longer listed")
 
     let (going, goingTitle) = failed("going")
-    store.deletingWorkrooms.insert(going)
+    store.lifecycle.deletingWorkrooms.insert(going)
     store.terminals.onEvent?(.remoteCloseFailed(going, title: goingTitle))
-    XCTAssertNil(store.errorTitle, "a workroom being deleted")
+    XCTAssertNil(store.modals.errorTitle, "a workroom being deleted")
   }
 }

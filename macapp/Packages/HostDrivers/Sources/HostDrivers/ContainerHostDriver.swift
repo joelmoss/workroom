@@ -2,7 +2,6 @@ import DaemonConnection
 import Foundation
 import WorkroomDomain
 import WorkroomSystem
-import WorkroomVCS
 import WorkroomWire
 
 /// The first `HostDriver`. Its hosts are the ones the caller hands in over ssh (the ssh fixture,
@@ -12,7 +11,7 @@ import WorkroomWire
 /// `workroomd` as its entrypoint, reached through the runtime's own `exec` (#308), and `destroy`
 /// removes it. Nothing here persists.
 public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriver,
-  DaemonPlacingDriver,
+  DaemonPlacingDriver, StartableHostDriver, HostRecording,
   @unchecked Sendable
 {
   /// How the driver makes containers of its own: a container runtime's CLI (`docker`, or Apple's
@@ -31,8 +30,10 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
     /// are each a context behind the one `docker`, so without it a host made on one is looked for
     /// on whichever the user switched to since.
     public var context: String?
-    /// Which runtime's CLI `runtime` is: Docker's, or Apple's `container` (#309).
-    public var dialect: Dialect
+    /// Which runtime's CLI `runtime` is: Docker's, or Apple's `container` (#309). Apple's
+    /// `container` (1.5.0) runs each container in a VM of its own and has no `--restart`, no
+    /// `--filter` and no Go templates (`AppleContainerCLI`).
+    public var dialect: ContainerRuntime
     /// CPUs and memory (`4G`) each container gets, or nil for the runtime's own default. Apple's is
     /// 1 GB per container VM, too little for a compiler or a daemon; Docker's containers share its
     /// VM's.
@@ -47,7 +48,8 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
 
     public init(
       runtime: URL, image: String, user: String,
-      daemonSocket: String, labels: [String], context: String? = nil, dialect: Dialect = .docker,
+      daemonSocket: String, labels: [String], context: String? = nil,
+      dialect: ContainerRuntime = .docker,
       cpus: Int? = nil, memory: String? = nil, daemon: (@Sendable (String) -> URL?)? = nil,
       daemonFolder: URL? = nil
     ) {
@@ -63,14 +65,6 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
       self.cpus = cpus
       self.memory = memory
     }
-  }
-
-  /// The two container CLIs a driver can speak (#309). Apple's `container` (1.5.0) runs each
-  /// container in a VM of its own and has no `--restart`, no `--filter` and no Go templates
-  /// (`AppleContainerCLI`).
-  public enum Dialect: Sendable {
-    case docker
-    case apple
   }
 
   /// A host this driver made: its container, and for one an older build derived from a base, the
@@ -373,8 +367,9 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
 
   /// Starts `host`'s container if it is stopped, and waits until it can be logged in to (#309): a
   /// container someone stopped stays stopped, and a runtime with no restart policy (Apple's) leaves
-  /// every one stopped after a reboot. Only for a workroom the user opens (`RemoteHosts.activate`),
-  /// never for a background probe, which would start every container the app knows.
+  /// every one stopped after a reboot. Only for a workroom the user opens
+  /// (`HostReachability.activate`), never for a background probe, which would start every container
+  /// the app knows.
   public func startIfStopped(_ host: HostID) async throws {
     _ = try reach(host)
     guard case .remote(let id) = host, let made = lock.withLock({ provisioned[id] }) else {
@@ -437,6 +432,19 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
         container: Self.containerName(id), image: record.image, volumes: record.volumes ?? [])
       destroyed.remove(id)
     }
+  }
+
+  /// `record(of:)` as the descriptor's container record.
+  public func record(_ host: HostID, in descriptor: inout HostDescriptor) {
+    descriptor.container = record(of: host)
+  }
+
+  /// The descriptor's container record, unless this driver holds that host already.
+  public func adopt(_ descriptor: HostDescriptor) throws {
+    guard let id = descriptor.id, let record = descriptor.container,
+      self.record(of: .remote(id)) == nil
+    else { return }
+    try adopt(id, record)
   }
 
   /// Removes the containers and images carrying this driver's labels that are not `known` hosts'
@@ -674,7 +682,7 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
 
   /// The containers this driver began running that no config record names yet (#284), one file per
   /// runtime and Docker context. A name goes in before its `run`, and out once config records its
-  /// host (`RemoteHosts.adopt`) or it is removed. So a crash before a new workroom's host was
+  /// host (`HostReachability.adopt`) or it is removed. So a crash before a new workroom's host was
   /// recorded still leaves its container named here, and a launch whose config records nothing
   /// sweeps only these (`sweep(onlyPending:)`), never a live workroom that config fails to show.
   /// ponytail: a container removed by hand stays listed, costing its runtime one listing a launch;
@@ -720,13 +728,13 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
 
   /// A file name's runtime and Docker context. `@` is in no context's name, so no context (the
   /// current one) is told apart from one named `default`.
-  private static func suffix(_ dialect: Dialect, _ context: String?) -> String {
+  private static func suffix(_ dialect: ContainerRuntime, _ context: String?) -> String {
     (dialect == .apple ? "apple" : "docker") + (context.map { "@\($0)" } ?? "")
   }
 
   /// The runtimes and Docker contexts whose drivers, with hosts in `directory`, have containers
   /// pending (`pendingContainers`).
-  public static func pending(in directory: URL) -> [(dialect: Dialect, context: String?)] {
+  public static func pending(in directory: URL) -> [(dialect: ContainerRuntime, context: String?)] {
     ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []).compactMap {
       guard $0.hasPrefix(pendingPrefix), $0.hasSuffix(".json") else { return nil }
       let parts = $0.dropFirst(pendingPrefix.count).dropLast(".json".count)
@@ -741,7 +749,7 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
   }
 
   /// How a sweep's failure starts when it could not list the containers, so swept nothing: the
-  /// runtime was down, say. `RemoteHosts.adopt` sweeps that runtime again on a later reload.
+  /// runtime was down, say. `HostReachability.adopt` sweeps it again on a later reload.
   public static let listingFailed = "listing containers: "
 
   public static func containerName(_ id: UUID) -> String {
@@ -1299,4 +1307,7 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
     return SSHTransport.lastAttach(
       of: session, in: directory.appendingPathComponent(id.uuidString))
   }
+
+  /// A container's link is loopback.
+  public var linkCrossesNetwork: Bool { false }
 }

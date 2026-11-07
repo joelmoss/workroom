@@ -2,7 +2,6 @@ import DaemonConnection
 import Foundation
 import WorkroomDomain
 import WorkroomSystem
-import WorkroomVCS
 import os
 
 /// The first real provider driver (#256): boxd.sh machines, driven through the `boxd` CLI and
@@ -26,7 +25,9 @@ import os
 ///
 /// Everything the daemon keeps is on the machine's home disk (`daemonSocket`), so a machine that is
 /// stopped and started keeps its binary and its screens.
-public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @unchecked Sendable {
+public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDriver,
+  HostPresenceReporting, CheckoutClearingDriver, HostOptionsReading, @unchecked Sendable
+{
   public struct Configuration: Sendable {
     /// The `boxd` CLI, signed in.
     public var cli: URL
@@ -56,6 +57,8 @@ public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @
     /// The home the CLI runs with, which holds its sign-in (`credentialsFile`). The user's own,
     /// except in the fresh-user harness (`make app-run-boxd-fresh`).
     public var home: URL
+    /// The host-setup scripts the app bundles, which `create` runs on each new machine.
+    public var hostSetup: HostSetup
 
     public init(
       cli: URL, prefix: String = "workroom", org: String? = nil, account: String? = nil,
@@ -65,7 +68,7 @@ public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @
         ".ssh/config"),
       knownHosts: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
         ".ssh/known_hosts"),
-      home: URL = FileManager.default.homeDirectoryForCurrentUser
+      home: URL = FileManager.default.homeDirectoryForCurrentUser, hostSetup: HostSetup
     ) {
       self.cli = cli
       self.prefix = prefix
@@ -76,11 +79,12 @@ public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @
       self.sshConfig = sshConfig
       self.knownHosts = knownHosts
       self.home = home
+      self.hostSetup = hostSetup
     }
   }
 
   /// The host descriptor's `driver` for this provider's hosts.
-  public static let driverName = "boxd"
+  public static let driverName = HostKind.boxd.driver
   /// The user every boxd machine logs in as, whose home holds the daemon's state and the clone.
   public static let user = "boxd"
   /// Where Workroom keeps its state on a boxd machine: the daemon's socket and the sessions' screens.
@@ -146,7 +150,7 @@ public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @
         _ = try await cli(["machine", "new", name] + flags)
       }
       try await ProvisioningProgress.step(.setup) {
-        let script = try HostSetup.systemdScript()
+        let script = try configuration.hostSetup.systemdScript()
         let user = try ssh(id).user
         let command =
           "sudo sh -s -- "
@@ -350,13 +354,14 @@ public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @
 
   /// Whether `host` is asleep, from boxd's own record, without reaching the machine: an ssh login
   /// would wake it (#356). Nil when the CLI could not answer (missing, timed out, output it did not
-  /// expect, a machine without a status); `RemoteHosts` takes that as asleep for a background read.
+  /// expect, a machine without a status); `HostReachability` takes that as asleep for a background
+  /// read.
   ///
   /// `gone` when boxd answers that the machine is not found: deleted outside the app, or in an org
   /// that isn't active. Any other error the CLI answers with (signed out, another account) counts
   /// as asleep: the read can't tell, and connecting would wake a box the user may be paying for,
   /// so a background read leaves it alone; opening the workroom still connects.
-  public func presence(_ host: HostID) async -> Presence? {
+  public func presence(_ host: HostID) async -> HostPresence? {
     guard case .remote(let id) = host else { return nil }
     do {
       let output = try await cli(
@@ -370,9 +375,6 @@ public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @
       return failure.answered ? .asleep : nil
     } catch { return nil }
   }
-
-  /// What boxd says of a machine, for a background read (#356).
-  public enum Presence: Equatable, Sendable { case awake, asleep, gone }
 
   /// How long a status read (`presence`) waits for the CLI: a status sweep and a
   /// connect wait on it, so a hung CLI must not hold them for the CLI's usual 120 s.
@@ -454,6 +456,14 @@ public final class BoxdHostDriver: HostTerminalDriver, ProvisioningHostDriver, @
     } catch let failure as CLIFailure {
       throw HostDriverError.provisioning(failure.localizedDescription)
     }
+  }
+
+  /// The snapshots and the default size, read together. Only the size's own labels need it, so
+  /// the snapshots' failure is the one said.
+  public func readHostOptions() async throws -> HostOptionsFacts {
+    async let size = try? defaultSize()
+    async let names = snapshotNames()
+    return .boxd(snapshots: try await names, size: await size)
   }
 
   /// The statuses a connection would wake from: suspended and hibernated.

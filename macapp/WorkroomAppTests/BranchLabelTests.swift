@@ -13,7 +13,7 @@ final class BranchLabelTests: XCTestCase {
   private func makeStore() -> AppStore {
     let store = AppStore()
     store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: [Workroom(name: "feat", path: "/p/feat", vcsName: "workroom/feat", warnings: [])]
@@ -24,7 +24,7 @@ final class BranchLabelTests: XCTestCase {
 
   func testWorkroomBranchFromStatus() {
     let store = makeStore()
-    store.workroomStatuses[.workroom(project: "/p", name: "feat")] = WorkroomStatus(
+    store.vcsStatus.workroomStatuses[.workroom(project: "/p", name: "feat")] = WorkroomStatus(
       branchForCI: "feature/login")
     let target = store.target(for: .workroom(project: "/p", name: "feat"))!
     XCTAssertEqual(store.branchLabel(for: target), "feature/login")
@@ -32,7 +32,7 @@ final class BranchLabelTests: XCTestCase {
 
   func testRootBranchFromStatus() {
     let store = makeStore()
-    store.workroomStatuses[.root(project: "/p")] = WorkroomStatus(branchForCI: "main")
+    store.vcsStatus.workroomStatuses[.root(project: "/p")] = WorkroomStatus(branchForCI: "main")
     let target = store.target(for: .root(project: "/p"))!
     XCTAssertEqual(store.branchLabel(for: target), "main")
   }
@@ -53,7 +53,7 @@ final class BranchLabelTests: XCTestCase {
   func testResolvedNameWinsOverTheStatusSweep() {
     let store = makeStore()
     let sid = SidebarID.workroom(project: "/p", name: "feat")
-    store.workroomStatuses[sid] = WorkroomStatus(branchForCI: "stale-name")
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(branchForCI: "stale-name")
     store.setResolvedBranchName("fresh-name", for: sid)
     XCTAssertEqual(store.branchName(for: sid), "fresh-name")
     let target = store.target(for: sid)!
@@ -63,7 +63,7 @@ final class BranchLabelTests: XCTestCase {
   func testClearingTheResolvedNameFallsBackToTheSweep() {
     let store = makeStore()
     let sid = SidebarID.workroom(project: "/p", name: "feat")
-    store.workroomStatuses[sid] = WorkroomStatus(branchForCI: "from-sweep")
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(branchForCI: "from-sweep")
     store.setResolvedBranchName("from-resolver", for: sid)
     store.setResolvedBranchName(nil, for: sid)
     XCTAssertEqual(store.branchName(for: sid), "from-sweep")
@@ -77,11 +77,29 @@ final class BranchLabelTests: XCTestCase {
     let sid = SidebarID.workroom(project: "/p", name: "feat")
     store.setResolvedBranchName("old-name", for: sid)
 
-    store.mergeLocalStatus(
+    store.vcsStatus.mergeLocalStatus(
       WorkroomStatus(branchForCI: "switched-to"), into: sid)
 
     XCTAssertNil(store.resolvedBranchNames[sid], "the cache is no longer the freshest answer")
     XCTAssertEqual(store.branchName(for: sid), "switched-to")
+  }
+
+  /// The status is the app's, so a merge from any window's lane, or the sweep, settles every window's
+  /// cache: a second window showing the same workroom must not keep the old name.
+  /// Value: protects=two windows on one workroom agree on its branch after `git switch`;
+  /// fails_when=`VCSStatusService.mergeLocalStatus` settles no window, or only one
+  func testAMergeSettlesEveryWindowsResolvedName() {
+    let first = makeStore()
+    let second = AppStore(vcsStatus: first.vcsStatus)
+    let sid = SidebarID.workroom(project: "/p", name: "feat")
+    first.setResolvedBranchName("old-name", for: sid)
+    second.setResolvedBranchName("old-name", for: sid)
+
+    first.vcsStatus.mergeLocalStatus(WorkroomStatus(branchForCI: "switched-to"), into: sid)
+
+    XCTAssertNil(first.resolvedBranchNames[sid])
+    XCTAssertNil(second.resolvedBranchNames[sid], "the other window's cache is stale too")
+    XCTAssertEqual(second.branchName(for: sid), "switched-to")
   }
 
   /// A sweep that AGREES leaves it alone, and one with nothing to say (a detached HEAD) is not
@@ -91,14 +109,14 @@ final class BranchLabelTests: XCTestCase {
     let sid = SidebarID.workroom(project: "/p", name: "feat")
     store.setResolvedBranchName("feature/login", for: sid)
 
-    store.mergeLocalStatus(
+    store.vcsStatus.mergeLocalStatus(
       WorkroomStatus(branchForCI: "feature/login"), into: sid)
     XCTAssertEqual(store.resolvedBranchNames[sid], "feature/login")
 
-    store.mergeLocalStatus(WorkroomStatus(branchForCI: nil), into: sid)
+    store.vcsStatus.mergeLocalStatus(WorkroomStatus(branchForCI: nil), into: sid)
     XCTAssertEqual(store.resolvedBranchNames[sid], "feature/login")
 
-    store.mergeLocalStatus(WorkroomStatus(branchForCI: ""), into: sid)
+    store.vcsStatus.mergeLocalStatus(WorkroomStatus(branchForCI: ""), into: sid)
     XCTAssertEqual(store.resolvedBranchNames[sid], "feature/login")
   }
 
@@ -111,7 +129,8 @@ final class BranchLabelTests: XCTestCase {
     store.setResolvedBranchName("feature/login", for: workroom)
     store.setResolvedBranchName("main", for: root)
 
-    store.removeWorkroomLocally(store.projects[0].workrooms[0], in: store.projects[0])
+    store.removeWorkroomLocally(
+      store.projectStore.projects[0].workrooms[0], in: store.projectStore.projects[0])
     XCTAssertNil(store.resolvedBranchNames[workroom])
     XCTAssertEqual(store.resolvedBranchNames[root], "main", "only the deleted workroom is pruned")
 
@@ -119,7 +138,7 @@ final class BranchLabelTests: XCTestCase {
     let whole = makeStore()
     whole.setResolvedBranchName("feature/login", for: workroom)
     whole.setResolvedBranchName("main", for: root)
-    whole.removeProjectLocally(whole.projects[0])
+    whole.removeProjectLocally(whole.projectStore.projects[0])
     XCTAssertNil(whole.resolvedBranchNames[root])
     XCTAssertNil(whole.resolvedBranchNames[workroom])
   }
@@ -128,7 +147,7 @@ final class BranchLabelTests: XCTestCase {
   func testEmptyResolvedNameDoesNotWin() {
     let store = makeStore()
     let sid = SidebarID.workroom(project: "/p", name: "feat")
-    store.workroomStatuses[sid] = WorkroomStatus(branchForCI: "from-sweep")
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(branchForCI: "from-sweep")
     store.setResolvedBranchName("", for: sid)
     XCTAssertEqual(store.branchName(for: sid), "from-sweep")
   }
@@ -146,8 +165,8 @@ final class BranchLabelTests: XCTestCase {
   func testBranchNameIsCacheOnlyAndCostsNothing() {
     let store = makeStore()
     let sid = SidebarID.workroom(project: "/p", name: "feat")
-    store.workroomStatuses[sid] = WorkroomStatus(branchForCI: "feature/login")
-    store.workroomStatuses[.root(project: "/p")] = WorkroomStatus(branchForCI: "main")
+    store.vcsStatus.workroomStatuses[sid] = WorkroomStatus(branchForCI: "feature/login")
+    store.vcsStatus.workroomStatuses[.root(project: "/p")] = WorkroomStatus(branchForCI: "main")
     let target = store.target(for: sid)!
 
     let started = Date()

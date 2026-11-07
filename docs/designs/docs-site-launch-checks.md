@@ -1,5 +1,7 @@
 # Docs site: checks against the app
 
+Status: live. A working list with items still open by hand; delete it when they are done.
+
 The pages under `docs-site/` were drafted from the code and the README, never from the running app (D5). On 2026-10-20 every page's claims were checked against the code: about 390 matched it, 39 were wrong and were fixed, and the items below are what only the running app (or a real provider) can settle. Work through them, then delete this file.
 
 ## Contradictions found while drafting (resolved 2026-10-20)

@@ -15,7 +15,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use workroomd::pty::Pty;
+use workroomd::testing::Pty;
 
 #[allow(dead_code)] // not every helper is used here
 mod common;
@@ -1060,7 +1060,7 @@ fn read_until_on_pty(pty: &Pty, needle: &str, timeout: Duration) -> bool {
 fn kill_all_ends_every_session() {
     use std::io::Read;
     use std::os::unix::net::UnixStream;
-    use workroomd::serve::BUILD;
+    use workroomd::testing::BUILD;
     use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
     use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
 

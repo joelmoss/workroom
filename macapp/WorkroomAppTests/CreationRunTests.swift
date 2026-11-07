@@ -1,3 +1,4 @@
+import DevContainer
 import Foundation
 import WorkroomDomain
 import XCTest
@@ -16,7 +17,7 @@ final class CreationRunTests: XCTestCase {
 
   private let project = Project(path: "/p", vcs: "git", workrooms: [])
 
-  private func run(_ kind: CreationKind = .local, clock: Clock = Clock()) -> CreationRun {
+  private func run(_ kind: HostKind? = nil, clock: Clock = Clock()) -> CreationRun {
     CreationRun(
       project: project, kind: kind, splitAnchor: nil, previousSelection: nil,
       now: { clock.now })
@@ -30,7 +31,7 @@ final class CreationRunTests: XCTestCase {
   /// frame; fails_when=a step is missing, reordered or retitled; no_claim=none beyond protects
   func testEachKindListsItsWholePlanUpFront() {
     XCTAssertEqual(
-      run(.local).steps.map(\.title), ["Fetch base branch", "Create worktree", "Run setup script"])
+      run(nil).steps.map(\.title), ["Fetch base branch", "Create worktree", "Run setup script"])
     XCTAssertEqual(
       run(.container(.docker)).steps.map(\.id),
       ["repository", "image", "machine", "connect", "clone", "checkout", "script"])
@@ -58,7 +59,7 @@ final class CreationRunTests: XCTestCase {
   /// with no script, or a script's start finds no row; no_claim=the file check
   func testTheSetupScriptsRowIsListedOnlyWhenThereIsOne() {
     let run = CreationRun(
-      project: project, kind: .local, splitAnchor: nil, previousSelection: nil,
+      project: project, kind: nil, splitAnchor: nil, previousSelection: nil,
       hasSetupScript: false)
     XCTAssertEqual(run.steps.map(\.id), ["fetch", "worktree"])
     run.finish("script", as: .skipped(reason: "No setup script"))
@@ -74,22 +75,22 @@ final class CreationRunTests: XCTestCase {
   /// after the worktree or the checkout, and one without gets none; fails_when=the row is missing,
   /// misplaced, or shown with no include file; no_claim=the file check (`hasIncludeFile`)
   func testTheCopyLocalFilesRowIsListedOnlyWhenTheRootHasAnIncludeFile() {
-    func ids(_ kind: CreationKind, _ include: Bool) -> [String] {
+    func ids(_ kind: HostKind?, _ include: Bool) -> [String] {
       CreationRun(
         project: project, kind: kind, splitAnchor: nil, previousSelection: nil,
         hasIncludeFile: include
       ).steps.map(\.id)
     }
-    XCTAssertEqual(ids(.local, true), ["fetch", "worktree", "include", "script"])
-    XCTAssertEqual(ids(.local, false), ["fetch", "worktree", "script"])
-    for kind in [CreationKind.container(.docker), .boxd, .exeDev] {
+    XCTAssertEqual(ids(nil, true), ["fetch", "worktree", "include", "script"])
+    XCTAssertEqual(ids(nil, false), ["fetch", "worktree", "script"])
+    for kind in [HostKind.container(.docker), .boxd, .exeDev] {
       // The setup script's row follows, as on this Mac.
       XCTAssertEqual(
         Array(ids(kind, true).suffix(3)), ["checkout", "include", "script"], "\(kind)")
       XCTAssertFalse(ids(kind, false).contains("include"), "\(kind)")
     }
     let run = CreationRun(
-      project: project, kind: .local, splitAnchor: nil, previousSelection: nil,
+      project: project, kind: nil, splitAnchor: nil, previousSelection: nil,
       hasIncludeFile: true)
     XCTAssertEqual(run.steps[2].title, "Copy local files")
   }
@@ -99,7 +100,7 @@ final class CreationRunTests: XCTestCase {
   /// no_claim=none beyond protects
   func testALeftOutRowComesBackInItsPlanPlace() {
     let run = CreationRun(
-      project: project, kind: .local, splitAnchor: nil, previousSelection: nil)
+      project: project, kind: nil, splitAnchor: nil, previousSelection: nil)
     XCTAssertEqual(run.steps.map(\.id), ["fetch", "worktree", "script"])
     run.begin("include")
     XCTAssertEqual(run.steps.map(\.id), ["fetch", "worktree", "include", "script"])
@@ -125,7 +126,7 @@ final class CreationRunTests: XCTestCase {
   /// sent; fails_when=finish drops the reason or leaves the row running; no_claim=none beyond
   /// protects
   func testFinishEndsARowAsTheEventSays() {
-    let run = run(.local)
+    let run = run(nil)
     run.finish("fetch", as: .skipped(reason: "No remote to fetch from"))
     run.begin("worktree")
     run.finish("worktree", as: .done)
@@ -139,7 +140,7 @@ final class CreationRunTests: XCTestCase {
   /// Value: protects=succeed ends the running step done and skips the rest; fails_when=a step stays
   /// pending or running after success; no_claim=none beyond protects
   func testSucceedSkipsWhatNeverRan() {
-    let run = run(.local)
+    let run = run(nil)
     run.begin("worktree")
     run.succeed()
     XCTAssertEqual(
@@ -167,7 +168,7 @@ final class CreationRunTests: XCTestCase {
   /// Value: protects=a failure before any step began marks the first step failed; fails_when=no row
   /// shows what failed; no_claim=none beyond protects
   func testAFailureBeforeAnyStepMarksTheFirst() {
-    let run = run(.local)
+    let run = run(nil)
     run.fail(.failedBeforeWorkroom(message: "no"))
     XCTAssertEqual(run.steps.map(\.state), [.failed, .skipped(reason: nil), .skipped(reason: nil)])
   }
@@ -175,7 +176,7 @@ final class CreationRunTests: XCTestCase {
   /// Value: protects=a step the CLI already marked failed stays the failed one; fails_when=the next
   /// pending step is marked failed too; no_claim=none beyond protects
   func testAFailAfterTheStepFailedItselfMarksNothingElse() {
-    let run = run(.local)
+    let run = run(nil)
     run.begin("worktree")
     run.begin("script")
     run.finish("script", as: .failed)
@@ -188,7 +189,7 @@ final class CreationRunTests: XCTestCase {
   /// formats them
   func testDurationsComeFromTheInjectedClock() {
     let clock = Clock()
-    let run = run(.local, clock: clock)
+    let run = run(clock: clock)
     run.begin("fetch")
     clock.advance(4)
     run.begin("worktree")
@@ -222,7 +223,7 @@ final class CreationRunTests: XCTestCase {
   /// one on the running step, else the first; fails_when=a line is lost or filed under the wrong
   /// row; no_claim=none beyond protects
   func testLogLinesLandOnTheirStepAndStrayOnesOnTheRunningStep() {
-    let run = run(.local)
+    let run = run(nil)
     run.append("before anything", to: nil)
     run.begin("worktree")
     run.append("$ git worktree add", to: "worktree")
@@ -237,7 +238,7 @@ final class CreationRunTests: XCTestCase {
   /// running step; fails_when=skipped steps are left out of the fraction; no_claim=the circle's
   /// drawing
   func testProgressCountsSkippedAsCompleteAndNamesTheRunningStep() {
-    let run = run(.local)
+    let run = run(nil)
     run.finish("fetch", as: .skipped(reason: nil))
     run.begin("worktree")
     XCTAssertEqual(run.progress.fraction, 1.0 / 3)
@@ -287,9 +288,9 @@ final class CreationRunTests: XCTestCase {
   /// Value: protects=the destination text the pane's subtitle and the provisional row share;
   /// fails_when=a kind names the wrong place; no_claim=none beyond protects
   func testEachKindNamesItsDestination() {
-    XCTAssertEqual(CreationKind.local.destination, "This Mac")
-    XCTAssertEqual(CreationKind.container(.apple).destination, "Apple Container")
-    XCTAssertEqual(CreationKind.boxd.destination, "boxd")
-    XCTAssertEqual(CreationKind.exeDev.destination, "exe.dev")
+    XCTAssertEqual(CreationRun.destination(of: nil), "This Mac")
+    XCTAssertEqual(CreationRun.destination(of: .container(.apple)), "Apple Container")
+    XCTAssertEqual(CreationRun.destination(of: .boxd), "boxd")
+    XCTAssertEqual(CreationRun.destination(of: .exeDev), "exe.dev")
   }
 }

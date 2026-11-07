@@ -111,19 +111,19 @@ final class ChangeBadgeTests: XCTestCase {
   // which semantic reads which token; seam=none; no_claim=the .secondary/.purple quiet arms.
   func testStatusSemanticsReadTheTrafficLightTokens() {
     let t = ThemeService.shared.tokens
-    XCTAssertEqual(rgb(VCSStatusPresentation.Semantic.dirty.color), rgb(t.warning))
-    XCTAssertEqual(rgb(VCSStatusPresentation.Semantic.conflict.color), rgb(t.failure))
-    XCTAssertEqual(rgb(VCSStatusPresentation.Semantic.ciPass.color), rgb(t.success))
-    XCTAssertEqual(rgb(VCSStatusPresentation.Semantic.ciFail.color), rgb(t.failure))
-    XCTAssertEqual(rgb(VCSStatusPresentation.Semantic.ciRunning.color), rgb(t.warning))
-    XCTAssertEqual(rgb(PRPresentation.Semantic.open.color), rgb(t.success))
-    XCTAssertEqual(rgb(PRPresentation.Semantic.closed.color), rgb(t.failure))
-    XCTAssertEqual(rgb(PRPresentation.ReviewSemantic.approved.color), rgb(t.success))
-    XCTAssertEqual(rgb(PRPresentation.ReviewSemantic.changesRequested.color), rgb(t.failure))
-    XCTAssertEqual(rgb(PRPresentation.ReviewSemantic.requested.color), rgb(t.warning))
-    XCTAssertEqual(rgb(PRPresentation.CheckSemantic.passing.color), rgb(t.success))
-    XCTAssertEqual(rgb(PRPresentation.CheckSemantic.failing.color), rgb(t.failure))
-    XCTAssertEqual(rgb(PRPresentation.CheckSemantic.pending.color), rgb(t.warning))
+    XCTAssertEqual(rgb(VCSStatusPresentation.Semantic.dirty.color(t)), rgb(t.warning))
+    XCTAssertEqual(rgb(VCSStatusPresentation.Semantic.conflict.color(t)), rgb(t.failure))
+    XCTAssertEqual(rgb(VCSStatusPresentation.Semantic.ciPass.color(t)), rgb(t.success))
+    XCTAssertEqual(rgb(VCSStatusPresentation.Semantic.ciFail.color(t)), rgb(t.failure))
+    XCTAssertEqual(rgb(VCSStatusPresentation.Semantic.ciRunning.color(t)), rgb(t.warning))
+    XCTAssertEqual(rgb(PRPresentation.Semantic.open.color(t)), rgb(t.success))
+    XCTAssertEqual(rgb(PRPresentation.Semantic.closed.color(t)), rgb(t.failure))
+    XCTAssertEqual(rgb(PRPresentation.ReviewSemantic.approved.color(t)), rgb(t.success))
+    XCTAssertEqual(rgb(PRPresentation.ReviewSemantic.changesRequested.color(t)), rgb(t.failure))
+    XCTAssertEqual(rgb(PRPresentation.ReviewSemantic.requested.color(t)), rgb(t.warning))
+    XCTAssertEqual(rgb(PRPresentation.CheckSemantic.passing.color(t)), rgb(t.success))
+    XCTAssertEqual(rgb(PRPresentation.CheckSemantic.failing.color(t)), rgb(t.failure))
+    XCTAssertEqual(rgb(PRPresentation.CheckSemantic.pending.color(t)), rgb(t.warning))
   }
 
   /// A moved file is ONE row, so its old path has nowhere to live except this line — `old → new`.

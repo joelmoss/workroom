@@ -6,14 +6,14 @@ import WorkroomSystem
 /// other end is the stdout of the local process carrying it (`ssh host workroomd relay`), and its
 /// stdin too for a connection (see `Purpose`).
 ///
-/// Whoever connects over it owns both: `DaemonVCSConnection` closes the descriptor and ends the
+/// Whoever connects over it owns both: `DaemonClient` closes the descriptor and ends the
 /// process with the connection. The carrier's exit is also how a lost link is noticed. The child
 /// holds the only copy of its end of the pair, so when it exits, that end closes and the next read
 /// on this one sees EOF.
 public final class HostStream: @unchecked Sendable {
   /// What the stream is spawned for, which decides how the carrier's stdin is wired.
   public enum Purpose {
-    /// A connection (`DaemonVCSConnection.connect(host:stream:)`): the carrier's stdin and stdout
+    /// A connection (`DaemonClient.connect(host:stream:)`): the carrier's stdin and stdout
     /// are one socket, the descriptor handed off.
     case connection
     /// A one-off exchange (`communicate`): the carrier's stdin is a socketpair of its own, so the
@@ -115,7 +115,7 @@ public final class HostStream: @unchecked Sendable {
     guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else {
       throw HostConnectionError.serviceUnavailable("socketpair failed: errno \(errno)")
     }
-    DaemonVCSConnection.noSignalOnWrite(pair[0])
+    DaemonClient.noSignalOnWrite(pair[0])
     _ = fcntl(pair[0], F_SETFD, FD_CLOEXEC)
     _ = fcntl(pair[1], F_SETFD, FD_CLOEXEC)
     return (pair[0], pair[1])

@@ -3,7 +3,7 @@
 // channels it accepts (the nested "floor" model).
 //
 // This is the single source of truth for channel semantics on the Go side. The
-// macOS app (macapp Core/ReleaseChannel.swift) and the shell installers
+// macOS app (macapp Core/AppShell/ReleaseChannel.swift) and the shell installers
 // (install.sh / install.ps1 via Scripts/channel-helper.sh) mirror these exact
 // rules — if you change the classification here, change all three.
 //

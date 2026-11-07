@@ -5,15 +5,15 @@ import XCTest
 
 /// What a target contributes to a saved session (issue #46).
 ///
-/// Uses the same factory seam as `TerminalSessionsTests`: a `GhosttySurfaceView` only creates its PTY
+/// Uses the same factory seam as `TerminalPanesTests`: a `GhosttySurfaceView` only creates its PTY
 /// when it enters a window, so constructing one here spawns nothing.
 @MainActor
 final class SessionCaptureTests: XCTestCase {
   private let target = TerminalTarget(
-    id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
+    id: .workroom(project: "/p", name: "foo"), title: "foo", path: "/tmp", isMissing: false)
 
-  private func makeSessions() -> TerminalSessions {
-    let sessions = TerminalSessions()
+  private func makeSessions() -> TerminalPanes {
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command)
     }
@@ -22,7 +22,7 @@ final class SessionCaptureTests: XCTestCase {
   }
 
   /// Mirrors what `AppStore.captureWindowSession` does, without needing a window or a store.
-  private func capture(_ sessions: TerminalSessions) -> TargetSession? {
+  private func capture(_ sessions: TerminalPanes) -> TargetSession? {
     guard let captured = sessions.sessionCapture(forTargetID: target.id) else { return nil }
     var keys: [TerminalTab.ID: String] = [:]
     var tabs: [TabSession] = []
@@ -34,13 +34,33 @@ final class SessionCaptureTests: XCTestCase {
     }
     guard !tabs.isEmpty else { return nil }
     return TargetSession(
-      targetID: target.id, tabs: tabs,
+      targetID: target.id.encoded, tabs: tabs,
       splits: captured.splits.compactMap { LayoutNode<String>.capture($0) { keys[$0] } },
       focusedKey: captured.focused.flatMap { keys[$0] },
       terminalCounter: captured.counter)
   }
 
   // MARK: Shape
+
+  /// The saved cwd is the shell's last report, which reaches the tab in the same call that tells
+  /// the surface: a pane that never reported saves none, and its restore opens at the target.
+  /// Value: protects=a restored terminal reopens where its shell last was; fails_when=the report
+  /// stops reaching the tab (`updateCwd`), now that the capture reads only the tab; why_new=no test
+  /// saved a reported cwd; seam=none; no_claim=libghostty's OSC 7 parsing.
+  func testCapturesTheCwdTheShellLastReported() throws {
+    let sessions = makeSessions()
+    let quiet = sessions.addTab(for: target)
+    let moved = sessions.addTab(for: target)
+    let surface = try XCTUnwrap(sessions.surface(moved))
+    surface.handlePwd("/work/one")
+    surface.handlePwd("/work/two")
+
+    let captured = try XCTUnwrap(capture(sessions))
+    let cwds = Dictionary(
+      uniqueKeysWithValues: captured.tabs.map { ($0.key, $0.terminal?.cwd) })
+    XCTAssertEqual(cwds[moved.id.uuidString], "/work/two")
+    XCTAssertEqual(cwds[quiet.id.uuidString], .some(nil), "no report, no saved directory")
+  }
 
   func testCapturesTabsInStripOrderWithTheCounter() throws {
     let sessions = makeSessions()
@@ -56,6 +76,40 @@ final class SessionCaptureTests: XCTestCase {
       ["Terminal 1", "Terminal 2", "Terminal 3"])
     XCTAssertEqual(captured.terminalCounter, 3, "so the next ⌘T is Terminal 4, not Terminal 1")
     XCTAssertEqual(captured.tabs.map(\.key), sessions.tabs(for: target).map(\.id.uuidString))
+  }
+
+  /// Two windows showing one workroom (#444 Q12) each save their own tabs, split, focus and counter,
+  /// and nothing of the other's: the tabs are app-wide (ADR 0069), but a window's capture reads
+  /// through its own layout. One window's saved layout is byte for byte what it was before the
+  /// other opened tabs there.
+  /// Value: protects=session.json for a two-window, one-workroom state; fails_when=a capture reads
+  /// the app's tabs rather than its window's layout; why_new=no capture test had two windows on one
+  /// target; seam=none; no_claim=the window list `SavedLayoutCoordinator` writes.
+  func testTwoWindowsOnOneWorkroomEachSaveOnlyTheirOwnTabs() throws {
+    let one = makeSessions()
+    one.addTab(for: target)
+    one.splitFocusedPane(for: target, orientation: .horizontal)
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = .sortedKeys
+    let alone = try encoder.encode(XCTUnwrap(capture(one)))
+
+    let two = makeSessions()
+    let theirs = two.addTab(for: target)
+    two.addTab(for: target)
+    two.addTab(for: target)
+
+    let oneCaptured = try XCTUnwrap(capture(one))
+    XCTAssertEqual(try encoder.encode(oneCaptured), alone, "the other window changed this one's")
+    let twoCaptured = try XCTUnwrap(capture(two))
+    XCTAssertEqual(
+      Set(oneCaptured.tabs.map(\.key)).intersection(twoCaptured.tabs.map(\.key)), [],
+      "no tab saved by both windows")
+    XCTAssertEqual(oneCaptured.tabs.count, 2)
+    XCTAssertEqual(oneCaptured.splits.count, 1)
+    XCTAssertEqual(twoCaptured.tabs.map(\.key), two.tabs(for: target).map(\.id.uuidString))
+    XCTAssertTrue(twoCaptured.splits.isEmpty)
+    XCTAssertEqual(twoCaptured.terminalCounter, 3, "each window numbers its own terminals")
+    XCTAssertNotEqual(twoCaptured.focusedKey, theirs.id.uuidString, "its own focus, the last tab")
   }
 
   func testCapturedSplitAddressesTheCapturedTabs() throws {

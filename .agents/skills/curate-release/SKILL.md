@@ -3,7 +3,7 @@ name: curate-release
 description: Workroom's tag-driven release process — channel architecture (stable/pre vs the side-by-side Nightly build), keeping the channel-classification logic in lockstep across Go/Swift/shell, and curating GitHub release notes after a tag publishes.
 ---
 
-Tag-driven (see CONTRIBUTING.md "Deployment & Releases"). After a release publishes, **curate its GitHub release
+Tag-driven (see `docs/contributing/releasing.md`). After a release publishes, **curate its GitHub release
 notes** — replace GoReleaser's raw commit list with a succinct, themed summary in the style of
 `v2.0.0-beta.1` (a headline, a one-line framing, and grouped bullets). The commit list is what
 the git log is for.
@@ -28,13 +28,14 @@ nothing can drift/collide (the main binary rejects `--channel nightly`).
 `release/X.Y` branch (`git branch release/2.0 v2.0.0`), fixes **cherry-picked** from master, never
 merged back — release-branch tags must stay unreachable from master or the nightly's `git describe`
 base goes wrong. `release.yml` has no branch filter, so a tag on a release branch just works. CI
-covers `release/**`. Full runbook: CONTRIBUTING "Patch releases", including the one open caveat
+covers `release/**`. Full runbook: `docs/contributing/releasing.md` "Patch releases", including the one open caveat
 (patching an *old* minor makes it GitHub's "Latest" by creation date and misleads the stable
 updater).
 
 Canonical tag→channel classification is `internal/channel` (Go), mirrored by
-`macapp/WorkroomApp/Core/ReleaseChannel.swift` and `macapp/Scripts/channel-helper.sh` — **keep the
-three in lockstep**. **Two Sparkle feeds**, both assets on the fixed `appcast` release: `appcast.xml` (stable + pre)
+`macapp/Scripts/channel-helper.sh`; the two share `internal/channel/testdata/channel_cases.tsv` —
+**keep them in lockstep**. `macapp/WorkroomApp/Core/AppShell/ReleaseChannel.swift` classifies no
+tags: its channel raw names must match what `appcast.sh` writes. **Two Sparkle feeds**, both assets on the fixed `appcast` release: `appcast.xml` (stable + pre)
 and `appcast-nightly.xml` (one rolling item). Nightly needs its own because Sparkle offers every
 UNTAGGED item to every client whatever `allowedChannels` says — on the shared feed a Nightly
 install was offered the main DMG the moment a stable build number outran the newest nightly item,

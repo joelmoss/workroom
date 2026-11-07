@@ -6,8 +6,8 @@ import Foundation
 /// - `PaneLayout<SidebarID>` — the workroom-into-workroom split (issue #23 follow-up).
 ///
 /// Both instantiations hold a LIST of these trees: several disjoint groups at once, each with ≥2
-/// leaves and at most one visible — `TerminalSessions.splitsByTarget` per terminal target, and
-/// `AppStore.workroomSplits` per window. Either way a
+/// leaves and at most one visible — a `PaneSplitGroups`, whose rules both share, held per terminal
+/// target by `TerminalPanes` and per window by `AppStore`. Either way a
 /// leaf REFERENCES its content by id — it does not own the view/surface (the tab / target detail does).
 /// That keeps this a pure value tree: `Equatable`, and unit-testable with no AppKit/libghostty in sight.
 ///
@@ -194,6 +194,24 @@ public indirect enum PaneLayout<Leaf: Hashable>: Equatable {
     }
   }
 
+  /// This tree as a divider drag shows it: `ratio` on the split node `splitID`, while that node
+  /// still holds `stored`, its ratio when the drag began. Once the node has moved for another
+  /// reason (a re-even landing mid-drag, issue #126), or is gone, the tree as it is, so the
+  /// divider re-anchors on the new value instead of replaying its stale start. Both splits'
+  /// dividers draw through this while a drag is live and write their ratio only on release.
+  public func showingDrag(_ ratio: CGFloat, forSplit splitID: UUID, from stored: CGFloat)
+    -> PaneLayout<Leaf>
+  {
+    guard self.ratio(forSplit: splitID) == stored else { return self }
+    return settingRatio(ratio, forSplit: splitID)
+  }
+
+  /// `showingDrag` for the drag in flight, or the tree as it is when there is none.
+  public func showing(_ drag: DividerDrag?) -> PaneLayout<Leaf> {
+    guard let drag else { return self }
+    return showingDrag(drag.ratio, forSplit: drag.split, from: drag.stored)
+  }
+
   /// Number of leaves in this (sub)tree (issue #83). A lone leaf is 1; a split is the sum of its
   /// children. Kept for callers that need the true pane count; `equalized()` deliberately does NOT
   /// weight by it — see `slots(along:)`.
@@ -283,3 +301,22 @@ public indirect enum PaneLayout<Leaf: Hashable>: Equatable {
 }
 
 extension PaneLayout: Sendable where Leaf: Sendable {}
+
+/// A divider drag in flight, held by the view that draws the split rather than written to its
+/// store on every mouse-moved tick: the ratio dragged to on split node `split`, and `stored`, that
+/// node's ratio when the drag began, so a re-even landing mid-drag (issue #126) drops the override
+/// (`PaneLayout.showing`). Both splits' dividers park their drags in one, the workroom split's
+/// since issue #139 and the terminal panes' since plan step 3.5; the release commits the ratio.
+public struct DividerDrag: Equatable, Sendable {
+  public let split: UUID
+  public let ratio: CGFloat
+  public let stored: CGFloat
+
+  /// A drag to `ratio` on `split`, measured against `layout`'s ratio for it, or `fallback` (the
+  /// divider's own) when the layout no longer has the node.
+  public init<Leaf>(split: UUID, ratio: CGFloat, over layout: PaneLayout<Leaf>, fallback: CGFloat) {
+    self.split = split
+    self.ratio = ratio
+    stored = layout.ratio(forSplit: split) ?? fallback
+  }
+}

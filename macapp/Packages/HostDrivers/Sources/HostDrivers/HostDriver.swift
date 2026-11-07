@@ -1,8 +1,8 @@
 import DaemonConnection
 import Darwin
 import Foundation
+import WorkroomDomain
 import WorkroomSystem
-import WorkroomVCS
 
 /// Reaches a host, whether a provider made it or the user brought it over SSH.
 ///
@@ -18,7 +18,7 @@ public protocol HostDriver: Sendable {
   /// Whether connect starts an unsupervised daemon when nothing listens (SSH hosts).
   var startsDaemon: Bool { get }
   /// A byte stream to the daemon on `host`, for
-  /// `DaemonVCSConnection.connect(host:stream:)`. Not the first thing to open on a host:
+  /// `DaemonClient.connect(host:stream:)`. Not the first thing to open on a host:
   /// `DaemonBootstrap.connect` runs the bootstrap first (#231), which is what puts a daemon there.
   /// Spawned as a `.connection`, which `connect` takes over (`HostStream.handOff`).
   func openStream(to host: HostID) async throws -> HostStream
@@ -29,6 +29,9 @@ public protocol HostDriver: Sendable {
   /// is the stream, its stdin a socket of its own that `communicate` closes for EOF (#305).
   /// `openStream` runs the same carrier with the relay as the command, as a `.connection`.
   func exec(_ command: String, on host: HostID) async throws -> HostStream
+  /// `exec` over a login of its own, for a command that must outlive the exchange's login, as the
+  /// daemon's start must: a driver whose exchanges share one connection (SSH) opens another.
+  func execIndependently(_ command: String, on host: HostID) async throws -> HostStream
 }
 
 /// A driver that owns the hosts it creates. An SSH host is the user's server and deliberately
@@ -90,21 +93,36 @@ extension HostDriver {
   /// doesn't say otherwise.
   public var daemonSocket: String { DaemonInstall.defaultSocket }
   public var startsDaemon: Bool { false }
+  /// Every exchange has a login of its own unless the driver shares one.
+  public func execIndependently(_ command: String, on host: HostID) async throws -> HostStream {
+    try await exec(command, on: host)
+  }
 }
 
-/// What a provider driver runs on a new host to set it up.
-public enum HostSetup {
+/// Finds a shell script the app bundles by its name, without `.sh`, or nil when this build has
+/// none. The app answers from its bundle and a package test from the checkout, so the package
+/// never reads `Bundle.main`. `HostSetup` and `DaemonBootstrap` each look in a folder of their own.
+public typealias ScriptLocator = @Sendable (String) -> URL?
+
+/// What a provider driver runs on a new host to set it up: the scripts the app bundles under
+/// `host-setup`, found by `scripts`.
+public struct HostSetup: Sendable {
+  public let scripts: ScriptLocator
+
+  public init(scripts: @escaping ScriptLocator) {
+    self.scripts = scripts
+  }
+
   /// `Resources/host-setup/systemd.sh`: the identity unit and the daemon's supervisor, for a machine
   /// that runs systemd (boxd, exe.dev).
-  public static func systemdScript() throws -> String { try script("systemd") }
+  public func systemdScript() throws -> String { try script("systemd") }
 
   /// `Resources/host-setup/exedev-github.sh`: points an exe.dev VM's git and gh at exe.dev's
   /// GitHub integration.
-  public static func exeDevGitHubScript() throws -> String { try script("exedev-github") }
+  public func exeDevGitHubScript() throws -> String { try script("exedev-github") }
 
-  public static func script(_ name: String) throws -> String {
-    guard
-      let url = Bundle.main.url(forResource: name, withExtension: "sh", subdirectory: "host-setup")
+  public func script(_ name: String) throws -> String {
+    guard let url = scripts(name)
     else { throw HostDriverError.invalidConfiguration("this build has no host-setup/\(name).sh") }
     return try String(contentsOf: url, encoding: .utf8)
   }
@@ -140,6 +158,9 @@ public protocol HostTerminalDriver: HostDriver {
   /// pane's exit status is `login`'s, always 0 (#392). `.finished` on a host with no attach of its
   /// own.
   func lastAttach(of session: UUID, on host: HostID) -> LastAttach
+  /// Whether a pane's link to these hosts leaves this Mac, so a network change can break it: not
+  /// a container's, which is loopback.
+  var linkCrossesNetwork: Bool { get }
 }
 
 /// A driver that puts the daemon on some of its hosts itself, from outside the host (#308): a
@@ -170,6 +191,8 @@ public enum LastAttach: Equatable, Sendable {
 }
 
 extension HostTerminalDriver {
+  public var linkCrossesNetwork: Bool { true }
+
   /// An attach that says nothing about its session.
   public func attachCommand(
     to host: HostID, session: UUID, workingDirectory: String, restored: Bool
@@ -211,12 +234,10 @@ public enum HostDriverError: Error, Equatable, Sendable, LocalizedError {
   /// Only Nightly and Dev builds made them; they are made again rather than migrated.
   case olderContainer
 
-  /// What a container made by an older build says, wherever it is met: what any older host says.
-  public static let olderContainerMessage = RepositoryRoutingError.olderLayoutMessage
-
   public var errorDescription: String? {
     switch self {
-    case .olderContainer: return Self.olderContainerMessage
+    // What any older host says.
+    case .olderContainer: return HostID.olderLayoutMessage
     case .unknownHost: return "This driver has no such host."
     case .notImplemented(let what): return "\(what) is not implemented yet."
     case .invalidConfiguration(let detail): return "Invalid host configuration: \(detail)"

@@ -1,6 +1,9 @@
 import DaemonConnection
+import DaemonConnectionTestSupport
 import Darwin
 import HostDrivers
+import Synchronization
+import WorkroomDomain
 import WorkroomVCS
 import WorkroomWire
 import XCTest
@@ -18,7 +21,7 @@ import XCTest
 /// and the ssh leg from Rust (`remote_transport.rs`, on the Linux runner).
 final class RemoteHostIntegrationTests: XCTestCase {
   private var directory: URL!
-  private var connections: [DaemonVCSConnection] = []
+  private var connections: [DaemonClient] = []
 
   override func setUp() {
     super.setUp()
@@ -61,12 +64,14 @@ final class RemoteHostIntegrationTests: XCTestCase {
       daemon: URL(fileURLWithPath: try need("WR_SSH_FIXTURE_DAEMON")))
   }
 
-  private func connect(_ host: SSHTransport.Host) async throws -> (
-    DaemonVCSConnection, UUID
+  /// In its caller's isolation, so a main-actor test can call it without handing the test case to
+  /// another executor.
+  nonisolated(nonsending) private func connect(_ host: SSHTransport.Host) async throws -> (
+    DaemonClient, UUID
   ) {
     let id = UUID()
     let driver = ContainerHostDriver(hosts: [id: host], directory: directory)
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: .remote(id), stream: try await driver.openStream(to: .remote(id)))
     connections.append(connection)
     return (connection, id)
@@ -191,8 +196,9 @@ final class RemoteHostIntegrationTests: XCTestCase {
     try onHost(fixture, "mkdir -p \(path)/lib && echo hi > \(path)/lib/only-here.rb")
     let (connection, id) = try await connect(fixture.host)
     let target = TerminalTarget(
-      id: "remote", title: "remote", path: path, unavailability: .remote, remoteHost: id)
-    let sessions = TerminalSessions()
+      id: .workroom(project: "/p", name: "remote"), title: "remote", path: path,
+      unavailability: .remote, remoteHost: id)
+    let sessions = TerminalPanes()
     sessions.remoteFiles = { location in
       try connection.files(context: FileContext(location: location, sharedLocation: nil))
     }
@@ -244,14 +250,14 @@ final class RemoteHostIntegrationTests: XCTestCase {
   /// Run through `/bin/sh -c`, as libghostty runs a pane's command. No local terminal, so ssh
   /// allocates none on the host either, and the attach there relays over pipes, as the Rust
   /// harnesses' do.
+  // Unchecked for the `Process` and `Pipe`, which are set up in `init` and only read after.
   final class Pane: @unchecked Sendable {
     let process = Process()
     private let input = Pipe()
-    private let lock = NSLock()
-    private var seen = ""
+    private let seen = Mutex("")
     /// From `terminationHandler`: `waitUntilExit`/`isRunning` are not reliable for a process
     /// launched from an async test (see `HostStream.spawn`).
-    private var exited: Int32?
+    private let exited = Mutex<Int32?>(nil)
 
     init(command: String) throws {
       process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -267,10 +273,10 @@ final class RemoteHostIntegrationTests: XCTestCase {
           handle.readabilityHandler = nil
           return
         }
-        self?.lock.withLock { self?.seen += String(decoding: data, as: UTF8.self) }
+        self?.seen.withLock { $0 += String(decoding: data, as: UTF8.self) }
       }
       process.terminationHandler = { [weak self] finished in
-        self?.lock.withLock { self?.exited = finished.terminationStatus }
+        self?.exited.withLock { $0 = finished.terminationStatus }
       }
       try process.run()
     }
@@ -279,16 +285,16 @@ final class RemoteHostIntegrationTests: XCTestCase {
 
     func read(until needle: String, within seconds: TimeInterval = 20) -> String {
       let deadline = Date().addingTimeInterval(seconds)
-      while Date() < deadline, !lock.withLock({ seen.contains(needle) }) {
+      while Date() < deadline, !seen.withLock({ $0.contains(needle) }) {
         Thread.sleep(forTimeInterval: 0.05)
       }
-      return lock.withLock { seen }
+      return seen.withLock { $0 }
     }
 
     /// The link dropping hard: ssh killed, with no goodbye to the host.
     func dropLink() {
       // Never a pid already reaped, which may be someone else's by now.
-      guard lock.withLock({ exited == nil }) else { return }
+      guard exited.withLock({ $0 == nil }) else { return }
       kill(process.processIdentifier, SIGKILL)
       _ = exitCode(within: 10)
     }
@@ -297,10 +303,10 @@ final class RemoteHostIntegrationTests: XCTestCase {
     /// lost link. Nil while it is still running at the deadline.
     func exitCode(within seconds: TimeInterval) -> Int32? {
       let deadline = Date().addingTimeInterval(seconds)
-      while lock.withLock({ exited }) == nil, Date() < deadline {
+      while exited.withLock({ $0 }) == nil, Date() < deadline {
         Thread.sleep(forTimeInterval: 0.05)
       }
-      return lock.withLock { exited }
+      return exited.withLock { $0 }
     }
   }
 
@@ -329,7 +335,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     )
     let gone = Date().addingTimeInterval(10)
     while try onHost(fixture, "\(Self.supervisedDaemon) || true") != "", Date() < gone {
-      Thread.sleep(forTimeInterval: 0.2)
+      try await Task.sleep(for: .milliseconds(200))
     }
     XCTAssertEqual(try onHost(fixture, "\(Self.supervisedDaemon) || true"), "")
     let id = UUID()
@@ -384,7 +390,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
       command: driver.attachCommand(
         to: .remote(id), session: UUID(), workingDirectory: "/home/workroom", restored: false))
     defer { pane.dropLink() }
-    Thread.sleep(forTimeInterval: 1)
+    try await Task.sleep(for: .seconds(1))
     // `sudo` is the integration's wrapper, which keeps `TERMINFO` across it.
     pane.type(
       "echo \"T=$TERM\"; type sudo; infocmp -x \"$TERM\" >/dev/null && echo FOU\"\"ND\n")
@@ -400,7 +406,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
       command: driver.attachCommand(
         to: .remote(id), session: UUID(), workingDirectory: "/home/workroom", restored: false))
     defer { plain.dropLink() }
-    Thread.sleep(forTimeInterval: 1)
+    try await Task.sleep(for: .seconds(1))
     plain.type("echo \"T=$TERM\"; echo DO\"\"NE\n")
     let fallback = plain.read(until: "DONE")
     XCTAssertTrue(fallback.contains("T=xterm-256color"), fallback)
@@ -460,7 +466,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
       held: layout, key: key, targetID: "wr|/Users/a/app|w", store: try macA.layouts())
     XCTAssertEqual(seeded.revision, 1)
 
-    let macB = try await DaemonVCSConnection.connect(
+    let macB = try await DaemonClient.connect(
       host: .remote(id), stream: try await driver.openStream(to: .remote(id)))
     connections.append(macB)
     let resolved = try await HostLayoutSync.resolve(
@@ -501,7 +507,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     for _ in 0..<50 {
       state = try onHost(fixture, "kill -0 \(pid) 2>/dev/null && echo alive || echo gone")
       if state == "gone" { break }
-      Thread.sleep(forTimeInterval: 0.1)
+      try await Task.sleep(for: .milliseconds(100))
     }
     XCTAssertEqual(state, "gone", "the shell outlived its session")
     let listed = try await connection.workingDirectory(of: session)
@@ -528,7 +534,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
       command: driver.attachCommand(
         to: .remote(id), session: session, workingDirectory: "/home/workroom", restored: false))
     defer { first.dropLink() }
-    Thread.sleep(forTimeInterval: 1)
+    try await Task.sleep(for: .seconds(1))
     first.type("echo PID=$$; echo READ\"\"Y\n")
     let before = first.read(until: "READY")
     let pid = try XCTUnwrap(
@@ -548,7 +554,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     defer { second.dropLink() }
     let repainted = second.read(until: "READY")
     XCTAssertTrue(repainted.contains(pid), repainted)
-    Thread.sleep(forTimeInterval: 0.5)
+    try await Task.sleep(for: .milliseconds(500))
     second.type("echo NOW=$$ DO\"\"NE; exit 7\n")
     let after = second.read(until: "DONE")
     XCTAssertTrue(after.contains("NOW=\(pid.dropFirst(4)) DONE"), after)

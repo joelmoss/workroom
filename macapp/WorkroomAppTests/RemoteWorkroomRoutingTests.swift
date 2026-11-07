@@ -62,7 +62,7 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
       Workroom(
         name: name, path: self.path, vcsName: "workroom/\(name)", warnings: [],
         host: HostDescriptor(
-          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: host,
+          driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: host,
           repository: repository, org: "acme", account: "usr_1"))
     }
     let alone = RemoteWorkrooms.registrations([
@@ -74,7 +74,7 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
       Project(
         path: "/proj", vcs: "git", workrooms: [workroom("w", other, "o/new")],
         host: HostDescriptor(
-          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+          driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
           repository: "o/old", org: "acme", account: "usr_1"))
     ])
     XCTAssertEqual(beside.first?.entry.github?.flag, "github.com/o/new")
@@ -153,7 +153,7 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     let remote = try RepositoryLocation.remote(host: UUID(), path: path)
     router.replaceRemote([try .init(location: remote, sharedLocation: remote)])
 
-    let status = await WorkroomStatusResolver(router: router).resolve(location: remote)
+    let status = await WorkingStatusResolver(router: router).resolve(location: remote)
 
     XCTAssertEqual(status.failure, .asleep)
     XCTAssertNil(status.dirty)
@@ -172,7 +172,7 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     let remote = try RepositoryLocation.remote(host: UUID(), path: path)
     router.replaceRemote([try .init(location: remote, sharedLocation: remote)])
 
-    let status = await WorkroomStatusResolver(router: router).resolve(location: remote)
+    let status = await WorkingStatusResolver(router: router).resolve(location: remote)
 
     XCTAssertNotEqual(status.failure, .asleep)
     XCTAssertNotNil(status.failure)
@@ -188,7 +188,7 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     let remote = try RepositoryLocation.remote(host: UUID(), path: path)
     router.replaceRemote([try .init(location: remote, sharedLocation: remote)])
 
-    let status = await WorkroomStatusResolver(router: router).resolve(location: remote)
+    let status = await WorkingStatusResolver(router: router).resolve(location: remote)
 
     XCTAssertEqual(status.failure, .olderLayout)
     XCTAssertNil(status.dirty)
@@ -218,7 +218,8 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     ).target(inProject: "/proj")
     XCTAssertEqual(tagged.sessionWorkroomKey, workroomID.uuidString)
 
-    let local = TerminalTarget(id: "wr|/proj|b", title: "b", path: "/proj/b", isMissing: false)
+    let local = TerminalTarget(
+      id: .workroom(project: "/proj", name: "b"), title: "b", path: "/proj/b", isMissing: false)
     XCTAssertEqual(local.sessionWorkroomKey, "wr|/proj|b")
     // A remote workroom recorded before workroom ids (#251) has none, and keeps its target id.
     XCTAssertEqual(
@@ -231,20 +232,22 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
   func testARemoteWorkroomHasAStatusItemOnItsHost() throws {
     let host = UUID()
     let store = AppStore()
-    store.projects = [
+    store.projectStore.projects = [
       project([remote("a", host: host), remote("b", host: UUID(), state: "failed")])
     ]
-    RepositoryRouter.shared.replaceRemote(RemoteWorkrooms.registrations(store.projects))
+    RepositoryRouter.shared.replaceRemote(
+      RemoteWorkrooms.registrations(store.projectStore.projects))
 
     let item = try XCTUnwrap(
-      store.selectedStatusWorkItem(for: .workroom(project: "/proj", name: "a")))
+      store.vcsStatus.selectedStatusWorkItem(for: .workroom(project: "/proj", name: "a")))
     XCTAssertEqual(item.location, try .remote(host: host, path: path))
     XCTAssertFalse(item.permitsLocalAccess)
     XCTAssertTrue(item.permitsGitHubAccess)
     XCTAssertEqual(item.sharedLocation, item.location)
-    XCTAssertNil(store.selectedStatusWorkItem(for: .workroom(project: "/proj", name: "b")))
+    XCTAssertNil(
+      store.vcsStatus.selectedStatusWorkItem(for: .workroom(project: "/proj", name: "b")))
     XCTAssertEqual(
-      store.statusWorkItems().map(\.sid),
+      store.vcsStatus.statusWorkItems().map(\.sid),
       [.root(project: "/proj"), .workroom(project: "/proj", name: "a")])
   }
 }

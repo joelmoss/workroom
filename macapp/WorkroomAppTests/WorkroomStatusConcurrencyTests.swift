@@ -1,3 +1,4 @@
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
@@ -9,22 +10,17 @@ import XCTest
 /// `AppStore.runLocalSweep`'s `cap`-bounded `withTaskGroup` fan-out must hold, and had ZERO test
 /// coverage before this file (confirmed by grep: no hits for `runLocalSweep`/`localConcurrency` in
 /// this test target). Shared by any status double that needs to prove it never over-runs.
-private final class InFlightCounter: @unchecked Sendable {
-  private let lock = NSLock()
-  private var current = 0
-  private(set) var peak = 0
+private final class InFlightCounter: Sendable {
+  private let counts = Mutex<(current: Int, peak: Int)>((0, 0))
+  var peak: Int { counts.withLock { $0.peak } }
 
   func enter() {
-    lock.lock()
-    current += 1
-    peak = max(peak, current)
-    lock.unlock()
+    counts.withLock {
+      $0.current += 1
+      $0.peak = max($0.peak, $0.current)
+    }
   }
-  func leave() {
-    lock.lock()
-    current -= 1
-    lock.unlock()
-  }
+  func leave() { counts.withLock { $0.current -= 1 } }
 }
 
 /// A local reader that holds briefly in `workingStatus` while counting concurrent callers — long
@@ -76,13 +72,11 @@ private struct MissingToolRunner: StatusCommandRunning {
 /// enough for the CI stage to run: `gh auth` available, a branch, a sha, and a repository named after
 /// the directory the lookup ran in — so a test can tell WHICH project a CI query was built for.
 /// `lookupResult` replaces the lookup's answer (e.g. a timeout).
-private final class LookupCountingRunner: StatusCommandRunning, @unchecked Sendable {
-  private let lock = NSLock()
-  private var _lookups = 0
-  private var _queries: [String] = []
+private final class LookupCountingRunner: StatusCommandRunning, Sendable {
+  private let recorded = Mutex<(lookups: Int, queries: [String])>((0, []))
   private let lookupResult: CommandResult?
-  var lookups: Int { lock.withLock { _lookups } }
-  var queries: [String] { lock.withLock { _queries } }
+  var lookups: Int { recorded.withLock { $0.lookups } }
+  var queries: [String] { recorded.withLock { $0.queries } }
 
   init(lookupResult: CommandResult? = nil) { self.lookupResult = lookupResult }
 
@@ -98,13 +92,14 @@ private final class LookupCountingRunner: StatusCommandRunning, @unchecked Senda
     if args.contains("symbolic-ref") { return ok("main") }
     if args.contains("rev-parse") { return ok(String(repeating: "a", count: 40)) }
     if executable == "gh", args.prefix(2) == ["repo", "view"] {
-      lock.withLock { _lookups += 1 }
+      recorded.withLock { $0.lookups += 1 }
       if let lookupResult { return lookupResult }
       let name = (directory as NSString).lastPathComponent
       return ok("https://github.com/acme/\(name)")
     }
     if executable == "gh", args.contains("graphql") {
-      lock.withLock { _queries.append(args.first { $0.hasPrefix("query=") } ?? "") }
+      let query = args.first { $0.hasPrefix("query=") } ?? ""
+      recorded.withLock { $0.queries.append(query) }
       return ok("")
     }
     return ok("")
@@ -176,18 +171,18 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
   @MainActor
   func testLocalSweepNeverExceedsItsConcurrencyCap() async {
     let store = AppStore()
-    store.projects = (0..<8).map { throwawayProject("\($0)") }
+    store.projectStore.projects = (0..<8).map { throwawayProject("\($0)") }
 
     let counter = InFlightCounter()
-    store.statusResolver = WorkroomStatusResolver(
+    store.vcsStatus.statusResolver = WorkroomStatusResolver(
       runner: MissingToolRunner(), router: countingRouter(counter))
 
-    store.refreshWorkroomStatuses(force: true)
-    await store.statusSweepTask?.value
+    store.vcsStatus.refreshWorkroomStatuses(force: true)
+    await store.vcsStatus.statusSweepTask?.value
 
     XCTAssertLessThanOrEqual(
-      counter.peak, AppStore.localConcurrency,
-      "runLocalSweep let more than its cap of \(AppStore.localConcurrency) local probes run at once"
+      counter.peak, VCSStatusService.localConcurrency,
+      "runLocalSweep let more than its cap of \(VCSStatusService.localConcurrency) local probes run at once"
     )
     XCTAssertGreaterThan(
       counter.peak, 1,
@@ -201,7 +196,7 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
   func testAWedgedLocalReadReadsAsTimeout() async throws {
     let project = throwawayProject("wedged")
     let location = try await RepositoryLocation.local(project.path)
-    let resolver = WorkroomStatusResolver(
+    let resolver = WorkingStatusResolver(
       timeout: 0.05, router: countingRouter(InFlightCounter(), delay: 1))
 
     let status = await resolver.resolve(location: location)
@@ -218,8 +213,9 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
   @MainActor
   func testCISweepNeverExceedsItsConcurrencyCap() async throws {
     let store = AppStore()
-    store.projects = (0..<8).map { throwawayProject("ci-\($0)") }
-    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+    store.projectStore.projects = (0..<8).map { throwawayProject("ci-\($0)") }
+    RepositoryRouter.shared.replaceLocal(
+      try await RepositoryRouter.prepare(store.projectStore.projects))
 
     let ghCounter = InFlightCounter()
     // `dirty: false` (not counted here) only needs to make every item CI-eligible
@@ -230,19 +226,19 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
     // fails_when=resolve(item:) routes a located item through .shared again; why_new=the local-cap test
     // only drives items without a location; seam=none
     let localCounter = InFlightCounter()
-    store.statusResolver = WorkroomStatusResolver(
+    store.vcsStatus.statusResolver = WorkroomStatusResolver(
       runner: CountingGHRunner(counter: ghCounter), router: countingRouter(localCounter))
 
-    store.refreshWorkroomStatuses(force: true)
-    await store.statusSweepTask?.value
+    store.vcsStatus.refreshWorkroomStatuses(force: true)
+    await store.vcsStatus.statusSweepTask?.value
 
     XCTAssertGreaterThan(
       localCounter.peak, 0,
       "a registered item's status was not read through the resolver's injected router")
 
     XCTAssertLessThanOrEqual(
-      ghCounter.peak, AppStore.ciConcurrency,
-      "runCISweep let more than its cap of \(AppStore.ciConcurrency) CI probes run at once")
+      ghCounter.peak, VCSStatusService.ciConcurrency,
+      "runCISweep let more than its cap of \(VCSStatusService.ciConcurrency) CI probes run at once")
     XCTAssertGreaterThan(
       ghCounter.peak, 1,
       "the fan-out never actually overlapped — this test would pass even against a fully serial "
@@ -269,15 +265,16 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
   func testCISweepLooksUpTheRepositoryOncePerProject() async throws {
     let store = AppStore()
     let projects = [project("once-a", workrooms: 2), project("once-b", workrooms: 2)]
-    store.projects = projects
-    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+    store.projectStore.projects = projects
+    RepositoryRouter.shared.replaceLocal(
+      try await RepositoryRouter.prepare(store.projectStore.projects))
 
     let runner = LookupCountingRunner()
-    store.statusResolver = WorkroomStatusResolver(
+    store.vcsStatus.statusResolver = WorkroomStatusResolver(
       runner: runner, router: countingRouter(InFlightCounter()))
 
-    store.refreshWorkroomStatuses(force: true)
-    await store.statusSweepTask?.value
+    store.vcsStatus.refreshWorkroomStatuses(force: true)
+    await store.vcsStatus.statusSweepTask?.value
 
     XCTAssertEqual(runner.lookups, 2, "expected one repository lookup per project")
     XCTAssertEqual(runner.queries.count, 6, "every root and workroom should get a CI probe")
@@ -293,17 +290,18 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
   @MainActor
   func testCISweepSharesATransientLookupFailureAcrossWorkrooms() async throws {
     let store = AppStore()
-    store.projects = [project("blip", workrooms: 3)]
-    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+    store.projectStore.projects = [project("blip", workrooms: 3)]
+    RepositoryRouter.shared.replaceLocal(
+      try await RepositoryRouter.prepare(store.projectStore.projects))
 
     let runner = LookupCountingRunner(
       lookupResult: CommandResult(
         stdout: "", stderr: "", exitCode: 15, timedOut: true, signaled: true))
-    store.statusResolver = WorkroomStatusResolver(
+    store.vcsStatus.statusResolver = WorkroomStatusResolver(
       runner: runner, router: countingRouter(InFlightCounter()))
 
-    store.refreshWorkroomStatuses(force: true)
-    await store.statusSweepTask?.value
+    store.vcsStatus.refreshWorkroomStatuses(force: true)
+    await store.vcsStatus.statusSweepTask?.value
 
     XCTAssertEqual(runner.lookups, 1, "a failed lookup was retried by the project's workrooms")
     XCTAssertTrue(runner.queries.isEmpty, "a CI probe ran against an unresolved repository")

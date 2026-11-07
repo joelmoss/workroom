@@ -4,8 +4,8 @@ import Foundation
 /// so a crash before config records one still leaves it named. A driver writes an entry before
 /// the CLI call that makes the machine, and takes it off once it removed the machine again. The
 /// create takes it off the moment a record naming it is written (`Recorder.forgettingPending`),
-/// and each reload takes off any that config names (`RemoteHosts.adopt`). So an entry names only
-/// a machine this build began making and config never recorded. One file beside the drivers'
+/// and each reload takes off any that config names (`HostReachability.adopt`). So an entry names
+/// only a machine this build began making and config never recorded. One file beside the drivers'
 /// hosts, which is this build's alone (`RemoteWorkrooms.directory` is per bundle ID).
 ///
 /// The sweep removes only these, never every unrecorded `workroom-*` machine: the names carry no

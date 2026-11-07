@@ -200,10 +200,7 @@ final class SwitcherMarkTests: XCTestCase {
   // MARK: Pane miniatures
 
   func testEachPaneKindMapsToItsOwnMiniature() {
-    // `GhosttySurfaceView(workingDirectory:)` is inert until it enters a window, so building one here
-    // costs nothing and spawns no shell.
-    let state = TerminalState(
-      view: GhosttySurfaceView(workingDirectory: "/tmp"), defaultTitle: "zsh")
+    let state = TerminalState(defaultTitle: "zsh", launch: .shell, launchDirectory: "/tmp")
     let terminal = PaneMiniature(content: TabContent.terminal(state), isRunning: true)
     XCTAssertEqual(terminal, .terminal(running: true))
 

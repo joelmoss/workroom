@@ -1,14 +1,15 @@
+import WorkroomGit
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
 
 @testable import Workroom
 
-/// Integration tests that exercise `WorkroomStatusResolver` against REAL git repos through the
+/// Integration tests that exercise `WorkingStatusResolver` against REAL git repos through the
 /// REAL `StatusCommandRunner` (no mock). These prove the status reads match what the actual
 /// binaries emit (git 2.54 verified) — the unit tests only cover hand-written fixtures.
 ///
-/// They **require** real `git` (CI installs it — see `.github/workflows/ci.yml`); a
+/// They **require** real `git` (CI installs it — see `.github/workflows/ci-app.yml`); a
 /// missing tool FAILS the suite rather than silently skipping, so the VCS layer can never go
 /// un-exercised. Every repo is a **throwaway** created fresh under `NSTemporaryDirectory()` and
 /// removed in `tearDown` — these tests NEVER touch any of the developer's own repositories.
@@ -30,7 +31,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
       let router = RepositoryRouter()
       try router.register(
         .init(location: location, sharedLocation: shared))
-      return await WorkroomStatusResolver(router: router).resolve(location: location)
+      return await WorkingStatusResolver(router: router).resolve(location: location)
     } catch {
       XCTFail("\(error)")
       return WorkroomStatus(dirty: nil, failure: .unavailable)

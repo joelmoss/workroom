@@ -25,7 +25,7 @@ final class DefaultsIsolationTests: XCTestCase {
     let keysFile = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()  // WorkroomAppTests
       .deletingLastPathComponent()  // macapp
-      .appendingPathComponent("WorkroomApp/Core/DefaultsKeys.swift")
+      .appendingPathComponent("WorkroomApp/Core/AppShell/DefaultsKeys.swift")
     let source = try String(contentsOf: keysFile, encoding: .utf8)
 
     // Declarations are `static let <name> = Key<…>(…)`, one per key, so splitting on the keyword

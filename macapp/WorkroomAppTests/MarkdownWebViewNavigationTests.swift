@@ -8,6 +8,7 @@ import XCTest
 /// UNTRUSTED rendered Markdown file. The gate must keep the frame on our own bundled assets, open only
 /// web/mail links externally, and drop everything else (`file:`, `javascript:`, custom schemes). The
 /// decision is factored into a side-effect-free `navigationDecision`, so no live `WKWebView` is needed.
+@MainActor
 final class MarkdownWebViewNavigationTests: XCTestCase {
 
   typealias Coord = MarkdownWebView.Coordinator

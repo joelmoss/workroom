@@ -1,0 +1,409 @@
+name: CI (app)
+
+# Called by ci.yml, never on its own. Each input is one job's path filter
+# (scripts/ci/changed_areas.py); a job it skips reports as skipped.
+on:
+  workflow_call:
+    inputs:
+      packages:
+        description: Run `app-packages`
+        type: boolean
+        required: true
+      app:
+        description: Run `app`
+        type: boolean
+        required: true
+      scripts:
+        description: Run `app-scripts`
+        type: boolean
+        required: true
+
+permissions: {}
+
+jobs:
+  # The local packages' tests (macapp/Packages) run with plain `swift test`, outside the app host,
+  # so `make app-test` never sees them. Their own job, beside `app` rather than a step of it: the
+  # step took 8 of that job's 21 minutes (measured 2026-10-18) and needs nothing the app build
+  # makes. A cold SyntaxHighlighting run fetches its 16 tree-sitter repos (~4 min) and
+  # compiles them (~1 min; its 1.5GB .build is too big to cache), and the target retries each
+  # package's resolve.
+  app-packages:
+    if: inputs.packages
+    runs-on: xcode-27
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Xcode
+        uses: ./.github/actions/setup-app-build
+        with:
+          go: "false"
+          formulae: ""
+
+      - name: Test (Swift packages)
+        run: make app-package-test
+
+  app:
+    if: inputs.app
+    runs-on: xcode-27
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      # The whole history, for restore-mtime.py below: it needs each file's last commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # Xcode, Go (Scripts/build-helper.sh compiles + embeds the workroom CLI during the test
+      # build) and XcodeGen.
+      - name: Set up the app build
+        uses: ./.github/actions/setup-app-build
+
+      - name: Lint (swift-format --strict)
+        run: make app-lint
+
+      # The app bundles `workroomd`, and the Debug build bundles the Linux daemons too (#227),
+      # cross-built by build-daemon.sh with cargo-zigbuild.
+      - name: Set up the daemon build
+        uses: ./.github/actions/setup-daemon-build
+        with:
+          targets: aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+
+      # Keyed on the pinned engine sha, as in ci-rust.yml's `daemon-terminal-state`: a bump
+      # refetches and rebuilds, nothing else does. `kit` because this job's cache also holds
+      # GhosttyKit, which `app-scripts`, on the same OS and script, never builds: sharing a key
+      # would restore that.
+      - name: Cache libghostty-vt and GhosttyKit
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/workroom/ghostty-vt
+          key: ghostty-vt-kit-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+
+      # Xcode builds the bundled workroomd (Scripts/build-daemon.sh) on the stable toolchain, the
+      # macOS tests below build it again in debug, and all of it is cached here, the workspace's
+      # own artifacts included: without them workroomd was rebuilt in release for all three targets
+      # on every run, 38s + 1m41 + 1m44 one after another (measured 2026-10-18, run 39115663007).
+      # Cargo's fingerprints then find it up to date on a run that touched nothing under vcs/, and
+      # rebuild what a commit did touch. That needs the build script's inputs stable too:
+      # WORKROOMD_BUILD on the Test step below. vcs/.built-from is the index of the checkout the
+      # artifacts were built from, written after the tests (see the Restore source mtimes step).
+      #
+      # Restore and save are split, and the key ends in the commit, so each master push saves the
+      # build it just made and every later run, a PR's included, restores the newest one through
+      # the prefix: a key without the commit is saved once and then read for weeks, and every
+      # commit since that save rebuilds on every run. Only master pushes save (the last step of
+      # this job), so a PR never fills the cache with builds no one else can read. The fallback
+      # crosses Cargo.lock changes (cargo rebuilds what moved) but not a toolchain change, after
+      # which nothing in target/ is reusable; it also bounds how far target/ can grow with stale
+      # dependency versions, since nothing here prunes them. The prefixes are built in a step
+      # because the ship pregate's secret scanner reads a long literal `key:` line as a credential
+      # (and `app-daemon-v<N>` as entropy, hence no `v`).
+      - name: Cargo cache key
+        id: rust
+        env:
+          CARGO_LOCK: ${{ hashFiles('vcs/Cargo.lock') }}
+        shell: bash
+        run: |
+          toolchain="app-daemon-8-$RUNNER_OS-$RUNNER_ARCH-$(rustc +stable -V | awk '{print $2}')"
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+          echo "lock=$toolchain-$CARGO_LOCK" >> "$GITHUB_OUTPUT"
+
+      # `path` must stay identical to the save step's: it is part of the cache's version.
+      - name: Restore cargo cache (daemon)
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            vcs/target
+            vcs/.built-from
+          key: ${{ steps.rust.outputs.lock }}-${{ github.sha }}
+          restore-keys: |
+            ${{ steps.rust.outputs.lock }}-
+            ${{ steps.rust.outputs.toolchain }}-
+
+      # SPM resolves ~15 packages (Sparkle, Sentry, libghostty, the tree-sitter grammars, and
+      # swift-syntax pulled transitively) by cloning them from GitHub on every run. Cache the
+      # resolved checkouts keyed on project.yml AND the tracked Package.resolved (checkout already
+      # places this one file — the rest of the gitignored .xcodeproj doesn't exist yet) so an
+      # unchanged set skips the network entirely. Package.resolved is in the key, not just
+      # project.yml, because a pin can be re-reviewed to a different revision under the SAME
+      # version string — keying on project.yml alone let a stale cache silently keep serving the old
+      # revision after such a bump until the cache aged out.
+      #
+      # Deliberately NO restore-keys fallback: a fuzzy prefix match can restore an older cache whose
+      # checked-out `workspace-state.json` disagrees with the CURRENT Package.resolved — and SPM
+      # trusts that already-resolved state over reconciling against the file, so a exact-key miss
+      # silently re-served the stale revision anyway (reproduced on run 33511971205, right after
+      # adding Package.resolved to the key above got this far). Paying the network cost in full on
+      # every exact-key miss is the correct tradeoff: it's rare (only a real dependency change), and
+      # it's exactly the situation this cache must not paper over.
+      - name: Cache SPM packages
+        id: spm
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: macapp/DerivedData/SourcePackages
+          key: >-
+            spm-${{ runner.os }}-${{
+            hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved')
+            }}
+
+      # Compiling the dependency graph — libgit2 (429 tasks), SwiftGitX, the tree-sitter grammars,
+      # Sentry, Sparkle, swift-syntax — is ~60% of the build's work and none of it changes between
+      # runs. Caching the build dir lets xcodebuild's incremental check reuse those objects, and with
+      # the sources' mtimes restored to their landing times (the step below) our own objects too:
+      # only what commits since the save touched, and its dependents, rebuilds. (The restored dep
+      # checkouts keep their original mtimes, so the dependency objects were always up to date.)
+      #
+      # Restore and save are split, and the key ends in the commit, as for the cargo cache above:
+      # each master push saves (~150MB) and every later run restores the newest build for the same
+      # compiler and dependency set through the prefix. The fallback stops at that set, which is
+      # what the dep objects depend on: a change to it rebuilds them in full, as it always has. The
+      # `v5` leaves behind every dir saved under an older key, whose objects were built against
+      # checkout-time or author-time mtimes.
+      - name: Xcode version (cache key input)
+        id: xcode
+        run: |
+          # e.g. "Xcode 26.0" + "Build version 17A324" → "26.0-17A324".
+          echo "version=$(xcodebuild -version | awk 'NR==1{v=$2} NR==2{b=$NF} END{print v "-" b}')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Xcode build dir
+        id: xcbuild
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: macapp/DerivedData/Build
+          key: >-
+            xcbuild-v5-${{ runner.os }}-${{ steps.xcode.outputs.version }}-${{
+            hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'vcs/scripts/build-ghostty-vt.sh') }}-${{
+            github.sha }}
+          restore-keys: >-
+            xcbuild-v5-${{ runner.os }}-${{ steps.xcode.outputs.version }}-${{
+            hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'vcs/scripts/build-ghostty-vt.sh') }}-
+
+      # xcodebuild's incremental check keys on mtimes, and a checkout stamps every file with now, so
+      # against the restored build dir above every one of our own sources read as changed and the
+      # app and test targets recompiled in full on every run (~5 min of this job, measured
+      # 2026-10-18; locally, touching the sources without changing them costs 602 Swift compile
+      # tasks, 44s against 16s for a no-op). Landing times are the same on every runner.
+      #
+      # Except what under vcs/ differs from the checkout the cargo cache was built from, which
+      # stays at now: cargo reuses a cached artifact whenever the source's mtime is older than it,
+      # content unseen, and a cache is read by runs it was not built for: a PR's, a release
+      # branch's, a master push after one whose run failed. The step after the tests records that
+      # checkout's index (path, mode and blob of every file) in the cached directory. An index, not
+      # a commit: a PR run builds GitHub's merge commit, which the next push's checkout does not
+      # have. No record means no cargo cache was restored (every app-daemon-8 entry carries one), so
+      # there is nothing stale to guard and landing times alone are safe. Only vcs/, cargo's inputs:
+      # the Xcode build dir this run saves is built against these mtimes, and a Swift file left at
+      # now would be recompiled by every later run, which gives it its landing time again.
+      - name: Restore source mtimes
+        run: |
+          if [ -f vcs/.built-from/index ]; then
+            python3 macapp/Scripts/restore-mtime.py --fresh vcs/.built-from/index vcs
+          else
+            python3 macapp/Scripts/restore-mtime.py
+          fi
+
+      # Resolve up front with retries so a transient github.com blip mid-clone can't fail the whole
+      # run (it did: swift-syntax clone hit "Couldn't connect to server"). The subsequent app-test
+      # build reuses these checkouts via the same -clonedSourcePackagesDirPath, so it won't re-clone.
+      #
+      # Skipped on an exact cache hit: there's nothing to clone, so the whole step (~25s, including an
+      # xcodegen run that `make app-test` does again anyway) is pure overhead. A restore-keys-only
+      # (partial) restore reports no cache-hit, so a dependency change still resolves here, retries
+      # and all.
+      - name: Resolve SPM packages (retry on network flake)
+        if: steps.spm.outputs.cache-hit != 'true'
+        working-directory: macapp
+        run: |
+          xcodegen generate
+          for attempt in 1 2 3; do
+            xcodebuild -project WorkroomApp.xcodeproj -scheme WorkroomApp \
+              -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages \
+              -resolvePackageDependencies && exit 0
+            echo "::warning::SPM resolve attempt $attempt failed; retrying in 15s"
+            sleep 15
+          done
+          echo "::error::SPM resolve failed after 3 attempts"; exit 1
+
+      # Hosted runners have no signing cert / dev team: ad-hoc sign, clear the team, manual
+      # style so xcodebuild won't provision against Apple's servers. Lets the non-sandboxed
+      # app build and the unit tests launch their host app. (`make app-test` also builds.)
+      #
+      # WORKROOMD_BUILD: the daemon's build number, normally the commit's own time, read by its
+      # build.rs from .git/HEAD; a constant here so that script's inputs don't change with every
+      # commit, which rebuilt workroomd for all three targets on every run (~3 min, measured
+      # 2026-10-18) however warm the cargo cache. Nothing in these tests reads the built daemon's
+      # number (DaemonBootstrapTests parses fixture strings), and no host ever sees a CI build.
+      # As an xcodebuild build setting, not a step `env:`: the build service that runs the script
+      # phases does not get this step's environment (run 39133476315 showed none of it), while
+      # every build setting is exported to them.
+      #
+      # APP_TEST_DIAGNOSTICS= keeps xcodebuild's diagnostics (~10.5s) that `make app-test` skips
+      # locally: a failure's uploaded xcresult needs the system log archive, which holds
+      # ReportCrash's EXC_GUARD line for a test host that crashed (#350).
+      - name: Test
+        run: >-
+          make app-test APP_TEST_DIAGNOSTICS=
+          APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM= WORKROOMD_BUILD=1"
+
+      # What the cargo cache was built from, saved with it by the last step: the Restore source
+      # mtimes step diffs the next checkout against it.
+      - name: Record the checkout the daemon cache was built from
+        run: mkdir -p vcs/.built-from && git ls-files -s -z > vcs/.built-from/index
+
+      # Parallel xcodebuild prints NO assertion text — just a `Failing tests:` list — so a red run
+      # here says WHICH test failed and nothing about why. The message only exists in the xcresult,
+      # which is why diagnosing nightly 33955949260's failure needed a local repro instead of a read.
+      - name: Upload test results (xcresult)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: xcresult-ci
+          path: macapp/DerivedData/Logs/Test/*.xcresult
+          retention-days: 7
+
+      # The supervisor PTY integration test (issue #7) drives workroomd's run_supervisor.sh under a pty with
+      # a fake server — the only gate on the no-orphan / no-"already running" behaviour the Swift unit
+      # tests (mocked seam) can't see. python3 is preinstalled on the macOS runner.
+      - name: Test (run-command supervisor)
+        run: make app-test-supervisor
+
+      # The Rust tests run on Linux (`rust` in ci-rust.yml), where std creates a socket
+      # close-on-exec in one call. macOS sets the flag in a second call, and a child spawned in
+      # between inherits the socket: the race behind the stale-socket fixture and the stray
+      # descriptors a session's shell could inherit. Their tests prove nothing on Linux, so these
+      # alone run here; the rest of the crate stays on the cheaper Linux runner. `exception_ports`
+      # is macOS-only (Mach exception ports, #329), so Linux compiles it out and this is its only
+      # run. `process::tests` covers the macOS process table, which Linux reads from /proc instead
+      # (#430). `shell::tests` and `apple_bash_is_not_left_in_posix_mode` cover the Apple
+      # `/bin/bash` skip, which exists only on macOS. These filters are an allowlist: a new
+      # macOS-only test must be added here.
+      # CARGO_INCREMENTAL=0: incremental state would only bloat the cached target/ (rust-cache,
+      # which cached it before, set the same for the whole job). WORKROOMD_BUILD as on the Test
+      # step, or build.rs reruns for every commit and the debug crate rebuilds each run; none of
+      # these tests reads the build number (only the hand-off tests do, on Linux).
+      - name: Test (daemon descriptor inheritance, macOS)
+        env:
+          CARGO_INCREMENTAL: "0"
+          WORKROOMD_BUILD: "1"
+        run: |
+          cargo test --manifest-path vcs/Cargo.toml -p workroomd --lib -- pty::tests process::tests shell::tests
+          cargo test --manifest-path vcs/Cargo.toml -p workroomd --test attach_falls_back_to_a_shell -- --exact \
+            apple_bash_is_not_left_in_posix_mode
+          cargo test --manifest-path vcs/Cargo.toml -p workroomd --test remote_transport -- --exact \
+            a_stale_socket_stays_stale_while_children_are_spawned \
+            a_relay_with_no_daemon_fails_fast_and_says_so
+          cargo test --manifest-path vcs/Cargo.toml -p workroomd --test exception_ports
+
+      # Last, so only a green job saves; master pushes only (see the restore steps). Under the key
+      # the restore computed, as Package.resolved and Cargo.lock may be rewritten by the build. An
+      # exact hit is a rerun of a commit already saved, and a key cannot be saved twice.
+      - name: Save Xcode build dir
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.xcbuild.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: macapp/DerivedData/Build
+          key: ${{ steps.xcbuild.outputs.cache-primary-key }}
+
+      - name: Save cargo cache (daemon)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            vcs/target
+            vcs/.built-from
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+  # The script tests run beside `app` rather than at the end of it: they were 920-1060s of a ~2400s
+  # job and need none of its Xcode build, so on a separate runner the two chains overlap and the
+  # slower one sets the wall time. `app` still runs `make app-test-supervisor` and the unit tests.
+  # If required status checks are ever configured for master, list this job (`app / app-scripts`)
+  # beside `app / app`: the script tests no longer run inside `app`, so requiring only `app` would
+  # stop them gating a merge.
+  app-scripts:
+    if: inputs.scripts
+    runs-on: xcode-27
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      # Full history, for the tags: daemon-protocol_test.sh reads the latest stable release's app
+      # protocol at its tag, and fails in a clone without them.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # Catch infrastructure drift before installing tools or cross-compiling packaging fixtures.
+      # The headless benchmark check needs only the runner's existing Swift toolchain.
+      - name: Test infrastructure preflight
+        run: make app-test-preflight
+
+      # The script tests run xcrun, lipo and codesign; the image's default Xcode is 27.0, not 27.1.
+      # build-helper_test.sh cross-compiles the workroom CLI, so Go too. No Homebrew tools.
+      - name: Set up the app build
+        uses: ./.github/actions/setup-app-build
+        with:
+          formulae: ""
+
+      - name: Cache libghostty-vt
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/workroom/ghostty-vt
+          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+
+      # The target directory build-daemon_test.sh builds into (BUILD_DAEMON_TEST_TARGET_DIR on the test
+      # step below); without one the test compiles from scratch in vcs/target/build-daemon-test. Not
+      # `vcs/target` itself, for the reason the test gives. The key changed with the directory: an exact hit
+      # on the old entry would never save the new one.
+      - name: Cache cargo (daemon)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: vcs -> build-daemon-target
+          key: app-scripts-build-agent
+
+      # `build-daemon_test.sh`'s universal cases need BOTH darwin targets installed and skip
+      # themselves otherwise — and the step still prints OK, so the skip is invisible. Measured on
+      # run 34783566140: "SKIP universal cases (rustup targets not installed)" followed by
+      # "build-daemon_test: OK". The workroomd half of the guard below had therefore never run on a
+      # PR, only on nightly/release, which install these before `make app-release`.
+      #
+      # Its Go sibling has no such gate (Go cross-compiles with no extra install), which is why the
+      # asymmetry went unnoticed: `build-helper_test.sh` really was exercising the multi-arch path
+      # on every PR while `build-daemon_test.sh` quietly was not.
+      #
+      # The musl targets and cargo-zigbuild are the same gap for the Linux daemons (#227): without
+      # them the Linux case skips, and build-daemon.sh's Linux branch would first run on a nightly.
+      # ci-rust.yml's `daemon-linux` does not cover it, because it calls `cargo zigbuild` directly.
+      #
+      # After both caches above: Zig lands outside them, and the targets and cargo-zigbuild must
+      # come after rust-cache restores ~/.cargo.
+      - name: Set up the daemon build (universal-arch and Linux-daemon script tests)
+        uses: ./.github/actions/setup-daemon-build
+        with:
+          targets: >-
+            x86_64-apple-darwin aarch64-apple-darwin
+            aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+
+      # Shell-script tests. `make app-test` builds Debug with a single native arch, so it can never
+      # exercise build-helper.sh's / build-daemon.sh's multi-arch path — the branch whose absence
+      # shipped an arm64-only CLI inside every universal .app. These run them directly with
+      # ARCHS="arm64 x86_64".
+      #
+      # daemon-name_test.sh is skipped: ci-actions.yml runs it on every change.
+      - name: Test (app scripts)
+        env:
+          BUILD_DAEMON_TEST_TARGET_DIR: ${{ github.workspace }}/vcs/build-daemon-target
+        run: make app-test-scripts APP_SCRIPT_TESTS_SKIP=macapp/Scripts/daemon-name_test.sh

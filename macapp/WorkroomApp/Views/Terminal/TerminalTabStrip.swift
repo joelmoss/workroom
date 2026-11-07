@@ -1,0 +1,1221 @@
+import Defaults
+import DesignSystem
+import SwiftUI
+import WorkroomDomain
+
+/// The horizontal tab strip above a target's terminal: a chip per terminal tab, a "+" to open a
+/// new one, and the drag interactions — reorder within the strip, or drag a chip down into a pane
+/// to split (issue #3). Fully owns the reorder drag state; the drop-into-pane wiring is shared with
+/// the pane content, so `WorkroomTerminalsView` passes a `chipPaneDrag` binding (the live preview the
+/// pane tree renders) plus `localize`/`dropTarget` closures that resolve a cursor point against the
+/// pane area (which only the coordinator knows the frame of).
+///
+/// The "+" is **adaptive** (issue #129): while the tabs fit it sits inline, hugging the last chip;
+/// once they overflow it lifts out of the scroller and pins at the strip's trailing edge, so it's
+/// never scrolled out of reach. The scroller's trailing edge carries an alpha ramp in that state, so
+/// a clipped chip dissolves instead of being cut mid-glyph. The decision itself is
+/// `TabStripOverflow.pinsControls`, wired up by the shared `OverflowingTabScroller` (which
+/// `WorkroomTabBar` uses too, so the two strips can't drift).
+struct TerminalTabStrip: View {
+  #if DEBUG
+    static var bodyPasses = 0
+  #endif
+  let tabs: [TerminalTab]
+  let activeID: TerminalTab.ID?
+  let target: TerminalTarget
+  let sessions: TerminalPanes
+  @Environment(\.paneHost) private var host
+  @EnvironmentObject var runCommand: RunCommandController
+  @EnvironmentObject var notifications: NotificationCenterStore
+  @EnvironmentObject var codingAgentManager: TerminalCodingAgentManager
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.isQuickTerminal) private var isQuickTerminal
+  @Environment(\.themeTokens) private var tokens
+  /// The tab whose ✦ agent popover is open.
+  @State private var codingAgentPopoverTab: TerminalTab.ID?
+  /// The live drop-into-pane preview, shared with `PaneTreeView` via the coordinator.
+  @Binding var chipPaneDrag: PaneDragState?
+  /// The pane-local point for a chip drag at a global location, or nil when the cursor is still over
+  /// the strip (→ a reorder, not a drop-into-pane). Owned by the coordinator (needs the pane frame).
+  let localize: (CGPoint) -> CGPoint?
+  /// Where a chip dropped at a global location lands (pane + edge), or nil if it isn't over a pane.
+  let dropTarget: (CGPoint) -> (tab: TerminalTab.ID, edge: PaneEdge)?
+
+  @State private var hoveredTab: TerminalTab.ID?
+  @State private var addHovering = false
+  /// The chips at least half on screen (#358).
+  @State private var visibleTabs: Set<TerminalTab.ID> = []
+  /// Each host's program-status link, for the chips' "Program status: …" tooltip line (#358).
+  @ObservedObject private var programStatus = ProgramStatusMonitor.shared
+  /// The last chip click (id + time), so a quick second click on the same chip promotes a preview
+  /// content tab to persisted without delaying the eager first-click select (#66).
+  @State private var lastChipClick: ChipClick?
+
+  // Drag-to-reorder. The tab order is *frozen* for the duration of a drag: the dragged
+  // chip simply follows the cursor (its slot never moves, so it can't jump), and the
+  // other chips slide aside to open a gap. The reorder is committed once, on drop.
+  @State private var drag = TabReorderDrag<TerminalTab.ID>()
+  /// Measurements stay current without publishing idle drag state for every spinner glyph.
+  @State private var measuredWidths = TerminalChipWidths()
+
+  private let tabSpacing: CGFloat = 4
+  /// The strip's own right inset, so a pinned "+" is never flush against the pane edge. The strip has
+  /// carried no trailing toolbar since issue #150 moved every per-pane action into the pane's own
+  /// title bar, so the "+" is now the strip's last element.
+  private static let stripTrailingInset: CGFloat = 4
+
+  /// The strip's leading inset, lining the leftmost tab up with the terminal panel below it: the pane
+  /// tree is inset 2pt inside the workroom's card and each pane leaf pads another 2pt.
+  private static let leadingInset: CGFloat = 4
+
+  var body: some View {
+    #if DEBUG
+      Self.bodyPasses += 1
+    #endif
+    // Resolve the drag once per layout: which tab is dragging, and where it would land.
+    let draggedIndex = drag.id.flatMap { id in tabs.firstIndex { $0.id == id } }
+    // While dragging a chip down into a pane, the strip stops opening a reorder gap.
+    let dropIndex = drag.dropIndex(
+      ids: tabs.map(\.id), spacing: tabSpacing, suspendedByPaneDrag: chipPaneDrag != nil)
+    let draggedWidth = drag.draggedWidth
+    // `member → group index` for every grouped chip, built ONCE per layout and threaded down: a
+    // grouped chip's selected pill insets itself to sit *inside* its split bracket rather than
+    // overrunning it, and the separator rules need to tell one group from the next, not merely
+    // grouped from solo.
+    let groupOf = sessions.splitGroupIndices(for: target)
+
+    // `spacing` is the gutter between the scroller region and the per-tab toolbar, and it has to be a
+    // real gutter rather than leftover slack. `OverflowingTabScroller`'s pinned "+" rides a
+    // `safeAreaInset(edge: .trailing)`, which puts its `spacing:` between the CHIPS and the "+" and
+    // leaves the "+" itself flush with the scroller's trailing edge — so at `spacing: 0` a pinned "+"
+    // abutted the first toolbar button exactly (measured: both at x=1123), which is symptom 1 of issue
+    // #129. It went unnoticed because at the old strip width the default fixture's tabs still fit
+    // INLINE, where the gap happened to be leftover slack; issue #139's card geometry narrowed the strip
+    // enough to pin, and `TabStripOverflowUITests.testPinnedAddButtonKeepsGutterFromToolbar` caught it.
+    return HStack(spacing: TabStripMetrics.gutter) {
+      // The scrolling chips plus the adaptive "+" (issue #129), assembled by the shared
+      // `OverflowingTabScroller`. The width it measures for the overflow predicate is the scroller's
+      // own: it's the flexible child beside the `fixedSize` toolbar, so it already equals "strip minus
+      // toolbar" (and the full strip when there's no active tab and the toolbar renders nothing).
+      OverflowingTabScroller(
+        leadingInset: Self.leadingInset, spacing: tabSpacing,
+        inlineLead: TabStripMetrics.inlineAddLead,
+        // Scroll the focused tab into view on selection (issue #129 follow-up); suspended mid-drag,
+        // like the reorder gap animation below.
+        scrollTarget: activeID, scrollSuspended: drag.isDragging
+      ) { overflowing in
+        chipRun(
+          tabs, draggedIndex: draggedIndex, dropIndex: dropIndex, draggedWidth: draggedWidth,
+          groupOf: groupOf, overflowing: overflowing)
+      } controls: {
+        // A waiting terminal scrolled off the trailing end shows here, beside the pinned "+".
+        HStack(spacing: tabSpacing) {
+          if let tab = hiddenWaitingTab(trailing: true) {
+            waitingEdgeButton(tab, edge: "trailing")
+          }
+          addTerminalButton
+        }
+      }
+      .overlay(alignment: .leading) {
+        if let tab = hiddenWaitingTab(trailing: false) {
+          waitingEdgeButton(tab, edge: "leading")
+        }
+      }
+    }
+    // No top padding: the strip sits flush at the top of the detail pane so the terminal tabs align
+    // with the top of the sidebar (the pane's own top inset is dropped too — see `WorkroomPaneLeaf`).
+    .padding(.top, 0)
+    // Flush with the content below — the active tab's `bg` fill bridges the panel→bg colour step so
+    // the strip reads as part of the terminal panel (Chrome-style). No bottom gap.
+    .padding(.bottom, 0)
+    .padding(.trailing, Self.stripTrailingInset)
+    // The Quick Terminal's strip is its titlebar: any empty part of it drags the window along the
+    // screen edges. Behind everything, so chips and buttons keep their clicks; the scroller's empty
+    // tail lets clicks through (its interaction shape stops at the chips), so the room after "+" counts.
+    .background {
+      if isQuickTerminal { QuickTerminalDragHandle().accessibilityHidden(true) }
+    }
+  }
+
+  /// The chips themselves plus the hairline that sets the inline "+" apart — everything that scrolls
+  /// and stays put across an overflow flip. Measured as one run for the overflow predicate (by
+  /// `OverflowingTabScroller`, which also lays the row out with the leading inset: in a split group the
+  /// leftmost tab lines up with the terminal panel below it). The split bracket is drawn behind it (leading-aligned, so x = 0
+  /// is the first chip's leading edge, which is what `TabStripSplitRun.rects` computes against).
+  @ViewBuilder
+  private func chipRun(
+    _ tabs: [TerminalTab], draggedIndex: Int?, dropIndex: Int?, draggedWidth: CGFloat,
+    groupOf: [TerminalTab.ID: Int], overflowing: Bool
+  ) -> some View {
+    HStack(spacing: tabSpacing) {
+      ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
+        let isDragging = drag.id == tab.id
+        let isHovered = hoveredTab == tab.id && !drag.isDragging
+        // Activity in an unfocused tab highlights the tab itself (accent title + faint accent
+        // fill) instead of a count — a tab is too narrow for a number.
+        let hasActivity = notifications.count(tab: tab.id) > 0
+        // Run-command state for this tab's chip icon (issue #7): only the dedicated run tab
+        // carries one — running, stopping, failed, or stopped/exited.
+        // Process-based, distinct from the OSC-9;4 RunningUnderline below.
+        let runState: TerminalTabChip.RunState? =
+          runCommand.runTabID(for: target.id) == tab.id
+          ? (runCommand.runStates[target.id]?.isStopping == true
+            ? .stopping
+            : (runCommand.isRunCommandRunning(for: target.id)
+              ? .running : (runCommand.runFailed(for: target.id) ? .failed : .stopped)))
+          : nil
+        // Dragged chip tracks the cursor; the rest shift to open the gap.
+        let offsetX =
+          isDragging
+          ? drag.translation
+          : gapShift(
+            for: index, draggedIndex: draggedIndex, target: dropIndex,
+            amount: draggedWidth + tabSpacing)
+        // A ✦ badge marks any tab with a live diagnosis (issue #49) — the per-tab signal that
+        // complements the active tab's diagnosis shown in the detail-panel status bar.
+        let codingAgentBadge = codingAgentManager.banners[tab.id] != nil
+        TerminalTabChip(
+          tab: tab, isActive: tab.id == activeID, isHovered: isHovered,
+          isDragging: isDragging, hasActivity: hasActivity, runState: runState,
+          showLeadingSeparator: showsLeadingSeparator(at: index, groupOf: groupOf),
+          isGrouped: groupOf[tab.id] != nil,
+          codingAgentBadge: codingAgentBadge, onCodingAgentTap: { codingAgentPopoverTab = tab.id },
+          statusLines: ProgramStatusPresentation.tooltipLines(
+            for: tab, of: target, hosts: programStatus.hosts)
+        ) {
+          host.requestCloseTerminalTab(tab.id, for: target)
+        }
+        // Which chips the strip shows, for the edge button that reveals a waiting one (#358).
+        .onScrollVisibilityChange { visible in
+          if visible { visibleTabs.insert(tab.id) } else { visibleTabs.remove(tab.id) }
+        }
+        .popover(
+          isPresented: Binding(
+            get: { codingAgentPopoverTab == tab.id },
+            set: { if !$0 { codingAgentPopoverTab = nil } })
+        ) {
+          codingAgentPopover(for: tab)
+        }
+        .onHover { inside in
+          if inside { hoveredTab = tab.id } else if hoveredTab == tab.id { hoveredTab = nil }
+        }
+        .onTapGesture {
+          // Eager: select on the first click (changes `active.id`; the view's .onChange hook
+          // marks the tab read). A quick second click on the same chip promotes a preview content
+          // tab to persisted (#66) — `persist` no-ops on terminal/persisted tabs, so this is safe
+          // for every chip and never delays the select.
+          let now = Date()
+          sessions.select(tab.id, for: target)
+          if let last = lastChipClick, last.id == tab.id, now.timeIntervalSince(last.at) < 0.35 {
+            sessions.persist(tab.id, for: target)
+            lastChipClick = nil
+          } else {
+            lastChipClick = ChipClick(id: tab.id, at: now)
+          }
+        }
+        .tabChipContextMenu(tab: tab, target: target, host: host, sessions: sessions)
+        // Measure in .global space: a .local drag reads coordinates relative to the
+        // chip, which itself moves via .offset(drag.translation) — that feedback loop
+        // dampens the translation so the chip lags the cursor. Global space is fixed.
+        .gesture(
+          DragGesture(minimumDistance: 6, coordinateSpace: .global)
+            .onChanged { value in
+              drag.setWidths(measuredWidths.values)
+              // Kept within the tab run, as a workroom tab is: not past the last chip.
+              drag.update(tab.id, translation: clampReorder(value.translation.width, index))
+              // Dragged clear of the window → a tear-off (issue #172), or into a workroom from the
+              // Quick Terminal: show where it goes and stop previewing a drop into the panes.
+              if isDragOutsideWindow(value.location) {
+                chipPaneDrag = nil
+                sessions.showDragOutside(tab)
+                return
+              }
+              sessions.hideDragOutside()
+              // Dragged down over the pane area → preview a drop-into-pane (the strip stops gapping).
+              chipPaneDrag = localize(value.location)
+                .map { PaneDragState(tabID: tab.id, location: $0) }
+            }
+            .onEnded { value in
+              sessions.hideDragOutside()
+              if isDragOutsideWindow(value.location) {
+                // A chip dragged out of the window does what dragging the pane's own title bar out
+                // does — the chip is the other handle on the same pane.
+                sessions.dropOutside(tab.id, for: target)
+                drag.cancel()
+                chipPaneDrag = nil
+                return
+              }
+              if let drop = dropTarget(value.location) {
+                sessions.dropTabFromStrip(
+                  tab.id, ontoEdge: drop.edge, of: drop.tab, for: target)
+                drag.cancel()
+              } else {
+                // `drag.commit` itself must run INSIDE `withAnimation`, not just the `moveTab` it
+                // gates: `commit` resets `drag.id`/`translation` as a side effect (see its doc), which
+                // is what drives this chip's `offsetX` back to 0. Calling it outside the animation
+                // block snapped the chip back to its pre-drag position instantly, one frame before
+                // `moveTab`'s reorder animated in — a visible flick-back before the tab settled.
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                  if let move = drag.commit(
+                    ids: tabs.map(\.id), spacing: tabSpacing,
+                    finalTranslation: clampReorder(value.translation.width, index))
+                  {
+                    sessions.moveTab(tab.id, toIndex: move.to, for: target)
+                  }
+                }
+              }
+              chipPaneDrag = nil
+            }
+        )
+        .offset(x: offsetX)
+        .zIndex(isDragging ? 1 : 0)
+        .animation(
+          isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX
+        )
+        // Scroll target for `OverflowingTabScroller`'s `ScrollViewReader` (issue #129 follow-up) — the
+        // same id `ForEach` already keys identity on.
+        .id(tab.id)
+      }
+      // A divider sets the new-terminal (+) button apart from the last tab (mirrors the workroom
+      // tab bar). Hidden when the last tab is set apart on its own — focused or hovered — to match
+      // the "no divider beside the focused/hovered tab" rule above, and when the "+" has pinned
+      // (issue #129): the fade and the gutter already separate the two regions, and a hairline beside
+      // a dissolving edge reads as a cut. Toggled via OPACITY (not removed) so it stays laid out and
+      // the "+" never shifts as the hover/focus comes and goes — which also keeps the measured run
+      // width stable across those transitions.
+      // Only present at all with ≥1 tab (a split member's empty strip is just the "+" and close ✕).
+      // Negative leading trims the gap to the last tab to ~2pt (HStack `tabSpacing` 4 − 2), matching
+      // the inter-tab dividers.
+      if !tabs.isEmpty {
+        Rectangle()
+          .fill(tokens.border)
+          .frame(width: 1, height: 14)
+          .padding(.leading, -2)
+          .padding(.trailing, 4)
+          .opacity(showsTrailingDivider(groupOf: groupOf) && !overflowing ? 1 : 0)
+      }
+    }
+    .background(alignment: .leading) {
+      // Hidden during a drag (group-aware strip drag is Phase 2). With nothing grouped it would
+      // draw nothing, so it is skipped before it maps the tabs or reads their widths.
+      if !drag.isDragging, !groupOf.isEmpty {
+        TabStripSplitBrackets(
+          ids: tabs.map(\.id), width: { measuredWidths.values[$0] ?? 0 }, groupOf: groupOf,
+          spacing: tabSpacing, identifierPrefix: "terminal.tab.splitBracket")
+      }
+    }
+    .onPreferenceChange(TabWidthKey.self) { widths in
+      measuredWidths.values = widths
+      if drag.isDragging { drag.setWidths(widths) }
+    }
+  }
+
+  /// The "new terminal" (+) button, rendered in one of two positions (issue #129): inline as the last
+  /// element of the scrolling row while the tabs fit, so it hugs the rightmost tab; or lifted out and
+  /// pinned to the scroller's trailing edge once they overflow, so it can't be scrolled out of reach.
+  /// The same view either way; `OverflowingTabScroller` applies its inline positioning pad and takes
+  /// its width measurement, so that width stays a pure intrinsic measurement.
+  private var addTerminalButton: some View {
+    Button {
+      // Held while the host is asked for its layout (#255), as ⌘T is.
+      host.newTerminal(in: target)
+    } label: {
+      Image(systemName: "plus")
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .padding(4)
+        .background(
+          RoundedRectangle(cornerRadius: 5)
+            .fill(tokens.hover.opacity(addHovering ? 1 : 0))
+        )
+        // The whole padded glyph (the hover well's area) is clickable/hoverable, not just the "+" —
+        // the transparent padding wouldn't hit-test on its own.
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .onHover { addHovering = $0 }
+    .help("New terminal (⌘T)")
+    .accessibilityLabel("New terminal")
+    .accessibilityIdentifier("NewTerminal")
+  }
+
+  /// The terminal that has waited longest (#358) among those scrolled off the strip's trailing (or
+  /// leading) end. Nil until the strip has said which chips it shows.
+  private func hiddenWaitingTab(trailing: Bool) -> TerminalTab? {
+    let ids = tabs.map(\.id)
+    guard let firstVisible = ids.firstIndex(where: visibleTabs.contains) else { return nil }
+    let hidden = sessions.blockedTabs(forTargetID: target.id).map(\.tab).first { id in
+      guard !visibleTabs.contains(id), let index = ids.firstIndex(of: id) else { return false }
+      return (index > firstVisible) == trailing
+    }
+    return hidden.flatMap { id in tabs.first { $0.id == id } }
+  }
+
+  /// Reveals and focuses a waiting terminal that is scrolled out of the strip (#358): selecting it
+  /// is what scrolls its chip into view.
+  private func waitingEdgeButton(_ tab: TerminalTab, edge: String) -> some View {
+    let sentence = ProgramStatusPresentation.sentence(
+      tab.programStatus?.blocked.first?.kind ?? .none)
+    return Button {
+      sessions.select(tab.id, for: target)
+    } label: {
+      ProgramStatusGlyph(mark: .blocked, stale: tab.programStatus?.stale == true, size: 10)
+        .frame(width: 24, height: 24)
+        .background(Circle().fill(tokens.panel))
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .withTabTitle(tab.content) { button, title in
+      button
+        .help("\(title): \(sentence)")
+        .accessibilityLabel("Show \(title), \(sentence.lowercased())")
+    }
+    .accessibilityIdentifier("terminal.tab.waitingEdge.\(edge)")
+  }
+
+  /// A reorder translation kept within the tab run (`TabReorderDrag.clamped`), as `WorkroomTabBar`'s.
+  private func clampReorder(_ translation: CGFloat, _ index: Int) -> CGFloat {
+    drag.clamped(translation, ids: tabs.map(\.id), index: index, spacing: tabSpacing)
+  }
+
+  /// Horizontal shift for a non-dragged chip so the row opens a gap at the drop target (delegates to
+  /// the shared `TabReorder` math).
+  private func gapShift(for index: Int, draggedIndex: Int?, target: Int?, amount: CGFloat)
+    -> CGFloat
+  {
+    TabReorder.gapShift(index: index, draggedIndex: draggedIndex, target: target, amount: amount)
+  }
+
+  /// Whether to draw a hairline on the leading edge of tab `index`, separating it from its left
+  /// neighbour (`TabStripSeparators.between`, the workroom bar's rule too). Never before the first
+  /// tab — unlike the workroom bar, whose first chip gets one — and never while dragging (reorder /
+  /// drop-into-pane).
+  private func showsLeadingSeparator(at index: Int, groupOf: [TerminalTab.ID: Int]) -> Bool {
+    guard index > 0, !drag.isDragging, chipPaneDrag == nil else { return false }
+    return TabStripSeparators.between(
+      tabs[index - 1].id, tabs[index].id, active: activeID, hovered: hoveredTab, groupOf: groupOf)
+  }
+
+  /// Whether the divider between the last tab and the "+" button shows (`TabStripSeparators.atEdge`).
+  /// Dropped when the last tab is set apart on its own — focused or hovered — and when it is a
+  /// split-group member: the bracket's right side already separates the group from the "+", so a
+  /// divider there doubles up. Without the split-member case a group pinned to the far right kept
+  /// this divider whenever an *inner* member was focused (the last tab wasn't the active one), so it
+  /// showed alongside the bracket edge.
+  private func showsTrailingDivider(groupOf: [TerminalTab.ID: Int]) -> Bool {
+    TabStripSeparators.atEdge(
+      of: tabs.last?.id, active: activeID, hovered: hoveredTab, groupOf: groupOf)
+  }
+
+  /// The ✦ agent popover for a tab (inline presentation): the diagnosis + its actions, off the grid.
+  @ViewBuilder private func codingAgentPopover(for tab: TerminalTab) -> some View {
+    if let state = codingAgentManager.banners[tab.id] {
+      TerminalCodingAgentBanner(
+        state: state,
+        onDiagnose: { codingAgentManager.diagnose(tab: tab.id, target: target.id) },
+        onInsertFix: { fix in
+          sessions.surface(of: tab.id)?.sendText(fix)
+          codingAgentPopoverTab = nil
+        },
+        onInvestigate: {
+          host.investigate(state, in: target, surface: sessions.surface(of: tab.id))
+          codingAgentManager.dismiss(tab: tab.id)
+          codingAgentPopoverTab = nil
+        },
+        onDismiss: {
+          codingAgentManager.dismiss(tab: tab.id)
+          codingAgentPopoverTab = nil
+        }
+      )
+      .frame(width: 360)
+    }
+  }
+}
+
+/// A single terminal tab chip: its title, an always-visible close button, and the active/hover/
+/// activity/dragging styling. Purely presentational — the strip wraps it with the hover, tap, and
+/// drag gestures, since those drive (and read) the strip's shared drag state.
+private struct TerminalTabChip: View {
+  /// The run-command state shown as a leading chip icon — only the dedicated run tab has one (#7).
+  /// `failed` (issue #79) renders a distinct glyph + colour, not just a red tint, so it stays legible
+  /// for red/green colourblind users (the running/stopped play glyph vs the failed octagon).
+  enum RunState { case running, stopping, stopped, failed }
+
+  let tab: TerminalTab
+  let isActive: Bool
+  let isHovered: Bool
+  let isDragging: Bool
+  let hasActivity: Bool
+  let runState: RunState?
+  /// Draw a hairline on the leading edge, separating two adjacent idle tabs (computed by the strip).
+  let showLeadingSeparator: Bool
+  /// A member of a split group — its fill insets so it sits *inside* the group's bracket, never
+  /// overrunning it (the bracket hugs the chip run, so a full-bleed pill would cover the border).
+  let isGrouped: Bool
+  /// A ✦ badge marking an available inline-agent diagnosis (issue #49); tapping opens its popover.
+  var codingAgentBadge: Bool = false
+  var onCodingAgentTap: () -> Void = {}
+  /// What the program in this terminal reports, or why nothing does (#358): the tooltip's lines
+  /// below the title.
+  var statusLines: [String] = []
+  let onClose: () -> Void
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.themeTokens) private var tokens
+
+  /// Glyph + colour + a11y/help word for the run-state chip icon. Failure is carried by BOTH the
+  /// glyph (octagon vs play) and the colour, so it survives red/green colourblindness (#79).
+  private func runIconSpec(_ state: RunState) -> (glyph: String, color: Color, label: String) {
+    switch state {
+    case .running: return ("play.circle.fill", tokens.success, "running")
+    case .stopping: return ("stop.circle.fill", tokens.warning, "stopping")
+    case .stopped: return ("play.circle.fill", tokens.fgMuted, "stopped")
+    case .failed: return ("xmark.octagon.fill", tokens.failure, "failed")
+    }
+  }
+
+  /// Pulled out of the `body` modifier chain, with an explicit return type: inlined, the
+  /// map/ternary combo made the chip's already-large `body` "unable to type-check in reasonable
+  /// time" on a clean CI build (it type-checked fine locally only because a warm `DerivedData`
+  /// incremental cache skipped re-inferring it).
+  /// The chip's accessibility label: title, plus the recognized tool, plus the ✦ diagnosis badge.
+  ///
+  /// The badge has to live here (or on the chip's value) because the chip's explicit
+  /// `.accessibilityLabel` makes it ONE accessibility element and its descendants unreachable — see
+  /// the note on `.accessibilityValue` below. The VALUE is already taken by run state, which
+  /// `RunStatusUITests`/`GhosttyActionDispatchUITests` assert with EXACT equality
+  /// (`value == "failed"`, `== "Busy"`), and a failed run is exactly the case that also raises a
+  /// badge — so appending there would have broken those. The label is composed and asserted with
+  /// `contains` (`ToolFaviconUITests`), so it extends safely.
+  ///
+  /// Extracted as a computed property for the same reason `runOrBusyAccessibilityValue` is: inlined
+  /// in the chip's already-large `body`, this kind of map/ternary combo blew the type-checker's
+  /// budget on a clean build.
+  private func chipAccessibilityLabel(_ title: String) -> String {
+    var parts = [title]
+    if let tool = tab.recognizedTool { parts.append(tool.displayName) }
+    if codingAgentBadge { parts.append("Diagnosis available") }
+    // A run tab's value stays its run state (asserted exactly), so its OSC 9;4 ERROR goes here.
+    if runState != nil, tab.isProgressFailed { parts.append("a command reported an error") }
+    // The value says the waiting kind; the label adds only that the link is down (#358).
+    if [.blocked, .done, .error].contains(tab.indicator), tab.programStatus?.stale == true {
+      parts.append(ProgramStatusPresentation.mayBeOutOfDate)
+    }
+    return parts.joined(separator: ", ")
+  }
+
+  private var runOrBusyAccessibilityValue: String {
+    if let runState { return runIconSpec(runState).label }
+    return ProgramStatusPresentation.accessibilityValue(
+      indicator: tab.indicator, rollup: tab.programStatus)
+  }
+
+  private func tooltip(_ title: String) -> String {
+    ([tab.filePath ?? title] + statusLines).joined(separator: "\n")
+  }
+
+  /// The chip's base line, one at a time: waiting and a stopped error are static, a running
+  /// command sweeps.
+  @ViewBuilder private var underline: some View {
+    switch tab.indicator {
+    case .blocked: StatusUnderline(color: tokens.warning)
+    case .error: StatusUnderline(color: tokens.failure)
+    case .running(let failed): RunningUnderline(failed: failed)
+    case .done, .none: EmptyView()
+    }
+  }
+
+  var body: some View {
+    // Title and close button laid out side by side: a compact gap keeps the ✕ visibly tied to its
+    // tab (a wide gap reads as detached) while still clearing the title so they never crowd.
+    HStack(spacing: 6) {
+      // Inline-agent diagnosis available (issue #49): a ✦ badge that opens the diagnosis popover.
+      if codingAgentBadge {
+        Button(action: onCodingAgentTap) {
+          Image(systemName: "sparkles")
+            .font(.system(size: 10))
+            .foregroundStyle(tokens.accent)
+        }
+        .buttonStyle(.plain)
+        .help("Show the diagnosis for this command")
+        .accessibilityIdentifier("terminal.codingAgentBadge")
+        .accessibilityLabel("Diagnosis available")
+      }
+      // Run state: green play while running, a warning spinner while stopping, dim play once it
+      // exits, and a red octagon if it failed (#79). Keep the slot stable across state changes.
+      if let runState {
+        let spec = runIconSpec(runState)
+        Group {
+          if runState == .stopping {
+            ProgressView().controlSize(.mini).tint(spec.color)
+          } else {
+            Image(systemName: spec.glyph)
+              .font(.system(size: 10))
+              .foregroundStyle(spec.color)
+          }
+        }
+        .frame(width: 12, height: 12)
+        .help("Run command \(spec.label)")
+        // Purely visual: the chip's own `.accessibilityValue` below (not this glyph) is the
+        // XCUITest query handle for run state (#79) — the chip's explicit `.accessibilityLabel`
+        // (issue #141) makes it a single accessibility element, so this nested image's own
+        // label/identifier are unreachable regardless of `.accessibilityElement(children:)`
+        // policy (measured: `.contain` in either modifier position still didn't expose it).
+        .accessibilityHidden(true)
+      }
+      // A content tab gets a leading glyph so it reads as not-a-terminal at a glance (#66 diff, #59
+      // changeset). The symbol comes from `TabContent.glyph`, shared with the pane's own title bar
+      // (issue #150) so the two can't drift; nil for a terminal, which is the unmarked default.
+      if let glyph = tab.content.glyph {
+        Image(systemName: glyph)
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(tokens.fgMuted)
+          .accessibilityHidden(true)
+      }
+      // A recognized CLI/TUI's real brand favicon (issue #141). `tab.recognizedTool` is nil for a
+      // content tab, an unrecognized command, or a registry entry whose logo hasn't been fetched yet
+      // — `ToolLogoRegistry` only vends entries with a bundled image, so this never renders a
+      // missing/broken asset. Dynamic (unlike the diff/file/changeset glyphs, which are fixed for the
+      // tab's life), same category of mid-session width change as the ✦ agent badge above — no
+      // special-casing needed, `TabWidthKey` already re-measures after layout.
+      if let tool = tab.recognizedTool {
+        Image(ToolLogoRegistry.assetName(for: tool.id))
+          .resizable()
+          .aspectRatio(contentMode: .fit)
+          .frame(width: 12, height: 12)
+          .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+          .help(tool.displayName)
+          .accessibilityHidden(true)
+      }
+      // Unread activity is marked by a leading accent dot (+ accent title) — a different visual
+      // primitive from the selected tab's neutral fill, so the two never read alike. A waiting or
+      // program's finished mark already says it, so the dot gives way to it; a shell command's ✓
+      // carries no notification, so it does not.
+      let markSaysIt =
+        tab.indicator == .blocked
+        || (tab.indicator == .done && tab.programStatus?.done?.exitCode == nil)
+      if hasActivity, !markSaysIt {
+        Circle()
+          .fill(tokens.accent)
+          .frame(width: 6, height: 6)
+          .accessibilityHidden(true)
+      }
+      // A waiting or finished program (#358) leads the title; the chip's value says which.
+      if tab.indicator == .blocked || tab.indicator == .done {
+        ProgramStatusGlyph(
+          mark: tab.indicator == .blocked ? .blocked : .done,
+          stale: tab.programStatus?.stale == true, size: 9
+        )
+        .accessibilityHidden(true)
+      }
+      // The title is read in a leaf (`TabTitleReader`): a terminal's changes many times a second,
+      // and only this text re-renders for it, not the chip.
+      TabTitleReader(content: tab.content) { title in
+        Text(title)
+          .font(.callout)
+          // The focused tab's title is brighter (full primary) so it reads as selected; unfocused
+          // titles dim to muted. Brightness only — NOT weight: a bold↔regular swap on switch
+          // re-measures the title and nudges the chips sideways. Unread activity (accent) overrides
+          // either, on any tab.
+          .foregroundStyle(
+            hasActivity ? tokens.accent : (isActive ? Color.primary : tokens.fgMuted)
+          )
+          // A preview tab's name is italic until it's persisted (VS-Code semantics, #66).
+          .italic(tab.isPreview)
+          .lineLimit(1)
+          .truncationMode(.tail)
+          // Cap the title (~25 chars at `.callout`) so a long name (a file path, a shell-set
+          // terminal title) tail-truncates with an ellipsis instead of stretching the chip
+          // arbitrarily wide; the full title rides in the chip's `.help` tooltip below. A short
+          // title stays tight (leading alignment, Text sizes to its ideal width up to the cap).
+          .frame(maxWidth: TabStripMetrics.maxChipTitle, alignment: .leading)
+      }
+      // The ✕ is always shown (every tab is closable at a glance), so the chip width is constant.
+      TabCloseButton(action: onClose)
+        .withTabTitle(tab.content) { button, title in
+          button
+            .help("Close \(title)")
+            .accessibilityLabel("Close \(title)")
+        }
+    }
+    .padding(.leading, 10)
+    .padding(.trailing, 4)  // tighter than the leading inset — the ✕ sits near the chip's edge
+    .padding(.vertical, 6)
+    // Every tab is a self-contained pill, rounded on all four corners — no tab bleeds into the panel
+    // (the focused pane isn't necessarily the one directly below the strip, e.g. a split). The active
+    // tab is filled with the terminal background (`bg`) so it stands distinct from the recessed strip;
+    // inactive tabs keep the faint hover wash, the `panel` bar showing through the clear idle fill. A
+    // grouped chip insets its pill so it nests inside the split bracket instead of overrunning it.
+    .background {
+      RoundedRectangle(cornerRadius: 6, style: .continuous)
+        .fill(isActive ? tokens.bg : (isHovered ? tokens.hover : Color.clear))
+        .padding(isGrouped ? EdgeInsets(top: 2, leading: 3, bottom: 2, trailing: 3) : EdgeInsets())
+        // Fade the hover wash in/out instead of snapping it on.
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isHovered)
+    }
+    .background {
+      RoundedRectangle(cornerRadius: 6)
+        .fill(.thickMaterial)
+        .overlay(
+          RoundedRectangle(cornerRadius: 6)
+            .strokeBorder(tokens.border, lineWidth: 1)
+        )
+        .opacity(isDragging ? 1 : 0)
+    }
+    // Measure the chip's natural width for the drag gap math.
+    .background {
+      GeometryReader { geo in
+        Color.clear.preference(key: TabWidthKey.self, value: [tab.id: geo.size.width])
+      }
+    }
+    // Only the focused tab is outlined: unfocused tabs have a transparent border so they recede into
+    // the strip, and the focused tab's outline is a stronger stroke (`fgDim`, not the old `border`
+    // hairline) so it reads as clearly selected rather than washed out. Grouped tabs are framed by the
+    // shared split bracket (`TabStripSplitBrackets`) instead, so they skip it.
+    .overlay {
+      if !isGrouped && isActive {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .strokeBorder(tokens.fgDim, lineWidth: 1)
+      }
+    }
+    // Hairline centred in the gap between this chip and its left neighbour, so it sits cleanly between
+    // the tabs and never overlaps either pill. The gap is the HStack's `tabSpacing` (4pt); the overlay
+    // is anchored to this chip's leading edge, so the 1pt rect's centre lands at −tabSpacing/2 = −2 →
+    // offset −2.5 (the leading-anchored rect's own centre is at +0.5). An overlay (not an HStack
+    // element) so it never enters the width the drag-gap math measures.
+    .overlay(alignment: .leading) {
+      if showLeadingSeparator {
+        Rectangle()
+          .fill(tokens.border)
+          .frame(width: 1, height: 14)
+          .offset(x: -2.5)
+      }
+    }
+    // A flowing underline along the chip's base while a command runs in this tab (issue #28).
+    // An overlay so it never changes the chip's measured width (the drag gap math reads that).
+    .overlay(alignment: .bottom) {
+      underline
+        .padding(.horizontal, 6)
+        .padding(.bottom, 1)
+    }
+    .contentShape(Rectangle())
+    // The full, untruncated name as a tooltip — so a tail-truncated chip still reveals it on hover.
+    // For a content tab the full name is its PATH (issue #136): the chip shows only the basename, so
+    // two `user.rb` tabs from different directories are otherwise indistinguishable without opening
+    // each one. The close button's own `.help` (inner) wins when the cursor is over the ✕. Program
+    // status lines follow (#358).
+    // The recognized tool's favicon (issue #141) is otherwise conveyed ONLY by a plain `Image` — a
+    // leaf `.accessibilityIdentifier` on the icon itself is silently unreachable (measured: an
+    // XCUITest querying it never found the element, even though the model-layer detection and the
+    // image asset both resolved correctly). Folded into the chip's own label instead, and the title
+    // stays in the label so VoiceOver still reads the tab's name. The three read the title in a
+    // leaf (`TabTitleReader`), so the chip's body does not re-run for every title change.
+    .withTabTitle(tab.content) { chip, title in
+      chip
+        .help(tooltip(title))
+        .accessibilityIdentifier("terminal.tab.\(title)")
+        .accessibilityLabel(chipAccessibilityLabel(title))
+    }
+    .accessibilityAddTraits(isActive ? .isSelected : [])
+    // The ✦ badge is a real control that assistive technology could not reach at all: it is a nested
+    // `Button`, and the chip's own label above collapses the chip into a single element. Announcing
+    // it in the label (see `chipAccessibilityLabel`) makes it perceivable; this makes it OPERABLE,
+    // so VoiceOver can open the diagnosis without a mouse. Same reasoning applies to the nested ✕,
+    // which is still unreachable — see the TODOS entry.
+    .accessibilityActions {
+      if codingAgentBadge {
+        Button("Show diagnosis") { onCodingAgentTap() }
+      }
+    }
+    // The running state is otherwise conveyed ONLY by the flowing underline above — invisible to
+    // VoiceOver, and unassertable in XCUITest. `GhosttyActionDispatchUITests` reads this to prove
+    // `GHOSTTY_ACTION_PROGRESS_REPORT` (OSC 9;4) still reaches the tab model after an engine change.
+    // On the dedicated run tab (#79) this instead reports the run's own state — `running` / `stopped`
+    // / `failed` — since the chip's explicit `.accessibilityLabel` above (issue #141) makes the whole
+    // chip ONE accessibility element: no `.accessibilityElement(children:)` policy kept the nested
+    // run-state icon or the ✦ badge separately queryable once the chip has its own label (measured;
+    // `.contain` didn't help in either modifier position), so run state has to live on the chip's own
+    // value instead of a descendant's.
+    .accessibilityValue(runOrBusyAccessibilityValue)
+    .scaleEffect(isDragging ? 1.04 : 1)
+    .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)
+  }
+}
+
+/// Split brackets observe these widths live; a strip without groups leaves them unobserved.
+@Observable
+private final class TerminalChipWidths {
+  var values: [TerminalTab.ID: CGFloat] = [:]
+}
+
+/// Collects each tab chip's natural width for the drag gap math.
+private struct TabWidthKey: PreferenceKey {
+  static let defaultValue: [TerminalTab.ID: CGFloat] = [:]
+  static func reduce(
+    value: inout [TerminalTab.ID: CGFloat], nextValue: () -> [TerminalTab.ID: CGFloat]
+  ) {
+    value.merge(nextValue()) { _, new in new }
+  }
+}
+
+/// A thin accent underline that flows left→right while a command runs in a tab (issue #28): a base
+/// accent track with a brighter highlight that sweeps across it, conveying indeterminate progress.
+/// Under Reduce Motion the sweep is dropped for a static, fuller-opacity track.
+/// Reused by `WorkroomTabBar`'s chips so a busy workroom tab shows the same flowing underline.
+///
+/// The sweep is a Core Animation gradient (`SweepView`), not a SwiftUI animation. A `repeatForever`
+/// offset here forced a full hosting-view layout on every display frame for as long as any pane was
+/// running — with a coding agent in a pane, all day: a 10 s `sample` of the idle app put ~7 s of
+/// its main thread in that render, 25–40% CPU, and Reduce Motion took it to ~3%. The compositor
+/// runs a `CABasicAnimation` on its own, so the main thread gets no per-frame work at all.
+struct RunningUnderline: View {
+  /// The program reported OSC 9;4 ERROR: same sweep, in the failure colour.
+  var failed = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.themeTokens) private var tokens
+  private var color: Color { failed ? tokens.failure : tokens.accent }
+
+  var body: some View {
+    Capsule()
+      .fill(color.opacity(reduceMotion ? 0.7 : 0.25))
+      .overlay {
+        if !reduceMotion { SweepHighlight(color: NSColor(color)) }
+      }
+      .frame(height: 2)
+  }
+}
+
+/// The highlight that travels along a `RunningUnderline`, as a layer the compositor animates.
+private struct SweepHighlight: NSViewRepresentable {
+  var color: NSColor
+
+  func makeNSView(context: Context) -> SweepView { SweepView(color: color) }
+
+  func updateNSView(_ view: SweepView, context: Context) { view.color = color }
+}
+
+/// A capsule-clipped view whose gradient sublayer sweeps left→right forever while its window is key
+/// and on screen (`KeyWindowAnimationView`).
+final class SweepView: KeyWindowAnimationView {
+  static let duration: TimeInterval = 1.1
+  static let animationKey = "sweep"
+
+  var color: NSColor {
+    didSet { if color != oldValue { gradient.colors = Self.stops(color) } }
+  }
+  private let gradient = CAGradientLayer()
+  /// The width the running animation was built for; a layout at the same width leaves it alone.
+  private var sweptWidth: CGFloat = 0
+
+  init(color: NSColor) {
+    self.color = color
+    super.init(frame: .zero)
+    wantsLayer = true
+    layer?.masksToBounds = true
+    gradient.startPoint = CGPoint(x: 0, y: 0.5)
+    gradient.endPoint = CGPoint(x: 1, y: 0.5)
+    gradient.colors = Self.stops(color)
+    layer?.addSublayer(gradient)
+  }
+
+  @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) unused") }
+
+  // Never the event target: the chip's tap and drag-reorder gestures own the strip this overlay
+  // paints, as they did when it was a plain SwiftUI capsule.
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  private static func stops(_ color: NSColor) -> [CGColor] {
+    [color.withAlphaComponent(0).cgColor, color.cgColor, color.withAlphaComponent(0).cgColor]
+  }
+
+  /// Whether the sweep should run: only in a key, visible window, and only once there is a width
+  /// to travel. Pure so a test can pin the gate without a real key window.
+  nonisolated static func shouldSweep(isKey: Bool, isVisible: Bool, width: CGFloat) -> Bool {
+    isKey && isVisible && width > 0
+  }
+
+  override func layout() {
+    super.layout()
+    layer?.cornerRadius = bounds.height / 2
+    // Same geometry as the SwiftUI sweep it replaced: a highlight 40% of the track (20pt minimum)
+    // travelling from just off the leading edge to just off the trailing edge.
+    let highlight = max(20, bounds.width * 0.4)
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    gradient.frame = CGRect(x: -highlight, y: 0, width: highlight, height: bounds.height)
+    CATransaction.commit()
+    // The travel distance is baked into the animation, so a change of width rebuilds it; any other
+    // layout pass leaves the highlight mid-travel.
+    if bounds.width != sweptWidth {
+      sweptWidth = bounds.width
+      gradient.removeAnimation(forKey: Self.animationKey)
+    }
+    syncAnimation()
+  }
+
+  override func syncAnimation() {
+    let running = Self.shouldSweep(
+      isKey: window?.isKeyWindow == true,
+      isVisible: window?.occlusionState.contains(.visible) == true, width: bounds.width)
+    setSweeping(running)
+  }
+
+  /// Add or remove the sweep. Idempotent: an animation already in flight is left alone, so a
+  /// notification that changes nothing never restarts the highlight mid-travel.
+  func setSweeping(_ running: Bool) {
+    if !running {
+      gradient.removeAnimation(forKey: Self.animationKey)
+      return
+    }
+    guard gradient.animation(forKey: Self.animationKey) == nil else { return }
+    let highlight = gradient.bounds.width
+    let sweep = CABasicAnimation(keyPath: "transform.translation.x")
+    sweep.fromValue = 0
+    sweep.toValue = bounds.width + highlight
+    sweep.duration = Self.duration
+    sweep.repeatCount = .infinity
+    sweep.timingFunction = CAMediaTimingFunction(name: .linear)
+    gradient.add(sweep, forKey: Self.animationKey)
+  }
+
+  /// Test seam: whether the sweep animation is currently attached.
+  var isSweeping: Bool { gradient.animation(forKey: Self.animationKey) != nil }
+}
+
+/// A tab's close button, overlaid on the title's right edge. Its own hover paints a subtle
+/// background behind the ✕. (Show/hide is handled by the caller's overlay.)
+private struct TabCloseButton: View {
+  let action: () -> Void
+  @State private var hovering = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: "xmark")
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(hovering ? .primary : .secondary)
+        .padding(3)
+        // A circular hover well behind the ✕ (matches a round close affordance), faded in/out.
+        .background(
+          Circle()
+            .fill(tokens.hover.opacity(hovering ? 1 : 0))
+        )
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering = $0 }
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: hovering)
+  }
+}
+
+/// A grouped two-segment switch for the diff view mode (issue #66): unified | side-by-side, rendered
+/// as one control — a faint rounded track with a raised "thumb" behind the active segment — so it
+/// reads as a single switch rather than two loose buttons. Clicking a segment reports that mode.
+/// The unified / side-by-side segmented switch. Used by the tab toolbar (per-tab override) and the
+/// changeset detail's diff header (its local override). Internal so both can share the one control.
+struct DiffModeSwitch: View {
+  /// The currently effective mode (this tab's override, or the global default) — the lit segment.
+  let mode: DiffViewMode
+  let select: (DiffViewMode) -> Void
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    HStack(spacing: 0) {
+      segment(.unified, help: "Unified diff", identifier: "tab.toolbar.diffUnified")
+      segment(.sideBySide, help: "Side-by-side diff", identifier: "tab.toolbar.diffSideBySide")
+    }
+    .padding(1.5)
+    .background(RoundedRectangle(cornerRadius: Radius.s).fill(tokens.surface))
+  }
+
+  @ViewBuilder
+  private func segment(_ segMode: DiffViewMode, help: String, identifier: String) -> some View {
+    let active = mode == segMode
+    Button {
+      select(segMode)
+    } label: {
+      Image(systemName: segMode.symbol)
+        // A touch smaller than the plain action buttons (size 11): the `doc.*` glyphs render heavier,
+        // so matching their size made the switch read as oversized next to them.
+        .font(.system(size: 9.5))
+        .foregroundStyle(active ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(RoundedRectangle(cornerRadius: Radius.xs).fill(active ? tokens.bg : .clear))
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .help(help)
+    .accessibilityLabel(help)
+    .accessibilityIdentifier(identifier)
+    .accessibilityAddTraits(active ? .isSelected : [])
+  }
+}
+
+/// A grouped two-segment switch for a Markdown file tab's rendered-preview vs. source view, built to
+/// match `DiffModeSwitch` (same track + raised-thumb styling) so the two toolbars read as siblings.
+/// Clicking a segment reports whether preview should be on. Lives in the tab toolbar (issue: file
+/// viewer toggle moved out of the pane header, alongside the split button).
+struct MarkdownModeSwitch: View {
+  /// Whether rendered preview is the effective mode (this tab's override, defaulting to preview) — the
+  /// lit segment.
+  let preview: Bool
+  let select: (Bool) -> Void
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    HStack(spacing: 0) {
+      segment(
+        isPreview: true, symbol: "eye", help: "Rendered preview",
+        identifier: "tab.toolbar.markdownPreview")
+      segment(
+        isPreview: false, symbol: "chevron.left.forwardslash.chevron.right", help: "Source",
+        identifier: "tab.toolbar.markdownSource")
+    }
+    .padding(1.5)
+    .background(RoundedRectangle(cornerRadius: Radius.s).fill(tokens.surface))
+  }
+
+  @ViewBuilder
+  private func segment(isPreview: Bool, symbol: String, help: String, identifier: String)
+    -> some View
+  {
+    let active = preview == isPreview
+    Button {
+      select(isPreview)
+    } label: {
+      Image(systemName: symbol)
+        .font(.system(size: 9.5))
+        .foregroundStyle(active ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(RoundedRectangle(cornerRadius: Radius.xs).fill(active ? tokens.bg : .clear))
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .help(help)
+    .accessibilityLabel(help)
+    .accessibilityIdentifier(identifier)
+    .accessibilityAddTraits(active ? .isSelected : [])
+  }
+}
+
+/// The remove-from-split (✕) control for a workroom split member. Hosted in the workroom pane title bar
+/// (`WorkroomPaneTitleBar`, issue #110) — present above every member regardless of its terminal count or
+/// a blocking setup script, which is why it no longer needs to ride the tab strip or a setup-overlay
+/// corner. A view (not an inline button) so it carries its own `onHover`, which ensures the `.help`
+/// tooltip's tracking area is installed (a bare `.help` without any hover tracking can silently fail to
+/// show).
+///
+/// Takes the group's inherited `ToolbarIconButtonStyle` and glyph size rather than styling itself: it
+/// used to be `.plain` with its own 8pt horizontal padding, so it was the one control in the header
+/// whose well was a different size and shape from its neighbours'.
+struct CloseWorkroomPaneButton: View {
+  let action: () -> Void
+  @State private var hovering = false
+
+  var body: some View {
+    Button(action: action) {
+      // `pip.exit` (a pane with an arrow leaving its corner) reads as "pop this workroom out of the
+      // split", not "close the workroom" — the ✕ was ambiguous (issue #110).
+      Image(systemName: "pip.exit")
+        .foregroundStyle(hovering ? .primary : .secondary)
+    }
+    .onHover { hovering = $0 }
+    .help("Remove this workroom from the split")
+    .accessibilityLabel("Remove workroom from split")
+    .accessibilityIdentifier("workroom.pane.close")
+  }
+}
+
+/// The last chip click — id + time — used by the strip's eager single/double tap discrimination (#66).
+private struct ChipClick {
+  let id: TerminalTab.ID
+  let at: Date
+}
+
+extension View {
+  /// The right-click menu for a tab chip — **also reused on the diff pane body** (issue #72), so a
+  /// diff panel and its tab offer the same actions. Diff (content) tabs lead with "Open File in…"
+  /// (disabled when the source was deleted — review D4) and, while still a preview, "Keep Open"
+  /// (promotes it to persisted, #66). Both tab types then get the split items — disabled for a tab
+  /// outside the currently visible split so it can't silently dissolve it (review D5) — and the close
+  /// group (Close / Close Others / Close All).
+  @ViewBuilder
+  func tabChipContextMenu(
+    tab: TerminalTab, target: TerminalTarget, host: any PaneHost, sessions: TerminalPanes
+  ) -> some View {
+    self.contextMenu {
+      if host.runTabID(for: target.id) == tab.id {
+        runCommandMenuItems(host: host, target: target)
+        Divider()
+      }
+      // The escape hatch for a program that left a request behind (#358).
+      if tab.programStatus?.hasReport == true {
+        Button {
+          sessions.clearProgramStatus(tab: tab.id, target: target.id)
+        } label: {
+          Label("Clear Status", systemImage: "hand.raised.slash")
+        }
+        // Unreachable, the daemon never hears the clear and the reconnect puts the mark back.
+        .disabled(tab.programStatus?.stale == true)
+        Divider()
+      }
+      if case .diff(let descriptor) = tab.content {
+        // Unified / side-by-side, mirroring the pane title bar's switch (issue #150). The switch was
+        // the only per-pane control with no menu or keyboard route at all, which is what forced it to
+        // survive the bar's narrow-pane collapse; with this it has a second way in. Sets the same
+        // per-tab override the switch does.
+        Picker(
+          "View",
+          selection: Binding(
+            get: { tab.diffViewModeOverride ?? Defaults[.diffViewMode] },
+            set: { sessions.setDiffViewMode($0, forTab: tab.id, in: target) })
+        ) {
+          Label("Unified", systemImage: "text.alignleft").tag(DiffViewMode.unified)
+          Label("Side by Side", systemImage: "rectangle.split.2x1").tag(DiffViewMode.sideBySide)
+        }
+        .pickerStyle(.inline)
+        Divider()
+        // Open the working file in the in-app viewer (issue #117), alongside the external-editor
+        // "Open File in…" below — mirrors the Changes-panel row menu. Both no-op / disabled for a
+        // deleted source (no working copy).
+        //
+        // `for: target`, like every other action in this menu: it is attached to a specific chip AND
+        // to the pane body, so in a workroom split it can be raised on a workroom that isn't the
+        // selected one — and the no-target overload resolves `selectedTarget`, which would open the
+        // file into the other workroom's strip (issue #150).
+        Button {
+          host.openFilePreview(path: descriptor.path, for: target)
+        } label: {
+          Label("Open File", systemImage: "doc.text")
+        }
+        .disabled(descriptor.change == .deleted)
+        Button {
+          host.openDiffTabFile(descriptor, for: target)
+        } label: {
+          Label("Open File in…", systemImage: "arrow.up.forward.app")
+        }
+        // A remote workroom's files aren't on this Mac.
+        .disabled(descriptor.change == .deleted || target.isMissing)
+        if tab.isPreview {
+          Button {
+            sessions.persist(tab.id, for: target)
+          } label: {
+            Label("Keep Open", systemImage: "pin")
+          }
+        }
+        Divider()
+      }
+      // A file tab gets the same actions as a diff tab (open in editor, pin a preview), so the new
+      // file panes right-click like diff panes (they share this menu via PaneTreeView).
+      if case .file(let descriptor) = tab.content {
+        // Rendered preview / source for a markdown file — the menu route for the pane title bar's
+        // other mode switch (issue #150). Markdown-only, like the switch: nothing else has a rendered
+        // form to offer.
+        if PlainFileViewer.isMarkdown(descriptor.path) {
+          Picker(
+            "View",
+            selection: Binding(
+              get: { tab.markdownPreviewOverride ?? true },
+              set: { sessions.setMarkdownPreview($0, forTab: tab.id, in: target) })
+          ) {
+            Label("Rendered Preview", systemImage: "eye").tag(true)
+            Label("Source", systemImage: "chevron.left.forwardslash.chevron.right").tag(false)
+          }
+          .pickerStyle(.inline)
+          Divider()
+        }
+        Button {
+          host.openFileInEditor(path: descriptor.path)
+        } label: {
+          Label("Open File in…", systemImage: "doc.text")
+        }
+        .disabled(target.isMissing)
+        if tab.isPreview {
+          Button {
+            sessions.persist(tab.id, for: target)
+          } label: {
+            Label("Keep Open", systemImage: "pin")
+          }
+        }
+        Divider()
+      }
+      // A changeset (commit detail) tab has no per-file actions of its own, but still offers "Keep
+      // Open" while previewed (issue #59) — same pin affordance as diff/file panes.
+      if case .changeset = tab.content, tab.isPreview {
+        Button {
+          sessions.persist(tab.id, for: target)
+        } label: {
+          Label("Keep Open", systemImage: "pin")
+        }
+        Divider()
+      }
+      // Membership in ANY group — visible or hidden (a group persists while a solo tab is focused),
+      // so "Remove from Split" still works for a member of an off-screen group.
+      let isMember = sessions.split(containing: tab.id, for: target) != nil
+      // Split this tab — never disabled. The old gate refused this for a chip outside the shown
+      // split (review D5), because splitting it would have REPLACED that split; groups are disjoint
+      // and additive now, so splitting a solo chip seeds a new group and leaves every other alone.
+      Group {
+        Button {
+          sessions.splitTab(tab.id, on: .right, for: target)
+        } label: {
+          Label("Split Right", systemImage: "rectangle.trailinghalf.inset.filled")
+        }
+        Button {
+          sessions.splitTab(tab.id, on: .left, for: target)
+        } label: {
+          Label("Split Left", systemImage: "rectangle.leadinghalf.inset.filled")
+        }
+        Button {
+          sessions.splitTab(tab.id, on: .bottom, for: target)
+        } label: {
+          Label("Split Down", systemImage: "rectangle.bottomhalf.inset.filled")
+        }
+        Button {
+          sessions.splitTab(tab.id, on: .top, for: target)
+        } label: {
+          Label("Split Up", systemImage: "rectangle.tophalf.inset.filled")
+        }
+      }
+      // Remove ONLY this tab from the split — the inverse of Split R/L/D/U (issue #122). Shown
+      // only for a real split member (hidden on solo tabs), matching the workroom-split menu's
+      // "Remove from Split" (WorkroomContextMenu.swift). `extractFromSplit` pops just this leaf,
+      // keeps any other members split, and dissolves only when <2 would remain; the removed tab is
+      // shown solo. Not `role: .destructive` — the tab keeps running (its surface isn't torn down).
+      if isMember {
+        Divider()
+        Button {
+          sessions.extractFromSplit(tab.id, for: target)
+        } label: {
+          Label("Remove from Split", systemImage: "pip.exit")
+        }
+      }
+      Divider()
+      // This pane into a window of its own (#444), as dragging the chip out of the window does.
+      if sessions.allowsDetach {
+        paneWindowMenuItem(host: host, tabID: tab.id, targetID: target.id)
+        Divider()
+      } else if target.id == QuickTerminalController.targetID {
+        QuickTerminalMoveToWorkroomMenu(tabID: tab.id, target: target, style: .menuItem)
+        Divider()
+      }
+      Button(role: .destructive) {
+        host.requestCloseTerminalTab(tab.id, for: target)
+      } label: {
+        Label("Close", systemImage: "xmark")
+      }
+      Button(role: .destructive) {
+        host.requestCloseOtherTerminalTabs(tab.id, for: target)
+      } label: {
+        Label("Close Others", systemImage: "xmark")
+      }
+      .disabled(sessions.tabs(for: target).count <= 1)
+      Button(role: .destructive) {
+        host.requestCloseAllTerminalTabs(for: target)
+      } label: {
+        Label("Close All", systemImage: "xmark")
+      }
+    }
+  }
+}

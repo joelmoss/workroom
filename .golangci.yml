@@ -4,7 +4,7 @@
 # capped at export-data version 2, so v1.64.8 cannot typecheck a Go 1.27 toolchain's stdlib at all
 # ("export data version 4 is greater than maximum supported version 2") no matter which Go builds
 # it. v2 is the only version that reads current export data, so the config moved with it. Keep the
-# CI pin in .github/workflows/ci.yml on the SAME major — a v1 binary cannot read this file (it
+# CI pin in .github/workflows/ci-go.yml on the SAME major — a v1 binary cannot read this file (it
 # errors "unsupported version of the configuration"), and v2 cannot read the old one.
 version: "2"
 

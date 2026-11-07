@@ -11,6 +11,7 @@ import XCTest
 /// item's key equivalent never fires and the shortcut appears simply not to work, but only while an
 /// agent is running. That has shipped twice (most recently issue #128). Until now the function was
 /// private and untested; it was split into a pure classifier so these can exist.
+@MainActor
 final class AppShortcutReservationTests: XCTestCase {
 
   private func reserved(

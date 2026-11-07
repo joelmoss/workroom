@@ -2,6 +2,7 @@ import CryptoKit
 import DaemonConnection
 import Darwin
 import HostDrivers
+import WorkroomDomain
 import WorkroomVCS
 import WorkroomWire
 import XCTest
@@ -45,7 +46,7 @@ final class HostStreamTests: XCTestCase {
   func testRequestsAnswerThroughARelayedStream() async throws {
     let socket = try daemon().socketPath
     let host = HostID.remote(UUID())
-    let connection = try await DaemonVCSConnection.connect(
+    let connection = try await DaemonClient.connect(
       host: host, stream: try relay(to: socket))
     // `connect` already negotiated; this proves the stream keeps carrying traffic after it.
     let reply = try await connection.request(DaemonVCSRequest(method: "capabilities"), timeout: 5)
@@ -62,7 +63,7 @@ final class HostStreamTests: XCTestCase {
     let stream = try relay(to: socket)
     let manager = HostConnectionManager()
     _ = try await manager.connect(host: host) {
-      try await DaemonVCSConnection.connect(host: host, stream: stream)
+      try await DaemonClient.connect(host: host, stream: stream)
     }
     let connected = await manager.snapshot(for: host).status
     XCTAssertEqual(connected, .connected)
@@ -75,7 +76,7 @@ final class HostStreamTests: XCTestCase {
   func testClosingTheConnectionEndsTheCarrier() async throws {
     let socket = try daemon().socketPath
     let stream = try relay(to: socket)
-    let connection = try await DaemonVCSConnection.connect(host: .remote(UUID()), stream: stream)
+    let connection = try await DaemonClient.connect(host: .remote(UUID()), stream: stream)
     let pid = stream.processIdentifier
     await connection.close()
     let ended = await eventually { Self.exited(pid) }
@@ -89,7 +90,7 @@ final class HostStreamTests: XCTestCase {
     let missing = "/tmp/wr-none-\(UUID().uuidString.prefix(8)).sock"
     let stream = try relay(to: missing)
     do {
-      _ = try await DaemonVCSConnection.connect(host: .remote(UUID()), stream: stream)
+      _ = try await DaemonClient.connect(host: .remote(UUID()), stream: stream)
       XCTFail("connected to nothing")
     } catch HostConnectionError.serviceUnavailable(let detail) {
       XCTAssertTrue(detail.contains("no daemon listening"), detail)

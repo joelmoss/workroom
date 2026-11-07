@@ -1,6 +1,6 @@
 # Setup and teardown scripts on every kind of workroom
 
-Status: built (2026-10-17), on branch `workroom/mild-spire`; reviewed with `/plan-eng-review` (below).
+Status: shipped in #498 (merged 2026-10-18); reviewed with `/plan-eng-review` (below).
 PR #495 (#367, `.worktreeinclude`), which this needed first, merged the same day. "As built" records
 where the build differs from the plan.
 
@@ -107,7 +107,7 @@ just above it (610 s), and a run that ends by timeout is the agent's 124.
 
 ### 2. Remote setup (app)
 
-In `runRemoteCreate` (`AppStore+WorkroomCreation.swift`), after `copyIncluded` and before
+In `runRemoteCreate` (`WorkroomLifecycle+Create.swift`), after `copyIncluded` and before
 `completeCreationRun`:
 
 1. `run.begin("script")`. The step's id is `script`, the local row's id, so both kinds share "Run
@@ -259,7 +259,7 @@ scope: the plan as written above; pending remedies: R1.
 ### Factual corrections (no behaviour change)
 
 - C1. "`CreationRun`'s `hasSetupScript`" in Design §2 is `AppStore.hasSetupScript`
-  (`AppStore+WorkroomCreation.swift:119`), which `CreationRun.init` receives as a parameter.
+  (`WorkroomLifecycle+Create.swift:119`), which `CreationRun.init` receives as a parameter.
 
 ## Decision ledger
 
@@ -398,7 +398,7 @@ History: none
 ### More factual corrections (required by approved decisions, no new behaviour)
 
 - C2. Remote setup runs before `releaseCreatingWorkroom` and before `created.instance.connection.close()`
-  in `runRemoteCreate` (`AppStore+WorkroomCreation.swift:438-441`), not merely "before
+  in `runRemoteCreate` (`WorkroomLifecycle+Create.swift:438-441`), not merely "before
   `completeCreationRun`". A local workroom stays undeletable until its create's process ends
   (`releaseCreatingWorkroom`, "its workroom can be deleted and probed again (issue #116)"); D1 says
   remote matches, so a delete can't start a teardown and destroy the host under a running setup.
@@ -523,7 +523,7 @@ O3 confirmed: `if err := cmd.Start(); err != nil { return "", err }` (`internal/
 ### R5: scripts on a relayed (container) host get git credentials
 Finding: O1, High (Codex), confirmed for relayed hosts, `RemoteWorkrooms.swift:1001-1013`
 Plan baseline: Design §2 runs setup on the create's own connection; R1 (approved) bootstraps with `AgentBootstrap.connect` before teardown. Neither installs the relay.
-Runtime evidence: `RemoteHosts.connect` bootstraps the agent, then `installRelay` for a relayed host ("A relayed workroom's git asks this Mac for credentials (#309): its listener goes with the connection"). The create closes its connection without one (`AppStore+WorkroomCreation.swift:439`). Locally, scripts have the Mac's own git credentials.
+Runtime evidence: `RemoteHosts.connect` bootstraps the agent, then `installRelay` for a relayed host ("A relayed workroom's git asks this Mac for credentials (#309): its listener goes with the connection"). The create closes its connection without one (`WorkroomLifecycle+Create.swift:439`). Locally, scripts have the Mac's own git credentials.
 Comparison grid:
 | Choice | Current | A | B |
 |---|---|---|---|
@@ -678,7 +678,7 @@ Claude Code or Codex; checkbox as you ship. Effort ratios assumed: features ~30x
   - Verify: both suites; break one engine's env and see red
 - [ ] **T5 (P1, human: ~1 day / CC: ~1 h)** — macapp — remote setup row
   - Surfaced by: Design §2; C2, C3, R5
-  - Files: `RemoteProvisioning.swift`, `AppStore+WorkroomCreation.swift`, `ProvisioningProgress.swift`, tests
+  - Files: `RemoteProvisioning.swift`, `WorkroomLifecycle+Create.swift`, `ProvisioningProgress.swift`, tests
   - Verify: `make app-test`; `RemoteProvisioningTests`, `CreationFlowTests`
 - [ ] **T6 (P1, human: ~1 day / CC: ~1 h)** — macapp — remote teardown with bootstrap and relay
   - Surfaced by: Design §3; R1, R2, R5

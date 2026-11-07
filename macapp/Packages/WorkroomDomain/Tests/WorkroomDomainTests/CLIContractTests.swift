@@ -1,0 +1,283 @@
+import Foundation
+import WorkroomDomain
+import XCTest
+
+/// Decodes the CLI's `--json` contract goldens (`testdata/contracts`) with the app's own types.
+/// `cmd/contract_test.go` checks the CLI still prints each file byte for byte, so a change on
+/// either side that the other cannot read fails one of the two tests. The app's own reading of a
+/// create's events, through `CreationRun`, is `CreationRunContractTests` in the app's tests.
+final class CLIContractTests: XCTestCase {
+  /// The repository's `testdata/contracts`, found from this file's own source location.
+  private static let contracts = URL(fileURLWithPath: String(describing: #filePath))
+    .deletingLastPathComponent()  // WorkroomDomainTests
+    .deletingLastPathComponent()  // Tests
+    .deletingLastPathComponent()  // WorkroomDomain
+    .deletingLastPathComponent()  // Packages
+    .deletingLastPathComponent()  // macapp
+    .deletingLastPathComponent()  // repository root
+    .appendingPathComponent("testdata/contracts")
+
+  private func golden(_ name: String) throws -> Data {
+    let url = Self.contracts.appendingPathComponent(name)
+    return try XCTUnwrap(FileManager.default.contents(atPath: url.path), "missing \(url.path)")
+  }
+
+  private func decode<T: Decodable>(_ type: T.Type, _ name: String) throws -> T {
+    try JSONDecoder().decode(type, from: golden(name))
+  }
+
+  private func assertSuccess(_ name: String, file: StaticString = #filePath, line: UInt = #line)
+    throws
+  {
+    let envelope = try decode(Envelope.self, name)
+    XCTAssertTrue(envelope.ok, name, file: file, line: line)
+    XCTAssertEqual(envelope.schemaVersion, 1, name, file: file, line: line)
+    XCTAssertNil(envelope.error, name, file: file, line: line)
+  }
+
+  private func assertError(
+    _ name: String, kind: String, file: StaticString = #filePath, line: UInt = #line
+  ) throws {
+    let envelope = try decode(Envelope.self, name)
+    XCTAssertFalse(envelope.ok, name, file: file, line: line)
+    XCTAssertEqual(envelope.schemaVersion, 1, name, file: file, line: line)
+    XCTAssertEqual(envelope.error?.kind, kind, name, file: file, line: line)
+    XCTAssertFalse(envelope.error?.message.isEmpty ?? true, name, file: file, line: line)
+  }
+
+  func testList() throws {
+    try assertSuccess("list.json")
+    let list = try decode(ListResponse.self, "list.json")
+    XCTAssertEqual(list.workroomsDir, "/Users/dev/workrooms")
+    XCTAssertEqual(list.configPath, CLIConfig.defaultPath(home: "/Users/dev"))
+    XCTAssertEqual(list.baseBranch, "main")
+    XCTAssertEqual(list.projects.map(\.path), ["/Users/dev/src/app", "/Users/dev/src/empty"])
+    XCTAssertEqual(list.projects.map(\.hasInclude), [true, false])
+
+    let app = list.projects[0]
+    XCTAssertEqual(app.vcs, "git")
+    XCTAssertEqual(app.baseBranch, "develop")
+    XCTAssertNil(app.host)
+    XCTAssertEqual(app.workrooms.map(\.name), ["gone", "missing", "ok", "remote", "stray"])
+    let byName = Dictionary(uniqueKeysWithValues: app.workrooms.map { ($0.name, $0) })
+
+    XCTAssertEqual(byName["gone"]?.host?.state, "destroyed")
+    XCTAssertEqual(byName["gone"]?.warnings.map(\.kind), ["HostDestroyed"])
+
+    let missing = try XCTUnwrap(byName["missing"])
+    XCTAssertEqual(missing.vcsName, "workroom/missing")
+    XCTAssertEqual(missing.warnings.map(\.kind), ["DirectoryMissing", "VCSWorkroomMissing"])
+    XCTAssertEqual(missing.warnings[0].path, "/Users/dev/workrooms/missing")
+    XCTAssertEqual(missing.warnings[1].vcs, "git")
+    XCTAssertTrue(missing.hasBlockingWarning)
+    XCTAssertFalse(missing.isRemote)
+
+    XCTAssertEqual(byName["ok"]?.warnings, [])
+
+    let remote = try XCTUnwrap(byName["remote"]?.host)
+    XCTAssertTrue(try XCTUnwrap(byName["remote"]).isRemote)
+    XCTAssertEqual(remote.state, "running")
+    XCTAssertEqual(remote.driver, "container")
+    XCTAssertEqual(remote.provisioner, "com.developwithstyle.workroom.dev")
+    XCTAssertEqual(remote.credentials, "relay")
+    XCTAssertEqual(remote.org, "acme")
+    XCTAssertEqual(remote.account, "user-1")
+    XCTAssertEqual(
+      remote.container,
+      ContainerHostRecord(
+        address: "127.0.0.1", port: 2222, user: "workroom", hostKey: "ssh-ed25519 AAAA", image: nil,
+        context: "colima"))
+    XCTAssertEqual(remote.id, UUID(uuidString: "6F9619FF-8B86-D011-B42D-00C04FC964FF"))
+    XCTAssertEqual(remote.workroomID, UUID(uuidString: "1B4E28BA-2FA1-11D2-883F-0016D3CCA427"))
+    XCTAssertEqual(remote.repository, "acme/app")
+    XCTAssertEqual(remote.cloneURL, "https://github.com/acme/app.git")
+
+    XCTAssertEqual(byName["stray"]?.warnings.map(\.kind), ["VCSWorkroomMissing"])
+
+    XCTAssertEqual(list.projects[1].workrooms, [])
+    XCTAssertNil(list.projects[1].baseBranch)
+  }
+
+  /// #363: a create refused for its setup script carries the script, which the app shows before
+  /// approving it; trust status lists each script the same way.
+  func testScriptNotTrusted() throws {
+    try assertError("create-script-not-trusted.json", kind: "ScriptNotTrusted")
+    let error = try XCTUnwrap(
+      WorkroomCLIError(envelope: decode(Envelope.self, "create-script-not-trusted.json")))
+    let script = try XCTUnwrap(WorkroomCLIError.untrustedScript(error))
+    XCTAssertEqual(script.name, "workroom_setup")
+    // The path it is at, which the app shows (a devcontainer.json's differs from its name, #308).
+    XCTAssertEqual(script.file, "scripts/workroom_setup")
+    XCTAssertEqual(script.origin, "root")
+    XCTAssertEqual(script.text, "#!/bin/sh\necho installing\n")
+    XCTAssertEqual(script.sha256.count, 64)
+    // The exact bytes travel too (base64), so an approval records what was judged.
+    XCTAssertEqual(script.bytes, Data("#!/bin/sh\necho installing\n".utf8))
+    XCTAssertEqual(script.approvalBytes, script.bytes)
+    XCTAssertFalse(script.trusted)
+    XCTAssertFalse(script.exempt)
+
+    try assertSuccess("trust-status.json")
+    let status = try decode(TrustStatus.self, "trust-status.json")
+    XCTAssertFalse(status.trusted)
+    XCTAssertEqual(status.scripts, [script])
+  }
+
+  /// Value: protects=the app decodes trust status's local_work so a remote create's notice
+  /// appears; fails_when=the "local_work" CodingKey or the Go key is renamed; why_new=only the
+  /// create envelope's local work was decoded; seam=none; no_claim=the scripts list
+  func testTrustStatusLocalWork() throws {
+    try assertSuccess("trust-status-local-work.json")
+    let status = try decode(TrustStatus.self, "trust-status-local-work.json")
+    XCTAssertEqual(
+      status.localWork,
+      LocalWork(
+        branch: "main", remote: "origin", ahead: 1, uncommitted: false,
+        summary: "You have 1 commit on main that you haven't pushed yet"))
+    // The commit judged, which a remote create checks out (#308); the golden normalises its hash.
+    XCTAssertEqual(status.start, "<commit>")
+  }
+
+  /// A create that would leave local work out, asked to stop (`--start ask`), carries that work,
+  /// which the app asks where to start from.
+  func testLocalWorkLeftOut() throws {
+    try assertError("create-local-work.json", kind: "LocalWorkLeftOut")
+    let error = try XCTUnwrap(
+      WorkroomCLIError(envelope: decode(Envelope.self, "create-local-work.json")))
+    XCTAssertEqual(
+      WorkroomCLIError.leftOutWork(error),
+      LocalWork(
+        branch: "main", remote: "origin", ahead: 1, uncommitted: true,
+        summary:
+          "You have 1 commit on main that you haven't pushed yet, and some changes you haven't "
+          + "committed"))
+  }
+
+  func testCreate() throws {
+    try assertSuccess("create.json")
+    let created = try decode(CreateResponse.self, "create.json")
+    XCTAssertEqual(created.name, "calm-river")
+    XCTAssertEqual(created.path, "/Users/dev/workrooms/calm-river")
+    XCTAssertEqual(created.vcs, "git")
+    XCTAssertEqual(created.project, "/Users/dev/src/app")
+    XCTAssertNil(created.warning)
+  }
+
+  private func events(_ name: String) throws -> [StreamEvent] {
+    try String(decoding: golden(name), as: UTF8.self).split(separator: "\n").map {
+      try JSONDecoder().decode(StreamEvent.self, from: Data($0.utf8))
+    }
+  }
+
+  /// The step events (#483), as `id:state`, in order.
+  private func steps(_ events: [StreamEvent]) -> [String] {
+    events.filter { $0.type == "step" }.map { "\($0.id ?? ""):\($0.state ?? "")" }
+  }
+
+  func testCreateEvents() throws {
+    let events = try events("create-events.ndjson")
+    XCTAssertEqual(
+      steps(events),
+      ["fetch:skipped", "worktree:running", "worktree:done", "script:running", "script:done"])
+    XCTAssertEqual(events[0].detail, "No remote to fetch from")
+
+    let created = try XCTUnwrap(events.first { $0.type == "created" })
+    XCTAssertEqual(created.name, "calm-river")
+    XCTAssertEqual(created.path, "/Users/dev/workrooms/calm-river")
+    XCTAssertEqual(created.setup, true)
+    XCTAssertEqual(created.warning, "")
+
+    let logs = events.filter { $0.type == "log" }
+    XCTAssertEqual(logs.first?.phase, "setup")
+    XCTAssertEqual(logs.map(\.step), ["worktree", "worktree", "worktree", "script", "script"])
+    XCTAssertEqual(logs.suffix(2).map(\.text), ["installing", "done"])
+  }
+
+  func testCreateFetchWarning() throws {
+    let warning = "Could not fetch origin. The workroom starts from HEAD, which may be out of date."
+    try assertSuccess("create-fetch-warning.json")
+    XCTAssertEqual(try decode(CreateResponse.self, "create-fetch-warning.json").warning, warning)
+    let events = try events("create-fetch-warning-events.ndjson")
+    XCTAssertEqual(
+      steps(events),
+      ["fetch:running", "fetch:warning", "worktree:running", "worktree:done", "script:skipped"])
+    XCTAssertEqual(events.first { $0.state == "warning" }?.detail, warning)
+    XCTAssertEqual(events.first { $0.state == "skipped" }?.detail, "No setup script")
+    XCTAssertEqual(
+      events.first { $0.type == "log" }?.text, "$ git fetch --prune origin",
+      "the fetch's log starts with its command")
+    let created = try XCTUnwrap(events.first { $0.type == "created" })
+    XCTAssertEqual(created.warning, warning)
+    XCTAssertEqual(created.setup, false)
+  }
+
+  func testCreateRemote() throws {
+    try assertSuccess("create-remote.json")
+    let created = try decode(CreateResponse.self, "create-remote.json")
+    XCTAssertEqual(created.name, "calm-river")
+    XCTAssertEqual(created.path, "/home/workroom/app")
+    XCTAssertEqual(created.vcs, "git")
+    XCTAssertEqual(created.project, "/Users/dev/src/app")
+  }
+
+  func testIncludeArchive() throws {
+    try assertSuccess("include-archive.json")
+    XCTAssertEqual(
+      try decode(IncludeArchive.self, "include-archive.json"),
+      IncludeArchive(paths: [".env"], bytes: 8, warnings: [], skipped: []))
+  }
+
+  func testCreateSetupFailed() throws {
+    try assertError("create-setup-failed.json", kind: "SetupScriptFailed")
+    // The app still mounts the workroom and shows the setup log up to the failure.
+    let events = try events("create-setup-failed-events.ndjson")
+    XCTAssertEqual(
+      steps(events),
+      ["fetch:skipped", "worktree:running", "worktree:done", "script:running", "script:failed"])
+    let created = try XCTUnwrap(events.first { $0.type == "created" })
+    XCTAssertEqual(created.name, "calm-river")
+    XCTAssertEqual(created.setup, true)
+    let last = try XCTUnwrap(events.last { $0.type == "log" })
+    XCTAssertEqual(last.phase, "setup")
+    XCTAssertEqual(last.step, "script")
+    XCTAssertEqual(last.text, "boom")
+  }
+
+  func testAddProject() throws {
+    try assertSuccess("add-project.json")
+    let added = try decode(AddProjectResponse.self, "add-project.json")
+    XCTAssertEqual(added.path, "/Users/dev/src/app")
+    XCTAssertEqual(added.vcs, "git")
+    try assertError("add-project-unsupported-vcs.json", kind: "UnsupportedVCS")
+  }
+
+  func testDelete() throws {
+    try assertSuccess("delete.json")
+    let events = try events("delete-events.ndjson")
+    XCTAssertEqual(events.map(\.type), ["log"])
+    XCTAssertEqual(events[0].phase, "teardown")
+    XCTAssertEqual(events[0].text, "stopping")
+  }
+
+  func testDeleteProject() throws {
+    for name in ["delete-project.json", "delete-project-with-workrooms.json"] {
+      try assertSuccess(name)
+      XCTAssertNil(try decode(DeleteProjectResponse.self, name).trashPaths, name)
+    }
+    try assertSuccess("delete-project-from-disk.json")
+    XCTAssertEqual(
+      try decode(DeleteProjectResponse.self, "delete-project-from-disk.json").trashPaths,
+      ["/Users/dev/src/app", "/Users/dev/workrooms/calm-river"])
+
+    // Config-only removal runs no teardown; both cascading modes stream it.
+    XCTAssertEqual(try events("delete-project-events.ndjson").count, 0)
+    for name in [
+      "delete-project-with-workrooms-events.ndjson", "delete-project-from-disk-events.ndjson",
+    ] {
+      let events = try events(name)
+      XCTAssertEqual(events.map(\.type), ["log"], name)
+      XCTAssertEqual(events.first?.phase, "teardown", name)
+      XCTAssertEqual(events.first?.text, "stopping", name)
+    }
+  }
+}

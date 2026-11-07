@@ -1,3 +1,4 @@
+import Synchronization
 import XCTest
 
 @testable import Workroom
@@ -251,21 +252,18 @@ final class UITestFixtureHermeticShellTests: XCTestCase {
   /// would crash the launch). A guard, not a proof: it can only fail when the timing overlaps.
   func testConcurrentPreparationOfAMissingRCNeverThrows() throws {
     let directory = UITestFixture.hermeticZDOTDIR(bundleID: "com.example.test", in: root)
-    let lock = NSLock()
-    var failures: [String] = []
+    let failures = Mutex<[String]>([])
     for _ in 0..<20 {
       try? FileManager.default.removeItem(at: directory)
       DispatchQueue.concurrentPerform(iterations: 8) { _ in
         do {
           try UITestFixture.prepareHermeticZDOTDIR(at: directory)
         } catch {
-          lock.lock()
-          failures.append("\(error)")
-          lock.unlock()
+          failures.withLock { $0.append("\(error)") }
         }
       }
     }
-    XCTAssertEqual(failures, [])
+    XCTAssertEqual(failures.withLock { $0 }, [])
     XCTAssertEqual(
       try String(contentsOf: directory.appendingPathComponent(".zshrc"), encoding: .utf8),
       UITestFixture.hermeticShellRC)

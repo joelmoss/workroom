@@ -158,7 +158,7 @@ final class AppStoreNavigationTests: XCTestCase {
 
     // Simulate a delete without the CLI: reap B's terminals and drop it from the project list.
     await store.terminals.reap(store.target(for: b)!.id)
-    store.projects = [project("/a", workrooms: ["main"])]
+    store.projectStore.projects = [project("/a", workrooms: ["main"])]
 
     store.navigateBack()  // (a,t1) is the only live earlier entry
     XCTAssertEqual(store.selectedTargetID, a)

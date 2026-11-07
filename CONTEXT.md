@@ -24,7 +24,7 @@ _Avoid_: Workspace
 A project's own checkout, shown in the sidebar beside its workrooms.
 
 **Target**:
-A root or a workroom, as the thing a window selects and opens terminals in.
+A root or a workroom, as the thing a window selects and opens terminals in. A create's pane before its workroom has a name is one too, and so is the Quick Terminal, which has no sidebar row (`TargetID`).
 
 **Base branch**:
 The branch a new workroom starts from, set per project or for all projects.
@@ -88,6 +88,10 @@ _Avoid_: Status bar, terminal footer
 
 **Session**:
 A persistent pseudo-terminal held by workroomd, so a pane's shell outlives the pane, the window and the app.
+
+**Saved layout**:
+The tabs, splits and windows a Mac restores on its next launch: `session.json` for this Mac's targets (`SavedLayout.swift`, `SavedLayoutStore`), and the host layout for a remote workroom's (ADR 0044). Not a session: restoring a layout reattaches its panes' sessions, which workroomd kept alive.
+_Avoid_: Session (for the saved layout), session snapshot
 
 **Surface**:
 The libghostty view that renders a tab's terminal.

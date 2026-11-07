@@ -14,7 +14,7 @@ final class SidebarBenchmarkTests: XCTestCase {
   /// fixture measured all 224 rows rebuilding before either observation boundary was moved.
   func testVCSAndNotificationUpdatesDoNotRebuildSidebarRows() throws {
     let store = AppStore()
-    store.projects = (0..<32).map { index in
+    store.projectStore.projects = (0..<32).map { index in
       let path = "/sidebar-invalidation/project-\(index)"
       return Project(
         path: path, vcs: "git",
@@ -24,14 +24,18 @@ final class SidebarBenchmarkTests: XCTestCase {
         })
     }
     store.collapsedProjects = []
-    let id = SidebarID.root(project: store.projects[0].path)
-    store.workroomStatuses[id] = WorkroomStatus(dirty: false)
+    let id = SidebarID.root(project: store.projectStore.projects[0].path)
+    store.vcsStatus.workroomStatuses[id] = WorkroomStatus(dirty: false)
     ProjectSidebar.rowEvaluations = 0
     let hosting = NSHostingView(
       rootView: ProjectSidebar()
         .environmentObject(store)
+        .environmentObject(store.runCommand)
+        .environmentObject(store.projectStore)
+        .environmentObject(store.vcsStatus)
+        .environmentObject(store.lifecycle)
         .environmentObject(store.notifications)
-        .environmentObject(store.terminals)
+        .themeTokensRoot()
         .frame(width: 300, height: 700))
     hosting.frame = NSRect(x: 0, y: 0, width: 300, height: 700)
     let window = NSWindow(
@@ -44,14 +48,14 @@ final class SidebarBenchmarkTests: XCTestCase {
     hosting.displayIfNeeded()
     XCTAssertGreaterThan(ProjectSidebar.rowEvaluations, 0, "must render actual rows")
     ProjectSidebar.rowEvaluations = 0
-    store.mergeLocalStatus(WorkroomStatus(dirty: true), into: id)
+    store.vcsStatus.mergeLocalStatus(WorkroomStatus(dirty: true), into: id)
     settle(hosting)
     XCTAssertEqual(ProjectSidebar.rowEvaluations, 0, "a VCS badge change must not rebuild the tree")
-    store.mergeLocalStatus(WorkroomStatus(dirty: false), into: id)
+    store.vcsStatus.mergeLocalStatus(WorkroomStatus(dirty: false), into: id)
     settle(hosting)
     XCTAssertEqual(ProjectSidebar.rowEvaluations, 0)
     store.notifications.recordNotice(
-      targetID: TerminalTarget.rootID(project: store.projects[0].path),
+      targetID: TargetID.root(project: store.projectStore.projects[0].path),
       source: "fixture", title: "Needs attention", body: nil)
     settle(hosting)
     XCTAssertEqual(store.notifications.total, 1, "the notice must actually be recorded")
@@ -72,7 +76,7 @@ final class SidebarBenchmarkTests: XCTestCase {
   /// pointer-event delivery. A pointer entering one row must not rebuild unrelated rows.
   func testHoverOnlyRebuildsItsOwnRow() async throws {
     let store = AppStore()
-    store.projects = (0..<32).map { index in
+    store.projectStore.projects = (0..<32).map { index in
       let path = "/sidebar-hover/project-\(index)"
       return Project(
         path: path, vcs: "git",
@@ -82,7 +86,7 @@ final class SidebarBenchmarkTests: XCTestCase {
         })
     }
     store.collapsedProjects = []
-    let id = SidebarID.root(project: store.projects[0].path)
+    let id = SidebarID.root(project: store.projectStore.projects[0].path)
     var hover: Binding<Bool>?
     ProjectSidebar.didRenderHover = { rowID, binding in
       if rowID == id { hover = binding }
@@ -91,8 +95,12 @@ final class SidebarBenchmarkTests: XCTestCase {
     let hosting = NSHostingView(
       rootView: ProjectSidebar()
         .environmentObject(store)
+        .environmentObject(store.runCommand)
+        .environmentObject(store.projectStore)
+        .environmentObject(store.vcsStatus)
+        .environmentObject(store.lifecycle)
         .environmentObject(store.notifications)
-        .environmentObject(store.terminals)
+        .themeTokensRoot()
         .frame(width: 300, height: 700))
     hosting.frame = NSRect(x: 0, y: 0, width: 300, height: 700)
     let window = NSWindow(
@@ -125,11 +133,11 @@ final class SidebarBenchmarkTests: XCTestCase {
     try BenchmarkFixtures.write(
       ["projects": 32, "workrooms_per_project": 5, "hover_cpu_ms": samples, "hover_rows": rows],
       to: BenchmarkFixtures.reportURL(named: "sidebar-hover"))
-    store.collapsedProjects.insert(store.projects[0].path)
+    store.collapsedProjects.insert(store.projectStore.projects[0].path)
     await draw(hosting)
     settle(hosting)
     XCTAssertEqual(list.numberOfRows, 218, "collapse removes the root and five workrooms")
-    store.collapsedProjects.remove(store.projects[0].path)
+    store.collapsedProjects.remove(store.projectStore.projects[0].path)
     await draw(hosting)
     settle(hosting)
     XCTAssertEqual(list.numberOfRows, 224, "expand restores every row")
@@ -142,7 +150,7 @@ final class SidebarBenchmarkTests: XCTestCase {
     var reports: [[String: Any]] = []
     for count in [8, 16, 32, 64] {
       let store = AppStore()
-      store.projects = (0..<count).map { index in
+      store.projectStore.projects = (0..<count).map { index in
         let path = "/sidebar-benchmark/project-\(index)"
         return Project(
           path: path, vcs: "git",
@@ -156,14 +164,18 @@ final class SidebarBenchmarkTests: XCTestCase {
         (0..<500).map { index in
           WorkroomNotification(
             id: UUID(),
-            targetID: TerminalTarget.rootID(project: store.projects[index % count].path),
+            targetID: TargetID.root(project: store.projectStore.projects[index % count].path),
             tabID: UUID(), source: "fixture", title: "Notification \(index)", body: nil,
             date: Date(), count: 1)
         })
       let root = ProjectSidebar()
         .environmentObject(store)
+        .environmentObject(store.runCommand)
+        .environmentObject(store.projectStore)
+        .environmentObject(store.vcsStatus)
+        .environmentObject(store.lifecycle)
         .environmentObject(store.notifications)
-        .environmentObject(store.terminals)
+        .themeTokensRoot()
         .frame(width: 300, height: 700)
       let hosting = NSHostingView(rootView: root)
       hosting.frame = NSRect(x: 0, y: 0, width: 300, height: 700)
@@ -193,9 +205,9 @@ final class SidebarBenchmarkTests: XCTestCase {
         ProjectSidebar.menuEvaluations = 0
         let start = DispatchTime.now().uptimeNanoseconds
         let cpuStart = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
-        store.mergeLocalStatus(
+        store.vcsStatus.mergeLocalStatus(
           WorkroomStatus(dirty: sample.isMultiple(of: 2)),
-          into: .root(project: store.projects[0].path))
+          into: .root(project: store.projectStore.projects[0].path))
         await draw(hosting)
         samples.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
         cpuSamples.append(
@@ -210,7 +222,7 @@ final class SidebarBenchmarkTests: XCTestCase {
         ProjectSidebar.rowEvaluations = 0
         let cpuStart = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
         store.notifications.recordNotice(
-          targetID: TerminalTarget.rootID(project: store.projects[0].path),
+          targetID: TargetID.root(project: store.projectStore.projects[0].path),
           source: "fixture", title: "New notice \(sample)", body: nil)
         await draw(hosting)
         notificationCPU.append(

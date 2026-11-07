@@ -1,0 +1,452 @@
+import Combine
+import DevContainer
+import Foundation
+import HostDrivers
+import WorkroomDomain
+
+/// What a create makes, which decides its step plan and where it goes: a workroom on this Mac
+/// (`kind` nil), or on a host of `kind`.
+extension CreationRun {
+  /// Where the workroom goes, as the pane's subtitle and the provisional sidebar row say it.
+  nonisolated static func destination(of kind: HostKind?) -> String {
+    kind?.displayName ?? "This Mac"
+  }
+
+  /// The steps a create of `kind` runs, in order (spec section 3), all pending. A remote step's
+  /// id is its `ProvisioningProgress.Step`'s, which is how a driver's report finds its row.
+  nonisolated static func plan(for kind: HostKind?) -> [CreationStep] {
+    typealias Step = ProvisioningProgress.Step
+    let remote: [(Step, String)]
+    switch kind {
+    case nil:
+      return [
+        CreationStep(id: "fetch", title: "Fetch base branch"),
+        CreationStep(id: "worktree", title: "Create worktree"),
+        CreationStep(id: "changes", title: "Copy your changes"),
+        CreationStep(id: Step.include.rawValue, title: "Copy local files"),
+        CreationStep(id: "script", title: "Run setup script"),
+      ]
+    case .container:
+      // The devcontainer.json's rows (`onDemand`) show once the file says they run.
+      let rows: [(Step, String)] = [
+        (.repository, "Check repository"), (.config, "Read devcontainer.json"),
+        (.initialize, "Run initializeCommand"), (.image, "Pull image"), (.build, "Build image"),
+        (.machine, "Start container"), (.connect, "Connect"), (.clone, "Clone repository"),
+        (.checkout, "Check out branch"), (.include, "Copy local files"),
+        (.onCreate, "Run onCreateCommand"), (.updateContent, "Run updateContentCommand"),
+        (.postCreate, "Run postCreateCommand"), (.postStart, "Run postStartCommand"),
+      ]
+      return rows.map { CreationStep(id: $0.0.rawValue, title: $0.1) }
+        + [CreationStep(id: "script", title: "Run setup script")]
+    case .ssh:
+      remote = [
+        (.repository, "Check repository"), (.account, "Choose SSH host"),
+        (.machine, "Create folder"), (.connect, "Connect"),
+        (.clone, "Clone repository"), (.checkout, "Check out branch"),
+      ]
+    case .boxd:
+      remote = [
+        (.repository, "Check repository"), (.account, "Check boxd account"),
+        (.machine, "Create machine"), (.setup, "Set up machine"),
+        (.restart, "Restarting host from snapshot"), (.connect, "Connect"),
+        (.clone, "Clone repository"), (.checkout, "Check out branch"),
+      ]
+    case .exeDev:
+      remote = [
+        (.repository, "Check repository"), (.account, "Check exe.dev account"),
+        (.machine, "Create VM"), (.boot, "Wait for boot"), (.setup, "Set up machine"),
+        (.connect, "Connect"), (.clone, "Clone repository"), (.checkout, "Check out branch"),
+      ]
+    }
+    // The root's included files (#367), copied in once the branch is out, then the setup script,
+    // as on this Mac. The script's row is the local row, under the local create's id.
+    return (remote + [(.include, "Copy local files")]).map {
+      CreationStep(id: $0.0.rawValue, title: $0.1)
+    } + [CreationStep(id: "script", title: "Run setup script")]
+  }
+
+  /// The rows that show only when their step runs: a container create's devcontainer.json rows
+  /// (#308), and a boxd create's restart, which only a snapshot needs (#575). A step's `begin`
+  /// puts its row back.
+  nonisolated static let onDemand: Set<String> = Set(
+    ([.config, .initialize, .build, .restart] + DevContainerConfig.Hook.inContainer.map(\.step))
+      .map(\.rawValue))
+}
+
+extension DevContainerConfig.Hook {
+  /// The creation row a container hook runs under (#308).
+  var step: ProvisioningProgress.Step {
+    switch self {
+    case .initialize: .initialize
+    case .onCreate: .onCreate
+    case .updateContent: .updateContent
+    case .postCreate: .postCreate
+    case .postStart, .postAttach: .postStart
+    }
+  }
+}
+
+/// One row of a create's checklist.
+struct CreationStep: Identifiable, Equatable {
+  enum State: Equatable {
+    case pending
+    case running
+    /// Waiting on the user: the provider setup sheet is up (design D8). Its timer is paused.
+    case waitingForUser
+    case done
+    case warning(String)
+    case failed
+    case skipped(reason: String?)
+
+    /// Whether the step counts as complete in the step circle: done, warning or skipped.
+    var isComplete: Bool {
+      switch self {
+      case .done, .warning, .skipped: true
+      case .pending, .running, .waitingForUser, .failed: false
+      }
+    }
+  }
+
+  let id: String
+  let title: String
+  var state: State = .pending
+  var startedAt: Date?
+  var endedAt: Date?
+  /// Its output, ANSI-stripped, as `ScriptLogSession` keeps a script's.
+  var log: [String] = []
+
+  /// How long a finished step took, or nil while it hasn't finished or never ran.
+  var duration: TimeInterval? {
+    guard let startedAt, let endedAt else { return nil }
+    return endedAt.timeIntervalSince(startedAt)
+  }
+}
+
+/// How a create ended, or that it hasn't.
+enum CreationOutcome: Equatable {
+  case running
+  /// Done: the finished checklist stays until Done, or with "Close automatically when done" on, for
+  /// `WorkroomLifecycle.creationSuccessHold`.
+  case succeeded
+  /// Cancel on the provider setup sheet: the run goes at once.
+  case cancelled
+  /// A local create that failed before its worktree existed.
+  case failedBeforeWorkroom(message: String)
+  /// A local create whose workroom exists but whose setup script failed.
+  case setupScriptFailed(message: String)
+  /// A container create whose workroom exists but one of whose devcontainer.json lifecycle
+  /// commands failed (#308), which `message` names. As a failed setup script, it stays.
+  case hookFailed(message: String)
+  /// A remote create that failed; `leftBehind` when its machine could not be taken down.
+  case remoteFailed(message: String, leftBehind: Bool)
+  /// Stopped before anything was made: this Mac has not approved the setup script (#363). Approve
+  /// records it and starts the create again.
+  case scriptNotTrusted(ScriptTrust)
+  /// Stopped before anything was made: the main checkout has work the create would leave out, and
+  /// the user chooses where it starts (`CreationStart`), which starts the create again.
+  case localWorkFound(LocalWork)
+  /// Stopped before anything was made: the container create's devcontainer.json (at `file`)
+  /// describes Docker Compose services, which a workroom can't run (#308, eng review D10). Continue
+  /// With Default Image starts it again without the file.
+  case composeRefused(file: String)
+}
+
+/// Where a local create starts when the main checkout has work the remote's copy of the base branch
+/// lacks: the CLI's `--start`.
+enum CreationStart: String, Equatable {
+  /// The remote's copy, leaving the work out.
+  case origin
+  /// The local branch, with its unpushed commits.
+  case local
+  /// The local branch, with the main checkout's uncommitted changes copied in too.
+  case localWithChanges = "local-with-changes"
+  /// Stop on local work with `localWorkLeftOut`, to ask: a create's first try.
+  case ask
+}
+
+/// One create's progress (#483): the plan of steps it shows from the first frame, each step's state,
+/// timing and log, the workroom's name once it has one, and how it ended. Fed by the CLI's step
+/// events for a local create and by `ProvisioningProgress` for a remote one. Lives in
+/// `WorkroomLifecycle.creationRuns`, so every window shows the same checklist.
+@MainActor
+final class CreationRun: ObservableObject, Identifiable {
+  let id: UUID
+  let project: Project
+  /// The kind of host the workroom goes on, or nil for one on this Mac.
+  let kind: HostKind?
+  /// The pane the create was opened beside, if it was opened as a split.
+  let splitAnchor: SidebarID?
+  /// What was selected before the create took the selection, for Close to go back to.
+  let previousSelection: SidebarID?
+  /// When the run started, which orders two unnamed runs in the sidebar.
+  let startedAt: Date
+  /// Continue Without Script on an unapproved setup script: this create neither judges nor runs it
+  /// (#363), and a Try Again keeps that.
+  let skipsSetup: Bool
+  /// Continue With Default Image on an unapproved devcontainer.json: this container create neither
+  /// judges nor uses it (#308, eng review D4), and a Try Again keeps that.
+  let skipsDevContainer: Bool
+  /// Where it starts, as the user chose when it found local work; `.ask` until then. A Try Again
+  /// keeps it.
+  let start: CreationStart
+  /// The start point the create question this run answers was asked at (ADR 0059): it creates from
+  /// there with `--start-commit`, fetching nothing. Nil for a first try and a Try Again.
+  let startCommit: String?
+  /// The host options chosen for this create (#575): the Options panel's, or Try With Provider
+  /// Defaults' Provider default for each. A Try Again keeps them, and reads the project's and
+  /// Settings' afresh for the rest.
+  let hostOptions: HostOptions?
+  /// What a boxd or exe.dev create resolved its host options to, once it has: what Try With
+  /// Provider Defaults asks about. Nil for any other create.
+  var madeWith: ResolvedHostOptions?
+  /// The start point this run's own create question was asked at, once it stops on one: what an
+  /// answer passes on as its `startCommit`.
+  private(set) var askedAt: String?
+  @Published private(set) var steps: [CreationStep]
+  @Published private(set) var name: String?
+  @Published private(set) var outcome: CreationOutcome = .running
+  /// How far a container's host image pull has got, 0 to 1, while it pulls.
+  @Published var pullFraction: Double?
+  private let now: () -> Date
+
+  /// `hasSetupScript` false leaves the setup script's row out of the plan; it comes back if the
+  /// script runs after all (one only the new worktree has). `hasIncludeFile` false, a root with no
+  /// `.worktreeinclude`, leaves out the "Copy local files" row (#367) the same way. The "Copy
+  /// your changes" row is there only for a create that starts `.localWithChanges`. A run that answers
+  /// a create question (`startCommit`) fetches nothing, so it shows `carriedFetch`, the fetch row of
+  /// the try whose question it answers: one create, one fetch.
+  init(
+    id: UUID = UUID(), project: Project, kind: HostKind?, splitAnchor: SidebarID?,
+    previousSelection: SidebarID?, hasSetupScript: Bool = true, hasIncludeFile: Bool = false,
+    skipsSetup: Bool = false, skipsDevContainer: Bool = false, start: CreationStart = .ask,
+    startCommit: String? = nil, carriedFetch: CreationStep? = nil,
+    hostOptions: HostOptions? = nil, now: @escaping () -> Date = Date.init
+  ) {
+    self.hostOptions = hostOptions
+    self.id = id
+    self.project = project
+    self.kind = kind
+    self.splitAnchor = splitAnchor
+    self.previousSelection = previousSelection
+    self.skipsSetup = skipsSetup
+    self.skipsDevContainer = skipsDevContainer
+    self.start = start
+    self.startCommit = startCommit
+    self.now = now
+    self.startedAt = now()
+    self.steps = Self.plan(for: kind).filter {
+      // A skipped script keeps its row, to say so: it may be one only the base commit has.
+      (hasSetupScript || skipsSetup || $0.id != "script")
+        && (hasIncludeFile || $0.id != ProvisioningProgress.Step.include.rawValue)
+        && (start == .localWithChanges || $0.id != "changes")
+        && !Self.onDemand.contains($0.id)
+    }
+    if let carriedFetch, let index = steps.firstIndex(where: { $0.id == carriedFetch.id }) {
+      steps[index] = carriedFetch
+    }
+  }
+
+  /// Whether Try With Provider Defaults can help (#575): this create used host options, failed
+  /// making, booting, restarting or setting up its host, and left no machine running (a left-behind
+  /// one is deleted before another paid host is made).
+  var offersProviderDefaults: Bool {
+    guard case .remoteFailed(_, leftBehind: false) = outcome,
+      let madeWith, !madeWith.isProviderDefault,
+      let failed = steps.first(where: { $0.state == .failed })?.id
+    else { return false }
+    typealias Step = ProvisioningProgress.Step
+    return [Step.machine, .boot, .restart, .setup].map(\.rawValue).contains(failed)
+  }
+
+  /// The fetch row, for a run answering this one's create question to carry.
+  var fetchStep: CreationStep? { steps.first { $0.id == "fetch" } }
+
+  /// The warning a carried fetch row ended with (a failed fetch, a stale start), for the created
+  /// workroom's notice: the answering create's CLI doesn't fetch, so it can't say it again.
+  var carriedFetchWarning: String? {
+    guard startCommit != nil, case .warning(let text)? = fetchStep?.state, !text.isEmpty else {
+      return nil
+    }
+    return text
+  }
+
+  /// Where the CLI starts. A try whose fetch warned asked nobody where it starts and started from
+  /// origin (ADR 0055). An answer to it fetches nothing, so nothing marks its start stale: it starts
+  /// from origin as that try did, rather than ask a question the try never asked. The run keeps
+  /// `start`, so a later Try Again, which fetches afresh, can still ask.
+  var cliStart: CreationStart {
+    if startCommit != nil, start == .ask, case .warning? = fetchStep?.state { return .origin }
+    return start
+  }
+
+  var isRunning: Bool { outcome == .running }
+
+  /// Stopped before anything was made, waiting on the user: its setup script's Approve (#363), or
+  /// where to start. Not running, and not failed either.
+  var awaitsApproval: Bool {
+    switch outcome {
+    case .scriptNotTrusted, .localWorkFound, .composeRefused: true
+    default: false
+    }
+  }
+
+  /// The step running now, or waiting on the user.
+  var runningStep: CreationStep? {
+    steps.first { $0.state == .running || $0.state == .waitingForUser }
+  }
+
+  /// The step circle's reading: complete steps over all of them, and the step it is on.
+  var progress: (fraction: Double, label: String) {
+    let complete = steps.filter(\.state.isComplete).count
+    let current = runningStep ?? steps.first { $0.state == .failed }
+    return (Double(complete) / Double(max(steps.count, 1)), current?.title ?? "")
+  }
+
+  func setName(_ name: String) { self.name = name }
+
+  /// `stepID` starts: the step running now ends done, and pending steps before it are skipped. A
+  /// step already running keeps running; one waiting on the user starts again from zero.
+  func begin(_ stepID: String) {
+    guard let index = steps.firstIndex(where: { $0.id == stepID }) ?? restore(stepID),
+      steps[index].state != .running
+    else { return }
+    if steps[index].state != .waitingForUser, let running = runningIndex, running != index {
+      end(running, as: .done)
+    }
+    skipPending(before: index)
+    steps[index].state = .running
+    steps[index].startedAt = now()
+    steps[index].endedAt = nil
+  }
+
+  /// `stepID` ends as `state` (done, warning, skipped or failed), as the CLI's event says.
+  func finish(_ stepID: String, as state: CreationStep.State) {
+    guard let index = steps.firstIndex(where: { $0.id == stepID }) else { return }
+    skipPending(before: index)
+    end(index, as: state)
+  }
+
+  func warn(_ stepID: String, _ text: String) { finish(stepID, as: .warning(text)) }
+
+  /// `stepID` waits on the user (the provider setup sheet), its timer paused until `begin` again.
+  func waitForUser(_ stepID: String) {
+    begin(stepID)
+    guard let index = steps.firstIndex(where: { $0.id == stepID }) else { return }
+    steps[index].state = .waitingForUser
+  }
+
+  /// A line of output. One with no step, or a step outside the plan, goes to the running step, or to
+  /// the first if none is.
+  func append(_ line: String, to stepID: String?) {
+    let index =
+      steps.firstIndex { $0.id == stepID } ?? runningIndex ?? steps.indices.first
+    guard let index else { return }
+    steps[index].log.append(ScriptLogSession.stripANSI(line))
+  }
+
+  /// The create failed: the running step fails (or, when no step has, the first one not yet run), and
+  /// every step still pending is skipped.
+  func fail(_ outcome: CreationOutcome) {
+    if let running = runningIndex {
+      end(running, as: .failed)
+    } else if !steps.contains(where: { $0.state == .failed }),
+      let first = steps.firstIndex(where: { $0.state == .pending })
+    {
+      end(first, as: .failed)
+    }
+    skipPending(before: steps.endIndex)
+    self.outcome = outcome
+  }
+
+  /// The setup script needs approving before anything is made (#363): the step running now ends
+  /// done, the script's row (put back if the plan left it out) waits on the user, and the steps in
+  /// between stay pending, since Approve runs them.
+  /// `startCommit` is the start point the question was asked at.
+  func awaitApproval(of script: ScriptTrust, at startCommit: String? = nil) {
+    if let running = runningIndex { end(running, as: .done) }
+    if let index = steps.firstIndex(where: { $0.id == "script" }) ?? restore("script") {
+      steps[index].state = .waitingForUser
+    }
+    askedAt = startCommit
+    outcome = .scriptNotTrusted(script)
+  }
+
+  /// The main checkout has work the create would leave out, so where it starts waits on the user:
+  /// the step running now ends done and the worktree's row, which starts from the choice, waits.
+  /// `startCommit` is the start point the question was asked at.
+  func awaitStartChoice(for work: LocalWork, at startCommit: String? = nil) {
+    if let running = runningIndex { end(running, as: .done) }
+    if let index = steps.firstIndex(where: { $0.id == "worktree" }) {
+      steps[index].state = .waitingForUser
+    }
+    askedAt = startCommit
+    outcome = .localWorkFound(work)
+  }
+
+  /// The devcontainer.json describes Compose services (#308): the step running now ends done, the
+  /// config's row (put back if the plan left it out) waits on the user, and the rest stay pending,
+  /// since Continue With Default Image runs them.
+  func awaitDefaultImage(refusing file: String) {
+    if let running = runningIndex { end(running, as: .done) }
+    let step = ProvisioningProgress.Step.config.rawValue
+    if let index = steps.firstIndex(where: { $0.id == step }) ?? restore(step) {
+      steps[index].state = .waitingForUser
+    }
+    outcome = .composeRefused(file: file)
+  }
+
+  /// The create finished: the running step ends done and every step still pending is skipped.
+  func succeed() {
+    if let running = runningIndex { end(running, as: .done) }
+    skipPending(before: steps.endIndex)
+    outcome = .succeeded
+  }
+
+  /// Cancel on the provider setup sheet.
+  func cancel() { outcome = .cancelled }
+
+  /// A local create's CLI event (`create --json`): a step changing state, or a log line.
+  func apply(_ event: StreamEvent) {
+    switch event.type {
+    case "step":
+      guard let id = event.id else { return }
+      switch event.state {
+      case "running": begin(id)
+      case "done": finish(id, as: .done)
+      case "warning": finish(id, as: .warning(event.detail ?? ""))
+      case "skipped": finish(id, as: .skipped(reason: event.detail))
+      case "failed": finish(id, as: .failed)
+      default: break
+      }
+    case "log":
+      if let text = event.text { append(text, to: event.step) }
+    default: break
+    }
+  }
+
+  /// A step of the plan left out of `steps` (the setup script's or the include step's), put back in
+  /// its place in the plan.
+  private func restore(_ stepID: String) -> Int? {
+    let plan = Self.plan(for: kind)
+    guard let position = plan.firstIndex(where: { $0.id == stepID }) else { return nil }
+    let later = Set(plan[(position + 1)...].map(\.id))
+    let index = steps.firstIndex { later.contains($0.id) } ?? steps.endIndex
+    steps.insert(plan[position], at: index)
+    return index
+  }
+
+  private var runningIndex: Int? {
+    steps.firstIndex { $0.state == .running || $0.state == .waitingForUser }
+  }
+
+  private func end(_ index: Int, as state: CreationStep.State) {
+    steps[index].state = state
+    steps[index].endedAt = steps[index].startedAt == nil ? nil : now()
+  }
+
+  private func skipPending(before index: Int) {
+    for i in steps.indices[..<index] where steps[i].state == .pending {
+      steps[i].state = .skipped(reason: nil)
+    }
+  }
+}

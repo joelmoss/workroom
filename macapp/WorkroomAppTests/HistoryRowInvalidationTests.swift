@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -10,8 +11,8 @@ import XCTest
 /// `HistoryRow.body` → `AvatarSubject.gravatar` → `String(format:)`.
 ///
 /// The format string was only where the single watchdog sample happened to land. The hang was an
-/// invalidation storm: `HistoryRow` observed `AppStore` + `TerminalSessions` purely to answer
-/// "is my commit the focused changeset?", and `TerminalSessions` republishes on every terminal
+/// invalidation storm: `HistoryRow` observed `AppStore` + `TerminalPanes` purely to answer
+/// "is my commit the focused changeset?", and `TerminalPanes` republishes on every terminal
 /// title update and activity pulse — so while an agent streamed, EVERY row body re-ran, over an
 /// eager `VStack` holding the whole loaded window.
 ///
@@ -38,19 +39,18 @@ final class HistoryRowInvalidationTests: XCTestCase {
 
   // MARK: harness
 
-  /// Serves a fixed page. `@unchecked Sendable` + lock because `HistoryModel` reads it off-main via
+  /// Serves a fixed page. Behind a `Mutex` because `HistoryModel` reads it off-main via
   /// `runBlocking`; the tests serialize on `awaitCurrentLoad`.
-  private final class FixedPageProvider: LocalVCSProviding, @unchecked Sendable {
-    private let lock = NSLock()
-    private var page: VCSHistoryPage
+  private final class FixedPageProvider: LocalVCSProviding, Sendable {
+    private let page: Mutex<VCSHistoryPage>
     init(commits: [VCSCommit]) {
-      page = VCSHistoryPage(commits: commits, reachedEnd: true)
+      page = Mutex(VCSHistoryPage(commits: commits, reachedEnd: true))
     }
     func replace(commits: [VCSCommit]) {
-      lock.withLock { page = VCSHistoryPage(commits: commits, reachedEnd: true) }
+      page.withLock { $0 = VCSHistoryPage(commits: commits, reachedEnd: true) }
     }
     func log(root: URL, limit: Int) throws -> VCSHistoryPage {
-      lock.withLock { page }
+      page.withLock { $0 }
     }
     func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
       throw VCSError.io("unused")
@@ -95,7 +95,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: Self.projectPath, vcs: "git",
         workrooms: [
@@ -118,7 +118,9 @@ final class HistoryRowInvalidationTests: XCTestCase {
   /// Host the real History pane offscreen. Height is deliberately small (a realistic inspector
   /// section, ~8 rows' worth) so "how many rows does it build" is a meaningful question.
   private func host(_ store: AppStore) -> (NSWindow, NSView) {
-    let root = HistoryPanel(model: store.commitHistory, sessions: store.terminals)
+    // Rooted as the inspector roots it (`InspectorPaneViewController.setContent`).
+    let root = HistoryPanelAdapter()
+      .themeTokensRoot()
       .environmentObject(store)
       .environmentObject(store.notifications)
       .frame(width: 320, height: 360)
@@ -165,7 +167,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
   }
 
   // The other half of the storm — an agent's OSC title writes — is deliberately NOT a separate test:
-  // `TerminalSessions.updateTitle` is private (it is driven by libghostty callbacks) and it lands on
+  // `PaneLiveState.updateTitle` is private (it is driven by libghostty callbacks) and it lands on
   // the same `@Published tabsByTarget` reassignment that `pulsePaneActivity` exercises above. Asserting
   // it would mean widening production access purely for a duplicate of this test.
 
@@ -224,11 +226,13 @@ final class HistoryRowInvalidationTests: XCTestCase {
   /// The equality gate must not swallow a THEME repaint.
   ///
   /// This is the one regression `.equatable()` could plausibly cause, and the reasoning that says it
-  /// can't is subtle enough to be worth pinning: rows read `ThemeService.shared.tokens`, and Observation
-  /// registers that dependency per body evaluation against the body attribute itself — so an
-  /// observation-driven invalidation re-runs the body regardless of the row values comparing equal.
-  /// If SwiftUI ever changed that, every History row would keep its old colours after a theme switch
-  /// until something else happened to change a row value.
+  /// can't is subtle enough to be worth pinning: rows read `\.themeTokens`, and a changed environment
+  /// value re-runs a body that declares it regardless of the row values comparing equal, and
+  /// regardless of whether its last pass read it (an unselected, unhovered row's token reads sit in
+  /// untaken ternary branches). The rows carry no theme input of their own, so this is the only
+  /// path: measured at 8 of the 8 realized rows rebuilt. If SwiftUI
+  /// ever changed that, every History row would keep its old colours after a theme switch until
+  /// something else happened to change a row value.
   func testThemeChangeRebuildsRows() async throws {
     let provider = FixedPageProvider(commits: commits(20))
     let store = await makeStore(provider)

@@ -8,7 +8,8 @@ repository.workspace = true
 [lints]
 workspace = true
 
-# The daemon's wire: the multiplex envelope and the session frame, with their version constants.
+# The daemon's wire: the multiplex envelope and the session frame, with their version constants,
+# and the Terminal service's payloads inside its frames.
 # No I/O and nothing beyond the error and serialize derives, so anything that speaks to a daemon
 # can link it without the daemon's own dependencies.
 [dependencies]

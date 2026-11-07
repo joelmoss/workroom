@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import SwiftUI
+import Synchronization
 import WorkroomVCS
 import XCTest
 
@@ -19,82 +20,48 @@ final class AvatarImageLoaderTests: XCTestCase {
 
   /// Thread-safe canned-response registry `StubURLProtocol` reads from — `startLoading()` runs on a
   /// background queue URLSession owns, not the test's own thread.
-  private final class StubRegistry: @unchecked Sendable {
-    private let lock = NSLock()
-    private var responses: [URL: (status: Int, data: Data)] = [:]
-    private var errorURLs: Set<URL> = []
-    private var callCounts: [URL: Int] = [:]
+  private final class StubRegistry: Sendable {
+    private struct State {
+      var responses: [URL: (status: Int, data: Data)] = [:]
+      var errorURLs: Set<URL> = []
+      var callCounts: [URL: Int] = [:]
+      // Gating: hold a response until the test releases it, for staleness tests that need to
+      // control exactly when an in-flight fetch resolves relative to a `taskKey` change.
+      var gates: [URL: DispatchSemaphore] = [:]
+    }
+    private let state = Mutex(State())
 
     func setResponse(status: Int, data: Data, for url: URL) {
-      lock.lock()
-      responses[url] = (status, data)
-      lock.unlock()
+      state.withLock { $0.responses[url] = (status, data) }
     }
-    func setError(for url: URL) {
-      lock.lock()
-      errorURLs.insert(url)
-      lock.unlock()
-    }
-    func clearError(for url: URL) {
-      lock.lock()
-      errorURLs.remove(url)
-      lock.unlock()
-    }
-    func recordCall(_ url: URL) {
-      lock.lock()
-      callCounts[url, default: 0] += 1
-      lock.unlock()
-    }
-    func callCount(for url: URL) -> Int {
-      lock.lock()
-      defer { lock.unlock() }
-      return callCounts[url] ?? 0
-    }
+    func setError(for url: URL) { state.withLock { _ = $0.errorURLs.insert(url) } }
+    func clearError(for url: URL) { state.withLock { _ = $0.errorURLs.remove(url) } }
+    func recordCall(_ url: URL) { state.withLock { $0.callCounts[url, default: 0] += 1 } }
+    func callCount(for url: URL) -> Int { state.withLock { $0.callCounts[url] ?? 0 } }
     func response(for url: URL) -> (status: Int, data: Data)? {
-      lock.lock()
-      defer { lock.unlock() }
-      return responses[url]
+      state.withLock { $0.responses[url] }
     }
-    func hasError(for url: URL) -> Bool {
-      lock.lock()
-      defer { lock.unlock() }
-      return errorURLs.contains(url)
-    }
+    func hasError(for url: URL) -> Bool { state.withLock { $0.errorURLs.contains(url) } }
 
-    // MARK: gating — hold a response until the test releases it, for staleness tests that need to
-    // control exactly when an in-flight fetch resolves relative to a `taskKey` change.
-    private var gates: [URL: DispatchSemaphore] = [:]
-    func gate(_ url: URL) {
-      lock.lock()
-      gates[url] = DispatchSemaphore(value: 0)
-      lock.unlock()
-    }
+    // MARK: gating
+    func gate(_ url: URL) { state.withLock { $0.gates[url] = DispatchSemaphore(value: 0) } }
     func release(_ url: URL) {
-      lock.lock()
-      let sem = gates.removeValue(forKey: url)
-      lock.unlock()
+      let sem = state.withLock { $0.gates.removeValue(forKey: url) }
       sem?.signal()
     }
     fileprivate func gateSemaphore(for url: URL) -> DispatchSemaphore? {
-      lock.lock()
-      defer { lock.unlock() }
-      return gates[url]
+      state.withLock { $0.gates[url] }
     }
 
     /// `StubURLProtocol.registry` is a process-wide `static let`, shared across every test in this
     /// class with no teardown of its own — a stale response/gate left by an earlier test would
     /// otherwise silently leak into a later one. Called from `setUp()`.
-    func reset() {
-      lock.lock()
-      responses.removeAll()
-      errorURLs.removeAll()
-      callCounts.removeAll()
-      gates.removeAll()
-      lock.unlock()
-    }
+    func reset() { state.withLock { $0 = State() } }
   }
 
-  private final class StubURLProtocol: URLProtocol {
+  // Unchecked: URLSession drives an instance from its own threads, and this one keeps no state of
+  // its own, only the `Sendable` registry.
+  private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     static let registry = StubRegistry()
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -287,7 +254,8 @@ final class AvatarImageLoaderTests: XCTestCase {
     NSWindow, NSView
   ) {
     let hosting = NSHostingView(
-      rootView: HostWrapper(controller: controller, loader: loader, onCommit: onCommit))
+      rootView: HostWrapper(controller: controller, loader: loader, onCommit: onCommit)
+        .themeTokensRoot())
     hosting.frame = NSRect(x: 0, y: 0, width: 32, height: 32)
     let window = NSWindow(
       contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)

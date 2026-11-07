@@ -1,5 +1,7 @@
 # OQ19 — can the agent tell BUSY from IDLE? Measurements
 
+Status: research. Measured in #214; #382 removed the classifier it measured.
+
 **Superseded 2026-10-09 (#382): the agent no longer classifies its box.** Wakefulness is the user's
 and the provider's concern, so the classifier, its heartbeat and the Status service are removed,
 along with the golden replay fixtures. The harness and results under `vcs/scripts/oq19/` are kept as

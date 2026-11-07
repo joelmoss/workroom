@@ -1,0 +1,659 @@
+import AppKit
+import Defaults
+import DesignSystem
+import SwiftUI
+import WorkroomDomain
+
+/// Geometry the workroom pane cards share with the chrome AROUND them.
+enum WorkroomPaneMetrics {
+  /// The clear gutter on every side of a pane card — between the cards of a split, and between a solo
+  /// card and the window. Also the sidebars' and inspector's top/bottom card margin
+  /// (`SidebarColumn`/`InspectorColumn`), so the three columns' cards start and end on the same lines
+  /// rather than each choosing its own inset; they're side by side, so any difference reads as a
+  /// misalignment.
+  static let gutter: CGFloat = 2
+  /// Extra bottom-only margin, ADDED ON TOP of `gutter`, so the window's bottom edge keeps its
+  /// original 8pt clearance even though `gutter` itself was tightened. Bottom-only because only the
+  /// bottom margin was asked to stay put — the top, inter-pane, and sidebar/inspector side gutters
+  /// are meant to shrink. Mirrored into `SidebarColumn`/`InspectorColumn`'s `bottomMargin` (added to
+  /// their own `gutter`) so all three columns still end on the same line.
+  static let windowBottomMargin: CGFloat = 4
+}
+
+/// A drag from the workroom tab bar into the split content (content-local point + the dragged tab's id).
+struct WorkroomPaneDrag: Equatable {
+  let sid: SidebarID
+  var location: CGPoint
+}
+
+/// Workroom-into-workroom split renderer (issue #23 follow-up): renders `PaneLayout<SidebarID>` as
+/// nested, resizable panes — each a full `TargetTerminalDetail`. Deliberately SEPARATE from the
+/// terminal renderer `PaneTreeView` (whose re-parenting/blank-pane history makes surgery risky); it
+/// shares the pure `PaneTreeLayout` geometry, the generic `PaneLayout` model, and the divider and
+/// drop band (`SplitDivider`, `DropAccent`), and keeps its own card chrome.
+///
+/// Like `PaneTreeView`, panes are laid out in ONE flat `ZStack`, positioned by absolute frames and
+/// keyed by `SidebarID`, so a surviving pane keeps the exact same host across a layout change (only its
+/// frame moves) — its terminal is never re-parented. `RootView` ALWAYS renders through this view when
+/// the tab bar is on (a no-split case is just `.leaf(selected)`), so single↔split is a leaf-set change,
+/// not a structural swap — the same lesson that made `WorkroomTerminalsView` always render through
+/// `PaneTreeView`.
+struct WorkroomSplitView: View {
+  /// The app store, threaded to each leaf as a plain (non-observed) reference so the workroom
+  /// context menu (issue #112) can read/mutate it WITHOUT subscribing this terminal-hosting view
+  /// tree to the whole churny store. NOT `@EnvironmentObject`/`@ObservedObject` on purpose.
+  let store: AppStore
+  let layout: PaneLayout<SidebarID>
+  /// Resolve a leaf to its live target (drops a since-deleted workroom). Owned by the store.
+  let resolve: (SidebarID) -> TerminalTarget?
+  let focusedID: SidebarID?
+  /// The live drag of a workroom into the content — from the tab bar OR a split member's group title
+  /// bar (issue #110). Drives the drop-edge highlight; a member's title bar writes it while dragging.
+  @Binding var externalDrag: WorkroomPaneDrag?
+  /// Content-local point for a global drag location (nil when over the title-bar strip). Owned by
+  /// `RootView`; shared with the tab bar so a title-bar drag drops onto the same panes a chip would.
+  let localize: (CGPoint) -> CGPoint?
+  /// Where a drag at a global location lands (member pane + edge), or nil if not over a pane.
+  let dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge, rect: CGRect)?
+  let onFocus: (SidebarID) -> Void
+  let onSetRatio: (CGFloat, UUID) -> Void
+  let onClose: (SidebarID) -> Void
+  /// Move a member to land beside another at an edge (drag a group by its title bar). Wired to
+  /// `store.insertWorkroomSplit`, the same transform the tab-bar chip drop uses.
+  let onMove: (SidebarID, SidebarID, PaneEdge, CGRect) -> Void
+
+  private static let space = "workroomSplitContent"
+  /// The gutter holding the pane cards off the left/right sidebars (issue #110). Unconditional since
+  /// issue #139 — a solo workroom is a card too. **Shared** because `RootView`'s chip-drop hit-testing
+  /// plans against the *unpadded* detail rect and must subtract this, or every drop lands 3pt off the
+  /// pane the renderer actually drew (a drop inside the gutter would split with no preview shown).
+  static let outerGutter: CGFloat = 3
+
+  /// The divider ratio being dragged right now — held here rather than written to the store on every
+  /// mouse-moved tick. `store.setWorkroomSplitRatio` publishes `workroomSplits`, which invalidates
+  /// `RootView` and rebuilds every pane (and every pane title bar) at cursor rate; local state keeps
+  /// the churn inside this view and commits once on mouse-up. Same pattern as `SidebarColumn`'s
+  /// resize handle.
+  /// `stored` is the node's ratio as the store held it when the drag began. If the store moves that
+  /// node while the mouse is down — an auto-even after a pane closed (issue #126) — the override is
+  /// dropped so the divider sees the new value and re-anchors onto it, instead of the drag silently
+  /// replaying its stale start over the even.
+  @State private var liveRatio: DividerDrag?
+
+  var body: some View {
+    let leaves = layout.tabIDs
+    let multi = leaves.count >= 2
+    // The stored layout, with the in-flight divider ratio overlaid while a drag is live. Once
+    // committed, `liveRatio` clears and the store's own value takes over.
+    let shown = layout.showing(liveRatio)
+    GeometryReader { geo in
+      let plan = PaneTreeLayout.plan(shown, in: CGRect(origin: .zero, size: geo.size))
+      ZStack(alignment: .topLeading) {
+        ForEach(leaves, id: \.self) { sid in
+          if let target = resolve(sid), let rect = plan.panes[sid] {
+            WorkroomPaneLeaf(
+              store: store, sid: sid, target: target, focused: sid == focusedID, multi: multi,
+              memberCount: leaves.count,
+              externalDrag: $externalDrag, localize: localize, dropTarget: dropTarget,
+              onClose: { onClose(sid) }, onMove: onMove
+            )
+            // Same reason as the terminal panes (`PaneTreeView`): the header toolbar inside this
+            // card carries `.animation(_:value: focused)`, so without a geometry group it animates
+            // its own frame across the window whenever a member closes and the survivor both takes
+            // focus and resizes in one update.
+            .geometryGroup()
+            .frame(width: rect.width, height: rect.height)
+            .position(x: rect.midX, y: rect.midY)
+            .id(sid)
+            // A tap on the pane *chrome* focuses it. Clicking *into* the terminal is handled by the
+            // first-responder → selection callback (the libghostty NSView eats SwiftUI taps).
+            .onTapGesture { onFocus(sid) }
+          }
+        }
+        ForEach(plan.dividers) { d in
+          // The in-flight ratio is parked in `liveRatio`: it must NOT reach the store, whose write
+          // would rebuild every pane at cursor rate (issue #139). Only the release persists.
+          SplitDivider(
+            orientation: d.orientation, ratio: d.ratio, total: d.total, noun: "workroom",
+            identifier: "workroom.pane.divider",
+            onLive: {
+              liveRatio = DividerDrag(split: d.id, ratio: $0, over: layout, fallback: d.ratio)
+            },
+            onCommit: {
+              liveRatio = nil
+              onSetRatio($0, d.id)
+            }
+          )
+          .frame(width: d.hitRect.width, height: d.hitRect.height)
+          .position(x: d.rect.midX, y: d.rect.midY)
+        }
+        dropHighlight(plan: plan)
+        incomingPaneHighlight(plan: plan)
+        // The dragged workroom's title follows the cursor over the panes, as a dragged pane's does.
+        if let drag = externalDrag, let dragged = resolve(drag.sid) {
+          DragTitleGhost(title: dragged.title, at: drag.location)
+        }
+      }
+      .coordinateSpace(.named(Self.space))
+    }
+    // Applied outside the GeometryReader so the panes reflow within the inset.
+    .padding(.horizontal, Self.outerGutter)
+    .padding(.bottom, WorkroomPaneMetrics.windowBottomMargin)
+  }
+
+  /// The whole workroom a Quick Terminal pane dragged over this window would join, in the drop
+  /// highlight's colours.
+  @ViewBuilder
+  private func incomingPaneHighlight(plan: PaneTreeLayout.Plan<SidebarID>) -> some View {
+    if let sid = store.incomingQuickTerminalPane, let rect = plan.panes[sid] {
+      DropAccent(cornerRadius: 8).placed(in: rect)
+    }
+  }
+
+  /// The accent band previewing where a dragged workroom tab will land (mirrors `PaneTreeView`).
+  @ViewBuilder
+  private func dropHighlight(plan: PaneTreeLayout.Plan<SidebarID>) -> some View {
+    if let drag = externalDrag,
+      let hit = PaneTreeLayout.dropTarget(at: drag.location, panes: plan.panes),
+      hit.tab != drag.sid, let rect = plan.panes[hit.tab],
+      // Don't promise a split the drop will refuse: a pane too small to hold two floor-width halves
+      // rejects the insert, so previewing it would read as a broken drop rather than a guarded one.
+      store.canInsertWorkroomSplit(
+        drag.sid, beside: hit.tab, edge: hit.edge, destinationRect: rect)
+    {
+      DropAccent(cornerRadius: 8).placed(in: PaneTreeLayout.edgeBand(hit.edge, in: rect))
+    }
+  }
+}
+
+/// Where a drop will land: an accent wash with an accent border, in the theme's accent. One look for
+/// every drop target, a workroom tab's, a workroom pane's or a terminal pane's (`PaneTreeView`), so
+/// they can't drift apart.
+struct DropAccent: View {
+  let cornerRadius: CGFloat
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    let accent = tokens.accent
+    RoundedRectangle(cornerRadius: cornerRadius)
+      .fill(accent.opacity(0.25))
+      .strokeBorder(accent, lineWidth: 2)
+      .allowsHitTesting(false)
+  }
+
+  /// Laid over `rect` of the enclosing space, fading in and out.
+  func placed(in rect: CGRect) -> some View {
+    frame(width: rect.width, height: rect.height)
+      .position(x: rect.midX, y: rect.midY)
+      .transition(.opacity)
+  }
+}
+
+/// Pure, testable mapping from a split member's `SidebarID` + its resolved `target` to the workroom
+/// name shown in the group title bar. Extracted from `WorkroomPaneLeaf` so it is unit-testable without
+/// instantiating the view (same rationale as `RootPresentation`).
+///
+/// INVARIANT: `target` MUST be the resolved target for `sid` (i.e. `AppStore.target(for: sid)`), so
+/// `target.title` is *this* workroom's label-aware `displayName` (issue #41). A mismatched target would
+/// display an unrelated title; the one caller satisfies this via `resolve(sid)`.
+enum WorkroomSplitTitlePresentation {
+  static func workroomName(sid: SidebarID, target: TerminalTarget) -> String? {
+    // `target.title` is the label-aware `displayName`; NOT the raw `sid` name (issue #113).
+    if case .workroom = sid { return target.title }
+    return nil
+  }
+}
+
+/// One workroom pane: a title bar naming the workroom and carrying its own actions, above the full
+/// terminal body, the pair wrapped in a rounded card. Near-identical solo and split since issue #139 —
+/// the remove-from-split ✕, its menu item, and the group-drag gesture are `multi`-only, because only a
+/// real member has a group to leave or move within; so is the card's focused treatment (`highlighted`),
+/// because only a real member has a peer to be picked out from.
+private struct WorkroomPaneLeaf: View {
+  /// Plain (non-observed) store reference for the group title bar's context menu (issue #112) —
+  /// see `WorkroomSplitView.store`. NOT `@EnvironmentObject`: this view hosts a live terminal and
+  /// must not re-evaluate on every unrelated store change.
+  let store: AppStore
+  let sid: SidebarID
+  let target: TerminalTarget
+  let focused: Bool
+  let multi: Bool
+  /// How many members the group has right now. Only used to tell a focus MOVE from the group
+  /// changing shape — see `PaneTreeView.fadesFocusChange`.
+  let memberCount: Int
+  /// The shared workroom-drag state — the title bar writes it while dragging this group (issue #110).
+  @Binding var externalDrag: WorkroomPaneDrag?
+  let localize: (CGPoint) -> CGPoint?
+  let dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge, rect: CGRect)?
+  let onClose: () -> Void
+  let onMove: (SidebarID, SidebarID, PaneEdge, CGRect) -> Void
+
+  var body: some View {
+    // `content` MUST stay at ONE structural position (the second child of this VStack) — the title bar
+    // is a *sibling* above it, never a wrapper around it. A structural
+    // `if multi { VStack { titleBar; content } } else { content }` would swap SwiftUI's
+    // `_ConditionalContent` branch when a 2-member split dissolves to solo, tearing down + rebuilding
+    // `TargetTerminalDetail` and re-parenting the libghostty surface — the blank/stranded-pane bug.
+    // This mirrors `PaneLeafView`, which keeps its content in one slot and expresses the `multiPane`
+    // chrome as always-mounted overlays (issue #3).
+    //
+    // Since issue #139 every workroom has the title bar; only a create's bare pane (#483) goes
+    // without, as an optional sibling, so the content's slot never moves. The hazard of the same
+    // shape that remains is the missing-directory choice, which is why `TargetTerminalDetail` owns it
+    // as a ZStack sibling rather than this view branching on it.
+    VStack(spacing: 0) {
+      // Every workroom is identified by its own header (issue #139), which in a split also names
+      // *which* member this is and offers the way back out of the group. A create's pane is bare
+      // (#483): its checklist names it, and it has no ✕ or menu to close it by while it runs. The
+      // bar is a sibling above the content, so the content keeps its one structural slot.
+      if store.lifecycle.creationRun(forTargetID: target.id) == nil {
+        titleBar
+      }
+      // One unconditional slot. The "Directory not found" state and the withheld-during-setup state
+      // both live INSIDE `TargetTerminalDetail`'s own ZStack, so nothing here ever swaps branches.
+      TargetTerminalDetail(target: target, surfaceActive: focused, workroomIsSplit: multi)
+    }
+    // The pane reads as a unit by a subtle raised fill over the `panel` base plus the shadow +
+    // rounded corners (issue #110). The frame itself stays the plain neutral hairline regardless of
+    // focus — an accent frame around the whole card read as too loud/inconsistent, so the fill and
+    // shadow alone carry which member is focused. Fill stays accent-tinted as that cue — accent @
+    // 0.10 over a `panel` that is itself only 5.5% off the theme background moves luminance by a
+    // couple of percent, which was too faint to pick the focused member out of a split at a glance.
+    //
+    // The fill reads `focused`: the accent marks the selected workroom wherever it shows (its project
+    // sidebar row and the right sidebar's header wear the same fill), so a solo pane, always the
+    // focused one since the no-split layout is `.leaf(selected)`, wears it too, and in a split only
+    // the focused member does. The shadow still reads `highlighted`, a split-only "this member, not
+    // that one" cue. The fill layer stays unconditionally MOUNTED (only its value swaps).
+    .background(WorkroomPaneCardBackground(highlighted: focused))
+    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    // Mounted AFTER the clip (so the frame isn't clipped away) and BEFORE the shadow: `strokeBorder`
+    // insets by half its width, so the stroke sits inside the card and the shadow's silhouette — and
+    // every pane rect — is unchanged.
+    .overlay { WorkroomPaneCardBorder() }
+    .shadow(
+      color: .black.opacity(highlighted ? 0.18 : 0.10), radius: highlighted ? 6 : 3, y: 2
+    )
+    // A clear gutter on every side — between the cards of a split, and between a solo card and the
+    // window. The title bar sits at the pane's top, inside this inset. Shared with the two sidebar
+    // cards' top/bottom margins so all three columns line up.
+    .padding(WorkroomPaneMetrics.gutter)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("workroom.pane")
+    // Roots aren't workrooms — say what this pane actually is (the chip makes the same distinction).
+    .accessibilityLabel(Text(paneLabel))
+    // Only meaningful with peers to be selected *among*: this trait tracks MODEL focus, and a solo
+    // pane reporting `.isSelected` would say nothing while breaking how tests read it.
+    .accessibilityAddTraits(focused && multi ? .isSelected : [])
+  }
+
+  /// What VoiceOver calls this pane: its workroom, a create not yet named (#483), or its project.
+  private var paneLabel: String {
+    if let workroomName { return "Workroom \(workroomName)" }
+    if case .creation = sid { return "New workroom in \(projectLabel)" }
+    return "Project \(target.title)"
+  }
+
+  /// The title bar (issue #139): the workroom's name and actions, its drag handle and its menu.
+  private var titleBar: some View {
+    WorkroomPaneTitleBar(
+      target: target, projectPath: projectPath, projectLabel: projectLabel,
+      workroomName: workroomName, focused: focused, memberCount: memberCount,
+      controls: toolbarControls, onClose: onClose,
+      // The bar stays store-free (see `WorkroomSplitView.store`), so the leaf — which has the
+      // store — supplies the action.
+      onCloseAll: { store.requestCloseAllTerminalTabs(for: target) }
+    )
+    // Drag the group by its title bar to move the whole member within the split (issue #110) —
+    // the SAME gesture/closures the tab-bar chip uses, so it drops onto the same panes and shows
+    // the same drop-edge highlight. A plain click (no movement past `minimumDistance`) still
+    // falls through to the leaf's focus tap.
+    //
+    // Alone, the drag only moves the workroom out of the window (#444), to another window or a new
+    // one as its tab does; rearranging needs a split. `including:` stays `.all`, never `.none`:
+    // `GestureMask.none` disables every gesture in the SUBVIEW hierarchy as well as the added one,
+    // which would kill this bar's own Run / Open-in buttons in exactly the single-workroom case issue
+    // #139 exists to serve, while `ToolbarIconButtonStyle`'s `.onHover` well kept them looking alive.
+    .gesture(
+      DragGesture(minimumDistance: 6, coordinateSpace: .global)
+        .onChanged { value in
+          if isDragOutsideWindow(value.location) {
+            externalDrag = nil
+            WorkroomWindowDrag.update(
+              store: store, sid: sid, target: target,
+              width: store.workroomTabFrames[sid]?.width ?? 0)
+            return
+          }
+          WorkroomWindowDrag.cancel()
+          guard multi else { return }
+          externalDrag = localize(value.location).map {
+            WorkroomPaneDrag(sid: sid, location: $0)
+          }
+        }
+        .onEnded { value in
+          if isDragOutsideWindow(value.location) {
+            WorkroomWindowDrag.end(store: store, sid: sid)
+          } else if multi, let drop = dropTarget(value.location), drop.sid != sid {
+            onMove(sid, drop.sid, drop.edge, drop.rect)
+          }
+          externalDrag = nil
+        },
+      including: .all
+    )
+    // The workroom's right-click menu (issue #112) — the SAME items as the tab chip (incl.
+    // "Close"). "Remove from Split" (the menu equivalent of the ✕) is offered only for a real
+    // member; `workroomContextMenu` drops the item and its divider on a nil closure. `closeName`
+    // matches the chip's `workroomName ?? primaryLabel`. Attached AFTER `.gesture` so both share
+    // the bar's `.contentShape`; secondary-click (menu) and the primary-button drag coexist.
+    // The bar's own controls are separate hit targets, so a right-click landing directly on one may
+    // not raise this menu (already true of the ✕ before issue #139 added its neighbours) — the
+    // leading label region always does, and that is the region to aim for.
+    .contextMenu {
+      workroomContextMenu(
+        store: store, sid: sid, target: target, closeName: workroomName ?? projectLabel,
+        onRemoveFromSplit: multi ? onClose : nil)
+    }
+  }
+
+  /// Whether this card wears the focused treatment — derived ONCE here so the frame, the fill and the
+  /// shadow cannot disagree about it. Deliberately narrower than `focused`, which still drives the
+  /// title bar's colours and `TargetTerminalDetail(surfaceActive:)` (liveness, not emphasis: a solo
+  /// pane's own Run / Open-in controls must stay full strength, and its terminal stays active).
+  private var highlighted: Bool {
+    WorkroomPaneCardBorder.isHighlighted(focused: focused, multi: multi)
+  }
+
+  /// The owning project's path. Handed to the title bar (rather than the `sid`) so a presentation view
+  /// doesn't take a dependency on `SidebarID`, and so the lookup happens once for both the label and
+  /// the run controls' `hasRunCommand` check.
+  private var projectPath: String? { AppStore.projectPath(of: sid) }
+
+  /// Which trailing controls the header shows — resolved in one pass so the group's divider can't
+  /// disagree with the buttons on either side of it. The editor list is cached, so this is cheap enough
+  /// to compute per render.
+  private var toolbarControls: WorkroomPaneToolbarPresentation.Controls {
+    WorkroomPaneToolbarPresentation.controls(
+      isMissing: target.isMissing, opensTerminals: target.opensTerminals, projectPath: projectPath,
+      hasEditor: !ExternalEditor.installed.isEmpty, multi: multi,
+      // The same predicate `startRunCommand` guards on, so the button and the action can't disagree
+      // about whether a run could start (issue #171).
+      isCreating: store.lifecycle.isRunBlocked(target.id))
+  }
+
+  /// The project name — the chip's primary label format (`AppStore.projectPath` last component),
+  /// matching `WorkroomTabChip.primaryLabel`. Empty only if the sid resolves no project.
+  private var projectLabel: String {
+    projectPath.map { ($0 as NSString).lastPathComponent } ?? ""
+  }
+
+  /// This member's own display name (nil for a project root) — the label-aware `target.title`,
+  /// resolved through `WorkroomSplitTitlePresentation` so a relabel (issue #41) shows here
+  /// immediately. Feeds both the title bar's visible text and its accessibility label (issue #113);
+  /// NOT the raw `SidebarID` name, which never changes on relabel.
+  private var workroomName: String? {
+    WorkroomSplitTitlePresentation.workroomName(sid: sid, target: target)
+  }
+
+}
+
+/// The pane card's fill. Its own view rather than an inline `.background(…)` value for two reasons: it
+/// reads `\.controlActiveState` so the accent tint drops when the window isn't key (issue #139 — an
+/// inactive window holding a saturated accent band reads as active and is against macOS convention),
+/// and as a child it absorbs those activation re-renders itself, keeping them off `WorkroomPaneLeaf`
+/// and the libghostty surface it hosts.
+///
+/// The card passes `focused`, so the selected workroom's pane is accented, solo or split.
+/// Highlighted, it also marks the selected workroom elsewhere: the right sidebar's header
+/// (`InspectorWorkroomHeader`) and the project sidebar's selected row.
+struct WorkroomPaneCardBackground: View {
+  let highlighted: Bool
+  @Environment(\.controlActiveState) private var activeState
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    ZStack {
+      tokens.panel
+      activeState == .inactive || !highlighted
+        ? tokens.splitGroupFill : tokens.splitGroupFocusedFill
+    }
+  }
+}
+
+/// The pane card's frame — a constant neutral hairline; the fill and shadow carry which member is
+/// focused (see the comment above `.background` at the call site). Its own view only to mirror
+/// `WorkroomPaneCardBackground`'s isolation of the libghostty surface below it from this layer's
+/// re-renders.
+struct WorkroomPaneCardBorder: View {
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    RoundedRectangle(cornerRadius: 8, style: .continuous)
+      .strokeBorder(tokens.border, lineWidth: 1.5)
+      .allowsHitTesting(false)
+  }
+
+  /// Whether the card wears the focused treatment at all. Model focus alone isn't enough: a solo pane
+  /// is ALWAYS `focused` (the no-split layout is `.leaf(selected)`), and an accent fill/shadow with no
+  /// peer to be distinguished FROM is decoration rather than a selection cue — it spends the accent
+  /// that should mean "this member, not that one". The same expression the `.isSelected` trait uses,
+  /// kept pure so the gate is testable without hosting a view. The fill and the shadow both read this
+  /// one value.
+  static func isHighlighted(focused: Bool, multi: Bool) -> Bool { focused && multi }
+
+  /// Which colour frames a focused pane's ring — kept here for `PaneTreeView`'s split-terminal ring
+  /// (`PaneLeafView.borderColor`), which still highlights on focus; this view's own frame no longer
+  /// calls it. Pure and static (same rationale as `PaneTreeView.shouldDim`) so the three-way decision
+  /// is testable without hosting a view. Its input is a split-only "highlighted" gate, so a solo pane
+  /// takes the same neutral hairline an unfocused member does.
+  ///
+  /// 1.5pt of `accent` matches this view's own frame width and the terminal pane's other overlays, so
+  /// a focused pane can't be mistaken for the 2pt accent box of the drag drop-edge highlight in this
+  /// file. On a background window it goes neutral (`focused`, fg @ 0.3) rather than holding a
+  /// saturated accent — the same convention the card fill follows.
+  static func tint(highlighted: Bool, active: Bool, tokens: ThemeTokens) -> Color {
+    guard highlighted else { return tokens.border }
+    return active ? tokens.accent : tokens.focused
+  }
+}
+
+/// Which trailing controls a pane title bar offers. Pure and separate from the view (same rationale as
+/// `WorkroomSplitTitlePresentation`) so the matrix — a missing directory has nothing to open, a target
+/// with no owning project has no run command to look up, and only a real split member can be removed
+/// from one — is unit-testable without instantiating SwiftUI.
+///
+/// It takes the "is there anything to show" facts as inputs rather than letting each control decide for
+/// itself, because the group divider depends on **both** its neighbours: a separator with nothing on one
+/// side of it is worse than no separator. Deriving every flag here, in one pass, is what makes it
+/// impossible for the divider to disagree with the buttons it separates.
+enum WorkroomPaneToolbarPresentation {
+  struct Controls: Equatable {
+    let run: Bool
+    let openIn: Bool
+    /// The rule between the run group and "Open in…" — only when both are actually there.
+    let divider: Bool
+    /// "Close all tabs in this workroom" — moved here from the terminal tab strip's toolbar when that
+    /// toolbar was emptied (issue #150). It belongs on the WORKROOM's bar because it acts on the whole
+    /// workroom, not on one pane; every per-pane action went to the panes instead.
+    let closeAll: Bool
+    let removeFromSplit: Bool
+  }
+
+  /// `opensTerminals`: a pane can open here, which a remote workroom's can although its path is
+  /// not on this Mac (`isMissing`); its run runs on its host (#522).
+  static func controls(
+    isMissing: Bool, opensTerminals: Bool, projectPath: String?, hasEditor: Bool, multi: Bool,
+    isCreating: Bool
+  ) -> Controls {
+    // Run is deliberately NOT gated on a configured command: the button is always there for a present
+    // target, and pressing it with nothing configured opens Project Settings with the warning, the same
+    // as ⌘R (issue #139 follow-up). It still needs an owning project, since that's what a command would
+    // be keyed to. "Open in…" is gated, because with no editor installed there is nowhere to open.
+    //
+    // `isCreating` is the one gate that IS about the command running: `startRunCommand` refuses a
+    // workroom whose setup script is still writing the worktree (issue #167), so a Run button there
+    // looks alive and silently does nothing. Barely visible until issue #171 put the focused create
+    // inside its pane — where the create now sits under a full title bar for the whole script.
+    // "Open in…" stays: opening the half-built tree in an editor is a real action that really happens.
+    let run = opensTerminals && projectPath != nil && !isCreating
+    let openIn = !isMissing && hasEditor
+    // Close-all is the one control NOT gated on the directory, and deliberately so. Its neighbours are
+    // gated because a vanished directory gives them nothing to act on — there is nowhere to run and
+    // nothing to open. Tabs are different: they live in `TerminalPanes`, not on disk, so a workroom
+    // whose directory disappears keeps every terminal it had open.
+    //
+    // And a missing target is exactly where they get stranded. `TargetTerminalDetail` withholds
+    // `WorkroomTerminalsView` for a missing directory, which takes the tab strip, the chip context
+    // menu and `focusedSceneValue(\.hasTerminal)` with it — so File ▸ Close All Tabs is disabled too.
+    // This button is then the only bulk-close left. Ungated it is harmless where there is nothing to
+    // close, which is already true of a present workroom with no tabs.
+    return Controls(
+      run: run, openIn: openIn, divider: run && openIn, closeAll: true, removeFromSplit: multi)
+  }
+}
+
+/// The header atop **every** workroom pane (issue #110 for split members, issue #139 for all of them):
+/// a leading identity glyph, the `project / workroom` label (matching the tab chip's format), and a
+/// trailing toolbar carrying this workroom's own actions — "Open in…", run/stop/restart, and (for a
+/// real split member) the remove-from-split ✕. It spans the pane's full width and, together with the
+/// leaf's rounded card, makes each pane read as a distinct, identifiable unit. Reflects focus by colour
+/// (accent + full-strength text when focused, muted otherwise), the pane's selection signal.
+///
+/// The run/open-in controls used to live in the window title bar keyed on the *selected* target, so a
+/// co-displayed split member's were unreachable; here each pane owns its own and acts on its own
+/// target.
+private struct WorkroomPaneTitleBar: View {
+  let target: TerminalTarget
+  let projectPath: String?
+  /// The project name, derived (with `workroomName`) by the leaf — which needs it for the close prompt
+  /// anyway, so deriving it a second time here would be two copies of one format to keep in step.
+  let projectLabel: String
+  let workroomName: String?
+  let focused: Bool
+  /// See `WorkroomPaneLeaf.memberCount` — the group's size, so the fade below can sit out a close.
+  let memberCount: Int
+  /// The size this bar last rendered with — recorded after the body, so during a structural update
+  /// it still holds the previous value. Same mechanism as `PaneLeafView.lastPaneCount`.
+  @State private var lastMemberCount: Int?
+
+  /// Resolved by the leaf, which has the store — this view stays store-free on purpose (see
+  /// `WorkroomSplitView.store`).
+  let controls: WorkroomPaneToolbarPresentation.Controls
+  let onClose: () -> Void
+  let onCloseAll: () -> Void
+
+  /// The animation for this bar's focus fade — nil while the group is changing shape, so a member
+  /// closing lands instantly. One decision, shared with the terminal panes.
+  private var focusFade: Animation? {
+    PaneTreeView.fadesFocusChange(
+      paneCount: memberCount, lastPaneCount: lastMemberCount, reduceMotion: reduceMotion)
+      ? .easeInOut(duration: 0.07) : nil
+  }
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// "Dim unfocused panes" (issue #162) — the toolbar's fade is in lockstep with the pane scrim, so
+  /// the setting gates it too (see `PaneTreeView.shouldRecede`). The focus *colours* above are not
+  /// gated: they emphasise the focused pane rather than dimming the others, like the accent ring.
+  @Default(.dimUnfocusedPanes) private var dimUnfocusedPanes
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    HStack(spacing: 6) {
+      // Leading glyph mirrors the tab chip's: a house for a project root, a cube for a workroom
+      // (`workroomName` is nil only for a root). Accent on the focused pane, muted otherwise.
+      Image(systemName: workroomName == nil ? "house" : target.workroomGlyph)
+        .font(.system(size: 10))
+        .foregroundStyle(focused ? tokens.accent : tokens.fgMuted)
+        .help(workroomName == nil ? "" : target.hostTooltip)
+      if let reason = target.terminalUnavailability {
+        WarningGlyph()
+          .font(.system(size: 10))
+          .help(reason.title)
+      }
+      // `project / workroom`, same format and size as `WorkroomTabChip`. Full-strength on the focused
+      // member, muted otherwise — the brighter header is the in-content "this is the active pane" cue.
+      HStack(alignment: .firstTextBaseline, spacing: 4) {
+        Text(projectLabel)
+          .foregroundStyle(focused ? Color.primary : tokens.fgMuted)
+        if let workroomName {
+          Text("/").foregroundStyle(.tertiary)
+          Text(workroomName)
+            .foregroundStyle(focused ? Color.primary : tokens.fgMuted)
+        }
+      }
+      .font(.subheadline)
+      .lineLimit(1)
+      // The tab chips' cap, so the identity yields to the actions under width pressure instead of
+      // squeezing them out of a narrow split member.
+      .frame(maxWidth: TabStripMetrics.maxChipTitle, alignment: .leading)
+      // The full name and path, for a label the 180pt cap has truncated.
+      .help("\(fullTitle)\n\(target.path)")
+      Spacer(minLength: 8)
+      // This workroom's own actions. `RunControls` reads the store via `@EnvironmentObject`, which
+      // invalidates only ITSELF — `WorkroomPaneLeaf` and the terminal it hosts stay unsubscribed from
+      // store churn, the invariant `WorkroomSplitView.store` exists for.
+      // ONE styled group, so every control in it — including the ✕, which used to style itself — gets
+      // the same 22pt well and the same glyph size. The two numbers live on `ToolbarIconButtonStyle`
+      // and `PaneToolbarIcon`; nothing here restates them.
+      HStack(spacing: 6) {
+        if controls.run, let projectPath {
+          RunControls(target: target, projectPath: projectPath)
+        }
+        // Only when there is something on both sides of it — a rule with nothing to separate reads as a
+        // stray mark, and either group can be absent (no run command configured, no editor installed).
+        if controls.divider { TitlebarDivider() }
+        if controls.openIn { OpenInControl(path: target.path) }
+        if controls.closeAll {
+          if controls.run || controls.openIn { TitlebarDivider() }
+          // Shares `PaneToolbarButton` with the detail-panel title bar below this one, so both bars'
+          // buttons carry the same hover well and the same tooltip tracking.
+          PaneToolbarButton(
+            systemImage: "xmark.square", help: "Close all tabs in this workroom",
+            accessibilityLabel: "Close all tabs in this workroom",
+            identifier: "workroom.pane.closeAll", action: onCloseAll)
+        }
+        if controls.removeFromSplit {
+          TitlebarDivider()
+          CloseWorkroomPaneButton(action: onClose)
+        }
+      }
+      .buttonStyle(ToolbarIconButtonStyle())
+      .font(.system(size: PaneToolbarIcon.glyph))
+      // Recede with the pane, the way the terminal tab strip below already does (`WorkroomTerminalsView`
+      // fades to the same 0.45 on `!surfaceActive`): a non-focused member's actions are still there and
+      // still clickable — opacity doesn't block hit-testing, which matters for the ✕, the way out of a
+      // cramped split — they just stop competing with the focused pane's. Matching curve and duration so
+      // the header, the strip, and the per-pane scrim all fade as one.
+      .opacity(PaneTreeView.shouldRecede(active: focused, enabled: dimUnfocusedPanes) ? 0.45 : 1)
+      // nil while the group is changing shape: removing a member re-lays every survivor out, and
+      // fading this header through that is the chrome chasing a layout that already moved
+      // (`PaneTreeView.fadesFocusChange`). A focus move still cross-fades.
+      .animation(focusFade, value: focused)
+      .animation(focusFade, value: dimUnfocusedPanes)
+      .onChange(of: memberCount, initial: true) { _, new in lastMemberCount = new }
+    }
+    // Trailing inset is tighter than the leading so the trailing-most control lines up with the
+    // terminal tab strip's own toolbar below it (both land 4pt inside the card's trailing edge; the
+    // buttons carry their own hit padding).
+    .padding(.leading, 10)
+    .padding(.trailing, 4)
+    .frame(height: 28)
+    .frame(maxWidth: .infinity)
+    // No own background and no bottom rule — inherit the card's raised lighter fill (issue #110) so the
+    // header and the terminal body below read as one continuous surface.
+    // So a tap/drag on the bar's empty area is hit-tested: a tap bubbles to the leaf's focus tap and a
+    // drag (handled by the leaf's gesture on this bar) moves the group; each button consumes its own
+    // click.
+    .contentShape(Rectangle())
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("workroom.pane.titlebar")
+    .accessibilityLabel(
+      Text(workroomName.map { "\(projectLabel), workroom \($0)" } ?? projectLabel)
+    )
+  }
+
+  /// The tooltip's title, formatted by `WorkroomLabel` — the same one the tab chip and a
+  /// notification's origin line use. Built from the parts already passed in rather than resolved from
+  /// a `SidebarID`, so this presentation view keeps its store/sid independence.
+  private var fullTitle: String {
+    WorkroomLabel(project: projectLabel, workroom: workroomName).full
+  }
+}

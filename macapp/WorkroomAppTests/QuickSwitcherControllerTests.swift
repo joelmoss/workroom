@@ -19,8 +19,8 @@ final class QuickSwitcherControllerTests: XCTestCase {
   /// `WindowRegistry` holds windows weakly and prunes dead entries, so the test must keep them alive.
   private var windows: [NSWindow] = []
 
-  override func setUp() {
-    super.setUp()
+  override func setUp() async throws {
+    try await super.setUp()
     Defaults[.switcherWorkroomModifier] = .option
     Defaults[.switcherPaneModifier] = .control
     recency = SwitcherRecency()
@@ -28,9 +28,9 @@ final class QuickSwitcherControllerTests: XCTestCase {
     windows = []
   }
 
-  override func tearDown() {
+  override func tearDown() async throws {
     Defaults.reset(.switcherWorkroomModifier, .switcherPaneModifier)
-    super.tearDown()
+    try await super.tearDown()
   }
 
   /// A controller with every real-world seam replaced. `held` is the fake hardware modifier state.
@@ -77,7 +77,7 @@ final class QuickSwitcherControllerTests: XCTestCase {
   private func makeStore(workrooms: [String], panes: Int = 1) -> AppStore {
     let store = AppStore()
     store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
-    store.projects = [
+    store.projectStore.projects = [
       Project(
         path: "/p", vcs: "git",
         workrooms: workrooms.map {
@@ -339,7 +339,7 @@ final class QuickSwitcherControllerTests: XCTestCase {
     let before = controller.items.count
     XCTAssertGreaterThan(before, 1)
     // The whole window goes away (a sheet counts as dead too — you can't switch into a busy window).
-    store.errorMessage = "a dialog went up"  // any `hasModalPresentation` source
+    store.modals.errorMessage = "a dialog went up"  // any `hasModalPresentation` source
     controller.reconcileItems()
     XCTAssertFalse(controller.isLive, "no live candidates left ⇒ end without committing")
     XCTAssertEqual(recorder.ends, 1)
@@ -366,7 +366,8 @@ final class QuickSwitcherControllerTests: XCTestCase {
       guard case .workroom(let slot) = tracked else { return nil }
       return slot.id
     }()
-    a.errorMessage = "a sheet went up in the other window"  // `hasModalPresentation` ⇒ fox is dead
+    // `hasModalPresentation` ⇒ fox is dead
+    a.modals.errorMessage = "a sheet went up in the other window"
     let revealsBefore = recorder.reveals.count
     controller.reconcileItems()
 

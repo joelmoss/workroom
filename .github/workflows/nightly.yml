@@ -25,8 +25,8 @@ jobs:
   # the latest tag reachable from master: a prerelease tag targets its own release
   # (v2.0.0-beta.21 → 2.0.0), a stable tag bumps MINOR (v1.3.0 → 1.4.0). Minor, not patch, because
   # master is always the next minor — patch releases ship from a `release/X.Y` branch (see
-  # CONTRIBUTING "Patch releases"), and a `2.0.1-nightly.N` here would semver-sort *below* the
-  # v2.0.1 cut over there. Release-branch tags stay unreachable from master (fixes are
+  # docs/contributing/releasing.md "Patch releases"), and a `2.0.1-nightly.N` here would
+  # semver-sort *below* the v2.0.1 cut over there. Release-branch tags stay unreachable from master (fixes are
   # cherry-picked onto the branch, never merged back), so `git describe` here never sees them.
   # The commit count is the monotonic ordering key the CLI + Sparkle compare on.
   check:
@@ -155,23 +155,13 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      # Pinned to the Xcode the app is developed with; xcode-27 is the only runner image that has it.
-      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+      # Xcode, Go and XcodeGen + create-dmg. No module cache: this job's output is published, and a
+      # restored entry could be poisoned.
+      - name: Set up the app build
+        uses: ./.github/actions/setup-app-build
         with:
-          xcode-version: "27.1"
-
-      # No module cache: this job's output is published, and a restored entry could be poisoned.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
-
-      # aws/tap ships pre-tapped but untrusted on the runner image, which makes every `brew
-      # install` on this job emit a "tap trust" warning annotation unrelated to our formulae.
-      - name: Install XcodeGen + create-dmg
-        run: |
-          brew untap aws/tap
-          brew install xcodegen create-dmg
+          go-cache: "false"
+          formulae: xcodegen create-dmg
 
       # Separate step, and deliberately non-fatal — unlike the release workflow, which installs
       # sentry-cli on the same fatal brew line. This job is an unattended cron: a Homebrew/tap hiccup
@@ -182,59 +172,34 @@ jobs:
           brew install getsentry/tools/sentry-cli \
             || echo "::warning::sentry-cli unavailable; nightly will ship without symbol upload"
 
-      # The bundled `workroomd` links libghostty-vt so a reattaching pane can be repainted, which
-      # needs Zig — pinned by version AND checksum, as ci.yml's daemon job pins it: an unpinned
-      # toolchain silently changes the terminal emulator the app ships against.
-      - name: Install Zig
-        env:
-          ZIG_VERSION: "0.17.0"
-          ZIG_SHA256: "b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
-        run: |
-          url="https://ziglang.org/download/${ZIG_VERSION}/zig-aarch64-macos-${ZIG_VERSION}.tar.xz"
-          curl -fsSL "$url" -o zig.tar.xz
-          echo "${ZIG_SHA256}  zig.tar.xz" | shasum -a 256 -c -
-          mkdir -p "$HOME/.zig" && tar -xJf zig.tar.xz -C "$HOME/.zig" --strip-components=1
-          echo "$HOME/.zig" >> "$GITHUB_PATH"
-
-      - name: Add Rust darwin target (workroomd)
-        run: rustup target add aarch64-apple-darwin
-
-      # The app bundle carries a static Linux workroomd per arch for remote hosts (issue #227),
-      # cross-built by build-daemon.sh with cargo-zigbuild and the Zig installed above.
-      - name: Add Linux daemon toolchain
-        run: |
-          rustup target add aarch64-unknown-linux-musl x86_64-unknown-linux-musl
-          cargo install cargo-zigbuild --locked --version 0.23.4
+      # Zig, the darwin and Linux daemon targets, and cargo-zigbuild, downloaded and built rather
+      # than restored: this job's output is published.
+      - name: Set up the daemon build
+        uses: ./.github/actions/setup-daemon-build
+        with:
+          targets: aarch64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+          cache: "false"
 
       - name: Import Developer ID signing certificate
-        env:
-          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          CERT="$RUNNER_TEMP/dev-id.p12"
-          KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
-          echo "$MACOS_CERTIFICATE" | openssl base64 -d -A > "$CERT"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security import "$CERT" -P "$MACOS_CERTIFICATE_PWD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
-          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security list-keychain -d user -s "$KEYCHAIN" login.keychain
+        uses: ./.github/actions/import-signing-certificate
+        with:
+          certificate: ${{ secrets.MACOS_CERTIFICATE }}
+          certificate-password: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          keychain-password: ${{ secrets.KEYCHAIN_PASSWORD }}
 
       # Gate the nightly on the suite that guards the ARTIFACT — the bundled-resource checksum
       # tripwires and the universal-arch cases. Runs BEFORE the release step, or it is not a gate.
       #
       # `make app-release` cannot depend on this itself: app-test builds Debug, which pins automatic
       # "Apple Development" signing (project.yml), and this runner imports only a Developer ID cert.
-      # Hence the same ad-hoc overrides ci.yml uses.
+      # Hence the same ad-hoc overrides ci-app.yml uses.
       # The local packages' tests (macapp/Packages) run outside the app host, so `make app-test`
       # below does not cover them.
       - name: Test (Swift packages)
         run: make app-package-test
 
-      # APP_TEST_DIAGNOSTICS= keeps the diagnostics `make app-test` skips locally, as in ci.yml: the
-      # uploaded xcresult below needs the system log archive to name a crashed test host (#350).
+      # APP_TEST_DIAGNOSTICS= keeps the diagnostics `make app-test` skips locally, as in ci-app.yml:
+      # the uploaded xcresult below needs the system log archive to name a crashed test host (#350).
       - name: Test (artifact gate)
         run: >-
           make app-test APP_TEST_DIAGNOSTICS=

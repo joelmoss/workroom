@@ -4,11 +4,11 @@
 
 Workroom is a native macOS app. The Go CLI at the repository root is the app's engine: the app bundles it and shells out to it for every project and workroom operation, and it also runs standalone. The app bundles the Rust `workroomd` daemon too. Most work lands in `macapp/`.
 
-- `macapp/WorkroomApp/Core/` contains app services and models; `Views/` contains SwiftUI interfaces. Assets and bundled resources live under `macapp/WorkroomApp/`.
-- `macapp/Packages/` holds local Swift packages the app imports: `WorkroomDomain` (models such as `HostDescriptor`), `WorkroomVCS` (the local git engine behind `LocalVCSProviding`), `WorkroomWire`, `WorkroomSystem`, `DaemonConnection`, `HostDrivers` (container, boxd, exe.dev and SSH drivers), `DesignSystem` (`ThemeTokens` and shared UI) and `SyntaxHighlighting`. Search there too when a type is missing from `Core/`; `make app-package-test` runs their tests.
+- `macapp/WorkroomApp/Core/` contains app services and models; `Views/` contains SwiftUI interfaces. Both are grouped into one folder per `CONTEXT.md` context: `AppShell`, `WorkroomManagement`, `VersionControl`, `Terminal`, `RemoteHosts`, `DaemonConnection` (Core only) and `CodingAgents`, plus `Core/Testing` for the UI-test fixture. Assets and bundled resources live under `macapp/WorkroomApp/`.
+- `macapp/Packages/` holds local Swift packages the app imports: `WorkroomDomain` (models such as `HostDescriptor`, and the CLI's `--json` envelopes with their `WorkroomCLIError` mapping), `WorkroomVCS` (VCS values, `RepositoryLocation` and the `VCSProviding`/`VCSWriting`/`FileProviding` interfaces), `WorkroomGit` (the local git engine: `GitProvider`, libgit2, `UnifiedDiff`, `CLIVCSWriter`), `WorkroomWire`, `WorkroomSystem`, `DaemonConnection` (the daemon connection and its port-forward pumps, plus the `DaemonConnectionTestSupport` fixtures for tests), `HostDrivers` (container, boxd, exe.dev and SSH drivers, and `DaemonBootstrap`; the app hands both the scripts it bundles), `DevContainer` (devcontainer.json, its features and the container spec they make), `DesignSystem` (`ThemeTokens` and shared UI), `SyntaxHighlighting` and `TerminalModel` (`PaneState` and its rules, the `TargetPanes` layout, `TabRecords`, `TerminalLaunch`). Search there too when a type is missing from `Core/`; `make app-package-test` runs their tests.
 - `macapp/WorkroomAppTests/` and `WorkroomAppUITests/` contain app tests.
 - `cmd/` contains the CLI's Cobra commands; `internal/` owns workspace lifecycle, VCS, configuration, and scripts. Go tests sit beside sources; shared fixtures live in `testdata/`. The Go module root is the repository root (`go.mod`, `main.go`).
-- `vcs/` is the Rust workspace for the `workroomd` daemon (terminal sessions, VCS and File services) and its git read crates.
+- `vcs/` is the Rust workspace for the `workroomd` daemon (terminal sessions and its Control, VCS, File, Forward, Layout and ProgramStatus services) and its git read crates.
 - `docs/` contains supporting documentation.
 - `docs-site/` is the user documentation, served by Codaset at `codaset.dev/workroom/docs`. Its format contract is `docs-site/README.md`; `make docs-check` checks it.
 
@@ -70,7 +70,7 @@ These apply when reviewing a pull request. Raise a finding only when it passes t
 
 ## Architecture & Configuration
 
-Preserve the CLI `--json` contract; breaking changes require a `schema_version` bump in `cmd/json.go`. Read `CONTRIBUTING.md` and [repository notes](docs/repository-notes.md) for architecture and operations. For app work, also follow [macapp/AGENTS.md](macapp/AGENTS.md). Never use personal workrooms as destructive test fixtures.
+Preserve the CLI `--json` contract; breaking changes require a `schema_version` bump in `cmd/json.go`. Read `CONTRIBUTING.md`, [the architecture](docs/contributing/architecture.md) and [repository notes](docs/repository-notes.md) for architecture and operations. For app work, also follow [macapp/AGENTS.md](macapp/AGENTS.md). Never use personal workrooms as destructive test fixtures.
 
 ## Agent skills
 

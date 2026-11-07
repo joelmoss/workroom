@@ -57,15 +57,9 @@ var listCmd = &cobra.Command{
 				projects = filtered
 			}
 
-			payload := map[string]any{
-				"projects":      projects,
-				"workrooms_dir": res.WorkroomsDir,
-				"config_path":   res.ConfigPath,
-			}
-			if res.BaseBranch != "" {
-				payload["base_branch"] = res.BaseBranch
-			}
-			return writeJSONSuccess(os.Stdout, "list", payload)
+			return writeJSONSuccess(os.Stdout, "list", listPayload{
+				BaseBranch: res.BaseBranch, ConfigPath: res.ConfigPath, Projects: projects, WorkroomsDir: res.WorkroomsDir,
+			})
 		}
 
 		cwd, err := getCwd()

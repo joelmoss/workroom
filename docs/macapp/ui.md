@@ -4,7 +4,7 @@ Paths beginning `Core/`, `Views/` and `Scripts/` are relative to `macapp/`.
 For user-facing wording, follow [app copy](../app-copy.md).
 
 - **Menu enable/disable must flow through `focusedSceneValue` + `@FocusedValue`**
-  (see `WorkroomApp.swift`); a `Commands` body does not re-evaluate when the shared
+  (see `App/FocusedValues.swift` and `App/Menus/WorkroomCommands.swift`); a `Commands` body does not re-evaluate when the shared
   `AppStore` mutates. ⌘1–9 are handled by an `NSEvent` local monitor in `AppDelegate`,
   not menu items, so they fire before the terminal swallows the keys.
 
@@ -34,7 +34,7 @@ For user-facing wording, follow [app copy](../app-copy.md).
 ## Layout
 
 **VCS info that only the GUI needs** (e.g. the sidebar root row's current branch)
-is resolved app-side in `Core/BranchResolver.swift` (per project, async, with a per-call
+is resolved app-side in `Core/WorkroomManagement/BranchResolver.swift` (per project, async, with a per-call
 timeout) — deliberately NOT added to the `workroom --json` contract, which the human CLI
 never shows.
 
@@ -43,5 +43,60 @@ never shows.
 `Scripts/` — `run.sh` (local), `build-helper.sh` (embeds+signs the Go binary), `release.sh`
 (build → notarize → staple → DMG → EdDSA-sign for Sparkle), `appcast.sh` (publishes the Sparkle
 appcast to the fixed `appcast` release), `appcast-notes.sh` (re-renders a published item's
-`<description>` from the current release body — see [auto-update](../../CONTRIBUTING.md#auto-update-sparkle-appcast)), `make-icon.swift`
+`<description>` from the current release body — see [auto-update](../contributing/releasing.md#auto-update-sparkle-appcast)), `make-icon.swift`
 (regenerates the `AppIcon` PNGs in `Assets.xcassets` — run `swift Scripts/make-icon.swift`).
+
+## App design tokens
+
+The Mac app's spacing, radii, type roles and shared components live in the `DesignSystem`
+package (`Packages/DesignSystem`), beside the theme colours (`ThemeTokens`). `DESIGN.md` is the
+web brand and does not apply to the app.
+
+| Token | Values (pt) |
+| --- | --- |
+| `Spacing` | `xxs` 2, `xs` 4, `s` 6, `m` 8, `l` 12, `xl` 16, `xxl` 20 (a sheet's padding), `xxxl` 24 |
+| `Radius` | `xs` 5 (small hover wells), `s` 6 (rows, picker rows), `m` 8 (cards, fields), `l` 12 (toasts) |
+
+`FontRole` names what text is for: `title` (a sheet's title, `.headline`), `body` (`.callout`),
+`detail` (`.footnote`), `noticeTitle` and `noticeBody` (an inline notice), `headerGlyph` (a sheet
+header's 30pt glyph) and `messageGlyph` (an empty pane's glyph, `.title2`).
+
+A token replaces a literal only where the value is the same. A value the scale lacks stays a
+literal: never round a view's metric to fit the scale. Many views still use literals; convert
+them when you touch them.
+
+Everything reads the theme from the environment; roots inject it. Views and the `DesignSystem`
+components read `@Environment(\.themeTokens) private var tokens`, not `ThemeService.shared`, and
+no component takes the theme as an argument. `DesignSystem` declares the key, with the system
+palette (`ThemeTokens(preview: nil)`) as its default. Every SwiftUI root injects the live theme
+with `themeTokensRoot()`: each scene's root view and every `NSHostingView` or
+`NSHostingController` (the environment does not cross one). A `.sheet` or `.popover` takes no
+root of its own: it inherits the theme from the view that presents it, and repaints on a switch
+while open. A view needs no `.themeDidChange` observer to repaint either. `ThemeRepaintTests`
+measures both. A tree a root is missing from draws the native palette and never sees a switch.
+A hosted test that renders a themed view injects a root too, as production does.
+`ThemeService.shared` stays for AppKit drawing, for picking a theme, and for `generation`, which
+keys the syntax highlighting.
+
+The pane views (everything under `Views/Terminal` but `TargetTerminalDetail`, the content panes, the
+coding-agent views, the title bar's controls and the toasts) ask their window through
+`@Environment(\.paneHost)`, a `PaneHost`, not `@EnvironmentObject AppStore`: the Quick Terminal's
+and a detached pane's windows inject no store. Only main-window chrome may take the store from the
+environment, and `DetachedPaneEnvironmentTests` lists those types. Every root that renders pane
+views injects a host with `.paneHost(_:)`, as it injects the theme; reading it with none traps, as
+a missing environment object does. Other views that
+leave the store (the History and Changes panels, the toasts, the creation pane, the status bar) take
+a value read model and an `Actions` struct, built by a small `<Name>Adapter` view beside them that
+reads the store, so Observation stays where the view's reads were.
+
+Shared components:
+
+- `MessageState`: an empty or failed pane, centred. `InlineMessage`: the one-line version at the
+  top of a list.
+- `SheetHeader` and `WarningHeader`: a sheet's 30pt glyph beside its title column.
+- `SheetFooter`: Cancel (Escape) then the sheet's primary button, which takes
+  `sheetDefaultAction()` to answer Return.
+- `Notice`: an inline warning panel. `WarningLabel`: a one-line warning. `WarningGlyph`: the
+  warning triangle alone, for a row or field.
+- `RowHighlight`: a source list's selected and hover fill. `pickerRowChrome`: a picker row's fill
+  and ring.

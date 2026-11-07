@@ -55,13 +55,13 @@ final class ClaudeProfileResolutionTests: XCTestCase {
         workingDirectory: "", isAttached: false, metadata: metadata)
     }
     XCTAssertEqual(
-      TerminalSessions.claudeProfile(
+      PaneLiveState.claudeProfile(
         from: descriptor([SessionEnvironmentEntry(key: "claude_profile", value: "")])),
       .reported(""))
     XCTAssertEqual(
-      TerminalSessions.claudeProfile(
+      PaneLiveState.claudeProfile(
         from: descriptor([SessionEnvironmentEntry(key: "command", value: "claude")])),
       .notReported)
-    XCTAssertEqual(TerminalSessions.claudeProfile(from: nil), .notReported)
+    XCTAssertEqual(PaneLiveState.claudeProfile(from: nil), .notReported)
   }
 }

@@ -9,6 +9,7 @@ import XCTest
 /// empty-changeset stale-matches bug (eng review, outside-voice finding, 2026-09-01): a changeset tab
 /// retargeted to a different commit with zero changed files, without a focus change, used to leave
 /// `contentFind` holding the previous commit's matches with no bar visible to show them.
+@MainActor
 final class ChangesetDetailViewFindTests: XCTestCase {
   private func commit(_ id: String = "abc123") -> VCSCommit {
     VCSCommit(
@@ -36,25 +37,25 @@ final class ChangesetDetailViewFindTests: XCTestCase {
 
   func testEmptyChangesetHasNoSearchableDiff() {
     // The retarget case: a selection left over from the previous commit, and no files in this one.
-    let state = ChangesetDetailView.LoadState.loaded(changeset(files: []))
+    let state = ChangesetDetailView.ChangesetLoad.loaded(changeset(files: []))
     XCTAssertFalse(ChangesetDetailView.diffPaneHasContent(state: state, selectedPath: "a.swift"))
   }
 
   func testStaleSelectionHasNoSearchableDiff() {
     // A selectedPath left over from a PREVIOUS commit that doesn't exist in the new one.
-    let state = ChangesetDetailView.LoadState.loaded(changeset(files: ["b.swift"]))
+    let state = ChangesetDetailView.ChangesetLoad.loaded(changeset(files: ["b.swift"]))
     XCTAssertFalse(
       ChangesetDetailView.diffPaneHasContent(state: state, selectedPath: "a.swift"))
   }
 
   func testLoadedWithMatchingSelectionHasSearchableDiff() {
-    let state = ChangesetDetailView.LoadState.loaded(changeset(files: ["a.swift", "b.swift"]))
+    let state = ChangesetDetailView.ChangesetLoad.loaded(changeset(files: ["a.swift", "b.swift"]))
     XCTAssertTrue(
       ChangesetDetailView.diffPaneHasContent(state: state, selectedPath: "a.swift"))
   }
 
   func testNilSelectedPathHasNoSearchableDiff() {
-    let state = ChangesetDetailView.LoadState.loaded(changeset(files: ["a.swift"]))
+    let state = ChangesetDetailView.ChangesetLoad.loaded(changeset(files: ["a.swift"]))
     XCTAssertFalse(ChangesetDetailView.diffPaneHasContent(state: state, selectedPath: nil))
   }
 }

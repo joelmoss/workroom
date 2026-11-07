@@ -1,0 +1,647 @@
+//! The pty the terminal service owns, ported from `macapp/WorkroomSession/SessionPTY.swift`.
+//!
+//! One piece here is load-bearing and easy to drop in a port: **the self-pipe exec-failure
+//! check**. `forkpty` returning a pid tells the parent only that `fork` succeeded — not that the
+//! child ever reached the shell. Without the pipe, a bad shell path acks the attach as created and
+//! then closes moments later with no explanation, which is indistinguishable from a shell that
+//! exited on its own. With it, a genuine exec failure reports the real `errno` instead.
+//!
+//! The mechanism: both pipe ends are close-on-exec, so a *successful* `execve` closes the child's
+//! write end as part of the syscall and the parent reads EOF. A *failed* `execve` never reaches
+//! that closure — the child is still running our code — so it writes its errno first.
+
+use std::ffi::{CString, OsStr, OsString};
+use std::os::unix::ffi::OsStrExt;
+#[cfg(any(test, target_os = "linux"))]
+use std::time::Duration;
+use wr_exec::set_cloexec;
+
+/// Signals reset to their default in the child. A pty child inheriting the daemon's dispositions
+/// would ignore the signals a terminal is expected to act on — a shell that cannot be interrupted
+/// by ^C is the visible form of getting this wrong.
+const RESET_SIGNALS: [libc::c_int; 8] = [
+    libc::SIGINT,
+    libc::SIGQUIT,
+    libc::SIGTERM,
+    libc::SIGHUP,
+    libc::SIGPIPE,
+    libc::SIGTSTP,
+    libc::SIGTTIN,
+    libc::SIGTTOU,
+];
+
+/// How long `write_all` retries a pty that is not draining before calling the shell wedged.
+pub const WRITE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
+pub const DEFAULT_COLUMNS: u16 = 80;
+pub const DEFAULT_ROWS: u16 = 24;
+
+/// A terminal's size, as a Resize frame carries it.
+pub use wr_protocol::terminal::Size;
+
+#[derive(Debug, thiserror::Error)]
+pub enum PtyError {
+    #[error("pipe failed: {0}")]
+    Pipe(std::io::Error),
+    #[error("forkpty failed: {0}")]
+    ForkPty(std::io::Error),
+    /// The child was created but never became the requested program. This is the case the
+    /// self-pipe exists to distinguish from a shell that started and then exited.
+    #[error("exec of {program} failed: {source}")]
+    Exec {
+        program: String,
+        source: std::io::Error,
+    },
+    #[error("{0} contains an interior NUL")]
+    InteriorNul(&'static str),
+}
+
+#[derive(Debug)]
+pub struct Pty {
+    master: libc::c_int,
+    pid: libc::pid_t,
+    /// A pipe that wakes the session's reader out of its wait for the pty, when it has images to
+    /// send and the program is quiet (`wake_reader`). Read end, then write end; `None` if the
+    /// pipe could not be made, which costs that session's images and nothing else.
+    wake: Option<(libc::c_int, libc::c_int)>,
+}
+
+impl Pty {
+    /// Forks a child on a new pty and execs `program`.
+    ///
+    /// `cwd` failing to resolve is not fatal — the child falls back to `$HOME`, then `/`, matching
+    /// the Swift original. A workroom directory deleted while a session was detached should land
+    /// the user in a working shell, not kill the session.
+    pub fn spawn(
+        program: &OsStr,
+        argv0: Option<&OsStr>,
+        args: &[OsString],
+        env: &[(OsString, OsString)],
+        cwd: Option<&OsStr>,
+        columns: u16,
+        rows: u16,
+    ) -> Result<Pty, PtyError> {
+        let c_program =
+            CString::new(program.as_bytes()).map_err(|_| PtyError::InteriorNul("program"))?;
+        let mut c_args: Vec<CString> = Vec::with_capacity(args.len() + 1);
+        // argv[0] is not the program path. A shell decides it is a LOGIN shell by seeing its own
+        // name prefixed with `-` here — there is no flag for it — so the caller must be able to
+        // say what it is. `None` means the ordinary convention of repeating the program path.
+        c_args.push(match argv0 {
+            Some(name) => {
+                CString::new(name.as_bytes()).map_err(|_| PtyError::InteriorNul("argv0"))?
+            }
+            None => c_program.clone(),
+        });
+        for arg in args {
+            c_args
+                .push(CString::new(arg.as_bytes()).map_err(|_| PtyError::InteriorNul("argument"))?);
+        }
+        let mut argv: Vec<*const libc::c_char> = c_args.iter().map(|a| a.as_ptr()).collect();
+        argv.push(std::ptr::null());
+
+        let c_env: Vec<CString> = env
+            .iter()
+            .map(|(k, v)| {
+                let mut joined = k.as_bytes().to_vec();
+                joined.push(b'=');
+                joined.extend_from_slice(v.as_bytes());
+                CString::new(joined).map_err(|_| PtyError::InteriorNul("environment"))
+            })
+            .collect::<Result<_, _>>()?;
+        let mut envp: Vec<*const libc::c_char> = c_env.iter().map(|e| e.as_ptr()).collect();
+        envp.push(std::ptr::null());
+
+        let c_cwd = match cwd {
+            Some(dir) => {
+                Some(CString::new(dir.as_bytes()).map_err(|_| PtyError::InteriorNul("cwd"))?)
+            }
+            None => None,
+        };
+        // The fallback when `cwd` cannot be entered, read here because the child may only make
+        // async-signal-safe calls, and `getenv` is not one.
+        let c_home = c_cwd
+            .as_ref()
+            .and_then(|_| std::env::var_os("HOME"))
+            .and_then(|home| CString::new(home.as_bytes()).ok());
+
+        let mut err_pipe: [libc::c_int; 2] = [-1, -1];
+        // SAFETY: `err_pipe` has room for the two descriptors pipe writes.
+        if unsafe { libc::pipe(err_pipe.as_mut_ptr()) } != 0 {
+            return Err(PtyError::Pipe(std::io::Error::last_os_error()));
+        }
+        let (err_read, err_write) = (err_pipe[0], err_pipe[1]);
+        set_cloexec(err_read, true);
+        set_cloexec(err_write, true);
+
+        // `forkpty` takes the size as a const pointer — it reads the requested geometry and does
+        // not write back — so this never needs to be mutable.
+        let size = libc::winsize {
+            ws_row: if rows == 0 { DEFAULT_ROWS } else { rows },
+            ws_col: if columns == 0 {
+                DEFAULT_COLUMNS
+            } else {
+                columns
+            },
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // Before the fork: the child may not ask anything that could allocate or take a lock.
+        // SAFETY: getdtablesize takes no arguments.
+        let descriptor_limit = unsafe { libc::getdtablesize() };
+        let mut master: libc::c_int = -1;
+        // SAFETY: `master` is a live int forkpty writes the master descriptor to; null name and
+        // termios are allowed; `size` is a live winsize forkpty only reads.
+        let pid = unsafe { forkpty(&mut master, std::ptr::null_mut(), std::ptr::null(), &size) };
+
+        if pid < 0 {
+            let err = std::io::Error::last_os_error();
+            // SAFETY: both ends are this function's own pipe, and nothing else ever sees them.
+            unsafe {
+                libc::close(err_read);
+                libc::close(err_write);
+            }
+            return Err(PtyError::ForkPty(err));
+        }
+
+        if pid == 0 {
+            // Child. Everything from here to execve must be async-signal-safe: this is a forked
+            // process, so allocating or taking a lock the parent held risks a deadlock rather than
+            // an error. All the CStrings were built before the fork for exactly that reason.
+            // SAFETY: every call below is an async-signal-safe syscall or libc function. Every
+            // pointer is to a CString or array built before the fork, alive until exec. `close_inherited`
+            // runs in the child before exec, as it requires, and this child never returns to
+            // code that could use what it closes: it execs or `_exit`s.
+            unsafe {
+                libc::close(err_read);
+                close_inherited(err_write, descriptor_limit);
+
+                let mut empty: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut empty);
+                libc::sigprocmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut());
+                for signal in RESET_SIGNALS {
+                    libc::signal(signal, libc::SIG_DFL);
+                }
+
+                if let Some(dir) = &c_cwd
+                    && libc::chdir(dir.as_ptr()) != 0
+                    && c_home
+                        .as_ref()
+                        .is_none_or(|home| libc::chdir(home.as_ptr()) != 0)
+                {
+                    libc::chdir(c"/".as_ptr());
+                }
+
+                libc::execve(c_program.as_ptr(), argv.as_ptr(), envp.as_ptr());
+
+                // Only reachable when execve failed.
+                let failure = errno_value();
+                let bytes = failure.to_ne_bytes();
+                libc::write(
+                    err_write,
+                    bytes.as_ptr() as *const libc::c_void,
+                    bytes.len(),
+                );
+                libc::_exit(127);
+            }
+        }
+
+        // Parent. Close our copy of the write end BEFORE reading: the child's copy closing on a
+        // successful exec is only observable as EOF if no other descriptor holds the pipe open,
+        // and ours would, so the read below would block forever.
+        // SAFETY: the parent's own copy of the write end, closed once and not used after.
+        unsafe { libc::close(err_write) };
+        let mut buffer = [0u8; 4];
+        let mut total = 0usize;
+        while total < buffer.len() {
+            // SAFETY: `total` < 4, so the pointer stays inside `buffer` and the length is what is
+            // left of it.
+            let n = unsafe {
+                libc::read(
+                    err_read,
+                    buffer.as_mut_ptr().add(total) as *mut libc::c_void,
+                    buffer.len() - total,
+                )
+            };
+            if n > 0 {
+                total += n as usize;
+                continue;
+            }
+            if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            break;
+        }
+        // SAFETY: the parent's read end, closed once and not used after.
+        unsafe { libc::close(err_read) };
+
+        if total > 0 {
+            let raw = i32::from_ne_bytes(buffer);
+            // SAFETY: `master` belongs to no `Pty` yet, so closing it here is its only close, and
+            // `status` is a live local for waitpid to fill.
+            unsafe {
+                libc::close(master);
+                // Reap the child that already _exit(127)'d, so a failed spawn leaves no zombie.
+                let mut status = 0;
+                libc::waitpid(pid, &mut status, 0);
+            }
+            return Err(PtyError::Exec {
+                program: program.to_string_lossy().into_owned(),
+                source: std::io::Error::from_raw_os_error(raw),
+            });
+        }
+
+        let _ = wr_exec::set_nonblocking(master);
+        set_cloexec(master, true);
+        Ok(Pty {
+            master,
+            pid,
+            wake: wake_pipe(),
+        })
+    }
+
+    /// A pty an earlier program in this process started, handed over across `execve` (see
+    /// `crate::daemon::handoff`). The child is still this process's, so `waitpid` still reaps it.
+    ///
+    /// Close-on-exec goes back on at once: the descriptor crossed the exec only because the
+    /// outgoing daemon cleared it, and left clear, every shell this daemon forks later would inherit
+    /// this session's master.
+    pub fn adopt(master: libc::c_int, pid: libc::pid_t) -> Pty {
+        set_cloexec(master, true);
+        let _ = wr_exec::set_nonblocking(master);
+        Pty {
+            master,
+            pid,
+            wake: wake_pipe(),
+        }
+    }
+
+    pub fn master_fd(&self) -> libc::c_int {
+        self.master
+    }
+
+    pub fn child_pid(&self) -> libc::pid_t {
+        self.pid
+    }
+
+    pub fn resize(&self, size: Size) -> std::io::Result<()> {
+        let size = libc::winsize {
+            ws_row: if size.rows == 0 {
+                DEFAULT_ROWS
+            } else {
+                size.rows
+            },
+            ws_col: if size.columns == 0 {
+                DEFAULT_COLUMNS
+            } else {
+                size.columns
+            },
+            ws_xpixel: size.x_pixels,
+            ws_ypixel: size.y_pixels,
+        };
+        // SAFETY: TIOCSWINSZ reads one `winsize` through the pointer, which is a live local.
+        let rc = unsafe { libc::ioctl(self.master, libc::TIOCSWINSZ, &size) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// The pty's current geometry, as columns and rows.
+    ///
+    /// Read from the kernel rather than remembered, so a test asserting the size-owner policy is
+    /// asserting what the SHELL sees rather than what the daemon believes it set.
+    pub fn size(&self) -> std::io::Result<(u16, u16)> {
+        let size = self.winsize()?;
+        Ok((size.ws_col, size.ws_row))
+    }
+
+    /// The pty's size in pixels, read from the kernel like `size`. It is there across a hand-off
+    /// too: the master survives the exec, so the table does not carry it.
+    pub fn pixels(&self) -> std::io::Result<(u16, u16)> {
+        let size = self.winsize()?;
+        Ok((size.ws_xpixel, size.ws_ypixel))
+    }
+
+    fn winsize(&self) -> std::io::Result<libc::winsize> {
+        let mut size = libc::winsize {
+            ws_row: 0,
+            ws_col: 0,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: TIOCGWINSZ writes one `winsize` through the pointer, which is a live local.
+        let rc = unsafe { libc::ioctl(self.master, libc::TIOCGWINSZ, &mut size) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(size)
+    }
+
+    /// The process group currently in the foreground of this pty — the one that owns the screen,
+    /// and therefore the one whose name and cwd the title should reflect.
+    ///
+    /// Note what this cannot see: a child that calls `setsid` escapes the pty's foreground group
+    /// entirely. `SessionPTY.swift`'s own `terminationTargets` comment documents the same escape.
+    /// It is a real limit of the mechanism, not a bug in this call.
+    pub fn foreground_pgid(&self) -> Option<libc::pid_t> {
+        // SAFETY: tcgetpgrp takes and returns plain integers; `master` is open while `self` is.
+        let group = unsafe { libc::tcgetpgrp(self.master) };
+        (group > 0).then_some(group)
+    }
+
+    /// Blocks until `read` has something to say: output, or the child gone (a hang-up is
+    /// readable too). The reader sleeps here between bursts instead of polling the master on a
+    /// timer, which cost every idle session 200 wakeups a second. `Interrupted` is returned as
+    /// such; the caller just reads, and a read that would block comes back here.
+    pub fn wait_readable(&self) -> std::io::Result<()> {
+        self.poll_readable(-1).map(|_| ())
+    }
+
+    /// As `wait_readable`, giving up after `timeout`: whether `read` has something to say.
+    #[cfg(any(test, target_os = "linux"))]
+    pub fn wait_readable_within(&self, timeout: Duration) -> std::io::Result<bool> {
+        self.poll_readable(i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX))
+    }
+
+    /// Makes the reader's next or current wait return. Its read then finds nothing, which it
+    /// already takes in its stride. A pipe that is full has a wake pending already.
+    pub fn wake_reader(&self) {
+        if let Some((_, write)) = self.wake {
+            // SAFETY: `write` is this `Pty`'s own open descriptor, and the byte is a live local.
+            let _ = unsafe { libc::write(write, [0u8].as_ptr().cast(), 1) };
+        }
+    }
+
+    /// Empties the wake pipe, so a wake that has been seen does not spin the wait.
+    fn drain_wake(&self) {
+        let Some((read, _)) = self.wake else {
+            return;
+        };
+        let mut buffer = [0u8; 64];
+        // SAFETY: `read` is this `Pty`'s own non-blocking descriptor, and the buffer is live.
+        while unsafe { libc::read(read, buffer.as_mut_ptr().cast(), buffer.len()) } > 0 {}
+    }
+
+    fn wake_descriptor(&self) -> libc::pollfd {
+        libc::pollfd {
+            // poll ignores a negative descriptor.
+            fd: self.wake.map_or(-1, |(read, _)| read),
+            events: libc::POLLIN,
+            revents: 0,
+        }
+    }
+
+    /// Linux can keep the slave open after its session leader exits. A pidfd wakes the same reader
+    /// for that exit without reaping it, and closes across a daemon hand-off like the other watches.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn child_exit_fd(&self) -> std::io::Result<std::os::fd::OwnedFd> {
+        use std::os::fd::FromRawFd;
+        // SAFETY: pidfd_open takes only integers. Zero flags requests a close-on-exec descriptor.
+        let fd = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_open,
+                libc::c_long::from(self.pid),
+                0 as libc::c_ulong,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: the syscall returned a new descriptor, now owned by this handle alone.
+        Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as libc::c_int) })
+    }
+
+    /// Waits for either pty output/hangup or child exit; true means the exit descriptor woke us.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn wait_readable_or_exit(
+        &self,
+        exit: &std::os::fd::OwnedFd,
+    ) -> std::io::Result<bool> {
+        use std::os::fd::AsRawFd;
+        let mut descriptors = [
+            libc::pollfd {
+                fd: self.master,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: exit.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            self.wake_descriptor(),
+        ];
+        // SAFETY: the descriptors remain open for the call; the array has exactly three entries.
+        if unsafe { libc::poll(descriptors.as_mut_ptr(), 3, -1) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        self.drain_wake();
+        Ok(descriptors[1].revents != 0)
+    }
+
+    fn poll_readable(&self, timeout_ms: i32) -> std::io::Result<bool> {
+        let mut descriptors = [
+            libc::pollfd {
+                fd: self.master,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            self.wake_descriptor(),
+        ];
+        // SAFETY: two live pollfds, for descriptors open while `self` is.
+        let ready = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, timeout_ms) };
+        if ready < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        self.drain_wake();
+        Ok(descriptors[0].revents != 0)
+    }
+
+    /// Non-blocking; `Ok(0)` means the child has gone.
+    pub fn read(&self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        // SAFETY: the pointer and length come from one live `&mut [u8]`, so the kernel writes only
+        // inside it.
+        let n = unsafe {
+            libc::read(
+                self.master,
+                buffer.as_mut_ptr() as *mut libc::c_void,
+                buffer.len(),
+            )
+        };
+        if n < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(n as usize)
+    }
+
+    pub fn write(&self, bytes: &[u8]) -> std::io::Result<usize> {
+        // SAFETY: the pointer and length come from one live `&[u8]`, which write only reads.
+        let n = unsafe {
+            libc::write(
+                self.master,
+                bytes.as_ptr() as *const libc::c_void,
+                bytes.len(),
+            )
+        };
+        if n < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(n as usize)
+    }
+
+    /// Writes every byte, retrying a short write or `EAGAIN`.
+    ///
+    /// `write` alone is not enough and silently corrupts input: the master is NON-BLOCKING, so a
+    /// paste larger than the pty's input queue — or any write while the shell is not draining —
+    /// returns a short count or `EAGAIN`, and a caller that ignores the result drops the rest of
+    /// the keystrokes. That is a paste arriving truncated, with nothing logged.
+    ///
+    /// Bounded rather than patient: a shell that has not read anything for `WRITE_DEADLINE` is
+    /// wedged, and blocking the connection thread on it would stall every other frame from that
+    /// client. Report it instead.
+    pub fn write_all(&self, bytes: &[u8]) -> std::io::Result<()> {
+        let deadline = std::time::Instant::now() + WRITE_DEADLINE;
+        let mut written = 0;
+        while written < bytes.len() {
+            match self.write(&bytes[written..]) {
+                Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+                Ok(n) => {
+                    written += n;
+                    continue;
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) => {}
+                Err(e) => return Err(e),
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "the shell stopped reading its input",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        Ok(())
+    }
+
+    /// Blocks until the child exits, returning its status. Returns `None` if it was already reaped.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn wait(&self) -> Option<i32> {
+        let mut status = 0;
+        // SAFETY: `status` is a live local for waitpid to fill.
+        let rc = unsafe { libc::waitpid(self.pid, &mut status, 0) };
+        (rc == self.pid).then_some(status)
+    }
+}
+
+/// A non-blocking, close-on-exec pipe for `Pty::wake`. Made after the fork, so the shell never
+/// has it, and a hand-off makes a new one.
+fn wake_pipe() -> Option<(libc::c_int, libc::c_int)> {
+    let mut ends = [-1 as libc::c_int; 2];
+    // SAFETY: `ends` has room for the two descriptors pipe writes.
+    if unsafe { libc::pipe(ends.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    for end in ends {
+        set_cloexec(end, true);
+        let _ = wr_exec::set_nonblocking(end);
+    }
+    Some((ends[0], ends[1]))
+}
+
+impl Drop for Pty {
+    fn drop(&mut self) {
+        if let Some((read, write)) = self.wake {
+            // SAFETY: the `Pty` owns both ends, and this is their only close.
+            unsafe {
+                libc::close(read);
+                libc::close(write);
+            }
+        }
+        if self.master >= 0 {
+            // SAFETY: the `Pty` owns `master`, and this is its only close.
+            unsafe { libc::close(self.master) };
+        }
+    }
+}
+
+/// The libc crate names errno's location differently per platform, and this is called from a
+/// forked child where only async-signal-safe work is allowed — so it reads the raw location
+/// rather than going through `std::io::Error`.
+#[inline]
+fn errno_value() -> i32 {
+    // SAFETY: `__error` returns this thread's errno location, which is always valid to read.
+    #[cfg(target_vendor = "apple")]
+    unsafe {
+        *libc::__error()
+    }
+    // SAFETY: `__errno_location` returns this thread's errno location, always valid to read.
+    #[cfg(not(target_vendor = "apple"))]
+    unsafe {
+        *libc::__errno_location()
+    }
+}
+
+/// Closes every descriptor from 3 up but `keep`, in a forked child before `execve`, so the shell
+/// gets its terminal and nothing else of the daemon's.
+///
+/// Close-on-exec alone does not cover it. On macOS, std creates a socket or a pipe and only then
+/// marks it close-on-exec, so one that another thread is creating as this child forks (an accepted
+/// client, a forward's listener) arrives here without the flag, and would live as long as the
+/// shell: a client the daemon hung up on would never see EOF. Measured: 18 shells in 300 held a
+/// stray socket while another thread made sockets.
+///
+/// Async-signal-safe: syscalls only, and `limit` was read before the fork.
+unsafe fn close_inherited(keep: libc::c_int, limit: libc::c_int) {
+    #[cfg(target_os = "linux")]
+    {
+        // One call per range where the kernel has it (5.9+); the loop below otherwise. `syscall`
+        // is variadic and reads every argument back as a `long`, so each is passed as one; the
+        // kernel takes the low 32 bits.
+        let (first, all, flags): (libc::c_ulong, libc::c_ulong, libc::c_ulong) =
+            (3, u32::MAX.into(), 0);
+        if let Ok(keep) = libc::c_ulong::try_from(keep)
+            && keep >= first
+        {
+            let below = if keep > first {
+                // SAFETY: close_range takes integers only and closes descriptors nothing else in
+                // this child uses.
+                unsafe { libc::syscall(libc::SYS_close_range, first, keep - 1, flags) }
+            } else {
+                0
+            };
+            // SAFETY: as above.
+            let above = unsafe { libc::syscall(libc::SYS_close_range, keep + 1, all, flags) };
+            if below == 0 && above == 0 {
+                return;
+            }
+        }
+    }
+    // ponytail: up to the soft descriptor limit, so a descriptor opened above a since-lowered limit
+    // survives. Nothing here lowers it.
+    for fd in 3..limit {
+        if fd != keep {
+            // SAFETY: `close` takes no pointers, and in a child about to exec nothing else uses
+            // these descriptors.
+            unsafe { libc::close(fd) };
+        }
+    }
+}
+
+// glibc puts forkpty in libutil; musl and Darwin put it in libc.
+#[cfg_attr(target_env = "gnu", link(name = "util"))]
+unsafe extern "C" {
+    fn forkpty(
+        amaster: *mut libc::c_int,
+        name: *mut libc::c_char,
+        termp: *const libc::termios,
+        winp: *const libc::winsize,
+    ) -> libc::pid_t;
+}
+
+#[cfg(test)]
+mod tests;

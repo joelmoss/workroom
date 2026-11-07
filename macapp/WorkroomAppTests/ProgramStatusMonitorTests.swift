@@ -1,4 +1,5 @@
 import DaemonConnection
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -7,18 +8,17 @@ import XCTest
 
 /// A host connection that only speaks program status: events are pushed by the test, `seen` and
 /// `clear` are recorded.
-final class FakeProgramStatusConnection: HostServiceConnection, @unchecked Sendable {
+final class FakeProgramStatusConnection: HostServiceConnection, Sendable {
   let disconnection = AsyncStream<Void> { _ in }
-  private let lock = NSLock()
-  private var handler: (@Sendable (ProgramStatusEvent) -> Void)?
-  private var _requests: [String] = []
+  private let handler = Mutex<(@Sendable (ProgramStatusEvent) -> Void)?>(nil)
+  private let recorded = Mutex<[String]>([])
   let availability: ProgramStatusAvailability
 
   init(availability: ProgramStatusAvailability = .available) { self.availability = availability }
 
-  var requests: [String] { lock.withLock { _requests } }
+  var requests: [String] { recorded.withLock { $0 } }
 
-  func push(_ event: ProgramStatusEvent) { lock.withLock { handler }?(event) }
+  func push(_ event: ProgramStatusEvent) { handler.withLock { $0 }?(event) }
 
   func reader(context: RepositoryContext) throws -> VCSProviding { throw VCSError.io("unused") }
   func writer(context: RepositoryContext, reader: VCSProviding) throws -> VCSWriting {
@@ -27,14 +27,14 @@ final class FakeProgramStatusConnection: HostServiceConnection, @unchecked Senda
   func subscribeProgramStatus(
     onEvent: @escaping @Sendable (ProgramStatusEvent) -> Void
   ) async throws -> ProgramStatusAvailability {
-    lock.withLock { handler = onEvent }
+    handler.withLock { $0 = onEvent }
     return availability
   }
   func programStatusSeen(session: UUID, revision: UInt64, states: [String]?) async throws {
-    lock.withLock { _requests.append("seen \(revision) \(states ?? [])") }
+    recorded.withLock { $0.append("seen \(revision) \(states ?? [])") }
   }
   func programStatusClear(session: UUID) async throws {
-    lock.withLock { _requests.append("clear") }
+    recorded.withLock { $0.append("clear") }
   }
   func close() async {}
 }
@@ -67,9 +67,9 @@ final class ProgramStatusMonitorTests: XCTestCase {
     .status(boot: "b", session: session, revision: revision, reporting: reporting, records: records)
   }
 
-  func until(_ condition: @autoclosure () -> Bool, file: StaticString = #file, line: UInt = #line)
-    async
-  {
+  func until(
+    _ condition: @autoclosure () -> Bool, file: StaticString = #filePath, line: UInt = #line
+  ) async {
     for _ in 0..<200 where !condition() { try? await Task.sleep(for: .milliseconds(10)) }
     XCTAssertTrue(condition(), file: file, line: line)
   }
@@ -233,7 +233,8 @@ final class ProgramStatusMonitorTests: XCTestCase {
     monitor.sleep = { _ in try await Task.sleep(for: .seconds(3600)) }
     let back = SleepGate()
     monitor.reconnected = { _ in await back.wait() }
-    let attempts = Attempts()
+    // How many times the monitor tried to connect, from its `connect` closure.
+    let attempts = Counter()
     let connection = FakeProgramStatusConnection()
     monitor.connect = { _ in
       if attempts.next() == 1 { throw VCSError.io("the host is asleep") }
@@ -324,7 +325,7 @@ final class ProgramStatusMonitorTests: XCTestCase {
 
   /// Value: protects=a run's state, as its daemon publishes it, reaches its run tab through the
   /// monitor (#522): the only production route from the supervisor's status to the tab;
-  /// fails_when=the monitor drops the run line or TerminalSessions stops forwarding it, so a run
+  /// fails_when=the monitor drops the run line or TerminalPanes stops forwarding it, so a run
   /// that failed reads as running; seam=none; no_claim=the daemon side (run_session.rs)
   func testARunsStateFromItsDaemonReachesItsTab() async throws {
     let (monitor, gate) = makeMonitor()
@@ -336,17 +337,17 @@ final class ProgramStatusMonitorTests: XCTestCase {
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
     store.terminals.programStatus = monitor
-    store.signalSupervisorForTesting = { _, _ in .delivered }
-    store.projects = [
+    store.runCommand.signalSupervisorForTesting = { _, _ in .delivered }
+    store.projectStore.projects = [
       Project(
         path: "/a", vcs: "git",
         workrooms: [Workroom(name: "main", path: "/a/main", vcsName: "workroom/main", warnings: [])]
       )
     ]
-    store.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
+    store.runCommands.setRunConfig(RunConfig(command: "bin/dev", autoRun: false), forProject: "/a")
     let target = try XCTUnwrap(store.target(for: .workroom(project: "/a", name: "main")))
     store.startRunCommand(for: target)
-    let tab = try XCTUnwrap(store.runTabID(for: target.id))
+    let tab = try XCTUnwrap(store.runCommand.runTabID(for: target.id))
     let run = try XCTUnwrap(store.terminals.sessionID(forTab: tab, inTarget: target.id))
     await until(
       {
@@ -358,8 +359,8 @@ final class ProgramStatusMonitorTests: XCTestCase {
       .status(
         boot: "b", session: run, revision: 2, reporting: false, records: [], run: "exited 3 1"))
 
-    await until(store.runStates[target.id] == .stopped(tab: tab))
-    XCTAssertEqual(store.runOutcomes[target.id], .exited(code: 3))
+    await until(store.runCommand.runStates[target.id] == .stopped(tab: tab))
+    XCTAssertEqual(store.runCommand.runOutcomes[target.id], .exited(code: 3))
   }
 
   func testARemoteRunStopsWithoutClosingItsTerminal() async throws {
@@ -381,14 +382,14 @@ final class ProgramStatusMonitorTests: XCTestCase {
         return monitor.hosts[host] == .live
       }())
     await until(monitor.run(for: session) == "running 42")
-    store.stopRunCommand(for: target)
+    store.runCommand.stopRunCommand(for: target)
     connection.push(
       .status(
         boot: "b", session: session, revision: 2, reporting: false, records: [], run: "stopped 1"))
     await until(monitor.run(for: session) == "stopped 1")
-    await until(!store.isRunCommandRunning(for: target.id))
+    await until(!store.runCommand.isRunCommandRunning(for: target.id))
     XCTAssertNotNil(store.terminals.tab(tab.id, for: target), "stopping keeps the run terminal")
-    XCTAssertEqual(store.runOutcomes[target.id], .stoppedByUser)
+    XCTAssertEqual(store.runCommand.runOutcomes[target.id], .stoppedByUser)
   }
 
   func testALocalSnapshotCannotEndARemoteRunAwaitingItsHostsSnapshot() async throws {
@@ -410,8 +411,9 @@ final class ProgramStatusMonitorTests: XCTestCase {
         return monitor.hosts[.local] == .live
       }())
     XCTAssertFalse(monitor.hasSnapshot(of: host))
-    XCTAssertTrue(store.isRunCommandRunning(for: target.id))
-    XCTAssertNil(store.runOutcomes[target.id], "this Mac cannot say a remote run has ended")
+    XCTAssertTrue(store.runCommand.isRunCommandRunning(for: target.id))
+    XCTAssertNil(
+      store.runCommand.runOutcomes[target.id], "this Mac cannot say a remote run has ended")
   }
 
   private func restoredRemoteRun(monitor: ProgramStatusMonitor) throws
@@ -425,15 +427,15 @@ final class ProgramStatusMonitorTests: XCTestCase {
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
     store.terminals.programStatus = monitor
-    store.signalSupervisorForTesting = { _, _ in .delivered }
-    store.projects = [
+    store.runCommand.signalSupervisorForTesting = { _, _ in .delivered }
+    store.projectStore.projects = [
       Project(
         path: "/a", vcs: "git",
         workrooms: [
           Workroom(
             name: "docker", path: "/workspaces/app", vcsName: "workroom/docker", warnings: [],
             host: HostDescriptor(
-              driver: RemoteWorkrooms.Runtime.docker.rawValue,
+              driver: ContainerRuntime.docker.rawValue,
               provisioner: RemoteWorkrooms.provisioner, id: hostID))
         ])
     ]
@@ -448,31 +450,17 @@ final class ProgramStatusMonitorTests: XCTestCase {
 }
 
 /// Holds every sleep handed to `wait` until the test releases them.
-/// How many times a monitor tried to connect, from its `connect` closure.
-private final class Attempts: @unchecked Sendable {
-  private let lock = NSLock()
-  private var value = 0
-  var count: Int { lock.withLock { value } }
-  func next() -> Int {
-    lock.withLock {
-      value += 1
-      return value
-    }
-  }
-}
+private final class SleepGate: Sendable {
+  private let waiters = Mutex<[CheckedContinuation<Void, Never>]>([])
 
-private final class SleepGate: @unchecked Sendable {
-  private let lock = NSLock()
-  private var waiters: [CheckedContinuation<Void, Never>] = []
-
-  var isWaiting: Bool { lock.withLock { !waiters.isEmpty } }
+  var isWaiting: Bool { waiters.withLock { !$0.isEmpty } }
 
   func wait() async {
-    await withCheckedContinuation { continuation in lock.withLock { waiters.append(continuation) } }
+    await withCheckedContinuation { continuation in waiters.withLock { $0.append(continuation) } }
   }
 
   func release() {
-    let held = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+    let held = waiters.withLock { waiters in
       defer { waiters = [] }
       return waiters
     }
@@ -481,15 +469,14 @@ private final class SleepGate: @unchecked Sendable {
 }
 
 /// Connections handed to a monitor's `connect` one at a time, as the test releases them.
-private final class ConnectionQueue: @unchecked Sendable {
-  private let lock = NSLock()
-  private var items: [any HostServiceConnection] = []
+private final class ConnectionQueue: Sendable {
+  private let items = Mutex<[any HostServiceConnection]>([])
 
-  func yield(_ connection: any HostServiceConnection) { lock.withLock { items.append(connection) } }
+  func yield(_ connection: any HostServiceConnection) { items.withLock { $0.append(connection) } }
 
   func next() async throws -> any HostServiceConnection {
     while true {
-      if let item = lock.withLock({ items.isEmpty ? nil : items.removeFirst() }) { return item }
+      if let item = items.withLock({ $0.isEmpty ? nil : $0.removeFirst() }) { return item }
       try await Task.sleep(for: .milliseconds(10))
     }
   }
@@ -498,10 +485,11 @@ private final class ConnectionQueue: @unchecked Sendable {
 /// What program status does to a pane's indicators (#358).
 @MainActor
 final class ProgramStatusPaneTests: XCTestCase {
-  private let target = TerminalTarget(id: "wr|/p|ps", title: "ps", path: "/tmp", isMissing: false)
+  private let target = TerminalTarget(
+    id: .workroom(project: "/p", name: "ps"), title: "ps", path: "/tmp", isMissing: false)
 
-  private func makeSessions(_ monitor: ProgramStatusMonitor) -> TerminalSessions {
-    let sessions = TerminalSessions()
+  private func makeSessions(_ monitor: ProgramStatusMonitor) -> TerminalPanes {
+    let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
     sessions.recency = SwitcherRecency()
@@ -566,7 +554,7 @@ final class ProgramStatusPaneTests: XCTestCase {
     let monitor = ProgramStatusMonitor()
     let s = makeSessions(monitor)
     let tab = s.addTab(for: target)
-    let view = tab.surface!
+    let view = s.surface(tab)!
     let id = session(of: tab)
     func indicator() -> PaneIndicator { s.tabs(for: target)[0].indicator }
 
@@ -602,7 +590,7 @@ final class ProgramStatusPaneTests: XCTestCase {
     let monitor = ProgramStatusMonitor()
     let s = makeSessions(monitor)
     let tab = s.addTab(for: target)
-    let view = tab.surface!
+    let view = s.surface(tab)!
     let id = session(of: tab)
     func indicator() -> PaneIndicator { s.tabs(for: target)[0].indicator }
     let failed = ProgramStatusRecord(id: "shell command", state: .error, exitCode: 1)
@@ -657,7 +645,9 @@ final class ProgramStatusPaneTests: XCTestCase {
     window.makeFirstResponder(view)
     XCTAssertTrue(view.isEffectivelyFocused)
     var changes: [Bool] = []
-    view.onEffectiveFocusChange = { changes.append($0) }
+    view.onEvent = { event in
+      if case .effectiveFocusChanged(let focused) = event { changes.append(focused) }
+    }
     view.removeFromSuperview()
     XCTAssertFalse(view.isEffectivelyFocused)
     XCTAssertEqual(changes, [false])
@@ -673,7 +663,7 @@ final class ProgramStatusPaneTests: XCTestCase {
     monitor.sleep = { _ in try await Task.sleep(for: .seconds(3600)) }
     let s = makeSessions(monitor)
     let tab = s.addTab(for: target)
-    let view = tab.surface!
+    let view = s.surface(tab)!
     let id = session(of: tab)
     for _ in 0..<200 where monitor.hosts[.local] != .live {
       connection.push(.snapshotComplete(boot: "b", sessions: []))
@@ -685,7 +675,7 @@ final class ProgramStatusPaneTests: XCTestCase {
       try? await Task.sleep(for: .milliseconds(10))
     }
 
-    view.onEffectiveFocusChange?(true)
+    view.onEvent?(.effectiveFocusChanged(true))
     for _ in 0..<200 where connection.requests.isEmpty {
       try? await Task.sleep(for: .milliseconds(10))
     }
@@ -703,7 +693,7 @@ final class ProgramStatusPaneTests: XCTestCase {
     let s = makeSessions(monitor)
     s.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false) }
     let tab = s.addTab(for: target)
-    let view = tab.surface!
+    let view = s.surface(tab)!
     let id = session(of: tab)
     for _ in 0..<200 where monitor.hosts[.local] != .live {
       connection.push(.snapshotComplete(boot: "b", sessions: []))

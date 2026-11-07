@@ -1,5 +1,6 @@
 import DaemonConnection
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -11,11 +12,10 @@ import XCTest
 /// (`RemoteProvisioningIntegrationTests`).
 final class RemoteWorkroomDeletionTests: XCTestCase {
   /// What the delete sequence wrote to config, in place of the CLI.
-  private final class Calls: @unchecked Sendable {
-    private let lock = NSLock()
-    private var log: [String] = []
-    var all: [String] { lock.withLock { log } }
-    func add(_ call: String) { lock.withLock { log.append(call) } }
+  private final class Calls: Sendable {
+    private let log = Mutex<[String]>([])
+    var all: [String] { log.withLock { $0 } }
+    func add(_ call: String) { log.withLock { $0.append(call) } }
 
     var recorder: RemoteWorkrooms.Recorder {
       RemoteWorkrooms.Recorder(
@@ -38,10 +38,10 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     let calls = Calls()
     try await RemoteWorkrooms.delete(
       "gone", host: HostDescriptor(state: "destroyed", provisioner: mine, id: UUID()),
-      environment: nil, recorder: calls.recorder)
+      environment: nil, recorder: calls.recorder, onForgotten: { _ in })
     try await RemoteWorkrooms.delete(
       "crashed", host: HostDescriptor(state: "creating", provisioner: mine, workroomID: UUID()),
-      environment: nil, recorder: calls.recorder)
+      environment: nil, recorder: calls.recorder, onForgotten: { _ in })
     XCTAssertEqual(calls.all, ["forget gone", "forget crashed"])
   }
 
@@ -52,7 +52,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     do {
       try await RemoteWorkrooms.delete(
         "theirs", host: HostDescriptor(provisioner: "another.build", id: UUID()),
-        environment: nil, recorder: calls.recorder)
+        environment: nil, recorder: calls.recorder, onForgotten: { _ in })
       XCTFail("another build's workroom was deleted")
     } catch RemoteWorkrooms.Failure.anotherBuildsHost(let build) {
       XCTAssertEqual(build, "another.build")
@@ -61,7 +61,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
 
     try await RemoteWorkrooms.delete(
       "theirs", host: HostDescriptor(state: "destroyed", provisioner: "another.build"),
-      environment: nil, recorder: calls.recorder)
+      environment: nil, recorder: calls.recorder, onForgotten: { _ in })
     XCTAssertEqual(calls.all, ["forget theirs"])
   }
 
@@ -72,7 +72,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     do {
       try await RemoteWorkrooms.delete(
         "live", host: HostDescriptor(provisioner: mine, id: UUID()),
-        environment: nil, recorder: calls.recorder)
+        environment: nil, recorder: calls.recorder, onForgotten: { _ in })
       XCTFail("a live workroom was forgotten")
     } catch RemoteWorkrooms.Failure.signedOut {}
     XCTAssertEqual(calls.all, [])
@@ -105,12 +105,12 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
       name: "w", path: "/home/workroom/r", vcsName: "workroom/w", warnings: [],
       host: HostDescriptor(provisioner: mine, id: UUID()))
     let project = Project(path: "/proj", vcs: "git", workrooms: [workroom], host: base)
-    store.projects = [project]
+    store.projectStore.projects = [project]
 
     store.removeWorkroomLocally(workroom, in: project)
 
-    XCTAssertEqual(store.projects.first?.workrooms, [])
-    XCTAssertEqual(store.projects.first?.host, base)
+    XCTAssertEqual(store.projectStore.projects.first?.workrooms, [])
+    XCTAssertEqual(store.projectStore.projects.first?.host, base)
   }
 
   /// The CLI, recording each call the delete flows make, in order.
@@ -166,18 +166,19 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
   }
 
   /// A Dev build takes what it made out of the shared config once a launch, and never from a
-  /// test process or a Release or Nightly build. The once is per process, so this is the only test
-  /// that may call `claimProvisionedOnce` with `isTestProcess: false`.
+  /// test process or a Release or Nightly build. The once is per app lifecycle (`.shared` in the
+  /// app), so this test makes its own.
   @MainActor
   func testADevBuildClaimsItsEntriesOnceALaunch() async {
     let cli = RecordingCLI()
     let dev = "com.developwithstyle.workroom.dev"
-    await AppStore.claimProvisionedOnce(cli, bundleID: dev, isTestProcess: true)
-    await AppStore.claimProvisionedOnce(
+    let lifecycle = WorkroomLifecycle(vcsStatus: VCSStatusService(projectStore: ProjectStore()))
+    await lifecycle.claimProvisionedOnce(cli, bundleID: dev, isTestProcess: true)
+    await lifecycle.claimProvisionedOnce(
       cli, bundleID: "com.developwithstyle.workroom.nightly", isTestProcess: false)
     XCTAssertEqual(cli.calls.all, [])
-    await AppStore.claimProvisionedOnce(cli, bundleID: dev, isTestProcess: false)
-    await AppStore.claimProvisionedOnce(cli, bundleID: dev, isTestProcess: false)
+    await lifecycle.claimProvisionedOnce(cli, bundleID: dev, isTestProcess: false)
+    await lifecycle.claimProvisionedOnce(cli, bundleID: dev, isTestProcess: false)
     XCTAssertEqual(cli.calls.all, ["claim \(WorkroomCLI.sharedConfigPath) \(dev)"])
   }
 
@@ -210,14 +211,14 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
           host: HostDescriptor(state: "destroyed", provisioner: mine, id: UUID())),
       ],
       host: HostDescriptor(state: "destroyed", provisioner: mine, id: UUID()))
-    store.projects = [project]
+    store.projectStore.projects = [project]
 
-    store.deleteProject(project, scope: .fromDisk)
+    store.lifecycle.deleteProject(project, scope: .fromDisk, from: store)
     await waitFor("delete-project", in: cli)
 
     XCTAssertEqual(
       cli.calls.all, ["host r destroyed", "delete r", "host project clear", "delete-project"])
-    XCTAssertNil(store.errorMessage)
+    XCTAssertNil(store.modals.errorMessage)
   }
 
   /// Value: protects=C4, Delete Anyway on a project delete re-runs it as the project is now: a remote
@@ -236,19 +237,19 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
           name: "r", path: "/home/workroom/r", vcsName: "workroom/r", warnings: [],
           host: HostDescriptor(state: "destroyed", provisioner: mine, id: UUID())),
       ])
-    store.projects = [project]
+    store.projectStore.projects = [project]
     // The CLI's teardown fails after the remote workroom went; the reload no longer lists it.
     cli.deleteProjectError = WorkroomCLIError.cli(
       kind: "TeardownScriptFailed", message: "teardown script failed")
     cli.listed = [Project(path: "/proj", vcs: "git", workrooms: [local])]
 
-    store.deleteProject(project, scope: .workrooms)
+    store.lifecycle.deleteProject(project, scope: .workrooms, from: store)
     let deadline = ContinuousClock.now + .seconds(10)
-    while store.errorAction == nil, ContinuousClock.now < deadline {
+    while store.modals.errorAction == nil, ContinuousClock.now < deadline {
       try await Task.sleep(for: .milliseconds(5))
     }
-    let action = try XCTUnwrap(store.errorAction, "no Delete Anyway was offered")
-    store.clearError()
+    let action = try XCTUnwrap(store.modals.errorAction, "no Delete Anyway was offered")
+    store.modals.clearError()
     action.run()
     while cli.calls.all.filter({ $0 == "delete-project" }).count < 2, ContinuousClock.now < deadline
     {
@@ -268,24 +269,24 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     let ssh = Workroom(
       name: "ssh", path: "/home/workroom/r", vcsName: "workroom/ssh", warnings: [],
       host: HostDescriptor(
-        driver: RemoteWorkrooms.sshDriver, provisioner: mine,
+        driver: HostKind.ssh.driver, provisioner: mine,
         id: SSHHostDriver.id(for: destination), workroomID: UUID(), path: "/home/workroom/r",
         sshDestination: destination))
     let local = Workroom(
       name: "local", path: "/proj/local", vcsName: "workroom/local", warnings: [])
     let project = Project(path: "/proj", vcs: "git", workrooms: [ssh, local])
-    store.projects = [project]
+    store.projectStore.projects = [project]
     cli.listed = [project]
 
-    store.deleteProject(project, scope: .workrooms)
+    store.lifecycle.deleteProject(project, scope: .workrooms, from: store)
     let deadline = ContinuousClock.now + .seconds(10)
-    while store.errorAction == nil, ContinuousClock.now < deadline {
+    while store.modals.errorAction == nil, ContinuousClock.now < deadline {
       try await Task.sleep(for: .milliseconds(5))
     }
 
-    let action = try XCTUnwrap(store.errorAction)
+    let action = try XCTUnwrap(store.modals.errorAction)
     XCTAssertEqual(action.label, "Delete Without Teardowns")
-    XCTAssertTrue(store.errorDetails?.contains(ssh.path) == true)
+    XCTAssertTrue(store.modals.errorDetails?.contains(ssh.path) == true)
     XCTAssertFalse(
       cli.calls.all.contains("delete-project"), "the first failure must retain the project")
   }
@@ -299,14 +300,14 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
       name: "r", path: "/home/workroom/r", vcsName: "workroom/r", warnings: [],
       host: HostDescriptor(state: "destroyed", provisioner: mine))
     let project = Project(path: "/proj", vcs: "git", workrooms: [remote])
-    store.projects = [project]
+    store.projectStore.projects = [project]
     cli.listed = [Project(path: "/proj", vcs: "git", workrooms: [])]
 
-    store.deleteWorkroom(remote, in: project)
+    store.lifecycle.deleteWorkroom(remote, in: project, from: store)
     await waitFor("delete r", in: cli)
 
     XCTAssertEqual(cli.calls.all, ["host r destroyed", "delete r"])
-    XCTAssertEqual(store.projects.first?.workrooms, [])
+    XCTAssertEqual(store.projectStore.projects.first?.workrooms, [])
   }
 
   /// A remote workroom still being created (a create running in its project) can't be deleted,
@@ -321,14 +322,14 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
       name: "c", path: "/home/workroom/r", vcsName: "workroom/c", warnings: [],
       host: HostDescriptor(state: "creating", provisioner: mine, workroomID: UUID()))
     let project = Project(path: "/proj", vcs: "git", workrooms: [creating])
-    store.projects = [project]
-    XCTAssertFalse(store.isCreatingWorkroom(creating, in: project))
+    store.projectStore.projects = [project]
+    XCTAssertFalse(store.lifecycle.isCreatingWorkroom(creating, in: project))
 
-    store.register(
+    store.lifecycle.register(
       CreationRun(project: project, kind: .boxd, splitAnchor: nil, previousSelection: nil))
-    XCTAssertTrue(store.isCreatingWorkroom(creating, in: project))
-    store.deleteWorkroom(creating, in: project)
-    XCTAssertEqual(store.projects, [project], "a create still deriving was deleted")
+    XCTAssertTrue(store.lifecycle.isCreatingWorkroom(creating, in: project))
+    store.lifecycle.deleteWorkroom(creating, in: project, from: store)
+    XCTAssertEqual(store.projectStore.projects, [project], "a create still deriving was deleted")
   }
 
   /// A teardown that fails says what is still up and why, ending in one full stop whether or not
@@ -353,9 +354,9 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
   @MainActor
   func testANewErrorMessageDropsTheEarlierErrorsDetails() {
     let store = AppStore()
-    store.errorDetails = "HTTP 409"
-    store.errorMessage = "Teardown failed"
-    XCTAssertNil(store.errorDetails)
+    store.modals.errorDetails = "HTTP 409"
+    store.modals.errorMessage = "Teardown failed"
+    XCTAssertNil(store.modals.errorDetails)
   }
 
   /// Every scope of a project delete takes its remote hosts down, so the sheet says so whichever
@@ -376,12 +377,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
 /// A remote workroom's teardown script, run on its host before the host goes
 /// (`docs/designs/scripts-on-every-workroom.md`: D3, R1).
 final class RemoteTeardownTests: XCTestCase {
-  private final class Log: @unchecked Sendable {
-    private let lock = NSLock()
-    private var entries: [String] = []
-    var all: [String] { lock.withLock { entries } }
-    func add(_ entry: String) { lock.withLock { entries.append(entry) } }
-  }
+  private typealias Log = Calls<String>
 
   private final class Driver: HostTerminalDriver, ProvisioningHostDriver, @unchecked Sendable {
     let log: Log
@@ -413,7 +409,7 @@ final class RemoteTeardownTests: XCTestCase {
 
   private func host(state: String? = nil) -> HostDescriptor {
     HostDescriptor(
-      state: state, driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
+      state: state, driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner,
       id: UUID())
   }
 
@@ -438,7 +434,7 @@ final class RemoteTeardownTests: XCTestCase {
       "w", host: host,
       environment: RemoteProvisioning.Environment(
         driver: driver, daemonSocket: driver.daemonSocket),
-      recorder: recorder(log), teardown: teardown)
+      recorder: recorder(log), teardown: teardown, onForgotten: { _ in })
   }
 
   /// Value: protects=the teardown runs, in the checkout, before the host is destroyed and the
@@ -448,6 +444,35 @@ final class RemoteTeardownTests: XCTestCase {
     let log = Log()
     try await delete(host(), log, teardown: teardown(log, result: .passed))
     XCTAssertEqual(log.all, ["script teardown w /home/boxd/r", "destroy", "forget w"])
+  }
+
+  /// Value: protects=a delete's teardown connects through the reachability the delete was given,
+  /// as the rest of the delete does; fails_when=the teardown's script runs over
+  /// `RemoteHosts.shared`'s reachability, so the delete's own connect is never asked;
+  /// no_claim=the connect itself (HostReachabilityTests)
+  func testATeardownConnectsThroughTheDeletesReachability() async throws {
+    let log = Log()
+    let hosts = RemoteHosts(
+      connectHost: { _ in
+        log.add("connect")
+        throw HostDriverError.provisioning("no route to host")
+      }, startHost: { _ in })
+    let driver = Driver(log)
+    do {
+      try await RemoteWorkrooms.delete(
+        "w", host: host(),
+        environment: RemoteProvisioning.Environment(
+          driver: driver, daemonSocket: driver.daemonSocket),
+        recorder: recorder(log),
+        teardown: RemoteWorkrooms.Teardown(
+          path: "/home/boxd/r", rootScript: nil, judge: RemoteScriptTests.approveAll,
+          onLine: { _ in }),
+        reachability: hosts.reachability, onForgotten: { _ in })
+      XCTFail("a teardown that couldn't reach its host let the delete go on")
+    } catch RemoteWorkrooms.Failure.teardownScriptFailed(let why) {
+      XCTAssertEqual(why, "teardown script failed: couldn't reach the host")
+    }
+    XCTAssertEqual(log.all, ["connect"], "the teardown didn't connect through the delete's own")
   }
 
   /// Value: protects=D3, a failed teardown stops the delete with nothing taken down and its reason
@@ -504,24 +529,26 @@ final class RemoteTeardownTests: XCTestCase {
   /// showing the button (AppStoreDeleteRaceTests drive that for the local cases)
   func testWhichFailuresOfferDeleteAnyway() {
     XCTAssertTrue(
-      AppStore.isTeardownFailure(
+      WorkroomLifecycle.isTeardownFailure(
         WorkroomCLIError.cli(kind: "TeardownScriptFailed", message: "teardown script failed")))
-    XCTAssertTrue(AppStore.isTeardownFailure(WorkroomCLIError.timedOut))
+    XCTAssertTrue(WorkroomLifecycle.isTeardownFailure(WorkroomCLIError.timedOut))
     XCTAssertTrue(
-      AppStore.isTeardownFailure(
+      WorkroomLifecycle.isTeardownFailure(
         RemoteWorkrooms.Failure.teardownScriptFailed("teardown script failed: no route")))
     let script = RemoteScriptTests.judged(Data(), trusted: false)
     XCTAssertTrue(
-      AppStore.isTeardownFailure(WorkroomCLIError.scriptNotTrusted(script, message: "not trusted")))
+      WorkroomLifecycle.isTeardownFailure(
+        WorkroomCLIError.scriptNotTrusted(script, message: "not trusted")))
     XCTAssertTrue(
-      AppStore.isTeardownFailure(RemoteWorkrooms.Failure.teardownScriptNotTrusted(script)))
+      WorkroomLifecycle.isTeardownFailure(RemoteWorkrooms.Failure.teardownScriptNotTrusted(script)))
     // A teardown Workroom won't read (a device, over 1 MiB) comes without its script.
     XCTAssertTrue(
-      AppStore.isTeardownFailure(
+      WorkroomLifecycle.isTeardownFailure(
         WorkroomCLIError.cli(kind: "ScriptNotTrusted", message: "not a regular file")))
     XCTAssertFalse(
-      AppStore.isTeardownFailure(WorkroomCLIError.cli(kind: "VCSCommandFailed", message: "git")))
-    XCTAssertFalse(AppStore.isTeardownFailure(RemoteWorkrooms.Failure.signedOut))
+      WorkroomLifecycle.isTeardownFailure(
+        WorkroomCLIError.cli(kind: "VCSCommandFailed", message: "git")))
+    XCTAssertFalse(WorkroomLifecycle.isTeardownFailure(RemoteWorkrooms.Failure.signedOut))
   }
 
   /// Value: protects=a remote delete's teardown carries the workroom's checkout, the root's copy
@@ -533,7 +560,7 @@ final class RemoteTeardownTests: XCTestCase {
       host: HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: UUID()))
     let project = Project(path: "/proj", vcs: "git", workrooms: [workroom])
     for skip in [false, true] {
-      let teardown = AppStore.remoteTeardown(
+      let teardown = WorkroomLifecycle.remoteTeardown(
         of: workroom, in: project, log: nil, skip: skip, cli: WorkroomCLI.shared)
       XCTAssertEqual(teardown.skip, skip)
       XCTAssertEqual(teardown.path, "/home/workroom/r")
@@ -548,7 +575,7 @@ final class RemoteTeardownTests: XCTestCase {
     let log = Log()
     let legacy = HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: UUID())
     var teardown = teardown(log, result: .passed)
-    let run = teardown.run
+    let run = try XCTUnwrap(teardown.run)
     teardown.run = { request in
       log.add("key \(request.key == RemoteHosts.DriverKey() ? "docker" : "other")")
       return await run(request)
@@ -562,7 +589,7 @@ final class RemoteTeardownTests: XCTestCase {
   /// connect under way, replaces an older daemon and puts a relayed host's credentials up) before
   /// anything runs, and a failed connect is a failed script; fails_when=the script runs without
   /// connecting, or a failed connect passes; no_claim=the join, bootstrap and relay themselves
-  /// (RemoteHostsTests and DaemonBootstrap's tests)
+  /// (HostReachabilityTests and DaemonBootstrap's tests)
   func testTheScriptConnectsFirstAndAFailedConnectIsAFailure() async {
     let log = Log()
     let driver = Driver(log)
@@ -577,7 +604,7 @@ final class RemoteTeardownTests: XCTestCase {
         script: .teardown, workroom: "w", path: "/home/boxd/r", host: .remote(UUID()),
         key: boxd, driver: driver, daemonBinary: "/workroomd", rootScript: nil,
         judge: RemoteScriptTests.approveAll, onLine: { _ in }),
-      hosts: hosts)
+      reachability: hosts.reachability)
     guard case .failed(let why) = result else { return XCTFail("a failed connect passed") }
     XCTAssertEqual(why, "teardown script failed: couldn't reach the host")
     XCTAssertEqual(log.all, ["connect"], "the script ran without a connection")
@@ -600,7 +627,7 @@ final class RemoteTeardownTests: XCTestCase {
         script: .teardown, workroom: "w", path: "/r", host: .remote(UUID()),
         key: docker, driver: Driver(log), daemonBinary: "/workroomd",
         rootScript: nil, judge: RemoteScriptTests.approveAll, onLine: { _ in }),
-      hosts: hosts)
+      reachability: hosts.reachability)
     XCTAssertEqual(log.all, ["start", "connect"])
   }
 }

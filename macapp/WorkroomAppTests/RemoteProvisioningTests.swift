@@ -1,5 +1,7 @@
 import DaemonConnection
+import DaemonConnectionTestSupport
 import HostDrivers
+import Synchronization
 import WorkroomDomain
 import WorkroomVCS
 import XCTest
@@ -32,13 +34,13 @@ final class RemoteProvisioningHostKindTests: XCTestCase {
   /// exedev); fails_when=a kind's word changes or two kinds swap; why_new=tests pass a literal
   /// hostKind; seam=none; no_claim=the word reaching a script
   func testEachKindOfHostHasItsDocumentedWord() {
-    XCTAssertEqual(RemoteProvisioning.hostKind(.init(runtime: .docker)), "docker")
-    XCTAssertEqual(
-      RemoteProvisioning.hostKind(.init(runtime: .docker, context: "colima")), "docker")
-    XCTAssertEqual(RemoteProvisioning.hostKind(.init(runtime: .apple)), "apple")
-    XCTAssertEqual(RemoteProvisioning.hostKind(.boxd(org: nil, account: nil)), "boxd")
-    XCTAssertEqual(RemoteProvisioning.hostKind(.exeDev(account: nil)), "exedev")
-    XCTAssertEqual(RemoteProvisioning.hostKind(.ssh(destination: "myserver")), "ssh")
+    typealias Key = RemoteHosts.DriverKey
+    XCTAssertEqual(Key(runtime: .docker).kind.workroomHost, "docker")
+    XCTAssertEqual(Key(runtime: .docker, context: "colima").kind.workroomHost, "docker")
+    XCTAssertEqual(Key(runtime: .apple).kind.workroomHost, "apple")
+    XCTAssertEqual(Key.boxd(org: nil, account: nil).kind.workroomHost, "boxd")
+    XCTAssertEqual(Key.exeDev(account: nil).kind.workroomHost, "exedev")
+    XCTAssertEqual(Key.ssh(destination: "myserver").kind.workroomHost, "ssh")
   }
 }
 
@@ -46,17 +48,17 @@ final class RemoteProvisioningHostKindTests: XCTestCase {
 /// through the relay (#309); a remote provider's, whatever the provider gave its host.
 final class RemoteProvisioningCredentialsTests: XCTestCase {
   /// A connection the sequence reaches and then loses, so the git it runs fails at once.
-  private static let lostConnection: @Sendable (HostID) async throws -> DaemonVCSConnection = {
+  private static let lostConnection: @Sendable (HostID) async throws -> DaemonClient = {
     host in
     let fake = try FakeDaemon(version: 4)
     defer { fake.stop() }
-    return try await DaemonVCSConnection.connect(host: host, socketPath: fake.socketPath)
+    return try await DaemonClient.connect(host: host, socketPath: fake.socketPath)
   }
 
   private func environment(
     gitHubToken: (@Sendable () async throws -> String)?, credentialHint: String? = nil,
     driver: any HostDriver = CountingDriver(),
-    connect: @escaping @Sendable (HostID) async throws -> DaemonVCSConnection = lostConnection
+    connect: @escaping @Sendable (HostID) async throws -> DaemonClient = lostConnection
   ) -> RemoteProvisioning.Environment {
     RemoteProvisioning.Environment(
       driver: driver, daemonSocket: RemoteWorkrooms.daemonSocket, gitHubToken: gitHubToken,
@@ -69,9 +71,9 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
 
   private static func connecting(to fake: FakeDaemon)
     -> @Sendable (HostID) async throws
-    -> DaemonVCSConnection
+    -> DaemonClient
   {
-    { host in try await DaemonVCSConnection.connect(host: host, socketPath: fake.socketPath) }
+    { host in try await DaemonClient.connect(host: host, socketPath: fake.socketPath) }
   }
 
   private func provision(
@@ -160,8 +162,8 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
         #"{"stdout":"","stderr":"Cloning into 'p'...","exit_code":0,"timed_out":false,"signaled":false}"#
     )
     defer { fake.stop() }
-    let lines = LineLog()
-    let sink: @Sendable (ProvisioningProgress.Step, String) -> Void = { lines.add($0, $1) }
+    let lines = Calls<(ProvisioningProgress.Step, String)>()
+    let sink: @Sendable (ProvisioningProgress.Step, String) -> Void = { lines.add(($0, $1)) }
 
     let instance = try await ProvisioningProgress.$log.withValue(sink) {
       try await RemoteProvisioning.provision(
@@ -315,9 +317,9 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
     let boxd = BoxdHostDriver(
       configuration: .init(
         cli: URL(fileURLWithPath: "/nonexistent/boxd"), sshConfig: directory,
-        knownHosts: directory, home: directory),
+        knownHosts: directory, home: directory, hostSetup: .bundled),
       directory: directory)
-    let exeDev = ExeDevHostDriver(configuration: .init(), directory: directory)
+    let exeDev = ExeDevHostDriver(configuration: .init(hostSetup: .bundled), directory: directory)
     func wired(_ options: ResolvedHostOptions, _ driver: any HostDriver) -> (Bool, Bool) {
       var env = environment(gitHubToken: nil, driver: driver)
       env.made(with: options, by: driver)
@@ -335,26 +337,24 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
   }
 }
 
-private final class CheckpointLog: @unchecked Sendable {
-  private let lock = NSLock()
-  private var seen: [HostID] = []
-  var all: [HostID] { lock.withLock { seen } }
-  func add(_ host: HostID) { lock.withLock { seen.append(host) } }
+private final class CheckpointLog: Sendable {
+  private let seen = Mutex<[HostID]>([])
+  var all: [HostID] { seen.withLock { $0 } }
+  func add(_ host: HostID) { seen.withLock { $0.append(host) } }
 }
 
 /// Makes a host for every create, and counts what it makes and takes down.
-private final class CountingDriver: ProvisioningHostDriver, @unchecked Sendable {
-  private let lock = NSLock()
-  private var made = 0
-  private var removed = 0
-  var creates: Int { lock.withLock { made } }
-  var destroys: Int { lock.withLock { removed } }
+private final class CountingDriver: ProvisioningHostDriver, Sendable {
+  private let made = Mutex(0)
+  private let removed = Mutex(0)
+  var creates: Int { made.withLock { $0 } }
+  var destroys: Int { removed.withLock { $0 } }
 
   func create() async throws -> HostID {
-    lock.withLock { made += 1 }
+    made.withLock { $0 += 1 }
     return .remote(UUID())
   }
-  func destroy(_ host: HostID) async throws { lock.withLock { removed += 1 } }
+  func destroy(_ host: HostID) async throws { removed.withLock { $0 += 1 } }
   func openStream(to host: HostID) async throws -> HostStream {
     throw HostDriverError.notImplemented("openStream")
   }
@@ -363,25 +363,15 @@ private final class CountingDriver: ProvisioningHostDriver, @unchecked Sendable 
   }
 }
 
-private final class StepLog: @unchecked Sendable {
-  private let lock = NSLock()
-  private var seen: [ProvisioningProgress.Step] = []
-  func add(_ step: ProvisioningProgress.Step) { lock.withLock { seen.append(step) } }
+private final class StepLog: Sendable {
+  private let seen = Mutex<[ProvisioningProgress.Step]>([])
+  func add(_ step: ProvisioningProgress.Step) { seen.withLock { $0.append(step) } }
   func take() -> [ProvisioningProgress.Step] {
-    lock.withLock {
+    seen.withLock { seen in
       defer { seen = [] }
       return seen
     }
   }
-}
-
-private final class LineLog: @unchecked Sendable {
-  private let lock = NSLock()
-  private var seen: [(ProvisioningProgress.Step, String)] = []
-  func add(_ step: ProvisioningProgress.Step, _ line: String) {
-    lock.withLock { seen.append((step, line)) }
-  }
-  var all: [(ProvisioningProgress.Step, String)] { lock.withLock { seen } }
 }
 
 /// Copying the root's included files into a remote workroom's checkout (#367): the CLI's archive,
@@ -564,14 +554,12 @@ final class RemoteScriptTests: XCTestCase {
     }
   }
 
-  private final class Lines: @unchecked Sendable {
-    private let lock = NSLock()
-    private var all: [String] = []
-    private var started = 0
-    var lines: [String] { lock.withLock { all } }
-    var starts: Int { lock.withLock { started } }
-    func add(_ line: String) { lock.withLock { all.append(line) } }
-    func start() { lock.withLock { started += 1 } }
+  private final class Lines: Sendable {
+    private let heard = Mutex<(lines: [String], starts: Int)>(([], 0))
+    var lines: [String] { heard.withLock { $0.lines } }
+    var starts: Int { heard.withLock { $0.starts } }
+    func add(_ line: String) { heard.withLock { $0.lines.append(line) } }
+    func start() { heard.withLock { $0.starts += 1 } }
   }
 
   private static let contract = URL(fileURLWithPath: String(describing: #filePath))
@@ -648,15 +636,14 @@ final class RemoteScriptTests: XCTestCase {
   }
 
   /// A Mac that has approved `approved` alone, recording each judgement.
-  private final class Approving: @unchecked Sendable {
-    private let lock = NSLock()
-    private var seen: [Data] = []
+  private final class Approving: Sendable {
+    private let seen = Mutex<[Data]>([])
     let approved: Data
     init(_ approved: String) { self.approved = Data(approved.utf8) }
-    var judged: [Data] { lock.withLock { seen } }
+    var judged: [Data] { seen.withLock { $0 } }
     var judge: RemoteProvisioning.ScriptJudge {
       { text in
-        self.lock.withLock { self.seen.append(text) }
+        self.seen.withLock { $0.append(text) }
         return RemoteScriptTests.judged(text, trusted: text == self.approved)
       }
     }

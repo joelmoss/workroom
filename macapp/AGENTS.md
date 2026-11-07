@@ -38,7 +38,7 @@ For terminal-session and repository-routing changes:
   unchanged classifier behaves differently, inspect the inputs both paths feed it.
 - Give each fix a negative control. Name the neighbouring property it could damage (locks,
   parser state, cancellation or caller error handling) and test that property too.
-- For any change under `Core/Session/`, to `VCSProviding`/`VCSWriting` routing, or under
+- For any change under `Core/Terminal/Session/`, to `VCSProviding`/`VCSWriting` routing, or under
   `vcs/crates/workroomd`, dispatch an independent adversarial reviewer. Give it the diff, intent
   and evidence gate. Re-reading your own code does not replace that pass.
 
@@ -57,4 +57,4 @@ Before changing or reviewing an area, read its reference:
 | App identity, preferences, Ghostty entry point, engine pin or child environment | [Runtime](../docs/macapp/runtime.md) |
 | Menus, shortcuts, quick switchers, layout or Escape automation | [UI conventions](../docs/macapp/ui.md) |
 | Skipping unchanged work, or assuming what a `ghostty_surface_*` call does | [Performance facts](../docs/macapp-perf-facts.md) |
-| Release channels, versioning, Sparkle feeds or update notes | [Release process](../CONTRIBUTING.md#deployment--releases); use the curate-release skill when available |
+| Release channels, versioning, Sparkle feeds or update notes | [Release process](../docs/contributing/releasing.md); use the curate-release skill when available |

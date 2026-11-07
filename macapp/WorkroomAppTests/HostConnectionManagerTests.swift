@@ -1,5 +1,6 @@
 import DaemonConnection
 import Foundation
+import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 import XCTest
@@ -14,7 +15,7 @@ final class HostConnectionManagerTests: XCTestCase {
     try router.register(.init(location: root, sharedLocation: root))
     let connection = ConnectionFixture(delayStatus: true)
     let lease = try await manager.connect(host: root.host) { connection }
-    let pending = Task { await WorkroomStatusResolver(router: router).resolve(location: root) }
+    let pending = Task { await WorkingStatusResolver(router: router).resolve(location: root) }
     try await connection.statusStarted.arrived()
     await manager.disconnect(lease)
     let status = try await withTimeout(seconds: 2) { await pending.value }

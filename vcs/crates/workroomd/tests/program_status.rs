@@ -10,65 +10,35 @@ mod common;
 
 use serde_json::{Value, json};
 use std::ffi::{OsStr, OsString};
-use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
-use std::time::{Duration, Instant};
-use workroomd::session::{SessionId, SessionSpec, SessionStore};
-use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
+use std::time::Duration;
+use workroomd::testing::{SessionId, SessionSpec, SessionStore};
+use wr_protocol::envelope::Service;
 
-struct Client {
-    stream: UnixStream,
-    decoder: EnvelopeDecoder,
-    next_stream: u32,
-}
+struct Client(common::RpcClient);
 
 impl Client {
     fn connect(store: &SessionStore) -> Client {
-        let (stream, _server) = common::connect_in_process_to("program-status-test", store.clone());
-        stream
-            .set_read_timeout(Some(Duration::from_millis(50)))
-            .unwrap();
-        Client {
-            stream,
-            decoder: EnvelopeDecoder::new(),
-            next_stream: 1,
-        }
+        let (rpc, _server) = common::RpcClient::connect_to(
+            "program-status-test",
+            store.clone(),
+            Duration::from_millis(50),
+        );
+        Client(rpc)
     }
 
     fn send_bytes(&mut self, payload: Vec<u8>) -> u32 {
-        let stream = self.next_stream;
-        self.next_stream += 1;
-        self.stream
-            .write_all(&Envelope::new(Service::ProgramStatus, stream, payload).encode())
-            .unwrap();
+        let stream = self.0.take_stream();
+        self.0.send_payload(Service::ProgramStatus, stream, payload);
         stream
     }
 
     /// The next envelope as (stream, JSON), or `None` once `timeout` passes.
     fn next(&mut self, timeout: Duration) -> Option<(u32, Value)> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if let Some(envelope) = self.decoder.next_envelope().unwrap() {
-                assert_eq!(envelope.service, Service::ProgramStatus);
-                let (flag, body) = envelope.payload.split_first().unwrap();
-                assert_eq!(*flag, 1, "every reply and event is one final envelope");
-                return Some((envelope.stream, serde_json::from_slice(body).unwrap()));
-            }
-            if Instant::now() >= deadline {
-                return None;
-            }
-            let mut bytes = [0u8; 65536];
-            match self.stream.read(&mut bytes) {
-                Ok(0) => panic!("the daemon closed the connection"),
-                Ok(n) => self.decoder.push(&bytes[..n]),
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) => {}
-                Err(e) => panic!("read failed: {e}"),
-            }
-        }
+        let envelope = self.0.next(timeout)?;
+        assert_eq!(envelope.service, Service::ProgramStatus);
+        let (flag, body) = envelope.payload.split_first().unwrap();
+        assert_eq!(*flag, 1, "every reply and event is one final envelope");
+        Some((envelope.stream, serde_json::from_slice(body).unwrap()))
     }
 
     /// The reply to `request`, which must come before anything else.
@@ -208,9 +178,12 @@ fn requests_are_answered_in_the_shapes_the_app_decodes() {
 #[cfg(feature = "terminal-state")]
 mod live {
     use super::*;
+    use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+    use wr_protocol::envelope::Envelope;
 
     /// libghostty's answer to `OSC 7501 ; ?`, before the probe's own terminator.
     const ANSWER: &str =
@@ -327,7 +300,7 @@ mod live {
     fn attach(store: &SessionStore, session: SessionId, writer: impl Write + Send + 'static) {
         let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(Box::new(writer)));
         store
-            .attach(session, writer, 1, workroomd::pty::Size::cells(80, 24))
+            .attach(session, writer, 1, workroomd::testing::Size::cells(80, 24))
             .expect("attach");
     }
 
@@ -391,7 +364,7 @@ sleep 5"#,
         let mut client = Client::connect(&store);
         let reply = client.request(json!({"version": 1, "method": "subscribe"}));
         assert_eq!(reply["result"]["available"], true);
-        let boot = store.program_status().boot().to_hyphenated();
+        let boot = store.hooks().program_status.boot().to_hyphenated();
         let first = client.event();
         let second = client.event();
         let complete = client.event();
@@ -463,7 +436,7 @@ sleep 5"#,
             let ended = events.last().unwrap();
             assert_eq!(
                 ended,
-                &json!({"event": "ended", "boot": store.program_status().boot().to_hyphenated(),
+                &json!({"event": "ended", "boot": store.hooks().program_status.boot().to_hyphenated(),
                     "session": session.to_hyphenated()}),
                 "when it {end}"
             );
@@ -540,11 +513,13 @@ sleep 5"#,
 
         let after = SessionStore::new();
         after
-            .program_status()
-            .set_boot(before.program_status().boot());
+            .hooks()
+            .program_status
+            .set_boot(before.hooks().program_status.boot());
         let args = [OsString::from("-c"), OsString::from("sleep 5")];
-        let pty = workroomd::pty::Pty::spawn(OsStr::new("/bin/sh"), None, &args, &[], None, 80, 24)
-            .expect("pty");
+        let pty =
+            workroomd::testing::Pty::spawn(OsStr::new("/bin/sh"), None, &args, &[], None, 80, 24)
+                .expect("pty");
         after.adopt(pty, frozen).expect("adopt");
 
         let carried = status_of(&after, id(1));
@@ -629,8 +604,8 @@ i=0; while [ $i -lt 30 ]; do printf '\033]7501;id=s%d:state=working\033\\' $i; i
             stalled: Arc::clone(&stalled),
             released: Arc::clone(&released),
         })));
-        let mut connection = workroomd::program_status::Connection::new(
-            Arc::clone(store.program_status()),
+        let mut connection = workroomd::testing::Connection::new(
+            Arc::clone(&store.hooks().program_status),
             writer,
             Arc::new(|| {}),
         );
@@ -639,7 +614,7 @@ i=0; while [ $i -lt 30 ]; do printf '\033]7501;id=s%d:state=working\033\\' $i; i
             1,
             serde_json::to_vec(&json!({"version": 1, "method": "subscribe"})).unwrap(),
         );
-        workroomd::program_status::dispatch(&subscribe, &store, &mut connection);
+        workroomd::testing::dispatch(&subscribe, &store, &mut connection);
         stalled.store(true, Ordering::SeqCst);
 
         let seen = wait_until(

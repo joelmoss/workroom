@@ -19,7 +19,7 @@ import XCTest
 /// the `terminal-state` feature that keeps screens; a plain `cargo zigbuild` leaves it out.
 class ContainerIntegrationTestCase: XCTestCase {
   /// The runtime's suite says which.
-  var dialect: ContainerHostDriver.Dialect { .docker }
+  var dialect: ContainerRuntime { .docker }
   /// The switch that opts the suite in.
   var optIn: String { "WR_DOCKER_CONTAINER_TESTS" }
 
@@ -28,7 +28,7 @@ class ContainerIntegrationTestCase: XCTestCase {
   /// This test's own label, so what it left is told apart from other tests' and other runs'.
   var label: String!
   var daemon: URL!
-  var connections: [DaemonVCSConnection] = []
+  var connections: [DaemonClient] = []
   private var cleanups: [() async -> Void] = []
 
   override func setUpWithError() throws {
@@ -40,7 +40,7 @@ class ContainerIntegrationTestCase: XCTestCase {
       throw XCTSkip("set TEST_RUNNER_WR_LINUX_DAEMON to the Linux workroomd")
     }
     daemon = URL(fileURLWithPath: path)
-    let runtimeKind: RemoteWorkrooms.Runtime = dialect == .apple ? .apple : .docker
+    let runtimeKind = dialect
     guard let found = RemoteHosts.executable(for: runtimeKind) else {
       throw XCTSkip("\(runtimeKind.rawValue)'s CLI isn't installed")
     }
@@ -84,7 +84,7 @@ class ContainerIntegrationTestCase: XCTestCase {
 
   /// The stock image with git, which a workroom needs: built through the driver, so its build is
   /// exercised too, and labelled as this test's.
-  func gitImage(_ driver: ContainerHostDriver) async throws -> String {
+  nonisolated(nonsending) func gitImage(_ driver: ContainerHostDriver) async throws -> String {
     let context = directory.appendingPathComponent("image", isDirectory: true)
     try FileManager.default.createDirectory(at: context, withIntermediateDirectories: true)
     let dockerfile = context.appendingPathComponent("Dockerfile")
@@ -100,7 +100,16 @@ class ContainerIntegrationTestCase: XCTestCase {
     return tag
   }
 
-  func create(
+  // The async helpers run in their caller's isolation, so a main-actor test can call them without
+  // handing the test case to another executor.
+  nonisolated(nonsending) func create(
+    _ driver: ContainerHostDriver, image: String, workspace: String = "/workspaces/app"
+  ) async throws -> HostID {
+    try await Self.create(driver, image: image, workspace: workspace)
+  }
+
+  /// `create`, for a child task, which cannot take the test case along.
+  static func create(
     _ driver: ContainerHostDriver, image: String, workspace: String = "/workspaces/app"
   ) async throws -> HostID {
     try await driver.create(spec: .init(image: image, workspaceFolder: workspace))
@@ -145,9 +154,9 @@ class ContainerIntegrationTestCase: XCTestCase {
   }
 
   @discardableResult
-  func onHost(_ driver: ContainerHostDriver, _ host: HostID, _ command: String) async throws
-    -> String
-  {
+  nonisolated(nonsending) func onHost(
+    _ driver: ContainerHostDriver, _ host: HostID, _ command: String
+  ) async throws -> String {
     let (status, output) = try await driver.exec(command, on: host).communicate(nil, timeout: 30)
     XCTAssertEqual(status, 0, "in the container, \(command) failed: \(output)")
     return output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -166,9 +175,9 @@ class ContainerIntegrationTestCase: XCTestCase {
       command: "/usr/bin/script -q /dev/null /bin/sh -c \(PosixShell.quoted(attach))")
   }
 
-  func connect(_ driver: ContainerHostDriver, _ host: HostID, daemon: URL? = nil) async throws
-    -> DaemonVCSConnection
-  {
+  nonisolated(nonsending) func connect(
+    _ driver: ContainerHostDriver, _ host: HostID, daemon: URL? = nil
+  ) async throws -> DaemonClient {
     let bundled = daemon ?? self.daemon!
     let connection = try await DaemonBootstrap.connect(
       host: host, driver: driver, socket: ContainerHostDriver.containerSocket,
@@ -325,7 +334,7 @@ class ContainerIntegrationTestCase: XCTestCase {
     let host = try await create(driver, image: try await gitImage(driver))
     let connection = try await connect(driver, host)
     let session = UUID()
-    let statuses = Lines()
+    let statuses = Calls<String>()
     let availability = try await connection.subscribeProgramStatus { event in
       if case .status(_, let reported, _, _, _, let run?) = event, reported == session {
         statuses.add(run)
@@ -406,7 +415,7 @@ class ContainerIntegrationTestCase: XCTestCase {
     let driver = driver()
     let image = try await gitImage(driver)
     let hosts = try await withThrowingTaskGroup(of: HostID.self) { group in
-      for _ in 0..<3 { group.addTask { try await self.create(driver, image: image) } }
+      for _ in 0..<3 { group.addTask { try await Self.create(driver, image: image) } }
       return try await group.reduce(into: [HostID]()) { $0.append($1) }
     }
     XCTAssertEqual(Set(hosts).count, 3)
@@ -454,7 +463,7 @@ class ContainerIntegrationTestCase: XCTestCase {
       answer: { _ in "username=x-access-token\npassword=\(token)\n" },
       transport: .init(
         forwarding: { host in
-          let connection = try await DaemonVCSConnection.connect(
+          let connection = try await DaemonClient.connect(
             host: host, stream: try await driver.openStream(to: host))
           return (.init(host: host, generation: generation), try connection.forwarding())
         },
@@ -489,7 +498,7 @@ class ContainerIntegrationTestCase: XCTestCase {
           + " \(script) > \(checkout)/scripts/\(script) && chmod 755 \(checkout)/scripts/\(script)")
     }
     for script in [RemoteProvisioning.Script.setup, .teardown] {
-      let lines = Lines()
+      let lines = Calls<String>()
       let result = await RemoteProvisioning.runScript(
         script, workroom: "box", at: checkout, hostKind: "docker", rootScript: nil,
         daemonBinary: try XCTUnwrap(driver.daemonPath(on: host)), on: host, driver: driver,
@@ -537,12 +546,5 @@ class ContainerIntegrationTestCase: XCTestCase {
       "\(ContainerHostDriver.containerDaemon) list --socket \(ContainerHostDriver.containerSocket)")
     XCTAssertTrue(listed.lowercased().contains(session.uuidString.lowercased()), listed)
     try await driver.destroy(host)
-  }
-
-  final class Lines: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lines: [String] = []
-    var all: [String] { lock.withLock { lines } }
-    func add(_ line: String) { lock.withLock { lines.append(line) } }
   }
 }

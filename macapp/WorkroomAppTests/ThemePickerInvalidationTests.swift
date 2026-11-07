@@ -6,11 +6,11 @@ import XCTest
 
 @testable import Workroom
 
-/// The measurement taken before touching anything: `FamilyRow` reads
-/// `ThemeService.shared.tokens` for its own chrome (border/hover/accent colours), and
-/// `ThemeService` is `@Observable`, so every row that touched `tokens` during its last body pass
-/// is a real dependency — an arrow-key press (`applyFamily` → `tokens` replaced) invalidates every
-/// row currently materialized by the picker's `LazyVStack`. The open question was never *whether*
+/// The measurement taken before touching anything: `FamilyRow` reads the theme environment
+/// (`\.themeTokens`) for its own chrome (border/hover/accent colours), and the root injecting it
+/// reads the `@Observable` `ThemeService`, so an arrow-key press (`applyFamily` → `tokens`
+/// replaced) re-injects the tokens and invalidates every row currently materialized by the
+/// picker's `LazyVStack`. The open question was never *whether*
 /// that happens (it does, by construction) but whether it is perceptible now that the 2026-08-06
 /// preview cache already removed the disk I/O side of the same keypress. Hosted at the picker's
 /// real popover size (`ThemePicker.contentSize`) so the materialized-row count matches production,
@@ -20,18 +20,21 @@ final class ThemePickerInvalidationTests: XCTestCase {
   private var savedFamily: String!
   private var savedAppearance: ThemePreference!
 
-  override func setUp() {
+  override func setUp() async throws {
+    try await super.setUp()
     savedFamily = Defaults[.themeFamily]
     savedAppearance = Defaults[.theme]
   }
 
-  override func tearDown() {
+  override func tearDown() async throws {
     Defaults[.themeFamily] = savedFamily
     Defaults[.theme] = savedAppearance
+    try await super.tearDown()
   }
 
   private func host() -> (NSWindow, NSView) {
-    let hosting = NSHostingView(rootView: ThemePicker())
+    // Rooted as every production host is: the picker opens in a popover of an injected tree.
+    let hosting = NSHostingView(rootView: ThemePicker().themeTokensRoot())
     hosting.frame = NSRect(
       origin: .zero,
       size: NSSize(width: ThemePicker.contentSize.width, height: ThemePicker.contentSize.height))
@@ -44,7 +47,7 @@ final class ThemePickerInvalidationTests: XCTestCase {
   }
 
   /// No live terminal is registered with `ThemeService.shared` in this bare harness, so
-  /// `applyFamily`'s per-window `TerminalSessions.applyThemeToAll` sweep is a no-op — this isolates
+  /// `applyFamily`'s per-window `TerminalPanes.applyThemeToAll` sweep is a no-op — this isolates
   /// the cost this TODO entry is about (the picker's own re-render) from the per-surface reconfigure
   /// a real window's terminals would also pay. The app-global engine reload is NOT excluded: it
   /// moved into `applyActiveTheme` itself (WORKROOM-3R) and now runs once per apply regardless, which

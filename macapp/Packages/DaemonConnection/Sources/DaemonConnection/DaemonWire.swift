@@ -166,7 +166,7 @@ public struct DaemonVCSReply<T: Decodable>: Decodable {
 }
 
 /// The opcodes of `Service::Forward` (`0x05`), the wire contract of
-/// `vcs/crates/workroomd/src/forward.rs` (issue #208). The service itself is `DaemonForwardService`,
+/// `vcs/crates/workroomd/src/host/forward.rs` (issue #208). The service itself is `DaemonForwardService`,
 /// in the app.
 public enum ForwardOpcode {
   public static let open: UInt8 = 0x01

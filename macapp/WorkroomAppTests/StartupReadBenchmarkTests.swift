@@ -33,7 +33,7 @@ final class StartupReadBenchmarkTests: XCTestCase {
         })
     }
     let sessionURL = directory.appendingPathComponent("session.json")
-    let store = SessionStore(url: sessionURL)
+    let store = SavedLayoutStore(url: sessionURL)
     XCTAssertTrue(
       store.writeSynchronously(
         SessionFile(
@@ -47,7 +47,7 @@ final class StartupReadBenchmarkTests: XCTestCase {
       settingsMS.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
       XCTAssertEqual(reader.state, .enabled)
       start = DispatchTime.now().uptimeNanoseconds
-      let result = SessionStore(url: sessionURL).read()
+      let result = SavedLayoutStore(url: sessionURL).read()
       sessionMS.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
       guard case .restored(let file, let report) = result else {
         return XCTFail("the fixture session must decode")

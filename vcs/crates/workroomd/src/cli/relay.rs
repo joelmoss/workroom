@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use super::{DAEMON_UNAVAILABLE, flag};
-use crate::serve;
+use crate::daemon::serve;
 
 /// Copies bytes between stdin/stdout and a running daemon's socket, and does nothing else.
 ///
@@ -45,7 +45,10 @@ pub fn run_relay(args: &[String]) -> ExitCode {
         }
     };
     std::thread::spawn(move || {
-        let _ = std::io::copy(&mut crate::transport::FdStream::stdin(), &mut to_daemon);
+        let _ = std::io::copy(
+            &mut crate::daemon::transport::FdStream::stdin(),
+            &mut to_daemon,
+        );
         let _ = to_daemon.shutdown(std::net::Shutdown::Write);
     });
 
@@ -63,7 +66,7 @@ pub fn run_relay(args: &[String]) -> ExitCode {
     // Watching stdout for a hang-up ends it the moment sshd closes the channel. That is Linux, where
     // a pipe whose readers are gone reports POLLERR; macOS's poll does not report it for a pipe,
     // and there the relay falls back to noticing on its next write.
-    let mut to_client = crate::transport::FdStream::writer(libc::STDOUT_FILENO);
+    let mut to_client = crate::daemon::transport::FdStream::writer(libc::STDOUT_FILENO);
     let mut from_daemon = &stream;
     let mut buffer = vec![0u8; 65536];
     let mut watched = [

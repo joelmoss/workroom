@@ -6,9 +6,9 @@ import SwiftUI
 /// whole chrome: foreground alpha variants give muted/dim text and the faint surface/border/hover
 /// fills, the accent comes from `palette[4]` (each theme's signature colour — see issue #36 review).
 ///
-/// SwiftUI views read these via `@Environment(ThemeService.self).tokens.*`, which tracks the
-/// dependency so they repaint on a theme change. AppKit / non-SwiftUI sites (terminal focus border,
-/// dim scrim) read `ThemeService.shared.tokens` and refresh on `.themeDidChange`.
+/// SwiftUI views read these via `@Environment(\.themeTokens)`, which every SwiftUI root injects so
+/// they repaint on a theme change. AppKit / non-SwiftUI sites (terminal focus border, dim scrim)
+/// read `ThemeService.shared.tokens` and refresh on `.themeDidChange`.
 ///
 /// Derivation mirrors muxy's `MuxyTheme.Snapshot`. When no theme resolves (first launch before a
 /// theme is applied, or a deleted file), the fallbacks are the macOS system colours, so the chrome
