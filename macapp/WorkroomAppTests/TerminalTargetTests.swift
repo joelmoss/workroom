@@ -85,16 +85,25 @@ final class TerminalTargetTests: XCTestCase {
   }
 
   /// A base names another remote only when the part before the slash is one, as the CLI reads it.
-  func testSplitBaseMatchesTheCLIsRule() {
-    let remotes = ["origin", "upstream"]
-    XCTAssertTrue(RemoteWorkrooms.splitBase("develop", remotes: remotes) == ("origin", "develop"))
-    XCTAssertTrue(RemoteWorkrooms.splitBase("origin/main", remotes: remotes) == ("origin", "main"))
-    XCTAssertTrue(
-      RemoteWorkrooms.splitBase("upstream/main", remotes: remotes) == ("upstream", "main"))
-    XCTAssertTrue(
-      RemoteWorkrooms.splitBase("release/1.0", remotes: remotes) == ("origin", "release/1.0"))
-    XCTAssertTrue(
-      RemoteWorkrooms.splitBase("upstream/", remotes: remotes) == ("origin", "upstream/"))
+  /// The cases are `testdata/twins/split_base.tsv`, which the CLI's `TestSplitBase` also reads, so
+  /// the two copies of the rule can't drift.
+  func testSplitBaseMatchesTheCLIsRule() throws {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()  // WorkroomAppTests
+      .deletingLastPathComponent()  // macapp
+      .deletingLastPathComponent()  // repository root
+      .appendingPathComponent("testdata/twins/split_base.tsv")
+    var rows = 0
+    for line in try String(contentsOf: url, encoding: .utf8).split(separator: "\n")
+    where !line.hasPrefix("#") {
+      let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+      guard fields.count == 4 else { return XCTFail("malformed fixture line: \(line)") }
+      let remotes = fields[0].split(separator: ",").map(String.init)
+      let split = RemoteWorkrooms.splitBase(fields[1], remotes: remotes)
+      XCTAssertTrue(split == (fields[2], fields[3]), "\(fields[1]) with \(remotes) gave \(split)")
+      rows += 1
+    }
+    XCTAssertGreaterThan(rows, 0, "no cases in the fixture")
   }
 
   /// The project's base branch arrives under the CLI's snake_case key.

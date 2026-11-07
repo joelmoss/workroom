@@ -144,7 +144,8 @@ func (f *fetchStep) finish(warning string, err error) {
 // SplitBase reads a base branch setting: "<remote>/<branch>" when the part before the first "/"
 // is one of remotes, else a branch on origin. So `upstream/main` is upstream's main, `origin/main`
 // is plain `main`, and `release/1.0` stays an origin branch unless a remote is named "release".
-// The macOS app applies the same rule (RemoteWorkrooms.splitBase).
+// The macOS app applies the same rule (RemoteWorkrooms.splitBase); testdata/twins/split_base.tsv
+// holds the cases both are tested against.
 func SplitBase(base string, remotes []string) (remote, branch string) {
 	if r, rest, ok := strings.Cut(base, "/"); ok && rest != "" && slices.Contains(remotes, r) {
 		return r, rest

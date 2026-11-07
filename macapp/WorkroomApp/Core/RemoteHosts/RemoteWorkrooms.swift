@@ -90,7 +90,8 @@ enum RemoteWorkrooms {
 
   /// A base branch setting as the CLI reads it (`vcs.SplitBase`): `<remote>/<branch>` when the part
   /// before the first `/` is one of `remotes`, else a branch on origin. So `upstream/main` is
-  /// upstream's main, `origin/main` is `main`, and `release/1.0` stays an origin branch.
+  /// upstream's main, `origin/main` is `main`, and `release/1.0` stays an origin branch. Both copies
+  /// are tested against `testdata/twins/split_base.tsv`.
   static func splitBase(_ base: String, remotes: [String]) -> (remote: String, branch: String) {
     if let slash = base.firstIndex(of: "/") {
       let remote = String(base[..<slash])

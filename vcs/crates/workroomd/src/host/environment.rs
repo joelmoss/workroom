@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 use crate::util::lock_or_recover;
 
 /// Shells whose `-lic` means login and interactive; anything else gets a login `/bin/sh -lc`, as
-/// `ShellEnvironment.posixShells` does on the Mac.
+/// `ShellEnvironment.posixShells` does on the Mac. Both, and the CLI's, are tested against
+/// `testdata/twins/login_shell.tsv`.
 const POSIX_SHELLS: [&str; 5] = ["zsh", "bash", "sh", "dash", "ksh"];
 /// The PATH the probe shell starts from, so a login shell composes its own as it would in a terminal.
 const PROBE_SPAWN_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";

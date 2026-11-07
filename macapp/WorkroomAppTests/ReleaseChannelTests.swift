@@ -21,6 +21,25 @@ final class ReleaseChannelTests: XCTestCase {
     XCTAssertEqual(ReleaseChannel.allCases, [.stable, .pre, .nightly])
   }
 
+  /// The app classifies no tags, but its raw values must be the channel names the CLI and
+  /// `channel-helper.sh` classify tags into (and `appcast.sh` writes): every channel in their
+  /// shared fixture, `internal/channel/testdata/channel_cases.tsv`, and no other.
+  func testRawValuesAreTheChannelsTheClassifiersProduce() throws {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()  // WorkroomAppTests
+      .deletingLastPathComponent()  // macapp
+      .deletingLastPathComponent()  // repository root
+      .appendingPathComponent("internal/channel/testdata/channel_cases.tsv")
+    var channels = Set<String>()
+    for line in try String(contentsOf: url, encoding: .utf8).split(separator: "\n")
+    where !line.hasPrefix("#") {
+      let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
+      guard fields.count == 2 else { return XCTFail("malformed fixture line: \(line)") }
+      if fields[1] != "EXCLUDED" { channels.insert(String(fields[1])) }
+    }
+    XCTAssertEqual(Set(ReleaseChannel.allCases.map(\.rawValue)), channels)
+  }
+
   /// The main app's Settings picker offers stable/pre only — nightly is a separate side-by-side
   /// product, never a runtime switch.
   func testPickerCasesExcludeNightly() {

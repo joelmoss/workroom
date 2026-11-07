@@ -1,0 +1,15 @@
+# Shared base-branch setting -> (remote, branch) cases. The CLI and the app each read a base
+# branch, and both MUST agree on every row: Go internal/vcs's SplitBase (vcs_test.go) and Swift
+# RemoteWorkrooms.splitBase (the app's TerminalTargetTests). The code stays two copies, one per
+# runtime (ADR 0005's spirit); this table is what keeps them one rule. The base names another
+# remote only when the part before its first "/" is one of the repository's remotes.
+# Format: <remotes, comma-separated><TAB><base><TAB><remote><TAB><branch>.
+origin,upstream	develop	origin	develop
+origin,upstream	origin/main	origin	main
+origin,upstream	upstream/main	upstream	main
+origin,upstream	upstream/release/1.0	upstream	release/1.0
+origin,upstream	release/1.0	origin	release/1.0
+origin,upstream	upstream/	origin	upstream/
+origin,upstream	/main	origin	/main
+origin,release	release/1.0	release	1.0
+origin	upstream/main	origin	upstream/main

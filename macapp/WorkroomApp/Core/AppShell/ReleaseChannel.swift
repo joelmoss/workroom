@@ -3,7 +3,8 @@ import Foundation
 
 /// A release channel the user can subscribe to for Sparkle auto-updates (issue #91). Mirrors the Go
 /// CLI's `internal/channel` package; the canonical classification + floor rules live there and in
-/// `Scripts/channel-helper.sh` — keep all three in lockstep.
+/// `Scripts/channel-helper.sh`, on one shared fixture (`channel_cases.tsv`) that
+/// `ReleaseChannelTests` also reads to pin these raw values to the channels they classify into.
 ///
 /// Floor / nested model: a channel receives its own builds plus every channel below it, newest
 /// wins. Stable users never see prereleases.

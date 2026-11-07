@@ -140,26 +140,38 @@ final class ShellEnvironmentTests: XCTestCase {
 
   // MARK: loginShellInvocation
 
-  func testPOSIXShellsGetInteractiveLogin() {
-    for shell in ["/bin/zsh", "/bin/bash", "/bin/sh", "/bin/dash", "/usr/local/bin/ksh"] {
-      let invocation = ShellEnvironment.loginShellInvocation(script: "echo hi", shell: shell)
-      XCTAssertEqual(invocation.argv.executable, shell, shell)
-      XCTAssertEqual(invocation.argv.args.first, "-lic", shell)
-    }
-  }
+  /// The repository's `testdata/twins/login_shell.tsv`, found from this file's own location. The
+  /// CLI's `loginShellInvocation` and workroomd's `probe_invocation` read the same table, so the
+  /// three copies of the rule can't drift.
+  private static let loginShellCases = URL(fileURLWithPath: String(describing: #filePath))
+    .deletingLastPathComponent()  // WorkroomSystemTests
+    .deletingLastPathComponent()  // Tests
+    .deletingLastPathComponent()  // WorkroomSystem
+    .deletingLastPathComponent()  // Packages
+    .deletingLastPathComponent()  // macapp
+    .deletingLastPathComponent()  // repository root
+    .appendingPathComponent("testdata/twins/login_shell.tsv")
 
-  /// fish and nushell can't be driven with `-lic`, so they fall back to a login `/bin/sh -lc`.
-  /// That still sources `/etc/profile`, so `path_helper` runs and they get the same floor —
-  /// only their own rc-set PATH additions are missed. No test covered this branch before, and
-  /// extracting the shared helper made it load-bearing for the run command too.
-  func testNonPOSIXShellsFallBackToLoginBinSh() {
-    for shell in ["/opt/homebrew/bin/fish", "/opt/homebrew/bin/nu", "/bin/csh"] {
+  /// POSIX shells get `-lic`; fish, nushell, csh and anything else can't be driven with it, so
+  /// they fall back to a login `/bin/sh -lc`. That still sources `/etc/profile`, so `path_helper`
+  /// runs and they get the same floor — only their own rc-set PATH additions are missed. Both
+  /// forms are checked, as the run command uses the string one.
+  func testLoginShellInvocationMatchesTheSharedTable() throws {
+    let table = try String(contentsOf: Self.loginShellCases, encoding: .utf8)
+    var rows = 0
+    for line in table.split(separator: "\n", omittingEmptySubsequences: true)
+    where !line.hasPrefix("#") {
+      let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+      guard fields.count == 3 else { return XCTFail("malformed fixture line: \(line)") }
+      let (shell, program, flag) = (fields[0], fields[1], fields[2])
       let invocation = ShellEnvironment.loginShellInvocation(script: "echo hi", shell: shell)
-      XCTAssertEqual(invocation.argv.executable, "/bin/sh", shell)
-      XCTAssertEqual(invocation.argv.args.first, "-lc", shell)
-      XCTAssertTrue(invocation.commandString.contains("/bin/sh"), shell)
-      XCTAssertTrue(invocation.commandString.contains("-lc"), shell)
+      XCTAssertEqual(invocation.argv.executable, program, shell)
+      XCTAssertEqual(invocation.argv.args.first, flag, shell)
+      XCTAssertTrue(invocation.commandString.contains(program), shell)
+      XCTAssertTrue(invocation.commandString.contains(flag), shell)
+      rows += 1
     }
+    XCTAssertGreaterThan(rows, 0, "no cases in the fixture")
   }
 
   func testCommandStringQuotesTheScript() {

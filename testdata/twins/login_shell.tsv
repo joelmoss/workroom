@@ -1,0 +1,25 @@
+# Shared $SHELL -> login-shell invocation cases. Three runtimes each decide how to start the user's
+# login shell, and all three MUST agree on every row: Go internal/script's loginShellInvocation
+# (login_environment_test.go), Swift ShellEnvironment.loginShellInvocation (WorkroomSystem's
+# ShellEnvironmentTests) and Rust workroomd's host::environment::probe_invocation
+# (host/environment/tests.rs). The code stays three copies, one per runtime (ADR 0005's spirit);
+# this table is what keeps them one rule. A shell the rule doesn't know runs as a login /bin/sh.
+# Format: <shell><TAB><program><TAB><flag>. A row with an empty shell (a line starting with a tab)
+# tests an unset or empty $SHELL.
+/bin/zsh	/bin/zsh	-lic
+/usr/bin/zsh	/usr/bin/zsh	-lic
+/bin/bash	/bin/bash	-lic
+/opt/homebrew/bin/bash	/opt/homebrew/bin/bash	-lic
+/bin/sh	/bin/sh	-lic
+/bin/dash	/bin/dash	-lic
+/usr/local/bin/ksh	/usr/local/bin/ksh	-lic
+zsh	zsh	-lic
+bash	bash	-lic
+/opt/homebrew/bin/fish	/bin/sh	-lc
+/usr/bin/fish	/bin/sh	-lc
+/opt/homebrew/bin/nu	/bin/sh	-lc
+/bin/csh	/bin/sh	-lc
+/bin/tcsh	/bin/sh	-lc
+/usr/local/bin/zsh5	/bin/sh	-lc
+-zsh	/bin/sh	-lc
+	/bin/sh	-lc

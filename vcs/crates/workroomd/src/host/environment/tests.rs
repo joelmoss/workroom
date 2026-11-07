@@ -78,12 +78,26 @@ fn merging_drops_the_probes_state_and_puts_the_overrides_on_top() {
     assert_eq!(merged["EDITOR"], "vim");
 }
 
+/// The cases are shared with the CLI's `loginShellInvocation` and the app's `ShellEnvironment`,
+/// which read the same table, so the three copies of the rule can't drift.
 #[test]
 fn a_posix_shell_is_probed_login_and_interactive_and_anything_else_through_sh() {
-    assert_eq!(probe_invocation("/usr/bin/zsh"), ("/usr/bin/zsh", "-lic"));
-    assert_eq!(probe_invocation("/bin/bash"), ("/bin/bash", "-lic"));
-    assert_eq!(probe_invocation("/usr/bin/fish"), ("/bin/sh", "-lc"));
-    assert_eq!(probe_invocation(""), ("/bin/sh", "-lc"));
+    let table =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../testdata/twins/login_shell.tsv");
+    let table = std::fs::read_to_string(&table).unwrap();
+    let mut rows = 0;
+    for line in table.lines() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        let [shell, program, flag] = fields[..] else {
+            panic!("malformed fixture line (want 3 fields): {line:?}");
+        };
+        assert_eq!(probe_invocation(shell), (program, flag), "shell {shell:?}");
+        rows += 1;
+    }
+    assert!(rows > 0, "no cases in the fixture");
 }
 
 /// A fake POSIX shell (named `bash`) that exports a variable and runs the probe's line, as a
