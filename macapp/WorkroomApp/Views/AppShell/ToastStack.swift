@@ -9,27 +9,15 @@ import SwiftUI
 ///
 /// Toasts stack newest-at-bottom and auto-dismiss after 5s, with the countdown paused while hovered.
 /// If a toast's notification is dismissed elsewhere (Clear, app refocus, workroom delete), the toast
-/// is pruned so it can't outlive what it represents.
+/// is pruned so it can't outlive what it represents (`ToastStackAdapter` does that, since it is the
+/// one that sees the notification list).
+///
+/// Store-free: it renders `model` and forwards taps to `actions`. `ToastStackAdapter` builds both
+/// from the window's `AppStore`.
 struct ToastStack: View {
-  @EnvironmentObject var store: AppStore
-  @EnvironmentObject var runCommand: RunCommandController
-  @EnvironmentObject var notifications: NotificationCenterStore
+  let model: ToastStackModel
+  let actions: ToastStackActions
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-  /// Toasts to render. Notifications no longer live in the right inspector (moved to the left
-  /// sidebar, issue #118), so the previous `previewingRight` suppression — which withheld toasts
-  /// while the right inspector was edge-revealed because that panel WAS the notifications surface —
-  /// is gone; a focused arrival always toasts now (see `recordNotification`).
-  private var visibleToasts: [WorkroomNotification] {
-    store.toasts
-  }
-
-  /// Origin label for a toast, resolved from the live model so a workroom's display label
-  /// (issue #41) shows and tracks renames; falls back to the snapshot when the target is gone.
-  private func resolvedSource(forTargetID id: TerminalTarget.ID, fallback: String) -> String {
-    let live = store.notificationSource(forTargetID: id)
-    return live.isEmpty ? fallback : live
-  }
 
   var body: some View {
     // ONE container (issue #67): live run toasts ride above the transient notification toasts, so the
@@ -38,46 +26,42 @@ struct ToastStack: View {
       // Tool-version warnings ride at the top: unlike the two below, these describe a STANDING
       // condition (an old `git` doesn't fix itself), so they never auto-dismiss and stay until the
       // user closes them. See `VCSToolVersions`.
-      ForEach(store.vcsToolWarnings) { warning in
+      ForEach(model.toolWarnings) { warning in
         ToolWarningToastView(
           warning: warning,
           onDismiss: {
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-              store.dismissToolWarning(tool: warning.tool)
+              actions.dismissToolWarning(warning.tool)
             }
           }
         )
         .transition(.move(edge: .trailing).combined(with: .opacity))
       }
-      ForEach(store.runToastItems) { item in
+      ForEach(model.runToasts) { run in
         RunToastView(
-          item: item,
-          source: resolvedSource(forTargetID: item.targetID, fallback: item.source),
+          item: run.item,
+          source: run.source,
           onTap: {
             // Tap anywhere on the card → open the run terminal AND dismiss the toast (it won't
             // reappear; you're now looking at the run). Mirrors the notification toast's tap.
-            store.openRunToast(for: item.targetID)
-            runCommand.dismissRunToast(for: item.targetID)
+            actions.openRunToast(run.item.targetID)
           },
           onDismiss: {
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-              runCommand.dismissRunToast(for: item.targetID)
+              actions.dismissRunToast(run.item.targetID)
             }
           }
         )
         .transition(.move(edge: .trailing).combined(with: .opacity))
       }
-      ForEach(visibleToasts) { toast in
+      ForEach(model.toasts) { toast in
         ToastView(
-          item: toast,
-          source: resolvedNotificationSource(store, toast),
-          onTap: {
-            store.dismissToast(toast.id)
-            WindowRegistry.shared.open(toast)
-          },
+          item: toast.item,
+          source: toast.source,
+          onTap: { actions.openToast(toast.item) },
           onDismiss: {
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-              store.dismissToast(toast.id)
+              actions.dismissToast(toast.item.id)
             }
           }
         )
@@ -88,24 +72,113 @@ struct ToastStack: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
     .animation(
       reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.82),
-      value: store.toasts.map(\.id)
+      value: model.toasts.map(\.id)
     )
     .animation(
       reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.82),
-      value: store.runToastItems
+      value: model.runToasts.map(\.item)
     )
-    // Keep toasts honest with the spine: drop any whose notification was dismissed elsewhere.
-    .onChange(of: notifications.items) { _, items in
-      let live = Set(items.map(\.id))
-      for toast in store.toasts where !live.contains(toast.id) { store.dismissToast(toast.id) }
-    }
     .animation(
       reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.82),
-      value: store.vcsToolWarnings
+      value: model.toolWarnings
     )
     // An empty stack must not eat clicks meant for the content beneath it.
-    .allowsHitTesting(
-      !store.toasts.isEmpty || !store.runToastItems.isEmpty || !store.vcsToolWarnings.isEmpty
+    .allowsHitTesting(!model.isEmpty)
+  }
+}
+
+/// What `ToastStack` shows, with each toast's origin label already resolved.
+struct ToastStackModel: Equatable {
+  /// A notification toast and its origin label.
+  struct Toast: Identifiable, Equatable {
+    let item: WorkroomNotification
+    /// Resolved from the live model so a workroom's display label (issue #41) shows and tracks
+    /// renames; the snapshot when the target is gone.
+    let source: String
+    var id: WorkroomNotification.ID { item.id }
+  }
+
+  /// A live run toast and its origin label.
+  struct RunToast: Identifiable, Equatable {
+    let item: RunCommandController.RunToastItem
+    /// Resolved as `Toast.source` is.
+    let source: String
+    var id: TerminalTarget.ID { item.id }
+  }
+
+  var toolWarnings: [VCSToolVersions.ToolWarning] = []
+  var runToasts: [RunToast] = []
+  /// Notifications no longer live in the right inspector (moved to the left sidebar, issue #118),
+  /// so the previous `previewingRight` suppression — which withheld toasts while the right inspector
+  /// was edge-revealed because that panel WAS the notifications surface — is gone; a focused arrival
+  /// always toasts now (see `recordNotification`).
+  var toasts: [Toast] = []
+
+  var isEmpty: Bool { toolWarnings.isEmpty && runToasts.isEmpty && toasts.isEmpty }
+}
+
+/// What a toast's controls do. Animation stays with `ToastStack`; these only change the model.
+struct ToastStackActions {
+  /// Close a standing tool warning, by its tool.
+  var dismissToolWarning: (String) -> Void
+  /// Open a run toast's terminal and dismiss the toast.
+  var openRunToast: (TerminalTarget.ID) -> Void
+  /// Dismiss a run toast without opening it.
+  var dismissRunToast: (TerminalTarget.ID) -> Void
+  /// Open a notification toast's terminal (which also dismisses the notification) and drop it.
+  var openToast: (WorkroomNotification) -> Void
+  /// Drop a notification toast, leaving its notification in place.
+  var dismissToast: (WorkroomNotification.ID) -> Void
+}
+
+/// Builds `ToastStack`'s model and actions from the window's `AppStore`.
+///
+/// A view of its own, not a computation in `RootView`: its body is where the toast lists are read,
+/// so a toast arriving re-evaluates this and the stack, and not the window around them.
+struct ToastStackAdapter: View {
+  @EnvironmentObject var store: AppStore
+  @EnvironmentObject var runCommand: RunCommandController
+  @EnvironmentObject var notifications: NotificationCenterStore
+
+  var body: some View {
+    ToastStack(model: model, actions: actions)
+      // Keep toasts honest with the spine: drop any whose notification was dismissed elsewhere.
+      .onChange(of: notifications.items) { _, items in
+        let live = Set(items.map(\.id))
+        for toast in store.toasts where !live.contains(toast.id) { store.dismissToast(toast.id) }
+      }
+  }
+
+  private var model: ToastStackModel {
+    ToastStackModel(
+      toolWarnings: store.vcsToolWarnings,
+      runToasts: store.runToastItems.map { item in
+        .init(item: item, source: resolvedSource(forTargetID: item.targetID, fallback: item.source))
+      },
+      toasts: store.toasts.map { .init(item: $0, source: resolvedNotificationSource(store, $0)) }
+    )
+  }
+
+  /// Origin label for a run toast, resolved from the live model so a workroom's display label
+  /// (issue #41) shows and tracks renames; falls back to the snapshot when the target is gone.
+  private func resolvedSource(forTargetID id: TerminalTarget.ID, fallback: String) -> String {
+    let live = store.notificationSource(forTargetID: id)
+    return live.isEmpty ? fallback : live
+  }
+
+  private var actions: ToastStackActions {
+    ToastStackActions(
+      dismissToolWarning: { [store] tool in store.dismissToolWarning(tool: tool) },
+      openRunToast: { [store, runCommand] targetID in
+        store.openRunToast(for: targetID)
+        runCommand.dismissRunToast(for: targetID)
+      },
+      dismissRunToast: { [runCommand] targetID in runCommand.dismissRunToast(for: targetID) },
+      openToast: { [store] toast in
+        store.dismissToast(toast.id)
+        WindowRegistry.shared.open(toast)
+      },
+      dismissToast: { [store] id in store.dismissToast(id) }
     )
   }
 }
@@ -301,7 +374,7 @@ private struct ToastView: View {
 /// dismisses without opening. Persistence, the foreground-hide rule, and auto-dismiss live on the
 /// store (the source of truth); this view only renders + forwards the two actions.
 private struct RunToastView: View {
-  let item: AppStore.RunToastItem
+  let item: RunCommandController.RunToastItem
   /// Origin label, resolved by the parent so it reflects a workroom's display label (issue #41).
   let source: String
   let onTap: () -> Void
@@ -399,3 +472,36 @@ private struct RunToastView: View {
     .accessibilityHidden(true)
   }
 }
+
+#if DEBUG
+  #Preview("Toasts") {
+    let target = TerminalTarget.ID.workroom(project: "platform", name: "fix-auth")
+    ToastStack(
+      model: ToastStackModel(
+        toolWarnings: [
+          .init(
+            tool: "git", title: "git is too old",
+            detail: "Push, pull and fetch need git 2.30 or newer.")
+        ],
+        runToasts: [
+          .init(
+            item: .init(
+              targetID: target, tabID: UUID(), source: "platform / fix-auth",
+              command: "npm run dev", status: .failed(code: 1)),
+            source: "platform / fix-auth")
+        ],
+        toasts: [
+          .init(
+            item: WorkroomNotification(
+              id: UUID(), targetID: target, tabID: UUID(), source: "platform / fix-auth",
+              title: "Build finished", body: "All 212 tests passed.", date: .now, count: 1),
+            source: "platform / fix-auth")
+        ]
+      ),
+      actions: ToastStackActions(
+        dismissToolWarning: { _ in }, openRunToast: { _ in }, dismissRunToast: { _ in },
+        openToast: { _ in }, dismissToast: { _ in })
+    )
+    .frame(width: 360, height: 360)
+  }
+#endif

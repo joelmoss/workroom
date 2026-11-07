@@ -426,7 +426,7 @@ struct RootView: View {
       // activity bar's width (44) so a toast never sits under the always-visible bar on the edge.
       // `.pointerStyle`: the arrow over a toast, not a terminal's cursor rect beneath it (#466).
       .overlay(alignment: .bottomTrailing) {
-        ToastStack().pointerStyle(.default).padding(.trailing, 44)
+        ToastStackAdapter().pointerStyle(.default).padding(.trailing, 44)
       }
   }
 

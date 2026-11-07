@@ -20,7 +20,7 @@ struct QuickTerminalContent: View {
       // Toasts while it is the front window (#573 D2). `.pointerStyle`: the arrow over a toast,
       // not a terminal's cursor rect beneath it (#466).
       .overlay(alignment: .bottomTrailing) {
-        ToastStack().pointerStyle(.default).padding(8)
+        ToastStackAdapter().pointerStyle(.default).padding(8)
       }
       .background(tokens.panel)
       // The tab strip takes the titlebar's place; without this the hosting view insets everything
