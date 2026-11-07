@@ -4,6 +4,8 @@
     gui-lock.py shared    [--label TEXT] -- COMMAND [ARG...]   # hosted unit tests (make app-test)
     gui-lock.py exclusive [--label TEXT] -- COMMAND [ARG...]   # XCUITest (make app-uitest)
     gui-lock.py status                                         # who holds it; never waits
+    gui-lock.py vm-slot   [--slots N] [--label TEXT] -- COMMAND [ARG...]  # a Tart guest (app-uitest-vm)
+    gui-lock.py vm-status [--slots N]                          # who holds the VM slots; never waits
 
 Runs COMMAND while holding a machine-wide lock, then exits with COMMAND's status.
 
@@ -37,6 +39,17 @@ Exit status: COMMAND's own; 128+N if COMMAND was killed by signal N, or this hel
 waited; 75 on timeout; 2 on a usage error. If the lock files cannot be created at all, COMMAND runs
 without the lock and a warning says so: this coordinates runs, it is not a gate on them.
 
+VM slots. `make app-uitest-vm` runs UI tests in Tart macOS guests instead of on this Mac's screen,
+so they need no GUI session, but Virtualization.framework runs at most two macOS guests at once and
+a third `tart run` fails. `vm-slot` is a counting lock for that: N slots (default 2), each a flock
+on its own file `vm.slot-<i>` under WR_VM_LOCK_DIR (default ~/.cache/workroom/vm-locks). A run takes
+the first free slot, waiting with the same "waiting for …" messages while all are taken, and runs
+COMMAND with WR_VM_SLOT=<i> so it can name its guest after the slot. Unlike the GUI lock it fails
+closed: if the lock files cannot be used it exits 75 with the reason rather than running unlocked,
+because an uncounted third guest fails to boot and takes its run down with it; WR_GUI_LOCK=off does
+not apply to it. WR_VM_LOCK_TIMEOUT works as WR_GUI_LOCK_TIMEOUT does. `vm-status` exits 1 while
+every slot is held.
+
 Standard library only, and Python 3.9 (Xcode's python3) compatible, so it runs anywhere xcodebuild
 does.
 """
@@ -66,8 +79,19 @@ def lock_dir():
     return path
 
 
-def holders_dir(root):
-    path = os.path.join(root, "gui.holders")
+def vm_lock_dir():
+    default = os.path.join(os.path.expanduser("~"), ".cache", "workroom", "vm-locks")
+    path = os.environ.get("WR_VM_LOCK_DIR") or default
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    return path
+
+
+GUI_HOLDERS = "gui.holders"
+VM_HOLDERS = "vm.holders"
+
+
+def holders_dir(root, name=GUI_HOLDERS):
+    path = os.path.join(root, name)
     os.makedirs(path, mode=0o700, exist_ok=True)
     return path
 
@@ -97,11 +121,11 @@ def pid_alive(pid):
     return True
 
 
-def read_holders(root):
+def read_holders(root, name=GUI_HOLDERS):
     """Live holder records, as (pid, mode, started, label). Records a killed holder left behind are
     pruned here; the lock itself never depended on them."""
     try:
-        directory = holders_dir(root)
+        directory = holders_dir(root, name)
         names = sorted(os.listdir(directory))
     except OSError:
         return []
@@ -130,11 +154,11 @@ def read_holders(root):
     return holders
 
 
-def write_holder(root, mode, label):
+def write_holder(root, mode, label, name=GUI_HOLDERS):
     """Record who holds (or is queued for) the session, for other runs' messages. Best effort: the
     lock is the flock, and a record that cannot be written must not fail the run."""
     try:
-        path = os.path.join(holders_dir(root), str(os.getpid()))
+        path = os.path.join(holders_dir(root, name), str(os.getpid()))
         staged = path + ".tmp"
         with open(staged, "w") as record:
             record.write("%s\t%f\t%s\n" % (mode, time.time(), label.replace("\n", " ")))
@@ -171,9 +195,10 @@ def raise_interrupted(signum, _frame):
     raise Interrupted(signum)
 
 
-def wait_for(acquire, root, mode, deadline):
-    """Poll `acquire` until it succeeds. Says who is in the way once, and again every
-    REMIND_SECONDS, so a queued run explains itself instead of looking hung."""
+def wait_for(acquire, root, mode, deadline, waiting=None, holders_name=GUI_HOLDERS):
+    """Poll `acquire` until it succeeds. Says who is in the way once (`waiting`, or the GUI
+    session's reason), and again every REMIND_SECONDS, so a queued run explains itself instead of
+    looking hung."""
     if acquire():
         return True
     started = time.time()
@@ -181,11 +206,13 @@ def wait_for(acquire, root, mode, deadline):
     while True:
         now = time.time()
         if now - reminded >= REMIND_SECONDS:
-            holders = read_holders(root)
+            holders = read_holders(root, holders_name)
             if reminded == 0.0:
-                why = "UI tests need it to themselves" if mode == "exclusive" else (
-                    "a UI-test run is using it or queued for it")
-                log("waiting for this Mac's GUI session (%s). Held by:" % why)
+                if waiting is None:
+                    why = "UI tests need it to themselves" if mode == "exclusive" else (
+                        "a UI-test run is using it or queued for it")
+                    waiting = "waiting for this Mac's GUI session (%s)" % why
+                log("%s. Held by:" % waiting)
             else:
                 log("still waiting (%s). Held by:" % duration(now - started))
             for line in describe(holders) or ["  (a run that is about to start or finish)"]:
@@ -208,6 +235,43 @@ def run_unlocked(command):
         return 127 if error.errno == errno.ENOENT else 126
 
 
+def run_holding(command, env=None):
+    """Run COMMAND to its end while the caller holds its lock, and return its exit status.
+
+    The command owns the terminal. Ctrl-C reaches it directly (it shares our process group), so
+    this process just waits for it to exit rather than dropping the lock under a run that is still
+    cleaning up; a signal sent to this process alone is passed on. Python-level handlers, never
+    SIG_IGN: exec resets a caught signal to its default in the child, but an ignored one would stay
+    ignored, and xcodebuild would then shrug off Ctrl-C."""
+    child = []
+
+    def forward(signum, _frame):
+        if child and child[0].poll() is None:
+            child[0].send_signal(signum)
+
+    signal.signal(signal.SIGINT, lambda _signum, _frame: None)
+    signal.signal(signal.SIGTERM, forward)
+    signal.signal(signal.SIGHUP, forward)
+    try:
+        child.append(subprocess.Popen(command, env=env))
+    except OSError as error:
+        log("cannot run %s: %s" % (command[0], error.strerror))
+        return 127 if error.errno == errno.ENOENT else 126
+    status = child[0].wait()
+    return 128 - status if status < 0 else status
+
+
+def deadline_from(variable):
+    timeout = os.environ.get(variable, "").strip()
+    if not timeout:
+        return None, timeout
+    try:
+        return time.time() + max(0.0, float(timeout)), timeout
+    except ValueError:
+        log("ignoring %s=%r (not a number of seconds)" % (variable, timeout))
+        return None, timeout
+
+
 def run_locked(mode, label, command):
     try:
         root = lock_dir()
@@ -224,25 +288,13 @@ def run_locked(mode, label, command):
             "session now, so another workroom's run can overlap this %s" % (error, label)
         )
         return run_unlocked(command)
-    timeout = os.environ.get("WR_GUI_LOCK_TIMEOUT", "").strip()
-    deadline = None
-    if timeout:
-        try:
-            deadline = time.time() + max(0.0, float(timeout))
-        except ValueError:
-            log("ignoring WR_GUI_LOCK_TIMEOUT=%r (not a number of seconds)" % timeout)
+    deadline, timeout = deadline_from("WR_GUI_LOCK_TIMEOUT")
 
     # Two locks give queued UI-test runs priority. `gui.turnstile` is the queue: an exclusive run
     # holds it from the moment it starts waiting until it finishes, and a shared run only passes
     # through it on the way in, so no shared run can start while an exclusive one is queued or
     # running. `gui.lock` is the session itself.
     record = None
-    child = None
-
-    def forward(signum, _frame):
-        if child is not None and child.poll() is None:
-            child.send_signal(signum)
-
     previous = {}
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         previous[signum] = signal.signal(signum, raise_interrupted)
@@ -264,26 +316,9 @@ def run_locked(mode, label, command):
                 log("gave up after WR_GUI_LOCK_TIMEOUT=%s seconds" % timeout)
                 return EX_TEMPFAIL
             record = write_holder(root, mode, label) or record
-
-            # From here the command owns the terminal. Ctrl-C reaches it directly (it shares our
-            # process group), so this process just waits for it to exit rather than dropping the
-            # lock under a run that is still cleaning up; a signal sent to this process alone is
-            # passed on. Python-level handlers, never SIG_IGN: exec resets a caught signal to its
-            # default in the child, but an ignored one would stay ignored, and xcodebuild would
-            # then shrug off Ctrl-C.
-            signal.signal(signal.SIGINT, lambda _signum, _frame: None)
-            signal.signal(signal.SIGTERM, forward)
-            signal.signal(signal.SIGHUP, forward)
         except Interrupted as interrupted:
             return 128 + interrupted.signum
-
-        try:
-            child = subprocess.Popen(command)
-        except OSError as error:
-            log("cannot run %s: %s" % (command[0], error.strerror))
-            return 127 if error.errno == errno.ENOENT else 126
-        status = child.wait()
-        return 128 - status if status < 0 else status
+        return run_holding(command)
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
@@ -294,6 +329,99 @@ def run_locked(mode, label, command):
                 pass
         os.close(session)
         os.close(turnstile)
+
+
+DEFAULT_VM_SLOTS = 2
+
+
+def open_vm_slots(slots):
+    """The lock directory and one open lock file per slot. Raises OSError when they cannot be
+    used, holders directory included, so a run never starts on a lock that half works."""
+    root = vm_lock_dir()
+    holders_dir(root, VM_HOLDERS)
+    files = []
+    try:
+        for index in range(1, slots + 1):
+            files.append(open_lock_file(os.path.join(root, "vm.slot-%d" % index)))
+    except OSError:
+        for fd in files:
+            os.close(fd)
+        raise
+    return root, files
+
+
+def run_in_vm_slot(slots, label, command):
+    """Run COMMAND holding one of `slots` VM slots, with WR_VM_SLOT set to its number. Fails
+    closed: exit 75 if the lock cannot be used, never run unlocked."""
+    try:
+        root, files = open_vm_slots(slots)
+    except OSError as error:
+        log("cannot use the VM slot lock (%s); not starting a guest without it, since this Mac runs "
+            "at most %d and an uncounted one fails to boot. Fix the directory or point "
+            "WR_VM_LOCK_DIR elsewhere" % (error, slots))
+        return EX_TEMPFAIL
+    deadline, timeout = deadline_from("WR_VM_LOCK_TIMEOUT")
+    held = []
+
+    def acquire():
+        for index, fd in enumerate(files, 1):
+            if try_flock(fd, fcntl.LOCK_EX):
+                held.append(index)
+                return True
+        return False
+
+    record = None
+    previous = {}
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        previous[signum] = signal.signal(signum, raise_interrupted)
+    try:
+        try:
+            waiting = "waiting for a VM slot (this Mac runs %d guest%s at once)" % (
+                slots, "" if slots == 1 else "s")
+            if not wait_for(acquire, root, "vm-slot", deadline, waiting, VM_HOLDERS):
+                log("gave up after WR_VM_LOCK_TIMEOUT=%s seconds" % timeout)
+                return EX_TEMPFAIL
+            record = write_holder(root, "slot %d" % held[0], label, VM_HOLDERS)
+        except Interrupted as interrupted:
+            return 128 + interrupted.signum
+        except OSError as error:
+            log("cannot use the VM slot lock (%s); not starting a guest without it" % error)
+            return EX_TEMPFAIL
+        env = dict(os.environ)
+        env["WR_VM_SLOT"] = str(held[0])
+        return run_holding(command, env)
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+        if record is not None:
+            try:
+                os.unlink(record)
+            except OSError:
+                pass
+        for fd in files:
+            os.close(fd)
+
+
+def vm_status(slots):
+    """Print the VM slot holders. Exit 1 while every slot is held (a new run would wait), else 0.
+    Counts by the flocks themselves, so a record a run had no time to write still counts."""
+    try:
+        root, files = open_vm_slots(slots)
+    except OSError as error:
+        print("gui-lock: VM slot lock unusable (%s), so no guest run can start" % error)
+        return 1
+    busy = 0
+    for fd in files:
+        if try_flock(fd, fcntl.LOCK_EX):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        else:
+            busy += 1
+        os.close(fd)
+    holders = read_holders(root, VM_HOLDERS)
+    print("gui-lock: %d of %d VM slot%s in use" % (busy, slots, "" if slots == 1 else "s"))
+    for line in describe(holders):
+        print(line)
+    return 1 if busy >= slots else 0
 
 
 def status():
@@ -317,8 +445,19 @@ def usage(message=None):
         log(message)
     sys.stderr.write(
         "usage: gui-lock.py shared|exclusive [--label TEXT] -- COMMAND [ARG...]\n"
-        "       gui-lock.py status\n")
+        "       gui-lock.py status\n"
+        "       gui-lock.py vm-slot [--slots N] [--label TEXT] -- COMMAND [ARG...]\n"
+        "       gui-lock.py vm-status [--slots N]\n")
     return 2
+
+
+def parse_slots(rest):
+    """Strip a leading `--slots N`. Returns (slots, rest), or (None, message) on a bad value."""
+    if rest[:1] != ["--slots"]:
+        return DEFAULT_VM_SLOTS, rest
+    if len(rest) < 2 or not rest[1].isdigit() or int(rest[1]) < 1:
+        return None, "--slots needs a whole number of at least 1"
+    return int(rest[1]), rest[2:]
 
 
 def main(argv):
@@ -327,9 +466,16 @@ def main(argv):
     mode = argv[0]
     if mode == "status" and len(argv) == 1:
         return status()
-    if mode not in ("shared", "exclusive"):
+    if mode not in ("shared", "exclusive", "vm-slot", "vm-status"):
         return usage("unknown mode %r" % mode)
     rest = argv[1:]
+    slots = DEFAULT_VM_SLOTS
+    if mode in ("vm-slot", "vm-status"):
+        slots, rest = parse_slots(rest)
+        if slots is None:
+            return usage(rest)
+        if mode == "vm-status":
+            return vm_status(slots) if not rest else usage("vm-status takes only --slots")
     label = os.getcwd()
     if rest[:1] == ["--label"]:
         if len(rest) < 2:
@@ -338,6 +484,10 @@ def main(argv):
     if rest[:1] != ["--"] or len(rest) < 2:
         return usage("expected -- COMMAND")
     command = rest[1:]
+    if mode == "vm-slot":
+        # Before the WR_GUI_LOCK=off check on purpose: that switch is for the GUI session, which a
+        # guest does not use, and the guest count is a limit this Mac enforces whatever it says.
+        return run_in_vm_slot(slots, label, command)
     if os.environ.get("WR_GUI_LOCK", "").strip().lower() in ("off", "0", "no", "false"):
         return run_unlocked(command)
     return run_locked(mode, label, command)
