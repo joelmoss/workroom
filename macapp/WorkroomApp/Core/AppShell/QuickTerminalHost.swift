@@ -156,9 +156,7 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
     _ bannerState: CodingAgentBannerState, in target: TerminalTarget,
     surface: GhosttySurfaceView?
   ) -> TerminalTab {
-    runCommand.startInvestigate(
-      bannerState: bannerState, target: target, surface: surface,
-      codingAgentSetting: Defaults[.terminalCodingAgentBackend])
+    runCommand.startInvestigate(bannerState: bannerState, target: target, surface: surface)
   }
 
   // MARK: PaneHost: the run tab's menu

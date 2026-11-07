@@ -45,7 +45,7 @@ protocol PaneHost: AnyObject, Sendable {
   // MARK: Status bar and coding agent
 
   func branchLabel(for target: TerminalTarget) -> String?
-  /// An Investigate tab for a diagnosis (`AppStore.startInvestigate`).
+  /// An Investigate tab for a diagnosis (`RunCommandController.startInvestigate`).
   @discardableResult
   func investigate(
     _ bannerState: CodingAgentBannerState, in target: TerminalTarget,

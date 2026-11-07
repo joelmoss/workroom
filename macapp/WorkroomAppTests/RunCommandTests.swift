@@ -147,7 +147,7 @@ final class RunCommandTests: XCTestCase {
   func testAnInvestigateTabIsNotARunSession() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let t = target(store, "/a", "main")
-    let tab = store.startInvestigate(
+    let tab = store.runCommand.startInvestigate(
       bannerState: investigateBanner(t), target: t, surface: nil, codingAgentSetting: "auto")
     XCTAssertEqual(store.terminals.surface(tab)?.isRunSession, false)
   }
@@ -513,7 +513,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertNil(store.terminals.tab(run, for: t))
     XCTAssertNil(store.runCommand.runTabID(for: t.id))
 
-    let investigate = store.startInvestigate(
+    let investigate = store.runCommand.startInvestigate(
       bannerState: investigateBanner(t), target: t, surface: nil)
     XCTAssertNotNil(store.terminals.tab(investigate.id, for: t))
 
@@ -934,7 +934,7 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     let bannerState = investigateBanner(t)
 
-    let tab = store.startInvestigate(
+    let tab = store.runCommand.startInvestigate(
       bannerState: bannerState, target: t, surface: nil, codingAgentSetting: "auto")
 
     XCTAssertEqual(captured.last, CodingAgentPrompt.investigateCommandLine(for: bannerState))
@@ -947,7 +947,7 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     let bannerState = investigateBanner(t)
 
-    store.startInvestigate(
+    store.runCommand.startInvestigate(
       bannerState: bannerState, target: t, surface: nil, codingAgentSetting: "codex")
 
     XCTAssertEqual(
@@ -963,7 +963,7 @@ final class RunCommandTests: XCTestCase {
     }
     let missing = CodingAgentBannerState.failure(failure, .cliNotFound)
 
-    store.startInvestigate(
+    store.runCommand.startInvestigate(
       bannerState: missing, target: t, surface: nil, codingAgentSetting: "auto")
 
     XCTAssertEqual(
@@ -976,7 +976,7 @@ final class RunCommandTests: XCTestCase {
     let bannerState = investigateBanner(t)
     XCTAssertFalse(store.runCommand.hasLiveRunCommand)
 
-    let tab1 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
+    let tab1 = store.runCommand.startInvestigate(bannerState: bannerState, target: t, surface: nil)
     let surface1 = try! XCTUnwrap(store.terminals.surface(tab1))
     surface1.liveProcessOverrideForTesting = true
     XCTAssertTrue(store.runCommand.hasLiveRunCommand)
@@ -988,7 +988,7 @@ final class RunCommandTests: XCTestCase {
 
     // Cleanup path 2: the tab is closed/reaped (`.tabsRemoved`) — independent of `.childExited`
     // ever firing (it isn't guaranteed to, per libghostty exit-reporting flakiness).
-    let tab2 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
+    let tab2 = store.runCommand.startInvestigate(bannerState: bannerState, target: t, surface: nil)
     let surface2 = try! XCTUnwrap(store.terminals.surface(tab2))
     surface2.liveProcessOverrideForTesting = true
     XCTAssertTrue(store.runCommand.hasLiveRunCommand)
@@ -1001,7 +1001,8 @@ final class RunCommandTests: XCTestCase {
   func testGracefullyStopAllCompletesImmediatelyWithOnlyInvestigateTabLive() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let t = target(store, "/a", "main")
-    let tab = store.startInvestigate(bannerState: investigateBanner(t), target: t, surface: nil)
+    let tab = store.runCommand.startInvestigate(
+      bannerState: investigateBanner(t), target: t, surface: nil)
     let surface = try! XCTUnwrap(store.terminals.surface(tab))
     surface.liveProcessOverrideForTesting = true
     XCTAssertTrue(store.runCommand.hasLiveRunCommand)
@@ -1027,7 +1028,8 @@ final class RunCommandTests: XCTestCase {
 
     XCTAssertFalse(runCommands.hasLiveInvestigateSession(for: [t.id]))
 
-    let tab = store.startInvestigate(bannerState: investigateBanner(t), target: t, surface: nil)
+    let tab = store.runCommand.startInvestigate(
+      bannerState: investigateBanner(t), target: t, surface: nil)
     try! XCTUnwrap(store.terminals.surface(tab)).liveProcessOverrideForTesting = true
 
     XCTAssertTrue(runCommands.hasLiveInvestigateSession(for: [t.id]))
@@ -1042,7 +1044,8 @@ final class RunCommandTests: XCTestCase {
   func testInvestigateTabsClearedWhenTargetReapedWithLiveInvestigateTab() async {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let t = target(store, "/a", "main")
-    let tab = store.startInvestigate(bannerState: investigateBanner(t), target: t, surface: nil)
+    let tab = store.runCommand.startInvestigate(
+      bannerState: investigateBanner(t), target: t, surface: nil)
     try! XCTUnwrap(store.terminals.surface(tab)).liveProcessOverrideForTesting = true
     XCTAssertTrue(store.runCommand.hasLiveRunCommand)
 
@@ -1059,8 +1062,8 @@ final class RunCommandTests: XCTestCase {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let t = target(store, "/a", "main")
     let bannerState = investigateBanner(t)
-    let tab1 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
-    let tab2 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
+    let tab1 = store.runCommand.startInvestigate(bannerState: bannerState, target: t, surface: nil)
+    let tab2 = store.runCommand.startInvestigate(bannerState: bannerState, target: t, surface: nil)
     try! XCTUnwrap(store.terminals.surface(tab1)).liveProcessOverrideForTesting = false
     try! XCTUnwrap(store.terminals.surface(tab2)).liveProcessOverrideForTesting = true
 
@@ -1901,7 +1904,7 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     let run = store.terminals.addRunTab(
       for: t, command: "bin/dev", cwd: t.path, focus: false, runSession: true)
-    let investigate = store.startInvestigate(
+    let investigate = store.runCommand.startInvestigate(
       bannerState: investigateBanner(t), target: t, surface: nil, codingAgentSetting: "auto")
 
     XCTAssertEqual(TabSession(key: "r", tab: run)?.terminal?.run, true)

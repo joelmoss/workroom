@@ -35,7 +35,7 @@ final class ProgramStatusAlerts: ObservableObject {
 
   var monitor: ProgramStatusMonitor = .shared
   /// Every host whose terminals raise notifications: each window's and the Quick Terminal's.
-  var stores: () -> [any NotifyingHost] = { WindowRegistry.shared.notifyingHosts }
+  var notifyingHosts: () -> [any NotifyingHost] = { WindowRegistry.shared.notifyingHosts }
   var isEnabled: () -> Bool = { Defaults[.notifyWhenTerminalNeedsMe] }
   var isFinishEnabled: () -> Bool = { Defaults[.notifyWhenTurnFinishes] }
   var now: () -> Date = Date.init
@@ -140,7 +140,7 @@ final class ProgramStatusAlerts: ObservableObject {
     }
     // A program that wrote its own notification just before its finish report: this replaces it.
     let held = takeHeldEntry(session)
-    destination.store.raiseFinished(
+    destination.host.raiseFinished(
       targetID: destination.target, tabID: destination.tab, record: done, detail: held?.body)
   }
 
@@ -151,7 +151,7 @@ final class ProgramStatusAlerts: ObservableObject {
     guard attachments(of: session).isEmpty else { return }
     for (key, entry) in open where entry.session == session {
       deferred.removeValue(forKey: key)?.cancel()
-      for store in stores() { store.withdrawNeedsYou(episode: key) }
+      for host in notifyingHosts() { host.withdrawNeedsYou(episode: key) }
     }
     recomputeWaiting()
   }
@@ -160,7 +160,7 @@ final class ProgramStatusAlerts: ObservableObject {
   private func resolve(_ key: String) {
     open.removeValue(forKey: key)
     deferred.removeValue(forKey: key)?.cancel()
-    for store in stores() { store.withdrawNeedsYou(episode: key) }
+    for host in notifyingHosts() { host.withdrawNeedsYou(episode: key) }
   }
 
   /// `detail` is the program's own notification text, for a request whose report has no message.
@@ -214,7 +214,7 @@ final class ProgramStatusAlerts: ObservableObject {
       earlier.withdraw()
       detail = detail ?? earlier.body
     }
-    destination.store.raiseNeedsYou(
+    destination.host.raiseNeedsYou(
       targetID: destination.target, tabID: destination.tab, episode: key, record: record,
       detail: detail
     ) { [weak self] in self?.isStillWaiting(key, session: session) ?? false }
@@ -259,7 +259,7 @@ final class ProgramStatusAlerts: ObservableObject {
       }
     if let request = requests.first {
       if raised.contains(request.key) {
-        for store in stores() { store.mergeIntoNeedsYou(episode: request.key, body: body) }
+        for host in notifyingHosts() { host.mergeIntoNeedsYou(episode: request.key, body: body) }
       } else if notified.contains(request.key)
         || !alert(request.key, session: session, record: request.record, detail: body)
       {
@@ -295,9 +295,9 @@ final class ProgramStatusAlerts: ObservableObject {
 
   /// The attachments of `session` in open windows, the one the user focused last first.
   private func attachments(of session: UUID) -> [Attachment] {
-    let found = stores().flatMap { store in
-      store.terminals.attachments(of: session).map {
-        Attachment(store: store, target: $0.target, tab: $0.tab, focused: $0.focused)
+    let found = notifyingHosts().flatMap { host in
+      host.terminals.attachments(of: session).map {
+        Attachment(host: host, target: $0.target, tab: $0.tab, focused: $0.focused)
       }
     }
     let recency = SwitcherRecency.shared.panes.ids
@@ -307,7 +307,7 @@ final class ProgramStatusAlerts: ObservableObject {
   }
 
   private struct Attachment {
-    let store: any NotifyingHost
+    let host: any NotifyingHost
     let target: TerminalTarget.ID
     let tab: TerminalTab.ID
     let focused: Bool
@@ -341,7 +341,7 @@ final class ProgramStatusAlerts: ObservableObject {
   /// Where `request` is shown: "Terminal 2 in fix-auth", in the window it was last focused in.
   func place(of request: WaitingRequest) -> String? {
     guard let destination = attachments(of: request.session).first else { return nil }
-    return destination.store.terminalPlace(targetID: destination.target, tabID: destination.tab)
+    return destination.host.terminalPlace(targetID: destination.target, tabID: destination.tab)
   }
 
   /// Opens the terminal `request` waits in, raising its window.

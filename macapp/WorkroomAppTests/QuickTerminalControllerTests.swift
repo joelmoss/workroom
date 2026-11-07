@@ -452,7 +452,7 @@ final class QuickTerminalControllerTests: XCTestCase {
     host.terminals.programStatus = monitor
     let alerts = ProgramStatusAlerts()
     alerts.monitor = monitor
-    alerts.stores = { registry.notifyingHosts }
+    alerts.notifyingHosts = { registry.notifyingHosts }
     alerts.isEnabled = { true }
     alerts.isFinishEnabled = { true }
     alerts.sleep = { _ in try await Task.sleep(for: .seconds(3600)) }

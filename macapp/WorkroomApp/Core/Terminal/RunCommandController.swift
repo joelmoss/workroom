@@ -1,5 +1,6 @@
 import AppKit
 import DaemonConnection
+import Defaults
 import Foundation
 import WorkroomDomain
 import WorkroomSystem
@@ -179,7 +180,7 @@ final class RunCommandController: ObservableObject {
   @discardableResult
   func startInvestigate(
     bannerState: CodingAgentBannerState, target: TerminalTarget, surface: GhosttySurfaceView?,
-    codingAgentSetting: String
+    codingAgentSetting: String = Defaults[.terminalCodingAgentBackend]
   ) -> TerminalTab {
     let cwd = surface?.lastKnownCwd ?? target.path
     let agent = CodingAgentBackend.forInvestigate(

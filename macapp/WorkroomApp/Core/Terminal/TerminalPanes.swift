@@ -1548,7 +1548,7 @@ final class TerminalPanes {
   /// `setFocused`, so focus observers fire (it is NOT a direct dict write; see the focus-chokepoint
   /// note on `setFocused`). The caller (`AppStore`) owns the run-state and hears the tab's exit as
   /// `.childExited`; this just creates and shows the tab. Also the mechanism behind an interactive Investigate
-  /// session (issue #49) — `AppStore.startInvestigate` is that caller for Investigate, tracking the
+  /// session (issue #49) — `RunCommandController.startInvestigate` is that caller for Investigate, tracking the
   /// tab in `investigateTabs` rather than `runStates` (issue #146): a single-slot-per-target dev-server
   /// run and a freely-multiple interactive agent session are different enough lifecycles to warrant
   /// separate bookkeeping, not a shared one.
