@@ -12,17 +12,23 @@ struct ChangesetDetailView: View {
   /// The workroom directory the VCS reads in.
   let directory: String
   var repositoryLocation: RepositoryLocation? = nil
-  /// This changeset tab's id + target — so a file tap routes through the store (which records a
-  /// back/forward step and updates the tab), rather than a view-local `@State`.
-  let tabID: TerminalTab.ID
-  let target: TerminalTarget
   /// Whether this pane holds focus — only the focused pane feeds the (shared) find model and shows
   /// the find bar. Mirrors `DiffViewer.isFocused`/`PlainFileViewer.isFocused`.
   var isFocused: Bool = true
-  /// The shared find state (owned by `AppStore`, `contentFind`), threaded through to the internal
-  /// `DiffViewer`.
+  /// The window's shared find state (`contentFind`), threaded through to the internal `DiffViewer`.
   @ObservedObject var find: FileFindModel
-  @EnvironmentObject var store: AppStore
+  /// A direct reader for the changeset (the UI-test fixture's seeded one); nil reads through
+  /// `RepositoryRouter`.
+  var vcsReader: (@Sendable (URL) throws -> LocalVCSProviding)? = nil
+  /// The fixture's canned diffs, handed to the embedded `DiffViewer`; nil in a live app.
+  var cannedDiffs: AppServices.CannedDiffs? = nil
+  let actions: Actions
+
+  struct Actions {
+    /// Show a file's diff: nil for the first file. Routed through the tab (which records a
+    /// back/forward step), rather than a view-local `@State`.
+    var selectFile: (String?) -> Void
+  }
 
   @State private var state: LoadState = .loading
   /// The id of whichever `.task(id:)` invocation most recently started a load at this
@@ -152,7 +158,7 @@ struct ChangesetDetailView: View {
     let root = URL(fileURLWithPath: directory, isDirectory: true)
     do {
       let changeset: VCSChangeset
-      if let vcsReader = store.services.vcsReader {
+      if let vcsReader {
         // A direct reader (the UI-test fixture's seeded one).
         changeset = try await vcsReader(root).changeset(root: root, commitID: commitID)
       } else {
@@ -375,7 +381,7 @@ struct ChangesetDetailView: View {
     // name instead would make two history entries that render identically, and Back would spend a press
     // going nowhere visible. With one spelling, `setChangesetSelectedPath`'s own "did it change" guard
     // is enough; no view-level tap guard is needed.
-    .onTapGesture { store.selectChangesetFile(isFirst ? nil : file.path, tab: tabID, in: target) }
+    .onTapGesture { actions.selectFile(isFirst ? nil : file.path) }
     .help(ChangeBadge.pathLine(path: file.path, oldPath: file.oldPath))
     .accessibilityElement(children: .combine)
     .accessibilityIdentifier("ChangesetFileRow")
@@ -429,7 +435,7 @@ struct ChangesetDetailView: View {
         directory: directory, repositoryLocation: repositoryLocation,
         showsFileHeader: true,
         headerModeBinding: $diffMode,
-        isFocused: isFocused, find: find, cannedDiffs: store.services.cannedDiffs)
+        isFocused: isFocused, find: find, cannedDiffs: cannedDiffs)
     } else {
       MessageState("Select a file", systemImage: "sidebar.left")
     }
@@ -475,3 +481,18 @@ private struct DescriptionTruncationKey: PreferenceKey {
   static let defaultValue = false
   static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
 }
+
+#if DEBUG
+  #Preview("Changeset") {
+    ChangesetDetailView(
+      descriptor: ChangesetDescriptor(
+        commitID: "fixturecommit1", title: "Fixture commit 1", isPreview: false),
+      directory: "/tmp/workroom-preview", find: FileFindModel(),
+      vcsReader: { _ in UITestFixture.vcsProvider },
+      cannedDiffs: AppServices.CannedDiffs(
+        diff: UITestFixture.diff(for:), fileContent: UITestFixture.fileContent(for:)),
+      actions: .init(selectFile: { _ in })
+    )
+    .frame(width: 900, height: 560)
+  }
+#endif
