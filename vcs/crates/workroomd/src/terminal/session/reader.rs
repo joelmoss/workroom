@@ -7,6 +7,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use super::attached::{apply_size, deliver, send_images, targets, terminal_envelope};
+use super::keepalive::send_probes;
 use super::terminate::{sweep_run_session, terminate};
 use super::{Attached, Hooks, Session, SessionId, SessionStore, TERMINATING, exit_code};
 use crate::terminal::images;
@@ -267,8 +268,9 @@ pub(super) fn read_session(
                 drop(terminating);
                 std::thread::sleep(Duration::from_millis(5));
                 // A quiet master can read this way for as long as its shell says nothing, which
-                // is when a transfer has the stream to itself.
+                // is when a transfer has the stream to itself, and when a probe is most needed.
                 send_images(&pty, &shadow, &attached, &hooks);
+                send_probes(&pty, &shadow, &attached, &hooks);
                 continue;
             }
             // The shell IS the session; with it gone there is nothing left to reattach to.
@@ -386,5 +388,8 @@ pub(super) fn read_session(
             }
         }
         send_images(&pty, &shadow, &attached, &hooks);
+        // After the output and the images, so a probe the keepalive ticker woke this reader for
+        // goes out between two deliveries, never inside one (`send_probes`).
+        send_probes(&pty, &shadow, &attached, &hooks);
     }
 }

@@ -4,6 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::keepalive::Keepalive;
 use super::reader::READ_CHUNK;
 use super::{
     Attached, Client, Hooks, NEXT_TOKEN, SessionError, SessionId, SessionInfo, SessionStore, Target,
@@ -37,6 +38,19 @@ impl SessionStore {
         writer: SharedWriter,
         stream: u32,
         size: Size,
+    ) -> Result<(SessionInfo, u64), SessionError> {
+        self.attach_client(id, writer, stream, size, false)
+    }
+
+    /// `attach`, for a client that may have asked to be probed (`keepalive`, #593): one that stops
+    /// answering then stops counting as attached.
+    pub fn attach_client(
+        &self,
+        id: SessionId,
+        writer: SharedWriter,
+        stream: u32,
+        size: Size,
+        keepalive: bool,
     ) -> Result<(SessionInfo, u64), SessionError> {
         let (pty, shadow, attached) = self
             .parts(id)
@@ -159,6 +173,7 @@ impl SessionStore {
                     pixels: (size.x_pixels, size.y_pixels),
                     classifier: InputClassifier::new(),
                     transfer,
+                    keepalive: keepalive.then(Keepalive::default),
                 });
                 // Attaching does not TAKE the size from a client that has it — that needs an act.
                 // It only fills a vacancy.
@@ -182,6 +197,9 @@ impl SessionStore {
             return Err(SessionError::RepaintFailed(id.to_hyphenated()));
         }
         apply_size(&pty, &shadow, &attached, size, &self.hooks);
+        if keepalive {
+            self.start_keepalive();
+        }
 
         let sessions = lock_or_recover(&self.sessions);
         let session = sessions
@@ -198,7 +216,8 @@ impl SessionStore {
     ///
     /// **If exactly one client is left, it takes the size immediately** rather than waiting to be
     /// claimed. Closing one laptop must not strand the terminal at the geometry of the window that
-    /// just went away.
+    /// just went away. Unless it has stopped answering its probes (#593): that one's window is on
+    /// a Mac nobody is at, so the size stays free for the next client to fill.
     pub fn detach(&self, id: SessionId, token: u64) {
         let Some((pty, shadow, attached)) = self.parts(id) else {
             return;
@@ -209,13 +228,7 @@ impl SessionStore {
             if attached.owner == Some(token) {
                 attached.owner = None;
             }
-            match attached.clients.as_slice() {
-                [only] => {
-                    let last = only.token;
-                    attached.claim(last)
-                }
-                _ => None,
-            }
+            attached.claim_for_sole_survivor()
         };
         apply_size(&pty, &shadow, &attached, size, &self.hooks);
     }
@@ -249,23 +262,42 @@ impl SessionStore {
     ///
     /// Typing or clicking in a pane is what makes it yours. A terminal answering a query is not —
     /// see `crate::terminal::input` for why that distinction needs a parser.
+    ///
+    /// From a probed client (`keepalive`), any input shows it is still there, and its answers to
+    /// the probe are taken out first: they are for the daemon, never the program. One that had
+    /// stopped answering is attached again, and fills the size if nobody holds it, as an attach
+    /// does.
     pub fn write_input(&self, id: SessionId, token: u64, bytes: &[u8]) {
         let Some((pty, shadow, attached)) = self.parts(id) else {
             return;
         };
+        let mut stripped = None;
         let size = {
             let mut attached = lock_or_recover(&attached);
+            let mut returned = false;
+            if let Some(keepalive) = attached
+                .client(token)
+                .and_then(|client| client.keepalive.as_mut())
+            {
+                returned = keepalive.heard();
+                stripped = Some(keepalive.strip(bytes));
+            }
+            let input = stripped.as_deref().unwrap_or(bytes);
             let acted = attached
                 .client(token)
-                .is_some_and(|client| client.classifier.is_user_input(bytes));
-            if acted && attached.owner != Some(token) {
+                .is_some_and(|client| client.classifier.is_user_input(input));
+            let vacant = attached.owner.is_none();
+            if (acted && attached.owner != Some(token)) || (returned && vacant) {
                 attached.claim(token)
             } else {
                 None
             }
         };
         apply_size(&pty, &shadow, &attached, size, &self.hooks);
-        let _ = pty.write_all(bytes);
+        let input = stripped.as_deref().unwrap_or(bytes);
+        if !input.is_empty() {
+            let _ = pty.write_all(input);
+        }
     }
 
     /// Who owns the size, for tests and diagnostics.
@@ -333,13 +365,7 @@ pub(super) fn deliver(
     if attached.owner == Some(target.token) {
         attached.owner = None;
     }
-    match attached.clients.as_slice() {
-        [only] => {
-            let last = only.token;
-            attached.claim(last)
-        }
-        _ => None,
-    }
+    attached.claim_for_sole_survivor()
 }
 
 /// Resizes the pty and the shadow together, if there is a size to apply.

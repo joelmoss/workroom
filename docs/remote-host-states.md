@@ -20,6 +20,16 @@ something on a host: a connect, an exec, a script, a delete.
   connection dropped and its remote panes attach again, rather than wait the minute ssh's keepalive
   takes to notice a dead link; a pane's attach reconnects the host. One that answers keeps its links.
   A container's link is loopback and is left alone.
+- **While the Mac is away** (asleep, or off the network): its panes' `workroomd attach` relays on
+  the host stay connected until sshd notices, up to about 2 h on stock Linux. Each remote pane's
+  attach asks the host's daemon to probe it (`WORKROOM_SESSION_KEEPALIVE=1`, #593, ADR 0070): every
+  15 s the daemon sends the pane a mode query its libghostty answers, and a client that leaves three
+  in a row unanswered stops counting as attached, so other Macs list the session as detached within
+  a minute. It keeps getting output: a Mac that wakes on a link that survived carries on, and its
+  first answer counts it as attached again. The first missed probe is unacknowledged data, so the
+  host's TCP ends sshd's connection after its retransmission timeout (about 15 min): after a
+  longer sleep an idle remote pane reattaches on wake, as one that printed meanwhile always did. A
+  daemon from before #593 ignores the variable.
 - `HostReachability.connect(host, driver:)` is the bootstrap step inside `ensureConnected`. It starts no
   container or provider host itself; on SSH hosts its bootstrap starts the daemon when nothing
   listens. It fails while another connect to the host is under way:
