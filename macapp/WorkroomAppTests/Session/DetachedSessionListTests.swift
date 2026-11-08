@@ -273,6 +273,104 @@ final class DetachedSessionListTests: XCTestCase {
     XCTAssertTrue(list.detached(for: remote).isEmpty)
   }
 
+  // Value: protects=Stop never ends a session another Mac attached to after this Mac let it go,
+  // though the leftover exception still lists it (PR #594 Codex P1); fails_when=Stop's re-read
+  // admits an attached session through the exception; why_new=the exception outranked the
+  // attached flag at Stop; seam=a released registration and a host that says it is attached
+  func testStopNeverEndsASessionAttachedElsewhereAfterThisMacLetItGo() async throws {
+    let id = UUID()
+    let endedByService = Mutex<[UUID]>([])
+    let service = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "isolated") }, ownership: { _ in .notOwned },
+      endRemote: { session, _ in
+        endedByService.withLock { $0.append(session) }
+        return true
+      })
+    service.registerRemoteSession(
+      id, on: .remote(hostID), via: HostDriverRegistry.unreachable,
+      workingDirectory: "/home/workroom/far")
+    service.sessionReleased(id)  // an Active tab swap on this Mac
+    // Then another Mac attaches to it.
+    let fixture = SessionsConnection(
+      sessions: [session(workroom: workroomID.uuidString, id: id, attached: true)])
+    let list = makeList(connections: try await connected(fixture), service: service)
+    await list.refresh(remote, ownedSessionIDs: [])
+    XCTAssertEqual(list.detached(for: remote).count, 1, "fixture: listed as this Mac's leftover")
+
+    await list.stop(id, in: remote, ownedSessionIDs: [])
+
+    XCTAssertTrue(endedByService.withLock { $0 }.isEmpty, "not ended through the service")
+    XCTAssertTrue(fixture.ended.isEmpty, "nor on the host")
+    XCTAssertTrue(service.isRemote(id), "its registration stays")
+    XCTAssertTrue(list.detached(for: remote).isEmpty, "its row goes quietly")
+  }
+
+  // Value: protects=the leftover exception covers only the old ssh draining just after a swap,
+  // never a client still attached later, which may be another Mac's (PR #594 Codex P1);
+  // fails_when=a release lasts until this Mac attaches it again; why_new=the release never
+  // expired; seam=the service's clock
+  func testTheLeftoverExceptionExpiresAfterTheDrainWindow() async throws {
+    let clock = Mutex(100.0)
+    let service = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "isolated") }, ownership: { _ in .notOwned },
+      now: { clock.withLock { $0 } })
+    let id = try registerRemoteSession(on: service, log: "").session
+    service.sessionReleased(id)
+    let fixture = SessionsConnection(
+      sessions: [session(workroom: workroomID.uuidString, id: id, attached: true)])
+    let list = makeList(connections: try await connected(fixture), service: service)
+    await list.refresh(remote, ownedSessionIDs: [])
+    XCTAssertEqual(list.detached(for: remote).count, 1, "fixture: listed while it drains")
+
+    clock.withLock { $0 += PersistentSessionService.releaseDrain + 1 }
+    await list.refresh(remote, ownedSessionIDs: [])
+
+    XCTAssertTrue(list.detached(for: remote).isEmpty)
+    XCTAssertFalse(service.wasReleasedHere(id))
+  }
+
+  // Value: protects=a footer whose list was empty (another Mac held every session) picks up a
+  // session that Mac lets go, while the connection stays up (PR #594 Codex P2); fails_when=a
+  // remote list is read only per connection; why_new=nothing re-read an empty list, and an empty
+  // list has no button to open; seam=a stub host whose answer changes, a short re-read interval
+  func testAnEmptyListPicksUpASessionLetGoElsewhere() async throws {
+    let id = UUID()
+    let fixture = SessionsConnection(
+      sessions: [session(workroom: workroomID.uuidString, id: id, attached: true)])
+    let manager = try await connected(fixture)
+    let list = makeList(connections: manager)
+    let target = remote
+    let follow = Task {
+      await list.follow(target, ownedSessionIDs: { [] }, rereadEvery: .milliseconds(10))
+    }
+    defer { follow.cancel() }
+    try await waitUntil { fixture.listed >= 1 }
+    XCTAssertTrue(list.detached(for: remote).isEmpty, "fixture: another Mac holds it")
+
+    fixture.answer = [session(workroom: workroomID.uuidString, id: id)]
+
+    try await waitUntil {
+      await MainActor.run { list.detached(for: target).map(\.identifier.uuid) == [id] }
+    }
+  }
+
+  /// Negative control: the re-read never reaches a host with no connection.
+  func testTheRereadAsksNothingOfAHostWithNoConnection() async throws {
+    let manager = HostConnectionManager()
+    let list = makeList(connections: manager)
+    let target = remote
+    let follow = Task {
+      await list.follow(target, ownedSessionIDs: { [] }, rereadEvery: .milliseconds(5))
+    }
+    try await Task.sleep(for: .milliseconds(50))
+    follow.cancel()
+    await follow.value
+
+    let status = await manager.snapshot(for: .remote(hostID)).status
+    XCTAssertEqual(status, .disconnected)
+    XCTAssertTrue(list.detached(for: remote).isEmpty)
+  }
+
   /// Negative control: a session this Mac let go and a pane here attached again is no longer the
   /// leftover the exception admits.
   func testASessionLetGoThenAttachedAgainHereIsNoLongerALeftover() throws {

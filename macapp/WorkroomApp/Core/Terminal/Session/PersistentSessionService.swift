@@ -117,8 +117,9 @@ final class PersistentSessionService {
   private var attachedRemote: [UUID: Set<UUID>] = [:]
   /// Remote sessions a pane here let go of for another (an Active tab swap), and no pane has
   /// attached to since (#584): their host can go on counting the old ssh as attached until it
-  /// notices it gone, and only these are offered as detached meanwhile (`DetachedSessionList`).
-  private var releasedRemote: Set<UUID> = []
+  /// notices it gone, and only these are offered as detached meanwhile (`DetachedSessionList`),
+  /// for `releaseDrain` from when (`now`) they were let go.
+  private var releasedRemote: [UUID: Double] = [:]
   /// Remote sessions whose pane closed but whose host did not end them (#293). Each is tried again
   /// once per connection to its host (`retryWhenReconnected`), so a host that refuses for good is
   /// not asked in a loop.
@@ -562,7 +563,7 @@ final class PersistentSessionService {
     dropUnended(sessionID)
     remoteSessions.removeValue(forKey: sessionID)
     attachedRemote.removeValue(forKey: sessionID)
-    releasedRemote.remove(sessionID)
+    releasedRemote.removeValue(forKey: sessionID)
   }
 
   /// The host a remote session's pane attaches to, or nil for a local session.
@@ -594,11 +595,26 @@ final class PersistentSessionService {
   /// local session, whose old attach this Mac ends itself.
   func sessionReleased(_ sessionID: UUID) {
     guard remoteSessions[sessionID] != nil else { return }
-    releasedRemote.insert(sessionID)
+    releasedRemote[sessionID] = now()
   }
 
-  /// Whether a pane here let remote `sessionID` go and none has attached to it since.
-  func wasReleasedHere(_ sessionID: UUID) -> Bool { releasedRemote.contains(sessionID) }
+  /// How long, in seconds, a session let go here is taken to be draining its old ssh: the pane's
+  /// ssh is killed with its surface, and over a live link its host's channel closes within a
+  /// second or two. Longer than the list's re-reads after a swap (`refreshAfterReleasing`, 3 s),
+  /// so a slow drain still lists; short enough that another Mac attaching later is not taken for
+  /// this Mac's leftover for long, and never at Stop, which ends nothing attached.
+  static let releaseDrain: Double = 5
+
+  /// Whether a pane here let remote `sessionID` go within `releaseDrain` and none has attached to
+  /// it since. One whose window has passed is forgotten.
+  func wasReleasedHere(_ sessionID: UUID) -> Bool {
+    guard let at = releasedRemote[sessionID] else { return false }
+    guard now() - at < Self.releaseDrain else {
+      releasedRemote.removeValue(forKey: sessionID)
+      return false
+    }
+    return true
+  }
 
   /// Whether a remote session's last attach was refused by its host for good (#241).
   func remoteHostRefusedLastAttach(_ sessionID: UUID) -> Bool {
@@ -620,7 +636,7 @@ final class PersistentSessionService {
   ) -> String? {
     if let remote = remoteSessions[sessionID] {
       // A pane here holds it again, however its attach goes: no longer one this Mac let go.
-      if pane != nil { releasedRemote.remove(sessionID) }
+      if pane != nil { releasedRemote.removeValue(forKey: sessionID) }
       do {
         let command = try remote.driver.attachCommand(
           to: remote.host, session: sessionID, workingDirectory: remote.workingDirectory,
@@ -891,7 +907,7 @@ final class PersistentSessionService {
       }
       dropUnended(sessionID)
       remoteSessions.removeValue(forKey: sessionID)
-      releasedRemote.remove(sessionID)
+      releasedRemote.removeValue(forKey: sessionID)
       return true
     }
     // An UNKNOWN owner must report failure, not success. `reap` gates deleting the workroom's
