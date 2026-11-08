@@ -1022,6 +1022,34 @@ final class RunCommandTests: XCTestCase {
     XCTAssertEqual(store.terminals.focusedTab(for: t)?.id, run)
   }
 
+  /// Value: protects=Investigate from the dimmed member of a workroom split brings that workroom
+  /// forward with its new tab focused (#611); fails_when=Investigate opens the tab but leaves the
+  /// other member selected; why_new=#598's guard rightly dropped the stale first-responder restore
+  /// that used to promote the member by accident, and nothing else did; seam=`AppStore.investigate`,
+  /// the pane host the status bar and the tab strip's ✦ popover call; no_claim=the surface taking
+  /// first responder once it mounts (`wantsFocus` follows the selection).
+  func testInvestigateInTheUnselectedSplitMemberSelectsItAndFocusesTheNewTab() throws {
+    let store = makeStore([project("/a", workrooms: ["main", "feature"])])
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    let b = SidebarID.workroom(project: "/a", name: "feature")
+    store.terminals.addTab(for: target(store, "/a", "main"))
+    let tb = target(store, "/a", "feature")
+    store.startRunCommand(for: tb)
+    store.insertWorkroomSplit(b, beside: a, edge: .right)
+    store.selectedTargetID = a  // b is co-displayed and dimmed
+    XCTAssertTrue(store.isWorkroomSplitVisible, "precondition: the split is on screen")
+    let runSurface = try XCTUnwrap(runView(store, tb))
+
+    let investigate = store.investigate(investigateBanner(tb), in: tb, surface: runSurface)
+
+    XCTAssertEqual(store.selectedTargetID, b, "Investigate brings its workroom forward")
+    XCTAssertEqual(store.terminals.focusedTab(for: tb)?.id, investigate.id)
+    XCTAssertEqual(
+      store.history.entries.last?.tab, investigate.id,
+      "history records the Investigate tab, in the workroom it opened in")
+  }
+
   func testInvestigateLivenessClearsViaChildExitAndViaTabRemoval() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let t = target(store, "/a", "main")

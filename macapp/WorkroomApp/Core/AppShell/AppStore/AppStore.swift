@@ -1191,7 +1191,10 @@ final class AppStore: ObservableObject {
   /// responder change is only ever a *user's* pane choice when the split is actually being displayed.
   /// Scoping to the *visible* group (`visibleWorkroomSplit`) covers the same fault across groups: a
   /// member of some OTHER group is equally off screen, and its stale claim must not select it either.
-  private func focusWorkroomMemberFromSurface(_ targetID: TerminalTarget.ID) {
+  ///
+  /// Investigate calls it too (`investigate`, #611): opening an Investigate tab is a pane choice
+  /// as deliberate as a click.
+  func focusWorkroomMemberFromSurface(_ targetID: TerminalTarget.ID) {
     guard let group = visibleWorkroomSplit, isWorkroomSplitVisible,
       let sid = sidebarID(for: targetID), group.contains(sid),
       selectedTargetID != sid

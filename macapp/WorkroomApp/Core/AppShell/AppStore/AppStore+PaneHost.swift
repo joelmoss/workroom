@@ -12,7 +12,13 @@ extension AppStore: PaneHost {
     _ bannerState: CodingAgentBannerState, in target: TerminalTarget,
     surface: GhosttySurfaceView?
   ) -> TerminalTab {
-    runCommand.startInvestigate(bannerState: bannerState, target: target, surface: surface)
+    // Investigate is a choice of `target`'s workroom, as selecting one of its tabs is, so a dimmed
+    // member of a workroom split comes forward (#611). Its new tab's surface then takes keyboard
+    // focus as it mounts. Done first, so history records the new tab in the workroom it opened in.
+    // The status bar and the ✦ popover don't activate their pane, and the popover's
+    // first-responder restore that used to do it by accident is now ignored (#598).
+    focusWorkroomMemberFromSurface(target.id)
+    return runCommand.startInvestigate(bannerState: bannerState, target: target, surface: surface)
   }
 
   func runTabID(for targetID: TerminalTarget.ID) -> TerminalTab.ID? {
