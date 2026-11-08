@@ -86,7 +86,11 @@ APP_UITEST_FLAGS ?= -skip-testing:WorkroomAppUITests/SessionRestoreUITests -skip
 # `pkill -x "Workroom Dev"` this used to be killed all of them. Stop and relaunch both wait out a
 # UI-test run in progress anywhere on this Mac, which a new window taking focus would otherwise
 # break — together, so the wait never leaves the app down, and giving up on it leaves it running.
+#
+# app-run and app-test first sweep up deleted workrooms' dev daemons and socket dirs (app-orphans),
+# quietly: it prints only what it stopped or removed, and never fails the run.
 app-run: app-build ## Build (Debug) and launch this checkout's dev app, replacing any running copy of it
+	sh macapp/Scripts/sweep-dev-orphans.sh --quiet
 	cd macapp && $(call gui_lock,shared,app-run) \
 	  sh -c 'sh Scripts/stop-dev-app.sh "$$1" && echo "Launching $$1" && open "$$1"' app-run \
 	  "$(APP_BUNDLE)"
@@ -99,6 +103,13 @@ app-run-boxd-fresh: app-build ## Launch the dev app as a user boxd has never see
 	cd macapp && $(call gui_lock,shared,app-run) \
 	  sh Scripts/boxd-fresh-user.sh "$(APP_BUNDLE)"
 
+# A deleted workroom's dev build leaves its `workroomd serve` (and its shells) running, and its
+# /tmp/workroom-<uid>-<dev id> socket dir behind. This stops the daemons whose Workroom Dev.app is
+# gone and removes the dev socket dirs nothing serves; never a live bundle's daemon, nor a release
+# or Nightly one (macapp/Scripts/sweep-dev-orphans.sh).
+app-orphans: ## Stop deleted workrooms' dev daemons and remove their unserved /tmp socket dirs
+	sh macapp/Scripts/sweep-dev-orphans.sh
+
 app-build: ## Build the app (Debug)
 	cd macapp && xcodegen generate && $(APP_XCODEBUILD) build $(APP_SIGN_FLAGS) $(APP_ID_FLAGS)
 
@@ -110,6 +121,7 @@ test_summary = status=$$?; sh Scripts/test-summary.sh DerivedData/Logs/Test $(1)
 # Built, then run in two steps, so only the run holds the GUI session: a build never waits on
 # another workroom's tests, and never makes another workroom's tests wait on it.
 app-test: ## Run the app's unit tests (other workrooms' unit runs can overlap)
+	sh macapp/Scripts/sweep-dev-orphans.sh --quiet
 	cd macapp && xcodegen generate && \
 	  $(APP_XCODEBUILD) -destination 'platform=macOS' build-for-testing $(APP_SIGN_FLAGS) $(APP_ID_FLAGS) && \
 	  touch DerivedData/.WorkroomApp.test-stamp && { \

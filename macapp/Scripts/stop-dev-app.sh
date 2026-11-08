@@ -15,14 +15,13 @@
 # SIGTERM throughout, as before: the app's SIGTERM handler is what flushes its session and stops its
 # run commands gracefully (App/AppDelegate.swift, installSigtermHandler).
 #
-# For tests: STOP_DEV_APP_PS names a FILE holding a process table to read instead of running `ps`,
-# and STOP_DEV_APP_DRY_RUN=1 prints `stop <pid>` for each process instead of signalling it.
-#
-# A file, not a command. It used to be expanded unquoted into a command substitution, so whatever
-# this variable held was EXECUTED — and `make app-run` runs this script with the developer's own
-# inherited environment. A value left exported from a debugging session (or arriving from anywhere
-# else) then both ran as a command and decided, from its own output, which processes get SIGTERM.
+# For tests: STOP_DEV_APP_PS names a FILE holding a process table to read instead of running `ps`
+# (dev-daemons.sh says why a file), and STOP_DEV_APP_DRY_RUN=1 prints `stop <pid>` for each process
+# instead of signalling it.
 set -eu
+
+# shellcheck source=dev-daemons.sh
+. "$(dirname "$0")/dev-daemons.sh"
 
 bundle="${1:?usage: stop-dev-app.sh path/to/App.app}"
 bundle="${bundle%/}"
@@ -36,13 +35,7 @@ bundle_id() {
 # `…/Application Support/<id>/sessions/workroomd`, or PersistentSessionPaths' fallback
 # `/tmp/workroom-<uid>-<id>/workroomd` (`agent.sock` before #525). Fails for any other shape. A hand-off keeps the arguments.
 served_id() {
-  case "$1" in
-    # wr-agent: a daemon a build from before the rename (#525) started, until it exits.
-    "workroomd serve "*"--socket "* | "wr-agent serve "*"--socket "*) ;;
-    *) return 1 ;;
-  esac
-  socket="${1#*--socket }"
-  socket="${socket%% --*}"
+  socket="$(served_socket "$1")" || return 1
   directory="${socket%/*}"
   case "$directory" in
     */sessions)
@@ -76,11 +69,7 @@ stopped_helpers=""
 # process only counts when argv[0] is itself the executable inside a bundle: the part before the
 # first `/Contents/MacOS/` must be an existing `<name>.app` directory. That keeps out a process
 # that merely mentions such a path in its arguments (`tail -f …/workroomd.log`).
-if [ -n "${STOP_DEV_APP_PS:-}" ]; then
-  processes="$(cat -- "$STOP_DEV_APP_PS")"
-else
-  processes="$(ps -ww -A -o pid= -o command=)"
-fi
+processes="$(process_table)"
 while read -r pid cmdline; do
   case "$cmdline" in
     /*/"$name.app/Contents/MacOS/"*) ;;
