@@ -100,6 +100,8 @@ Click it to see **Detached terminals**. Each row shows the terminal's title and 
 
 A remote workroom's detached sessions are the sessions on its host that no tab shows, on this Mac or on another one. The workroom's run command isn't listed. The list fills in once Workroom is connected to the host, and is empty while the host is asleep, stopped or out of reach. It never wakes or starts the host.
 
+Only the host account that started a session can see it. Each account on a host has its own background helper, and only that account can reach it, so someone signed in to the host as a different user never sees your sessions and can't open or stop them. Anyone who can sign in to the host as you can see them, as they could from a shell.
+
 ### Stop all detached terminals {nightly}
 
 **Settings ▸ Terminal ▸ Stop Detached Terminals…** counts the background terminals that no open tab is attached to, then asks before it stops them and anything running in them.
