@@ -6,7 +6,7 @@ description: >-
 inputs:
   version:
     description: cargo-zigbuild release
-    default: "0.23.4"
+    default: "0.24.1"
   cache:
     description: >-
       'false' builds it from source without the cache. Every job whose output is published passes

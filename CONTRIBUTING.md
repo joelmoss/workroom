@@ -61,8 +61,8 @@ older Go cannot read the current toolchain's export data. v1 is not an option he
 `go/types` caps out at export-data version 2, so it cannot analyze a Go 1.27 stdlib, and it rejects
 the v2-format `.golangci.yml`.
 
-**To change the Rust workspace (`vcs/`):** Rust **1.96.1** with rustfmt and clippy for `make vcs-lint`
-(`rustup toolchain install 1.96.1 --component rustfmt,clippy`), the version CI's lint jobs pin. Its
+**To change the Rust workspace (`vcs/`):** Rust **1.99.1** with rustfmt and clippy for `make vcs-lint`
+(`rustup toolchain install 1.99.1 --component rustfmt,clippy`), the version CI's lint jobs pin. Its
 `terminal-state` half also needs Zig 0.17.0 (installed through mise when it is available) and builds a
 pinned Ghostty on its first run. The workspace lint table in `vcs/Cargo.toml` is a floor of lints the
 code already passes; never silence one with an `allow` without asking first.
@@ -230,7 +230,7 @@ executor and a temp config — no real repo required.
 | `cli-install` | `go install` into `$GOBIN` |
 | `cli-lint` | `golangci-lint run` |
 | `cli-clean` | Remove the built binary |
-| `vcs-lint` | rustfmt, clippy and `cargo doc -D warnings` over `vcs/`, with and without `terminal-state`, on CI's Rust 1.96.1 |
+| `vcs-lint` | rustfmt, clippy and `cargo doc -D warnings` over `vcs/`, with and without `terminal-state`, on CI's Rust 1.99.1 |
 | `vcs-lint-linux` | The same pinned lint gate on Linux, including Linux-only code; uses a working container, Docker or Podman runtime on macOS |
 
 ---
