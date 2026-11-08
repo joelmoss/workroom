@@ -55,7 +55,7 @@ maintainer follows.
   embeds the CLI engine at build time, so a Go toolchain must be on `PATH`.
 
 **To develop the CLI engine only:** Go 1.25+, and **`golangci-lint` v2.x** for `make cli-lint`
-(`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2` — note the `/v2` in the
+(`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0` — note the `/v2` in the
 module path). Install it with `go install`, not a prebuilt binary: a golangci-lint built against an
 older Go cannot read the current toolchain's export data. v1 is not an option here — its vendored
 `go/types` caps out at export-data version 2, so it cannot analyze a Go 1.27 stdlib, and it rejects
