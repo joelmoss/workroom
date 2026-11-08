@@ -98,6 +98,73 @@ fn a_protocol_report_states_its_build_number() {
     assert_eq!(build_number_in("protocol 6\nbuild workroomd 0.1.0\n"), 0);
 }
 
+/// Starts `binary`'s build probe, retrying while Linux says the file is busy. A script this test
+/// has just written can still be open for writing in a child that another test thread forked and
+/// has not yet exec'd, and running it in that window fails with ETXTBSY (#601).
+fn start_probe(binary: &Path) -> Result<BuildProbe, HandOffError> {
+    for _ in 0..100 {
+        match BuildProbe::start(binary) {
+            Err(HandOffError::Start { ref source, .. })
+                if source.kind() == std::io::ErrorKind::ExecutableFileBusy =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            other => return other,
+        }
+    }
+    BuildProbe::start(binary)
+}
+
+/// The race `start_probe` waits out, made certain: Linux refuses to run a file that is open for
+/// writing, and a probe started meanwhile succeeds once the writer lets go.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_script_still_open_for_writing_is_waited_for_not_refused() {
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!("workroomd-busy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("busy");
+    let mut writer = std::fs::File::create(&path).unwrap();
+    writer
+        .write_all(b"#!/bin/sh\necho protocol 7; echo build-number 300; exit 0\n")
+        .unwrap();
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    match BuildProbe::start(&path) {
+        Err(HandOffError::Start { ref source, .. })
+            if source.kind() == std::io::ErrorKind::ExecutableFileBusy => {}
+        other => panic!(
+            "expected ETXTBSY while the script is open for writing, got {:?}",
+            other.map(|_| ())
+        ),
+    }
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        drop(writer);
+    });
+    let probe = start_probe(&path);
+    release.join().unwrap();
+    assert_eq!(
+        probe
+            .and_then(|p| p.no_downgrade(&path, 200, Instant::now() + CHECK_TIMEOUT))
+            .map_err(|e| e.to_string()),
+        Ok(())
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Fails unless `result` is a refusal whose message contains `wanted`, naming what came instead.
+#[track_caller]
+fn assert_refused(result: Result<(), HandOffError>, wanted: &str) {
+    match result {
+        Err(error) if error.to_string().contains(wanted) => {}
+        other => panic!(
+            "expected a refusal containing {wanted:?}, got {:?}",
+            other.map_err(|e| e.to_string())
+        ),
+    }
+}
+
 /// A program with a lower build number is refused, after the table check and before the exec;
 /// one at least as high, or any when this build has no number, is let through (D13). One that
 /// does not say in time is refused too: every session's output is stopped meanwhile.
@@ -120,15 +187,17 @@ fn a_hand_off_to_an_older_build_is_refused() {
     let unnumbered = program("unnumbered", None);
     let soon = || Instant::now() + CHECK_TIMEOUT;
     let no_downgrade = |binary: &Path, ours: u64, deadline: Instant| {
-        BuildProbe::start(binary)?.no_downgrade(binary, ours, deadline)
+        start_probe(binary)?.no_downgrade(binary, ours, deadline)
     };
-    assert!(
-        no_downgrade(&older, 200, soon())
-            .unwrap_err()
-            .to_string()
-            .contains("older than this daemon's build 200")
+    assert_refused(
+        no_downgrade(&older, 200, soon()),
+        "older than this daemon's build 200",
     );
-    assert!(no_downgrade(&unnumbered, 200, soon()).is_err());
+    let unnumbered_result = no_downgrade(&unnumbered, 200, soon());
+    assert!(
+        unnumbered_result.is_err(),
+        "an unnumbered program must be refused, got {unnumbered_result:?}"
+    );
     assert_eq!(
         no_downgrade(&same, 200, soon()).map_err(|e| e.to_string()),
         Ok(())
@@ -145,11 +214,9 @@ fn a_hand_off_to_an_older_build_is_refused() {
     std::fs::write(&slow, "#!/bin/sh\nsleep 30\necho build-number 300\n").unwrap();
     std::fs::set_permissions(&slow, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let started = Instant::now();
-    assert!(
-        no_downgrade(&slow, 200, Instant::now() + Duration::from_millis(300))
-            .unwrap_err()
-            .to_string()
-            .contains("did not say its build")
+    assert_refused(
+        no_downgrade(&slow, 200, Instant::now() + Duration::from_millis(300)),
+        "did not say its build",
     );
     assert!(started.elapsed() < Duration::from_secs(5));
     // One that exits but leaves a process holding its output open is refused at the deadline,
@@ -166,16 +233,14 @@ fn a_hand_off_to_an_older_build_is_refused() {
     )
     .unwrap();
     let started = Instant::now();
-    assert!(
-        no_downgrade(&lingering, 200, Instant::now() + Duration::from_millis(300))
-            .unwrap_err()
-            .to_string()
-            .contains("did not say its build")
+    assert_refused(
+        no_downgrade(&lingering, 200, Instant::now() + Duration::from_millis(300)),
+        "did not say its build",
     );
     assert!(started.elapsed() < Duration::from_secs(5));
     // Asked for while the table is checked: a check that takes all the time leaves a report
     // already given to be read, not refused.
-    let mut probe = BuildProbe::start(&newer).unwrap();
+    let mut probe = start_probe(&newer).unwrap();
     while probe.child.try_wait().unwrap().is_none() {
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -199,7 +264,7 @@ fn a_hand_off_to_an_older_build_is_refused() {
         std::os::unix::fs::PermissionsExt::from_mode(0o755),
     )
     .unwrap();
-    let mut probe = BuildProbe::start(&late_report).unwrap();
+    let mut probe = start_probe(&late_report).unwrap();
     while probe.child.try_wait().unwrap().is_none() {
         std::thread::sleep(Duration::from_millis(10));
     }
