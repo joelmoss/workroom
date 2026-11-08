@@ -80,10 +80,14 @@ enum ContainerCreate {
 
   /// Everything before the container: the config row, initializeCommand, the pull or build, and
   /// the container's spec. `start` is the judged commit, which a build's files come from.
+  ///
+  /// `environment` is this Mac's, for `${localEnv:…}` and the one initializeCommand runs with: the
+  /// login shell's, as local setup scripts get, so a tool nvm or mise put on PATH is found from a
+  /// Finder launch too. A create's trust status read refreshed it just before (`trustStatus`).
   static func prepare(
     _ file: File?, project: String, repository: String, start: String,
     runtime: ContainerRuntime, driver: ContainerHostDriver, defaultImage: String,
-    environment: [String: String] = ProcessInfo.processInfo.environment, featureCache: URL
+    environment: [String: String] = ShellEnvironment.environment(), featureCache: URL
   ) async throws -> Prepared {
     let config = file?.config
     // Where its Dockerfile, build context and local features are read: the judged commit, or the
@@ -106,7 +110,8 @@ enum ContainerCreate {
       config, repository: repository, variables: variables(""))
     if let command = config?.lifecycle[.initialize] {
       try await ProvisioningProgress.step(.initialize) {
-        try await runOnMac(command.substituting(variables(workspace)), in: project)
+        try await runOnMac(
+          command.substituting(variables(workspace)), in: project, environment: environment)
       }
     }
 
@@ -153,7 +158,7 @@ enum ContainerCreate {
         let source = scratch.appendingPathComponent("features-source", isDirectory: true)
         let local = config.features.keys.contains { $0.hasPrefix("./") || $0.hasPrefix("../") }
         if local {
-          // A root-level .devcontainer.json's folder is "", which git archive refuses.
+          // A root-level .devcontainer.json's folder is "", which is no pathspec.
           try await export(
             project: project, at: revision, paths: [folder.isEmpty ? "." : folder], to: source)
         }
@@ -217,34 +222,48 @@ enum ContainerCreate {
   }
 
   /// `paths` of the repository at `revision`, written under `directory` as a checkout of it would
-  /// have them (`git archive`); with no revision, as they are in the project's folder.
+  /// have them; with no revision, as they are in the project's folder.
+  ///
+  /// Checked out through an index of its own (`read-tree`, then `checkout-index`), not with
+  /// `git archive`: an archive leaves out what `.gitattributes` marks `export-ignore` and expands
+  /// `export-subst`, so a repository that keeps `.devcontainer` or `tests/` out of its release
+  /// tarballs would build without them. The index sits beside `directory`, in the create's
+  /// scratch folder; every git command here must use it, or `read-tree` replaces the project's.
   private static func export(
     project: String, at revision: String?, paths: [String], to directory: URL
   ) async throws {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let q = PosixShell.quoted
     let listed = Set(paths).sorted().map(q).joined(separator: " ")
-    // pipefail: a path the archive doesn't have fails here, not later as a missing file in the build.
+    let git = "git -C \(q(project))"
+    // pipefail and --error-unmatch: a path the commit doesn't have fails here, not later as a
+    // missing file in the build. --prefix needs its trailing slash to be a folder.
     let script =
       "set -o pipefail; "
-      + (revision.map { "git -C \(q(project)) archive --format=tar \(q($0)) -- \(listed)" }
-        ?? "tar -c -f - -C \(q(project)) -- \(listed)")
-      + " | tar -x -f - -C \(q(directory.path))"
+      + (revision.map {
+        "export GIT_INDEX_FILE=\(q(directory.path + ".index")) && \(git) read-tree \(q($0))"
+          + " && \(git) ls-files -z --error-unmatch -- \(listed)"
+          + " | \(git) checkout-index -z --stdin --prefix=\(q(directory.path + "/"))"
+      }
+        ?? "tar -c -f - -C \(q(project)) -- \(listed) | tar -x -f - -C \(q(directory.path))")
     let (status, said) = try await shell(script, in: project, timeout: 300)
     guard status == 0 else { throw Failure.exportFailed(said) }
   }
 
   /// initializeCommand, on this Mac in the project's folder (eng review D6), its output in the
-  /// row's log. 10 minutes, as a lifecycle command in the container.
+  /// row's log. 10 minutes, as a lifecycle command in the container. `environment` is what it runs
+  /// with (`prepare`'s).
   static func runOnMac(
-    _ command: DevContainerConfig.Command, in project: String, timeout: TimeInterval = 600
+    _ command: DevContainerConfig.Command, in project: String, timeout: TimeInterval = 600,
+    environment: [String: String] = ShellEnvironment.environment()
   ) async throws {
     let script = DevContainerSetup.hookScript(
       .initialize, commands: [command], checkout: project, environment: [:])
     let status: Int32
     let said: String
     do {
-      (status, said) = try await shell(script, in: project, timeout: timeout, log: .initialize)
+      (status, said) = try await shell(
+        script, in: project, timeout: timeout, environment: environment, log: .initialize)
     } catch is VCSTimeoutError {
       throw Failure.initializeFailed(
         "it still held its output open after \(Int(timeout)) s"
@@ -259,8 +278,10 @@ enum ContainerCreate {
   /// `/bin/sh -c script` on this Mac, with its output, line by line, in `log`'s row when given.
   /// `timeout` bounds the whole exchange, not only silence: a process the script left in the
   /// background holds its output open past it, and one that keeps printing is never silent.
+  /// Git's own reads keep the app's environment; only the user's command gets the login shell's.
   private static func shell(
     _ script: String, in directory: String, timeout: TimeInterval,
+    environment: [String: String] = ProcessInfo.processInfo.environment,
     log step: ProvisioningProgress.Step? = nil
   ) async throws -> (status: Int32, output: String) {
     let sink = step.flatMap { step in
@@ -270,7 +291,7 @@ enum ContainerCreate {
     defer { lines.finish() }
     let stream = try HostStream.spawn(
       URL(fileURLWithPath: "/bin/sh"), ["-c", "cd \(PosixShell.quoted(directory)) && \(script)"],
-      environment: ProcessInfo.processInfo.environment, handshakeTimeout: 10, purpose: .exchange)
+      environment: environment, handshakeTimeout: 10, purpose: .exchange)
     do {
       return try await withTimeout(seconds: timeout) {
         try await stream.communicate(

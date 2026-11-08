@@ -47,7 +47,7 @@ Apple's runtime gives each container a VM of its own, and its default is too sma
 
 ## Your dev container
 
-Workroom makes the container from your repository's dev container file, `.devcontainer/devcontainer.json` or `.devcontainer.json`, the same file VS Code, Codespaces and DevPod read. It reads the file from the commit the new workroom starts from, on `origin`, so a change you haven't pushed to a file already there isn't used. When that commit has no dev container file, the one in your project's folder is used, with the Dockerfile and build context beside it, so you can try a new one before you push it. Comments and trailing commas are allowed.
+Workroom makes the container from your repository's dev container file, `.devcontainer/devcontainer.json` or `.devcontainer.json`, the same file VS Code, Codespaces and DevPod read. It reads the file from the commit the new workroom starts from, on `origin`, so a change you haven't pushed to a file already there isn't used. When that commit has no dev container file, the one in your project's folder is used, with the Dockerfile and build context beside it, so you can try a new one before you push it. A Dockerfile and build context read from the commit are its files as a checkout has them, so a file your `.gitattributes` marks `export-ignore` is still there. Comments and trailing commas are allowed.
 
 Workroom uses these keys:
 
@@ -73,7 +73,7 @@ An approval covers the file's own contents only. The Dockerfile it builds, and t
 
 They run as the container's user:
 
-- **`initializeCommand`** runs on your Mac, in your project, before the image is built.
+- **`initializeCommand`** runs on your Mac, in your project, before the image is built. It gets your login shell's environment, as a [setup script](../guides/prepare-a-project.md) does, so a tool your dotfiles or a version manager such as nvm or mise put on your `PATH` is found, even when you opened Workroom from the Finder. `${localEnv:…}` reads the same environment.
 - After the clone and **Copy local files**: **`onCreateCommand`**, **`updateContentCommand`**, **`postCreateCommand`** and **`postStartCommand`**, in that order, each as a row of its own.
 - **Run setup script** comes last, so `scripts/workroom_setup` sees the container as VS Code would leave it, with anything `postStartCommand` started already running.
 - **`postStartCommand`** runs again each time the container starts, on the first connect after it. A terminal you open meanwhile says it is waiting for it, and attaches once it is done. Updating Workroom doesn't start the container again, so it doesn't rerun.
