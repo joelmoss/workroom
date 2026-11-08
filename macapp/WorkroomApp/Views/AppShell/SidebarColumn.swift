@@ -20,6 +20,10 @@ struct SidebarColumn: View {
   var localize: (CGPoint) -> CGPoint? = { _ in nil }
   var dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge, rect: CGRect)? = { _ in nil }
 
+  /// The identity of the drag plumbing above, minted once: the closures are new on every `RootView`
+  /// pass, and the sidebar's gate compares this in their place (`SidebarDragPlumbing`).
+  @State private var dragToken = UUID()
+
   /// Live width while dragging — non-`nil` only during a drag. Local `@State` so each mouse-moved
   /// tick re-renders just this column, not the whole RootView tree. Committed once, on drag end.
   @State private var liveWidth: CGFloat?
@@ -33,8 +37,13 @@ struct SidebarColumn: View {
     return min(max(base, minWidth), maxWidth)
   }
 
+  private var drag: SidebarDragPlumbing {
+    SidebarDragPlumbing(
+      token: dragToken, drag: paneDrag, localize: localize, dropTarget: dropTarget)
+  }
+
   var body: some View {
-    ProjectSidebar(paneDrag: paneDrag, localize: localize, dropTarget: dropTarget)
+    ProjectSidebar(drag: drag).equatable()
       .frame(width: width)
       .frame(maxHeight: .infinity)
       // Tighten the gap to the detail panel: 2pt trailing vs the default 8 (mirrors the inspector's

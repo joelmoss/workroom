@@ -303,14 +303,19 @@ struct EdgeRevealSidebars: ViewModifier {
   var paneDrag: Binding<WorkroomPaneDrag?> = .constant(nil)
   var localize: (CGPoint) -> CGPoint? = { _ in nil }
   var dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge, rect: CGRect)? = { _ in nil }
+  /// The identity of the panel's drag plumbing, minted once (see `SidebarColumn.dragToken`).
+  @State private var dragToken = UUID()
+
+  /// The revealed panel's width. One source for BOTH the panel's width and the drag gate below, so
+  /// they can't drift: the gate reads it when it runs, as a row behind its equality gate keeps the
+  /// closures of an earlier pass.
+  private var panelWidth: CGFloat { store.dockedSidebarWidth ?? 260 }
 
   func body(content: Content) -> some View {
     // The revealed leading panel sits at offset 0 occupying detail-local x `[margin, margin+width]`
     // (`sidebarCard`'s default 8pt leading inset). `localize` already hands back a detail-local point,
     // so "cursor still over the panel card" is pure arithmetic — suppress the drag plumbing there so a
     // reveal-row drag only resolves once it crosses the card's right edge onto a pane (issue #101).
-    // `panelWidth` is bound once and used for BOTH the panel's width and the gate so they can't drift.
-    let panelWidth = store.dockedSidebarWidth ?? 260
     // sidebarCard's default `margin`; track it if the leading overlay ever passes a `leadingMargin`.
     let cardLeadingMargin: CGFloat = 8
     func overPanel(_ global: CGPoint) -> Bool {
@@ -330,10 +335,12 @@ struct EdgeRevealSidebars: ViewModifier {
           width: panelWidth
         ) {
           ProjectSidebar(
-            paneDrag: paneDrag,
-            localize: { overPanel($0) ? nil : localize($0) },
-            dropTarget: { overPanel($0) ? nil : dropTarget($0) }
+            drag: SidebarDragPlumbing(
+              token: dragToken, drag: paneDrag,
+              localize: { overPanel($0) ? nil : localize($0) },
+              dropTarget: { overPanel($0) ? nil : dropTarget($0) })
           )
+          .equatable()
           // The arrow, not the cursor rect of a terminal beneath the revealed panel (#466).
           .pointerStyle(.default)
         }
