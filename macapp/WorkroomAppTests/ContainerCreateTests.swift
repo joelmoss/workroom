@@ -278,6 +278,51 @@ final class ContainerCreateTests: XCTestCase {
       "the export touched the project's own index")
   }
 
+  // Value: protects=a build's files are converted by the judged commit's .gitattributes, not the
+  // project folder's; fails_when=checkout-index reads the working tree's attributes, so an
+  // uncommitted eol change rewrites the commit's files; why_new=PR #596 review (Codex);
+  // seam=stub runtime; no_claim=a git older than 2.40, which has no --attr-source
+  /// A Dockerfile committed `-text` keeps its LF endings though the folder's uncommitted
+  /// `.gitattributes` asks for CRLF, and the folder and its index are as they were.
+  func testAnExportUsesTheCommitsAttributesNotTheFolders() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-create-\(UUID().uuidString)", isDirectory: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    let project = directory.appendingPathComponent("project", isDirectory: true)
+    let config = project.appendingPathComponent(".devcontainer", isDirectory: true)
+    try FileManager.default.createDirectory(at: config, withIntermediateDirectories: true)
+    try "FROM committed-base\nRUN true\n".write(
+      to: config.appendingPathComponent("Dockerfile"), atomically: true, encoding: .utf8)
+    let attributes = project.appendingPathComponent(".gitattributes")
+    try ".devcontainer/Dockerfile -text\n".write(to: attributes, atomically: true, encoding: .utf8)
+    try git(["init", "-q"], in: project)
+    try git(["add", "."], in: project)
+    try git(
+      ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "base"], in: project)
+    try ".devcontainer/Dockerfile text eol=crlf\n".write(
+      to: attributes, atomically: true, encoding: .utf8)
+    let (driver, built) = try buildRecordingDriver(in: directory)
+    let json = Data(#"{"build": {"dockerfile": "Dockerfile"}}"#.utf8)
+
+    _ = try await ContainerCreate.prepare(
+      ContainerCreate.File(
+        path: ".devcontainer/devcontainer.json", data: json,
+        config: try DevContainerConfig.parse(json)),
+      project: project.path, repository: "app", start: "HEAD", runtime: .docker,
+      driver: driver, defaultImage: "unused", environment: [:],
+      featureCache: directory.appendingPathComponent("features"))
+
+    XCTAssertEqual(
+      try String(contentsOf: built, encoding: .utf8), "FROM committed-base\nRUN true\n",
+      "the folder's attributes converted the commit's Dockerfile")
+    XCTAssertEqual(
+      try gitOutput(["status", "--porcelain"], in: project), " M .gitattributes\n",
+      "the export changed the project's folder or index")
+    XCTAssertEqual(
+      try String(contentsOf: config.appendingPathComponent("Dockerfile"), encoding: .utf8),
+      "FROM committed-base\nRUN true\n")
+  }
+
   // Value: protects=initializeCommand and ${localEnv:…} get the login shell's environment, as
   // local setup scripts do; fails_when=they get the app's own process environment, which a
   // Finder launch leaves without nvm's or mise's PATH; why_new=#308 /ship review; seam=a stub

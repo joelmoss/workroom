@@ -229,6 +229,9 @@ enum ContainerCreate {
   /// `export-subst`, so a repository that keeps `.devcontainer` or `tests/` out of its release
   /// tarballs would build without them. The index sits beside `directory`, in the create's
   /// scratch folder; every git command here must use it, or `read-tree` replaces the project's.
+  /// The files are converted by the revision's own `.gitattributes` (`--attr-source`, git 2.40):
+  /// `checkout-index` otherwise reads the project folder's, whose uncommitted edits would rewrite
+  /// the commit's files, as an eol change does.
   private static func export(
     project: String, at revision: String?, paths: [String], to directory: URL
   ) async throws {
@@ -243,11 +246,21 @@ enum ContainerCreate {
       + (revision.map {
         "export GIT_INDEX_FILE=\(q(directory.path + ".index")) && \(git) read-tree \(q($0))"
           + " && \(git) ls-files -z --error-unmatch -- \(listed)"
-          + " | \(git) checkout-index -z --stdin --prefix=\(q(directory.path + "/"))"
+          + " | \(git) --attr-source=\(q($0)) checkout-index -z --stdin"
+          + " --prefix=\(q(directory.path + "/"))"
       }
         ?? "tar -c -f - -C \(q(project)) -- \(listed) | tar -x -f - -C \(q(directory.path))")
     let (status, said) = try await shell(script, in: project, timeout: 300)
-    guard status == 0 else { throw Failure.exportFailed(said) }
+    guard status == 0 else {
+      // A git before 2.40 has no --attr-source. Falling back would convert the commit's files by
+      // the folder's attributes, so the create stops and says why instead.
+      if revision != nil, said.contains("unknown option"), said.contains("attr-source") {
+        throw Failure.exportFailed(
+          "this Mac's git is too old to read the commit's .gitattributes (git 2.40 or later is "
+            + "needed)")
+      }
+      throw Failure.exportFailed(said)
+    }
   }
 
   /// initializeCommand, on this Mac in the project's folder (eng review D6), its output in the
