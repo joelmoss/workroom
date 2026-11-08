@@ -9,21 +9,21 @@ struct RunMenuState: Equatable {
   var configured: Bool
   var running: Bool
 
-  @MainActor
-  init(host: any PaneHost, target: TerminalTarget) {
-    available = target.opensTerminals && !host.isRunBlocked(target.id)
-    configured = host.hasRunCommand(for: target)
-    running = host.isRunCommandRunning(for: target.id)
-  }
-
-  init(available: Bool, configured: Bool, running: Bool) {
-    self.available = available
-    self.configured = configured
-    self.running = running
-  }
+  /// Every item off: no target to run.
+  static let off = RunMenuState(available: false, configured: false, running: false)
 
   var canRun: Bool { available && configured }
   var canRestartOrStop: Bool { available && running }
+}
+
+extension RunMenuState {
+  @MainActor
+  init(host: any PaneHost, target: TerminalTarget) {
+    self.init(
+      available: target.opensTerminals && !host.isRunBlocked(target.id),
+      configured: host.hasRunCommand(for: target), running: host.isRunCommandRunning(for: target.id)
+    )
+  }
 }
 
 /// Run, Restart or Stop, worded and drawn the same in every menu that offers them.
@@ -63,11 +63,9 @@ func runCommandMenuItems(host: any PaneHost, target: TerminalTarget) -> some Vie
 struct WorkroomMenuModel: Equatable {
   /// The surface the menu is on.
   enum Style {
-    /// The tab chip and the split title bar: everything the model offers.
+    /// The tab chip, the split title bar and the sidebar row: everything the model offers. The row,
+    /// neither a tab nor a split member, offers no Close and no Remove from Split.
     case full
-    /// A workroom's sidebar row: no Close and no Remove from Split, as a row is neither a tab nor
-    /// a split member.
-    case sidebarRow
     /// The inspector header's actions, in Apple's order: no run, Close or split items, and the
     /// destructive one last, apart.
     case inspectorHeader
@@ -79,10 +77,12 @@ struct WorkroomMenuModel: Equatable {
     case restart(enabled: Bool)
     case stop(enabled: Bool)
     case divider
-    case close(name: String)
+    case close
     case openInSplit, removeFromSplit
     case moveToNewWindow(enabled: Bool)
-    case setLabel, editLabel, removeLabel
+    /// "Set Label…", or "Edit Label…" when the workroom has one.
+    case label(exists: Bool)
+    case removeLabel
     case delete(enabled: Bool)
   }
 
@@ -123,9 +123,9 @@ struct WorkroomMenuModel: Equatable {
         .run(enabled: run.canRun), .restart(enabled: run.canRestartOrStop),
         .stop(enabled: run.canRestartOrStop), .divider,
       ]
-      if style == .full, let closeName { top.append(.close(name: closeName)) }
+      if closeName != nil { top.append(.close) }
       if canOpenInSplit { top.append(.openInSplit) }
-      if style == .full, removableFromSplit { top.append(.removeFromSplit) }
+      if removableFromSplit { top.append(.removeFromSplit) }
     }
     if showsMoveToNewWindow { top.append(.moveToNewWindow(enabled: canMoveWorkroom)) }
     entries += top
@@ -133,7 +133,7 @@ struct WorkroomMenuModel: Equatable {
     // The chip and row divide the label items from the items above only when one showed; the
     // inspector always does, so its menu starts with the divider when nothing is above.
     if style == .inspectorHeader || !top.isEmpty { entries.append(.divider) }
-    entries.append(workroom.hasLabel ? .editLabel : .setLabel)
+    entries.append(.label(exists: workroom.hasLabel))
     if workroom.hasLabel { entries.append(.removeLabel) }
     entries += [.divider, .delete(enabled: !workroom.isCreating)]
     return entries
@@ -213,10 +213,10 @@ struct WorkroomMenuItems: View {
       }
       .disabled(!enabled)
     // A label is a display-only alias (issue #41): the workroom name and its branch are unchanged.
-    case .setLabel:
-      Button(action: actions.editLabel) { Label("Set Label…", systemImage: "pencil") }
-    case .editLabel:
-      Button(action: actions.editLabel) { Label("Edit Label…", systemImage: "pencil") }
+    case .label(let exists):
+      Button(action: actions.editLabel) {
+        Label(exists ? "Edit Label…" : "Set Label…", systemImage: "pencil")
+      }
     case .removeLabel:
       Button(action: actions.removeLabel) { Label("Remove Label", systemImage: "pencil.slash") }
     case .delete(let enabled):
@@ -239,8 +239,7 @@ extension WorkroomMenuModel {
   ) {
     let pair = store.workroomAndProject(for: sid)
     self.init(
-      run: target.map { RunMenuState(host: store, target: $0) }
-        ?? RunMenuState(available: false, configured: false, running: false),
+      run: target.map { RunMenuState(host: store, target: $0) } ?? .off,
       closeName: closeName,
       removableFromSplit: removableFromSplit, canOpenInSplit: store.canOpenAsSplit(sid),
       showsMoveToNewWindow: store.target(for: sid).map {
@@ -308,11 +307,7 @@ struct WorkroomMenuAdapter: View {
         guard let pair else { return }
         store.removeWorkroomLabel(pair.workroom, in: pair.project)
       },
-      delete: { [store] in
-        guard let pair else { return }
-        store.modals.pendingDeletion = PendingWorkroomDeletion(
-          workroom: pair.workroom, project: pair.project)
-      })
+      delete: { [store, sid] in store.requestDeleteWorkroom(sid) })
   }
 }
 
@@ -324,7 +319,7 @@ struct WorkroomMenuAdapter: View {
       canMoveWorkroom: true, workroom: .init(hasLabel: true))
     HStack(alignment: .top, spacing: 24) {
       ForEach(
-        [WorkroomMenuModel.Style.full, .sidebarRow, .inspectorHeader], id: \.self
+        [WorkroomMenuModel.Style.full, .inspectorHeader], id: \.self
       ) { style in
         VStack(alignment: .leading) {
           WorkroomMenuItems(model: model, actions: .inert, style: style)

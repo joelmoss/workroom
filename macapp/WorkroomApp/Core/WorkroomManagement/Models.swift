@@ -219,7 +219,12 @@ extension Project {
   /// The project-root target, with whether its directory is gone as the caller last saw it
   /// (`ProjectStore.missingRoots`).
   func rootTarget(isMissing: Bool) -> TerminalTarget {
-    TerminalTarget(id: .root(project: path), title: displayName, path: path, isMissing: isMissing)
+    Self.rootTarget(path: path, name: displayName, isMissing: isMissing)
+  }
+
+  /// The root target of the project at `path`, named `name`, for a caller that holds only those.
+  static func rootTarget(path: String, name: String, isMissing: Bool) -> TerminalTarget {
+    TerminalTarget(id: .root(project: path), title: name, path: path, isMissing: isMissing)
   }
 }
 

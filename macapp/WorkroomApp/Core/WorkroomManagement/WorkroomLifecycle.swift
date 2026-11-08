@@ -296,11 +296,16 @@ final class WorkroomLifecycle: ObservableObject {
   /// Whether `workroom` has an in-flight create (its setup is running) — the delete affordances
   /// disable while this holds so it can't be torn down mid-setup (issue #116), from any window.
   func isCreatingWorkroom(_ workroom: Workroom, in project: Project) -> Bool {
+    isCreatingWorkroom(workroom, inProject: project.path)
+  }
+
+  /// `isCreatingWorkroom(_:in:)`, for the project at `projectPath`.
+  func isCreatingWorkroom(_ workroom: Workroom, inProject projectPath: String) -> Bool {
     creatingWorkrooms.contains(
-      TargetID.workroom(project: project.path, name: workroom.name))
+      TargetID.workroom(project: projectPath, name: workroom.name))
       // A remote create (#253) is in this set from just after its workroom has a name; until then,
       // its run says so. One a crash left at `creating` is deletable.
-      || (workroom.host?.lifecycle == .creating && hasRunningCreation(inProject: project.path))
+      || (workroom.host?.lifecycle == .creating && hasRunningCreation(inProject: projectPath))
   }
 
   /// Why no workroom can be created in `project` right now, as the New Workroom menu shows it beside
@@ -490,7 +495,7 @@ final class WorkroomLifecycle: ObservableObject {
     guard vcsStatus.probesRepositories, let p = projectStore.project(at: projectID) else { return }
     // A root folder moved or deleted takes its metadata dir with it, so its row's warning can come
     // up now rather than at the next reload.
-    projectStore.recheckMissingRoots()
+    projectStore.recheckMissingRoot(projectID: projectID)
     send(.rootBranchChanged(projectID))
     let resolver = self.resolver
     rootBranchRefreshTasks[projectID]?.cancel()

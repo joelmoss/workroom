@@ -1428,23 +1428,53 @@ final class AppStore: ObservableObject {
   func orderedWorkroomTargets(order: [TerminalTarget.ID]? = nil)
     -> [(sid: SidebarID, target: TerminalTarget)]
   {
+    var targets: [(sid: SidebarID, target: TerminalTarget)] = []
+    visitWorkroomTargets(order: order) { sid, target in
+      targets.append((sid, target))
+      return true
+    }
+    return targets
+  }
+
+  /// Whether the bar holds two workroom tabs or more. Resolves no tab past the second.
+  var hasMultipleWorkroomTargets: Bool {
+    var count = 0
+    visitWorkroomTargets { _, _ in
+      count += 1
+      return count < 2
+    }
+    return count >= 2
+  }
+
+  /// Whether the bar holds a workroom tab other than `sid`'s. Resolves no tab past the first such.
+  func hasWorkroomTarget(otherThan sid: SidebarID) -> Bool {
+    var found = false
+    visitWorkroomTargets { other, _ in
+      found = other != sid
+      return !found
+    }
+    return found
+  }
+
+  /// Hands `visit` each of `orderedWorkroomTargets` in order, until it returns false, resolving
+  /// none after that.
+  private func visitWorkroomTargets(
+    order: [TerminalTarget.ID]? = nil, _ visit: (SidebarID, TerminalTarget) -> Bool
+  ) {
     // Include every in-progress creation's target (issue #116): its terminal is withheld during a
     // setup script, so it isn't yet "active" (no terminal), but its chip must still show through setup.
     var active = terminals.activeTargetIDs
     active.formUnion(lifecycle.creationRunForTarget.keys)
     // A run's two ids resolve to one pane until the reload that publishes its name: one chip.
     var seen = Set<SidebarID>()
-    return Self.orderedActiveTargets(
-      persisted: order ?? workroomTabOrder, active: active
-    )
-    .compactMap { tid in
+    for tid in Self.orderedActiveTargets(persisted: order ?? workroomTabOrder, active: active) {
       // A create before its name lands (#483) has no workroom yet: its chip is its `.creation` pane.
       guard
         let sid = sidebarID(for: tid)
           ?? lifecycle.creationRun(forTargetID: tid).map(lifecycle.paneID(of:)),
         let target = target(for: sid), seen.insert(sid).inserted
-      else { return nil }
-      return (sid, target)
+      else { continue }
+      if !visit(sid, target) { return }
     }
   }
 
@@ -2274,6 +2304,19 @@ final class AppStore: ObservableObject {
       let workroom = project.workrooms.first(where: { $0.id == name })
     else { return nil }
     return (workroom, project)
+  }
+
+  /// Ask to delete `sid`'s workroom, through `RootView`'s confirmation: its sidebar row's button and
+  /// every workroom menu's Delete Workroom…. No-op for a root or a since-removed workroom.
+  func requestDeleteWorkroom(_ sid: SidebarID) {
+    guard let (workroom, project) = workroomAndProject(for: sid) else { return }
+    modals.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
+  }
+
+  /// Open `project`'s settings in Settings ▸ Projects (issue #7): its sidebar row's button and its
+  /// context menu's Project Settings….
+  func openProjectSettings(_ project: Project) {
+    modals.pendingProjectSettings = PendingProjectSettings(project: project)
   }
 
   /// Close every tab in `target` except `keepID` ("Close others"), confirming once if any victim has

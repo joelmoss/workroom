@@ -35,16 +35,11 @@ final class PaneInvalidationTests: XCTestCase {
     let b = try XCTUnwrap(store.target(for: .root(project: paths[1])))
     let surfaceA = try XCTUnwrap(store.terminals.surface(store.terminals.addTab(for: a)))
     let surfaceB = try XCTUnwrap(store.terminals.surface(store.terminals.addTab(for: b)))
-    let hosting = NSHostingView(
-      rootView: WorkroomTerminalsView(target: b, panes: store.terminals)
+    let (window, _) = hostInWindow(
+      WorkroomTerminalsView(target: b, panes: store.terminals)
         .invalidationEnvironment(store)
-        .frame(width: 900, height: 600))
-    hosting.frame = NSRect(x: 100, y: 100, width: 900, height: 600)
-    let window = NSWindow(
-      contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
-    window.isReleasedWhenClosed = false
-    window.contentView = hosting
-    window.orderFront(nil)
+        .frame(width: 900, height: 600),
+      size: NSSize(width: 900, height: 600), origin: NSPoint(x: 100, y: 100))
     return Fixture(
       store: store, a: a, b: b, surfaceA: surfaceA, surfaceB: surfaceB, window: window)
   }

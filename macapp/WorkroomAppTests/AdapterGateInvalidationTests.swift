@@ -22,15 +22,8 @@ import XCTest
 final class AdapterGateInvalidationTests: XCTestCase {
 
   private func host(_ root: some View) -> (NSWindow, NSView) {
-    let hosting = NSHostingView(rootView: root.frame(width: 600, height: 300))
-    hosting.frame = NSRect(x: 0, y: 0, width: 600, height: 300)
-    let window = NSWindow(
-      contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
-    // A programmatic NSWindow defaults `isReleasedWhenClosed` to true, which would over-release on
-    // top of ARC — same reasoning as `PaneRenderingTests.host`.
-    window.isReleasedWhenClosed = false
-    window.contentView = hosting
-    window.orderFront(nil)
+    let (window, hosting) = hostInWindow(
+      root.frame(width: 600, height: 300), size: NSSize(width: 600, height: 300))
     return (window, hosting)
   }
 

@@ -35,19 +35,35 @@ struct NewWorkroomPlacesMenu: View {
   /// boxd or exe.dev (#575): a submenu with Create, at once with the resolved host options, and
   /// Configure…, which opens one create's host options first.
   private func hostOptionsPlaceMenu(at place: HostKind) -> some View {
-    let reason = RemoteWorkrooms.unavailability(of: place)
-    return Menu(reason.map { "\(place.displayName) — \($0)" } ?? place.displayName) {
+    let entry = availability(of: place)
+    return Menu(entry.title) {
       newRemoteWorkroomButton(at: place, title: "Create")
       Button("Configure…") {
         store.modals.pendingHostOptions = PendingHostOptions(project: project, place: place)
       }
       .help("Choose the image and size for this \(place.displayName) workroom first")
     }
-    .help(
-      reason.map { "\(place.displayName) can't be used: \($0)" }
-        ?? "A workroom of \(project.displayName) in \(place.hostPhrase)"
-    )
-    .disabled(reason != nil || !lifecycle.canCreateRemoteWorkroom(in: project))
+    .help(entry.help)
+    .disabled(entry.disabled)
+  }
+
+  /// How a place's entry reads and whether it can be chosen now.
+  private struct PlaceAvailability {
+    /// The place's name, and why it can't be used when it can't.
+    let title: String
+    let help: String
+    let disabled: Bool
+  }
+
+  private func availability(of place: HostKind) -> PlaceAvailability {
+    // The place's own reason only: one that holds the whole project (a create in flight) is said
+    // once, above the entries.
+    let reason = RemoteWorkrooms.unavailability(of: place)
+    return PlaceAvailability(
+      title: reason.map { "\(place.displayName) — \($0)" } ?? place.displayName,
+      help: reason.map { "\(place.displayName) can't be used: \($0)" }
+        ?? "A workroom of \(project.displayName) in \(place.hostPhrase)",
+      disabled: reason != nil || !lifecycle.canCreateRemoteWorkroom(in: project))
   }
 
   /// New Workroom on this Mac. Creates in one project may overlap, each in its own pane (#483).
@@ -68,18 +84,13 @@ struct NewWorkroomPlacesMenu: View {
     #if DEBUG
       ProjectSidebar.menuEvaluations += 1
     #endif
-    // The place's own reason only: one that holds the whole project (a create in flight) is said
-    // once, above the entries.
-    let reason = RemoteWorkrooms.unavailability(of: place)
+    let entry = availability(of: place)
     return Button {
       Task { await lifecycle.createRemoteWorkroom(in: project, place: place, from: store) }
     } label: {
-      Text(title ?? reason.map { "\(place.displayName) — \($0)" } ?? place.displayName)
+      Text(title ?? entry.title)
     }
-    .help(
-      reason.map { "\(place.displayName) can't be used: \($0)" }
-        ?? "A workroom of \(project.displayName) in \(place.hostPhrase)"
-    )
-    .disabled(reason != nil || !lifecycle.canCreateRemoteWorkroom(in: project))
+    .help(entry.help)
+    .disabled(entry.disabled)
   }
 }
