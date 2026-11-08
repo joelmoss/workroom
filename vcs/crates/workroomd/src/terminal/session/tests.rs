@@ -2552,3 +2552,80 @@ fn a_child_seen_to_have_exited_is_left_for_the_end_to_reap() {
     // `child_gone` reaped it already; this only lets go of the handle.
     let _ = child.wait();
 }
+
+/// A probed client that stops answering gives up the size, as one that detaches does, so the one
+/// still answering, a Mac someone is at, gets its own window's size at once (#593). Then the
+/// first answer from the one that went quiet counts it as attached again without taking the size
+/// back: that needs an act, as ever.
+#[cfg(feature = "terminal-state")]
+#[test]
+fn a_probed_client_that_stops_answering_gives_up_the_size() {
+    let store = SessionStore::with_keepalive_interval(Duration::from_millis(30));
+    let session = id(0xA1);
+    sized_session(&store, session);
+    let quiet_writer: SharedWriter = Arc::new(Mutex::new(Box::new(Capture::default())));
+    let (_, quiet) = store
+        .attach_client(session, quiet_writer, 1, Size::cells(80, 24), true)
+        .expect("attach the probed client");
+    let (_answering, answering) = attach_sized(&store, session, 100, 30);
+    assert_eq!(
+        store.size_owner(session),
+        Some(quiet),
+        "the first attach owns it"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while store.size_owner(session) != Some(answering) {
+        assert!(Instant::now() < deadline, "the quiet client kept the size");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(pty_size(&store, session), (100, 30));
+    assert!(store.list()[0].attached, "the answering client is attached");
+
+    store.write_input(session, quiet, b"\x1b[?25930;0$y");
+    assert_eq!(
+        store.size_owner(session),
+        Some(answering),
+        "an answer is no act"
+    );
+    store.kill_all();
+}
+
+/// A client that has stopped answering is never handed the size as the one left (#593): the Mac
+/// that held it is asleep, so when the other client goes the size stays free, and the next client
+/// to attach takes it at once rather than showing the sleeping Mac's geometry until it types.
+#[cfg(feature = "terminal-state")]
+#[test]
+fn a_stale_client_left_on_its_own_is_not_handed_the_size() {
+    let store = SessionStore::with_keepalive_interval(Duration::from_millis(30));
+    let session = id(0xA2);
+    sized_session(&store, session);
+    let quiet_writer: SharedWriter = Arc::new(Mutex::new(Box::new(Capture::default())));
+    store
+        .attach_client(session, quiet_writer, 1, Size::cells(80, 24), true)
+        .expect("attach the probed client");
+    let (_other, other) = attach_sized(&store, session, 100, 30);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while store.size_owner(session) != Some(other) {
+        assert!(
+            Instant::now() < deadline,
+            "the quiet client never went stale"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    store.detach(session, other);
+    assert_eq!(
+        store.size_owner(session),
+        None,
+        "the stale client took the size"
+    );
+    let (_next, next) = attach_sized(&store, session, 120, 40);
+    assert_eq!(
+        store.size_owner(session),
+        Some(next),
+        "the next attach did not fill it"
+    );
+    assert_eq!(pty_size(&store, session), (120, 40));
+    store.kill_all();
+}

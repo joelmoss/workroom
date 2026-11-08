@@ -523,6 +523,22 @@ final class PersistentSessionPairTests: XCTestCase {
       "the daemon was handed a socket that is not the daemon's")
   }
 
+  /// Value: protects=a local pane is never probed for keepalive (#593): its attach ends with the
+  /// app, so a probe would only add traffic; fails_when=the keepalive variable reaches a local
+  /// pane's environment; why_new=only the remote command carried it before; seam=none
+  @MainActor
+  func testALocalPaneNeverAsksToBeProbed() {
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in .notOwned })
+    let environment = service.launchEnvironment(
+      sessionID: UUID(), workingDirectory: NSTemporaryDirectory())
+
+    XCTAssertFalse(environment.isEmpty, "no local launch to check")
+    XCTAssertFalse(
+      environment.contains { $0.key == "WORKROOM_SESSION_KEEPALIVE" }, "\(environment)")
+  }
+
   /// Value: protects=a run tab's pane asks the daemon for a run session (#522): its command and
   /// WORKROOM_SESSION_RUN=1, which a shell's pane never carries; fails_when=either variable is
   /// dropped, so the run becomes a bare shell or a shell becomes a run; seam=none;

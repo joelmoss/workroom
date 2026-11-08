@@ -153,7 +153,9 @@ final class HostStreamTests: XCTestCase {
         + "'WORKROOM_SESSION_RESOURCES=/run/workroom/ghostty' "
         + "'GHOSTTY_SHELL_FEATURES=cursor,sudo,title'; else unset WORKROOM_SESSION_RESOURCES "
         + "GHOSTTY_SHELL_FEATURES; set -- 'TERM=xterm-256color'; fi; "
-        + "'env' \"$@\" 'WORKROOM_SESSION_ID=\(session.uuidString)' "
+        // Probed for keepalive (#593), whatever the host's daemon: an older one ignores it.
+        + "'env' \"$@\" 'WORKROOM_SESSION_KEEPALIVE=1' "
+        + "'WORKROOM_SESSION_ID=\(session.uuidString)' "
         + "'WORKROOM_SESSION_SOCKET=/run/workroom/workroomd.sock' "
         + "'WORKROOM_SESSION_CWD=/home/w/it'\\''s here' '/run/workroom/workroomd' 'attach' "
         + "'--no-spawn'")

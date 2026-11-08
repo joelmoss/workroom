@@ -69,6 +69,10 @@ pub(crate) fn dispatch(
         FrameKind::Attach => {
             let request = AttachRequest::decode(&frame.payload)?;
             let id = request.id?;
+            // A remote pane's attach asks to be probed, so a client whose Mac has gone stops
+            // counting as attached (#593). Read from the environment the relay forwards whole, so
+            // any relay carries it.
+            let keepalive = crate::terminal::session::keepalive_requested(&request.env);
             // A new session must register its first client before its reader starts: a command
             // such as `echo` can exit before attach, taking its output and exit status with it.
             let attach = || {
@@ -84,7 +88,7 @@ pub(crate) fn dispatch(
                 .ok_or(crate::terminal::session::SessionError::NotFound(
                     id.to_hyphenated(),
                 ))?;
-                sessions.attach(
+                sessions.attach_client(
                     id,
                     Arc::clone(writer),
                     envelope.stream,
@@ -94,6 +98,7 @@ pub(crate) fn dispatch(
                         x_pixels: request.x_pixels,
                         y_pixels: request.y_pixels,
                     },
+                    keepalive,
                 )
             };
             // Refused, not created, for a client that asked to attach only to what exists: see

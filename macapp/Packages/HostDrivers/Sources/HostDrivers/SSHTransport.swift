@@ -304,6 +304,13 @@ public enum SSHTransport {
   /// `runCommand` makes the session a run session (#522), whose daemon runs it under the run
   /// supervisor in the host's own login shell. It is the project's run command, which the user
   /// typed and which runs on the host anyway, so the command line showing it gives nothing away.
+  ///
+  /// `keepaliveVariable` asks the host's daemon to probe this pane's terminal (#593), so the
+  /// session stops reading as attached about a minute after this Mac sleeps or drops off the
+  /// network, rather than when sshd notices, up to about 2 h later. The pane's libghostty answers
+  /// the probe on its own, whether or not anyone types. Sent whatever the host's daemon is: one
+  /// that predates it ignores it, as it drops every `WORKROOM_SESSION_*` from the shell's
+  /// environment, and sends no probe.
   public static func remoteAttachCommand(
     binary: String, session: UUID, socket: String, resources: String, workingDirectory: String,
     restored: Bool, metadata: [(key: String, value: String)] = [], runCommand: String? = nil
@@ -316,6 +323,7 @@ public enum SSHTransport {
       .filter { [SessionMetadataKey.workroom, SessionMetadataKey.title].contains($0.key) }
     let variables =
       [
+        keepaliveVariable,
         "WORKROOM_SESSION_ID=\(session.uuidString)",
         "WORKROOM_SESSION_SOCKET=\(socket)",
         "WORKROOM_SESSION_CWD=\(workingDirectory)",
@@ -338,6 +346,11 @@ public enum SSHTransport {
       + (variables + [binary, "attach", "--no-spawn"] + (restored ? ["--no-create"] : []))
       .map(shellQuoted).joined(separator: " ")
   }
+
+  /// What a remote pane's attach sets to be probed (`remoteAttachCommand`): the daemon's
+  /// `KEEPALIVE_VARIABLE`. Only a remote pane: a local one's attach ends with the app, whatever
+  /// the network does.
+  public static let keepaliveVariable = "WORKROOM_SESSION_KEEPALIVE=1"
 
   public static let alias = "workroom-host"
 

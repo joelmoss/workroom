@@ -30,6 +30,7 @@ use crate::util::lock_or_recover;
 mod attached;
 mod freeze;
 mod hooks;
+mod keepalive;
 mod reader;
 mod refusals;
 mod store;
@@ -37,6 +38,9 @@ mod terminate;
 
 pub(crate) use freeze::{HANDOFF_FORMAT_DEADLINE, HANDOFF_IMAGE_DEADLINE};
 pub use hooks::Hooks;
+pub use keepalive::{
+    PROBE as KEEPALIVE_PROBE, VARIABLE as KEEPALIVE_VARIABLE, requested as keepalive_requested,
+};
 pub use reader::READ_CHUNK;
 pub use refusals::refusals_path;
 pub use terminate::KILL_EXIT_WAIT;
@@ -81,9 +85,18 @@ struct Client {
     classifier: InputClassifier,
     /// Its images on their way after a repaint, if it has any. Only the reader sends them.
     transfer: Option<Arc<Transfer>>,
+    /// Whether it still answers, for a client that asked to be probed (#593, `keepalive`).
+    keepalive: Option<keepalive::Keepalive>,
 }
 
 impl Client {
+    /// Whether it has stopped answering its probes, and so no longer counts as attached.
+    fn is_stale(&self) -> bool {
+        self.keepalive
+            .as_ref()
+            .is_some_and(keepalive::Keepalive::is_stale)
+    }
+
     /// Whether this client is allowed to own the size. A client that has not advertised one yet
     /// cannot: a relay forked into a pipe rather than a terminal reports 0x0, and letting that own
     /// would resize every other viewer's pty to nothing.
@@ -258,7 +271,12 @@ impl Session {
         SessionInfo {
             id: self.id,
             pid: self.pty.child_pid(),
-            attached: !lock_or_recover(&self.attached).clients.is_empty(),
+            // A client that has stopped answering its probes does not count (#593): its Mac is
+            // most likely asleep or off the network, and another Mac's list must show the session.
+            attached: lock_or_recover(&self.attached)
+                .clients
+                .iter()
+                .any(|client| !client.is_stale()),
             cwd: foreground.and_then(crate::terminal::process::working_directory),
             // Only `claude`'s environment is read: no other program's is anyone's business. Anything
             // not confirmed as `claude` reports no profile, so the app never guesses an account.
@@ -339,7 +357,8 @@ pub struct TakenScreen {
 ///    ├─ ending              `mark_ending` as sessions leave the map, `is_ending`
 ///    ├─ Runs.wake           `signal_run` (`Hooks::run_signalled`)
 ///    └─ attached            per session: `list` (`Session::info`), the end of `attach`, the freeze
-///       ├─ shadow           per session: `attach`'s repaint, `apply_size`, `send_images`, a read
+///       ├─ shadow           per session: `attach`'s repaint, `apply_size`, `send_images`,
+///       │                   `send_probes`, a read
 ///       │  ├─ Hub.boot      a status event built under it (a read, `change_program_status`)
 ///       │  └─ Transfer      a client's image queues: `send_images` taking the next chunk
 ///       ├─ Transfer         a read stopping a client's transfer
@@ -356,7 +375,8 @@ pub struct TakenScreen {
 /// `Subscriber.queue` as a publish takes them (`Hub::publish` copies the list first, and publishes
 /// only with every session lock released); a `Transfer` as an encoder looks at it and finishes; a shadow as an encoder copies its pixels, and as `compress_shadows` and
 /// `promote_unprobed` visit each one after releasing the map. The store map is released before a
-/// reader starts (`create_then`), and before `changed_screens` takes any session's attachment lock.
+/// reader starts (`create_then`), and before `changed_screens` or the keepalive ticker
+/// (`keepalive::tick`) takes any session's attachment lock.
 /// The forward, layout, watch and rpc locks never nest with these.
 ///
 /// # Poisoned locks
@@ -388,6 +408,8 @@ pub struct SessionStore {
     /// Where `refused` is kept for the next program to serve this socket, when this one serves
     /// one (`keep_refusals`).
     refusals: Arc<OnceLock<PathBuf>>,
+    /// The thread that probes the clients that asked for it (#593), started by the first.
+    keepalive: Arc<keepalive::Ticker>,
 }
 
 /// Sessions marked as being ended in `SessionStore::ending` until dropped, panics included.
