@@ -89,6 +89,9 @@ and the hash there together. That job
 installs `shellcheck` 0.11.0 the same way (`SHELLCHECK_VERSION` and `SHELLCHECK_SHA256`), because the
 runner's own is older, and also lints `macapp/Scripts/*.sh` through `make app-scripts-lint`.
 
+When a build or lint fails oddly, run `make tools-check`: it compares the tools on your `PATH` with
+the versions pinned above and says what to install, however you installed them.
+
 Runtime requirements for *using* Workroom are in the docs'
 [Install page](docs-site/pages/get-started/install.md).
 
