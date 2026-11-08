@@ -22,6 +22,8 @@ enum TerminalSessionAttachment {
     // is (`makeTerminalTab`): unregistered, its attach would go to this Mac's helpers.
     sessions.registerHostSession(sessionID, for: target, metadata: view.attachment.metadata)
     let previous = state.sessionID
+    // Let go here, so the list offers it while its host still counts the old ssh (#584).
+    if let previous, previous != sessionID { sessions.sessionService.sessionReleased(previous) }
     state.sessionID = sessionID
     tab.content = .terminal(state)
     // The tab first: its session is the one the surface reads as it attaches again.

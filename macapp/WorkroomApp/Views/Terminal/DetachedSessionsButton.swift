@@ -34,6 +34,12 @@ struct DetachedSessionsButton: View {
         }
       }
     }
+    // Read again as the list opens: one read over the connection already there, never a connect,
+    // so what it offers is not the hours-old answer of the footer's mount.
+    .onChange(of: showing) { _, isShowing in
+      guard isShowing else { return }
+      Task { await refresh() }
+    }
     // A remote workroom's list is read again each time its host connects (`follow`), so a pane
     // that mounts before its host is up still shows what the host holds.
     .task(id: target.id) {
