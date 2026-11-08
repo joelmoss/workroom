@@ -24,14 +24,6 @@ final class PaneInvalidationTests: XCTestCase {
     let window: NSWindow
   }
 
-  /// No sessions, and an inert surface, so nothing spawns.
-  private func makeInert(_ store: AppStore) {
-    store.terminals.sessionService = isolatedPaneSessionService()
-    store.terminals.makeView = { _, cwd, command in
-      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
-    }
-  }
-
   private func fixture() throws -> Fixture {
     let store = AppStore()
     makeInert(store)
@@ -62,14 +54,6 @@ final class PaneInvalidationTests: XCTestCase {
     try await Task.sleep(for: .milliseconds(150))
     window.contentView?.layoutSubtreeIfNeeded()
     window.displayIfNeeded()
-  }
-
-  /// Report what a working agent reports: OSC 9;4 progress, then a title naming a known agent.
-  private func agentStartsWorking(on surface: GhosttySurfaceView) async throws {
-    surface.handleProgressReport(true)
-    try await Task.sleep(for: .milliseconds(50))
-    surface.foregroundProcessNameForTesting = "codex"
-    surface.handleTitleChange("Codex")
   }
 
   private func resetPasses() {

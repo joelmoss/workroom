@@ -14,6 +14,8 @@ struct ProjectSidebar: View {
   private static let signposter = OSSignposter(
     subsystem: "com.developwithstyle.workroom", category: "Sidebar")
   #if DEBUG
+    /// Project, root and workroom row bodies, together (`SidebarBenchmarkTests`); terminal rows are
+    /// counted only in `SidebarRowPasses`.
     static var rowEvaluations = 0
     static var menuEvaluations = 0
     static var didRenderHover: ((SidebarID, Binding<Bool>) -> Void)?
@@ -308,7 +310,10 @@ struct ProjectSidebar: View {
   @ViewBuilder
   private func projectRow(_ project: Project, hovered: Bool) -> some View {
     #if DEBUG
-      let _ = { Self.rowEvaluations += 1 }()
+      let _ = {
+        Self.rowEvaluations += 1
+        SidebarRowPasses.project += 1
+      }()
     #endif
     HStack(spacing: 6) {
       // The whole caret/name area toggles expansion; clicking anywhere on it (including the
@@ -420,7 +425,10 @@ struct ProjectSidebar: View {
   @ViewBuilder
   private func rootRow(_ project: Project, hovered: Bool) -> some View {
     #if DEBUG
-      let _ = { Self.rowEvaluations += 1 }()
+      let _ = {
+        Self.rowEvaluations += 1
+        SidebarRowPasses.root += 1
+      }()
     #endif
     let id = SidebarID.root(project: project.path)
     let target = project.rootTarget
@@ -497,7 +505,10 @@ struct ProjectSidebar: View {
   @ViewBuilder
   private func workroomRow(_ workroom: Workroom, in project: Project, hovered: Bool) -> some View {
     #if DEBUG
-      let _ = { Self.rowEvaluations += 1 }()
+      let _ = {
+        Self.rowEvaluations += 1
+        SidebarRowPasses.workroom += 1
+      }()
     #endif
     let id = SidebarID.workroom(project: project.path, name: workroom.name)
     let target = workroom.target(inProject: project.path)
@@ -642,6 +653,9 @@ struct ProjectSidebar: View {
   )
     -> some View
   {
+    #if DEBUG
+      let _ = { SidebarRowPasses.terminal += 1 }()
+    #endif
     // A content tab gets the same glyph the tab strip and the pane title bar use (#66), so a glance
     // at the row says "this isn't a terminal". `TabContent.glyph` is that one source; it returns nil
     // for a terminal (the unmarked default elsewhere), and this row is the one place that wants an
@@ -841,6 +855,26 @@ struct ProjectSidebar: View {
     // The enclosing footer provides the shared sidebar background.
   }
 }
+
+#if DEBUG
+  /// How many times each kind of sidebar row's body has run, read by the sidebar's invalidation
+  /// tests: which rows a change re-runs, by kind.
+  @MainActor enum SidebarRowPasses {
+    static var project = 0
+    static var root = 0
+    static var workroom = 0
+    static var terminal = 0
+
+    static var total: Int { project + root + workroom + terminal }
+
+    static func reset() {
+      project = 0
+      root = 0
+      workroom = 0
+      terminal = 0
+    }
+  }
+#endif
 
 /// Hover belongs to a row: changing it must not invalidate the sidebar's List (#534).
 private struct SidebarHoverRegion<Content: View>: View {
