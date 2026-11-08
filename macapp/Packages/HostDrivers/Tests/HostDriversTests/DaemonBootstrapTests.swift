@@ -824,17 +824,38 @@ final class DaemonBootstrapTests: XCTestCase {
   /// The same on the send side, which is the 11 MB push: a far side that reads slowly, taking
   /// longer than the bound in all, is not ended, because every piece sent resets it. One `send`
   /// of the whole input, or a bound not reset by sending, ends this one.
+  ///
+  /// Not a race with the clock (#600). The push starts only once the far side says it is reading,
+  /// so its startup is never silence. Its pace (32 KiB, then 0.1 s) puts each gap well inside the
+  /// 2 s bound even on a loaded runner, and 31 such gaps take at least 3.1 s, longer than the
+  /// bound, which the elapsed-time check pins.
   func testASlowReaderIsNotEnded() async throws {
+    let ready = FileManager.default.temporaryDirectory
+      .appendingPathComponent("slow-reader-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: ready) }
     let stream = try HostStream.spawn(
       URL(fileURLWithPath: "/bin/sh"),
       [
         "-c",
-        "while [ $(( $(head -c 32768 | wc -c) )) -gt 0 ]; do sleep 0.1; done; echo drained",
+        ": > \"$0\"; while [ $(( $(head -c 32768 | wc -c) )) -gt 0 ]; do sleep 0.1; done;"
+          + " echo drained",
+        ready.path,
       ], environment: [:], handshakeTimeout: 5, purpose: .exchange)
+    defer { stopIfStillRunning(stream) }
+    let deadline = ContinuousClock.now + .seconds(30)
+    while !FileManager.default.fileExists(atPath: ready.path) {
+      guard ContinuousClock.now < deadline else { return XCTFail("the far side never started") }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    let bound: TimeInterval = 2
+    let started = ContinuousClock.now
     let (status, output) = try await stream.communicate(
-      Data(repeating: 0, count: 1_000_000), timeout: 0.5)
+      Data(repeating: 0, count: 1_000_000), timeout: bound)
     XCTAssertEqual(status, 0)
     XCTAssertEqual(output, "drained\n")
+    XCTAssertGreaterThan(
+      ContinuousClock.now - started, .seconds(bound),
+      "the exchange must outlast the bound, or this does not show the bound is on silence")
   }
 
   /// A far side that stops reading mid-push still gets to answer: what it printed before it
