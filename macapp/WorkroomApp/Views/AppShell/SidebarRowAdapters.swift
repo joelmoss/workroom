@@ -62,9 +62,7 @@ struct SidebarRootRowAdapter: View, Equatable {
   private var model: SidebarRootRowModel {
     // Whether the folder is gone is read from the store, not `stat`ed: nothing observable changes
     // when a folder goes, so a `stat` here would keep what it saw until the row next re-ran.
-    let target = Project.rootTarget(
-      path: projectPath, name: projectName,
-      isMissing: store.projectStore.missingRoots.contains(projectPath))
+    let target = store.projectStore.rootTarget(path: projectPath, name: projectName)
     return SidebarRootRowModel(
       projectPath: projectPath, projectName: projectName, target: target,
       subtree: store.sidebarSubtree(of: target), activity: store.sidebarActivity(of: target.id))
@@ -163,11 +161,11 @@ extension AppStore {
 // MARK: Backgrounds
 
 /// A root, workroom or create's row highlight, drawn at the row-background level so hover and
-/// selection share the same (smaller, inset) geometry. The selected row wears the focused workroom
-/// card's fill, as the right sidebar's header does (`InspectorWorkroomHeader`), so the row, the pane
-/// and the header read as one workroom; hovered rows a subtle one. Drawn ourselves so we control the
-/// size rather than the full-row system selection highlight. It reads the selection itself, so a
-/// selection repaints two backgrounds and re-runs no row.
+/// selection share the same (smaller, inset) geometry. The selected row wears the focused
+/// workroom card's fill, as the right sidebar's header does (`InspectorWorkroomHeader`), so the
+/// row, the pane and the header read as one workroom; hovered rows a subtle one. Drawn ourselves
+/// so we control the size rather than the full-row system selection highlight. It reads the
+/// selection itself, so a selection repaints two backgrounds and re-runs no row.
 ///
 /// The store is handed in, not taken from the environment: a row's background is laid out once
 /// more while its row animates out of the List (a project collapsing), without the environment
@@ -208,8 +206,8 @@ struct SidebarTerminalRowBackground: View {
     let selected =
       store.selectedTargetID == parent && store.terminals.focusedTab(for: target)?.id == tabID
     // Lighter than the root/workroom selection fill (0.13): the selected workroom is the primary
-    // selection, the focused terminal a secondary "active within" cue — so the two don't read as two
-    // equal selections when a subtree is open (issue #30 design pass).
+    // selection, the focused terminal a secondary "active within" cue — so the two don't read as
+    // two equal selections when a subtree is open (issue #30 design pass).
     let fill: Color =
       selected ? tokens.hover : (hovered ? tokens.hover.opacity(0.5) : .clear)
     #if DEBUG
@@ -239,7 +237,9 @@ struct SidebarProjectMenu: View {
     // No tooltip here: a submenu's parent shows it on top of the submenu, over This Mac. Each
     // entry has its own.
     Divider()
-    runCommandMenuItems(host: store, target: project.rootTarget)
+    runCommandMenuItems(
+      host: store,
+      target: store.projectStore.rootTarget(path: project.path, name: project.displayName))
     Divider()
     Button {
       store.openProjectSettings(project)

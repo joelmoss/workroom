@@ -3,11 +3,11 @@ import SwiftUI
 import TerminalModel
 import WorkroomDomain
 
-// The sidebar's four kinds of row, each a store-free view of a value model behind an equality gate.
-// An adapter per row (`SidebarRowAdapters.swift`) reads the window's stores and builds the model, so
-// a change re-runs the adapters that read it, and a row's body runs only when its model, its hover
-// or its drag plumbing changed. What changes often and shows in one corner of a row (VCS status,
-// unread counts, selection, the drag, the run) is read in a leaf of its own instead.
+// The sidebar's four kinds of row, each a store-free view of a value model behind an equality
+// gate. An adapter per row (`SidebarRowAdapters.swift`) reads the window's stores and builds the
+// model, so a change re-runs the adapters that read it, and a row's body runs only when its model,
+// its hover or its drag plumbing changed. What changes often and shows in one corner of a row (VCS
+// status, unread counts, selection, the drag, the run) is read in a leaf of its own instead.
 
 /// What the sidebar's rows do. Built from the window's store on each sidebar pass; every closure
 /// takes the ids it acts on and captures only the store, so a row whose gate skipped still acts on
@@ -88,10 +88,11 @@ enum SidebarRowMetrics {
   /// disclosure caret (root/workroom, only at ≥2 terminals) or the terminal glyph, and is always
   /// reserved so the labels beside it line up whether or not a caret is shown.
   static let caretWidth: CGFloat = 14
-  /// Fixed content height shared by the project row and its root/workroom children so every row in
-  /// the tree is the same height regardless of which trailing controls (run/delete/spinner) it shows
-  /// (issue: uniform row sizing). Paired with the sidebar's matching top/bottom insets. Terminal rows
-  /// are a deliberately more compact tier (their own glyph + footnote) and keep their own insets.
+  /// Fixed content height shared by the project row and its root/workroom children so every row
+  /// in the tree is the same height regardless of which trailing controls (run/delete/spinner) it
+  /// shows (issue: uniform row sizing). Paired with the sidebar's matching top/bottom insets.
+  /// Terminal rows are a deliberately more compact tier (their own glyph + footnote) and keep
+  /// their own insets.
   static let rowHeight: CGFloat = 20
 }
 
@@ -143,16 +144,16 @@ struct SidebarProjectRow: View, Equatable {
       }()
     #endif
     let project = model.project
-    HStack(spacing: 6) {
+    HStack(spacing: Spacing.s) {
       // The whole caret/name area toggles expansion; clicking anywhere on it (including the
       // trailing empty space) collapses or expands the project.
       Button {
         actions.toggleProject(project.path)
       } label: {
-        HStack(spacing: 6) {
+        HStack(spacing: Spacing.s) {
           // The project chevron sits to the right of the project name — projects keep their own
-          // disclosure idiom, distinct from the leading caret column the root/workroom/terminal rows
-          // share. Always shown (every project has at least the root as a child).
+          // disclosure idiom, distinct from the leading caret column the root/workroom/terminal
+          // rows share. Always shown (every project has at least the root as a child).
           Text(project.displayName).font(.callout).fontWeight(.medium)
             .foregroundStyle(.secondary)
           Image(systemName: model.expanded ? "chevron.down" : "chevron.right")
@@ -194,8 +195,8 @@ struct SidebarProjectRow: View, Equatable {
       ) {
         actions.openProjectSettings(project)
       }
-      // "+" asks where, as the context menu does (#309). A create shows its progress in its own pane
-      // and row, never here (#483).
+      // "+" asks where, as the context menu does (#309). A create shows its progress in its own
+      // pane and row, never here (#483).
       CreateRowButton(
         help:
           "New workroom in \(project.displayName), on this Mac, in a local container or on "
@@ -258,7 +259,7 @@ struct SidebarRootRow: View, Equatable {
     let id = model.id
     let target = model.target
     let activity = model.activity
-    HStack(spacing: 6) {
+    HStack(spacing: Spacing.s) {
       SidebarLeadingSlot(
         id: id, target: target, root: true, subtree: model.subtree, hovered: hovered,
         toggle: { actions.toggleTerminals(target.id) })
@@ -286,8 +287,8 @@ struct SidebarRootRow: View, Equatable {
       .contentShape(Rectangle())
       .modifier(SidebarDragDim(id: id, drag: drag.drag))
       .onTapGesture { actions.select(id) }
-      // Drag this root onto a displayed workroom pane to split them (issue #101). Simultaneous so the
-      // List still scrolls vertically; the tap above still selects.
+      // Drag this root onto a displayed workroom pane to split them (issue #101). Simultaneous so
+      // the List still scrolls vertically; the tap above still selects.
       .simultaneousGesture(drag.splitGesture(id, actions: actions))
       .modifier(SidebarRootTooltip(projectID: model.projectPath))
       .accessibilityElement(children: .ignore)
@@ -364,7 +365,7 @@ struct SidebarWorkroomRow: View, Equatable {
     let workroom = model.workroom
     let target = model.target
     let activity = model.activity
-    HStack(spacing: 6) {
+    HStack(spacing: Spacing.s) {
       // Leading identity glyph (a cube for a workroom), swapped for the expand/collapse chevron on
       // hover when the row has ≥2 terminals — the same left edge as the root row, so roots and
       // workrooms read as aligned siblings.
@@ -382,9 +383,9 @@ struct SidebarWorkroomRow: View, Equatable {
       }
       // Spinner/delete slot: a progress spinner while the workroom's setup runs (issue #116) or a
       // command runs (issue #28), swapped for the delete button on hover — so a workroom stays
-      // deletable even mid-run. The delete button is always laid out (it reveals via opacity), so it
-      // fixes the slot's size and the smaller spinner can't shift the row. Trailing, so the spinner
-      // lines up with the root row's, which has no slot.
+      // deletable even mid-run. The delete button is always laid out (it reveals via opacity), so
+      // it fixes the slot's size and the smaller spinner can't shift the row. Trailing, so the
+      // spinner lines up with the root row's, which has no slot.
       ZStack(alignment: .trailing) {
         // A create's progress, for every kind, while its run lasts (#483).
         if let run = model.creationRun?.run {
@@ -392,7 +393,8 @@ struct SidebarWorkroomRow: View, Equatable {
         } else if activity.waiting == 0, activity.failed || activity.running, !hovered {
           RunningSpinner(failed: activity.failed)
         }
-        // Hidden while the workroom's setup is still running — it can't be deleted mid-setup (#116).
+        // Hidden while the workroom's setup is still running — it can't be deleted mid-setup
+        // (#116).
         DeleteRowButton(
           name: workroom.displayName,
           visible: hovered && !model.isCreating
@@ -416,8 +418,8 @@ struct SidebarWorkroomRow: View, Equatable {
       .contentShape(Rectangle())
       .modifier(SidebarDragDim(id: id, drag: drag.drag))
       .onTapGesture { actions.select(id) }
-      // Drag this workroom onto a displayed pane to split them (issue #101). Simultaneous so the List
-      // still scrolls vertically; the tap above still selects.
+      // Drag this workroom onto a displayed pane to split them (issue #101). Simultaneous so the
+      // List still scrolls vertically; the tap above still selects.
       .simultaneousGesture(
         drag.splitGesture(id, actions: actions), including: model.pending ? .none : .all
       )
@@ -493,10 +495,11 @@ struct SidebarTerminalRow: View, Equatable {
     #if DEBUG
       let _ = { SidebarRowPasses.terminal += 1 }()
     #endif
-    HStack(spacing: 6) {
-      // Leading glyph centered in the shared caret slot, same size/weight as the root house and the
-      // workroom chevron so the leading-icon column reads as one set. The fixed-width frame keeps the
-      // title in the same column as the root/workroom labels regardless of the symbol's intrinsic width.
+    HStack(spacing: Spacing.s) {
+      // Leading glyph centered in the shared caret slot, same size/weight as the root house and
+      // the workroom chevron so the leading-icon column reads as one set. The fixed-width frame
+      // keeps the title in the same column as the root/workroom labels regardless of the symbol's
+      // intrinsic width.
       Image(systemName: model.glyph)
         .font(.system(size: 10))
         .foregroundStyle(.secondary)
@@ -517,9 +520,9 @@ struct SidebarTerminalRow: View, Equatable {
 
       SidebarUnreadDot(source: .tab(model.tabID))
 
-      // Same swapped slot as the workroom row: a spinner while a command runs, replaced by the close
-      // button on hover. The close button is always laid out (revealed via opacity) so the row size
-      // is stable and the smaller spinner can't shift it.
+      // Same swapped slot as the workroom row: a spinner while a command runs, replaced by the
+      // close button on hover. The close button is always laid out (revealed via opacity) so the
+      // row size is stable and the smaller spinner can't shift it.
       ZStack {
         if model.isRunning || model.indicator == .error, !hovered {
           RunningSpinner(failed: model.isProgressFailed || model.indicator == .error)
@@ -542,7 +545,7 @@ struct SidebarTerminalRow: View, Equatable {
       }
     }
     // A small indent so the expanded terminal rows read as children of their root/workroom row.
-    .padding(.leading, 8)
+    .padding(.leading, Spacing.m)
     .contentShape(Rectangle())
     .onTapGesture { actions.revealTerminal(model.tabID, model.parent) }
     .accessibilityAddTraits(.isButton)
@@ -570,13 +573,13 @@ struct SidebarTerminalRow: View, Equatable {
 
 // MARK: Shared parts
 
-/// The leading icon column for a root/workroom row (issue #30): the identity glyph — a house for the
-/// project root, a cube for a workroom. When the row owns ≥2 terminals it's expandable, and
-/// hovering the row swaps the glyph for the expand/collapse chevron — so the chevron shows only when
-/// it's both usable and the row is the pointer's focus. The chevron's own `Button` toggles expansion
-/// without selecting the row (a button inside a selectable `List` row swallows the tap). Both occupy
-/// `caretWidth` (centered), so sibling rows share one left edge and the glyph/chevron sit on the same
-/// vertical axis as the terminal-row glyph below.
+/// The leading icon column for a root/workroom row (issue #30): the identity glyph — a house for
+/// the project root, a cube for a workroom. When the row owns ≥2 terminals it's expandable, and
+/// hovering the row swaps the glyph for the expand/collapse chevron — so the chevron shows only
+/// when it's both usable and the row is the pointer's focus. The chevron's own `Button` toggles
+/// expansion without selecting the row (a button inside a selectable `List` row swallows the tap).
+/// Both occupy `caretWidth` (centered), so sibling rows share one left edge and the glyph/chevron
+/// sit on the same vertical axis as the terminal-row glyph below.
 private struct SidebarLeadingSlot: View {
   let id: SidebarID
   let target: TerminalTarget
@@ -613,7 +616,7 @@ private struct SidebarLeadingSlot: View {
     let target = workroom.target(inProject: path)
     let terminal = TabContent.terminal(
       TerminalState(defaultTitle: "zsh", launch: .shell, launchDirectory: target.path))
-    VStack(alignment: .leading, spacing: 4) {
+    VStack(alignment: .leading, spacing: Spacing.xs) {
       SidebarProjectRow(
         model: SidebarProjectRowModel(project: project, expanded: true), hovered: false,
         actions: .inert)
@@ -637,7 +640,7 @@ private struct SidebarLeadingSlot: View {
           programStatus: nil, hasSession: false),
         content: terminal, hovered: false, actions: .inert)
     }
-    .padding(8)
+    .padding(Spacing.m)
     .environmentObject(store)
     .environmentObject(store.runCommand)
     .environmentObject(store.vcsStatus)

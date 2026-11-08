@@ -211,15 +211,11 @@ extension Project {
   }
 
   /// The always-present project-root target. The project directory can disappear like a
-  /// workroom directory, so `isMissing` is checked against the filesystem.
+  /// workroom directory, so `isMissing` is checked against the filesystem. The sidebar takes it
+  /// from `ProjectStore.rootTarget(path:name:)` instead, which reads what the store last saw.
   var rootTarget: TerminalTarget {
-    rootTarget(isMissing: !FileManager.default.fileExists(atPath: path))
-  }
-
-  /// The project-root target, with whether its directory is gone as the caller last saw it
-  /// (`ProjectStore.missingRoots`).
-  func rootTarget(isMissing: Bool) -> TerminalTarget {
-    Self.rootTarget(path: path, name: displayName, isMissing: isMissing)
+    Self.rootTarget(
+      path: path, name: displayName, isMissing: !FileManager.default.fileExists(atPath: path))
   }
 
   /// The root target of the project at `path`, named `name`, for a caller that holds only those.

@@ -6,10 +6,10 @@ import XCTest
 @testable import Workroom
 
 /// `RootView` is the window's composition root: a pass of its body re-evaluates the whole window's
-/// view tree. It used to observe every Combine-published object the menus and the title-bar bar read
-/// (the notification list, the Room menu's remote state, the updater, the waiting agents), so each
-/// of their publishes re-ran it. Those now live in `MenuStateAdapter`, `AccessoryBarInjector` and
-/// `WhatsNewLaunchCheck`, which re-run in its place.
+/// view tree. It used to observe every Combine-published object the menus and the title-bar bar
+/// read (the notification list, the Room menu's remote state, the updater, the waiting agents), so
+/// each of their publishes re-ran it. Those now live in `MenuStateAdapter`, `AccessoryBarInjector`
+/// and `WhatsNewLaunchCheck`, which re-run in its place.
 ///
 /// The real `RootView`, hosted with `RootWindow`'s injection stack (and the app-level objects
 /// `WorkroomApp` adds), over one project whose directory does not exist, so no terminal opens.

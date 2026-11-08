@@ -2256,9 +2256,10 @@ final class AppStore: ObservableObject {
   func newTerminalInSelectedTarget() {
     guard let target = selectedTarget, target.opensTerminals else { return }
     // Never open a shell into a worktree a setup script is still writing (issues #167/#171). The
-    // File menu item disables itself on the same predicate (`MenuStateAdapter.terminalInteractionAvailable`),
-    // but that is a display rule — this is the chokepoint every caller routes through, the way
-    // `startRunCommand` guards the run path rather than trusting its buttons.
+    // File menu item disables itself on the same predicate
+    // (`MenuStateAdapter.terminalInteractionAvailable`), but that is a display rule — this is the
+    // chokepoint every caller routes through, the way `startRunCommand` guards the run path rather
+    // than trusting its buttons.
     guard !lifecycle.isCreationBlocking(target.id) else { return }
     newTerminal(in: target)
   }
@@ -2306,15 +2307,15 @@ final class AppStore: ObservableObject {
     return (workroom, project)
   }
 
-  /// Ask to delete `sid`'s workroom, through `RootView`'s confirmation: its sidebar row's button and
-  /// every workroom menu's Delete Workroom…. No-op for a root or a since-removed workroom.
+  /// Ask to delete `sid`'s workroom, through `RootView`'s confirmation: its sidebar row's button
+  /// and every workroom menu's Delete Workroom…. No-op for a root or a since-removed workroom.
   func requestDeleteWorkroom(_ sid: SidebarID) {
     guard let (workroom, project) = workroomAndProject(for: sid) else { return }
     modals.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
   }
 
-  /// Open `project`'s settings in Settings ▸ Projects (issue #7): its sidebar row's button and its
-  /// context menu's Project Settings….
+  /// Open `project`'s settings in Settings ▸ Projects (issue #7): its sidebar row's button and
+  /// its context menu's Project Settings….
   func openProjectSettings(_ project: Project) {
     modals.pendingProjectSettings = PendingProjectSettings(project: project)
   }

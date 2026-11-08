@@ -33,26 +33,27 @@ struct MenuStateAdapter: ViewModifier {
       .modifier(RoomCommandStateValues(store: store))
       .modifier(
         MenuStateValues(
-          // `workroomSelected`: while a setup script blocks the selected workroom's terminal, report
-          // false so ⌘T can't open a (hidden) terminal behind the setup pane (Open/Reveal still work).
+          // `workroomSelected`: while a setup script blocks the selected workroom's terminal,
+          // report false so ⌘T can't open a (hidden) terminal behind the setup pane (Open/Reveal
+          // still work).
           //
-          // Every boolean here also ANDs in `!modal`: a menu item's key equivalent fires even while a
-          // dialog or sheet is up (⌘T behind the Add Project sheet really did open a tab), and a
-          // disabled item drops its key equivalent — the same mechanism `hasProjects` already relies
-          // on for ⌘N. Doing it here rather than per-item keeps it to one site, and greying the item
-          // out tells the user WHY the key did nothing, which swallowing the event in the key monitor
-          // cannot.
+          // Every boolean here also ANDs in `!modal`: a menu item's key equivalent fires even
+          // while a dialog or sheet is up (⌘T behind the Add Project sheet really did open a
+          // tab), and a disabled item drops its key equivalent — the same mechanism `hasProjects`
+          // already relies on for ⌘N. Doing it here rather than per-item keeps it to one site,
+          // and greying the item out tells the user WHY the key did nothing, which swallowing the
+          // event in the key monitor cannot.
           workroomSelected: terminalInteractionAvailable && !modal,
           hasNotifications: !notifications.items.isEmpty && !modal,
           hasWaitingTerminals: !programStatusAlerts.waiting.isEmpty && !modal,
-          // `hasProjects`: "New Workroom" (⌘N) disabled with no projects (#81). Deliberately NOT gated
-          // on `modal` — ⌘N/⌘O must still work while a picker is open, because raising one picker
-          // replaces the other and that's the documented behaviour (issue #94).
+          // `hasProjects`: "New Workroom" (⌘N) disabled with no projects (#81). Deliberately NOT
+          // gated on `modal` — ⌘N/⌘O must still work while a picker is open, because raising one
+          // picker replaces the other and that's the documented behaviour (issue #94).
           hasProjects: !store.projectStore.projects.isEmpty,
-          // `hasWorkroomAnchor`: the two "(split right)" items (⌥⌘N/⌥⌘O, issue #163) need a workroom
-          // to split BESIDE. Deliberately NOT gated on `modal`, for the same reason `hasProjects`
-          // isn't — a disabled item drops its key equivalent, and these chords must keep working
-          // while a picker is up, exactly as their plain ⌘N/⌘O siblings do.
+          // `hasWorkroomAnchor`: the two "(split right)" items (⌥⌘N/⌥⌘O, issue #163) need a
+          // workroom to split BESIDE. Deliberately NOT gated on `modal`, for the same reason
+          // `hasProjects` isn't — a disabled item drops its key equivalent, and these chords must
+          // keep working while a picker is up, exactly as their plain ⌘N/⌘O siblings do.
           hasWorkroomAnchor: store.selectedTargetID != nil,
           // Go-menu Back/Forward (issue #26).
           canNavigateBack: store.canGoBack && !modal,
@@ -70,11 +71,12 @@ struct MenuStateAdapter: ViewModifier {
           hasRunTerminal: runCommand.hasAnyRunTerminal && !modal,
           // Go-menu Previous/Next Workroom Tab (issue #29) — only meaningful with ≥2 tabs.
           multipleWorkroomTabs: store.hasMultipleWorkroomTargets && !modal,
-          // Go-menu "Last-Used Workroom" (⌥⇥, issue #132). Counted across every window, so it stays
-          // enabled when this window holds the only workroom and another window holds a second one.
-          // Observation tracks the other windows' reads too, and they ask only whether each workroom
-          // has terminals (`TerminalPanes.activeTargetIDs`), so another window's workroom opening
-          // or emptying re-runs this body, and its tabs' titles, agents and progress do not.
+          // Go-menu "Last-Used Workroom" (⌥⇥, issue #132). Counted across every window, so it
+          // stays enabled when this window holds the only workroom and another window holds a
+          // second one. Observation tracks the other windows' reads too, and they ask only whether
+          // each workroom has terminals (`TerminalPanes.activeTargetIDs`), so another window's
+          // workroom opening or emptying re-runs this body, and its tabs' titles, agents and
+          // progress do not.
           canSwitchWorkrooms: QuickSwitcher.canSwitchWorkrooms() && !modal,
           // Go-menu "Open in…" + ⌘O — enabled only with an editor and a valid selection.
           canOpenInEditor: store.canOpenInEditor && !modal,
@@ -91,11 +93,11 @@ struct MenuStateAdapter: ViewModifier {
     return !store.lifecycle.isCreationBlocking(target.id)
   }
 
-  /// Whether ⌘R (File ▸ Run) should be live for the selection — the shared `canRunCommand` gate, not a
-  /// bare `hasRunCommand`. The menu is one of the callers `startRunCommand`'s guards were written for
-  /// (issue #171), so it enables on exactly the conditions under which a run would actually start: a
-  /// present directory, no create in flight, and a command configured. The run command is configured
-  /// per project and runnable from the root or any workroom (issue #7).
+  /// Whether ⌘R (File ▸ Run) should be live for the selection — the shared `canRunCommand` gate,
+  /// not a bare `hasRunCommand`. The menu is one of the callers `startRunCommand`'s guards were
+  /// written for (issue #171), so it enables on exactly the conditions under which a run would
+  /// actually start: a present directory, no create in flight, and a command configured. The run
+  /// command is configured per project and runnable from the root or any workroom (issue #7).
   private var selectedHasRunCommand: Bool {
     guard let path = AppStore.projectPath(of: store.selectedTargetID),
       let target = store.selectedTarget
