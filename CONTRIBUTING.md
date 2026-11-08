@@ -79,9 +79,9 @@ or Podman runtime is required; the compiler container gets 4 GB of memory. The c
 than reporting a skipped check as a pass.
 On Linux it runs the canonical gate natively, with its normal Rust/Zig prerequisites.
 
-**To change a GitHub workflow:** **`jactionlint` 2.1.0** for `make actions-lint`
-(`go install github.com/jdx/jactionlint/v2/cmd/jactionlint@v2.1.0`, or
-`mise use -g github:jdx/jactionlint@2.1.0`), with `shellcheck` on `PATH` so `run:` blocks are
+**To change a GitHub workflow:** **`jactionlint` 2.5.0** for `make actions-lint`
+(`go install github.com/jdx/jactionlint/v2/cmd/jactionlint@v2.5.0`, or
+`mise use -g github:jdx/jactionlint@2.5.0`), with `shellcheck` on `PATH` so `run:` blocks are
 checked too. It runs every actionlint check plus security rules: pinned action SHAs, job-level
 `permissions`, `timeout-minutes` on every job, no restored caches in publishing jobs. CI's
 `workflows` job (`ci-actions.yml`) runs the same version, checked by the release archive's sha256: bump the version
