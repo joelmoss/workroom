@@ -7,8 +7,9 @@ import SwiftUI
 /// `AppStore` (per-window selection, terminals, splits, run state); this registry is the *only*
 /// shared coordination point above them, for the things that are genuinely app-scoped:
 ///
-/// - **Key/active routing** — the `AppDelegate` key-event monitor and a terminal surface's
-///   context-menu actions act on whichever window is key (`keyStore`).
+/// - **Key/active routing** — the `AppDelegate` key-event monitor acts on whichever window is key
+///   (`store(for:)`), and app-wide actions (the menu-bar popover, a notification click) on it or
+///   the last active one (`keyStore`). A terminal's context menu acts on its own pane's host (#583).
 /// - **Last-active capture** — `lastActiveStore` tracks the most recent *workroom* window to become
 ///   key, captured before any modal (quit alert / Settings) can steal key status, so quit-time
 ///   persistence reads the right window.

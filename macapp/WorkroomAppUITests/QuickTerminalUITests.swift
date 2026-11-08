@@ -2,8 +2,8 @@ import XCTest
 
 /// The Quick Terminal's window (issue #39), hosted by `QuickTerminalHost`: summoned from File ▸
 /// Quick Terminal, its tabs and splits driven by the keys `AppDelegate`'s monitor routes to it
-/// (`QuickTerminalKey`), closed with its last tab, summoned fresh, and a pane moved out into a
-/// workroom.
+/// (`QuickTerminalKey`) and by a pane's right-click menu, closed with its last tab, summoned
+/// fresh, and a pane moved out into a workroom.
 ///
 /// Summoned from the menu item, never its key equivalent: that is ⌥§ by default, which no test
 /// should rely on. Every count is scoped to the Quick Terminal's window, because the fixture's
@@ -158,6 +158,46 @@ final class QuickTerminalUITests: XCTestCase {
     XCTAssertTrue(
       quickTerminal(app).waitForNonExistence(timeout: 10),
       "the Quick Terminal's only tab left it, so it closes")
+  }
+
+  /// A Quick Terminal pane's right-click Split Right, New Terminal and Close Terminal act on the
+  /// Quick Terminal, not on the workroom window behind it (#583), which keeps its tabs and panes.
+  func testAPanesRightClickMenuActsOnTheQuickTerminal() {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    let workroom = workroomWindow(app)
+    XCTAssertTrue(
+      panes(in: workroom).firstMatch.waitForExistence(timeout: 15),
+      "the fixture workroom should render a terminal pane on launch")
+    let workroomTabsBefore = tabs(in: workroom).count
+    let workroomPanesBefore = panes(in: workroom).count
+    let qt = summon(app)
+    assertCounts(in: qt, tabs: 1, panes: 1, "summoned")
+
+    choose("Split Right", onAPaneIn: qt, app)
+    assertCounts(in: qt, tabs: 2, panes: 2, "after Split Right")
+    choose("New Terminal", onAPaneIn: qt, app)
+    assertCounts(in: qt, tabs: 3, panes: 1, "after New Terminal")
+    choose("Close Terminal", onAPaneIn: qt, app)
+    XCTAssertTrue(
+      waitForCount(tabs(in: qt), 2),
+      "after Close Terminal: the Quick Terminal should have 2 tabs, has \(tabs(in: qt).count)")
+
+    XCTAssertTrue(
+      waitForCount(tabs(in: workroom), workroomTabsBefore), "the workroom kept its tabs")
+    XCTAssertTrue(waitForCount(panes(in: workroom), workroomPanesBefore), "and its panes")
+  }
+
+  /// Right-click a pane in `window` and choose `title` from its menu.
+  private func choose(
+    _ title: String, onAPaneIn window: XCUIElement, _ app: XCUIApplication,
+    file: StaticString = #filePath, line: UInt = #line
+  ) {
+    panes(in: window).firstMatch.rightClick()
+    guard let item = app.waitForHittableMenuItem(titled: title) else {
+      return XCTFail("the pane's menu should offer \(title)", file: file, line: line)
+    }
+    item.click()
   }
 
   /// The on-screen "Move to workroom" item for the fixture workroom (`uitest-room`), not the

@@ -961,6 +961,8 @@ final class AppStore: ObservableObject {
       raiseDetachedPane(tabID)
     case .paneWindowToggleRequested(let targetID, let tabID):
       togglePaneWindow(tabID, targetID: targetID)
+    case .paneCommandRequested(let target, let tabID, let command):
+      performPaneCommand(command, tab: tabID, in: target)
     // Run sessions (#522): a run tab back from a saved session, and what its daemon says of it.
     case .runTabRestored(let targetID, let tabID):
       adoptRestoredRun(tab: tabID, targetID: targetID)
@@ -2254,7 +2256,14 @@ final class AppStore: ObservableObject {
 
   /// Open a new terminal tab in the selected target — root or workroom (⌘T).
   func newTerminalInSelectedTarget() {
-    guard let target = selectedTarget, target.opensTerminals else { return }
+    guard let target = selectedTarget else { return }
+    newTerminalIfAllowed(in: target)
+  }
+
+  /// A new terminal tab in `target`, unless it can't open terminals now: ⌘T's, and a pane's
+  /// right-click New Terminal's.
+  private func newTerminalIfAllowed(in target: TerminalTarget) {
+    guard target.opensTerminals else { return }
     // Never open a shell into a worktree a setup script is still writing (issues #167/#171). The
     // File menu item disables itself on the same predicate
     // (`MenuStateAdapter.terminalInteractionAvailable`), but that is a display rule — this is the
@@ -2262,6 +2271,29 @@ final class AppStore: ObservableObject {
     // than trusting its buttons.
     guard !lifecycle.isCreationBlocking(target.id) else { return }
     newTerminal(in: target)
+  }
+
+  /// A pane's right-click New Terminal, split or Close Terminal (#583), on that pane and its
+  /// workroom, with the guards ⌘T, ⌘D and ⌘W apply. A pane in its own window opens and splits
+  /// nothing, as those keys do nothing there (`WorkroomCommands.workroomCommandEnabled`): its window
+  /// holds one pane, and `splitTab` would split this window's focused pane instead, since a
+  /// detached tab is never focused here. Its close is its window's ⌘W.
+  private func performPaneCommand(
+    _ command: PaneCommand, tab tabID: TerminalTab.ID, in wiredTarget: TerminalTarget
+  ) {
+    let detached = terminals.detachedTabIDs.contains(tabID)
+    switch command {
+    case .newTerminal:
+      // The workroom as it is now: whether it opens terminals can change after the pane was made.
+      guard !detached, let target = terminalTarget(forID: wiredTarget.id) else { return }
+      newTerminalIfAllowed(in: target)
+    case .split(let edge):
+      guard !detached, let target = terminalTarget(forID: wiredTarget.id), target.opensTerminals
+      else { return }
+      terminals.splitTab(tabID, on: edge, for: target)
+    case .close:
+      requestCloseTerminalTab(tabID, for: wiredTarget)
+    }
   }
 
   /// Close the active terminal tab in the selected target (⌘W).

@@ -75,6 +75,14 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
       runCommand.closingRunTab(tabID, for: target.id) { [weak self] in
         self?.terminals.closeTab(tabID, for: target)
       }
+    // A pane's right-click New Terminal, split or Close Terminal (#583), here as its ⌘T, ⌘D and ⌘W
+    // are (`QuickTerminalController.perform`), on the pane clicked.
+    case .paneCommandRequested(let target, let tabID, let command):
+      switch command {
+      case .newTerminal: newTerminal(in: target)
+      case .split(let edge): terminals.splitTab(tabID, on: edge, for: target)
+      case .close: requestCloseTerminalTab(tabID, for: target)
+      }
     // No navigation history, workroom split or selection to follow a content change, a pane count
     // or a surface focus.
     case .tabContentChanged, .paneCountChanged, .surfaceFocused:
