@@ -237,6 +237,136 @@ final class ContainerCreateTests: XCTestCase {
     XCTAssertLessThan(Date().timeIntervalSince(started), 1.9, "the deadline didn't end it")
   }
 
+  // Value: protects=a build's Dockerfile and context come from the judged commit as a checkout
+  // has them, export-ignore or not; fails_when=they are exported with git archive, which leaves
+  // out what .gitattributes marks export-ignore, or the export replaces the project's own index;
+  // why_new=#308 /ship review; seam=stub runtime; no_claim=what the runtime builds from it
+  /// A repository that keeps `.devcontainer` out of its release tarballs still builds from it, and
+  /// the project's staged changes are as they were.
+  func testAnExportIgnoredDockerfileStillReachesTheBuild() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-create-\(UUID().uuidString)", isDirectory: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    let project = directory.appendingPathComponent("project", isDirectory: true)
+    let config = project.appendingPathComponent(".devcontainer", isDirectory: true)
+    try FileManager.default.createDirectory(at: config, withIntermediateDirectories: true)
+    try "FROM committed-base\n".write(
+      to: config.appendingPathComponent("Dockerfile"), atomically: true, encoding: .utf8)
+    try ".devcontainer export-ignore\n.devcontainer/** export-ignore\n".write(
+      to: project.appendingPathComponent(".gitattributes"), atomically: true, encoding: .utf8)
+    try git(["init", "-q"], in: project)
+    try git(["add", "."], in: project)
+    try git(
+      ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "base"], in: project)
+    try "staged\n".write(
+      to: project.appendingPathComponent("staged"), atomically: true, encoding: .utf8)
+    try git(["add", "staged"], in: project)
+    let (driver, built) = try buildRecordingDriver(in: directory)
+    let json = Data(#"{"build": {"dockerfile": "Dockerfile"}}"#.utf8)
+
+    _ = try await ContainerCreate.prepare(
+      ContainerCreate.File(
+        path: ".devcontainer/devcontainer.json", data: json,
+        config: try DevContainerConfig.parse(json)),
+      project: project.path, repository: "app", start: "HEAD", runtime: .docker,
+      driver: driver, defaultImage: "unused", environment: [:],
+      featureCache: directory.appendingPathComponent("features"))
+
+    XCTAssertEqual(try String(contentsOf: built, encoding: .utf8), "FROM committed-base\n")
+    XCTAssertEqual(
+      try gitOutput(["diff", "--cached", "--name-only"], in: project), "staged\n",
+      "the export touched the project's own index")
+  }
+
+  // Value: protects=initializeCommand and ${localEnv:…} get the login shell's environment, as
+  // local setup scripts do; fails_when=they get the app's own process environment, which a
+  // Finder launch leaves without nvm's or mise's PATH; why_new=#308 /ship review; seam=a stub
+  // login shell seeds ShellEnvironment's cache; no_claim=what a real rc exports
+  /// A tool only the login shell's PATH has, and a variable only it sets, are what initializeCommand
+  /// sees by default.
+  func testInitializeCommandGetsTheLoginShellsEnvironment() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-create-\(UUID().uuidString)", isDirectory: true)
+    let project = directory.appendingPathComponent("project", isDirectory: true)
+    let bin = directory.appendingPathComponent("login-bin", isDirectory: true)
+    let shellFolder = directory.appendingPathComponent("shell", isDirectory: true)
+    for folder in [project, bin, shellFolder] {
+      try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    }
+    ShellEnvironment.resetForTesting()
+    addTeardownBlock {
+      ShellEnvironment.resetForTesting()
+      try? FileManager.default.removeItem(at: directory)
+    }
+    let tool = bin.appendingPathComponent("wr-login-tool")
+    try "#!/bin/sh\necho found\n".write(to: tool, atomically: true, encoding: .utf8)
+    // A login shell whose rc puts `bin` on PATH and sets a variable, then runs the probe's script.
+    let shell = shellFolder.appendingPathComponent("zsh")
+    try """
+    #!/bin/sh
+    export PATH=\(PosixShell.quoted(bin.path)):"$PATH" WR_LOGIN_ONLY=from-login
+    eval "$2"
+    """.write(to: shell, atomically: true, encoding: .utf8)
+    for file in [tool, shell] {
+      try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+    }
+    let probed = await ShellEnvironment.refresh(shell: shell.path)
+    XCTAssertEqual(probed["WR_LOGIN_ONLY"], "from-login", "the stub login shell wasn't read")
+    let (driver, _) = try buildRecordingDriver(in: directory)
+    let json = Data(
+      (#"{"image": "x", "initializeCommand": "wr-login-tool > tool; "#
+        + #"echo \"$WR_LOGIN_ONLY ${localEnv:WR_LOGIN_ONLY}\" > vars"}"#).utf8)
+
+    _ = try await ContainerCreate.prepare(
+      ContainerCreate.File(
+        path: ".devcontainer/devcontainer.json", data: json,
+        config: try DevContainerConfig.parse(json)),
+      project: project.path, repository: "app", start: "HEAD", runtime: .docker,
+      driver: driver, defaultImage: "unused",
+      featureCache: directory.appendingPathComponent("features"))
+
+    XCTAssertEqual(
+      try String(contentsOf: project.appendingPathComponent("tool"), encoding: .utf8), "found\n")
+    XCTAssertEqual(
+      try String(contentsOf: project.appendingPathComponent("vars"), encoding: .utf8),
+      "from-login from-login\n")
+  }
+
+  /// A driver whose stub runtime appends each Dockerfile it is asked to build to the returned
+  /// file, and answers an image inspect.
+  private func buildRecordingDriver(in directory: URL) throws -> (ContainerHostDriver, URL) {
+    let built = directory.appendingPathComponent("built")
+    let runtime = directory.appendingPathComponent("docker")
+    try """
+    #!/bin/sh
+    case "$1" in
+      build) while [ "$1" != --file ]; do shift; done; cat "$2" >> \(PosixShell.quoted(built.path)) ;;
+      image) echo '{}' ;;
+    esac
+    """.write(to: runtime, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: runtime.path)
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory.appendingPathComponent("hosts"),
+      provisioning: ContainerHostDriver.Provisioning(
+        runtime: runtime, image: "unused", user: "",
+        daemonSocket: DaemonInstall.defaultSocket, labels: ["workroom.provisioner=test"],
+        daemon: { _ in nil }))
+    return (driver, built)
+  }
+
+  private func gitOutput(_ arguments: [String], in directory: URL) throws -> String {
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.arguments = arguments
+    process.currentDirectoryURL = directory
+    process.standardOutput = output
+    try process.run()
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    return String(decoding: data, as: UTF8.self)
+  }
+
   private func git(_ arguments: [String], in directory: URL) throws {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let process = Process()

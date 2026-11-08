@@ -1700,6 +1700,49 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(removed, ["image delete \(snapshot)"])
   }
 
+  // Value: protects=a container a crash left mid-create on Apple's runtime takes the named
+  // volumes made for it when the sweep removes it; fails_when=Apple's sweep stops reading the
+  // workroom.volumes label from the JSON listing, or removes a volume before its container;
+  // why_new=#308 /ship review (only Docker's sweep had this test); seam=stub runtime;
+  // no_claim=Apple's not-found wording for a volume already gone
+  /// The volumes a swept container's label names go after it; a container with none removes none.
+  func testAppleSweptContainerTakesItsOwnedVolumes() async throws {
+    let (orphan, plain) = (UUID(), UUID())
+    let ours = ["workroom.provisioner": "test", "workroom.created": "1"]
+    let list: [[String: Any]] = [
+      [
+        "id": ContainerHostDriver.containerName(orphan), "status": ["state": "stopped"],
+        "configuration": [
+          "labels": ours.merging(["workroom.volumes": "dind-a,cache-a"]) { $1 },
+          "image": ["reference": "x:1"],
+        ],
+      ],
+      [
+        "id": ContainerHostDriver.containerName(plain), "status": ["state": "stopped"],
+        "configuration": ["labels": ours, "image": ["reference": "x:1"]],
+      ],
+    ]
+    let json = String(decoding: try JSONSerialization.data(withJSONObject: list), as: UTF8.self)
+    let (runtime, log) = try scriptedRuntime(
+      """
+      "list --all --format json") printf '%s' \(SSHTransport.shellQuoted(json)) ;;
+      "image list --format json") printf '[]' ;;
+      """)
+    let driver = Self.driver(runtime: runtime, context: nil, dialect: .apple)
+
+    _ = await driver.sweep(keeping: [])
+    let failures = await driver.sweep(keeping: [])
+
+    XCTAssertEqual(failures, [])
+    let removals = try calls(log).filter { $0.hasPrefix("delete ") || $0.hasPrefix("volume ") }
+    XCTAssertEqual(
+      removals,
+      [
+        "delete --force \(ContainerHostDriver.containerName(orphan))", "volume rm dind-a cache-a",
+        "delete --force \(ContainerHostDriver.containerName(plain))",
+      ])
+  }
+
   /// What each container gets: Apple's own default is a 1 GB VM, too small for a compiler or an
   /// agent, so it gets half the cores and a quarter of the memory, between 2 and 8 GB, unless set.
   /// Docker's containers share Docker's VM and get nothing unless set.
