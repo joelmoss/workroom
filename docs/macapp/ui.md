@@ -88,6 +88,10 @@ a missing environment object does. Other views that
 leave the store (the History and Changes panels, the toasts, the creation pane, the status bar) take
 a value read model and an `Actions` struct, built by a small `<Name>Adapter` view beside them that
 reads the store, so Observation stays where the view's reads were.
+The sidebar's rows go further: each is an Equatable view of a value model behind a gated adapter, so a
+change elsewhere in the store re-runs no row, and the selection, drag and run state are leaves that
+read their own. A `.contextMenu` closure is lazy (a re-rendering row does not build its menu), so the
+workroom menu's adapter and store reads need no gate.
 
 Shared components:
 

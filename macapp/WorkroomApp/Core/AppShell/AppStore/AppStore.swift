@@ -2226,7 +2226,7 @@ final class AppStore: ObservableObject {
   func newTerminalInSelectedTarget() {
     guard let target = selectedTarget, target.opensTerminals else { return }
     // Never open a shell into a worktree a setup script is still writing (issues #167/#171). The
-    // File menu item disables itself on the same predicate (`RootView.terminalInteractionAvailable`),
+    // File menu item disables itself on the same predicate (`MenuStateAdapter.terminalInteractionAvailable`),
     // but that is a display rule — this is the chokepoint every caller routes through, the way
     // `startRunCommand` guards the run path rather than trusting its buttons.
     guard !lifecycle.isCreationBlocking(target.id) else { return }
