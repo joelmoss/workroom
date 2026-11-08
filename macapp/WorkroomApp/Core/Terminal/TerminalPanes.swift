@@ -2543,7 +2543,9 @@ final class TerminalPanes {
     // and route up to the workroom selection so a click into a co-displayed split pane targets that
     // workroom (issue #23 follow-up).
     case .focused:
-      guard targets[targetID] != nil else { return }
+      guard targets[targetID] != nil, !isFocusBeingShown(otherThan: tabID, in: target) else {
+        return
+      }
       focus(tabID, for: target)
       onEvent?(.surfaceFocused(targetID))
     case .effectiveFocusChanged(let focused):
@@ -2564,6 +2566,22 @@ final class TerminalPanes {
         TerminalLinkOpener.handleCmdClickFile(word, cwd: cwd ?? target.path)
       }
     }
+  }
+
+  /// Whether `target`'s focus has just moved to a terminal tab other than `tabID` whose surface is
+  /// not in a window yet: the focus change is still being rendered (#598). A surface becoming first
+  /// responder then was not clicked, since the pane the user sees is about to be replaced. It is
+  /// AppKit handing the window's first responder back to it, as a closing popover does (the
+  /// diagnosis popover's Investigate opens a tab and closes the popover in one action), and taking
+  /// it as focus would put the old tab back over the new one. A content tab has no surface, so a
+  /// click into a terminal beside a focused diff still focuses the terminal.
+  private func isFocusBeingShown(otherThan tabID: TerminalTab.ID, in target: TerminalTarget)
+    -> Bool
+  {
+    guard let focused = targets[target.id]?.state.focused, focused != tabID,
+      let surface = surface(of: focused)
+    else { return false }
+    return surface.window == nil
   }
 
   // MARK: Program status (#358)

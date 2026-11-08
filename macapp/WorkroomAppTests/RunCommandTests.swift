@@ -970,6 +970,58 @@ final class RunCommandTests: XCTestCase {
       captured.last, CodingAgentPrompt.investigateCommandLine(for: missing, agent: .codex))
   }
 
+  /// Value: protects=Investigate from a diagnosis popover brings its new tab to the front (#598);
+  /// fails_when=a surface that becomes first responder while another tab's focus is still being
+  /// rendered takes focus back; why_new=no test covered AppKit handing first responder back to the
+  /// old surface as the popover closes, which made the Investigate tab open behind the run tab;
+  /// seam=the `.focused` event the surface's becomeFirstResponder raises, sent with no window;
+  /// no_claim=the popover close itself (TerminalCodingAgentUITests covers the click path).
+  func testAFirstResponderRestoreDoesNotPullFocusOffANewInvestigateTab() throws {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    let runSurface = try XCTUnwrap(runView(store, t))
+
+    let investigate = store.runCommand.startInvestigate(
+      bannerState: investigateBanner(t), target: t, surface: runSurface)
+    XCTAssertEqual(store.terminals.focusedTab(for: t)?.id, investigate.id)
+
+    // The popover closing hands the window's first responder back to the run surface, whose
+    // Investigate replacement has not been put on screen yet.
+    runSurface.onEvent?(.focused)
+
+    XCTAssertEqual(
+      store.terminals.focusedTab(for: t)?.id, investigate.id,
+      "the Investigate tab keeps focus while it is still being shown")
+  }
+
+  /// Value: protects=a click into a pane still focuses it once the focused tab is on screen (#598's
+  /// guard must not block it); fails_when=the guard ignores `.focused` whenever another tab is
+  /// focused; why_new=the guard above is new; seam=the focused tab's surface in a real `NSWindow`,
+  /// as `TerminalFocusAdoptionTests` does; no_claim=mouseDown itself.
+  func testAFirstResponderChangeFocusesItsTabOnceTheFocusedTabIsOnScreen() throws {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.runCommands.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    let run = try XCTUnwrap(store.runCommand.runTabID(for: t.id))
+    let runSurface = try XCTUnwrap(runView(store, t))
+    let investigate = store.runCommand.startInvestigate(
+      bannerState: investigateBanner(t), target: t, surface: runSurface)
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+      styleMask: [.titled], backing: .buffered, defer: true)
+    let investigateSurface = try XCTUnwrap(store.terminals.surface(investigate))
+    investigateSurface.frame = window.contentView!.bounds
+    window.contentView!.addSubview(investigateSurface)
+    defer { investigateSurface.removeFromSuperview() }
+
+    runSurface.onEvent?(.focused)
+
+    XCTAssertEqual(store.terminals.focusedTab(for: t)?.id, run)
+  }
+
   func testInvestigateLivenessClearsViaChildExitAndViaTabRemoval() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let t = target(store, "/a", "main")

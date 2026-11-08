@@ -170,7 +170,10 @@ final class TerminalCodingAgentUITests: XCTestCase {
   /// Return is pressed (#550). Uses the plain terminal tab, since a failed run leaves no prompt.
   func testOneLineFixLandsAtThePromptUnexecuted() {
     let app = launchedApp(runCommand: "true")
-    let chip = app.descendants(matching: .any)
+    // The chip's title, not the first element carrying the chip's identifier: the chip's badge,
+    // title and ✕ each carry it (#598), so once the diagnosis adds the ✦ badge in front, the first
+    // match is the badge, and clicking it opens the diagnosis popover, which takes the Return below.
+    let chip = app.staticTexts
       .matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab.")).firstMatch
     XCTAssertTrue(chip.waitForExistence(timeout: 20), "the fixture workroom has a terminal tab")
     chip.click()
