@@ -1,104 +1,340 @@
 import SwiftUI
 import WorkroomDomain
 
+/// What a target's Run, Restart and Stop items can do now.
+struct RunMenuState: Equatable {
+  /// The target opens terminals and no create holds its run back (`isRunBlocked`).
+  var available: Bool
+  /// Its project has a run command.
+  var configured: Bool
+  var running: Bool
+
+  @MainActor
+  init(host: any PaneHost, target: TerminalTarget) {
+    available = target.opensTerminals && !host.isRunBlocked(target.id)
+    configured = host.hasRunCommand(for: target)
+    running = host.isRunCommandRunning(for: target.id)
+  }
+
+  init(available: Bool, configured: Bool, running: Bool) {
+    self.available = available
+    self.configured = configured
+    self.running = running
+  }
+
+  var canRun: Bool { available && configured }
+  var canRestartOrStop: Bool { available && running }
+}
+
+/// Run, Restart or Stop, worded and drawn the same in every menu that offers them.
+private struct RunMenuButton: View {
+  enum Kind { case run, restart, stop }
+  let kind: Kind
+  let enabled: Bool
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      switch kind {
+      case .run: Label("Run", systemImage: "play.fill")
+      case .restart: Label("Restart", systemImage: "arrow.clockwise")
+      case .stop: Label("Stop", systemImage: "stop.fill")
+      }
+    }
+    .disabled(!enabled)
+  }
+}
+
 /// Target-scoped run actions, shared by project, workroom and run-tab context menus.
 @MainActor
 @ViewBuilder
 func runCommandMenuItems(host: any PaneHost, target: TerminalTarget) -> some View {
-  let available = target.opensTerminals && !host.isRunBlocked(target.id)
-  let configured = host.hasRunCommand(for: target)
-  let running = host.isRunCommandRunning(for: target.id)
-  Button {
-    host.runOrFocusRunCommand(for: target)
-  } label: {
-    Label("Run", systemImage: "play.fill")
-  }
-  .disabled(!available || !configured)
-  Button {
+  let state = RunMenuState(host: host, target: target)
+  RunMenuButton(kind: .run, enabled: state.canRun) { host.runOrFocusRunCommand(for: target) }
+  RunMenuButton(kind: .restart, enabled: state.canRestartOrStop) {
     host.restartRunCommand(for: target)
-  } label: {
-    Label("Restart", systemImage: "arrow.clockwise")
   }
-  .disabled(!available || !running)
-  Button {
-    host.stopRunCommand(for: target)
-  } label: {
-    Label("Stop", systemImage: "stop.fill")
-  }
-  .disabled(!available || !running)
+  RunMenuButton(kind: .stop, enabled: state.canRestartOrStop) { host.stopRunCommand(for: target) }
 }
 
-/// The shared right-click menu items for a workroom, reused by the tab chip
-/// (`WorkroomTabBar`) and the split group title bar (`WorkroomSplitView`) — issue #112. One
-/// source of truth so the two menus can't drift.
-///
-/// `closeName != nil` renders the "Close" item (close the whole workroom — all its terminal
-/// tabs — the files stay) with that display name.
-///
-/// `onRemoveFromSplit != nil` renders a "Remove from Split" item that pops this workroom out of the
-/// split (keeps it running) — the menu equivalent of the title bar's `pip.exit` ✕. Only the split
-/// title bar passes it; the tab chip passes `nil` (a tab isn't a split member).
-///
-/// Label + Delete apply only to a real workroom (roots are never labelled or deletable), gated
-/// on `store.workroomAndProject(for:)`.
-///
-/// Each item sets a store flag that `RootView`'s `.confirmationDialog`/`.sheet` bridge observes
-/// (the store-flag → dialog pattern), except "Remove Label"/"Remove from Split" which act immediately.
-///
-/// `@MainActor` because it touches the main-actor `AppStore`; the callers' `.contextMenu` closures
-/// are already main-actor-isolated (they live in `View.body`), so this is a no-op at the call site.
-/// Whether `openInSplitMenuItem` renders anything — read by `workroomContextMenu` so its leading
-/// divider tracks the item, instead of the two drifting apart.
-@MainActor
-func canOpenInSplit(store: AppStore, sid: SidebarID) -> Bool {
-  // The store's own predicate, not a re-derived subset: it also refuses a missing directory and a
-  // pane too narrow to hold two halves, so the item disappears in exactly the states where
-  // choosing it could not have worked.
-  store.canOpenAsSplit(sid)
+/// What one workroom's menu shows: its tab chip's and split title bar's right-click menu (issue
+/// #112), its sidebar row's, and the inspector header's actions menu. One model so the menus
+/// can't drift; `entries(for:)` says where each caller's differs.
+struct WorkroomMenuModel: Equatable {
+  /// The surface the menu is on.
+  enum Style {
+    /// The tab chip and the split title bar: everything the model offers.
+    case full
+    /// A workroom's sidebar row: no Close and no Remove from Split, as a row is neither a tab nor
+    /// a split member.
+    case sidebarRow
+    /// The inspector header's actions, in Apple's order: no run, Close or split items, and the
+    /// destructive one last, apart.
+    case inspectorHeader
+  }
+
+  /// One item or divider, in the order it shows.
+  enum Entry: Equatable {
+    case run(enabled: Bool)
+    case restart(enabled: Bool)
+    case stop(enabled: Bool)
+    case divider
+    case close(name: String)
+    case openInSplit, removeFromSplit
+    case moveToNewWindow(enabled: Bool)
+    case setLabel, editLabel, removeLabel
+    case delete(enabled: Bool)
+  }
+
+  /// What a workroom offers that a project root, never labelled or deleted, does not.
+  struct WorkroomState: Equatable {
+    var hasLabel = false
+    /// Its setup is still running against the worktree, so it can't be deleted (issue #116).
+    var isCreating = false
+  }
+
+  var run: RunMenuState
+  /// "Close" (the whole workroom, all its terminal tabs; its files stay) under this display name;
+  /// nil hides it.
+  var closeName: String? = nil
+  /// "Remove from Split": pops this workroom out of the split, still running. Only a split's real
+  /// member offers it, as the menu twin of the title bar's ✕ (`pip.exit`).
+  var removableFromSplit = false
+  /// "Open (split right)" (issue #163), the mouse-reachable ⌥⌘O. `AppStore.canOpenAsSplit` decides,
+  /// so the item disappears in exactly the states where choosing it could not have worked: nothing
+  /// to split beside, this workroom IS the selection, a missing directory or a pane too narrow. Not
+  /// hidden for a workroom already in the visible group, or every pane title bar would lose it; on
+  /// a non-focused member it moves that pane to the right of the focused one.
+  var canOpenInSplit = false
+  /// "Move to New Window" (#444) shows wherever the workroom has terminals in this window, so there
+  /// is something to move.
+  var showsMoveToNewWindow = false
+  /// …and is enabled when `AppStore.canMoveWorkroom` says so: not while a create is still setting
+  /// it up, nor for a window's only workroom, which would leave its window empty.
+  var canMoveWorkroom = false
+  /// Nil for a project root.
+  var workroom: WorkroomState? = nil
+
+  func entries(for style: Style) -> [Entry] {
+    var entries: [Entry] = []
+    var top: [Entry] = []
+    if style != .inspectorHeader {
+      entries += [
+        .run(enabled: run.canRun), .restart(enabled: run.canRestartOrStop),
+        .stop(enabled: run.canRestartOrStop), .divider,
+      ]
+      if style == .full, let closeName { top.append(.close(name: closeName)) }
+      if canOpenInSplit { top.append(.openInSplit) }
+      if style == .full, removableFromSplit { top.append(.removeFromSplit) }
+    }
+    if showsMoveToNewWindow { top.append(.moveToNewWindow(enabled: canMoveWorkroom)) }
+    entries += top
+    guard let workroom else { return entries }
+    // The chip and row divide the label items from the items above only when one showed; the
+    // inspector always does, so its menu starts with the divider when nothing is above.
+    if style == .inspectorHeader || !top.isEmpty { entries.append(.divider) }
+    entries.append(workroom.hasLabel ? .editLabel : .setLabel)
+    if workroom.hasLabel { entries.append(.removeLabel) }
+    entries += [.divider, .delete(enabled: !workroom.isCreating)]
+    return entries
+  }
 }
 
-/// "Open (split right)" — open this workroom beside the current one (issue #163), the mouse-reachable
-/// equivalent of ⌥⌘O and of dragging the row onto a pane edge. Shared by `workroomContextMenu`
-/// (tab chip + split pane title bar) and `ProjectSidebar`'s own inline row menu.
-///
-/// Hidden only when there is nothing to split beside, or when this workroom IS the selection.
-/// Deliberately NOT also hidden for a workroom already in the visible group: every rendered pane
-/// title bar belongs either to the selected solo workroom or to the visible group, so that guard
-/// would make the item unreachable on that whole surface. Invoked on a non-focused member it moves
-/// that pane to the right of the focused one — a real rearrange, and exactly what dragging the
-/// same title bar already does (`insertWorkroomSplit` is "a move, not a duplicate").
-@MainActor
-@ViewBuilder
-func openInSplitMenuItem(store: AppStore, sid: SidebarID) -> some View {
-  if canOpenInSplit(store: store, sid: sid) {
-    Button {
-      store.openExistingAsSplit(sid)
-    } label: {
-      // `rectangle.trailinghalf.inset.filled` is the app's established glyph for a rightward split
-      // (TerminalTabStrip's Split Right toolbar button and context item), and this action always
-      // inserts on `.right` — so it wears the same icon rather than a neutral one.
-      Label("Open (split right)", systemImage: "rectangle.trailinghalf.inset.filled")
+/// What `WorkroomMenuItems` does for each item.
+struct WorkroomMenuActions {
+  var run: () -> Void
+  var restart: () -> Void
+  var stop: () -> Void
+  /// Asks first, through `RootView`'s confirmation.
+  var close: () -> Void
+  var openInSplit: () -> Void
+  /// Acts at once, with no confirmation.
+  var removeFromSplit: () -> Void
+  var moveToNewWindow: () -> Void
+  /// "Set Label…" or "Edit Label…", through `RootView`'s label sheet.
+  var editLabel: () -> Void
+  /// Acts at once.
+  var removeLabel: () -> Void
+  /// Asks first, through `RootView`'s confirmation.
+  var delete: () -> Void
+
+  /// Does nothing, for previews.
+  static var inert: WorkroomMenuActions {
+    WorkroomMenuActions(
+      run: {}, restart: {}, stop: {}, close: {}, openInSplit: {}, removeFromSplit: {},
+      moveToNewWindow: {}, editLabel: {}, removeLabel: {}, delete: {})
+  }
+}
+
+/// A workroom's menu items, from its model alone: no store, so a preview or test can draw it.
+struct WorkroomMenuItems: View {
+  #if DEBUG
+    /// How many times the items' body has run, read by `WorkroomMenuModelTests`.
+    static var bodyPasses = 0
+  #endif
+  let model: WorkroomMenuModel
+  let actions: WorkroomMenuActions
+  let style: WorkroomMenuModel.Style
+
+  var body: some View {
+    #if DEBUG
+      let _ = { Self.bodyPasses += 1 }()
+    #endif
+    let entries = model.entries(for: style)
+    ForEach(entries.indices, id: \.self) { index in
+      item(entries[index])
+    }
+  }
+
+  @ViewBuilder
+  private func item(_ entry: WorkroomMenuModel.Entry) -> some View {
+    switch entry {
+    case .run(let enabled): RunMenuButton(kind: .run, enabled: enabled, action: actions.run)
+    case .restart(let enabled):
+      RunMenuButton(kind: .restart, enabled: enabled, action: actions.restart)
+    case .stop(let enabled): RunMenuButton(kind: .stop, enabled: enabled, action: actions.stop)
+    case .divider: Divider()
+    case .close:
+      Button(action: actions.close) { Label("Close", systemImage: "xmark") }
+    case .openInSplit:
+      Button(action: actions.openInSplit) {
+        // `rectangle.trailinghalf.inset.filled` is the app's established glyph for a rightward split
+        // (TerminalTabStrip's Split Right toolbar button and context item), and this action always
+        // inserts on `.right` — so it wears the same icon rather than a neutral one.
+        Label("Open (split right)", systemImage: "rectangle.trailinghalf.inset.filled")
+      }
+    case .removeFromSplit:
+      Button(action: actions.removeFromSplit) {
+        Label("Remove from Split", systemImage: "pip.exit")
+      }
+    case .moveToNewWindow(let enabled):
+      Button(action: actions.moveToNewWindow) {
+        Label("Move to New Window", systemImage: "macwindow.badge.plus")
+      }
+      .disabled(!enabled)
+    // A label is a display-only alias (issue #41): the workroom name and its branch are unchanged.
+    case .setLabel:
+      Button(action: actions.editLabel) { Label("Set Label…", systemImage: "pencil") }
+    case .editLabel:
+      Button(action: actions.editLabel) { Label("Edit Label…", systemImage: "pencil") }
+    case .removeLabel:
+      Button(action: actions.removeLabel) { Label("Remove Label", systemImage: "pencil.slash") }
+    case .delete(let enabled):
+      // An ellipsis, as it asks before it acts: Apple's convention.
+      Button(role: .destructive, action: actions.delete) {
+        Label("Delete Workroom…", systemImage: "trash")
+      }
+      .disabled(!enabled)
     }
   }
 }
 
-/// "Move to New Window" (#444): this workroom, its terminals still running, into a window of its
-/// own. Shown wherever the workroom has terminals in this window, so there is something to move;
-/// disabled while a create is still setting it up, and for a window's only workroom, which would
-/// leave its window empty (`AppStore.canMoveWorkroom`). Shared by `workroomContextMenu` and
-/// `ProjectSidebar`'s row menu.
-@MainActor
-@ViewBuilder
-func moveToNewWindowMenuItem(store: AppStore, sid: SidebarID) -> some View {
-  if showsMoveToNewWindow(store: store, sid: sid) {
-    Button {
-      store.moveWorkroomToNewWindow(sid)
-    } label: {
-      Label("Move to New Window", systemImage: "macwindow.badge.plus")
-    }
-    .disabled(!store.canMoveWorkroom(sid))
+extension WorkroomMenuModel {
+  /// The model for `sid`'s menu as `store` and `lifecycle` hold it now. The run items are
+  /// `target`'s; with no target they are all off.
+  @MainActor
+  init(
+    store: AppStore, lifecycle: WorkroomLifecycle, sid: SidebarID, target: TerminalTarget?,
+    closeName: String?, removableFromSplit: Bool
+  ) {
+    let pair = store.workroomAndProject(for: sid)
+    self.init(
+      run: target.map { RunMenuState(host: store, target: $0) }
+        ?? RunMenuState(available: false, configured: false, running: false),
+      closeName: closeName,
+      removableFromSplit: removableFromSplit, canOpenInSplit: store.canOpenAsSplit(sid),
+      showsMoveToNewWindow: store.target(for: sid).map {
+        store.terminals.tabCount(forTargetID: $0.id) > 0
+      } ?? false,
+      canMoveWorkroom: store.canMoveWorkroom(sid),
+      workroom: pair.map {
+        WorkroomState(
+          hasLabel: $0.workroom.label != nil,
+          isCreating: lifecycle.isCreatingWorkroom($0.workroom, in: $0.project))
+      })
   }
 }
+
+/// Builds `WorkroomMenuItems`' model and actions for `sid` from the window's store.
+///
+/// The store, not `\.paneHost`, because the title bar accessory's tree, where the tab chips live,
+/// injects no pane host. Main-window only: every caller is the main window's chrome.
+struct WorkroomMenuAdapter: View {
+  #if DEBUG
+    /// How many times the adapter's body has run, read by `WorkroomMenuModelTests`.
+    static var bodyPasses = 0
+  #endif
+  @EnvironmentObject var store: AppStore
+  @EnvironmentObject var lifecycle: WorkroomLifecycle
+  let sid: SidebarID
+  /// The run items' target; nil for a style that shows none.
+  let target: TerminalTarget?
+  /// Shows "Close" under this name; see `WorkroomMenuModel.closeName`.
+  var closeName: String? = nil
+  /// Shows "Remove from Split", which calls this.
+  var onRemoveFromSplit: (() -> Void)? = nil
+  let style: WorkroomMenuModel.Style
+
+  var body: some View {
+    #if DEBUG
+      let _ = { Self.bodyPasses += 1 }()
+    #endif
+    WorkroomMenuItems(
+      model: WorkroomMenuModel(
+        store: store, lifecycle: lifecycle, sid: sid, target: target, closeName: closeName,
+        removableFromSplit: onRemoveFromSplit != nil),
+      actions: actions, style: style)
+  }
+
+  private var actions: WorkroomMenuActions {
+    let pair = store.workroomAndProject(for: sid)
+    return WorkroomMenuActions(
+      run: { [store, target] in target.map { store.runOrFocusRunCommand(for: $0) } },
+      restart: { [store, target] in target.map { store.restartRunCommand(for: $0) } },
+      stop: { [store, target] in target.map { store.stopRunCommand(for: $0) } },
+      close: { [store, target, closeName] in
+        guard let target, let closeName else { return }
+        store.modals.pendingWorkroomClose = PendingWorkroomClose(target: target, name: closeName)
+      },
+      openInSplit: { [store, sid] in store.openExistingAsSplit(sid) },
+      removeFromSplit: { [onRemoveFromSplit] in onRemoveFromSplit?() },
+      moveToNewWindow: { [store, sid] in store.moveWorkroomToNewWindow(sid) },
+      editLabel: { [store] in
+        guard let pair else { return }
+        store.modals.pendingWorkroomLabel = PendingWorkroomLabel(
+          workroom: pair.workroom, project: pair.project)
+      },
+      removeLabel: { [store] in
+        guard let pair else { return }
+        store.removeWorkroomLabel(pair.workroom, in: pair.project)
+      },
+      delete: { [store] in
+        guard let pair else { return }
+        store.modals.pendingDeletion = PendingWorkroomDeletion(
+          workroom: pair.workroom, project: pair.project)
+      })
+  }
+}
+
+#if DEBUG
+  #Preview("Workroom menu") {
+    let model = WorkroomMenuModel(
+      run: RunMenuState(available: true, configured: true, running: true), closeName: "fix-auth",
+      removableFromSplit: true, canOpenInSplit: true, showsMoveToNewWindow: true,
+      canMoveWorkroom: true, workroom: .init(hasLabel: true))
+    HStack(alignment: .top, spacing: 24) {
+      ForEach(
+        [WorkroomMenuModel.Style.full, .sidebarRow, .inspectorHeader], id: \.self
+      ) { style in
+        VStack(alignment: .leading) {
+          WorkroomMenuItems(model: model, actions: .inert, style: style)
+        }
+        .buttonStyle(.borderless)
+      }
+    }
+    .padding()
+  }
+#endif
 
 /// A pane's "Move to New Window", or "Move Back to Main Window" once it is in a window of its own
 /// (#444): the same toggle as the pane title bar's button and ⌃⌘O, for the pane the menu is on.
@@ -258,88 +494,4 @@ struct QuickTerminalMoveToWorkroomMenu: View {
         .disabled(!choice.enabled)
     }
   }
-}
-
-/// Whether `moveToNewWindowMenuItem` renders anything, for the dividers around it.
-@MainActor
-func showsMoveToNewWindow(store: AppStore, sid: SidebarID) -> Bool {
-  store.target(for: sid).map { store.terminals.tabCount(forTargetID: $0.id) > 0 } ?? false
-}
-
-@MainActor
-@ViewBuilder
-func workroomContextMenu(
-  store: AppStore, sid: SidebarID, target: TerminalTarget, closeName: String?,
-  onRemoveFromSplit: (() -> Void)? = nil
-) -> some View {
-  runCommandMenuItems(host: store, target: target)
-  Divider()
-  if let closeName {
-    // Close the whole workroom (all its tabs); the workroom's files stay. Confirmed via
-    // RootView's `pendingWorkroomClose` dialog.
-    Button {
-      store.modals.pendingWorkroomClose = PendingWorkroomClose(target: target, name: closeName)
-    } label: {
-      Label("Close", systemImage: "xmark")
-    }
-  }
-  openInSplitMenuItem(store: store, sid: sid)
-  if let onRemoveFromSplit {
-    // Pop this workroom out of the split (it keeps running) — same action as the title bar's ✕
-    // (`pip.exit`). Acts immediately; no confirmation.
-    Button {
-      onRemoveFromSplit()
-    } label: {
-      Label("Remove from Split", systemImage: "pip.exit")
-    }
-  }
-  moveToNewWindowMenuItem(store: store, sid: sid)
-  // Label + delete only apply to a workroom (roots are never labelled or deletable). Mirrors the
-  // sidebar row's context menu (issue #41 + delete).
-  if let pair = store.workroomAndProject(for: sid) {
-    // Leading divider only when a top item (Close / Remove from Split / Open (split right) / Move to
-    // New Window) showed.
-    if closeName != nil || onRemoveFromSplit != nil || canOpenInSplit(store: store, sid: sid)
-      || showsMoveToNewWindow(store: store, sid: sid)
-    {
-      Divider()
-    }
-    workroomLabelMenuItems(store: store, workroom: pair.workroom, project: pair.project)
-    Divider()
-    deleteWorkroomMenuItem(store: store, workroom: pair.workroom, project: pair.project)
-  }
-}
-
-/// "Set Label…" ("Edit Label…" once it has one) and, when labelled, "Remove Label" (issue #41). A
-/// label is a display-only alias: the workroom name and its branch are unchanged. Shared by every
-/// workroom menu.
-@MainActor
-@ViewBuilder
-func workroomLabelMenuItems(store: AppStore, workroom: Workroom, project: Project) -> some View {
-  Button {
-    store.modals.pendingWorkroomLabel = PendingWorkroomLabel(workroom: workroom, project: project)
-  } label: {
-    Label(workroom.label == nil ? "Set Label…" : "Edit Label…", systemImage: "pencil")
-  }
-  if workroom.label != nil {
-    Button {
-      store.removeWorkroomLabel(workroom, in: project)
-    } label: {
-      Label("Remove Label", systemImage: "pencil.slash")
-    }
-  }
-}
-
-/// Delete, through `RootView`'s confirmation, so its title ends in an ellipsis: Apple's convention for
-/// a command that asks something before it acts. Shared by every workroom menu.
-@MainActor
-@ViewBuilder
-func deleteWorkroomMenuItem(store: AppStore, workroom: Workroom, project: Project) -> some View {
-  Button(role: .destructive) {
-    store.modals.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
-  } label: {
-    Label("Delete Workroom…", systemImage: "trash")
-  }
-  // Can't delete a workroom while its setup is still running against the worktree (issue #116).
-  .disabled(store.lifecycle.isCreatingWorkroom(workroom, in: project))
 }

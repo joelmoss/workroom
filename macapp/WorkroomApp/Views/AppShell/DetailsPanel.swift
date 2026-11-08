@@ -220,18 +220,13 @@ struct InspectorWorkroomHeader: View {
     .background(WorkroomPaneCardBackground(highlighted: true))
   }
 
-  /// The workroom's own actions, from the same items as its other menus (`WorkroomContextMenu`),
+  /// The workroom's own actions, from the same items as its other menus (`WorkroomMenuItems`),
   /// in Apple's order: the destructive one last, apart. A root has only Move to New Window, as it
   /// is never labelled or deleted.
   private func actions(_ sid: SidebarID) -> some View {
     Menu {
-      moveToNewWindowMenuItem(store: store, sid: sid)
-      if let pair = store.workroomAndProject(for: sid) {
-        Divider()
-        workroomLabelMenuItems(store: store, workroom: pair.workroom, project: pair.project)
-        Divider()
-        deleteWorkroomMenuItem(store: store, workroom: pair.workroom, project: pair.project)
-      }
+      // No target: this menu has no run items, and its other items look `sid` up themselves.
+      WorkroomMenuAdapter(sid: sid, target: nil, style: .inspectorHeader)
     } label: {
       Image(systemName: "ellipsis").font(.system(size: 11)).foregroundStyle(.secondary)
     }
