@@ -310,7 +310,7 @@ struct TerminalStatusBarAdapter: View {
         }
         return .init(backend: backend, claudeProfile: state.claudeProfile)
       },
-      hasDetachedSessions: !sessionsStore.detached(for: target.id.encoded).isEmpty,
+      hasDetachedSessions: !sessionsStore.detached(for: target).isEmpty,
       run: run,
       runOutcome: runOutcome
     )

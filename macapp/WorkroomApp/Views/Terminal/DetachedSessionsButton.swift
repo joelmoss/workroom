@@ -11,7 +11,7 @@ struct DetachedSessionsButton: View {
   private var terminals: TerminalPanes { host.terminals }
 
   var body: some View {
-    let detached = sessionsStore.detached(for: target.id.encoded)
+    let detached = sessionsStore.detached(for: target)
     // The refresh task must run UNCONDITIONALLY, not just when `detached` is already non-empty:
     // it's the only thing that ever populates `detached` in the first place. Nesting it inside
     // the `if` below (as this used to) makes the button structurally unable to ever appear from a
@@ -34,7 +34,13 @@ struct DetachedSessionsButton: View {
         }
       }
     }
-    .task(id: target.id) { await refresh() }
+    // A remote workroom's list is read again each time its host connects (`follow`), so a pane
+    // that mounts before its host is up still shows what the host holds.
+    .task(id: target.id) {
+      await sessionsStore.follow(target) { [terminals, target] in
+        terminals.ownedSessionIDs(for: target)
+      }
+    }
   }
 
   private func popover(_ detached: [SessionDescriptor]) -> some View {
@@ -62,8 +68,7 @@ struct DetachedSessionsButton: View {
   }
 
   private func refresh() async {
-    await sessionsStore.refresh(
-      workroomID: target.id.encoded, ownedSessionIDs: terminals.ownedSessionIDs(for: target))
+    await sessionsStore.refresh(target, ownedSessionIDs: terminals.ownedSessionIDs(for: target))
   }
 
   private func attachToActive(_ session: SessionDescriptor) {
@@ -90,8 +95,8 @@ struct DetachedSessionsButton: View {
   private func stop(_ session: SessionDescriptor) {
     guard let id = session.identifier.uuid else { return }
     Task {
-      await PersistentSessionService.shared.endSession(sessionID: id)
-      await refresh()
+      await sessionsStore.stop(
+        id, in: target, ownedSessionIDs: terminals.ownedSessionIDs(for: target))
     }
   }
 }
