@@ -1,5 +1,6 @@
 import DesignSystem
 import SwiftUI
+import TerminalModel
 import WorkroomDomain
 
 // The sidebar's four kinds of row, each a store-free view of a value model behind an equality gate.
@@ -230,7 +231,6 @@ struct SidebarRootRowModel: Equatable {
   let projectPath: String
   let projectName: String
   let target: TerminalTarget
-  let style: RootPresentation.Style
   let subtree: SidebarSubtreeState
   let activity: SidebarTargetActivity
 
@@ -240,7 +240,8 @@ struct SidebarRootRowModel: Equatable {
 /// The always-present project-root row: the first child under each project. Reads like a workroom
 /// (a leading house glyph marking it as the root, then the current branch) — so roots and
 /// workrooms share one left edge. Selectable (opens a terminal at the project directory); never
-/// deletable.
+/// deletable. Its branch is read by the label, the tooltip and the spoken label alone, so a branch
+/// resolving re-runs no row.
 struct SidebarRootRow: View, Equatable {
   let model: SidebarRootRowModel
   let hovered: Bool
@@ -274,22 +275,12 @@ struct SidebarRootRow: View, Equatable {
     #endif
     let id = model.id
     let target = model.target
-    let style = model.style
     let activity = model.activity
     HStack(spacing: 6) {
       SidebarLeadingSlot(
         id: id, target: target, root: true, subtree: model.subtree, hovered: hovered,
         toggle: { actions.toggleTerminals(target.id) })
-      Text(style.label)
-        .font(.callout)
-        .lineLimit(1)
-        .truncationMode(.tail)
-        // A healthy root must apply NO foreground color so it inherits the sidebar's default
-        // (vibrant) foreground and dims with every other row when the window goes inactive — exactly
-        // like the workroom rows. Pinning a color here (even `.foregroundColor(nil)`) opts the text
-        // out of that vibrancy dimming, which left roots bright on blur (issue #43). Only the
-        // de-emphasized detached/none states take an explicit `.secondary`.
-        .modifier(RootLabelTint(dim: style.dim))
+      SidebarRootLabel(projectID: model.projectPath)
       Spacer(minLength: 0)
       SidebarUnreadDot(source: .target(target.id))
       if target.isMissing {
@@ -316,14 +307,12 @@ struct SidebarRootRow: View, Equatable {
       // Drag this root onto a displayed workroom pane to split them (issue #101). Simultaneous so the
       // List still scrolls vertically; the tap above still selects.
       .simultaneousGesture(drag.splitGesture(id, actions: actions))
-      .help(style.tooltip)
+      .modifier(SidebarRootTooltip(projectID: model.projectPath))
       .accessibilityElement(children: .ignore)
       .accessibilityAddTraits(.isButton)
       .modifier(
         SidebarRootStatusLabel(
-          id: id,
-          rootLabel: target.isMissing
-            ? "\(style.accessibility), folder not found" : style.accessibility,
+          id: id, projectID: model.projectPath, isMissing: target.isMissing,
           // The marks' spoken twins: this row ignores its children, so their own labels are lost.
           programLabels: [
             activity.waiting > 0
@@ -499,8 +488,9 @@ struct SidebarTerminalRowModel: Equatable {
   let glyph: String
   let indicator: PaneIndicator
   let programStatus: ProgramStatusRollup?
-  /// What its program reports or why nothing does, below its title in the tooltip.
-  let tooltipLines: [String]
+  /// Whether it is a terminal attached to a daemon session, whose host can say why its program
+  /// reports nothing (`SidebarTerminalTooltip`).
+  let hasSession: Bool
 
   var isRunning: Bool {
     if case .running = indicator { return true }
@@ -584,7 +574,11 @@ struct SidebarTerminalRow: View, Equatable {
     .accessibilityAction { actions.revealTerminal(model.tabID, model.parent) }
     .withTabTitle(content) { row, title in
       row
-        .help(([title] + model.tooltipLines).joined(separator: "\n"))
+        .modifier(
+          SidebarTerminalTooltip(
+            title: title, indicator: model.indicator, rollup: model.programStatus,
+            hasSession: model.hasSession, hostID: model.target.hostID)
+        )
         .accessibilityLabel(
           ([title]
             + ProgramStatusPresentation.accessibilityParts(
@@ -629,3 +623,51 @@ private struct SidebarLeadingSlot: View {
     }
   }
 }
+
+#if DEBUG
+  #Preview("Sidebar rows") {
+    // A project, its root with a terminal waiting on the user, a workroom running a command, and
+    // that workroom's terminal. The leaves in the rows read the store they are handed here.
+    let store = AppStore()
+    let path = "/tmp/platform"
+    let workroom = Workroom(
+      name: "fix-auth", path: "\(path)/fix-auth", vcsName: "fix-auth", warnings: [])
+    let project = Project(path: path, vcs: "git", workrooms: [workroom])
+    let root = project.rootTarget
+    let target = workroom.target(inProject: path)
+    let terminal = TabContent.terminal(
+      TerminalState(defaultTitle: "zsh", launch: .shell, launchDirectory: target.path))
+    VStack(alignment: .leading, spacing: 4) {
+      SidebarProjectRow(
+        model: SidebarProjectRowModel(project: project, expanded: true), hovered: false,
+        actions: .inert)
+      SidebarRootRow(
+        model: SidebarRootRowModel(
+          projectPath: path, projectName: project.displayName, target: root,
+          subtree: SidebarSubtreeState(),
+          activity: SidebarTargetActivity(waiting: 1)),
+        hovered: false, drag: .inert, actions: .inert)
+      SidebarWorkroomRow(
+        model: SidebarWorkroomRowModel(
+          projectPath: path, workroom: workroom, target: target, pending: false,
+          isCreating: false, creationRun: nil,
+          subtree: SidebarSubtreeState(hasSubtree: true, expanded: true),
+          activity: SidebarTargetActivity(running: true)),
+        hovered: false, drag: .inert, actions: .inert)
+      SidebarTerminalRow(
+        model: SidebarTerminalRowModel(
+          tabID: UUID(), target: target, parent: .workroom(project: path, name: "fix-auth"),
+          title: .fixed("zsh"), glyph: "terminal", indicator: .running(failed: false),
+          programStatus: nil, hasSession: false),
+        content: terminal, hovered: false, actions: .inert)
+    }
+    .padding(8)
+    .environmentObject(store)
+    .environmentObject(store.runCommand)
+    .environmentObject(store.vcsStatus)
+    .environmentObject(store.lifecycle)
+    .environmentObject(store.notifications)
+    .themeTokensRoot()
+    .frame(width: 280)
+  }
+#endif

@@ -160,7 +160,9 @@ final class SidebarInvalidationTests: XCTestCase {
   }
 
   /// A host's status publishing re-runs no row: the terminal rows' tooltip line is the only thing
-  /// it can change, and here it changes nothing.
+  /// it can change, and the tooltip reads it itself. That tooltip has no positive half here: SwiftUI
+  /// builds a modifier that only adds a tooltip when the tooltip is asked for, which no test window
+  /// does, so its body never runs in this harness.
   func testAHostStatusPublishReRunsNoRow() async throws {
     let f = try fixture()
     defer { close(f) }
@@ -262,8 +264,9 @@ final class SidebarInvalidationTests: XCTestCase {
     XCTAssertEqual(SidebarRowPasses.total, 0, "a VCS change must re-run no row")
   }
 
-  /// A root's branch resolving changes the label its row shows, and no other row's.
-  func testARootBranchResolvingReRunsOnlyThatRootsRow() async throws {
+  /// A root's branch resolving repaints its label, tooltip and spoken label, which read it
+  /// themselves, and re-runs no row.
+  func testARootBranchResolvingReRunsNoRow() async throws {
     let f = try fixture()
     defer { close(f) }
     try await render(f)
@@ -274,7 +277,8 @@ final class SidebarInvalidationTests: XCTestCase {
     f.store.vcsStatus.rootRefs[f.a.id] = RootRef(branch: "feature", kind: .branch)
     try await render(f)
 
-    XCTAssertEqual(Set(SidebarRowPasses.byRow.keys), [f.rootA])
+    XCTAssertEqual(SidebarRowPasses.total, 0, "a root's branch resolving must re-run no row")
+    XCTAssertGreaterThan(SidebarRowPasses.rootLabel, 0, "the root's label reads it, so it re-runs")
   }
 
   // MARK: Structure (control)
