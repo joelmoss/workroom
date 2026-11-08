@@ -14,11 +14,36 @@ import WorkroomDomain
 /// keeps the plumbing an earlier pass built, which does what the new one would: the closures read
 /// their window's live state (`RootView`'s `@State`, its store), never a value of the pass that
 /// built them.
-struct SidebarDragPlumbing: Equatable {
+///
+/// Sendable, its closures held by a main-actor box, so a view's nonisolated `==` can compare it.
+struct SidebarDragPlumbing: Equatable, Sendable {
   let token: UUID
-  var drag: Binding<WorkroomPaneDrag?>
-  var localize: (CGPoint) -> CGPoint?
-  var dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge, rect: CGRect)?
+  private let handlers: Handlers
+
+  @MainActor private final class Handlers {
+    let drag: Binding<WorkroomPaneDrag?>
+    let localize: (CGPoint) -> CGPoint?
+    let dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge, rect: CGRect)?
+
+    init(
+      drag: Binding<WorkroomPaneDrag?>, localize: @escaping (CGPoint) -> CGPoint?,
+      dropTarget: @escaping (CGPoint) -> (sid: SidebarID, edge: PaneEdge, rect: CGRect)?
+    ) {
+      self.drag = drag
+      self.localize = localize
+      self.dropTarget = dropTarget
+    }
+  }
+
+  @MainActor init(
+    token: UUID, drag: Binding<WorkroomPaneDrag?>, localize: @escaping (CGPoint) -> CGPoint?,
+    dropTarget: @escaping (CGPoint) -> (sid: SidebarID, edge: PaneEdge, rect: CGRect)?
+  ) {
+    self.token = token
+    handlers = Handlers(drag: drag, localize: localize, dropTarget: dropTarget)
+  }
+
+  @MainActor var drag: Binding<WorkroomPaneDrag?> { handlers.drag }
 
   static func == (lhs: Self, rhs: Self) -> Bool { lhs.token == rhs.token }
 
@@ -35,17 +60,18 @@ struct SidebarDragPlumbing: Equatable {
   /// `minimumDistance` keeps a plain click selecting the row (a zero-translation tap never starts
   /// the drag).
   @MainActor func splitGesture(_ id: SidebarID, actions: SidebarActions) -> some Gesture {
-    DragGesture(minimumDistance: 6, coordinateSpace: .global)
+    let handlers = handlers
+    return DragGesture(minimumDistance: 6, coordinateSpace: .global)
       .onChanged { value in
-        drag.wrappedValue = localize(value.location).map {
+        handlers.drag.wrappedValue = handlers.localize(value.location).map {
           WorkroomPaneDrag(sid: id, location: $0)
         }
       }
       .onEnded { value in
-        if let drop = dropTarget(value.location) {
+        if let drop = handlers.dropTarget(value.location) {
           actions.insertSplit(id, drop.sid, drop.edge, drop.rect)
         }
-        drag.wrappedValue = nil
+        handlers.drag.wrappedValue = nil
       }
   }
 }

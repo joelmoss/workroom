@@ -69,7 +69,7 @@ struct MenuStateAdapter: ViewModifier {
           vcsCanPull: remoteState.canPull && store.vcsAllowsRemoteActions && !modal,
           hasRunTerminal: runCommand.hasAnyRunTerminal && !modal,
           // Go-menu Previous/Next Workroom Tab (issue #29) — only meaningful with ≥2 tabs.
-          multipleWorkroomTabs: store.orderedWorkroomTargets().count > 1 && !modal,
+          multipleWorkroomTabs: store.hasMultipleWorkroomTargets && !modal,
           // Go-menu "Last-Used Workroom" (⌥⇥, issue #132). Counted across every window, so it stays
           // enabled when this window holds the only workroom and another window holds a second one.
           // Observation tracks the other windows' reads too, and they ask only whether each workroom

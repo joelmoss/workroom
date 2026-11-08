@@ -214,7 +214,7 @@ extension AppStore {
     return terminals.tabCount(forTargetID: target.id) > 0
       && !lifecycle.isCreationBlocking(target.id)
       && !hostLayouts.fetching.contains(target.id)
-      && orderedWorkroomTargets().contains { $0.sid != sid }
+      && hasWorkroomTarget(otherThan: sid)
   }
 
   /// The size a workroom's new window opens at, whatever window it left: a move is a request for a

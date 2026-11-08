@@ -1,5 +1,7 @@
 import AppKit
 import DaemonConnection
+import Defaults
+import DesignSystem
 import SwiftUI
 import WorkroomDomain
 import WorkroomVCS
@@ -76,8 +78,8 @@ final class SidebarInvalidationTests: XCTestCase {
     _ = store.terminals.addTab(for: b.rootTarget)
 
     DragHost.drag = nil
-    let hosting = NSHostingView(
-      rootView: DragHost()
+    let (window, hosting) = hostInWindow(
+      DragHost()
         .environmentObject(store)
         .environmentObject(store.runCommand)
         .environmentObject(store.projectStore)
@@ -86,13 +88,8 @@ final class SidebarInvalidationTests: XCTestCase {
         .environmentObject(store.notifications)
         .environmentObject(store.modals)
         .themeTokensRoot()
-        .frame(width: 300, height: 700))
-    hosting.frame = NSRect(x: 0, y: 0, width: 300, height: 700)
-    let window = NSWindow(
-      contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
-    window.isReleasedWhenClosed = false
-    window.contentView = hosting
-    window.orderFront(nil)
+        .frame(width: 300, height: 700),
+      size: NSSize(width: 300, height: 700))
     return Fixture(
       store: store, a: a, b: b, surfaceA: surfaceA, tabA: tabAID, window: window, view: hosting,
       folder: root)
@@ -106,13 +103,7 @@ final class SidebarInvalidationTests: XCTestCase {
   }
 
   /// Lets SwiftUI run any update the change scheduled.
-  private func render(_ f: Fixture) async throws {
-    f.view.layoutSubtreeIfNeeded()
-    try await Task.sleep(for: .milliseconds(150))
-    f.view.layoutSubtreeIfNeeded()
-    f.window.displayIfNeeded()
-    settle(f.view, seconds: 0.2)
-  }
+  private func render(_ f: Fixture) async throws { try await render(f.view) }
 
   private func listRows(_ f: Fixture) throws -> Int {
     func findTable(_ view: NSView) -> NSTableView? {
@@ -229,6 +220,47 @@ final class SidebarInvalidationTests: XCTestCase {
       SidebarRowPasses.background, 0, "the row backgrounds read the selection, so they re-run")
   }
 
+  // MARK: The theme
+
+  /// A theme switch repaints an expanded terminal row's background: its subtree reads the theme
+  /// from the environment, so the switch re-runs it although its `==` leaves the theme out.
+  func testAThemeSwitchRepaintsAnExpandedTerminalRow() async throws {
+    let savedFamily = Defaults[.themeFamily]
+    defer { ThemeService.shared.applyFamily(savedFamily) }
+    ThemeService.shared.applyFamily(ThemeCatalog.defaultFamilyName)
+    let original = ThemeService.shared.tokens.hover
+    let other = try XCTUnwrap(
+      ThemeCatalog.families.first { family in
+        ThemeService.shared.applyFamily(family.name)
+        defer { ThemeService.shared.applyFamily(ThemeCatalog.defaultFamilyName) }
+        return ThemeService.shared.tokens.hover != original
+      },
+      "the catalog needs a family with another hover colour")
+
+    let f = try fixture()
+    defer { close(f) }
+    _ = f.store.terminals.addTab(for: f.a.rootTarget)
+    f.store.toggleTerminals(for: f.a.rootTarget.id)
+    // The selected target's focused terminal draws the theme's hover colour.
+    f.store.selectedTargetID = f.rootA
+    f.store.selectionStatusTask?.cancel()
+    try await render(f)
+    let focused = try XCTUnwrap(f.store.terminals.focusedTab(for: f.a.rootTarget)?.id)
+    XCTAssertEqual(SidebarRowPasses.terminalFills[focused], original)
+
+    ThemeService.shared.applyFamily(other.name)
+    let switched = ThemeService.shared.tokens.hover
+    try await render(f)
+    settle(f.view, seconds: 2) { SidebarRowPasses.terminalFills[focused] == switched }
+    XCTAssertEqual(SidebarRowPasses.terminalFills[focused], switched, "the row repaints")
+
+    ThemeService.shared.applyFamily(ThemeCatalog.defaultFamilyName)
+    try await render(f)
+    settle(f.view, seconds: 2) { SidebarRowPasses.terminalFills[focused] == original }
+    XCTAssertEqual(
+      SidebarRowPasses.terminalFills[focused], original, "the row repaints on a second switch")
+  }
+
   // MARK: The drag
 
   func testADragTickReRunsNoRow() async throws {
@@ -309,6 +341,30 @@ final class SidebarInvalidationTests: XCTestCase {
     XCTAssertEqual(
       SidebarRowPasses.folderMissing[f.rootA], false, "A's root row shows its folder back")
     XCTAssertNil(SidebarRowPasses.byRow[f.rootB], "B's folder never went")
+  }
+
+  /// A root's metadata watcher firing re-checks that root alone, so its folder going shows on its
+  /// row before the next reload, and no other row re-runs.
+  func testARootFolderGoingShowsOnItsRowWhenItsWatcherFires() async throws {
+    let f = try fixture()
+    defer { close(f) }
+    try await render(f)
+    try FileManager.default.removeItem(atPath: f.a.path)
+    f.store.projectStore.recheckMissingRoot(projectID: f.a.id)
+    try await render(f)
+    XCTAssertEqual(
+      SidebarRowPasses.folderMissing[f.rootA], true, "A's root row shows its folder gone")
+
+    SidebarRowPasses.reset()
+    try FileManager.default.createDirectory(atPath: f.a.path, withIntermediateDirectories: true)
+    try FileManager.default.removeItem(atPath: f.b.path)
+    f.store.projectStore.recheckMissingRoot(projectID: f.a.id)
+    try await render(f)
+
+    XCTAssertEqual(
+      SidebarRowPasses.folderMissing[f.rootA], false, "A's root row shows its folder back")
+    XCTAssertNil(SidebarRowPasses.byRow[f.rootB], "only A's root was re-checked")
+    XCTAssertFalse(f.store.projectStore.missingRoots.contains(f.b.id))
   }
 
   /// A workroom's folder going reaches its row as the list's `DirectoryMissing` warning.

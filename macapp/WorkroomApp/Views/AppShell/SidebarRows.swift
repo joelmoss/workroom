@@ -64,14 +64,8 @@ struct SidebarActions {
         guard let oldest else { return }
         store.openTerminal(targetID: oldest.0, tabID: oldest.1)
       },
-      openProjectSettings: { [store] project in
-        store.modals.pendingProjectSettings = PendingProjectSettings(project: project)
-      },
-      deleteWorkroom: { [store] id in
-        guard let (workroom, project) = store.workroomAndProject(for: id) else { return }
-        store.modals.pendingDeletion = PendingWorkroomDeletion(
-          workroom: workroom, project: project)
-      },
+      openProjectSettings: { [store] project in store.openProjectSettings(project) },
+      deleteWorkroom: { [store] id in store.requestDeleteWorkroom(id) },
       revealTerminal: { [store] tabID, parent in store.revealTerminal(tabID, at: parent) },
       closeTerminal: { [store] tabID, target in store.requestCloseTerminalTab(tabID, for: target) },
       insertSplit: { [store] id, beside, edge, rect in
@@ -247,22 +241,9 @@ struct SidebarRootRow: View, Equatable {
   let hovered: Bool
   let drag: SidebarDragPlumbing
   let actions: SidebarActions
-  /// `drag`'s identity, for the gate: the plumbing itself holds closures, which a nonisolated
-  /// comparison can't reach.
-  private let dragToken: UUID
-
-  init(
-    model: SidebarRootRowModel, hovered: Bool, drag: SidebarDragPlumbing, actions: SidebarActions
-  ) {
-    self.model = model
-    self.hovered = hovered
-    self.drag = drag
-    self.actions = actions
-    dragToken = drag.token
-  }
 
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-    lhs.model == rhs.model && lhs.hovered == rhs.hovered && lhs.dragToken == rhs.dragToken
+    lhs.model == rhs.model && lhs.hovered == rhs.hovered && lhs.drag == rhs.drag
   }
 
   var body: some View {
@@ -339,9 +320,6 @@ struct SidebarWorkroomRowModel: Equatable {
   let projectPath: String
   let workroom: Workroom
   let target: TerminalTarget
-  /// A remote workroom still being made: its row opens its creation pane (#483), but has nothing to
-  /// drag, label or delete yet.
-  let pending: Bool
   /// Its create is still running (#116), from any window: it can't be deleted mid-setup.
   let isCreating: Bool
   /// A create's progress, for every kind, while its run lasts (#483).
@@ -350,6 +328,9 @@ struct SidebarWorkroomRowModel: Equatable {
   let activity: SidebarTargetActivity
 
   var id: SidebarID { .workroom(project: projectPath, name: workroom.name) }
+  /// A remote workroom still being made: its row opens its creation pane (#483), but has nothing to
+  /// drag, label or delete yet.
+  var pending: Bool { workroom.host != nil && isCreating }
 }
 
 /// A create's run, compared by identity: the step circle observes the run itself.
@@ -364,22 +345,9 @@ struct SidebarWorkroomRow: View, Equatable {
   let hovered: Bool
   let drag: SidebarDragPlumbing
   let actions: SidebarActions
-  /// `drag`'s identity, for the gate (see `SidebarRootRow.dragToken`).
-  private let dragToken: UUID
-
-  init(
-    model: SidebarWorkroomRowModel, hovered: Bool, drag: SidebarDragPlumbing,
-    actions: SidebarActions
-  ) {
-    self.model = model
-    self.hovered = hovered
-    self.drag = drag
-    self.actions = actions
-    dragToken = drag.token
-  }
 
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-    lhs.model == rhs.model && lhs.hovered == rhs.hovered && lhs.dragToken == rhs.dragToken
+    lhs.model == rhs.model && lhs.hovered == rhs.hovered && lhs.drag == rhs.drag
   }
 
   var body: some View {
@@ -463,7 +431,8 @@ struct SidebarWorkroomRow: View, Equatable {
       .contextMenu {
         // A workroom still being made has nothing to open, label or delete yet.
         if !model.pending {
-          WorkroomMenuAdapter(sid: id, target: target, style: .sidebarRow)
+          // No Close and no Remove from Split: a row is neither a tab nor a split member.
+          WorkroomMenuAdapter(sid: id, target: target, style: .full)
         }
       }
   }
@@ -656,8 +625,8 @@ private struct SidebarLeadingSlot: View {
         hovered: false, drag: .inert, actions: .inert)
       SidebarWorkroomRow(
         model: SidebarWorkroomRowModel(
-          projectPath: path, workroom: workroom, target: target, pending: false,
-          isCreating: false, creationRun: nil,
+          projectPath: path, workroom: workroom, target: target, isCreating: false,
+          creationRun: nil,
           subtree: SidebarSubtreeState(hasSubtree: true, expanded: true),
           activity: SidebarTargetActivity(running: true)),
         hovered: false, drag: .inert, actions: .inert)

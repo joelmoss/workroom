@@ -26,37 +26,33 @@ struct SidebarProjectRowAdapter: View, Equatable {
 
   private var model: SidebarProjectRowModel {
     let expanded = !store.collapsedProjects.contains(project.path)
+    var waiting = 0
+    var waitingStale = false
     // The waiting count shows only while collapsed, so an expanded project observes no terminal.
-    guard !expanded else { return SidebarProjectRowModel(project: project, expanded: true) }
-    let ids = project.targetIDs
-    let terminals = store.terminals
-    let waiting = ids.reduce(0) { $0 + terminals.blockedTerminalCount(forTargetID: $1) }
+    if !expanded {
+      let ids = project.targetIDs
+      let terminals = store.terminals
+      waiting = ids.reduce(0) { $0 + terminals.blockedTerminalCount(forTargetID: $1) }
+      waitingStale = waiting > 0 && ids.contains { terminals.isWaitingStale(forTargetID: $0) }
+    }
     return SidebarProjectRowModel(
-      project: project, expanded: false, waiting: waiting,
-      waitingStale: waiting > 0 && ids.contains { terminals.isWaitingStale(forTargetID: $0) })
+      project: project, expanded: expanded, waiting: waiting, waitingStale: waitingStale)
   }
 }
 
-/// Builds a project's root row.
+/// Builds a project's root row. Of the project it holds what the row shows, its path (its id) and
+/// its name, and not its workrooms, so a pass of the sidebar compares no project's workroom list.
 struct SidebarRootRowAdapter: View, Equatable {
   @EnvironmentObject private var store: AppStore
-  let project: Project
+  let projectPath: String
+  let projectName: String
   let hovered: Bool
   let drag: SidebarDragPlumbing
   let actions: SidebarActions
-  /// `drag`'s identity, for the gate (see `SidebarRootRow.dragToken`).
-  private let dragToken: UUID
-
-  init(project: Project, hovered: Bool, drag: SidebarDragPlumbing, actions: SidebarActions) {
-    self.project = project
-    self.hovered = hovered
-    self.drag = drag
-    self.actions = actions
-    dragToken = drag.token
-  }
 
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-    lhs.project == rhs.project && lhs.hovered == rhs.hovered && lhs.dragToken == rhs.dragToken
+    lhs.projectPath == rhs.projectPath && lhs.projectName == rhs.projectName
+      && lhs.hovered == rhs.hovered && lhs.drag == rhs.drag
   }
 
   var body: some View {
@@ -66,41 +62,28 @@ struct SidebarRootRowAdapter: View, Equatable {
   private var model: SidebarRootRowModel {
     // Whether the folder is gone is read from the store, not `stat`ed: nothing observable changes
     // when a folder goes, so a `stat` here would keep what it saw until the row next re-ran.
-    let target = project.rootTarget(
-      isMissing: store.projectStore.missingRoots.contains(project.id))
+    let target = Project.rootTarget(
+      path: projectPath, name: projectName,
+      isMissing: store.projectStore.missingRoots.contains(projectPath))
     return SidebarRootRowModel(
-      projectPath: project.path, projectName: project.displayName, target: target,
+      projectPath: projectPath, projectName: projectName, target: target,
       subtree: store.sidebarSubtree(of: target), activity: store.sidebarActivity(of: target.id))
   }
 }
 
-/// Builds a workroom's row.
+/// Builds a workroom's row. Of its project it holds the path alone, all the row shows of it.
 struct SidebarWorkroomRowAdapter: View, Equatable {
   @EnvironmentObject private var store: AppStore
   @EnvironmentObject private var lifecycle: WorkroomLifecycle
   let workroom: Workroom
-  let project: Project
+  let projectPath: String
   let hovered: Bool
   let drag: SidebarDragPlumbing
   let actions: SidebarActions
-  /// `drag`'s identity, for the gate (see `SidebarRootRow.dragToken`).
-  private let dragToken: UUID
-
-  init(
-    workroom: Workroom, project: Project, hovered: Bool, drag: SidebarDragPlumbing,
-    actions: SidebarActions
-  ) {
-    self.workroom = workroom
-    self.project = project
-    self.hovered = hovered
-    self.drag = drag
-    self.actions = actions
-    dragToken = drag.token
-  }
 
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-    lhs.workroom == rhs.workroom && lhs.project == rhs.project && lhs.hovered == rhs.hovered
-      && lhs.dragToken == rhs.dragToken
+    lhs.workroom == rhs.workroom && lhs.projectPath == rhs.projectPath
+      && lhs.hovered == rhs.hovered && lhs.drag == rhs.drag
   }
 
   var body: some View {
@@ -108,13 +91,12 @@ struct SidebarWorkroomRowAdapter: View, Equatable {
   }
 
   private var model: SidebarWorkroomRowModel {
-    let target = workroom.target(inProject: project.path)
-    let isCreating = lifecycle.isCreatingWorkroom(workroom, in: project)
+    let target = workroom.target(inProject: projectPath)
     return SidebarWorkroomRowModel(
-      projectPath: project.path, workroom: workroom, target: target,
-      pending: workroom.host != nil && isCreating, isCreating: isCreating,
+      projectPath: projectPath, workroom: workroom, target: target,
+      isCreating: lifecycle.isCreatingWorkroom(workroom, inProject: projectPath),
       creationRun: lifecycle.creationRun(
-        for: .workroom(project: project.path, name: workroom.name)
+        for: .workroom(project: projectPath, name: workroom.name)
       ).map(SidebarCreationRunRef.init),
       subtree: store.sidebarSubtree(of: target), activity: store.sidebarActivity(of: target.id))
   }
@@ -230,6 +212,9 @@ struct SidebarTerminalRowBackground: View {
     // equal selections when a subtree is open (issue #30 design pass).
     let fill: Color =
       selected ? tokens.hover : (hovered ? tokens.hover.opacity(0.5) : .clear)
+    #if DEBUG
+      let _ = { SidebarRowPasses.terminalFills[tabID] = fill }()
+    #endif
     RoundedRectangle(cornerRadius: Radius.s)
       .fill(fill)
       .padding(.horizontal, Spacing.m)
@@ -257,7 +242,7 @@ struct SidebarProjectMenu: View {
     runCommandMenuItems(host: store, target: project.rootTarget)
     Divider()
     Button {
-      store.modals.pendingProjectSettings = PendingProjectSettings(project: project)
+      store.openProjectSettings(project)
     } label: {
       Label("Project Settings…", systemImage: "gearshape")
     }

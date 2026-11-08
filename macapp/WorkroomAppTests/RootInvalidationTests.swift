@@ -40,8 +40,8 @@ final class RootInvalidationTests: XCTestCase {
       .appendingPathComponent("root-invalidation-\(UUID().uuidString)").path
     store.projectStore.projects = [Project(path: path, vcs: "git", workrooms: [])]
     let updater = Updater()
-    let hosting = NSHostingView(
-      rootView: RootView()
+    let (window, hosting) = hostInWindow(
+      RootView()
         .themeTokensRoot()
         .environmentObject(store)
         .paneHost(store)
@@ -58,16 +58,8 @@ final class RootInvalidationTests: XCTestCase {
         .environmentObject(WhatsNewService(fetcher: NoReleases(), currentVersion: nil))
         .environmentObject(CodingAgentUsageMonitor.shared)
         .environmentObject(ClaudeUsageBridge.shared)
-        .frame(width: 1000, height: 640))
-    hosting.frame = NSRect(x: 0, y: 0, width: 1000, height: 640)
-    let window = NSWindow(
-      contentRect: hosting.frame, styleMask: [.titled, .resizable], backing: .buffered,
-      defer: false)
-    // A programmatic NSWindow defaults `isReleasedWhenClosed` to true, which would over-release on
-    // top of ARC — same reasoning as `PaneRenderingTests.host`.
-    window.isReleasedWhenClosed = false
-    window.contentView = hosting
-    window.orderFront(nil)
+        .frame(width: 1000, height: 640),
+      size: NSSize(width: 1000, height: 640), styleMask: [.titled, .resizable])
     return Fixture(
       store: store, updater: updater, root: .root(project: path), window: window, view: hosting)
   }

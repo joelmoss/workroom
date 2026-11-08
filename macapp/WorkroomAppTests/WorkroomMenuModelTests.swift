@@ -20,6 +20,15 @@ final class WorkroomMenuModelTests: XCTestCase {
   /// A create still setting the workroom up: every run item off (`isRunBlocked`).
   private let blocked = RunMenuState(available: false, configured: true, running: false)
 
+  /// A sidebar row's entries for `model`'s workroom: the full menu, as its row builds it, with no
+  /// Close and no Remove from Split (`SidebarWorkroomRow`'s `WorkroomMenuAdapter`).
+  private func sidebarRowEntries(_ model: WorkroomMenuModel) -> [Entry] {
+    var row = model
+    row.closeName = nil
+    row.removableFromSplit = false
+    return row.entries(for: .full)
+  }
+
   private func runItems(_ state: RunMenuState) -> [Entry] {
     [
       .run(enabled: state.available && state.configured),
@@ -37,7 +46,7 @@ final class WorkroomMenuModelTests: XCTestCase {
       run: idle, closeName: "proj", showsMoveToNewWindow: true, canMoveWorkroom: true)
     XCTAssertEqual(
       model.entries(for: .full),
-      runItems(idle) + [.divider, .close(name: "proj"), .moveToNewWindow(enabled: true)])
+      runItems(idle) + [.divider, .close, .moveToNewWindow(enabled: true)])
     XCTAssertEqual(model.entries(for: .inspectorHeader), [.moveToNewWindow(enabled: true)])
   }
 
@@ -58,29 +67,32 @@ final class WorkroomMenuModelTests: XCTestCase {
     XCTAssertEqual(
       model.entries(for: .full),
       runItems(idle) + [
-        .divider, .close(name: "feature"), .openInSplit, .moveToNewWindow(enabled: true),
-        .divider, .setLabel, .divider, .delete(enabled: true),
+        .divider, .close, .openInSplit, .moveToNewWindow(enabled: true),
+        .divider, .label(exists: false), .divider, .delete(enabled: true),
       ])
     // The sidebar row has no Close and no Remove from Split, in the same order otherwise.
     XCTAssertEqual(
-      model.entries(for: .sidebarRow),
+      sidebarRowEntries(model),
       runItems(idle) + [
         .divider, .openInSplit, .moveToNewWindow(enabled: true),
-        .divider, .setLabel, .divider, .delete(enabled: true),
+        .divider, .label(exists: false), .divider, .delete(enabled: true),
       ])
     // The inspector has no run or split items, and no Close.
     XCTAssertEqual(
       model.entries(for: .inspectorHeader),
-      [.moveToNewWindow(enabled: true), .divider, .setLabel, .divider, .delete(enabled: true)])
+      [
+        .moveToNewWindow(enabled: true), .divider, .label(exists: false), .divider,
+        .delete(enabled: true),
+      ])
   }
 
   /// The divider above the label items shows only when an item showed above it, on the chip and
   /// the row; the inspector's is always there, so its menu then starts with one.
   func testAWorkroomWithNothingAboveItsLabel() {
     let model = WorkroomMenuModel(run: idle, workroom: .init())
-    let tail: [Entry] = [.setLabel, .divider, .delete(enabled: true)]
+    let tail: [Entry] = [.label(exists: false), .divider, .delete(enabled: true)]
     XCTAssertEqual(model.entries(for: .full), runItems(idle) + [.divider] + tail)
-    XCTAssertEqual(model.entries(for: .sidebarRow), runItems(idle) + [.divider] + tail)
+    XCTAssertEqual(sidebarRowEntries(model), runItems(idle) + [.divider] + tail)
     XCTAssertEqual(model.entries(for: .inspectorHeader), [.divider] + tail)
   }
 
@@ -92,10 +104,11 @@ final class WorkroomMenuModelTests: XCTestCase {
     let model = WorkroomMenuModel(
       run: blocked, showsMoveToNewWindow: true, workroom: .init(isCreating: true))
     let tail: [Entry] = [
-      .moveToNewWindow(enabled: false), .divider, .setLabel, .divider, .delete(enabled: false),
+      .moveToNewWindow(enabled: false), .divider, .label(exists: false), .divider,
+      .delete(enabled: false),
     ]
     XCTAssertEqual(model.entries(for: .full), runItems(blocked) + [.divider] + tail)
-    XCTAssertEqual(model.entries(for: .sidebarRow), runItems(blocked) + [.divider] + tail)
+    XCTAssertEqual(sidebarRowEntries(model), runItems(blocked) + [.divider] + tail)
     XCTAssertEqual(model.entries(for: .inspectorHeader), tail)
   }
 
@@ -110,11 +123,12 @@ final class WorkroomMenuModelTests: XCTestCase {
     XCTAssertEqual(
       model.entries(for: .full),
       runItems(running) + [
-        .divider, .close(name: "feature"), .openInSplit, .removeFromSplit,
-        .moveToNewWindow(enabled: true), .divider, .setLabel, .divider, .delete(enabled: true),
+        .divider, .close, .openInSplit, .removeFromSplit,
+        .moveToNewWindow(enabled: true), .divider, .label(exists: false), .divider,
+        .delete(enabled: true),
       ])
-    // The sidebar never offers Remove from Split, whatever the model says.
-    XCTAssertFalse(model.entries(for: .sidebarRow).contains(.removeFromSplit))
+    // Its sidebar row builds the model with no Remove from Split, so none shows.
+    XCTAssertFalse(sidebarRowEntries(model).contains(.removeFromSplit))
     XCTAssertFalse(model.entries(for: .inspectorHeader).contains(.removeFromSplit))
   }
 
@@ -126,7 +140,7 @@ final class WorkroomMenuModelTests: XCTestCase {
     XCTAssertEqual(
       model.entries(for: .full),
       runItems(idle) + [
-        .divider, .close(name: "proj"), .removeFromSplit, .moveToNewWindow(enabled: true),
+        .divider, .close, .removeFromSplit, .moveToNewWindow(enabled: true),
       ])
   }
 
@@ -137,12 +151,12 @@ final class WorkroomMenuModelTests: XCTestCase {
       run: idle, closeName: "Login", showsMoveToNewWindow: true, canMoveWorkroom: true,
       workroom: .init(hasLabel: true))
     let tail: [Entry] = [
-      .moveToNewWindow(enabled: true), .divider, .editLabel, .removeLabel, .divider,
+      .moveToNewWindow(enabled: true), .divider, .label(exists: true), .removeLabel, .divider,
       .delete(enabled: true),
     ]
     XCTAssertEqual(
-      model.entries(for: .full), runItems(idle) + [.divider, .close(name: "Login")] + tail)
-    XCTAssertEqual(model.entries(for: .sidebarRow), runItems(idle) + [.divider] + tail)
+      model.entries(for: .full), runItems(idle) + [.divider, .close] + tail)
+    XCTAssertEqual(sidebarRowEntries(model), runItems(idle) + [.divider] + tail)
     XCTAssertEqual(model.entries(for: .inspectorHeader), tail)
   }
 
@@ -154,11 +168,12 @@ final class WorkroomMenuModelTests: XCTestCase {
     let model = WorkroomMenuModel(
       run: idle, closeName: "feature", showsMoveToNewWindow: true, workroom: .init())
     let tail: [Entry] = [
-      .moveToNewWindow(enabled: false), .divider, .setLabel, .divider, .delete(enabled: true),
+      .moveToNewWindow(enabled: false), .divider, .label(exists: false), .divider,
+      .delete(enabled: true),
     ]
     XCTAssertEqual(
-      model.entries(for: .full), runItems(idle) + [.divider, .close(name: "feature")] + tail)
-    XCTAssertEqual(model.entries(for: .sidebarRow), runItems(idle) + [.divider] + tail)
+      model.entries(for: .full), runItems(idle) + [.divider, .close] + tail)
+    XCTAssertEqual(sidebarRowEntries(model), runItems(idle) + [.divider] + tail)
     XCTAssertEqual(model.entries(for: .inspectorHeader), tail)
   }
 
@@ -170,7 +185,7 @@ final class WorkroomMenuModelTests: XCTestCase {
       Array(WorkroomMenuModel(run: unconfigured).entries(for: .full).prefix(3)),
       [.run(enabled: false), .restart(enabled: false), .stop(enabled: false)])
     XCTAssertEqual(
-      Array(WorkroomMenuModel(run: running).entries(for: .sidebarRow).prefix(3)),
+      Array(sidebarRowEntries(WorkroomMenuModel(run: running)).prefix(3)),
       [.run(enabled: true), .restart(enabled: true), .stop(enabled: true)])
   }
 

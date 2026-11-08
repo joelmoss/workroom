@@ -33,16 +33,9 @@ struct ProjectSidebar: View, Equatable {
 
   /// Live drag of a root/workroom row into the detail content to form a workroom split (issue #101).
   /// The default makes the gesture an inert no-op for previews / any host that doesn't wire it.
-  let drag: SidebarDragPlumbing
-  /// `drag`'s identity, for the gate (see `SidebarRootRow.dragToken`).
-  private let dragToken: UUID
+  var drag: SidebarDragPlumbing = .inert
 
-  init(drag: SidebarDragPlumbing = .inert) {
-    self.drag = drag
-    dragToken = drag.token
-  }
-
-  nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.dragToken == rhs.dragToken }
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.drag == rhs.drag }
 
   /// Per-level leading indent so the tree reads as a hierarchy: projects sit at `rowInsets.leading`,
   /// their root/workroom children one `levelIndent` deeper (`childRowInsets`), and a target's terminal
@@ -107,18 +100,21 @@ struct ProjectSidebar: View, Equatable {
           // followed by its terminal subtree (rendered only when expanded with ≥2 terminals).
           let rid = SidebarID.root(project: project.path)
           SidebarHoverRegion(id: rid) { hovered in
-            SidebarRootRowAdapter(project: project, hovered: hovered, drag: drag, actions: actions)
-              .equatable()
-              .listRowInsets(Self.childRowInsets)
-              .listRowSeparator(.hidden)
-              .listRowBackground(SidebarRowBackground(store: store, id: rid, hovered: hovered))
+            SidebarRootRowAdapter(
+              projectPath: project.path, projectName: project.displayName, hovered: hovered,
+              drag: drag, actions: actions
+            )
+            .equatable()
+            .listRowInsets(Self.childRowInsets)
+            .listRowSeparator(.hidden)
+            .listRowBackground(SidebarRowBackground(store: store, id: rid, hovered: hovered))
           }
           SidebarTerminalSubtree(target: project.rootTarget, parent: rid, actions: actions)
           ForEach(project.workrooms) { workroom in
             let wid = SidebarID.workroom(project: project.path, name: workroom.name)
             SidebarHoverRegion(id: wid) { hovered in
               SidebarWorkroomRowAdapter(
-                workroom: workroom, project: project, hovered: hovered, drag: drag,
+                workroom: workroom, projectPath: project.path, hovered: hovered, drag: drag,
                 actions: actions
               )
               .equatable()
@@ -236,6 +232,8 @@ struct ProjectSidebar: View, Equatable {
     static var createSteps: [UUID: String] = [:]
     /// The title each terminal row last drew, by tab.
     static var terminalTitles: [TerminalTab.ID: String] = [:]
+    /// The fill each terminal row's background last drew, by tab.
+    static var terminalFills: [TerminalTab.ID: Color] = [:]
 
     static var total: Int { project + root + workroom + terminal }
 
@@ -254,6 +252,7 @@ struct ProjectSidebar: View, Equatable {
       unreadDot = 0
       createSteps = [:]
       terminalTitles = [:]
+      terminalFills = [:]
     }
   }
 #endif
@@ -277,7 +276,8 @@ private struct SidebarHoverRegion<Content: View>: View {
 /// A view of its own so the tab list and the expansion are read here: an agent working in a target
 /// re-runs that target's subtree, not the tree. Equatable, which SwiftUI uses on its own for a view
 /// holding closures; not behind `.equatable()`, whose wrapper would make even an empty subtree a
-/// List row.
+/// List row. `==` leaves out `actions`, whose closures act on the ids they are handed, and the
+/// theme, which it reads from the environment: a theme switch re-runs it whatever `==` says.
 private struct SidebarTerminalSubtree: View, Equatable {
   @EnvironmentObject private var store: AppStore
   @Environment(\.themeTokens) private var tokens

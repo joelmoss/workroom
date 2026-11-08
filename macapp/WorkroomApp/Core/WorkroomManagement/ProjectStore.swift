@@ -37,16 +37,30 @@ final class ProjectStore: ObservableObject {
   private var storedProjects: [Project] = []
 
   /// The listed projects whose root folder is gone, by id, as of the last publish of `projects` or
-  /// the last `recheckMissingRoots`. The filesystem can't be observed, so the root rows read this
+  /// the last `recheckMissingRoot`. The filesystem can't be observed, so the root rows read this
   /// instead of `stat`ing: a reload (the app becoming active, a create or delete) re-checks every
-  /// root, and an unchanged set notifies no one, so a reload of an unchanged list re-runs no row.
+  /// root, even when the list is unchanged, and an unchanged set notifies no one, so a reload of an
+  /// unchanged list re-runs no row.
   private(set) var missingRoots: Set<Project.ID> = []
 
   /// Re-checks which listed roots are gone, writing `missingRoots` only if that changed.
-  func recheckMissingRoots() {
+  private func recheckMissingRoots() {
     let missing = Set(
       storedProjects.lazy.filter { !FileManager.default.fileExists(atPath: $0.path) }.map(\.id))
     if missing != missingRoots { missingRoots = missing }
+  }
+
+  /// Re-checks whether one listed project's root is gone, as its metadata watcher fires, writing
+  /// `missingRoots` only if that changed. A project no longer listed is left out.
+  func recheckMissingRoot(projectID: Project.ID) {
+    guard let project = storedProjects.first(where: { $0.id == projectID }) else { return }
+    let missing = !FileManager.default.fileExists(atPath: project.path)
+    guard missing != missingRoots.contains(projectID) else { return }
+    if missing {
+      missingRoots.insert(projectID)
+    } else {
+      missingRoots.remove(projectID)
+    }
   }
 
   /// The listed project at `path` (its `id`), if any.
