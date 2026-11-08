@@ -85,6 +85,8 @@ fn link_ghostty_vt() {
         .header(header.to_string_lossy())
         .clang_arg(format!("-I{}", prefix.join("include").display()))
         .allowlist_item("[Gg]hostty.*")
+        // The formatter's extras are a bitmask of `#define`s, which the pattern above misses.
+        .allowlist_var("GHOSTTY_FORMATTER_EXTRA_.*")
         // The header's comments are Doxygen, which rustdoc rejects now that `sys` is public;
         // vt.h itself is where they are read.
         .generate_comments(false)

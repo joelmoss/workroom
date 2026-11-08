@@ -35,6 +35,10 @@ history; `GHOSTTY_SHA` in `vcs/scripts/build-ghostty-vt.sh` is the single source
 engine version and this file deliberately does not duplicate it. The comparison baseline was a stock
 Ghostty.app install of that same version. Re-measure after a pin bump; these findings expire with it.
 
+**Checked 2026-11-08 for the move to libghostty-vt's `vt-1.0.0` tag** (engine `83fb9562` →
+`0fa3d577`). Nothing to regenerate: `src/shell-integration` and `src/terminfo` are byte-identical
+between the refs (no commits touch either), so `CHECKSUMS` is unchanged.
+
 **Regenerated 2026-10-30 for the move to stock Ghostty v1.4.0** (engine `1e9e14af` → `83fb9562`).
 Two files changed: `shell-integration/bash/ghostty.bash` and `zsh/ghostty-integration` now strip
 control bytes from the OSC 7 hostname and directory, so a directory name cannot smuggle in its own

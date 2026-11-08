@@ -38,20 +38,16 @@ final class GhosttyRuntimeAdapter {
   ) -> Bool {
     switch action.tag {
     case GHOSTTY_ACTION_PWD:
-      guard let view = surfaceView(from: target), let pwd = action.action.pwd.pwd else {
-        return false
-      }
-      view.handlePwd(String(cString: pwd))
+      guard let view = surfaceView(from: target) else { return false }
+      view.handlePwd(String(cString: action.action.pwd.pwd))
       return true
 
     case GHOSTTY_ACTION_SET_TITLE:
       // OSC 0/2 — the running command's name while a command is busy (via shell-integration
       // preexec), or the directory the shell sets at each prompt. The tab strip keeps the command
       // and ignores the directory titles (issue #2).
-      guard let view = surfaceView(from: target), let title = action.action.set_title.title else {
-        return false
-      }
-      view.handleTitleChange(String(cString: title))
+      guard let view = surfaceView(from: target) else { return false }
+      view.handleTitleChange(String(cString: action.action.set_title.title))
       return true
 
     case GHOSTTY_ACTION_COMMAND_FINISHED:
@@ -77,9 +73,10 @@ final class GhosttyRuntimeAdapter {
     case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
       guard let view = surfaceView(from: target) else { return false }
       let note = action.action.desktop_notification
-      let title = note.title.map { String(cString: $0) } ?? ""
-      let body = note.body.map { String(cString: $0) }
-      view.onEvent?(.activity(Self.terminalActivity(title: title, body: body)))
+      view.onEvent?(
+        .activity(
+          Self.terminalActivity(
+            title: String(cString: note.title), body: String(cString: note.body))))
       return true
 
     case GHOSTTY_ACTION_OPEN_URL:
@@ -88,7 +85,7 @@ final class GhosttyRuntimeAdapter {
     case GHOSTTY_ACTION_MOUSE_OVER_LINK:
       guard let view = surfaceView(from: target) else { return false }
       let link = action.action.mouse_over_link
-      view.hasOSC8LinkUnderCursor = link.len > 0 && link.url != nil
+      view.hasOSC8LinkUnderCursor = link.len > 0
       return true
 
     case GHOSTTY_ACTION_MOUSE_SHAPE:
@@ -119,8 +116,7 @@ final class GhosttyRuntimeAdapter {
       // Scrollback find (⌘F). libghostty opens its search and asks the host to show the find UI; the
       // needle is non-empty when search starts from a selection (`search_selection`), else empty.
       guard let view = surfaceView(from: target) else { return false }
-      let needle = action.action.start_search.needle.map { String(cString: $0) } ?? ""
-      view.applySearchEvent(.start(needle: needle))
+      view.applySearchEvent(.start(needle: String(cString: action.action.start_search.needle)))
       return true
 
     case GHOSTTY_ACTION_END_SEARCH:
@@ -197,11 +193,10 @@ final class GhosttyRuntimeAdapter {
   }
 
   private func handleOpenURL(target: ghostty_target_s, openURL: ghostty_action_open_url_s) -> Bool {
-    guard let view = surfaceView(from: target), let urlPtr = openURL.url, openURL.len > 0 else {
-      return false
-    }
-    let urlString = urlPtr.withMemoryRebound(to: UInt8.self, capacity: Int(openURL.len)) { raw in
-      String(bytes: UnsafeBufferPointer(start: raw, count: Int(openURL.len)), encoding: .utf8)
+    guard let view = surfaceView(from: target), openURL.len > 0 else { return false }
+    let count = Int(openURL.len)
+    let urlString = openURL.url.withMemoryRebound(to: UInt8.self, capacity: count) { raw in
+      String(bytes: UnsafeBufferPointer(start: raw, count: count), encoding: .utf8)
     }
     guard let urlString, let url = URL(string: urlString) else { return false }
     return view.onOpenURL?(url) ?? false
@@ -235,21 +230,21 @@ final class GhosttyRuntimeAdapter {
   func writeClipboard(
     userdata: UnsafeMutableRawPointer?,
     location: ghostty_clipboard_e,
-    content: UnsafePointer<ghostty_clipboard_content_s>?,
+    content: UnsafePointer<ghostty_clipboard_content_s>,
     count: Int,
     confirm: Bool
   ) {
-    guard let content, count > 0 else { return }
+    guard count > 0 else { return }
     var text: String?
     for i in 0..<count {
       let entry = content[i]
       // Only forward text payloads: a binary mime (image/*, etc.) would be garbled, and breaking on
       // the first non-null entry would skip a later text/plain one.
-      let isText = entry.mime.map { String(cString: $0).hasPrefix("text/") } ?? true
-      guard isText, let data = entry.data else { continue }
+      guard String(cString: entry.mime).hasPrefix("text/") else { continue }
       // `len` is authoritative — the payload is binary-safe and NOT necessarily null-terminated, so
       // `String(cString:)` would read past the end or truncate at an embedded NUL.
-      text = String(decoding: UnsafeRawBufferPointer(start: data, count: entry.len), as: UTF8.self)
+      text = String(
+        decoding: UnsafeRawBufferPointer(start: entry.data, count: entry.len), as: UTF8.self)
       break
     }
     guard let text, !text.isEmpty else { return }
@@ -278,8 +273,8 @@ final class GhosttyRuntimeAdapter {
   func readClipboard(
     userdata: UnsafeMutableRawPointer?,
     location: ghostty_clipboard_e,
-    state: UnsafeMutableRawPointer?,
-    mimes: UnsafePointer<UnsafePointer<CChar>?>?,
+    state: UnsafeMutableRawPointer,
+    mimes: UnsafePointer<UnsafePointer<CChar>>,
     mimeCount: Int,
     wantsAvailable: Bool
   ) -> ghostty_clipboard_read_result_e {
@@ -304,10 +299,10 @@ final class GhosttyRuntimeAdapter {
   /// Whether the engine asked for a representation we can actually produce. An empty list means the
   /// caller expressed no preference, which we read as "text is fine".
   private static func requestsServedMIME(
-    _ mimes: UnsafePointer<UnsafePointer<CChar>?>?, count: Int
+    _ mimes: UnsafePointer<UnsafePointer<CChar>>, count: Int
   ) -> Bool {
-    guard let mimes, count > 0 else { return true }
-    for i in 0..<count where mimes[i].map({ String(cString: $0) }) == servedClipboardMIME {
+    guard count > 0 else { return true }
+    for i in 0..<count where String(cString: mimes[i]) == servedClipboardMIME {
       return true
     }
     return false
@@ -322,7 +317,7 @@ final class GhosttyRuntimeAdapter {
   /// (`can_remember` on the confirmation), but a persistent allow for a terminal program that asked
   /// once is a bigger promise than this prompt currently explains, so every request is asked afresh.
   private static func completeClipboardRequest(
-    surface: ghostty_surface_t, text: String, state: UnsafeMutableRawPointer?, confirmed: Bool
+    surface: ghostty_surface_t, text: String, state: UnsafeMutableRawPointer, confirmed: Bool
   ) {
     servedClipboardMIME.withCString { mime in
       text.withCString { data in
@@ -361,16 +356,17 @@ final class GhosttyRuntimeAdapter {
   /// until we answer.
   func confirmReadClipboard(
     userdata: UnsafeMutableRawPointer?,
-    confirm: UnsafePointer<ghostty_clipboard_confirm_s>?,
-    state: UnsafeMutableRawPointer?,
+    confirm: UnsafePointer<ghostty_clipboard_confirm_s>,
+    state: UnsafeMutableRawPointer,
     request: ghostty_clipboard_request_e
   ) {
-    guard let confirm, let kind = ClipboardConfirmationKind(request) else { return }
+    guard let kind = ClipboardConfirmationKind(request) else { return }
     let payload = confirm.pointee
     var text = ""
-    if let contents = payload.contents, payload.contents_len > 0, let data = contents[0].data {
+    if let contents = payload.contents, payload.contents_len > 0 {
       text = String(
-        decoding: UnsafeRawBufferPointer(start: data, count: contents[0].len), as: UTF8.self)
+        decoding: UnsafeRawBufferPointer(start: contents[0].data, count: contents[0].len),
+        as: UTF8.self)
     }
     // Not every protocol carries a requesting program's name; the prompt falls back to "an
     // application" when it doesn't.

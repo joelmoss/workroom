@@ -20,8 +20,8 @@ pub const fn mode_new(value: u16, ansi: bool) -> GhosttyMode {
 ///
 /// They are called only from inside [`Terminal::write`] and [`Terminal::write_until`], which take
 /// `&mut Terminal`, so nothing else can be reading the callbacks ([`Terminal::callbacks`]) while one
-/// runs. Each is passed what the library passed, already checked against the size of the library's
-/// own struct.
+/// runs. Each is passed what the library passed; the payload structs have had frozen layouts since
+/// libghostty-vt 1.0.0, so there is no size to check.
 pub trait Callbacks: Default {
     /// `GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT`: an OSC 9;4. `percent` is -1 when the report has
     /// none.
@@ -145,12 +145,9 @@ unsafe extern "C" fn on_progress_report<C: Callbacks>(
     ) else {
         return;
     };
-    // A sized struct: only read `progress` if this library's struct has it.
-    let has_percent = report.size
-        >= std::mem::offset_of!(GhosttyTerminalProgressReport, progress)
-            + std::mem::size_of::<i8>();
-    let percent = if has_percent { report.progress } else { -1 };
-    callbacks.progress_report(report.state, percent);
+    // Callback payloads are frozen since 1.0.0, so every field is there: a change upstream would
+    // arrive as a new callback.
+    callbacks.progress_report(report.state, report.progress);
 }
 
 unsafe extern "C" fn on_write_pty<C: Callbacks>(
@@ -184,14 +181,6 @@ unsafe extern "C" fn on_program_status<C: Callbacks>(
     ) else {
         return;
     };
-    // A sized struct whose every field has been there since it was introduced, so one too short
-    // for `message` is not this struct at all.
-    if report.size
-        < std::mem::offset_of!(GhosttyTerminalProgramStatus, message)
-            + std::mem::size_of::<GhosttyString>()
-    {
-        return;
-    }
     callbacks.program_status(ProgramStatus { report });
 }
 
@@ -222,16 +211,8 @@ unsafe extern "C" fn on_semantic_prompt<C: Callbacks>(
     ) else {
         return;
     };
-    let has_kind = event.size
-        >= std::mem::offset_of!(GhosttyTerminalSemanticPrompt, kind)
-            + std::mem::size_of::<GhosttySemanticPromptKind>();
-    if !has_kind {
-        return;
-    }
-    let has_exit_code = event.size
-        >= std::mem::offset_of!(GhosttyTerminalSemanticPrompt, exit_code)
-            + std::mem::size_of::<i32>();
-    let exit_code = (has_exit_code && event.has_exit_code).then_some(event.exit_code);
+    // A frozen payload, as in `on_progress_report`.
+    let exit_code = event.has_exit_code.then_some(event.exit_code);
     callbacks.semantic_prompt(event.kind, exit_code);
 }
 
@@ -371,7 +352,7 @@ impl Placed {
             let mut generation = 0u64;
             let rc = ghostty_kitty_graphics_image_get(
                 image,
-                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_IMAGE_DATA_GENERATION,
+                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_GENERATION,
                 (&raw mut generation).cast(),
             );
             if rc != OK {
@@ -441,7 +422,8 @@ pub struct Selection<'t> {
     _terminal: PhantomData<&'t ()>,
 }
 
-/// What the formatter adds to the cells (`GhosttyFormatterTerminalExtra`). All off by default.
+/// What the formatter adds to the cells: some of the `GHOSTTY_FORMATTER_EXTRA_*` bits of
+/// `GHOSTTY_FORMATTER_OPT_EXTRAS`. All off by default, and every other bit is always off.
 #[derive(Default, Clone, Copy)]
 pub struct Extras {
     pub modes: bool,
@@ -450,6 +432,29 @@ pub struct Extras {
     pub pwd: bool,
     pub keyboard: bool,
     pub charsets: bool,
+}
+
+impl Extras {
+    /// The bitmask, built up from no bits rather than from libghostty's default
+    /// (`GHOSTTY_FORMATTER_EXTRAS_DEFAULT`, which adds the palette, the cursor's style and its
+    /// hyperlink). Those stay off, as they were before 1.0.0 set options by key: workroomd sends
+    /// only the colours a program set, not all 256.
+    fn mask(self) -> GhosttyFormatterExtras {
+        [
+            (self.modes, GHOSTTY_FORMATTER_EXTRA_MODES),
+            (
+                self.scrolling_region,
+                GHOSTTY_FORMATTER_EXTRA_SCROLLING_REGION,
+            ),
+            (self.tabstops, GHOSTTY_FORMATTER_EXTRA_TABSTOPS),
+            (self.pwd, GHOSTTY_FORMATTER_EXTRA_PWD),
+            (self.keyboard, GHOSTTY_FORMATTER_EXTRA_KEYBOARD),
+            (self.charsets, GHOSTTY_FORMATTER_EXTRA_CHARSETS),
+        ]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .fold(0, |mask, (_, bit)| mask | bit)
+    }
 }
 
 /// One libghostty-vt terminal, reporting to its `C`.
@@ -809,14 +814,12 @@ impl<C: Callbacks> Terminal<C> {
             point.value.coordinate = GhosttyPointCoordinate { x: at.x, y: at.y };
             // SAFETY: as above.
             let mut grid: GhosttyGridRef = unsafe { std::mem::zeroed() };
-            grid.size = std::mem::size_of::<GhosttyGridRef>();
-            // SAFETY: `inner` is a live terminal and `grid` a live out-pointer with its size set.
+            // SAFETY: `inner` is a live terminal and `grid` a live out-pointer.
             let rc = unsafe { ghostty_terminal_grid_ref(self.inner, point, &mut grid) };
             (rc == OK).then_some(grid)
         };
         Some(Selection {
             raw: GhosttySelection {
-                size: std::mem::size_of::<GhosttySelection>(),
                 start: grid(start)?,
                 end: grid(end)?,
                 rectangle: false,
@@ -834,33 +837,53 @@ impl<C: Callbacks> Terminal<C> {
         selection: Option<&Selection<'_>>,
     ) -> Vec<u8> {
         let mut formatter: GhosttyFormatter = ptr::null_mut();
-        // SAFETY: the options are a C struct of integers, bools and sized sub-structs, for which
-        // all zeroes is a valid value; the fields that matter are set below.
-        let mut options: GhosttyFormatterTerminalOptions = unsafe { std::mem::zeroed() };
-        options.size = std::mem::size_of::<GhosttyFormatterTerminalOptions>();
-        options.emit = emit;
-        // `trim` stays false: untrimmed VT output keeps the blank rows at the end of the screen, so
-        // a client scrolls as far as the producer did and the next write lands below the last line.
-        options.extra.size = std::mem::size_of::<GhosttyFormatterTerminalExtra>();
-        options.extra.modes = extras.modes;
-        options.extra.scrolling_region = extras.scrolling_region;
-        options.extra.tabstops = extras.tabstops;
-        options.extra.pwd = extras.pwd;
-        options.extra.keyboard = extras.keyboard;
-        if extras.charsets {
-            options.extra.screen.size = std::mem::size_of::<GhosttyFormatterScreenExtra>();
-            options.extra.screen.charsets = true;
-        }
-        if let Some(selection) = selection {
-            options.selection = &selection.raw;
-        }
         // SAFETY: `inner` is a live terminal that outlives the formatter, which is freed before
-        // this method returns; `formatter` is a live out-pointer. The selection, when set, lives
-        // until this method returns and borrows this terminal, so no write came since it was taken.
-        let rc = unsafe {
-            ghostty_formatter_terminal_new(ptr::null(), &mut formatter, self.inner, options)
-        };
+        // this method returns, and `formatter` is a live out-pointer.
+        let rc = unsafe { ghostty_formatter_terminal_new(ptr::null(), &mut formatter, self.inner) };
         if rc != OK || formatter.is_null() {
+            return Vec::new();
+        }
+        let unwrap = false;
+        // Untrimmed VT output keeps the blank rows at the end of the screen, so a client scrolls
+        // as far as the producer did and the next write lands below the last line.
+        let trim = false;
+        let mask = extras.mask();
+        // Every option is set, not left to libghostty's defaults, which are not ours: they trim,
+        // and turn extras on.
+        let mut options: Vec<(GhosttyFormatterOption, *const c_void)> = vec![
+            (
+                GhosttyFormatterOption_GHOSTTY_FORMATTER_OPT_EMIT,
+                (&raw const emit).cast(),
+            ),
+            (
+                GhosttyFormatterOption_GHOSTTY_FORMATTER_OPT_UNWRAP,
+                (&raw const unwrap).cast(),
+            ),
+            (
+                GhosttyFormatterOption_GHOSTTY_FORMATTER_OPT_TRIM,
+                (&raw const trim).cast(),
+            ),
+            (
+                GhosttyFormatterOption_GHOSTTY_FORMATTER_OPT_EXTRAS,
+                (&raw const mask).cast(),
+            ),
+        ];
+        if let Some(selection) = selection {
+            options.push((
+                GhosttyFormatterOption_GHOSTTY_FORMATTER_OPT_SELECTION,
+                (&raw const selection.raw).cast(),
+            ));
+        }
+        // SAFETY: `formatter` is live, and each value is a live local of its option's type, read
+        // before the call returns. The formatter copies the selection, which borrows this
+        // terminal, so no write came since it was taken. A selection that no longer resolves is
+        // refused, and gives no bytes, as a failed format does.
+        let set = options.into_iter().all(
+            |(option, value)| unsafe { ghostty_formatter_set(formatter, option, value) } == OK,
+        );
+        if !set {
+            // SAFETY: `formatter` is live and freed exactly once, here.
+            unsafe { ghostty_formatter_free(formatter) };
             return Vec::new();
         }
         let mut out: *mut u8 = ptr::null_mut();
@@ -1016,42 +1039,42 @@ impl<C: Callbacks> Terminal<C> {
         unsafe {
             let current: u64 = get(
                 handle,
-                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_IMAGE_DATA_GENERATION,
+                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_GENERATION,
             )?;
             if current != generation {
                 return None;
             }
             let width: u32 = get(
                 handle,
-                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_IMAGE_DATA_WIDTH,
+                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_WIDTH,
             )?;
             let height: u32 = get(
                 handle,
-                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_IMAGE_DATA_HEIGHT,
+                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_HEIGHT,
             )?;
             let format: GhosttyKittyImageFormat = get(
                 handle,
-                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_IMAGE_DATA_FORMAT,
+                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_FORMAT,
             )?;
-            let length: usize = get(
-                handle,
-                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN,
-            )?;
-            let mut pointer: *const u8 = ptr::null();
+            // NO_VALUE until all of the pixels have arrived, which leaves nothing to copy yet.
+            let mut pixels = GhosttyString {
+                ptr: ptr::null(),
+                len: 0,
+            };
             let rc = ghostty_kitty_graphics_image_get(
                 handle,
-                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR,
-                (&raw mut pointer).cast(),
+                GhosttyKittyGraphicsImageData_GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_PIXELS,
+                (&raw mut pixels).cast(),
             );
-            if rc != OK || pointer.is_null() {
+            if rc != OK || pixels.ptr.is_null() {
                 return None;
             }
             Some(ImagePixels {
                 width,
                 height,
                 format,
-                // The storage holds `length` bytes at `pointer` until the next write.
-                data: std::slice::from_raw_parts(pointer, length).to_vec(),
+                // The storage holds `len` bytes at `ptr` until the next write.
+                data: std::slice::from_raw_parts(pixels.ptr, pixels.len).to_vec(),
             })
         }
     }

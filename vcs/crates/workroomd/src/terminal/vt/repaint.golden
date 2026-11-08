@@ -1,0 +1,368 @@
+
+=== primary replay (8392 bytes)
+[2J[3J]104\]4;1;rgb:12/34/56\[?1h[?25l[?1002h[?1004h[?1006h[?2004h[3g[5GH[17GH[H[0m[1m[38;5;0mline 0[0m [0m[4:3m[38;5;0m[58;5;0mcurly[0m [0m[38;2;0;100;200m[48;2;5;0;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l0;https://example.com/0\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 1[0m [0m[4:3m[38;5;6m[58;5;1mcurly[0m [0m[38;2;1;100;200m[48;2;5;1;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l1;https://example.com/1\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 2[0m [0m[4:3m[38;5;12m[58;5;2mcurly[0m [0m[38;2;2;100;200m[48;2;5;2;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l2;https://example.com/2\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 3[0m [0m[4:3m[38;5;18m[58;5;3mcurly[0m [0m[38;2;3;100;200m[48;2;5;3;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l3;https://example.com/3\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 4[0m [0m[4:3m[38;5;24m[58;5;4mcurly[0m [0m[38;2;4;100;200m[48;2;5;4;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l4;https://example.com/4\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 5[0m [0m[4:3m[38;5;30m[58;5;5mcurly[0m [0m[38;2;5;100;200m[48;2;5;5;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l5;https://example.com/5\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 6[0m [0m[4:3m[38;5;36m[58;5;6mcurly[0m [0m[38;2;6;100;200m[48;2;5;6;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l6;https://example.com/6\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline 7[0m [0m[4:3m[38;5;42m[58;5;7mcurly[0m [0m[38;2;7;100;200m[48;2;5;7;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l7;https://example.com/7\link]8;;\ 漢字🙂é
+[0m[1m[38;5;0mline 8[0m [0m[4:3m[38;5;48m[58;5;8mcurly[0m [0m[38;2;8;100;200m[48;2;5;8;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l8;https://example.com/8\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 9[0m [0m[4:3m[38;5;54m[58;5;9mcurly[0m [0m[38;2;9;100;200m[48;2;5;9;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l9;https://example.com/9\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 10[0m [0m[4:3m[38;5;60m[58;5;10mcurly[0m [0m[38;2;10;100;200m[48;2;5;10;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l10;https://example.com/10\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 11[0m [0m[4:3m[38;5;66m[58;5;11mcurly[0m [0m[38;2;11;100;200m[48;2;5;11;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l11;https://example.com/11\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 12[0m [0m[4:3m[38;5;72m[58;5;12mcurly[0m [0m[38;2;12;100;200m[48;2;5;12;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l12;https://example.com/12\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 13[0m [0m[4:3m[38;5;78m[58;5;13mcurly[0m [0m[38;2;13;100;200m[48;2;5;13;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l13;https://example.com/13\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 14[0m [0m[4:3m[38;5;84m[58;5;14mcurly[0m [0m[38;2;14;100;200m[48;2;5;14;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l14;https://example.com/14\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline 15[0m [0m[4:3m[38;5;90m[58;5;15mcurly[0m [0m[38;2;15;100;200m[48;2;5;15;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l15;https://example.com/15\link]8;;\ 漢字🙂é
+[0m[1m[38;5;0mline 16[0m [0m[4:3m[38;5;96m[58;5;16mcurly[0m [0m[38;2;16;100;200m[48;2;5;16;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l16;https://example.com/16\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 17[0m [0m[4:3m[38;5;102m[58;5;17mcurly[0m [0m[38;2;17;100;200m[48;2;5;17;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l17;https://example.com/17\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 18[0m [0m[4:3m[38;5;108m[58;5;18mcurly[0m [0m[38;2;18;100;200m[48;2;5;18;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l18;https://example.com/18\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 19[0m [0m[4:3m[38;5;114m[58;5;19mcurly[0m [0m[38;2;19;100;200m[48;2;5;19;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l19;https://example.com/19\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 20[0m [0m[4:3m[38;5;120m[58;5;20mcurly[0m [0m[38;2;20;100;200m[48;2;5;20;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l20;https://example.com/20\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 21[0m [0m[4:3m[38;5;126m[58;5;21mcurly[0m [0m[38;2;21;100;200m[48;2;5;21;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l21;https://example.com/21\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 22[0m [0m[4:3m[38;5;132m[58;5;22mcurly[0m [0m[38;2;22;100;200m[48;2;5;22;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l22;https://example.com/22\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline 23[0m [0m[4:3m[38;5;138m[58;5;23mcurly[0m [0m[38;2;23;100;200m[48;2;5;23;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l23;https://example.com/23\link]8;;\ 漢字🙂é
+[0m[1m[38;5;0mline 24[0m [0m[4:3m[38;5;144m[58;5;24mcurly[0m [0m[38;2;24;100;200m[48;2;5;24;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l24;https://example.com/24\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 25[0m [0m[4:3m[38;5;150m[58;5;25mcurly[0m [0m[38;2;25;100;200m[48;2;5;25;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l25;https://example.com/25\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 26[0m [0m[4:3m[38;5;156m[58;5;26mcurly[0m [0m[38;2;26;100;200m[48;2;5;26;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l26;https://example.com/26\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 27[0m [0m[4:3m[38;5;162m[58;5;27mcurly[0m [0m[38;2;27;100;200m[48;2;5;27;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l27;https://example.com/27\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 28[0m [0m[4:3m[38;5;168m[58;5;28mcurly[0m [0m[38;2;28;100;200m[48;2;5;28;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l28;https://example.com/28\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 29[0m [0m[4:3m[38;5;174m[58;5;29mcurly[0m [0m[38;2;29;100;200m[48;2;5;29;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l29;https://example.com/29\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 30[0m [0m[4:3m[38;5;180m[58;5;30mcurly[0m [0m[38;2;30;100;200m[48;2;5;30;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l30;https://example.com/30\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline[0mparked[0m[4:3m[38;5;186m[58;5;31mrly[0m [0m[38;2;31;100;200m[48;2;5;31;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l31;https://example.com/31\link]8;;\ 漢字🙂é
+[0m[1m[38;5;0mline 32[0m [0m[4:3m[38;5;192m[58;5;32mcurly[0m [0m[38;2;32;100;200m[48;2;5;32;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l32;https://example.com/32\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 33[0m [0m[4:3m[38;5;198m[58;5;33mcurly[0m [0m[38;2;33;100;200m[48;2;5;33;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l33;https://example.com/33\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 34[0m [0m[4:3m[38;5;204m[58;5;34mcurly[0m [0m[38;2;34;100;200m[48;2;5;34;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l34;https://example.com/34\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 35[0m [0m[4:3m[38;5;210m[58;5;35mcurly[0m [0m[38;2;35;100;200m[48;2;5;35;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l35;https://example.com/35\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 36[0m [0m[4:3m[38;5;216m[58;5;36mcurly[0m [0m[38;2;36;100;200m[48;2;5;36;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l36;https://example.com/36\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 37[0m [0m[4:3m[38;5;222m[58;5;37mcurly[0m [0m[38;2;37;100;200m[48;2;5;37;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l37;https://example.com/37\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 38[0m [0m[4:3m[38;5;228m[58;5;38mcurly[0m [0m[38;2;38;100;200m[48;2;5;38;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l38;https://example.com/38\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline 39[0m [0m[4:3m[38;5;234m[58;5;39mcurly[0m [0m[38;2;39;100;200m[48;2;5;39;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l39;https://example.com/39\link]8;;\ 漢字🙂é
+wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+[4CA[11CB
+┌──┐
+$ make
+[2;20r[>4;2m]7;kitty-shell-cwd://host/tmp/repaint \)0[>13u[10;11H]9;4;1;50\
+=== primary extras (8358 bytes)
+]104\]4;1;rgb:12/34/56\[?1h[?25l[?1002h[?1004h[?1006h[?2004h[3g[5GH[17GH[H[0m[1m[38;5;0mline 0[0m [0m[4:3m[38;5;0m[58;5;0mcurly[0m [0m[38;2;0;100;200m[48;2;5;0;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l0;https://example.com/0\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 1[0m [0m[4:3m[38;5;6m[58;5;1mcurly[0m [0m[38;2;1;100;200m[48;2;5;1;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l1;https://example.com/1\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 2[0m [0m[4:3m[38;5;12m[58;5;2mcurly[0m [0m[38;2;2;100;200m[48;2;5;2;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l2;https://example.com/2\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 3[0m [0m[4:3m[38;5;18m[58;5;3mcurly[0m [0m[38;2;3;100;200m[48;2;5;3;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l3;https://example.com/3\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 4[0m [0m[4:3m[38;5;24m[58;5;4mcurly[0m [0m[38;2;4;100;200m[48;2;5;4;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l4;https://example.com/4\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 5[0m [0m[4:3m[38;5;30m[58;5;5mcurly[0m [0m[38;2;5;100;200m[48;2;5;5;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l5;https://example.com/5\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 6[0m [0m[4:3m[38;5;36m[58;5;6mcurly[0m [0m[38;2;6;100;200m[48;2;5;6;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l6;https://example.com/6\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline 7[0m [0m[4:3m[38;5;42m[58;5;7mcurly[0m [0m[38;2;7;100;200m[48;2;5;7;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l7;https://example.com/7\link]8;;\ 漢字🙂é
+[0m[1m[38;5;0mline 8[0m [0m[4:3m[38;5;48m[58;5;8mcurly[0m [0m[38;2;8;100;200m[48;2;5;8;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l8;https://example.com/8\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 9[0m [0m[4:3m[38;5;54m[58;5;9mcurly[0m [0m[38;2;9;100;200m[48;2;5;9;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l9;https://example.com/9\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 10[0m [0m[4:3m[38;5;60m[58;5;10mcurly[0m [0m[38;2;10;100;200m[48;2;5;10;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l10;https://example.com/10\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 11[0m [0m[4:3m[38;5;66m[58;5;11mcurly[0m [0m[38;2;11;100;200m[48;2;5;11;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l11;https://example.com/11\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 12[0m [0m[4:3m[38;5;72m[58;5;12mcurly[0m [0m[38;2;12;100;200m[48;2;5;12;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l12;https://example.com/12\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 13[0m [0m[4:3m[38;5;78m[58;5;13mcurly[0m [0m[38;2;13;100;200m[48;2;5;13;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l13;https://example.com/13\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 14[0m [0m[4:3m[38;5;84m[58;5;14mcurly[0m [0m[38;2;14;100;200m[48;2;5;14;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l14;https://example.com/14\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline 15[0m [0m[4:3m[38;5;90m[58;5;15mcurly[0m [0m[38;2;15;100;200m[48;2;5;15;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l15;https://example.com/15\link]8;;\ 漢字🙂é
+[0m[1m[38;5;0mline 16[0m [0m[4:3m[38;5;96m[58;5;16mcurly[0m [0m[38;2;16;100;200m[48;2;5;16;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l16;https://example.com/16\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 17[0m [0m[4:3m[38;5;102m[58;5;17mcurly[0m [0m[38;2;17;100;200m[48;2;5;17;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l17;https://example.com/17\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 18[0m [0m[4:3m[38;5;108m[58;5;18mcurly[0m [0m[38;2;18;100;200m[48;2;5;18;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l18;https://example.com/18\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 19[0m [0m[4:3m[38;5;114m[58;5;19mcurly[0m [0m[38;2;19;100;200m[48;2;5;19;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l19;https://example.com/19\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 20[0m [0m[4:3m[38;5;120m[58;5;20mcurly[0m [0m[38;2;20;100;200m[48;2;5;20;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l20;https://example.com/20\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 21[0m [0m[4:3m[38;5;126m[58;5;21mcurly[0m [0m[38;2;21;100;200m[48;2;5;21;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l21;https://example.com/21\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 22[0m [0m[4:3m[38;5;132m[58;5;22mcurly[0m [0m[38;2;22;100;200m[48;2;5;22;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l22;https://example.com/22\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline 23[0m [0m[4:3m[38;5;138m[58;5;23mcurly[0m [0m[38;2;23;100;200m[48;2;5;23;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l23;https://example.com/23\link]8;;\ 漢字🙂é
+[0m[1m[38;5;0mline 24[0m [0m[4:3m[38;5;144m[58;5;24mcurly[0m [0m[38;2;24;100;200m[48;2;5;24;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l24;https://example.com/24\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 25[0m [0m[4:3m[38;5;150m[58;5;25mcurly[0m [0m[38;2;25;100;200m[48;2;5;25;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l25;https://example.com/25\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 26[0m [0m[4:3m[38;5;156m[58;5;26mcurly[0m [0m[38;2;26;100;200m[48;2;5;26;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l26;https://example.com/26\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 27[0m [0m[4:3m[38;5;162m[58;5;27mcurly[0m [0m[38;2;27;100;200m[48;2;5;27;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l27;https://example.com/27\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 28[0m [0m[4:3m[38;5;168m[58;5;28mcurly[0m [0m[38;2;28;100;200m[48;2;5;28;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l28;https://example.com/28\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 29[0m [0m[4:3m[38;5;174m[58;5;29mcurly[0m [0m[38;2;29;100;200m[48;2;5;29;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l29;https://example.com/29\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 30[0m [0m[4:3m[38;5;180m[58;5;30mcurly[0m [0m[38;2;30;100;200m[48;2;5;30;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l30;https://example.com/30\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline[0mparked[0m[4:3m[38;5;186m[58;5;31mrly[0m [0m[38;2;31;100;200m[48;2;5;31;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l31;https://example.com/31\link]8;;\ 漢字🙂é
+[0m[1m[38;5;0mline 32[0m [0m[4:3m[38;5;192m[58;5;32mcurly[0m [0m[38;2;32;100;200m[48;2;5;32;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l32;https://example.com/32\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 33[0m [0m[4:3m[38;5;198m[58;5;33mcurly[0m [0m[38;2;33;100;200m[48;2;5;33;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l33;https://example.com/33\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 34[0m [0m[4:3m[38;5;204m[58;5;34mcurly[0m [0m[38;2;34;100;200m[48;2;5;34;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l34;https://example.com/34\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 35[0m [0m[4:3m[38;5;210m[58;5;35mcurly[0m [0m[38;2;35;100;200m[48;2;5;35;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l35;https://example.com/35\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 36[0m [0m[4:3m[38;5;216m[58;5;36mcurly[0m [0m[38;2;36;100;200m[48;2;5;36;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l36;https://example.com/36\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 37[0m [0m[4:3m[38;5;222m[58;5;37mcurly[0m [0m[38;2;37;100;200m[48;2;5;37;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l37;https://example.com/37\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 38[0m [0m[4:3m[38;5;228m[58;5;38mcurly[0m [0m[38;2;38;100;200m[48;2;5;38;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l38;https://example.com/38\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline 39[0m [0m[4:3m[38;5;234m[58;5;39mcurly[0m [0m[38;2;39;100;200m[48;2;5;39;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l39;https://example.com/39\link]8;;\ 漢字🙂é
+wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+[4CA[11CB
+┌──┐
+$ make
+[2;20r[>4;2m]7;kitty-shell-cwd://host/tmp/repaint \)0
+=== primary extras tail 10 (5996 bytes)
+]104\]4;1;rgb:12/34/56\[?1h[?25l[?1002h[?1004h[?1006h[?2004h[3g[5GH[17GH[H[0m[1m[38;5;4mline 12[0m [0m[4:3m[38;5;72m[58;5;12mcurly[0m [0m[38;2;12;100;200m[48;2;5;12;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l12;https://example.com/12\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 13[0m [0m[4:3m[38;5;78m[58;5;13mcurly[0m [0m[38;2;13;100;200m[48;2;5;13;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l13;https://example.com/13\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 14[0m [0m[4:3m[38;5;84m[58;5;14mcurly[0m [0m[38;2;14;100;200m[48;2;5;14;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l14;https://example.com/14\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline 15[0m [0m[4:3m[38;5;90m[58;5;15mcurly[0m [0m[38;2;15;100;200m[48;2;5;15;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l15;https://example.com/15\link]8;;\ 漢字🙂é
+[0m[1m[38;5;0mline 16[0m [0m[4:3m[38;5;96m[58;5;16mcurly[0m [0m[38;2;16;100;200m[48;2;5;16;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l16;https://example.com/16\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 17[0m [0m[4:3m[38;5;102m[58;5;17mcurly[0m [0m[38;2;17;100;200m[48;2;5;17;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l17;https://example.com/17\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 18[0m [0m[4:3m[38;5;108m[58;5;18mcurly[0m [0m[38;2;18;100;200m[48;2;5;18;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l18;https://example.com/18\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 19[0m [0m[4:3m[38;5;114m[58;5;19mcurly[0m [0m[38;2;19;100;200m[48;2;5;19;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l19;https://example.com/19\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 20[0m [0m[4:3m[38;5;120m[58;5;20mcurly[0m [0m[38;2;20;100;200m[48;2;5;20;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l20;https://example.com/20\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 21[0m [0m[4:3m[38;5;126m[58;5;21mcurly[0m [0m[38;2;21;100;200m[48;2;5;21;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l21;https://example.com/21\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 22[0m [0m[4:3m[38;5;132m[58;5;22mcurly[0m [0m[38;2;22;100;200m[48;2;5;22;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l22;https://example.com/22\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline 23[0m [0m[4:3m[38;5;138m[58;5;23mcurly[0m [0m[38;2;23;100;200m[48;2;5;23;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l23;https://example.com/23\link]8;;\ 漢字🙂é
+[0m[1m[38;5;0mline 24[0m [0m[4:3m[38;5;144m[58;5;24mcurly[0m [0m[38;2;24;100;200m[48;2;5;24;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l24;https://example.com/24\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 25[0m [0m[4:3m[38;5;150m[58;5;25mcurly[0m [0m[38;2;25;100;200m[48;2;5;25;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l25;https://example.com/25\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 26[0m [0m[4:3m[38;5;156m[58;5;26mcurly[0m [0m[38;2;26;100;200m[48;2;5;26;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l26;https://example.com/26\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 27[0m [0m[4:3m[38;5;162m[58;5;27mcurly[0m [0m[38;2;27;100;200m[48;2;5;27;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l27;https://example.com/27\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 28[0m [0m[4:3m[38;5;168m[58;5;28mcurly[0m [0m[38;2;28;100;200m[48;2;5;28;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l28;https://example.com/28\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 29[0m [0m[4:3m[38;5;174m[58;5;29mcurly[0m [0m[38;2;29;100;200m[48;2;5;29;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l29;https://example.com/29\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 30[0m [0m[4:3m[38;5;180m[58;5;30mcurly[0m [0m[38;2;30;100;200m[48;2;5;30;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l30;https://example.com/30\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline[0mparked[0m[4:3m[38;5;186m[58;5;31mrly[0m [0m[38;2;31;100;200m[48;2;5;31;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l31;https://example.com/31\link]8;;\ 漢字🙂é
+[0m[1m[38;5;0mline 32[0m [0m[4:3m[38;5;192m[58;5;32mcurly[0m [0m[38;2;32;100;200m[48;2;5;32;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l32;https://example.com/32\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 33[0m [0m[4:3m[38;5;198m[58;5;33mcurly[0m [0m[38;2;33;100;200m[48;2;5;33;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l33;https://example.com/33\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 34[0m [0m[4:3m[38;5;204m[58;5;34mcurly[0m [0m[38;2;34;100;200m[48;2;5;34;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l34;https://example.com/34\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 35[0m [0m[4:3m[38;5;210m[58;5;35mcurly[0m [0m[38;2;35;100;200m[48;2;5;35;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l35;https://example.com/35\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 36[0m [0m[4:3m[38;5;216m[58;5;36mcurly[0m [0m[38;2;36;100;200m[48;2;5;36;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l36;https://example.com/36\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 37[0m [0m[4:3m[38;5;222m[58;5;37mcurly[0m [0m[38;2;37;100;200m[48;2;5;37;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l37;https://example.com/37\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 38[0m [0m[4:3m[38;5;228m[58;5;38mcurly[0m [0m[38;2;38;100;200m[48;2;5;38;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l38;https://example.com/38\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline 39[0m [0m[4:3m[38;5;234m[58;5;39mcurly[0m [0m[38;2;39;100;200m[48;2;5;39;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l39;https://example.com/39\link]8;;\ 漢字🙂é
+wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+[4CA[11CB
+┌──┐
+$ make
+[2;20r[>4;2m]7;kitty-shell-cwd://host/tmp/repaint \)0
+=== primary cells (8210 bytes)
+[0m[1m[38;5;0mline 0[0m [0m[4:3m[38;5;0m[58;5;0mcurly[0m [0m[38;2;0;100;200m[48;2;5;0;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l0;https://example.com/0\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 1[0m [0m[4:3m[38;5;6m[58;5;1mcurly[0m [0m[38;2;1;100;200m[48;2;5;1;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l1;https://example.com/1\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 2[0m [0m[4:3m[38;5;12m[58;5;2mcurly[0m [0m[38;2;2;100;200m[48;2;5;2;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l2;https://example.com/2\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 3[0m [0m[4:3m[38;5;18m[58;5;3mcurly[0m [0m[38;2;3;100;200m[48;2;5;3;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l3;https://example.com/3\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 4[0m [0m[4:3m[38;5;24m[58;5;4mcurly[0m [0m[38;2;4;100;200m[48;2;5;4;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l4;https://example.com/4\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 5[0m [0m[4:3m[38;5;30m[58;5;5mcurly[0m [0m[38;2;5;100;200m[48;2;5;5;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l5;https://example.com/5\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 6[0m [0m[4:3m[38;5;36m[58;5;6mcurly[0m [0m[38;2;6;100;200m[48;2;5;6;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l6;https://example.com/6\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline 7[0m [0m[4:3m[38;5;42m[58;5;7mcurly[0m [0m[38;2;7;100;200m[48;2;5;7;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l7;https://example.com/7\link]8;;\ 漢字🙂é
+[0m[1m[38;5;0mline 8[0m [0m[4:3m[38;5;48m[58;5;8mcurly[0m [0m[38;2;8;100;200m[48;2;5;8;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l8;https://example.com/8\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 9[0m [0m[4:3m[38;5;54m[58;5;9mcurly[0m [0m[38;2;9;100;200m[48;2;5;9;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l9;https://example.com/9\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 10[0m [0m[4:3m[38;5;60m[58;5;10mcurly[0m [0m[38;2;10;100;200m[48;2;5;10;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l10;https://example.com/10\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 11[0m [0m[4:3m[38;5;66m[58;5;11mcurly[0m [0m[38;2;11;100;200m[48;2;5;11;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l11;https://example.com/11\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 12[0m [0m[4:3m[38;5;72m[58;5;12mcurly[0m [0m[38;2;12;100;200m[48;2;5;12;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l12;https://example.com/12\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 13[0m [0m[4:3m[38;5;78m[58;5;13mcurly[0m [0m[38;2;13;100;200m[48;2;5;13;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l13;https://example.com/13\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 14[0m [0m[4:3m[38;5;84m[58;5;14mcurly[0m [0m[38;2;14;100;200m[48;2;5;14;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l14;https://example.com/14\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline 15[0m [0m[4:3m[38;5;90m[58;5;15mcurly[0m [0m[38;2;15;100;200m[48;2;5;15;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l15;https://example.com/15\link]8;;\ 漢字🙂é
+[0m[1m[38;5;0mline 16[0m [0m[4:3m[38;5;96m[58;5;16mcurly[0m [0m[38;2;16;100;200m[48;2;5;16;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l16;https://example.com/16\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 17[0m [0m[4:3m[38;5;102m[58;5;17mcurly[0m [0m[38;2;17;100;200m[48;2;5;17;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l17;https://example.com/17\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 18[0m [0m[4:3m[38;5;108m[58;5;18mcurly[0m [0m[38;2;18;100;200m[48;2;5;18;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l18;https://example.com/18\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 19[0m [0m[4:3m[38;5;114m[58;5;19mcurly[0m [0m[38;2;19;100;200m[48;2;5;19;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l19;https://example.com/19\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 20[0m [0m[4:3m[38;5;120m[58;5;20mcurly[0m [0m[38;2;20;100;200m[48;2;5;20;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l20;https://example.com/20\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 21[0m [0m[4:3m[38;5;126m[58;5;21mcurly[0m [0m[38;2;21;100;200m[48;2;5;21;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l21;https://example.com/21\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 22[0m [0m[4:3m[38;5;132m[58;5;22mcurly[0m [0m[38;2;22;100;200m[48;2;5;22;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l22;https://example.com/22\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline 23[0m [0m[4:3m[38;5;138m[58;5;23mcurly[0m [0m[38;2;23;100;200m[48;2;5;23;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l23;https://example.com/23\link]8;;\ 漢字🙂é
+[0m[1m[38;5;0mline 24[0m [0m[4:3m[38;5;144m[58;5;24mcurly[0m [0m[38;2;24;100;200m[48;2;5;24;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l24;https://example.com/24\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 25[0m [0m[4:3m[38;5;150m[58;5;25mcurly[0m [0m[38;2;25;100;200m[48;2;5;25;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l25;https://example.com/25\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 26[0m [0m[4:3m[38;5;156m[58;5;26mcurly[0m [0m[38;2;26;100;200m[48;2;5;26;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l26;https://example.com/26\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 27[0m [0m[4:3m[38;5;162m[58;5;27mcurly[0m [0m[38;2;27;100;200m[48;2;5;27;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l27;https://example.com/27\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 28[0m [0m[4:3m[38;5;168m[58;5;28mcurly[0m [0m[38;2;28;100;200m[48;2;5;28;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l28;https://example.com/28\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 29[0m [0m[4:3m[38;5;174m[58;5;29mcurly[0m [0m[38;2;29;100;200m[48;2;5;29;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l29;https://example.com/29\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 30[0m [0m[4:3m[38;5;180m[58;5;30mcurly[0m [0m[38;2;30;100;200m[48;2;5;30;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l30;https://example.com/30\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline[0mparked[0m[4:3m[38;5;186m[58;5;31mrly[0m [0m[38;2;31;100;200m[48;2;5;31;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l31;https://example.com/31\link]8;;\ 漢字🙂é
+[0m[1m[38;5;0mline 32[0m [0m[4:3m[38;5;192m[58;5;32mcurly[0m [0m[38;2;32;100;200m[48;2;5;32;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l32;https://example.com/32\link]8;;\ 漢字🙂é
+[0m[1m[38;5;1mline 33[0m [0m[4:3m[38;5;198m[58;5;33mcurly[0m [0m[38;2;33;100;200m[48;2;5;33;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l33;https://example.com/33\link]8;;\ 漢字🙂é
+[0m[1m[38;5;2mline 34[0m [0m[4:3m[38;5;204m[58;5;34mcurly[0m [0m[38;2;34;100;200m[48;2;5;34;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l34;https://example.com/34\link]8;;\ 漢字🙂é
+[0m[1m[38;5;3mline 35[0m [0m[4:3m[38;5;210m[58;5;35mcurly[0m [0m[38;2;35;100;200m[48;2;5;35;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l35;https://example.com/35\link]8;;\ 漢字🙂é
+[0m[1m[38;5;4mline 36[0m [0m[4:3m[38;5;216m[58;5;36mcurly[0m [0m[38;2;36;100;200m[48;2;5;36;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l36;https://example.com/36\link]8;;\ 漢字🙂é
+[0m[1m[38;5;5mline 37[0m [0m[4:3m[38;5;222m[58;5;37mcurly[0m [0m[38;2;37;100;200m[48;2;5;37;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l37;https://example.com/37\link]8;;\ 漢字🙂é
+[0m[1m[38;5;6mline 38[0m [0m[4:3m[38;5;228m[58;5;38mcurly[0m [0m[38;2;38;100;200m[48;2;5;38;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l38;https://example.com/38\link]8;;\ 漢字🙂é
+[0m[1m[38;5;7mline 39[0m [0m[4:3m[38;5;234m[58;5;39mcurly[0m [0m[38;2;39;100;200m[48;2;5;39;9mtrue[0m [0m[2m[7m[9mfaint[0m ]8;id=l39;https://example.com/39\link]8;;\ 漢字🙂é
+wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+[4CA[11CB
+┌──┐
+$ make
+
+=== primary text (1919 bytes)
+line 0 curly true faint link 漢字🙂é
+line 1 curly true faint link 漢字🙂é
+line 2 curly true faint link 漢字🙂é
+line 3 curly true faint link 漢字🙂é
+line 4 curly true faint link 漢字🙂é
+line 5 curly true faint link 漢字🙂é
+line 6 curly true faint link 漢字🙂é
+line 7 curly true faint link 漢字🙂é
+line 8 curly true faint link 漢字🙂é
+line 9 curly true faint link 漢字🙂é
+line 10 curly true faint link 漢字🙂é
+line 11 curly true faint link 漢字🙂é
+line 12 curly true faint link 漢字🙂é
+line 13 curly true faint link 漢字🙂é
+line 14 curly true faint link 漢字🙂é
+line 15 curly true faint link 漢字🙂é
+line 16 curly true faint link 漢字🙂é
+line 17 curly true faint link 漢字🙂é
+line 18 curly true faint link 漢字🙂é
+line 19 curly true faint link 漢字🙂é
+line 20 curly true faint link 漢字🙂é
+line 21 curly true faint link 漢字🙂é
+line 22 curly true faint link 漢字🙂é
+line 23 curly true faint link 漢字🙂é
+line 24 curly true faint link 漢字🙂é
+line 25 curly true faint link 漢字🙂é
+line 26 curly true faint link 漢字🙂é
+line 27 curly true faint link 漢字🙂é
+line 28 curly true faint link 漢字🙂é
+line 29 curly true faint link 漢字🙂é
+line 30 curly true faint link 漢字🙂é
+lineparkedrly true faint link 漢字🙂é
+line 32 curly true faint link 漢字🙂é
+line 33 curly true faint link 漢字🙂é
+line 34 curly true faint link 漢字🙂é
+line 35 curly true faint link 漢字🙂é
+line 36 curly true faint link 漢字🙂é
+line 37 curly true faint link 漢字🙂é
+line 38 curly true faint link 漢字🙂é
+line 39 curly true faint link 漢字🙂é
+wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+    A           B
+┌──┐
+$ make
+=== alternate replay (367 bytes)
+[2J[3J]104\[3g[9GH[17GH[25GH[33GH[41GH[49GH[57GH[65GH[73GH[Hshell history
+$ vim
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[3;12r[3;1H[?1049h]104\[?1049h[3g[9GH[17GH[25GH[33GH[41GH[49GH[57GH[65GH[73GH[H[0m[7mTUI[0m
+
+
+
+[2C[0m[1m[38;5;5mbody[0m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[3;12r[12;40H]9;4;0\
+=== alternate extras (181 bytes)
+]104\[?1049h[3g[9GH[17GH[25GH[33GH[41GH[49GH[57GH[65GH[73GH[H[0m[7mTUI[0m
+
+
+
+[2C[0m[1m[38;5;5mbody[0m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[3;12r
+=== alternate extras tail 10 (181 bytes)
+]104\[?1049h[3g[9GH[17GH[25GH[33GH[41GH[49GH[57GH[65GH[73GH[H[0m[7mTUI[0m
+
+
+
+[2C[0m[1m[38;5;5mbody[0m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[3;12r
+=== alternate cells (90 bytes)
+[0m[7mTUI[0m
+
+
+
+[2C[0m[1m[38;5;5mbody[0m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+=== alternate text (13 bytes)
+TUI
+
+
+
+  body
+=== image replay (79 bytes)
+[2J[3J]104\[3g[9GH[17GH[Hbefore
+
+
+after
+
+
+
+
+
+[4;6H]9;4;0\
+=== image pixels (2410 bytes)
+20x40 Rgb
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+=== image placement (62 bytes)
+[2;1H_Ga=p,i=7,C=1,x=0,y=0,w=20,h=40,X=0,Y=0,z=0,q=2\[4;6H

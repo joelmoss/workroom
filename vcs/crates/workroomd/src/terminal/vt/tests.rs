@@ -176,7 +176,7 @@ fn the_cursor_lands_where_the_producer_left_it() {
     );
 }
 
-/// The kitty stack is the one thing `extra.keyboard` does not carry, so it is emitted by hand.
+/// The kitty stack is the one thing the keyboard extra does not carry, so it is emitted by hand.
 ///
 /// Value: protects=the kitty flags read back as the value pushed, on both ends; fails_when=
 /// get_u32 stops reading KITTY_KEYBOARD_FLAGS, so both ends read None and still compare equal;
@@ -1686,6 +1686,110 @@ fn a_placement_waits_out_a_pending_wrap_and_origin_mode() {
 
     terminal.write(b"\x1b[?6h");
     assert_eq!(terminal.placement(7, false), Placement::Hold);
+}
+
+/// The bytes `repaint_golden_matches` holds to `repaint.golden`, one section per thing a client
+/// is sent: the replay, the formatter with and without the shadow's extras, a tail selection, the
+/// plain text, and an image's pixels and placement.
+fn repaint_golden() -> Vec<u8> {
+    let mut primary = sized_terminal(80, 24);
+    // History, with styles, colours, a hyperlink and wide and combining characters in it.
+    for n in 0..40 {
+        primary.write(
+            format!(
+                "\x1b[1;3{}mline {n}\x1b[0m \x1b[4:3;58;5;{n}m\x1b[38;5;{}mcurly\x1b[0m \
+                 \x1b[38;2;{n};100;200m\x1b[48;2;5;{n};9mtrue\x1b[0m \x1b[2;7;9mfaint\x1b[0m \
+                 \x1b]8;id=l{n};https://example.com/{n}\x1b\\link\x1b]8;;\x1b\\ \
+                 漢字🙂e\u{301}\r\n",
+                n % 8,
+                n * 6
+            )
+            .as_bytes(),
+        );
+    }
+    // A line the terminal wrapped, then the state the extras carry: tabstops, a scrolling region,
+    // modes, the pwd, modifyOtherKeys, the kitty flags, a G1 charset, a palette colour.
+    primary.write(&[b'w'; 130]);
+    primary.write(b"\r\n\x1b[3g\x1b[5G\x1bH\x1b[17G\x1bH\r\tA\tB\r\n");
+    primary.write(b"\x1b[?1h\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?25l");
+    primary.write(b"\x1b]7;kitty-shell-cwd://host/tmp/repaint\x1b\\\x1b[>4;2m\x1b[>13u");
+    primary.write(b"\x1b)0\x0elqqk\x0f\x1b]4;1;rgb:12/34/56\x1b\\\x1b]2;title\x07");
+    primary.write(b"\x1b]133;A\x07$ \x1b]133;B\x07make\r\n\x1b]133;C\x07\x1b]9;4;1;50\x07");
+    primary.write(b"\x1b[2;20r\x1b[10;5Hparked");
+
+    let mut alternate = sized_terminal(80, 24);
+    alternate.write(b"shell history\r\n$ vim\r\n\x1b[?1049h\x1b[2J\x1b[H\x1b[7mTUI\x1b[0m");
+    alternate.write(b"\x1b[5;3H\x1b[1;35mbody\x1b[0m\x1b[3;12r\x1b[12;40H");
+
+    let mut image = sized_terminal(20, 10);
+    image.write(b"before\r\n");
+    image.write(&raw_image(7, 20, 40));
+    image.write(b"\r\nafter");
+
+    let mut out = Vec::new();
+    let mut section = |name: &str, bytes: &[u8]| {
+        out.extend_from_slice(format!("\n=== {name} ({} bytes)\n", bytes.len()).as_bytes());
+        out.extend_from_slice(bytes);
+    };
+    for (name, terminal) in [("primary", &primary), ("alternate", &alternate)] {
+        section(&format!("{name} replay"), &terminal.replay());
+        section(&format!("{name} extras"), &terminal.format_rows(true, None));
+        section(
+            &format!("{name} extras tail 10"),
+            &terminal.format_rows(true, Some(10)),
+        );
+        section(&format!("{name} cells"), &terminal.format_rows(false, None));
+        section(&format!("{name} text"), terminal.visible_text().as_bytes());
+    }
+    section("image replay", &image.replay());
+    let images = image.visible_images();
+    assert_eq!(images.len(), 1, "the fixture's image is not visible");
+    let pixels = image.pixels(images[0]).expect("pixels");
+    section(
+        "image pixels",
+        &[
+            format!("{}x{} {:?}\n", pixels.width, pixels.height, pixels.color).as_bytes(),
+            &pixels.data,
+        ]
+        .concat(),
+    );
+    section("image placement", &ready(image.placement(7, true)));
+    out
+}
+
+/// Value: protects=the repaint bytes stay the same across an engine bump that should not change
+/// them (vt-1.0.0 moved the formatter's options to keys, with new defaults); fails_when=TRIM or an
+/// extra the shadow does not ask for is left at libghostty's default, or the image pixels are read
+/// short; why_new=the round-trip tests compare state, not bytes, so a trimmed or restyled repaint
+/// could still pass them; seam=none; no_claim=that the golden bytes are correct, only unchanged.
+///
+/// When a bump changes them on purpose, read the diff, then rewrite the file with
+/// `WR_WRITE_REPAINT_GOLDEN=1`.
+#[test]
+fn repaint_golden_matches() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/terminal/vt/repaint.golden"
+    );
+    let actual = repaint_golden();
+    if std::env::var_os("WR_WRITE_REPAINT_GOLDEN").is_some() {
+        std::fs::write(path, &actual).expect("write the golden");
+        return;
+    }
+    let expected = std::fs::read(path).expect("read the golden");
+    if let Some(at) = actual.iter().zip(&expected).position(|(a, b)| a != b) {
+        let from = at.saturating_sub(80);
+        panic!(
+            "the repaint differs from {path} at byte {at}:\n expected {:?}\n actual   {:?}",
+            String::from_utf8_lossy(&expected[from..(at + 80).min(expected.len())]),
+            String::from_utf8_lossy(&actual[from..(at + 80).min(actual.len())]),
+        );
+    }
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "the repaint's length differs from {path}"
+    );
 }
 
 /// Value: protects=images drawn through placeholders come back; fails_when=virtual placements
