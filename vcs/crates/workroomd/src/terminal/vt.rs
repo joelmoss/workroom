@@ -166,12 +166,16 @@ fn decode_png_rgba(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     let rgba = match frame.color_type {
         png::ColorType::Rgba => buffer,
         png::ColorType::Rgb => buffer
-            .chunks_exact(3)
-            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|&[r, g, b]| [r, g, b, 255])
             .collect(),
         png::ColorType::GrayscaleAlpha => buffer
-            .chunks_exact(2)
-            .flat_map(|pixel| [pixel[0], pixel[0], pixel[0], pixel[1]])
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|&[gray, alpha]| [gray, gray, gray, alpha])
             .collect(),
         png::ColorType::Grayscale => buffer
             .iter()
