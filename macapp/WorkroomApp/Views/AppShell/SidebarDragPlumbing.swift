@@ -8,12 +8,12 @@ import WorkroomDomain
 /// (not a drop); `dropTarget` says where a drop at a global point lands (workroom pane and edge),
 /// or nil when it isn't over a pane. `RootView` owns all three; it knows the content frame.
 ///
-/// Equal by `token` alone, which its sidebar mints once (`SidebarColumn`, `EdgeRevealSidebars`), so
-/// the sidebar and its rows can sit behind equality gates: the closures are rebuilt on every pass of
-/// the views that forward them, and a gate comparing them would never skip. A row whose gate skips
-/// keeps the plumbing an earlier pass built, which does what the new one would: the closures read
-/// their window's live state (`RootView`'s `@State`, its store), never a value of the pass that
-/// built them.
+/// Equal by `token` alone, which its sidebar mints once (`SidebarColumn`, `EdgeRevealSidebars`),
+/// so the sidebar and its rows can sit behind equality gates: the closures are rebuilt on every
+/// pass of the views that forward them, and a gate comparing them would never skip. A row whose
+/// gate skips keeps the plumbing an earlier pass built, which does what the new one would: the
+/// closures read their window's live state (`RootView`'s `@State`, its store), never a value of
+/// the pass that built them.
 ///
 /// Sendable, its closures held by a main-actor box, so a view's nonisolated `==` can compare it.
 struct SidebarDragPlumbing: Equatable, Sendable {

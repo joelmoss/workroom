@@ -165,8 +165,8 @@ enum QuickSwitcher {
   /// than cosmetic: **a disabled menu item drops its key equivalent**, which is what stops the item
   /// swallowing a Tab the monitor deliberately passed through.
   ///
-  /// Counts rather than building `workroomSlots()`: this is recomputed on every `MenuStateAdapter` pass, and
-  /// the MRU ordering it would do is irrelevant to "is there more than one".
+  /// Counts rather than building `workroomSlots()`: this is recomputed on every `MenuStateAdapter`
+  /// pass, and the MRU ordering it would do is irrelevant to "is there more than one".
   static func canSwitchWorkrooms(registry: WindowRegistry = .shared) -> Bool {
     var count = 0
     for store in registry.allStores where !store.modals.hasModalPresentation {

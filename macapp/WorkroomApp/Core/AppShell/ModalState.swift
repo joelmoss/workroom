@@ -304,9 +304,10 @@ final class ModalState: ObservableObject {
   /// What's New — the theme dropdown is a transient popover, not modal, and deliberately NOT counted:
   /// it closes itself when one of these comes up). Those are `@State` in RootView rather than the
   /// `pending*` ones, so `hasModalPresentation` can't see them directly; RootView keeps this in sync
-  /// with a single `onChange` (What's New's flag reaches it through `WhatsNewLaunchCheck`'s binding). Deliberately a mirror rather than re-homing the four flags onto the
-  /// store: re-homing a local sheet flag to a store-level published item needs a clobber guard to stop
-  /// a second trigger silently overwriting an open sheet's in-progress input, and none of that
+  /// with a single `onChange` (What's New's flag reaches it through `WhatsNewLaunchCheck`'s
+  /// binding). Deliberately a mirror rather than re-homing the four flags onto the store:
+  /// re-homing a local sheet flag to a store-level published item needs a clobber guard to stop a
+  /// second trigger silently overwriting an open sheet's in-progress input, and none of that
   /// complexity buys anything here — all this needs is "is something up".
   var auxSheetPresented: Bool {
     get { self[.auxSheet] != nil }

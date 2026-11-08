@@ -23,11 +23,23 @@ final class SidebarInvalidationTests: XCTestCase {
   private struct DragHost: View {
     /// The drag state's binding, as its last pass handed it to the sidebar.
     static var drag: Binding<WorkroomPaneDrag?>?
+    /// The binding of state the host reads and the sidebar doesn't, as `RootView` and a column
+    /// resize hold theirs.
+    static var unrelated: Binding<Int>?
+    /// The passes of this body, so a test sees its change re-ran the host.
+    static var passes = 0
     static let token = UUID()
     @State private var drag: WorkroomPaneDrag?
+    @State private var unrelated = 0
 
     var body: some View {
-      let _ = { Self.drag = $drag }()
+      let _ = {
+        Self.drag = $drag
+        Self.unrelated = $unrelated
+        Self.passes += 1
+      }()
+      // Read, so a write re-runs this body.
+      let _ = unrelated
       ProjectSidebar(
         drag: SidebarDragPlumbing(
           token: Self.token, drag: $drag, localize: { _ in nil }, dropTarget: { _ in nil })
@@ -78,6 +90,7 @@ final class SidebarInvalidationTests: XCTestCase {
     _ = store.terminals.addTab(for: b.rootTarget)
 
     DragHost.drag = nil
+    DragHost.unrelated = nil
     let (window, hosting) = hostInWindow(
       DragHost()
         .environmentObject(store)
@@ -98,6 +111,7 @@ final class SidebarInvalidationTests: XCTestCase {
   private func close(_ f: Fixture) {
     f.window.close()
     DragHost.drag = nil
+    DragHost.unrelated = nil
     try? FileManager.default.removeItem(at: f.folder)
     Task { await f.store.terminals.reapAll() }
   }
@@ -152,9 +166,9 @@ final class SidebarInvalidationTests: XCTestCase {
   }
 
   /// A host's status publishing re-runs no row: the terminal rows' tooltip line is the only thing
-  /// it can change, and the tooltip reads it itself. That tooltip has no positive half here: SwiftUI
-  /// builds a modifier that only adds a tooltip when the tooltip is asked for, which no test window
-  /// does, so its body never runs in this harness.
+  /// it can change, and the tooltip reads it itself. That tooltip has no positive half here:
+  /// SwiftUI builds a modifier that only adds a tooltip when the tooltip is asked for, which no
+  /// test window does, so its body never runs in this harness.
   func testAHostStatusPublishReRunsNoRow() async throws {
     let f = try fixture()
     defer { close(f) }
@@ -277,6 +291,28 @@ final class SidebarInvalidationTests: XCTestCase {
 
     XCTAssertEqual(SidebarRowPasses.total, 0, "a drag tick must re-run no row")
     XCTAssertGreaterThan(SidebarRowPasses.dragDim, 0, "the rows' dim reads the drag, so it re-runs")
+  }
+
+  // MARK: The holder
+
+  /// A pass of the view holding the sidebar (a `RootView` pass, a column resize) re-runs no tree:
+  /// the sidebar's gate compares its drag plumbing, which that pass leaves equal.
+  func testAPassOfTheHolderReRunsNoTree() async throws {
+    let f = try fixture()
+    defer { close(f) }
+    try await render(f)
+    let unrelated = try XCTUnwrap(DragHost.unrelated, "the host must hand over its own state")
+    unrelated.wrappedValue += 1
+    try await render(f)
+
+    SidebarRowPasses.reset()
+    DragHost.passes = 0
+    unrelated.wrappedValue += 1
+    try await render(f)
+
+    XCTAssertGreaterThan(DragHost.passes, 0, "the change re-ran the holder")
+    XCTAssertEqual(SidebarRowPasses.tree, 0, "a pass of the holder must re-run no tree")
+    XCTAssertEqual(SidebarRowPasses.total, 0, "a pass of the holder must re-run no row")
   }
 
   // MARK: VCS

@@ -66,6 +66,11 @@ final class VCSStatusService: ObservableObject {
   }
   private var storedRootRefs: [Project.ID: RootRef] = [:]
 
+  /// How `projectID`'s root shows its branch, the placeholder while it is unresolved.
+  func rootPresentation(for projectID: Project.ID) -> RootPresentation.Style {
+    RootPresentation.make(rootRefs[projectID] ?? .unresolved)
+  }
+
   /// Per-workroom (and per-root) VCS + CI status driving the ambient badges and the Changes panel
   /// (issue #24), keyed by `SidebarID`. Resolved app-side, best-effort/"last checked". Shared so two
   /// windows showing the same workroom report a consistent badge and don't double the probes.

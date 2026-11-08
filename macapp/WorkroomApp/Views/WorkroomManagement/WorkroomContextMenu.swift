@@ -45,7 +45,8 @@ private struct RunMenuButton: View {
   }
 }
 
-/// Target-scoped run actions, shared by project, workroom and run-tab context menus.
+/// Target-scoped run actions, shared by the project, root-row and run-tab context menus. The
+/// workroom menus build theirs from `WorkroomMenuModel` (`WorkroomMenuItems`).
 @MainActor
 @ViewBuilder
 func runCommandMenuItems(host: any PaneHost, target: TerminalTarget) -> some View {
@@ -198,9 +199,9 @@ struct WorkroomMenuItems: View {
       Button(action: actions.close) { Label("Close", systemImage: "xmark") }
     case .openInSplit:
       Button(action: actions.openInSplit) {
-        // `rectangle.trailinghalf.inset.filled` is the app's established glyph for a rightward split
-        // (TerminalTabStrip's Split Right toolbar button and context item), and this action always
-        // inserts on `.right` — so it wears the same icon rather than a neutral one.
+        // `rectangle.trailinghalf.inset.filled` is the app's established glyph for a rightward
+        // split (TerminalTabStrip's Split Right toolbar button and context item), and this action
+        // always inserts on `.right` — so it wears the same icon rather than a neutral one.
         Label("Open (split right)", systemImage: "rectangle.trailinghalf.inset.filled")
       }
     case .removeFromSplit:

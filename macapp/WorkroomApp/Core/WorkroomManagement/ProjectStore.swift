@@ -37,11 +37,17 @@ final class ProjectStore: ObservableObject {
   private var storedProjects: [Project] = []
 
   /// The listed projects whose root folder is gone, by id, as of the last publish of `projects` or
-  /// the last `recheckMissingRoot`. The filesystem can't be observed, so the root rows read this
-  /// instead of `stat`ing: a reload (the app becoming active, a create or delete) re-checks every
-  /// root, even when the list is unchanged, and an unchanged set notifies no one, so a reload of an
-  /// unchanged list re-runs no row.
+  /// the last `recheckMissingRoot`. The filesystem can't be observed, so the sidebar reads this
+  /// (`rootTarget(path:name:)`) instead of `stat`ing: a reload (the app becoming active, a create
+  /// or delete) re-checks every root, even when the list is unchanged, and an unchanged set
+  /// notifies no one, so a reload of an unchanged list re-runs no row.
   private(set) var missingRoots: Set<Project.ID> = []
+
+  /// The root target of the project at `path`, named `name`, missing as of `missingRoots`, so
+  /// nothing is `stat`ed. `Project.rootTarget` is the live check.
+  func rootTarget(path: String, name: String) -> TerminalTarget {
+    Project.rootTarget(path: path, name: name, isMissing: missingRoots.contains(path))
+  }
 
   /// Re-checks which listed roots are gone, writing `missingRoots` only if that changed.
   private func recheckMissingRoots() {

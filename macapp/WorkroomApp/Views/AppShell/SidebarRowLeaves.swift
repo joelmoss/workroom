@@ -14,16 +14,16 @@ struct SidebarRootLabel: View {
     #if DEBUG
       let _ = { SidebarRowPasses.rootLabel += 1 }()
     #endif
-    let style = RootPresentation.make(vcsStatus.rootRefs[projectID] ?? .unresolved)
+    let style = vcsStatus.rootPresentation(for: projectID)
     Text(style.label)
       .font(.callout)
       .lineLimit(1)
       .truncationMode(.tail)
       // A healthy root must apply NO foreground color so it inherits the sidebar's default
-      // (vibrant) foreground and dims with every other row when the window goes inactive — exactly
-      // like the workroom rows. Pinning a color here (even `.foregroundColor(nil)`) opts the text
-      // out of that vibrancy dimming, which left roots bright on blur (issue #43). Only the
-      // de-emphasized detached/none states take an explicit `.secondary`.
+      // (vibrant) foreground and dims with every other row when the window goes inactive —
+      // exactly like the workroom rows. Pinning a color here (even `.foregroundColor(nil)`) opts
+      // the text out of that vibrancy dimming, which left roots bright on blur (issue #43). Only
+      // the de-emphasized detached/none states take an explicit `.secondary`.
       .modifier(RootLabelTint(dim: style.dim))
   }
 }
@@ -34,7 +34,7 @@ struct SidebarRootTooltip: ViewModifier {
   let projectID: Project.ID
 
   func body(content: Content) -> some View {
-    content.help(RootPresentation.make(vcsStatus.rootRefs[projectID] ?? .unresolved).tooltip)
+    content.help(vcsStatus.rootPresentation(for: projectID).tooltip)
   }
 }
 

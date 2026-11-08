@@ -425,7 +425,7 @@ private struct WorkroomTabChip: View {
   /// A root's branch (nil for a workroom), reusing the sidebar's root presentation.
   private var branchLabel: String? {
     guard case .root(let project) = sid else { return nil }
-    return RootPresentation.make(vcsStatus.rootRefs[project] ?? .unresolved).label
+    return vcsStatus.rootPresentation(for: project).label
   }
 
   /// The full, untruncated rendered title — what the (possibly capped) title HStack shows. Feeds the

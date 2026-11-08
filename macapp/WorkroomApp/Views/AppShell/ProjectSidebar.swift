@@ -11,10 +11,11 @@ import os
 /// and workrooms carry their terminal-disclosure chevron in a shared leading column (shown only at
 /// ≥2 terminals) that lines up with the terminal rows' glyphs.
 ///
-/// The tree reads only its structure: the projects, which are collapsed, and the creates without a
-/// row yet. Each row is built by its own adapter behind an equality gate (`SidebarRowAdapters`),
-/// so a pass of the tree re-runs no row whose inputs are unchanged, and the sidebar is gated on its
-/// drag plumbing, so a pass of the view that holds it re-runs no tree.
+/// The tree reads only its structure: the projects, which are collapsed, which roots are missing
+/// (`ProjectStore.missingRoots`, so no pass `stat`s a folder) and the creates without a row yet.
+/// Each row is built by its own adapter behind an equality gate (`SidebarRowAdapters`), so a pass
+/// of the tree re-runs no row whose inputs are unchanged, and the sidebar is gated on its drag
+/// plumbing, so a pass of the view that holds it re-runs no tree.
 struct ProjectSidebar: View, Equatable {
   private static let signposter = OSSignposter(
     subsystem: "com.developwithstyle.workroom", category: "Sidebar")
@@ -31,8 +32,9 @@ struct ProjectSidebar: View, Equatable {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.themeTokens) private var tokens
 
-  /// Live drag of a root/workroom row into the detail content to form a workroom split (issue #101).
-  /// The default makes the gesture an inert no-op for previews / any host that doesn't wire it.
+  /// Live drag of a root/workroom row into the detail content to form a workroom split (issue
+  /// #101). The default makes the gesture an inert no-op for previews / any host that doesn't wire
+  /// it.
   var drag: SidebarDragPlumbing = .inert
 
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.drag == rhs.drag }
@@ -85,6 +87,9 @@ struct ProjectSidebar: View, Equatable {
   private var tree: some View {
     let interval = Self.signposter.beginInterval("Sidebar tree")
     defer { Self.signposter.endInterval("Sidebar tree", interval) }
+    #if DEBUG
+      SidebarRowPasses.tree += 1
+    #endif
     let actions = SidebarActions.live(store: store)
     return List {
       ForEach(projectStore.projects) { project in
@@ -109,7 +114,9 @@ struct ProjectSidebar: View, Equatable {
             .listRowSeparator(.hidden)
             .listRowBackground(SidebarRowBackground(store: store, id: rid, hovered: hovered))
           }
-          SidebarTerminalSubtree(target: project.rootTarget, parent: rid, actions: actions)
+          SidebarTerminalSubtree(
+            target: projectStore.rootTarget(path: project.path, name: project.displayName),
+            parent: rid, actions: actions)
           ForEach(project.workrooms) { workroom in
             let wid = SidebarID.workroom(project: project.path, name: workroom.name)
             SidebarHoverRegion(id: wid) { hovered in
@@ -213,6 +220,8 @@ struct ProjectSidebar: View, Equatable {
   /// fast-changing reads out of the rows re-ran in their place; and, for the changes a row must
   /// show, what it last drew.
   @MainActor enum SidebarRowPasses {
+    /// Passes of the tree itself, which builds the rows' adapters; not a row, so not in `total`.
+    static var tree = 0
     static var project = 0
     static var root = 0
     static var workroom = 0
@@ -238,6 +247,7 @@ struct ProjectSidebar: View, Equatable {
     static var total: Int { project + root + workroom + terminal }
 
     static func reset() {
+      tree = 0
       project = 0
       root = 0
       workroom = 0
@@ -399,7 +409,7 @@ struct SidebarRootStatusLabel: ViewModifier {
   let programLabels: [String]
 
   func body(content: Content) -> some View {
-    let root = RootPresentation.make(vcsStatus.rootRefs[projectID] ?? .unresolved).accessibility
+    let root = vcsStatus.rootPresentation(for: projectID).accessibility
     let label =
       ([
         isMissing ? "\(root), folder not found" : root,

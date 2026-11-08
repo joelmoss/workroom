@@ -6,8 +6,8 @@ import SwiftUI
 ///
 /// Its own view so the objects only the bar needs are observed here, not by `RootView`: the
 /// updater (the "Update" pill) and the notification list would otherwise re-run the whole window
-/// body on every publish (`RootInvalidationTests`). Each publish still re-runs this, which hands the
-/// accessory a fresh root as `RootView` re-running did, so the bar keeps the transparency
+/// body on every publish (`RootInvalidationTests`). Each publish still re-runs this, which hands
+/// the accessory a fresh root as `RootView` re-running did, so the bar keeps the transparency
 /// `TitlebarAccessoryHost` re-asserts on every update.
 struct AccessoryBarInjector: ViewModifier {
   #if DEBUG

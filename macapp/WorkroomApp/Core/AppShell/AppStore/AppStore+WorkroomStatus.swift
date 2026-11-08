@@ -110,7 +110,7 @@ extension AppStore {
     let status = vcsStatus.workroomStatuses[sid]
     if let branch = status?.branchForCI, !branch.isEmpty { return branch }
     if case .root(let project) = sid {
-      let label = RootPresentation.make(vcsStatus.rootRefs[project] ?? .unresolved).label
+      let label = vcsStatus.rootPresentation(for: project).label
       return label.isEmpty ? nil : label
     }
     return nil
