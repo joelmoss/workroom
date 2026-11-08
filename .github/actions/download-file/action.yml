@@ -1,0 +1,40 @@
+name: Download file
+description: >-
+  Download a release asset and verify its SHA-256. Retries transient failures (a 5xx from GitHub's
+  or a vendor's CDN, a reset connection) so one bad response does not turn a run red. A checksum
+  mismatch is never retried: it is an error.
+
+inputs:
+  url:
+    description: URL to download
+    required: true
+  sha256:
+    description: Expected SHA-256 of the file
+    required: true
+  path:
+    description: Where to write the file
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Download and verify
+      shell: bash
+      env:
+        DOWNLOAD_URL: ${{ inputs.url }}
+        DOWNLOAD_SHA256: ${{ inputs.sha256 }}
+        DOWNLOAD_PATH: ${{ inputs.path }}
+      run: |
+        set -euo pipefail
+        # --retry-all-errors covers the 5xx that --fail turns into an error; a checksum mismatch
+        # happens after curl returns, so it is not retried. 5 retries at 10s ~ a minute of outage.
+        curl --fail --silent --show-error --location \
+          --retry 5 --retry-all-errors --retry-delay 10 \
+          --connect-timeout 20 --max-time 300 \
+          "$DOWNLOAD_URL" --output "$DOWNLOAD_PATH"
+        # `sha256sum` on Linux, `shasum` on macOS.
+        if command -v sha256sum >/dev/null 2>&1; then
+          echo "${DOWNLOAD_SHA256}  ${DOWNLOAD_PATH}" | sha256sum --check --strict
+        else
+          echo "${DOWNLOAD_SHA256}  ${DOWNLOAD_PATH}" | shasum -a 256 --check --strict
+        fi
