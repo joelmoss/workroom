@@ -51,10 +51,10 @@ maintainer follows.
 - **Zig 0.17.0** (installed through mise when it is available) — `xcodegen generate` builds the pinned
   Ghostty on its first run, which also needs Xcode's Metal toolchain (the build downloads it, about
   840 MB, if it is missing).
-- **Go 1.25+** (the module targets `go 1.25.7`; CI and the maintainer build with Go 1.26) — the app
+- **Go 1.27+** (the module targets `go 1.27.3`, which CI builds with) — the app
   embeds the CLI engine at build time, so a Go toolchain must be on `PATH`.
 
-**To develop the CLI engine only:** Go 1.25+, and **`golangci-lint` v2.x** for `make cli-lint`
+**To develop the CLI engine only:** Go 1.27+, and **`golangci-lint` v2.x** for `make cli-lint`
 (`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0` — note the `/v2` in the
 module path). Install it with `go install`, not a prebuilt binary: a golangci-lint built against an
 older Go cannot read the current toolchain's export data. v1 is not an option here — its vendored
@@ -109,7 +109,7 @@ The macOS app is the product; the Go CLI is the bundled engine (and an optional 
 | **App build tooling** | [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`project.yml` → `.xcodeproj`) |
 | **VCS backend** | Git worktrees |
 | **Config store** | JSON at `~/.config/workroom/config.json` |
-| **CLI engine language** | Go 1.25+ (built/tested on Go 1.26) |
+| **CLI engine language** | Go 1.27+ (built and tested on Go 1.27.3) |
 | **CLI framework** | [Cobra](https://github.com/spf13/cobra) for commands |
 | **CLI prompts / output** | [charmbracelet/huh](https://github.com/charmbracelet/huh) · [fatih/color](https://github.com/fatih/color) |
 | **CLI release tooling** | [GoReleaser](https://goreleaser.com) v2 |
