@@ -83,6 +83,18 @@ chsh -s "$(brew --prefix)/bin/bash"
 
 Log out and back in so apps you open from the Dock see the new shell, then open a new terminal in Workroom. `echo $BASH_VERSION` should print `5.x`.
 
+## `top` says "Error opening terminal: xterm-ghostty"
+
+Workroom's terminals set `TERM=xterm-ghostty` and point to their own terminfo entry for it. macOS's built-in `top` is a privileged program, and the terminal library it uses ignores that entry. It only reads the system's own terminfo, which has no `xterm-ghostty`. Other programs, `vim` among them, are not affected.
+
+Run `top` with a terminal type the system knows:
+
+```sh
+TERM=xterm-256color top
+```
+
+Or use `htop` or `btop` instead (`brew install htop`), which read Workroom's entry.
+
 ## The pull request and CI views are empty
 
 The app gets them from the GitHub CLI. You need [`gh`](https://cli.github.com) 2.57.0 or newer on your `PATH`, signed in. Check with:
