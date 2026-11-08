@@ -77,6 +77,20 @@ final class ProgramStatusPresentationTests: XCTestCase {
         .contains(ProgramStatusPresentation.stuckLine))
   }
 
+  /// The sidebar's terminal tooltip schedules its one repaint for when the hint comes due, and
+  /// none for a terminal that isn't waiting or whose host's link is down.
+  func testTheStuckHintComesDueTenMinutesIntoAWait() {
+    let waiting = rollup(blocked: [blocked(.permission)])
+    XCTAssertEqual(
+      ProgramStatusPresentation.stuckHintDue(indicator: .blocked, rollup: waiting),
+      now.addingTimeInterval(600))
+    XCTAssertNil(ProgramStatusPresentation.stuckHintDue(indicator: .none, rollup: nil))
+    XCTAssertNil(ProgramStatusPresentation.stuckHintDue(indicator: .done, rollup: waiting))
+    XCTAssertNil(
+      ProgramStatusPresentation.stuckHintDue(
+        indicator: .blocked, rollup: rollup(blocked: [blocked(.permission)], stale: true)))
+  }
+
   func testAFinishedTurnSaysSoWithItsMessage() {
     let done = ProgramStatusRecord(id: "", state: .done, message: "All tests pass")
     XCTAssertEqual(

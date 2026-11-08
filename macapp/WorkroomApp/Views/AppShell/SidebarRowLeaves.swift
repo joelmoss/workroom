@@ -41,6 +41,11 @@ struct SidebarRootTooltip: ViewModifier {
 /// A terminal row's tooltip: its title, then what its program reports or why nothing does. Each
 /// host's program-status link (#358) is observed here, so a host that connects repaints the
 /// "Program status: …" line, and its publishes re-run no row.
+///
+/// A program that waits on the user changes nothing while it waits, so the "Stuck?" line that comes
+/// due after a while is scheduled: the timeline holds the one date it comes due, and none for a
+/// terminal that isn't waiting, so it ticks at most once per wait. One schedule type either way,
+/// so a terminal starting or stopping waiting keeps the row's identity.
 struct SidebarTerminalTooltip: ViewModifier {
   @ObservedObject private var programStatus = ProgramStatusMonitor.shared
   let title: String
@@ -50,9 +55,13 @@ struct SidebarTerminalTooltip: ViewModifier {
   let hostID: HostID
 
   func body(content: Content) -> some View {
-    let lines = ProgramStatusPresentation.tooltipLines(
-      indicator: indicator, rollup: rollup, hostState: programStatus.hosts[hostID],
-      hasSession: hasSession)
-    return content.help(([title] + lines).joined(separator: "\n"))
+    let due = ProgramStatusPresentation.stuckHintDue(indicator: indicator, rollup: rollup)
+    return TimelineView(.explicit(due.map { [$0] } ?? [])) { context in
+      // The clock too: before the schedule's entry, the context's date may be when it appeared.
+      let lines = ProgramStatusPresentation.tooltipLines(
+        indicator: indicator, rollup: rollup, hostState: programStatus.hosts[hostID],
+        hasSession: hasSession, now: max(context.date, .now))
+      content.help(([title] + lines).joined(separator: "\n"))
+    }
   }
 }

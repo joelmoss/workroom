@@ -488,6 +488,9 @@ final class WorkroomLifecycle: ObservableObject {
   /// `resolveBranches` (`storeRootRef`).
   func rootBranchDidChange(projectID: Project.ID) {
     guard vcsStatus.probesRepositories, let p = projectStore.project(at: projectID) else { return }
+    // A root folder moved or deleted takes its metadata dir with it, so its row's warning can come
+    // up now rather than at the next reload.
+    projectStore.recheckMissingRoots()
     send(.rootBranchChanged(projectID))
     let resolver = self.resolver
     rootBranchRefreshTasks[projectID]?.cancel()

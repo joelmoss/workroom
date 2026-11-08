@@ -213,9 +213,13 @@ extension Project {
   /// The always-present project-root target. The project directory can disappear like a
   /// workroom directory, so `isMissing` is checked against the filesystem.
   var rootTarget: TerminalTarget {
-    TerminalTarget(
-      id: .root(project: path), title: displayName, path: path,
-      isMissing: !FileManager.default.fileExists(atPath: path))
+    rootTarget(isMissing: !FileManager.default.fileExists(atPath: path))
+  }
+
+  /// The project-root target, with whether its directory is gone as the caller last saw it
+  /// (`ProjectStore.missingRoots`).
+  func rootTarget(isMissing: Bool) -> TerminalTarget {
+    TerminalTarget(id: .root(project: path), title: displayName, path: path, isMissing: isMissing)
   }
 }
 
