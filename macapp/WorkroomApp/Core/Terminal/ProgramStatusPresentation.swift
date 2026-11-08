@@ -102,13 +102,20 @@ enum ProgramStatusPresentation {
     }
     lines.append(source)
     if rollup.stale { lines.append(staleLine) }
-    // A stale mark can't be cleared until its host is back, so the hint waits for it.
-    if indicator == .blocked, !rollup.stale, let since = rollup.blockedSince,
-      now.timeIntervalSince(since) >= Double(ProgramStatusLimits.stuckHint.components.seconds)
-    {
+    if let due = stuckHintDue(indicator: indicator, rollup: rollup), now >= due {
       lines.append(stuckLine)
     }
     return lines
+  }
+
+  /// When the tooltip's "Stuck?" line becomes due, for a terminal waiting on the user; nil when it
+  /// never will as things stand.
+  static func stuckHintDue(indicator: PaneIndicator, rollup: ProgramStatusRollup?) -> Date? {
+    // A stale mark can't be cleared until its host is back, so the hint waits for it.
+    guard indicator == .blocked, let rollup, rollup.hasReport, !rollup.stale,
+      let since = rollup.blockedSince
+    else { return nil }
+    return since.addingTimeInterval(Double(ProgramStatusLimits.stuckHint.components.seconds))
   }
 
   /// `tooltipLines` for a terminal tab of `target`, its host's link read from `hosts`.

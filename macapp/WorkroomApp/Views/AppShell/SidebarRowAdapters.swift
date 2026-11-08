@@ -64,7 +64,10 @@ struct SidebarRootRowAdapter: View, Equatable {
   }
 
   private var model: SidebarRootRowModel {
-    let target = project.rootTarget
+    // Whether the folder is gone is read from the store, not `stat`ed: nothing observable changes
+    // when a folder goes, so a `stat` here would keep what it saw until the row next re-ran.
+    let target = project.rootTarget(
+      isMissing: store.projectStore.missingRoots.contains(project.id))
     return SidebarRootRowModel(
       projectPath: project.path, projectName: project.displayName, target: target,
       subtree: store.sidebarSubtree(of: target), activity: store.sidebarActivity(of: target.id))

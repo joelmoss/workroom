@@ -1,4 +1,5 @@
 import AppKit
+import DaemonConnection
 import SwiftUI
 import WorkroomDomain
 import WorkroomVCS
@@ -279,6 +280,194 @@ final class SidebarInvalidationTests: XCTestCase {
 
     XCTAssertEqual(SidebarRowPasses.total, 0, "a root's branch resolving must re-run no row")
     XCTAssertGreaterThan(SidebarRowPasses.rootLabel, 0, "the root's label reads it, so it re-runs")
+  }
+
+  // MARK: What a row shows (positives)
+
+  // Each makes the change a row shows twice and measures the second, as the negatives do, so a gate
+  // that drops a field from its `==` fails here rather than passing on a first update.
+
+  /// The filesystem can't be observed, so a project's folder going shows on its root row when the
+  /// app next reloads its list, which republishes it unchanged; and its coming back the same way.
+  func testARootFolderGoingShowsOnItsRowAtTheNextReload() async throws {
+    let f = try fixture()
+    defer { close(f) }
+    try await render(f)
+    XCTAssertEqual(SidebarRowPasses.folderMissing[f.rootA], false)
+
+    try FileManager.default.removeItem(atPath: f.a.path)
+    f.store.projectStore.projects = f.store.projectStore.projects
+    try await render(f)
+    XCTAssertEqual(
+      SidebarRowPasses.folderMissing[f.rootA], true, "A's root row shows its folder gone")
+
+    SidebarRowPasses.reset()
+    try FileManager.default.createDirectory(atPath: f.a.path, withIntermediateDirectories: true)
+    f.store.projectStore.projects = f.store.projectStore.projects
+    try await render(f)
+
+    XCTAssertEqual(
+      SidebarRowPasses.folderMissing[f.rootA], false, "A's root row shows its folder back")
+    XCTAssertNil(SidebarRowPasses.byRow[f.rootB], "B's folder never went")
+  }
+
+  /// A workroom's folder going reaches its row as the list's `DirectoryMissing` warning.
+  func testAWorkroomFolderGoingShowsOnItsRow() async throws {
+    let f = try fixture()
+    defer { close(f) }
+    let wid = SidebarID.workroom(project: f.a.path, name: "w")
+    let workroom = try XCTUnwrap(f.a.workrooms.first)
+    let gone = Warning(
+      kind: "DirectoryMissing", message: "directory not found", path: workroom.path, vcs: nil)
+    func publish(warnings: [Warning]) {
+      f.store.projectStore.projects[0] = Project(
+        path: f.a.path, vcs: f.a.vcs,
+        workrooms: [
+          Workroom(
+            name: workroom.name, path: workroom.path, vcsName: workroom.vcsName,
+            warnings: warnings)
+        ])
+    }
+    try await render(f)
+    publish(warnings: [gone])
+    try await render(f)
+    publish(warnings: [])
+    try await render(f)
+    XCTAssertEqual(SidebarRowPasses.folderMissing[wid], false)
+
+    SidebarRowPasses.reset()
+    publish(warnings: [gone])
+    try await render(f)
+
+    XCTAssertEqual(SidebarRowPasses.folderMissing[wid], true, "the row shows its folder gone")
+  }
+
+  /// A workroom's label and name are on its row.
+  func testALabelAndARenameReRunTheWorkroomsRow() async throws {
+    let f = try fixture()
+    defer { close(f) }
+    let workroom = try XCTUnwrap(f.a.workrooms.first)
+    func publish(name: String, label: String?) {
+      f.store.projectStore.projects[0] = Project(
+        path: f.a.path, vcs: f.a.vcs,
+        workrooms: [
+          Workroom(
+            name: name, path: workroom.path, vcsName: workroom.vcsName, warnings: [],
+            label: label)
+        ])
+    }
+    let wid = SidebarID.workroom(project: f.a.path, name: "w")
+    try await render(f)
+    publish(name: "w", label: "One")
+    try await render(f)
+
+    SidebarRowPasses.reset()
+    publish(name: "w", label: "Two")
+    try await render(f)
+    XCTAssertEqual(SidebarRowPasses.workroomTitles[wid], "Two", "the row shows its new label")
+
+    SidebarRowPasses.reset()
+    publish(name: "w2", label: nil)
+    try await render(f)
+    let renamed = SidebarID.workroom(project: f.a.path, name: "w2")
+    XCTAssertEqual(SidebarRowPasses.workroomTitles[renamed], "w2", "the row shows its new name")
+  }
+
+  /// A create's failure shows on its workroom's row, in the step circle that observes its run.
+  func testACreationFailingShowsOnItsWorkroomsRow() async throws {
+    let f = try fixture()
+    defer { close(f) }
+    let lifecycle = f.store.lifecycle
+    let wid = TargetID.workroom(project: f.a.path, name: "w")
+    func attach() -> CreationRun {
+      let run = CreationRun(project: f.a, kind: nil, splitAnchor: nil, previousSelection: nil)
+      lifecycle.creationRuns[run.id] = run
+      lifecycle.creationRunForTarget[wid] = run.id
+      return run
+    }
+    defer {
+      lifecycle.creationRunForTarget[wid] = nil
+      lifecycle.creationRuns = [:]
+    }
+    try await render(f)
+    let first = attach()
+    try await render(f)
+    first.fail(.failedBeforeWorkroom(message: "first"))
+    try await render(f)
+    let second = attach()
+    try await render(f)
+    XCTAssertEqual(SidebarRowPasses.createSteps[second.id], "progress")
+
+    SidebarRowPasses.reset()
+    second.fail(.failedBeforeWorkroom(message: "second"))
+    try await render(f)
+
+    XCTAssertEqual(
+      SidebarRowPasses.createSteps[second.id], "failed", "the row shows its create failed")
+  }
+
+  /// A terminal starting to wait on the user is on its target's row.
+  func testATerminalNeedingYouReRunsItsTargetsRow() async throws {
+    let f = try fixture()
+    defer { close(f) }
+    let monitor = ProgramStatusMonitor()
+    f.store.terminals.programStatus = monitor
+    let session = UUID()
+    // A tab with a session follows its host's program status, as a daemon-backed tab does.
+    _ = f.store.terminals.addTab(for: f.a.rootTarget, sessionID: session)
+    let waiting = ProgramStatusRecord(id: "", state: .blocked, kind: .question, episode: 1)
+    try await render(f)
+    monitor.seed(session, records: [waiting])
+    try await render(f)
+    monitor.seed(session, records: [])
+    try await render(f)
+
+    SidebarRowPasses.reset()
+    monitor.seed(session, records: [waiting])
+    try await render(f)
+
+    XCTAssertEqual(f.store.terminals.blockedTerminalCount(forTargetID: f.a.rootTarget.id), 1)
+    XCTAssertEqual(
+      Set(SidebarRowPasses.byRow.keys), [f.rootA], "only A's root row shows A's terminal waiting")
+  }
+
+  /// An unread notification repaints the unread dots, which read the notifications themselves, and
+  /// re-runs no row.
+  func testAnUnreadNotificationRepaintsTheDotsAndNoRow() async throws {
+    let f = try fixture()
+    defer { close(f) }
+    func notify() {
+      f.store.notifications.recordNotice(
+        targetID: f.a.rootTarget.id, source: "test", title: "Done", body: nil)
+    }
+    try await render(f)
+    notify()
+    try await render(f)
+
+    SidebarRowPasses.reset()
+    notify()
+    try await render(f)
+
+    XCTAssertEqual(f.store.notifications.count(target: f.a.rootTarget.id), 2, "the change landed")
+    XCTAssertGreaterThan(SidebarRowPasses.unreadDot, 0, "the dots read it, so they re-run")
+    XCTAssertEqual(SidebarRowPasses.total, 0, "an unread notification must re-run no row")
+  }
+
+  /// A terminal's title is drawn by its row's title leaf, which reads it live.
+  func testATerminalTitleChangeShowsOnItsRow() async throws {
+    let f = try fixture()
+    defer { close(f) }
+    _ = f.store.terminals.addTab(for: f.a.rootTarget)
+    f.store.toggleTerminals(for: f.a.rootTarget.id)
+    try await render(f)
+    f.surfaceA.handleTitleChange("one")
+    try await render(f)
+
+    SidebarRowPasses.reset()
+    f.surfaceA.handleTitleChange("two")
+    try await render(f)
+
+    XCTAssertEqual(SidebarRowPasses.terminalTitles[f.tabA], "two", "the row shows its new title")
   }
 
   // MARK: Structure (control)

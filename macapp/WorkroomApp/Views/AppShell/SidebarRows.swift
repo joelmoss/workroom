@@ -271,6 +271,7 @@ struct SidebarRootRow: View, Equatable {
         ProjectSidebar.rowEvaluations += 1
         SidebarRowPasses.root += 1
         SidebarRowPasses.byRow[model.id, default: 0] += 1
+        SidebarRowPasses.folderMissing[model.id] = model.target.unavailability == .directoryMissing
       }()
     #endif
     let id = model.id
@@ -387,6 +388,8 @@ struct SidebarWorkroomRow: View, Equatable {
         ProjectSidebar.rowEvaluations += 1
         SidebarRowPasses.workroom += 1
         SidebarRowPasses.byRow[model.id, default: 0] += 1
+        SidebarRowPasses.folderMissing[model.id] = model.target.unavailability == .directoryMissing
+        SidebarRowPasses.workroomTitles[model.id] = model.workroom.displayName
       }()
     #endif
     let id = model.id
@@ -532,6 +535,9 @@ struct SidebarTerminalRow: View, Equatable {
       // The title is read in a leaf (`TabTitleReader`): a terminal's changes many times a second,
       // and the row's body must not re-run for each one.
       TabTitleReader(content: content) { title in
+        #if DEBUG
+          let _ = { SidebarRowPasses.terminalTitles[model.tabID] = title }()
+        #endif
         Text(title)
           .font(.footnote)
           .foregroundStyle(.secondary)
@@ -574,17 +580,18 @@ struct SidebarTerminalRow: View, Equatable {
     .accessibilityAction { actions.revealTerminal(model.tabID, model.parent) }
     .withTabTitle(content) { row, title in
       row
-        .modifier(
-          SidebarTerminalTooltip(
-            title: title, indicator: model.indicator, rollup: model.programStatus,
-            hasSession: model.hasSession, hostID: model.target.hostID)
-        )
         .accessibilityLabel(
           ([title]
             + ProgramStatusPresentation.accessibilityParts(
               indicator: model.indicator, rollup: model.programStatus)).joined(separator: ", ")
         )
         .accessibilityIdentifier("sidebar.terminal.\(title)")
+        // Outermost: the tooltip schedules its own repaint, so the labels stay on the row itself.
+        .modifier(
+          SidebarTerminalTooltip(
+            title: title, indicator: model.indicator, rollup: model.programStatus,
+            hasSession: model.hasSession, hostID: model.target.hostID)
+        )
     }
     .contextMenu {
       SidebarTerminalMenu(tabID: model.tabID, target: model.target)

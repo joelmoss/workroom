@@ -214,7 +214,8 @@ struct ProjectSidebar: View, Equatable {
 #if DEBUG
   /// How many times each kind of sidebar row's body has run, read by the sidebar's invalidation
   /// tests: which rows a change re-runs, by kind and by row, and which of the leaves that keep the
-  /// fast-changing reads out of the rows re-ran in their place.
+  /// fast-changing reads out of the rows re-ran in their place; and, for the changes a row must
+  /// show, what it last drew.
   @MainActor enum SidebarRowPasses {
     static var project = 0
     static var root = 0
@@ -226,6 +227,15 @@ struct ProjectSidebar: View, Equatable {
     static var background = 0
     static var dragDim = 0
     static var rootLabel = 0
+    /// Whether each root and workroom row last drew its folder as missing, by id.
+    static var folderMissing: [SidebarID: Bool] = [:]
+    /// The name each workroom row last drew, by id.
+    static var workroomTitles: [SidebarID: String] = [:]
+    static var unreadDot = 0
+    /// What each create's step circle last drew, by run: `progress`, `failed` or `done`.
+    static var createSteps: [UUID: String] = [:]
+    /// The title each terminal row last drew, by tab.
+    static var terminalTitles: [TerminalTab.ID: String] = [:]
 
     static var total: Int { project + root + workroom + terminal }
 
@@ -239,6 +249,11 @@ struct ProjectSidebar: View, Equatable {
       background = 0
       dragDim = 0
       rootLabel = 0
+      folderMissing = [:]
+      workroomTitles = [:]
+      unreadDot = 0
+      createSteps = [:]
+      terminalTitles = [:]
     }
   }
 #endif
@@ -335,7 +350,12 @@ struct SidebarUnreadDot: View {
   @EnvironmentObject private var notifications: NotificationCenterStore
   let source: Source
 
-  var body: some View { UnreadDot(count: count) }
+  var body: some View {
+    #if DEBUG
+      let _ = { SidebarRowPasses.unreadDot += 1 }()
+    #endif
+    UnreadDot(count: count)
+  }
 
   private var count: Int {
     switch source {
@@ -446,6 +466,12 @@ struct CreateStepCircle: View {
 
   var body: some View {
     let step = WorkroomLifecycle.CreateStep(run)
+    #if DEBUG
+      let _ = {
+        SidebarRowPasses.createSteps[run.id] =
+          run.outcome == .succeeded ? "done" : step.failed ? "failed" : "progress"
+      }()
+    #endif
     if run.outcome == .succeeded {
       EmptyView()
     } else if step.failed {
