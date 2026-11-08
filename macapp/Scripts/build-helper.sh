@@ -20,6 +20,10 @@ HELPER="${HELPER_DIR}/workroom"
 
 # Xcode's build environment usually lacks Homebrew/Go on PATH.
 export PATH="/usr/local/go/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
+# Let the `go` found above use its own toolchain. An inherited GOROOT (mise exports one for
+# the Go it manages) points that `go` at another version's compiler, and every package
+# fails with `compile: version "go1.X" does not match go tool version "go1.Y"`.
+unset GOROOT
 if ! command -v go >/dev/null 2>&1; then
   echo "error: 'go' not found on PATH. Install Go or adjust PATH in build-helper.sh." >&2
   exit 1

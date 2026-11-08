@@ -43,6 +43,8 @@ ZIP="${BUILD}/${APP_NAME}.zip"
 DMG="${BUILD}/${APP_NAME}.dmg"
 
 export PATH="/usr/local/go/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
+# The `go` found above uses its own toolchain, not an inherited GOROOT's (see build-helper.sh).
+unset GOROOT
 
 # Run `xcrun notarytool <subcommand> …` with whichever auth is configured: an App Store
 # Connect API key when NOTARY_KEY_PATH is set (CI: --key/--key-id/--issuer), else a local
