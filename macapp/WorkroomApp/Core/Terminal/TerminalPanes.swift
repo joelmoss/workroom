@@ -2572,7 +2572,8 @@ final class TerminalPanes {
   /// not in a window yet: the focus change is still being rendered (#598). A surface becoming first
   /// responder then was not clicked, since the pane the user sees is about to be replaced. It is
   /// AppKit handing the window's first responder back to it, as a closing popover does (the
-  /// diagnosis popover's Investigate opens a tab and closes the popover in one action), and taking
+  /// diagnosis popover's Investigate opens a tab and closes the popover in one action; so does a
+  /// bell row opening a notification from another tab of the workroom in front, #607), and taking
   /// it as focus would put the old tab back over the new one. A content tab has no surface, so a
   /// click into a terminal beside a focused diff still focuses the terminal.
   private func isFocusBeingShown(otherThan tabID: TerminalTab.ID, in target: TerminalTarget)

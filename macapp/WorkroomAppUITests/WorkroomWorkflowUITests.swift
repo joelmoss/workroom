@@ -349,6 +349,52 @@ final class WorkroomWorkflowUITests: XCTestCase {
       "opening the notification should have dismissed it")
   }
 
+  /// A terminal tab by its chip's accessibility id (`terminal.tab.<title>`).
+  private func terminalChip(_ app: XCUIApplication, _ title: String) -> XCUIElement {
+    app.descendants(matching: .any).matching(identifier: "terminal.tab.\(title)").firstMatch
+  }
+
+  private func poll(timeout: TimeInterval, until condition: () -> Bool) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if condition() { return true }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return condition()
+  }
+
+  /// A notification raised by a background tab of the workroom in front opens THAT tab from the
+  /// bell (#607): the workroom is already selected, so only the tab switch shows the routing worked.
+  /// Terminal 1 raises it after a second, by which time ⌘T has put a new tab in front.
+  func testABellRowFromAnotherTabOfTheSameWorkroomSelectsThatTab() throws {
+    let app = launchedApp()
+    let first = terminalChip(app, "Terminal 1")
+    XCTAssertTrue(first.waitForExistence(timeout: 15), "the fixture workroom has a terminal")
+    first.click()
+    XCTAssertTrue(poll(timeout: 5) { first.isSelected })
+    let bell = app.buttons["activityBar.notifications"]
+    XCTAssertTrue(bell.waitForExistence(timeout: 10))
+    let unreadBefore = bell.label
+
+    app.typeText("sleep 1; printf '\\e]9;Same Workroom Ping\\a'\r")
+    app.typeKey("t", modifierFlags: .command)
+    XCTAssertTrue(poll(timeout: 5) { !first.isSelected }, "⌘T puts a new tab in front")
+    XCTAssertTrue(
+      poll(timeout: 10) { bell.label != unreadBefore }, "Terminal 1's notification arrives")
+
+    bell.click()
+    let popover = app.popovers.firstMatch
+    XCTAssertTrue(popover.waitForExistence(timeout: 4), "the bell opens its popover")
+    let row = popover.buttons.matching(NSPredicate(format: "label CONTAINS 'Same Workroom Ping'"))
+      .firstMatch
+    XCTAssertTrue(row.waitForExistence(timeout: 4), "the notification is listed")
+    row.click()
+
+    XCTAssertTrue(
+      poll(timeout: 5) { first.isSelected },
+      "opening the notification selects Terminal 1, the tab that raised it")
+  }
+
   // "Deleting a workroom withdraws its notifications" is covered by
   // `AppStoreDeleteRaceTests.testDeletingAWorkroomWithdrawsItsNotifications` (a unit test, not
   // here): fixture-mode workrooms are never registered with the real CLI, so `deleteWorkroom`'s
