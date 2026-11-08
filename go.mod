@@ -1,6 +1,6 @@
 module github.com/joelmoss/workroom
 
-go 1.25.7
+go 1.27.3
 
 require (
 	github.com/charmbracelet/huh v1.0.0
