@@ -16,13 +16,17 @@ final class TerminalCodingAgentUITests: XCTestCase {
     continueAfterFailure = false
   }
 
-  private func launchedApp(runCommand: String, multilineFix: Bool = false) -> XCUIApplication {
+  private func launchedApp(
+    runCommand: String, multilineFix: Bool = false, workroomSplit: Bool = false
+  ) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     app.launchArguments += ["-WorkroomUITestCodingAgentStub", "1"]
     app.launchArguments += ["-WorkroomUITestRunCommand", runCommand]
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     if multilineFix { app.launchArguments += ["-WorkroomUITestCodingAgentMultilineFix", "1"] }
+    // A root + workroom split with the workroom selected (`UITestFixture.workroomSplit`).
+    if workroomSplit { app.launchArguments += ["-WorkroomUITestWorkroomSplit", "1"] }
     app.useScratchDaemon()
     app.launch()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
@@ -146,6 +150,53 @@ final class TerminalCodingAgentUITests: XCTestCase {
       seededCommand.contains("UITEST diagnosis: port already in use"),
       "the seeded command must carry the diagnosis text, not a bare `claude` invocation — got: "
         + seededCommand)
+  }
+
+  /// Investigate from the dimmed member of a workroom split brings that workroom forward, with its
+  /// new tab as the focused pane (#611). The run fails in the workroom; a click on the root's title
+  /// bar then selects the root, so the workroom is dimmed when its status bar's Investigate is
+  /// clicked. The status bar does not activate its pane, so only Investigate itself can bring the
+  /// workroom forward.
+  ///
+  /// The focused pane is the one `terminal.pane` with the selected trait (`PaneTreeView`); a dimmed
+  /// member's pane never has it. The Investigate pane is told apart by its seeded command, which its
+  /// surface reports as `placeholderValue`.
+  func testInvestigateFromTheDimmedSplitMemberBringsItForward() {
+    let app = launchedApp(runCommand: "echo 'boom: build failed'; exit 7", workroomSplit: true)
+    startRun(app)
+    revealRunTab(app)
+    let diagnosis = app.buttons["terminal.statusBar.diagnosis"]
+    XCTAssertTrue(diagnosis.waitForExistence(timeout: 20))
+
+    let titlebars = app.descendants(matching: .any).matching(identifier: "workroom.pane.titlebar")
+    let rootBar = titlebars.matching(
+      NSPredicate(format: "NOT (label CONTAINS[c] %@)", "workroom")
+    ).firstMatch
+    XCTAssertTrue(rootBar.waitForExistence(timeout: 6), "the root member's title bar renders")
+    rootBar.click()
+    let selectedPane = app.descendants(matching: .any).matching(identifier: "terminal.pane")
+      .matching(NSPredicate(format: "selected == true")).firstMatch
+    XCTAssertTrue(
+      selectedPane.waitForExistence(timeout: 6), "the root's pane is the focused pane")
+    XCTAssertFalse(
+      selectedPane.buttons["terminal.statusBar.diagnosis"].exists,
+      "precondition: the workroom with the failed run is dimmed")
+
+    diagnosis.click()
+    let investigate = app.buttons["Investigate"]
+    XCTAssertTrue(investigate.waitForExistence(timeout: 5))
+    investigate.click()
+
+    let focusedInvestigate = app.descendants(matching: .any).matching(identifier: "terminal.pane")
+      .matching(NSPredicate(format: "selected == true"))
+      .containing(
+        NSPredicate(
+          format: "identifier == %@ AND placeholderValue CONTAINS %@", "terminal.surface",
+          "UITEST diagnosis: port already in use")
+      ).firstMatch
+    XCTAssertTrue(
+      focusedInvestigate.waitForExistence(timeout: 10),
+      "the workroom comes forward with its Investigate tab as the focused pane")
   }
 
   /// A multi-line fix could run its first line with no Return pressed, so the real banner must not
