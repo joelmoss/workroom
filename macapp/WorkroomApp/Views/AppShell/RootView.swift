@@ -3,22 +3,20 @@ import Defaults
 import SwiftUI
 import WorkroomDomain
 
+/// The window's composition root. It takes from the environment only what it renders from; the
+/// Combine-published objects that feed the menus, the title-bar bar and the What's New check are
+/// observed by `MenuStateAdapter`, `AccessoryBarInjector` and `WhatsNewLaunchCheck`, so their
+/// publishes do not re-run this body (`RootInvalidationTests`).
 struct RootView: View {
+  #if DEBUG
+    /// How many times the body has run, read by `RootInvalidationTests`.
+    static var bodyPasses = 0
+  #endif
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var modals: ModalState
-  @EnvironmentObject var runCommand: RunCommandController
   @EnvironmentObject var runCommands: RunCommands
   @EnvironmentObject var projectStore: ProjectStore
   @EnvironmentObject var lifecycle: WorkroomLifecycle
-  @EnvironmentObject var notifications: NotificationCenterStore
-  @ObservedObject private var programStatusAlerts = ProgramStatusAlerts.shared
-  // Observed so the Room menu's Fetch/Push/Pull items follow `canFetch`/`canPush`/`canPull`, which
-  // the store's Observation tracking cannot see.
-  @EnvironmentObject var remoteState: RemoteStateModel
-  // Drives the leading title-bar "Update" pill (injected into the accessory closure below) and the
-  // "What's New" dialog. Both injected by `WorkroomApp` on the `RootWindow`.
-  @EnvironmentObject var updater: Updater
-  @EnvironmentObject var whatsNew: WhatsNewService
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.openSettings) private var openSettings
   /// Drives the title-bar accessory's dim while a dialog is up, matched to `DialogOverlay`'s backdrop.
@@ -40,9 +38,8 @@ struct RootView: View {
   /// notification (a menu command can't anchor a sheet).
   @State private var showKeyboardShortcuts = false
 
-  /// The "What's New" dialog's content, or nil when closed. Set by the launch-window auto-check.
-  /// Window-local so multiple windows never stack duplicate dialogs.
-  @State private var whatsNewContent: WhatsNewSheetContent?
+  /// Whether the "What's New" dialog is up, mirrored from `WhatsNewLaunchCheck`, which owns it.
+  @State private var whatsNewShown = false
 
   /// Live preview of a workroom tab being dragged into the detail content to form a split (issue #23
   /// follow-up). Set by `WorkroomTabBar`'s drag, read by `WorkroomSplitView` to highlight the drop edge.
@@ -50,16 +47,10 @@ struct RootView: View {
   /// The detail content area's global frame, so a chip drag can be resolved against the workroom panes.
   @State private var detailContentFrame: CGRect = .zero
 
-  /// True when the selected target can host a terminal right now: it exists, isn't missing, and its
-  /// terminal isn't withheld behind its own create (issue #116).
-  /// Reads `isCreationBlocking`, the same predicate `TargetTerminalDetail` withholds on, so ⌘T and
-  /// its neighbours stay disabled over a create that has no terminal to act on.
-  private var terminalInteractionAvailable: Bool {
-    guard let target = store.selectedTarget, target.opensTerminals else { return false }
-    return !lifecycle.isCreationBlocking(target.id)
-  }
-
   var body: some View {
+    #if DEBUG
+      Self.bodyPasses += 1
+    #endif
     // The custom chrome lives in a full-width `.left` titlebar accessory (`accessoryBarContent`, hosted
     // via `TitlebarAccessoryHost` in `rootWindowChrome`), not a content top-strip and not SwiftUI
     // `.toolbar` items — so AppKit owns the bar height (an empty NSToolbar; see WindowBackgroundThemer)
@@ -68,7 +59,7 @@ struct RootView: View {
     // not sheets — render above the toast stack and above an edge-revealed sidebar. Inside, an
     // arriving toast drew on top of the dialog. Only the overlay presenters care about this ordering;
     // `.sheet` / `.alert` are position-independent.
-    rootWindowChrome(rootLifecycle(rootModals(windowContent)))
+    return rootWindowChrome(rootLifecycle(rootModals(windowContent)))
   }
 
   private var windowContent: some View {
@@ -79,8 +70,9 @@ struct RootView: View {
   }
 
   /// The full title-bar bar hosted in the `.left` titlebar accessory: leading controls, the workroom
-  /// tab strip (fills + scrolls), trailing controls. Environment objects are re-injected because the
-  /// accessory is a separate hosting tree from the main window content.
+  /// tab strip (fills + scrolls), trailing controls. `AccessoryBarInjector` hosts it and re-injects
+  /// the environment objects, because the accessory is a separate hosting tree from the main window
+  /// content.
   private var accessoryBarContent: some View {
     HStack(spacing: 6) {
       LeadingTitlebarBar()
@@ -92,15 +84,7 @@ struct RootView: View {
     // No own background — the accessory is transparent so the window's panel bg shows through it AND
     // behind the traffic lights uniformly (an opaque fill here didn't match the titlebar strip behind
     // the lights). WindowBackgroundThemer sets the window bg to the panel token.
-    .environmentObject(store)
-    .environmentObject(modals)
-    .environmentObject(runCommand)
-    .environmentObject(runCommands)
-    .environmentObject(store.projectStore)
-    .environmentObject(store.vcsStatus)
-    .environmentObject(lifecycle)
-    .environmentObject(notifications)
-    .environmentObject(updater)
+    //
     // The accessory is a window-level AppKit hosting tree, so the dialog's own backdrop — an overlay
     // on the content below — can never cover it. Left alone, the workroom tab strip's New/Open buttons
     // and its chips stay clickable through a "modal" dialog, and the bar stays undimmed while
@@ -447,17 +431,7 @@ struct RootView: View {
       .sheet(isPresented: $showKeyboardShortcuts) {
         KeyboardShortcutsView()
       }
-      // "What's New" auto-check: only the launch/restore window runs it, so restored ⌘N windows don't
-      // each pop the dialog. Silent — opens straight to the notes when there are any to show.
-      .task {
-        guard store.isRestoreWindow else { return }
-        if let notes = await whatsNew.checkOnLaunch() {
-          whatsNewContent = WhatsNewSheetContent(notes: notes)
-        }
-      }
-      .sheet(item: $whatsNewContent) { content in
-        WhatsNewSheet(content: content) { whatsNewContent = nil }
-      }
+      .modifier(WhatsNewLaunchCheck(store: store, presented: $whatsNewShown))
   }
 
   /// Window-level chrome (title, toolbar trimming, background themer + the unified title-bar bar), the
@@ -480,7 +454,7 @@ struct RootView: View {
       // in a full-width `.left` titlebar accessory to the RIGHT of the lights (Chrome-style), which
       // never collapses into an overflow `»` (the tab strip is a ScrollView that just scrolls).
       .navigationTitle(store.windowTitle)
-      .background(TitlebarAccessoryHost { accessoryBarContent })
+      .modifier(AccessoryBarInjector(store: store, bar: AnyView(accessoryBarContent)))
       .background(WindowBackgroundThemer())
       // Keep the root branch labels reasonably current: refresh when the app regains
       // focus (throttled, so rapid alt-tabbing doesn't fork a git process per project).
@@ -497,66 +471,13 @@ struct RootView: View {
         store.refreshRemoteStateIfActive()
         Task { await store.reloadIfStale() }
       }
-      // Publish selection state for menu-command enablement (see WorkroomCommands). Grouped into one
-      // modifier so the long publisher chain stays a single, fast-to-type-check expression (SwiftUI
-      // chokes on ~12 `.focusedSceneValue` calls inline).
-      // Keep the store's mirror of the four view-local sheet flags current, so
-      // `hasModalPresentation` is a complete answer for every reader (see its doc comment).
+      // Keep the store's mirror of the view-local sheet flags current, so `hasModalPresentation` is
+      // a complete answer for every reader (see its doc comment).
       .onChange(of: auxSheetPresented, initial: true) { _, presented in
         modals.auxSheetPresented = presented
       }
-      .modifier(RoomCommandStateValues(store: store))
-      .modifier(
-        MenuStateValues(
-          // `workroomSelected`: while a setup script blocks the selected workroom's terminal, report
-          // false so ⌘T can't open a (hidden) terminal behind the setup pane (Open/Reveal still work).
-          //
-          // Every boolean here also ANDs in `!modals.hasModalPresentation`: a menu item's key
-          // equivalent fires even while a dialog or sheet is up (⌘T behind the Add Project sheet
-          // really did open a tab), and a disabled item drops its key equivalent — the same mechanism
-          // `hasProjects` already relies on for ⌘N. Doing it here rather than per-item keeps it to one
-          // site, and greying the item out tells the user WHY the key did nothing, which swallowing
-          // the event in the key monitor cannot.
-          workroomSelected: terminalInteractionAvailable && !modals.hasModalPresentation,
-          hasNotifications: !notifications.items.isEmpty && !modals.hasModalPresentation,
-          hasWaitingTerminals: !programStatusAlerts.waiting.isEmpty
-            && !modals.hasModalPresentation,
-          // `hasProjects`: "New Workroom" (⌘N) disabled with no projects (#81). Deliberately NOT gated
-          // on `hasModalPresentation` — ⌘N/⌘O must still work while a picker is open, because raising
-          // one picker replaces the other and that's the documented behaviour (issue #94).
-          hasProjects: !projectStore.projects.isEmpty,
-          // `hasWorkroomAnchor`: the two "(split right)" items (⌥⌘N/⌥⌘O, issue #163) need a workroom
-          // to split BESIDE. Deliberately NOT gated on `hasModalPresentation`, for the same reason
-          // `hasProjects` isn't — a disabled item drops its key equivalent, and these chords must
-          // keep working while a picker is up, exactly as their plain ⌘N/⌘O siblings do.
-          hasWorkroomAnchor: store.selectedTargetID != nil,
-          // Go-menu Back/Forward (issue #26).
-          canNavigateBack: store.canGoBack && !modals.hasModalPresentation,
-          canNavigateForward: store.canGoForward && !modals.hasModalPresentation,
-          // Run/Stop/Restart (issue #7) — run-state lives on the store, so these stay live.
-          hasRunCommand: selectedHasRunCommand && !modals.hasModalPresentation,
-          runCommandActive: selectedRunCommandActive && !modals.hasModalPresentation,
-          // Room menu's Fetch / Push / Pull (⌥⇧⌘F / ⇧⌘P / ⌥⇧⌘P). The model's own `can*` already
-          // fold in "a remote exists" and "nothing is in flight"; the tool floor and the modal guard
-          // are ANDed here so the menu can't fire an action the toolbar itself would refuse.
-          vcsCanFetch: remoteState.canFetch && vcsToolsUsable && !modals.hasModalPresentation,
-          vcsCanPush: remoteState.canPush && vcsToolsUsable && !modals.hasModalPresentation,
-          vcsCanPull: remoteState.canPull && vcsToolsUsable && !modals.hasModalPresentation,
-          hasRunTerminal: runCommand.hasAnyRunTerminal && !modals.hasModalPresentation,
-          // Go-menu Previous/Next Workroom Tab (issue #29) — only meaningful with ≥2 tabs.
-          multipleWorkroomTabs: store.orderedWorkroomTargets().count > 1
-            && !modals.hasModalPresentation,
-          // Go-menu "Last-Used Workroom" (⌥⇥, issue #132). Counted across every window, so it stays
-          // enabled when this window holds the only workroom and another window holds a second one.
-          // Observation tracks the other windows' reads too, and they ask only whether each workroom
-          // has terminals (`TerminalPanes.activeTargetIDs`), so another window's workroom opening
-          // or emptying re-runs this body, and its tabs' titles, agents and progress do not.
-          canSwitchWorkrooms: QuickSwitcher.canSwitchWorkrooms() && !modals.hasModalPresentation,
-          // Go-menu "Open in…" + ⌘O — enabled only with an editor and a valid selection.
-          canOpenInEditor: store.canOpenInEditor && !modals.hasModalPresentation,
-          canMoveWorkroom: store.selectedTargetID.map(store.canMoveWorkroom) == true
-            && !modals.hasModalPresentation,
-          modalPresented: modals.hasModalPresentation))
+      // Publish selection state for menu-command enablement (see WorkroomCommands).
+      .modifier(MenuStateAdapter(store: store))
   }
 
   /// The sheets RootView owns as `@State` rather than store state, ORed for the store mirror.
@@ -565,30 +486,7 @@ struct RootView: View {
   /// menu item inert while it's up, and the whole point of it being a panel is that you keep using the
   /// app — ⌘⇧L especially — to see what the theme you just picked actually looks like.
   private var auxSheetPresented: Bool {
-    showAddProject || showKeyboardShortcuts || whatsNewContent != nil
-  }
-
-  /// The project path of the selected root or workroom (nil for no selection) — the run command is
-  /// configured per project and runnable from either (issue #7).
-  private var selectedRunProjectPath: String? {
-    AppStore.projectPath(of: store.selectedTargetID)
-  }
-  /// Whether the selected workroom's project has a run command configured.
-  /// Whether the `git` on PATH can run the remote commands (`VCSToolVersions`).
-  private var vcsToolsUsable: Bool { store.vcsAllowsRemoteActions }
-
-  /// Whether ⌘R (File ▸ Run) should be live for the selection — the shared `canRunCommand` gate, not a
-  /// bare `hasRunCommand`. The menu is one of the callers `startRunCommand`'s guards were written for
-  /// (issue #171), so it enables on exactly the conditions under which a run would actually start: a
-  /// present directory, no create in flight, and a command configured.
-  private var selectedHasRunCommand: Bool {
-    guard let path = selectedRunProjectPath, let target = store.selectedTarget else { return false }
-    return store.canRunCommand(for: target, inProject: path)
-  }
-  /// Whether the selected target's run command is currently running.
-  private var selectedRunCommandActive: Bool {
-    guard let target = store.selectedTarget else { return false }
-    return runCommand.isRunCommandRunning(for: target.id)
+    showAddProject || showKeyboardShortcuts || whatsNewShown
   }
 
   /// Pushes the chosen appearance onto the running app. nil (System) tells AppKit to
@@ -798,56 +696,5 @@ struct RootView: View {
         onMove: { store.insertWorkroomSplit($0, beside: $1, edge: $2, destinationRect: $3) }
       )
     }
-  }
-}
-
-/// Publishes the per-window menu-command enablement values as `focusedSceneValue`s in one place. A
-/// `Commands` body doesn't re-evaluate when the shared store mutates, but it does track focused
-/// values — so RootView recomputes these (it observes the store/sessions) and the menu reads them via
-/// `@FocusedValue` (see `WorkroomCommands`). Collapsed into a `ViewModifier` so RootView's body stays a
-/// single, fast-to-type-check expression (a dozen inline `.focusedSceneValue` calls blow the
-/// type-checker's budget).
-private struct MenuStateValues: ViewModifier {
-  let workroomSelected: Bool
-  let hasNotifications: Bool
-  let hasWaitingTerminals: Bool
-  let hasProjects: Bool
-  let hasWorkroomAnchor: Bool
-  let canNavigateBack: Bool
-  let canNavigateForward: Bool
-  let hasRunCommand: Bool
-  let runCommandActive: Bool
-  let vcsCanFetch: Bool
-  let vcsCanPush: Bool
-  let vcsCanPull: Bool
-  let hasRunTerminal: Bool
-  let multipleWorkroomTabs: Bool
-  let canSwitchWorkrooms: Bool
-  let canOpenInEditor: Bool
-  let canMoveWorkroom: Bool
-  /// Published for the items that have no other boolean to fold it into (see `ModalPresentedKey`).
-  /// The booleans above already have it ANDed in at the call site, so they need nothing here.
-  let modalPresented: Bool
-
-  func body(content: Content) -> some View {
-    content
-      .focusedSceneValue(\.modalPresented, modalPresented)
-      .focusedSceneValue(\.workroomSelected, workroomSelected)
-      .focusedSceneValue(\.hasNotifications, hasNotifications)
-      .focusedSceneValue(\.hasWaitingTerminals, hasWaitingTerminals)
-      .focusedSceneValue(\.hasProjects, hasProjects)
-      .focusedSceneValue(\.hasWorkroomAnchor, hasWorkroomAnchor)
-      .focusedSceneValue(\.canNavigateBack, canNavigateBack)
-      .focusedSceneValue(\.canNavigateForward, canNavigateForward)
-      .focusedSceneValue(\.hasRunCommand, hasRunCommand)
-      .focusedSceneValue(\.vcsCanFetch, vcsCanFetch)
-      .focusedSceneValue(\.vcsCanPush, vcsCanPush)
-      .focusedSceneValue(\.vcsCanPull, vcsCanPull)
-      .focusedSceneValue(\.runCommandActive, runCommandActive)
-      .focusedSceneValue(\.hasRunTerminal, hasRunTerminal)
-      .focusedSceneValue(\.multipleWorkroomTabs, multipleWorkroomTabs)
-      .focusedSceneValue(\.canSwitchWorkrooms, canSwitchWorkrooms)
-      .focusedSceneValue(\.canOpenInEditor, canOpenInEditor)
-      .focusedSceneValue(\.canMoveWorkroom, canMoveWorkroom)
   }
 }
