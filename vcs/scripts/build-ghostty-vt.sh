@@ -15,12 +15,14 @@
 #
 # THE PIN IS THE POINT. The daemon and the app must run the same engine revision, because a snapshot
 # written by one and decoded by another is not a supported combination — snapshot format v1 carries
-# no binary-compatibility guarantee, and the header says the API is "definitely going to change".
-# GHOSTTY_SHA below is the single source of truth for both. See docs/designs/remote-workrooms.md,
-# Distribution Plan.
+# no binary-compatibility guarantee. libghostty-vt 1.0.0 made its C ABI stable across 1.x, but its
+# stability promise leaves the snapshot bytes out ("may change in any release"), and the app's
+# ghostty.h has no promise at all. GHOSTTY_SHA below is the single source of truth for both. See
+# docs/designs/remote-workrooms.md, Distribution Plan.
 set -euo pipefail
 
-GHOSTTY_SHA="83fb95624"
+# libghostty-vt's vt-1.0.0 tag.
+GHOSTTY_SHA="0fa3d577a"
 GHOSTTY_REPO="https://github.com/ghostty-org/ghostty.git"
 # build.zig.zon's `minimum_zig_version` at the pinned sha.
 ZIG_VERSION="0.17.0"

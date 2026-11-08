@@ -72,41 +72,51 @@ final class GhosttyApp {
       return
     }
 
-    var rt = ghostty_runtime_config_s()
-    rt.userdata = Unmanaged.passUnretained(self).toOpaque()
-    // We service the system pasteboard ourselves (copy-on-select etc. live on the surface view),
-    // so the X11-style selection clipboard is not supported.
-    rt.supports_selection_clipboard = false
+    // Each callback is a typed constant first, not a closure written as an argument of the
+    // initializer below: there it takes this method's main-actor isolation, and Swift traps the
+    // moment the IO thread calls `wakeup_cb`. The callbacks that need the main actor enter it.
     // @convention(c) callbacks capture nothing — they route through the shared singleton.
-    rt.wakeup_cb = { _ in GhosttyApp.shared.scheduleTick() }
+    let wakeup: ghostty_runtime_wakeup_cb = { _ in GhosttyApp.shared.scheduleTick() }
     // The rest fire on the main thread (`GhosttyRuntimeAdapter`'s Threading note).
-    rt.action_cb = { app, target, action in
+    let action: ghostty_runtime_action_cb = { app, target, action in
       MainActor.assumeIsolated {
         GhosttyRuntimeAdapter.shared.handleAction(app: app, target: target, action: action)
       }
     }
-    rt.read_clipboard_cb = { userdata, location, state, mimes, mimeCount, wantsAvailable in
+    let readClipboard: ghostty_runtime_read_clipboard_cb = {
+      userdata, location, state, mimes, mimeCount, wantsAvailable in
       MainActor.assumeIsolated {
         GhosttyRuntimeAdapter.shared.readClipboard(
           userdata: userdata, location: location, state: state, mimes: mimes, mimeCount: mimeCount,
           wantsAvailable: wantsAvailable)
       }
     }
-    rt.confirm_read_clipboard_cb = { userdata, confirm, state, request in
+    let confirmReadClipboard: ghostty_runtime_confirm_read_clipboard_cb = {
+      userdata, confirm, state, request in
       MainActor.assumeIsolated {
         GhosttyRuntimeAdapter.shared.confirmReadClipboard(
           userdata: userdata, confirm: confirm, state: state, request: request)
       }
     }
-    rt.write_clipboard_cb = { userdata, location, content, count, confirm in
+    let writeClipboard: ghostty_runtime_write_clipboard_cb = {
+      userdata, location, content, count, confirm in
       MainActor.assumeIsolated {
         GhosttyRuntimeAdapter.shared.writeClipboard(
           userdata: userdata, location: location, content: content, count: count, confirm: confirm)
       }
     }
-    rt.close_surface_cb = { userdata, needsConfirm in
+    let closeSurface: ghostty_runtime_close_surface_cb = { userdata, needsConfirm in
       GhosttyRuntimeAdapter.closeSurface(userdata: userdata, needsConfirm: needsConfirm)
     }
+    // Every callback but `close_surface_cb` has been non-null since ghostty.h declared its
+    // nullability, so the struct has no empty initializer and is built whole. We service the
+    // system pasteboard ourselves (copy-on-select etc. live on the surface view), so the X11-style
+    // selection clipboard is not supported.
+    var rt = ghostty_runtime_config_s(
+      userdata: Unmanaged.passUnretained(self).toOpaque(), supports_selection_clipboard: false,
+      wakeup_cb: wakeup, action_cb: action, read_clipboard_cb: readClipboard,
+      confirm_read_clipboard_cb: confirmReadClipboard, write_clipboard_cb: writeClipboard,
+      close_surface_cb: closeSurface)
 
     guard let createdApp = ghostty_app_new(&rt, cfg) else {
       reportStartupFailure("ghostty_app_new failed — terminals unavailable")

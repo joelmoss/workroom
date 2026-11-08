@@ -161,6 +161,17 @@ bump is worthless.
 - A `BUILD SUCCEEDED` straight after the bump proves nothing: Xcode does not recompile Swift
   when only the binary artifact's header changed. `touch` every file that imports GhosttyKit
   (`grep -rl 'import GhosttyKit' macapp`, tests included) and rebuild, or do a clean build.
+  Going back to an older pin in the same checkout (to take a baseline) also fails with
+  "ghostty.h has been modified since the module file … was built": `rm -rf
+  macapp/DerivedData/Build` and build again. Removing only the precompiled-module folders leaves
+  the build graph pointing at files that are gone.
+- Since the vt-1.0.0 bump, ghostty.h declares pointer nullability, so `ghostty_runtime_config_s`
+  has no empty initializer. Build it from callbacks held in typed constants
+  (`let wakeup: ghostty_runtime_wakeup_cb = …`), as `GhosttyApp.initialize` does. With the closures
+  written inline as arguments of the initializer, inside that main-actor method, every test that
+  opened a run tab aborted the test host (`EXC_BREAKPOINT` in libdispatch, with the stack through
+  `closure #1 in GhosttyApp.initialize()`). The closures apparently took the main actor's isolation
+  and trapped on the first callback from libghostty's own threads; typed constants do not.
 - Regenerate `Resources/ghostty/` (terminfo via `infocmp`/`tic`, `shell-integration/`) from the
   pinned commit; see `Resources/ghostty/SOURCE.md`.
 - Check whether ghostty#14444 (the pane-close freeze, #547) has merged, and whether the new sha holds
@@ -172,7 +183,9 @@ bump is worthless.
 - Check upstream still skips Apple's bash: `detectShell` in `src/termio/shell_integration.zig` at
   the new sha must still return no integration for `/bin/bash` on Darwin. `workroomd`'s
   `shell::invocation` mirrors that skip by hand, so if upstream changes it, change both.
-- Re-check the GhosttyKit modulemap-collision workaround (`macapp/AGENTS.md`).
+- Check `include/module.modulemap` at the new sha. (An older step here pointed at a modulemap
+  workaround in `macapp/AGENTS.md`; it was for the jj-era `wr_vcs_uniffiFFI` xcframework, which went
+  with jj in b26f5415, and the section with it.)
 - The bake gate (how many clean nightlies before the bump enters a `pre` tag) has never been decided.
 - Rollback is not one line: revert, `rm -rf macapp/DerivedData/SourcePackages`, rebuild. CI's
   `spm-`/`xcbuild-` cache `restore-keys` can restore a mixed state.

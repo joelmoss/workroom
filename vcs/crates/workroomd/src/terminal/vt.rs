@@ -12,14 +12,14 @@
 //! **What re-synthesis has to send, and why each piece.** Phase 0 measured all three of these by
 //! watching a fresh client get them wrong:
 //!
-//! 1. **Screen + state** from the formatter, with its `extra` flags on. With the default options
-//!    the formatter emits 8 bytes and the client loses *every* negotiated mode — it looks correct
+//! 1. **Screen + state** from the formatter, with its extras on. Without them the formatter
+//!    emits 8 bytes and the client loses *every* negotiated mode — it looks correct
 //!    and is completely dead: no mouse, wrong key encoding, not even on the alternate screen.
-//! 2. **The cursor**, by hand. `GhosttyFormatterTerminalExtra` covers modes, scrolling region,
-//!    tabstops, pwd, keyboard and charsets — but has no cursor field. The formatter homes
+//! 2. **The cursor**, by hand. The extras the shadow asks for (`Extras`: modes, scrolling region,
+//!    tabstops, pwd, keyboard and charsets) leave the cursor out. The formatter homes
 //!    the cursor, paints, and leaves it wherever the last cell landed, so without an explicit CUP
 //!    the next byte lands in the wrong place.
-//! 3. **Kitty keyboard flags**, by hand. `extra.keyboard` covers ModifyOtherKeys and not the kitty
+//! 3. **Kitty keyboard flags**, by hand. The keyboard extra covers ModifyOtherKeys and not the kitty
 //!    stack. The snapshot carries the flags correctly, so nothing is lost across persistence; they
 //!    simply are not emitted.
 //!
@@ -773,7 +773,7 @@ impl ShadowTerminal {
         bytes
     }
 
-    /// The colours a program set, for a repaint. Not `extra.palette`, which sends all 256: each is
+    /// The colours a program set, for a repaint. Not the palette extra, which sends all 256: each is
     /// a message in the app's 64-slot mailbox, so every attach filled it, and a pane freed before
     /// the next tick deadlocked (#547). They also replaced the client's theme with this terminal's
     /// built-in colours. The reset first is for a pane that reconnects and still holds colours the
