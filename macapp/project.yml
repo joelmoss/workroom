@@ -373,6 +373,9 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+        # Made as the bundle loads: fails a test whose terminal reaches this build's real daemon
+        # (`HostedRunSessionGuard`).
+        INFOPLIST_KEY_NSPrincipalClass: HostedRunGuardObserver
         PRODUCT_BUNDLE_IDENTIFIER: com.developwithstyle.workroom.tests
         SWIFT_VERSION: "6.0"
         DEVELOPMENT_TEAM: B898J443L9

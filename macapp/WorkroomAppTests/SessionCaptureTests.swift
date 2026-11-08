@@ -5,8 +5,9 @@ import XCTest
 
 /// What a target contributes to a saved session (issue #46).
 ///
-/// Uses the same factory seam as `TerminalPanesTests`: a `GhosttySurfaceView` only creates its PTY
-/// when it enters a window, so constructing one here spawns nothing.
+/// Uses the same factory seam as `TerminalPanesTests`, with inert surfaces: a backgrounded run tab
+/// (`addRunTab(focus: false)`) creates its surface off-window, so a spawning one ran the run
+/// command for real.
 @MainActor
 final class SessionCaptureTests: XCTestCase {
   private let target = TerminalTarget(
@@ -15,7 +16,7 @@ final class SessionCaptureTests: XCTestCase {
   private func makeSessions() -> TerminalPanes {
     let sessions = TerminalPanes()
     sessions.makeView = { _, cwd, command in
-      GhosttySurfaceView(workingDirectory: cwd, command: command)
+      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
     sessions.recency = SwitcherRecency()  // never write this suite's tabs into the shared MRU
     return sessions

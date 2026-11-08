@@ -6,6 +6,9 @@ import XCTest
 /// A store over `projects` whose terminals mount a `GhosttySurfaceView` that only spawns its PTY
 /// once it enters a window, so a unit test can open tabs without starting a shell. The shape most
 /// suites need; a suite that needs a fake CLI, a captured command or an inert surface keeps its own.
+/// A backgrounded run tab is the exception: it spawns off-window (`ensureSurfaceCreated`), and
+/// through the app's shared session service into this build's real daemon, so a suite that starts a
+/// run, or arms an auto-run, uses an inert surface (`spawnsSurface: false`).
 @MainActor
 func makeStore(_ projects: [Project]) -> AppStore {
   let store = AppStore()
