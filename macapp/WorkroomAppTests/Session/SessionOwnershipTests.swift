@@ -769,6 +769,74 @@ final class HelperSessionSubstitutionTests: XCTestCase {
   }
 }
 
+/// The one Sentry event that says someone still reattaches through the v2.0.0 `workroom-session`
+/// shim (#591), so the shim can be retired once it reads zero. It must count real shim reattaches
+/// and nothing else, and once per launch, so a restore of many panes is one event.
+final class ShimReattachTelemetryTests: XCTestCase {
+  /// Value: protects=the retirement gate sees a launch that reattached through the shim;
+  /// fails_when=the send is dropped, or fires per pane rather than per launch;
+  /// seam=reportShimReattach; no_claim=what Sentry does with the event
+  @MainActor
+  func testAShimReattachIsReportedOncePerLaunch() {
+    let reports = Counter()
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in .owned },
+      reportShimReattach: { reports.add() })
+    let first = UUID()
+
+    let command = service.attachCommand(forSession: first, restored: true)
+    XCTAssertEqual(command?.contains("workroom-session"), true, "got \(command ?? "nil")")
+    XCTAssertEqual(reports.count, 1, "a reattach through the shim must be reported")
+
+    // A restore of many panes, and one pane asking again: still the launch's one event.
+    _ = service.attachCommand(forSession: first, restored: true)
+    for _ in 0..<5 { _ = service.attachCommand(forSession: UUID(), restored: true) }
+    XCTAssertEqual(reports.count, 1, "one event per launch, not one per pane")
+  }
+
+  /// Value: protects=daemon sessions never count as shim use, or the gate never reads zero;
+  /// fails_when=the send fires for every attach; seam=reportShimReattach; no_claim=remote panes
+  @MainActor
+  func testADaemonAttachIsNeverReported() {
+    let reports = Counter()
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in .notOwned },
+      reportShimReattach: { reports.add() })
+
+    let command = service.attachCommand(forSession: UUID(), restored: true)
+    XCTAssertEqual(command?.contains("workroomd"), true, "got \(command ?? "nil")")
+    _ = service.attachCommand(forSession: UUID())
+    XCTAssertEqual(reports.count, 0, "a daemon attach is not a shim reattach")
+  }
+
+  /// A helper that does not answer gets no attach at all (a plain shell), and a session the helper
+  /// lost is attached through the daemon: neither went through the shim.
+  @MainActor
+  func testNoShimAttachMeansNoReport() {
+    let reports = Counter()
+    let wedged = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in .unreachable },
+      reportShimReattach: { reports.add() })
+    XCTAssertNil(wedged.attachCommand(forSession: UUID(), restored: true))
+
+    let answers = OwnershipScript([.owned, .notOwned])
+    let lost = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in answers.next() },
+      reportShimReattach: { reports.add() })
+    let sessionID = UUID()
+    XCTAssertEqual(lost.backend(forSession: sessionID), .legacySessionHelper)
+    XCTAssertEqual(lost.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .gone)
+    let command = lost.attachCommand(forSession: sessionID, restored: true)
+    XCTAssertEqual(command?.contains("workroomd"), true, "got \(command ?? "nil")")
+
+    XCTAssertEqual(reports.count, 0, "nothing reattached through the shim")
+  }
+}
+
 /// Answers a scripted sequence of ownership results, then repeats the last one.
 private final class OwnershipScript: Sendable {
   private let answers: [SessionOwnership]

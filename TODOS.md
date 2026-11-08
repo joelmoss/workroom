@@ -148,16 +148,18 @@ fixture and its tests are pure carrying cost.
 `WorkroomSessionProtocol` to change again (it is frozen today because its only real peer — a shipped
 v2.0.0 binary — can never be recompiled to match).
 
-**Cons:** Nothing signals when the population hits zero. It is a judgement call on elapsed time and
-release adoption, so this will sit open for a while. Deleting it early strands exactly the users it
-was added for.
+**Cons:** It waits on release adoption, so this will sit open for a while. Deleting it early strands
+exactly the users it was added for.
 
-**How to start:** Check whether any reattach-from-old-Swift-helper has been reported since the shim landed.
-Then delete the directory, the fixture, the compatibility tests, and the freeze comment together —
-they are one unit, and leaving the fixture behind without its tests is worse than leaving all of it.
+**How to start:** Check the Sentry issue "Terminal reattached through the v2.0.0 workroom-session
+shim" (fingerprint `workroom-session-shim-reattach`): the app sends it once per launch that
+reattaches a terminal through the shim (#591). Then delete the directory, the fixture, the
+compatibility tests, the freeze comment and that event together — they are one unit, and leaving the
+fixture behind without its tests is worse than leaving all of it. Then split
+`PersistentSessionService` (cleanup row 3.7).
 
-**Depends on / blocked by:** The shim landing first, then elapsed time plus release adoption. No hard
-gate.
+**Depends on / blocked by:** Retirement waits for that event to read zero for a few weeks across
+stable and Nightly, after a stable release that carries it (#591).
 
 **Priority:** P2, not before 2027.
 

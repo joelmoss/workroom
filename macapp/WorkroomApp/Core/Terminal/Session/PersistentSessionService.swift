@@ -157,6 +157,12 @@ final class PersistentSessionService {
   private let hostUpdates: (HostID) async -> AsyncStream<HostConnectionManager.Snapshot>
   /// A test's answer to `retag`, in place of this Mac's daemon. Nil for `shared`.
   private var retagOverride: ((UUID, String) async -> Bool)?
+  /// Reports that a pane reattached through the v2.0.0 `workroom-session` shim (#591): Sentry for
+  /// `shared`, a counter for a test.
+  private let reportShimReattach: () -> Void
+  /// Whether this launch has reported a shim reattach. `shared` lives for the launch, so this is
+  /// what makes it one event per launch rather than one per restored pane.
+  private var reportedShimReattach = false
 
   private init() {
     let probeLogger = Logger(
@@ -189,6 +195,7 @@ final class PersistentSessionService {
       return try await HostConnectionManager.shared.endSession(session, on: host)
     }
     self.hostUpdates = { await HostConnectionManager.shared.updates(for: $0) }
+    self.reportShimReattach = SentryConfig.reportShimReattach
   }
 
   /// Test seam. `shared` never uses it; every other behaviour is identical.
@@ -200,9 +207,11 @@ final class PersistentSessionService {
     hostUpdates: @escaping (HostID) async -> AsyncStream<HostConnectionManager.Snapshot> = {
       _ in AsyncStream { $0.finish() }
     },
-    retag: ((UUID, String) async -> Bool)? = nil
+    retag: ((UUID, String) async -> Bool)? = nil,
+    reportShimReattach: @escaping () -> Void = {}
   ) {
     self.retagOverride = retag
+    self.reportShimReattach = reportShimReattach
     self.probe = probe
     self.ownershipOverride = ownership
     self.now = now
@@ -672,6 +681,14 @@ final class PersistentSessionService {
       let path = binaryPath(for: owner),
       socketPath(for: owner) != nil
     else { return nil }
+    // Counts the shim's remaining use, once per launch, so it can be retired at zero (#591). This
+    // is exactly the shim path: the owner is the helper only when a running v2.0.0 helper said it
+    // holds this session (`preferred()` never names it for a new one), no helper socket is
+    // `.notOwned` and so the daemon, and a helper that cannot answer leaves no owner and no command.
+    if owner == .legacySessionHelper, !reportedShimReattach {
+      reportedShimReattach = true
+      reportShimReattach()
+    }
     let command = path.replacingOccurrences(of: " ", with: "\\ ") + " attach"
     // A restored id the daemon no longer holds is refused rather than silently created; the relay
     // then says the session ended and creates a new one under the same id (`attach.rs`, #459).

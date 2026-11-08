@@ -67,6 +67,27 @@ enum SentryConfig {
     }
   }
 
+  // MARK: Shim reattach
+
+  /// The message of the one event a launch sends when a pane reattaches through the v2.0.0
+  /// `workroom-session` shim (#591). Stable, like `shimReattachFingerprint`, so every launch's
+  /// event lands in one Sentry issue whose count is the measure.
+  static let shimReattachMessage = "Terminal reattached through the v2.0.0 workroom-session shim"
+  static let shimReattachFingerprint = ["workroom-session-shim-reattach"]
+
+  /// Counts a launch that still reattaches a terminal through the v2.0.0 `workroom-session` shim,
+  /// so the shim can be retired once this reads zero (#591, TODOS.md). Info-level, not an error:
+  /// it is a count, not a fault. Carries nothing about the session (no path, id, title or
+  /// environment), only which shim it was. Debug builds never start the SDK (`shouldStart`), and
+  /// a capture without a started SDK sends nothing.
+  static func reportShimReattach() {
+    SentrySDK.capture(message: shimReattachMessage) { scope in
+      scope.setLevel(.info)
+      scope.setFingerprint(shimReattachFingerprint)
+      scope.setTag(value: "workroom-session-v2.0.0", key: "session_shim")
+    }
+  }
+
   // MARK: App-hang fingerprinting
 
   /// Sentry groups a Cocoa event by its *in-app* frames, and a macOS app hang has exactly one —
