@@ -32,6 +32,21 @@ names a check that must register before success. Drafts do not wait for expected
 | 4 | No checks registered | Report that no gate ran; do not treat this as a pass |
 | 5 | Authentication, API or protocol error | Restore access or report the error; no passing verdict was issued |
 
+## Merge gate
+
+Add `--codex` to make the watcher the merge gate: after the checks pass it waits for the Codex
+review state (the PR comment's `codex-review-state:v1`) to name the head SHA as completed, then
+prints CI, Codex findings, inline comment and unresolved-thread counts, non-bot reviews in
+CHANGES_REQUESTED/COMMENTED state, and pending review requests.
+
+```sh
+python3 scripts/ci/watch_pr_checks.py <PR> --codex --expect 'app / app'
+```
+
+Exit 0 means clean. Other exits: 6 Codex has unresolved findings, 7 Codex never reviewed the head
+within `--codex-timeout` (default 900 seconds), 8 unresolved threads, reviews or requests pending.
+A head that moves while waiting exits 1. Do not merge on any non-zero exit.
+
 The default poll interval is 15 seconds and overall timeout 30 minutes. `--interval` and
 `--timeout` accept positive seconds. A head with no checks gets a three-minute registration grace
 (ten minutes when expected checks are named). A missing expected check gets up to ten minutes

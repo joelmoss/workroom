@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from watch_pr_checks import FIELDS, SnapshotError, pr_reader, read_snapshot, watch
+from watch_pr_checks import (FIELDS, SnapshotError, codex_reviewed, codex_state, gate, pr_reader,
+                             read_snapshot, watch)
 
 
 def check(name="app", status="completed", conclusion="success"):
@@ -197,6 +198,95 @@ class SnapshotTests(unittest.TestCase):
             with self.assertRaises(SnapshotError) as failure:
                 read_snapshot()
             self.assertEqual(failure.exception.retry, retry)
+
+
+HEAD = "a" * 40
+
+
+def codex_comment(sha=HEAD, status="completed", any_findings=False, unresolved=False):
+    state = {"code_review": {"commit_sha": sha, "has_any_findings": any_findings,
+                             "has_unresolved_findings": unresolved, "status": status}}
+    return {"body": f"<!-- codex-review-state:v1 {json.dumps(state)} -->\nsummary"}
+
+
+def reviews_data(**changes):
+    return {"inline": 0, "unresolved": 0, "reviews": [], "requested": [], **changes}
+
+
+class GateTests(unittest.TestCase):
+    def run_gate(self, states, data=None, timeout=10, heads=None):
+        clock = [0]
+        index = [0]
+        messages = []
+
+        def read():
+            head = (heads or [HEAD])[min(index[0], len(heads or [HEAD]) - 1)]
+            return snapshot(headRefOid=head)
+
+        def read_codex(_):
+            value = states[min(index[0], len(states) - 1)]
+            index[0] += 1
+            return codex_state([value] if value else [])
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        code = gate(read, messages.append, read_codex=read_codex,
+                    read_reviews=lambda _: data or reviews_data(), now=lambda: clock[0],
+                    sleep=sleep, interval=1, timeout=timeout)
+        return code, messages
+
+    def test_clean_gate_exits_zero_with_summary(self):
+        code, messages = self.run_gate([codex_comment()], reviews_data(inline=2))
+        self.assertEqual(code, 0)
+        self.assertIn("Inline review comments: 2 (0 unresolved threads)", messages)
+        self.assertIn("Pending review requests: none", messages)
+        self.assertIn("merge gate clean", messages[-1])
+
+    def test_waits_while_codex_names_an_older_commit(self):
+        code, messages = self.run_gate([codex_comment("b" * 40), codex_comment("b" * 40),
+                                        codex_comment()])
+        self.assertEqual(code, 0)
+        self.assertEqual(sum("Waiting for Codex" in line for line in messages), 1)
+
+    def test_in_progress_review_of_head_is_not_complete(self):
+        code, _ = self.run_gate([codex_comment(status="in_progress"), codex_comment()])
+        self.assertEqual(code, 0)
+
+    def test_never_reviewed_head_times_out_with_code_7(self):
+        code, messages = self.run_gate([codex_comment("b" * 40)], timeout=3)
+        self.assertEqual(code, 7)
+        self.assertIn("never reviewed head", messages[-1])
+        self.assertIn("b" * 40, messages[-1])
+
+    def test_missing_state_comment_times_out(self):
+        code, _ = self.run_gate([None], timeout=3)
+        self.assertEqual(code, 7)
+
+    def test_unresolved_findings_exit_6(self):
+        code, messages = self.run_gate([codex_comment(any_findings=True, unresolved=True)])
+        self.assertEqual(code, 6)
+        self.assertIn("findings: yes (unresolved)", messages[1])
+
+    def test_pending_comments_reviews_and_requests_exit_8(self):
+        human = {"user": {"login": "joel", "type": "User"}, "state": "CHANGES_REQUESTED"}
+        bot = {"user": {"login": "codex[bot]", "type": "Bot"}, "state": "COMMENTED"}
+        approved = {"user": {"login": "amy", "type": "User"}, "state": "APPROVED"}
+        for data in (reviews_data(unresolved=1), reviews_data(reviews=[human]),
+                     reviews_data(requested=["amy"])):
+            with self.subTest(data=data):
+                self.assertEqual(self.run_gate([codex_comment()], data)[0], 8)
+        code, _ = self.run_gate([codex_comment()], reviews_data(reviews=[bot, approved]))
+        self.assertEqual(code, 0)
+
+    def test_head_moving_while_waiting_is_reported(self):
+        code, messages = self.run_gate([codex_comment("b" * 40)], heads=[HEAD, "c" * 40])
+        self.assertEqual(code, 1)
+        self.assertIn("Head moved", messages[-1])
+
+    def test_newest_state_comment_wins(self):
+        state = codex_state([codex_comment("b" * 40), {"body": "chatter"}, codex_comment()])
+        self.assertTrue(codex_reviewed(state, HEAD))
 
 
 if __name__ == "__main__":
