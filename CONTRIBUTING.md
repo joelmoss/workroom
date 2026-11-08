@@ -71,7 +71,9 @@ Use `make vcs-lint-linux` before landing Linux-specific Rust changes from a Mac:
 does not compile `cfg(target_os = "linux")` code. It runs the same Makefile gate in a Linux
 image with pinned Rust and checksum-verified Zig, using the host's architecture. The first run
 downloads the image, crates and Ghostty; later runs reuse caches under
-`${XDG_CACHE_HOME:-~/.cache}/workroom/linux-lint/<architecture>`. The checkout is mounted read-only,
+`${XDG_CACHE_HOME:-~/.cache}/workroom/linux-lint/<architecture>`, except Zig's own caches: they
+live inside the container, because a macOS bind mount's file locks don't hold, so a Ghostty pin
+change rebuilds them from cold. The checkout is mounted read-only,
 and Linux Cargo output and credentials are separate from the Mac's. A working `container`, Docker
 or Podman runtime is required; the compiler container gets 4 GB of memory. The command fails rather
 than reporting a skipped check as a pass.

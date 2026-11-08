@@ -37,9 +37,19 @@ mkdir -p "$cache/home"
 echo "vcs-lint-linux: $runtime, Rust $RUST_VERSION, Zig $zig_version; cache $cache"
 # A linked checkout's .git points outside this mount. Fetches from a build script must
 # not discover that host-only metadata; the engine's own cache remains a real git repo.
+#
+# Zig's caches stay inside the container, off the /cache mount. Docker Desktop's macOS bind
+# mount does not make flock exclusive, and Zig's cache relies on it when several compile steps
+# build the same entry at once: six concurrent builds sharing one fresh cache there left a
+# compiler_rt without __divti3 and its kin in 1 round of 4, against 0 of 4 on the container's
+# own filesystem (#599, measured 2026-11-08). That broken archive stayed cached and failed
+# every later Ghostty pin.
+# Zig runs only when libghostty-vt is not already built in /cache, so starting cold costs that
+# one build.
 exec "$runtime" run --rm --init --memory 4G --user "$(id -u):$(id -g)" \
   --volume "$ROOT:/workroom:ro" --volume "$cache:/cache" \
   --workdir /workroom --env HOME=/cache/home --env CARGO_HOME=/cache/cargo \
   --env CARGO_TARGET_DIR=/cache/target --env WR_GHOSTTY_VT_CACHE=/cache/ghostty-vt \
+  --env ZIG_GLOBAL_CACHE_DIR=/tmp/zig/global --env WR_GHOSTTY_VT_ZIG_CACHE=/tmp/zig \
   --env GIT_CEILING_DIRECTORIES=/workroom \
   --env WORKROOMD_BUILD=1 "$image" make vcs-lint "VCS_RUST=$RUST_VERSION"

@@ -77,6 +77,17 @@ class LinuxLintTests(unittest.TestCase):
         self.assertEqual(run[-4], build[build.index("--tag") + 1])
         self.assertEqual(run[-3:], ["make", "vcs-lint", f"VCS_RUST={RUST}"])
 
+    def test_zig_caches_stay_off_the_host_mount(self):
+        # Docker Desktop's macOS bind mount has no exclusive flock, which Zig's cache needs (#599).
+        result, calls = self.run_launcher()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run = next(call for call in calls if call[:2] == ["container", "run"])
+        env = dict(run[i + 1].split("=", 1) for i, arg in enumerate(run) if arg == "--env")
+        for key in ("ZIG_GLOBAL_CACHE_DIR", "WR_GHOSTTY_VT_ZIG_CACHE"):
+            self.assertIn(key, env)
+            self.assertFalse(env[key].startswith("/cache"), f"{key}={env[key]}")
+        self.assertEqual(env["WR_GHOSTTY_VT_CACHE"], "/cache/ghostty-vt")
+
     def test_installed_but_stopped_runtime_falls_back(self):
         result, calls = self.run_launcher(LINT_TEST_OFF="container")
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -55,6 +55,9 @@ CACHE_ROOT="${WR_GHOSTTY_VT_CACHE:-${HOME}/.cache/workroom/ghostty-vt}"
 # And by the Zig version, since both pins above decide what gets built: keyed by sha alone, a
 # Zig-only bump found the old archive here and kept linking it.
 PREFIX="${CACHE_ROOT}/${GHOSTTY_SHA}-zig${ZIG_VERSION}/${target}"
+# Where Zig's per-target build caches go; by default beside the library. A caller whose cache
+# root is on a filesystem without working flock moves them elsewhere: lint-linux.sh says why.
+ZIG_CACHE_ROOT="${WR_GHOSTTY_VT_ZIG_CACHE:-$CACHE_ROOT}"
 
 if $print_prefix; then
   echo "$PREFIX"
@@ -185,7 +188,7 @@ else
       -Demit-lib-vt=true \
       -Doptimize=ReleaseFast \
       -Dtarget="$target" \
-      --cache-dir "${CACHE_ROOT}/zig-cache-${target}" \
+      --cache-dir "${ZIG_CACHE_ROOT}/zig-cache-${target}" \
       --prefix "$BUILD_TMP" >&2 )
 
   if [ ! -f "${BUILD_TMP}/lib/libghostty-vt.a" ]; then
