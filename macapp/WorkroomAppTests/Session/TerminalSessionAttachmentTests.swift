@@ -75,6 +75,63 @@ final class TerminalSessionAttachmentTests: XCTestCase {
     XCTAssertTrue(sessions.ownedSessionIDs(for: target).isEmpty)
   }
 
+  // Value: protects=a remote workroom's pane pointed at a session its host holds and no tab
+  // showed attaches on that host, not to a shell on this Mac (#584); fails_when=the swap leaves
+  // the session unregistered, so its attach goes to the local helpers; why_new=the detached list
+  // never offered a remote session; seam=none
+  func testARemotePanePointedAtItsHostsSessionAttachesOnItsHost() throws {
+    let service = isolatedPaneSessionService()
+    let sessions = makeIsolatedPanes(service: service)
+    let host = UUID()
+    let remote = TerminalTarget(
+      id: .workroom(project: "/p", name: "far"), title: "far", path: "/home/workroom/far",
+      unavailability: .remote, remoteHost: host, remoteWorkroomID: UUID())
+    sessions.addTab(for: remote)
+    let onTheHost = UUID()
+    XCTAssertFalse(service.isRemote(onTheHost), "fixture: a session this app never attached")
+
+    XCTAssertTrue(
+      TerminalSessionAttachment.attachToActivePane(
+        sessionID: onTheHost, target: remote, sessions: sessions))
+
+    XCTAssertEqual(service.remoteHost(of: onTheHost), .remote(host))
+    let surface = try XCTUnwrap(sessions.surface(sessions.focusedTab(for: remote)))
+    XCTAssertEqual(surface.attachment.sessionID, onTheHost)
+    XCTAssertTrue(surface.attachment.isRestored, "attached to, never created")
+  }
+
+  // Value: protects=a remote workroom's detached session opened in a new tab attaches on its host
+  // (#584); fails_when=a new tab given a session id stops registering it with the target's host;
+  // why_new=the detached list never offered a remote session; seam=none
+  func testARemoteSessionOpenedInANewTabAttachesOnItsHost() throws {
+    let service = isolatedPaneSessionService()
+    let sessions = makeIsolatedPanes(service: service)
+    let host = UUID()
+    let remote = TerminalTarget(
+      id: .workroom(project: "/p", name: "far"), title: "far", path: "/home/workroom/far",
+      unavailability: .remote, remoteHost: host, remoteWorkroomID: UUID())
+    let onTheHost = UUID()
+
+    let tab = sessions.addTab(for: remote, sessionID: onTheHost)
+
+    XCTAssertEqual(service.remoteHost(of: onTheHost), .remote(host))
+    XCTAssertTrue(try XCTUnwrap(sessions.surface(tab)).attachment.isRestored)
+  }
+
+  /// Negative control: a local workroom's pane pointed at a session leaves it this Mac's.
+  func testALocalPanePointedAtASessionRegistersNoHost() {
+    let service = isolatedPaneSessionService()
+    let sessions = makeIsolatedPanes(service: service)
+    sessions.addTab(for: target)
+    let session = UUID()
+
+    XCTAssertTrue(
+      TerminalSessionAttachment.attachToActivePane(
+        sessionID: session, target: target, sessions: sessions))
+
+    XCTAssertFalse(service.isRemote(session))
+  }
+
   // Value: protects=a pane pointed at another session stops holding the old one's remote host,
   // and only its own mark goes (#356); fails_when=the swap no longer clears the old attach, or
   // clears another pane's; why_new=the swap used to clear it from the surface's own copy of the

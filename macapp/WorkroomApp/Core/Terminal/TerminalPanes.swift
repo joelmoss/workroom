@@ -2718,6 +2718,17 @@ final class TerminalPanes {
     }
   }
 
+  /// Points `session`, one `target`'s host already holds, at that host, so a pane of `target`
+  /// switched to it (`TerminalSessionAttachment`) attaches there and not on this Mac's helpers,
+  /// which never held it (#584). `workingDirectory` is a path on the host, used only if the session
+  /// has to be made anew. One registered already, and a local target's, is left as it is.
+  func registerHostSession(
+    _ session: UUID, for target: TerminalTarget, metadata: [(key: String, value: String)]
+  ) {
+    guard let host = target.remoteHost, !sessionService.isRemote(session) else { return }
+    registerRemote(session, on: host, workingDirectory: target.path, metadata: metadata)
+  }
+
   /// A remote pane always has a session: without one the pane would be a plain shell on this Mac
   /// that reads as the remote workroom's. With no driver to reach the host, the session is still
   /// registered against one that holds no host, so the pane says why rather than opening that

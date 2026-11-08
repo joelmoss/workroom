@@ -18,6 +18,9 @@ enum TerminalSessionAttachment {
     if let owner = sessions.owner(of: sessionID, in: target), owner != tab.id {
       return false
     }
+    // A remote workroom's session from its host's list is attached on that host, as a new tab's
+    // is (`makeTerminalTab`): unregistered, its attach would go to this Mac's helpers.
+    sessions.registerHostSession(sessionID, for: target, metadata: view.attachment.metadata)
     let previous = state.sessionID
     state.sessionID = sessionID
     tab.content = .terminal(state)

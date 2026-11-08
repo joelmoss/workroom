@@ -96,6 +96,10 @@ Click it to see **Detached terminals**. Each row shows the terminal's title and 
 - **New tab** opens the session in a new tab.
 - **Stop** ends the session and anything running in it.
 
+#### In a remote workroom {nightly}
+
+A remote workroom's detached sessions are the sessions on its host that no tab on this Mac shows. The list fills in once Workroom is connected to the host, and is empty while the host is asleep, stopped or out of reach. It never wakes or starts the host.
+
 ### Stop all detached terminals {nightly}
 
 **Settings ▸ Terminal ▸ Stop Detached Terminals…** counts the background terminals that no open tab is attached to, then asks before it stops them and anything running in them.
