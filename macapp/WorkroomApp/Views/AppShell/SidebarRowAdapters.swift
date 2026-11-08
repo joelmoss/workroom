@@ -40,7 +40,6 @@ struct SidebarProjectRowAdapter: View, Equatable {
 /// Builds a project's root row.
 struct SidebarRootRowAdapter: View, Equatable {
   @EnvironmentObject private var store: AppStore
-  @EnvironmentObject private var vcsStatus: VCSStatusService
   let project: Project
   let hovered: Bool
   let drag: SidebarDragPlumbing
@@ -68,7 +67,6 @@ struct SidebarRootRowAdapter: View, Equatable {
     let target = project.rootTarget
     return SidebarRootRowModel(
       projectPath: project.path, projectName: project.displayName, target: target,
-      style: RootPresentation.make(vcsStatus.rootRefs[project.id] ?? .unresolved),
       subtree: store.sidebarSubtree(of: target), activity: store.sidebarActivity(of: target.id))
   }
 }
@@ -122,9 +120,6 @@ struct SidebarWorkroomRowAdapter: View, Equatable {
 /// Builds one terminal's row in a target's subtree.
 struct SidebarTerminalRowAdapter: View, Equatable {
   @EnvironmentObject private var store: AppStore
-  /// Each host's program-status link (#358), for the "Program status: …" tooltip line: observed so
-  /// a host that connects repaints the line.
-  @ObservedObject private var programStatus = ProgramStatusMonitor.shared
   let tabID: TerminalTab.ID
   let target: TerminalTarget
   let parent: SidebarID
@@ -155,9 +150,7 @@ struct SidebarTerminalRowAdapter: View, Equatable {
     return SidebarTerminalRowModel(
       tabID: tab.id, target: target, parent: parent, title: title,
       glyph: tab.content.glyph ?? "terminal", indicator: tab.indicator,
-      programStatus: tab.programStatus,
-      tooltipLines: ProgramStatusPresentation.tooltipLines(
-        for: tab, of: target, hosts: programStatus.hosts))
+      programStatus: tab.programStatus, hasSession: tab.terminal?.sessionID != nil)
   }
 }
 

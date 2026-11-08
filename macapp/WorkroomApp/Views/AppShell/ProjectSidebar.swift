@@ -225,6 +225,7 @@ struct ProjectSidebar: View, Equatable {
     static var runButton = 0
     static var background = 0
     static var dragDim = 0
+    static var rootLabel = 0
 
     static var total: Int { project + root + workroom + terminal }
 
@@ -237,6 +238,7 @@ struct ProjectSidebar: View, Equatable {
       runButton = 0
       background = 0
       dragDim = 0
+      rootLabel = 0
     }
   }
 #endif
@@ -366,16 +368,21 @@ struct SidebarStatusGlyph: View {
   }
 }
 
+/// A root row's spoken label: its branch (as `SidebarRootLabel` reads it), its VCS status and its
+/// program marks.
 struct SidebarRootStatusLabel: ViewModifier {
   @EnvironmentObject private var vcsStatus: VCSStatusService
   let id: SidebarID
-  let rootLabel: String
+  let projectID: Project.ID
+  /// The project's folder is gone.
+  let isMissing: Bool
   let programLabels: [String]
 
   func body(content: Content) -> some View {
+    let root = RootPresentation.make(vcsStatus.rootRefs[projectID] ?? .unresolved).accessibility
     let label =
       ([
-        rootLabel,
+        isMissing ? "\(root), folder not found" : root,
         VCSStatusPresentation.accessibilityLabel(vcsStatus.workroomStatuses[id] ?? .unresolved),
       ]
       + programLabels).filter { !$0.isEmpty }.joined(separator: ", ")
