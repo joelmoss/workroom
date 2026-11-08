@@ -8,9 +8,10 @@ one workroom, a coding agent in another and a test suite in a third, and none of
 others' way.
 
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/ee234785-981c-4dc6-a9e4-306d9033ad2f" width="900" controls muted
-    alt="The Workroom macOS app: a sidebar tree of several projects and their workrooms with current branches and change badges; two workrooms open side by side, one with a vertically split terminal running a test suite and a dev server, the other showing a syntax-highlighted file diff; and an inspector with Changes, History, Pull Request, and Files sections.">
-  </video>
+  <a href="https://codaset.dev/workroom">
+    <img src="docs/screenshots/app.png" width="900"
+      alt="The Workroom macOS app, with a tab per workroom across the top. Two workrooms are open side by side: one runs Claude Code, which is asking to approve an edit to session_manager.rb; the other has a dev server logging requests above a terminal where the test suite passes. An inspector on the right lists the workroom's changed files, its commit history and its pull request with CI passing.">
+  </a>
 </p>
 
 <p align="center">
