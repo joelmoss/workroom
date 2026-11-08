@@ -126,6 +126,9 @@ actor HostConnectionManager {
   private var slots: [HostID: Slot] = [:]
   private var observers: [HostID: [UUID: AsyncStream<Snapshot>.Continuation]] = [:]
 
+  /// How many `updates(for:)` streams are open on `host`. For tests.
+  func observerCount(for host: HostID) -> Int { observers[host]?.count ?? 0 }
+
   func snapshot(for host: HostID) -> Snapshot {
     guard let slot = slots[host] else { return Snapshot(lease: nil, status: .disconnected) }
     return Snapshot(lease: slot.lease, status: slot.status)
