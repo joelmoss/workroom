@@ -34,6 +34,20 @@ enum SurfaceEvent {
   case effectiveFocusChanged(Bool)
   /// The right-click menu's "Move to New Window" / "Move Back to Main Window" (#444).
   case windowToggleRequested
+  /// The right-click menu's New Terminal, a split or Close Terminal, for THIS pane (#583).
+  case paneCommand(PaneCommand)
+}
+
+/// A right-click pane command, which the host owning the pane's tab carries out on that tab and its
+/// target. Raised as an event, not sent to the key window's store: the Quick Terminal and a
+/// detached pane's window have none, so that lookup fell through to the last main window (#583).
+enum PaneCommand: Equatable {
+  /// A new terminal in the pane's target.
+  case newTerminal
+  /// A new terminal beside the pane, on `edge`.
+  case split(PaneEdge)
+  /// Close the pane, through the close confirm.
+  case close
 }
 
 /// One terminal surface: an `NSView` that hosts a `ghostty_surface_t` (Metal-rendered by libghostty
@@ -128,13 +142,12 @@ final class GhosttySurfaceView: NSView {
   /// The right-click menu's "Move to Workroom" for a Quick Terminal pane, asked as the menu opens.
   var moveToWorkroomChoices: (() -> [PaneWorkroomGroup])?
 
-  /// Whether the context menu offers New Terminal, the splits and Close Terminal, which act on the
-  /// store's focused pane: off for a terminal that is no workroom's, as in the exe.dev setup sheet.
+  /// Whether the context menu offers New Terminal, the splits and Close Terminal, raised for this
+  /// pane as `.paneCommand`: off for a terminal that is no workroom's, as in the exe.dev setup sheet.
   var offersPaneCommands = true
   /// Whether the right-click menu offers "Move to New Window" / "Move Back to Main Window" for THIS
-  /// pane (#444), raised as `.windowToggleRequested` rather than sent to the key window's store,
-  /// which the other menu commands use: a pane in its own window has no store of its own to be
-  /// found by. Off where panes can't move (the Quick Terminal).
+  /// pane (#444), raised as `.windowToggleRequested`. Off where panes can't move (the Quick
+  /// Terminal).
   var offersWindowToggle = false
   /// True while this run surface is stopped but kept open under the supervisor (issue #7): the
   /// supervisor process is still alive (so `processHasExited` is false), but the user's command has
@@ -1819,12 +1832,16 @@ final class GhosttySurfaceView: NSView {
     menu.addItem(paste)
     guard offersPaneCommands else { return menu }
     menu.addItem(.separator())
-    menu.addItem(contextItem("New Terminal", #selector(contextNewTerminal), "t", .command))
-    menu.addItem(contextItem("Split Right", #selector(contextSplitRight), "d", .command))
-    menu.addItem(contextItem("Split Left", #selector(contextSplitLeft)))
-    menu.addItem(contextItem("Split Down", #selector(contextSplitDown), "d", [.command, .shift]))
-    menu.addItem(contextItem("Split Up", #selector(contextSplitUp)))
-    menu.addItem(.separator())
+    // A detached pane's window holds that one pane, so it offers no new terminal or split: the menu
+    // bar disables those while one is key, for the same reason (`WorkroomCommands`).
+    if !(window is DetachedPaneWindow) {
+      menu.addItem(contextItem("New Terminal", #selector(contextNewTerminal), "t", .command))
+      menu.addItem(contextItem("Split Right", #selector(contextSplitRight), "d", .command))
+      menu.addItem(contextItem("Split Left", #selector(contextSplitLeft)))
+      menu.addItem(contextItem("Split Down", #selector(contextSplitDown), "d", [.command, .shift]))
+      menu.addItem(contextItem("Split Up", #selector(contextSplitUp)))
+      menu.addItem(.separator())
+    }
     if offersWindowToggle {
       menu.addItem(
         contextItem(
@@ -1878,30 +1895,22 @@ final class GhosttySurfaceView: NSView {
     return item
   }
 
-  // Context-menu commands act on the app's focused pane — which the right-click just made this one.
+  // Context-menu commands act on THIS pane, raised to the sessions that own its tab, so they reach
+  // its own window's host: the key window's store would be a main window's even when the pane is
+  // the Quick Terminal's or in a detached window, which register none (#583).
   // Deferred to the next runloop so they run AFTER the menu modal and the `rightMouseDown` handler
   // unwind: closing a pane frees its surface, and doing that mid-event (while `rightMouseDown` still
   // holds a surface pointer for its balancing RELEASE) is a use-after-free crash.
-  @objc private func contextNewTerminal() {
-    DispatchQueue.main.async { WindowRegistry.shared.keyStore?.newTerminalInSelectedTarget() }
-  }
-  @objc private func contextCloseTerminal() {
-    DispatchQueue.main.async { WindowRegistry.shared.keyStore?.closeCurrentTerminalTab() }
-  }
-  @objc private func contextSplitRight() {
-    DispatchQueue.main.async { WindowRegistry.shared.keyStore?.splitFocusedRight() }
-  }
-  @objc private func contextSplitLeft() {
-    DispatchQueue.main.async { WindowRegistry.shared.keyStore?.splitFocusedLeft() }
-  }
-  @objc private func contextSplitDown() {
-    DispatchQueue.main.async { WindowRegistry.shared.keyStore?.splitFocusedDown() }
-  }
-  @objc private func contextSplitUp() {
-    DispatchQueue.main.async { WindowRegistry.shared.keyStore?.splitFocusedUp() }
-  }
-  @objc private func contextToggleWindow() {
-    DispatchQueue.main.async { [weak self] in self?.onEvent?(.windowToggleRequested) }
+  @objc private func contextNewTerminal() { raiseDeferred(.paneCommand(.newTerminal)) }
+  @objc private func contextCloseTerminal() { raiseDeferred(.paneCommand(.close)) }
+  @objc private func contextSplitRight() { raiseDeferred(.paneCommand(.split(.right))) }
+  @objc private func contextSplitLeft() { raiseDeferred(.paneCommand(.split(.left))) }
+  @objc private func contextSplitDown() { raiseDeferred(.paneCommand(.split(.bottom))) }
+  @objc private func contextSplitUp() { raiseDeferred(.paneCommand(.split(.top))) }
+  @objc private func contextToggleWindow() { raiseDeferred(.windowToggleRequested) }
+
+  private func raiseDeferred(_ event: SurfaceEvent) {
+    DispatchQueue.main.async { [weak self] in self?.onEvent?(event) }
   }
 
   @objc func paste(_ sender: Any?) {

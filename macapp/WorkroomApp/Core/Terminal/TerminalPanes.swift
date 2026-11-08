@@ -651,6 +651,9 @@ final class TerminalPanes {
     /// The terminal's own right-click "Move to New Window" / "Move Back to Main Window" (#444):
     /// detach this pane, or dock it when it is already in its own window.
     case paneWindowToggleRequested(TerminalTarget.ID, TerminalTab.ID)
+    /// The terminal's own right-click New Terminal, split or Close Terminal (#583), for this tab in
+    /// this target: the host holding these panes carries it out, whichever window is key.
+    case paneCommandRequested(TerminalTarget, TerminalTab.ID, PaneCommand)
     /// A restored pane was detached when the session was saved, so its window must be rebuilt at the
     /// saved frame. Separate from `.paneDetached` because restore is not a gesture: there is no cursor
     /// to place the window at, and the frame is authoritative.
@@ -2552,6 +2555,8 @@ final class TerminalPanes {
       onEvent?(.childExited(target, tabID, exitCode: exitCode))
     case .closeRequested:
       onEvent?(.closeRequested(target, tabID))
+    case .paneCommand(let command):
+      onEvent?(.paneCommandRequested(target, tabID, command))
     case .cmdClickFile(let word, let cwd):
       if target.remoteHost != nil {
         remoteLinks.open(word, tab: tabID, target: target)

@@ -65,7 +65,7 @@ To pop a pane out:
 - Right-click the tab, or the terminal, and choose **Move to New Window**.
 - Drag the pane's title bar, or its tab, out past the edge of the window.
 
-The pane opens in a window named after its terminal, with a pane footer along the bottom.
+The pane opens in a window named after its terminal, with a pane footer along the bottom. The window holds only that pane, so you can't open a new terminal or split in it. In Nightly, its right-click menu has no **New Terminal** or splits, and **Close Terminal** there closes this pane.
 
 To put it back, press <kbd>⌃⌘O</kbd> again (**Window ▸ Move back to main window**), click **Move Back** in the window's toolbar, or right-click and choose **Move Back to Main Window**.
 

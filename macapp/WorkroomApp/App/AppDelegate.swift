@@ -59,10 +59,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   ///
   /// Deliberately **not** `WindowRegistry.keyStore`. That resolves
   /// `store(for: NSApp.keyWindow) ?? lastActiveStore ?? allStores.first` (WindowRegistry.swift:113),
-  /// so it falls back *past* a foreign key window — which is right for its other three callers (the
-  /// menu-bar popover, where `store(for:)` is legitimately nil; notification-click routing; the
-  /// terminal context menu) but wrong here: it fires ⌘R / ⌘1-9 / ⌥⌘S into a *background* workroom
-  /// whenever a sheet, Settings, About, Sparkle's updater or the quick terminal is key. Those windows
+  /// so it falls back *past* a foreign key window — which is right for its other callers (the
+  /// menu-bar popover, where `store(for:)` is legitimately nil; notification-click routing) but
+  /// wrong here: it fires ⌘R / ⌘1-9 / ⌥⌘S into a *background* workroom whenever a sheet, Settings,
+  /// About, Sparkle's updater or the quick terminal is key. Those windows
   /// are all unregistered, so `store(for:)` returns nil for them with no extra checks — which is what
   /// lets every branch below simply no-op instead of needing a swallow-with-allowlist (an allowlist
   /// was the first design; it was the sole source of a ⌘⌫ gap, broken ⌘V on non-Latin layouts, and a
