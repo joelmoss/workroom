@@ -326,10 +326,15 @@ final class GhosttySurfaceView: NSView {
     // Non-nil sets `config.command`; see `PaneSessionAttachment.launch` for what that does and does
     // not mean.
     var startedPersistent = false
-    if let launch = attachment.launch(
-      workingDirectory: workingDirectory, runCommand: runCommand, isRunSession: isRunSession),
-      let attachPointer = strdup(launch.command)
-    {
+    let launch = attachment.launch(
+      workingDirectory: workingDirectory, runCommand: runCommand, isRunSession: isRunSession)
+    #if DEBUG
+      // A hosted unit test never reaches this build's own daemon: it fails, and nothing spawns.
+      if let launch, HostedRunSessionGuard.refuses(launch, workingDirectory: workingDirectory) {
+        return
+      }
+    #endif
+    if let launch, let attachPointer = strdup(launch.command) {
       surfaceCStrings.append(attachPointer)
       config.command = UnsafePointer(attachPointer)
       config.wait_after_command = false

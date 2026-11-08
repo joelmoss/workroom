@@ -332,9 +332,15 @@ final class GatedFakeCLI: WorkroomCLIProtocol, Sendable {
 final class AppStoreCreateWorkroomTests: XCTestCase {
   private let projectPath = "/private/var/tmp/wr-create-project"
 
+  /// Its terminals never spawn. A backgrounded run tab (an armed auto-run reaching
+  /// `ensureInitialTerminal`) creates its surface off-window, and through the app's shared session
+  /// service that attached to this build's REAL daemon, which then kept the session's shell, and
+  /// so itself, alive after the run.
   private func makeStore(_ fake: WorkroomCLIProtocol) -> AppStore {
     let store = AppStore(cli: fake)
-    store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    store.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+    }
     store.lifecycle.creationSuccessHold = .zero
     store.lifecycle.closesFinishedCreations = { true }
     return store
@@ -725,7 +731,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   /// to fix. The run starts against an unmounted pane AND overwrites the armed auto-run, so when the
   /// user finally dismisses, `ensureInitialTerminal` sees a non-empty tab list, skips `addTab`, and
   /// the workroom lands with a run tab and NO shell — issue #7's contract, broken silently.
-  func testRunIsRefusedWhileTheSetupDialogStillCoversThePane() {
+  func testRunIsRefusedWhileTheSetupDialogStillCoversThePane() throws {
     let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
     let proj = project(withWorkroom: "wr")
     store.projectStore.projects = [proj]
@@ -752,6 +758,12 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     XCTAssertEqual(
       store.terminals.tabCount(forTargetID: id), 2,
       "the workroom gets its backgrounded run AND its always-on shell (issue #7)")
+    // A backgrounded run spawns off-window, and a real one here attached to this build's daemon and
+    // left a shell session there that kept it running after every `make app-test`.
+    let runTab = try XCTUnwrap(store.runCommand.runTabID(for: id))
+    XCTAssertNil(
+      store.terminals.surface(of: runTab)?.surface,
+      "the backgrounded run spawned a real terminal, which attaches to this build's real daemon")
   }
 
   /// `isRunBlocked` needs BOTH halves; neither covers the other. `creatingWorkrooms` clears too
@@ -1365,7 +1377,9 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     // A second window: its own AppStore (own selection), the SAME shared lifecycle and projects —
     // exactly how `WorkroomApp` builds a ⌘N window.
     let other = AppStore(lifecycle: store.lifecycle, cli: fake)
-    other.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    other.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+    }
     let idA = TargetID.workroom(project: projectPath, name: "wr-a")
 
     let a = await startAndLand(store, "wr-a", project: emptyProject)
@@ -1391,7 +1405,9 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
       projectPath: projectPath, names: ["wr-a"], hasSetup: true, holdsFirstListAfterReady: true)
     let store = makeStore(fake)
     let other = AppStore(lifecycle: store.lifecycle, cli: fake)
-    other.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    other.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+    }
     let idA = TargetID.workroom(project: projectPath, name: "wr-a")
 
     let a = Task { await store.lifecycle.createWorkroom(in: emptyProject, from: store) }
