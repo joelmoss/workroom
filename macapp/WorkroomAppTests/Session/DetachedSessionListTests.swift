@@ -227,6 +227,7 @@ final class DetachedSessionListTests: XCTestCase {
   func testARemoteSessionThisMacLetGoIsListedThoughItsOldAttachLingers() async throws {
     let service = isolatedPaneSessionService()
     let id = try registerRemoteSession(on: service, log: "").session
+    service.sessionReleased(id)
     let fixture = SessionsConnection(
       sessions: [session(workroom: workroomID.uuidString, id: id, attached: true)])
     let list = makeList(connections: try await connected(fixture), service: service)
@@ -234,6 +235,129 @@ final class DetachedSessionListTests: XCTestCase {
     await list.refresh(remote, ownedSessionIDs: [])
 
     XCTAssertEqual(list.detached(for: remote).map(\.identifier.uuid), [id])
+  }
+
+  // Value: protects=a pane in another window here that lost its link and is waiting out its
+  // reconnect backoff keeps its session out of this window's list, though no pane mark is held
+  // meanwhile; fails_when=the leftover exception admits every session this Mac registered;
+  // why_new=the second review of #584; seam=a pane's attach marked, then dropped as an exit does
+  func testARemoteSessionWhosePaneHereIsReconnectingIsHidden() async throws {
+    let service = isolatedPaneSessionService()
+    let id = try registerRemoteSession(on: service, log: "").session
+    let pane = UUID()
+    XCTAssertNotNil(service.attachCommand(forSession: id, by: pane))
+    service.paneDetached(by: pane)  // its ssh exited; the reattach waits out the backoff
+    XCTAssertFalse(service.hasAttachedPane(to: id), "fixture: no pane mark held")
+    let fixture = SessionsConnection(
+      sessions: [session(workroom: workroomID.uuidString, id: id, attached: true)])
+    let list = makeList(connections: try await connected(fixture), service: service)
+
+    await list.refresh(remote, ownedSessionIDs: [])
+
+    XCTAssertTrue(list.detached(for: remote).isEmpty)
+  }
+
+  // Value: protects=a lazily restored hidden tab in another window here (registered, never
+  // attached) whose session another Mac is attached to stays out of the list; fails_when=the
+  // exception admits a registered session another client holds; why_new=the second review of
+  // #584; seam=a registration with no attach
+  func testARemoteSessionAHiddenTabHereRegisteredAndAnotherMacHoldsIsHidden() async throws {
+    let service = isolatedPaneSessionService()
+    let id = try registerRemoteSession(on: service, log: "").session
+    let fixture = SessionsConnection(
+      sessions: [session(workroom: workroomID.uuidString, id: id, attached: true)])
+    let list = makeList(connections: try await connected(fixture), service: service)
+
+    await list.refresh(remote, ownedSessionIDs: [])
+
+    XCTAssertTrue(list.detached(for: remote).isEmpty)
+  }
+
+  /// Negative control: a session this Mac let go and a pane here attached again is no longer the
+  /// leftover the exception admits.
+  func testASessionLetGoThenAttachedAgainHereIsNoLongerALeftover() throws {
+    let service = isolatedPaneSessionService()
+    let id = try registerRemoteSession(on: service, log: "").session
+    service.sessionReleased(id)
+    XCTAssertTrue(service.wasReleasedHere(id), "fixture: let go")
+
+    let pane = UUID()
+    XCTAssertNotNil(service.attachCommand(forSession: id, by: pane))
+    service.paneDetached(by: pane)
+
+    XCTAssertFalse(service.wasReleasedHere(id))
+  }
+
+  // Value: protects=Stop never ends a session that someone attached to after the list was read
+  // (another Mac picked it up); fails_when=Stop trusts the list it was clicked from;
+  // why_new=the second review of #584; seam=a stub host connection whose answer changes
+  func testStoppingASessionAttachedSinceTheListWasReadEndsNothing() async throws {
+    let id = UUID()
+    let fixture = SessionsConnection(sessions: [session(workroom: workroomID.uuidString, id: id)])
+    let list = makeList(connections: try await connected(fixture))
+    await list.refresh(remote, ownedSessionIDs: [])
+    XCTAssertEqual(list.detached(for: remote).count, 1, "fixture: listed")
+    fixture.answer = [session(workroom: workroomID.uuidString, id: id, attached: true)]
+
+    await list.stop(id, in: remote, ownedSessionIDs: [])
+
+    XCTAssertTrue(fixture.ended.isEmpty, "a session in use is never ended")
+    XCTAssertTrue(list.detached(for: remote).isEmpty, "its row goes")
+  }
+
+  /// The same for a local workroom: a session attached since the read is left running.
+  func testStoppingALocalSessionAttachedSinceTheListWasReadEndsNothing() async throws {
+    let id = UUID()
+    let answer = Mutex([session(workroom: local.id.encoded, id: id)])
+    // A local end resolves the session's owner first, so being asked is how an end shows here.
+    let askedToEnd = Mutex<[UUID]>([])
+    let service = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "isolated") },
+      ownership: { asked in
+        askedToEnd.withLock { $0.append(asked) }
+        return .notOwned
+      })
+    let list = DetachedSessionList(
+      service: service, connections: HostConnectionManager(),
+      localSessions: { answer.withLock { $0 } })
+    await list.refresh(local, ownedSessionIDs: [])
+    XCTAssertEqual(list.detached(for: local).count, 1, "fixture: listed")
+    answer.withLock { $0 = [self.session(workroom: self.local.id.encoded, id: id, attached: true)] }
+
+    await list.stop(id, in: local, ownedSessionIDs: [])
+
+    XCTAssertTrue(askedToEnd.withLock { $0 }.isEmpty, "a session in use is never ended")
+    XCTAssertTrue(list.detached(for: local).isEmpty, "its row goes")
+
+    // Negative control: one still detached at the click is ended.
+    answer.withLock { $0 = [self.session(workroom: self.local.id.encoded, id: id)] }
+    await list.stop(id, in: local, ownedSessionIDs: [])
+    XCTAssertEqual(askedToEnd.withLock { $0 }, [id])
+  }
+
+  // Value: protects=the session a local Active tab swap lets go shows in the list once its old
+  // attach has exited, the case the re-read exists for; fails_when=the list is read once after
+  // the swap; why_new=the second review of #584 (the loop was tested only on a remote id);
+  // seam=the local source, whose answer changes after the first read
+  func testALocalSessionLetGoIsListedOnceItsDepartingAttachHasGone() async throws {
+    let id = UUID()
+    let reads = Mutex(0)
+    let target = local
+    let sourced = DetachedSessionList(
+      service: isolatedPaneSessionService(), connections: HostConnectionManager(),
+      localSessions: {
+        let read = reads.withLock {
+          $0 += 1
+          return $0
+        }
+        return [self.session(workroom: target.id.encoded, id: id, attached: read < 3)]
+      })
+
+    await sourced.refreshAfterReleasing(
+      id, in: target, ownedSessionIDs: { [] }, interval: .milliseconds(1))
+
+    XCTAssertEqual(sourced.detached(for: target).map(\.identifier.uuid), [id])
+    XCTAssertEqual(reads.withLock { $0 }, 3, "read until it was let go, then no more")
   }
 
   // Value: protects=a remote session a pane in another window on this Mac shows is hidden, though

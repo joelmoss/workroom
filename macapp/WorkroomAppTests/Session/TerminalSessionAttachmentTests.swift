@@ -118,6 +118,27 @@ final class TerminalSessionAttachmentTests: XCTestCase {
     XCTAssertTrue(try XCTUnwrap(sessions.surface(tab)).attachment.isRestored)
   }
 
+  // Value: protects=the remote session an Active tab swap lets go is marked as let go here, which
+  // is what lists it while its old ssh lingers on the host, and only that one; fails_when=the swap
+  // marks nothing, or marks the session it attaches; why_new=the second review of #584; seam=none
+  func testARemoteSwapMarksTheSessionItLetsGoAsReleased() throws {
+    let service = isolatedPaneSessionService()
+    let sessions = makeIsolatedPanes(service: service)
+    let remote = TerminalTarget(
+      id: .workroom(project: "/p", name: "far"), title: "far", path: "/home/workroom/far",
+      unavailability: .remote, remoteHost: UUID(), remoteWorkroomID: UUID())
+    let tab = sessions.addTab(for: remote)
+    let old = try XCTUnwrap(sessions.sessionID(forTab: tab.id, inTarget: remote.id))
+    let next = UUID()
+
+    XCTAssertTrue(
+      TerminalSessionAttachment.attachToActivePane(
+        sessionID: next, target: remote, sessions: sessions))
+
+    XCTAssertTrue(service.wasReleasedHere(old))
+    XCTAssertFalse(service.wasReleasedHere(next))
+  }
+
   /// Negative control: a swap refused (another tab shows the session) registers nothing.
   func testARefusedRemoteSwapRegistersNothing() {
     let service = isolatedPaneSessionService()

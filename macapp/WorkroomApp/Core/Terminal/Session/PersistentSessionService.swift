@@ -115,6 +115,10 @@ final class PersistentSessionService {
   /// the same session. A pane registers its session when it is made, but a restored one spawns
   /// nothing until it enters a window, so a registration alone says nothing about the host.
   private var attachedRemote: [UUID: Set<UUID>] = [:]
+  /// Remote sessions a pane here let go of for another (an Active tab swap), and no pane has
+  /// attached to since (#584): their host can go on counting the old ssh as attached until it
+  /// notices it gone, and only these are offered as detached meanwhile (`DetachedSessionList`).
+  private var releasedRemote: Set<UUID> = []
   /// Remote sessions whose pane closed but whose host did not end them (#293). Each is tried again
   /// once per connection to its host (`retryWhenReconnected`), so a host that refuses for good is
   /// not asked in a loop.
@@ -558,6 +562,7 @@ final class PersistentSessionService {
     dropUnended(sessionID)
     remoteSessions.removeValue(forKey: sessionID)
     attachedRemote.removeValue(forKey: sessionID)
+    releasedRemote.remove(sessionID)
   }
 
   /// The host a remote session's pane attaches to, or nil for a local session.
@@ -585,6 +590,16 @@ final class PersistentSessionService {
   /// go since (#356, #584).
   func hasAttachedPane(to sessionID: UUID) -> Bool { attachedRemote[sessionID] != nil }
 
+  /// A pane here let remote `sessionID` go for another session (an Active tab swap). Nothing for a
+  /// local session, whose old attach this Mac ends itself.
+  func sessionReleased(_ sessionID: UUID) {
+    guard remoteSessions[sessionID] != nil else { return }
+    releasedRemote.insert(sessionID)
+  }
+
+  /// Whether a pane here let remote `sessionID` go and none has attached to it since.
+  func wasReleasedHere(_ sessionID: UUID) -> Bool { releasedRemote.contains(sessionID) }
+
   /// Whether a remote session's last attach was refused by its host for good (#241).
   func remoteHostRefusedLastAttach(_ sessionID: UUID) -> Bool {
     guard let remote = remoteSessions[sessionID] else { return false }
@@ -604,6 +619,8 @@ final class PersistentSessionService {
     forSession sessionID: UUID, restored: Bool = false, by pane: UUID? = nil
   ) -> String? {
     if let remote = remoteSessions[sessionID] {
+      // A pane here holds it again, however its attach goes: no longer one this Mac let go.
+      if pane != nil { releasedRemote.remove(sessionID) }
       do {
         let command = try remote.driver.attachCommand(
           to: remote.host, session: sessionID, workingDirectory: remote.workingDirectory,
@@ -874,6 +891,7 @@ final class PersistentSessionService {
       }
       dropUnended(sessionID)
       remoteSessions.removeValue(forKey: sessionID)
+      releasedRemote.remove(sessionID)
       return true
     }
     // An UNKNOWN owner must report failure, not success. `reap` gates deleting the workroom's

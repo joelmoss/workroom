@@ -108,19 +108,27 @@ final class DetachedSessionList: ObservableObject {
   /// Whether no one is using `session`, as Stop Detached Terminals judges it
   /// (`PersistentSessionService.detachedSessionIDs`): a client attached to it (a pane in another
   /// window, another Mac's, an external attach) is using it, and two clients fight over its size.
-  /// A remote session this Mac registered and no pane here holds any more is the exception: its
-  /// last attach was this Mac's, whose ssh the host can go on counting until it notices it gone.
+  /// A remote session a pane here let go of in a swap, and no pane here has attached to since, is
+  /// the exception: its last attach was this Mac's, whose ssh the host can go on counting until it
+  /// notices it gone. Only one let go: a session merely registered here may be a reconnecting
+  /// pane's in another window, or a hidden tab's that another Mac holds.
   /// A remote run session is never offered: another Mac's run, which Run adopts (D7).
   private func isDetached(_ session: SessionDescriptor, remote: Bool) -> Bool {
     guard remote else { return !session.isAttached }
     if session.value(forMetadataKey: RunSessionKey.kind) == RunSessionKey.run { return false }
     guard session.isAttached else { return true }
     guard let id = session.identifier.uuid else { return false }
-    return service.isRemote(id) && !service.hasAttachedPane(to: id)
+    return service.wasReleasedHere(id) && !service.hasAttachedPane(to: id)
   }
 
-  /// Ends a session the list shows, where it runs, then reads the list again.
+  /// Ends a session the list shows, where it runs, then reads the list again. Read again first,
+  /// and ended only if it is still detached: the list can be hours old, and since then another Mac
+  /// or window may have picked the session up. One that is not drops out of the list.
   func stop(_ sessionID: UUID, in target: TerminalTarget, ownedSessionIDs: Set<UUID>) async {
+    await read(target, ownedSessionIDs: ownedSessionIDs)
+    guard detached(for: target).contains(where: { $0.identifier.uuid == sessionID }) else {
+      return
+    }
     if target.remoteHost == nil || service.isRemote(sessionID) {
       // A remote session a pane here attached to is registered, and its kill retries.
       await service.endSession(sessionID: sessionID)
