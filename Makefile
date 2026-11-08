@@ -2,7 +2,10 @@
 # macOS app under macapp/ (Xcode-based), `vcs-*` = the Rust workspace under vcs/, `docs-*` = the
 # docs site under docs-site/, `actions-*` = the GitHub Actions under .github/. Run `make` with no
 # target to list them. Each area's targets live in mk/<area>.mk, included below.
-export PATH := /opt/homebrew/bin:/usr/local/bin:$(PATH)
+# Homebrew's dirs are a fallback for a shell that lacks them, so they go last: the caller's PATH
+# order wins, and a version manager's tools (mise's go, golangci-lint, shellcheck) come before
+# any Homebrew copy of the same tool.
+export PATH := $(PATH):/opt/homebrew/bin:/usr/local/bin
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 .DEFAULT_GOAL := help
