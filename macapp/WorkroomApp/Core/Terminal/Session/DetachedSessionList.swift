@@ -37,25 +37,60 @@ final class DetachedSessionList: ObservableObject {
     detachedByWorkroom[target.sessionWorkroomKey] ?? []
   }
 
+  /// What a remote workroom's `follow` acts on: a change in its host's connection, or the time to
+  /// read again.
+  private enum FollowEvent: Sendable {
+    case snapshot(HostConnectionManager.Snapshot)
+    case reread
+  }
+
   /// Keeps `target`'s list while the caller runs (a footer's `.task`): read once for a local
-  /// workroom, and for a remote one each time its host connects, since a pane's footer mounts
-  /// before the pane's own attach has brought the host up. Never connects: a host this app isn't
-  /// connected to (unreachable, asleep, stopped, still connecting) lists nothing until it is.
-  func follow(_ target: TerminalTarget, ownedSessionIDs: () -> Set<UUID>) async {
+  /// workroom. A remote one is read each time its host connects, since a pane's footer mounts
+  /// before the pane's own attach has brought the host up, and every `rereadEvery` while it is
+  /// connected: the daemon sends nothing when another Mac lets a session go, and a list that is
+  /// empty shows no button to open. Never connects: a host this app isn't connected to
+  /// (unreachable, asleep, stopped, still connecting) lists nothing, and is asked nothing, until
+  /// it is.
+  func follow(
+    _ target: TerminalTarget, ownedSessionIDs: () -> Set<UUID>,
+    rereadEvery: Duration = .seconds(30)
+  ) async {
     guard target.remoteHost != nil else {
       return await refresh(target, ownedSessionIDs: ownedSessionIDs())
     }
+    // One stream of both, so the reads stay on this loop, one at a time. Its feeders end with it.
+    let (events, feed) = AsyncStream<FollowEvent>.makeStream()
+    let updates = await connections.updates(for: target.hostID)
+    let snapshots = Task {
+      for await snapshot in updates { feed.yield(.snapshot(snapshot)) }
+      feed.finish()
+    }
+    let rereads = Task {
+      while true {
+        do { try await Task.sleep(for: rereadEvery) } catch { return }
+        feed.yield(.reread)
+      }
+    }
+    defer {
+      snapshots.cancel()
+      rereads.cancel()
+    }
     var listed: HostConnectionManager.Lease?
-    for await snapshot in await connections.updates(for: target.hostID) {
-      switch snapshot.status {
+    for await event in events {
+      switch event {
       // Once per connection: the manager publishes each change of state, not each request.
-      case .connected where snapshot.lease != listed:
+      case .snapshot(let snapshot) where snapshot.status == .connected:
+        guard snapshot.lease != listed else { break }
         listed = snapshot.lease
         await refresh(target, ownedSessionIDs: ownedSessionIDs())
-      case .disconnected:
+      case .snapshot(let snapshot):
         listed = nil
-        detachedByWorkroom[target.sessionWorkroomKey] = nil
-      case .connected, .connecting: break
+        if snapshot.status == .disconnected {
+          detachedByWorkroom[target.sessionWorkroomKey] = nil
+        }
+      case .reread:
+        guard listed != nil else { break }
+        await refresh(target, ownedSessionIDs: ownedSessionIDs())
       }
     }
   }
@@ -122,11 +157,18 @@ final class DetachedSessionList: ObservableObject {
   }
 
   /// Ends a session the list shows, where it runs, then reads the list again. Read again first,
-  /// and ended only if it is still detached: the list can be hours old, and since then another Mac
-  /// or window may have picked the session up. One that is not drops out of the list.
+  /// and ended only if it is still detached with no client attached: the list can be hours old,
+  /// and since then another Mac or window may have picked the session up. The leftover exception
+  /// never counts here, since the client it lets through may be another Mac's (PR #594). One that
+  /// is not ended drops out of the list.
   func stop(_ sessionID: UUID, in target: TerminalTarget, ownedSessionIDs: Set<UUID>) async {
     await read(target, ownedSessionIDs: ownedSessionIDs)
-    guard detached(for: target).contains(where: { $0.identifier.uuid == sessionID }) else {
+    let key = target.sessionWorkroomKey
+    guard
+      let session = detached(for: target).first(where: { $0.identifier.uuid == sessionID }),
+      !session.isAttached
+    else {
+      detachedByWorkroom[key]?.removeAll { $0.identifier.uuid == sessionID }
       return
     }
     if target.remoteHost == nil || service.isRemote(sessionID) {
