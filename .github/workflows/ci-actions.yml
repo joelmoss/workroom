@@ -29,22 +29,30 @@ jobs:
       # The runner's own shellcheck (0.9.0 on ubuntu-24.04) is older than the one developers run, so
       # the same script could lint clean locally and fail here. Pinned by checksum like jactionlint;
       # /usr/local/bin comes before /usr/bin, so both jactionlint and `make app-scripts-lint` use it.
+      - name: Download shellcheck
+        uses: ./.github/actions/download-file
+        with:
+          url: https://github.com/koalaman/shellcheck/releases/download/v${{ env.SHELLCHECK_VERSION }}/shellcheck-v${{ env.SHELLCHECK_VERSION }}.linux.x86_64.tar.xz
+          sha256: ${{ env.SHELLCHECK_SHA256 }}
+          path: ${{ runner.temp }}/shellcheck.tar.xz
+
       - name: Install shellcheck
         run: |
-          archive="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-          curl -fsSLO "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/$archive"
-          echo "$SHELLCHECK_SHA256  $archive" | sha256sum --check --strict
-          tar -xJf "$archive" --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
-          sudo install shellcheck /usr/local/bin/shellcheck
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP" --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          sudo install "$RUNNER_TEMP/shellcheck" /usr/local/bin/shellcheck
           shellcheck --version
+
+      - name: Download jactionlint
+        uses: ./.github/actions/download-file
+        with:
+          url: https://github.com/jdx/jactionlint/releases/download/v${{ env.JACTIONLINT_VERSION }}/jactionlint_${{ env.JACTIONLINT_VERSION }}_linux_amd64.tar.gz
+          sha256: ${{ env.JACTIONLINT_SHA256 }}
+          path: ${{ runner.temp }}/jactionlint.tar.gz
 
       - name: Lint the workflows
         run: |
-          archive="jactionlint_${JACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          curl -fsSLO "https://github.com/jdx/jactionlint/releases/download/v${JACTIONLINT_VERSION}/$archive"
-          echo "$JACTIONLINT_SHA256  $archive" | sha256sum --check --strict
-          tar -xzf "$archive" jactionlint
-          sudo install jactionlint /usr/local/bin/jactionlint
+          tar -xzf "$RUNNER_TEMP/jactionlint.tar.gz" -C "$RUNNER_TEMP" jactionlint
+          sudo install "$RUNNER_TEMP/jactionlint" /usr/local/bin/jactionlint
           make actions-lint
 
       # Here, not in the macOS `app` job: this job already installs the pinned shellcheck.
