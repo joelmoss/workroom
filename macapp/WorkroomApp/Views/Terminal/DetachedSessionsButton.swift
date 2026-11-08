@@ -73,12 +73,22 @@ struct DetachedSessionsButton: View {
 
   private func attachToActive(_ session: SessionDescriptor) {
     guard let id = session.identifier.uuid else { return }
+    // The session the pane lets go, which the list should offer once its old attach has gone.
+    let released = terminals.focusedTab(for: target)?.terminal?.sessionID
     guard
       TerminalSessionAttachment.attachToActivePane(
         sessionID: id, target: target, sessions: terminals)
     else { return }
     showing = false
-    Task { await refresh() }
+    Task { [terminals, target, sessionsStore] in
+      guard let released, released != id else {
+        return await sessionsStore.refresh(
+          target, ownedSessionIDs: terminals.ownedSessionIDs(for: target))
+      }
+      await sessionsStore.refreshAfterReleasing(released, in: target) {
+        terminals.ownedSessionIDs(for: target)
+      }
+    }
   }
 
   private func openNew(_ session: SessionDescriptor) {

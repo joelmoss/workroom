@@ -61,6 +61,33 @@ final class DetachedSessionList: ObservableObject {
   }
 
   func refresh(_ target: TerminalTarget, ownedSessionIDs: Set<UUID>) async {
+    await read(target, ownedSessionIDs: ownedSessionIDs)
+  }
+
+  /// `refresh` after a pane here let `released` go (Active tab), read again until the list shows
+  /// it, it has gone, or `attempts` reads have found it still attached: the pane's old attach
+  /// exits after the swap, so the first read can still find it attached, and hide it. Bounded,
+  /// since another client may really hold it.
+  func refreshAfterReleasing(
+    _ released: UUID, in target: TerminalTarget, ownedSessionIDs: () -> Set<UUID>,
+    attempts: Int = 12, interval: Duration = .milliseconds(250)
+  ) async {
+    for attempt in 1...max(attempts, 1) {
+      let sessions = await read(target, ownedSessionIDs: ownedSessionIDs())
+      let listed = detached(for: target).contains { $0.identifier.uuid == released }
+      guard !listed, sessions.contains(where: { $0.identifier.uuid == released }),
+        attempt < attempts
+      else { return }
+      do { try await Task.sleep(for: interval) } catch { return }
+    }
+  }
+
+  /// Reads `target`'s sessions where they run and keeps those that are detached; returns every
+  /// session read.
+  @discardableResult
+  private func read(_ target: TerminalTarget, ownedSessionIDs: Set<UUID>) async
+    -> [SessionDescriptor]
+  {
     let key = target.sessionWorkroomKey
     let sessions: [SessionDescriptor]
     if target.remoteHost != nil {
@@ -73,7 +100,23 @@ final class DetachedSessionList: ObservableObject {
     detachedByWorkroom[key] = sessions.filter { session in
       session.value(forMetadataKey: SessionMetadataKey.workroom) == key
         && (session.identifier.uuid.map { !ownedSessionIDs.contains($0) } ?? true)
+        && isDetached(session, remote: target.remoteHost != nil)
     }
+    return sessions
+  }
+
+  /// Whether no one is using `session`, as Stop Detached Terminals judges it
+  /// (`PersistentSessionService.detachedSessionIDs`): a client attached to it (a pane in another
+  /// window, another Mac's, an external attach) is using it, and two clients fight over its size.
+  /// A remote session this Mac registered and no pane here holds any more is the exception: its
+  /// last attach was this Mac's, whose ssh the host can go on counting until it notices it gone.
+  /// A remote run session is never offered: another Mac's run, which Run adopts (D7).
+  private func isDetached(_ session: SessionDescriptor, remote: Bool) -> Bool {
+    guard remote else { return !session.isAttached }
+    if session.value(forMetadataKey: RunSessionKey.kind) == RunSessionKey.run { return false }
+    guard session.isAttached else { return true }
+    guard let id = session.identifier.uuid else { return false }
+    return service.isRemote(id) && !service.hasAttachedPane(to: id)
   }
 
   /// Ends a session the list shows, where it runs, then reads the list again.

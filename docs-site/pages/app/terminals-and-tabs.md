@@ -88,7 +88,7 @@ When you reopen Workroom, visible panes reconnect immediately. Hidden terminal t
 
 ### Detached sessions
 
-A session can be running in the background with no tab in the workroom showing it. When the current workroom has such sessions, a button with a stack icon and a count appears at the right of the pane footer, the strip along the bottom of a pane.
+A session can be running in the background with no tab showing it, in any window. When the current workroom has such sessions, a button with a stack icon and a count appears at the right of the pane footer, the strip along the bottom of a pane.
 
 Click it to see **Detached terminals**. Each row shows the terminal's title and its folder, and three buttons:
 
@@ -98,7 +98,7 @@ Click it to see **Detached terminals**. Each row shows the terminal's title and 
 
 #### In a remote workroom {nightly}
 
-A remote workroom's detached sessions are the sessions on its host that no tab on this Mac shows. The list fills in once Workroom is connected to the host, and is empty while the host is asleep, stopped or out of reach. It never wakes or starts the host.
+A remote workroom's detached sessions are the sessions on its host that no tab shows, on this Mac or on another one. The workroom's run command isn't listed. The list fills in once Workroom is connected to the host, and is empty while the host is asleep, stopped or out of reach. It never wakes or starts the host.
 
 ### Stop all detached terminals {nightly}
 

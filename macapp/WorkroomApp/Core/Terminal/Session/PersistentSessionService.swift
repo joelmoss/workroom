@@ -581,6 +581,10 @@ final class PersistentSessionService {
     attachedRemote.keys.contains { remoteSessions[$0]?.host == host }
   }
 
+  /// Whether a pane on this Mac, in any window, has attached to remote `sessionID` and not let it
+  /// go since (#356, #584).
+  func hasAttachedPane(to sessionID: UUID) -> Bool { attachedRemote[sessionID] != nil }
+
   /// Whether a remote session's last attach was refused by its host for good (#241).
   func remoteHostRefusedLastAttach(_ sessionID: UUID) -> Bool {
     guard let remote = remoteSessions[sessionID] else { return false }

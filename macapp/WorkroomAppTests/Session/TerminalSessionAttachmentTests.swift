@@ -118,6 +118,26 @@ final class TerminalSessionAttachmentTests: XCTestCase {
     XCTAssertTrue(try XCTUnwrap(sessions.surface(tab)).attachment.isRestored)
   }
 
+  /// Negative control: a swap refused (another tab shows the session) registers nothing.
+  func testARefusedRemoteSwapRegistersNothing() {
+    let service = isolatedPaneSessionService()
+    let sessions = makeIsolatedPanes(service: service)
+    let remote = TerminalTarget(
+      id: .workroom(project: "/p", name: "far"), title: "far", path: "/home/workroom/far",
+      unavailability: .remote, remoteHost: UUID(), remoteWorkroomID: UUID())
+    let owner = sessions.addTab(for: remote)
+    let shown = UUID()
+    sessions.giveSession(shown, toTab: owner.id, in: remote)
+    sessions.addTab(for: remote)
+    XCTAssertFalse(service.isRemote(shown), "fixture: shown, never registered")
+
+    XCTAssertFalse(
+      TerminalSessionAttachment.attachToActivePane(
+        sessionID: shown, target: remote, sessions: sessions))
+
+    XCTAssertFalse(service.isRemote(shown))
+  }
+
   /// Negative control: a local workroom's pane pointed at a session leaves it this Mac's.
   func testALocalPanePointedAtASessionRegistersNoHost() {
     let service = isolatedPaneSessionService()
