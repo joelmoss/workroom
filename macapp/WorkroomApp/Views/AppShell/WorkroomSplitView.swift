@@ -342,16 +342,16 @@ private struct WorkroomPaneLeaf: View {
     )
     // The workroom's right-click menu (issue #112) — the SAME items as the tab chip (incl.
     // "Close"). "Remove from Split" (the menu equivalent of the ✕) is offered only for a real
-    // member; `workroomContextMenu` drops the item and its divider on a nil closure. `closeName`
+    // member; the menu drops the item and its divider on a nil closure. `closeName`
     // matches the chip's `workroomName ?? primaryLabel`. Attached AFTER `.gesture` so both share
     // the bar's `.contentShape`; secondary-click (menu) and the primary-button drag coexist.
     // The bar's own controls are separate hit targets, so a right-click landing directly on one may
     // not raise this menu (already true of the ✕ before issue #139 added its neighbours) — the
     // leading label region always does, and that is the region to aim for.
     .contextMenu {
-      workroomContextMenu(
-        store: store, sid: sid, target: target, closeName: workroomName ?? projectLabel,
-        onRemoveFromSplit: multi ? onClose : nil)
+      WorkroomMenuAdapter(
+        sid: sid, target: target, closeName: workroomName ?? projectLabel,
+        onRemoveFromSplit: multi ? onClose : nil, style: .full)
     }
   }
 

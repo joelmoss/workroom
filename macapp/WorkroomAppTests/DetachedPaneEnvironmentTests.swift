@@ -261,6 +261,8 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
     "EdgeRevealSidebars",
     // The title bar accessory and the workroom tab bar.
     "LeadingTitlebarBar", "TrailingTitlebarBar", "WorkroomTabBar", "WorkroomTabChip", "RunControls",
+    // The workroom menu of the tab chip, split title bar, sidebar row and inspector header.
+    "WorkroomMenuAdapter",
     // The sidebar and activity bar.
     "ProjectSidebar", "SidebarAddProjectButton", "RowRunButton", "ActivityBar",
     "NotificationsBarButton",

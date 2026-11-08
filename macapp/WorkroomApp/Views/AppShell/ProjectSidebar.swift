@@ -573,21 +573,7 @@ struct ProjectSidebar: View {
       .contextMenu {
         // A workroom still being made has nothing to open, label or delete yet.
         if !pending {
-          runCommandMenuItems(host: store, target: target)
-          Divider()
-          // Open this workroom beside the current one (issue #163) — the same shared item the tab
-          // chip and split pane title bar get from `workroomContextMenu`. Called directly because
-          // this row's menu is its own inline list, not that shared builder; migrating it wholesale
-          // would silently add a "Close" item and reorder the menu.
-          openInSplitMenuItem(store: store, sid: id)
-          // Into a window of its own (#444), when it has terminals here to move.
-          moveToNewWindowMenuItem(store: store, sid: id)
-          if canOpenInSplit(store: store, sid: id) || showsMoveToNewWindow(store: store, sid: id) {
-            Divider()
-          }
-          workroomLabelMenuItems(store: store, workroom: workroom, project: project)
-          Divider()
-          deleteWorkroomMenuItem(store: store, workroom: workroom, project: project)
+          WorkroomMenuAdapter(sid: id, target: target, style: .sidebarRow)
         }
       }
   }

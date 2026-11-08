@@ -455,9 +455,10 @@ private struct WorkroomTabChip: View {
       // only, a workroom chip shows the full set — same as before the extraction. A create's chip has
       // no terminals to close while its run lasts (#483): its pane's own actions end it.
       .contextMenu {
-        workroomContextMenu(
-          store: store, sid: sid, target: target,
-          closeName: lifecycle.isCreationBlocking(target.id) ? nil : workroomName ?? primaryLabel)
+        WorkroomMenuAdapter(
+          sid: sid, target: target,
+          closeName: lifecycle.isCreationBlocking(target.id) ? nil : workroomName ?? primaryLabel,
+          style: .full)
       }
       .accessibilityElement(children: .combine)
       .accessibilityLabel(
