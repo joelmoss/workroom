@@ -60,11 +60,29 @@ enum SentryConfig {
     // Metrics are on by default in SDK 9.12+; explicit for intent.
     options.enableMetrics = true
 
-    // Regroup app hangs before they're sent. See `appHangFingerprint`.
+    // Drop update-feed outages, and regroup app hangs before they're sent. See
+    // `isAppcastFailedRequest` and `appHangFingerprint`.
     options.beforeSend = { event in
+      if isAppcastFailedRequest(event) { return nil }
       if let fingerprint = appHangFingerprint(for: event) { event.fingerprint = fingerprint }
       return event
     }
+  }
+
+  // MARK: Update-feed failed requests
+
+  /// Prefix of both Sparkle feeds (`appcast.xml`, `appcast-nightly.xml`): `SUFeedURL` in
+  /// `project.yml` points at assets on the fixed `appcast` GitHub release.
+  static let appcastURLPrefix = "https://github.com/joelmoss/workroom/releases/download/appcast/"
+
+  /// Whether `event` is the SDK's failed-request report (`captureFailedRequests`, on by default for
+  /// 5xx) for a fetch of the update feed. Those are GitHub outages, not app faults: Sparkle retries
+  /// on its next check, and one outage files the event twice (on finish, and again when Sparkle
+  /// cancels the task), which is how WORKROOM-4B and WORKROOM-4N opened from a single 504 on
+  /// 2026-11-09. Every other failed request is still reported.
+  static func isAppcastFailedRequest(_ event: Event) -> Bool {
+    guard event.exceptions?.first?.mechanism?.type == "HTTPClientError" else { return false }
+    return event.request?.url?.hasPrefix(appcastURLPrefix) == true
   }
 
   // MARK: Shim reattach

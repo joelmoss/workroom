@@ -213,6 +213,52 @@ final class SentryAppHangFingerprintTests: XCTestCase {
     XCTAssertNil(SentryConfig.appHangFingerprint(for: Event(level: .error)))
   }
 
+  /// A failed-request event built the way `SentryNetworkTracker.captureFailedRequest` builds one.
+  private func failedRequestEvent(url: String, status: Int = 504) -> Event {
+    let event = Event(level: .error)
+    let exception = Exception(
+      value: "HTTP Client Error with status code: \(status)", type: "HTTPClientError")
+    exception.mechanism = Mechanism(type: "HTTPClientError")
+    event.exceptions = [exception]
+    let request = SentryRequest()
+    request.url = url
+    request.method = "GET"
+    event.request = request
+    return event
+  }
+
+  /// The real `beforeSend` wiring, from `configure`, so a filter that is defined but never hooked
+  /// up fails here.
+  private func beforeSend(_ event: Event) -> Event? {
+    let options = Options()
+    SentryConfig.configure(options)
+    return options.beforeSend?(event)
+  }
+
+  /// WORKROOM-4B/4N: a GitHub 504 on either Sparkle feed is dropped before it is sent.
+  func testBeforeSendDropsUpdateFeedFailedRequests() {
+    for feed in ["appcast.xml", "appcast-nightly.xml"] {
+      let event = failedRequestEvent(url: SentryConfig.appcastURLPrefix + feed)
+      XCTAssertNil(beforeSend(event), feed)
+    }
+  }
+
+  /// Negative control: failed requests elsewhere, and non-HTTP events on the feed URL, still send.
+  func testBeforeSendKeepsOtherFailedRequestsAndEvents() {
+    let release = "https://github.com/joelmoss/workroom/releases/download/v2.1.0/Workroom.dmg"
+    XCTAssertNotNil(beforeSend(failedRequestEvent(url: release)))
+    XCTAssertNotNil(beforeSend(failedRequestEvent(url: "https://api.github.com/repos")))
+
+    let crash = Event(level: .error)
+    let exception = Exception(value: "boom", type: "NSInvalidArgumentException")
+    exception.mechanism = Mechanism(type: "NSException")
+    crash.exceptions = [exception]
+    let request = SentryRequest()
+    request.url = SentryConfig.appcastURLPrefix + "appcast.xml"
+    crash.request = request
+    XCTAssertNotNil(beforeSend(crash))
+  }
+
   func testNoiseClassification() {
     XCTAssertTrue(SentryConfig.isNoiseBinary("libsystem_kernel.dylib"))
     XCTAssertTrue(SentryConfig.isNoiseBinary("libobjc.A.dylib"))
