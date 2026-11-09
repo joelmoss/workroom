@@ -10,13 +10,18 @@ final class SoundFeedback {
     var interval: Double { self == .notification ? 0.5 : 0.25 }
   }
 
+  /// Silent in an app a UI test launched: no test asserts a sound, and in a Tart guest
+  /// (`make app-uitest-vm`), which has no audio device, `NSSound.play` hangs in CoreAudio and the
+  /// test's next synthesized key then times out.
   static let shared = SoundFeedback(
     now: { ProcessInfo.processInfo.systemUptime },
-    play: playOffMain)
+    play: AppEnvironment.isUILaunch ? playNothing : playOffMain)
 
   nonisolated private static func playOffMain(_ kind: Kind) async {
     await SoundPlayer.shared.play(kind)
   }
+
+  nonisolated private static func playNothing(_ kind: Kind) async {}
 
   private var pending: Set<Kind> = []
   private var lastAccepted: [Kind: Double] = [:]

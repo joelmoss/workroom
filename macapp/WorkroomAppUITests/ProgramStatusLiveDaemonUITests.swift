@@ -2,7 +2,8 @@ import XCTest
 
 /// Program status (#358) end to end, through a REAL `workroomd`: the fixture's terminals attach
 /// through a scratch daemon of their own (`-WorkroomUITestLiveDaemon`, so no daemon, session or config
-/// of the developer's is touched), and `testdata/program-status/mock-claude-code.sh` plays back
+/// of the developer's is touched), and `testdata/program-status/mock-claude-code.sh` (copied into
+/// this bundle) plays back
 /// what Claude Code sends. So this covers what the seeded `ProgramStatusUITests` cannot: the probe
 /// answered by the daemon, the service, the app's subscription, the monitor, the indicators, the
 /// "needs you" alert, Claude's own alert folded into it, and ⇧⌘M.
@@ -11,9 +12,17 @@ import XCTest
 /// prompt); the in-app alert stands in for them.
 final class ProgramStatusLiveDaemonUITests: XCTestCase {
   private var app: XCUIApplication!
-  private let mock = URL(fileURLWithPath: #filePath)
-    .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-    .appendingPathComponent("testdata/program-status/mock-claude-code.sh").path
+  /// From the test bundle, not the source tree: a run in a Tart guest has no checkout.
+  private var mock: String {
+    guard
+      let url = Bundle(for: Self.self).url(
+        forResource: "mock-claude-code", withExtension: "sh")
+    else {
+      XCTFail("mock-claude-code.sh is missing from the UI-test bundle (macapp/project.yml)")
+      return ""
+    }
+    return url.path
+  }
 
   override func setUp() {
     super.setUp()

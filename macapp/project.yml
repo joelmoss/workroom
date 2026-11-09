@@ -434,6 +434,10 @@ targets:
     platform: macOS
     sources:
       - path: WorkroomAppUITests
+      # Claude Code's recorded sequence, for ProgramStatusLiveDaemonUITests. Copied into the test
+      # bundle, so a run without this checkout (a Tart guest: `make app-uitest-vm`) has it too.
+      - path: ../testdata/program-status/mock-claude-code.sh
+        buildPhase: resources
     dependencies:
       - target: WorkroomApp
     settings:
