@@ -275,7 +275,7 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
     "HistoryPanelAdapter", "FilesPanel", "PullRequestPanel", "ReadyForReviewButton", "MergeButton",
     "VCSToolbar",
     // Sheets the main window presents, and its creation pane.
-    "CommitSheet", "HostOptionsPanel", "CreationPaneAdapter",
+    "CommitSheet", "CreationPaneAdapter",
   ]
 
   /// Every view under `Views/` asks its window through `\.paneHost` unless it is main-window only, so

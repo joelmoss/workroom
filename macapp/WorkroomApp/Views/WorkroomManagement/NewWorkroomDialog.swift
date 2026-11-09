@@ -36,13 +36,50 @@ struct NewWorkroomDialog: View {
   var splitIntent = false
   @Environment(\.themeTokens) private var tokens
 
+  /// `configure` opens straight on one create's host options (the sidebar's "boxd ▸ Configure…"),
+  /// set before the first frame so the projects never show on the way there.
+  init(
+    store: AppStore, onClose: @escaping () -> Void, splitIntent: Bool = false,
+    configure: ConfigureRequest? = nil
+  ) {
+    self.store = store
+    self.onClose = onClose
+    self.splitIntent = splitIntent
+    _step = State(
+      initialValue: configure.map { .configure($0.project, $0.place) } ?? .projects)
+    _placeAnchor = State(initialValue: configure?.splitAnchor)
+  }
+
+  /// Where the dialog is: choosing a project, then where its workroom goes (#309), then, for boxd
+  /// or exe.dev, its host options (#575).
+  enum Step: Equatable {
+    case projects
+    case places(Project)
+    case configure(Project, HostKind)
+
+    /// The step Back goes to; nil on the projects, which have no Back.
+    var back: Step? {
+      switch self {
+      case .projects: nil
+      case .places: .projects
+      case .configure(let project, _): .places(project)
+      }
+    }
+
+    /// Whether ↑/↓/←/⏎ drive the dialog's list. In host options they are its fields' and Create
+    /// Workroom's.
+    var takesListKeys: Bool {
+      if case .configure = self { return false }
+      return true
+    }
+  }
+
   @State private var query = ""
   /// Index into `filtered` of the keyboard-highlighted row (↑/↓ move it, ⏎ / click pick it).
   @State private var highlighted = 0
   @FocusState private var searchFocused: Bool
-  /// The project picked (#309), whose workroom's place is asked next.
-  @State private var placing: Project?
-  /// Where that workroom lands beside, taken when its project was picked.
+  @State private var step: Step
+  /// Where the picked project's workroom lands beside, taken when it was picked.
   @State private var placeAnchor: SidebarID?
   @FocusState private var placesFocused: Bool
 
@@ -56,7 +93,7 @@ struct NewWorkroomDialog: View {
     // Capture the anchor NOW, not at landing: the create is async and the user can select a
     // different workroom while a setup script runs.
     let anchor = (split || splitIntent) ? store.selectedTargetID : nil
-    placing = project
+    step = .places(project)
     placeAnchor = anchor
     highlighted = WorkroomPlace.all.firstIndex { isUsable($0, in: project) } ?? 0
   }
@@ -87,14 +124,34 @@ struct NewWorkroomDialog: View {
     }
   }
 
-  private var rowCount: Int { placing == nil ? filtered.count : WorkroomPlace.all.count }
+  private var rowCount: Int {
+    if case .projects = step { return filtered.count }
+    return WorkroomPlace.all.count
+  }
 
-  /// From the places back to the projects (the back button, or ←).
+  /// One step back (the back button, or ← on the places): from a place's host options to the
+  /// places, highlighting that place; from the places to the projects.
   private func goBack() {
-    placing = nil
-    placeAnchor = nil
-    highlighted = 0
-    searchFocused = true
+    guard let back = step.back else { return }
+    let left = step
+    step = back
+    if case .configure(_, let place) = left {
+      highlighted = WorkroomPlace.all.firstIndex(of: .remote(place)) ?? 0
+      placesFocused = true
+    } else {
+      placeAnchor = nil
+      highlighted = 0
+      searchFocused = true
+    }
+  }
+
+  private var title: String {
+    switch step {
+    case .projects: PickerSplitIntent.title(open: false, split: splitIntent)
+    case .places(let project): "New Workroom in \(project.displayName)"
+    case .configure(let project, let place):
+      "New \(place.displayName) Workroom in \(project.displayName)"
+    }
   }
 
   /// Where `project`'s workroom can go: the reason none can, said once, then each place, a
@@ -140,25 +197,37 @@ struct NewWorkroomDialog: View {
       .buttonStyle(.plain)
       .accessibilityIdentifier("newWorkroom.place.\(place.id)")
       if place.remote?.takesHostOptions == true {
-        Button("Configure…") {
+        Button {
           openOptions(place, in: project, split: PickerSplitIntent.requestedFromCurrentModifiers())
+        } label: {
+          Image(systemName: "slider.horizontal.3")
         }
-        .buttonStyle(.borderless)
-        .help("Choose the host image and size for this workroom (⌘⏎)")
+        .buttonStyle(ToolbarIconButtonStyle())
+        .help("Configure")
+        .accessibilityLabel("Configure")
         .accessibilityIdentifier("newWorkroom.options.\(place.id)")
       }
     }
     .disabled(!usable)
   }
 
-  /// A boxd or exe.dev place's Configure… (#575): the create waits on its host options panel.
+  /// A boxd or exe.dev place's Configure (#575): the create waits on its host options, the next
+  /// step. A split asked for here is taken now, as a pick takes it.
   private func openOptions(_ place: WorkroomPlace, in project: Project, split: Bool = false) {
     guard let remote = place.remote, remote.takesHostOptions, isUsable(place, in: project)
     else { return }
+    if split, placeAnchor == nil { placeAnchor = store.selectedTargetID }
+    step = .configure(project, remote)
+  }
+
+  /// Creates `project`'s workroom at `place` with the options chosen in its step.
+  private func create(in project: Project, at place: HostKind, options: HostOptions?) {
     onClose()
-    store.modals.pendingHostOptions = PendingHostOptions(
-      project: project, place: remote,
-      splitAnchor: placeAnchor ?? (split ? store.selectedTargetID : nil))
+    let anchor = placeAnchor
+    Task {
+      await store.lifecycle.createRemoteWorkroom(
+        in: project, place: place, splitAnchor: anchor, hostOptions: options, from: store)
+    }
   }
 
   private func projectRow(_ project: Project, isHighlighted: Bool) -> some View {
@@ -174,49 +243,57 @@ struct NewWorkroomDialog: View {
   var body: some View {
     VStack(spacing: 0) {
       HStack {
-        if let placing {
+        if step.back != nil {
           Button(action: goBack) {
             Image(systemName: "chevron.left")
           }
-          .buttonStyle(.borderless)
-          .help("Back (←)")
+          .buttonStyle(ToolbarIconButtonStyle())
+          // ← moves a field's caret in host options, so only the button goes back there.
+          .help(step.takesListKeys ? "Back (←)" : "Back")
           .accessibilityLabel("Back")
           .accessibilityIdentifier("newWorkroom.back")
-          Text("New Workroom in \(placing.displayName)").font(.headline)
-        } else {
-          Text(PickerSplitIntent.title(open: false, split: splitIntent)).font(.headline)
         }
+        Text(title).font(.headline).lineLimit(1)
         Spacer()
         Button("Cancel") { onClose() }.keyboardShortcut(.cancelAction)
       }
       .padding(12)
       Divider()
 
-      if let placing {
-        placesList(placing)
-      } else {
+      switch step {
+      case .projects:
         searchField
         projectList
+      case .places(let project):
+        placesList(project)
+      case .configure(let project, let place):
+        HostOptionsStep(store: store, project: project, provider: place) { options in
+          create(in: project, at: place, options: options)
+        }
+        .id(place)
       }
 
-      PickerHintFooter(open: false, split: splitIntent)
+      if step.takesListKeys { PickerHintFooter(open: false, split: splitIntent) }
     }
     .frame(width: 420, height: 460)
-    .onAppear { searchFocused = true }
+    .onAppear { if step == .projects { searchFocused = true } }
     // ↑/↓ move the highlight (no create); ⏎ picks the highlighted row. The single-line search
     // field doesn't consume the arrow keys, so they bubble here (same as ThemePicker). ⏎ is wired
     // ONLY here — never on the field's `.onSubmit` — so a pick can't double-fire into a double-create.
+    // In host options every key passes (`Step.takesListKeys`).
     .onKeyPress(.upArrow) {
+      guard step.takesListKeys else { return .ignored }
       highlighted = ProjectPickerModel.move(highlight: highlighted, by: -1, count: rowCount)
       return .handled
     }
     .onKeyPress(.downArrow) {
+      guard step.takesListKeys else { return .ignored }
       highlighted = ProjectPickerModel.move(highlight: highlighted, by: 1, count: rowCount)
       return .handled
     }
     // ← steps back from the places. On the projects it stays the filter field's caret key.
     .onKeyPress(.leftArrow) {
-      guard placing != nil else { return .ignored }
+      guard case .places = step else { return .ignored }
       goBack()
       return .handled
     }
@@ -225,20 +302,23 @@ struct NewWorkroomDialog: View {
     // field's `.onSubmit` — a double-fire would be a double *create*.
     .onKeyPress(keys: [.return]) { press in
       let split = PickerSplitIntent.requested(press.modifiers)
-      if let placing {
+      switch step {
+      case .configure:
+        return .ignored
+      case .places(let project):
         if WorkroomPlace.all.indices.contains(highlighted) {
           let place = WorkroomPlace.all[highlighted]
           // ⌘⏎ opens a boxd or exe.dev place's Configure… (#575); elsewhere it creates, as before.
           if press.modifiers.contains(.command), place.remote?.takesHostOptions == true {
-            openOptions(place, in: placing, split: split)
+            openOptions(place, in: project, split: split)
           } else {
-            pick(place, in: placing, split: split)
+            pick(place, in: project, split: split)
           }
         }
-      } else if let project = ProjectPickerModel.selection(
-        filtered: filtered, highlight: highlighted)
-      {
-        pick(project, split: split)
+      case .projects:
+        if let project = ProjectPickerModel.selection(filtered: filtered, highlight: highlighted) {
+          pick(project, split: split)
+        }
       }
       return .handled
     }
@@ -313,15 +393,26 @@ struct NewWorkroomPresenter: ViewModifier {
   @ObservedObject var store: AppStore
   /// The split intent of the CURRENT raise, taken from the store as the picker goes up.
   @State private var splitIntent = false
+  /// The create whose host options the CURRENT raise opens on, taken from the store as it goes up.
+  @State private var configure: ConfigureRequest?
 
   func body(content: Content) -> some View {
     content
+      // The sidebar's "boxd ▸ Configure…" (#575): the dialog, opened on that create's host options.
+      .onChange(of: store.modals.requestNewWorkroomConfigure?.id) { _, id in
+        guard id != nil, let request = store.modals.requestNewWorkroomConfigure else { return }
+        store.modals.requestNewWorkroomConfigure = nil
+        splitIntent = false
+        configure = request
+        store.modals.activePicker = .new
+      }
       // Raising New sets `activePicker = .new`, which replaces Open if it was showing (issue #94).
       .onChange(of: store.modals.requestNewWorkroomPicker) { _, request in
         if request {
           // Consume the split intent as we raise, so it can never be read by a LATER plain raise
           // (⌥⌘N → Esc → the title bar's + button would otherwise still split).
           splitIntent = store.consumePickerSplitIntent()
+          configure = nil
           store.modals.activePicker = .new
           store.modals.requestNewWorkroomPicker = false
           // Warm the shell-environment probe while the dialog is open. `create` awaits the same
@@ -336,7 +427,8 @@ struct NewWorkroomPresenter: ViewModifier {
         if store.modals.activePicker == .new {
           DialogOverlay(onDismiss: { store.modals.activePicker = nil }) {
             NewWorkroomDialog(
-              store: store, onClose: { store.modals.activePicker = nil }, splitIntent: splitIntent)
+              store: store, onClose: { store.modals.activePicker = nil }, splitIntent: splitIntent,
+              configure: configure)
           }
         }
       }

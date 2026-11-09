@@ -139,11 +139,6 @@ final class ModalShortcutRoutingTests: XCTestCase {
         }
       ),
       (
-        // The Configure… panel (#575), so menu shortcuts can't reach a surface hidden behind it.
-        "pendingHostOptions",
-        { $0.modals.pendingHostOptions = PendingHostOptions(project: project, place: .boxd) }
-      ),
-      (
         // Value: protects=menu shortcuts go inert while the start choice is up; fails_when=
         // `|| pendingStartChoice != nil` is dropped from hasModalPresentation; why_new=no other
         // row sets it; seam=none; no_claim=the choice sheet itself

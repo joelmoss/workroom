@@ -61,9 +61,9 @@ struct PendingProjectSettings: Identifiable {
   var id: String { project.id }
 }
 
-/// A boxd or exe.dev create waiting on its Options panel (#575): the place, and where the workroom
-/// lands, taken when it was asked for.
-struct PendingHostOptions: Identifiable {
+/// A boxd or exe.dev create to open the New Workroom dialog's host options on (#575): the place,
+/// and where the workroom lands, taken when it was asked for.
+struct ConfigureRequest: Identifiable {
   let project: Project
   let place: HostKind
   var splitAnchor: SidebarID?
@@ -108,11 +108,10 @@ enum ActiveModal {
   case remoteConfirm(PendingVCSAction)
   case commit(PendingCommit)
   case remoteSetup(PendingRemoteSetup)
-  case hostOptions(PendingHostOptions)
 
   enum Kind {
     case picker, auxSheet, error, workroomDeletion, workroomClose, startChoice, projectDeletion
-    case workroomLabel, remoteConfirm, commit, remoteSetup, hostOptions
+    case workroomLabel, remoteConfirm, commit, remoteSetup
   }
 }
 
@@ -294,11 +293,10 @@ final class ModalState: ObservableObject {
     set { update(.remoteSetup, to: newValue, as: ActiveModal.remoteSetup) }
   }
 
-  /// A boxd or exe.dev create waiting on its host options (drives `HostOptionsPanel`, #575).
-  var pendingHostOptions: PendingHostOptions? {
-    get { if case .hostOptions(let pending)? = self[.hostOptions] { pending } else { nil } }
-    set { update(.hostOptions, to: newValue, as: ActiveModal.hostOptions) }
-  }
+  /// Set by the sidebar's "boxd ▸ Configure…" and "exe.dev ▸ Configure…" (#575) to raise the New
+  /// Workroom dialog on that create's host options. `NewWorkroomPresenter` takes and clears it; the
+  /// dialog it raises is the picker, which `hasModalPresentation` already counts.
+  var requestNewWorkroomConfigure: ConfigureRequest?
 
   /// Mirrors whether one of RootView's *view-local* sheets is up (Add Project, Keyboard Shortcuts,
   /// What's New — the theme dropdown is a transient popover, not modal, and deliberately NOT counted:

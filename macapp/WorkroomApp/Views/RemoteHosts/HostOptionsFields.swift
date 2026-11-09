@@ -50,12 +50,19 @@ final class HostOptionsCatalog: ObservableObject {
   var now: () -> Date = Date.init
   var fetch: ((HostKind) async -> Reading)?
 
+  /// Whether `provider` was read well under `freshFor` ago, so `load` returns at once with what
+  /// that read found.
+  func isFresh(_ provider: HostKind) -> Bool {
+    guard let at = readAt[provider] else { return false }
+    return now().timeIntervalSince(at) < Self.freshFor
+  }
+
   /// Reads `provider` unless it was read well under `freshFor` ago; a read already under way is
   /// waited on instead. The read is the catalog's, not the asking screen's, so a screen going away
   /// doesn't cut it short for another still waiting. What it found is set all at once, so its
   /// sections redraw once.
   func load(_ provider: HostKind) async {
-    if let at = readAt[provider], now().timeIntervalSince(at) < Self.freshFor { return }
+    if isFresh(provider) { return }
     if let running = reading[provider] {
       _ = await running.value
       return

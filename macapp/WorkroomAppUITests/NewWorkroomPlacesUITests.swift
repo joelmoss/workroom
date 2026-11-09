@@ -164,6 +164,176 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     app.typeKey(.escape, modifierFlags: [])
   }
 
+  // MARK: Configure (#575)
+
+  /// Launches the fixture with its host option reads held `delay` seconds and, with `fail`,
+  /// failing; then, with `openPicker`, opens File ▸ New Workroom… on the fixture project's places.
+  private func launchForConfigure(fail: Bool, delay: Double, openPicker: Bool = true)
+    -> XCUIApplication
+  {
+    let app = XCUIApplication()
+    app.launchArguments += [
+      "-WorkroomUITestFixture", "1", "-ApplePersistenceIgnoreState", "YES",
+      "-WorkroomUITestHostOptions", fail ? "fail" : "ok",
+      "-WorkroomUITestHostOptionsDelay", String(delay),
+    ]
+    app.launch()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+    XCTAssertTrue(
+      app.otherElements["sidebar.project.UITestProject"].waitForExistence(timeout: 10),
+      "fixture project row should exist")
+    guard openPicker else { return app }
+    pickProject(app)
+    XCTAssertTrue(app.buttons["newWorkroom.place.thisMac"].waitForExistence(timeout: 5))
+    return app
+  }
+
+  /// Value: protects=⏎ on the Configure step's settings presses Create Workroom: the dialog closes
+  /// and the boxd create starts, listing its own row; fails_when=⏎ does nothing there (the
+  /// dialog's own ⏎ handler steps aside on this step, so only the default-action shortcut can
+  /// answer it), or reaches a field instead; why_new=review finding (⏎ untested);
+  /// seam=-WorkroomUITestHostOptions ok; no_claim=the create's later steps, which go on with the
+  /// live remote create path and fail on the fixture project
+  func testReturnOnTheConfigureSettingsCreatesTheWorkroom() {
+    let app = launchForConfigure(fail: false, delay: 0.5)
+    let configure = app.buttons["newWorkroom.options.boxd"]
+    XCTAssertTrue(configure.waitForExistence(timeout: 5), "boxd has no Configure button")
+    configure.click()
+    let create = app.buttons["hostOptions.create"]
+    XCTAssertTrue(
+      app.switches["hostOptions.remember"].waitForExistence(timeout: 10), "no settings showed")
+    XCTAssertTrue(create.isEnabled)
+    attach(app, "configure-before-return")
+
+    app.typeKey(.return, modifierFlags: [])
+    XCTAssertTrue(create.waitForNonExistence(timeout: 5), "⏎ didn't press Create Workroom")
+    XCTAssertFalse(app.buttons["newWorkroom.back"].exists, "the dialog stayed open")
+    let row = app.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier BEGINSWITH %@", "sidebar.creation.")).firstMatch
+    XCTAssertTrue(row.waitForExistence(timeout: 5), "⏎ closed the dialog but started no create")
+    attach(app, "configure-after-return")
+  }
+
+  /// Value: protects=the sidebar's boxd ▸ Configure… opens the New Workroom dialog straight on
+  /// boxd's Configure step for that project, with no project list on the way, and Back from it
+  /// lists the project's places; fails_when=the menu item opens a sheet or nothing, the dialog
+  /// opens on the projects, or Back leaves the dialog; why_new=review finding (sidebar route
+  /// untested); seam=-WorkroomUITestHostOptions ok, -WorkroomUITestHostOptionsDelay;
+  /// no_claim=the exe.dev item, which shares the code path
+  func testTheSidebarsConfigureOpensTheDialogOnTheConfigureStep() {
+    let app = launchForConfigure(fail: false, delay: 1.5, openPicker: false)
+    app.otherElements["sidebar.project.UITestProject"].rightClick()
+    let newWorkroom = app.menuItems["New Workroom"]
+    XCTAssertTrue(newWorkroom.waitForExistence(timeout: 5))
+    newWorkroom.hover()
+    let boxd = app.menuItems["boxd"]
+    XCTAssertTrue(boxd.waitForExistence(timeout: 5), "the menu has no boxd submenu")
+    boxd.hover()
+    // boxd's own: exe.dev's submenu has a Configure… too.
+    let configure = boxd.menuItems["Configure…"]
+    XCTAssertTrue(configure.waitForExistence(timeout: 5), "boxd's submenu has no Configure…")
+    configure.click()
+
+    let loading = app.descendants(matching: .any)
+      .matching(identifier: "hostOptions.loading").firstMatch
+    XCTAssertTrue(loading.waitForExistence(timeout: 2), "Configure… opened no loading step")
+    XCTAssertTrue(
+      app.staticTexts["New boxd Workroom in UITestProject"].exists, "wrong step title")
+    XCTAssertFalse(app.textFields["newWorkroom.filter"].exists, "the dialog opened on projects")
+    XCTAssertFalse(app.sheets.firstMatch.exists, "Configure… opened a sheet")
+    attach(app, "sidebar-configure-loading")
+    XCTAssertTrue(
+      app.switches["hostOptions.remember"].waitForExistence(timeout: 10), "no settings showed")
+
+    app.buttons["newWorkroom.back"].click()
+    XCTAssertTrue(
+      app.buttons["newWorkroom.place.thisMac"].waitForExistence(timeout: 5),
+      "Back didn't list the project's places")
+    XCTAssertTrue(app.staticTexts["New Workroom in UITestProject"].exists)
+    app.typeKey(.escape, modifierFlags: [])
+  }
+
+  /// Value: protects=Configure opens a step in the dialog that shows loading while the provider is
+  /// read, then the provider's error in place, and Back from it returns to the places with that
+  /// place highlighted, then to the projects; fails_when=the step opens a sheet, skips loading,
+  /// shows settings after a failed read, or Back leaves the dialog; why_new=owner request;
+  /// seam=-WorkroomUITestHostOptions fail, -WorkroomUITestHostOptionsDelay; no_claim=the
+  /// crossfade's look, the providers' own reads
+  func testConfigureShowsLoadingThenTheErrorAndBackReturnsToThePlaces() {
+    let app = launchForConfigure(fail: true, delay: 2)
+    let configure = app.buttons["newWorkroom.options.exedev"]
+    XCTAssertTrue(configure.waitForExistence(timeout: 5), "exe.dev has no Configure button")
+    configure.click()
+
+    let loading = app.descendants(matching: .any)
+      .matching(identifier: "hostOptions.loading").firstMatch
+    XCTAssertTrue(loading.waitForExistence(timeout: 2), "Configure showed no loading state")
+    XCTAssertTrue(
+      app.staticTexts["New exe.dev Workroom in UITestProject"].exists, "wrong step title")
+    XCTAssertFalse(app.buttons["newWorkroom.place.thisMac"].exists, "the places still show")
+    XCTAssertFalse(app.sheets.firstMatch.exists, "Configure opened a sheet")
+    attach(app, "configure-loading")
+
+    let message = app.staticTexts["error.message"]
+    XCTAssertTrue(message.waitForExistence(timeout: 10), "the failed read showed no error")
+    XCTAssertEqual(message.value as? String, "The fixture's provider couldn't be reached.")
+    XCTAssertEqual(
+      app.staticTexts["error.title"].value as? String, "Couldn't load exe.dev host options")
+    XCTAssertFalse(loading.exists, "loading stayed up with the error")
+    XCTAssertFalse(app.buttons["hostOptions.create"].exists, "Create shows with the error")
+    XCTAssertFalse(app.sheets.firstMatch.exists, "the error opened a sheet")
+    attach(app, "configure-error")
+
+    // Back: the places, exe.dev highlighted, then the projects.
+    app.buttons["newWorkroom.back"].click()
+    XCTAssertTrue(
+      app.buttons["newWorkroom.place.thisMac"].waitForExistence(timeout: 5),
+      "Back didn't return to the places")
+    XCTAssertFalse(message.exists, "the error outlived Back")
+    attach(app, "configure-back-to-places")
+    app.buttons["newWorkroom.back"].click()
+    XCTAssertTrue(
+      app.textFields["newWorkroom.filter"].waitForExistence(timeout: 5),
+      "Back didn't return to the projects")
+    app.typeKey(.escape, modifierFlags: [])
+  }
+
+  /// Value: protects=a good read moves from loading to the settings with Create Workroom, and Back
+  /// from them returns to the places, where ⌘⏎ opens the step again, straight on the settings
+  /// since the read is fresh; fails_when=the settings never show, Back leaves the dialog, or a
+  /// fresh read shows loading again; why_new=owner request; seam=-WorkroomUITestHostOptions ok,
+  /// -WorkroomUITestHostOptionsDelay; no_claim=what the fields offer (HostOptionChoicesTests)
+  func testConfigureShowsTheSettingsAfterLoadingAndBackReturnsToThePlaces() {
+    let app = launchForConfigure(fail: false, delay: 1.5)
+    let configure = app.buttons["newWorkroom.options.boxd"]
+    XCTAssertTrue(configure.waitForExistence(timeout: 5), "boxd has no Configure button")
+    configure.click()
+
+    let loading = app.descendants(matching: .any)
+      .matching(identifier: "hostOptions.loading").firstMatch
+    XCTAssertTrue(loading.waitForExistence(timeout: 2), "Configure showed no loading state")
+    let create = app.buttons["hostOptions.create"]
+    // A grouped Form draws its Toggle as a switch.
+    let remember = app.switches["hostOptions.remember"]
+    XCTAssertTrue(remember.waitForExistence(timeout: 10), "the good read showed no settings")
+    XCTAssertTrue(
+      create.exists && create.isEnabled, "Create Workroom isn't offered with the settings")
+    XCTAssertFalse(loading.exists, "loading stayed up with the settings")
+    XCTAssertFalse(app.staticTexts["error.message"].exists, "a good read showed an error")
+    attach(app, "configure-settings")
+
+    app.buttons["newWorkroom.back"].click()
+    XCTAssertTrue(
+      app.buttons["newWorkroom.place.thisMac"].waitForExistence(timeout: 5),
+      "Back didn't return to the places")
+    // Back highlights boxd, so ⌘⏎ opens its step again: the read is fresh, so no loading.
+    app.typeKey(.return, modifierFlags: .command)
+    XCTAssertTrue(
+      remember.waitForExistence(timeout: 5), "⌘⏎ on the highlighted boxd didn't open its settings")
+    XCTAssertFalse(loading.exists, "a fresh read showed loading again")
+    app.typeKey(.escape, modifierFlags: [])
+  }
+
   private func attach(_ app: XCUIApplication, _ name: String) {
     let shot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
     shot.name = name

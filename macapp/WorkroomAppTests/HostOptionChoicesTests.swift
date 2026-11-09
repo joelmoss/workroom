@@ -212,3 +212,36 @@ final class HostOptionsCatalogTests: XCTestCase {
     XCTAssertEqual(changes, 1, "a read changed the catalog \(changes) times")
   }
 }
+
+/// The New Workroom dialog's host options step: loading, then the settings or the provider's error.
+@MainActor
+final class HostOptionsStepPhaseTests: XCTestCase {
+  /// Value: protects=Configure opens on loading only when the provider must be read, then shows
+  /// the settings after a good read and the provider's reason after a failed one;
+  /// fails_when=a fresh read still shows loading, an unread provider skips it, or a failure shows
+  /// the settings; why_new=owner request; seam=the catalog's clock and fetch;
+  /// no_claim=the crossfade and sheet resize, checked by hand
+  func testLoadingThenSettingsOrTheProvidersError() async {
+    let catalog = HostOptionsCatalog()
+    var clock = Date(timeIntervalSince1970: 0)
+    var works = true
+    catalog.now = { clock }
+    catalog.fetch = { _ in works ? .boxd(snapshots: ["base"], size: nil) : .failed("unreachable") }
+
+    XCTAssertEqual(HostOptionsStep.initialPhase(for: .boxd, catalog: catalog), .loading)
+    await catalog.load(.boxd)
+    XCTAssertEqual(HostOptionsStep.phase(after: .boxd, catalog: catalog), .loaded)
+    XCTAssertEqual(
+      HostOptionsStep.initialPhase(for: .boxd, catalog: catalog), .loaded,
+      "a fresh read still opened on loading")
+
+    works = false
+    clock += HostOptionsCatalog.freshFor + 1
+    XCTAssertEqual(HostOptionsStep.initialPhase(for: .boxd, catalog: catalog), .loading)
+    await catalog.load(.boxd)
+    XCTAssertEqual(HostOptionsStep.phase(after: .boxd, catalog: catalog), .failed("unreachable"))
+    XCTAssertEqual(
+      HostOptionsStep.initialPhase(for: .boxd, catalog: catalog), .loading,
+      "a failed read was treated as fresh")
+  }
+}

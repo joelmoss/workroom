@@ -1682,6 +1682,8 @@ final class AppStore: ObservableObject {
     private func loadFixture() {
       let fixtures = applyingDeletionTombstones(UITestFixture.projects())
       projectStore.projects = fixtures
+      // Host option reads are the fixture's, never a provider's (#575). Each reload sets the same.
+      HostOptionsCatalog.shared.fetch = UITestFixture.hostOptionsFetch()
       // A container create mid-download, still unnamed (#309, #483). Once: a reload re-enters here.
       if let pulled = UITestFixture.imagePull, let project = fixtures.first,
         !lifecycle.creationRuns.values.contains(where: { $0.project.path == project.path })

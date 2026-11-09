@@ -49,7 +49,7 @@ A snapshot saves one of your boxd machines, its disk and memory, so new machines
 - To see them, run `boxd snapshots list` in a terminal. The **Snapshot** setting lists the same ones.
 - To make one, set a machine up as you want it, then run `boxd snapshots save <machine> <name>`. `boxd list` shows your machines' names, and a boxd workroom's **Machine Name** is in its [Details pane](../app/details-and-ports.md).
 
-Choose the snapshot in [Settings ▸ Remote Hosts](../app/settings.md#remote-hosts), in [Settings ▸ Projects](../app/settings.md#projects), or for one workroom with **Configure…**. See [Choose a host's image and size](overview.md#choose-a-hosts-image-and-size).
+Choose the snapshot in [Settings ▸ Remote Hosts](../app/settings.md#remote-hosts), in [Settings ▸ Projects](../app/settings.md#projects), or for one workroom with the **Configure** button (sliders icon) in the **New Workroom** dialog. See [Choose a host's image and size](overview.md#choose-a-hosts-image-and-size).
 
 A machine made from a snapshot keeps the snapshot's size. Workroom restarts it once, so it gets an identity of its own, and it brings back none of the old machine's terminals, pane layouts or checkout.
 

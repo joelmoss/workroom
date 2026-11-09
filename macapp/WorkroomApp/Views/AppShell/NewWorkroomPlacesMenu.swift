@@ -39,7 +39,8 @@ struct NewWorkroomPlacesMenu: View {
     return Menu(entry.title) {
       newRemoteWorkroomButton(at: place, title: "Create")
       Button("Configure…") {
-        store.modals.pendingHostOptions = PendingHostOptions(project: project, place: place)
+        store.modals.requestNewWorkroomConfigure = ConfigureRequest(
+          project: project, place: place)
       }
       .help("Choose the image and size for this \(place.displayName) workroom first")
     }

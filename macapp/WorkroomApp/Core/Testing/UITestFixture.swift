@@ -3,6 +3,7 @@ import DaemonConnection
 import Defaults
 import DesignSystem
 import Foundation
+import HostDrivers
 import SyntaxHighlighting
 import WorkroomDomain
 import WorkroomGit
@@ -731,6 +732,36 @@ import WorkroomVCS
     /// 0.42`, #309), seeded on the fixture project so the row's progress can be seen without a real
     /// pull. nil unless given.
     static var imagePull: Double? { text("WorkroomUITestImagePull").flatMap(Double.init) }
+
+    /// What a fixture launch's host option reads find (#575), so no fixture run asks a real
+    /// provider (exe.dev's read is an ssh login to the developer's account). `-WorkroomUITestHostOptions
+    /// fail` fails every read with `hostOptionsFailure`; anything else, or nothing, reads one boxd
+    /// snapshot and a small exe.dev plan. `-WorkroomUITestHostOptionsDelay <seconds>` holds each read
+    /// that long, so the loading state can be seen.
+    static var hostOptionsFail: Bool { text("WorkroomUITestHostOptions") == "fail" }
+    static var hostOptionsDelay: Double {
+      text("WorkroomUITestHostOptionsDelay").flatMap(Double.init) ?? 0
+    }
+    static let hostOptionsFailure = "The fixture's provider couldn't be reached."
+
+    /// The catalog read a fixture launch uses in place of the providers'.
+    static func hostOptionsFetch() -> (HostKind) async -> HostOptionsCatalog.Reading {
+      let fail = hostOptionsFail
+      let delay = hostOptionsDelay
+      return { provider in
+        if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+        if fail { return .failed(hostOptionsFailure) }
+        switch provider {
+        case .boxd:
+          return .boxd(snapshots: ["uitest-snapshot"], size: nil)
+        case .exeDev:
+          return .exeDev(.init(maxCPUs: 4, maxMemoryGB: 8, defaultDiskGB: 20, maxDiskGB: 100))
+        case .container, .ssh:
+          // As the real read says: these take no host options, so no step asks for them.
+          return .failed("\(provider.displayName) hosts take no host options.")
+        }
+      }
+    }
 
     /// Whether splits auto-even on add/remove in a fixture launch
     /// (`-WorkroomUITestAutoResizeSplitsEvenly 0` to turn it off). Defaults to the shipped `true`, and

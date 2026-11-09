@@ -348,10 +348,6 @@ struct RootView: View {
           project: pending.project.path, runWarning: pending.showsRunWarning)
         openSettings()
       }
-      // One boxd or exe.dev create's host options (#575), from the New Workroom dialog or menu.
-      .sheet(item: $modals.pendingHostOptions) { pending in
-        HostOptionsPanel(pending: pending).environmentObject(store)
-      }
       // The commit dialog. Presented on the ROOT for `VCSFailureSheet`'s reason: it can be opened
       // from the Changes header, and a dialog that only survives while a particular pane happens to
       // be open is worse than no dialog. `pendingCommit` is already counted by

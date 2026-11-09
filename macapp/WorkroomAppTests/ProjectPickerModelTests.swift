@@ -120,3 +120,24 @@ final class ProjectPickerModelTests: XCTestCase {
     XCTAssertNil(ProjectPickerModel.selection(filtered: filtered, highlight: 5))
   }
 }
+
+/// The New Workroom dialog's steps: projects, places, then a boxd or exe.dev place's host options.
+final class NewWorkroomDialogStepTests: XCTestCase {
+  /// Value: protects=Back goes one step at a time (host options → that project's places →
+  /// projects), and the list keys pass to host options' fields; fails_when=Back skips a step,
+  /// changes project, shows on the projects, or ↑/↓/←/⏎ drive the list from host options;
+  /// why_new=the Step enum replaced seven scattered checks (review finding); seam=none;
+  /// no_claim=focus and highlight on Back (NewWorkroomPlacesUITests)
+  func testBackGoesOneStepAndHostOptionsKeepTheKeys() {
+    let project = Project(path: "/step", vcs: "git", workrooms: [])
+    typealias Step = NewWorkroomDialog.Step
+
+    XCTAssertEqual(Step.configure(project, .boxd).back, .places(project))
+    XCTAssertEqual(Step.places(project).back, .projects)
+    XCTAssertNil(Step.projects.back, "the projects have a Back")
+
+    XCTAssertTrue(Step.projects.takesListKeys)
+    XCTAssertTrue(Step.places(project).takesListKeys)
+    XCTAssertFalse(Step.configure(project, .exeDev).takesListKeys)
+  }
+}
