@@ -64,7 +64,7 @@ packages:
     # Auto-update framework: polls the appcast feed and installs EdDSA-signed DMGs.
     # See WorkroomApp/Core/AppShell/Updater.swift and the SU* Info.plist keys below.
     url: https://github.com/sparkle-project/Sparkle
-    from: "2.9.3"
+    from: "2.10.1"
   libghostty:
     # The libghostty C API as a static archive. We link the `GhosttyKit` product (raw C API) and
     # roll our own terminal surface view. The embedding API is not yet stable, so the engine is
@@ -82,7 +82,7 @@ packages:
     # SPM product (the recommended static framework — it also re-exports the SwiftUI APIs since
     # 9.4.1). SDK init + the macOS-trimmed option set live in WorkroomApp.init() (SentrySDK.start).
     url: https://github.com/getsentry/sentry-cocoa
-    from: "9.19.0"
+    from: "9.33.0"
   Defaults:
     # Type-safe UserDefaults: the single source of truth for every persisted preference's key +
     # default value. Keys live in WorkroomApp/Core/AppShell/DefaultsKeys.swift; read via `@Default` in views
