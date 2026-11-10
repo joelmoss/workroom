@@ -22,7 +22,7 @@ workspace = true
 # hash feature the enum is empty and gix-hash fails to compile itself. `revision` is what provides
 # rev_walk. Both are pure Rust — no C toolchain enters the tree, which is the whole reason for
 # preferring gix over git2-rs here.
-gix = { version = "0.85", default-features = false, features = ["revision", "sha1"] }
+gix = { version = "0.90", default-features = false, features = ["revision", "sha1"] }
 wr-vcs-model = { path = "../wr-vcs-model" }
 # A read's git child is ended the way workroomd ends its own: the recorded tree, then the group.
 wr-exec = { path = "../wr-exec" }
