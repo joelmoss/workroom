@@ -120,6 +120,17 @@ import WorkroomVCS
       return text("WorkroomUITestGhosttyConfigFile")
     }
 
+    /// `-WorkroomUITestSearchNeedle <text>`: the needle a find bar adopts when it opens empty, so the
+    /// engine-bump smoke test (`EngineBumpSmokeUITests`) can drive a real search. XCUITest cannot
+    /// type into the bar's field (TODOS.md, "Finish the action-dispatch UI coverage"), and this
+    /// still sends the needle to the engine through the same `onChange` the field uses.
+    static var searchNeedle: String? {
+      guard fixtureFlag, let needle = text("WorkroomUITestSearchNeedle"), !needle.isEmpty else {
+        return nil
+      }
+      return needle
+    }
+
     /// An explicit fixture window frame, in `NSStringFromRect` format, for geometry-sensitive tests:
     /// `-WorkroomUITestWindowFrame "{{80, 80}, {1650, 780}}"`.
     /// Fixture sizing bypasses saved sessions and `window.mainFrame`; absent or invalid input keeps

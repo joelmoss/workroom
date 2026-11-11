@@ -217,7 +217,26 @@ final class TerminalSearchModel: ObservableObject {
     isActive = true
     total = next.total
     selected = next.selected
-    if case .start(let needle) = event { self.needle = needle }
+    if case .start(let needle) = event {
+      if needle.isEmpty, !Self.fixtureNeedle.isEmpty {
+        self.needle = Self.fixtureNeedle
+        // Sent here as well as by the bar's `onChange`: the engine's echo can land before the bar
+        // is on screen, and then no `onChange` fires for it.
+        perform?(.setNeedle(Self.fixtureNeedle))
+      } else {
+        self.needle = needle
+      }
+    }
+  }
+
+  /// A UI test's seeded needle (`UITestFixture.searchNeedle`), adopted only by a bar that opens
+  /// empty. Never in Release.
+  private static var fixtureNeedle: String {
+    #if DEBUG
+      UITestFixture.searchNeedle ?? ""
+    #else
+      ""
+    #endif
   }
 
   private func reset() {

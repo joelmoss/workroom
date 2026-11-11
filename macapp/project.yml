@@ -438,6 +438,9 @@ targets:
       # bundle, so a run without this checkout (a Tart guest: `make app-uitest-vm`) has it too.
       - path: ../testdata/program-status/mock-claude-code.sh
         buildPhase: resources
+      # EngineBumpSmokeUITests' helper, run from a pane's shell: the runner cannot write /tmp itself.
+      - path: ../testdata/engine-bump-smoke/engine-bump-smoke.sh
+        buildPhase: resources
     dependencies:
       - target: WorkroomApp
     settings:

@@ -74,6 +74,9 @@
       "macapp/Tests/pregate/package_gate_test.py",
       "macapp/Tests/pregate/app_gate_test.py"
     ],
+    "testdata/engine-bump-smoke/**": [
+      "macapp/Tests/pregate/app_gate_test.py"
+    ],
     "testdata/contracts/**": [
       "macapp/Tests/pregate/rust_gate_test.py",
       "macapp/Tests/pregate/package_gate_test.py",
