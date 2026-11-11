@@ -18,7 +18,8 @@ the likeliest suspects.
 - [ ] Run a full-screen TUI (`vim` or `htop`) → draws correctly; **resize the window** →
       reflows cleanly.
 - [ ] Scroll back through history (trackpad + ⌘-scroll), then scroll to bottom.
-- [ ] `echo $TERM` → `xterm-ghostty` (confirms bundled terminfo resolved).
+- [ ] `echo $TERM` → `xterm-256color`, or `xterm-ghostty` with Settings ▸ Terminal ▸ Report
+      terminal as Ghostty on (confirms the generated config's `term` line reached the shell).
 
 ## C. IME / keyboard (the cost center)
 - [ ] **Dead keys**: `⌥e` then `e` → `é`.
@@ -244,7 +245,8 @@ dispatches on symbolic labels — don't spend the retest budget there.
       overlay tracks without jumping or sticking.
 
 ### Resource contract (silent-failure class)
-- [ ] `echo $TERM` → `xterm-ghostty`, and `infocmp xterm-ghostty >/dev/null` succeeds.
+- [ ] `echo $TERM` → `xterm-256color` by default, `infocmp xterm-ghostty >/dev/null` succeeds, and
+      `top` runs (`EngineBumpSmokeUITests` automates all three).
 - [ ] **OSC 7 still lands**: `cd` somewhere, then ⌘-click a *relative* path in the output → resolves
       against the new cwd. (Nothing logs when this breaks — it just stops working.)
 - [ ] **OSC 133 still lands**: run a long command → the tab title tracks it and the busy indicator

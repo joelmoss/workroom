@@ -633,6 +633,7 @@ private struct TerminalSettingsPane: View {
   @Default(.confirmOnCloseTerminal) private var confirmOnCloseTerminal
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @Default(.filePathEditor) private var pathEditor
+  @Default(.terminalReportsGhostty) private var reportsGhostty
   // The detached sessions "Stop Detached Terminals" found; non-nil presents its alert.
   @State private var detachedToStop: [UUID]?
 
@@ -704,6 +705,32 @@ private struct TerminalSettingsPane: View {
         }
       }
       .help("The app used to open ⌘-clicked file paths.")
+
+      VStack(alignment: .leading, spacing: 4) {
+        Toggle("Report terminal as Ghostty", isOn: $reportsGhostty)
+          .help(
+            "New terminals set TERM=xterm-ghostty instead of xterm-256color. Programs that look "
+              + "the terminal up by name, such as tmux, get Ghostty's extra features. Only this Mac "
+              + "has the xterm-ghostty entry, so top, sudo and ssh to other machines stop working."
+          )
+          .accessibilityIdentifier("settings.control.terminalReportsGhostty")
+          // A surface takes its TERM from the config when it starts, so a reload is enough: the
+          // next terminal opened gets the new value, and running shells keep theirs.
+          .onChange(of: reportsGhostty) { _, reports in
+            // Written here too, so the reload reads the new value whenever `@Default` lands it.
+            Defaults[.terminalReportsGhostty] = reports
+            GhosttyApp.shared.reloadConfig(
+              force: true, dark: ThemeService.isCurrentAppearanceDark())
+          }
+        Text(
+          "Off, terminals use xterm-256color, which every Mac, server and container knows. On, "
+            + "they use xterm-ghostty: tmux gets full colour and curly underlines, but top, sudo "
+            + "and ssh to machines without the entry stop working. Applies to new terminals. "
+            + "Remote workrooms always use xterm-ghostty."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      }
 
       QuickTerminalSection()
     }

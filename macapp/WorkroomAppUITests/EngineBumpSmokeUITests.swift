@@ -135,8 +135,8 @@ final class EngineBumpSmokeUITests: XCTestCase {
   /// report for it. A watcher started in the background before vim, so it outlives the app, checks
   /// `~/Library/Logs/DiagnosticReports` once the app's process is gone.
   ///
-  /// Not `top`, which §N names: `/usr/bin/top` is setuid root, so ncurses ignores the `$TERMINFO`
-  /// Workroom finds `xterm-ghostty` through, and it stops at "Error opening terminal" in any pane.
+  /// §N names `top`; `testTopRuns` covers it on its own, and `less` keeps this test independent of
+  /// the terminal type.
   func testQuitWithLiveTUIsExitsCleanly() throws {
     let result = "\(scratch)/quit-result"
     let app = launchedApp(["-WorkroomUITestTerminalTabs", "2"])
@@ -312,15 +312,30 @@ final class EngineBumpSmokeUITests: XCTestCase {
 
   // MARK: Resource contract
 
-  /// `$TERM` is `xterm-ghostty`, and its terminfo entry (from `Resources/ghostty`) resolves.
-  func testTermIsXtermGhosttyAndItsTerminfoResolves() {
+  /// `$TERM` is `xterm-256color` by default, and the bundled `xterm-ghostty` entry (from
+  /// `Resources/ghostty`) still resolves for anyone who turns on Report terminal as Ghostty.
+  func testTermIsXterm256ColorAndTheGhosttyEntryResolves() {
     let app = launchedApp()
     focusTerminal(app)
     run(app, "echo WRT-$TERM; infocmp xterm-ghostty >/dev/null; echo WRI-$?")
     let result = waitForScreen(app, containing: "WRI-0")
     XCTAssertTrue(
-      result.screen.contains("WRT-xterm-ghostty"), "$TERM. Screen was:\n\(result.screen)")
+      result.screen.contains("WRT-xterm-256color"), "$TERM. Screen was:\n\(result.screen)")
     XCTAssertTrue(result.found, "infocmp xterm-ghostty failed. Screen was:\n\(result.screen)")
+  }
+
+  /// macOS's `top` runs. It is setuid root, so ncurses ignores `TERMINFO` and reads only the
+  /// system's entries: with `TERM=xterm-ghostty` it stopped at "Error opening terminal".
+  func testTopRuns() {
+    let app = launchedApp()
+    focusTerminal(app)
+    run(app, "top")
+    let result = waitForScreen(app, containing: "PID")
+    XCTAssertTrue(result.found, "top did not start. Screen was:\n\(result.screen)")
+    XCTAssertFalse(
+      result.screen.contains("Error opening terminal"), "Screen was:\n\(result.screen)")
+    app.typeText("q")
+    assertAnswers(app)
   }
 
   // MARK: Helpers

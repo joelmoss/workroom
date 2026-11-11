@@ -85,9 +85,9 @@ Log out and back in so apps you open from the Dock see the new shell, then open 
 
 ## `top` says "Error opening terminal: xterm-ghostty"
 
-Workroom's terminals set `TERM=xterm-ghostty` and point to their own terminfo entry for it. macOS's built-in `top` is a privileged program, and the terminal library it uses ignores that entry. It only reads the system's own terminfo, which has no `xterm-ghostty`. Other programs, `vim` among them, are not affected.
+You see this with **Report terminal as Ghostty** on in [Settings ▸ Terminal](../app/settings.md#report-terminal-as-ghostty), and in Workroom 2.1.0, where every terminal sets `TERM=xterm-ghostty`. Workroom points the terminal at its own terminfo entry for that name. macOS's built-in `top` is a privileged program, and the terminal library it uses ignores that entry. It only reads the system's own terminfo, which has no `xterm-ghostty`. Other programs, `vim` among them, are not affected.
 
-Run `top` with a terminal type the system knows:
+Turn **Report terminal as Ghostty** off and open a new terminal, or run `top` with a terminal type the system knows:
 
 ```sh
 TERM=xterm-256color top

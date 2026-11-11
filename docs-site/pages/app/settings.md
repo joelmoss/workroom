@@ -65,6 +65,16 @@ In Workroom 2.1.0 there is no Notifications pane. **Show notifications in the me
 | **Confirm before closing a terminal** | Asks before closing a terminal, because that ends its shell and anything running in it, with no undo. |
 | **Open file paths in** | The app that opens a file path you <kbd>⌘</kbd>-click in a terminal: **Default App**, or one of Visual Studio Code, Zed and Xcode if installed. |
 
+### Report terminal as Ghostty {nightly}
+
+Off by default. New terminals set `TERM=xterm-256color`, which every Mac, server and container knows, so `top`, `sudo vim` and `ssh` to any server work as they do in Terminal. Programs still see `COLORTERM=truecolor` and `TERM_PROGRAM=ghostty`, so full colour and Ghostty detection are unchanged.
+
+On, new terminals set `TERM=xterm-ghostty`. Programs that look a terminal up by that name, tmux among them, then use what Ghostty adds: full colour without a tmux setting, curly and coloured underlines, and synchronized output. The `xterm-ghostty` entry only exists on this Mac, so macOS's `top`, editors under `sudo`, and `ssh` to a server without the entry stop working. See [`top` says "Error opening terminal: xterm-ghostty"](../help/troubleshooting.md#top-says-error-opening-terminal-xterm-ghostty).
+
+The setting applies to terminals you open after changing it. Remote workrooms always use `xterm-ghostty`, because Workroom installs its entry on the remote machine.
+
+In Workroom 2.1.0 every terminal uses `xterm-ghostty`.
+
 ### Stop Detached Terminals… {nightly}
 
 The **Stop Detached Terminals…** button counts the background terminals that no open tab is attached to and asks before it stops them. The note under it explains that terminals keep running after you quit and reattach when you relaunch, that run commands do too unless you choose to stop them, and that the Quick Terminal is never kept. See [Terminals and tabs](terminals-and-tabs.md#detached-sessions).

@@ -86,6 +86,13 @@ extension Defaults.Keys {
   static let confirmOnCloseTerminal = Key<Bool>(
     "confirmOnCloseTerminal", default: true, suite: .app)
 
+  /// New local terminals set `TERM=xterm-ghostty` rather than `xterm-256color`. Off by default,
+  /// because only this Mac has the `xterm-ghostty` entry, and only through `TERMINFO`: setuid
+  /// programs (macOS's `top`), `sudo` and `ssh` cannot find it. Remote workrooms use `xterm-ghostty`
+  /// either way (`SSHTransport.remoteAttachCommand`). Settings ▸ Terminal.
+  static let terminalReportsGhostty = Key<Bool>(
+    "terminalReportsGhostty", default: false, suite: .app)
+
   /// The host options every boxd and exe.dev workroom is created with (#575, ADR 0065), keyed by
   /// `HostKind.hostOptionsKey`: Settings ▸ Remote Hosts.
   static let hostOptions = Key<[String: HostOptions]>("hostOptions", default: [:], suite: .app)

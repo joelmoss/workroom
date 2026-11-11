@@ -68,12 +68,37 @@ final class GhosttyConfigLocationTests: XCTestCase {
     // pass against a reverted sanitiser. The file's length does not — the two stripped newlines are
     // two extra lines.
     XCTAssertEqual(
-      lines.count, 7, "the name broke out of its own directive and started another line")
+      lines.count, 8, "the name broke out of its own directive and started another line")
     XCTAssertEqual(
       lines.first { $0.hasPrefix("minimum-contrast") }, "minimum-contrast = 3.0",
       "the injected `minimum-contrast = 0` became a directive and displaced the real contrast floor"
     )
     XCTAssertEqual(try theme(in: url), "Evilminimum-contrast = 0Name")
+  }
+
+  /// New terminals set `TERM=xterm-256color` unless the user opts into `xterm-ghostty`, and the
+  /// line takes only those two values, so nothing a caller passes becomes a directive of its own.
+  func testTheTermLineIsXterm256ColorUnlessTheUserReportsGhostty() throws {
+    let url = GhosttyApp.defaultThemeConfigURL(
+      bundleID: "com.example.term", fileManager: fileManager)
+    func termLine() throws -> String? {
+      try String(contentsOf: url, encoding: .utf8).split(separator: "\n")
+        .first { $0.hasPrefix("term = ") }.map(String.init)
+    }
+
+    XCTAssertTrue(GhosttyApp.writeThemeConfig(theme: "Nord", to: url))
+    XCTAssertEqual(try termLine(), "term = xterm-256color", "the default")
+
+    let ghostty = GhosttyApp.terminalType(reportsGhostty: true)
+    XCTAssertTrue(GhosttyApp.writeThemeConfig(theme: "Nord", term: ghostty, to: url))
+    XCTAssertEqual(try termLine(), "term = xterm-ghostty", "Report terminal as Ghostty")
+
+    XCTAssertTrue(
+      GhosttyApp.writeThemeConfig(theme: "Nord", term: "vt100\nminimum-contrast = 0", to: url))
+    XCTAssertEqual(try termLine(), "term = xterm-256color", "an unknown value")
+    XCTAssertEqual(
+      try String(contentsOf: url, encoding: .utf8).split(separator: "\n")
+        .filter { $0.hasPrefix("minimum-contrast") }, ["minimum-contrast = 3.0"])
   }
 
   /// The write reports failure rather than swallowing it. `loadConfig` cannot tell —
