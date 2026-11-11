@@ -21,8 +21,9 @@
 # docs/designs/remote-workrooms.md, Distribution Plan.
 set -euo pipefail
 
-# libghostty-vt's vt-1.0.0 tag.
-GHOSTTY_SHA="0fa3d577a"
+# ghostty main on 2026-11-10, 78 commits past libghostty-vt's vt-1.0.0 tag (0fa3d577a); its
+# headers say 1.1.0-dev.
+GHOSTTY_SHA="ea8b12a8a"
 GHOSTTY_REPO="https://github.com/ghostty-org/ghostty.git"
 # build.zig.zon's `minimum_zig_version` at the pinned sha.
 ZIG_VERSION="0.17.0"

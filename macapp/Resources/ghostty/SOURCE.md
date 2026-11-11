@@ -35,6 +35,18 @@ history; `GHOSTTY_SHA` in `vcs/scripts/build-ghostty-vt.sh` is the single source
 engine version and this file deliberately does not duplicate it. The comparison baseline was a stock
 Ghostty.app install of that same version. Re-measure after a pin bump; these findings expire with it.
 
+**Regenerated 2026-11-11 for the move to ghostty `main`** (engine `0fa3d577` → `ea8b12a8`).
+`src/shell-integration` is byte-identical between the refs. The one `src/terminfo` change
+(`358818ebd`) replaces the entry's last name field, its description, `Ghostty` with `Ghostty
+terminal emulator`; no capability moved. Regenerated the source-diff way below: `infocmp -x` the old
+entry, edit that one line, `tic -x` back. `infocmp -x` of the result matches the edited source, the
+capabilities match the old entry's, and `67/ghostty` is still a real file byte-identical to
+`78/xterm-ghostty`. Both files and their `CHECKSUMS` lines changed.
+
+**Found on this bump, unrelated to it:** macOS's `/usr/bin/top` is setuid root, so ncurses ignores
+`$TERMINFO` there and `top` stops at "Error opening terminal: xterm-ghostty" in any pane. Only
+`$TERMINFO` points at this directory, so every setuid ncurses program fails the same way.
+
 **Checked 2026-11-08 for the move to libghostty-vt's `vt-1.0.0` tag** (engine `83fb9562` →
 `0fa3d577`). Nothing to regenerate: `src/shell-integration` and `src/terminfo` are byte-identical
 between the refs (no commits touch either), so `CHECKSUMS` is unchanged.
