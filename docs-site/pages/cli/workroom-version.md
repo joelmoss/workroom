@@ -12,15 +12,15 @@ workroom version [flags]
 ## Options
 
 ```text
-  -h, --help   help for version
+  -h, --help[=true|false]   help for version
 ```
 
 ## Options inherited from parent commands
 
 ```text
-      --json      Emit machine-readable JSON (exactly one object on stdout)
-  -p, --pretend   Run through the command without making changes (dry run)
-  -v, --verbose   Print detailed and verbose output
+      --json[=true|false]      Emit machine-readable JSON (exactly one object on stdout)
+  -p, --pretend[=true|false]   Run through the command without making changes (dry run)
+  -v, --verbose[=true|false]   Print detailed and verbose output
 ```
 
 ## See also

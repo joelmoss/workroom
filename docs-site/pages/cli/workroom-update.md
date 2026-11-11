@@ -24,17 +24,17 @@ workroom update [flags]
 ## Options
 
 ```text
-      --channel string   Release channel: stable or pre (remembered for next time)
-  -c, --check            Only check if an update is available
-  -h, --help             help for update
+      --channel string       Release channel: stable or pre (remembered for next time)
+  -c, --check[=true|false]   Only check if an update is available
+  -h, --help[=true|false]    help for update
 ```
 
 ## Options inherited from parent commands
 
 ```text
-      --json      Emit machine-readable JSON (exactly one object on stdout)
-  -p, --pretend   Run through the command without making changes (dry run)
-  -v, --verbose   Print detailed and verbose output
+      --json[=true|false]      Emit machine-readable JSON (exactly one object on stdout)
+  -p, --pretend[=true|false]   Run through the command without making changes (dry run)
+  -v, --verbose[=true|false]   Print detailed and verbose output
 ```
 
 ## See also

@@ -8,7 +8,7 @@ require (
 	github.com/gofrs/flock v0.13.2
 	github.com/mattn/go-isatty v0.0.24
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.10
+	github.com/spf13/pflag v1.1.0
 	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/mod v0.43.0
 )
