@@ -48,8 +48,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # --match 'v*' skips the floating `nightly` release tag (retagged to HEAD
-          # each run), which would otherwise win git describe and break parsing.
+          # --match 'v*' skips the `nightly` release tag, which would otherwise win
+          # git describe whenever it is reachable, and break parsing.
           LATEST="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo v0.0.0)"
           RAW="${LATEST#v}"; RAW="${RAW%%+*}"   # strip leading v + any build metadata
           CORE="${RAW%%-*}"                      # MAJOR.MINOR.PATCH
@@ -296,14 +296,9 @@ jobs:
           REPO: ${{ github.repository }}
         run: macapp/Scripts/appcast.sh
 
-      - name: Point the nightly tag at the commit just built
-        # `gh release upload` leaves the tag where the release was first created (July 2026), so
-        # the release page showed that commit, and "N commits since" counted from it.
-        env:
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-        run: gh api -X PATCH "repos/${REPO}/git/refs/tags/nightly" -f sha="${SHA}" -F force=true
-
+      # The `nightly` tag stays on the commit the release was first created from (July 2026), so the
+      # notes name the commit each build is from. Moving the tag here was tried: GITHUB_TOKEN gets
+      # a 403 moving a ref across changes to `.github/workflows`, a permission it cannot be given.
       - name: Stamp nightly release with the version, date and commit (skip marker)
         # LAST step: the title is written only after assets + appcast succeed, so a partial run
         # retries. Editing a release keeps its first publish date, so it goes back to draft and
