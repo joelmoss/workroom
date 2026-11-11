@@ -167,10 +167,16 @@ XML
 # a build-only key would wrongly skip the second. Nightly is a single ROLLING item: any existing
 # nightly item is removed first, so its enclosure URL/signature never goes stale (the DMG is
 # clobbered in place each run).
-ITEM="$ITEM" CHANNEL="$CHANNEL" BUILD_NUMBER="$BUILD_NUMBER" python3 - "$FEED" <<'PY'
+#
+# The item goes to python3 in a file, not the environment: it carries the release notes, and Linux
+# caps a single environment string at 128 KiB. v3.0.0's uncurated GoReleaser body (1,552 commits,
+# 125 KB) blew that cap and the publish job died with "Argument list too long".
+ITEM_FILE="${BUILD}/appcast-item.xml"
+printf '%s' "$ITEM" >"$ITEM_FILE"
+CHANNEL="$CHANNEL" BUILD_NUMBER="$BUILD_NUMBER" python3 - "$FEED" "$ITEM_FILE" <<'PY'
 import os, re, sys
 path = sys.argv[1]
-item = os.environ["ITEM"]
+item = open(sys.argv[2], encoding="utf-8").read()
 channel = os.environ["CHANNEL"]
 build = os.environ["BUILD_NUMBER"]
 marker = f"<!-- wr:{channel}:{build} -->"
