@@ -48,7 +48,7 @@ maintainer follows.
   is generated from `macapp/project.yml`, not checked in.
 - **Rust** (rustup `stable`) — the app build compiles the embedded `workroomd` from the `vcs/` workspace
   (`macapp/Scripts/build-daemon.sh`).
-- **Zig 0.17.0** (installed through mise when it is available) — `xcodegen generate` builds the pinned
+- **Zig 0.17.1** (installed through mise when it is available) — `xcodegen generate` builds the pinned
   Ghostty on its first run, which also needs Xcode's Metal toolchain (the build downloads it, about
   840 MB, if it is missing).
 - **Go 1.27+** (the module targets `go 1.27.3`, which CI builds with) — the app
@@ -63,7 +63,7 @@ the v2-format `.golangci.yml`.
 
 **To change the Rust workspace (`vcs/`):** Rust **1.99.1** with rustfmt and clippy for `make vcs-lint`
 (`rustup toolchain install 1.99.1 --component rustfmt,clippy`), the version CI's lint jobs pin. Its
-`terminal-state` half also needs Zig 0.17.0 (installed through mise when it is available) and builds a
+`terminal-state` half also needs Zig 0.17.1 (installed through mise when it is available) and builds a
 pinned Ghostty on its first run. The workspace lint table in `vcs/Cargo.toml` is a floor of lints the
 code already passes; never silence one with an `allow` without asking first.
 

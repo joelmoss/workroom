@@ -28,7 +28,7 @@ runs:
       uses: ./.github/actions/install-zig
       with:
         archive: aarch64-macos
-        sha256: "b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
+        sha256: "75f1bc7a1e9852f17ec9a0c1895f767c4ec56d46bc8a834920eece1d0359dd8d"
         cache: ${{ inputs.cache }}
 
     # The app bundle carries a static Linux workroomd per arch for remote hosts (issue #227),

@@ -8,7 +8,7 @@ inputs:
   # are built with the same Zig. Each caller keeps its archive's checksum.
   version:
     description: Zig release
-    default: "0.17.0"
+    default: "0.17.1"
   archive:
     description: Platform part of the tarball name, e.g. x86_64-linux or aarch64-macos
     required: true
