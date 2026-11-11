@@ -286,6 +286,11 @@ a personal workstation). Install tart from its notarized GitHub release, since t
 tart clone ghcr.io/cirruslabs/macos-golden-gate-xcode:27.2 wr-uitest-base
 tart set wr-uitest-base --cpu 4 --memory 8192 --display 1920x1200   # fixture windows are 1450x780,
                                                                     # one test needs 1650 wide
+# Homebrew bash (4.4+) for EngineBumpSmokeUITests.testBashExitStatusReachesTheApp (#465), which
+# skips without it. Boot the base itself once, install, and shut it down cleanly:
+tart run wr-uitest-base --no-graphics &
+tart exec wr-uitest-base /bin/zsh -lc 'HOMEBREW_NO_AUTO_UPDATE=1 brew install bash'
+tart exec wr-uitest-base sudo shutdown -h now
 ```
 
 Nothing else to provision: Cirrus images log `admin` in at the console, already allow Automation

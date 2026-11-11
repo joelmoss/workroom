@@ -21,12 +21,34 @@ final class UITestFixtureHermeticShellTests: XCTestCase {
   }
 
   private func apply(
-    active: Bool = true, bundleID: String? = "com.example.test"
+    active: Bool = true, bundleID: String? = "com.example.test", bash: Bool = false
   ) throws -> (applied: Bool, environment: [String: String]) {
     var environment: [String: String] = [:]
     let applied = try UITestFixture.applyHermeticShell(
-      active: active, bundleID: bundleID, root: root, set: { environment[$0] = $1 })
+      active: active, bundleID: bundleID, root: root, bash: bash,
+      set: { environment[$0] = $1 })
     return (applied, environment)
+  }
+
+  /// `-WorkroomUITestShell bash`: SHELL is an executable wrapper named `bash` (so Ghostty injects
+  /// its bash integration) that runs Homebrew's bash with HOME at the hermetic folder, which holds
+  /// no bash startup file, and history going nowhere.
+  func testBashLaunchRunsHomebrewBashThroughAHermeticWrapper() throws {
+    let result = try apply(bash: true)
+    let zdotdir = UITestFixture.hermeticZDOTDIR(bundleID: "com.example.test", in: root)
+    let wrapper = UITestFixture.hermeticBashDirectory(bundleID: "com.example.test", in: root)
+      .appendingPathComponent("bash")
+    XCTAssertEqual(result.environment["SHELL"], wrapper.path)
+    XCTAssertEqual(result.environment["ZDOTDIR"], zdotdir.path)
+    XCTAssertTrue(FileManager.default.isExecutableFile(atPath: wrapper.path))
+    let script = try String(contentsOf: wrapper, encoding: .utf8)
+    XCTAssertTrue(script.hasPrefix("#!/bin/sh\n"))
+    XCTAssertTrue(script.contains("HOME='\(zdotdir.path)'\n"), script)
+    XCTAssertTrue(script.contains("HISTFILE=/dev/null\n"), script)
+    XCTAssertTrue(script.contains("exec /opt/homebrew/bin/bash \"$@\"\n"), script)
+    XCTAssertEqual(
+      try FileManager.default.contentsOfDirectory(atPath: zdotdir.path), [".zshrc"],
+      "the HOME bash sees has no .bash_profile, .bashrc or .profile")
   }
 
   func testUILaunchSetsShellAndZDOTDIR() throws {

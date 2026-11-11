@@ -76,6 +76,25 @@ final class GhosttyConfigLocationTests: XCTestCase {
     XCTAssertEqual(try theme(in: url), "Evilminimum-contrast = 0Name")
   }
 
+  /// A UI test's shell becomes a `direct:` command line; none is written otherwise, and a path with
+  /// a newline (which would start a directive of its own) is dropped.
+  func testAUITestShellIsWrittenAsADirectCommand() throws {
+    let url = GhosttyApp.defaultThemeConfigURL(
+      bundleID: "com.example.command", fileManager: fileManager)
+    func commandLines() throws -> [String] {
+      try String(contentsOf: url, encoding: .utf8).split(separator: "\n")
+        .filter { $0.hasPrefix("command") }.map(String.init)
+    }
+
+    XCTAssertTrue(GhosttyApp.writeThemeConfig(theme: "Nord", to: url))
+    XCTAssertEqual(try commandLines(), [], "the login shell, as normal")
+    XCTAssertTrue(GhosttyApp.writeThemeConfig(theme: "Nord", command: "/tmp/w/bash", to: url))
+    XCTAssertEqual(try commandLines(), ["command = direct:/tmp/w/bash"])
+    XCTAssertTrue(
+      GhosttyApp.writeThemeConfig(theme: "Nord", command: "/tmp/w/bash\ntheme = x", to: url))
+    XCTAssertEqual(try commandLines(), [], "a path with a newline is dropped")
+  }
+
   /// New terminals set `TERM=xterm-256color` unless the user opts into `xterm-ghostty`.
   func testTheTermLineIsXterm256ColorUnlessTheUserReportsGhostty() throws {
     let url = GhosttyApp.defaultThemeConfigURL(

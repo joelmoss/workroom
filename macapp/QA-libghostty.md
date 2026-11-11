@@ -257,6 +257,8 @@ dispatches on symbolic labels — don't spend the retest budget there.
       `false` → the inline agent banner shows (or auto-diagnose runs, if on); `true` → no banner.
       Before ghostty#14250, OSC 133;D reported 0 for every bash 4.4+ command. Don't use macOS
       `/bin/bash` (3.2): the integration never loads there, so no banner is the expected result.
+      (`EngineBumpSmokeUITests.testBashExitStatusReachesTheApp` automates it in the VM, whose base
+      image has Homebrew bash; it skips on a Mac without it.)
 - [ ] If `shell-integration/` was regenerated, `make app-test` covers the bytes
       (`GhosttyResourcesTests`) but **not** the contract — both boxes above are the contract.
 - [ ] **ssh integration.** We now ship the CLI the wrapper needs: `Contents/MacOS/ghostty` is a

@@ -21,7 +21,7 @@ import XCTest
 /// a garbled escape), and the Return goes in its own `typeText` call after shifted punctuation.
 ///
 /// Left to the manual checklist: the scrollbar overlay, ⌘-clicking a relative path, ssh, the shell
-/// matrix and bash's exit status, the busy indicator's animation (its state is checked here, not
+/// matrix, the busy indicator's animation (its state is checked here, not
 /// how it looks), and which screen row a Find Next lands on (the counter is checked here, the
 /// highlight's position is not).
 final class EngineBumpSmokeUITests: XCTestCase {
@@ -374,6 +374,37 @@ final class EngineBumpSmokeUITests: XCTestCase {
     let elapsed = Date().timeIntervalSince(typed)
     log("busy cleared \(Int(elapsed)) s after the command was typed")
     XCTAssertLessThan(elapsed, 25, "cleared by the command's end, not the 30 s progress timeout")
+  }
+
+  /// bash's exit status reaches the app (#465). With Homebrew bash as the shell, a failing command
+  /// raises the coding agent's diagnosis and a passing one clears it. Before ghostty#14250, bash's
+  /// OSC 133;D reported 0 for every bash 4.4+ command, so nothing ever failed. macOS's `/bin/bash`
+  /// (3.2) never loads the integration, so this needs Homebrew's: the VM base image has it
+  /// (`docs/designs/parallel-workroom-testing.md`), and a Mac without it skips.
+  func testBashExitStatusReachesTheApp() throws {
+    try XCTSkipUnless(
+      FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/bash"),
+      "needs Homebrew bash at /opt/homebrew/bin/bash (brew install bash)")
+    let app = launchedApp([
+      "-WorkroomUITestShell", "bash", "-WorkroomUITestCodingAgentStub", "1",
+    ])
+    focusTerminal(app)
+    // `$((…))` so the marker is only in the output: bash 4+ (1), with Ghostty's integration loaded.
+    run(app, "echo WRB$((2+3))-$((BASH_VERSINFO[0] >= 4))-$(type -t __ghostty_precmd)")
+    let shell = waitForScreen(app, containing: "WRB5-")
+    XCTAssertTrue(
+      shell.screen.contains("WRB5-1-function"),
+      "the pane runs Homebrew bash with Ghostty's integration. Screen was:\n\(shell.screen)")
+
+    run(app, "( exit 7 )")
+    let diagnosis = app.buttons["terminal.statusBar.diagnosis"]
+    XCTAssertTrue(
+      diagnosis.waitForExistence(timeout: 20),
+      "exit 7 reached the app and raised the diagnosis: bash reported a non-zero status")
+    run(app, "true")
+    XCTAssertTrue(
+      poll(timeout: 15) { !diagnosis.exists },
+      "a passing command cleared the diagnosis: bash reported 0 for `true`")
   }
 
   /// `$TERM` is `xterm-256color` by default, and the bundled `xterm-ghostty` entry (from
