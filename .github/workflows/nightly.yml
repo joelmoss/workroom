@@ -296,6 +296,33 @@ jobs:
           REPO: ${{ github.repository }}
         run: macapp/Scripts/appcast.sh
 
-      - name: Stamp nightly release with the version (skip marker)
-        # LAST step: written only after assets + appcast succeed, so a partial run retries.
-        run: gh release edit nightly --title "${VERSION}"
+      - name: Point the nightly tag at the commit just built
+        # `gh release upload` leaves the tag where the release was first created (July 2026), so
+        # the release page showed that commit, and "N commits since" counted from it.
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: gh api -X PATCH "repos/${REPO}/git/refs/tags/nightly" -f sha="${SHA}" -F force=true
+
+      - name: Stamp nightly release with the version, date and commit (skip marker)
+        # LAST step: the title is written only after assets + appcast succeed, so a partial run
+        # retries. Editing a release keeps its first publish date, so it goes back to draft and
+        # out again to show tonight's: the release is hidden for those two calls, a second or so.
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          NOTES="Workroom ${VERSION}, built $(date -u '+%-d %B %Y') from ${SHA:0:8}.
+
+          Rolling nightly build from the tip of master. Not a stable release; expect rough edges."
+          gh release edit nightly --title "${VERSION}" --notes "${NOTES}"
+          gh release edit nightly --draft=true
+          # A release left a draft has no public download URLs, so the CLI updater and Sparkle
+          # would lose the nightly until the next run: try hard to publish it again.
+          for attempt in 1 2 3 4 5; do
+            gh release edit nightly --draft=false --prerelease --latest=false && exit 0
+            echo "republishing the nightly release failed (attempt ${attempt}); retrying" >&2
+            sleep $((attempt * 5))
+          done
+          echo "::error::the nightly release is still a draft; run: gh release edit nightly --draft=false --prerelease --latest=false"
+          exit 1
