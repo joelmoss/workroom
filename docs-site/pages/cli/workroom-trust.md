@@ -1,7 +1,6 @@
 ---
 title: workroom trust
 description: Approve a project's setup and teardown scripts so Workroom runs them.
-nightly: true
 ---
 
 <!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->

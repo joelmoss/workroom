@@ -62,8 +62,6 @@ The last two switch to where you were last, not to the next one in position. The
 | Pull with Rebase | <kbd>⇧⌥⌘P</kbd> |
 | Open in Editor | <kbd>⇧⌘O</kbd> |
 
-In Workroom 2.1.0 this group is called **Run** and has only Run, Restart and Stop. Commit… has no shortcut there, Fetch, Push and Pull with Rebase are in the **Source Control** menu, and Open in Editor is under Navigation.
-
 ## View
 
 | Action | Keys |
@@ -98,7 +96,7 @@ In Workroom 2.1.0 this group is called **Run** and has only Run, Restart and Sto
 | Show/Hide Workroom (global) | <kbd>⌘§</kbd> |
 | Quick Terminal (global) | <kbd>⌥§</kbd> |
 
-<kbd>⌥§</kbd> is the default. In the Nightly app you can change it in **Settings ▸ Terminal ▸ Quick Terminal**, and the app's Keyboard Shortcuts sheet shows the one you set. While the Quick Terminal is in front, <kbd>⌘T</kbd>, <kbd>⌘W</kbd>, <kbd>⌘D</kbd>, <kbd>⇧⌘D</kbd>, <kbd>⌘1–9</kbd> and <kbd>⌃⌘</kbd> with an arrow key act on its own tabs and panes. See [Terminals and tabs](../app/terminals-and-tabs.md#quick-terminal).
+<kbd>⌥§</kbd> is the default. You can change it in **Settings ▸ Terminal ▸ Quick Terminal**, and the app's Keyboard Shortcuts sheet shows the one you set. While the Quick Terminal is in front, <kbd>⌘T</kbd>, <kbd>⌘W</kbd>, <kbd>⌘D</kbd>, <kbd>⇧⌘D</kbd>, <kbd>⌘1–9</kbd> and <kbd>⌃⌘</kbd> with an arrow key act on its own tabs and panes. See [Terminals and tabs](../app/terminals-and-tabs.md#quick-terminal).
 
 ## More
 
@@ -110,4 +108,4 @@ The sheet doesn't list these, but the menus have them.
 | Files | <kbd>⌥⌘F</kbd> |
 | Details | <kbd>⌥⌘I</kbd> |
 
-Details is Nightly only. See [Details and ports](../app/details-and-ports.md).
+See [Details and ports](../app/details-and-ports.md).

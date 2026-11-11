@@ -33,7 +33,7 @@ A new workroom opens straight away, with a generated name such as `swift-meadow`
 The workroom is a real folder, `~/workrooms/swift-meadow`, on a new branch, `workroom/swift-meadow`,
 that starts from the latest default branch on `origin`. Your root and any other workroom are untouched.
 
-### Watch it being made {nightly}
+### Watch it being made
 
 While the workroom is made, its pane shows a checklist of the steps: **Fetch base branch**, **Create
 worktree**, then **Copy local files** and **Run setup script** if your project has them. Click a step to

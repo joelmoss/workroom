@@ -1,7 +1,6 @@
 ---
 title: Reconnecting
 description: What happens to a remote workroom's terminals when your Mac sleeps, your network changes or the host restarts.
-nightly: true
 ---
 
 A remote workroom's terminals run on its host, so they keep running when your Mac loses its connection. When the connection comes back, Workroom attaches each pane to its session again, with no action from you. This page covers when that happens and what you see.

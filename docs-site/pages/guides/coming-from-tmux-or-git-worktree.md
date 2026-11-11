@@ -44,7 +44,7 @@ Workroom does the jobs you use tmux for, with each workroom as the unit instead 
 There is no prefix key: shortcuts use <kbd>⌘</kbd>, like any Mac app. See
 [Keyboard shortcuts](../reference/keyboard-shortcuts.md) for all of them.
 
-### Terminals that outlive the app {nightly}
+### Terminals that outlive the app
 
 A small background process on each host keeps your terminals running when you quit Workroom, as a tmux
 server does. When you open Workroom again, each terminal reattaches with its output where you left it.

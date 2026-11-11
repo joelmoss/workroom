@@ -15,11 +15,11 @@ Workroom checks for updates in the background and tells you when one is ready. T
 
 **Settings ▸ About** also has **View release notes**, which opens the releases page on GitHub. See also [Release notes](../help/release-notes.md).
 
-### Checks after launch {nightly}
+### Checks after launch
 
 Automatic update checks start after the first window appears. **Check for Updates…** still checks immediately when you choose it.
 
-### Updating keeps your terminals {nightly}
+### Updating keeps your terminals
 
 Next to the **Update** button, a short note scrolls past: Safe to update: workroom terminals and run commands keep running. The Quick Terminal stops. Terminals and run commands in your workrooms keep their sessions across the update, whatever you chose for quitting with dev servers running. The Quick Terminal has no session to keep.
 
@@ -38,7 +38,7 @@ Nightly is not a channel you switch to. It is a separate app, **Workroom Nightly
 
 To get it, download `workroom-macos-app_nightly.dmg` from the [releases page](https://github.com/joelmoss/workroom/releases) on GitHub, on the pre-release tagged `nightly`. Its title is the current Nightly version. Workroom Nightly updates itself from its own feed, so it only ever moves to a newer Nightly build.
 
-Nightly builds are numbered like `2.2.0-nightly.1234`, where the last number counts commits, so a later build always has a higher number.
+Nightly builds are numbered like `3.1.0-nightly.1234`, where the last number counts commits, so a later build always has a higher number.
 
 ### The Nightly command-line tool
 

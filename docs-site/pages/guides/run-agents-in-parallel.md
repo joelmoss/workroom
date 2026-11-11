@@ -41,7 +41,7 @@ show it is busy. When a terminal you aren't looking at posts a notification, its
 up, and if Workroom isn't the app in front, you get a desktop notification. Click it to go straight to
 that terminal.
 
-### Waiting, working and finished {nightly}
+### Waiting, working and finished
 
 Claude Code 2.1.295 or later and Codex 0.163 or later tell Workroom what they are doing. Workroom shows
 it on the terminal's tab and sidebar row:

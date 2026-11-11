@@ -1,7 +1,6 @@
 ---
 title: workroom trust status
 description: Say whether a project's setup and teardown scripts are approved.
-nightly: true
 ---
 
 <!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->

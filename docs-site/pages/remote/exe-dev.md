@@ -1,7 +1,6 @@
 ---
 title: exe.dev
 description: Set up exe.dev once from the app, then create workrooms that run on exe.dev VMs.
-nightly: true
 ---
 
 [exe.dev](https://exe.dev) is a cloud service that runs each workroom on a VM of its own. This page covers the one-time setup, which Workroom walks you through, and creating a workroom on exe.dev. For what remote workrooms are, see [Remote workrooms](overview.md).

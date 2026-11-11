@@ -46,13 +46,13 @@ To take a workroom out of the split, right-click its title bar and choose **Remo
 
 ## Even out a split
 
-With **Automatically resize splits evenly** on, Workroom evens out the dividers whenever a pane joins or leaves a split, or you drag a pane to a new place in it. A third pane then never lands at a quarter of the width. Only the dividers that run the same way as the pane that joined or left are evened: adding or closing a pane beside another never changes a pane's height, and adding or closing one above or below never changes its width. In Workroom 2.1.0 the setting is called **Resize splits evenly automatically**, and every divider is evened. It is on by default. Turn it off in **Settings ▸ Appearance**.
+With **Automatically resize splits evenly** on, Workroom evens out the dividers whenever a pane joins or leaves a split, or you drag a pane to a new place in it. A third pane then never lands at a quarter of the width. Only the dividers that run the same way as the pane that joined or left are evened: adding or closing a pane beside another never changes a pane's height, and adding or closing one above or below never changes its width. It is on by default. Turn it off in **Settings ▸ Appearance**.
 
-### Workrooms side by side {nightly}
+### Workrooms side by side
 
 When workrooms are side by side, each one gets a share of the width for every terminal it shows across. With one terminal in the left workroom and two side by side in the right, the right workroom takes two thirds, so all three terminals are the same width. Workrooms above and below each other share the height the same way, by terminal rows. The divider between the workrooms moves when you add or close a terminal, and when you switch a workroom between a tab that is split and one that isn't, so the terminals you can see stay the same width, unless that would make a terminal narrower or shorter than the smallest pane size, in which case it stays where it is.
 
-Workroom 2.1.0 also has **View ▸ Resize Splits Evenly** and **View ▸ Resize Workroom Splits Evenly**, which even a split out by hand. Nightly no longer has them.
+Workroom 3.0 removed the **View ▸ Resize Splits Evenly** and **View ▸ Resize Workroom Splits Evenly** commands that evened a split out by hand.
 
 ## Pop a pane out into its own window
 
@@ -65,7 +65,7 @@ To pop a pane out:
 - Right-click the tab, or the terminal, and choose **Move to New Window**.
 - Drag the pane's title bar, or its tab, out past the edge of the window.
 
-The pane opens in a window named after its terminal, with a pane footer along the bottom. The window holds only that pane, so you can't open a new terminal or split in it. In Nightly, its right-click menu has no **New Terminal** or splits, and **Close Terminal** there closes this pane.
+The pane opens in a window named after its terminal, with a pane footer along the bottom. The window holds only that pane, so you can't open a new terminal or split in it. Its right-click menu has no **New Terminal** or splits, and **Close Terminal** there closes this pane.
 
 To put it back, press <kbd>⌃⌘O</kbd> again (**Window ▸ Move back to main window**), click **Move Back** in the window's toolbar, or right-click and choose **Move Back to Main Window**.
 
@@ -74,7 +74,7 @@ To put it back, press <kbd>⌃⌘O</kbd> again (**Window ▸ Move back to main w
 
 Workroom restores a popped-out pane to the same place when you relaunch.
 
-## Move a workroom to another window {nightly}
+## Move a workroom to another window
 
 A whole workroom, with all of its terminals, can move to a new window or into another Workroom window.
 

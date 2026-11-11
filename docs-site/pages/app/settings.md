@@ -16,7 +16,7 @@ Settings that belong to one project, such as its run command, are in the [Projec
 
 **Workroom ▸ Confirm Before Quitting** in the menu is the same switch.
 
-### Quitting with dev servers running {nightly}
+### Quitting with dev servers running
 
 | Setting | What it does |
 | --- | --- |
@@ -24,7 +24,7 @@ Settings that belong to one project, such as its run command, are in the [Projec
 
 The question appears whether or not **Confirm before quitting** is on. See [Quitting with a run going](terminals-and-tabs.md#quitting-with-a-run-going).
 
-### New Workrooms {nightly}
+### New Workrooms
 
 | Setting | What it does |
 | --- | --- |
@@ -33,7 +33,7 @@ The question appears whether or not **Confirm before quitting** is on. See [Quit
 
 New workrooms start from `origin`'s copy of the base branch, otherwise the local branch. Write `upstream/main` to start from another remote's branch, such as a fork's upstream. A project's own base branch in [Projects](#projects) wins. The field saves when you press <kbd>Return</kbd> or leave it. See [Projects](projects.md#base-branch) and [Workrooms](workrooms.md#watch-the-steps).
 
-## Notifications {nightly}
+## Notifications
 
 | Setting | What it does |
 | --- | --- |
@@ -42,7 +42,7 @@ New workrooms start from `origin`'s copy of the base branch, otherwise the local
 | **Notify when a terminal needs me** | Alerts you, and counts it on the Dock badge, when a program in a terminal waits on you. Off keeps the marks but stops Workroom's alerts. The program's own notifications still arrive. |
 | **Notify when a terminal finishes** | Alerts you when a program finishes its turn in a terminal you are not looking at. It replaces the program's own notification after its turn. |
 
-In Workroom 2.1.0 there is no Notifications pane. **Show notifications in the menu bar** is in **General**. See [Notifications](notifications.md).
+See [Notifications](notifications.md).
 
 ## Appearance
 
@@ -52,7 +52,7 @@ In Workroom 2.1.0 there is no Notifications pane. **Show notifications in the me
 | **Theme** | Opens the theme picker. A theme family has a light and a dark variant, and the one in use follows **Appearance**. Terminals change with it. The picker is also on <kbd>⇧⌘K</kbd> (**View ▸ Theme…**). |
 | **Diff view** | **Unified** or **Side by Side** for diffs you open from now on. A narrow pane always falls back to unified. |
 | **Dim unfocused panes** | Shades every pane except the focused one so the active terminal stands out in a split. On by default. |
-| **Automatically resize splits evenly** | When you add or close a pane, or drag one to a new place in its split, the panes in its row or column resize to match. With workrooms side by side, every terminal in the window ends up the same size (Nightly). Off leaves the dividers where you put them. Workroom 2.1.0 calls this **Resize splits evenly automatically** and evens every divider. See [Even out a split](splits-and-windows.md#even-out-a-split). |
+| **Automatically resize splits evenly** | When you add or close a pane, or drag one to a new place in its split, the panes in its row or column resize to match. With workrooms side by side, every terminal in the window ends up the same size. Off leaves the dividers where you put them. See [Even out a split](splits-and-windows.md#even-out-a-split). |
 | **Load author avatars** | Fetches author and reviewer avatars from Gravatar and GitHub. Off shows coloured initials only and makes no network request. |
 
 <kbd>⇧⌘L</kbd> (**View ▸ Light Mode** or **Dark Mode**) flips between light and dark without opening Settings.
@@ -65,7 +65,7 @@ In Workroom 2.1.0 there is no Notifications pane. **Show notifications in the me
 | **Confirm before closing a terminal** | Asks before closing a terminal, because that ends its shell and anything running in it, with no undo. |
 | **Open file paths in** | The app that opens a file path you <kbd>⌘</kbd>-click in a terminal: **Default App**, or one of Visual Studio Code, Zed and Xcode if installed. |
 
-### Report terminal as Ghostty {nightly}
+### Report terminal as Ghostty
 
 Off by default. New terminals set `TERM=xterm-256color`, which every Mac, server and container knows, so `top`, `sudo vim` and `ssh` to any server work as they do in Terminal. Programs still see `COLORTERM=truecolor` and `TERM_PROGRAM=ghostty`, so full colour and Ghostty detection are unchanged.
 
@@ -73,15 +73,11 @@ On, new terminals set `TERM=xterm-ghostty`. Programs that look a terminal up by 
 
 The setting applies to terminals you open after changing it. Remote workrooms don't use this setting. They use `xterm-ghostty` once Workroom has installed its entry on the remote machine, and `xterm-256color` until then.
 
-In Workroom 2.1.0 every terminal uses `xterm-ghostty`.
-
-### Stop Detached Terminals… {nightly}
+### Stop Detached Terminals…
 
 The **Stop Detached Terminals…** button counts the background terminals that no open tab is attached to and asks before it stops them. The note under it explains that terminals keep running after you quit and reattach when you relaunch, that run commands do too unless you choose to stop them, and that the Quick Terminal is never kept. See [Terminals and tabs](terminals-and-tabs.md#detached-sessions).
 
-In Workroom 2.1.0 this pane has a **Persist sessions** switch instead, and terminals only survive a quit while it is on.
-
-### Quick Terminal {nightly}
+### Quick Terminal
 
 | Setting | What it does |
 | --- | --- |
@@ -94,17 +90,15 @@ A Quick Terminal that is only hidden keeps its shells, so a new folder applies f
 
 ## AI Agents
 
-This pane is called **Agent** in Workroom 2.1.0.
-
 | Setting | What it does |
 | --- | --- |
-| **Investigate with** | The agent the **Investigate** button opens: **Auto (Claude, else Codex)**, **Claude** or **Codex**. The diagnosis itself always uses Claude Code. Called **Diagnose with** in Workroom 2.1.0. |
+| **Investigate with** | The agent the **Investigate** button opens: **Auto (Claude, else Codex)**, **Claude** or **Codex**. The diagnosis itself always uses Claude Code. |
 | **Diagnose automatically** | Runs the diagnosis as soon as a command fails, instead of waiting for you to ask. |
 | **Redact obvious secrets before sending** | Masks obvious secrets in a failed command's output before it goes to the agent. Best-effort, not a guarantee. |
 
 See [Coding agents](coding-agents.md#diagnose-a-failed-command).
 
-### Usage {nightly}
+### Usage
 
 | Setting | What it does |
 | --- | --- |
@@ -116,9 +110,9 @@ See [Coding agents](coding-agents.md#usage).
 
 ## Projects
 
-The pane lists your projects. Click one to open its settings, and the back button to return to the list. They are its run command and, in Nightly, its base branch and its boxd and exe.dev options. The gear on a project row in the sidebar, and **Project Settings…** in its right-click menu, open this pane on that project. A text field saves when you press <kbd>Return</kbd> or leave it. See [Project settings](projects.md#project-settings).
+The pane lists your projects. Click one to open its settings, and the back button to return to the list. They are its run command, its base branch and its boxd and exe.dev options. The gear on a project row in the sidebar, and **Project Settings…** in its right-click menu, open this pane on that project. A text field saves when you press <kbd>Return</kbd> or leave it. See [Project settings](projects.md#project-settings).
 
-## Remote Hosts {nightly}
+## Remote Hosts
 
 What Workroom creates each new boxd and exe.dev workroom's host with. Existing workrooms keep the host they were made with. There is a group for each provider, shown whether or not you have set that provider up, and each setting saves as you change it. Each group's **info** link opens [Choose a host's image and size](../remote/overview.md#choose-a-hosts-image-and-size). In a list, the provider's own default is marked **(default)**, and choosing it leaves the choice to the provider. Where the provider doesn't say what its default is, the list shows **Provider default** instead.
 

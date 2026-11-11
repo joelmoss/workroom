@@ -1,7 +1,6 @@
 ---
 title: workroom base
 description: Set or clear the branch new workrooms start from.
-nightly: true
 ---
 
 <!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->

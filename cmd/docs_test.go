@@ -136,14 +136,7 @@ func cliDocsPage(c *cobra.Command, body string) string {
 
 // cliNightly names the commands no stable release has yet, whose pages carry the Nightly badge. Cutting
 // a stable release that includes one removes it here (the curate-release skill's docs step).
-var cliNightly = map[string]bool{
-	"workroom base":         true,
-	"workroom base set":     true,
-	"workroom base clear":   true,
-	"workroom trust":        true,
-	"workroom trust status": true,
-	"workroom untrust":      true,
-}
+var cliNightly = map[string]bool{}
 
 // cliDocsLink turns cobra's link to another command's page (workroom_create.md) into the docs site's
 // file name for it.

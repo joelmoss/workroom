@@ -11,14 +11,14 @@ With `--json`, a command prints exactly one JSON object on stdout, then exits wi
 
 In `--json` mode a command never prompts. `workroom delete` needs `--confirm NAME`, and anything that would ask a question fails instead.
 
-Commands that run in `--json` mode: `create`, `list` (with `--warnings none|fast|full`), `delete`, `version`. On Nightly, `base set`, `base clear`, `trust`, `trust status` and `untrust` run in `--json` mode too. The app also uses two hidden commands, `add-project` and `delete-project`.
+Commands that run in `--json` mode: `create`, `list` (with `--warnings none|fast|full`), `delete`, `version`. `base set`, `base clear`, `trust`, `trust status` and `untrust` run in `--json` mode too. The app also uses two hidden commands, `add-project` and `delete-project`.
 
 ## The result envelope
 
 A successful command prints `ok: true`, the schema and CLI versions, the command name, and the command's own fields:
 
 ```json
-{ "ok": true, "schema_version": 1, "cli_version": "v2.1.0",
+{ "ok": true, "schema_version": 1, "cli_version": "v3.0.0",
   "command": "create", "name": "swift-meadow", "path": "/Users/you/workrooms/swift-meadow",
   "vcs": "git", "project": "/Users/you/dev/myapp" }
 ```
@@ -26,7 +26,7 @@ A successful command prints `ok: true`, the schema and CLI versions, the command
 A failed command prints `ok: false` and an `error` object. `kind` is the stable machine code and `message` is for people, so branch on `kind`, never on `message`:
 
 ```json
-{ "ok": false, "schema_version": 1, "cli_version": "v2.1.0",
+{ "ok": false, "schema_version": 1, "cli_version": "v3.0.0",
   "command": "create", "error": { "kind": "WorkspaceExists", "message": "git worktree already exists: …" } }
 ```
 
@@ -36,19 +36,19 @@ The schema is versioned with `schema_version`, currently `1`. Adding a field is 
 
 ### Fields by command
 
-- `create` returns `name`, `path`, `vcs` and `project`. On Nightly it adds a `warning` string when the new workroom starts from out-of-date refs or from a fallback base.
+- `create` returns `name`, `path`, `vcs` and `project`. It adds a `warning` string when the new workroom starts from out-of-date refs or from a fallback base.
 - `delete` returns `name`.
-- `list` returns `projects`, `workrooms_dir` and `config_path`. Each project has `path`, `vcs` and `workrooms`, and each workroom has `name`, `path`, `vcs_name` and `warnings`. On Nightly, a workroom or project on another host also has a `host` object. On Nightly, `list` adds `base_branch` at the top level for the global default, and to each project that sets its own. Without a setting the field is absent. On Nightly, each project also has `has_include`, true when its root has a `.worktreeinclude`. It is absent with `--warnings none`, which reads only the config.
-- On Nightly, `base set` and `base clear` return `{"project": …, "base_branch": …}`, or `{"global": true, "base_branch": …}` with `--global`.
+- `list` returns `projects`, `workrooms_dir` and `config_path`. Each project has `path`, `vcs` and `workrooms`, and each workroom has `name`, `path`, `vcs_name` and `warnings`. A workroom or project on another host also has a `host` object. `list` adds `base_branch` at the top level for the global default, and to each project that sets its own. Without a setting the field is absent. Each project also has `has_include`, true when its root has a `.worktreeinclude`. It is absent with `--warnings none`, which reads only the config.
+- `base set` and `base clear` return `{"project": …, "base_branch": …}`, or `{"global": true, "base_branch": …}` with `--global`.
 
-The `warnings` on a workroom have a `kind` and a `message`. The kinds are `DirectoryMissing` and `VCSWorkroomMissing`. On Nightly there is a third, `HostDestroyed`, for a remote workroom whose host its provider destroyed. A remote workroom never gets the first two.
+The `warnings` on a workroom have a `kind` and a `message`. The kinds are `DirectoryMissing` and `VCSWorkroomMissing`. There is a third, `HostDestroyed`, for a remote workroom whose host its provider destroyed. A remote workroom never gets the first two.
 
 ### A create that fails after the workroom exists
 
 Creating a workroom is not transactional. When the setup script fails, the workroom already exists, so the error envelope carries a `created` object with its `name`, `path`, `vcs` and `project`:
 
 ```json
-{ "ok": false, "schema_version": 1, "cli_version": "v2.1.0", "command": "create",
+{ "ok": false, "schema_version": 1, "cli_version": "v3.0.0", "command": "create",
   "created": { "name": "calm-river", "path": "/Users/you/workrooms/calm-river",
                "project": "/Users/you/dev/myapp", "vcs": "git" },
   "error": { "kind": "SetupScriptFailed", "message": "setup script failed: … returned a non-zero exit code" } }
@@ -70,9 +70,9 @@ A `log` event is one line of a script's output. `phase` is `setup` or `teardown`
 { "type": "created", "name": "swift-meadow", "path": "/Users/you/workrooms/swift-meadow", "project": "/Users/you/dev/myapp", "vcs": "git", "setup": true }
 ```
 
-### Step events {nightly}
+### Step events
 
-On Nightly, `create --json` also reports its steps, in order: `fetch` (fetch the base branch), `worktree` (`git worktree add`), `changes` (copy your main checkout's uncommitted changes, only with `--start local-with-changes`), `include` (copy the files listed in `.worktreeinclude`, only when the project has that file) and `script` (the setup script). `state` is `running`, `done`, `warning`, `skipped` or `failed`. `detail` carries the warning text, the reason a step was skipped, or the failure message, and is left out when there is none:
+`create --json` also reports its steps, in order: `fetch` (fetch the base branch), `worktree` (`git worktree add`), `changes` (copy your main checkout's uncommitted changes, only with `--start local-with-changes`), `include` (copy the files listed in `.worktreeinclude`, only when the project has that file) and `script` (the setup script). `state` is `running`, `done`, `warning`, `skipped` or `failed`. `detail` carries the warning text, the reason a step was skipped, or the failure message, and is left out when there is none:
 
 ```json
 { "type": "step", "id": "fetch", "state": "warning", "detail": "Could not fetch origin. …" }
@@ -117,7 +117,7 @@ Branch on the exit code when you don't need the details.
 | `VCSCommandFailed` | 1 | An underlying `git` command failed. |
 | `InternalError` | 1 | Anything else. |
 
-These kinds exist on Nightly only:
+These kinds are returned as well:
 
 | `kind` | Exit | Meaning |
 | ------ | ---- | ------- |
@@ -132,12 +132,12 @@ These kinds exist on Nightly only:
 | `RemoteWorkroomUnsupported` | 3 | `delete` or `delete-project` was asked to act on a remote workroom. |
 | `StartCommitUnusable` | 3 | A create answering an earlier one's question was given a `start_commit` that is no longer where it starts, as when the project's base branch changed in between. Nothing was created; create again without it. |
 
-### The ScriptNotTrusted envelope {nightly}
+### The ScriptNotTrusted envelope
 
 A `ScriptNotTrusted` error envelope has a `script` object, so a program can show the script and ask. `text` is the script to show, which is lossy for bytes that aren't UTF-8. `bytes` is its exact contents in base64, which is what to approve:
 
 ```json
-{ "ok": false, "schema_version": 1, "cli_version": "v2.1.0", "command": "create",
+{ "ok": false, "schema_version": 1, "cli_version": "v3.0.0", "command": "create",
   "error": { "kind": "ScriptNotTrusted", "message": "script is not trusted on this Mac: …" },
   "script": { "name": "workroom_setup", "origin": "root", "sha256": "0ce619c6…", "text": "#!/bin/sh\n…",
               "bytes": "IyEvYmluL3No…", "trusted": false, "exempt": false },
@@ -146,6 +146,6 @@ A `ScriptNotTrusted` error envelope has a `script` object, so a program can show
 
 See [workroom trust](../cli/workroom-trust.md) for how approval works.
 
-### The start commit {nightly}
+### The start commit
 
 A `create` that stops to ask something before it makes anything, a `ScriptNotTrusted` or `LocalWorkLeftOut` error, also has `start_commit`: the commit its start point resolved to after its fetch. The Workroom app passes it back when you answer, so the create continues from the commit you were asked about instead of fetching again. That create reports no `fetch` step, since the one whose question it answers already fetched.

@@ -42,7 +42,7 @@ variables:
 | `WORKROOM_NAME`      | The workroom's name, such as `swift-meadow`.                        |
 | `WORKROOM_PATH`      | The workroom's folder.                                              |
 | `WORKROOM_ROOT_PATH` | Your root checkout's folder. Not set on a remote host.              |
-| `WORKROOM_HOST`      | Where the script runs, such as `local` or `boxd`. Nightly only.     |
+| `WORKROOM_HOST`      | Where the script runs, such as `local` or `boxd`.                    |
 
 See [Environment variables](../reference/environment-variables.md) for the full list.
 
@@ -68,13 +68,13 @@ dropdb "myapp_${WORKROOM_NAME}" 2>/dev/null || true
 
 Workroom looks for it as it looks for the setup script: the workroom's own copy first, then the root's.
 
-### When a teardown fails {nightly}
+### When a teardown fails
 
 If the teardown script fails, the delete stops and nothing is removed, so you can fix the script and try
 again. The app shows the script's output and offers **Delete Anyway**, which deletes the workroom without
 running it. From the CLI, run `workroom delete <name> --skip-teardown`.
 
-## Approve your scripts {nightly}
+## Approve your scripts
 
 Setup and teardown scripts are code from the repository, so Workroom runs one only after you have
 approved its exact contents on this Mac. The first create or delete that would run a new script, or one
@@ -109,7 +109,7 @@ workroom untrust        # forget this project's approvals
 
 See [`workroom trust`](../cli/workroom-trust.md).
 
-## Copy gitignored files into new workrooms {nightly}
+## Copy gitignored files into new workrooms
 
 A clean checkout is missing the gitignored files your project needs to run, such as `.env` or
 `config/master.key`. List them in a `.worktreeinclude` file at your project's root, in `.gitignore`
@@ -147,7 +147,7 @@ set, <kbd>⌘R</kbd> starts it in any of the project's workrooms, in a tab of it
 | Restart | <kbd>⌥⌘R</kbd>                          |
 | Stop    | <kbd>⇧⌘R</kbd>                          |
 
-## Choose the branch new workrooms start from {nightly}
+## Choose the branch new workrooms start from
 
 New workrooms start from the default branch on `origin`, freshly fetched. To start them from another
 branch, such as `develop`, set the project's base branch in **Settings ▸ Projects**, under **New

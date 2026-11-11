@@ -18,8 +18,7 @@ When a command fails in a terminal, the pane footer shows **Command failed (exit
 The diagnosis has these buttons:
 
 - **Diagnose** asks a coding agent for the cause and a suggested fix.
-- **Insert fix** types the suggested command into the terminal without running it. Press <kbd>Return</kbd> yourself to run it. If the command looks destructive, Workroom asks you to confirm before it inserts it. A suggestion that runs over more than one line is dropped, because a line break could run it before you review it, so that diagnosis has no **Insert fix**. Use **Investigate** instead. In Workroom 2.1.0 a multi-line suggestion is still offered.
-- **Investigate** opens an interactive Claude Code or Codex session in the same folder, seeded with the failure, to dig deeper. **Settings ▸ AI Agents ▸ Investigate with** picks which. It appears once a diagnosis has arrived.
+- **Insert fix** types the suggested command into the terminal without running it. Press <kbd>Return</kbd> yourself to run it. If the command looks destructive, Workroom asks you to confirm before it inserts it. A suggestion that runs over more than one line is dropped, because a line break could run it before you review it, so that diagnosis has no **Insert fix**. Use **Investigate** instead.- **Investigate** opens an interactive Claude Code or Codex session in the same folder, seeded with the failure, to dig deeper. **Settings ▸ AI Agents ▸ Investigate with** picks which. It appears once a diagnosis has arrived.
 - The **x** button dismisses it.
 
 The diagnosis always uses the Claude Code command-line tool installed on your Mac, with its tools turned off, so nothing in the failed command's output can make it run anything. Codex has no such mode, so it never runs the diagnosis. If Claude Code is not found, the footer says so, and when Codex is installed and is your pick for **Investigate with**, it still offers **Investigate**. If neither is installed, it tells you to install one. If Claude Code is not signed in, the footer tells you to run `claude login`. In a remote workroom it warns that a local diagnosis may be inaccurate.
@@ -28,15 +27,14 @@ Failed-command detection needs shell integration. See [Terminals and tabs](termi
 
 ### Settings for diagnosis
 
-These are in **Settings ▸ AI Agents**. In Workroom 2.1.0 the pane is called **Agent**.
+These are in **Settings ▸ AI Agents**.
 
-- **Investigate with** picks the agent **Investigate** opens: **Auto (Claude, else Codex)**, **Claude** or **Codex**. **Auto** opens Claude Code, or Codex when Claude Code is not installed. In Workroom 2.1.0 this setting is called **Diagnose with**, and **Investigate** always opens Claude Code.
-- **Diagnose automatically** runs the diagnosis as soon as a command fails, instead of waiting for you to click **Diagnose**.
+- **Investigate with** picks the agent **Investigate** opens: **Auto (Claude, else Codex)**, **Claude** or **Codex**. **Auto** opens Claude Code, or Codex when Claude Code is not installed.- **Diagnose automatically** runs the diagnosis as soon as a command fails, instead of waiting for you to click **Diagnose**.
 - **Redact obvious secrets before sending** masks obvious secrets in the output before it reaches the agent. The pane says that redaction is best-effort, not a guarantee.
 
 A failed command's text and output go to the local CLI to get a suggested fix.
 
-## Usage {nightly}
+## Usage
 
 Workroom reads how much of each coding agent's usage allowance you have used and shows it as small bars.
 
@@ -76,11 +74,11 @@ Codex usage comes from the Codex app server, or from its local session files.
 
 If cswap has no reading for one of your Claude accounts, that account shows a grey bar with an exclamation-mark icon, and the tooltip says its usage is unavailable. Click it to see why. An agent with no reading at all is not shown.
 
-## Codex alerts {nightly}
+## Codex alerts
 
 Codex does not ask Workroom whether it supports program status, so Workroom treats it differently from Claude Code. It alerts you when Codex has been waiting, in the foreground, for about a second, and the alert reaches you 1 to 3 seconds in. See [Notifications](notifications.md#the-alert) for how Workroom folds Codex's own notification into the alert.
 
-## Voice mode {nightly}
+## Voice mode
 
 Workroom carries the microphone entitlement macOS needs, so a program in a terminal can use your microphone. Claude Code's voice mode is the main example. The first time a program asks, macOS shows a prompt: **Programs Workroom runs, including terminal commands, repository setup scripts and coding agents, can use your microphone.**
 

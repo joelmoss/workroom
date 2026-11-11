@@ -1,7 +1,6 @@
 ---
 title: boxd
 description: Set up boxd once from the app, then create workrooms that run on boxd machines.
-nightly: true
 ---
 
 [boxd](https://boxd.sh) is a cloud service that runs each workroom on a machine of its own. This page covers the one-time setup, which Workroom walks you through, and creating a workroom on boxd. For what remote workrooms are, see [Remote workrooms](overview.md).

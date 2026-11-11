@@ -1,7 +1,6 @@
 ---
 title: workroom untrust
 description: Forget the approval of a project's setup and teardown scripts.
-nightly: true
 ---
 
 <!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->
