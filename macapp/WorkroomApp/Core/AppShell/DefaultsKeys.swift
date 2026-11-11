@@ -88,8 +88,9 @@ extension Defaults.Keys {
 
   /// New local terminals set `TERM=xterm-ghostty` rather than `xterm-256color`. Off by default,
   /// because only this Mac has the `xterm-ghostty` entry, and only through `TERMINFO`: setuid
-  /// programs (macOS's `top`), `sudo` and `ssh` cannot find it. Remote workrooms use `xterm-ghostty`
-  /// either way (`SSHTransport.remoteAttachCommand`). Settings ▸ Terminal.
+  /// programs (macOS's `top`), `sudo` and `ssh` cannot find it. Remote workrooms ignore this: they
+  /// use `xterm-ghostty` once Workroom has installed its entry on the host, and `xterm-256color`
+  /// until then (`SSHTransport.remoteAttachCommand`). Settings ▸ Terminal.
   static let terminalReportsGhostty = Key<Bool>(
     "terminalReportsGhostty", default: false, suite: .app)
 

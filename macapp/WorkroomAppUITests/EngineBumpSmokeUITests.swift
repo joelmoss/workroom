@@ -21,8 +21,9 @@ import XCTest
 /// a garbled escape), and the Return goes in its own `typeText` call after shifted punctuation.
 ///
 /// Left to the manual checklist: the scrollbar overlay, ⌘-clicking a relative path, ssh, the shell
-/// matrix and bash's exit status, and which screen row a Find Next lands on (the counter is checked
-/// here, the highlight's position is not).
+/// matrix and bash's exit status, deleting a workroom with live panes, OSC 133 (the tab title and
+/// busy indicator following a long command), and which screen row a Find Next lands on (the
+/// counter is checked here, the highlight's position is not).
 final class EngineBumpSmokeUITests: XCTestCase {
   /// The test's `/tmp` folder, made by the pane on the first `helper` call.
   private var scratch = ""
@@ -164,7 +165,7 @@ final class EngineBumpSmokeUITests: XCTestCase {
   func testRunTabRestartsCleanly() {
     let app = launchedRunApp(runCommand: "sleep 2; exit 7")
     for attempt in 1...2 {
-      app.menuBars.menuBarItems["Room"].menuItems["Run"].click()
+      clickMenu(app, "Room", "Run")
       XCTAssertTrue(waitForRunState(app, "running"), "attempt \(attempt): the run started")
       XCTAssertTrue(waitForRunState(app, "failed"), "attempt \(attempt): exit 7 reads as failed")
     }
@@ -173,13 +174,13 @@ final class EngineBumpSmokeUITests: XCTestCase {
 
   func testRunTabStopsAndStartsAgain() {
     let app = launchedRunApp(runCommand: "sleep 30")
-    app.menuBars.menuBarItems["Room"].menuItems["Run"].click()
+    clickMenu(app, "Room", "Run")
     XCTAssertTrue(waitForRunState(app, "running"), "the run started")
-    app.menuBars.menuBarItems["Room"].menuItems["Stop"].click()
+    clickMenu(app, "Room", "Stop")
     XCTAssertTrue(waitForRunState(app, "stopped"), "Stop stopped it")
-    app.menuBars.menuBarItems["Room"].menuItems["Run"].click()
+    clickMenu(app, "Room", "Run")
     XCTAssertTrue(waitForRunState(app, "running"), "it started again")
-    app.menuBars.menuBarItems["Room"].menuItems["Restart"].click()
+    clickMenu(app, "Room", "Restart")
     XCTAssertTrue(waitForRunState(app, "running", timeout: 20), "Restart left it running")
     assertNoAlreadyRunning(app)
   }
@@ -243,7 +244,7 @@ final class EngineBumpSmokeUITests: XCTestCase {
     // `WRF""IND` so the typed line itself is not a match.
     run(app, "for i in 1 2 3 4 5; do echo WRF\"\"IND$i; done")
     XCTAssertTrue(waitForScreen(app, containing: "WRFIND5").found, "the matches are on screen")
-    app.menuBars.menuBarItems["Edit"].menuItems["Find…"].click()
+    clickMenu(app, "Edit", "Find…")
     let summary = app.staticTexts.matching(identifier: "terminal.search.summary").firstMatch
     XCTAssertTrue(
       poll(timeout: 10) { self.matchPosition(summary)?.total == 5 },
@@ -252,7 +253,7 @@ final class EngineBumpSmokeUITests: XCTestCase {
     var positions: [Int] = []
     for _ in 0..<7 {
       let previous = summaryText(summary)
-      app.menuBars.menuBarItems["Edit"].menuItems["Find Next"].click()
+      clickMenu(app, "Edit", "Find Next")
       _ = poll(timeout: 5) { self.summaryText(summary) != previous }
       positions.append(matchPosition(summary)?.index ?? -1)
     }
@@ -264,7 +265,7 @@ final class EngineBumpSmokeUITests: XCTestCase {
     var backwards: [Int] = [positions.last ?? -1]
     for _ in 0..<6 {
       let previous = summaryText(summary)
-      app.menuBars.menuBarItems["Edit"].menuItems["Find Previous"].click()
+      clickMenu(app, "Edit", "Find Previous")
       _ = poll(timeout: 5) { self.summaryText(summary) != previous }
       backwards.append(matchPosition(summary)?.index ?? -1)
     }
@@ -430,6 +431,11 @@ final class EngineBumpSmokeUITests: XCTestCase {
     XCTAssertTrue(chip.waitForExistence(timeout: 10), "\(name) has a workroom chip")
     chip.click()
     RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+  }
+
+  /// Clicks `item` in the menu bar's `menu` (Room ▸ Run, Edit ▸ Find Next).
+  private func clickMenu(_ app: XCUIApplication, _ menu: String, _ item: String) {
+    app.menuBars.menuBarItems[menu].menuItems[item].click()
   }
 
   /// Types the line, then the Return in its own call (see `GhosttyOrphanShellUITests.run`).

@@ -71,7 +71,7 @@ Off by default. New terminals set `TERM=xterm-256color`, which every Mac, server
 
 On, new terminals set `TERM=xterm-ghostty`. Programs that look a terminal up by that name, tmux among them, then use what Ghostty adds: full colour without a tmux setting, curly and coloured underlines, and synchronized output. The `xterm-ghostty` entry only exists on this Mac, so macOS's `top`, editors under `sudo`, and `ssh` to a server without the entry stop working. See [`top` says "Error opening terminal: xterm-ghostty"](../help/troubleshooting.md#top-says-error-opening-terminal-xterm-ghostty).
 
-The setting applies to terminals you open after changing it. Remote workrooms always use `xterm-ghostty`, because Workroom installs its entry on the remote machine.
+The setting applies to terminals you open after changing it. Remote workrooms don't use this setting. They use `xterm-ghostty` once Workroom has installed its entry on the remote machine, and `xterm-256color` until then.
 
 In Workroom 2.1.0 every terminal uses `xterm-ghostty`.
 

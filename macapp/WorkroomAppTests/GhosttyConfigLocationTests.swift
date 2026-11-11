@@ -76,8 +76,7 @@ final class GhosttyConfigLocationTests: XCTestCase {
     XCTAssertEqual(try theme(in: url), "Evilminimum-contrast = 0Name")
   }
 
-  /// New terminals set `TERM=xterm-256color` unless the user opts into `xterm-ghostty`, and the
-  /// line takes only those two values, so nothing a caller passes becomes a directive of its own.
+  /// New terminals set `TERM=xterm-256color` unless the user opts into `xterm-ghostty`.
   func testTheTermLineIsXterm256ColorUnlessTheUserReportsGhostty() throws {
     let url = GhosttyApp.defaultThemeConfigURL(
       bundleID: "com.example.term", fileManager: fileManager)
@@ -89,16 +88,13 @@ final class GhosttyConfigLocationTests: XCTestCase {
     XCTAssertTrue(GhosttyApp.writeThemeConfig(theme: "Nord", to: url))
     XCTAssertEqual(try termLine(), "term = xterm-256color", "the default")
 
-    let ghostty = GhosttyApp.terminalType(reportsGhostty: true)
+    let ghostty = TerminalType(reportsGhostty: true)
     XCTAssertTrue(GhosttyApp.writeThemeConfig(theme: "Nord", term: ghostty, to: url))
     XCTAssertEqual(try termLine(), "term = xterm-ghostty", "Report terminal as Ghostty")
 
-    XCTAssertTrue(
-      GhosttyApp.writeThemeConfig(theme: "Nord", term: "vt100\nminimum-contrast = 0", to: url))
-    XCTAssertEqual(try termLine(), "term = xterm-256color", "an unknown value")
-    XCTAssertEqual(
-      try String(contentsOf: url, encoding: .utf8).split(separator: "\n")
-        .filter { $0.hasPrefix("minimum-contrast") }, ["minimum-contrast = 3.0"])
+    let plain = TerminalType(reportsGhostty: false)
+    XCTAssertTrue(GhosttyApp.writeThemeConfig(theme: "Nord", term: plain, to: url))
+    XCTAssertEqual(try termLine(), "term = xterm-256color", "switched back off")
   }
 
   /// The write reports failure rather than swallowing it. `loadConfig` cannot tell —

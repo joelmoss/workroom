@@ -711,7 +711,8 @@ private struct TerminalSettingsPane: View {
           .help(
             "New terminals set TERM=xterm-ghostty instead of xterm-256color. Programs that look "
               + "the terminal up by name, such as tmux, get Ghostty's extra features. Only this Mac "
-              + "has the xterm-ghostty entry, so top, sudo and ssh to other machines stop working."
+              + "has the xterm-ghostty entry. top, sudo, and ssh to a machine without the entry "
+              + "stop working."
           )
           .accessibilityIdentifier("settings.control.terminalReportsGhostty")
           // A surface takes its TERM from the config when it starts, so a reload is enough: the
@@ -724,9 +725,9 @@ private struct TerminalSettingsPane: View {
           }
         Text(
           "Off, terminals use xterm-256color, which every Mac, server and container knows. On, "
-            + "they use xterm-ghostty: tmux gets full colour and curly underlines, but top, sudo "
-            + "and ssh to machines without the entry stop working. Applies to new terminals. "
-            + "Remote workrooms always use xterm-ghostty."
+            + "they use xterm-ghostty, and tmux gets full colour and curly underlines. top, sudo, "
+            + "and ssh to a machine without the entry then stop working. Applies to new "
+            + "terminals. Remote workrooms don't use this setting."
         )
         .font(.caption)
         .foregroundStyle(.secondary)
