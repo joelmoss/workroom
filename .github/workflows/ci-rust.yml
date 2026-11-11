@@ -90,7 +90,7 @@ jobs:
         uses: ./.github/actions/install-zig
         with:
           archive: x86_64-linux
-          sha256: "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
+          sha256: "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a"
 
       # Keyed on the pinned engine sha, so a bump refetches and rebuilds and nothing else does.
       # Without this every run clones Ghostty and spends ~75s building the emulator.
@@ -149,7 +149,7 @@ jobs:
         uses: ./.github/actions/install-zig
         with:
           archive: x86_64-linux
-          sha256: "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
+          sha256: "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a"
 
       # Its own key per arch. Sharing `daemon-terminal-state`'s key would restore that job's glibc
       # prefix, count as a hit, never save the musl one, and rebuild it on every run.

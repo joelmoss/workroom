@@ -11,8 +11,8 @@ ARG ZIG_VERSION
 # The x86_64 pin is the one used by CI's install-zig action.
 RUN set -eu; \
     case "${ZIG_VERSION}/$(uname -m)" in \
-      0.17.0/aarch64) arch=aarch64; sha=9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8 ;; \
-      0.17.0/x86_64) arch=x86_64; sha=1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026 ;; \
+      0.17.1/aarch64) arch=aarch64; sha=a1546d5646eb184437918d6635ca6b762a0e889eac09cef720ee7a1ed3fe7795 ;; \
+      0.17.1/x86_64) arch=x86_64; sha=3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a ;; \
       *) echo "Unsupported Zig version/architecture; update the verified release checksums" >&2; exit 1 ;; \
     esac; \
     curl -fsSL --retry 3 "https://ziglang.org/download/${ZIG_VERSION}/zig-${arch}-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz; \

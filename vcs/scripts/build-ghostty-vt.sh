@@ -25,8 +25,10 @@ set -euo pipefail
 # headers say 1.1.0-dev.
 GHOSTTY_SHA="ea8b12a8a"
 GHOSTTY_REPO="https://github.com/ghostty-org/ghostty.git"
-# build.zig.zon's `minimum_zig_version` at the pinned sha.
-ZIG_VERSION="0.17.0"
+# At least build.zig.zon's `minimum_zig_version` at the pinned sha (0.17.0). 0.17.1 because
+# 0.17.0's x86_64 Linux compiler crashed ("General protection exception") building this sha for
+# x86_64-linux-musl on GitHub's runners, while aarch64 and the Mac built it.
+ZIG_VERSION="0.17.1"
 
 target=""
 print_prefix=false
