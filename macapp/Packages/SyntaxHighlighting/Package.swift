@@ -35,7 +35,7 @@ let package = Package(
     // branch (the default branch omits it), so we pin a commit from that branch — not `main`.
     .package(
       url: "https://github.com/alex-pinkus/tree-sitter-swift",
-      revision: "31d17fe7e818a2048c808b5c6fdc2dc792f4f5b5"),
+      revision: "82bb3a533e0801fd2bbaa11dc49676e10bf41948"),
     .package(
       url: "https://github.com/tree-sitter/tree-sitter-go",
       revision: "2346a3ab1bb3857b48b29d779a1ef9799a248cd7"),
@@ -68,7 +68,7 @@ let package = Package(
     // grammar only (injections/inline are deferred), but linking the product pulls both.
     .package(
       url: "https://github.com/tree-sitter-grammars/tree-sitter-markdown",
-      revision: "c3570720f7f7bbad22fe96603f106276618e0cf5"),
+      revision: "41ff24a6c775492c543b09228aeb98d1cd2b3a0f"),
     .package(
       url: "https://github.com/tree-sitter/tree-sitter-html",
       revision: "73a3947324f6efddf9e17c0ea58d454843590cc0"),
@@ -81,7 +81,7 @@ let package = Package(
     // compile.
     .package(
       url: "https://github.com/DerekStride/tree-sitter-sql",
-      revision: "851e9cb257ba7c66cc8c14214a31c44d2f1e954e"),
+      revision: "2d088525f3f986108d969dab526a0d7129281e24"),
   ],
   targets: [
     .target(

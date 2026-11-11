@@ -1,5 +1,5 @@
 {
-  "originHash" : "9b07b67f50d0d6630a315742a5fc747846a18569031aed0d91cedb539a009166",
+  "originHash" : "6a254b007aeef3d20c4913a4cdd556f65ac5a1ec9ed110bd874a30846dc3b30b",
   "pins" : [
     {
       "identity" : "defaults",
@@ -108,7 +108,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/tree-sitter-grammars/tree-sitter-markdown",
       "state" : {
-        "revision" : "c3570720f7f7bbad22fe96603f106276618e0cf5"
+        "revision" : "41ff24a6c775492c543b09228aeb98d1cd2b3a0f"
       }
     },
     {
@@ -132,7 +132,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/DerekStride/tree-sitter-sql",
       "state" : {
-        "revision" : "851e9cb257ba7c66cc8c14214a31c44d2f1e954e"
+        "revision" : "2d088525f3f986108d969dab526a0d7129281e24"
       }
     },
     {
@@ -140,7 +140,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/alex-pinkus/tree-sitter-swift",
       "state" : {
-        "revision" : "31d17fe7e818a2048c808b5c6fdc2dc792f4f5b5"
+        "revision" : "82bb3a533e0801fd2bbaa11dc49676e10bf41948"
       }
     },
     {
