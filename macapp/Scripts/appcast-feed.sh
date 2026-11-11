@@ -1,6 +1,17 @@
 # shellcheck shell=sh
 # Shared by appcast.sh and appcast-notes.sh — sourced, not executed.
 #
+# wr_render_markdown <repo>
+#   Renders the GFM on stdin to HTML with GitHub's /markdown API, the same rendering the release
+#   page shows, and prints it. The notes travel in the request body on stdin, never as an argument:
+#   Linux caps one argument or environment string at 128 KiB, and an uncurated GoReleaser body runs
+#   past that (v3.0.0's was 125 KB for 1,552 commits).
+wr_render_markdown() {
+  python3 -c 'import json, sys
+json.dump({"mode": "gfm", "context": sys.argv[1], "text": sys.stdin.read()}, sys.stdout)' "$1" |
+    gh api --method POST /markdown --input -
+}
+#
 # wr_fetch_feed <repo> <release-tag> <asset> <dest>
 #   Downloads a published feed from its PUBLIC download URL, the same URL SUFeedURL points every
 #   installed app at. Returns 0 when fetched, 2 when that URL is a clean 404 (the feed does not

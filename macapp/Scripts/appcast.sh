@@ -79,12 +79,14 @@ PUBDATE="$(date -u '+%a, %d %b %Y %H:%M:%S +0000')"
 # Embed the curated release notes, rendered to HTML, so Sparkle's update dialog shows the real notes
 # inline instead of just a link. Best-effort: if the release body can't be fetched or rendered (e.g.
 # notes not curated yet), NOTES_DESC stays empty and the item falls back to the <link> alone.
+# shellcheck source=appcast-feed.sh
+. "${MACAPP_DIR}/Scripts/appcast-feed.sh"
 NOTES_DESC=""
 if NOTES_MD="$(gh release view "$TAG" --repo "$REPO" --json body -q .body 2>/dev/null)" \
   && [ -n "$NOTES_MD" ]; then
   # GitHub renders the same GFM the release page shows.
-  if NOTES_HTML="$(gh api --method POST /markdown -f mode=gfm -f context="$REPO" \
-    -f text="$NOTES_MD" 2>/dev/null)" && [ -n "$NOTES_HTML" ]; then
+  if NOTES_HTML="$(printf '%s' "$NOTES_MD" | wr_render_markdown "$REPO" 2>/dev/null)" \
+    && [ -n "$NOTES_HTML" ]; then
     # A CDATA section can't contain the literal "]]>"; split any occurrence so it stays well-formed.
     NOTES_HTML="${NOTES_HTML//]]>/]]]]><![CDATA[>}"
     NOTES_DESC="<description><![CDATA[${NOTES_HTML}]]></description>"
@@ -105,8 +107,6 @@ fi
 # The download uses the public URL, not `gh release download`: the API's asset listing can go stale
 # after a --clobber re-upload (see appcast-feed.sh). A stale listing still names appcast.xml, so the
 # probe below refuses rather than initializing.
-# shellcheck source=appcast-feed.sh
-. "${MACAPP_DIR}/Scripts/appcast-feed.sh"
 FETCH_RC=0
 wr_fetch_feed "$REPO" "$FEED_TAG" appcast.xml "$FEED" || FETCH_RC=$?
 if [ "$FETCH_RC" -eq 0 ]; then

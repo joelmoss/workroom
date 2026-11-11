@@ -30,20 +30,25 @@ esac
 
 NOTES_URL="https://github.com/${REPO}/releases/tag/${TAG}"
 
+# shellcheck source=appcast-feed.sh
+. "${MACAPP_DIR}/Scripts/appcast-feed.sh"
+
 # Render the release body to HTML (the same GFM the release page shows). No body → nothing to embed.
 NOTES_MD="$(gh release view "$TAG" --repo "$REPO" --json body -q .body 2>/dev/null || true)"
 if [ -z "$NOTES_MD" ]; then
   echo "note: release $TAG has no body; nothing to embed." >&2
   exit 0
 fi
-NOTES_HTML="$(gh api --method POST /markdown -f mode=gfm -f context="$REPO" -f text="$NOTES_MD")"
+NOTES_HTML="$(printf '%s' "$NOTES_MD" | wr_render_markdown "$REPO")"
 # A CDATA section can't contain the literal "]]>"; split any occurrence so it stays well-formed.
 NOTES_HTML="${NOTES_HTML//]]>/]]]]><![CDATA[>}"
+# To python3 in a file, not the environment: the same 128 KiB cap as above.
+mkdir -p "$BUILD"
+NOTES_HTML_FILE="${BUILD}/appcast-notes.html"
+printf '%s' "$NOTES_HTML" >"$NOTES_HTML_FILE"
 
 # Fetch the published feed. Only a clean 404 means there is no feed yet (the build publishes it);
 # any other failure fails the run, so a refresh that did nothing can never report success.
-# shellcheck source=appcast-feed.sh
-. "${MACAPP_DIR}/Scripts/appcast-feed.sh"
 rc=0
 wr_fetch_feed "$REPO" "$FEED_TAG" appcast.xml "$FEED" || rc=$?
 case "$rc" in
@@ -54,11 +59,11 @@ esac
 
 # Exit 0 = feed rewritten (upload it); 9 = item missing or already current (skip the upload).
 set +e
-NOTES_HTML="$NOTES_HTML" NOTES_URL="$NOTES_URL" python3 - "$FEED" <<'PY'
+NOTES_URL="$NOTES_URL" python3 - "$FEED" "$NOTES_HTML_FILE" <<'PY'
 import os, re, sys
 
 path = sys.argv[1]
-html = os.environ["NOTES_HTML"]
+html = open(sys.argv[2], encoding="utf-8").read()
 link = os.environ["NOTES_URL"]
 xml = open(path, encoding="utf-8").read()
 

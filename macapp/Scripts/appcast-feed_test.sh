@@ -52,5 +52,22 @@ wait "$SERVER" 2>/dev/null
 wr_fetch_feed o/r appcast appcast.xml "$DEST" 2>/dev/null
 expect "an unreachable server is a failure, never absence" 1 $?
 
+# wr_render_markdown sends the notes on stdin, so a body past Linux's 128 KiB argument cap still
+# renders. A stub `gh` records its arguments and echoes the request body back.
+mkdir -p "$ROOT/bin"
+cat >"$ROOT/bin/gh" <<'GH'
+#!/bin/sh
+printf '%s\n' "$@" >"$(dirname "$0")/args"
+cat
+GH
+chmod +x "$ROOT/bin/gh"
+big=$(head -c 300000 /dev/zero | tr '\0' x)
+req=$(printf '%s' "$big" | PATH="$ROOT/bin:$PATH" wr_render_markdown o/r)
+expect "rendering posts to /markdown with the body on stdin" "api --method POST /markdown --input -" \
+  "$(tr '\n' ' ' <"$ROOT/bin/args" | sed 's/ $//')"
+expect "the whole body reaches the request" "gfm o/r 300000" \
+  "$(printf '%s' "$req" | python3 -c 'import json, sys
+r = json.load(sys.stdin); print(r["mode"], r["context"], len(r["text"]))')"
+
 [ "$fails" -eq 0 ] && echo "appcast-feed: all cases pass"
 exit "$fails"
