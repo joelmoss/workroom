@@ -250,11 +250,15 @@ dispatches on symbolic labels — don't spend the retest budget there.
       `top` runs (`EngineBumpSmokeUITests` automates all three).
 - [ ] **OSC 7 still lands**: `cd` somewhere, then ⌘-click a *relative* path in the output → resolves
       against the new cwd. (Nothing logs when this breaks — it just stops working.)
-- [ ] **OSC 133 still lands**: run a long command → the tab title tracks it and the busy indicator
-      animates, then clears on completion. (`EngineBumpSmokeUITests.testShellIntegrationTracksAndEndsACommand`
-      automates the title and the busy state; look at the animation yourself.)
+- [ ] **OSC 133 still lands**: run a long command → the tab title tracks it and clears when it
+      ends. A command doesn't make the tab busy by itself: only OSC 9;4 does, so run
+      `printf '\033]9;4;1;50\007'; sleep 6` → the busy indicator animates, then clears when the
+      command ends (OSC 133;D), well before the 30 s stale-progress timeout.
+      (`EngineBumpSmokeUITests.testShellIntegrationTracksAndEndsACommand` automates the title and
+      the busy state this way; look at the animation yourself.)
 - [ ] **bash exit status reaches the app** (#465): with Homebrew bash (4.4+) as the login shell, run
-      `false` → the inline agent banner shows (or auto-diagnose runs, if on); `true` → no banner.
+      `( exit 7 )` → the inline agent banner shows (or auto-diagnose runs, if on); `true` → no
+      banner. Exit 7 rather than `false`'s 1, so the code that arrives is plainly the command's.
       Before ghostty#14250, OSC 133;D reported 0 for every bash 4.4+ command. Don't use macOS
       `/bin/bash` (3.2): the integration never loads there, so no banner is the expected result.
       (`EngineBumpSmokeUITests.testBashExitStatusReachesTheApp` automates it in the VM, whose base

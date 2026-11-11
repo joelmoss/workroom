@@ -823,11 +823,16 @@ import WorkroomVCS
         "workroom-tests-zdotdir-\(pathComponent(bundleID))", isDirectory: true)
     }
 
-    /// `<root>/workroom-tests-bash-<bundle id>`, which holds the `bash` wrapper
-    /// `-WorkroomUITestShell bash` launches. Per bundle id for the reason `hermeticZDOTDIR` is.
-    static func hermeticBashDirectory(bundleID: String, in root: URL) -> URL {
+    /// Where the hermetic folders live: the temporary directory, unless a unit test passes its own.
+    static var hermeticRoot: URL { FileManager.default.temporaryDirectory }
+
+    /// `<root>/workroom-tests-bash-<bundle id>/bash`: the wrapper `-WorkroomUITestShell bash`
+    /// launches, the one place its path is built. Per bundle id for the reason `hermeticZDOTDIR` is.
+    /// Named `bash` so Ghostty recognises the shell and injects its bash integration.
+    static func hermeticBashWrapperURL(bundleID: String, in root: URL) -> URL {
       root.appendingPathComponent(
-        "workroom-tests-bash-\(pathComponent(bundleID))", isDirectory: true)
+        "workroom-tests-bash-\(pathComponent(bundleID))", isDirectory: true
+      ).appendingPathComponent("bash")
     }
 
     /// The bundle id as one path component: anything outside `[A-Za-z0-9._-]` becomes `_`.
@@ -848,11 +853,12 @@ import WorkroomVCS
       guard AppEnvironment.isUILaunch, hermeticBashRequested,
         let bundleID = Bundle.main.bundleIdentifier
       else { return nil }
-      return hermeticBashDirectory(bundleID: bundleID, in: FileManager.default.temporaryDirectory)
-        .appendingPathComponent("bash").path
+      return hermeticBashWrapperURL(bundleID: bundleID, in: hermeticRoot).path
     }
 
-    /// Where `-WorkroomUITestShell bash` expects Homebrew's bash. Tests check it exists first.
+    /// Where `-WorkroomUITestShell bash` expects Homebrew's bash.
+    /// `EngineBumpSmokeUITests.testBashExitStatusReachesTheApp` checks the same path exists before
+    /// it launches, and skips without it; the UI-test target cannot import this, so it repeats it.
     static let homebrewBash = "/opt/homebrew/bin/bash"
 
     /// The wrapper a bash launch's terminals start, named `bash` so Ghostty still injects its bash
@@ -872,13 +878,27 @@ import WorkroomVCS
       """
     }
 
-    /// Write the bash wrapper into `directory` (made 0700, refused if it is a symlink or not ours),
-    /// through a temporary sibling and `rename`, so a concurrent launch never runs half of it.
-    /// Returns the wrapper's path.
-    static func prepareHermeticBash(at directory: URL, home: URL) throws -> URL {
+    /// Write the bash wrapper at `wrapper` (its folder made ours and 0700 by `ensureOwnedFolder`),
+    /// executable, through `atomicWrite`, so a concurrent launch never runs half of it.
+    static func prepareHermeticBash(at wrapper: URL, home: URL) throws {
+      try ensureOwnedFolder(wrapper.deletingLastPathComponent())
+      try atomicWrite(
+        Data(hermeticBashWrapper(home: home).utf8), to: wrapper, mode: hermeticFolderMode)
+    }
+
+    /// Make `directory` a folder of this user's with mode 0700, or throw. A symlink is refused, as
+    /// is anything that is not a directory owned by this user, before and after creating it: the
+    /// path is predictable, and a caller may go on to delete what it lists. A directory of ours with
+    /// another mode (an earlier version created the ZDOTDIR 0755; 0500 would fail its sweep on every
+    /// launch) is reset.
+    private static func ensureOwnedFolder(_ directory: URL) throws {
       var info = stat()
-      if lstat(directory.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFLNK {
-        throw HermeticShellError.folderIsSymlink(directory)
+      if lstat(directory.path, &info) == 0 {
+        switch info.st_mode & S_IFMT {
+        case S_IFLNK: throw HermeticShellError.folderIsSymlink(directory)
+        case S_IFDIR: break
+        default: throw HermeticShellError.folderNotOurs(directory)  // a file, a FIFO...
+        }
       }
       try FileManager.default.createDirectory(
         at: directory, withIntermediateDirectories: true,
@@ -886,17 +906,29 @@ import WorkroomVCS
       guard lstat(directory.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR,
         info.st_uid == geteuid()
       else { throw HermeticShellError.folderNotOurs(directory) }
-      let wrapper = directory.appendingPathComponent("bash")
-      let temporary = directory.appendingPathComponent(".bash.tmp-\(UUID().uuidString)")
-      try Data(hermeticBashWrapper(home: home).utf8).write(to: temporary)
-      try FileManager.default.setAttributes(
-        [.posixPermissions: hermeticFolderMode], ofItemAtPath: temporary.path)
-      if rename(temporary.path, wrapper.path) != 0 {
+      if Int(info.st_mode & 0o777) != hermeticFolderMode {
+        try FileManager.default.setAttributes(
+          [.posixPermissions: hermeticFolderMode], ofItemAtPath: directory.path)
+      }
+    }
+
+    /// Write `data` to `destination` through a `<name>.tmp-<uuid>` sibling and `rename`, so a
+    /// reader never sees half of it. Our own temporary name, because the ZDOTDIR sweep keeps every
+    /// `.zshrc*` name and `Data.write(options: .atomic)` does not promise what its sibling is called.
+    /// `mode`, when given, is set before the rename.
+    private static func atomicWrite(_ data: Data, to destination: URL, mode: Int? = nil) throws {
+      let temporary = destination.deletingLastPathComponent()
+        .appendingPathComponent("\(destination.lastPathComponent).tmp-\(UUID().uuidString)")
+      try data.write(to: temporary)
+      if let mode {
+        try FileManager.default.setAttributes(
+          [.posixPermissions: mode], ofItemAtPath: temporary.path)
+      }
+      if rename(temporary.path, destination.path) != 0 {
         let code = POSIXErrorCode(rawValue: errno) ?? .EIO
         try? FileManager.default.removeItem(at: temporary)
         throw POSIXError(code)
       }
-      return wrapper
     }
 
     enum HermeticShellError: Error {
@@ -925,28 +957,8 @@ import WorkroomVCS
     /// correct alone.
     static func prepareHermeticZDOTDIR(at directory: URL) throws {
       let files = FileManager.default
-      var info = stat()
-      if lstat(directory.path, &info) == 0 {
-        switch info.st_mode & S_IFMT {
-        case S_IFLNK: throw HermeticShellError.folderIsSymlink(directory)
-        case S_IFDIR: break
-        default: throw HermeticShellError.folderNotOurs(directory)  // a file, a FIFO...
-        }
-      }
-      try files.createDirectory(
-        at: directory, withIntermediateDirectories: true,
-        attributes: [.posixPermissions: hermeticFolderMode])
-      // Look again at what is there NOW rather than trusting the check above: the path is predictable
-      // and the sweep below deletes what it lists. A directory of ours with another mode (an earlier
-      // version created it 0755; 0500 would fail the sweep on every launch) is reset; anything else
-      // is not ours to empty.
-      guard lstat(directory.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR,
-        info.st_uid == geteuid()
-      else { throw HermeticShellError.folderNotOurs(directory) }
-      if Int(info.st_mode & 0o777) != hermeticFolderMode {
-        try files.setAttributes(
-          [.posixPermissions: hermeticFolderMode], ofItemAtPath: directory.path)
-      }
+      // Checked again after creating it, since the sweep below deletes what it lists.
+      try ensureOwnedFolder(directory)
       for entry in try files.contentsOfDirectory(atPath: directory.path)
       where !entry.hasPrefix(".zshrc") || entry == ".zshrc.zwc" {
         try removeTolerantOfVanishing(directory.appendingPathComponent(entry))
@@ -960,17 +972,8 @@ import WorkroomVCS
         try removeTolerantOfVanishing(rc)
       }
       let content = Data(hermeticShellRC.utf8)
-      if (try? Data(contentsOf: rc)) != content {
-        // Our own temporary name, then `rename`: the sweep above keeps every `.zshrc*` name, and
-        // `Data.write(options: .atomic)` does not promise what its temporary sibling is called.
-        let temporary = directory.appendingPathComponent(".zshrc.tmp-\(UUID().uuidString)")
-        try content.write(to: temporary)
-        if rename(temporary.path, rc.path) != 0 {
-          let code = POSIXErrorCode(rawValue: errno) ?? .EIO
-          try? FileManager.default.removeItem(at: temporary)
-          throw POSIXError(code)
-        }
-      }
+      // Through a `.zshrc.tmp-<uuid>` sibling, which the sweep above keeps.
+      if (try? Data(contentsOf: rc)) != content { try atomicWrite(content, to: rc) }
     }
 
     /// `removeItem`, except that an entry another launch removed first is not an error.
@@ -1008,7 +1011,7 @@ import WorkroomVCS
     static func applyHermeticShell(
       active: Bool = AppEnvironment.isUILaunch,
       bundleID: String? = Bundle.main.bundleIdentifier,
-      root: URL = FileManager.default.temporaryDirectory,
+      root: URL = hermeticRoot,
       bash: Bool = hermeticBashRequested,
       set: (String, String) -> Void = { setenv($0, $1, 1) }
     ) throws -> Bool {
@@ -1017,8 +1020,8 @@ import WorkroomVCS
       let directory = hermeticZDOTDIR(bundleID: bundleID, in: root)
       try prepareHermeticZDOTDIR(at: directory)
       if bash {
-        let wrapper = try prepareHermeticBash(
-          at: hermeticBashDirectory(bundleID: bundleID, in: root), home: directory)
+        let wrapper = hermeticBashWrapperURL(bundleID: bundleID, in: root)
+        try prepareHermeticBash(at: wrapper, home: directory)
         set("SHELL", wrapper.path)
       } else {
         set("SHELL", hermeticShell)

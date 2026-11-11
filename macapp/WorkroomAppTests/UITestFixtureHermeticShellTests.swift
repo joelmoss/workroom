@@ -36,8 +36,8 @@ final class UITestFixtureHermeticShellTests: XCTestCase {
   func testBashLaunchRunsHomebrewBashThroughAHermeticWrapper() throws {
     let result = try apply(bash: true)
     let zdotdir = UITestFixture.hermeticZDOTDIR(bundleID: "com.example.test", in: root)
-    let wrapper = UITestFixture.hermeticBashDirectory(bundleID: "com.example.test", in: root)
-      .appendingPathComponent("bash")
+    let wrapper = UITestFixture.hermeticBashWrapperURL(bundleID: "com.example.test", in: root)
+    XCTAssertEqual(wrapper.lastPathComponent, "bash", "Ghostty injects its integration by name")
     XCTAssertEqual(result.environment["SHELL"], wrapper.path)
     XCTAssertEqual(result.environment["ZDOTDIR"], zdotdir.path)
     XCTAssertTrue(FileManager.default.isExecutableFile(atPath: wrapper.path))
