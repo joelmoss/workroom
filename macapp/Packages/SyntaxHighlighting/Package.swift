@@ -16,9 +16,10 @@ let package = Package(
     // --- Syntax highlighting (issue: tree-sitter diff highlighting, phase 1 editor foundation) ---
     // The tree-sitter C runtime, used directly: parser, query and cursor. (The SwiftTreeSitter
     // wrapper was dropped in 2026-10: its match iteration cost four times the C cursor, and its
-    // bundle search misfired under a hosted test.) Pinned EXACT — the C ABI between the runtime and
-    // the pinned grammars must not drift under us.
-    .package(url: "https://github.com/tree-sitter/tree-sitter", exact: "0.25.10"),
+    // bundle search misfired under a hosted test.) Upstream dropped its Package.swift in 0.27.0, so
+    // ../TreeSitter builds a vendored copy; macapp/Scripts/vendor-tree-sitter.sh bumps it, and its
+    // VENDOR.md records the release. The runtime must keep accepting the grammar ABIs below.
+    .package(path: "../TreeSitter"),
     // Each grammar ships a `Package.swift` whose library target (`dependencies: []`) compiles only
     // `src/parser.c` (+ `src/scanner.c` for external-scanner grammars) and copies `queries/` as a
     // resource bundle. Their own (test-only) SwiftTreeSitter dependency is pruned by SPM, so we link
@@ -86,7 +87,7 @@ let package = Package(
     .target(
       name: "SyntaxHighlighting",
       dependencies: [
-        .product(name: "TreeSitter", package: "tree-sitter"),
+        .product(name: "TreeSitter", package: "TreeSitter"),
         .product(name: "TreeSitterJSON", package: "tree-sitter-json"),
         .product(name: "TreeSitterBash", package: "tree-sitter-bash"),
         .product(name: "TreeSitterSwift", package: "tree-sitter-swift"),
