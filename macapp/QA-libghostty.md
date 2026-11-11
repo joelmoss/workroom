@@ -205,6 +205,7 @@ dispatches on symbolic labels — don't spend the retest budget there.
 - [ ] **Workroom switch**: cycle between three workrooms ~10× → each returns to its own live panes;
       no surface renders another workroom's content.
 - [ ] **Workroom delete** with live panes in it → panes tear down, app stays up.
+      (`EngineBumpSmokeUITests.testDeletingAWorkroomWithLivePanesTearsThemDown` automates it.)
 - [ ] **Orphan check** (the one that catches a bad IO patch): a bare shell-name grep
       (`ps -ax | grep zsh`) always matches unrelated shells on the machine — false positive/negative
       both ways. Spawn the pane's shell with a unique marker instead (e.g.
@@ -250,7 +251,8 @@ dispatches on symbolic labels — don't spend the retest budget there.
 - [ ] **OSC 7 still lands**: `cd` somewhere, then ⌘-click a *relative* path in the output → resolves
       against the new cwd. (Nothing logs when this breaks — it just stops working.)
 - [ ] **OSC 133 still lands**: run a long command → the tab title tracks it and the busy indicator
-      animates, then clears on completion.
+      animates, then clears on completion. (`EngineBumpSmokeUITests.testShellIntegrationTracksAndEndsACommand`
+      automates the title and the busy state; look at the animation yourself.)
 - [ ] **bash exit status reaches the app** (#465): with Homebrew bash (4.4+) as the login shell, run
       `false` → the inline agent banner shows (or auto-diagnose runs, if on); `true` → no banner.
       Before ghostty#14250, OSC 133;D reported 0 for every bash 4.4+ command. Don't use macOS

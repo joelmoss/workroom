@@ -21,9 +21,9 @@ import XCTest
 /// a garbled escape), and the Return goes in its own `typeText` call after shifted punctuation.
 ///
 /// Left to the manual checklist: the scrollbar overlay, ⌘-clicking a relative path, ssh, the shell
-/// matrix and bash's exit status, deleting a workroom with live panes, OSC 133 (the tab title and
-/// busy indicator following a long command), and which screen row a Find Next lands on (the
-/// counter is checked here, the highlight's position is not).
+/// matrix and bash's exit status, the busy indicator's animation (its state is checked here, not
+/// how it looks), and which screen row a Find Next lands on (the counter is checked here, the
+/// highlight's position is not).
 final class EngineBumpSmokeUITests: XCTestCase {
   /// The test's `/tmp` folder, made by the pane on the first `helper` call.
   private var scratch = ""
@@ -110,6 +110,42 @@ final class EngineBumpSmokeUITests: XCTestCase {
         }
       }
     }
+  }
+
+  /// Delete a workroom while one of its terminals runs a loop and another floods output: its panes
+  /// tear down, their processes end, and the app and the other workroom carry on. Fixture workrooms
+  /// are not registered with the CLI, so the teardown that follows fails and the workroom comes back
+  /// (`AppStoreDeleteRaceTests.testFailedTeardownRestoresWorkroom`); the panes are reaped before it.
+  func testDeletingAWorkroomWithLivePanesTearsThemDown() throws {
+    let stamp = "\(scratch)/stamp"
+    let marker = "qa_delete_\(UUID().uuidString.prefix(8))"
+    let app = launchedApp(["-WorkroomUITestWorkroomCount", "2"])
+    select(app, workroom: "uitest-room")
+    focusTerminal(app)
+    try prepareScratch(app)
+    select(app, workroom: "uitest-room-2")
+    focusTerminal(app)
+    run(app, "exec -a \(marker) sh -c 'while true; do touch \(stamp); sleep 0.5; done'")
+    XCTAssertTrue(pollUntilAdvancing(stamp), "setup: the stamper never started")
+    app.typeKey("t", modifierFlags: .command)
+    assertCount(tabs(app), reaches: 2, "⌘T opened a second terminal")
+    focusTab(app, 1)
+    run(app, "yes WRDELETE")
+    RunLoop.current.run(until: Date().addingTimeInterval(1))
+
+    clickMenu(app, "Room", "Delete Workroom…")
+    let confirm = app.buttons["Delete"]
+    XCTAssertTrue(confirm.waitForExistence(timeout: 5), "the delete confirmation appeared")
+    confirm.click()
+
+    XCTAssertTrue(
+      poll(timeout: 20) { !self.stampIsAdvancing(stamp, window: 1.5) },
+      "\(marker) kept touching \(stamp): the deleted workroom's panes were not torn down")
+    XCTAssertEqual(app.state, .runningForeground, "the app survived the delete")
+    dismissErrorSheet(app)
+    select(app, workroom: "uitest-room")
+    focusTerminal(app)
+    assertAnswers(app)
   }
 
   /// `GhosttyOrphanShellUITests` covers a normal quit. This is the force-quit: the app is killed with
@@ -313,6 +349,33 @@ final class EngineBumpSmokeUITests: XCTestCase {
 
   // MARK: Resource contract
 
+  /// OSC 133 still lands. Shell integration retitles the tab to a running command and back, and the
+  /// end-of-command mark (133;D, `GHOSTTY_ACTION_COMMAND_FINISHED`) clears the busy state. The second
+  /// command sets busy with OSC 9;4 and never clears it, so only 133;D can: the 30 s stale-progress
+  /// timeout in `GhosttySurfaceView` falls after this test's deadline.
+  func testShellIntegrationTracksAndEndsACommand() {
+    let app = launchedApp()
+    focusTerminal(app)
+    run(app, "sleep 4")
+    let titled = app.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab.sleep")).firstMatch
+    XCTAssertTrue(titled.waitForExistence(timeout: 20), "the tab took the running command's title")
+    XCTAssertTrue(poll(timeout: 20) { !titled.exists }, "the title moved on when it finished")
+
+    let chip = anyTab(app)
+    let typed = Date()
+    run(app, #"printf '\033]9;4;1;50\007'; sleep 6"#)
+    XCTAssertTrue(poll(timeout: 5) { (chip.value as? String) == "Busy" }, "OSC 9;4 marked it busy")
+    RunLoop.current.run(until: Date().addingTimeInterval(2))
+    XCTAssertEqual(chip.value as? String, "Busy", "still busy while the command runs")
+    XCTAssertTrue(
+      poll(timeout: 20) { (chip.value as? String) == "Idle" },
+      "the command's end (OSC 133;D) cleared the busy state; value is \(chip.value ?? "nil")")
+    let elapsed = Date().timeIntervalSince(typed)
+    log("busy cleared \(Int(elapsed)) s after the command was typed")
+    XCTAssertLessThan(elapsed, 25, "cleared by the command's end, not the 30 s progress timeout")
+  }
+
   /// `$TERM` is `xterm-256color` by default, and the bundled `xterm-ghostty` entry (from
   /// `Resources/ghostty`) still resolves for anyone who turns on Report terminal as Ghostty.
   func testTermIsXterm256ColorAndTheGhosttyEntryResolves() {
@@ -431,6 +494,24 @@ final class EngineBumpSmokeUITests: XCTestCase {
     XCTAssertTrue(chip.waitForExistence(timeout: 10), "\(name) has a workroom chip")
     chip.click()
     RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+  }
+
+  /// The first terminal tab, whatever its title (it changes as commands run).
+  private func anyTab(_ app: XCUIApplication) -> XCUIElement {
+    app.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab.")).firstMatch
+  }
+
+  /// Closes the error sheet a fixture workroom's failed teardown raises, if it comes up.
+  private func dismissErrorSheet(_ app: XCUIApplication) {
+    let sheet = app.sheets.firstMatch
+    guard sheet.waitForExistence(timeout: 15) else { return }
+    if sheet.buttons["OK"].exists {
+      sheet.buttons["OK"].click()
+    } else {
+      sheet.buttons["Cancel"].click()
+    }
+    XCTAssertTrue(poll(timeout: 5) { !sheet.exists }, "the teardown error sheet closed")
   }
 
   /// Clicks `item` in the menu bar's `menu` (Room ▸ Run, Edit ▸ Find Next).
