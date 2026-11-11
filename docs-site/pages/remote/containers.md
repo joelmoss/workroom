@@ -1,7 +1,6 @@
 ---
 title: Docker and Apple containers
 description: Run a workroom in a Docker or Apple container on your Mac, made from your repository's devcontainer.json, with its ports forwarded to localhost.
-nightly: true
 ---
 
 A container workroom runs in a container on your Mac instead of in a git worktree. Its terminals, files and coding agents live inside the container, so what you install or run there stays out of your Mac. For what remote workrooms are, see [Remote workrooms](overview.md).

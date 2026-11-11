@@ -1,7 +1,6 @@
 ---
 title: workroom base clear
 description: Start new workrooms from the global base, else origin's default branch.
-nightly: true
 ---
 
 <!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->

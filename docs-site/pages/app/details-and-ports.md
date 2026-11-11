@@ -1,7 +1,6 @@
 ---
 title: Details and ports
 description: See where a workroom runs, copy its path, and forward ports from a container or SSH workroom to your Mac.
-nightly: true
 ---
 
 The Details pane tells you where the selected workroom runs. For a workroom in a Docker or Apple

@@ -1,7 +1,6 @@
 ---
 title: Remote workrooms
 description: Run workrooms on cloud machines, local containers or an existing SSH host, and keep working in the same app.
-nightly: true
 ---
 
 A remote workroom is a workroom whose files, terminals and coding agents live on a host instead of on your Mac. You still use it from Workroom's window, with the same tabs, splits, inspector and notifications.
@@ -39,7 +38,7 @@ Workroom starts a small program, `workroomd`, on every host. It keeps your termi
 
 Your terminals are sessions on the host, not processes on your Mac. A dev server or a coding agent keeps running when you quit Workroom, close the window or lose your network. When you come back, your tabs attach to the same sessions. See [Reconnecting](reconnecting.md).
 
-In Nightly, the project's run command runs on the host too, in its own tab. See [Run on a remote workroom](../app/terminals-and-tabs.md#run-on-a-remote-workroom).
+The project's run command runs on the host too, in its own tab. See [Run on a remote workroom](../app/terminals-and-tabs.md#run-on-a-remote-workroom).
 
 What stays on your Mac:
 

@@ -1,7 +1,6 @@
 ---
 title: workroom base set
 description: Start new workrooms from BRANCH.
-nightly: true
 ---
 
 <!-- Generated from the CLI by `make docs-cli`. Don't edit by hand. -->

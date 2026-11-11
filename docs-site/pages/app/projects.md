@@ -35,7 +35,7 @@ A project's settings are in **Settings ▸ Projects**. The pane lists your proje
 
 Changes apply straight away. A text field saves when you press <kbd>Return</kbd> or leave it.
 
-In Nightly, the pane also holds the project's boxd and exe.dev options. See [Choose a host's image and size](../remote/overview.md#choose-a-hosts-image-and-size).
+The pane also holds the project's boxd and exe.dev options. See [Choose a host's image and size](../remote/overview.md#choose-a-hosts-image-and-size).
 
 ### Run command
 
@@ -45,7 +45,7 @@ Turn on **Run automatically when a workroom is created** to start the command in
 
 If you press <kbd>⌘R</kbd> in a project that has no run command, **Settings ▸ Projects** opens on it with a warning that you cannot run the workroom until you set one.
 
-### Base branch {nightly}
+### Base branch
 
 **Base branch** is the branch new workrooms of this project start from. Leave it empty to use the app default from **Settings ▸ General ▸ New Workrooms** (see [Settings](settings.md#general)), or `origin`'s default branch when neither is set.
 

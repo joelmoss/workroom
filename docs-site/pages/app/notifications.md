@@ -3,34 +3,32 @@ title: Notifications
 description: Find out which terminal needs you, from the bell, the menu bar, desktop banners and the marks on tabs.
 ---
 
-Workroom tells you when a terminal you are not looking at has something for you, so you can keep several coding agents and long commands going at once. This page covers the bell, the menu bar item, desktop banners and, in Nightly, the marks that show a terminal is waiting on you.
+Workroom tells you when a terminal you are not looking at has something for you, so you can keep several coding agents and long commands going at once. This page covers the bell, the menu bar item, desktop banners and the marks that show a terminal is waiting on you.
 
 ## The bell
 
-The bell sits at the right of the footer along the bottom of the window. A number on it counts your unread notifications. In Nightly it also counts requests a terminal is waiting on you for, as the Dock badge does. The footer stays in place when you switch workrooms or hide the sidebars.
+The bell sits at the right of the footer along the bottom of the window. A number on it counts your unread notifications. It also counts requests a terminal is waiting on you for, as the Dock badge does. The footer stays in place when you switch workrooms or hide the sidebars.
 
-In Nightly, Workroom keeps one list of notifications for all your windows and the Quick Terminal. Every window's bell shows the whole list and the same number as the Dock badge and the menu bar. In Workroom 2.1.0 each window's bell lists and counts only that window's notifications.
+Workroom keeps one list of notifications for all your windows and the Quick Terminal. Every window's bell shows the whole list and the same number as the Dock badge and the menu bar.
 
-Click the bell to open the list. Each entry shows the notification's title and text, the workroom it came from and how long ago. A repeat from the same terminal is counted as `×N`. Click an entry to go straight to that terminal. In Nightly that is whichever window has it, and if the terminal has closed, its workroom opens in the window in front. Right-click an entry for **Delete Notification**, or click **Clear All** at the bottom of the list.
+Click the bell to open the list. Each entry shows the notification's title and text, the workroom it came from and how long ago. A repeat from the same terminal is counted as `×N`. Click an entry to go straight to that terminal. That is whichever window has it, and if the terminal has closed, its workroom opens in the window in front. Right-click an entry for **Delete Notification**, or click **Clear All** at the bottom of the list.
 
 <kbd>⌘</kbd>-click the bell, or press <kbd>⇧⌘N</kbd> (**Go ▸ Next Notification**), to jump to the oldest pending one. Opening it dismisses it, so pressing the key again walks through the backlog from oldest to newest. The bell is off when there are none.
 
-When a terminal in the background posts a notification, its tab and its project in the sidebar show an unread dot. If Workroom is the app in front, a toast pops up. In Nightly the toast shows in the window in front, whichever window the terminal is in. If Workroom is not in front, you get a desktop banner. Click the toast or the banner to jump to the terminal.
+When a terminal in the background posts a notification, its tab and its project in the sidebar show an unread dot. If Workroom is the app in front, a toast pops up. The toast shows in the window in front, whichever window the terminal is in. If Workroom is not in front, you get a desktop banner. Click the toast or the banner to jump to the terminal.
 
-The history keeps the newest 500 entries. Dismissing a notification or clearing the history updates the counts on its terminal and project too. Moving a workroom to another window takes its notifications with it. In Nightly, closing a window removes the notifications its terminals raised, and their banners.
+The history keeps the newest 500 entries. Dismissing a notification or clearing the history updates the counts on its terminal and project too. Moving a workroom to another window takes its notifications with it. Closing a window removes the notifications its terminals raised, and their banners.
 
-In Nightly, rapid foreground notifications share a chime. Bursts of terminal bells are limited
+Rapid foreground notifications share a chime. Bursts of terminal bells are limited
 across panes too. Every notification still appears in the history.
 
 ## The menu bar
 
-Workroom can show its logo in the macOS menu bar. The logo turns yellow while any of your windows has an unread notification or a request waiting. Turn it on or off with **Settings ▸ Notifications ▸ Show notifications in the menu bar**. In Workroom 2.1.0 this switch is in **Settings ▸ General**.
+Workroom can show its logo in the macOS menu bar. The logo turns yellow while any of your windows has an unread notification or a request waiting. Turn it on or off with **Settings ▸ Notifications ▸ Show notifications in the menu bar**.
+To see how many are pending, turn on **Settings ▸ Notifications ▸ Show unread count in the menu bar**. The count then sits beside the logo, across all your windows.
+Click it to open the list. It is the same list every window's bell shows. When there is nothing pending, a click brings Workroom to the front instead. Click an entry to open its terminal.
 
-To see how many are pending, turn on **Settings ▸ Notifications ▸ Show unread count in the menu bar**. The count then sits beside the logo, across all your windows. In Workroom 2.1.0 the count always shows and the logo does not change colour.
-
-Click it to open the list. In Nightly it is the same list every window's bell shows. When there is nothing pending, a click brings Workroom to the front instead. Click an entry to open its terminal.
-
-## When a terminal needs you {nightly}
+## When a terminal needs you
 
 A program in a terminal can tell Workroom what it is doing: working, waiting on you, finished, or failed. Claude Code 2.1.295 and later, and Codex 0.163 and later, do this. Workroom shows it as a mark, and alerts you once when a program starts waiting on you in a terminal you are not looking at.
 
@@ -80,13 +78,13 @@ If a program left a request behind, for example because it crashed in the middle
 
 Marks work in terminals on remote hosts too. When Workroom loses its link to a host, the marks stay with a small clock beside them, and the tooltip says they may be out of date until Workroom reconnects. **Clear Status** waits for the link as well.
 
-Panes that do not run under Workroom's background helper, such as Investigate tabs, never show program status. In Workroom 2.1.0 that includes run tabs; in Nightly a run tab runs under the helper, so it shows program status too.
+Panes that do not run under Workroom's background helper, such as Investigate tabs, never show program status. A run tab runs under the helper, so it shows program status too.
 
 ### For program authors
 
 The protocol is OSC 7501. Its specification is the [program status protocol](https://www.superlogical.com/rex/docs/build/program-status). A program asks the terminal whether it supports the protocol, then reports its state.
 
-## Command results {nightly}
+## Command results
 
 A shell command that runs for 10 seconds or longer leaves a result on its pane. A build or test run that ends in a background tab, or on a remote host while your laptop is closed, then tells you how it went without you opening the terminal.
 

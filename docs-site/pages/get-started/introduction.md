@@ -34,7 +34,7 @@ the app.
 - **The Quick Terminal.** A shell one keystroke away from any app. See
   [Terminals and tabs](../app/terminals-and-tabs.md#quick-terminal).
 - **Remote workrooms.** Run a workroom on a boxd or exe.dev machine, or in a container, and work in it
-  as if it were local. Nightly only. See [Remote workrooms](../remote/overview.md).
+  as if it were local. See [Remote workrooms](../remote/overview.md).
 
 ## Four ideas
 

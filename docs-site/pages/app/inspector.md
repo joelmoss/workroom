@@ -11,15 +11,15 @@ Press <kbd>⌘B</kbd> (**View ▸ Inspector**) to show or hide it. The icon stri
 
 | Pane | Shows | Shortcut |
 | --- | --- | --- |
-| Details (Nightly only) | Where the workroom runs, and its forwarded ports. See [Details and ports](details-and-ports.md) | <kbd>⌥⌘I</kbd> |
+| Details | Where the workroom runs, and its forwarded ports. See [Details and ports](details-and-ports.md) | <kbd>⌥⌘I</kbd> |
 | Changes | Three sections: Changes, History and Pull Request | <kbd>⌥⌘C</kbd> |
 | Files | The workroom's file tree | <kbd>⌥⌘F</kbd> |
 
-**View** also has an item for each section of the Changes pane: **Changes**, **History** (<kbd>⌥⌘Y</kbd>) and **Pull Request** (<kbd>⌥⌘P</kbd>). Each opens the inspector at that section. The **Room** menu repeats these pane and section items, without the shortcuts, except in Workroom 2.1.0. The sections stack in the Changes pane, and you can collapse them or drag the dividers to resize them.
+**View** also has an item for each section of the Changes pane: **Changes**, **History** (<kbd>⌥⌘Y</kbd>) and **Pull Request** (<kbd>⌥⌘P</kbd>). Each opens the inspector at that section. The **Room** menu repeats these pane and section items, without the shortcuts. The sections stack in the Changes pane, and you can collapse them or drag the dividers to resize them.
 
 The inspector follows the workroom you are in.
 
-### Workroom header {nightly}
+### Workroom header
 
 The inspector shows the project and workroom name above its panes, led by the icon the sidebar shows for the workroom, or a house for a project's root. The **Workroom actions** menu beside the name has **Move to New Window**, the label items and **Delete Workroom…**. See [Workrooms](workrooms.md).
 
@@ -46,7 +46,7 @@ The list shows the newest commits first. Use **Load more** at the bottom to go f
 
 ## Commit
 
-Click the check-mark button in the **Changes** header, or choose **Room ▸ Commit…** (<kbd>⌥⌘↩</kbd>), to open **Commit changes**. It is off when there is nothing to commit. Workroom 2.1.0 has only the button.
+Click the check-mark button in the **Changes** header, or choose **Room ▸ Commit…** (<kbd>⌥⌘↩</kbd>), to open **Commit changes**. It is off when there is nothing to commit.
 
 1. Untick any files you do not want in the commit. A file that appears while the sheet is open arrives ticked. To commit a single file, use **Commit Only This File** on its row.
 2. Type a **Summary**. Add a **Description (optional)** if you want one.
@@ -64,7 +64,7 @@ The bar at the top of the Changes pane has three parts: the current branch, a sy
 - The sync button shows the next sensible step for the branch. It reads **Publish branch** for a branch that is not on the remote yet, **Push** when you have commits to push, and **Pull with rebase** when the remote has commits you lack, with counts of how many. With nothing to do it shows when you last fetched. Click it to run that step.
 - The fetch button, with the tooltip **Fetch from the remote**, contacts the remote and updates the counts.
 
-The **Room** menu has the same actions. In Workroom 2.1.0 it is the **Source Control** menu.
+The **Room** menu has the same actions.
 
 | Action | Shortcut |
 | --- | --- |
@@ -86,11 +86,11 @@ When the branch has a pull request:
 - A summary row and one row per check show the CI result. Click a check to open it on GitHub.
 - A draft pull request has a **Ready for Review** button.
 - The merge button merges the pull request into its base branch on GitHub, after you confirm. Its drop-down chooses the method: **Create a merge commit**, **Squash and merge** or **Rebase and merge**. Your choice is remembered.
-- The header's **Pull request actions** menu has **Go to Pull Request**, **Ready for Review** or **Convert to Draft**, **Close Pull Request** and **Reopen Pull Request**. **Go to Pull Request**, and **Ready for Review** or **Convert to Draft**, are also in the **Room** menu, except in Workroom 2.1.0.
+- The header's **Pull request actions** menu has **Go to Pull Request**, **Ready for Review** or **Convert to Draft**, **Close Pull Request** and **Reopen Pull Request**. **Go to Pull Request**, and **Ready for Review** or **Convert to Draft**, are also in the **Room** menu.
 
 With no pull request the section says **No pull request**. Workroom does not open pull requests itself. Create one with `gh pr create` in a terminal, or on GitHub. See [Review and ship](../guides/review-and-ship.md).
 
-### CI freshness {nightly}
+### CI freshness
 
 Workroom reuses a CI result for up to five minutes when the repository and commit are unchanged. Selecting a workroom still reloads its pull request details and individual checks. A different commit gets its own CI result.
 
@@ -98,9 +98,6 @@ To check CI again right away, click the refresh button in the **Changes** header
 
 ## Files
 
-**Files** shows the workroom's working tree as a list you can expand. A click on a file opens it read-only in the main pane, in a preview tab. Click again quickly to keep it open. <kbd>⌘</kbd>-click opens it in your editor. Markdown files open as a rendered preview, with a switch to the source. A `mermaid` code block is drawn as a diagram in the preview. A diagram Workroom cannot draw shows its source instead. Files are shown with syntax highlighting.
-
-> [!NOTE]
-> In Workroom 2.1.0 a diagram is drawn in a fixed light or dark style. Nightly draws it in your theme's colours, so a theme change recolours it at once.
+**Files** shows the workroom's working tree as a list you can expand. A click on a file opens it read-only in the main pane, in a preview tab. Click again quickly to keep it open. <kbd>⌘</kbd>-click opens it in your editor. Markdown files open as a rendered preview, with a switch to the source. A `mermaid` code block is drawn as a diagram in the preview. A diagram Workroom cannot draw shows its source instead. A diagram is drawn in your theme's colours, so a theme change recolours it at once. Files are shown with syntax highlighting.
 
 The refresh button in the header reloads the tree. A very large tree is cut off, with a line that says how many more there are.

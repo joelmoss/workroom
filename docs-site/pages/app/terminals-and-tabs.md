@@ -46,9 +46,9 @@ Choose the editor in **Settings ▸ Terminal ▸ Open file paths in**. It lists 
 
 A <kbd>⌘</kbd>-click on anything else goes to the terminal as an ordinary click.
 
-To open the whole workroom, use **Room ▸ Open in** your editor, for example **Open in Zed** (<kbd>⇧⌘O</kbd>), or the editor button in the workroom's title bar. Its small arrow lets you pick a different editor. **Room ▸ Reveal in Finder** shows the workroom's folder in Finder. In Workroom 2.1.0 these are **Go ▸ Open in** and **File ▸ Reveal in Finder**. Click the folder path in a pane's footer to copy it or reveal it.
+To open the whole workroom, use **Room ▸ Open in** your editor, for example **Open in Zed** (<kbd>⇧⌘O</kbd>), or the editor button in the workroom's title bar. Its small arrow lets you pick a different editor. **Room ▸ Reveal in Finder** shows the workroom's folder in Finder. Click the folder path in a pane's footer to copy it or reveal it.
 
-In Nightly, the editor button may briefly show a generic app symbol while its icon loads. The button still opens your editor immediately.
+The editor button may briefly show a generic app symbol while its icon loads. The button still opens your editor immediately.
 
 ## Shell integration
 
@@ -66,12 +66,12 @@ Log out and back in so apps you open from the Dock see the new shell, then open 
 
 ## Terminals that outlive their tabs
 
-A terminal's shell is held by a background helper, not by its tab. That is why terminals keep running when you quit Workroom, and reattach when you open it again. Closing a terminal ends it. In Nightly, run commands are kept too, unless you choose to stop them when you quit (see [Quitting with a run going](#quitting-with-a-run-going)). The Quick Terminal is never kept.
+A terminal's shell is held by a background helper, not by its tab. That is why terminals keep running when you quit Workroom, and reattach when you open it again. Closing a terminal ends it. Run commands are kept too, unless you choose to stop them when you quit (see [Quitting with a run going](#quitting-with-a-run-going)). The Quick Terminal is never kept.
 
 > [!NOTE]
-> In Workroom 2.1.0 this was a setting named **Persist sessions**. Nightly removed the setting, and terminals always survive a quit.
+> Before Workroom 3.0 this was a setting named **Persist sessions**. It is gone, and terminals always survive a quit.
 
-### Images {nightly}
+### Images
 
 Programs that use the Kitty graphics protocol, such as `kitten icat`, work in local and remote terminals. An image on screen comes back when you reopen Workroom, when a remote terminal reconnects, and after a background update. It follows the text, so a large image can take a moment on a slow connection. If its top has scrolled off, the part still on screen comes back.
 
@@ -82,7 +82,7 @@ These images don't come back:
 - Images sent by file path, temp file or shared memory, rather than directly.
 - Images over 32 MB once decoded. During an update, a very large image that doesn't compress can be lost too.
 
-### Restoring hidden terminals {nightly}
+### Restoring hidden terminals
 
 When you reopen Workroom, visible panes reconnect immediately. Hidden terminal tabs reconnect gradually after the window appears, so restoring many panes leaves room for clicks and typing. Their shells and commands keep running in the background helper throughout.
 
@@ -96,13 +96,13 @@ Click it to see **Detached terminals**. Each row shows the terminal's title and 
 - **New tab** opens the session in a new tab.
 - **Stop** ends the session and anything running in it.
 
-#### In a remote workroom {nightly}
+#### In a remote workroom
 
 A remote workroom's detached sessions are the sessions on its host that no tab shows, on this Mac or on another one. The workroom's run command isn't listed. The list fills in once Workroom is connected to the host and is checked again every 30 seconds, so a session another Mac lets go shows up within half a minute. If the Mac showing a session goes to sleep or loses its network, the session shows up here within about a minute and a half. When that Mac comes back, its tab carries on with the session, unless it was stopped meanwhile. It is empty while the host is asleep, stopped or out of reach. It never wakes or starts the host.
 
 Only the host account that started a session can see it. Each account on a host has its own background helper, and only that account can reach it, so someone signed in to the host as a different user never sees your sessions and can't open or stop them. Anyone who can sign in to the host as you can see them, as they could from a shell.
 
-### Stop all detached terminals {nightly}
+### Stop all detached terminals
 
 **Settings ▸ Terminal ▸ Stop Detached Terminals…** counts the background terminals that no open tab is attached to, then asks before it stops them and anything running in them.
 
@@ -117,21 +117,18 @@ Set a run command for a project, such as `npm run dev`, and start it in any of i
 | Stop | <kbd>⇧⌘R</kbd> (**Room ▸ Stop**) |
 | Go to the run terminal | **Room ▸ Go to Run Terminal** |
 
-In Workroom 2.1.0 these are in a **Run** menu, and going to the run terminal is **Go ▸ Run Terminal**.
-
 The workroom's title bar shows **Run** when idle and **Restart** and **Stop** while a run is going. **Stop** sends the command Ctrl-C and waits for it to exit. If it has not exited after about six seconds, Workroom force-quits it.
 
-The command runs in its own terminal tab, in your login shell, at the workroom's directory. The pane footer of that tab shows the run's state. If a run ends or fails while you are looking at another tab or workroom, a toast tells you. In Workroom 2.1.0, run commands stop when you quit Workroom.
-
-### Stop from the sidebar {nightly}
+The command runs in its own terminal tab, in your login shell, at the workroom's directory. The pane footer of that tab shows the run's state. If a run ends or fails while you are looking at another tab or workroom, a toast tells you.
+### Stop from the sidebar
 
 Project-root and workroom rows show their run control only while the run command is running. Click it to stop the command. The run terminal's footer immediately shows **Stopping…**, and the run tab and sidebar control show spinners until the command stops. Then the sidebar control disappears even if its run terminal stays open, including for a workroom on a host.
 
-### Run from a context menu {nightly}
+### Run from a context menu
 
 Right-click a project row in the sidebar, a workroom, or its Run terminal tab to choose **Run**, **Restart**, or **Stop**. Project-row actions control the project's root directory; workroom and terminal actions control that workroom. **Run** needs a configured command. **Restart** and **Stop** are enabled while the command is running.
 
-### Quitting with a run going {nightly}
+### Quitting with a run going
 
 A run command is held by the background helper, as a terminal is, so it can keep running after you quit. The first time you quit with a run going, Workroom asks whether to keep your dev servers running or stop them, and remembers your answer. Change it in **Settings ▸ General ▸ When quitting with dev servers running**: **Ask**, **Keep running** or **Stop**. An update always keeps them running, whatever you chose.
 
@@ -146,11 +143,11 @@ When you open Workroom again, every other run's tab comes back where you left it
 
 If Workroom's background helper isn't running, the run tab says so and runs nothing. Press Run to try again.
 
-### Idle stopped runs {nightly}
+### Idle stopped runs
 
-Stopped Run tabs keep their output and remain ready for Run or Restart. If a stopped tab kept from an earlier Nightly does not restart, close it and open a new Run tab. Restart reuses the existing session, so closing and reopening the tab is how it picks up the fix.
+Stopped Run tabs keep their output and remain ready for Run or Restart.
 
-### Run on a remote workroom {nightly}
+### Run on a remote workroom
 
 On a remote or container workroom, the run command runs on the workroom's host, in its directory there, in the host user's login shell. Run, Stop and Restart work as they do on your Mac. If a container is stopped, Run and Restart start it first; Stop never does. If a run ends while Workroom is reconnecting to its host, for example because the host restarted, the tab stops and says so: "This run ended while Workroom was reconnecting to its host. Press Run to start it again." A run started on one Mac shows on another that opens the same workroom: pressing Run there shows the run that's going rather than starting a second one. To reach a container's dev server from your Mac, forward its port. See [Port forwarding](../remote/port-forwarding.md).
 
@@ -162,12 +159,10 @@ The Quick Terminal is a window of shells of its own that slides in from the top 
 - It appears on the screen your pointer is on, centred along the edge until you move it. Drag the empty part of its tab bar or a footer to slide it along the edge, or towards another edge to move it there. It stays against an edge the whole way. Drag its sides to resize it. It keeps its size and place the next time it opens, even after you close it.
 - You can also open it from **File ▸ Quick Terminal** or the Quick Terminal button in the title bar.
 - Its tabs and panes work as a workroom's do. <kbd>⌘T</kbd> or the **+** opens a tab in the **Opens in** folder, and <kbd>⌘1</kbd>–<kbd>⌘9</kbd> pick one. Drag a tab along the tab bar to reorder it, or onto a pane's edge to split it there. <kbd>⌘D</kbd> splits the focused pane to the right and <kbd>⇧⌘D</kbd> below, and <kbd>⌃⌘</kbd> with an arrow key moves between panes. Each pane has its title bar, focus border and footer, with the folder its shell is in and that folder's branch. See [Splits and windows](splits-and-windows.md).
-- In Nightly, its terminals' notifications work as a workroom terminal's do. They go in the notification list as "Quick Terminal", count on the bell, the menu bar and the Dock badge, and show as a toast or a banner. Programs that report status, such as Claude Code and Codex, get the "needs you" and finished-turn alerts too. Opening one slides the Quick Terminal in on that pane. While the Quick Terminal is in front, toasts show in it. Closing it removes its notifications. In Workroom 2.1.0 its alerts show only as a banner or a toast, and don't appear in the notification list. See [Notifications](notifications.md).
-- In Nightly, its shells run in Workroom's background helper, as a workroom's do, but they end when you close their pane, close the Quick Terminal or quit Workroom, and never come back after a relaunch. If Workroom crashes, they are ended the next time it starts.
-- In Nightly, a pane can move into any workroom open in a Workroom window, still running. Click **Move to workroom** in the pane's title bar, or right-click its tab or the terminal and choose **Move to Workroom**, then pick the workroom. With more than one window open, the workrooms are listed under each window. You can also drag its tab or title bar out of the Quick Terminal and drop it on a window. It joins the workroom whose tab or pane you drop it on, or that window's selected one if you drop it anywhere else in the window. While you drag, the workroom it will join is highlighted, and the pointer shows it can't be dropped anywhere else. From then on it is that workroom's terminal: it is kept when you quit and comes back after a relaunch. A workroom on a remote host can't take one. Its panes can't move to a window of their own: there is no **Move to New Window**.
+- Its terminals' notifications work as a workroom terminal's do. They go in the notification list as "Quick Terminal", count on the bell, the menu bar and the Dock badge, and show as a toast or a banner. Programs that report status, such as Claude Code and Codex, get the "needs you" and finished-turn alerts too. Opening one slides the Quick Terminal in on that pane. While the Quick Terminal is in front, toasts show in it. Closing it removes its notifications. See [Notifications](notifications.md).
+- Its shells run in Workroom's background helper, as a workroom's do, but they end when you close their pane, close the Quick Terminal or quit Workroom, and never come back after a relaunch. If Workroom crashes, they are ended the next time it starts.
+- A pane can move into any workroom open in a Workroom window, still running. Click **Move to workroom** in the pane's title bar, or right-click its tab or the terminal and choose **Move to Workroom**, then pick the workroom. With more than one window open, the workrooms are listed under each window. You can also drag its tab or title bar out of the Quick Terminal and drop it on a window. It joins the workroom whose tab or pane you drop it on, or that window's selected one if you drop it anywhere else in the window. While you drag, the workroom it will join is highlighted, and the pointer shows it can't be dropped anywhere else. From then on it is that workroom's terminal: it is kept when you quit and comes back after a relaunch. A workroom on a remote host can't take one. Its panes can't move to a window of their own: there is no **Move to New Window**.
 - <kbd>⌘W</kbd> closes the focused pane and ends its shell. **Confirm before closing a terminal** applies, as it does in a workroom. A pane whose shell exits stays open until you close it, also as in a workroom. Closing the last tab closes the Quick Terminal. The next time you open it, you get a new shell.
 - **Settings ▸ Terminal ▸ Quick Terminal** chooses the edge it slides in from, whether it slides away when it loses focus, the folder it opens in, and its keyboard shortcut. A new folder applies from the next new shell. See [Settings](settings.md#quick-terminal).
-
-In Workroom 2.1.0 the Quick Terminal is one shell in an ordinary window you can move, with a red button that closes it, and it always opens in your home folder.
 
 The Quick Terminal's hotkey is on while **Settings ▸ General ▸ Global show/hide hotkey (⌘§)** is on. The same switch controls the <kbd>⌘§</kbd> show and hide hotkey. See [Settings](settings.md#general) and [Splits and windows](splits-and-windows.md#show-or-hide-workroom-from-anywhere).

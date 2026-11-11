@@ -1,7 +1,6 @@
 ---
 title: Port forwarding
 description: Reach a dev server in a container or SSH workroom from your Mac's browser, and publish a port on boxd or exe.dev.
-nightly: true
 ---
 
 A dev server running in a remote workroom listens on its host, where your Mac's browser can't reach it. For a Docker, Apple container or SSH workroom, Workroom forwards ports to `localhost` on your Mac and lists them in the **Ports** list. For boxd and exe.dev, you publish the port with the provider.

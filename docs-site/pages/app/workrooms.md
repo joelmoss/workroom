@@ -19,13 +19,13 @@ The picker for <kbd>⌘N</kbd> has a **Filter projects** field. Type to narrow t
 
 The workroom opens with a terminal in its directory when the create finishes. If the project has a [run command](projects.md#run-command) set to run automatically, it starts then.
 
-### Choose where it runs {nightly}
+### Choose where it runs
 
 After you pick a project, Workroom asks where the workroom goes: **This Mac**, a local container, a remote provider, or an SSH host. The sidebar **+** and **New Workroom** menus offer the same choices. Press <kbd>←</kbd> or click the back arrow to return to the project list.
 
 Anything other than **This Mac** is a remote workroom. See [Remote workrooms](../remote/overview.md).
 
-### Watch the steps {nightly}
+### Watch the steps
 
 A new workroom opens a creation pane at once, with a checklist of the steps. For a workroom on your Mac they are:
 
@@ -54,7 +54,7 @@ If a step fails, the pane shows the reason under that step's row, with two butto
 
 When the setup script needs your approval, a sheet shows it before anything is created, with **Continue Without Script…**, **Cancel Creation** and **Approve**. Continue Without Script asks first, then creates the workroom without running the script, and leaves it unapproved. **Review Script…** in the pane opens the sheet again. See [Prepare a project](../guides/prepare-a-project.md) for setup scripts and the approval step.
 
-### Include work you haven't pushed {nightly}
+### Include work you haven't pushed
 
 New workrooms start from what you've pushed, so they don't have commits you haven't pushed yet, or changes you haven't committed. When you have either on the base branch, Workroom asks before it creates anything, and offers only what applies:
 
@@ -101,7 +101,7 @@ The switcher steps through workrooms in every window. <kbd>⌃Tab</kbd> does the
 
 A label is a name that shows in place of the workroom's own name. The workroom and its branch keep their names.
 
-1. Right-click the workroom, in the sidebar or on its tab, and choose **Set Label…**. The **Room** menu has it too, except in Workroom 2.1.0.
+1. Right-click the workroom, in the sidebar or on its tab, and choose **Set Label…**. The **Room** menu has it too.
 2. Type the label and click **Save**.
 
 Choose **Edit Label…** to change it, or **Remove Label** to go back to the real name. A label cannot match the name or label another workroom in the same project already shows.
@@ -110,7 +110,7 @@ Choose **Edit Label…** to change it, or **Remove Label** to go back to the rea
 
 Right-click a workroom's tab and choose **Close** to close all of its terminals and take it out of the tab bar. The workroom itself and its files stay, and you can open it again. Workroom asks you to confirm.
 
-## Move a workroom to another window {nightly}
+## Move a workroom to another window
 
 You can give a workroom a window of its own, or move it into another Workroom window. Its terminals keep running.
 
@@ -125,7 +125,7 @@ A window's only workroom cannot move, because that would leave an empty window. 
 
 Deleting removes the workroom's directory. For a workroom on your Mac, Workroom keeps the `workroom/<name>` branch in your repository.
 
-1. Hover the workroom in the sidebar and click the trash button, right-click it and choose **Delete Workroom…**, or choose **Room ▸ Delete Workroom…** (not in Workroom 2.1.0).
+1. Hover the workroom in the sidebar and click the trash button, right-click it and choose **Delete Workroom…**, or choose **Room ▸ Delete Workroom…**.
 2. Confirm in the **Delete 'name'?** dialog.
 
 The row leaves the sidebar at once. Workroom runs your project's `scripts/workroom_teardown` script in the background, then removes the directory. You cannot delete a workroom while its setup is still running.
@@ -134,7 +134,7 @@ The row leaves the sidebar at once. Workroom runs your project's `scripts/workro
 
 If the teardown script fails or can't start, the delete stops. The workroom comes back in the sidebar with its folder and branch, but its terminals were closed before the script ran, so open new ones if you keep it. A sheet titled **Teardown of ‘name’ failed** shows why, with the script's output. Fix the script and delete again. If the script has not been approved on this Mac, the sheet is titled **Approve the teardown script?** instead, says which workroom and project it's for, and shows the script.
 
-### Delete Anyway {nightly}
+### Delete Anyway
 
 The sheet has a **Delete Anyway** button that deletes the workroom without running the teardown script. If the script has not been approved on this Mac, the sheet shows it with an **Approve** button, which runs it and deletes the workroom. See [Prepare a project](../guides/prepare-a-project.md).
 

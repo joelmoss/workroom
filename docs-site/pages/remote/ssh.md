@@ -1,7 +1,6 @@
 ---
 title: SSH hosts
 description: Create workrooms in separate folders on a Linux server you already reach with ssh.
-nightly: true
 ---
 
 An SSH host is a Linux server you already have. Workroom puts each workroom in its own folder on

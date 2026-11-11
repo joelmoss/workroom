@@ -21,9 +21,9 @@ Creating a workroom is not all or nothing, so the workroom exists even though th
 2. Delete the workroom with `workroom delete NAME`.
 3. Create it again.
 
-On Nightly the app shows the failure with **Open Anyway** and **Delete Workroom…**. On a remote workroom the host keeps running until you choose.
+The app shows the failure with **Open Anyway** and **Delete Workroom…**. On a remote workroom the host keeps running until you choose.
 
-## The script is not trusted on this Mac {nightly}
+## The script is not trusted on this Mac
 
 The message is "script is not trusted on this Mac". The setup or teardown script is new, or it changed since you approved it. Read it, then approve it:
 
@@ -34,7 +34,7 @@ In the app, a sheet shows the script. Creating a workroom offers **Approve**, **
 
 A `--json` or scripted call can't ask, so it exits with code 3. `workroom trust status` exits 2 when it can't tell, for example when the base branch can't be resolved. Fix that first. See [workroom trust](../cli/workroom-trust.md).
 
-## A delete stopped and nothing was removed {nightly}
+## A delete stopped and nothing was removed
 
 When the teardown script fails, can't start, runs out of time, or isn't approved, the delete stops and removes nothing. For a remote workroom it also stops when the host can't be reached. The app shows why, with the script's output.
 
@@ -49,8 +49,7 @@ This is on purpose. Workroom never deletes the `workroom/NAME` branch. Remove it
 
 ## The list shows "directory not found" or "git workroom not found"
 
-The workroom's folder, or its Git worktree, was removed outside Workroom. Run `workroom delete NAME` to clean up the entry. Version 2.1.0 words the second as "git workspace not found".
-
+The workroom's folder, or its Git worktree, was removed outside Workroom. Run `workroom delete NAME` to clean up the entry.
 ## A project shows a warning triangle in the sidebar
 
 The tooltip says "Project folder not found". Workroom tracks a project by its path, so the folder was moved or deleted. Put it back at the same path, or choose **Delete Project…** from the project's menu and pick **Remove from Workroom only — keep all files**.
@@ -85,7 +84,7 @@ Log out and back in so apps you open from the Dock see the new shell, then open 
 
 ## `top` says "Error opening terminal: xterm-ghostty"
 
-You see this with **Report terminal as Ghostty** on in [Settings ▸ Terminal](../app/settings.md#report-terminal-as-ghostty), and in Workroom 2.1.0, where every terminal sets `TERM=xterm-ghostty`. Workroom points the terminal at its own terminfo entry for that name. macOS's built-in `top` is a privileged program, and the terminal library it uses ignores that entry. It only reads the system's own terminfo, which has no `xterm-ghostty`. Other programs, `vim` among them, are not affected.
+You see this with **Report terminal as Ghostty** on in [Settings ▸ Terminal](../app/settings.md#report-terminal-as-ghostty). Workroom points the terminal at its own terminfo entry for that name. macOS's built-in `top` is a privileged program, and the terminal library it uses ignores that entry. It only reads the system's own terminfo, which has no `xterm-ghostty`. Other programs, `vim` among them, are not affected.
 
 Turn **Report terminal as Ghostty** off and open a new terminal, or run `top` with a terminal type the system knows:
 
@@ -112,7 +111,7 @@ The prompt reads "Workroom would like to access data from other apps". A program
 2. Turn on Workroom.
 3. Quit and reopen Workroom.
 
-## A coding agent's voice mode never asks for the microphone {nightly}
+## A coding agent's voice mode never asks for the microphone
 
 Voice input from a program in a Workroom terminal, such as Claude Code's voice mode, needs the microphone. Without the right permission macOS refuses before it asks, so voice fails with no prompt and no error. Current builds of Workroom allow it.
 
@@ -120,7 +119,7 @@ Voice input from a program in a Workroom terminal, such as Claude Code's voice m
 2. Close every terminal, quit Workroom, wait about 30 seconds, and open it again. Terminals, new ones included, keep running under a helper the previous version started until it exits.
 3. If voice still never prompts, open System Settings, then Privacy & Security, then Microphone, and check that Workroom is listed and on.
 
-## A remote workroom's host can't be reached {nightly}
+## A remote workroom's host can't be reached
 
 Opening a workroom starts its container again if your Mac stopped it. If Workroom still can't connect, the host may have been removed by its provider. `workroom list` marks such a workroom with the `HostDestroyed` warning.
 

@@ -21,7 +21,7 @@ the background. To check for an update yourself, choose **Workroom ▸ Check for
 The first time you open it, a short welcome walks you through what Workroom does and asks you to add
 your first project. You can skip that and add a project later from the sidebar.
 
-## Use the workroom command in Workroom's terminals {nightly}
+## Use the workroom command in Workroom's terminals
 
 Every terminal pane in the app has `workroom` on its `PATH`, so you can run it there without installing
 anything. It is the app's own copy. If you have also installed `workroom` yourself, with the menu item
@@ -63,7 +63,7 @@ You can change what it installs with these variables:
 | Variable                | What it does                                                                 |
 | ----------------------- | ---------------------------------------------------------------------------- |
 | `WORKROOM_INSTALL_PATH` | Installs to another folder, such as `/usr/local/bin`. macOS and Linux only.  |
-| `VERSION`               | Installs a specific version, such as `v2.1.0`.                               |
+| `VERSION`               | Installs a specific version, such as `v3.0.0`.                               |
 | `WORKROOM_CHANNEL`      | `pre` installs the latest prerelease. `nightly` installs `workroom-nightly`. |
 
 Set them in front of `sh`, so the installer sees them:

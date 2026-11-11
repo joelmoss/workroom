@@ -1,7 +1,6 @@
 ---
 title: Work on a remote host
 description: Run a workroom on a cloud machine or in a container, from choosing a host to deleting it when you're done.
-nightly: true
 ---
 
 A remote workroom runs on a host, so a coding agent can keep working with your Mac asleep,
