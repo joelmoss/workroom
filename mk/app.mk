@@ -227,7 +227,7 @@ app-bench-highlighting: ## Benchmark syntax highlighting (release build of the p
 
 # Each local package's tests (macapp/Packages), with plain `swift test`: no app host, so no GUI lock.
 # CI, nightly and release run it beside `make app-test`. Each package resolves first, up to three
-# times: SyntaxHighlighting clones 14 grammars, and a github.com blip would otherwise fail a release
+# times: SyntaxHighlighting clones 10 grammars, and a github.com blip would otherwise fail a release
 # gate. SwiftPM's build service cannot write under Claude Code's command sandbox, so run it with
 # the sandbox off there.
 # The packages test concurrently: `swift test` spends 7-15s per package on SPM's own startup and

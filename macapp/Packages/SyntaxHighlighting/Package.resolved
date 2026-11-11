@@ -1,5 +1,5 @@
 {
-  "originHash" : "e272cd666f0ae24a5824c3226e8f67d59b70e3fabbe158e633372910396bd7fc",
+  "originHash" : "4e07fcc003d1ada796273c002b18743cd91268926de7d162a43cb5ca27dc3378",
   "pins" : [
     {
       "identity" : "tree-sitter-bash",
@@ -7,14 +7,6 @@
       "location" : "https://github.com/tree-sitter/tree-sitter-bash",
       "state" : {
         "revision" : "a06c2e4415e9bc0346c6b86d401879ffb44058f7"
-      }
-    },
-    {
-      "identity" : "tree-sitter-css",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/tree-sitter/tree-sitter-css",
-      "state" : {
-        "revision" : "c0d581e32d183a536731ed6c3a72758b27e20411"
       }
     },
     {
@@ -34,14 +26,6 @@
       }
     },
     {
-      "identity" : "tree-sitter-javascript",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/tree-sitter/tree-sitter-javascript",
-      "state" : {
-        "revision" : "3a837b6f3658ca3618f2022f8707e29739c91364"
-      }
-    },
-    {
       "identity" : "tree-sitter-json",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/tree-sitter/tree-sitter-json",
@@ -55,14 +39,6 @@
       "location" : "https://github.com/tree-sitter-grammars/tree-sitter-markdown",
       "state" : {
         "revision" : "41ff24a6c775492c543b09228aeb98d1cd2b3a0f"
-      }
-    },
-    {
-      "identity" : "tree-sitter-python",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/tree-sitter/tree-sitter-python",
-      "state" : {
-        "revision" : "bffb65a8cfe4e46290331dfef0dbf0ef3679de11"
       }
     },
     {
@@ -103,14 +79,6 @@
       "location" : "https://github.com/tree-sitter/tree-sitter-typescript",
       "state" : {
         "revision" : "75b3874edb2dc714fb1fd77a32013d0f8699989f"
-      }
-    },
-    {
-      "identity" : "tree-sitter-yaml",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/tree-sitter-grammars/tree-sitter-yaml",
-      "state" : {
-        "revision" : "b733d3f5f5005890f324333dd57e1f0badec5c87"
       }
     }
   ],

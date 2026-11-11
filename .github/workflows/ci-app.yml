@@ -24,7 +24,7 @@ jobs:
   # The local packages' tests (macapp/Packages) run with plain `swift test`, outside the app host,
   # so `make app-test` never sees them. Their own job, beside `app` rather than a step of it: the
   # step took 8 of that job's 21 minutes (measured 2026-10-18) and needs nothing the app build
-  # makes. A cold SyntaxHighlighting run fetches its 14 grammar repos (~4 min) and
+  # makes. A cold SyntaxHighlighting run fetches its 10 remote grammar repos (14 took ~4 min) and
   # compiles them (~1 min; its 1.5GB .build is too big to cache), and the target retries each
   # package's resolve.
   app-packages:

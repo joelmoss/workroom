@@ -42,24 +42,18 @@ let package = Package(
     .package(
       url: "https://github.com/tree-sitter/tree-sitter-ruby",
       revision: "ad907a69da0c8a4f7a943a7fe012712208da6dee"),
-    // JS/Python/CSS/YAML are pinned to the newest tag whose Package.swift HARDCODES
-    // `sources: ["src/parser.c", "src/scanner.c"]`. Their later tags switched to a
-    // `FileManager.fileExists("src/scanner.c")` check that evaluates false under Xcode's SPM (wrong
-    // CWD), silently dropping the external scanner and breaking the link.
-    .package(
-      url: "https://github.com/tree-sitter/tree-sitter-javascript",
-      revision: "3a837b6f3658ca3618f2022f8707e29739c91364"),
+    // JS/Python/CSS/YAML are vendored under Grammars/; their tags are pinned in
+    // macapp/Scripts/vendor-tree-sitter-grammars.sh. From 0.25 (yaml 0.7.2), upstream's manifest
+    // adds `src/scanner.c` only when `FileManager.fileExists` finds it, which is false under SwiftPM
+    // (wrong CWD), so the external scanner is dropped and the link fails. Our manifests list it.
+    .package(path: "Grammars/tree-sitter-javascript"),
     // One package, one product (`TreeSitterTypeScript`) wrapping two targets/modules:
     // `TreeSitterTypeScript` + `TreeSitterTSX`. Both link from the single product dependency.
     .package(
       url: "https://github.com/tree-sitter/tree-sitter-typescript",
       revision: "75b3874edb2dc714fb1fd77a32013d0f8699989f"),
-    .package(
-      url: "https://github.com/tree-sitter/tree-sitter-python",
-      revision: "bffb65a8cfe4e46290331dfef0dbf0ef3679de11"),
-    .package(
-      url: "https://github.com/tree-sitter-grammars/tree-sitter-yaml",
-      revision: "b733d3f5f5005890f324333dd57e1f0badec5c87"),
+    .package(path: "Grammars/tree-sitter-python"),
+    .package(path: "Grammars/tree-sitter-yaml"),
     .package(
       url: "https://github.com/tree-sitter-grammars/tree-sitter-toml",
       revision: "64b56832c2cffe41758f28e05c756a3a98d16f41"),
@@ -72,9 +66,7 @@ let package = Package(
     .package(
       url: "https://github.com/tree-sitter/tree-sitter-html",
       revision: "73a3947324f6efddf9e17c0ea58d454843590cc0"),
-    .package(
-      url: "https://github.com/tree-sitter/tree-sitter-css",
-      revision: "c0d581e32d183a536731ed6c3a72758b27e20411"),
+    .package(path: "Grammars/tree-sitter-css"),
     // Product/module is `TreeSitterSql` (lowercase `ql`), not `TreeSitterSQL`. Pinned to the
     // `gh-pages` branch, which vendors the generated `src/parser.c` + `src/tree_sitter/parser.h` that
     // `main` strips — without them the external scanner can't find `tree_sitter/parser.h` and won't
