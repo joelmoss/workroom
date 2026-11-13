@@ -167,7 +167,7 @@ on branch `prototype/railway-sandbox-spike` (local only until pushed). Everythin
 - A `setsid nohup` daemon, and `workroomd serve --idle-timeout never`, outlive the login that started them.
   `workroomd` (x86_64 musl, protocol 10) serves, lists and attaches through the relay.
 - PTY resize reaches the VM over `-t`. **`-T` has no size path**: `stty size` is `0 0` before and after a resize.
-- Git, as [ADR 0072](../adr/0072-a-provider-without-git-integration-gets-the-users-gh-token.md) proposes: the Mac's
+- Git, as [ADR 0072](../adr/0072-a-provider-without-git-integration-gets-the-users-gh-token.md) decides: the Mac's
   `gh auth token` written over stdin to a 0600 file, a system credential helper for `https://github.com` and
   `insteadOf` rewrites. A clone of a private repository by its `git@github.com:` URL and a push of a branch both
   worked, and GitHub's activity API records the pusher as the user.

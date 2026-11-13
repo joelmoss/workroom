@@ -1,6 +1,6 @@
 # A remote provider's host fetches and pushes with the provider's own GitHub credentials, and Workroom runs no broker
 
-**Amended by [ADR 0072](0072-a-provider-without-git-integration-gets-the-users-gh-token.md) (proposed 2026-11-13):** a provider with no git integration of its own, Railway, gets the user's `gh` token on its host.
+**Amended by [ADR 0072](0072-a-provider-without-git-integration-gets-the-users-gh-token.md) (2026-11-13):** a provider with no git integration of its own, Railway, gets the user's `gh` token on its host.
 
 Decided 2026-10-12, superseding ADR 0024 and ADR 0025. Workroom gives a remote provider's host no git credential. Each host uses its provider's defaults: a boxd machine uses the user's boxd `git` integration (`boxd manage integrations connect git`), and an exe.dev VM uses an exe.dev GitHub integration per repository (`integrations add github --repository <owner/repo> --act-as-user --attach auto:all`), which Workroom adds itself on a project's first exe.dev workroom (amended 2026-10-12, below). Configurable options can come later if a need shows. The Codaset broker, the Codaset sign-in and the Mac's device key are removed, so a remote workroom needs no Codaset account. The owner chose this because Codaset had no other use for an account, because pushes must be in the user's name (a GitHub App installation token always pushes as the App's bot), and because broad repository scope inside the VM is acceptable.
 
