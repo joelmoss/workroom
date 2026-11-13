@@ -434,7 +434,7 @@ pub fn handle_connection<T: Transport>(
 
     let mut decoder = EnvelopeDecoder::new();
     let mut buffer = [0u8; 8192];
-    let mut attachment = crate::terminal::dispatch::Attachment::default();
+    let mut attachment = crate::terminal::dispatch::Attachment::new(Arc::clone(&closer));
     let mut services = ConnectionServices {
         peer,
         partial: crate::daemon::rpc::PartialRequests::default(),
