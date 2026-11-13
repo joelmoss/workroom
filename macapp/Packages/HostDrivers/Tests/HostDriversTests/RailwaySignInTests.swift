@@ -43,6 +43,48 @@ final class RailwaySignInTests: XCTestCase {
       XCTAssertNotNil(redirect.uri.port)
     }
     XCTAssertNotEqual(first.uri.port, second.uri.port)
+
+    // Bound to loopback alone: this Mac's other addresses refuse the port.
+    let port = UInt16(first.uri.port ?? 0)
+    XCTAssertTrue(Self.connects(to: "127.0.0.1", port: port))
+    for address in Self.otherIPv4Addresses() {
+      XCTAssertFalse(Self.connects(to: address, port: port), "listening on \(address)")
+    }
+  }
+
+  /// Whether a TCP connection to `address:port` is accepted.
+  private static func connects(to address: String, port: UInt16) -> Bool {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    defer { close(fd) }
+    var target = sockaddr_in()
+    target.sin_family = sa_family_t(AF_INET)
+    target.sin_port = port.bigEndian
+    inet_pton(AF_INET, address, &target.sin_addr)
+    return withUnsafePointer(to: &target) {
+      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+      }
+    }
+  }
+
+  /// This Mac's IPv4 addresses other than loopback.
+  private static func otherIPv4Addresses() -> [String] {
+    var list: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&list) == 0, let first = list else { return [] }
+    defer { freeifaddrs(list) }
+    var addresses: [String] = []
+    for entry in sequence(first: first, next: { $0.pointee.ifa_next }) {
+      guard let address = entry.pointee.ifa_addr, address.pointee.sa_family == AF_INET else {
+        continue
+      }
+      var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+      getnameinfo(
+        address, socklen_t(address.pointee.sa_len), &host, socklen_t(host.count), nil, 0,
+        NI_NUMERICHOST)
+      let text = String(cString: host)
+      if !text.hasPrefix("127.") { addresses.append(text) }
+    }
+    return addresses
   }
 
   /// Value: protects=the whole sign-in: the browser is opened on Railway's consent page, the

@@ -31,20 +31,20 @@ final class RailwayAccount: Sendable {
     try await session.signIn(with: tokens)
   }
 
-  /// The app's account: Railway itself, the refresh token in this build's Keychain item. Under a
-  /// UI test fixture, Railway stubbed (`UITestFixture.railwayAccount`); in any other test process,
-  /// a store in memory, so no test reads or writes the developer's Keychain.
+  /// The app's account: Railway itself, the refresh token in this build's Keychain item. In any
+  /// test process, Railway stubbed (`RailwayStub`: the UI test fixture's scenario, else signed
+  /// out), so no test reaches Railway, opens a browser, or touches the developer's Keychain.
   static let shared: RailwayAccount = {
     #if DEBUG
-      if let fixture = UITestFixture.railwayAccount { return fixture }
+      if AppEnvironment.current.isTestProcess {
+        return UITestFixture.railwayAccount
+          ?? RailwayStub(workspaces: []).account(store: RailwayStub.MemoryStore())
+      }
     #endif
-    let store: any RailwayTokenStore =
-      AppEnvironment.current.isTestProcess
-      ? EphemeralTokenStore()
-      : KeychainTokenStore(
-        service: keychainService(bundleID: bundleID), accessGroup: sharedAccessGroup)
     return RailwayAccount(
-      transport: URLSessionRailwayTransport(), store: store,
+      transport: URLSessionRailwayTransport(),
+      store: KeychainTokenStore(
+        service: keychainService(bundleID: bundleID), accessGroup: sharedAccessGroup),
       lock: FileRefreshLock(path: refreshLockPath), clientID: clientID,
       open: { url in _ = await MainActor.run { NSWorkspace.shared.open(url) } })
   }()
@@ -86,15 +86,6 @@ final class RailwayAccount: Sendable {
       ? base : base.appendingPathComponent(bundleID, isDirectory: true)
     return folder.appendingPathComponent("railway-refresh.lock")
   }
-}
-
-/// A refresh token kept in memory only: for a test process that isn't a UI test fixture.
-final class EphemeralTokenStore: RailwayTokenStore, @unchecked Sendable {
-  private let lock = NSLock()
-  private var value: String?
-  func read() throws -> String? { lock.withLock { value } }
-  func write(_ token: String) throws { lock.withLock { value = token } }
-  func delete() throws { lock.withLock { value = nil } }
 }
 
 // MARK: The Keychain

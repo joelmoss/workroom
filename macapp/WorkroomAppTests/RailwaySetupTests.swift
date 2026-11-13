@@ -142,6 +142,39 @@ final class RailwaySetupTests: XCTestCase {
     XCTAssertEqual(setup.account, .signedOut("Sign-in was cancelled on Railway's page."))
   }
 
+  /// Value: protects=signing in again to share other workspaces, then declining, keeps the
+  /// sign-in already held: still signed in, workspaces listed, with why; fails_when=the sheet
+  /// shows a signed-in user as signed out; seam=RailwaySetup
+  func testDecliningASecondSignInKeepsTheFirst() async throws {
+    let stub = RailwayStub(workspaces: [personal])
+    let setup = setup(stub, store: .init(RailwayStub.refreshToken))
+    await setup.refresh()
+    stub.declines = true
+
+    await setup.signIn()
+
+    XCTAssertEqual(setup.account, .signedIn)
+    XCTAssertEqual(setup.workspaces, [personal])
+    XCTAssertEqual(setup.signInProblem, "Sign-in was cancelled on Railway's page.")
+    XCTAssertTrue(setup.isReady)
+  }
+
+  /// Value: protects=a sign-in waiting on the browser can be stopped, back to where it was;
+  /// seam=RailwaySetup.stopSigningIn
+  func testStoppingASignInGoesBack() async throws {
+    let stub = RailwayStub(workspaces: [personal])
+    stub.browserWaits = true
+    let setup = setup(stub)
+    await setup.refresh()
+
+    let signingIn = Task { await setup.signIn() }
+    try await Task.sleep(for: .milliseconds(100))
+    await setup.stopSigningIn()
+    await signingIn.value
+
+    XCTAssertEqual(setup.account, .signedOut(nil))
+  }
+
   /// Value: protects=closing the sheet mid sign-in stops the redirect listener and changes
   /// nothing after; seam=RailwaySetup.cancel
   func testClosingTheSheetEndsASignIn() async throws {

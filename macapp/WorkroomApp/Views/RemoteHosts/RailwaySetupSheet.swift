@@ -60,11 +60,19 @@ struct RailwaySetupSheet: View {
       SetupDetail(
         "Finish signing in on Railway's page in your browser. Workroom carries on by itself once "
           + "you approve.")
-      signInButton("Open Railway Again", identifier: "railwaySetup.signInRestart")
-        .buttonStyle(.link)
+      HStack(spacing: 12) {
+        signInButton("Open Railway Again", identifier: "railwaySetup.signInRestart")
+        Button("Stop Signing In") { Task { await setup.stopSigningIn() } }
+          .help("Stop waiting for Railway's page, keeping any sign-in Workroom already has.")
+          .accessibilityIdentifier("railwaySetup.stopSigningIn")
+      }
+      .buttonStyle(.link)
     case .signedIn:
       SetupDetail("Signed in to Railway.")
         .accessibilityIdentifier("railwaySetup.signedIn")
+      if let problem = setup.signInProblem {
+        SetupProblem(problem).accessibilityIdentifier("railwaySetup.signInProblem")
+      }
       Button("Sign Out…") { confirmingSignOut = true }
         .help("Forget Workroom's Railway sign-in. Your Railway sandboxes keep running.")
         .accessibilityIdentifier("railwaySetup.signOut")

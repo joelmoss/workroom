@@ -37,6 +37,9 @@ final class RailwaySetup: RemoteSetup {
   /// Each workspace's Trial, where Railway answered (whether a member may read a workspace's
   /// billing isn't documented, so a check that fails is left out, and doesn't refuse).
   private(set) var trialing: [String: Bool] = [:]
+  /// Why the last sign-in failed while an earlier one is still kept (the user declined sharing
+  /// other workspaces).
+  private(set) var signInProblem: String?
   /// The workspace the `Workroom` project goes in.
   private(set) var selectedWorkspaceID: String?
   /// The workspace holding the project already recorded, which the sign-in must reach.
@@ -105,13 +108,23 @@ final class RailwaySetup: RemoteSetup {
     // Superseded by another sign-in, or the sheet closed.
     guard signingIn == task, !isCancelled else { return }
     signingIn = nil
-    switch result {
-    case .success: await loadWorkspaces()
-    case .failure(let error as RailwayOAuthError):
-      account = .signedOut(error.localizedDescription)
-    case .failure(is CancellationError): account = .signedOut(nil)
-    case .failure(let error): account = .signedOut(error.localizedDescription)
+    signInProblem = nil
+    var problem: String?
+    if case .failure(let error) = result, !(error is CancellationError) {
+      problem = error.localizedDescription
     }
+    // A sign-in that failed or was stopped leaves the one already kept, if any.
+    if case .failure = result, !(await railway.session.isSignedIn) {
+      account = .signedOut(problem)
+      return
+    }
+    await loadWorkspaces()
+    if account == .signedIn { signInProblem = problem }
+  }
+
+  /// Stops a sign-in waiting on the browser, back to the sign-in already kept, if any.
+  func stopSigningIn() async {
+    signingIn?.cancel()
   }
 
   /// Forgets the sign-in, once the user has read `signOutWarning`.
@@ -119,9 +132,7 @@ final class RailwaySetup: RemoteSetup {
     signingIn?.cancel()
     do {
       try await railway.session.signOut()
-      workspaces = []
-      trialing = [:]
-      selectedWorkspaceID = nil
+      clear()
       account = .signedOut(nil)
     } catch {
       account = .failed(error.localizedDescription)
@@ -168,6 +179,7 @@ final class RailwaySetup: RemoteSetup {
   }
 
   private func clear() {
+    signInProblem = nil
     workspaces = []
     trialing = [:]
     selectedWorkspaceID = nil
