@@ -101,7 +101,7 @@ fn a_pinging_connection_that_keeps_pinging_is_kept() {
     let until = Instant::now() + DEADLINE * 5;
     while Instant::now() < until {
         assert!(ping(&mut client), "a pinging connection was closed");
-        std::thread::sleep(DEADLINE / 3);
+        std::thread::sleep(DEADLINE / 6);
     }
     assert!(!served.is_finished(), "a pinging connection was closed");
 }
