@@ -178,4 +178,45 @@ final class RailwaySweepTests: XCTestCase {
     XCTAssertTrue(failures.first?.contains("sbx-stuck") == true, "\(failures)")
     XCTAssertEqual(destroyed(railway), ["sbx-stuck", "sbx-b"])
   }
+
+  /// Value: protects=with no record naming this environment (a lost or another config, a
+  /// throwaway HOME, which doesn't isolate Railway's folder), only a sandbox a create made and no
+  /// record ever named goes, so a first create's crash leaves nothing billing and no live host is
+  /// taken for unrecorded; fails_when=an only-pending sweep destroys a sandbox no create left
+  /// pending, keeps one a crash left, or takes one whose record was written; seam=create, record
+  /// and RailwayHostDriver.sweep over StubRailway, across two drivers (a relaunch)
+  func testWithNoRecordTheSweepTakesOnlyWhatACreateLeftPending() async throws {
+    let crashed = railway([Self.sandbox("sbx-1"), Self.sandbox("sbx-live")])
+    crashed.answer("sshPublicKeys", data: ["sshPublicKeys": ["edges": []]])
+    crashed.answer("sshPublicKeyCreate", data: ["sshPublicKeyCreate": ["id": "key-1"]])
+    crashed.answer(
+      "sandboxCreate", data: ["sandboxCreate": ["id": "sbx-1", "status": "CREATING"]])
+    crashed.answer("sandbox", data: ["sandbox": ["id": "sbx-1", "status": "RUNNING"]])
+    // A create whose host config never recorded: the app quit before it could.
+    _ = try await driver(crashed).create()
+
+    let relaunched = driver(crashed)
+    let swept = try await relaunched.sweep(keeping: [], onlyPending: true)
+    XCTAssertEqual(swept, [])
+    XCTAssertEqual(destroyed(crashed), ["sbx-1"])
+
+    // Recorded this time: nothing is pending, and nothing is even listed.
+    let recorded = railway([Self.sandbox("sbx-1")])
+    for (field, data) in [
+      ("sshPublicKeys", ["sshPublicKeys": ["edges": []]]),
+      ("sshPublicKeyCreate", ["sshPublicKeyCreate": ["id": "key-1"]]),
+      ("sandboxCreate", ["sandboxCreate": ["id": "sbx-1", "status": "CREATING"]]),
+      ("sandbox", ["sandbox": ["id": "sbx-1", "status": "RUNNING"]]),
+    ] as [(String, [String: Any])] {
+      recorded.answer(field, data: data)
+    }
+    let made = driver(recorded)
+    let host = try await made.create()
+    var descriptor = HostDescriptor(driver: "railway")
+    made.record(host, in: &descriptor)
+    let none = try await driver(recorded).sweep(keeping: [], onlyPending: true)
+    XCTAssertEqual(none, [])
+    XCTAssertEqual(destroyed(recorded), [])
+    XCTAssertTrue(requests(recorded, "sandboxes").isEmpty)
+  }
 }

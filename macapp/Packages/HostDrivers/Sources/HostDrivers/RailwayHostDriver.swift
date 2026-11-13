@@ -121,6 +121,7 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
     let sandbox = try await ProvisioningProgress.step(.machine) {
       try await api.createSandbox(environmentID: configuration.environmentID)
     }
+    markPending(sandbox)
     let id = UUID()
     let record = RailwayHostRecord(
       projectID: configuration.projectID, environmentID: configuration.environmentID,
@@ -145,6 +146,7 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
       throw HostDriverError.provisioning(failure)
     }
     hosts.withLock { $0[id] = nil }
+    forgetPending([record.sandboxID])
     try? FileManager.default.removeItem(at: hostDirectory(id))
   }
 
@@ -157,6 +159,7 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
     try? FileManager.default.removeItem(at: hostDirectory(id))
     guard let failure else {
       hosts.withLock { $0[id] = nil }
+      forgetPending([record.sandboxID])
       throw error
     }
     throw HostDriverError.leftBehind(
@@ -336,6 +339,7 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
   public func record(_ host: HostID, in descriptor: inout HostDescriptor) {
     guard case .remote(let id) = host, let record = hosts.withLock({ $0[id] }) else { return }
     descriptor.railway = record
+    forgetPending([record.sandboxID])
   }
 
   public func adopt(_ descriptor: HostDescriptor) throws {
@@ -410,10 +414,19 @@ extension RailwayHostDriver {
   /// it yet, and any made within `grace`, which may be a create still under way in the other build
   /// sharing this environment (Release and Nightly, ADR 0036). A sandbox whose age Railway doesn't
   /// give in a form this reads counts as new.
+  ///
+  /// `onlyPending` takes only the sandboxes a create made that no record has named since
+  /// (`pendingSandboxes`): for when no record names this environment, which is also what a lost
+  /// config, or a launch with a throwaway `HOME` (which doesn't isolate this folder), reads, where
+  /// every live sandbox would otherwise look unrecorded. With none pending it lists nothing.
   public func sweep(
-    keeping recorded: Set<String>, now: Date = Date(), grace: TimeInterval = sweepGrace
+    keeping recorded: Set<String>, onlyPending: Bool = false, now: Date = Date(),
+    grace: TimeInterval = sweepGrace
   ) async throws -> [String] {
     let environment = configuration.environmentID
+    forgetPending(recorded)
+    let pending = onlyPending ? pendingSandboxes : []
+    if onlyPending && pending.isEmpty { return [] }
     let kept = recorded.union(hosts.withLock { $0.values.map(\.sandboxID) })
     func old(_ sandbox: RailwaySandbox) -> Bool {
       guard let made = sandbox.createdAt.flatMap(Self.date) else { return false }
@@ -423,13 +436,59 @@ extension RailwayHostDriver {
     for sandbox in try await api.sandboxes(environmentID: environment)
     where sandbox.environmentID == environment && !kept.contains(sandbox.id)
       && !["DESTROYED", "DESTROYING"].contains(sandbox.status) && old(sandbox)
+      && (!onlyPending || pending.contains(sandbox.id))
     {
       let record = RailwayHostRecord(
         projectID: configuration.projectID, environmentID: environment, sandboxID: sandbox.id,
         hostKey: "")
-      if let failure = await destroySandbox(record) { failures.append(failure) }
+      if let failure = await destroySandbox(record) {
+        failures.append(failure)
+      } else {
+        forgetPending([sandbox.id])
+      }
     }
     return failures
+  }
+
+  /// The sandboxes a create made that no record has named since, kept beside the Mac's Railway key
+  /// so Release and Nightly, which share the environment, share them too. A create writes its
+  /// sandbox down the moment Railway names it; recording, destroying or sweeping it takes it off.
+  public var pendingSandboxes: Set<String> {
+    Self.pendingLock.withLock { readPending() }
+  }
+
+  private static let pendingLock = NSLock()
+  private var pendingFile: URL {
+    configuration.keys.appendingPathComponent("pending-sandboxes.json")
+  }
+
+  private func readPending() -> Set<String> {
+    Set((try? JSONDecoder().decode([String].self, from: Data(contentsOf: pendingFile))) ?? [])
+  }
+
+  /// Best-effort: a sandbox not written down is still swept once a record names this environment.
+  private func markPending(_ sandbox: String) {
+    Self.pendingLock.withLock {
+      let pending = readPending().union([sandbox])
+      try? FileManager.default.createDirectory(
+        at: configuration.keys, withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
+      try? JSONEncoder().encode(pending.sorted()).write(to: pendingFile, options: .atomic)
+    }
+  }
+
+  private func forgetPending(_ sandboxes: Set<String>) {
+    guard !sandboxes.isEmpty else { return }
+    Self.pendingLock.withLock {
+      let before = readPending()
+      let pending = before.subtracting(sandboxes)
+      guard pending != before else { return }
+      if pending.isEmpty {
+        try? FileManager.default.removeItem(at: pendingFile)
+      } else {
+        try? JSONEncoder().encode(pending.sorted()).write(to: pendingFile, options: .atomic)
+      }
+    }
   }
 
   /// How old an unrecorded sandbox must be before the sweep takes it: longer than any create takes
