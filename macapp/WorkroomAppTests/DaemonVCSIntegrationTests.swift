@@ -204,6 +204,27 @@ final class DaemonVCSIntegrationTests: XCTestCase {
     await connection.close()
   }
 
+  // Value: protects=the remote service stream's announcement reaching the daemon as the frame it
+  // acknowledges (ADR 0075); the manager swallows a failed one, so a wrong frame would silently
+  // leave no deadline; fails_when=the daemon does not acknowledge it, or an older daemon is sent
+  // it; why_new=the manager's test announces to a fixture; seam=none
+  func testTheDaemonAcknowledgesThatAConnectionPings() async throws {
+    let daemon = try DaemonHarness.start(environment: environment)
+    daemons.append(daemon)
+    let connection = try await DaemonClient.connect(
+      host: .local, socketPath: daemon.socketPath)
+    try await withTimeout(seconds: 5) { try await connection.announcePinging() }
+    try await withTimeout(seconds: 2) { try await connection.ping() }
+    await connection.close()
+
+    // An older daemon has no deadline and is never sent the frame, which it would drop unanswered.
+    let older = try FakeDaemon(version: 4)
+    defer { older.stop() }
+    let stale = try await DaemonClient.connect(host: .local, socketPath: older.socketPath)
+    try await withTimeout(seconds: 2) { try await stale.announcePinging() }
+    await stale.close()
+  }
+
   // Value: protects=a healthy host whose ping reply queues behind a large reply on a slow link is
   // not dropped after a wake; fails_when=only the ping's own reply counts as an answer, or a silent
   // host reads as answering; why_new=the real daemon always answers at once; seam=none
