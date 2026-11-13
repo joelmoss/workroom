@@ -105,6 +105,14 @@ final class RailwayGitHubTokenTests: XCTestCase {
     XCTAssertTrue(command.contains(RailwayHostDriver.gitHubTokenPath), command)
     XCTAssertEqual(tokenLogins(relay).count, 1)
     assertTokenOnlyOnStdin(relay, railway)
+
+    // The git setup runs too, pointed at the same file.
+    let git = try XCTUnwrap(
+      relay.calls(to: "ssh").first {
+        $0.stdin.map { String(decoding: $0, as: UTF8.self) }?
+          .contains("credential.https://github.com.helper") == true
+      }, "no login set up git")
+    XCTAssertEqual(git.args.last, "sh -s -- '/root/.local/state/workroom/gh-token'")
   }
 
   /// Value: protects=a Mac signed out of gh bills no sandbox it would have to destroy;
