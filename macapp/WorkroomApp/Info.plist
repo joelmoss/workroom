@@ -32,6 +32,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Programs Workroom runs, including terminal commands, repository setup scripts and coding agents, can use your microphone.</string>
+	<key>RailwayOAuthClientID</key>
+	<string>rlwy_oaci_H1zdJw3FGIwJ4Uyzuvb6HQNu</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUFeedURL</key>
