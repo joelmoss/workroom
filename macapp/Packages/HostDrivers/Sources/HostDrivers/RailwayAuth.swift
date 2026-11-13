@@ -232,6 +232,8 @@ public actor RailwaySession: RailwayAccessTokenProviding {
   private let now: @Sendable () -> Date
   private var access: (token: String, expires: Date)?
   private var refreshing: Task<String, Error>?
+  /// Bumped by each sign-in and sign-out, so a refresh that started before one stores nothing.
+  private var generation = 0
 
   public init(
     client: RailwayOAuthClient, store: any RailwayTokenStore, lock: any RailwayRefreshLock,
@@ -251,6 +253,8 @@ public actor RailwaySession: RailwayAccessTokenProviding {
     guard let refresh = tokens.refreshToken, !refresh.isEmpty else {
       throw RailwayOAuthError.noRefreshToken
     }
+    generation += 1
+    refreshing = nil
     try store.write(refresh)
     access = (tokens.accessToken, expiry(of: tokens))
   }
@@ -258,7 +262,7 @@ public actor RailwaySession: RailwayAccessTokenProviding {
   /// Forgets the sign-in. Railway has no revocation endpoint Workroom can call, so the
   /// authorization stays listed on the user's Railway account until they remove it there.
   public func signOut() throws {
-    refreshing?.cancel()
+    generation += 1
     refreshing = nil
     access = nil
     try store.delete()
@@ -279,38 +283,53 @@ public actor RailwaySession: RailwayAccessTokenProviding {
   }
 
   private func refresh() async throws -> String {
-    let (store, client, lock) = (self.store, self.client, self.lock)
+    let generation = self.generation
     let tokens: RailwayTokens = try await lock.withLock {
-      guard let current = try store.read() else { throw RailwaySessionError.signedOut }
+      guard let current = try await self.storedToken(generation) else {
+        throw RailwaySessionError.signedOut
+      }
       do {
-        return try await Self.refresh(current, client: client, store: store)
+        return try await self.refresh(current, generation: generation)
       } catch RailwayOAuthError.invalidGrant {
         // Another app may have rotated it between the read and the refusal.
-        if let again = try store.read(), again != current {
-          do { return try await Self.refresh(again, client: client, store: store) } catch
+        if let again = try await self.storedToken(generation), again != current {
+          do { return try await self.refresh(again, generation: generation) } catch
             RailwayOAuthError.invalidGrant
           {
-            if try store.read() == again { try store.delete() }
+            try await self.forget(again, generation: generation)
             throw RailwaySessionError.signedOut
           }
         }
-        if try store.read() == current { try store.delete() }
+        try await self.forget(current, generation: generation)
         throw RailwaySessionError.signedOut
       }
     }
+    guard generation == self.generation else { throw RailwaySessionError.signedOut }
     access = (tokens.accessToken, expiry(of: tokens))
     return tokens.accessToken
   }
 
-  /// Refreshes with `token` and stores the newest refresh token before anything uses the answer.
-  private static func refresh(
-    _ token: String, client: RailwayOAuthClient, store: any RailwayTokenStore
-  ) async throws -> RailwayTokens {
+  /// The stored refresh token, unless the user signed out since `generation`.
+  private func storedToken(_ generation: Int) throws -> String? {
+    guard generation == self.generation else { throw RailwaySessionError.signedOut }
+    return try store.read()
+  }
+
+  /// Refreshes with `token` and stores the newest refresh token before anything uses the answer,
+  /// unless the user signed out meanwhile.
+  private func refresh(_ token: String, generation: Int) async throws -> RailwayTokens {
     let tokens = try await client.refresh(token)
+    guard generation == self.generation else { throw RailwaySessionError.signedOut }
     if let newest = tokens.refreshToken, !newest.isEmpty, newest != token {
       try store.write(newest)
     }
     return tokens
+  }
+
+  /// Empties the store of a refused `token`, unless another app has already replaced it.
+  private func forget(_ token: String, generation: Int) throws {
+    guard generation == self.generation else { return }
+    if try store.read() == token { try store.delete() }
   }
 
   private func expiry(of tokens: RailwayTokens) -> Date {

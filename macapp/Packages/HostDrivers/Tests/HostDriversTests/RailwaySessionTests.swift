@@ -268,6 +268,27 @@ final class RailwaySessionTests: XCTestCase {
     }
   }
 
+  /// Value: protects=signing out while a refresh is in flight stays signed out: the refresh's
+  /// answer is never stored; fails_when=the refresh token comes back after sign-out; seam=RailwaySession
+  func testSigningOutDuringARefreshStaysSignedOut() async throws {
+    let railway = StubRailway()
+    railway.answerToken("refresh_token") { _ in
+      Thread.sleep(forTimeInterval: 0.2)
+      return StubRailway.tokens(access: "at-2", refresh: "rt-2")
+    }
+    let store = MemoryTokenStore("rt-1")
+    let session = session(railway, store: store)
+
+    async let refreshed = try? session.accessToken()
+    try await Task.sleep(for: .milliseconds(50))
+    try await session.signOut()
+    _ = await refreshed
+
+    XCTAssertNil(store.token)
+    let signedIn = await session.isSignedIn
+    XCTAssertFalse(signedIn)
+  }
+
   /// Value: protects=the cross-process lock really excludes: a second holder waits for the
   /// first; seam=FileRefreshLock on a temporary file
   func testTheFileLockExcludesASecondHolder() async throws {
