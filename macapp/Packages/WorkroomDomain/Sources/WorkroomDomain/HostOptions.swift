@@ -136,7 +136,8 @@ public struct HostOptions: Codable, Hashable, Sendable {
       return Resolution(
         image: image, cpu: walk(\.cpu), memory: none, disk: none,
         sizeTakenBySnapshot: image.value != nil)
-    case .container, .ssh:
+    // Railway's region, size and image come with its host options (#633).
+    case .container, .ssh, .railway:
       return nil
     }
   }

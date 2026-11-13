@@ -23,6 +23,9 @@ final class HostReachability: @unchecked Sendable {
   /// When each host's last attempt failed, which answers for it for `retryAfter`, and whether it
   /// failed for an older layout (#525), which the backoff keeps saying.
   private var failedAt: [HostID: (at: ContinuousClock.Instant, olderLayout: Bool)] = [:]
+  /// The hosts their provider last said are gone, which the backoff keeps saying, so the status
+  /// shows gone (with Remove Workroom) rather than unreachable (#629).
+  private var gone: Set<HostID> = []
   /// When boxd last said each host was asleep, which answers for it for `retryAfter` (#356).
   private var asleepAt: [HostID: ContinuousClock.Instant] = [:]
   /// The host of the workroom selected in each window (one `AppStore` per window), which a
@@ -215,19 +218,31 @@ final class HostReachability: @unchecked Sendable {
       now() - failed.at < Self.retryAfter
     {
       if failed.olderLayout { throw RepositoryRoutingError.olderLayout(host) }
+      if lock.withLock({ gone.contains(host) }) { throw RepositoryRoutingError.gone(host) }
       throw RepositoryRoutingError.unavailable(host)
     }
     // A boxd box wakes on an ssh login, so a background read must not connect to one that is
     // asleep: every status sweep would wake every box and keep it billing (#356). Only opening or
     // selecting the workroom, or something the user did (`wake`), wakes it. When boxd can't say,
     // the read leaves it be too. One boxd says is gone is reported as such, not as asleep.
-    if !opened, !wake, !selected {
-      switch await presence(host) {
+    // A host that never sleeps (Railway's) is asked about on every read, opened or not: asking
+    // wakes nothing, and a sandbox Railway destroyed then reads as gone rather than unreachable.
+    let background = !opened && !wake && !selected
+    if background || !hostsSleep(host) {
+      let presence = await presence(host)
+      if presence != .gone { _ = lock.withLock { gone.remove(host) } }
+      switch presence {
       case .asleep: throw RepositoryRoutingError.asleep(host)
       case .gone:
-        lock.withLock { failedAt[host] = (now(), false) }
+        lock.withLock {
+          failedAt[host] = (now(), false)
+          gone.insert(host)
+        }
         throw RepositoryRoutingError.gone(host)
-      case .awake, nil: break  // nil: a host that doesn't sleep (not boxd's)
+      // Its relay key still reaches it, so what the user asked for still connects; a background
+      // read says why it couldn't check (#629).
+      case .signedOut where background: throw RepositoryRoutingError.signedOut(host)
+      case .awake, .signedOut, nil: break  // nil: a host that doesn't sleep (not boxd's)
       }
     }
     do {
@@ -321,6 +336,14 @@ final class HostReachability: @unchecked Sendable {
   /// `retryAfter` about a box it called asleep.
   // ponytail: one `machine get` per host per window; one `machine list` per sweep is the upgrade
   // if many boxd workrooms make it slow.
+  /// Whether `host`'s driver says its hosts sleep; true for one that reports no presence.
+  private func hostsSleep(_ host: HostID) -> Bool {
+    guard case .remote(let id) = host,
+      let reporting = registry.existingDriver(holding: id) as? any HostPresenceReporting
+    else { return true }
+    return reporting.hostsSleep
+  }
+
   private func presence(_ host: HostID) async -> HostPresence? {
     guard case .remote(let id) = host,
       let reporting = registry.existingDriver(holding: id) as? any HostPresenceReporting
@@ -334,12 +357,16 @@ final class HostReachability: @unchecked Sendable {
     } else {
       presence = await reporting.presence(host)
     }
-    lock.withLock { asleepAt[host] = presence == .asleep || presence == nil ? now() : nil }
+    let sleeps = reporting.hostsSleep
+    lock.withLock {
+      asleepAt[host] = presence == .asleep || (presence == nil && sleeps) ? now() : nil
+    }
     // boxd could not say (no CLI, a timeout, output it did not expect, the read cancelled): a
     // background read leaves the box be rather than wake it, and says why. Opening the workroom,
     // selecting it or a click still connects. Remembered as asleep is, so an outage asks boxd once a
-    // `retryAfter` rather than on every read.
+    // `retryAfter` rather than on every read. A host that never sleeps is simply connected to.
     guard let presence else {
+      guard sleeps else { return nil }
       Self.logger.notice(
         "boxd could not say whether host \(id, privacy: .public) is asleep; left it be")
       return .asleep

@@ -24,10 +24,12 @@ public enum HostKind: Hashable, Sendable {
   case container(ContainerRuntime)
   case boxd
   case exeDev
+  /// A Railway sandbox (ADR 0071, #629).
+  case railway
   case ssh
 
   /// The remote providers, in the order the New Workroom menu and picker list them (#259).
-  public static let remoteProviders: [HostKind] = [.boxd, .exeDev, .ssh]
+  public static let remoteProviders: [HostKind] = [.boxd, .exeDev, .railway, .ssh]
 
   /// The remote providers that take host options, in Settings' order (#575).
   public static let optionedProviders = remoteProviders.filter(\.takesHostOptions)
@@ -47,6 +49,7 @@ public enum HostKind: Hashable, Sendable {
     case .container(let runtime): runtime.rawValue
     case .boxd: "boxd"
     case .exeDev: "exedev"
+    case .railway: "railway"
     case .ssh: "ssh"
     }
   }
@@ -65,6 +68,7 @@ public enum HostKind: Hashable, Sendable {
     case .container(let runtime): runtime.displayName
     case .boxd: "boxd"
     case .exeDev: "exe.dev"
+    case .railway: "Railway"
     case .ssh: "SSH"
     }
   }
@@ -79,6 +83,7 @@ public enum HostKind: Hashable, Sendable {
     case .container(let runtime): "\(runtime.containerPhrase) on this Mac"
     case .boxd: "a boxd machine"
     case .exeDev: "an exe.dev VM"
+    case .railway: "a Railway sandbox"
     case .ssh: "an SSH host"
     }
   }
@@ -91,6 +96,9 @@ public enum HostKind: Hashable, Sendable {
   public var credentialHint: String? {
     switch self {
     case .container: nil
+    case .railway:
+      "If GitHub refused the clone: a Railway sandbox has no GitHub credentials of its own, so "
+        + "Workroom can clone only a public repository there for now."
     case .ssh:
       "If GitHub refused the clone, set up credentials on the host: a GitHub SSH key for an "
         + "SSH URL, or `gh auth login` and `gh auth setup-git` for HTTPS."
@@ -110,7 +118,7 @@ public enum HostKind: Hashable, Sendable {
   /// serves `/vm/<name>` behind its sign-in.
   public func dashboardURL(machine: String) -> URL? {
     switch self {
-    case .container, .ssh: return nil
+    case .container, .ssh, .railway: return nil
     case .boxd:
       var url = URLComponents(string: "https://app.boxd.sh/machines")!
       url.queryItems = [URLQueryItem(name: "m", value: machine)]
@@ -127,6 +135,7 @@ public enum HostKind: Hashable, Sendable {
     case .container(.apple): "apple"
     case .boxd: "boxd"
     case .exeDev: "exedev"
+    case .railway: "railway"
     case .ssh: "ssh"
     }
   }
@@ -141,7 +150,7 @@ public enum HostKind: Hashable, Sendable {
     switch self {
     case .boxd: "boxd"
     case .exeDev: "exeDev"
-    case .container, .ssh: nil
+    case .container, .ssh, .railway: nil
     }
   }
 
@@ -151,7 +160,7 @@ public enum HostKind: Hashable, Sendable {
     switch self {
     case .boxd: .snapshot
     case .exeDev: .containerImage
-    case .container, .ssh: nil
+    case .container, .ssh, .railway: nil
     }
   }
 }

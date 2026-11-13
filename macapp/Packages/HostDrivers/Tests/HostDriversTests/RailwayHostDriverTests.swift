@@ -1,0 +1,421 @@
+import DaemonConnection
+import Foundation
+import Synchronization
+import WorkroomDomain
+import WorkroomSystem
+import XCTest
+
+@testable import HostDrivers
+
+/// The Railway driver (#629) through its capability protocols, with Railway stubbed at HTTP
+/// (`StubRailway`) and every ssh, ssh-keygen and ssh-keyscan it runs through the command runner
+/// (`StubRelay`): nothing reaches Railway or its relay. A host's own exchanges over `exec` and
+/// `openStream` go over real ssh, so the live suite covers them; no test here calls them.
+final class RailwayHostDriverTests: XCTestCase {
+  /// The relay's host key as the stub's keyscan presents it, and one it changed to.
+  static let relayKey =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ8X3z81/tuP7CvmK3ZqWgwEvHUR6b04oi2lQJGld2C1"
+  static let otherKey =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherKeyOtherKeyOtherKeyOtherKeyOtherKey0"
+  /// Never resolves, so a test that slipped past the runner reaches nothing.
+  static let relayHost = "relay.railway.invalid"
+
+  /// A token provider that hands out one token, or is signed out.
+  private final class Tokens: RailwayAccessTokenProviding, Sendable {
+    private let signedIn: Mutex<Bool>
+    init(signedIn: Bool = true) { self.signedIn = Mutex(signedIn) }
+    func signOut() { signedIn.withLock { $0 = false } }
+    func accessToken() async throws -> String {
+      guard signedIn.withLock({ $0 }) else { throw RailwaySessionError.signedOut }
+      return "at-1"
+    }
+    func accessTokenRejected(_ token: String) async {}
+  }
+
+  /// ssh, ssh-keygen and ssh-keyscan as the driver runs them: keygen writes a key pair where `-f`
+  /// says, keyscan prints `relayKey` (or `scanned`), and ssh answers `ssh` (exit 0 by default).
+  /// Records each call with its stdin.
+  final class StubRelay: StatusCommandRunning, @unchecked Sendable {
+    struct Call {
+      let executable: String
+      let args: [String]
+      let stdin: Data?
+    }
+    private let lock = NSLock()
+    private var _calls: [Call] = []
+    var scanned = RailwayHostDriverTests.relayKey
+    var ssh: [CommandResult] = []
+
+    var calls: [Call] { lock.withLock { _calls } }
+    func calls(to tool: String) -> [Call] { calls.filter { $0.executable.hasSuffix("/\(tool)") } }
+
+    func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+      async -> CommandResult
+    {
+      await run(executable, args, in: directory, timeout: timeout, stdin: nil)
+    }
+
+    func run(
+      _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
+      stdin: Data?
+    ) async -> CommandResult {
+      lock.withLock { _calls.append(Call(executable: executable, args: args, stdin: stdin)) }
+      switch (executable as NSString).lastPathComponent {
+      case "ssh-keygen":
+        let path = args[args.firstIndex(of: "-f")! + 1]
+        try? "PRIVATE".write(toFile: path, atomically: true, encoding: .utf8)
+        try? "ssh-ed25519 AAAAMacKey workroom\n".write(
+          toFile: path + ".pub", atomically: true, encoding: .utf8)
+        return RailwayHostDriverTests.ok("")
+      case "ssh-keyscan":
+        return RailwayHostDriverTests.ok("\(args.last!) \(scanned)\n")
+      case "ssh":
+        return lock.withLock { _ssh() }
+      default:
+        return CommandResult(stdout: "", stderr: "unexpected", exitCode: 1, timedOut: false)
+      }
+    }
+
+    private func _ssh() -> CommandResult {
+      ssh.isEmpty ? RailwayHostDriverTests.ok("") : ssh.removeFirst()
+    }
+  }
+
+  static func ok(_ stdout: String) -> CommandResult {
+    CommandResult(stdout: stdout, stderr: "", exitCode: 0, timedOut: false)
+  }
+
+  /// A Railway that makes sandbox `sbx-1`, RUNNING at once, and knows no ssh key.
+  private func railway(status: String? = "RUNNING") -> StubRailway {
+    let railway = StubRailway()
+    railway.answer("sshPublicKeys", data: ["sshPublicKeys": ["edges": []]])
+    railway.answer("sshPublicKeyCreate", data: ["sshPublicKeyCreate": ["id": "key-1"]])
+    railway.answer(
+      "sandboxCreate", data: ["sandboxCreate": ["id": "sbx-1", "status": "CREATING"]])
+    railway.answer(
+      "sandbox",
+      data: ["sandbox": status.map { ["id": "sbx-1", "status": $0] as Any } ?? NSNull()])
+    railway.answer(
+      "sandboxDestroy", data: ["sandboxDestroy": ["id": "sbx-1", "status": "DESTROYING"]])
+    return railway
+  }
+
+  private var root: URL!
+
+  override func setUp() {
+    root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-railway-\(UUID().uuidString)")
+    let root = root!
+    addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+  }
+
+  private var keys: URL { root.appendingPathComponent("railway") }
+
+  private func driver(
+    _ railway: StubRailway, _ relay: StubRelay, tokens: Tokens = Tokens()
+  ) -> RailwayHostDriver {
+    RailwayHostDriver(
+      configuration: .init(
+        environmentID: "env-1", projectID: "prj-1", keys: keys, relayHost: Self.relayHost,
+        hostSetup: .checkout, pollInterval: .milliseconds(1)),
+      api: RailwayAPI(transport: railway, tokens: tokens),
+      directory: root.appendingPathComponent("hosts"), runner: relay)
+  }
+
+  private func variables(_ railway: StubRailway, _ field: String) -> [String: Any]? {
+    railway.graphQLRequests.map(StubRailway.graphQLBody)
+      .last { ($0["query"] as? String)?.contains("\(field)(") == true }?["variables"]
+      as? [String: Any]
+  }
+
+  private func record(_ driver: RailwayHostDriver, _ host: HostID) -> RailwayHostRecord? {
+    var descriptor = HostDescriptor(driver: "railway")
+    driver.record(host, in: &descriptor)
+    return descriptor.railway
+  }
+
+  // MARK: Create
+
+  /// Value: protects=a Railway host lasts until its workroom is deleted (ADR 0071); fails_when=the
+  /// sandbox is made with Railway's idle timeout, in another environment, or not through the API;
+  /// seam=ProvisioningHostDriver.create + HostRecording over StubRailway
+  func testACreateMakesASandboxThatNeverIdlesOutInThisMacsEnvironment() async throws {
+    let railway = railway()
+    let relay = StubRelay()
+    let driver = driver(railway, relay)
+
+    let host = try await driver.create()
+
+    let input = try XCTUnwrap(variables(railway, "sandboxCreate")?["input"] as? [String: Any])
+    XCTAssertEqual(input["environmentId"] as? String, "env-1")
+    XCTAssertEqual(input["idleTimeoutMinutes"] as? Int, 0)
+    XCTAssertEqual(
+      record(driver, host),
+      RailwayHostRecord(
+        projectID: "prj-1", environmentID: "env-1", sandboxID: "sbx-1", hostKey: Self.relayKey))
+    XCTAssertFalse(
+      relay.calls.contains { $0.executable.hasSuffix("railway") }, "never the railway CLI")
+  }
+
+  /// Value: protects=the Mac reaches its host with a key of its own, registered once on the
+  /// account and shared by Release and Nightly; fails_when=a key is made or registered on every
+  /// create, or one Railway already has is registered again; seam=create over StubRailway
+  func testTheMacsKeyIsMadeOnceAndRegisteredOnlyWhenRailwayLacksIt() async throws {
+    let railway = railway()
+    let relay = StubRelay()
+    _ = try await driver(railway, relay).create()
+
+    XCTAssertEqual(relay.calls(to: "ssh-keygen").count, 1)
+    let key = try XCTUnwrap(variables(railway, "sshPublicKeyCreate")?["input"] as? [String: Any])
+    XCTAssertEqual(key["publicKey"] as? String, "ssh-ed25519 AAAAMacKey workroom")
+
+    // Railway now knows it, as the other build's next create finds it.
+    railway.answer(
+      "sshPublicKeys",
+      data: [
+        "sshPublicKeys": [
+          "edges": [["node": ["id": "key-1", "publicKey": "ssh-ed25519 AAAAMacKey other-comment"]]]
+        ]
+      ])
+    let before = railway.graphQLRequests.count
+    _ = try await driver(railway, relay).create()
+    XCTAssertEqual(relay.calls(to: "ssh-keygen").count, 1, "the key was made again")
+    let sent = railway.graphQLRequests.dropFirst(before).map(StubRailway.graphQLBody)
+    XCTAssertFalse(
+      sent.contains { ($0["query"] as? String)?.contains("sshPublicKeyCreate") == true },
+      "a key Railway has was registered again")
+  }
+
+  /// Value: protects=the host is reached through Railway's relay with only the pinned key trusted
+  /// (ADR 0071); fails_when=the destination, user, key or known_hosts drift, or a key a later scan
+  /// sees replaces the pin; seam=create's ssh through the runner, and the written ssh_config
+  func testTheRelayKeyIsPinnedOnFirstUseAndNeverReplaced() async throws {
+    let railway = railway()
+    let relay = StubRelay()
+    let host = try await driver(railway, relay).create()
+    XCTAssertEqual(relay.calls(to: "ssh-keyscan").count, 1)
+
+    let setup = try XCTUnwrap(relay.calls(to: "ssh").first)
+    let config = try String(
+      contentsOfFile: setup.args[setup.args.firstIndex(of: "-F")! + 1], encoding: .utf8)
+    XCTAssertTrue(config.contains(#"HostName "\#(Self.relayHost)""#), config)
+    XCTAssertTrue(config.contains(#"User "sbx:env-1:sbx-1""#), config)
+    XCTAssertTrue(config.contains("StrictHostKeyChecking yes"), config)
+    XCTAssertTrue(config.contains(keys.appendingPathComponent("id_ed25519").path), config)
+    guard case .remote(let id) = host else { return XCTFail("\(host)") }
+    let known = try String(
+      contentsOf: root.appendingPathComponent("hosts/\(id.uuidString)/known_hosts"),
+      encoding: .utf8)
+    XCTAssertEqual(known, "\(Self.relayHost) \(Self.relayKey)\n")
+
+    // The relay now shows another key: the pin stands, and the next host is made with it.
+    relay.scanned = Self.otherKey
+    let later = driver(railway, relay)
+    let next = try await later.create()
+    XCTAssertEqual(relay.calls(to: "ssh-keyscan").count, 1, "the pin was scanned again")
+    XCTAssertEqual(record(later, next)?.hostKey, Self.relayKey, "the pin was replaced")
+  }
+
+  /// Value: protects=a man in the middle never reaches a workroom (ADR 0071); fails_when=a changed
+  /// relay key is retried, accepted, or fails without saying why, or leaves the sandbox billing;
+  /// seam=create, and the pane's refusal check
+  func testAChangedRelayKeyIsARefusalWithItsReason() async throws {
+    let railway = railway()
+    let relay = StubRelay()
+    relay.ssh = [
+      CommandResult(
+        stdout: "",
+        stderr: "@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@\n"
+          + "Host key verification failed.\n", exitCode: 255, timedOut: false)
+    ]
+    do {
+      _ = try await driver(railway, relay).create()
+      XCTFail("a changed relay key was accepted")
+    } catch HostDriverError.provisioning(let detail) {
+      XCTAssertTrue(detail.contains("host key"), detail)
+    }
+    XCTAssertEqual(relay.calls(to: "ssh").count, 1, "a refusal was retried")
+    XCTAssertEqual(variables(railway, "sandboxDestroy")?["id"] as? String, "sbx-1")
+
+    // A pane whose ssh met another key stops retrying.
+    let driver = driver(self.railway(), StubRelay())
+    let host = try await driver.create()
+    guard case .remote(let id) = host else { return XCTFail("\(host)") }
+    let session = UUID()
+    _ = try driver.attachCommand(
+      to: host, session: session, workingDirectory: "/root", restored: false)
+    XCTAssertFalse(driver.hostRefusedLastAttach(of: session, on: host))
+    try "Host key verification failed.\n".write(
+      to: root.appendingPathComponent("hosts/\(id.uuidString)/attach-\(session.uuidString).log"),
+      atomically: true, encoding: .utf8)
+    XCTAssertTrue(driver.hostRefusedLastAttach(of: session, on: host))
+  }
+
+  /// Value: protects=no sandbox is left billing after a create that failed (user story 28);
+  /// fails_when=a sandbox that never ran, or a failed setup, is kept; or a destroy that fails is
+  /// not named as left behind; seam=create over StubRailway
+  func testACreateThatFailsAfterTheSandboxExistsDestroysIt() async throws {
+    let failed = railway(status: "FAILED")
+    do {
+      _ = try await driver(failed, StubRelay()).create()
+      XCTFail("a failed sandbox became a host")
+    } catch HostDriverError.provisioning {}
+    XCTAssertEqual(variables(failed, "sandboxDestroy")?["id"] as? String, "sbx-1")
+
+    let stuck = railway()
+    stuck.answer("sandboxDestroy") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Railway is down"}]}"#.utf8))
+    }
+    let relay = StubRelay()
+    relay.ssh = [CommandResult(stdout: "", stderr: "boom", exitCode: 1, timedOut: false)]
+    do {
+      _ = try await driver(stuck, relay).create()
+      XCTFail("a failed setup became a host")
+    } catch HostDriverError.leftBehind(_, let leftover, let host) {
+      XCTAssertTrue(leftover.joined().contains("sbx-1"), "\(leftover)")
+      XCTAssertNotNil(host)
+    }
+  }
+
+  /// Value: protects=the daemon outlives the login that starts it, and a host with an empty
+  /// machine id gets an identity of its own; fails_when=setup runs without its script, with sudo
+  /// (the host is root, with no sudo or systemd), or the driver relies on a supervisor;
+  /// seam=create's setup through the runner
+  func testSetupGivesTheHostAnIdentityFileAndTheDaemonIsStartedFromALogin() async throws {
+    let relay = StubRelay()
+    let driver = driver(railway(), relay)
+    let host = try await driver.create()
+    guard case .remote(let id) = host else { return XCTFail("\(host)") }
+
+    XCTAssertTrue(driver.startsDaemon)
+    let setup = try XCTUnwrap(relay.calls(to: "ssh").first)
+    let command = try XCTUnwrap(setup.args.last)
+    XCTAssertTrue(command.hasPrefix("sh -s -- "), command)
+    XCTAssertTrue(command.contains(id.uuidString.lowercased()), command)
+    XCTAssertFalse(command.contains("sudo"), command)
+    let script = String(decoding: try XCTUnwrap(setup.stdin), as: UTF8.self)
+    XCTAssertTrue(script.contains("/etc/workroom-identity"), script)
+    XCTAssertTrue(script.contains("/etc/machine-id"), script)
+    XCTAssertEqual(driver.daemonSocket, "/root/.local/state/workroom/daemon/workroomd.sock")
+  }
+
+  // MARK: Presence
+
+  /// Value: protects=a gone sandbox shows gone without a login, and a running one is never taken
+  /// for asleep (ADR 0071); fails_when=status is read by ssh, or a status maps wrongly;
+  /// seam=HostPresenceReporting over StubRailway
+  func testPresenceComesFromTheSandboxsStatus() async throws {
+    let railway = railway()
+    let relay = StubRelay()
+    let driver = driver(railway, relay)
+    let host = try await driver.create()
+    let logins = relay.calls(to: "ssh").count
+
+    for (status, presence) in [
+      ("RUNNING", HostPresence.awake), ("CREATING", .awake), ("DESTROYED", .gone),
+      ("DESTROYING", .gone), ("FAILED", .gone),
+    ] {
+      railway.answer("sandbox", data: ["sandbox": ["id": "sbx-1", "status": status]])
+      let read = await driver.presence(host)
+      XCTAssertEqual(read, presence, status)
+    }
+    railway.answer("sandbox", data: ["sandbox": NSNull()])
+    let missing = await driver.presence(host)
+    XCTAssertEqual(missing, .gone, "a sandbox Railway doesn't know")
+    railway.answer("sandbox") { _ in
+      RailwayHTTPResponse(status: 502, body: Data("bad gateway".utf8))
+    }
+    let unknown = await driver.presence(host)
+    XCTAssertNil(unknown, "Railway couldn't say")
+    XCTAssertFalse(driver.hostsSleep, "a Railway host never sleeps")
+    XCTAssertEqual(relay.calls(to: "ssh").count, logins, "presence logged in")
+  }
+
+  /// Value: protects=a revoked or expired sign-in reads as signed out, so the workroom offers
+  /// Sign in (#629); fails_when=it reads as gone (the only action would be removing it) or asleep;
+  /// seam=HostPresenceReporting
+  func testASignedOutRailwayReadsAsSignedOut() async throws {
+    let tokens = Tokens()
+    let driver = driver(railway(), StubRelay(), tokens: tokens)
+    let host = try await driver.create()
+    tokens.signOut()
+    let presence = await driver.presence(host)
+    XCTAssertEqual(presence, .signedOut)
+  }
+
+  // MARK: Delete and relaunch
+
+  /// Value: protects=deleting the workroom stops the bill (user story 27); fails_when=the sandbox
+  /// is kept, or one already gone fails the delete; seam=ProvisioningHostDriver.destroy
+  func testDeletingTheWorkroomDestroysTheSandbox() async throws {
+    let railway = railway()
+    let driver = driver(railway, StubRelay())
+    let host = try await driver.create()
+    var descriptor = HostDescriptor(driver: "railway")
+    driver.record(host, in: &descriptor)
+    guard case .remote(let id) = host else { return XCTFail("\(host)") }
+    descriptor.id = id
+
+    try await driver.destroy(host)
+    let destroyed = try XCTUnwrap(variables(railway, "sandboxDestroy"))
+    XCTAssertEqual(destroyed["id"] as? String, "sbx-1")
+    XCTAssertEqual(destroyed["environmentId"] as? String, "env-1")
+
+    // Destroyed from the dashboard already: Railway refuses, and says it is gone.
+    try driver.adopt(descriptor)
+    railway.answer("sandboxDestroy") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Sandbox not found"}]}"#.utf8))
+    }
+    railway.answer("sandbox", data: ["sandbox": ["id": "sbx-1", "status": "DESTROYED"]])
+    try await driver.destroy(host)
+
+    // Still running, and Railway won't destroy it: the delete fails, so it can be tried again.
+    railway.answer("sandbox", data: ["sandbox": ["id": "sbx-1", "status": "RUNNING"]])
+    try driver.adopt(descriptor)
+    do {
+      try await driver.destroy(host)
+      XCTFail("a sandbox still running was taken for destroyed")
+    } catch {}
+  }
+
+  /// Value: protects=a workroom reached again after a relaunch, from config alone; fails_when=a
+  /// fresh driver can't attach to, read or delete a recorded host; seam=HostRecording.adopt, then
+  /// HostTerminalDriver and HostPresenceReporting
+  func testAFreshDriverReachesARecordedHost() async throws {
+    let railway = railway()
+    let made = driver(railway, StubRelay())
+    let host = try await made.create()
+    var descriptor = HostDescriptor(driver: "railway")
+    made.record(host, in: &descriptor)
+    guard case .remote(let id) = host else { return XCTFail("\(host)") }
+    descriptor.id = id
+
+    let fresh = driver(railway, StubRelay())
+    XCTAssertThrowsError(
+      try fresh.attachCommand(to: host, session: UUID(), workingDirectory: "/", restored: false))
+    try fresh.adopt(descriptor)
+    let presence = await fresh.presence(host)
+    XCTAssertEqual(presence, .awake)
+    _ = try fresh.attachCommand(to: host, session: UUID(), workingDirectory: "/", restored: false)
+    try await fresh.destroy(host)
+    XCTAssertEqual(variables(railway, "sandboxDestroy")?["id"] as? String, "sbx-1")
+  }
+
+  /// Value: protects=a pane shows only its session and every key reaches the program: no host
+  /// terminal (`-T`), so no relay banner and no Ctrl+\ then d detach, and never the relay's
+  /// durable-session resume (ADR 0074); fails_when=the attach asks for a terminal or names a
+  /// durable session; seam=HostTerminalDriver.attachCommand
+  func testAPaneAttachesWithoutAHostTerminalOrADurableSession() async throws {
+    let driver = driver(railway(), StubRelay())
+    let host = try await driver.create()
+    let attach = try driver.attachCommand(
+      to: host, session: UUID(), workingDirectory: "/root/app", restored: false)
+    XCTAssertTrue(attach.contains("'-T'"), attach)
+    XCTAssertTrue(attach.contains("'--dial'"), attach)
+    XCTAssertFalse(attach.contains("RAILWAY_DURABLE"), attach)
+    XCTAssertFalse(attach.contains("'-t'"), attach)
+    XCTAssertTrue(attach.contains("relay --socket"), attach)
+  }
+}

@@ -21,6 +21,9 @@ final class RemoteHosts: Sendable {
     case boxd(org: String?, account: String?)
     /// An exe.dev account, `whoami`'s email (#259).
     case exeDev(account: String?)
+    /// A Railway environment of this Mac's (#629): the one a host's record names, or the one a
+    /// create makes its sandbox in.
+    case railway(environment: String)
     case ssh(destination: String)
 
     /// The driver a recorded host is in, or nil for a descriptor of no driver this build knows, and
@@ -34,6 +37,9 @@ final class RemoteHosts: Sendable {
         self = .ssh(destination: destination)
       case .boxd: self = .boxd(org: descriptor.org, account: descriptor.account)
       case .exeDev: self = .exeDev(account: descriptor.account)
+      case .railway:
+        guard let environment = descriptor.railway?.environmentID else { return nil }
+        self = .railway(environment: environment)
       case .container(let runtime):
         self.init(runtime: runtime, context: descriptor.container?.context)
       case nil: return nil
@@ -51,6 +57,7 @@ final class RemoteHosts: Sendable {
       case .container(let runtime, _): .container(runtime)
       case .boxd: .boxd
       case .exeDev: .exeDev
+      case .railway: .railway
       case .ssh: .ssh
       }
     }
@@ -65,8 +72,15 @@ final class RemoteHosts: Sendable {
       case .container: RemoteWorkrooms.user
       case .boxd: BoxdHostDriver.user
       case .exeDev: ExeDevHostDriver.user
+      case .railway: RailwayHostDriver.user
       case .ssh: ""
       }
+    }
+
+    /// That user's home, which holds the clone: a Railway sandbox logs in as root.
+    var loginHome: String {
+      if case .railway = self { return "/root" }
+      return "/home/\(loginUser)"
     }
 
     /// The container runtime, or nil for a remote provider.
@@ -89,7 +103,7 @@ final class RemoteHosts: Sendable {
     var account: String? {
       switch self {
       case .boxd(_, let account), .exeDev(let account): account
-      case .container, .ssh: nil
+      case .container, .railway, .ssh: nil
       }
     }
   }

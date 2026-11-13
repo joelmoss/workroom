@@ -81,6 +81,7 @@ final class HostDriverRegistry: @unchecked Sendable {
           // Not kept while the CLI is missing, so installing it later takes without a relaunch.
           guard cli != nil else { return driver }
         case .exeDev(let account): driver = Self.exeDev(account: account)
+        case .railway(let environment): driver = Self.railway(environment: environment)
         case .ssh(let destination): driver = Self.ssh(destination: destination)
         }
       }
@@ -193,10 +194,13 @@ final class HostDriverRegistry: @unchecked Sendable {
     let recorded = descriptors.filter {
       DriverKey($0) != nil && RemoteWorkrooms.ownsHost($0)
     }
-    for descriptor in recorded where descriptor.kind == .ssh {
-      guard let key = DriverKey(descriptor), descriptor.sshHome != nil else { continue }
+    // An SSH host's home and a Railway host's sandbox are in its record, which its driver must
+    // hold before a pane, a read or a delete reaches it.
+    for descriptor in recorded where descriptor.kind == .ssh || descriptor.kind == .railway {
+      guard let key = DriverKey(descriptor), descriptor.kind != .ssh || descriptor.sshHome != nil
+      else { continue }
       do { try (driver(key) as? any HostRecording)?.adopt(descriptor) } catch {
-        Self.logger.error("SSH host record: \(error.localizedDescription, privacy: .public)")
+        Self.logger.error("host record: \(error.localizedDescription, privacy: .public)")
       }
     }
     // An older build's base, until `BaseRetirement` removes it: it never relays.
@@ -320,6 +324,16 @@ final class HostDriverRegistry: @unchecked Sendable {
       // The account exe.dev knows the user's key as, which a new base is made in. Throws, naming
       // the fix, when the user's ssh can't sign in to exe.dev.
       return .exeDev(account: try await Self.exeDev().signedIn())
+    case .railway:
+      // This Mac's environment in the `Workroom` project of the workspace the user picked, made
+      // on the first create (ADR 0071). Throws `RailwaySessionError.signedOut` when signed out.
+      let placement = RailwayAccount.placement
+      guard let workspace = placement.read().selectedWorkspaceID ?? placement.read().workspaceID
+      else { throw RemoteWorkrooms.Failure.railwayNotSetUp }
+      let placed = try await placement.ensure(
+        workspaceID: workspace, api: RailwayAccount.shared.api,
+        environmentName: RailwayPlacementStore.environmentName())
+      return .railway(environment: placed.environmentID)
     }
   }
 
@@ -361,7 +375,10 @@ final class HostDriverRegistry: @unchecked Sendable {
     var environments: [DriverKey: RemoteProvisioning.Environment] = [:]
     for host in hosts where RemoteWorkrooms.isLive(host) {
       let key = try Self.deletionKey(host)
-      if case .ssh = key { try (driver(key) as? any HostRecording)?.adopt(host) }
+      switch key {
+      case .ssh, .railway: try (driver(key) as? any HostRecording)?.adopt(host)
+      default: break
+      }
       if environments[key] == nil { environments[key] = try environment(key).1 }
       // Taking a box down needs it on its driver, whatever a reload adopted: one that has not
       // adopted it yet would read the box as unknown. A boxd driver needs nothing adopted.
@@ -426,6 +443,22 @@ final class HostDriverRegistry: @unchecked Sendable {
   static func exeDev(account: String? = nil) -> ExeDevHostDriver {
     ExeDevHostDriver(
       configuration: .init(account: account, hostSetup: .bundled), directory: RemoteHosts.hosts)
+  }
+
+  /// A Railway driver making its sandboxes in `environment`, and reaching any host it adopts.
+  static func railway(environment: String) -> RailwayHostDriver {
+    let placement = RailwayAccount.placement.read()
+    var relay = RailwayHostDriver.relay
+    #if DEBUG
+      // A test's panes and connects reach nothing.
+      if AppEnvironment.current.isTestProcess { relay = UITestFixture.railwayRelay }
+    #endif
+    return RailwayHostDriver(
+      configuration: .init(
+        environmentID: environment,
+        projectID: placement.environmentID == environment ? placement.projectID : nil,
+        keys: RailwayAccount.directory, relayHost: relay, hostSetup: .bundled),
+      api: RailwayAccount.shared.api, directory: RemoteHosts.hosts)
   }
 
   /// An SSH host's driver, its home not yet known: a key's, or the one the host check makes.

@@ -61,7 +61,7 @@ final class KeychainTokenStoreTests: XCTestCase {
   /// seam=KeychainTokenStore
   func testATokenIsWrittenReplacedAndRead() throws {
     let keychain = FakeKeychain()
-    let store = KeychainTokenStore(service: "svc", accessGroup: nil, keychain: keychain)
+    let store = KeychainTokenStore(service: "svc", keychain: keychain)
 
     XCTAssertNil(try store.read())
     try store.write("rt-1")
@@ -79,32 +79,25 @@ final class KeychainTokenStoreTests: XCTestCase {
   func testAKeychainThatCantAnswerThrowsRatherThanReadingAsSignedOut() {
     let keychain = FakeKeychain()
     keychain.failure = errSecInteractionNotAllowed
-    let store = KeychainTokenStore(service: "svc", accessGroup: nil, keychain: keychain)
+    let store = KeychainTokenStore(service: "svc", keychain: keychain)
 
     XCTAssertThrowsError(try store.read())
     XCTAssertThrowsError(try store.write("rt"))
   }
 
-  /// Value: protects=with an access group, the item goes in that group of the data protection
-  /// keychain; without one, no group is named; seam=KeychainTokenStore
-  func testAnAccessGroupIsNamedOnEveryQueryOnlyWhenGiven() throws {
-    let shared = FakeKeychain()
-    try KeychainTokenStore(service: "svc", accessGroup: "TEAM.group", keychain: shared).write("rt")
-    for query in shared.queries {
-      XCTAssertEqual(query[kSecAttrAccessGroup as String] as? String, "TEAM.group")
-      XCTAssertEqual(query[kSecUseDataProtectionKeychain as String] as? Bool, true)
-    }
-
+  /// Value: protects=the item is the build's own, in no shared access group (ADR 0073);
+  /// seam=KeychainTokenStore
+  func testTheItemIsInNoSharedAccessGroup() throws {
     let own = FakeKeychain()
-    try KeychainTokenStore(service: "svc", accessGroup: nil, keychain: own).write("rt")
+    try KeychainTokenStore(service: "svc", keychain: own).write("rt")
     for query in own.queries {
       XCTAssertNil(query[kSecAttrAccessGroup as String])
       XCTAssertEqual(query[kSecClass as String] as? String, kSecClassGenericPassword as String)
     }
   }
 
-  /// Value: protects=a Dev build keeps its own sign-in (its own service), and Release and Nightly
-  /// don't share one through the file keychain before the access group exists; seam=RailwayAccount
+  /// Value: protects=each build keeps its own sign-in (its own service), Release and Nightly
+  /// included (ADR 0073); seam=RailwayAccount
   func testEachBuildKeepsItsOwnKeychainService() {
     XCTAssertEqual(
       RailwayAccount.keychainService(bundleID: "com.developwithstyle.workroom.dev.wr-x"),

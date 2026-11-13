@@ -20,9 +20,10 @@ You choose where a workroom goes when you create it. Click the **+** on a projec
 | **Apple Container** | A container on this Mac, run by Apple's `container` tool. | [Containers](containers.md) |
 | **boxd** | A machine in the boxd cloud. | [boxd](boxd.md) |
 | **exe.dev** | A VM in the exe.dev cloud. | [exe.dev](exe-dev.md) |
+| **Railway** | A sandbox in your Railway account. | [Railway](railway.md) |
 | **SSH** | A folder on a Linux server you already reach with ssh. | [SSH hosts](ssh.md) |
 
-In the menu, Docker and Apple Container sit under **Local containers**, and boxd, exe.dev and SSH sit under **Remote**. A choice that cannot be used right now is dimmed, and says why next to its name. For example, a container runtime that is not installed says `not installed`.
+In the menu, Docker and Apple Container sit under **Local containers**, and boxd, exe.dev, Railway and SSH sit under **Remote**. A choice that cannot be used right now is dimmed, and says why next to its name. For example, a container runtime that is not installed says `not installed`.
 
 ## What a project needs
 

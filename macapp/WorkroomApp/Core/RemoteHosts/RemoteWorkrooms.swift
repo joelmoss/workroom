@@ -18,7 +18,7 @@ enum RemoteWorkrooms {
   static func unavailability(of kind: HostKind) -> String? {
     switch kind {
     case .container(let runtime): unavailability(of: runtime)
-    case .boxd, .exeDev, .ssh:
+    case .boxd, .exeDev, .railway, .ssh:
       // Never unavailable: a create first checks the user's account there and, when it isn't
       // ready, shows the provider's setup (`BoxdSetup`, `ExeDevSetup`), installing boxd too.
       nil
@@ -127,7 +127,7 @@ enum RemoteWorkrooms {
   static func clonePath(
     for repository: GitHubRepository, on key: RemoteHosts.DriverKey = .init()
   ) -> String {
-    "/home/\(key.loginUser)/\(repository.name)"
+    "\(key.loginHome)/\(repository.name)"
   }
 
   enum Failure: Error, LocalizedError, Equatable {
@@ -137,6 +137,8 @@ enum RemoteWorkrooms {
     case noAppleContainer
     case anotherBuildsHost(String)
     case boxdNotInstalled
+    /// No Railway workspace is picked yet: the setup sheet picks one (#629).
+    case railwayNotSetUp
     case baseBranchNotOnOrigin(String)
     case baseBranchOnOtherRemote(String)
     /// The workroom's teardown script failed on its host, or the host couldn't be reached to run it:
@@ -167,6 +169,8 @@ enum RemoteWorkrooms {
         return "This project's new workrooms start from \(base), on a remote other than origin. A "
           + "remote workroom's machine has only origin, so it can't start there. To make remote "
           + "workrooms, set a base branch on origin in Project Settings."
+      case .railwayNotSetUp:
+        return "Pick the Railway workspace Workroom keeps its hosts in: Settings, Set Up Railway."
       case .boxdNotInstalled:
         return "The boxd command wasn't found. Install it from boxd.sh, then sign in with "
           + "`boxd auth login`."

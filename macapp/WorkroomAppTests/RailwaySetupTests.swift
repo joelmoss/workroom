@@ -14,10 +14,54 @@ final class RailwaySetupTests: XCTestCase {
   private let team = RailwayWorkspace(id: "ws-team", name: "Codaset", plan: .pro)
   private let free = RailwayWorkspace(id: "ws-free", name: "Side projects", plan: .free)
 
+  /// This test's own placement file, so no test sees another's picked workspace.
+  private lazy var placement: RailwayPlacementStore = {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-railway-setup-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+    return RailwayPlacementStore(file: root.appendingPathComponent("placement.json"))
+  }()
+
   private func setup(
     _ stub: RailwayStub, store: RailwayStub.MemoryStore = .init(), needed: String? = nil
   ) -> RailwaySetup {
-    RailwaySetup(account: stub.account(store: store), neededWorkspaceID: needed)
+    RailwaySetup(
+      account: stub.account(store: store), neededWorkspaceID: needed, placement: placement)
+  }
+
+  /// Value: protects=the workspace the user picks is the one the first create makes the project
+  /// in, across relaunches (#629); fails_when=the pick lives only in the sheet; seam=RailwaySetup
+  /// over a placement file
+  func testThePickedWorkspaceIsKeptForTheNextCreate() async throws {
+    let stub = RailwayStub(workspaces: [personal, team])
+    let store = RailwayStub.MemoryStore(RailwayStub.refreshToken)
+    let first = setup(stub, store: store)
+    await first.refresh()
+    XCTAssertEqual(placement.read().selectedWorkspaceID, "ws-personal", "the default wasn't kept")
+    await first.select("ws-team")
+    XCTAssertEqual(placement.read().selectedWorkspaceID, "ws-team")
+
+    let again = setup(stub, store: store)
+    await again.refresh()
+    XCTAssertEqual(again.selectedWorkspaceID, "ws-team")
+  }
+
+  /// Value: protects=a Railway create asks for setup only when it's needed: signed out, or the
+  /// recorded project's workspace no longer shared (#629); fails_when=a ready account is asked
+  /// again, or an unready one goes ahead; seam=RailwaySetup.needed
+  func testACreateWaitsOnSetupUntilSignedInWithAReachableWorkspace() async throws {
+    let stub = RailwayStub(workspaces: [personal])
+    let signedOut = await RailwaySetup.needed(
+      account: stub.account(store: RailwayStub.MemoryStore()), placement: placement)
+    XCTAssertNotNil(signedOut)
+
+    let account = stub.account(store: RailwayStub.MemoryStore(RailwayStub.refreshToken))
+    let ready = await RailwaySetup.needed(account: account, placement: placement)
+    XCTAssertNil(ready)
+
+    try placement.update { $0.workspaceID = "ws-team" }
+    let missing = await RailwaySetup.needed(account: account, placement: placement)
+    XCTAssertEqual(missing?.neededWorkspaceMissing, true)
   }
 
   /// Value: protects=a user Workroom has never signed in sees Sign in, and signing in through the

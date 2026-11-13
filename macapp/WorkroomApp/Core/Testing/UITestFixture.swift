@@ -113,6 +113,17 @@ import WorkroomVCS
       return stub.account(store: RailwayStub.MemoryStore(kept))
     }
 
+    /// `-WorkroomUITestRailwayWorkroom 1` (#629): the project also lists `railwayWorkroomName`, a
+    /// workroom on a Railway sandbox. Its relay is a name that never resolves (`railwayRelay`), and
+    /// Railway is `RailwayStub`, so nothing reaches Railway.
+    static var railwayWorkroom: Bool {
+      fixtureFlag && flag("WorkroomUITestRailwayWorkroom")
+    }
+
+    static let railwayWorkroomName = "uitest-railway"
+    /// The relay a fixture launch's Railway driver logs in through: `.invalid` never resolves.
+    static let railwayRelay = "relay.railway.invalid"
+
     /// `-WorkroomUITestRailwayNeededWorkspace <id>`: the workspace of the `Workroom` project the
     /// fixture's Railway setup checks the sign-in reaches (#627).
     static var railwayNeededWorkspace: String? {
@@ -791,7 +802,7 @@ import WorkroomVCS
           return .boxd(snapshots: ["uitest-snapshot"], size: nil)
         case .exeDev:
           return .exeDev(.init(maxCPUs: 4, maxMemoryGB: 8, defaultDiskGB: 20, maxDiskGB: 100))
-        case .container, .ssh:
+        case .container, .ssh, .railway:
           // As the real read says: these take no host options, so no step asks for them.
           return .failed("\(provider.displayName) hosts take no host options.")
         }
@@ -1196,6 +1207,18 @@ import WorkroomVCS
           Workroom(
             name: scriptedWorkroomName, path: scriptedWorkroomDirectory.path, vcsName: vcs,
             warnings: []))
+      }
+      if railwayWorkroom {
+        workrooms.append(
+          Workroom(
+            name: railwayWorkroomName, path: "/root/\(projectName)", vcsName: vcs, warnings: [],
+            host: HostDescriptor(
+              driver: HostKind.railway.driver, provisioner: RemoteWorkrooms.provisioner,
+              id: UUID(uuidString: "6A1D0E3C-5B2F-4C7E-9D10-29A7F0C4B6E1"),
+              railway: RailwayHostRecord(
+                projectID: "prj-uitest", environmentID: "env-uitest", sandboxID: "sbx-uitest",
+                hostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIUITestUITestUITestUITestUITestUITe"))
+          ))
       }
       for dir in dirs {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

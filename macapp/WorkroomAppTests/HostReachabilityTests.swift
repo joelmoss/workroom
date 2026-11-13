@@ -188,7 +188,8 @@ final class HostReachabilityTests: XCTestCase {
     asked.setGone()
     connects.advance(HostReachability.retryAfter)
     let before = asked.calls
-    for expected in [RepositoryRoutingError.gone(host), .unavailable(host)] {
+    // Still gone inside the window, so the status keeps saying so (#629).
+    for expected in [RepositoryRoutingError.gone(host), .gone(host)] {
       do {
         try await remote.ensureConnected(host)
         XCTFail("a gone machine was connected to")
@@ -369,12 +370,73 @@ final class HostReachabilityTests: XCTestCase {
       state.withLock { $0.value = asleep.map { $0 ? .asleep : .awake } }
     }
     func setGone() { state.withLock { $0.value = .gone } }
+    func set(presence: HostPresence?) { state.withLock { $0.value = presence } }
     func answer() -> HostPresence? {
       state.withLock {
         $0.count += 1
         return $0.value
       }
     }
+  }
+
+  /// Value: protects=a Railway workroom destroyed on Railway shows gone even while it is on screen,
+  /// a revoked sign-in shows signed out without blocking what the user asked for, and a Railway
+  /// that can't answer never reads as asleep (#629); fails_when=presence is asked only on
+  /// background reads, signed-out blocks an opened workroom, or nil reads as asleep;
+  /// seam=HostReachability over the real Railway driver's `hostsSleep`, presence stubbed
+  func testARailwayHostIsAskedOnEveryReadAndASignOutHoldsOnlyBackgroundReads() async throws {
+    let connects = Connects()
+    connects.hold(false)
+    let asked = Asleep()
+    let remoteHosts = RemoteHosts(
+      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
+      startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() })
+    let remote = remoteHosts.reachability
+    let id = UUID()
+    let host = HostID.remote(id)
+    remote.adopt([
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "w", path: "/root/r", vcsName: "workroom/w", warnings: [],
+            host: HostDescriptor(
+              driver: HostKind.railway.driver, provisioner: RemoteWorkrooms.provisioner, id: id,
+              railway: RailwayHostRecord(
+                projectID: "prj", environmentID: "env", sandboxID: "sbx",
+                hostKey: "ssh-ed25519 AAAA")))
+        ])
+    ])
+
+    // Railway couldn't say: a sandbox never sleeps, so the read connects.
+    asked.set(presence: nil)
+    try await remote.ensureConnected(host)
+    XCTAssertEqual(connects.calls, 1)
+
+    // Signed out: a background read says so, and connects nothing; the opened workroom connects.
+    asked.set(presence: .signedOut)
+    do {
+      try await remote.ensureConnected(host)
+      XCTFail("a background read went ahead signed out")
+    } catch {
+      XCTAssertEqual(error as? RepositoryRoutingError, .signedOut(host))
+    }
+    remote.activate(host)
+    try await remote.ensureConnected(host)
+    XCTAssertEqual(connects.calls, 2)
+
+    // Destroyed on Railway: gone, even while selected.
+    asked.set(presence: .gone)
+    remote.select(host)
+    for _ in 0..<2 {
+      do {
+        try await remote.ensureConnected(host)
+        XCTFail("a gone sandbox was connected to")
+      } catch {
+        XCTAssertEqual(error as? RepositoryRoutingError, .gone(host), "gone decayed")
+      }
+    }
+    XCTAssertEqual(connects.calls, 2)
   }
 
   /// Only a host whose workroom the user opened has its container started before connecting: the

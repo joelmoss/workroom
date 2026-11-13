@@ -13,7 +13,8 @@ final class HostKindTests: XCTestCase {
   /// why_new=the four provider enums merged into one; seam=none; no_claim=the drivers themselves
   func testEachKindIsTheDriverItNames() {
     XCTAssertEqual(
-      Self.every.map(\.driver), ["container", "apple-container", "boxd", "exedev", "ssh"])
+      Self.every.map(\.driver),
+      ["container", "apple-container", "boxd", "exedev", "railway", "ssh"])
     for kind in Self.every {
       XCTAssertEqual(HostKind(driver: kind.driver), kind, kind.driver)
     }
@@ -24,7 +25,7 @@ final class HostKindTests: XCTestCase {
 
   func testScriptsAreToldThePlainName() {
     XCTAssertEqual(
-      Self.every.map(\.workroomHost), ["docker", "apple", "boxd", "exedev", "ssh"])
+      Self.every.map(\.workroomHost), ["docker", "apple", "boxd", "exedev", "railway", "ssh"])
   }
 
   /// Value: protects=the host options a user saved in Settings; fails_when=a kind's key is taken
@@ -45,8 +46,29 @@ final class HostKindTests: XCTestCase {
 
   func testOnlyAContainerIsOnThisMac() {
     XCTAssertEqual(
-      Self.every.map(\.isRemoteProvider), [false, false, true, true, true])
-    XCTAssertEqual(HostKind.remoteProviders, [.boxd, .exeDev, .ssh], "the menu's order changed")
+      Self.every.map(\.isRemoteProvider), [false, false, true, true, true, true])
+    XCTAssertEqual(
+      HostKind.remoteProviders, [.boxd, .exeDev, .railway, .ssh], "the menu's order changed")
+  }
+
+  /// Value: protects=a Railway workroom reached again after a relaunch; fails_when=the sandbox,
+  /// environment or pinned key is lost or renamed in config.json; why_new=#629; seam=none;
+  /// no_claim=the driver's use of it
+  func testARailwayRecordSurvivesConfigUnderItsStoredKeys() throws {
+    let record = RailwayHostRecord(
+      projectID: "prj", environmentID: "env", sandboxID: "sbx", hostKey: "ssh-ed25519 AAAA")
+    let data = try JSONEncoder().encode(HostDescriptor(driver: "railway", railway: record))
+    let json = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: data) as? [String: Any])["railway"]
+    XCTAssertEqual(
+      json as? [String: String],
+      [
+        "project_id": "prj", "environment_id": "env", "sandbox_id": "sbx",
+        "host_key": "ssh-ed25519 AAAA",
+      ])
+    let read = try JSONDecoder().decode(HostDescriptor.self, from: data)
+    XCTAssertEqual(read.kind, .railway)
+    XCTAssertEqual(read.railway, record)
   }
 
   /// Value: protects=a host this build can't name is never handled as one it can; fails_when=a

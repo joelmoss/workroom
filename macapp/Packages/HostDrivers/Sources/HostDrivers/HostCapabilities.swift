@@ -8,13 +8,26 @@ import WorkroomDomain
 
 /// What a driver's provider says of a host without reaching it, for a background read that must
 /// not wake it (#356).
-public enum HostPresence: Equatable, Sendable { case awake, asleep, gone }
+public enum HostPresence: Equatable, Sendable {
+  case awake, asleep, gone
+  /// The provider can't be asked until the user signs in to it again: Workroom's own sign-in to it
+  /// was revoked or expired (Railway, #629).
+  case signedOut
+}
 
-/// A driver whose hosts sleep, and whose provider can say so without the ssh login that would wake
-/// one (boxd).
+/// A driver whose provider can say whether a host is there without an ssh login: boxd, whose
+/// login would wake a sleeping box, and Railway, whose sandbox's status says it is gone.
 public protocol HostPresenceReporting: HostDriver {
-  /// Whether `host` is awake, asleep or gone; nil when the provider could not say.
+  /// Whether `host` is awake, asleep, gone or out of reach until a sign-in; nil when the provider
+  /// could not say.
   func presence(_ host: HostID) async -> HostPresence?
+  /// Whether this provider's hosts sleep, so a read that can't say must leave one be rather than
+  /// wake it (boxd). A host that never sleeps (Railway) is simply connected to.
+  var hostsSleep: Bool { get }
+}
+
+extension HostPresenceReporting {
+  public var hostsSleep: Bool { true }
 }
 
 /// A driver whose hosts can be stopped, and started again on this Mac (containers, #309).

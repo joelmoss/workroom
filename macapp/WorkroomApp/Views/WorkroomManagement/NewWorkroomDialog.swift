@@ -469,6 +469,7 @@ enum WorkroomPlace: Hashable {
     case .remote(.container(let runtime)): "A workroom in \(runtime.containerPhrase) on this Mac"
     case .remote(.boxd): "A workroom on a boxd machine"
     case .remote(.exeDev): "A workroom on an exe.dev VM"
+    case .remote(.railway): "A workroom in a Railway sandbox"
     case .remote(.ssh): "A folder on a Linux server you already have"
     }
   }

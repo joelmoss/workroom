@@ -19,4 +19,10 @@ final class HostSetupBundleTests: XCTestCase {
   func testTheGitHubSetupScriptShipsInTheBundle() throws {
     XCTAssertTrue(try HostSetup.bundled.exeDevGitHubScript().contains("github.int.exe.xyz"))
   }
+
+  // Value: protects=every Railway create can give its sandbox an identity; fails_when=railway.sh
+  // leaves host-setup or is renamed; seam=none; no_claim=what it does on a sandbox
+  func testTheRailwaySetupScriptShipsInTheBundle() throws {
+    XCTAssertTrue(try HostSetup.bundled.script("railway").contains("/etc/workroom-identity"))
+  }
 }
