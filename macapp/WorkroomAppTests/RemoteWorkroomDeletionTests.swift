@@ -45,6 +45,31 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     XCTAssertEqual(calls.all, ["forget gone", "forget crashed"])
   }
 
+  /// A Railway workroom's Ports list is its sandbox's (#632), so deleting the workroom stops its
+  /// forwards with the host, as a container's do, and nothing reconnects a sandbox that is gone.
+  @MainActor
+  func testDeletingARailwayWorkroomStopsItsHostsForwards() async throws {
+    let calls = Calls()
+    let id = UUID()
+    let host = HostDescriptor(
+      state: "destroyed", driver: HostKind.railway.driver, provisioner: mine, id: id,
+      workroomID: UUID(),
+      railway: RailwayHostRecord(
+        projectID: "prj", environmentID: "env", sandboxID: "sbx", hostKey: "ssh-ed25519 AAAA"))
+    let ports = PortForwardingModel.model(for: .init(host: .remote(id), workroom: nil))
+    XCTAssertTrue(PortForwardingModel.models[.remote(id)] === ports)
+    let forgotten = Mutex<[RemoteWorkrooms.Forgotten]>([])
+    try await RemoteWorkrooms.delete(
+      "w", host: host, environment: nil, recorder: calls.recorder,
+      onForgotten: { event in
+        forgotten.withLock { $0.append(event) }
+        WorkroomLifecycle.forgetRemote(event)
+      })
+    XCTAssertEqual(forgotten.withLock { $0 }, [.host(.remote(id))])
+    XCTAssertEqual(calls.all, ["forget w"])
+    XCTAssertNil(PortForwardingModel.models[.remote(id)], "the sandbox's forwards outlived it")
+  }
+
   /// Another build's host takes another build's key, so this one refuses it and records nothing;
   /// one already destroyed is anyone's to drop.
   func testAnotherBuildsLiveWorkroomIsRefusedBeforeAnythingIsDone() async throws {

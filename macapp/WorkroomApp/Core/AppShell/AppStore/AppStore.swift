@@ -383,17 +383,17 @@ final class AppStore: ObservableObject {
     commitHistory.focus(target: inspectorTarget)
   }
 
-  /// Forward the ports the selected container workroom's dev container declares, once a launch
-  /// (`PortForwardingModel.forwardDeclared`). On selection, not when the Ports list shows: opening
-  /// the workroom is when its dev server is wanted, whatever the inspector is showing. The read
-  /// connects the host, as every inspector read does, and selecting it has already started it.
+  /// Forward the ports the selected remote workroom's dev container declares, once a launch
+  /// (`PortForwardingModel.forwardDeclared`), on every host whose ports Workroom forwards
+  /// (`Workroom.portsPlace`). On selection, not when the Ports list shows: opening the workroom is
+  /// when its dev server is wanted, whatever the inspector is showing. The read connects the host,
+  /// as every inspector read does, and selecting it has already started it.
   private func forwardDeclaredPorts() {
-    guard let workroom = selectedWorkroom, workroom.isContainer || workroom.isSSH,
+    guard let workroom = selectedWorkroom, let place = workroom.portsPlace,
       let id = workroom.reachableHost,
       let location = try? RepositoryLocation.remote(host: id, path: workroom.path)
     else { return }
-    let model = PortForwardingModel.model(
-      for: .remote(id), workroom: workroom.isSSH ? workroom.host?.workroomID : nil)
+    let model = PortForwardingModel.model(for: place)
     guard !model.declared else { return }
     Task {
       await model.forwardDeclared {

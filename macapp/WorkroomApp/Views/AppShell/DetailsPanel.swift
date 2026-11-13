@@ -5,9 +5,9 @@ import WorkroomDomain
 import WorkroomVCS
 
 /// The inspector's **Details** pane: the selected workroom itself rather than its repository. Where
-/// it runs (this Mac, a container, a boxd or exe.dev machine) and its path there, then, for a
-/// container workroom, its Ports list. A remote provider publishes its machines' ports itself, and a
-/// workroom on this Mac reaches its ports directly, so neither shows one.
+/// it runs (this Mac, a container, a remote host) and its path there, then, for a container, SSH
+/// or Railway workroom, its Ports list. boxd and exe.dev publish their machines' ports themselves,
+/// and a workroom on this Mac reaches its ports directly, so neither shows one.
 struct DetailsPanel: View {
   @EnvironmentObject var store: AppStore
   @Environment(\.themeTokens) private var tokens
@@ -184,18 +184,22 @@ private struct DevContainerNote: View {
 
 extension DetailsPanel {
 
-  /// Only where ports can be forwarded: a container workroom this app reaches. Nowhere else has
-  /// anything to configure here.
+  /// Only where ports can be forwarded: a remote workroom this app reaches on a host whose ports
+  /// Workroom forwards (`TerminalTarget.portsPlace`). Nowhere else has anything to configure here.
   @ViewBuilder
   private func ports(_ target: TerminalTarget) -> some View {
-    if case .container = target.hostPlace, let host = target.remoteHost {
+    if let place = target.portsPlace {
       Divider()
-      PortsSection(model: .model(for: .remote(host)))
-    } else if target.hostPlace == .ssh, let host = target.remoteHost,
-      let workroom = target.remoteWorkroomID
-    {
-      Divider()
-      PortsSection(model: .model(for: .remote(host), workroom: workroom))
+      PortsSection(model: .model(for: place), host: Self.portsHost(target.hostPlace))
+    }
+  }
+
+  /// What a Ports row calls the host its ports are on.
+  private static func portsHost(_ kind: HostKind?) -> String {
+    switch kind {
+    case .container: "container"
+    case .railway: "sandbox"
+    default: "host"
     }
   }
 
@@ -319,12 +323,14 @@ struct InspectorWorkroomHeader: View {
   }
 }
 
-/// Ports forwarded from a container workroom's host to this Mac (issues #208, #254): the ones its
+/// Ports forwarded from a remote workroom's host to this Mac (issues #208, #254, #632): the ones its
 /// dev container declares, and any the user adds. Nothing is persisted across launches: the daemon
 /// closes every forwarded socket when the client detaches, so a list restored at launch would name
 /// addresses that no longer answer; the declared ones are forwarded again instead.
 private struct PortsSection: View {
   @ObservedObject var model: PortForwardingModel
+  /// What the host is called in the rows and the `+` tooltip: "container", "sandbox" or "host".
+  let host: String
   /// A new row's port field is showing, after `+`.
   @State private var adding = false
   @FocusState private var fieldFocused: Bool
@@ -336,7 +342,7 @@ private struct PortsSection: View {
         Text("Ports").font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
         Spacer(minLength: 0)
         InspectorHeaderButton(
-          systemImage: "plus", help: "Forward a port from this workroom's container"
+          systemImage: "plus", help: "Forward a port from this workroom's \(host)"
         ) {
           adding = true
           fieldFocused = true
@@ -405,8 +411,8 @@ private struct PortsSection: View {
     let address = "localhost:\(forward.localPort)"
     VStack(alignment: .leading, spacing: 1) {
       HStack(spacing: 6) {
-        // Mac first, arrow the way a connection goes: from the address here into the container.
-        Text("\(address) → container \(String(forward.remotePort))")
+        // Mac first, arrow the way a connection goes: from the address here into the host.
+        Text("\(address) → \(host) \(String(forward.remotePort))")
           .font(.system(.caption, design: .monospaced))
           .foregroundStyle(tokens.fgMuted)
           .textSelection(.enabled)
