@@ -132,8 +132,9 @@ public struct HostSetup: Sendable {
 ///
 /// Not a fifth `HostDriver` method, and not `openStream`: a pane is a process libghostty spawns and
 /// wires to its own pty, and a socketpair made in this process cannot become one. So the driver
-/// hands over a command instead. For ssh that is `ssh -t <host> workroomd attach …`, the far side's
-/// attach client running in the pty ssh allocates there. An SDK-exec driver has no such command,
+/// hands over a command instead. For ssh that is this Mac's `workroomd attach --dial ssh -T <host>
+/// … relay` (ADR 0074), the attach client running in the pane's own pty and reaching the host's
+/// daemon over ssh. A container's is the runtime's `exec -t`. An SDK-exec driver has no command,
 /// and would need a local bridge process: a Phase 4 question (design doc, Phase 3).
 public protocol HostTerminalDriver: HostDriver {
   /// The command a pane runs to attach to `session` on `host`, starting in `workingDirectory` if

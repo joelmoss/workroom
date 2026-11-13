@@ -142,40 +142,127 @@ public enum SSHTransport {
   /// configuration written to `hostDirectory`.
   public static func attachCommand(
     to host: Host, in hostDirectory: URL, session: UUID, workingDirectory: String, restored: Bool,
-    metadata: [(key: String, value: String)] = [], runCommand: String? = nil
+    metadata: [(key: String, value: String)] = [], runCommand: String? = nil,
+    client: String = attachClient
   ) throws -> String {
     attachCommand(
       via: try route(to: host, in: hostDirectory), in: hostDirectory,
       daemonSocket: host.daemonSocket, session: session, workingDirectory: workingDirectory,
-      restored: restored, metadata: metadata, runCommand: runCommand)
+      restored: restored, metadata: metadata, runCommand: runCommand, client: client)
   }
 
   /// The command a pane runs to attach to `session` over `route`, keeping ssh's log in
-  /// `hostDirectory`.
+  /// `hostDirectory` (ADR 0074).
+  ///
+  /// The pane runs `client`, this Mac's own `workroomd attach`, which sets raw mode on the pane's
+  /// pty and sends its size as `Resize` frames, and it starts `ssh -T <host> … relay` itself
+  /// (`--dial`) and speaks the daemon's framed protocol over it. `-T`: no terminal on the host, so
+  /// no host pty, and nothing a relay in front of sshd (Railway's) writes into one. Everything
+  /// after `--dial` is ssh's command line; attach's own flags come before it.
+  ///
+  /// `client`'s environment is the pane's, which it filters itself to what a host session may take
+  /// (`wr_protocol::terminal::is_host_attach_variable`), plus the session contract set here
+  /// (`clientVariables`) and the route's own (an ssh agent), which ssh reads and the filter drops.
   public static func attachCommand(
     via route: Route, in hostDirectory: URL, daemonSocket: String, session: UUID,
     workingDirectory: String, restored: Bool, metadata: [(key: String, value: String)] = [],
-    runCommand: String? = nil
+    runCommand: String? = nil, client: String = attachClient
   ) -> String {
-    // `-t`: the attach client on the far side wants a terminal, for raw mode and the pane's size,
-    // and ssh forwards the pane's resizes to it. It outranks the config's `RequestTTY no`, which
-    // is right for the service stream.
     let log = attachLog(session, in: hostDirectory).path
     let environment = route.environment.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }
     let ssh =
-      (environment.isEmpty ? [] : ["/usr/bin/env"] + environment) + ["/usr/bin/ssh"]
-      + route.options + [
-        "-E", log, "-o", "PermitLocalCommand=yes", "-o", "LocalCommand=printf '\\0338\\033[J'",
-        "-t", route.destination,
-        loginShellCommand(
-          remoteAttachCommand(
-            binary: DaemonInstall.binary(besideSocket: daemonSocket), session: session,
-            socket: daemonSocket, resources: DaemonInstall.resources(besideSocket: daemonSocket),
-            workingDirectory: workingDirectory, restored: restored, metadata: metadata,
-            runCommand: runCommand)),
+      ["/usr/bin/ssh"] + route.options + [
+        "-E", log, "-T", route.destination,
+        loginShellCommand(hostRelayCommand(socket: daemonSocket)),
       ]
-    return (["/bin/sh", "-c", attachWrapper, "workroom-attach", log] + ssh)
+    let attach =
+      ["/usr/bin/env"]
+      + inheritedSessionVariables.flatMap { ["-u", $0] }
+      + environment
+      + clientVariables(
+        session: session, workingDirectory: workingDirectory, metadata: metadata,
+        runCommand: runCommand)
+      + [client, "attach"] + (restored ? ["--no-create"] : []) + ["--dial"] + ssh
+    return (["/bin/sh", "-c", attachWrapper, "workroom-attach", log] + attach)
       .map(shellQuoted).joined(separator: " ")
+  }
+
+  /// This Mac's own `workroomd`, which a remote pane runs to attach (`attachCommand`): the app
+  /// bundle's, as a local pane's (`PersistentSessionPaths.binaryURL`). Where it would be when it
+  /// is missing, so the pane says it could not start it rather than the app throwing.
+  public static var attachClient: String {
+    let candidates = [
+      Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/workroomd"),
+      Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent("workroomd"),
+    ].compactMap { $0 }
+    return
+      (candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
+      ?? candidates[0]).path
+  }
+
+  /// The session variables a pane's environment may already hold, from the app's own environment
+  /// (an app started from a Workroom terminal has that terminal's): cleared before the attach sets
+  /// its own, so none of them reaches the host as this session's.
+  static var inheritedSessionVariables: [String] {
+    [
+      "WORKROOM_SESSION_ID", "WORKROOM_SESSION_SOCKET", "WORKROOM_SESSION_SHELL",
+      "WORKROOM_SESSION_CWD", "WORKROOM_SESSION_COMMAND", "WORKROOM_SESSION_RUN",
+      "WORKROOM_SESSION_RESOURCES", "WORKROOM_SESSION_KEEPALIVE", "WORKROOM_SESSION_FALLBACK",
+    ] + SessionMetadataKey.environmentVariables.map(\.variable)
+  }
+
+  /// What the Mac's attach client sends the host's daemon about the session, as `workroomd attach`
+  /// reads it (`AttachRequest::from_vars`).
+  ///
+  /// The terminal is always `xterm-ghostty`: the host's daemon falls back to `xterm-256color`
+  /// without Ghostty's shell integration when the bootstrap's terminfo is not beside it (#239), as
+  /// the host-side script decided before. `metadata`'s workroom and title go in under the same
+  /// variables a local pane's attach gets (`SessionMetadataKey.environmentVariables`), which the
+  /// host's daemon keeps (#255). Nothing else of it does: the project is this Mac's path, which the
+  /// host neither keeps nor needs.
+  ///
+  /// `runCommand` makes the session a run session (#522), whose daemon runs it under the run
+  /// supervisor in the host's own login shell.
+  ///
+  /// `keepaliveVariable` asks the host's daemon to probe this pane's terminal (#593), so the
+  /// session stops reading as attached about a minute after this Mac sleeps or drops off the
+  /// network. The pane's libghostty answers the probe through the client, whether or not anyone
+  /// types.
+  static func clientVariables(
+    session: UUID, workingDirectory: String, metadata: [(key: String, value: String)],
+    runCommand: String?
+  ) -> [String] {
+    let names = Dictionary(uniqueKeysWithValues: SessionMetadataKey.environmentVariables)
+      .filter { [SessionMetadataKey.workroom, SessionMetadataKey.title].contains($0.key) }
+    return [
+      "TERM=xterm-ghostty",
+      keepaliveVariable,
+      "WORKROOM_SESSION_ID=\(session.uuidString)",
+      "WORKROOM_SESSION_CWD=\(workingDirectory)",
+    ]
+      + (runCommand.map { ["WORKROOM_SESSION_RUN=1", "WORKROOM_SESSION_COMMAND=\($0)"] } ?? [])
+      + metadata.compactMap { entry in
+        names[entry.key].flatMap { entry.value.isEmpty ? nil : "\($0)=\(entry.value)" }
+      }
+  }
+
+  /// What a pane's ssh runs on the host (ADR 0074): the installed daemon's `relay`, once the
+  /// install is checked, in sh (`loginShellCommand`).
+  ///
+  /// A host an older Nightly made before the rename (#525) has only `wr-agent`, and its supervisor
+  /// starts only that, so attaching again could never succeed: it says so on stderr, which reaches
+  /// the pane, and exits 1, which the Mac's client passes on as a stop (D3). A host with no daemon
+  /// installed yet (rebooted from tmpfs, or never bootstrapped) exits 255, which the client reports
+  /// as a lost link, so the pane attaches again with backoff: by then the bootstrap, which nothing
+  /// orders panes after, has installed it.
+  public static func hostRelayCommand(socket: String) -> String {
+    let binary = DaemonInstall.binary(besideSocket: socket)
+    let former = DaemonInstall.formerBinary(besideSocket: socket)
+    return "if ! test -e \(shellQuoted(binary)) && test -x \(shellQuoted(former)); then echo "
+      + shellQuoted("workroom: " + DaemonInstall.formerLayoutMessage) + " >&2; exit 1; fi; "
+      + "test -x \(shellQuoted(binary)) || { echo "
+      + shellQuoted("workroom: no daemon is installed at \(binary) yet") + " >&2; exit 255; }; "
+      + "exec " + relayCommand(binary: binary, socket: socket)
   }
 
   /// sshd evaluates its command with the account's login shell, which may be fish. Keep the
@@ -193,7 +280,8 @@ public enum SSHTransport {
     return "sh -c " + quoted + "'"
   }
 
-  /// What a pane runs around its ssh (#241), as `sh -c <this> workroom-attach <log> <ssh argv>`.
+  /// What a pane runs around its attach (#241), as `sh -c <this> workroom-attach <log> <argv>`:
+  /// the Mac's attach client and its ssh (`attachCommand`), or a container runtime's `exec`.
   ///
   /// ssh's own messages go to the session's log (`-E`), so the app can read why the last attach
   /// failed (`hostRefusedLastAttach`) rather than guess from the status, which is 255 for all of
@@ -201,16 +289,17 @@ public enum SSHTransport {
   /// the pane stops retrying one, and its reason (a changed host key, a refused key) is what the
   /// user has to act on. Any other lost link says, in plain words, that the pane keeps trying
   /// (`retryNotice`); ssh's own reason stays in the log.
-  /// Until ssh is in, the pane says what it is waiting for; `LocalCommand`, which ssh runs once it
-  /// has authenticated and before the session starts, restores the cursor saved ahead of that line
-  /// and erases from there (DECSC, DECRC, ED), so an attach that goes through shows only the
-  /// session, however many rows the line wrapped onto. `SHELL` is what ssh runs `LocalCommand`
-  /// with, so it is a POSIX one.
+  /// Until the host answers, the pane says what it is waiting for, after saving the cursor
+  /// (DECSC). The attach client, once its handshake with the host's daemon succeeds, restores it
+  /// and erases from there (DECRC, ED), so an attach that goes through shows only the session,
+  /// however many rows the line wrapped onto. `SHELL` is what ssh runs a `ProxyCommand` from the
+  /// user's own configuration with, so it is a POSIX one.
   ///
-  /// ssh's status goes beside the log (`attachStatus`), because the pane's own exit status never
+  /// The status goes beside the log (`attachStatus`), because the pane's own exit status never
   /// carries it: on macOS libghostty starts every command under `/usr/bin/login`, which exits 0
-  /// whatever ran under it (#392). The status is removed before ssh starts, so a wrapper killed
-  /// before it writes one leaves none rather than the last attach's.
+  /// whatever ran under it (#392). The client exits 255 for a link to try again, as ssh does. The
+  /// status is removed before the attach starts, so a wrapper killed before it writes one leaves
+  /// none rather than the last attach's.
   public static let attachWrapper = """
     log=$1; shift; printf '\\0337%s' "workroom: waiting for this terminal's host..."; \
     : > "$log"; rm -f "${log%.log}.status"; \
@@ -271,7 +360,9 @@ public enum SSHTransport {
     "load key", "bad owner or permissions",
   ]
 
-  /// What runs on the host, in the pty ssh allocates there.
+  /// What a container pane runs in its container, in the pty the runtime's `exec -t` allocates
+  /// there (`ContainerExecTransport.attachCommand`, ADR 0060). An ssh host's pane no longer runs
+  /// it: its attach client is the Mac's (`attachCommand`, ADR 0074).
   ///
   /// The session contract is the environment `workroomd attach` reads, set with `env` because ssh
   /// carries none of the pane's own. Deliberately absent: the shell (the host's own login shell
