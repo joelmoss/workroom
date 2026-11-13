@@ -15,7 +15,7 @@ Workroom sets these for both the setup script and the teardown script. The scrip
 | `WORKROOM_PATH` | The absolute path of the workroom directory. |
 | `WORKROOM_ROOT_PATH` | The absolute path of the root, the project the workroom belongs to. Scripts run inside the workroom, so use this to reach files in the root. |
 | `WORKROOM_PARENT_DIR` | A deprecated alias for `WORKROOM_ROOT_PATH`, still set so existing scripts keep working. Use `WORKROOM_ROOT_PATH` in new scripts. |
-| `WORKROOM_HOST` | Where the script runs: `local` on your Mac, or the kind of host for a remote workroom: `boxd`, `exedev`, `docker`, `apple` or `ssh`. |
+| `WORKROOM_HOST` | Where the script runs: `local` on your Mac, or the kind of host for a remote workroom: `boxd`, `exedev`, `railway`, `docker`, `apple` or `ssh`. |
 
 Scripts also receive the rest of the environment your login shell sets up in the workroom, such as anything you export in your dotfiles and the tool versions the workroom pins. See [Prepare a project](../guides/prepare-a-project.md) for writing the scripts.
 

@@ -23,6 +23,9 @@ final class HostReachability: @unchecked Sendable {
   /// When each host's last attempt failed, which answers for it for `retryAfter`, and whether it
   /// failed for an older layout (#525), which the backoff keeps saying.
   private var failedAt: [HostID: (at: ContinuousClock.Instant, olderLayout: Bool)] = [:]
+  /// The hosts their provider last said are gone, which the backoff keeps saying, so the status
+  /// shows gone (with Remove Workroom) rather than unreachable (#629).
+  private var gone: Set<HostID> = []
   /// When boxd last said each host was asleep, which answers for it for `retryAfter` (#356).
   private var asleepAt: [HostID: ContinuousClock.Instant] = [:]
   /// The host of the workroom selected in each window (one `AppStore` per window), which a
@@ -215,6 +218,7 @@ final class HostReachability: @unchecked Sendable {
       now() - failed.at < Self.retryAfter
     {
       if failed.olderLayout { throw RepositoryRoutingError.olderLayout(host) }
+      if lock.withLock({ gone.contains(host) }) { throw RepositoryRoutingError.gone(host) }
       throw RepositoryRoutingError.unavailable(host)
     }
     // A boxd box wakes on an ssh login, so a background read must not connect to one that is
@@ -225,10 +229,15 @@ final class HostReachability: @unchecked Sendable {
     // wakes nothing, and a sandbox Railway destroyed then reads as gone rather than unreachable.
     let background = !opened && !wake && !selected
     if background || !hostsSleep(host) {
-      switch await presence(host) {
+      let presence = await presence(host)
+      if presence != .gone { _ = lock.withLock { gone.remove(host) } }
+      switch presence {
       case .asleep: throw RepositoryRoutingError.asleep(host)
       case .gone:
-        lock.withLock { failedAt[host] = (now(), false) }
+        lock.withLock {
+          failedAt[host] = (now(), false)
+          gone.insert(host)
+        }
         throw RepositoryRoutingError.gone(host)
       // Its relay key still reaches it, so what the user asked for still connects; a background
       // read says why it couldn't check (#629).

@@ -76,6 +76,17 @@ public final class RailwayPlacementStore: Sendable {
   public func ensure(workspaceID: String, api: RailwayAPI, environmentName: String) async throws
     -> (projectID: String, environmentID: String)
   {
+    // One at a time: the creates a setup sheet carries on start together, and two would each
+    // make a project and an environment.
+    try await RailwaySerial.shared.run {
+      try await self.ensureNow(
+        workspaceID: workspaceID, api: api, environmentName: environmentName)
+    }
+  }
+
+  private func ensureNow(workspaceID: String, api: RailwayAPI, environmentName: String)
+    async throws -> (projectID: String, environmentID: String)
+  {
     var placement = read()
     if placement.workspaceID != workspaceID {
       try update {
@@ -121,6 +132,24 @@ public final class RailwayPlacementStore: Sendable {
 
   public static func randomSuffix() -> String {
     String(UUID().uuidString.lowercased().prefix(6))
+  }
+}
+
+/// Runs this Mac's Railway setup steps one at a time, in order: making the placement, and making
+/// and registering the Mac's key and pinning the relay's, which concurrent first creates would
+/// otherwise each do.
+public actor RailwaySerial {
+  public static let shared = RailwaySerial()
+  private var tail: Task<Void, Never>?
+
+  public func run<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) async throws -> T {
+    let previous = tail
+    let task = Task<T, Error> {
+      await previous?.value
+      return try await body()
+    }
+    tail = Task { _ = try? await task.value }
+    return try await task.value
   }
 }
 

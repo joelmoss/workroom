@@ -113,7 +113,10 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
   /// a workroom's host. One that gets no further is destroyed.
   public func create() async throws -> HostID {
     let (identity, hostKey) = try await ProvisioningProgress.step(.account, report: false) {
-      (try await macKey(), try await pinnedRelayKey())
+      // One create at a time makes the key and the pin; the rest find them.
+      try await RailwaySerial.shared.run {
+        (try await self.macKey(), try await self.pinnedRelayKey())
+      }
     }
     let sandbox = try await ProvisioningProgress.step(.machine) {
       try await api.createSandbox(environmentID: configuration.environmentID)

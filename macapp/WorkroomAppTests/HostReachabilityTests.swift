@@ -188,7 +188,8 @@ final class HostReachabilityTests: XCTestCase {
     asked.setGone()
     connects.advance(HostReachability.retryAfter)
     let before = asked.calls
-    for expected in [RepositoryRoutingError.gone(host), .unavailable(host)] {
+    // Still gone inside the window, so the status keeps saying so (#629).
+    for expected in [RepositoryRoutingError.gone(host), .gone(host)] {
       do {
         try await remote.ensureConnected(host)
         XCTFail("a gone machine was connected to")
@@ -427,11 +428,13 @@ final class HostReachabilityTests: XCTestCase {
     // Destroyed on Railway: gone, even while selected.
     asked.set(presence: .gone)
     remote.select(host)
-    do {
-      try await remote.ensureConnected(host)
-      XCTFail("a gone sandbox was connected to")
-    } catch {
-      XCTAssertEqual(error as? RepositoryRoutingError, .gone(host))
+    for _ in 0..<2 {
+      do {
+        try await remote.ensureConnected(host)
+        XCTFail("a gone sandbox was connected to")
+      } catch {
+        XCTAssertEqual(error as? RepositoryRoutingError, .gone(host), "gone decayed")
+      }
     }
     XCTAssertEqual(connects.calls, 2)
   }

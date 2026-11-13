@@ -236,7 +236,19 @@ final class RailwayHostDriverTests: XCTestCase {
     }
     XCTAssertEqual(relay.calls(to: "ssh").count, 1, "a refusal was retried")
     XCTAssertEqual(variables(railway, "sandboxDestroy")?["id"] as? String, "sbx-1")
-    XCTAssertTrue(SSHTransport.isRefusal("Host key verification failed."))
+
+    // A pane whose ssh met another key stops retrying.
+    let driver = driver(self.railway(), StubRelay())
+    let host = try await driver.create()
+    guard case .remote(let id) = host else { return XCTFail("\(host)") }
+    let session = UUID()
+    _ = try driver.attachCommand(
+      to: host, session: session, workingDirectory: "/root", restored: false)
+    XCTAssertFalse(driver.hostRefusedLastAttach(of: session, on: host))
+    try "Host key verification failed.\n".write(
+      to: root.appendingPathComponent("hosts/\(id.uuidString)/attach-\(session.uuidString).log"),
+      atomically: true, encoding: .utf8)
+    XCTAssertTrue(driver.hostRefusedLastAttach(of: session, on: host))
   }
 
   /// Value: protects=no sandbox is left billing after a create that failed (user story 28);
