@@ -42,6 +42,8 @@ enum VCSStatusPresentation {
       case .busy: why = "status unavailable, repository is busy"
       case .staleWorkingCopy: why = "status unavailable, working copy is out of date"
       case .olderLayout: why = "status unavailable, workroom needs creating again"
+      case .signedOut: why = "status unavailable, signed out of Railway"
+      case .gone: why = "host is gone, remove the workroom"
       default: why = "status unavailable"
       }
       return StatusDot(symbol: "questionmark.circle", semantic: .unknown, accessibility: why)

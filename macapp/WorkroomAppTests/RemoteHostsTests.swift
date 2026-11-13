@@ -807,6 +807,53 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertFalse(remote.registry.runtimeIsMissing(for: .remote(id)))
   }
 
+  /// Value: protects=a Railway workroom is reached and deleted after a relaunch from config alone
+  /// (#629); fails_when=its record isn't adopted at reload or at delete, so every pane, read and
+  /// delete reads the host as unknown; or its clone goes in /home/root; seam=HostDriverRegistry
+  @MainActor func testARailwayWorkroomIsReachedAndDeletedAfterARelaunch() throws {
+    let id = UUID()
+    let record = RailwayHostRecord(
+      projectID: "prj", environmentID: "env-1", sandboxID: "sbx-1", hostKey: "ssh-ed25519 AAAA")
+    let host = HostDescriptor(
+      driver: HostKind.railway.driver, provisioner: RemoteWorkrooms.provisioner, id: id,
+      railway: record)
+    let key = try XCTUnwrap(RemoteHosts.DriverKey(host))
+    XCTAssertEqual(key, .railway(environment: "env-1"))
+    XCTAssertNil(
+      RemoteHosts.DriverKey(HostDescriptor(driver: HostKind.railway.driver, id: id)),
+      "a Railway host with no record names no driver")
+    let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
+    XCTAssertEqual(RemoteWorkrooms.clonePath(for: repository, on: key), "/root/r")
+    XCTAssertEqual(host.machineName, "sbx-1")
+
+    let remote = RemoteHosts()
+    remote.reachability.adopt([
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(name: "w", path: "/root/r", vcsName: "workroom/w", warnings: [], host: host)
+        ])
+    ])
+    let driver = try XCTUnwrap(
+      remote.registry.existingDriver(holding: id) as? RailwayHostDriver)
+    XCTAssertEqual(driver.configuration.environmentID, "env-1")
+    // Held, so a pane, a read and a delete reach it (an attach would write its ssh files).
+    var adopted = HostDescriptor(driver: HostKind.railway.driver)
+    driver.record(.remote(id), in: &adopted)
+    XCTAssertEqual(adopted.railway, record)
+    XCTAssertFalse(remote.registry.runtimeIsMissing(for: .remote(id)))
+
+    // A delete straight after launch, before any reload adopted it.
+    let fresh = RemoteHosts().registry
+    let deletion = try XCTUnwrap(try fresh.environment(toDelete: [host]))
+    let environment = try XCTUnwrap(deletion.environment(for: host))
+    XCTAssertEqual(environment.daemonSocket, "/root/.local/state/workroom/daemon/workroomd.sock")
+    XCTAssertNil(environment.gitHubToken)
+    var recorded = HostDescriptor(driver: HostKind.railway.driver)
+    (try fresh.driver(key) as? any HostRecording)?.record(.remote(id), in: &recorded)
+    XCTAssertEqual(recorded.railway, record)
+  }
+
   /// An exe.dev host (#259) is its own driver key, keyed by its account: never Docker's or boxd's.
   /// Its clone goes in the home of the user exe.dev logs in as, its base serves only its own
   /// account, and its descriptor round-trips through config.

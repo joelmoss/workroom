@@ -2,6 +2,7 @@ import AppKit
 import DevContainer
 import SwiftUI
 import WorkroomDomain
+import WorkroomVCS
 
 /// The inspector's **Details** pane: the selected workroom itself rather than its repository. Where
 /// it runs (this Mac, a container, a boxd or exe.dev machine) and its path there, then, for a
@@ -42,6 +43,7 @@ struct DetailsPanel: View {
         }
         devContainer(target)
         hostOptions(target)
+        railway(target)
       }
       .padding(12)
       ports(target)
@@ -81,6 +83,78 @@ struct DetailsPanel: View {
         ref: RemoteWorkrooms.splitBase(
           store.projectStore.effectiveBaseBranch(for: project) ?? "HEAD", remotes: ["origin"]
         ).branch)
+    }
+  }
+}
+
+extension DetailsPanel {
+  /// A Railway workroom's standing (#629): a sandbox Railway no longer has is gone, with Remove
+  /// Workroom; one Workroom can't check on because its Railway sign-in was revoked or expired is
+  /// signed out, with Sign In.
+  @ViewBuilder
+  fileprivate func railway(_ target: TerminalTarget) -> some View {
+    if target.hostPlace == .railway, let sid = store.inspectorTargetID {
+      RailwayHostNote(sid: sid)
+    }
+  }
+}
+
+/// What the Details pane says of a Railway workroom that is gone or signed out, with the one
+/// thing to do about it.
+struct RailwayHostNote: View {
+  @EnvironmentObject var store: AppStore
+  @EnvironmentObject var vcsStatus: VCSStatusService
+  let sid: SidebarID
+  private var failure: VCSStatusFailure? { vcsStatus.workroomStatuses[sid]?.failure }
+  /// Whether this build holds a Railway sign-in: nil until read.
+  @State private var signedIn: Bool?
+  @State private var signingIn = false
+  @State private var problem: String?
+
+  var body: some View {
+    Group {
+      if failure == .gone {
+        VStack(alignment: .leading, spacing: 6) {
+          Text(RepositoryRoutingError.goneMessage)
+            .font(.caption).foregroundStyle(.secondary)
+            .accessibilityIdentifier("details.railwayGone")
+          Button("Remove Workroom…") { store.requestDeleteWorkroom(sid) }
+            .help("Remove this workroom: its Railway sandbox is gone, and its work with it.")
+            .accessibilityIdentifier("details.railwayRemove")
+        }
+      } else if signedIn == false || (failure == .signedOut && signedIn != true) {
+        VStack(alignment: .leading, spacing: 6) {
+          Text(RepositoryRoutingError.signedOutMessage)
+            .font(.caption).foregroundStyle(.secondary)
+            .accessibilityIdentifier("details.railwaySignedOut")
+          if let problem {
+            Text(problem).font(.caption).foregroundStyle(.red)
+          }
+          Button(signingIn ? "Finish Signing In in Your Browser…" : "Sign In to Railway…") {
+            signIn()
+          }
+          .disabled(signingIn)
+          .help("Open Railway's sign-in page in your browser.")
+          .accessibilityIdentifier("details.railwaySignIn")
+        }
+      }
+    }
+    .task(id: failure) { signedIn = await RailwayAccount.shared.session.isSignedIn }
+  }
+
+  private func signIn() {
+    signingIn = true
+    problem = nil
+    Task {
+      do {
+        try await RailwayAccount.shared.signInWithBrowser()
+      } catch is CancellationError {
+      } catch {
+        problem = error.localizedDescription
+      }
+      signingIn = false
+      // The next status sweep reads the workroom again with the new sign-in.
+      signedIn = await RailwayAccount.shared.session.isSignedIn
     }
   }
 }

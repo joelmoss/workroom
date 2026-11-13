@@ -57,6 +57,12 @@ extension CreationRun {
         (.machine, "Create VM"), (.boot, "Wait for boot"), (.setup, "Set up machine"),
         (.connect, "Connect"), (.clone, "Clone repository"), (.checkout, "Check out branch"),
       ]
+    case .railway:
+      remote = [
+        (.repository, "Check repository"), (.account, "Check Railway account"),
+        (.machine, "Create sandbox"), (.boot, "Wait for sandbox"), (.setup, "Set up sandbox"),
+        (.connect, "Connect"), (.clone, "Clone repository"), (.checkout, "Check out branch"),
+      ]
     }
     // The root's included files (#367), copied in once the branch is out, then the setup script,
     // as on this Mac. The script's row is the local row, under the local create's id.

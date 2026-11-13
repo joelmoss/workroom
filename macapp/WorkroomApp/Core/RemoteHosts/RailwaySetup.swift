@@ -46,13 +46,31 @@ final class RailwaySetup: RemoteSetup {
   let neededWorkspaceID: String?
 
   private let railway: RailwayAccount
+  /// Where the picked workspace is kept, for the first create to make the project in.
+  private let placement: RailwayPlacementStore
   /// The sign-in waiting on the browser, which closing the sheet stops.
   private var signingIn: Task<Result<Void, Error>, Never>?
   private var isCancelled = false
 
-  init(account: RailwayAccount, neededWorkspaceID: String?) {
+  init(
+    account: RailwayAccount, neededWorkspaceID: String?,
+    placement: RailwayPlacementStore = RailwayAccount.placement
+  ) {
     railway = account
     self.neededWorkspaceID = neededWorkspaceID
+    self.placement = placement
+    selectedWorkspaceID = placement.read().selectedWorkspaceID
+  }
+
+  /// The setup a Railway create waits on, or nil when Workroom is signed in and the workspace
+  /// picked (and holding the project already recorded) is one the sign-in reaches.
+  static func needed(
+    account: RailwayAccount = .shared, placement: RailwayPlacementStore = RailwayAccount.placement
+  ) async -> RailwaySetup? {
+    let setup = RailwaySetup(
+      account: account, neededWorkspaceID: placement.read().workspaceID, placement: placement)
+    await setup.refresh()
+    return setup.isReady ? nil : setup
   }
 
   /// The project's workspace isn't among those granted.
@@ -143,6 +161,13 @@ final class RailwaySetup: RemoteSetup {
   func select(_ id: String) async {
     guard workspaces.contains(where: { $0.id == id }) else { return }
     selectedWorkspaceID = id
+    remember(id)
+  }
+
+  /// Keeps the picked workspace for the next create. A failed write leaves the pick on screen.
+  private func remember(_ id: String?) {
+    guard let id, placement.read().selectedWorkspaceID != id else { return }
+    try? placement.update { $0.selectedWorkspaceID = id }
   }
 
   /// The sheet is gone: a sign-in still waiting on the browser stops listening.
@@ -170,6 +195,7 @@ final class RailwaySetup: RemoteSetup {
       trialing = trials
       account = .signedIn
       selectedWorkspaceID = defaultSelection()
+      remember(selectedWorkspaceID)
     } catch RailwaySessionError.signedOut {
       clear()
       account = .signedOut("Your Railway sign-in has ended. Sign in again to carry on.")

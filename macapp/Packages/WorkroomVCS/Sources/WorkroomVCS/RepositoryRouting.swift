@@ -12,6 +12,9 @@ public enum RepositoryRoutingError: Error, Equatable, Sendable, LocalizedError,
   case asleep(HostID)
   /// A boxd machine boxd says is not found: deleted, or in another org or account (#356).
   case gone(HostID)
+  /// A provider host whose provider Workroom isn't signed in to any more (a Railway sign-in
+  /// revoked or expired, #629): a background read leaves it be until the user signs in again.
+  case signedOut(HostID)
   /// A host an older Nightly made, which this build can't open and has to be made again: one from
   /// before the daemon was renamed (#525), or a container from before #308, reached over ssh.
   case olderLayout(HostID)
@@ -24,6 +27,17 @@ public enum RepositoryRoutingError: Error, Equatable, Sendable, LocalizedError,
     "The box is asleep, or boxd could not say (check the boxd CLI and `boxd auth`). Open the "
     + "workroom to reach it."
 
+  /// What a read of a host its provider no longer has says: a boxd machine not found, or a
+  /// Railway sandbox destroyed, failed or missing (#356, #629). Its clone went with it.
+  public static let goneMessage =
+    "This workroom's host is gone: it was deleted on its provider (or, on boxd, it's in an org "
+    + "or account that isn't active). Its work went with it, so remove the workroom."
+
+  /// What a read of a host whose provider sign-in ended says (#629), here and on the Changes panel.
+  public static let signedOutMessage =
+    "Workroom is signed out of Railway, so it can't check on this workroom's sandbox. Sign in to "
+    + "Railway to reach it again."
+
   public var errorDescription: String? {
     switch self {
     case .olderLayout: return HostID.olderLayoutMessage
@@ -31,8 +45,8 @@ public enum RepositoryRoutingError: Error, Equatable, Sendable, LocalizedError,
     case .mixedHosts: return "Working and shared repositories must be on the same host."
     case .unavailable: return "Repository service unavailable."
     case .asleep: return Self.asleepMessage
-    case .gone:
-      return "This workroom's boxd machine is gone, or in a boxd org or account that isn't active."
+    case .gone: return Self.goneMessage
+    case .signedOut: return Self.signedOutMessage
     case .registrationRequired:
       return "Reload projects to register this repository before changing it."
     }

@@ -273,7 +273,7 @@ extension HostDescriptor {
       return "Docker container\(context) on this Mac"
     case .container(.apple):
       return "Apple container on this Mac"
-    case .boxd, .exeDev, nil:
+    case .boxd, .exeDev, .railway, nil:
       let provider = kind?.displayName ?? driver
       return provider.map { "Remote workroom on \($0)" } ?? "Remote workroom"
     }
@@ -282,8 +282,11 @@ extension HostDescriptor {
   /// The name the host's provider lists it under, so it can be found in boxd's or exe.dev's
   /// dashboard, or in `docker ps`: every driver names a host `workroom-<id>`.
   var machineName: String? {
-    kind == .ssh
-      ? sshDestination
-      : (isDestroyed ? nil : id.map(ContainerHostDriver.containerName))
+    switch kind {
+    case .ssh: sshDestination
+    // A Railway sandbox has no name: its id is what the dashboard lists (#629).
+    case .railway: isDestroyed ? nil : railway?.sandboxID
+    default: isDestroyed ? nil : id.map(ContainerHostDriver.containerName)
+    }
   }
 }

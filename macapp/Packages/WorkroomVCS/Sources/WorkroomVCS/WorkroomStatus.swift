@@ -89,6 +89,8 @@ public enum VCSStatusFailure: Equatable, Sendable {
   case staleWorkingCopy  // the working tree changed while it was being read; a retry settles it
   case asleep  // a boxd box its provider put to sleep; a probe leaves it be (#356)
   case olderLayout  // a host an older Nightly made, this build can't open (#525, #308)
+  case signedOut  // a Railway host while Workroom's Railway sign-in has ended (#629)
+  case gone  // a host its provider no longer has: removing the workroom is all that's left (#629)
 }
 
 /// One changed path in the working tree, with its change kind (for the detail panel grouping).
@@ -324,7 +326,7 @@ public struct WorkroomStatus: Equatable, Sendable {
     switch failure {
     // Unknown-because-the-probe-failed: above clean, below dirty. `.timeout` is left out, as before.
     case .unavailable, .registrationRequired, .missingPath, .notRepository, .busy,
-      .staleWorkingCopy, .olderLayout:
+      .staleWorkingCopy, .olderLayout, .signedOut, .gone:
       return 1
     case .timeout, .asleep, nil: break
     }

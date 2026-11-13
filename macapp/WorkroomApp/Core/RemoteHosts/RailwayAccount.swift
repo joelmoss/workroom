@@ -43,11 +43,34 @@ final class RailwayAccount: Sendable {
     #endif
     return RailwayAccount(
       transport: URLSessionRailwayTransport(),
-      store: KeychainTokenStore(
-        service: keychainService(bundleID: bundleID), accessGroup: sharedAccessGroup),
+      store: KeychainTokenStore(service: keychainService(bundleID: bundleID)),
       lock: FileRefreshLock(path: refreshLockPath), clientID: clientID,
       open: { url in _ = await MainActor.run { NSWorkspace.shared.open(url) } })
   }()
+
+  /// This Mac's Railway folder (ADR 0071, #629): its ssh key for the relay, the relay's pinned host
+  /// key and the placement (`RailwayPlacement`). One for Release and Nightly, which share the
+  /// project, environment, key and hosts though each signs in itself (ADR 0073); a Dev build's
+  /// own. A test process gets a folder of its own, so no test reads or writes the developer's.
+  static let directory: URL = {
+    let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("Workroom", isDirectory: true)
+    #if DEBUG
+      if AppEnvironment.current.isTestProcess {
+        return FileManager.default.temporaryDirectory.appendingPathComponent(
+          "workroom-railway-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)",
+          isDirectory: true)
+      }
+    #endif
+    let folder =
+      RemoteWorkrooms.sharedHostBuilds.contains(bundleID)
+      ? base : base.appendingPathComponent(bundleID, isDirectory: true)
+    return folder.appendingPathComponent("railway", isDirectory: true)
+  }()
+
+  /// Where this Mac keeps its Railway hosts: the workspace, project and environment.
+  static let placement = RailwayPlacementStore(
+    file: directory.appendingPathComponent("placement.json"))
 
   /// Codaset's Native OAuth app (`RailwayOAuthClientID` in the Info properties). Public by design.
   static var clientID: String {
@@ -55,36 +78,29 @@ final class RailwayAccount: Sendable {
   }
 
   /// The workspace holding this Mac's `Workroom` project (ADR 0071), which the setup sheet checks
-  /// the sign-in reaches. Nil until a project is recorded (#629).
+  /// the sign-in reaches. Nil until a project is recorded.
   static var neededWorkspaceID: String? {
     #if DEBUG
       if let fixture = UITestFixture.railwayNeededWorkspace { return fixture }
     #endif
-    return nil
+    return placement.read().workspaceID
   }
 
   private static var bundleID: String {
     Bundle.main.bundleIdentifier ?? "com.developwithstyle.workroom"
   }
 
-  /// The Keychain access group Release and Nightly are to share the sign-in through (ADR 0073).
-  /// Nil for now: `keychain-access-groups` is a restricted entitlement on macOS, which needs a
-  /// provisioning profile neither build is signed with yet, so each build keeps its own item in its
-  /// own service. Setting this (to the group the entitlement names) is all the store needs.
-  static let sharedAccessGroup: String? = nil
-
-  /// The Keychain service of a build's sign-in: its bundle id's, so a Dev build keeps its own.
+  /// The Keychain service of a build's sign-in: its bundle id's, so each build, Release and
+  /// Nightly included, keeps its own (ADR 0073).
   static func keychainService(bundleID: String) -> String { "\(bundleID).railway" }
 
-  /// The lock every build sharing a sign-in refreshes under: one file for Release and Nightly, a
-  /// Dev build's own.
+  /// The lock this build refreshes its sign-in under. Each build's sign-in is its own
+  /// authorization at Railway, so only this build's processes share it.
   private static var refreshLockPath: URL {
-    let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
       .appendingPathComponent("Workroom", isDirectory: true)
-    let folder =
-      RemoteWorkrooms.sharedHostBuilds.contains(bundleID)
-      ? base : base.appendingPathComponent(bundleID, isDirectory: true)
-    return folder.appendingPathComponent("railway-refresh.lock")
+      .appendingPathComponent(bundleID, isDirectory: true)
+      .appendingPathComponent("railway-refresh.lock")
   }
 }
 
@@ -124,36 +140,29 @@ struct KeychainError: Error, LocalizedError, Equatable {
   }
 }
 
-/// The refresh token as a generic password in the Keychain, this device only. With an access
-/// group, in that group of the data protection keychain, which every app the group names shares.
-/// A read that can't answer (a locked Keychain) throws rather than reading as no sign-in.
+/// The refresh token as a generic password in this build's Keychain item, this device only (ADR
+/// 0073: each build keeps its own sign-in). A read that can't answer (a locked Keychain) throws
+/// rather than reading as no sign-in.
 final class KeychainTokenStore: RailwayTokenStore {
   private let service: String
   private let account: String
-  private let accessGroup: String?
   private let keychain: any KeychainCalling
 
   init(
-    service: String, account: String = "refresh-token", accessGroup: String?,
+    service: String, account: String = "refresh-token",
     keychain: any KeychainCalling = SystemKeychain()
   ) {
     self.service = service
     self.account = account
-    self.accessGroup = accessGroup
     self.keychain = keychain
   }
 
   private var base: [String: Any] {
-    var query: [String: Any] = [
+    [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: service,
       kSecAttrAccount as String: account,
     ]
-    if let accessGroup {
-      query[kSecAttrAccessGroup as String] = accessGroup
-      query[kSecUseDataProtectionKeychain as String] = true
-    }
-    return query
   }
 
   func read() throws -> String? {

@@ -113,7 +113,7 @@ final class HostOptionsCatalog: ObservableObject {
       key = .boxd(org: nil, account: nil)
     case .exeDev:
       key = .exeDev(account: nil)
-    case .container, .ssh:
+    case .container, .ssh, .railway:
       return .failed("\(provider.displayName) hosts take no host options.")
     }
     do {
@@ -311,7 +311,7 @@ struct HostOptionsFields: View {
           "Disk", option: $options.disk,
           choices: HostOptionChoices(providerDefault: nil, below: inherited?.disk))
       }
-    case .container, .ssh:
+    case .container, .ssh, .railway:
       EmptyView()
     }
   }
@@ -369,7 +369,7 @@ struct HostOptionsFields: View {
     switch provider {
     case .boxd: (catalog.boxdSize?.vcpu, nil)
     case .exeDev: (ExeDevHostDriver.defaultCPUs, catalog.plan?.defaultDiskGB.map { "\($0)GB" })
-    case .container, .ssh: (nil, nil)
+    case .container, .ssh, .railway: (nil, nil)
     }
   }
 
