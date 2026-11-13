@@ -47,13 +47,14 @@ public protocol ReconnectingHostDriver: HostDriver {
   func invalidateConnection() async
 }
 
-/// A driver that makes a host with the host options a create resolved (#575: boxd, exe.dev).
+/// A driver that makes a host with the host options a create resolved (#575: boxd, exe.dev;
+/// #633: Railway).
 public protocol OptionedProvisioningDriver: ProvisioningHostDriver {
   func create(options: ResolvedHostOptions) async throws -> HostID
 }
 
 /// A driver whose host made from an image can still hold another workroom's checkout: boxd's images
-/// are snapshots of used machines (#575).
+/// are snapshots of used machines (#575), Railway's checkpoints copies of used sandboxes (#633).
 public protocol CheckoutClearingDriver: HostDriver {
   /// Removes a checkout of `cloneURL` at `path` on `host`, and nothing else there.
   func clearCheckout(at path: String, of cloneURL: String, on host: HostID) async throws
@@ -102,6 +103,8 @@ public enum HostOptionsFacts: Equatable, Sendable {
   /// The account's snapshots and the org's default size, nil when that one read failed.
   case boxd(snapshots: [String], size: BoxdHostDriver.DefaultSize?)
   case exeDev(ExeDevHostDriver.PlanLimits)
+  /// This Mac's environment's checkpoints and the plan's sizes (#633).
+  case railway(RailwayHostOptions)
 }
 
 /// A driver whose provider says what host options it takes (#575).

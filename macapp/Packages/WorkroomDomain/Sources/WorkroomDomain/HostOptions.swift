@@ -7,12 +7,15 @@ public enum HostImageKind: Sendable {
   case snapshot
   /// A container image, named with its registry.
   case containerImage
+  /// A Railway checkpoint in this Mac's environment, which the fields list by name.
+  case checkpoint
 
   /// The host option field's label.
   public var fieldLabel: String {
     switch self {
     case .snapshot: "Snapshot"
     case .containerImage: "Custom image"
+    case .checkpoint: "Checkpoint"
     }
   }
 
@@ -21,6 +24,7 @@ public enum HostImageKind: Sendable {
     switch self {
     case .snapshot: "Made From Snapshot"
     case .containerImage: "Custom Image"
+    case .checkpoint: "Made From Checkpoint"
     }
   }
 }
@@ -35,23 +39,27 @@ public enum HostOption<Value: Codable & Hashable & Sendable>: Codable, Hashable,
 /// What one level (this create, a project, or Settings) chooses for a provider's hosts (#575,
 /// ADR 0065). The field and case names are a stored-data contract in `Defaults`: keep them.
 public struct HostOptions: Codable, Hashable, Sendable {
-  /// exe.dev's `--image`; boxd's `--from-snapshot`.
+  /// exe.dev's `--image`; boxd's `--from-snapshot`; Railway's checkpoint, by name.
   public var image: HostOption<String>?
-  /// exe.dev's `--cpu`; boxd's `--vcpu`, whose memory follows.
+  /// exe.dev's `--cpu`; boxd's `--vcpu`, whose memory follows; Railway's vCPUs.
   public var cpu: HostOption<Int>?
-  /// exe.dev's `--memory`. boxd's size follows its CPU.
+  /// exe.dev's `--memory`; Railway's memory, both as `<n>GB`. boxd's size follows its CPU.
   public var memory: HostOption<String>?
   /// exe.dev's `--disk`, the root disk's size.
   public var disk: HostOption<String>?
+  /// Railway's region (#633), by Railway's id (`us-east4-eqdc4a`).
+  public var region: HostOption<String>?
 
   public init(
     image: HostOption<String>? = nil, cpu: HostOption<Int>? = nil,
-    memory: HostOption<String>? = nil, disk: HostOption<String>? = nil
+    memory: HostOption<String>? = nil, disk: HostOption<String>? = nil,
+    region: HostOption<String>? = nil
   ) {
     self.image = image
     self.cpu = cpu
     self.memory = memory
     self.disk = disk
+    self.region = region
   }
 
   public var isEmpty: Bool { self == HostOptions() }
@@ -61,13 +69,13 @@ public struct HostOptions: Codable, Hashable, Sendable {
   public func overlaid(on base: HostOptions) -> HostOptions {
     HostOptions(
       image: image ?? base.image, cpu: cpu ?? base.cpu, memory: memory ?? base.memory,
-      disk: disk ?? base.disk)
+      disk: disk ?? base.disk, region: region ?? base.region)
   }
 
   /// Every option at Provider default: what Try With Provider Defaults creates with.
   public static let providerDefaults = HostOptions(
     image: .providerDefault, cpu: .providerDefault, memory: .providerDefault,
-    disk: .providerDefault)
+    disk: .providerDefault, region: .providerDefault)
 
   /// The level an option was resolved from.
   public enum Level: String, Hashable, Sendable {
@@ -93,6 +101,7 @@ public struct HostOptions: Codable, Hashable, Sendable {
     public var cpu: Resolved<Int>
     public var memory: Resolved<String>
     public var disk: Resolved<String>
+    public var region: Resolved<String>
     /// A boxd snapshot is the image, so the create gets no size: boxd refuses `--vcpu` and
     /// `--memory` with a snapshot ("forks and snapshot restores keep their source's size"). `cpu`
     /// still holds the size below, which a level that overrides the snapshot inherits.
@@ -102,7 +111,7 @@ public struct HostOptions: Codable, Hashable, Sendable {
     public var options: ResolvedHostOptions {
       ResolvedHostOptions(
         image: image.value, cpu: sizeTakenBySnapshot ? nil : cpu.value, memory: memory.value,
-        disk: disk.value)
+        disk: disk.value, region: region.value)
     }
   }
 
@@ -131,13 +140,17 @@ public struct HostOptions: Codable, Hashable, Sendable {
     case .exeDev:
       return Resolution(
         image: image, cpu: walk(\.cpu), memory: walk(\.memory), disk: walk(\.disk),
-        sizeTakenBySnapshot: false)
+        region: none, sizeTakenBySnapshot: false)
     case .boxd:
       return Resolution(
-        image: image, cpu: walk(\.cpu), memory: none, disk: none,
+        image: image, cpu: walk(\.cpu), memory: none, disk: none, region: none,
         sizeTakenBySnapshot: image.value != nil)
-    // Railway's region, size and image come with its host options (#633).
-    case .container, .ssh, .railway:
+    case .railway:
+      // Railway sizes a checkpoint restore as it does a fresh sandbox (`SandboxResourcesInput`).
+      return Resolution(
+        image: image, cpu: walk(\.cpu), memory: walk(\.memory), disk: none,
+        region: walk(\.region), sizeTakenBySnapshot: false)
+    case .container, .ssh:
       return nil
     }
   }
@@ -150,12 +163,17 @@ public struct ResolvedHostOptions: Codable, Hashable, Sendable {
   public var cpu: Int?
   public var memory: String?
   public var disk: String?
+  public var region: String?
 
-  public init(image: String? = nil, cpu: Int? = nil, memory: String? = nil, disk: String? = nil) {
+  public init(
+    image: String? = nil, cpu: Int? = nil, memory: String? = nil, disk: String? = nil,
+    region: String? = nil
+  ) {
     self.image = image
     self.cpu = cpu
     self.memory = memory
     self.disk = disk
+    self.region = region
   }
 
   public var isProviderDefault: Bool { self == ResolvedHostOptions() }

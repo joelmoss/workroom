@@ -24,17 +24,23 @@ import WorkroomSystem
 /// - **Git** (ADR 0072): Railway has no git integration, so the host holds the Mac's `gh` token in
 ///   `gitHubTokenPath`, written over stdin at create and on every connect when it changed
 ///   (`GitHubTokenCarrying`); `railway-github.sh` sets the credential helper and the rewrites.
+/// - **Host options** (#633): region, size and host image (Railway's default, or a checkpoint in
+///   this Mac's environment), in `RailwayHostOptions.swift`. A host made from a checkpoint has the
+///   source's checkout and token file cleared before its clone (`CheckoutClearingDriver`).
 ///
 /// What a create runs on its host (the identity file and the readiness of the relay) goes through
 /// the command runner, so tests stub it; a host's later exchanges (`exec`, `openStream`) are
 /// `HostStream`s over ssh, as on every ssh host.
-public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver,
-  HostPresenceReporting, HostRecording, GitHubTokenCarrying, @unchecked Sendable
+public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDriver,
+  HostPresenceReporting, HostRecording, GitHubTokenCarrying, HostOptionsReading,
+  CheckoutClearingDriver, @unchecked Sendable
 {
   public struct Configuration: Sendable {
     /// This Mac's environment in the `Workroom` project, where every sandbox it makes goes.
     public var environmentID: String
     public var projectID: String?
+    /// The workspace the project is in, whose plan caps a host's size (#633); nil reads no plan.
+    public var workspaceID: String?
     /// This Mac's folder for its Railway ssh key (`id_ed25519`) and the relay's pinned host key
     /// (`relay_host_key`): one for Release and Nightly, a Dev build's own.
     public var keys: URL
@@ -54,7 +60,7 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
     public var gitHubToken: (@Sendable () async throws -> String)?
 
     public init(
-      environmentID: String, projectID: String?, keys: URL,
+      environmentID: String, projectID: String?, workspaceID: String? = nil, keys: URL,
       relayHost: String = RailwayHostDriver.relay,
       keyName: String = "Workroom on \(ProcessInfo.processInfo.hostName)",
       daemonSocket: String = "\(RailwayHostDriver.stateDirectory)/daemon/workroomd.sock",
@@ -64,6 +70,7 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
     ) {
       self.environmentID = environmentID
       self.projectID = projectID
+      self.workspaceID = workspaceID
       self.keys = keys
       self.relayHost = relayHost
       self.keyName = keyName
@@ -95,7 +102,7 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
   public var hostsSleep: Bool { false }
   /// Where each host's `ssh_config`, `known_hosts` and attach logs are written.
   public let directory: URL
-  private let api: RailwayAPI
+  let api: RailwayAPI
   private let runner: any StatusCommandRunning
   private let hosts = Mutex<[UUID: RailwayHostRecord]>([:])
 
@@ -109,11 +116,11 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
     self.runner = runner
   }
 
-  private func hostDirectory(_ id: UUID) -> URL {
+  func hostDirectory(_ id: UUID) -> URL {
     directory.appendingPathComponent(id.uuidString)
   }
 
-  private func record(of host: HostID) throws -> (UUID, RailwayHostRecord) {
+  func record(of host: HostID) throws -> (UUID, RailwayHostRecord) {
     guard case .remote(let id) = host, let record = hosts.withLock({ $0[id] }) else {
       throw HostDriverError.unknownHost(host)
     }
@@ -124,10 +131,19 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
 
   /// A sandbox of Railway's default image, region and size, with its idle timeout off, set up as
   /// a workroom's host. One that gets no further is destroyed.
-  public func create() async throws -> HostID {
+  public func create() async throws -> HostID { try await create(options: ResolvedHostOptions()) }
+
+  /// A sandbox made with `options` (#633), with its idle timeout off, set up as a workroom's host:
+  /// in their region and size, from their checkpoint, which must be in this Mac's environment.
+  /// One that gets no further is destroyed.
+  public func create(options: ResolvedHostOptions) async throws -> HostID {
+    let sandboxOptions = try RailwaySandboxOptions(options)
     let (identity, hostKey, token) = try await ProvisioningProgress.step(
       .account, report: false
     ) {
+      if let checkpoint = sandboxOptions.checkpoint {
+        try await self.checkHeld(checkpoint: checkpoint)
+      }
       // One create at a time makes the key and the pin; the rest find them.
       let (identity, hostKey) = try await RailwaySerial.shared.run {
         (try await self.macKey(), try await self.pinnedRelayKey())
@@ -136,7 +152,8 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
       return (identity, hostKey, try await self.macGitHubToken())
     }
     let sandbox = try await ProvisioningProgress.step(.machine) {
-      try await api.createSandbox(environmentID: configuration.environmentID)
+      try await api.createSandbox(
+        environmentID: configuration.environmentID, options: sandboxOptions)
     }
     let id = UUID()
     let record = RailwayHostRecord(
@@ -323,7 +340,7 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
 
   /// One login to the host through the relay, running `command` with `stdin`. The log gets the
   /// command and what it printed, never `stdin`.
-  private func login(_ config: URL, _ command: String, stdin: Data, failure: String) async throws {
+  func login(_ config: URL, _ command: String, stdin: Data, failure: String) async throws {
     ProvisioningProgress.record("$ \(command)")
     let result = await runner.run(
       "/usr/bin/ssh", ["-F", config.path, SSHTransport.alias, command], in: NSHomeDirectory(),
@@ -443,7 +460,7 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
 
   // MARK: ssh
 
-  private func target(_ record: RailwayHostRecord, identity: String) -> SSHTransport.Host {
+  func target(_ record: RailwayHostRecord, identity: String) -> SSHTransport.Host {
     SSHTransport.Host(
       address: configuration.relayHost, port: 22,
       user: "sbx:\(record.environmentID):\(record.sandboxID)", identityFile: identity,
@@ -496,8 +513,10 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
 // MARK: The API calls the driver makes
 
 extension RailwayAPI {
-  /// A sandbox in `environmentID` that never idles out (ADR 0071): its id.
-  public func createSandbox(environmentID: String) async throws -> String {
+  /// A sandbox in `environmentID` that never idles out (ADR 0071), made with `options`: its id.
+  public func createSandbox(
+    environmentID: String, options: RailwaySandboxOptions = RailwaySandboxOptions()
+  ) async throws -> String {
     struct Answer: Decodable {
       struct Sandbox: Decodable { let id: String }
       let sandboxCreate: Sandbox
@@ -505,9 +524,7 @@ extension RailwayAPI {
     return try await query(
       "mutation sandboxCreate($input: SandboxCreateInput!) { sandboxCreate(input: $input) "
         + "{ id status } }",
-      variables: [
-        "input": ["environmentId": .string(environmentID), "idleTimeoutMinutes": 0]
-      ], as: Answer.self
+      variables: ["input": options.input(environmentID: environmentID)], as: Answer.self
     ).sandboxCreate.id
   }
 
