@@ -329,7 +329,7 @@ final class DaemonVCSProtocolTests: XCTestCase {
   /// declared a second time, in a second language. Checked against the shipped binary's own report
   /// so a bump on one side alone fails here rather than as a dead service.
   func testTheClientsProtocolConstantsMatchTheShippedDaemon() throws {
-    XCTAssertEqual(DaemonHandshake.protocolVersion, 10)
+    XCTAssertEqual(DaemonHandshake.protocolVersion, 11)
     XCTAssertEqual(DaemonHandshake.minVCSVersion, 2)
     XCTAssertEqual(DaemonHandshake.minFileVersion, 3)
     XCTAssertEqual(DaemonHandshake.minForwardVersion, 5)
@@ -337,6 +337,7 @@ final class DaemonVCSProtocolTests: XCTestCase {
     XCTAssertEqual(DaemonHandshake.minProgramStatusVersion, 8)
     XCTAssertEqual(DaemonHandshake.minRunVersion, 9)
     XCTAssertEqual(DaemonHandshake.minRetagVersion, 10)
+    XCTAssertEqual(DaemonHandshake.minPingsVersion, 11)
     let process = Process()
     process.executableURL = try DaemonHarness.binaryURL()
     process.arguments = ["protocol"]
@@ -365,6 +366,7 @@ final class DaemonVCSProtocolTests: XCTestCase {
       reported("min-program-status"), DaemonHandshake.minProgramStatusVersion, output)
     XCTAssertEqual(reported("min-run"), DaemonHandshake.minRunVersion, output)
     XCTAssertEqual(reported("min-retag"), DaemonHandshake.minRetagVersion, output)
+    XCTAssertEqual(reported("min-pings"), DaemonHandshake.minPingsVersion, output)
   }
 
   /// Every failure the daemon's `FileError` can produce keeps its meaning across the wire.

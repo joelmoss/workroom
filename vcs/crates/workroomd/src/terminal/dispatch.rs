@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::daemon::rpc::{self, SharedWriter};
+use crate::daemon::transport::Closer;
 use crate::terminal::pty::Size;
 use crate::terminal::session::{RunSignalError, SessionId, SessionInfo, SessionSpec, SessionStore};
 use crate::terminal::shell;
@@ -20,18 +21,29 @@ use wr_protocol::terminal::{
 };
 
 /// The session one connection is attached to, if any, and which attachment of it this is.
-#[derive(Default)]
 pub(crate) struct Attachment {
     id: Option<SessionId>,
     /// Identifies THIS attachment, so ending this connection cannot detach a client that has since
     /// taken the session over.
     token: u64,
+    /// Ends this connection: a probed client that stops answering is closed with it (ADR 0075).
+    closer: Closer,
     /// The ssh variables this connection's `relay` passed on (`FrameKind::Peer`), set on the
     /// host-environment sessions it creates (ADR 0074).
     peer: Vec<(OsString, OsString)>,
 }
 
 impl Attachment {
+    /// The attachment of the connection `closer` ends, attached to nothing yet.
+    pub(crate) fn new(closer: Closer) -> Attachment {
+        Attachment {
+            id: None,
+            token: 0,
+            closer,
+            peer: Vec::new(),
+        }
+    }
+
     /// The connection has ended. The session keeps its reader; only the client goes. There is
     /// nothing to stop and nothing to join — which is also why a detached session keeps draining
     /// its pty instead of wedging the shell behind a full output queue.
@@ -73,9 +85,11 @@ pub(crate) fn dispatch(
             let request = AttachRequest::decode(&frame.payload)?;
             let id = request.id?;
             // A remote pane's attach asks to be probed, so a client whose Mac has gone stops
-            // counting as attached (#593). Read from the environment the relay forwards whole, so
-            // any relay carries it.
-            let keepalive = crate::terminal::session::keepalive_requested(&request.env);
+            // counting as attached (#593) and has this connection closed, which ends its relay
+            // (ADR 0075). Read from the environment the relay forwards whole, so any relay carries
+            // it.
+            let keepalive = crate::terminal::session::keepalive_requested(&request.env)
+                .then(|| Arc::clone(&attachment.closer));
             // A new session must register its first client before its reader starts: a command
             // such as `echo` can exit before attach, taking its output and exit status with it.
             let attach = || {

@@ -27,12 +27,18 @@ use crate::daemon::rpc::{self, SharedWriter};
 use crate::daemon::transport::Transport;
 use crate::terminal::session::SessionStore;
 use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Hello, ProtocolError, Service, negotiate};
+use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
 use wr_protocol::reply::Reply;
 
 pub const BUILD: &str = concat!("workroomd ", env!("CARGO_PKG_VERSION"));
 
 /// How long a daemon with no sessions and no clients waits before exiting.
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a connection that said it pings (`FrameKind::Pings`) may go with nothing received
+/// before it is closed (ADR 0075): four of the app's 15 s pings. A Mac that slept or dropped off
+/// the network leaves its service stream's `relay` running, and on Railway nothing else ends it.
+pub const SERVICE_DEADLINE: Duration = Duration::from_secs(60);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServeError {
@@ -166,6 +172,8 @@ pub struct Daemon {
     pub sessions: SessionStore,
     connections: Arc<AtomicUsize>,
     freshen: Option<Freshen>,
+    /// `SERVICE_DEADLINE`, or a test's shorter one.
+    service_deadline: Duration,
 }
 
 impl Default for Daemon {
@@ -180,7 +188,16 @@ impl Daemon {
             sessions: SessionStore::new(),
             connections: Arc::new(AtomicUsize::new(0)),
             freshen: None,
+            service_deadline: SERVICE_DEADLINE,
         }
+    }
+
+    /// A daemon whose pinging connections are closed after `deadline` of silence instead of
+    /// `SERVICE_DEADLINE`, so a test sees one closed in a fraction of a second.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_service_deadline(mut self, deadline: Duration) -> Daemon {
+        self.service_deadline = deadline;
+        self
     }
 
     /// While `run` serves, touches `lock` and `log` every `every`, so a cleaner that deletes files
@@ -239,6 +256,7 @@ impl Daemon {
                     self.connections.fetch_add(1, Ordering::SeqCst);
                     let sessions = self.sessions.clone();
                     let connections = Arc::clone(&self.connections);
+                    let deadline = self.service_deadline;
                     // `std::thread::spawn` panics when the OS cannot create a thread. That would
                     // unwind THIS accept loop — the fetch_add above already ran, so `connections`
                     // would be stuck one high forever with nothing left to correct it (worse, an
@@ -249,7 +267,7 @@ impl Daemon {
                     if std::thread::Builder::new()
                         .spawn(move || {
                             let _ = stream.set_nonblocking(false);
-                            let _ = handle_connection(stream, sessions);
+                            let _ = handle_connection_with(stream, sessions, deadline);
                             connections.fetch_sub(1, Ordering::SeqCst);
                             wake_idle();
                         })
@@ -385,6 +403,64 @@ struct ConnectionServices {
     forwards: crate::host::forward::Forwards,
     /// Its program status subscription, ended with it like `subscriptions`.
     program_status: crate::terminal::program_status::Connection,
+    /// The service-stream deadline, once the client says it pings.
+    deadline: Deadline,
+}
+
+/// Closes a connection whose client said it pings (`FrameKind::Pings`) and then sent nothing for
+/// `after` (ADR 0075). Only such a client gets it: an older app, and every local connection, never
+/// says so, and a quiet one of those is just quiet.
+///
+/// A watchdog thread waits on a channel the read loop ticks on every read, and ends the connection
+/// through its `Closer` when no tick comes in time. Only what is received counts: the daemon's own
+/// writes (output, program status) say nothing about whether anyone is still there. The thread ends
+/// with the connection, when the read loop drops the sender.
+struct Deadline {
+    after: Duration,
+    closer: crate::daemon::transport::Closer,
+    peer: String,
+    heard: Option<std::sync::mpsc::Sender<()>>,
+}
+
+impl Deadline {
+    /// Starts the watchdog, once. A thread the OS will not give leaves the connection with no
+    /// deadline, as it was before this existed.
+    fn start(&mut self) {
+        if self.heard.is_some() {
+            return;
+        }
+        let (heard, ticks) = std::sync::mpsc::channel::<()>();
+        let after = self.after;
+        let closer = Arc::clone(&self.closer);
+        let peer = self.peer.clone();
+        let started = std::thread::Builder::new()
+            .name("service-deadline".into())
+            .spawn(move || {
+                loop {
+                    match ticks.recv_timeout(after) {
+                        Ok(()) => continue,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            crate::daemon::log::note(format_args!(
+                                "closing {peer}'s connection: nothing from it for {after:?}"
+                            ));
+                            closer();
+                            return;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                    }
+                }
+            });
+        if started.is_ok() {
+            self.heard = Some(heard);
+        }
+    }
+
+    /// Something arrived from the client.
+    fn heard(&self) {
+        if let Some(heard) = &self.heard {
+            let _ = heard.send(());
+        }
+    }
 }
 
 /// Greets, negotiates, then serves envelopes until the peer goes away.
@@ -396,6 +472,16 @@ struct ConnectionServices {
 pub fn handle_connection<T: Transport>(
     transport: T,
     sessions: SessionStore,
+) -> Result<(), ProtocolError> {
+    handle_connection_with(transport, sessions, SERVICE_DEADLINE)
+}
+
+/// `handle_connection`, closing a connection that said it pings after `deadline` of silence
+/// rather than `SERVICE_DEADLINE`.
+pub fn handle_connection_with<T: Transport>(
+    transport: T,
+    sessions: SessionStore,
+    deadline: Duration,
 ) -> Result<(), ProtocolError> {
     // Before `split`, which consumes the transport: the watch service needs a way to end THIS
     // connection from a thread that only writes.
@@ -434,8 +520,14 @@ pub fn handle_connection<T: Transport>(
 
     let mut decoder = EnvelopeDecoder::new();
     let mut buffer = [0u8; 8192];
-    let mut attachment = crate::terminal::dispatch::Attachment::default();
+    let mut attachment = crate::terminal::dispatch::Attachment::new(Arc::clone(&closer));
     let mut services = ConnectionServices {
+        deadline: Deadline {
+            after: deadline,
+            closer: Arc::clone(&closer),
+            peer: peer.clone(),
+            heard: None,
+        },
         peer,
         partial: crate::daemon::rpc::PartialRequests::default(),
         layout_partial: crate::daemon::rpc::PartialRequests::default(),
@@ -484,7 +576,10 @@ pub fn handle_connection<T: Transport>(
         }
         match reader.read(&mut buffer) {
             Ok(0) => break,
-            Ok(n) => decoder.push(&buffer[..n]),
+            Ok(n) => {
+                services.deadline.heard();
+                decoder.push(&buffer[..n]);
+            }
             Err(_) => break,
         }
     }
@@ -531,6 +626,14 @@ fn dispatch(
         crate::terminal::program_status::dispatch(envelope, sessions, &mut services.program_status);
         return None;
     }
+    if envelope.service == Service::Control && is_pings(&envelope.payload) {
+        services.deadline.start();
+        return Some(Envelope::new(
+            envelope.service,
+            envelope.stream,
+            Frame::control(FrameKind::Acknowledged).encode(),
+        ));
+    }
     if envelope.service == Service::Terminal || envelope.service == Service::Control {
         return crate::terminal::dispatch::dispatch(
             envelope,
@@ -542,6 +645,13 @@ fn dispatch(
         );
     }
     None
+}
+
+/// Whether a Control envelope is the client saying it pings.
+fn is_pings(payload: &[u8]) -> bool {
+    let mut frames = FrameDecoder::new();
+    frames.push(payload);
+    matches!(frames.next_frame(), Ok(Some(frame)) if frame.kind == FrameKind::Pings)
 }
 
 /// The Status service is retired (#382): the daemon no longer decides whether its box is busy. An app

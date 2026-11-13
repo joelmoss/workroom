@@ -33,6 +33,9 @@ protocol HostServiceConnection: Sendable {
   func sessions() async throws -> [SessionDescriptor]
   /// Returns once the daemon answers anything, its cheapest question (`dropUnlessAnswering`).
   func ping() async throws
+  /// Tells the daemon this connection pings, so it may close it after 60 s with nothing from the
+  /// app (ADR 0075). Asked only by the manager, which then pings it (`pingInterval`).
+  func announcePinging() async throws
   /// Each remote workroom's pane layout, kept on its host (#255). Throws `VCSError.backendVersion`
   /// when the peer predates the service.
   func layouts() throws -> DaemonLayoutService
@@ -76,6 +79,9 @@ extension HostServiceConnection {
     throw HostConnectionError.serviceUnavailable("Host cannot be pinged.")
   }
 
+  /// Nothing to announce: a connection with no daemon behind it has no deadline.
+  func announcePinging() async throws {}
+
   func layouts() throws -> DaemonLayoutService {
     throw VCSError.backendVersion("Host has no layout service.")
   }
@@ -99,6 +105,18 @@ extension HostServiceConnection {
 actor HostConnectionManager {
   static let shared = HostConnectionManager()
 
+  /// How often a remote service stream is pinged (ADR 0075): its host's daemon closes it after
+  /// 60 s with nothing from the app, so a Mac that slept or dropped off the network leaves no
+  /// login behind it. Four pings fit in that, so one lost to a slow link never closes it.
+  static let pingInterval: Duration = .seconds(15)
+
+  /// `pingInterval`, or a test's shorter one.
+  private let pingEvery: Duration
+
+  init(pingInterval: Duration = HostConnectionManager.pingInterval) {
+    pingEvery = pingInterval
+  }
+
   struct Lease: Hashable, Sendable {
     let host: HostID
     let generation: UUID
@@ -121,6 +139,8 @@ actor HostConnectionManager {
     var status: Snapshot.Status = .connecting
     var pending: [UUID: Pending] = [:]
     var monitor: Task<Void, Never>?
+    /// Pings a remote host's connection (`pinging`), ended with it.
+    var pinger: Task<Void, Never>?
   }
 
   private var slots: [HostID: Slot] = [:]
@@ -363,8 +383,29 @@ actor HostConnectionManager {
       guard !Task.isCancelled else { return }
       await self?.disconnect(lease)
     }
+    if lease.host != .local { slots[lease.host]?.pinger = pinging(connection) }
     publish(lease.host)
     continuation.resume(returning: lease)
+  }
+
+  /// Says `connection` pings, then pings it every `pingEvery` until cancelled (ADR 0075). Remote
+  /// hosts only: a local connection never gets the daemon's deadline, so it is never announced.
+  /// A ping that fails or goes unanswered is let go, bounded so the next one is never held up:
+  /// whether the link is dead is `dropUnlessAnswering`'s question, and a dead one ends through
+  /// `disconnection`. An announcement that fails is let go too: the pings still keep it alive.
+  private func pinging(_ connection: any HostServiceConnection) -> Task<Void, Never> {
+    let every = pingEvery
+    let bound =
+      TimeInterval(every.components.seconds)
+      + TimeInterval(every.components.attoseconds) / 1e18
+    return Task {
+      try? await connection.announcePinging()
+      while !Task.isCancelled {
+        try? await Task.sleep(for: every)
+        guard !Task.isCancelled else { return }
+        try? await withTimeout(seconds: bound) { try await connection.ping() }
+      }
+    }
   }
 
   private func finish<Value: Sendable>(
@@ -397,8 +438,10 @@ actor HostConnectionManager {
     slots[host]?.connection = nil
     slots[host]?.pending = [:]
     slots[host]?.monitor = nil
+    slots[host]?.pinger = nil
     slots[host]?.status = .disconnected
     old.monitor?.cancel()
+    old.pinger?.cancel()
     for pending in old.pending.values {
       pending.task.cancel()
       pending.fail(error)

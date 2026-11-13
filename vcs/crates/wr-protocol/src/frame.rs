@@ -53,11 +53,15 @@ pub enum FrameKind {
     /// "no session …" when the daemon holds no such session, which a client reads as the session
     /// being gone, and another `Failure` for a payload that is malformed.
     Retag = 0x27,
+    /// Says this connection pings: the app sends something on it at least every 15 s, so the
+    /// daemon may close it after 60 s with nothing received (ADR 0075). Sent once, on a remote
+    /// service stream, to a daemon at `MIN_PINGS_VERSION` or newer. No payload; `Acknowledged`.
+    Pings = 0x28,
     /// What `relay` knows about the connection it carries (protocol 11, ADR 0074): its own
     /// `SSH_CONNECTION` and `SSH_CLIENT`, as NUL-terminated `KEY=VALUE` entries. Sent by `relay`
     /// alone, right after the client's greeting, and never answered. The daemon sets them on the
     /// host-environment sessions this connection creates. An older daemon drops it.
-    Peer = 0x28,
+    Peer = 0x29,
 
     Sessions = 0x31,
     Acknowledged = 0x32,
@@ -103,7 +107,8 @@ impl FrameKind {
             0x25 => Self::HandOff,
             0x26 => Self::Signal,
             0x27 => Self::Retag,
-            0x28 => Self::Peer,
+            0x28 => Self::Pings,
+            0x29 => Self::Peer,
             0x31 => Self::Sessions,
             0x32 => Self::Acknowledged,
             _ => return None,
@@ -360,7 +365,7 @@ mod tests {
             }
             rows += 1;
         }
-        assert_eq!(rows, 19, "every row was read");
+        assert_eq!(rows, 20, "every row was read");
         // Every kind this codec defines has exactly one row, so a new kind cannot go uncovered.
         let defined: Vec<u8> = (0..=u8::MAX)
             .filter(|&b| FrameKind::from_u8(b).is_some())
