@@ -19,7 +19,9 @@ use std::time::{Duration, Instant};
 use workroomd::testing::{
     HostOrigin, KEEPALIVE_PROBE, KEEPALIVE_VARIABLE, SessionId, SessionStore, handle_connection,
 };
-use wr_protocol::terminal::parse_session_id;
+use wr_protocol::envelope::Service;
+use wr_protocol::frame::{Frame, FrameKind};
+use wr_protocol::terminal::{AttachRequest, parse_session_id};
 
 const SESSION: &str = "6B9B968D-0BD7-4172-850A-A373DA73BC70";
 
@@ -546,4 +548,105 @@ fn a_local_attach_still_hands_the_session_its_whole_environment() {
     ] {
         assert!(seen.contains(entry), "{entry} in {seen:?}");
     }
+}
+
+/// The daemon holds the Mac's variables to the allowlist itself, whatever a client sends.
+#[test]
+fn a_host_attach_that_sends_more_than_the_allowlist_still_reaches_the_shell_with_only_it() {
+    let scratch = Scratch::new("raw");
+    let host = Host::serve(&scratch, SessionStore::new(), &DAEMON);
+    let stream = std::os::unix::net::UnixStream::connect(&host.socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    let mut client = common::RpcClient::over(stream.try_clone().unwrap(), stream);
+    client.handshake();
+    let entry = |key: &str, value: &str| (OsString::from(key), OsString::from(value));
+    let request = AttachRequest {
+        id: parse_session_id(OsStr::new(SESSION)),
+        command: Some("/bin/sh -c 'echo; env; echo END-OF-ENV'".into()),
+        env: vec![
+            entry("SECRET", "from-the-mac"),
+            entry("PATH", "/opt/homebrew/bin"),
+            entry("LANG", "en_GB.UTF-8"),
+        ],
+        host_environment: true,
+        ..Default::default()
+    };
+    client.send(
+        Service::Terminal,
+        1,
+        Frame::new(FrameKind::Attach, request.encode()),
+    );
+    let seen = client.read_until("END-OF-ENV", Duration::from_secs(10));
+    assert!(seen.contains("LANG=en_GB.UTF-8"), "{seen:?}");
+    assert!(seen.contains("PATH=/host/bin:/usr/bin:/bin"), "{seen:?}");
+    assert!(!seen.contains("SECRET"), "{seen:?}");
+    assert!(!seen.contains("/opt/homebrew/bin"), "{seen:?}");
+}
+
+/// This process's own account entry, as `getpwuid` gives it: (home, shell).
+fn own_account() -> (String, String) {
+    // SAFETY: getpwuid returns a pointer into static storage, read at once on this thread.
+    unsafe {
+        let entry = libc::getpwuid(libc::geteuid());
+        assert!(!entry.is_null(), "no passwd entry for this user");
+        let text =
+            |p: *const libc::c_char| std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned();
+        (text((*entry).pw_dir), text((*entry).pw_shell))
+    }
+}
+
+/// A real `workroomd serve`, as a host runs it: the session's `HOME` and `SHELL` come from the
+/// account entry, not the daemon's environment, and Ghostty's resources are beside its socket. A
+/// command session, so no shell or profile of the developer's runs.
+#[test]
+fn a_served_daemon_takes_home_and_shell_from_the_account_and_resources_beside_its_socket() {
+    let scratch = Scratch::new("served");
+    let socket = scratch.0.join("d.sock");
+    let resources = scratch.0.join("ghostty");
+    std::fs::create_dir_all(resources.join("terminfo/x")).unwrap();
+    std::fs::write(resources.join("terminfo/x/xterm-ghostty"), b"compiled").unwrap();
+    let _daemon = Spawned(
+        Command::new(daemon_binary())
+            .args(["serve", "--socket"])
+            .arg(&socket)
+            .args(["--idle-timeout", "never"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", "/wrong/home")
+            .env("SHELL", "/wrong/shell")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("serve"),
+    );
+    assert!(common::wait_for(Duration::from_secs(5), || socket.exists()));
+    let mut env = MAC.to_vec();
+    env.push(("WORKROOM_SESSION_COMMAND", "/bin/sh -c 'echo; exec env'"));
+    let cwd = scratch.0.to_string_lossy().into_owned();
+    env.push(("WORKROOM_SESSION_CWD", cwd.as_str()));
+    let output = Command::new(daemon_binary())
+        .args(["attach", "--dial"])
+        .arg(daemon_binary())
+        .args(["relay", "--socket"])
+        .arg(&socket)
+        .env_clear()
+        .env("WORKROOM_SESSION_ID", SESSION)
+        .envs(env)
+        .stdin(Stdio::null())
+        .output()
+        .expect("attach");
+    let seen = String::from_utf8_lossy(&output.stdout);
+    let (home, shell) = own_account();
+    for entry in [
+        format!("HOME={home}\r"),
+        format!("SHELL={shell}\r"),
+        format!("TERMINFO={}/terminfo\r", resources.display()),
+    ] {
+        assert!(seen.contains(&entry), "{entry:?} in {seen:?}");
+    }
+    // Ended by this test, not left running: the daemon never idles out.
+    let _ = common::control(&socket, Frame::control(FrameKind::KillAll));
 }

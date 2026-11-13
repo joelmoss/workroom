@@ -119,7 +119,7 @@ fn replaced(name: &OsStr) -> bool {
         || bytes.starts_with(b"GHOSTTY_")
         || matches!(
             bytes,
-            b"TERMINFO" | b"SSH_TTY" | b"SSH_CONNECTION" | b"SSH_CLIENT" | b"SSH_AUTH_SOCK"
+            b"TERMINFO" | b"SSH_TTY" | b"SSH_CONNECTION" | b"SSH_CLIENT"
         )
         || matches!(bytes, b"HOME" | b"SHELL" | b"USER" | b"LOGNAME")
 }
