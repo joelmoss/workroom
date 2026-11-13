@@ -249,6 +249,12 @@ final class CLIContractTests: XCTestCase {
     XCTAssertEqual(added.path, "/Users/dev/src/app")
     XCTAssertEqual(added.vcs, "git")
     try assertError("add-project-unsupported-vcs.json", kind: "UnsupportedVCS")
+    // --clone (#620): a pretend clone decodes as an ordinary add, and a full folder is refused.
+    try assertSuccess("add-project-clone-pretend.json")
+    XCTAssertEqual(
+      try decode(AddProjectResponse.self, "add-project-clone-pretend.json").path,
+      "/Users/dev/src/api")
+    try assertError("add-project-destination-not-empty.json", kind: "DestinationNotEmpty")
   }
 
   func testDelete() throws {

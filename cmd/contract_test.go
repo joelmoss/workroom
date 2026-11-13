@@ -386,6 +386,24 @@ func TestContractAddProject(t *testing.T) {
 		t.Fatalf("add-project on a directory that is no repository exited 0: %s", run.stdout)
 	}
 	checkContract(t, "add-project-unsupported-vcs.json", run.stdout, home)
+
+	// --clone (#620): what a clone would do, and a destination it refuses. A real clone's
+	// CloneFailed is left out: its message is git's own words, which vary by git version.
+	origin := "file://" + project
+	run = runCLI(t, "add-project", filepath.Join(home, "src", "api"), "--clone", origin, "--json", "--pretend")
+	if run.code != 0 {
+		t.Fatalf("add-project --clone --pretend: exit %d, %s", run.code, run.stdout)
+	}
+	checkContract(t, "add-project-clone-pretend.json", run.stdout, home)
+
+	if err := os.WriteFile(filepath.Join(plain, "README"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run = runCLI(t, "add-project", plain, "--clone", origin, "--json")
+	if run.code == 0 {
+		t.Fatalf("add-project --clone into a full folder exited 0: %s", run.stdout)
+	}
+	checkContract(t, "add-project-destination-not-empty.json", run.stdout, home)
 }
 
 // projectWithWorkroom is a registered project with one real workroom, named contractName, whose

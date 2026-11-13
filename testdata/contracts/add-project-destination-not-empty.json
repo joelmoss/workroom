@@ -1,0 +1,1 @@
+{"cli_version":"dev","command":"add-project","error":{"kind":"DestinationNotEmpty","message":"the destination folder is not empty: /Users/dev/src/plain"},"ok":false,"schema_version":1}

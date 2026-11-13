@@ -41,7 +41,7 @@ func Run(scriptType, scriptPath, workroomDir, name, rootPath string, stream io.W
 	// a timeout, and on expiry it terminates THIS process — after which it treats the worktree as
 	// settled and re-allows deletion. Without the group, a quiet installer outlived that and kept
 	// writing files a teardown was already removing.
-	setProcessGroup(cmd)
+	SetProcessGroup(cmd)
 	cmd.Dir = workroomDir
 	var buf bytes.Buffer
 	var sink io.Writer = &buf
@@ -93,7 +93,7 @@ func Run(scriptType, scriptPath, workroomDir, name, rootPath string, stream io.W
 	go func() {
 		select {
 		case <-sigs:
-			killProcessGroup(cmd)
+			KillProcessGroup(cmd)
 		case <-done:
 		}
 	}()

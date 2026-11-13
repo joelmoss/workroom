@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import WorkroomDomain
 import WorkroomSystem
 
@@ -88,6 +89,32 @@ private final class RunState: @unchecked Sendable {
   }
 }
 
+/// A task's cancellation, handed to the process it started: `fire` runs the action `onFire`
+/// registered, whichever of the two comes first (a task can be cancelled before its child runs).
+private final class CancelSignal: Sendable {
+  private struct State {
+    var fired = false
+    var action: (@Sendable () -> Void)?
+  }
+  private let state = Mutex(State())
+
+  func fire() {
+    let action = state.withLock { s -> (@Sendable () -> Void)? in
+      s.fired = true
+      return s.action
+    }
+    action?()
+  }
+
+  func onFire(_ action: @escaping @Sendable () -> Void) {
+    let fired = state.withLock { s -> Bool in
+      s.action = action
+      return s.fired
+    }
+    if fired { action() }
+  }
+}
+
 /// Reads stderr incrementally, splitting on newlines so NDJSON log events surface
 /// live (rather than only after the process exits). It also keeps the raw bytes for
 /// the fallback error path (a non-zero exit without a decodable stdout envelope).
@@ -132,6 +159,12 @@ private final class StderrCollector: @unchecked Sendable {
 protocol WorkroomCLIProtocol: Sendable {
   func list(warnings: String, project: String?) async throws -> ListResponse
   func addProject(_ path: String, create: Bool) async throws -> String
+  /// Clones `url` into `path` and registers the clone (#620), handing `onLog` each line of git's
+  /// progress as it arrives. It has no timeout; cancelling the calling task cancels the clone, and
+  /// it returns once the CLI has put the destination back as it found it. Returns the canonical
+  /// path the CLI registered.
+  func cloneProject(_ url: String, into path: String, onLog: @escaping @Sendable (String) -> Void)
+    async throws -> String
   func create(
     project: String,
     onLog: (@Sendable (String) -> Void)?,
@@ -191,6 +224,13 @@ protocol WorkroomCLIProtocol: Sendable {
 
 /// Fakes that never meet a remote workroom need not implement its two calls.
 extension WorkroomCLIProtocol {
+  /// Fakes that never clone need not implement it.
+  func cloneProject(_ url: String, into path: String, onLog: @escaping @Sendable (String) -> Void)
+    async throws -> String
+  {
+    throw WorkroomCLIError.cli(kind: "Unsupported", message: "cloneProject is not faked")
+  }
+
   /// Fakes that never see Delete Anyway need not implement it: it is a plain delete there.
   func delete(
     name: String, project: String, skipTeardown: Bool, onLog: (@Sendable (String) -> Void)?
@@ -422,6 +462,20 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     return try decode(AddProjectResponse.self, from: result).path
   }
 
+  /// `add-project --clone`. `userInitiated`, so git sees the login shell's environment: its
+  /// `SSH_AUTH_SOCK` and credential helpers are how a clone signs in, since git can't prompt.
+  func cloneProject(_ url: String, into path: String, onLog: @escaping @Sendable (String) -> Void)
+    async throws -> String
+  {
+    let result = try await run(
+      ["add-project", path, "--clone", url, "--json"], timeout: nil, userInitiated: true,
+      cancellable: true,
+      onEvent: { event in
+        if event.type == "log", let text = event.text { onLog(text) }
+      })
+    return try decode(AddProjectResponse.self, from: result).path
+  }
+
   /// Creates a workroom. `onReady(name, path, hasSetup)` fires when the workroom exists
   /// but setup is still running — `hasSetup` reports whether a setup script will run, so
   /// the caller can block on its log. `onLog` streams setup output lines as they arrive.
@@ -605,12 +659,36 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   ///
   /// `stdin` is written to the child's input and closed; without it the child reads the null
   /// device, never the app's own stdin.
+  ///
+  /// A nil `timeout` never times out. With `cancellable`, cancelling the calling task sends the
+  /// child SIGTERM, with no SIGKILL after it: the child is trusted to clean up and exit, and `run`
+  /// returns only once it has, so a retry never races its cleanup. Without it (every command but a
+  /// clone) a cancelled task still lets the child finish, so no script is cut off partway.
   private func run(
-    _ args: [String], timeout: TimeInterval, userInitiated: Bool = false, stdin: Data? = nil,
-    onEvent: ((StreamEvent) -> Void)? = nil
+    _ args: [String], timeout: TimeInterval?, userInitiated: Bool = false, stdin: Data? = nil,
+    cancellable: Bool = false, onEvent: ((StreamEvent) -> Void)? = nil
   ) async throws -> CLIResult {
     let url = try Self.bundledBinaryURL()
-    return try await withCheckedThrowingContinuation { continuation in
+    let cancel = CancelSignal()
+    guard cancellable else {
+      return try await run(
+        url: url, args, timeout: timeout, userInitiated: userInitiated, stdin: stdin,
+        onEvent: onEvent, cancel: cancel)
+    }
+    return try await withTaskCancellationHandler {
+      try await run(
+        url: url, args, timeout: timeout, userInitiated: userInitiated, stdin: stdin,
+        onEvent: onEvent, cancel: cancel)
+    } onCancel: {
+      cancel.fire()
+    }
+  }
+
+  private func run(
+    url: URL, _ args: [String], timeout: TimeInterval?, userInitiated: Bool, stdin: Data?,
+    onEvent: ((StreamEvent) -> Void)?, cancel: CancelSignal
+  ) async throws -> CLIResult {
+    try await withCheckedThrowingContinuation { continuation in
       let proc = Process()
       proc.executableURL = url
       proc.arguments = args
@@ -669,7 +747,9 @@ final class WorkroomCLI: WorkroomCLIProtocol {
           if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
         }
       }
-      DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timeoutItem)
+      if let timeout {
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timeoutItem)
+      }
 
       proc.terminationHandler = { finishedProc in
         state.markFinished()
@@ -687,6 +767,9 @@ final class WorkroomCLI: WorkroomCLIProtocol {
 
       do {
         try proc.run()
+        // `nonisolated(unsafe)`: `Process` isn't Sendable, but `terminate()` is thread-safe.
+        nonisolated(unsafe) let running = proc
+        cancel.onFire { if running.isRunning { running.terminate() } }
         if let inPipe, let stdin {
           DispatchQueue.global().async {
             let handle = inPipe.fileHandleForWriting

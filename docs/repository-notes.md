@@ -64,6 +64,11 @@ Release download counts are snapshotted daily, and before every `--clobber` uplo
   Git repo is used as-is, and a non-empty non-repo dir or a file path is rejected
   (`ErrUnsupportedVCS` / `ErrNotDirectory`); `--create --pretend` is a dry-run (reports
   `would_create`, mutates nothing). Backs the app's "Create new directory…" mode (issue #103).
+  `add-project PATH --clone URL` (issue #620, the "Clone a repository…" mode) clones URL into a
+  missing or empty PATH (`ErrDestinationNotEmpty` otherwise), streams git's progress as `clone`
+  log events on stderr, and fails with `CloneFailed` carrying git's own error lines; SIGTERM
+  kills git's process group and reports `Cancelled`. On any failure it removes the folders it
+  made, or empties a folder that was already there; `--pretend` reports `would_clone`.
   `delete-project` is config-only unless: `--with-workrooms` cascades the per-workroom
   teardown (hard-deletes worktree dirs, branches kept); or `--from-disk` runs each workroom's
   teardown, drops the project from config, and returns `trash_paths` (project root first, then

@@ -18,6 +18,8 @@ type AddProjectResult struct {
 	VCS  string
 	// WouldCreate reports, under Pretend, whether AddProject would make the directory.
 	WouldCreate bool
+	// WouldClone reports, under Pretend, that CloneProject would clone into the path.
+	WouldClone bool
 }
 
 // AddProject registers an empty project (one with no workrooms yet) so the macOS app's sidebar can

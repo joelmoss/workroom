@@ -135,6 +135,10 @@ extension Defaults.Keys {
   static let quickTerminalDirectory = Key<String>(
     "quickTerminalDirectory", default: "", suite: .app)
 
+  /// The folder new projects start in (Settings ▸ General): where "Clone a repository…" clones to
+  /// and "Create new directory…" creates in, and where "Choose…" opens (#620); "" = the home folder.
+  static let defaultProjectFolder = Key<String>("defaultProjectFolder", default: "", suite: .app)
+
   /// Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   static let filePathEditor = Key<String>("filePathEditorBundleID", default: "", suite: .app)
 
