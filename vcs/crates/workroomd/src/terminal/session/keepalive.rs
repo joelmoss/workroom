@@ -11,14 +11,19 @@
 //! terminal answering. The daemon sends the client a mode query no terminal knows (`PROBE`) every
 //! `INTERVAL`; the pane's libghostty answers it as it answers any DECRQM, whether or not anyone
 //! types, and the answer comes back as input. Any input at all counts. A client that has let
-//! `MISSES` probes in a row go unanswered no longer counts as attached, and gives up the size; its
-//! first input after that brings it back.
+//! `MISSES` probes in a row go unanswered no longer counts as attached, gives up the size, and has
+//! its connection closed (ADR 0075, amending ADR 0070's mark-only rule).
 //!
-//! **It is not evicted.** Output still goes to it, so a Mac that wakes on a link that survived
-//! carries on exactly as before, with nothing missed. One whose link is dead loses it when a write
-//! fails, as any client always has; the probes are what give that write something to fail on, so
-//! a dead link also ends its relay in sshd's retransmission time (about 15 min) rather than in
-//! TCPKeepAlive's.
+//! **Closing is the point.** Its `relay` then has nothing to talk to and exits, which on Railway
+//! ends the durable session its relay never notices is abandoned, and on any other host ends the
+//! process sshd would have kept for hours. The session is untouched: it outlives every client, and
+//! the Mac, whose ssh gives up on a dead link in about 45 s anyway, reattaches it as usual. The
+//! connection's own teardown detaches the client, as it does for any that goes, so the client is
+//! still on the session until then and its last input is still filtered.
+//!
+//! A connection the daemon cannot close from outside (`Transport::closer`: `serve --stdio`, a pipe
+//! pair) keeps ADR 0070's behaviour: its stale client stays, receives output, and its first input
+//! brings it back.
 //!
 //! Only a client that asked is probed (`VARIABLE`, which the app sets on a remote pane's attach
 //! and no older app sets), so an older app is never probed and never goes stale. An older daemon
@@ -31,6 +36,7 @@ use std::time::Duration;
 
 use super::attached::{apply_size, deliver, terminal_envelope};
 use super::{Attached, Hooks, Session, SessionId, SessionStore};
+use crate::daemon::transport::Closer;
 use crate::terminal::pty::Size;
 use crate::terminal::shadow::Shadow;
 use crate::util::lock_or_recover;
@@ -51,8 +57,8 @@ const ANSWER_HEAD: &[u8] = b"\x1b[?25930;";
 /// How often a client that asked is probed.
 pub(super) const INTERVAL: Duration = Duration::from_secs(15);
 
-/// How many probes in a row may go unanswered before a client stops counting as attached: it does
-/// so between `MISSES` and `MISSES + 1` intervals after it was last heard, 45 to 60 s.
+/// How many probes in a row may go unanswered before a client stops counting as attached and is
+/// closed: it is so between `MISSES` and `MISSES + 1` intervals after it was last heard, 45 to 60 s.
 pub(super) const MISSES: u32 = 3;
 
 /// Whether an attach request's environment asks for keepalive.
@@ -66,8 +72,9 @@ pub fn requested(env: &[(OsString, OsString)]) -> bool {
 /// Counted in ticks rather than measured in time. A host that is a VM on the sleeping Mac (a
 /// container workroom) is paused with it, and on resume its clock can have jumped; the ticker
 /// wakes once for all of that, so a pause costs at most one miss, never `MISSES`.
-#[derive(Debug, Default)]
 pub(super) struct Keepalive {
+    /// Ends the client's connection, once it has gone stale.
+    close: Closer,
     /// A probe should go out at the reader's next chance (`send_probes`).
     due: bool,
     /// A probe went out and nothing has come back since.
@@ -77,7 +84,25 @@ pub(super) struct Keepalive {
     answers: AnswerFilter,
 }
 
+impl Default for Keepalive {
+    /// One whose connection cannot be closed from here.
+    fn default() -> Keepalive {
+        Keepalive::new(Arc::new(|| {}))
+    }
+}
+
 impl Keepalive {
+    /// The keepalive of a client on the connection `close` ends.
+    pub(super) fn new(close: Closer) -> Keepalive {
+        Keepalive {
+            close,
+            due: false,
+            outstanding: false,
+            missed: 0,
+            answers: AnswerFilter::default(),
+        }
+    }
+
     /// Whether this client has stopped answering, and so no longer counts as attached.
     pub(super) fn is_stale(&self) -> bool {
         self.missed >= MISSES
@@ -259,10 +284,10 @@ impl SessionStore {
 }
 
 /// One interval: counts each probed client's miss, gives up the size of one that has just gone
-/// stale, and wakes each reader that has a probe to send.
+/// stale and closes its connection, and wakes each reader that has a probe to send.
 ///
 /// The store map is released before any session's attachment lock is taken, as `changed_screens`
-/// does, and each attachment lock is released before its size is applied.
+/// does, and each attachment lock is released before its size is applied or a connection closed.
 fn tick(sessions: &Mutex<HashMap<SessionId, Session>>, hooks: &Hooks) {
     let parts: Vec<_> = lock_or_recover(sessions)
         .values()
@@ -276,27 +301,33 @@ fn tick(sessions: &Mutex<HashMap<SessionId, Session>>, hooks: &Hooks) {
         })
         .collect();
     for (id, pty, shadow, attached) in parts {
-        let (probing, size) = {
+        let (probing, size, closing) = {
             let mut held = lock_or_recover(&attached);
             let mut probing = false;
             let mut gone_stale = Vec::new();
+            let mut closing = Vec::new();
             for client in &mut held.clients {
                 if let Some(keepalive) = client.keepalive.as_mut() {
                     probing = true;
                     if keepalive.tick() {
                         gone_stale.push(client.token);
+                        closing.push(Arc::clone(&keepalive.close));
                     }
                 }
             }
             if !gone_stale.is_empty() {
                 crate::note!(
-                    "session {}: a client stopped answering; it no longer counts as attached",
+                    "session {}: a client stopped answering; closing its connection",
                     id.to_hyphenated()
                 );
             }
-            (probing, held.release_from(&gone_stale))
+            (probing, held.release_from(&gone_stale), closing)
         };
         apply_size(&pty, &shadow, &attached, size, hooks);
+        // Its connection's read returns, and the teardown detaches it (`Attachment::end`).
+        for close in closing {
+            close();
+        }
         if probing {
             pty.wake_reader();
         }

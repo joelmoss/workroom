@@ -1,6 +1,7 @@
-//! Keepalive on a remote pane's attach (#593), through the real connection handler: a client that
-//! asked to be probed and stops answering stops counting as attached, one that answers stays, and
-//! one that never asked (an older app) is never probed.
+//! Keepalive on a remote pane's attach (#593, ADR 0075), through the real connection handler: a
+//! client that asked to be probed and stops answering has its connection closed while its session
+//! carries on, one that answers stays, and one that never asked (an older app) is never probed or
+//! closed.
 //!
 //! The ticker runs at `INTERVAL` here, not 15 s, through `SessionStore::with_keepalive_interval`.
 //! Probes go out only at ground, which needs the shadow terminal: the probed tests return early
@@ -23,7 +24,18 @@ const INTERVAL: Duration = Duration::from_millis(100);
 const ANSWER: &[u8] = b"\x1b[?25930;0$y";
 
 fn attach(store: &SessionStore, session: [u8; 16], keepalive: bool) -> RpcClient {
-    let (mut client, _server) =
+    attach_with(store, session, keepalive, false).0
+}
+
+/// `attach`, with the connection's handler thread, which ends when the daemon closes it, and
+/// `existing_only`, which refuses rather than creates a session that is not there.
+fn attach_with(
+    store: &SessionStore,
+    session: [u8; 16],
+    keepalive: bool,
+    existing_only: bool,
+) -> (RpcClient, std::thread::JoinHandle<()>) {
+    let (mut client, server) =
         RpcClient::connect_to("keepalive-test", store.clone(), Duration::from_millis(20));
     let mut env = vec![("PATH".into(), "/usr/bin:/bin".into())];
     if keepalive {
@@ -35,6 +47,7 @@ fn attach(store: &SessionStore, session: [u8; 16], keepalive: bool) -> RpcClient
         columns: 80,
         rows: 24,
         env,
+        existing_only,
         ..Default::default()
     };
     client.send(
@@ -42,7 +55,15 @@ fn attach(store: &SessionStore, session: [u8; 16], keepalive: bool) -> RpcClient
         1,
         Frame::new(FrameKind::Attach, request.encode()),
     );
-    client
+    (client, server)
+}
+
+fn pid(store: &SessionStore, session: [u8; 16]) -> Option<i32> {
+    store
+        .list()
+        .iter()
+        .find(|info| info.id == SessionId(session))
+        .map(|info| info.pid)
 }
 
 fn attached(store: &SessionStore, session: [u8; 16]) -> bool {
@@ -70,36 +91,45 @@ fn input(client: &mut RpcClient, bytes: &[u8]) {
 }
 
 /// The Mac holding the pane went to sleep: its relay is still connected, but nothing answers.
-/// Within a few intervals the session reads detached, so another Mac's list shows it. The client
-/// is not cut off, though: its first answer brings it back, and output still reaches it.
+/// Within a few intervals the daemon closes the connection, so the relay under it exits rather
+/// than waiting on a dead link for hours, and the session reads detached. The session itself
+/// carries on, and the Mac's next attach finds it, the same shell still running.
 #[test]
-fn a_probed_client_that_stops_answering_stops_counting_as_attached() {
+fn a_probed_client_that_stops_answering_is_closed_and_its_session_survives() {
     if !has_terminal_state() {
         return;
     }
     let store = SessionStore::with_keepalive_interval(INTERVAL);
     let session = [0x59; 16];
-    let mut client = attach(&store, session, true);
+    let (mut client, server) = attach_with(&store, session, true, false);
     let probed = wait_for_probe(&mut client, 1);
     assert!(probed, "no probe arrived; got {:?}", client.seen);
     assert!(attached(&store, session), "detached before it missed any");
+    let shell = pid(&store, session).expect("the session is listed");
 
-    let stale = wait_for(Duration::from_secs(5), || {
+    let closed = wait_for(Duration::from_secs(5), || {
         client.pump(Instant::now() + Duration::from_millis(20));
-        !attached(&store, session)
+        client.closed
     });
-    assert!(
-        stale,
-        "a client that never answered still counts as attached"
+    assert!(closed, "a client that never answered was not closed");
+    let ended = wait_for(Duration::from_secs(5), || server.is_finished());
+    assert!(ended, "the connection's handler is still running");
+    assert!(!attached(&store, session), "the closed client still counts");
+    assert_eq!(
+        pid(&store, session),
+        Some(shell),
+        "the session went with it"
     );
-    assert!(!client.closed, "the stale client was cut off");
 
-    input(&mut client, ANSWER);
-    let back = wait_for(Duration::from_secs(5), || attached(&store, session));
-    assert!(back, "its answer did not bring it back");
-    input(&mut client, b"echo STILL-HERE\n");
-    let seen = client.read_until("STILL-HERE", Duration::from_secs(5));
-    assert!(seen.contains("STILL-HERE"), "output stopped; got {seen:?}");
+    let (mut again, _server) = attach_with(&store, session, true, true);
+    input(&mut again, b"echo STILL-HERE\n");
+    let seen = again.read_until("STILL-HERE", Duration::from_secs(5));
+    assert!(seen.contains("STILL-HERE"), "no reattach; got {seen:?}");
+    assert_eq!(
+        pid(&store, session),
+        Some(shell),
+        "reattached another shell"
+    );
     store.kill_all();
 }
 
@@ -129,6 +159,7 @@ fn a_probed_client_that_answers_stays_attached_without_typing() {
         }
     }
     assert!(answered >= 4, "only {answered} probes in 12 intervals");
+    assert!(!client.closed, "an answering client was closed");
     input(&mut client, b"echo DONE\n");
     let seen = client.read_until("DONE", Duration::from_secs(5));
     assert!(seen.contains("DONE"), "got {seen:?}");
@@ -157,6 +188,7 @@ fn a_client_that_did_not_ask_is_never_probed_or_stale() {
         );
     }
     assert_eq!(probes(&client), 0, "probed without asking");
+    assert!(!client.closed, "a client that never asked was closed");
     store.kill_all();
 }
 

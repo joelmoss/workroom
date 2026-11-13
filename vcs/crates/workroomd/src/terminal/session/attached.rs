@@ -10,7 +10,7 @@ use super::{
     Attached, Client, Hooks, NEXT_TOKEN, SessionError, SessionId, SessionInfo, SessionStore, Target,
 };
 use crate::daemon::rpc::{self, SharedWriter};
-use crate::daemon::transport::WRITE_TIMEOUT;
+use crate::daemon::transport::{Closer, WRITE_TIMEOUT};
 use crate::terminal::images;
 use crate::terminal::input::InputClassifier;
 use crate::terminal::pty::{Pty, Size};
@@ -39,23 +39,25 @@ impl SessionStore {
         stream: u32,
         size: Size,
     ) -> Result<(SessionInfo, u64), SessionError> {
-        self.attach_client(id, writer, stream, size, false)
+        self.attach_client(id, writer, stream, size, None)
     }
 
     /// `attach`, for a client that may have asked to be probed (`keepalive`, #593): one that stops
-    /// answering then stops counting as attached.
+    /// answering then stops counting as attached, and `keepalive`, which ends its connection, is
+    /// called (ADR 0075).
     pub fn attach_client(
         &self,
         id: SessionId,
         writer: SharedWriter,
         stream: u32,
         size: Size,
-        keepalive: bool,
+        keepalive: Option<Closer>,
     ) -> Result<(SessionInfo, u64), SessionError> {
         let (pty, shadow, attached) = self
             .parts(id)
             .ok_or_else(|| SessionError::NotFound(id.to_hyphenated()))?;
 
+        let probed = keepalive.is_some();
         let token = NEXT_TOKEN.fetch_add(1, Ordering::SeqCst);
         // Whether the repaint reached the client WHOLE. A client that only got part of one is not
         // registered below — see `SessionError::RepaintFailed`.
@@ -173,7 +175,7 @@ impl SessionStore {
                     pixels: (size.x_pixels, size.y_pixels),
                     classifier: InputClassifier::new(),
                     transfer,
-                    keepalive: keepalive.then(Keepalive::default),
+                    keepalive: keepalive.map(Keepalive::new),
                 });
                 // Attaching does not TAKE the size from a client that has it — that needs an act.
                 // It only fills a vacancy.
@@ -197,7 +199,7 @@ impl SessionStore {
             return Err(SessionError::RepaintFailed(id.to_hyphenated()));
         }
         apply_size(&pty, &shadow, &attached, size, &self.hooks);
-        if keepalive {
+        if probed {
             self.start_keepalive();
         }
 

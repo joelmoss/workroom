@@ -520,7 +520,7 @@ pub fn handle_connection_with<T: Transport>(
 
     let mut decoder = EnvelopeDecoder::new();
     let mut buffer = [0u8; 8192];
-    let mut attachment = crate::terminal::dispatch::Attachment::default();
+    let mut attachment = crate::terminal::dispatch::Attachment::new(Arc::clone(&closer));
     let mut services = ConnectionServices {
         deadline: Deadline {
             after: deadline,
