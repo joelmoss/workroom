@@ -27,13 +27,13 @@ use std::collections::VecDeque;
 /// an older daemon has no `vcs::dispatch` at all, so an unversioned capability probe would just
 /// hang until its own timeout; `Service::File` at 3, `Service::Status` at 4 and `Service::Forward`
 /// at 5, all for the same reason, as is the Control frame `HandOff` at 6, `Service::Layout` at 7,
-/// `Service::ProgramStatus` at 8, run sessions with their Control frame `Signal` at 9 and the Control frame `Retag` at 10 — `serve.rs`'s
+/// `Service::ProgramStatus` at 8, run sessions with their Control frame `Signal` at 9, the Control frame `Retag` at 10 and the Control frame `Pings` at 11 — `serve.rs`'s
 /// dispatch returns silently for a service byte it does not handle). `MIN_SUPPORTED` stays untouched by such bumps: negotiation still
 /// takes the lower of the two sides' versions for the services both already understand (Terminal,
 /// Control), so a newer app still drives an older daemon left running rather than replacing it —
 /// only a version-gated service (checked against the peer's raw `Hello.protocol_version`, not the
 /// negotiated minimum) refuses to talk to a peer that predates it.
-pub const PROTOCOL_VERSION: u16 = 10;
+pub const PROTOCOL_VERSION: u16 = 11;
 pub const MIN_SUPPORTED_VERSION: u16 = 1;
 /// The minimum peer version that understands `Service::Vcs`. Checked directly against a peer's
 /// `Hello.protocol_version` by VCS clients — never folded into `negotiate`'s minimum, which would
@@ -68,6 +68,10 @@ pub const MIN_RUN_VERSION: u16 = 9;
 /// The minimum peer version that answers a `Retag` frame, which changes the workroom a live session
 /// is tagged with. A protocol-9 daemon drops it unanswered, so a client never sends one to it.
 pub const MIN_RETAG_VERSION: u16 = 10;
+/// The minimum peer version that answers a `Pings` frame, which puts a connection under the
+/// daemon's service-stream deadline (ADR 0075). A protocol-10 daemon drops it unanswered and has
+/// no deadline, so a client never sends one to it.
+pub const MIN_PINGS_VERSION: u16 = 11;
 
 /// Sent first by both sides. The magic is here so a peer that is not a daemon at all — a login
 /// banner, an MOTD, an ssh warning printed onto the stream — fails immediately and legibly
@@ -367,8 +371,14 @@ mod tests {
     /// `Retag`, pinned by the app too.
     #[test]
     fn retag_is_protocol_10() {
-        assert_eq!(PROTOCOL_VERSION, 10);
         assert_eq!(MIN_RETAG_VERSION, 10);
+    }
+
+    /// `Pings`, the service-stream deadline's announcement (ADR 0075), pinned by the app too.
+    #[test]
+    fn pings_is_protocol_11() {
+        assert_eq!(PROTOCOL_VERSION, 11);
+        assert_eq!(MIN_PINGS_VERSION, 11);
     }
 
     #[test]
