@@ -1,0 +1,174 @@
+import Foundation
+import Synchronization
+import XCTest
+
+@testable import HostDrivers
+
+/// Railway's GraphQL API client (#627), with Railway stubbed at HTTP (`StubRailway`): the seam the
+/// Railway driver's later tickets call through.
+final class RailwayAPITests: XCTestCase {
+  /// A token provider that hands out `tokens` in turn, recording the ones the API rejected.
+  private final class Tokens: RailwayAccessTokenProviding, Sendable {
+    private let state: Mutex<(next: [String], rejected: [String])>
+    init(_ tokens: [String]) { state = Mutex((tokens, [])) }
+    var rejected: [String] { state.withLock { $0.rejected } }
+    func accessToken() async throws -> String {
+      state.withLock { $0.next.count > 1 ? $0.next.removeFirst() : $0.next[0] }
+    }
+    func accessTokenRejected(_ token: String) async {
+      state.withLock { $0.rejected.append(token) }
+    }
+  }
+
+  private struct Me: Decodable, Equatable {
+    struct User: Decodable, Equatable { let email: String }
+    let me: User
+  }
+
+  /// Value: protects=every Railway call is a POST of the query and its variables to
+  /// backboard.railway.com/graphql/v2 with the access token as a bearer; fails_when=the token,
+  /// endpoint or body is wrong, or `data` doesn't decode; seam=RailwayAPI over the HTTP transport
+  func testAQuerySendsTheBearerTokenAndDecodesItsData() async throws {
+    let railway = StubRailway()
+    railway.answer("me", data: ["me": ["email": "me@x.dev"]])
+    let api = RailwayAPI(transport: railway, tokens: Tokens(["at-1"]))
+
+    let me = try await api.query(
+      "query me($n: Int) { me { email } }", variables: ["n": 3], as: Me.self)
+
+    XCTAssertEqual(me, Me(me: .init(email: "me@x.dev")))
+    let request = try XCTUnwrap(railway.graphQLRequests.first)
+    XCTAssertEqual(request.httpMethod, "POST")
+    XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer at-1")
+    XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+    let body = StubRailway.graphQLBody(request)
+    XCTAssertEqual(body["query"] as? String, "query me($n: Int) { me { email } }")
+    XCTAssertEqual((body["variables"] as? [String: Any])?["n"] as? Int, 3)
+  }
+
+  /// Value: protects=Railway's own words reach the user when it refuses a call; fails_when=the
+  /// error loses the messages or a partial `data` is taken as success; seam=RailwayAPI
+  func testRailwaysErrorsComeBackAsItsMessages() async {
+    let railway = StubRailway()
+    railway.answer("me") { _ in
+      RailwayHTTPResponse(
+        status: 200,
+        body: Data(
+          #"{"data":null,"errors":[{"message":"Not Authorized"},{"message":"Try later"}]}"#.utf8))
+    }
+    let api = RailwayAPI(transport: railway, tokens: Tokens(["at-1"]))
+
+    do {
+      _ = try await api.query("query { me { email } }", as: Me.self)
+      XCTFail("an errors answer decoded")
+    } catch {
+      XCTAssertEqual(error as? RailwayAPIError, .graphQL(["Not Authorized", "Try later"]))
+      XCTAssertEqual(error.localizedDescription, "Railway said: Not Authorized. Try later")
+    }
+  }
+
+  /// Value: protects=an access token Railway rejects (401) is refreshed and the call made once
+  /// more, so an hour-old token never surfaces as an error; fails_when=it surfaces, or retries
+  /// forever; seam=RailwayAPI with its token provider
+  func testARejectedTokenIsReportedAndTheCallRetriedOnce() async throws {
+    let railway = StubRailway()
+    railway.answer("me") { request in
+      request.value(forHTTPHeaderField: "Authorization") == "Bearer fresh"
+        ? RailwayHTTPResponse(status: 200, body: Data(#"{"data":{"me":{"email":"a@b"}}}"#.utf8))
+        : RailwayHTTPResponse(status: 401, body: Data("Unauthorized".utf8))
+    }
+    let tokens = Tokens(["stale", "fresh"])
+    let api = RailwayAPI(transport: railway, tokens: tokens)
+
+    let me = try await api.query("query { me { email } }", as: Me.self)
+
+    XCTAssertEqual(me.me.email, "a@b")
+    XCTAssertEqual(tokens.rejected, ["stale"])
+
+    let always = StubRailway()
+    always.answer("me") { _ in RailwayHTTPResponse(status: 401, body: Data()) }
+    do {
+      _ = try await RailwayAPI(transport: always, tokens: Tokens(["x"]))
+        .query("query { me { email } }", as: Me.self)
+      XCTFail("a 401 decoded")
+    } catch {
+      XCTAssertEqual(error as? RailwayAPIError, .unauthorized)
+      XCTAssertEqual(always.graphQLRequests.count, 2)
+    }
+  }
+
+  /// Value: protects=a server failure says its status, not a decoding error; seam=RailwayAPI
+  func testAServerFailureSaysItsStatus() async {
+    let railway = StubRailway()
+    railway.answer("me") { _ in RailwayHTTPResponse(status: 503, body: Data("down".utf8)) }
+    do {
+      _ = try await RailwayAPI(transport: railway, tokens: Tokens(["x"]))
+        .query("query { me { email } }", as: Me.self)
+      XCTFail("a 503 decoded")
+    } catch {
+      XCTAssertEqual(error as? RailwayAPIError, .http(status: 503, message: "down"))
+    }
+  }
+
+  // MARK: Workspaces and plans
+
+  /// Value: protects=the sheet lists the workspaces the user granted with their plans (`me {
+  /// workspaces }`); fails_when=a workspace or its plan is lost; seam=RailwayAPI.grantedWorkspaces
+  func testGrantedWorkspacesComeWithTheirPlans() async throws {
+    let railway = StubRailway()
+    railway.answer(
+      "me",
+      data: [
+        "me": [
+          "workspaces": [
+            ["id": "ws-1", "name": "Personal", "plan": "HOBBY"],
+            ["id": "ws-2", "name": "Codaset", "plan": "FREE"],
+          ]
+        ]
+      ])
+    let api = RailwayAPI(transport: railway, tokens: Tokens(["x"]))
+
+    let workspaces = try await api.grantedWorkspaces()
+
+    XCTAssertEqual(
+      workspaces,
+      [
+        RailwayWorkspace(id: "ws-1", name: "Personal", plan: .hobby),
+        RailwayWorkspace(id: "ws-2", name: "Codaset", plan: .free),
+      ])
+    let query = StubRailway.graphQLBody(railway.graphQLRequests[0])["query"] as? String ?? ""
+    XCTAssertFalse(query.contains("customer"), "the listing must not depend on billing access")
+  }
+
+  /// Value: protects=Trial is read per workspace from its customer, as a separate call;
+  /// seam=RailwayAPI.isTrialing
+  func testTrialIsReadFromTheWorkspacesCustomer() async throws {
+    let railway = StubRailway()
+    railway.answer("workspace") { request in
+      let variables = StubRailway.graphQLBody(request)["variables"] as? [String: Any]
+      XCTAssertEqual(variables?["id"] as? String, "ws-1")
+      return RailwayHTTPResponse(
+        status: 200, body: Data(#"{"data":{"workspace":{"customer":{"isTrialing":true}}}}"#.utf8))
+    }
+    let trialing = try await RailwayAPI(transport: railway, tokens: Tokens(["x"]))
+      .isTrialing(workspaceID: "ws-1")
+    XCTAssertTrue(trialing)
+  }
+
+  /// Value: protects=Trial and Free are refused with the reason, Hobby and Pro allowed, and a
+  /// plan this build doesn't know isn't refused; seam=RailwayWorkspace.refusal
+  func testTrialAndFreeAreRefusedWithTheReason() {
+    let free = RailwayWorkspace(id: "a", name: "A", plan: .free)
+    let hobby = RailwayWorkspace(id: "b", name: "B", plan: .hobby)
+    let pro = RailwayWorkspace(id: "c", name: "C", plan: .pro)
+    let newer = RailwayWorkspace(id: "d", name: "D", plan: .other("ENTERPRISE"))
+
+    XCTAssertEqual(free.refusal(trialing: false), RailwayPlanRefusal.free)
+    XCTAssertEqual(hobby.refusal(trialing: true), RailwayPlanRefusal.trial)
+    XCTAssertNil(hobby.refusal(trialing: false))
+    XCTAssertNil(pro.refusal(trialing: nil))
+    XCTAssertNil(newer.refusal(trialing: nil))
+    XCTAssertTrue(RailwayPlanRefusal.free.reason.contains("Hobby or Pro"))
+    XCTAssertTrue(RailwayPlanRefusal.trial.reason.contains("5 minutes"))
+  }
+}
