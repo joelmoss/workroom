@@ -163,7 +163,10 @@ pub(crate) fn dispatch(
                 // A remote pane attached from the Mac is built from this host instead, with only
                 // the client's terminal and locale (`host_session`, ADR 0074).
                 let (child_environment, session_shell, resources) = if request.host_environment {
-                    let host = sessions.hooks().host.session(&request.env, &attachment.peer);
+                    let host = sessions
+                        .hooks()
+                        .host
+                        .session(&request.env, &attachment.peer);
                     (host.environment, host.shell, host.resources)
                 } else {
                     (
@@ -320,7 +323,12 @@ pub(crate) fn dispatch(
                     crate::terminal::host_session::PEER_VARIABLES
                         .iter()
                         .any(|name| key == *name)
-                        .then(|| (key.to_os_string(), OsStr::from_bytes(&entry[split + 1..]).into()))
+                        .then(|| {
+                            (
+                                key.to_os_string(),
+                                OsStr::from_bytes(&entry[split + 1..]).into(),
+                            )
+                        })
                 })
                 .collect();
             None

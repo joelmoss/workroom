@@ -243,7 +243,8 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     if dialed.is_some() {
         // Only what a host session may take from the Mac (ADR 0074): the host gives it the rest,
         // from its own environment and account, so neither the Mac's shell nor its resources go.
-        request.env = wr_protocol::terminal::host_attach_environment(std::mem::take(&mut request.env));
+        request.env =
+            wr_protocol::terminal::host_attach_environment(std::mem::take(&mut request.env));
         request.shell = None;
         request.resources = None;
         request.host_environment = true;
@@ -319,7 +320,9 @@ pub fn run_attach(args: &[String]) -> ExitCode {
                         break stream;
                     }
                     if std::time::Instant::now() >= deadline {
-                        return Err(Unopened::Broken("the session daemon did not start within 5s"));
+                        return Err(Unopened::Broken(
+                            "the session daemon did not start within 5s",
+                        ));
                     }
                     std::thread::sleep(Duration::from_millis(20));
                 }
@@ -727,7 +730,10 @@ fn write_to(writer: &SharedWriter, bytes: &[u8]) -> bool {
     let Ok(mut writer) = writer.lock() else {
         return false;
     };
-    writer.write_all(bytes).and_then(|()| writer.flush()).is_ok()
+    writer
+        .write_all(bytes)
+        .and_then(|()| writer.flush())
+        .is_ok()
 }
 
 /// One connection to a daemon: its unix socket, or the stdio of a command that reaches one

@@ -86,8 +86,17 @@ impl HostSource {
         client: &[(OsString, OsString)],
         peer: &[(OsString, OsString)],
     ) -> HostSession {
-        let origin = self.fixed.get().cloned().unwrap_or_else(HostOrigin::current);
-        build(client, peer, &origin, self.resources.get().map(PathBuf::as_path))
+        let origin = self
+            .fixed
+            .get()
+            .cloned()
+            .unwrap_or_else(HostOrigin::current);
+        build(
+            client,
+            peer,
+            &origin,
+            self.resources.get().map(PathBuf::as_path),
+        )
     }
 }
 

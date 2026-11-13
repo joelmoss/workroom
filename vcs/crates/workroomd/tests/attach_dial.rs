@@ -6,15 +6,20 @@
 
 #[allow(dead_code)] // not every helper is used here
 mod common;
-use common::daemon_binary;
+use common::{ClientReader, Spawned, daemon_binary};
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
-use workroomd::testing::{HostOrigin, SessionStore, handle_connection};
+use workroomd::testing::{
+    HostOrigin, KEEPALIVE_PROBE, KEEPALIVE_VARIABLE, SessionId, SessionStore, handle_connection,
+};
+use wr_protocol::terminal::parse_session_id;
 
 const SESSION: &str = "6B9B968D-0BD7-4172-850A-A373DA73BC70";
 
@@ -219,7 +224,8 @@ const DAEMON: [(&str, &str); 7] = [
 /// The session's environment, one variable per line, from a session that runs `env`.
 fn session_environment(host: &Host) -> Vec<String> {
     let mut env: Vec<(&str, &str)> = MAC.to_vec();
-    env.push(("WORKROOM_SESSION_COMMAND", "env"));
+    // A line first, so a new session's repaint (with `terminal-state`) is a line of its own.
+    env.push(("WORKROOM_SESSION_COMMAND", "/bin/sh -c 'echo; exec env'"));
     let output = host.dial(&env).output().expect("attach");
     assert_eq!(
         output.status.code(),
@@ -235,7 +241,7 @@ fn session_environment(host: &Host) -> Vec<String> {
         .unwrap_or_else(|| panic!("the waiting line was not cleared first: {seen:?}"));
     seen.split(['\r', '\n'])
         .map(str::to_string)
-        .filter(|line| !line.is_empty())
+        .filter(|line| !line.is_empty() && !line.contains('\x1b'))
         .collect()
 }
 
@@ -304,7 +310,11 @@ fn without_ghosttys_terminfo_on_the_host_the_session_is_xterm_256color_without_i
     let lines = session_environment(&host);
     assert!(contains(&lines, "TERM=xterm-256color"), "{lines:?}");
     let names = names(&lines);
-    for absent in ["TERMINFO", "GHOSTTY_SHELL_FEATURES", "GHOSTTY_RESOURCES_DIR"] {
+    for absent in [
+        "TERMINFO",
+        "GHOSTTY_SHELL_FEATURES",
+        "GHOSTTY_RESOURCES_DIR",
+    ] {
         assert!(
             !names.contains(&absent),
             "{absent} without terminfo: {lines:?}"
@@ -345,6 +355,171 @@ fn a_dialed_shell_is_the_accounts_login_shell_and_runs_its_profile() {
     let seen = String::from_utf8_lossy(&output.stdout);
     assert!(seen.contains("PROFILE-RAN"), "{seen:?}");
     assert!(seen.contains("LOGIN=-sh"), "{seen:?}");
+}
+
+/// A pty standing in for libghostty's, at `rows` x `columns`: (the side the test types into, the
+/// side the client's stdin is).
+fn pty(rows: u16, columns: u16) -> (OwnedFd, OwnedFd) {
+    let (mut primary, mut secondary) = (-1, -1);
+    let mut size = libc::winsize {
+        ws_row: rows,
+        ws_col: columns,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: every pointer is to a live local; openpty writes the two descriptors.
+    let rc = unsafe {
+        libc::openpty(
+            &mut primary,
+            &mut secondary,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    };
+    assert_eq!(rc, 0, "openpty: {}", std::io::Error::last_os_error());
+    // SAFETY: openpty succeeded, so both are open descriptors this test now owns.
+    unsafe {
+        (
+            OwnedFd::from_raw_fd(primary),
+            OwnedFd::from_raw_fd(secondary),
+        )
+    }
+}
+
+fn resize(primary: &OwnedFd, rows: u16, columns: u16) {
+    let size = libc::winsize {
+        ws_row: rows,
+        ws_col: columns,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: TIOCSWINSZ reads one `winsize` through the pointer, which is a live local.
+    let rc = unsafe { libc::ioctl(primary.as_raw_fd(), libc::TIOCSWINSZ, &size) };
+    assert_eq!(rc, 0, "TIOCSWINSZ: {}", std::io::Error::last_os_error());
+}
+
+/// The session is created at the pane's size, and a resized pane resizes it, as `Resize` frames
+/// through the dialed link.
+#[test]
+fn a_resized_pane_resizes_the_dialed_session() {
+    let scratch = Scratch::new("resize");
+    let host = Host::serve(&scratch, SessionStore::new(), &DAEMON);
+    let (primary, secondary) = pty(30, 100);
+    let mut command = host.dial(&MAC);
+    command.stdin(Stdio::from(secondary));
+    let mut child = Spawned(command.spawn().expect("attach"));
+    let mut output = ClientReader::new(&mut child);
+    let mut typing = std::fs::File::from(primary.try_clone().unwrap());
+
+    typing.write_all(b"stty size\n").unwrap();
+    let seen = output
+        .read_until("30 100", Duration::from_secs(10))
+        .to_string();
+    assert!(
+        seen.contains("30 100"),
+        "created at the pane's size: {seen:?}"
+    );
+
+    resize(&primary, 40, 120);
+    let resized = common::wait_for(Duration::from_secs(10), || {
+        typing.write_all(b"stty size\n").unwrap();
+        output
+            .read_until("40 120", Duration::from_millis(300))
+            .contains("40 120")
+    });
+    assert!(resized, "{:?}", output.read_until("", Duration::ZERO));
+}
+
+/// ADR 0070's probe passes through the dialed client to the pane's terminal, whose answer comes
+/// back as input the daemon takes out, so a pane that answers stays attached.
+#[test]
+fn the_keepalive_probe_passes_through_a_dialed_client_and_its_answer_keeps_it_attached() {
+    if !common::has_terminal_state() {
+        return;
+    }
+    let scratch = Scratch::new("probe");
+    let store = SessionStore::with_keepalive_interval(Duration::from_millis(100));
+    let host = Host::serve(&scratch, store.clone(), &DAEMON);
+    let mut env = MAC.to_vec();
+    env.push((KEEPALIVE_VARIABLE, "1"));
+    let mut child = Spawned(host.dial(&env).spawn().expect("attach"));
+    let mut output = ClientReader::new(&mut child);
+    let mut answers = child.stdin.take().unwrap();
+    let probe = String::from_utf8(KEEPALIVE_PROBE.to_vec()).unwrap();
+
+    let mut probes = 0;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while probes < 5 && Instant::now() < deadline {
+        // Reads for the whole wait: `read_until` stops at a needle already seen.
+        let seen = output.read_until("\0never", Duration::from_millis(200));
+        probes = seen.matches(probe.as_str()).count();
+        answers.write_all(b"\x1b[?25930;0$y").unwrap();
+    }
+    assert!(probes >= 5, "the probe reached the pane {probes} times");
+    let id = parse_session_id(OsStr::new(SESSION)).unwrap();
+    let attached = store
+        .list()
+        .iter()
+        .any(|info| info.id == SessionId(id.0) && info.attached);
+    assert!(attached, "an answering pane counts as attached");
+}
+
+/// A session that ends with 255 must not read as a dropped link, which the app retries.
+#[test]
+fn a_dialed_session_that_exits_255_ends_with_254() {
+    let scratch = Scratch::new("exit");
+    let host = Host::serve(&scratch, SessionStore::new(), &DAEMON);
+    let mut env = MAC.to_vec();
+    env.push(("WORKROOM_SESSION_COMMAND", "/bin/sh -c 'exit 255'"));
+    let output = host.dial(&env).output().expect("attach");
+    assert_eq!(output.status.code(), Some(254));
+}
+
+/// The link drops mid-session: the client exits 255 for the app to attach again, and the session
+/// carries on on the host.
+#[test]
+fn a_dialed_link_that_drops_exits_255_and_leaves_the_session_running() {
+    let scratch = Scratch::new("drop");
+    let host = Host::serve(&scratch, SessionStore::new(), &DAEMON);
+    let pid = scratch.0.join("relay.pid");
+    // `<&0`: a non-interactive shell gives a background command /dev/null for stdin otherwise.
+    let relay = format!(
+        "'{}' relay --socket '{}' <&0 & echo $! > '{}'; wait",
+        daemon_binary().display(),
+        host.socket.display(),
+        pid.display()
+    );
+    let mut child = Spawned(
+        Command::new(daemon_binary())
+            .args(["attach", "--dial", "/bin/sh", "-c", &relay])
+            .env_clear()
+            .envs(MAC)
+            .env("WORKROOM_SESSION_ID", SESSION)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("attach"),
+    );
+    let mut output = ClientReader::new(&mut child);
+    let mut typing = child.stdin.take().unwrap();
+    typing.write_all(b"echo READY\n").unwrap();
+    let seen = output
+        .read_until("READY", Duration::from_secs(10))
+        .to_string();
+    assert!(seen.contains("READY"), "{seen:?}");
+
+    let pid: i32 = std::fs::read_to_string(&pid)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // SAFETY: kill only signals; the pid is this test's relay.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    let status = child.wait().expect("wait");
+    assert_eq!(status.code(), Some(255));
+    assert_eq!(host.store.list().len(), 1, "the session outlives its link");
 }
 
 /// A local pane is unchanged: it hands its whole environment to the session.
