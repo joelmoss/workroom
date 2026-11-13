@@ -1,5 +1,6 @@
 import AppKit
 import DevContainer
+import HostDrivers
 import SwiftUI
 import WorkroomDomain
 import WorkroomVCS
@@ -50,7 +51,7 @@ struct DetailsPanel: View {
     }
   }
 
-  /// The host options a boxd or exe.dev workroom was made with (#575). Nothing for one made before
+  /// The host options a boxd, exe.dev or Railway workroom was made with (#575, #633). Nothing for one made before
   /// them, or on the provider's defaults.
   @ViewBuilder
   private func hostOptions(_ target: TerminalTarget) -> some View {
@@ -64,6 +65,7 @@ struct DetailsPanel: View {
         made.cpu.map { "\($0) CPU" }, made.memory, made.disk.map { "\($0) disk" },
       ].compactMap { $0 }
       if !size.isEmpty { fact("Size", size.joined(separator: ", ")) }
+      if let region = made.region { fact("Region", RailwayHostOptions.regionName(region)) }
     }
   }
 

@@ -250,7 +250,8 @@ final class RailwayHostOptionsTests: XCTestCase {
       RailwayHostDriver.clearCheckoutCommand(
         path: "/root/acme", cloneURL: "git@github.com:acme/app.git",
         tokenPath: RailwayHostDriver.gitHubTokenPath))
-    XCTAssertEqual(logins.last.flatMap(\.stdin).map { String(decoding: $0, as: UTF8.self) },
+    XCTAssertEqual(
+      logins.last.flatMap(\.stdin).map { String(decoding: $0, as: UTF8.self) },
       Self.token, "the Mac's token wasn't written back")
   }
 

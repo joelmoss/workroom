@@ -805,7 +805,12 @@ import WorkroomVCS
           return .boxd(snapshots: ["uitest-snapshot"], size: nil)
         case .exeDev:
           return .exeDev(.init(maxCPUs: 4, maxMemoryGB: 8, defaultDiskGB: 20, maxDiskGB: 100))
-        case .container, .ssh, .railway:
+        case .railway:
+          return .railway(
+            RailwayHostOptions(
+              checkpoints: ["uitest-checkpoint"],
+              size: RailwayHostOptions.Size(plan: .hobby)))
+        case .container, .ssh:
           // As the real read says: these take no host options, so no step asks for them.
           return .failed("\(provider.displayName) hosts take no host options.")
         }
