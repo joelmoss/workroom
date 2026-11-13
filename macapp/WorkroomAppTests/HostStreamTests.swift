@@ -210,18 +210,24 @@ final class HostStreamTests: XCTestCase {
     let log = SSHTransport.attachLog(
       session, in: directory.appendingPathComponent(id.uuidString)
     ).path
+    // The pane runs this Mac's client, which dials the host's relay over ssh without a terminal
+    // (ADR 0074).
     XCTAssertTrue(
       command.hasPrefix("'/bin/sh' '-c' ")
-        && command.contains(" 'workroom-attach' '\(log)' '/usr/bin/ssh' '-F' "), command)
+        && command.contains(" 'workroom-attach' '\(log)' '/usr/bin/env' "), command)
+    XCTAssertTrue(
+      command.contains(
+        " \(SSHTransport.shellQuoted(SSHTransport.attachClient)) 'attach' '--no-create' "
+          + "'--dial' '/usr/bin/ssh' '-F' "), command)
     XCTAssertTrue(command.contains(" '-E' '\(log)' "), command)
-    XCTAssertTrue(command.contains(" '-t' 'workroom-host' "), command)
+    XCTAssertTrue(command.contains(" '-T' 'workroom-host' "), command)
     // A run tab's attach carries its run command through the driver to the host (#522).
     let runAttach = try driver.attachCommand(
       to: .remote(id), session: session, workingDirectory: "/w", restored: false, metadata: [],
       runCommand: "bin/dev")
     XCTAssertTrue(runAttach.contains("WORKROOM_SESSION_RUN=1"), runAttach)
     XCTAssertTrue(runAttach.contains("WORKROOM_SESSION_COMMAND=bin/dev"), runAttach)
-    XCTAssertFalse(command.contains("WORKROOM_SESSION_RUN"), command)
+    XCTAssertFalse(command.contains("WORKROOM_SESSION_RUN=1"), command)
   }
 
   /// A pane's attach to a host that is not there (#241): it says what it is waiting for, then

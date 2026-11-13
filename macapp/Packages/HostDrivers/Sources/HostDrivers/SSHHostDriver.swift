@@ -270,7 +270,7 @@ public final class SSHHostDriver: FolderPlacingDriver, ReconnectingHostDriver, H
   private func route(spawned: Bool, reusingConnection: Bool) throws -> SSHTransport.Route {
     try Self.validateDestination(destination)
     // These precede the shared defaults: OpenSSH takes the first value. Terminal panes keep
-    // independent connections and their LocalCommand screen clearing, without a MaxSessions cap.
+    // independent connections, without a MaxSessions cap.
     let reuse = reusingConnection ? try control.options() : []
     return SSHTransport.Route(
       options: reuse + configuration.sshOptions + SSHTransport.userOwnedOptions()
