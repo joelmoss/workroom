@@ -51,6 +51,15 @@ final class HostKindTests: XCTestCase {
       HostKind.remoteProviders, [.boxd, .exeDev, .railway, .ssh], "the menu's order changed")
   }
 
+  /// Value: protects=a Railway workroom's dev server reaching the Mac (#632); fails_when=a Railway
+  /// host gets no Ports list, or shares one list across workrooms like an SSH host; why_new=#632;
+  /// seam=none; no_claim=the forward itself, which rides the daemon connection on every kind
+  func testBoxdAndExeDevPublishTheirOwnPortsWhileEveryOtherHostForwardsThem() {
+    XCTAssertEqual(
+      Self.every.map(\.portForwards),
+      [.perHost, .perHost, nil, nil, .perHost, .perWorkroom])
+  }
+
   /// Value: protects=a Railway workroom reached again after a relaunch; fails_when=the sandbox,
   /// environment or pinned key is lost or renamed in config.json; why_new=#629; seam=none;
   /// no_claim=the driver's use of it
