@@ -82,8 +82,7 @@ func runCloneProject(svc *workroom.Service, url, path string, out, logSink io.Wr
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stop()
 	logWriter := newJSONLogWriter(logSink, "clone")
-	logWriter.splitCR = true
-	res, err := svc.CloneProject(ctx, url, path, logWriter)
+	res, err := svc.CloneProject(ctx, url, path, &crSplitter{w: logWriter})
 	logWriter.Flush()
 	if err != nil {
 		return err

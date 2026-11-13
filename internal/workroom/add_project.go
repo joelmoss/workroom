@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -181,12 +182,13 @@ func dirIsEmpty(dir string) (bool, error) {
 		return false, err
 	}
 	for _, e := range entries {
-		switch e.Name() {
-		case ".DS_Store", ".localized":
-			continue
-		default:
+		if !slices.Contains(finderJunk, e.Name()) {
 			return false, nil
 		}
 	}
 	return true, nil
 }
+
+// finderJunk is what Finder leaves in a folder it has shown, which doesn't make it non-empty. The
+// app's New Project sheet keeps the same list (`AddProjectSheetModel.finderJunk`).
+var finderJunk = []string{".DS_Store", ".localized"}
