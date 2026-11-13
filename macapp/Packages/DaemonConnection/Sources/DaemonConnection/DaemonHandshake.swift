@@ -8,7 +8,7 @@ public enum DaemonHandshake {
   /// Matches `PROTOCOL_VERSION` in the daemon's `wr_protocol::envelope`. Bumped together. `negotiate`
   /// on the daemon side takes the lower of the two sides' versions for Terminal/Control, so
   /// advertising a newer version here never breaks talking to an older daemon left running.
-  public static let protocolVersion: UInt16 = 10
+  public static let protocolVersion: UInt16 = 11
   /// `MIN_VCS_VERSION` and `MIN_FILE_VERSION` in the daemon's `wr_protocol::envelope`: the first peer
   /// versions that understand `Service::Vcs` and `Service::File`. Each is checked against a peer's RAW
   /// greeting version before that service's first envelope — never folded into the negotiated minimum,
@@ -31,6 +31,10 @@ public enum DaemonHandshake {
   /// `MIN_RETAG_VERSION`: the first peer version that answers `Retag`, which tags a live session
   /// with another workroom. An older daemon drops it unanswered, so it is never sent one.
   public static let minRetagVersion: UInt16 = 10
+  /// `MIN_PINGS_VERSION`: the first peer version that answers `Pings`, the app's word that it pings a
+  /// remote service stream and the daemon may close it after 60 s of silence (ADR 0075). An older
+  /// daemon drops it unanswered and has no deadline, so it is never sent one.
+  public static let minPingsVersion: UInt16 = 11
   public static let magic: [UInt8] = Array("WRA1".utf8)
 
   public static func encodeHello(build: String) -> [UInt8] {

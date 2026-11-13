@@ -110,6 +110,13 @@ public enum DaemonControl {
     SessionRetag.frame(session: session, workroom: workroom)
   }
 
+  /// `FrameKind::Pings`, a Control frame `WorkroomWire` predates.
+  public static let pingsFrameKind: UInt8 = 0x28
+
+  /// Says this connection pings (ADR 0075): the daemon closes it once nothing has come from it for
+  /// 60 s. No payload; answered with `acknowledged`.
+  public static func pings() -> [UInt8] { controlFrame(kind: pingsFrameKind, payload: []) }
+
   /// The sessions a reply lists. Throws when the frame is not a session list (a `.failure` carries
   /// the daemon's reason: a list over the frame cap, for one) or its list does not decode.
   public static func sessionList(in frame: SessionFrame) throws -> [SessionDescriptor] {

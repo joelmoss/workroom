@@ -257,6 +257,55 @@ final class HostConnectionManagerTests: XCTestCase {
     await manager.disconnect(lease)
   }
 
+  // Value: protects=a remote host's daemon closing the app's service stream only once the Mac
+  // has really gone (ADR 0075): the app says it pings and then pings well inside the daemon's 60 s
+  // deadline; fails_when=a remote stream is never announced or pinged, or pinging goes on after
+  // the link is dropped; why_new=new behaviour; seam=none
+  func testARemoteServiceStreamIsAnnouncedAndPingedUntilItIsDropped() async throws {
+    XCTAssertEqual(HostConnectionManager.pingInterval, .seconds(15), "ADR 0075's interval")
+    let manager = HostConnectionManager(pingInterval: .milliseconds(40))
+    let host = HostID.remote(UUID())
+    let connection = ConnectionFixture()
+    let lease = try await manager.connect(host: host) { connection }
+    try await connection.pinged(atLeast: 3)
+    let announced = await connection.announcements.value
+    XCTAssertEqual(announced, 1, "a remote stream was not announced exactly once")
+
+    await manager.disconnect(lease)
+    try await Task.sleep(for: .milliseconds(80))
+    let before = await connection.pings.value
+    try await Task.sleep(for: .milliseconds(200))
+    let after = await connection.pings.value
+    XCTAssertEqual(after, before, "a dropped link was still pinged")
+  }
+
+  // Value: protects=ADR 0075's rule that no local connection gets the daemon's deadline, so this
+  // Mac's own daemon never closes the app's stream; fails_when=a local stream is announced or
+  // pinged; why_new=new behaviour; seam=none
+  func testALocalServiceStreamIsNeverAnnouncedOrPinged() async throws {
+    let manager = HostConnectionManager(pingInterval: .milliseconds(40))
+    let connection = ConnectionFixture()
+    let lease = try await manager.connect(host: .local) { connection }
+    try await Task.sleep(for: .milliseconds(300))
+    let pinged = await connection.pings.value
+    let announced = await connection.announcements.value
+    XCTAssertEqual(pinged, 0, "a local stream was pinged")
+    XCTAssertEqual(announced, 0, "a local stream was announced")
+    await manager.disconnect(lease)
+  }
+
+  // Value: protects=pinging keeping on through a link that stopped answering, so one lost ping
+  // never leaves the stream unpinged until the daemon closes it; fails_when=an unanswered ping
+  // stalls the pings after it; why_new=new behaviour; seam=none
+  func testAnUnansweredPingDoesNotStopThePingsAfterIt() async throws {
+    let manager = HostConnectionManager(pingInterval: .milliseconds(40))
+    let host = HostID.remote(UUID())
+    let connection = ConnectionFixture(silent: true)
+    let lease = try await manager.connect(host: host) { connection }
+    try await connection.pinged(atLeast: 3)
+    await manager.disconnect(lease)
+  }
+
   func testSupersededHandshakeClosesLateConnection() async throws {
     let manager = HostConnectionManager()
     let host = HostID.remote(UUID())
@@ -480,6 +529,9 @@ private final class ConnectionFixture: HostServiceConnection, Sendable {
   /// A link that fails under a ping, as one that ends mid-ping does.
   let pingFails: Bool
   let silence = ConnectionSignal()
+  /// Pings asked, answered or not, and announcements that this connection pings.
+  let pings = ConnectionCount()
+  let announcements = ConnectionCount()
 
   init(
     marker: String = "fixture", readerContext: RepositoryContext? = nil, delayStatus: Bool = false,
@@ -493,6 +545,7 @@ private final class ConnectionFixture: HostServiceConnection, Sendable {
     (disconnection, loss) = AsyncStream<Void>.makeStream()
   }
   func ping() async throws {
+    await pings.increment()
     if silent { await silence.wait() }
     if pingFails { throw HostConnectionError.connectionLost }
   }
@@ -506,7 +559,19 @@ private final class ConnectionFixture: HostServiceConnection, Sendable {
     await ended.record(session)
     return true
   }
+  func announcePinging() async throws { await announcements.increment() }
   func close() async { await closed.open() }
+
+  /// Waits, up to 3 s, for `count` pings to have been asked.
+  func pinged(atLeast count: Int) async throws {
+    let deadline = Date().addingTimeInterval(3)
+    while true {
+      let pinged = await pings.value
+      if pinged >= count { return }
+      guard Date() < deadline else { return XCTFail("only \(pinged) of \(count) pings") }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+  }
 }
 
 private struct ConnectionReader: VCSProviding {
