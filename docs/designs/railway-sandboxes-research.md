@@ -1,7 +1,8 @@
 # Railway Sandboxes as a remote host provider
 
-Status: research, 2026-11-13. Nothing here has been run against Railway: every claim is from docs, CLI source or
-generated types, and no Railway resource was created. Read-only throughout.
+Status: research, 2026-11-13. Sections 1–7 are from docs, CLI source and generated types, read-only. A live
+spike the same day tested them: see [Spike results](#spike-results-2026-11-13), which supersedes this text
+where they differ.
 
 **Answer: feasible on paper through the SSH relay plus the GraphQL API, but it is a poor fit for Workroom's
 host model, and a flat yes is not supported until a live spike answers the unknowns below.** A Railway sandbox is
@@ -144,6 +145,64 @@ Other consequences for the app (inference):
 8. **Checkpoints as a persistence story.** Restores are a new sandbox, a new id and no processes. Is "resume a workroom from its checkpoint" a feature, or a non-goal (in which case destroy-on-idle ends the workroom)? Cost and cap of checkpoints are per environment.
 9. **Region.** CLI has no flag, so a CLI-driven driver always lands in `us-west2`.
 10. **The CLI's `active sandbox` side effect** on `~/.railway/config.json` if the driver shells out to `railway`.
+
+## Spike results (2026-11-13)
+
+Two live runs on throwaway projects in a paid personal workspace (plan not read; the 8 vCPU / 8 GB a sandbox got
+is the Pro default, so Hobby is untested), Railway CLI 5.71.0. Scripts and the full table:
+`vcs/scripts/railway-spike/FINDINGS.md`
+on branch `prototype/railway-sandbox-spike` (local only until pushed). Everything created was deleted.
+
+**Confirmed**
+
+- `sandboxCreate` with `idleTimeoutMinutes: 0` is accepted and echoed back. A sandbox with timeout 0 and no login ever made was still `RUNNING` 47 min after create.
+- Host: `x86_64`, Ubuntu 26.04.1, kernel `6.18.60-railway`, root with `$HOME=/root`. pid 1 is `/rwinit/init`:
+  **no systemd, no `loginctl`, no sshd** (the relay terminates ssh). `/etc/machine-id` is **empty**, on a fork too.
+  VMs come pre-booted from a pool (`init` had 75 min uptime at create).
+- Relay: target `sbx:<environmentId>:<sandboxId>@ssh.railway.com`; one host key, `ssh-ed25519
+  AAAAC3NzaC1lZDI1NTE5AAAAIJ8X3z81/tuP7CvmK3ZqWgwEvHUR6b04oi2lQJGld2C1`, the same on every read. It runs each
+  remote command as `bash -c 'if [ -f /etc/environment ]; then set -a; . /etc/environment; set +a; fi; <cmd>'`.
+- `ssh -T` is byte-clean: 1 MiB random up, down and echoed, sha256 equal, nothing on stderr. Two concurrent logins
+  and ControlMaster work. `ssh -L` works (5 MiB through a forward, sha256 equal).
+- A `setsid nohup` daemon, and `workroomd serve --idle-timeout never`, outlive the login that started them.
+  `workroomd` (x86_64 musl, protocol 10) serves, lists and attaches through the relay.
+- PTY resize reaches the VM over `-t`. **`-T` has no size path**: `stty size` is `0 0` before and after a resize.
+- Git, as [ADR 0072](../adr/0072-a-provider-without-git-integration-gets-the-users-gh-token.md) proposes: the Mac's
+  `gh auth token` written over stdin to a 0600 file, a system credential helper for `https://github.com` and
+  `insteadOf` rewrites. A clone of a private repository by its `git@github.com:` URL and a push of a branch both
+  worked, and GitHub's activity API records the pusher as the user.
+- Fork copies the disk, not processes, with a new hostname.
+- OAuth: dynamic client registration is **disabled** (`access_denied`). Discovery offers auth method `none`, the
+  device-code grant, client ID metadata documents and an **`ssh_keys`** scope the docs don't list. Railway's own
+  CLI refreshes with no secret and redirects to `http://127.0.0.1:<ephemeral>/callback`.
+- The CLI's `ssh keys add --key <path>` ignores a key outside `~/.ssh` and the agent; `sshPublicKeyCreate` works.
+
+**New: the relay's durable sessions**
+
+Every ssh login, PTY or not, becomes a Railway durable session (`sandboxSessions`: `SHELL` with a PTY, `EXEC`
+without), listed until the sandbox goes; no mutation deletes one.
+
+- With a PTY the relay writes `\r\nRailway durable session <name>. Use CTRL + \ then D to detach and come back
+  later\r\n` before any remote output, on every login and reattach. No `SetEnv` tried turns it off and the CLI has
+  no flag. Without a PTY there is no banner.
+- With a PTY, Ctrl+\ then `d` never reaches the VM: the relay resets the terminal (mouse modes off, `?1049l`,
+  `ESC[2J`), prints `[detached] session still running.` and a reconnect command, and closes. Ctrl+\ then any other
+  key passes through.
+- A login whose ssh client dies keeps running on the VM indefinitely: a killed `workroomd attach`, over `-t` or
+  `-T`, was still alive minutes later and `workroomd list` still said `attached`.
+- `SetEnv RAILWAY_DURABLE_SESSION_NAME=<name>` reattaches it. With `RAILWAY_DURABLE_RESUME=lastread` the client gets
+  only what it hadn't read; without, the whole scrollback is replayed. Over `-T` the reattach has no banner.
+- Killing the process from a second login ends it: the relay marks it `running: false`, `exitCode: -1`, and a
+  reattach then drains the buffered output and exits.
+
+These need a design decision before the spec: how a pane attaches (today `ssh -t ... workroomd attach`), and who
+ends a dead attach.
+
+**Still to show**
+
+- With Codaset's registered Native app: the localhost redirect, a refresh without a secret, and the scopes that
+  can create a project, an environment, a sandbox and a key.
+- Behaviour on a Hobby plan.
 
 ## Unverified
 
