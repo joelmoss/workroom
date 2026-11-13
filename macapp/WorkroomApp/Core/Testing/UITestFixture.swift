@@ -96,6 +96,30 @@ import WorkroomVCS
       flag(defaultsKey)
     }
 
+    /// `-WorkroomUITestRailway signedOut|signedIn` (#627): Railway's account is `RailwayStub`, with
+    /// the refresh token in memory (kept from before for `signedIn`), so the setup sheet signs in,
+    /// lists workspaces and signs out with no Railway, browser or Keychain. Its workspaces: Personal
+    /// (Hobby), Codaset (Pro), Side projects (Free) and New team (on a Trial). Nil otherwise.
+    static var railwayAccount: RailwayAccount? {
+      guard fixtureFlag, let scenario = text("WorkroomUITestRailway") else { return nil }
+      let stub = RailwayStub(workspaces: [
+        RailwayWorkspace(id: "ws-personal", name: "Personal", plan: .hobby),
+        RailwayWorkspace(id: "ws-codaset", name: "Codaset", plan: .pro),
+        RailwayWorkspace(id: "ws-side", name: "Side projects", plan: .free),
+        RailwayWorkspace(id: "ws-new", name: "New team", plan: .hobby),
+      ])
+      stub.trialing = ["ws-new": true]
+      let kept = scenario == "signedIn" ? RailwayStub.refreshToken : nil
+      return stub.account(store: RailwayStub.MemoryStore(kept))
+    }
+
+    /// `-WorkroomUITestRailwayNeededWorkspace <id>`: the workspace of the `Workroom` project the
+    /// fixture's Railway setup checks the sign-in reaches (#627).
+    static var railwayNeededWorkspace: String? {
+      guard fixtureFlag else { return nil }
+      return text("WorkroomUITestRailwayNeededWorkspace")
+    }
+
     /// Where a session-restore UI test wants its `session.json` (`-WorkroomUITestSessionFile <path>`).
     ///
     /// **In fixture mode the session store is a no-op unless this is set** (see

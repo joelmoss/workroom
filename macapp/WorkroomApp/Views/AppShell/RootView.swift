@@ -380,6 +380,8 @@ struct RootView: View {
       BoxdSetupSheet(setup: setup, onCreate: create, onCancel: cancel)
     } else if let setup = pending.setup as? SSHHostSetup {
       SSHHostSetupSheet(setup: setup, onCreate: create, onCancel: cancel)
+    } else if let setup = pending.setup as? RailwaySetup {
+      RailwaySetupSheet(setup: setup, onCreate: create, onCancel: cancel)
     }
   }
 

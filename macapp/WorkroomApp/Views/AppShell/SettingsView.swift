@@ -453,6 +453,8 @@ private struct NewWorkroomsSection: View {
 private struct RemoteHostsSettingsPane: View {
   @Default(.hostOptions) private var hostOptions
   @ObservedObject private var catalog = HostOptionsCatalog.shared
+  /// The Railway setup sheet open from here (#627), made fresh each time it opens.
+  @State private var railwaySetup: RailwaySetup?
 
   var body: some View {
     Form {
@@ -460,9 +462,30 @@ private struct RemoteHostsSettingsPane: View {
         HostOptionsSection(
           provider: provider, options: binding(provider), inherited: nil, catalog: catalog)
       }
+      Section("Railway") {
+        LabeledContent {
+          Button("Set Up Railway…") {
+            railwaySetup = RailwaySetup(
+              account: .shared, neededWorkspaceID: RailwayAccount.neededWorkspaceID)
+          }
+          .help("Sign in to Railway, pick its workspace, or sign out.")
+          .accessibilityIdentifier("settings.control.railwaySetup")
+        } label: {
+          Text("Account")
+          Text("Login with Railway, and the workspace Workroom keeps its hosts in.")
+        }
+      }
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)
+    .sheet(
+      isPresented: Binding(
+        get: { railwaySetup != nil }, set: { if !$0 { railwaySetup = nil } })
+    ) {
+      if let railwaySetup {
+        RailwaySetupSheet(setup: railwaySetup, onCancel: { self.railwaySetup = nil })
+      }
+    }
   }
 
   private func binding(_ provider: HostKind) -> Binding<HostOptions> {
