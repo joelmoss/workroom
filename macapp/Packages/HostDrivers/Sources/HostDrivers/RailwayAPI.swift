@@ -91,7 +91,8 @@ public enum RailwayAPIError: Error, Equatable, LocalizedError {
   public var errorDescription: String? {
     switch self {
     case .graphQL(let messages):
-      "Railway said: " + messages.map { $0.hasSuffix(".") ? String($0.dropLast()) : $0 }
+      "Railway said: "
+        + messages.map { $0.hasSuffix(".") ? String($0.dropLast()) : $0 }
         .joined(separator: ". ")
     case .unauthorized: "Railway didn't accept Workroom's sign-in."
     case .http(let status, let message):

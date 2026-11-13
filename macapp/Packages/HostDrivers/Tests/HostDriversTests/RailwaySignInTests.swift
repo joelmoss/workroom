@@ -50,7 +50,8 @@ final class RailwaySignInTests: XCTestCase {
   /// was sent; fails_when=any of them differ; seam=RailwaySignIn with a stand-in browser
   func testSigningInExchangesTheCallbacksCode() async throws {
     let railway = StubRailway()
-    railway.answerToken("authorization_code") { _ in StubRailway.tokens(access: "at", refresh: "rt") }
+    railway.answerToken("authorization_code") { _ in StubRailway.tokens(access: "at", refresh: "rt")
+    }
     let opened = Mutex<URL?>(nil)
     let follow = Self.browser()
 
@@ -78,7 +79,8 @@ final class RailwaySignInTests: XCTestCase {
   /// exchanged (a forged redirect); seam=RailwaySignIn
   func testACallbackWithAnotherStateIsRefused() async {
     let railway = StubRailway()
-    railway.answerToken("authorization_code") { _ in StubRailway.tokens(access: "at", refresh: "rt") }
+    railway.answerToken("authorization_code") { _ in StubRailway.tokens(access: "at", refresh: "rt")
+    }
     do {
       _ = try await RailwaySignIn(client: RailwayOAuthClient(clientID: "c", transport: railway))
         .run(open: Self.browser(state: "forged"))

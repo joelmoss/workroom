@@ -58,7 +58,8 @@ final class RailwaySessionTests: XCTestCase {
   /// redirect differs; seam=RailwayOAuthClient.exchange
   func testTheCodeIsExchangedWithPKCEAndNoSecret() async throws {
     let railway = StubRailway()
-    railway.answerToken("authorization_code") { _ in StubRailway.tokens(access: "at", refresh: "rt") }
+    railway.answerToken("authorization_code") { _ in StubRailway.tokens(access: "at", refresh: "rt")
+    }
 
     let tokens = try await client(railway).exchange(
       code: "the-code", redirectURI: URL(string: "http://127.0.0.1:50123/callback")!,
@@ -85,7 +86,8 @@ final class RailwaySessionTests: XCTestCase {
   /// it past the hour; seam=RailwayOAuthClient.exchange
   func testASignInWithNoRefreshTokenFails() async {
     let railway = StubRailway()
-    railway.answerToken("authorization_code") { _ in StubRailway.tokens(access: "at", refresh: nil) }
+    railway.answerToken("authorization_code") { _ in StubRailway.tokens(access: "at", refresh: nil)
+    }
     do {
       _ = try await client(railway).exchange(
         code: "c", redirectURI: URL(string: "http://127.0.0.1:1/callback")!, codeVerifier: "v")
@@ -110,7 +112,8 @@ final class RailwaySessionTests: XCTestCase {
     let store = MemoryTokenStore()
     let session = session(railway, store: store)
 
-    try await session.signIn(with: RailwayTokens(accessToken: "at", refreshToken: "rt", expiresIn: 3600))
+    try await session.signIn(
+      with: RailwayTokens(accessToken: "at", refreshToken: "rt", expiresIn: 3600))
 
     XCTAssertEqual(store.token, "rt")
     let signedIn = await session.isSignedIn
@@ -176,7 +179,8 @@ final class RailwaySessionTests: XCTestCase {
     let clock = Mutex(Date(timeIntervalSince1970: 0))
     let store = MemoryTokenStore()
     let session = session(railway, store: store, now: { clock.withLock { $0 } })
-    try await session.signIn(with: RailwayTokens(accessToken: "at", refreshToken: "rt", expiresIn: 3600))
+    try await session.signIn(
+      with: RailwayTokens(accessToken: "at", refreshToken: "rt", expiresIn: 3600))
 
     clock.withLock { $0 = $0.addingTimeInterval(3000) }
     let early = try await session.accessToken()
@@ -195,12 +199,14 @@ final class RailwaySessionTests: XCTestCase {
     let railway = StubRailway()
     railway.answerToken("refresh_token") { request in
       StubRailway.form(request)["refresh_token"] == "rt-other"
-        ? StubRailway.tokens(access: "at-3", refresh: "rt-3") : StubRailway.oauthError("invalid_grant")
+        ? StubRailway.tokens(access: "at-3", refresh: "rt-3")
+        : StubRailway.oauthError("invalid_grant")
     }
     let clock = Mutex(Date(timeIntervalSince1970: 0))
     let store = MemoryTokenStore()
     let session = session(railway, store: store, now: { clock.withLock { $0 } })
-    try await session.signIn(with: RailwayTokens(accessToken: "at", refreshToken: "rt", expiresIn: 60))
+    try await session.signIn(
+      with: RailwayTokens(accessToken: "at", refreshToken: "rt", expiresIn: 60))
     try store.write("rt-other")  // Nightly refreshed
 
     let token = try await session.accessToken()
@@ -246,7 +252,8 @@ final class RailwaySessionTests: XCTestCase {
     }
     XCTAssertEqual(store.token, "rt")
 
-    railway.answerToken("refresh_token") { _ in StubRailway.oauthError("server_error", status: 503) }
+    railway.answerToken("refresh_token") { _ in StubRailway.oauthError("server_error", status: 503)
+    }
     _ = try? await session.accessToken()
     XCTAssertEqual(store.token, "rt")
   }
@@ -255,7 +262,8 @@ final class RailwaySessionTests: XCTestCase {
   func testSigningOutForgetsTheSignIn() async throws {
     let store = MemoryTokenStore()
     let session = session(StubRailway(), store: store)
-    try await session.signIn(with: RailwayTokens(accessToken: "at", refreshToken: "rt", expiresIn: 3600))
+    try await session.signIn(
+      with: RailwayTokens(accessToken: "at", refreshToken: "rt", expiresIn: 3600))
 
     try await session.signOut()
 

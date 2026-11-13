@@ -12,7 +12,9 @@ struct RemoteSetupSheet<Steps: View>: View {
   let setup: any RemoteSetup
   /// Prefixes the buttons' accessibility identifiers, such as `exeDevSetup`.
   let identifier: String
-  let onCreate: () -> Void
+  /// Carries on with the create the sheet interrupted. Nil for a sheet opened from Settings, with
+  /// no create waiting: its primary button is Done.
+  let onCreate: (() -> Void)?
   let onCancel: () -> Void
   @ViewBuilder var steps: Steps
 
@@ -33,10 +35,18 @@ struct RemoteSetupSheet<Steps: View>: View {
       Spacer(minLength: 20)
 
       SheetFooter(cancelIdentifier: "\(identifier).cancel", onCancel: onCancel) {
-        Button("Create Workroom", action: onCreate)
-          .sheetDefaultAction()
-          .disabled(!setup.isReady)
-          .accessibilityIdentifier("\(identifier).create")
+        if let onCreate {
+          Button("Create Workroom", action: onCreate)
+            .sheetDefaultAction()
+            .disabled(!setup.isReady)
+            .help("Carry on creating the workroom.")
+            .accessibilityIdentifier("\(identifier).create")
+        } else {
+          Button("Done", action: onCancel)
+            .sheetDefaultAction()
+            .help("Close this sheet.")
+            .accessibilityIdentifier("\(identifier).done")
+        }
       }
     }
     .padding(24)

@@ -126,10 +126,17 @@ public struct RailwayOAuthClient: Sendable {
   }
 
   private struct TokenAnswer: Decodable {
-    let access_token: String?
-    let refresh_token: String?
-    let expires_in: Int?
+    let accessToken: String?
+    let refreshToken: String?
+    let expiresIn: Int?
     let error: String?
+
+    enum CodingKeys: String, CodingKey {
+      case accessToken = "access_token"
+      case refreshToken = "refresh_token"
+      case expiresIn = "expires_in"
+      case error
+    }
   }
 
   private func token(_ form: [(String, String)]) async throws -> RailwayTokens {
@@ -141,14 +148,14 @@ public struct RailwayOAuthClient: Sendable {
       form.map { "\($0)=\(Self.formEncode($1))" }.joined(separator: "&").utf8)
     let answer = try await transport.send(request)
     let decoded = try? JSONDecoder().decode(TokenAnswer.self, from: answer.body)
-    guard (200..<300).contains(answer.status), let access = decoded?.access_token else {
+    guard (200..<300).contains(answer.status), let access = decoded?.accessToken else {
       let error = decoded?.error ?? "no access token"
       if error == "invalid_grant" { throw RailwayOAuthError.invalidGrant }
       throw RailwayOAuthError.server(status: answer.status, error: error)
     }
     return RailwayTokens(
-      accessToken: access, refreshToken: decoded?.refresh_token,
-      expiresIn: decoded?.expires_in ?? 3600)
+      accessToken: access, refreshToken: decoded?.refreshToken,
+      expiresIn: decoded?.expiresIn ?? 3600)
   }
 
   private static let formAllowed: CharacterSet = {
@@ -293,9 +300,9 @@ public actor RailwaySession: RailwayAccessTokenProviding {
       } catch RailwayOAuthError.invalidGrant {
         // Another app may have rotated it between the read and the refusal.
         if let again = try await self.storedToken(generation), again != current {
-          do { return try await self.refresh(again, generation: generation) } catch
-            RailwayOAuthError.invalidGrant
-          {
+          do {
+            return try await self.refresh(again, generation: generation)
+          } catch RailwayOAuthError.invalidGrant {
             try await self.forget(again, generation: generation)
             throw RailwaySessionError.signedOut
           }

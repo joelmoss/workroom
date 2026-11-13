@@ -40,10 +40,11 @@ public final class RailwayLoopbackRedirect: Sendable {
     let port: UInt16 = try await withCheckedThrowingContinuation { ready in
       let once = Mutex(false)
       @Sendable func finish(_ result: Result<UInt16, Error>) {
-        guard once.withLock({ done in
-          defer { done = true }
-          return !done
-        })
+        guard
+          once.withLock({ done in
+            defer { done = true }
+            return !done
+          })
         else { return }
         ready.resume(with: result)
       }
