@@ -36,6 +36,8 @@ final class RailwaySetupUITests: XCTestCase {
     pane.click()
     let setUp = element(app, "settings.control.railwaySetup")
     XCTAssertTrue(setUp.waitForExistence(timeout: 5))
+    // Below the providers' host options.
+    setUp.scrollIntoView(in: app, maxScrolls: 30)
     setUp.click()
   }
 
