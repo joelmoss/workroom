@@ -44,6 +44,9 @@ final class HostDriverRegistry: @unchecked Sendable {
   /// Where `adopt` looks for the runtimes with containers pending
   /// (`ContainerHostDriver.pending(in:)`), or nil to look nowhere.
   private let pendingIn: URL?
+  /// This Mac's Railway environment, whose sandboxes no record names `adopt` sweeps (#630), or nil
+  /// to sweep none.
+  private let railwayEnvironment: @Sendable () -> String?
 
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "RemoteWorkrooms")
@@ -54,12 +57,14 @@ final class HostDriverRegistry: @unchecked Sendable {
     sweepDriver: (
       @Sendable (ContainerHostDriver, Set<UUID>, Set<String>, Bool) async -> [String]
     )? = nil,
-    pendingIn: URL? = RemoteHosts.pendingIn
+    pendingIn: URL? = RemoteHosts.pendingIn,
+    railwayEnvironment: @escaping @Sendable () -> String? = RemoteHosts.railwaySweepEnvironment
   ) {
     self.makeDriver = makeDriver
     self.makeContainerDriver = makeContainerDriver
     self.sweepDriver = sweepDriver
     self.pendingIn = pendingIn
+    self.railwayEnvironment = railwayEnvironment
   }
 
   /// The driver for `key`, made on first use. A container driver needs that runtime's CLI and this
@@ -180,8 +185,9 @@ final class HostDriverRegistry: @unchecked Sendable {
   /// Takes on every host `projects` record, each into the driver for its Docker context, so their
   /// panes and services reach them after a relaunch, then sweeps once per launch what carries this
   /// app's labels and no record names, and the remote provider machines a create left pending
-  /// (#373). Does nothing, and never touches Docker, when nothing is recorded, nothing has been
-  /// made, and no create left a container or machine pending (#284). `sweep: false`
+  /// (#373), and the sandboxes in this Mac's Railway environment no record names (#630). Does
+  /// nothing, and never touches Docker, when nothing is recorded, nothing has been made, no create
+  /// left a container or machine pending (#284), and Railway has no environment here. `sweep: false`
   /// holds the sweep for a later call: a list with a delete in flight leaves out hosts config
   /// still records (#296). `relayed` hears each recorded workroom host whose git credentials come
   /// through the Mac's relay (#309).
@@ -227,7 +233,22 @@ final class HostDriverRegistry: @unchecked Sendable {
     let machines = (pendingIn.map(PendingMachines.entries(in:)) ?? []).filter {
       !recordedIDs.contains($0.id)
     }
-    guard !recorded.isEmpty || !already.isEmpty || !marked.isEmpty || !machines.isEmpty else {
+    // This Mac's Railway environment (ADR 0071), never one a record names: a config copied from
+    // another Mac names that Mac's.
+    let railwayEnvironment = railwayEnvironment()
+    let railway = railwayEnvironment.map { DriverKey.railway(environment: $0) }
+    // Every record's sandbox, not only those this build adopts.
+    let sandboxes = Set(descriptors.compactMap { $0.railway?.sandboxID })
+    // With no record naming the environment, only what a create left pending goes: a lost config,
+    // another Mac's, or a launch with a throwaway `HOME` (which doesn't isolate Railway's folder)
+    // names none, and every live sandbox would look unrecorded.
+    let railwayOnlyPending = !descriptors.contains {
+      $0.railway?.environmentID == railwayEnvironment
+    }
+    guard
+      !recorded.isEmpty || !already.isEmpty || !marked.isEmpty || !machines.isEmpty
+        || railway != nil
+    else {
       return
     }
     // A descriptor with no container record yet goes to its runtime's driver that names no
@@ -253,7 +274,8 @@ final class HostDriverRegistry: @unchecked Sendable {
       }
     }
     let machineKeys = Set(machines.compactMap(\.key))
-    let claimed = claimSweep(Set(drivers.keys).union(machineKeys), allowed: sweep)
+    let claimed = claimSweep(
+      Set(drivers.keys).union(machineKeys).union(railway.map { [$0] } ?? []), allowed: sweep)
     guard !claimed.isEmpty else { return }
     // Every driver keeps every recorded host, not only its own: two contexts can name one daemon
     // (the nil driver's current context and that context by name), and a sweep that kept only its
@@ -270,7 +292,23 @@ final class HostDriverRegistry: @unchecked Sendable {
     Task.detached(priority: .utility) {
       await withTaskGroup(of: (DriverKey, [String], Bool).self) { group in
         for key in claimed {
-          if let driver = drivers[key] {
+          if key == railway {
+            group.addTask {
+              // Owed again when Railway can't list (signed out, offline); a destroy it refused is
+              // tried at the next launch.
+              do {
+                guard let driver = try self.driver(key) as? RailwayHostDriver else {
+                  return (key, ["Railway: this host cannot be swept"], true)
+                }
+                return (
+                  key, try await driver.sweep(keeping: sandboxes, onlyPending: railwayOnlyPending),
+                  true
+                )
+              } catch {
+                return (key, ["listing Railway's sandboxes: \(error.localizedDescription)"], false)
+              }
+            }
+          } else if let driver = drivers[key] {
             group.addTask {
               let failures = await sweep(driver, known, images, onlyPending)
               return (

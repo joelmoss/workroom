@@ -854,6 +854,147 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(recorded.railway, record)
   }
 
+  /// Railway at HTTP for the launch sweep (#630): lists the sandboxes it holds, all made long ago,
+  /// and destroys what it's asked, recording each GraphQL request's query and variables.
+  private final class SweptRailway: RailwayHTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _sent: [[String: Any]] = []
+    private var rows: [String]
+    init(_ rows: [String]) { self.rows = rows }
+
+    var sent: [[String: Any]] { lock.withLock { _sent } }
+    func variables(_ field: String) -> [[String: Any]] {
+      sent.filter { ($0["query"] as? String)?.contains("\(field)(") == true }
+        .map { $0["variables"] as? [String: Any] ?? [:] }
+    }
+    var destroyed: [String] { variables("sandboxDestroy").compactMap { $0["id"] as? String } }
+
+    func send(_ request: URLRequest) async throws -> RailwayHTTPResponse {
+      let body =
+        (try? JSONSerialization.jsonObject(with: request.httpBody ?? Data())) as? [String: Any]
+        ?? [:]
+      let query = body["query"] as? String ?? ""
+      let variables = body["variables"] as? [String: Any] ?? [:]
+      let environment = variables["environmentId"] as? String ?? ""
+      let data: [String: Any]? = lock.withLock {
+        _sent.append(body)
+        if query.contains("sandboxes(") {
+          let edges = rows.map { id -> [String: Any] in
+            [
+              "cursor": id,
+              "node": [
+                "id": id, "status": "RUNNING", "createdAt": "2026-01-01T00:00:00Z",
+                "environmentId": environment,
+              ],
+            ]
+          }
+          return ["sandboxes": ["edges": edges, "pageInfo": ["hasNextPage": false]]]
+        }
+        if query.contains("sandboxDestroy(") {
+          let id = variables["id"] as? String ?? ""
+          rows.removeAll { $0 == id }
+          return ["sandboxDestroy": ["id": id, "status": "DESTROYING"]]
+        }
+        return nil
+      }
+      guard let data else {
+        return RailwayHTTPResponse(
+          status: 200, body: Data(#"{"errors":[{"message":"no stub"}]}"#.utf8))
+      }
+      return RailwayHTTPResponse(
+        status: 200, body: try JSONSerialization.data(withJSONObject: ["data": data]))
+    }
+  }
+
+  private struct RailwayToken: RailwayAccessTokenProviding {
+    func accessToken() async throws -> String { "at" }
+    func accessTokenRejected(_ token: String) async {}
+  }
+
+  /// Value: protects=no sandbox in this Mac's environment is left billing that no workroom names,
+  /// once per launch, no other environment is ever listed or touched, and a config that names
+  /// nothing here (lost, another Mac's, a throwaway HOME) takes only what a create left pending
+  /// (ADR 0071, #630); fails_when=adopt doesn't sweep Railway, sweeps an environment a record names
+  /// instead of this Mac's, destroys a recorded sandbox, destroys an unpending one with no record
+  /// naming this environment, or sweeps twice a launch; seam=HostDriverRegistry.adopt with
+  /// makeDriver and the environment seam
+  func testALaunchSweepsThisMacsRailwayEnvironmentOnce() async throws {
+    let railway = SweptRailway(["sbx-orphan", "sbx-kept", "sbx-live"])
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-railway-sweep-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+    /// A launch: a registry of its own over the same Railway and the same Railway folder.
+    func launch() -> RemoteHosts {
+      RemoteHosts(
+        makeDriver: { key in
+          guard case .railway(let environment) = key else {
+            throw HostDriverError.invalidConfiguration("\(key)")
+          }
+          return RailwayHostDriver(
+            configuration: .init(
+              environmentID: environment, projectID: nil, keys: root, relayHost: "relay.invalid",
+              hostSetup: .bundled),
+            api: RailwayAPI(transport: railway, tokens: RailwayToken()), directory: root)
+        }, railwayEnvironment: { "env-1" })
+    }
+    func settle(_ remote: RemoteHosts) async throws {
+      for _ in 0..<500 where remote.registry.sweepsRunning > 0 {
+        try await Task.sleep(for: .milliseconds(2))
+      }
+    }
+    func projects(_ records: [RailwayHostRecord]) -> [Project] {
+      [
+        Project(
+          path: "/proj", vcs: "git",
+          workrooms: records.map {
+            Workroom(
+              name: $0.sandboxID, path: "/root/r", vcsName: "workroom/w", warnings: [],
+              host: HostDescriptor(
+                driver: HostKind.railway.driver, provisioner: RemoteWorkrooms.provisioner,
+                id: UUID(), railway: $0))
+          })
+      ]
+    }
+    let elsewhere = RailwayHostRecord(
+      projectID: "prj", environmentID: "env-other", sandboxID: "sbx-elsewhere", hostKey: "k")
+    let here = RailwayHostRecord(
+      projectID: "prj", environmentID: "env-1", sandboxID: "sbx-kept", hostKey: "k")
+
+    // No config at all, then one naming only another Mac's environment, with nothing pending:
+    // nothing is even listed.
+    var remote = launch()
+    remote.reachability.adopt([])
+    try await settle(remote)
+    remote = launch()
+    remote.reachability.adopt(projects([elsewhere]))
+    try await settle(remote)
+    XCTAssertTrue(railway.sent.isEmpty, "\(railway.sent)")
+
+    // A create left sbx-orphan pending: only it goes, never the unrecorded sbx-live.
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try JSONEncoder().encode(["sbx-orphan"]).write(
+      to: root.appendingPathComponent("pending-sandboxes.json"))
+    remote = launch()
+    remote.reachability.adopt(projects([elsewhere]))
+    try await settle(remote)
+    XCTAssertEqual(railway.destroyed, ["sbx-orphan"])
+
+    // A config naming this environment: everything else unrecorded goes, once a launch, after a
+    // held sweep.
+    remote = launch()
+    remote.reachability.adopt(projects([here, elsewhere]), sweep: false)
+    try await settle(remote)
+    XCTAssertEqual(railway.variables("sandboxes").count, 1, "a held sweep ran")
+    remote.reachability.adopt(projects([here, elsewhere]))
+    try await settle(remote)
+    XCTAssertEqual(railway.destroyed, ["sbx-orphan", "sbx-live"])
+    let sent = railway.variables("sandboxes") + railway.variables("sandboxDestroy")
+    XCTAssertEqual(Set(sent.compactMap { $0["environmentId"] as? String }), ["env-1"])
+    remote.reachability.adopt(projects([here, elsewhere]))
+    try await settle(remote)
+    XCTAssertEqual(railway.variables("sandboxes").count, 2, "swept twice in a launch")
+  }
+
   /// An exe.dev host (#259) is its own driver key, keyed by its account: never Docker's or boxd's.
   /// Its clone goes in the home of the user exe.dev logs in as, its base serves only its own
   /// account, and its descriptor round-trips through config.
