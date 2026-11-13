@@ -397,6 +397,55 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
   }
 }
 
+// MARK: The launch sweep (#630)
+
+extension RailwayHostDriver {
+  /// Destroys every sandbox in this Mac's environment that no host record names (ADR 0071): what a
+  /// crash between `sandboxCreate` and its record left, or a create whose cleanup failed. A sandbox
+  /// has no name or label, so the environment is all that says it is this Mac's; another Mac's
+  /// environment is never listed. Throws when Railway can't list the sandboxes (signed out,
+  /// offline), so the sweep is owed again; returns the destroys that failed.
+  ///
+  /// Kept besides `recorded`: every sandbox this driver holds, whose create may not have recorded
+  /// it yet, and any made within `grace`, which may be a create still under way in the other build
+  /// sharing this environment (Release and Nightly, ADR 0036). A sandbox whose age Railway doesn't
+  /// give in a form this reads counts as new.
+  public func sweep(
+    keeping recorded: Set<String>, now: Date = Date(), grace: TimeInterval = sweepGrace
+  ) async throws -> [String] {
+    let environment = configuration.environmentID
+    let kept = recorded.union(hosts.withLock { $0.values.map(\.sandboxID) })
+    func old(_ sandbox: RailwaySandbox) -> Bool {
+      guard let made = sandbox.createdAt.flatMap(Self.date) else { return false }
+      return now.timeIntervalSince(made) >= grace
+    }
+    var failures: [String] = []
+    for sandbox in try await api.sandboxes(environmentID: environment)
+    where sandbox.environmentID == environment && !kept.contains(sandbox.id)
+      && !["DESTROYED", "DESTROYING"].contains(sandbox.status) && old(sandbox)
+    {
+      let record = RailwayHostRecord(
+        projectID: configuration.projectID, environmentID: environment, sandboxID: sandbox.id,
+        hostKey: "")
+      if let failure = await destroySandbox(record) { failures.append(failure) }
+    }
+    return failures
+  }
+
+  /// How old an unrecorded sandbox must be before the sweep takes it: longer than any create takes
+  /// to record its host (the boot and setup a create waits on), as `PendingMachines.grace`.
+  public static let sweepGrace: TimeInterval = PendingMachines.grace
+
+  /// Railway's `DateTime`, ISO 8601 with or without fractional seconds.
+  static func date(_ text: String) -> Date? {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = formatter.date(from: text) { return date }
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter.date(from: text)
+  }
+}
+
 // MARK: The API calls the driver makes
 
 extension RailwayAPI {
@@ -468,5 +517,55 @@ extension RailwayAPI {
         + "input: $input) { id } }",
       variables: ["input": ["name": .string(name), "publicKey": .string(publicKey)]],
       as: Answer.self)
+  }
+}
+
+// MARK: The API calls the launch sweep makes (#630)
+
+/// A sandbox as `sandboxes` lists it.
+public struct RailwaySandbox: Decodable, Equatable, Sendable {
+  public let id: String
+  public let status: String
+  public let createdAt: String?
+  public let environmentID: String
+
+  enum CodingKeys: String, CodingKey {
+    case id, status, createdAt
+    case environmentID = "environmentId"
+  }
+}
+
+extension RailwayAPI {
+  /// Every sandbox in `environmentID`, page by page; destroyed ones are listed too.
+  public func sandboxes(environmentID: String) async throws -> [RailwaySandbox] {
+    struct Answer: Decodable {
+      struct Connection: Decodable {
+        struct Edge: Decodable { let node: RailwaySandbox }
+        struct PageInfo: Decodable {
+          let hasNextPage: Bool
+          let endCursor: String?
+        }
+        let edges: [Edge]
+        let pageInfo: PageInfo
+      }
+      let sandboxes: Connection
+    }
+    var all: [RailwaySandbox] = []
+    var after: String?
+    repeat {
+      var variables: [String: RailwayJSON] = [
+        "environmentId": .string(environmentID), "first": 100,
+      ]
+      if let after { variables["after"] = .string(after) }
+      let page = try await query(
+        "query sandboxes($environmentId: String!, $first: Int, $after: String) { sandboxes("
+          + "environmentId: $environmentId, first: $first, after: $after) { edges { node { id "
+          + "status createdAt environmentId } } pageInfo { hasNextPage endCursor } } }",
+        variables: variables, as: Answer.self
+      ).sandboxes
+      all += page.edges.map(\.node)
+      after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : nil
+    } while after != nil
+    return all
   }
 }

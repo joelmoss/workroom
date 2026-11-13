@@ -133,11 +133,12 @@ final class RemoteHosts: Sendable {
     )? =
       nil,
     presence: (@Sendable (HostID) async -> HostPresence?)? = nil,
-    pendingIn: URL? = RemoteHosts.pendingIn
+    pendingIn: URL? = RemoteHosts.pendingIn,
+    railwayEnvironment: @escaping @Sendable () -> String? = RemoteHosts.railwaySweepEnvironment
   ) {
     registry = HostDriverRegistry(
       makeDriver: makeDriver, makeContainerDriver: makeContainerDriver, sweepDriver: sweepDriver,
-      pendingIn: pendingIn)
+      pendingIn: pendingIn, railwayEnvironment: railwayEnvironment)
     reachability = HostReachability(
       registry: registry, connectHost: connectHost, isConnected: isConnected,
       startHost: startHost, now: now, relayHost: relayHost, connectDaemon: connectDaemon,
@@ -155,6 +156,12 @@ final class RemoteHosts: Sendable {
   /// `hosts`, except under test (a hosted unit run or a UI-test launch), which must never sweep
   /// the developer's own runtime.
   static var pendingIn: URL? { AppEnvironment.current.isTestProcess ? nil : hosts }
+
+  /// This Mac's Railway environment, whose unrecorded sandboxes the launch sweep destroys (#630),
+  /// or nil before setup made one. Nil under test too, as `pendingIn` is.
+  @Sendable static func railwaySweepEnvironment() -> String? {
+    AppEnvironment.current.isTestProcess ? nil : RailwayAccount.placement.read().environmentID
+  }
 
   /// `Application Support/Workroom/<bundle id>/remote`.
   static var directory: URL {

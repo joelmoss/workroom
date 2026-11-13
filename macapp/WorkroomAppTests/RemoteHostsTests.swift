@@ -854,6 +854,119 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(recorded.railway, record)
   }
 
+  /// Railway at HTTP for the launch sweep (#630): lists `sandboxes` and destroys what it's asked,
+  /// recording each GraphQL request's query and variables.
+  private final class SweptRailway: RailwayHTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _sent: [[String: Any]] = []
+    let rows: [String]
+    init(_ rows: [String]) { self.rows = rows }
+
+    var sent: [[String: Any]] { lock.withLock { _sent } }
+    func variables(_ field: String) -> [[String: Any]] {
+      sent.filter { ($0["query"] as? String)?.contains("\(field)(") == true }
+        .map { $0["variables"] as? [String: Any] ?? [:] }
+    }
+
+    func send(_ request: URLRequest) async throws -> RailwayHTTPResponse {
+      let body =
+        (try? JSONSerialization.jsonObject(with: request.httpBody ?? Data())) as? [String: Any]
+        ?? [:]
+      lock.withLock { _sent.append(body) }
+      let query = body["query"] as? String ?? ""
+      let variables = body["variables"] as? [String: Any] ?? [:]
+      let environment = variables["environmentId"] as? String ?? ""
+      let data: [String: Any]
+      if query.contains("sandboxes(") {
+        let edges = rows.map { id -> [String: Any] in
+          [
+            "cursor": id,
+            "node": [
+              "id": id, "status": "RUNNING", "createdAt": "2026-01-01T00:00:00Z",
+              "environmentId": environment,
+            ],
+          ]
+        }
+        data = ["sandboxes": ["edges": edges, "pageInfo": ["hasNextPage": false]]]
+      } else if query.contains("sandboxDestroy(") {
+        data = ["sandboxDestroy": ["id": variables["id"] ?? "", "status": "DESTROYING"]]
+      } else {
+        return RailwayHTTPResponse(
+          status: 200, body: Data(#"{"errors":[{"message":"no stub"}]}"#.utf8))
+      }
+      return RailwayHTTPResponse(
+        status: 200, body: try JSONSerialization.data(withJSONObject: ["data": data]))
+    }
+  }
+
+  private struct RailwayToken: RailwayAccessTokenProviding {
+    func accessToken() async throws -> String { "at" }
+    func accessTokenRejected(_ token: String) async {}
+  }
+
+  /// Value: protects=no sandbox in this Mac's environment is left billing that no workroom names,
+  /// once per launch, and no other environment is ever listed or touched (ADR 0071, #630);
+  /// fails_when=adopt doesn't sweep Railway, sweeps an environment a record names instead of this
+  /// Mac's, destroys a recorded sandbox, sweeps with no config at all, or sweeps twice a launch;
+  /// seam=HostDriverRegistry.adopt with makeDriver and the environment seam
+  func testALaunchSweepsThisMacsRailwayEnvironmentOnce() async throws {
+    let railway = SweptRailway(["sbx-orphan", "sbx-kept"])
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-railway-sweep-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+    let remote = RemoteHosts(
+      makeDriver: { key in
+        guard case .railway(let environment) = key else {
+          throw HostDriverError.invalidConfiguration("\(key)")
+        }
+        return RailwayHostDriver(
+          configuration: .init(
+            environmentID: environment, projectID: nil, keys: root, relayHost: "relay.invalid",
+            hostSetup: .bundled),
+          api: RailwayAPI(transport: railway, tokens: RailwayToken()), directory: root)
+      }, railwayEnvironment: { "env-1" })
+    func settle() async throws {
+      for _ in 0..<500 where remote.registry.sweepsRunning > 0 {
+        try await Task.sleep(for: .milliseconds(2))
+      }
+    }
+
+    // No config at all (lost, or a throwaway HOME): nothing is swept.
+    remote.reachability.adopt([])
+    try await settle()
+    XCTAssertTrue(railway.sent.isEmpty, "\(railway.sent)")
+
+    // Recorded in another environment (a config copied from another Mac).
+    let host = HostDescriptor(
+      driver: HostKind.railway.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+      railway: RailwayHostRecord(
+        projectID: "prj", environmentID: "env-other", sandboxID: "sbx-kept", hostKey: "k"))
+    let projects = [
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(name: "w", path: "/root/r", vcsName: "workroom/w", warnings: [], host: host)
+        ])
+    ]
+    remote.reachability.adopt(projects, sweep: false)
+    try await settle()
+    XCTAssertTrue(railway.sent.isEmpty, "a held sweep ran")
+
+    remote.reachability.adopt(projects)
+    try await settle()
+    XCTAssertEqual(
+      railway.variables("sandboxDestroy").compactMap { $0["id"] as? String },
+      [
+        "sbx-orphan"
+      ])
+    let sent = railway.variables("sandboxes") + railway.variables("sandboxDestroy")
+    XCTAssertEqual(Set(sent.compactMap { $0["environmentId"] as? String }), ["env-1"])
+
+    remote.reachability.adopt(projects)
+    try await settle()
+    XCTAssertEqual(railway.variables("sandboxes").count, 1, "swept twice in a launch")
+  }
+
   /// An exe.dev host (#259) is its own driver key, keyed by its account: never Docker's or boxd's.
   /// Its clone goes in the home of the user exe.dev logs in as, its base serves only its own
   /// account, and its descriptor round-trips through config.
