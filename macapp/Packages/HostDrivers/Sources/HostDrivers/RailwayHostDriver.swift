@@ -21,12 +21,15 @@ import WorkroomSystem
 ///   `HostRecording`) is all that ties it to its workroom; a driver made after a relaunch reaches
 ///   only the hosts it adopted.
 /// - **Presence** is the sandbox's status, read without a login: it never sleeps.
+/// - **Git** (ADR 0072): Railway has no git integration, so the host holds the Mac's `gh` token in
+///   `gitHubTokenPath`, written over stdin at create and on every connect when it changed
+///   (`GitHubTokenCarrying`); `railway-github.sh` sets the credential helper and the rewrites.
 ///
 /// What a create runs on its host (the identity file and the readiness of the relay) goes through
 /// the command runner, so tests stub it; a host's later exchanges (`exec`, `openStream`) are
 /// `HostStream`s over ssh, as on every ssh host.
 public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver,
-  HostPresenceReporting, HostRecording, @unchecked Sendable
+  HostPresenceReporting, HostRecording, GitHubTokenCarrying, @unchecked Sendable
 {
   public struct Configuration: Sendable {
     /// This Mac's environment in the `Workroom` project, where every sandbox it makes goes.
@@ -45,6 +48,10 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
     /// How long between reads of a new sandbox's status, and how many before giving up.
     public var pollInterval: Duration
     public var readyTries: Int
+    /// The Mac's `gh` token for github.com, which each host's git uses in the user's name (ADR
+    /// 0072): written at create and rewritten on a connect when it changed. Nil gives a host no
+    /// GitHub credentials.
+    public var gitHubToken: (@Sendable () async throws -> String)?
 
     public init(
       environmentID: String, projectID: String?, keys: URL,
@@ -52,7 +59,8 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
       keyName: String = "Workroom on \(ProcessInfo.processInfo.hostName)",
       daemonSocket: String = "\(RailwayHostDriver.stateDirectory)/daemon/workroomd.sock",
       screens: String = "\(RailwayHostDriver.stateDirectory)/screens",
-      hostSetup: HostSetup, pollInterval: Duration = .seconds(2), readyTries: Int = 150
+      hostSetup: HostSetup, pollInterval: Duration = .seconds(2), readyTries: Int = 150,
+      gitHubToken: (@Sendable () async throws -> String)? = nil
     ) {
       self.environmentID = environmentID
       self.projectID = projectID
@@ -64,6 +72,7 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
       self.hostSetup = hostSetup
       self.pollInterval = pollInterval
       self.readyTries = readyTries
+      self.gitHubToken = gitHubToken
     }
   }
 
@@ -74,6 +83,10 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
   /// Every sandbox logs in as root, whose home holds the daemon's state and the clone (spike).
   public static let user = "root"
   public static let stateDirectory = "/root/.local/state/workroom"
+  /// The host's copy of the Mac's `gh` token (ADR 0072), readable only by root, its owner. The
+  /// git credential helper `railway-github.sh` sets answers github.com from it. Clearing a
+  /// checkpoint's checkout must remove it too (#633).
+  public static let gitHubTokenPath = "\(stateDirectory)/gh-token"
 
   public let configuration: Configuration
   public var daemonSocket: String { configuration.daemonSocket }
@@ -112,11 +125,15 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
   /// A sandbox of Railway's default image, region and size, with its idle timeout off, set up as
   /// a workroom's host. One that gets no further is destroyed.
   public func create() async throws -> HostID {
-    let (identity, hostKey) = try await ProvisioningProgress.step(.account, report: false) {
+    let (identity, hostKey, token) = try await ProvisioningProgress.step(
+      .account, report: false
+    ) {
       // One create at a time makes the key and the pin; the rest find them.
-      try await RailwaySerial.shared.run {
+      let (identity, hostKey) = try await RailwaySerial.shared.run {
         (try await self.macKey(), try await self.pinnedRelayKey())
       }
+      // Read before anything is made: a Mac signed out of gh bills no sandbox.
+      return (identity, hostKey, try await self.macGitHubToken())
     }
     let sandbox = try await ProvisioningProgress.step(.machine) {
       try await api.createSandbox(environmentID: configuration.environmentID)
@@ -131,6 +148,7 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
       try await ProvisioningProgress.step(.boot) { try await awaitRunning(record) }
       try await ProvisioningProgress.step(.setup) {
         try await setUp(id, record, identity: identity)
+        if let token { try await setUpGitHub(id, record, identity: identity, token: token) }
       }
       return .remote(id)
     } catch {
@@ -243,6 +261,84 @@ public final class RailwayHostDriver: HostTerminalDriver, ProvisioningHostDriver
         + "ssh said: \(said)"
     }
     return "Railway's ssh relay refused Workroom's key: \(said)"
+  }
+
+  // MARK: GitHub
+
+  /// The Mac's current `gh` token, checked fit for the host's token file: nil when this driver
+  /// gives hosts none.
+  private func macGitHubToken() async throws -> String? {
+    guard let source = configuration.gitHubToken else { return nil }
+    let token = try await source().trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !token.isEmpty, !token.contains(where: \.isNewline) else {
+      throw HostDriverError.provisioning(
+        "gh gave no usable GitHub token on this Mac: run `gh auth login`")
+    }
+    return token
+  }
+
+  /// Points the new host's git at the user's token: `railway-github.sh` sets the credential
+  /// helper and the remote rewrites, then the token is written.
+  private func setUpGitHub(
+    _ id: UUID, _ record: RailwayHostRecord, identity: String, token: String
+  ) async throws {
+    let script = try configuration.hostSetup.script("railway-github")
+    let config = try SSHTransport.writeConfiguration(
+      for: target(record, identity: identity), in: hostDirectory(id))
+    try await login(
+      config, "sh -s -- \(PosixShell.quoted(Self.gitHubTokenPath))", stdin: Data(script.utf8),
+      failure: "setting up git on Railway's sandbox \(record.sandboxID) failed")
+    try await writeGitHubToken(token, config: config, record: record)
+  }
+
+  /// The Mac's current token on `host`, rewritten there only when it differs. Writes the host's
+  /// ssh files first: a host adopted after a relaunch may have none yet.
+  public func refreshGitHubToken(on host: HostID) async throws {
+    guard let token = try await macGitHubToken() else { return }
+    let (id, record) = try record(of: host)
+    let config = try SSHTransport.writeConfiguration(
+      for: target(record, identity: configuration.keys.appendingPathComponent("id_ed25519").path),
+      in: hostDirectory(id))
+    try await writeGitHubToken(token, config: config, record: record)
+  }
+
+  /// Writes `token` to the host's token file unless it already holds it. The token travels on
+  /// ssh's stdin only, so no process list, log or Railway variable ever has it.
+  private func writeGitHubToken(
+    _ token: String, config: URL, record: RailwayHostRecord
+  ) async throws {
+    try await login(
+      config, Self.gitHubTokenCommand(path: Self.gitHubTokenPath), stdin: Data(token.utf8),
+      failure: "writing the GitHub token to Railway's sandbox \(record.sandboxID) failed")
+  }
+
+  /// The host's side of a token write, a line for its shell with the token on stdin: compares it
+  /// with the file's, and only when they differ replaces the file, made readable by its owner
+  /// alone. Says `unchanged` or `rewritten`, never the token. The token is only ever in a shell
+  /// variable and builtins' arguments, never another process's argv.
+  static func gitHubTokenCommand(path: String) -> String {
+    let file = PosixShell.quoted(path)
+    return "f=\(file); umask 077; mkdir -p \"${f%/*}\"; t=$(cat); [ -n \"$t\" ] || exit 64; "
+      + "if [ -f \"$f\" ] && [ \"$(cat \"$f\")\" = \"$t\" ]; then echo unchanged; "
+      + "else printf '%s\\n' \"$t\" > \"$f.new\" && chmod 600 \"$f.new\" && mv -f \"$f.new\" \"$f\" "
+      + "&& echo rewritten; fi"
+  }
+
+  /// One login to the host through the relay, running `command` with `stdin`. The log gets the
+  /// command and what it printed, never `stdin`.
+  private func login(_ config: URL, _ command: String, stdin: Data, failure: String) async throws {
+    ProvisioningProgress.record("$ \(command)")
+    let result = await runner.run(
+      "/usr/bin/ssh", ["-F", config.path, SSHTransport.alias, command], in: NSHomeDirectory(),
+      timeout: 60, stdin: stdin)
+    try Task.checkCancellation()
+    ProvisioningProgress.record(result.stdout)
+    ProvisioningProgress.record(result.stderr)
+    guard result.ok else {
+      let said = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+      if SSHTransport.isRefusal(said) { throw HostDriverError.provisioning(Self.refusal(said)) }
+      throw HostDriverError.provisioning("\(failure): \(said)")
+    }
   }
 
   // MARK: Keys

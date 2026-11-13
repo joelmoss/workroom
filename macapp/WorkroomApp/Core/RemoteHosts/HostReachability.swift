@@ -92,6 +92,18 @@ final class HostReachability: @unchecked Sendable {
       return try await DaemonBootstrap.connect(
         host: host, driver: driver, socket: driver.daemonSocket)
     }
+    // A host whose git uses a copy of the Mac's gh token gets the current one (ADR 0072), so a
+    // token the user rotated doesn't live on there. A failure leaves the workroom usable except
+    // for git's remote commands, so it is logged; the next connect tries again.
+    if let carrying = driver as? any GitHubTokenCarrying {
+      do {
+        try await carrying.refreshGitHubToken(on: host)
+      } catch {
+        Self.logger.error(
+          "gh token for \(String(describing: host), privacy: .public): \(error.localizedDescription, privacy: .public)"
+        )
+      }
+    }
     // A relayed workroom's git asks this Mac for credentials (#309): its listener goes with the
     // connection, and its secret with this launch, so it is set up again on every connect. A
     // failure leaves the workroom usable except for git's remote commands, so it is logged.

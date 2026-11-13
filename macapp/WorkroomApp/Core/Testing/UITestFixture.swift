@@ -123,6 +123,9 @@ import WorkroomVCS
     static let railwayWorkroomName = "uitest-railway"
     /// The relay a fixture launch's Railway driver logs in through: `.invalid` never resolves.
     static let railwayRelay = "relay.railway.invalid"
+    /// The gh token a test process's Railway driver carries to its hosts: a fake, so no test reads
+    /// this Mac's own (ADR 0072).
+    static let railwayGitHubToken = "gho_FAKE_uitest_fixture"
 
     /// `-WorkroomUITestRailwayNeededWorkspace <id>`: the workspace of the `Workroom` project the
     /// fixture's Railway setup checks the sign-in reaches (#627).

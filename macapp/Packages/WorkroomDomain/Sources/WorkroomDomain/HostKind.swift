@@ -109,15 +109,16 @@ public enum HostKind: Hashable, Sendable {
 
   /// How the user gives this kind's hosts GitHub access, said after git's own words when a clone
   /// fails, or nil where Workroom gives it (a container takes the Mac's `gh` through the relay,
-  /// #309). A remote provider's host fetches and pushes with the provider's own credentials, so
-  /// it keeps working with this Mac closed. Worded for the one cause Workroom can't tell apart
+  /// #309). A remote provider's host fetches and pushes with the provider's own credentials, or
+  /// a Railway sandbox with its copy of the Mac's `gh` token (ADR 0072), so it keeps working with
+  /// this Mac closed. Worded for the one cause Workroom can't tell apart
   /// from git's message: the clone fails the same way for a network or GitHub outage.
   public var credentialHint: String? {
     switch self {
     case .container: nil
     case .railway:
-      "If GitHub refused the clone: a Railway sandbox has no GitHub credentials of its own, so "
-        + "Workroom can clone only a public repository there for now."
+      "If GitHub refused the clone: a Railway sandbox clones with this Mac's gh token. Check "
+        + "that `gh auth status` shows you signed in to github.com with access to the repository."
     case .ssh:
       "If GitHub refused the clone, set up credentials on the host: a GitHub SSH key for an "
         + "SSH URL, or `gh auth login` and `gh auth setup-git` for HTTPS."

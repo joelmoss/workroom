@@ -487,15 +487,21 @@ final class HostDriverRegistry: @unchecked Sendable {
   static func railway(environment: String) -> RailwayHostDriver {
     let placement = RailwayAccount.placement.read()
     var relay = RailwayHostDriver.relay
+    // The host's git pushes in the user's name with the Mac's gh token (ADR 0072).
+    var gitHubToken: @Sendable () async throws -> String = CredentialRelay.gitHubToken
     #if DEBUG
-      // A test's panes and connects reach nothing.
-      if AppEnvironment.current.isTestProcess { relay = UITestFixture.railwayRelay }
+      // A test's panes and connects reach nothing, and never read this Mac's gh.
+      if AppEnvironment.current.isTestProcess {
+        relay = UITestFixture.railwayRelay
+        gitHubToken = { UITestFixture.railwayGitHubToken }
+      }
     #endif
     return RailwayHostDriver(
       configuration: .init(
         environmentID: environment,
         projectID: placement.environmentID == environment ? placement.projectID : nil,
-        keys: RailwayAccount.directory, relayHost: relay, hostSetup: .bundled),
+        keys: RailwayAccount.directory, relayHost: relay, hostSetup: .bundled,
+        gitHubToken: gitHubToken),
       api: RailwayAccount.shared.api, directory: RemoteHosts.hosts)
   }
 
