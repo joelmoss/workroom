@@ -25,4 +25,12 @@ final class HostSetupBundleTests: XCTestCase {
   func testTheRailwaySetupScriptShipsInTheBundle() throws {
     XCTAssertTrue(try HostSetup.bundled.script("railway").contains("/etc/workroom-identity"))
   }
+
+  // Value: protects=every Railway create can point its sandbox's git at the user's token (ADR
+  // 0072); fails_when=railway-github.sh leaves host-setup or is renamed; seam=none;
+  // no_claim=what it does on a sandbox
+  func testTheRailwayGitHubSetupScriptShipsInTheBundle() throws {
+    XCTAssertTrue(
+      try HostSetup.bundled.script("railway-github").contains("credential.https://github.com"))
+  }
 }

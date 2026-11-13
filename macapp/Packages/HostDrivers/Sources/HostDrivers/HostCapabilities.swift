@@ -59,6 +59,14 @@ public protocol CheckoutClearingDriver: HostDriver {
   func clearCheckout(at path: String, of cloneURL: String, on host: HostID) async throws
 }
 
+/// A driver whose hosts' git uses a copy of the Mac's `gh` token, because their provider has no
+/// git integration (Railway, ADR 0072).
+public protocol GitHubTokenCarrying: HostDriver {
+  /// Compares `host`'s copy with the Mac's current token and rewrites it when they differ: on
+  /// every connect, so a token the user rotated or revoked doesn't live on there.
+  func refreshGitHubToken(on host: HostID) async throws
+}
+
 /// A driver whose provider gives each repository its hosts may clone access to, which Workroom
 /// adds before the first host is made (exe.dev's GitHub integration, ADR 0049).
 public protocol RepositoryGranting: HostDriver {

@@ -10,7 +10,7 @@ nightly: true
 
 - Your project's `origin` must be on github.com, and its base branch must be on `origin`. See [Remote workrooms](overview.md#what-a-project-needs).
 - You need a Railway workspace on the Hobby or Pro plan. On Trial and Free, Railway destroys a sandbox after 5 minutes without use and that can't be turned off, so Workroom refuses those workspaces.
-- For now a Railway sandbox has no GitHub credentials, so Workroom can clone only a public repository there.
+- `gh` must be signed in to github.com on this Mac (`gh auth login`). The sandbox clones and pushes with your `gh` token, so your commits and pushes are yours. See [GitHub on the sandbox](#github-on-the-sandbox).
 
 Workroom never runs your `railway` command or reads its `~/.railway` folder, so your own Railway CLI keeps working as you left it.
 
@@ -32,6 +32,16 @@ Click **Create Workroom**, and the create carries on.
 The sandbox uses Railway's default image, region and size. Its idle timeout is off, so it keeps running, and Railway keeps billing for it, until you delete the workroom.
 
 The first workroom on a Mac makes an SSH key for Railway in Workroom's own folder and adds it to your Railway account. Workroom reaches the sandbox through Railway's SSH relay, and remembers the relay's host key the first time. If the relay later shows a different key, Workroom refuses to connect and says why.
+
+## GitHub on the sandbox
+
+Railway has no GitHub integration for sandboxes, so Workroom gives each sandbox a copy of this Mac's `gh` token:
+
+- When it creates the sandbox, Workroom writes the token to a file there that only the sandbox's own account can read. It is never a Railway variable, so it isn't kept in Railway's variable store.
+- The sandbox's git uses it for github.com, and any GitHub remote, in its `git@github.com:` or `ssh://` form too, goes over HTTPS with it.
+- Each time Workroom connects to the sandbox, it checks the copy against this Mac's current token and replaces it if you rotated it.
+
+The token has the scope you gave `gh`, and anything running in the workroom can read it.
 
 ## Signed out
 
