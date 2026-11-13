@@ -162,6 +162,41 @@ final class TerminalTargetTests: XCTestCase {
       "another build's host takes another key")
   }
 
+  /// The Ports list a serving remote workroom shows (#632): a Railway sandbox is its workroom's own
+  /// host, so its list is the host's, as a container's is; an SSH host's is the workroom's; boxd
+  /// and exe.dev publish ports themselves, so theirs show none. The workroom's selection, which
+  /// forwards what its dev container declares, and the Details pane find the same list.
+  func testARailwayWorkroomForwardsItsHostsPortsAsAContainerDoes() {
+    let id = UUID()
+    let workroomID = UUID()
+    let mine = RemoteWorkrooms.provisioner
+    let railway = HostDescriptor(
+      driver: HostKind.railway.driver, provisioner: mine, id: id, workroomID: workroomID,
+      railway: RailwayHostRecord(
+        projectID: "prj", environmentID: "env", sandboxID: "sbx", hostKey: "ssh-ed25519 AAAA"))
+    let ssh = HostDescriptor(
+      driver: HostKind.ssh.driver, provisioner: mine, id: id, workroomID: workroomID,
+      path: "/home/joel/workrooms/w", sshDestination: "myserver", sshHome: "/home/joel")
+    let boxd = HostDescriptor(
+      driver: HostKind.boxd.driver, provisioner: mine, id: id, workroomID: workroomID, org: "o")
+    func places(_ host: HostDescriptor) -> [PortForwardingModel.Place?] {
+      let workroom = Workroom(
+        name: "x", path: "/home/w", vcsName: "workroom/x", warnings: [], host: host)
+      return [workroom.portsPlace, workroom.target(inProject: "/proj").portsPlace]
+    }
+    let remote = HostID.remote(id)
+    XCTAssertEqual(places(railway), Array(repeating: .init(host: remote, workroom: nil), count: 2))
+    XCTAssertEqual(
+      places(ssh), Array(repeating: .init(host: remote, workroom: workroomID), count: 2))
+    XCTAssertEqual(places(boxd), [nil, nil])
+    var creating = railway
+    creating.state = "creating"
+    XCTAssertEqual(places(creating), [nil, nil], "a host that isn't serving has nothing to reach")
+    var unrecorded = railway
+    unrecorded.railway = nil
+    XCTAssertEqual(places(unrecorded), [nil, nil], "a sandbox with no record names no driver")
+  }
+
   func testUnavailabilityReasons() {
     func target(_ warnings: [Warning], _ host: HostDescriptor?) -> TerminalTarget {
       Workroom(name: "x", path: "/p", vcsName: "workroom/x", warnings: warnings, host: host)
