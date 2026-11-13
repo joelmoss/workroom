@@ -669,12 +669,12 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     cancellable: Bool = false, onEvent: ((StreamEvent) -> Void)? = nil
   ) async throws -> CLIResult {
     let url = try Self.bundledBinaryURL()
-    let cancel = CancelSignal()
     guard cancellable else {
       return try await run(
         url: url, args, timeout: timeout, userInitiated: userInitiated, stdin: stdin,
-        onEvent: onEvent, cancel: cancel)
+        onEvent: onEvent, cancel: nil)
     }
+    let cancel = CancelSignal()
     return try await withTaskCancellationHandler {
       try await run(
         url: url, args, timeout: timeout, userInitiated: userInitiated, stdin: stdin,
@@ -686,7 +686,7 @@ final class WorkroomCLI: WorkroomCLIProtocol {
 
   private func run(
     url: URL, _ args: [String], timeout: TimeInterval?, userInitiated: Bool, stdin: Data?,
-    onEvent: ((StreamEvent) -> Void)?, cancel: CancelSignal
+    onEvent: ((StreamEvent) -> Void)?, cancel: CancelSignal?
   ) async throws -> CLIResult {
     try await withCheckedThrowingContinuation { continuation in
       let proc = Process()
@@ -769,7 +769,7 @@ final class WorkroomCLI: WorkroomCLIProtocol {
         try proc.run()
         // `nonisolated(unsafe)`: `Process` isn't Sendable, but `terminate()` is thread-safe.
         nonisolated(unsafe) let running = proc
-        cancel.onFire { if running.isRunning { running.terminate() } }
+        cancel?.onFire { if running.isRunning { running.terminate() } }
         if let inPipe, let stdin {
           DispatchQueue.global().async {
             let handle = inPipe.fileHandleForWriting

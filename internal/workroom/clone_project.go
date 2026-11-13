@@ -177,7 +177,7 @@ func cloneErrorLines(stderr string) string {
 
 // removeDirJunk deletes the entries dirIsEmpty ignores, so git sees the folder as empty too.
 func removeDirJunk(dir string) error {
-	for _, name := range []string{".DS_Store", ".localized"} {
+	for _, name := range finderJunk {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
 			return err
 		}

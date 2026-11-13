@@ -261,15 +261,11 @@ struct OnboardingWindow: View {
           Button("Skip") { step = .done }
             .disabled(isAdding)
         }
-        Button(addProjectMode == .clone ? "Clone Project" : "Add Project") {
+        Button(AddProjectSheetModel.confirmTitle(mode: addProjectMode)) {
           if addProjectMode == .clone { startClone() } else { Task { await handleAdd() } }
         }
         .buttonStyle(.borderedProminent)
-        .help(
-          addProjectMode == .clone
-            ? "Clone the repository into the folder and add it as a project."
-            : "Add the project."
-        )
+        .help(AddProjectSheetModel.confirmHelp(mode: addProjectMode))
         .accessibilityIdentifier("onboarding.confirmButton")
         .disabled(
           isAdding || clone.isRunning

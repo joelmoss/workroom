@@ -120,8 +120,21 @@ enum AddProjectSheetModel {
     guard FileManager.default.fileExists(atPath: p, isDirectory: &isDir) else { return nil }
     guard isDir.boolValue else { return "That's a file, not a folder." }
     let entries = (try? FileManager.default.contentsOfDirectory(atPath: p)) ?? []
-    let ignorable: Set<String> = [".DS_Store", ".localized"]
-    return entries.allSatisfy(ignorable.contains) ? nil : "That folder isn't empty."
+    return entries.allSatisfy(finderJunk.contains) ? nil : "That folder isn't empty."
+  }
+
+  /// What Finder leaves in a folder it has shown, which doesn't make it non-empty: the CLI's own
+  /// list (`finderJunk` in internal/workroom), kept the same so the sheet and the CLI agree.
+  static let finderJunk: Set<String> = [".DS_Store", ".localized"]
+
+  /// The confirm button's title and tooltip, the same in the sheet and the onboarding step.
+  static func confirmTitle(mode: AddProjectMode) -> String {
+    mode == .clone ? "Clone Project" : "Add Project"
+  }
+
+  static func confirmHelp(mode: AddProjectMode) -> String {
+    mode == .clone
+      ? "Clone the repository into the folder and add it as a project." : "Add the project."
   }
 
   static func footer(mode: AddProjectMode, path: String = "", url: String = "") -> String {
@@ -160,55 +173,64 @@ final class CloneRun {
     _ url: String, _ path: String, _ onProgress: @escaping @Sendable (String) -> Void
   ) async -> Result<Void, Error>
 
-  private(set) var isRunning = false
-  private(set) var isCancelling = false
+  /// Where the clone is: not running, running with `task`, or cancelled and cleaning up.
+  private enum Phase {
+    case idle
+    case running(Task<Void, Never>)
+    case cancelling
+  }
+
+  private var phase = Phase.idle
   private(set) var progress: String?
   private(set) var error: String?
-  private var task: Task<Void, Never>?
+
+  var isRunning: Bool {
+    if case .idle = phase { false } else { true }
+  }
+  var isCancelling: Bool {
+    if case .cancelling = phase { true } else { false }
+  }
 
   /// Clones with `perform`, then calls `onSuccess`. Cancelled or failed, it keeps the error to show
   /// and unlocks the form once the CLI has cleaned up.
   func start(url: String, path: String, perform: @escaping Perform, onSuccess: @escaping () -> Void)
   {
     guard !isRunning else { return }
-    isRunning = true
-    isCancelling = false
     error = nil
     progress = "Starting the clone…"
     let onProgress: @Sendable (String) -> Void = { [weak self] line in
       guard let run = self else { return }
       Task { @MainActor in run.show(line) }
     }
-    task = Task { [weak self] in
-      let result = await perform(url, path, onProgress)
-      guard let self else { return }
-      let cancelled = self.isCancelling
-      self.isRunning = false
-      self.isCancelling = false
-      self.progress = nil
-      self.task = nil
-      switch result {
-      case .success: onSuccess()
-      case .failure(let error):
-        self.error =
-          cancelled
-          ? "Clone cancelled."
-          : (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-      }
-    }
+    phase = .running(
+      Task { [weak self] in
+        let result = await perform(url, path, onProgress)
+        guard let self else { return }
+        let cancelled = self.isCancelling
+        self.phase = .idle
+        self.progress = nil
+        switch result {
+        case .success: onSuccess()
+        case .failure(let error):
+          self.error =
+            cancelled
+            ? "Clone cancelled."
+            : (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+      })
   }
 
   /// Cancels a running clone: the CLI kills git and puts the folder back as it found it.
   func cancel() {
-    guard isRunning, !isCancelling else { return }
-    isCancelling = true
+    guard case .running(let task) = phase else { return }
+    phase = .cancelling
     progress = "Cancelling…"
-    task?.cancel()
+    task.cancel()
   }
 
   /// Shows a progress line, unless it arrives after the clone finished or was cancelled.
   private func show(_ line: String) {
-    guard isRunning, !isCancelling else { return }
+    guard case .running = phase else { return }
     progress = line
   }
 
@@ -265,11 +287,15 @@ struct AddProjectFields: View {
         VStack(alignment: .leading, spacing: 6) {
           Text("Repository URL")
             .font(.subheadline.weight(.semibold))
-          TextField("https://github.com/owner/repo", text: $url)
-            .textFieldStyle(.roundedBorder)
-            .lineLimit(1)
-            .help("The repository to clone: an https://, ssh:// or git@host:owner/repo URL.")
-            .accessibilityIdentifier("addProject.urlField")
+          // `verbatim`: a string literal title is a LocalizedStringKey, which SwiftUI renders as
+          // Markdown, so a URL placeholder would show as a blue link.
+          TextField(text: $url, prompt: Text(verbatim: "https://github.com/owner/repo")) {
+            Text("Repository URL")
+          }
+          .textFieldStyle(.roundedBorder)
+          .lineLimit(1)
+          .help("The repository to clone: an https://, ssh:// or git@host:owner/repo URL.")
+          .accessibilityIdentifier("addProject.urlField")
         }
       }
 
@@ -428,14 +454,10 @@ struct AddProjectSheet: View {
 
       Divider()
       SheetFooter(cancelIdentifier: "addProject.cancelButton", onCancel: cancel) {
-        Button(mode == .clone ? "Clone Project" : "Add Project", action: submit)
+        Button(AddProjectSheetModel.confirmTitle(mode: mode), action: submit)
           .sheetDefaultAction()
           .disabled(!isValid || clone.isRunning)
-          .help(
-            mode == .clone
-              ? "Clone the repository into the folder and add it as a project."
-              : "Add the project."
-          )
+          .help(AddProjectSheetModel.confirmHelp(mode: mode))
           .accessibilityIdentifier("addProject.confirmButton")
       }
       .disabled(clone.isCancelling)

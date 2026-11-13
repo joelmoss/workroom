@@ -21,10 +21,6 @@ type jsonLogWriter struct {
 	phase string
 	step  string // the create step now running; tags each log event, "" when none
 	buf   []byte // bytes received since the last newline, not yet emitted
-	// splitCR also ends a line at a lone \r, which is how git redraws a progress counter in
-	// place; \r\n still ends one line. Off for scripts, whose CRLF output must not gain events.
-	splitCR bool
-	lastCR  bool // the last byte consumed was a \r that ended a line, so a \n next is its pair
 }
 
 func newJSONLogWriter(w io.Writer, phase string) *jsonLogWriter {
@@ -40,10 +36,6 @@ func writeJSONEvent(w io.Writer, obj any) {
 }
 
 func (l *jsonLogWriter) Write(b []byte) (int, error) {
-	if l.splitCR {
-		l.writeSplittingCR(b)
-		return len(b), nil
-	}
 	l.buf = append(l.buf, b...)
 	for {
 		i := bytes.IndexByte(l.buf, '\n')
@@ -54,23 +46,6 @@ func (l *jsonLogWriter) Write(b []byte) (int, error) {
 		l.buf = l.buf[i+1:]
 	}
 	return len(b), nil
-}
-
-// writeSplittingCR is Write for splitCR: each \n, \r or \r\n ends a line.
-func (l *jsonLogWriter) writeSplittingCR(b []byte) {
-	for _, c := range b {
-		switch {
-		case c == '\n' && l.lastCR:
-			l.lastCR = false
-		case c == '\n' || c == '\r':
-			l.emit(string(l.buf))
-			l.buf = l.buf[:0]
-			l.lastCR = c == '\r'
-		default:
-			l.lastCR = false
-			l.buf = append(l.buf, c)
-		}
-	}
 }
 
 // Flush emits any trailing output not terminated by a newline. Call once after the
@@ -95,4 +70,32 @@ func (l *jsonLogWriter) emit(line string) {
 		return
 	}
 	_, _ = l.w.Write(append(data, '\n'))
+}
+
+// crSplitter turns each lone \r into \n before passing output on, so a writer that splits lines on
+// \n also ends one where git redraws a progress counter in place. A \r\n stays one line end. Only
+// clone output goes through it: a script's CRLF output must not gain events.
+type crSplitter struct {
+	w      io.Writer
+	lastCR bool // the last byte was a \r, so a \n next is its pair
+}
+
+func (c *crSplitter) Write(b []byte) (int, error) {
+	out := make([]byte, 0, len(b))
+	for _, ch := range b {
+		switch {
+		case ch == '\n' && c.lastCR:
+			c.lastCR = false
+		case ch == '\r':
+			out = append(out, '\n')
+			c.lastCR = true
+		default:
+			out = append(out, ch)
+			c.lastCR = false
+		}
+	}
+	if _, err := c.w.Write(out); err != nil {
+		return 0, err
+	}
+	return len(b), nil
 }
