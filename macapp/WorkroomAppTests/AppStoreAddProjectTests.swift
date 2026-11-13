@@ -15,6 +15,8 @@ final class FakeWorkroomCLI: WorkroomCLIProtocol {
     var canonicalToReturn: String
     var projectsToList: [Project]
     var addProjectError: Error?
+    var cloneCalls: [(url: String, path: String)] = []
+    var cloneProgress: [String] = []
   }
   private let state: Mutex<State>
 
@@ -33,6 +35,13 @@ final class FakeWorkroomCLI: WorkroomCLIProtocol {
     set { state.withLock { $0.addProjectError = newValue } }
   }
 
+  var cloneCalls: [(url: String, path: String)] { state.withLock { $0.cloneCalls } }
+  /// The lines `cloneProject` streams before it returns, as git's progress would arrive.
+  var cloneProgress: [String] {
+    get { state.withLock { $0.cloneProgress } }
+    set { state.withLock { $0.cloneProgress = newValue } }
+  }
+
   init(canonical: String, projects: [Project]) {
     state = Mutex(State(canonicalToReturn: canonical, projectsToList: projects))
   }
@@ -46,6 +55,18 @@ final class FakeWorkroomCLI: WorkroomCLIProtocol {
       $0.addProjectCalls.append((path, create))
       return ($0.addProjectError, $0.canonicalToReturn)
     }
+    if let error { throw error }
+    return canonical
+  }
+
+  func cloneProject(_ url: String, into path: String, onLog: @escaping @Sendable (String) -> Void)
+    async throws -> String
+  {
+    let (error, canonical, progress) = state.withLock {
+      $0.cloneCalls.append((url, path))
+      return ($0.addProjectError, $0.canonicalToReturn, $0.cloneProgress)
+    }
+    progress.forEach(onLog)
     if let error { throw error }
     return canonical
   }
@@ -135,5 +156,47 @@ final class AppStoreAddProjectTests: XCTestCase {
     XCTAssertEqual((error as? WorkroomCLIError)?.errorDescription, "denied")
     XCTAssertNotNil(
       store.modals.errorMessage, "present(error) should still fire on the store, unchanged")
+  }
+
+  // MARK: Clone a repository… (issue #620)
+
+  /// A clone streams git's progress to the caller, then selects the clone by the CLI's canonical
+  /// path and opens its root, as any other add does.
+  func testCloneStreamsProgressAndSelectsTheClone() async {
+    let canonical = "/private/var/tmp/wr-clone/api"
+    let fake = FakeWorkroomCLI(
+      canonical: canonical,
+      projects: [Project(path: canonical, vcs: "git", workrooms: [])])
+    fake.cloneProgress = ["Cloning into '/tmp/wr-clone/api'...", "Receiving objects: 42% (21/50)"]
+    let store = makeStore(fake)
+    let seen = Mutex<[String]>([])
+
+    let result = await store.cloneProject(
+      "git@github.com:acme/api.git", into: "/tmp/wr-clone/api",
+      onProgress: { line in seen.withLock { $0.append(line) } })
+
+    guard case .success = result else { return XCTFail("expected .success, got \(result)") }
+    XCTAssertEqual(fake.cloneCalls.first?.url, "git@github.com:acme/api.git")
+    XCTAssertEqual(fake.cloneCalls.first?.path, "/tmp/wr-clone/api")
+    XCTAssertEqual(seen.withLock { $0 }, fake.cloneProgress)
+    XCTAssertEqual(store.selectedProjectID, canonical)
+    XCTAssertEqual(store.selectedTargetID, .root(project: canonical))
+  }
+
+  /// A failed clone hands its error back for the sheet to show inline: no alert behind the sheet.
+  func testCloneFailureIsReturnedNotPresented() async {
+    let fake = FakeWorkroomCLI(canonical: "/unused", projects: [])
+    fake.addProjectError = WorkroomCLIError.cli(
+      kind: "CloneFailed", message: "git clone failed: Permission denied (publickey).")
+    let store = makeStore(fake)
+
+    let result = await store.cloneProject("git@github.com:acme/api.git", into: "/x/api") { _ in }
+
+    guard case .failure(let error) = result else {
+      return XCTFail("expected .failure, got \(result)")
+    }
+    XCTAssertEqual((error as? WorkroomCLIError)?.kind, "CloneFailed")
+    XCTAssertNil(store.modals.errorMessage, "the sheet shows a clone's error, not an alert")
+    XCTAssertNil(store.selectedProjectID)
   }
 }

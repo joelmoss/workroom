@@ -50,6 +50,7 @@ func TestRegistryCoversEveryPublicSentinel(t *testing.T) {
 		ErrConfigRead, ErrConfigWrite, ErrVCSCommand, ErrRemoteProject, ErrRemoteWorkroom,
 		ErrProjectNotFound, ErrWorkroomNotFound, ErrInvalidHost, ErrWorkroomExists,
 		ErrBaseBranchNotFound, ErrScriptNotTrusted, ErrLocalWork, ErrStartCommitUnusable,
+		ErrCloneFailed, ErrDestinationNotEmpty,
 	}
 	if len(registry) != len(sentinels) {
 		t.Fatalf("registry has %d entries, expected %d (one per exported sentinel)", len(registry), len(sentinels))

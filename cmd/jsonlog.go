@@ -21,6 +21,10 @@ type jsonLogWriter struct {
 	phase string
 	step  string // the create step now running; tags each log event, "" when none
 	buf   []byte // bytes received since the last newline, not yet emitted
+	// splitCR also ends a line at a lone \r, which is how git redraws a progress counter in
+	// place; \r\n still ends one line. Off for scripts, whose CRLF output must not gain events.
+	splitCR bool
+	lastCR  bool // the last byte consumed was a \r that ended a line, so a \n next is its pair
 }
 
 func newJSONLogWriter(w io.Writer, phase string) *jsonLogWriter {
@@ -36,6 +40,10 @@ func writeJSONEvent(w io.Writer, obj any) {
 }
 
 func (l *jsonLogWriter) Write(b []byte) (int, error) {
+	if l.splitCR {
+		l.writeSplittingCR(b)
+		return len(b), nil
+	}
 	l.buf = append(l.buf, b...)
 	for {
 		i := bytes.IndexByte(l.buf, '\n')
@@ -46,6 +54,23 @@ func (l *jsonLogWriter) Write(b []byte) (int, error) {
 		l.buf = l.buf[i+1:]
 	}
 	return len(b), nil
+}
+
+// writeSplittingCR is Write for splitCR: each \n, \r or \r\n ends a line.
+func (l *jsonLogWriter) writeSplittingCR(b []byte) {
+	for _, c := range b {
+		switch {
+		case c == '\n' && l.lastCR:
+			l.lastCR = false
+		case c == '\n' || c == '\r':
+			l.emit(string(l.buf))
+			l.buf = l.buf[:0]
+			l.lastCR = c == '\r'
+		default:
+			l.lastCR = false
+			l.buf = append(l.buf, c)
+		}
+	}
 }
 
 // Flush emits any trailing output not terminated by a newline. Call once after the

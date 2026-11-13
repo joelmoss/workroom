@@ -7,9 +7,9 @@ import "os/exec"
 // OS; the caller's timeout still gets its process back.
 //
 // ponytail: grandchildren orphaned on Windows; Job Objects if it ever matters.
-func setProcessGroup(_ *exec.Cmd) {}
+func SetProcessGroup(_ *exec.Cmd) {}
 
-func killProcessGroup(cmd *exec.Cmd) {
+func KillProcessGroup(cmd *exec.Cmd) {
 	if cmd.Process != nil {
 		_ = cmd.Process.Kill()
 	}

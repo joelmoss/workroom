@@ -20,7 +20,8 @@ The project appears in the sidebar. Workroom only reads your checkout, which is 
 changes it.
 
 To start a brand-new project instead, choose **Create new directory…**, and Workroom makes the folder
-and a git repository in it.
+and a git repository in it. To start from a repository that isn't on this Mac yet, choose **Clone a
+repository…** and type its URL.
 
 ## Create a workroom
 

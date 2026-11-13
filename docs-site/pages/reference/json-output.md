@@ -130,6 +130,8 @@ These kinds are returned as well:
 | `InvalidHostDescriptor` | 2 | A host descriptor must be a JSON object. |
 | `RemoteProjectUnsupported` | 3 | `add-project` was given a remote path such as `host:path` or `ssh://…`. |
 | `RemoteWorkroomUnsupported` | 3 | `delete` or `delete-project` was asked to act on a remote workroom. |
+| `CloneFailed` | 1 | `add-project --clone` could not clone the repository. The message carries git's own error, such as `Permission denied (publickey).`; git never prompts, so missing credentials fail here. Nothing was registered. |
+| `DestinationNotEmpty` | 3 | `add-project --clone` was given a folder that already has files in it. Nothing was cloned. |
 | `StartCommitUnusable` | 3 | A create answering an earlier one's question was given a `start_commit` that is no longer where it starts, as when the project's base branch changed in between. Nothing was created; create again without it. |
 
 ### The ScriptNotTrusted envelope

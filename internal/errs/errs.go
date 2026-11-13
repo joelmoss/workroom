@@ -28,6 +28,8 @@ var (
 	ErrScriptNotTrusted    = errors.New("script is not trusted on this Mac")
 	ErrLocalWork           = errors.New("the new workroom would leave out some of your work")
 	ErrStartCommitUnusable = errors.New("the commit this create was asked about is no longer where it starts")
+	ErrCloneFailed         = errors.New("git clone failed")
+	ErrDestinationNotEmpty = errors.New("the destination folder is not empty")
 )
 
 // classification is one sentinel error's entry in the registry: its stable --json code and
@@ -68,6 +70,8 @@ var registry = []classification{
 	{ErrScriptNotTrusted, "ScriptNotTrusted", 3},
 	{ErrLocalWork, "LocalWorkLeftOut", 3},
 	{ErrStartCommitUnusable, "StartCommitUnusable", 3},
+	{ErrCloneFailed, "CloneFailed", 1},
+	{ErrDestinationNotEmpty, "DestinationNotEmpty", 3},
 }
 
 func classify(err error) (classification, bool) {

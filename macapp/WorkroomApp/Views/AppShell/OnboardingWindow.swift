@@ -119,6 +119,8 @@ struct OnboardingWindow: View {
   // needs to read it to enable/disable its own Add button.
   @State private var addProjectMode: AddProjectMode = .existing
   @State private var addProjectPath: String = ""
+  @State private var addProjectURL: String = ""
+  @State private var clone = CloneRun()
   @State private var showChooser = false
   @FocusState private var pathFieldFocused: Bool
   @State private var isAdding = false
@@ -230,8 +232,9 @@ struct OnboardingWindow: View {
       OnboardingTourStep()
     case .addProject:
       OnboardingAddProjectStep(
-        mode: $addProjectMode, path: $addProjectPath, showChooser: $showChooser,
-        pathFieldFocused: $pathFieldFocused, errorText: addProjectError)
+        mode: $addProjectMode, path: $addProjectPath, url: $addProjectURL,
+        showChooser: $showChooser, pathFieldFocused: $pathFieldFocused, clone: clone,
+        errorText: addProjectError)
     case .done:
       OnboardingDoneStep(onFinish: { dismissWindow(id: Self.sceneID) })
     }
@@ -241,7 +244,7 @@ struct OnboardingWindow: View {
     HStack {
       if step != .welcome {
         Button("Back") { step = OnboardingStep(rawValue: step.rawValue - 1) ?? .welcome }
-          .disabled(isAdding)
+          .disabled(isAdding || clone.isRunning)
       }
       Spacer()
       switch step {
@@ -249,14 +252,30 @@ struct OnboardingWindow: View {
         Button("Next") { step = OnboardingStep(rawValue: step.rawValue + 1) ?? .done }
           .buttonStyle(.borderedProminent)
       case .addProject:
-        Button("Skip") { step = .done }
-          .disabled(isAdding)
-        Button("Add Project") {
-          Task { await handleAdd() }
+        if clone.isRunning {
+          Button("Cancel Clone") { clone.cancel() }
+            .disabled(clone.isCancelling)
+            .help("Stop the clone and put the folder back as it was.")
+            .accessibilityIdentifier("onboarding.cancelClone")
+        } else {
+          Button("Skip") { step = .done }
+            .disabled(isAdding)
+        }
+        Button(addProjectMode == .clone ? "Clone Project" : "Add Project") {
+          if addProjectMode == .clone { startClone() } else { Task { await handleAdd() } }
         }
         .buttonStyle(.borderedProminent)
+        .help(
+          addProjectMode == .clone
+            ? "Clone the repository into the folder and add it as a project."
+            : "Add the project."
+        )
+        .accessibilityIdentifier("onboarding.confirmButton")
         .disabled(
-          isAdding || !AddProjectSheetModel.isValid(mode: addProjectMode, path: addProjectPath))
+          isAdding || clone.isRunning
+            || !AddProjectSheetModel.isValid(
+              mode: addProjectMode, path: addProjectPath, url: addProjectURL)
+        )
       case .done:
         EmptyView()
       }
@@ -277,6 +296,22 @@ struct OnboardingWindow: View {
           .frame(width: 6, height: 6)
       }
     }
+  }
+
+  /// Clones inside the wizard (#620): the step stays up through the clone, showing its progress and
+  /// any error inline, and moves on once it is added. The same store routing as `handleAdd`.
+  private func startClone() {
+    let store =
+      WindowRegistry.shared.lastActiveStore
+      ?? AppStore(runCommands: .shared, lifecycle: .shared)
+    addProjectError = nil
+    clone.start(
+      url: addProjectURL.trimmingCharacters(in: .whitespacesAndNewlines),
+      path: AddProjectSheetModel.normalize(addProjectPath),
+      perform: { url, path, onProgress in
+        await store.cloneProject(url, into: path, onProgress: onProgress)
+      },
+      onSuccess: { step = .done })
   }
 
   /// Routes through the existing launch window's store rather than a throwaway one, so a successful
@@ -364,8 +399,10 @@ private struct OnboardingTourStep: View {
 private struct OnboardingAddProjectStep: View {
   @Binding var mode: AddProjectMode
   @Binding var path: String
+  @Binding var url: String
   @Binding var showChooser: Bool
   var pathFieldFocused: FocusState<Bool>.Binding
+  let clone: CloneRun
   let errorText: String?
 
   @Environment(\.themeTokens) private var tokens
@@ -373,11 +410,12 @@ private struct OnboardingAddProjectStep: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       Text("Add your first project").font(.title2.bold())
-      Text("Add an existing repository, or create a new project directory.")
+      Text("Add an existing repository, clone one, or create a new project directory.")
         .font(.callout)
         .foregroundStyle(tokens.fgMuted)
       AddProjectFields(
-        mode: $mode, path: $path, showChooser: $showChooser, pathFieldFocused: pathFieldFocused)
+        mode: $mode, path: $path, url: $url, showChooser: $showChooser,
+        pathFieldFocused: pathFieldFocused, clone: clone)
       if let errorText {
         Text(errorText)
           .font(.callout)
