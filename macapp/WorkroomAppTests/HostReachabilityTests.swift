@@ -1,4 +1,5 @@
 import DaemonConnection
+import DaemonConnectionTestSupport
 import HostDrivers
 import Synchronization
 import WorkroomDomain
@@ -659,5 +660,61 @@ final class HostReachabilityTests: XCTestCase {
     clock.advance(HostReachability.retryAfter)
     try await remote.ensureConnected(.remote(id))
     XCTAssertEqual(relays.calls, 1, "installed again once it had taken")
+  }
+
+  // MARK: The gh token on a host (ADR 0072)
+
+  /// A driver whose hosts carry the Mac's gh token: records each refresh, and fails them or not.
+  private final class TokenCarrier: HostTerminalDriver, GitHubTokenCarrying, Sendable {
+    private let state = Mutex((refreshes: [HostID](), failing: false))
+    var refreshes: [HostID] { state.withLock { $0.refreshes } }
+    func fail(_ on: Bool) { state.withLock { $0.failing = on } }
+    func refreshGitHubToken(on host: HostID) async throws {
+      let failing = state.withLock {
+        $0.refreshes.append(host)
+        return $0.failing
+      }
+      if failing { throw HostDriverError.provisioning("the relay dropped the login") }
+    }
+    func openStream(to host: HostID) async throws -> HostStream {
+      throw HostDriverError.provisioning("no stream")
+    }
+    func exec(_ command: String, on host: HostID) async throws -> HostStream {
+      throw HostDriverError.provisioning("no exec")
+    }
+    func attachCommand(
+      to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
+      metadata: [(key: String, value: String)], runCommand: String?
+    ) throws -> String { "" }
+    func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool { false }
+    func lastAttach(of session: UUID, on host: HostID) -> LastAttach { .finished }
+  }
+
+  // Value: protects=a gh token the user rotated or revoked doesn't live on in a Railway host
+  // (ADR 0072, #631); fails_when=a connect skips the host's token, or a token write that fails
+  // takes the workroom's connection down with it; seam=HostReachability.connect over a FakeDaemon
+  /// Every connect to a host whose git carries the Mac's gh token refreshes it there; a refresh
+  /// that fails leaves the connection up.
+  func testEveryConnectRefreshesTheHostsGitHubToken() async throws {
+    let fake = try FakeDaemon(version: 4)
+    defer { fake.stop() }
+    let remote = RemoteHosts(
+      connectDaemon: { host, _ in
+        try await DaemonClient.connect(host: host, socketPath: fake.socketPath)
+      }, pendingIn: nil
+    ).reachability
+    let driver = TokenCarrier()
+    let host = HostID.remote(UUID())
+
+    try await remote.connect(host, driver: driver)
+    XCTAssertEqual(driver.refreshes, [host])
+    await remote.disconnect(host)
+
+    driver.fail(true)
+    try await remote.connect(host, driver: driver)
+    XCTAssertEqual(driver.refreshes, [host, host], "a reconnect didn't refresh the token")
+    let snapshot = await HostConnectionManager.shared.snapshot(for: host)
+    XCTAssertEqual(snapshot.status, .connected, "a failed refresh dropped the connection")
+    await remote.disconnect(host)
   }
 }
