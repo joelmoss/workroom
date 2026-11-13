@@ -45,6 +45,11 @@ struct TerminalTarget: Identifiable, Hashable {
 
   var isMissing: Bool { unavailability != nil }
 
+  /// Its Ports list in the Details pane (#632), or nil for none (`PortForwardingModel.Place`).
+  var portsPlace: PortForwardingModel.Place? {
+    .init(kind: hostPlace, host: remoteHost, workroom: remoteWorkroomID)
+  }
+
   /// The tooltip of a remote workroom's icon: what kind of host it is, and the machine to look for
   /// in its provider's dashboard.
   var hostTooltip: String {
@@ -187,6 +192,14 @@ extension Workroom {
   /// Whether its host is a Docker or Apple container on this Mac, not a remote provider's machine.
   var isContainer: Bool { host?.kind?.isRemoteProvider == false }
   var isSSH: Bool { host?.kind == .ssh }
+
+  /// Its Ports list (#632), or nil for none, as `TerminalTarget.portsPlace`: the list the
+  /// selection forwards its dev container's declared ports into.
+  var portsPlace: PortForwardingModel.Place? {
+    .init(
+      kind: host.flatMap(RemoteHosts.DriverKey.init)?.kind, host: reachableHost,
+      workroom: host?.workroomID)
+  }
 
   /// Only a serving host is reachable: one creating, failed, destroyed or in a state this build
   /// doesn't know is not. Only one this build owns (`RemoteWorkrooms.ownsHost`): another build's

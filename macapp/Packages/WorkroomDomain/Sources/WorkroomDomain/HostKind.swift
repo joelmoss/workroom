@@ -77,6 +77,25 @@ public enum HostKind: Hashable, Sendable {
   /// is on the local network, a remote provider's machine is in the cloud.
   public var icon: String { isRemoteProvider ? "cloud" : "network" }
 
+  /// Which Ports list its hosts' port forwards are kept in (CONTEXT "Port forward"), or nil for a
+  /// provider that publishes a host's ports itself (boxd, exe.dev). Every forward rides the host's
+  /// daemon connection, so a Railway sandbox's go through Railway's relay as an SSH host's go
+  /// through ssh (#632).
+  public enum PortForwards: Hashable, Sendable {
+    /// One list for the host: a container or a Railway sandbox is its workroom's own host.
+    case perHost
+    /// One list per workroom: an SSH host holds many workrooms (#378).
+    case perWorkroom
+  }
+
+  public var portForwards: PortForwards? {
+    switch self {
+    case .container, .railway: .perHost
+    case .ssh: .perWorkroom
+    case .boxd, .exeDev: nil
+    }
+  }
+
   /// One of its hosts, in a sentence: "a Docker container on this Mac", "a boxd machine".
   public var hostPhrase: String {
     switch self {
