@@ -17,7 +17,8 @@ use std::process::ExitCode;
 use crate::daemon::handoff;
 use crate::daemon::serve::BUILD;
 use wr_protocol::envelope::{
-    Hello, MIN_FILE_VERSION, MIN_FORWARD_VERSION, MIN_HANDOFF_VERSION, MIN_LAYOUT_VERSION,
+    Hello, MIN_FILE_VERSION, MIN_FORWARD_VERSION, MIN_HANDOFF_VERSION, MIN_HOST_ATTACH_VERSION,
+    MIN_LAYOUT_VERSION,
     MIN_PROGRAM_STATUS_VERSION, MIN_RETAG_VERSION, MIN_RUN_VERSION, MIN_SUPPORTED_VERSION,
     MIN_VCS_VERSION, PROTOCOL_VERSION, negotiate,
 };
@@ -102,11 +103,22 @@ pub fn drop_inherited_exception_ports() {
 /// Exit code the app already knows: `SessionAttachClient.daemonUnavailable`.
 pub(crate) const DAEMON_UNAVAILABLE: u8 = 92;
 
+/// Why a greeting failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandshakeError {
+    /// The stream ended, or could not be written, before the peer greeted.
+    Closed,
+    /// The peer sent something that is not a daemon's greeting, or one this build can't speak.
+    NotADaemon,
+}
+
 /// Exchange greetings and agree a version before anything else crosses the stream. Returns the
 /// peer's own version, which a version-gated request is checked against (never the negotiated one).
-pub(crate) fn handshake<S: Read + Write>(stream: &mut S) -> Result<u16, ()> {
+pub(crate) fn handshake<S: Read + Write>(stream: &mut S) -> Result<u16, HandshakeError> {
     let local = Hello::current(BUILD);
-    stream.write_all(&local.encode()).map_err(|_| ())?;
+    stream
+        .write_all(&local.encode())
+        .map_err(|_| HandshakeError::Closed)?;
     let _ = stream.flush();
 
     let mut greeting = Vec::new();
@@ -125,15 +137,15 @@ pub(crate) fn handshake<S: Read + Write>(stream: &mut S) -> Result<u16, ()> {
         // same error with `?`; this side now agrees with it.
         match Hello::decode(&greeting) {
             Ok(Some((hello, _))) => break hello,
-            Err(_) => return Err(()),
+            Err(_) => return Err(HandshakeError::NotADaemon),
             Ok(None) => {}
         }
         match stream.read(&mut byte) {
-            Ok(0) | Err(_) => return Err(()),
+            Ok(0) | Err(_) => return Err(HandshakeError::Closed),
             Ok(_) => greeting.push(byte[0]),
         }
     };
-    negotiate(&local, &remote).map_err(|_| ())?;
+    negotiate(&local, &remote).map_err(|_| HandshakeError::NotADaemon)?;
     Ok(remote.protocol_version)
 }
 
@@ -151,7 +163,7 @@ pub fn protocol() -> ExitCode {
          min-forward {MIN_FORWARD_VERSION} \
          min-handoff {MIN_HANDOFF_VERSION} min-layout {MIN_LAYOUT_VERSION} \
          min-program-status {MIN_PROGRAM_STATUS_VERSION} min-run {MIN_RUN_VERSION} \
-         min-retag {MIN_RETAG_VERSION}"
+         min-retag {MIN_RETAG_VERSION} min-host-attach {MIN_HOST_ATTACH_VERSION}"
     );
     println!("build {BUILD}");
     // The order between builds (#255): the app's probe reads it to decide whether to push.

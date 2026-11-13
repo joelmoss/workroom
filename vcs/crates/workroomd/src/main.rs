@@ -26,6 +26,10 @@ fn usage() -> &'static str {
         entry point, not a persistent remote daemon (that is serve --idle-timeout never + relay)
   workroomd attach --socket <path> [--session <uuid>]
         relay stdio to a session; what libghostty forks
+  workroomd attach [--no-create] --dial <command> [<argument>...]
+        the same, to a daemon reached through the command's stdio (a remote pane,
+        `--dial ssh -T <host> <binary> relay --socket <path>`): the session is built
+        from the host's environment; exits 255 for a link to retry
   workroomd relay --socket <path>
         copy bytes between stdio and a running daemon's socket, and nothing else;
         what a driver runs on the far side (`ssh host workroomd relay --socket <path>`)

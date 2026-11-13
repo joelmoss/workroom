@@ -1,0 +1,374 @@
+//! A remote pane attached from the Mac (ADR 0074): `workroomd attach --dial <command…>` speaks the
+//! daemon's framed protocol over the command's stdio, which on a real host is
+//! `ssh -T <host> <binary> relay --socket <path>`. Here the command is a local `workroomd relay`, or
+//! a script standing in for a host, so all of it runs over pipes with no ssh, as the
+//! remote-transport tests do.
+
+#[allow(dead_code)] // not every helper is used here
+mod common;
+use common::daemon_binary;
+
+use std::ffi::OsString;
+use std::io::{Read, Write};
+use std::os::unix::net::UnixListener;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
+use workroomd::testing::{HostOrigin, SessionStore, handle_connection};
+
+const SESSION: &str = "6B9B968D-0BD7-4172-850A-A373DA73BC70";
+
+/// Runs a dial-mode attach to `dialed` with only `env` and the session id, and returns its
+/// stdout, its stderr and its exit status.
+fn dial(dialed: &[&str], env: &[(&str, &str)]) -> (String, String, Option<i32>) {
+    let mut command = Command::new(daemon_binary());
+    command
+        .arg("attach")
+        .arg("--dial")
+        .args(dialed)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("WORKROOM_SESSION_ID", SESSION)
+        .envs(env.iter().copied())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("spawn attach");
+    let mut out = String::new();
+    let mut err = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut err)
+        .unwrap();
+    let status = child.wait().expect("wait");
+    (out, err, status.code())
+}
+
+/// A host that ends the dialed command before its daemon greets: ssh's own failure (255), a host
+/// with no daemon binary yet (127 from the remote shell, or the 255 a guard script exits), and
+/// `relay`'s daemon-unavailable status (92) are all a lost link the app keeps retrying.
+#[test]
+fn a_host_that_cannot_reach_its_daemon_yet_exits_with_the_retry_status() {
+    for status in ["255", "127", "92"] {
+        let (_, _, code) = dial(&["/bin/sh", "-c", &format!("exit {status}")], &[]);
+        assert_eq!(code, Some(255), "a dialed command that exited {status}");
+    }
+}
+
+/// A host that refuses for good says why on stderr and exits non-zero, as a host with only the
+/// former `wr-agent` layout does, and the pane stops rather than retrying.
+#[test]
+fn a_host_that_refuses_says_why_and_does_not_ask_for_a_retry() {
+    let (_, err, code) = dial(
+        &[
+            "/bin/sh",
+            "-c",
+            "echo 'workroom: this host has the former layout' >&2; exit 1",
+        ],
+        &[],
+    );
+    assert_eq!(code, Some(1));
+    assert!(err.contains("former layout"), "stderr: {err:?}");
+}
+
+/// A daemon older than this client is one the app has not updated yet: retry (ADR 0037), never a
+/// session it would build the wrong way.
+#[test]
+fn a_daemon_with_an_older_protocol_exits_with_the_retry_status() {
+    // A protocol-10 greeting, `WRA1 | 00 0a | 00`, then a daemon that waits.
+    let (out, _, code) = dial(
+        &[
+            "/bin/sh",
+            "-c",
+            "printf 'WRA1\\000\\012\\000'; cat >/dev/null",
+        ],
+        &[],
+    );
+    assert_eq!(code, Some(255));
+    assert!(out.is_empty(), "nothing reaches the pane: {out:?}");
+}
+
+/// A short directory: a unix socket address is capped at 104 bytes and cargo's target dir is long.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Scratch {
+        let dir = PathBuf::from(format!("/tmp/wr-dial-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("home")).expect("scratch dir");
+        Scratch(dir)
+    }
+
+    fn home(&self) -> PathBuf {
+        self.0.join("home")
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A daemon served in this process on a real socket, so a real `relay` reaches it, and the test
+/// says what the host's environment and account are (`SessionStore::set_host_origin`): never the
+/// developer's own shell, profile or home.
+struct Host {
+    store: SessionStore,
+    socket: PathBuf,
+}
+
+impl Host {
+    fn serve(scratch: &Scratch, store: SessionStore, environment: &[(&str, &str)]) -> Host {
+        store.set_host_origin(HostOrigin {
+            environment: environment
+                .iter()
+                .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+                .collect(),
+            shell: "/bin/sh".into(),
+            home: scratch.home(),
+            user: "fixture".into(),
+        });
+        store.keep_host_resources(scratch.0.join("ghostty"));
+        let socket = scratch.0.join("d.sock");
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let served = store.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                let sessions = served.clone();
+                std::thread::spawn(move || {
+                    let _ = handle_connection(stream, sessions);
+                });
+            }
+        });
+        Host { store, socket }
+    }
+
+    /// What a pane on the Mac runs: `attach --dial` to this host's `relay`, which has the ssh
+    /// variables sshd would have given it.
+    fn dial(&self, env: &[(&str, &str)]) -> Command {
+        let mut command = Command::new(daemon_binary());
+        command
+            .args(["attach", "--dial", "/usr/bin/env"])
+            .arg(format!("SSH_CONNECTION={SSH_CONNECTION}"))
+            .arg(format!("SSH_CLIENT={SSH_CLIENT}"))
+            .arg(daemon_binary())
+            .args(["relay", "--socket"])
+            .arg(&self.socket)
+            .env_clear()
+            .env("WORKROOM_SESSION_ID", SESSION)
+            .envs(env.iter().copied())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+}
+
+impl Drop for Host {
+    fn drop(&mut self) {
+        self.store.kill_all();
+    }
+}
+
+const CLEAR_WAITING_LINE: &str = "\x1b8\x1b[J";
+const SSH_CONNECTION: &str = "10.0.0.1 51234 10.0.0.2 22";
+const SSH_CLIENT: &str = "10.0.0.1 51234 22";
+
+/// What the Mac's pane has in its environment, much of which must never reach the host.
+const MAC: [(&str, &str); 14] = [
+    ("PATH", "/opt/homebrew/bin:/usr/bin:/bin"),
+    ("HOME", "/Users/mac"),
+    ("SHELL", "/bin/zsh"),
+    ("USER", "mac"),
+    ("SECRET", "from-the-mac"),
+    ("SSH_TTY", "/dev/ttys004"),
+    (
+        "WORKROOM_SESSION_RESOURCES",
+        "/Applications/Workroom.app/ghostty",
+    ),
+    ("WORKROOM_SESSION_SHELL", "/bin/zsh"),
+    ("TERM", "xterm-ghostty"),
+    ("COLORTERM", "truecolor"),
+    ("TERM_PROGRAM", "ghostty"),
+    ("TERM_PROGRAM_VERSION", "1.2.3"),
+    ("LANG", "en_GB.UTF-8"),
+    ("LC_CTYPE", "UTF-8"),
+];
+
+/// What the host's daemon has: some of it stale from the ssh login that started it.
+const DAEMON: [(&str, &str); 7] = [
+    ("PATH", "/host/bin:/usr/bin:/bin"),
+    ("FROM_DAEMON", "yes"),
+    ("HOME", "/wrong/home"),
+    ("SSH_CONNECTION", "192.0.2.9 1 192.0.2.10 22"),
+    ("SSH_CLIENT", "192.0.2.9 1 22"),
+    ("SSH_TTY", "/dev/pts/9"),
+    ("TERM", "dumb"),
+];
+
+/// The session's environment, one variable per line, from a session that runs `env`.
+fn session_environment(host: &Host) -> Vec<String> {
+    let mut env: Vec<(&str, &str)> = MAC.to_vec();
+    env.push(("WORKROOM_SESSION_COMMAND", "env"));
+    let output = host.dial(&env).output().expect("attach");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let seen = String::from_utf8_lossy(&output.stdout);
+    // The attach wrapper's "waiting for this terminal's host" line, cleared once the host's daemon
+    // has greeted: back to the cursor it saved (DECRC), and erased from there (ED).
+    let seen = seen
+        .strip_prefix(CLEAR_WAITING_LINE)
+        .unwrap_or_else(|| panic!("the waiting line was not cleared first: {seen:?}"));
+    seen.split(['\r', '\n'])
+        .map(str::to_string)
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+fn names(lines: &[String]) -> Vec<&str> {
+    lines
+        .iter()
+        .filter_map(|line| line.split('=').next())
+        .collect()
+}
+
+fn contains(lines: &[String], entry: &str) -> bool {
+    lines.iter().any(|line| line == entry)
+}
+
+/// The host builds the session (ADR 0074): its own environment, the account's home, shell and
+/// user, the relay's ssh variables, and from the Mac only the terminal and locale.
+#[test]
+fn a_dialed_session_gets_the_hosts_environment_and_only_the_terminal_and_locale_from_the_mac() {
+    let scratch = Scratch::new("env");
+    let host = Host::serve(&scratch, SessionStore::new(), &DAEMON);
+    let lines = session_environment(&host);
+    let home = format!("HOME={}", scratch.home().display());
+    let ssh_connection = format!("SSH_CONNECTION={SSH_CONNECTION}");
+    let ssh_client = format!("SSH_CLIENT={SSH_CLIENT}");
+    for entry in [
+        home.as_str(),
+        "SHELL=/bin/sh",
+        "USER=fixture",
+        "LOGNAME=fixture",
+        "PATH=/host/bin:/usr/bin:/bin",
+        "FROM_DAEMON=yes",
+        "COLORTERM=truecolor",
+        "TERM_PROGRAM=ghostty",
+        "TERM_PROGRAM_VERSION=1.2.3",
+        "LANG=en_GB.UTF-8",
+        "LC_CTYPE=UTF-8",
+        ssh_connection.as_str(),
+        ssh_client.as_str(),
+    ] {
+        assert!(contains(&lines, entry), "{entry} in {lines:?}");
+    }
+    let names = names(&lines);
+    for absent in [
+        "SECRET",
+        "SSH_TTY",
+        "WORKROOM_SESSION_RESOURCES",
+        "WORKROOM_SESSION_SHELL",
+    ] {
+        assert!(
+            !names.contains(&absent),
+            "{absent} reached the host: {lines:?}"
+        );
+    }
+    assert!(
+        !lines.iter().any(|line| line.contains("/Users/mac")),
+        "{lines:?}"
+    );
+}
+
+/// No terminfo at the daemon's resources (a tmpfs `/run` lost it on reboot): a plain terminal
+/// type, and no shell integration that would need Ghostty's files.
+#[test]
+fn without_ghosttys_terminfo_on_the_host_the_session_is_xterm_256color_without_integration() {
+    let scratch = Scratch::new("plain");
+    let host = Host::serve(&scratch, SessionStore::new(), &DAEMON);
+    let lines = session_environment(&host);
+    assert!(contains(&lines, "TERM=xterm-256color"), "{lines:?}");
+    let names = names(&lines);
+    for absent in ["TERMINFO", "GHOSTTY_SHELL_FEATURES", "GHOSTTY_RESOURCES_DIR"] {
+        assert!(
+            !names.contains(&absent),
+            "{absent} without terminfo: {lines:?}"
+        );
+    }
+}
+
+/// The bootstrap's terminfo is at the daemon's resources: Ghostty's terminal type, its terminfo
+/// and its shell integration.
+#[test]
+fn with_ghosttys_terminfo_on_the_host_the_session_is_xterm_ghostty_with_integration() {
+    let scratch = Scratch::new("ghostty");
+    let resources = scratch.0.join("ghostty");
+    std::fs::create_dir_all(resources.join("terminfo/x")).unwrap();
+    std::fs::write(resources.join("terminfo/x/xterm-ghostty"), b"compiled").unwrap();
+    let host = Host::serve(&scratch, SessionStore::new(), &DAEMON);
+    let lines = session_environment(&host);
+    for entry in [
+        "TERM=xterm-ghostty".to_string(),
+        format!("TERMINFO={}/terminfo", resources.display()),
+        "GHOSTTY_SHELL_FEATURES=cursor,sudo,title".to_string(),
+        format!("GHOSTTY_RESOURCES_DIR={}", resources.display()),
+    ] {
+        assert!(contains(&lines, &entry), "{entry} in {lines:?}");
+    }
+}
+
+/// The account's shell starts as a login shell, so its profile runs as an ssh login's did.
+#[test]
+fn a_dialed_shell_is_the_accounts_login_shell_and_runs_its_profile() {
+    let scratch = Scratch::new("login");
+    std::fs::write(scratch.home().join(".profile"), "echo PROFILE-RAN\n").unwrap();
+    let host = Host::serve(&scratch, SessionStore::new(), &DAEMON);
+    let mut child = host.dial(&MAC).spawn().expect("attach");
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(b"echo LOGIN=$0\nexit\n").unwrap();
+    let output = child.wait_with_output().expect("attach");
+    let seen = String::from_utf8_lossy(&output.stdout);
+    assert!(seen.contains("PROFILE-RAN"), "{seen:?}");
+    assert!(seen.contains("LOGIN=-sh"), "{seen:?}");
+}
+
+/// A local pane is unchanged: it hands its whole environment to the session.
+#[test]
+fn a_local_attach_still_hands_the_session_its_whole_environment() {
+    let scratch = Scratch::new("local");
+    let host = Host::serve(&scratch, SessionStore::new(), &DAEMON);
+    let output = Command::new(daemon_binary())
+        .args(["attach", "--socket"])
+        .arg(&host.socket)
+        .env_clear()
+        .envs(MAC)
+        .env("WORKROOM_SESSION_ID", SESSION)
+        .env("WORKROOM_SESSION_SHELL", "/bin/sh")
+        .env("WORKROOM_SESSION_COMMAND", "env")
+        .stdin(Stdio::null())
+        .output()
+        .expect("attach");
+    let seen = String::from_utf8_lossy(&output.stdout);
+    for entry in [
+        "SECRET=from-the-mac",
+        "HOME=/Users/mac",
+        "SSH_TTY=/dev/ttys004",
+    ] {
+        assert!(seen.contains(entry), "{entry} in {seen:?}");
+    }
+}

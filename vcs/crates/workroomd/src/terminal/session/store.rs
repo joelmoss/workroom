@@ -22,6 +22,20 @@ impl SessionStore {
         &self.hooks
     }
 
+    /// Builds host-environment sessions from `origin`, not this process's environment and account,
+    /// so a test never starts the developer's own shell in their own home.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_host_origin(&self, origin: crate::terminal::host_session::HostOrigin) {
+        self.hooks.host.fix(origin);
+    }
+
+    /// Looks for Ghostty's resources in `dir` for host-environment sessions, as a daemon serving a
+    /// socket does beside it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn keep_host_resources(&self, dir: std::path::PathBuf) {
+        self.hooks.host.keep_resources(dir);
+    }
+
     /// The live run sessions.
     pub fn run_session_ids(&self) -> Vec<SessionId> {
         lock_or_recover(&self.sessions)

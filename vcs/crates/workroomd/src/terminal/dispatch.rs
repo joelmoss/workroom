@@ -26,6 +26,9 @@ pub(crate) struct Attachment {
     /// Identifies THIS attachment, so ending this connection cannot detach a client that has since
     /// taken the session over.
     token: u64,
+    /// The ssh variables this connection's `relay` passed on (`FrameKind::Peer`), set on the
+    /// host-environment sessions it creates (ADR 0074).
+    peer: Vec<(OsString, OsString)>,
 }
 
 impl Attachment {
@@ -156,28 +159,49 @@ pub(crate) fn dispatch(
                 // invoked by the app" test — which reads exactly these variables — was true for
                 // anything the user typed in a pane, so the usage-instead-of-nested-shell guard
                 // could never fire there.
-                let child_environment: Vec<(OsString, OsString)> = request
-                    .env
-                    .iter()
-                    .filter(|(key, _)| !key.to_string_lossy().starts_with("WORKROOM_SESSION_"))
-                    .cloned()
-                    .collect();
+                //
+                // A remote pane attached from the Mac is built from this host instead, with only
+                // the client's terminal and locale (`host_session`, ADR 0074).
+                let (child_environment, session_shell, resources) = if request.host_environment {
+                    let host = sessions.hooks().host.session(&request.env, &attachment.peer);
+                    (host.environment, host.shell, host.resources)
+                } else {
+                    (
+                        request
+                            .env
+                            .iter()
+                            .filter(|(key, _)| {
+                                !key.to_string_lossy().starts_with("WORKROOM_SESSION_")
+                            })
+                            .cloned()
+                            .collect(),
+                        shell::user_shell(request.shell.clone()),
+                        request
+                            .resources
+                            .clone()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                };
                 let mut invocation = shell::invocation(
                     &request
                         .command
                         .clone()
                         .unwrap_or_default()
                         .to_string_lossy(),
-                    &shell::user_shell(request.shell.clone()),
-                    &request
-                        .resources
-                        .clone()
-                        .unwrap_or_default()
-                        .to_string_lossy(),
+                    &session_shell,
+                    &resources,
                     &child_environment,
                 );
                 if crate::terminal::run::is_requested(&request.env) {
-                    match run_invocation(sessions, id, &request, invocation.environment) {
+                    let run_shell = if request.host_environment {
+                        Some(OsString::from(&session_shell))
+                    } else {
+                        request.shell.clone()
+                    };
+                    match run_invocation(sessions, id, &request, run_shell, invocation.environment)
+                    {
                         Ok(run) => invocation = run,
                         Err(reason) => {
                             return reply(Frame::new(FrameKind::Failure, reason.into_bytes()));
@@ -284,6 +308,23 @@ pub(crate) fn dispatch(
                 format!("no session {}", id.to_hyphenated()).into_bytes(),
             )),
         },
+        // What `relay` knows about this connection: its ssh variables, and nothing else is taken.
+        // Never answered: the relay sends it into the client's stream, which expects no reply.
+        FrameKind::Peer => {
+            attachment.peer = frame
+                .payload
+                .split(|byte| *byte == 0)
+                .filter_map(|entry| {
+                    let split = entry.iter().position(|byte| *byte == b'=')?;
+                    let key = OsStr::from_bytes(&entry[..split]);
+                    crate::terminal::host_session::PEER_VARIABLES
+                        .iter()
+                        .any(|name| key == *name)
+                        .then(|| (key.to_os_string(), OsStr::from_bytes(&entry[split + 1..]).into()))
+                })
+                .collect();
+            None
+        }
         FrameKind::KillAll => {
             crate::note!("kill of every session requested by {}", peer);
             sessions.kill_all();
@@ -330,6 +371,7 @@ fn run_invocation(
     sessions: &SessionStore,
     id: SessionId,
     request: &AttachRequest,
+    shell: Option<OsString>,
     mut environment: Vec<(OsString, OsString)>,
 ) -> Result<shell::Invocation, String> {
     let command = request.command.clone().unwrap_or_default();
@@ -343,7 +385,7 @@ fn run_invocation(
     let _ = std::fs::remove_file(&status);
     let binary = crate::daemon::handoff::own_binary()
         .map_err(|e| format!("could not find this daemon's own binary: {e}"))?;
-    if let Some(shell) = request.shell.clone().filter(|shell| !shell.is_empty()) {
+    if let Some(shell) = shell.filter(|shell| !shell.is_empty()) {
         environment.retain(|(key, _)| key != "SHELL");
         environment.push((OsString::from("SHELL"), shell));
     }

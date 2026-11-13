@@ -17,6 +17,8 @@ pub struct Account {
     pub uid: libc::uid_t,
     pub gid: libc::gid_t,
     pub home: PathBuf,
+    /// The login shell, empty when the entry names none.
+    pub shell: String,
 }
 
 /// The account `spec` names: a user name or uid, with a group name or gid after a `:` (Docker's
@@ -33,6 +35,7 @@ pub fn lookup(spec: &str) -> io::Result<Account> {
             uid,
             gid: uid,
             home: PathBuf::from("/"),
+            shell: String::new(),
         }),
         Err(_) => entry(Entry::Name(user))?.ok_or_else(|| {
             io::Error::new(
@@ -136,6 +139,7 @@ fn entry(which: Entry) -> io::Result<Option<Account>> {
         uid: record.pw_uid,
         gid: record.pw_gid,
         home: PathBuf::from(text(record.pw_dir)),
+        shell: text(record.pw_shell),
     }))
 }
 
