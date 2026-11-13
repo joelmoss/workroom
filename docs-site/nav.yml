@@ -51,6 +51,8 @@
       page: remote/boxd
     - title: exe.dev
       page: remote/exe-dev
+    - title: Railway
+      page: remote/railway
     - title: SSH hosts
       page: remote/ssh
     - title: Containers

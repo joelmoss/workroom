@@ -112,7 +112,10 @@ struct RailwayHostNote: View {
   @State private var problem: String?
 
   var body: some View {
-    Group {
+    // Something always drawn: with nothing to show yet, an empty view never appears, so its
+    // `.task` would never read the sign-in.
+    VStack(alignment: .leading, spacing: 0) {
+      Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
       if failure == .gone {
         VStack(alignment: .leading, spacing: 6) {
           Text(RepositoryRoutingError.goneMessage)

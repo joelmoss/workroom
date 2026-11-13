@@ -13,8 +13,10 @@ import XCTest
 /// `openStream` go over real ssh, so the live suite covers them; no test here calls them.
 final class RailwayHostDriverTests: XCTestCase {
   /// The relay's host key as the stub's keyscan presents it, and one it changed to.
-  static let relayKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ8X3z81/tuP7CvmK3ZqWgwEvHUR6b04oi2lQJGld2C1"
-  static let otherKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherKeyOtherKeyOtherKeyOtherKeyOtherKey0"
+  static let relayKey =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ8X3z81/tuP7CvmK3ZqWgwEvHUR6b04oi2lQJGld2C1"
+  static let otherKey =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherKeyOtherKeyOtherKeyOtherKeyOtherKey0"
   /// Never resolves, so a test that slipped past the runner reaches nothing.
   static let relayHost = "relay.railway.invalid"
 

@@ -448,11 +448,16 @@ final class HostDriverRegistry: @unchecked Sendable {
   /// A Railway driver making its sandboxes in `environment`, and reaching any host it adopts.
   static func railway(environment: String) -> RailwayHostDriver {
     let placement = RailwayAccount.placement.read()
+    var relay = RailwayHostDriver.relay
+    #if DEBUG
+      // A test's panes and connects reach nothing.
+      if AppEnvironment.current.isTestProcess { relay = UITestFixture.railwayRelay }
+    #endif
     return RailwayHostDriver(
       configuration: .init(
         environmentID: environment,
         projectID: placement.environmentID == environment ? placement.projectID : nil,
-        keys: RailwayAccount.directory, hostSetup: .bundled),
+        keys: RailwayAccount.directory, relayHost: relay, hostSetup: .bundled),
       api: RailwayAccount.shared.api, directory: RemoteHosts.hosts)
   }
 
