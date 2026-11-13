@@ -5,7 +5,7 @@ Workroom is a native macOS app for working on several branches of a git project 
 ## Naming rules
 
 - **Daemon** means workroomd, the Workroom daemon, and nothing else (renamed from "the agent" by #525, ADR 0057). Claude and Codex are **coding agents**; names for them say `CodingAgent` (`CodingAgentRunner`, `TerminalCodingAgentManager`). Bare "agent" names nothing: say daemon or coding agent. The retired Swift `workroom-session` is the **legacy session helper**, never a daemon.
-- **Host** is the one word for remote compute. Do not call one a machine, a box, a VM or a base. Provider-facing names (boxd and exe.dev call theirs machines and VMs) and older code keep their words; new names say host.
+- **Host** is the one word for remote compute. Do not call one a machine, a box, a VM or a base. Provider-facing names (boxd and exe.dev call theirs machines and VMs, Railway calls its sandboxes) and older code keep their words; new names say host.
 - **Base** means a base branch only. It no longer names a machine that remote workrooms are derived from.
 - Use the terms below in code, issues, tests and docs. A name that is not here either belongs to one of the contexts below or is a gap to add.
 
@@ -124,27 +124,27 @@ A Linux server the user already has and reaches with their own ssh, which can ho
 _Avoid_: Generic host, BYO host, server
 
 **Host driver**:
-The adapter for one kind of host that reaches it, and creates and destroys it where Workroom makes it: a local container runtime, boxd, exe.dev or SSH.
+The adapter for one kind of host that reaches it, and creates and destroys it where Workroom makes it: a local container runtime, boxd, exe.dev, Railway or SSH.
 
 **Host options**:
-What a boxd or exe.dev host is created with: its host image and its size. Set for all projects, for one project, or for a single create; the most specific choice wins.
+What a boxd, exe.dev or Railway host is created with: its host image and its size, and on Railway its region. Set for all projects, for one project, or for a single create; the most specific choice wins.
 _Avoid_: Machine options, create flags
 
 **Host image**:
-What a boxd or exe.dev host is created from: a container image on exe.dev, a snapshot on boxd.
+What a boxd, exe.dev or Railway host is created from: a container image on exe.dev, a snapshot on boxd, Railway's default image or a checkpoint on Railway.
 _Avoid_: Machine image, template, base, snapshot (alone)
 
 **Provisioning**:
 Readying a host for one remote workroom: the driver creates it (on an SSH host, makes the workroom's folder instead), and the repository is cloned and checked out.
 
 **Provider credentials**:
-The GitHub access a remote provider gives its own hosts (boxd's git integration, exe.dev's GitHub integration), which a host on that provider fetches and pushes with. Workroom gives such a host none.
+The GitHub access a remote provider gives its own hosts (boxd's git integration, exe.dev's GitHub integration), which a host on that provider fetches and pushes with. Workroom gives such a host none. Railway gives its hosts none, so Workroom gives a Railway host the user's `gh` token.
 
 **Credential relay**:
 How a local container workroom's git asks this Mac's own `gh` for GitHub credentials, over the app's connection.
 
 **Port forward**:
-A loopback port on the host of a container workroom, or of a workroom on an SSH host, made reachable on this Mac for as long as the app is attached: the ports its `devcontainer.json` declares, and any the user adds. boxd and exe.dev publish ports themselves, so their workrooms have none.
+A loopback port on the host of a container workroom, or of a workroom on an SSH host, made reachable on this Mac for as long as the app is attached: the ports its `devcontainer.json` declares, and any the user adds. A Railway host's ports are forwarded the same way, through Railway's relay. boxd and exe.dev publish ports themselves, so their workrooms have none.
 
 ## Daemon connection
 
