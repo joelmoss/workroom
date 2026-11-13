@@ -255,6 +255,28 @@ pub struct AttachRequest {
     /// retired Swift helper held, whose client has no such flag. Inverted so the default,
     /// and an older client that never sends it, keeps create-on-attach.
     pub existing_only: bool,
+    /// A remote pane attached from the Mac (`HOST=1`, ADR 0074): the session is built from the
+    /// host's environment and account, and only `host_attach_environment`'s variables come from
+    /// `env`. Sent only to a daemon at `MIN_HOST_ATTACH_VERSION` or later.
+    pub host_environment: bool,
+}
+
+/// Whether a client's variable may reach a host-environment session (ADR 0074): the terminal
+/// type, colour support, terminal program, locale and the session's own metadata.
+pub fn is_host_attach_variable(name: &OsStr) -> bool {
+    let name = name.as_bytes();
+    matches!(
+        name,
+        b"TERM" | b"COLORTERM" | b"TERM_PROGRAM" | b"TERM_PROGRAM_VERSION" | b"LANG"
+    ) || name.starts_with(b"LC_")
+        || name.starts_with(b"WORKROOM_SESSION_")
+}
+
+/// `env` with only what `is_host_attach_variable` allows, in order.
+pub fn host_attach_environment(env: Vec<(OsString, OsString)>) -> Vec<(OsString, OsString)> {
+    env.into_iter()
+        .filter(|(key, _)| is_host_attach_variable(key))
+        .collect()
 }
 
 impl AttachRequest {
@@ -288,6 +310,9 @@ impl AttachRequest {
         put("YPIXELS", self.y_pixels.to_string().as_bytes());
         if self.existing_only {
             put("CREATE", b"0");
+        }
+        if self.host_environment {
+            put("HOST", b"1");
         }
         for (key, value) in &self.env {
             let mut entry = b"ENV:".to_vec();
@@ -333,6 +358,7 @@ impl AttachRequest {
                     request.y_pixels = value.to_string_lossy().parse().unwrap_or(0);
                 }
                 b"CREATE" => request.existing_only = value == "0",
+                b"HOST" => request.host_environment = value == "1",
                 _ => {
                     if let Some(name) = key.strip_prefix(b"ENV:") {
                         request.env.push((OsString::from_vec(name.to_vec()), value));
@@ -371,6 +397,7 @@ impl AttachRequest {
             y_pixels: 0,
             env,
             existing_only: false,
+            host_environment: false,
         }
     }
 }
@@ -438,9 +465,47 @@ mod tests {
                 (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
             ],
             existing_only: true,
+            host_environment: true,
         };
         let decoded = AttachRequest::decode(&request.encode()).expect("decode");
         assert_eq!(decoded, request);
+    }
+
+    /// The client's environment a remote pane may hand its host (ADR 0074), and nothing else.
+    #[test]
+    fn a_host_attach_keeps_only_the_terminal_locale_and_session_variables() {
+        let entry = |key: &str, value: &str| (OsString::from(key), OsString::from(value));
+        let kept = host_attach_environment(vec![
+            entry("TERM", "xterm-ghostty"),
+            entry("COLORTERM", "truecolor"),
+            entry("TERM_PROGRAM", "ghostty"),
+            entry("TERM_PROGRAM_VERSION", "1.2.3"),
+            entry("LANG", "en_GB.UTF-8"),
+            entry("LC_ALL", "en_GB.UTF-8"),
+            entry("LC_CTYPE", "UTF-8"),
+            entry("WORKROOM_SESSION_KEEPALIVE", "1"),
+            entry("PATH", "/opt/homebrew/bin"),
+            entry("HOME", "/Users/mac"),
+            entry("SHELL", "/bin/zsh"),
+            entry("USER", "mac"),
+            entry("TERMINFO", "/Applications/Workroom.app/terminfo"),
+            entry("LCX", "no"),
+            entry("SSH_AUTH_SOCK", "/tmp/agent"),
+        ]);
+        let names: Vec<&str> = kept.iter().map(|(k, _)| k.to_str().unwrap()).collect();
+        assert_eq!(
+            names,
+            [
+                "TERM",
+                "COLORTERM",
+                "TERM_PROGRAM",
+                "TERM_PROGRAM_VERSION",
+                "LANG",
+                "LC_ALL",
+                "LC_CTYPE",
+                "WORKROOM_SESSION_KEEPALIVE",
+            ]
+        );
     }
 
     /// A value containing `=` must survive: PATH-like variables and commands are full of them, and

@@ -46,6 +46,7 @@ pub mod testing {
         CredentialError, configure_git, credential, helper_command, install_relay,
     };
     pub use crate::host::forward::{MAX_LISTENERS, MAX_PENDING, PENDING_TIMEOUT};
+    pub use crate::terminal::host_session::HostOrigin;
     pub use crate::terminal::program_status::{Connection, dispatch};
     pub use crate::terminal::pty::{Pty, Size};
     pub use crate::terminal::screens::Screens;

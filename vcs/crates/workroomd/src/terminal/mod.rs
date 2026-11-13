@@ -3,6 +3,7 @@
 //! screens, run sessions and program status.
 
 pub(crate) mod dispatch;
+pub(crate) mod host_session;
 pub(crate) mod images;
 pub(crate) mod input;
 pub(crate) mod process;

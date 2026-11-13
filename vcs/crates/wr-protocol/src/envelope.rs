@@ -27,7 +27,8 @@ use std::collections::VecDeque;
 /// an older daemon has no `vcs::dispatch` at all, so an unversioned capability probe would just
 /// hang until its own timeout; `Service::File` at 3, `Service::Status` at 4 and `Service::Forward`
 /// at 5, all for the same reason, as is the Control frame `HandOff` at 6, `Service::Layout` at 7,
-/// `Service::ProgramStatus` at 8, run sessions with their Control frame `Signal` at 9, the Control frame `Retag` at 10 and the Control frame `Pings` at 11 — `serve.rs`'s
+/// `Service::ProgramStatus` at 8, run sessions with their Control frame `Signal` at 9, the Control frame `Retag` at 10, and the Control
+/// frames `Pings` and `Peer` with host-environment attaches at 11 — `serve.rs`'s
 /// dispatch returns silently for a service byte it does not handle). `MIN_SUPPORTED` stays untouched by such bumps: negotiation still
 /// takes the lower of the two sides' versions for the services both already understand (Terminal,
 /// Control), so a newer app still drives an older daemon left running rather than replacing it —
@@ -72,6 +73,12 @@ pub const MIN_RETAG_VERSION: u16 = 10;
 /// daemon's service-stream deadline (ADR 0075). A protocol-10 daemon drops it unanswered and has
 /// no deadline, so a client never sends one to it.
 pub const MIN_PINGS_VERSION: u16 = 11;
+/// The minimum peer version that builds a session from the host's own environment when an
+/// attach asks (`AttachRequest::host_environment`) and takes the `Peer` frame `relay` sends (ADR
+/// 0074). A protocol-10 daemon would hand such a session only the few variables a Mac's client
+/// sends, with no `PATH` or `HOME`, so a client that dials a host meets an older one with the
+/// retry status instead, while the app pushes the newest daemon (ADR 0037).
+pub const MIN_HOST_ATTACH_VERSION: u16 = 11;
 
 /// Sent first by both sides. The magic is here so a peer that is not a daemon at all — a login
 /// banner, an MOTD, an ssh warning printed onto the stream — fails immediately and legibly
@@ -379,6 +386,13 @@ mod tests {
     fn pings_is_protocol_11() {
         assert_eq!(PROTOCOL_VERSION, 11);
         assert_eq!(MIN_PINGS_VERSION, 11);
+    }
+
+    /// A remote pane attached from the Mac (ADR 0074): a client that dials the host needs a daemon
+    /// that builds the session from the host's own environment.
+    #[test]
+    fn host_attach_is_protocol_11() {
+        assert_eq!(MIN_HOST_ATTACH_VERSION, 11);
     }
 
     #[test]

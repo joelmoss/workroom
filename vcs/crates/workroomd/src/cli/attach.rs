@@ -1,13 +1,15 @@
 //! `workroomd attach`: the relay libghostty forks as a pane's `config.command`.
 use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::process::ExitCode;
+use std::process::{Child, Command, ExitCode, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::{DAEMON_UNAVAILABLE, flag, handshake};
+use super::{DAEMON_UNAVAILABLE, HandshakeError, flag, handshake};
 use crate::daemon::serve;
 use crate::terminal::pty::Size;
-use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
+use wr_protocol::envelope::{Envelope, EnvelopeDecoder, MIN_HOST_ATTACH_VERSION, Service};
 use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
 use wr_protocol::terminal::{AttachRequest, encode_resize};
 
@@ -191,6 +193,17 @@ fn request_from_env() -> AttachRequest {
 }
 
 pub fn run_attach(args: &[String]) -> ExitCode {
+    // `--dial` and everything after it is the command whose stdio reaches the daemon (ADR 0074), so
+    // attach's own flags are read only from what comes before it: the dialed command has a
+    // `--socket` of its own, the host's.
+    let (args, dialed) = match args.iter().position(|arg| arg == "--dial") {
+        Some(at) => (&args[..at], Some(&args[at + 1..])),
+        None => (args, None),
+    };
+    if dialed.is_some_and(|command| command.is_empty()) {
+        eprintln!("error: --dial needs a command to run");
+        return ExitCode::FAILURE;
+    }
     // **Only a relay falls back**, and this is read BEFORE anything can write to it. `attach` is
     // also a documented subcommand someone can type, and answering a typo by silently opening a
     // nested login shell inside their current one is absurd — the same reasoning `run_list` uses.
@@ -224,10 +237,21 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // daemon started here would be the idle-exit kind a remote host must not have, racing the
     // supervised one for the socket (#228). It also changes what a lost daemon connection means:
     // see the main loop's `Ok(0) | Err(_)` arm.
-    let no_spawn = args.iter().any(|arg| arg == "--no-spawn");
+    // A dialed daemon is a host's, so it is `--no-spawn` too, and more: this process runs on the
+    // Mac, so it never falls back to a shell, which would be the Mac's (see `Dialed`).
+    let no_spawn = dialed.is_some() || args.iter().any(|arg| arg == "--no-spawn");
+    if dialed.is_some() {
+        // Only what a host session may take from the Mac (ADR 0074): the host gives it the rest,
+        // from its own environment and account, so neither the Mac's shell nor its resources go.
+        request.env =
+            wr_protocol::terminal::host_attach_environment(std::mem::take(&mut request.env));
+        request.shell = None;
+        request.resources = None;
+        request.host_environment = true;
+    }
 
     let give_up = |reason: &str| -> ExitCode {
-        if invoked_by_the_app {
+        if invoked_by_the_app && dialed.is_none() {
             fall_back_to_shell(&request, reason)
         } else {
             eprintln!("error: attach needs --socket <path> and --session <uuid>, or the");
@@ -239,8 +263,10 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     let socket = flag(args, "--socket")
         .map(PathBuf::from)
         .or_else(serve::socket_from_env);
-    let Some(socket) = socket else {
-        return give_up("no session socket was given");
+    let socket = match (socket, dialed) {
+        (_, Some(_)) => None,
+        (Some(socket), None) => Some(socket),
+        (None, None) => return give_up("no session socket was given"),
     };
 
     let Some(session) = request.id else {
@@ -269,44 +295,55 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // (see `unreachable`). A peer that answers and fails the handshake is not a daemon that will
     // work if asked again.
     let run = crate::terminal::run::is_requested(&request.env);
-    let open = || -> Result<std::os::unix::net::UnixStream, (&str, bool)> {
-        let mut stream = match serve::connect(&socket) {
+    // Whether the "waiting for this terminal's host" line has been cleared (`Dialed::greeted`).
+    let mut cleared = false;
+    let mut open = || -> Result<Link, Unopened> {
+        if let Some(command) = dialed {
+            return Dialed::open(command, &mut cleared);
+        }
+        let socket = socket.as_deref().expect("a socket when nothing is dialed");
+        let stream = match serve::connect(socket) {
             Some(stream) => stream,
             None if no_spawn => {
-                return Err((
+                return Err(Unopened::Unreachable(
                     "no session daemon is listening, and on a remote host only its supervisor starts one",
-                    true,
                 ));
             }
             None => {
                 let binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("workroomd"));
-                if serve::spawn_daemon(&binary, &socket).is_err() {
-                    return Err(("could not start the session daemon", false));
+                if serve::spawn_daemon(&binary, socket).is_err() {
+                    return Err(Unopened::Broken("could not start the session daemon"));
                 }
                 let deadline = std::time::Instant::now() + Duration::from_secs(5);
                 loop {
-                    if let Some(stream) = serve::connect(&socket) {
+                    if let Some(stream) = serve::connect(socket) {
                         break stream;
                     }
                     if std::time::Instant::now() >= deadline {
-                        return Err(("the session daemon did not start within 5s", false));
+                        return Err(Unopened::Broken(
+                            "the session daemon did not start within 5s",
+                        ));
                     }
                     std::thread::sleep(Duration::from_millis(20));
                 }
             }
         };
-        let Ok(version) = handshake(&mut stream) else {
-            return Err(("could not agree a protocol with the session daemon", false));
+        let Ok(mut link) = Link::socket(stream) else {
+            return Err(Unopened::Exit(ExitCode::from(DAEMON_UNAVAILABLE)));
+        };
+        let Ok(version) = handshake(&mut link) else {
+            return Err(Unopened::Broken(
+                "could not agree a protocol with the session daemon",
+            ));
         };
         // An older daemon knows no run sessions and would run the command bare, with no supervisor
         // to stop or restart it (D4).
         if run && version < wr_protocol::envelope::MIN_RUN_VERSION {
-            return Err((
+            return Err(Unopened::Broken(
                 "the session daemon is older than this Workroom and can't run it",
-                false,
             ));
         }
-        Ok(stream)
+        Ok(link)
     };
     let _ = session;
     // A restored pane on a remote host whose daemon is not answering exits 255, which the app
@@ -314,8 +351,9 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // supervisor's daemon has bound its socket, and a shell here would be a live one in a pane whose
     // session is gone, so its last screen would never be shown (#232). A new remote pane still gets
     // the shell (#229): it has no session to wait for.
+    // A dialed pane never gets the shell: it would be the Mac's.
     let unreachable = |reason: &str| -> ExitCode {
-        if no_spawn && request.existing_only {
+        if (no_spawn && request.existing_only) || dialed.is_some() {
             eprintln!("workroomd: {reason}\r");
             ExitCode::from(255)
         } else {
@@ -344,19 +382,21 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // a close with no answer is retried, for up to 10s; a peer that stays open and silent is waited
     // on, as an attach always has been. Whatever follows `Attached` stays in `decoder`.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let (mut stream, mut decoder) = loop {
-        let mut stream = match open() {
-            Ok(stream) => stream,
-            Err((reason, true)) => return unreachable(reason),
-            Err((reason, false)) => return fall_back_to_shell(&request, reason),
+    let (mut link, mut decoder) = loop {
+        let mut link = match open() {
+            Ok(link) => link,
+            Err(Unopened::Unreachable(reason)) => return unreachable(reason),
+            Err(Unopened::Broken(reason)) => return fall_back_to_shell(&request, reason),
+            Err(Unopened::Exit(code)) => return code,
         };
         let mut decoder = EnvelopeDecoder::new();
-        let answer = match stream.write_all(&attach) {
-            Ok(()) => await_attached(&mut stream, &mut decoder, &mut buffer),
-            Err(_) => Answer::Closed,
+        let answer = if link.send(&attach) {
+            await_attached(&mut link.reader, &mut decoder, &mut buffer)
+        } else {
+            Answer::Closed
         };
         match answer {
-            Answer::Attached => break (stream, decoder),
+            Answer::Attached => break (link, decoder),
             // A restored pane on this Mac whose session has ended gets a new session under the
             // same id, said out loud. A shell that was no session would leave the pane saving the
             // dead id, so it would say "ended" again on every launch and never survive a quit
@@ -405,20 +445,18 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // the end of this function so every `return` below restores the terminal.
     let _raw = RawMode::enter();
 
-    // stdin -> daemon on its own thread; daemon -> stdout on this one.
-    let input_stream = match stream.try_clone() {
-        Ok(clone) => clone,
-        Err(_) => return ExitCode::from(DAEMON_UNAVAILABLE),
-    };
-    std::thread::spawn(move || relay_stdin(input_stream));
+    // stdin -> daemon on its own thread; daemon -> stdout on this one. Both writers share the
+    // link's one writer, whose lock keeps an input frame and a resize frame from interleaving: a
+    // pipe splits a write larger than `PIPE_BUF`.
+    let input = Arc::clone(&link.writer);
+    std::thread::spawn(move || relay_stdin(input));
 
     // And a third watching the terminal's size. Without this the session is stuck at whatever
     // size it was created with: the daemon accepts Resize frames but nothing ever sent one, so
     // resizing a pane left the shell — and any full-screen program in it — rendering at the old
     // geometry forever.
-    if let Ok(resize_stream) = stream.try_clone() {
-        std::thread::spawn(move || relay_resizes(resize_stream, size));
-    }
+    let resizes = Arc::clone(&link.writer);
+    std::thread::spawn(move || relay_resizes(resizes, size));
 
     let mut stdout = std::io::stdout();
     loop {
@@ -500,7 +538,7 @@ pub fn run_attach(args: &[String]) -> ExitCode {
                 Err(_) => return ExitCode::FAILURE,
             }
         }
-        match stream.read(&mut buffer) {
+        match link.reader.read(&mut buffer) {
             Ok(0) | Err(_) => break,
             Ok(n) => decoder.push(&buffer[..n]),
         }
@@ -534,7 +572,7 @@ enum Answer {
 
 /// Reads until the daemon answers an attach. Envelopes after `Attached` stay in `decoder`.
 fn await_attached(
-    stream: &mut std::os::unix::net::UnixStream,
+    stream: &mut impl Read,
     decoder: &mut EnvelopeDecoder,
     buffer: &mut [u8],
 ) -> Answer {
@@ -593,7 +631,7 @@ fn size_to_send(current: Size, next: Size) -> Option<Size> {
 /// anyway — and polling `TIOCGWINSZ` is also correct when a signal is missed or coalesced, which
 /// happens when several resizes land while the process is busy. A tenth of a second is far below
 /// the point a person notices a reflow lagging.
-fn relay_resizes(mut stream: std::os::unix::net::UnixStream, initial: Size) {
+fn relay_resizes(writer: SharedWriter, initial: Size) {
     let mut size = initial;
     loop {
         std::thread::sleep(Duration::from_millis(100));
@@ -603,13 +641,12 @@ fn relay_resizes(mut stream: std::os::unix::net::UnixStream, initial: Size) {
         size = next;
 
         let frame = Frame::new(FrameKind::Resize, encode_resize(size));
-        if stream
-            .write_all(&Envelope::new(Service::Terminal, 1, frame.encode()).encode())
-            .is_err()
-        {
+        if !write_to(
+            &writer,
+            &Envelope::new(Service::Terminal, 1, frame.encode()).encode(),
+        ) {
             return;
         }
-        let _ = stream.flush();
     }
 }
 
@@ -666,7 +703,7 @@ impl Drop for RawMode {
     }
 }
 
-fn relay_stdin(mut stream: std::os::unix::net::UnixStream) {
+fn relay_stdin(writer: SharedWriter) {
     let mut stdin = std::io::stdin();
     let mut buffer = [0u8; 4096];
     loop {
@@ -674,14 +711,179 @@ fn relay_stdin(mut stream: std::os::unix::net::UnixStream) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
                 let frame = Frame::new(FrameKind::Input, buffer[..n].to_vec());
-                if stream
-                    .write_all(&Envelope::new(Service::Terminal, 1, frame.encode()).encode())
-                    .is_err()
-                {
+                if !write_to(
+                    &writer,
+                    &Envelope::new(Service::Terminal, 1, frame.encode()).encode(),
+                ) {
                     break;
                 }
-                let _ = stream.flush();
             }
+        }
+    }
+}
+
+/// The link's write half, shared by the attach and the input and resize threads.
+type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+
+/// Writes `bytes` whole under the writer's lock. False once the link is gone.
+fn write_to(writer: &SharedWriter, bytes: &[u8]) -> bool {
+    let Ok(mut writer) = writer.lock() else {
+        return false;
+    };
+    writer
+        .write_all(bytes)
+        .and_then(|()| writer.flush())
+        .is_ok()
+}
+
+/// One connection to a daemon: its unix socket, or the stdio of a command that reaches one
+/// (`--dial`), which is killed with it.
+struct Link {
+    reader: Box<dyn Read + Send>,
+    writer: SharedWriter,
+    child: Option<Child>,
+}
+
+impl Link {
+    fn socket(stream: UnixStream) -> std::io::Result<Link> {
+        Ok(Link {
+            reader: Box::new(stream.try_clone()?),
+            writer: Arc::new(Mutex::new(Box::new(stream))),
+            child: None,
+        })
+    }
+
+    fn send(&self, bytes: &[u8]) -> bool {
+        write_to(&self.writer, bytes)
+    }
+}
+
+/// For the greeting (`handshake`), which reads and writes one stream.
+impl Read for Link {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.reader.read(buffer)
+    }
+}
+
+impl Write for Link {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.send(bytes) {
+            Ok(bytes.len())
+        } else {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Ends a dialed command with its link: an ssh left running would hold the host's relay, and its
+/// connection to the daemon, after the pane has gone.
+impl Drop for Link {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Why no link was opened, and what this process does about it.
+enum Unopened {
+    /// Nothing is listening: a remote pane exits 255 to be attached again (`unreachable`).
+    Unreachable(&'static str),
+    /// A peer that is no working daemon: a local pane becomes a shell (`fall_back_to_shell`).
+    Broken(&'static str),
+    /// Decided already, and said on stderr: a dialed host's answer (`Dialed`).
+    Exit(ExitCode),
+}
+
+/// A daemon reached through a command's stdio (ADR 0074): on the Mac, a remote pane's
+/// `ssh -T <host> <binary> relay --socket <path>`.
+///
+/// This process runs on the Mac, so whatever goes wrong it never falls back to a shell, and it
+/// ends with a status the app's attach wrapper reads: 255 for a link worth trying again, any other
+/// for one that will not work until someone acts.
+struct Dialed;
+
+impl Dialed {
+    fn open(command: &[String], cleared: &mut bool) -> Result<Link, Unopened> {
+        // ssh's own messages go where the pane's wrapper sends them (`-E`), and what the host's
+        // shell writes to stderr, such as a guard script's reason, reaches the pane.
+        let child = Command::new(&command[0])
+            .args(&command[1..])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn();
+        let mut child = match child {
+            Ok(child) => child,
+            Err(e) => {
+                eprintln!("workroomd: could not start {}: {e}\r", command[0]);
+                return Err(Unopened::Exit(ExitCode::FAILURE));
+            }
+        };
+        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+            return Err(Unopened::Exit(ExitCode::FAILURE));
+        };
+        let mut link = Link {
+            reader: Box::new(stdout),
+            writer: Arc::new(Mutex::new(Box::new(stdin))),
+            child: Some(child),
+        };
+        match handshake(&mut link) {
+            Ok(version) if version < MIN_HOST_ATTACH_VERSION => {
+                // The app pushes the newest daemon before its panes attach (ADR 0037), so this is a
+                // host it has not updated yet.
+                eprintln!(
+                    "workroomd: this host's daemon speaks protocol {version}, older than this \
+                     Workroom's; waiting for it to be updated\r"
+                );
+                Err(Unopened::Exit(ExitCode::from(255)))
+            }
+            Ok(_) => {
+                if !*cleared {
+                    *cleared = true;
+                    Self::greeted();
+                }
+                Ok(link)
+            }
+            Err(HandshakeError::Closed) => {
+                let mut child = link.child.take().expect("a dialed link has its command");
+                Err(Unopened::Exit(Self::ended(&mut child)))
+            }
+            Err(HandshakeError::NotADaemon) => {
+                eprintln!(
+                    "workroomd: the host answered with something other than its daemon's greeting\r"
+                );
+                Err(Unopened::Exit(ExitCode::FAILURE))
+            }
+        }
+    }
+
+    /// Clears the line the attach wrapper wrote while it waited for the host: back to the cursor
+    /// it saved ahead of the line (DECRC), and erase from there (ED), however many rows it wrapped
+    /// onto. ssh's `LocalCommand` did this when the pane's ssh had a terminal; it would now write
+    /// into the framed stream.
+    fn greeted() {
+        let mut stdout = std::io::stdout();
+        let _ = stdout.write_all(b"\x1b8\x1b[J");
+        let _ = stdout.flush();
+    }
+
+    /// The status for a dialed command that ended before its daemon greeted. 255 is ssh's own
+    /// failure, 127 a host with no daemon binary yet, and `DAEMON_UNAVAILABLE` a `relay` with no
+    /// daemon behind it: all a link to try again. A command killed by a signal, or one that ended
+    /// cleanly with nothing said, is too. Any other status is the host's refusal, whose reason it
+    /// wrote to stderr, and is passed on as it is.
+    fn ended(child: &mut Child) -> ExitCode {
+        let status = child.wait().ok().and_then(|status| status.code());
+        match status {
+            None | Some(0 | 127 | 255) => ExitCode::from(255),
+            Some(code) if code == i32::from(DAEMON_UNAVAILABLE) => ExitCode::from(255),
+            Some(code) => ExitCode::from(code.clamp(1, 254) as u8),
         }
     }
 }
