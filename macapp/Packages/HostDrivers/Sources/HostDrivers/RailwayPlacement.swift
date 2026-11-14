@@ -39,6 +39,9 @@ public struct RailwayPlacement: Codable, Equatable, Sendable {
 public final class RailwayPlacementStore: Sendable {
   public let file: URL
   private let lock = Mutex(())
+  /// The environment this store has seen Railway still hold this launch (made here, or listed in
+  /// its project), so only a launch's first create checks it.
+  private let confirmed = Mutex<String?>(nil)
 
   public init(file: URL) { self.file = file }
 
@@ -175,11 +178,42 @@ public final class RailwayPlacementStore: Sendable {
       }
       try update { $0.projectID = projectID }
     }
-    if let environmentID = placement.environmentID { return (projectID, environmentID) }
+    if let environmentID = placement.environmentID {
+      if confirmed.withLock({ $0 }) == environmentID { return (projectID, environmentID) }
+      switch try await Self.environmentGone(
+        environmentID, projectID: projectID, workspaceID: workspaceID, api: api)
+      {
+      case false?:
+        confirmed.withLock { $0 = environmentID }
+        return (projectID, environmentID)
+      case nil:
+        // Can't tell: kept, and asked again on the next create.
+        return (projectID, environmentID)
+      case true?:
+        // Deleted on Railway's dashboard, and its sandboxes with it: this Mac gets a new one.
+        try update { $0.environmentID = nil }
+      }
+    }
     let environmentID = try await api.createEnvironment(
       name: environmentName, projectID: projectID)
     try update { $0.environmentID = environmentID }
+    confirmed.withLock { $0 = environmentID }
     return (projectID, environmentID)
+  }
+
+  /// Whether Railway says `environmentID` is no longer in `projectID`: true only when this sign-in
+  /// sees the project and lists its environments without it. Nil when it can't tell (a project it
+  /// can't see, or a listing Railway refuses), so the recorded environment is kept; a request that
+  /// fails throws.
+  private static func environmentGone(
+    _ environmentID: String, projectID: String, workspaceID: String, api: RailwayAPI
+  ) async throws -> Bool? {
+    guard try await api.sees(project: projectID, in: workspaceID) else { return nil }
+    do {
+      return try await !api.environments(projectID: projectID).contains(environmentID)
+    } catch RailwayAPIError.graphQL {
+      return nil
+    }
   }
 
   /// The id of `workspaceID`'s project named `Workroom`, if it has one.
@@ -311,6 +345,27 @@ extension RailwayAPI {
       variables: ["input": ["name": .string(name), "workspaceId": .string(workspaceID)]],
       as: Answer.self
     ).projectCreate.id
+  }
+
+  /// The ids of `projectID`'s environments.
+  func environments(projectID: String) async throws -> [String] {
+    struct Answer: Decodable {
+      struct Project: Decodable {
+        struct Connection: Decodable {
+          struct Edge: Decodable {
+            struct Node: Decodable { let id: String }
+            let node: Node
+          }
+          let edges: [Edge]
+        }
+        let environments: Connection
+      }
+      let project: Project
+    }
+    return try await query(
+      "query project($id: String!) { project(id: $id) { environments { edges { node { id } } } } }",
+      variables: ["id": .string(projectID)], as: Answer.self
+    ).project.environments.edges.map(\.node.id)
   }
 
   public func createEnvironment(name: String, projectID: String) async throws -> String {

@@ -2292,3 +2292,18 @@ final class RemoteHostsTests: XCTestCase {
     }
   }
 }
+
+/// The Details pane's Railway sign-in note (PR #635 review).
+final class RailwayHostNoteTests: XCTestCase {
+  /// Value: protects=the Sign In button for a Railway workroom reported signed out while a sign-in
+  /// is held, as when it leaves out the workroom's workspace; fails_when=a held sign-in hides the
+  /// note and its one recovery; seam=RailwayHostNote.shows
+  func testASignedOutWorkroomShowsTheSignInEvenWithASignInHeld() {
+    XCTAssertTrue(RailwayHostNote.shows(signedIn: true, failure: .signedOut, signedInHere: false))
+    XCTAssertTrue(RailwayHostNote.shows(signedIn: false, failure: nil, signedInHere: false))
+    XCTAssertFalse(
+      RailwayHostNote.shows(signedIn: true, failure: .signedOut, signedInHere: true),
+      "a sign-in that just finished here waits for the workroom's next read")
+    XCTAssertFalse(RailwayHostNote.shows(signedIn: true, failure: nil, signedInHere: false))
+  }
+}

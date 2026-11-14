@@ -145,13 +145,16 @@ struct RailwayHostNote: View {
   @State private var signedIn: Bool?
   @State private var signingIn = false
   @State private var problem: String?
+  /// Whether a sign-in finished here since the workroom last reported signed out: its next read
+  /// is still to come, so the note steps aside until then.
+  @State private var signedInHere = false
 
   var body: some View {
     // Something always drawn: with nothing to show yet, an empty view never appears, so its
     // `.task` would never read the sign-in.
     VStack(alignment: .leading, spacing: 0) {
       Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
-      if signedIn == false || (failure == .signedOut && signedIn != true) {
+      if Self.shows(signedIn: signedIn, failure: failure, signedInHere: signedInHere) {
         VStack(alignment: .leading, spacing: 6) {
           Text(RepositoryRoutingError.signedOutMessage)
             .font(.caption).foregroundStyle(.secondary)
@@ -168,7 +171,17 @@ struct RailwayHostNote: View {
         }
       }
     }
-    .task(id: failure) { signedIn = await RailwayAccount.shared.session.isSignedIn }
+    .task(id: failure) {
+      signedInHere = false
+      signedIn = await RailwayAccount.shared.session.isSignedIn
+    }
+  }
+
+  /// Whether the note and its Sign In button show: with no sign-in, and for a workroom Railway
+  /// reports signed out even with one held, as when the sign-in leaves out its workspace, unless
+  /// a sign-in just finished here and the workroom hasn't been read with it yet.
+  static func shows(signedIn: Bool?, failure: VCSStatusFailure?, signedInHere: Bool) -> Bool {
+    signedIn == false || (failure == .signedOut && !signedInHere)
   }
 
   private func signIn() {
@@ -177,6 +190,7 @@ struct RailwayHostNote: View {
     Task {
       do {
         try await RailwayAccount.shared.signInWithBrowser()
+        signedInHere = true
       } catch is CancellationError {
       } catch {
         problem = error.localizedDescription

@@ -340,4 +340,36 @@ final class RailwayPlacementTests: XCTestCase {
     XCTAssertEqual(
       RailwayPlacementStore.environmentName(computer: "", suffix: "a1b2c3"), "mac-unnamed-a1b2c3")
   }
+
+  /// Value: protects=Railway creates work again after this Mac's environment is deleted on
+  /// Railway's dashboard (PR #635 review); fails_when=every create reuses the deleted
+  /// environment's id; seam=ensure over StubRailway listing the project's environments
+  func testAnEnvironmentRailwaySaysIsGoneFromItsProjectIsMadeAgain() async throws {
+    try store.update {
+      $0 = RailwayPlacement(workspaceID: "ws-1", projectID: "prj-1", environmentID: "env-gone")
+    }
+    let railway = railway(projects: [])
+    railway.answer(
+      "project", data: ["project": ["environments": ["edges": [["node": ["id": "env-other"]]]]]])
+    let api = RailwayAPI(transport: railway, tokens: Tokens())
+    let placed = try await store.ensure(workspaceID: "ws-1", api: api, environmentName: "mac-x-1")
+    XCTAssertEqual(placed.environmentID, "env-mac", "the deleted environment was reused")
+    XCTAssertEqual(store.read().environmentID, "env-mac")
+    XCTAssertEqual(sent(railway, "environmentCreate").first?["projectId"] as? String, "prj-1")
+  }
+
+  /// Value: protects=a placement that can't be checked is kept, never remade (PR #635 review);
+  /// fails_when=a refused or failed environments listing reads as a deleted environment and a
+  /// second one is made; seam=ensure over StubRailway with no answer for the listing
+  func testAnEnvironmentThatCantBeCheckedIsKept() async throws {
+    try store.update {
+      $0 = RailwayPlacement(workspaceID: "ws-1", projectID: "prj-1", environmentID: "env-1")
+    }
+    let railway = railway(projects: [])
+    let api = RailwayAPI(transport: railway, tokens: Tokens())
+    let placed = try await store.ensure(workspaceID: "ws-1", api: api, environmentName: "mac-x-1")
+    XCTAssertEqual(placed.environmentID, "env-1")
+    XCTAssertTrue(sent(railway, "environmentCreate").isEmpty, "a second environment was made")
+  }
+
 }
