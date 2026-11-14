@@ -57,10 +57,19 @@ pub enum FrameKind {
     /// daemon may close it after 60 s with nothing received (ADR 0075). Sent once, on a remote
     /// service stream, to a daemon at `MIN_PINGS_VERSION` or newer. No payload; `Acknowledged`.
     Pings = 0x28,
-    /// What `relay` knows about the connection it carries (protocol 11, ADR 0074): its own
-    /// `SSH_CONNECTION` and `SSH_CLIENT`, as NUL-terminated `KEY=VALUE` entries. Sent by `relay`
-    /// alone, right after the client's greeting, and never answered. The daemon sets them on the
-    /// host-environment sessions this connection creates. An older daemon drops it.
+    /// The environment of the ssh login `relay` runs in (protocol 11, ADR 0074), as NUL-terminated
+    /// `KEY=VALUE` entries (workroomd's `host_session::encode_login_environment`): every variable
+    /// of the login but its terminal (`TERM`, `COLORTERM`, `TERM_PROGRAM*`, `TERMINFO`,
+    /// `GHOSTTY_*`), `SSH_TTY`, the session metadata (`WORKROOM_SESSION_*`) and what each process
+    /// sets for itself (`PWD`, `OLDPWD`, `SHLVL`, `_`), so its `PATH`, `HOME`, `SHELL`, `USER`,
+    /// `SSH_CONNECTION`, `SSH_CLIENT` and the rest (`host_session::is_login_variable`, which the
+    /// daemon holds the entries to again). At most `host_session::MAX_PEER_ENVIRONMENT` bytes, with
+    /// `HOME`, `SHELL`, `USER`, `LOGNAME`, `PATH` and the two ssh variables first, so a full budget
+    /// leaves out something else. Sent by `relay` alone, right after the client's greeting, and
+    /// never answered. The daemon builds the environment of each host-environment session this
+    /// connection creates from it, and the session keeps those values for its life: a later
+    /// attach over another connection, with a `Peer` frame of its own, changes nothing in it. An
+    /// older daemon drops it.
     Peer = 0x29,
 
     Sessions = 0x31,
