@@ -84,7 +84,9 @@ public final class RailwayPlacementStore: Sendable {
   /// Mac's environment holds no sandbox: the launch sweep lists only the current environment, so
   /// one left behind, recorded or not, would bill with no sweep to find it. Otherwise it throws
   /// `RailwayPlacementError.environmentHoldsSandboxes`, or Railway's error when it can't list
-  /// them, and the placement stays.
+  /// them, and the placement stays. A listing is trusted only when the sign-in sees the workspace
+  /// the environment is in, which lists as empty otherwise: else it throws
+  /// `RailwayPlacementError.workspaceNotSeen`.
   public func ensure(
     workspaceID: String, project: RailwayProjectPick? = nil, api: RailwayAPI,
     environmentName: String
@@ -122,6 +124,12 @@ public final class RailwayPlacementStore: Sendable {
       || (project != nil && picked != placement.projectID)
     if moves {
       if let leaving = placement.environmentID {
+        // An environment in a workspace the sign-in can't see lists as empty: only a sign-in that
+        // sees it may trust the listing.
+        let seen = try await api.grantedWorkspaces().map(\.id)
+        guard let from = placement.workspaceID, seen.contains(from) else {
+          throw RailwayPlacementError.workspaceNotSeen
+        }
         let live = try await api.sandboxes(environmentID: leaving).filter {
           !["DESTROYED", "DESTROYING"].contains($0.status)
         }
@@ -193,9 +201,17 @@ public enum RailwayProjectPick: Hashable, Sendable {
 public enum RailwayPlacementError: LocalizedError, Equatable {
   /// This Mac's environment still holds `count` sandboxes that haven't been destroyed.
   case environmentHoldsSandboxes(Int)
+  /// Railway's sign-in can't see the workspace this Mac's environment is in (another account, or
+  /// none recorded), so its listing of the environment's sandboxes can't be trusted as empty.
+  case workspaceNotSeen
 
   public var errorDescription: String? {
     switch self {
+    case .workspaceNotSeen:
+      return "Railway's sign-in can't see the workspace this Mac's Railway environment is in, so "
+        + "Workroom can't tell whether sandboxes are still there, and would lose track of them in "
+        + "another workspace or project. Sign in to Railway with the account that set it up, then "
+        + "try again."
     case .environmentHoldsSandboxes(let count):
       let sandboxes = count == 1 ? "a sandbox" : "\(count) sandboxes"
       return "This Mac's Railway environment still has \(sandboxes), and Workroom would lose "

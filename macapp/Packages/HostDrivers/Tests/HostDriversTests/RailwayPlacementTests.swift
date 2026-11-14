@@ -27,6 +27,9 @@ final class RailwayPlacementTests: XCTestCase {
       "projects", data: ["projects": ["edges": projects.map { ["node": $0] }]])
     railway.answer("projectCreate", data: ["projectCreate": ["id": "prj-new"]])
     railway.answer("environmentCreate", data: ["environmentCreate": ["id": "env-mac"]])
+    // The sign-in sees the workspace this Mac's environment is in.
+    railway.answer(
+      "me", data: ["me": ["workspaces": [["id": "ws-1", "name": "Mine", "plan": "PRO"]]]])
     return railway
   }
 
@@ -204,6 +207,31 @@ final class RailwayPlacementTests: XCTestCase {
       XCTFail("left an environment Railway couldn't list")
     } catch RailwayAPIError.graphQL {}
     XCTAssertEqual(store.read(), before)
+  }
+
+  /// Value: protects=the placement leaves an environment only on an empty listing it can trust: a
+  /// sign-in that can't see the workspace the environment is in lists it as empty, so the move is
+  /// refused before listing, and the sandboxes there never lose their sweep (review 4, X6);
+  /// fails_when=a sign-in to another account, or a workspace the placement never recorded, moves
+  /// the placement on an empty listing; seam=ensure over StubRailway
+  func testLeavingAnEnvironmentInAWorkspaceTheSignInCantSeeIsRefused() async throws {
+    let railway = railway(projects: [])
+    list(railway, [:])
+    railway.answer(
+      "me", data: ["me": ["workspaces": [["id": "ws-2", "name": "Theirs", "plan": "PRO"]]]])
+    let api = RailwayAPI(transport: railway, tokens: Tokens())
+    for before in [
+      RailwayPlacement(workspaceID: "ws-1", projectID: "prj-1", environmentID: "env-1"),
+      RailwayPlacement(workspaceID: nil, projectID: "prj-1", environmentID: "env-1"),
+    ] {
+      try store.update { $0 = before }
+      do {
+        _ = try await store.ensure(workspaceID: "ws-2", api: api, environmentName: "mac-x-1")
+        XCTFail("left \(before) on a listing the sign-in can't vouch for")
+      } catch RailwayPlacementError.workspaceNotSeen {}
+      XCTAssertEqual(store.read(), before)
+    }
+    XCTAssertEqual(listed(railway), [], "listed an environment the sign-in can't see")
   }
 
   /// Value: protects=the setup sheet's pick of an existing project (story 14) gets this Mac's
