@@ -296,14 +296,11 @@ actor LiveRun {
       sandbox?.idleTimeoutMinutes == 0,
       "the sandbox's idle timeout is \(sandbox?.idleTimeoutMinutes.map(String.init) ?? "null")"
         + ", not 0")
-    let pin = try String(
-      contentsOf: driver.configuration.keys.appendingPathComponent("relay_host_key"),
-      encoding: .utf8
-    ).trimmingCharacters(in: .whitespacesAndNewlines)
-    log(
-      "relay key pinned"
-        + (pin == RailwayHostDriverTests.relayKey ? ", the one the spike saw" : ", NOT the spike's")
-    )
+    // The setup's logins went through with only the shipped key trusted: the relay presents it.
+    check(
+      record.hostKey == RailwayHostDriver.relayHostKey,
+      "the host is recorded with \(record.hostKey), not the shipped relay key")
+    log("relay key: the one Workroom ships, which the relay presented")
     let mode = try Self.mode(of: driver.configuration.keys.appendingPathComponent("id_ed25519"))
     check(mode == 0o600, "the Mac's Railway key is mode \(String(mode, radix: 8))")
     publicKey = try String(
@@ -575,7 +572,8 @@ actor LiveRun {
     try await driver.destroy(host)
     self.host = nil
     var status = try await api.sandboxStatus(record.sandboxID, environmentID: record.environmentID)
-    for _ in 0..<30 where !RailwayHostDriver.isGone(status) || status == "DESTROYING" {
+    for _ in 0..<30 where !(status.map(RailwayHostDriver.isGone) ?? true) || status == "DESTROYING"
+    {
       try await Task.sleep(for: .seconds(2))
       status = try await api.sandboxStatus(record.sandboxID, environmentID: record.environmentID)
     }

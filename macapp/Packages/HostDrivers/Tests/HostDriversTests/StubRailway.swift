@@ -48,6 +48,14 @@ final class StubRailway: RailwayHTTPTransport, Sendable {
       ]))
   }
 
+  /// A connection's only page, of `nodes`.
+  static func lastPage(_ nodes: [[String: Any]]) -> [String: Any] {
+    [
+      "edges": nodes.map { ["node": $0] },
+      "pageInfo": ["hasNextPage": false, "endCursor": NSNull()] as [String: Any],
+    ]
+  }
+
   var requests: [URLRequest] { sent.withLock { $0 } }
   var tokenRequests: [[String: String]] {
     requests.filter { $0.url == RailwayOAuthClient.tokenEndpoint }.map(Self.form)

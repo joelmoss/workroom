@@ -79,11 +79,12 @@ public indirect enum RailwayJSON: Sendable, Equatable, Encodable, ExpressibleByS
 
 /// Why a Railway API call failed.
 public enum RailwayAPIError: Error, Equatable, LocalizedError {
-  /// Railway answered with GraphQL errors: their messages.
+  /// Railway answered 2xx with GraphQL errors: their messages. Not proof that nothing was done:
+  /// the answer may carry partial data.
   case graphQL([String])
   /// Railway refused the access token, even a fresh one.
   case unauthorized
-  /// Any other HTTP failure: its status and body.
+  /// Any other HTTP failure: its status, and Railway's messages or else its body.
   case http(status: Int, message: String)
   /// An answer that didn't decode.
   case malformed(String)
@@ -151,16 +152,18 @@ public struct RailwayAPI: Sendable {
   private struct Errors: Decodable { let errors: [Message]? }
   private struct Envelope<T: Decodable>: Decodable { let data: T? }
 
+  /// The status decides first: a failed status is an HTTP failure whatever its body says (a 5xx
+  /// may have done the work), with Railway's own messages when the body has them.
   private static func decode<T: Decodable>(_ answer: RailwayHTTPResponse, as: T.Type) throws -> T {
-    if let errors = (try? JSONDecoder().decode(Errors.self, from: answer.body))?.errors,
-      !errors.isEmpty
-    {
-      throw RailwayAPIError.graphQL(errors.map(\.message))
-    }
+    let errors = ((try? JSONDecoder().decode(Errors.self, from: answer.body))?.errors ?? [])
+      .map(\.message)
     guard (200..<300).contains(answer.status) else {
       throw RailwayAPIError.http(
-        status: answer.status, message: String(decoding: answer.body, as: UTF8.self))
+        status: answer.status,
+        message: errors.isEmpty
+          ? String(decoding: answer.body, as: UTF8.self) : errors.joined(separator: ". "))
     }
+    if !errors.isEmpty { throw RailwayAPIError.graphQL(errors) }
     let envelope: Envelope<T>
     do { envelope = try JSONDecoder().decode(Envelope<T>.self, from: answer.body) } catch {
       throw RailwayAPIError.malformed(String(describing: error))

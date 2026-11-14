@@ -12,7 +12,7 @@ import XCTest
 /// (`StubRelay`): nothing reaches Railway or its relay. A host's own exchanges over `exec` and
 /// `openStream` go over real ssh, so the live suite covers them; no test here calls them.
 final class RailwayHostDriverTests: XCTestCase {
-  /// The relay's host key as the stub's keyscan presents it, and one it changed to.
+  /// The relay's host key, as Workroom ships it (the 2026-11-13 spike's), and another key.
   static let relayKey =
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ8X3z81/tuP7CvmK3ZqWgwEvHUR6b04oi2lQJGld2C1"
   static let otherKey =
@@ -33,7 +33,8 @@ final class RailwayHostDriverTests: XCTestCase {
   }
 
   /// ssh, ssh-keygen and ssh-keyscan as the driver runs them: keygen writes a key pair where `-f`
-  /// says, keyscan prints `relayKey` (or `scanned`), and ssh answers `ssh` (exit 0 by default).
+  /// says, a keyscan the driver should never run prints `otherKey`, and ssh answers `ssh` (exit 0
+  /// by default).
   /// Records each call with its stdin.
   final class StubRelay: StatusCommandRunning, @unchecked Sendable {
     struct Call {
@@ -43,7 +44,6 @@ final class RailwayHostDriverTests: XCTestCase {
     }
     private let lock = NSLock()
     private var _calls: [Call] = []
-    var scanned = RailwayHostDriverTests.relayKey
     var ssh: [CommandResult] = []
 
     var calls: [Call] { lock.withLock { _calls } }
@@ -68,7 +68,8 @@ final class RailwayHostDriverTests: XCTestCase {
           toFile: path + ".pub", atomically: true, encoding: .utf8)
         return RailwayHostDriverTests.ok("")
       case "ssh-keyscan":
-        return RailwayHostDriverTests.ok("\(args.last!) \(scanned)\n")
+        // Railway's relay key ships in the app: a scan would trust whatever answers.
+        return RailwayHostDriverTests.ok("\(args.last!) \(RailwayHostDriverTests.otherKey)\n")
       case "ssh":
         return lock.withLock { _ssh() }
       default:
@@ -88,7 +89,7 @@ final class RailwayHostDriverTests: XCTestCase {
   /// A Railway that makes sandbox `sbx-1`, RUNNING at once, and knows no ssh key.
   private func railway(status: String? = "RUNNING") -> StubRailway {
     let railway = StubRailway()
-    railway.answer("sshPublicKeys", data: ["sshPublicKeys": ["edges": []]])
+    railway.answer("sshPublicKeys", data: ["sshPublicKeys": StubRailway.lastPage([])])
     railway.answer("sshPublicKeyCreate", data: ["sshPublicKeyCreate": ["id": "key-1"]])
     railway.answer(
       "sandboxCreate", data: ["sandboxCreate": ["id": "sbx-1", "status": "CREATING"]])
@@ -97,6 +98,8 @@ final class RailwayHostDriverTests: XCTestCase {
       data: ["sandbox": status.map { ["id": "sbx-1", "status": $0] as Any } ?? NSNull()])
     railway.answer(
       "sandboxDestroy", data: ["sandboxDestroy": ["id": "sbx-1", "status": "DESTROYING"]])
+    railway.answer(
+      "me", data: ["me": ["workspaces": [["id": "ws-1", "name": "Mine", "plan": "PRO"]]]])
     return railway
   }
 
@@ -112,12 +115,13 @@ final class RailwayHostDriverTests: XCTestCase {
   private var keys: URL { root.appendingPathComponent("railway") }
 
   private func driver(
-    _ railway: StubRailway, _ relay: StubRelay, tokens: Tokens = Tokens()
+    _ railway: StubRailway, _ relay: StubRelay, tokens: Tokens = Tokens(),
+    workspaceID: String? = "ws-1"
   ) -> RailwayHostDriver {
     RailwayHostDriver(
       configuration: .init(
-        environmentID: "env-1", projectID: "prj-1", keys: keys, relayHost: Self.relayHost,
-        hostSetup: .checkout, pollInterval: .milliseconds(1)),
+        environmentID: "env-1", projectID: "prj-1", workspaceID: workspaceID, keys: keys,
+        relayHost: Self.relayHost, hostSetup: .checkout, pollInterval: .milliseconds(1)),
       api: RailwayAPI(transport: railway, tokens: tokens),
       directory: root.appendingPathComponent("hosts"), runner: relay)
   }
@@ -173,9 +177,9 @@ final class RailwayHostDriverTests: XCTestCase {
     railway.answer(
       "sshPublicKeys",
       data: [
-        "sshPublicKeys": [
-          "edges": [["node": ["id": "key-1", "publicKey": "ssh-ed25519 AAAAMacKey other-comment"]]]
-        ]
+        "sshPublicKeys": StubRailway.lastPage([
+          ["id": "key-1", "publicKey": "ssh-ed25519 AAAAMacKey other-comment"]
+        ])
       ])
     let before = railway.graphQLRequests.count
     _ = try await driver(railway, relay).create()
@@ -186,14 +190,23 @@ final class RailwayHostDriverTests: XCTestCase {
       "a key Railway has was registered again")
   }
 
-  /// Value: protects=the host is reached through Railway's relay with only the pinned key trusted
-  /// (ADR 0071); fails_when=the destination, user, key or known_hosts drift, or a key a later scan
-  /// sees replaces the pin; seam=create's ssh through the runner, and the written ssh_config
-  func testTheRelayKeyIsPinnedOnFirstUseAndNeverReplaced() async throws {
+  /// Value: protects=the host is reached through Railway's relay with only the relay key Workroom
+  /// ships trusted, from the very first login (ADR 0071's amendment, review 3 D6); fails_when=the
+  /// destination, user, key or known_hosts drift, the relay's key is learned by a scan (trusting
+  /// whatever answers the first time), or a pin or a record from the scanning builds beats the
+  /// shipped key; seam=create's ssh through the runner, the written ssh_config and known_hosts
+  func testTheRelayKeyIsTheOneWorkroomShips() async throws {
+    XCTAssertEqual(RailwayHostDriver.relayHostKey, Self.relayKey, "the spike's key")
+    // A scanning build's pin of another key, left in the folder.
+    try FileManager.default.createDirectory(at: keys, withIntermediateDirectories: true)
+    try (Self.otherKey + "\n").write(
+      to: keys.appendingPathComponent("relay_host_key"), atomically: true, encoding: .utf8)
     let railway = railway()
     let relay = StubRelay()
-    let host = try await driver(railway, relay).create()
-    XCTAssertEqual(relay.calls(to: "ssh-keyscan").count, 1)
+    let driver = driver(railway, relay)
+    let host = try await driver.create()
+    XCTAssertEqual(relay.calls(to: "ssh-keyscan").count, 0, "the relay's key was scanned")
+    XCTAssertEqual(record(driver, host)?.hostKey, Self.relayKey)
 
     let setup = try XCTUnwrap(relay.calls(to: "ssh").first)
     let config = try String(
@@ -208,12 +221,21 @@ final class RailwayHostDriverTests: XCTestCase {
       encoding: .utf8)
     XCTAssertEqual(known, "\(Self.relayHost) \(Self.relayKey)\n")
 
-    // The relay now shows another key: the pin stands, and the next host is made with it.
-    relay.scanned = Self.otherKey
-    let later = driver(railway, relay)
-    let next = try await later.create()
-    XCTAssertEqual(relay.calls(to: "ssh-keyscan").count, 1, "the pin was scanned again")
-    XCTAssertEqual(record(later, next)?.hostKey, Self.relayKey, "the pin was replaced")
+    // A host a scanning build recorded with another key is reached with the shipped one.
+    let adopted = UUID()
+    let later = self.driver(railway, relay)
+    try later.adopt(
+      HostDescriptor(
+        driver: "railway", id: adopted,
+        railway: RailwayHostRecord(
+          projectID: "prj-1", environmentID: "env-1", sandboxID: "sbx-1",
+          hostKey: Self.otherKey)))
+    _ = try later.attachCommand(
+      to: .remote(adopted), session: UUID(), workingDirectory: "/root", restored: false)
+    let rewritten = try String(
+      contentsOf: root.appendingPathComponent("hosts/\(adopted.uuidString)/known_hosts"),
+      encoding: .utf8)
+    XCTAssertEqual(rewritten, "\(Self.relayHost) \(Self.relayKey)\n", "the record's key won")
   }
 
   /// Value: protects=a man in the middle never reaches a workroom (ADR 0071); fails_when=a changed
@@ -233,6 +255,8 @@ final class RailwayHostDriverTests: XCTestCase {
       XCTFail("a changed relay key was accepted")
     } catch HostDriverError.provisioning(let detail) {
       XCTAssertTrue(detail.contains("host key"), detail)
+      XCTAssertTrue(detail.contains("changed"), detail)
+      XCTAssertTrue(detail.contains("update Workroom"), detail)
     }
     XCTAssertEqual(relay.calls(to: "ssh").count, 1, "a refusal was retried")
     XCTAssertEqual(variables(railway, "sandboxDestroy")?["id"] as? String, "sbx-1")
@@ -330,6 +354,61 @@ final class RailwayHostDriverTests: XCTestCase {
     XCTAssertNil(unknown, "Railway couldn't say")
     XCTAssertFalse(driver.hostsSleep, "a Railway host never sleeps")
     XCTAssertEqual(relay.calls(to: "ssh").count, logins, "presence logged in")
+  }
+
+  /// Value: protects=a sandbox Railway answers with no such sandbox for is called gone, and its
+  /// delete completed, only when the sign-in can see this Mac's workspace: another account (or a
+  /// sign-in that lost the workspace) reads every sandbox as missing, and its workroom would be
+  /// removed while the sandbox bills on (review 3, C4); fails_when=a null read under an account
+  /// that can't see the workspace, with no workspace recorded, or with the workspaces unreadable,
+  /// reads as gone or completes a delete; seam=HostPresenceReporting and destroy over StubRailway
+  func testANullSandboxIsGoneOnlyWhenTheSignInSeesThisMacsWorkspace() async throws {
+    let railway = railway()
+    let driver = driver(railway, StubRelay())
+    let host = try await driver.create()
+    guard case .remote(let id) = host else { return XCTFail("\(host)") }
+    let descriptor = HostDescriptor(
+      driver: "railway", id: id,
+      railway: RailwayHostRecord(
+        projectID: "prj-1", environmentID: "env-1", sandboxID: "sbx-1", hostKey: Self.relayKey))
+    railway.answer("sandbox", data: ["sandbox": NSNull()])
+    railway.answer("sandboxDestroy") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Sandbox not found"}]}"#.utf8))
+    }
+
+    // Another account: it sees a workspace, but not this Mac's.
+    railway.answer(
+      "me", data: ["me": ["workspaces": [["id": "ws-other", "name": "Theirs", "plan": "PRO"]]]])
+    var presence = await driver.presence(host)
+    XCTAssertEqual(presence, .signedOut, "another account's null read")
+    do {
+      try await driver.destroy(host)
+      XCTFail("another account's null read completed the delete")
+    } catch {}
+
+    // Railway couldn't list the workspaces: unknown, never gone.
+    railway.answer("me") { _ in RailwayHTTPResponse(status: 502, body: Data("bad".utf8)) }
+    presence = await driver.presence(host)
+    XCTAssertNil(presence, "an unconfirmed null read")
+    do {
+      try await driver.destroy(host)
+      XCTFail("an unconfirmed null read completed the delete")
+    } catch {}
+
+    // No workspace recorded for this Mac: nothing to confirm against.
+    let unplaced = self.driver(railway, StubRelay(), workspaceID: nil)
+    try unplaced.adopt(descriptor)
+    railway.answer(
+      "me", data: ["me": ["workspaces": [["id": "ws-1", "name": "Mine", "plan": "PRO"]]]])
+    presence = await unplaced.presence(host)
+    XCTAssertNil(presence, "a null read with no workspace to confirm")
+
+    // This Mac's workspace is seen: the null read is gone, and the delete completes.
+    try driver.adopt(descriptor)
+    presence = await driver.presence(host)
+    XCTAssertEqual(presence, .gone)
+    try await driver.destroy(host)
   }
 
   /// Value: protects=a revoked or expired sign-in reads as signed out, so the workroom offers

@@ -57,10 +57,11 @@ To keep the token out of your shell history, put a space before the command (zsh
 The suite never reads or writes `~/.railway`, `~/.ssh` or your Workroom config. It never uses an existing project either: a `Workroom` project you already have is left alone. Everything it makes is its own:
 
 - a project `workroom-live-<run>` and an environment `live-<run>` in it;
-- a new ssh key, registered on your account as `Workroom live suite <run>`;
-- a new pin of the relay's host key.
+- a new ssh key, registered on your account as `Workroom live suite <run>`.
 
-The key, the pin, the ssh configs, the pane logs and the terminal's `HOME` are all in `$TMPDIR/wr-railway-live-<id>`. The only outside things it reads are `gh auth token`, for the push, and `/usr/bin/ssh`. No token is printed, put on a command line or in a remote command, or passed to anything it starts. The `gh` token reaches the sandbox only over ssh's stdin, as the driver writes it.
+The relay's host key is the one Workroom ships (ADR 0071's amendment), so the suite checks the relay still presents it.
+
+The key, the ssh configs, the pane logs and the terminal's `HOME` are all in `$TMPDIR/wr-railway-live-<id>`. The only outside things it reads are `gh auth token`, for the push, and `/usr/bin/ssh`. No token is printed, put on a command line or in a remote command, or passed to anything it starts. The `gh` token reaches the sandbox only over ssh's stdin, as the driver writes it.
 
 ### What each step proves
 
@@ -68,12 +69,12 @@ The steps share one sandbox and run in order. A failed step is recorded, and the
 
 | Step | What it does | What it proves |
 |---|---|---|
-| lifecycle: create with idle timeout 0 | `driver.create`: key made and registered, relay key pinned, `sandboxCreate`, wait for RUNNING, `railway.sh` and `railway-github.sh` over the relay | Presence reads awake. Railway reports `idleTimeoutMinutes: 0` (ADR 0071). The Mac's key is mode 600. The log says whether the pinned relay key is the one the spike saw. |
+| lifecycle: create with idle timeout 0 | `driver.create`: key made and registered, `sandboxCreate`, wait for RUNNING, `railway.sh` and `railway-github.sh` over the relay | Presence reads awake. Railway reports `idleTimeoutMinutes: 0` (ADR 0071). The Mac's key is mode 600. The host is recorded with the shipped relay key, which the setup's logins trusted alone. |
 | daemon bootstrap | `DaemonBootstrap.ensure` with the Dev app's Linux daemon, then a service connection and `refreshGitHubToken` | `startsDaemon`: start.sh with no systemd, and the daemon outliving its login, through the relay's `bash -c` wrapper. A connect's token refresh works. |
 | attach, resize, no banner, Ctrl+\ then d | A pane runs the Mac's `workroomd attach --dial ssh -T … relay` in a real pty | The pane runs commands. `TERM` is `xterm-ghostty`, and `SSH_TTY` is unset. `stty size` follows a resize at once (30×100 to 40×120). Ctrl+\ then d reaches `od` as `034 d`, and the pane lives on. No "Railway durable session" banner or `[detached]` (ADR 0074). |
 | reattach with no banner | A new pane with `--no-create` on the same session | The daemon restores the screen (the earlier `MARK-42` is back without being typed). The pane takes input. No banner. |
 | a lost link retries | Kills the pane's ssh | The client exits 255, `lastAttach` is `lostLink`, it isn't read as refused, and the retry notice shows (ADR 0074, "a lost link"). |
-| a changed relay key is refused | An attach whose pin is a different real key | ssh's "Host key verification failed" shows in the pane, `hostRefusedLastAttach` is true, and there is no retry notice (ADR 0074, "a refused link"). The real pin is then written back. |
+| a changed relay key is refused | An attach whose known key is a different real key | ssh's "Host key verification failed" shows in the pane, `hostRefusedLastAttach` is true, and there is no retry notice (ADR 0074, "a refused link"). The shipped key is then written back. |
 | clone and push in the user's name | On the host: clone `git@github.com:<repo>`, commit, push a branch | The token file is mode 600. The `insteadOf` rewrite and credential helper work. GitHub's activity API names your `gh` login as the branch's pusher (ADR 0072, #631). |
 | stale pane and service stream closed | Opens a pane and a service connection that announces it pings, then cuts both: stops answering the keepalive probe and `SIGSTOP`s both ssh processes | Within about a minute (failed if over 100 s), the daemon closes both, both `relay` processes exit on the host, and Railway lists both durable sessions as no longer running. The session survives unattached and reattaches with its screen (ADR 0075). |
 | N short logins | `WR_RAILWAY_LOGINS` (300) logins running `true`, four at a time | Every login succeeds, and afterwards a new login and a new attach still work. It prints Railway's session-list count before and after, and how many still run (ADR 0074's accepted risk). |
@@ -92,7 +93,7 @@ Each step prints a line starting `railway live: — <step>`. Each finding prints
 railway live: run 1a2b3c, files in /var/folders/…/wr-railway-live-…
 railway live: project <id>: delete it by hand if this run is killed
 railway live: sandbox <id> in environment <id>
-railway live: relay key pinned, the one the spike saw
+railway live: relay key: the one Workroom ships, which the relay presented
 …
 railway live: relays closed 52 s after the cut
 railway live: 300 logins in 410 s, 0 failed

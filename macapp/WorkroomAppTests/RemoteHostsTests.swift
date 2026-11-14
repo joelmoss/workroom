@@ -925,6 +925,10 @@ final class RemoteHostsTests: XCTestCase {
           rows.removeAll { $0 == id }
           return ["sandboxDestroy": ["id": id, "status": "DESTROYING"]]
         }
+        // The sign-in sees this Mac's workspace, so a lost reply may be reconciled.
+        if query.contains("me {") {
+          return ["me": ["workspaces": [["id": "ws-1", "name": "Mine", "plan": "PRO"]]]]
+        }
         return nil
       }
       guard let data else {
@@ -961,8 +965,8 @@ final class RemoteHostsTests: XCTestCase {
           }
           return RailwayHostDriver(
             configuration: .init(
-              environmentID: environment, projectID: nil, keys: root, relayHost: "relay.invalid",
-              hostSetup: .bundled),
+              environmentID: environment, projectID: nil, workspaceID: "ws-1", keys: root,
+              relayHost: "relay.invalid", hostSetup: .bundled),
             api: RailwayAPI(transport: railway, tokens: RailwayToken()), directory: root)
         }, railwayEnvironment: { "env-1" })
     }
@@ -1038,6 +1042,19 @@ final class RemoteHostsTests: XCTestCase {
     remote.reachability.adopt(projects([here, elsewhere]))
     try await settle(remote)
     XCTAssertEqual(railway.variables("sandboxes").count, 1, "swept twice in a launch")
+  }
+
+  /// Value: protects=a Railway sweep that fails says it was the sweep and Railway's own reason,
+  /// whatever step failed (review 3, I5); fails_when=every failure is labelled as listing the
+  /// sandboxes (a workspace read, a ledger write) or loses Railway's words;
+  /// seam=HostDriverRegistry.railwaySweepFailure
+  func testARailwaySweepFailureSaysItWasTheSweepAndWhy() {
+    XCTAssertEqual(
+      HostDriverRegistry.railwaySweepFailure(RailwaySessionError.signedOut),
+      "Railway sweep: Workroom isn't signed in to Railway.")
+    XCTAssertEqual(
+      HostDriverRegistry.railwaySweepFailure(RailwayAPIError.http(status: 503, message: "down")),
+      "Railway sweep: Railway answered 503: down.")
   }
 
   /// Value: protects=a Railway sandbox leaves this Mac's create ledger only once config holds its

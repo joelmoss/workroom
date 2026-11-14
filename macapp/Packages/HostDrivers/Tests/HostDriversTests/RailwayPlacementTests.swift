@@ -64,6 +64,47 @@ final class RailwayPlacementTests: XCTestCase {
     XCTAssertEqual(railway.graphQLRequests.count, before)
   }
 
+  /// Value: protects=Release and Nightly setting up at once make one project and one environment
+  /// between them, not one each (review 3, C6); fails_when=a placement runs while the other app
+  /// holds the placement's lock, or acts on what it read before the other app finished;
+  /// seam=RailwayPlacementStore.ensure over StubRailway, with the lock file held from another
+  /// open file and the other app's placement written before it lets go
+  func testAPlacementWaitsForTheOtherAppsAndUsesWhatItMade() async throws {
+    let railway = railway(projects: [])
+    let api = RailwayAPI(transport: railway, tokens: Tokens())
+    let lock = store.lockFile
+    try FileManager.default.createDirectory(
+      at: lock.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let fd = open(lock.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+    XCTAssertGreaterThanOrEqual(fd, 0)
+    XCTAssertEqual(flock(fd, LOCK_EX | LOCK_NB), 0)
+    var held = true
+    defer { if held { close(fd) } }
+
+    let store = store!
+    let ensure = Task {
+      try await store.ensure(workspaceID: "ws-1", api: api, environmentName: "mac-a")
+    }
+    try await Task.sleep(for: .milliseconds(300))
+    XCTAssertTrue(railway.graphQLRequests.isEmpty, "placed while the other app held the lock")
+
+    // The other app placed this Mac meanwhile, then let go.
+    try store.update {
+      $0.workspaceID = "ws-1"
+      $0.projectID = "prj-other"
+      $0.environmentID = "env-other"
+    }
+    flock(fd, LOCK_UN)
+    close(fd)
+    held = false
+
+    let placed = try await ensure.value
+    XCTAssertEqual(placed.projectID, "prj-other")
+    XCTAssertEqual(placed.environmentID, "env-other")
+    XCTAssertTrue(sent(railway, "projectCreate").isEmpty, "a second project was made")
+    XCTAssertTrue(sent(railway, "environmentCreate").isEmpty, "a second environment was made")
+  }
+
   /// Value: protects=a retry after a failure never makes a second project; fails_when=the
   /// project's id is only recorded with the environment's; seam=ensure
   func testAProjectIsMadeWhenNoneIsThereAndKeptWhenTheEnvironmentFails() async throws {

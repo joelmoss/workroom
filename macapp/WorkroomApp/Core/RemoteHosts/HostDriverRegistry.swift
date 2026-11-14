@@ -166,6 +166,12 @@ final class HostDriverRegistry: @unchecked Sendable {
     }
   }
 
+  /// What the log says of a Railway sweep that threw, owed again: whichever step failed (a
+  /// listing, the workspaces, the ledger), in Railway's or the system's own words.
+  nonisolated static func railwaySweepFailure(_ error: any Error) -> String {
+    "Railway sweep: \(error.localizedDescription)"
+  }
+
   /// Ends `key`'s sweep: done for the launch when it ran, and owed again when its runtime could not
   /// list its containers (down at launch, say), so a later reload sweeps it (#284).
   func finishSweep(_ key: DriverKey, ran: Bool) {
@@ -307,7 +313,7 @@ final class HostDriverRegistry: @unchecked Sendable {
                   true
                 )
               } catch {
-                return (key, ["listing Railway's sandboxes: \(error.localizedDescription)"], false)
+                return (key, [Self.railwaySweepFailure(error)], false)
               }
             }
           } else if let driver = drivers[key] {

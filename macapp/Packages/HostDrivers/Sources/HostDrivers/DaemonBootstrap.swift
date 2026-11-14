@@ -43,6 +43,13 @@ import os
 /// daemon for an architecture), `resources` (the Ghostty set) and `scripts` (a far-side script by
 /// name). The app's own entry points pass its bundle (`DaemonBootstrap+Bundle.swift`).
 public enum DaemonBootstrap {
+  /// Where a daemon this bootstrap starts keeps its screens: beside its socket. It keeps its pane
+  /// layouts beside those (`<socket's folder>/layouts`). A host setup that clears a copied disk's
+  /// screens (railway.sh) derives the same paths from the socket.
+  public static func screens(besideSocket socket: String) -> String {
+    (socket as NSString).deletingLastPathComponent + "/screens"
+  }
+
   public struct Outcome: Equatable, Sendable {
     public enum Daemon: Equatable, Sendable {
       /// The daemon runs this app's binary.
@@ -307,7 +314,7 @@ public enum DaemonBootstrap {
     let directory = (socket as NSString).deletingLastPathComponent
     let result = try await run(
       script: "start", in: scripts, on: host, driver: driver, input: nil,
-      arguments: [binary, socket, directory + "/screens", "never"])
+      arguments: [binary, socket, screens(besideSocket: socket), "never"])
     guard result.status == 0, reports(in: result.output)["serving"]?.first == "yes" else {
       let reason = reports(in: result.output)["error"]?.joined(separator: " ")
       throw Error.installFailed(

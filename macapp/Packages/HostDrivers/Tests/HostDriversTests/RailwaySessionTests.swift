@@ -100,7 +100,8 @@ final class RailwaySessionTests: XCTestCase {
   // MARK: The session
 
   private func session(
-    _ railway: StubRailway, store: MemoryTokenStore, now: @escaping @Sendable () -> Date = Date.init
+    _ railway: StubRailway, store: any RailwayTokenStore,
+    now: @escaping @Sendable () -> Date = Date.init
   ) -> RailwaySession {
     RailwaySession(client: client(railway), store: store, lock: InProcessRefreshLock(), now: now)
   }
@@ -190,6 +191,82 @@ final class RailwaySessionTests: XCTestCase {
     let late = try await session.accessToken()
     XCTAssertEqual(late, "at-2")
     XCTAssertEqual(store.token, "rt-2")
+  }
+
+  /// A token store whose next `failing` writes fail, as a locked Keychain's would.
+  private final class FlakyTokenStore: RailwayTokenStore, Sendable {
+    struct WriteFailed: Error {}
+    private let state = Mutex<(token: String?, failing: Int)>((nil, 0))
+    var token: String? { state.withLock { $0.token } }
+    func fail(_ writes: Int) { state.withLock { $0.failing = writes } }
+    func read() throws -> String? { state.withLock { $0.token } }
+    func write(_ token: String) throws {
+      try state.withLock {
+        guard $0.failing == 0 else {
+          $0.failing -= 1
+          throw WriteFailed()
+        }
+        $0.token = token
+      }
+    }
+    func delete() throws { state.withLock { $0.token = nil } }
+  }
+
+  /// Value: protects=a Keychain that won't take the refresh token Railway just rotated to never
+  /// signs the user out: the newest token is kept in memory, used for the next refresh (the one
+  /// replaced is revoked), and written again (review 3, I4); fails_when=the refresh fails for the
+  /// write, the next refresh sends the revoked token, or the write is never tried again;
+  /// seam=RailwaySession with a token store whose writes fail
+  func testARotatedRefreshTokenTheStoreRefusesIsKeptAndWrittenAgain() async throws {
+    let railway = StubRailway()
+    railway.answerToken("refresh_token") { request in
+      switch StubRailway.form(request)["refresh_token"] {
+      case "rt": StubRailway.tokens(access: "at-2", refresh: "rt-2")
+      case "rt-2": StubRailway.tokens(access: "at-3", refresh: "rt-3")
+      default: StubRailway.oauthError("invalid_grant")
+      }
+    }
+    let clock = Mutex(Date(timeIntervalSince1970: 0))
+    let store = FlakyTokenStore()
+    let session = session(railway, store: store, now: { clock.withLock { $0 } })
+    try await session.signIn(
+      with: RailwayTokens(accessToken: "at", refreshToken: "rt", expiresIn: 60))
+
+    store.fail(1)
+    let second = try await session.accessToken()
+    XCTAssertEqual(second, "at-2", "the refresh failed for the store")
+    XCTAssertEqual(store.token, "rt", "the failed write was taken")
+
+    // The store takes writes again: the newest token is written, and the next refresh sends it.
+    _ = try await session.accessToken()
+    XCTAssertEqual(store.token, "rt-2", "the write wasn't tried again")
+    clock.withLock { $0 = $0.addingTimeInterval(3600) }
+    let third = try await session.accessToken()
+    XCTAssertEqual(third, "at-3")
+    XCTAssertEqual(store.token, "rt-3")
+    XCTAssertEqual(railway.tokenRequests.map { $0["refresh_token"] }, ["rt", "rt-2"])
+    let signedIn = await session.isSignedIn
+    XCTAssertTrue(signedIn)
+
+    // Still refused when the next refresh is due: that refresh sends the newest token anyway.
+    store.fail(2)
+    clock.withLock { $0 = $0.addingTimeInterval(3600) }
+    railway.answerToken("refresh_token") { request in
+      StubRailway.form(request)["refresh_token"] == "rt-3"
+        ? StubRailway.tokens(access: "at-4", refresh: "rt-4")
+        : StubRailway.oauthError("invalid_grant")
+    }
+    let fourth = try await session.accessToken()
+    XCTAssertEqual(fourth, "at-4")
+    clock.withLock { $0 = $0.addingTimeInterval(3600) }
+    railway.answerToken("refresh_token") { request in
+      StubRailway.form(request)["refresh_token"] == "rt-4"
+        ? StubRailway.tokens(access: "at-5", refresh: "rt-5")
+        : StubRailway.oauthError("invalid_grant")
+    }
+    let fifth = try await session.accessToken()
+    XCTAssertEqual(fifth, "at-5", "a refresh sent a revoked token")
+    XCTAssertEqual(store.token, "rt-5")
   }
 
   /// Value: protects=a refresh token another app (Release beside Nightly) rotated meanwhile is
