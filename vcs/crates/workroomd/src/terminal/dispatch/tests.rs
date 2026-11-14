@@ -285,3 +285,50 @@ fn only_the_first_peer_frame_on_a_connection_is_taken() {
         Some(env(&[("SSH_CONNECTION", "10.0.0.1 1 10.0.0.2 22")]))
     );
 }
+
+/// The daemon holds a `Peer` frame to the login environment itself, whatever a relay sends: the
+/// Mac's terminal, the ssh terminal and the session's metadata never come from it, and neither does
+/// an entry that is no variable at all.
+#[test]
+fn a_peer_frame_lets_only_the_login_environment_through() {
+    let peer = dispatched_peer(&[peer_envelope(&[
+        ("PATH", "/login/bin:/usr/bin"),
+        ("HOME", "/home/login"),
+        ("SHELL", "/bin/bash"),
+        ("USER", "login"),
+        ("SSH_CONNECTION", "10.0.0.1 1 10.0.0.2 22"),
+        ("SSH_TTY", "/dev/pts/3"),
+        ("WORKROOM_SESSION_ID", "6B9B968D-0BD7-4172-850A-A373DA73BC70"),
+        ("WORKROOM_SESSION_COMMAND", "rm -rf ~"),
+        ("TERM", "dumb"),
+        ("COLORTERM", "no"),
+        ("TERM_PROGRAM", "tmux"),
+        ("TERM_PROGRAM_VERSION", "3"),
+        ("TERMINFO", "/elsewhere"),
+        ("GHOSTTY_RESOURCES_DIR", "/elsewhere"),
+        ("", "no-name"),
+        ("PWD", "/home/login"),
+    ])]);
+    assert_eq!(
+        peer,
+        Some(env(&[
+            ("PATH", "/login/bin:/usr/bin"),
+            ("HOME", "/home/login"),
+            ("SHELL", "/bin/bash"),
+            ("USER", "login"),
+            ("SSH_CONNECTION", "10.0.0.1 1 10.0.0.2 22"),
+        ]))
+    );
+}
+
+/// A `Peer` frame over the bound is not taken at all, and nor is one after it: the session falls
+/// back to the account entry rather than to a cut environment.
+#[test]
+fn an_oversized_peer_frame_is_not_taken() {
+    let big = "x".repeat(crate::terminal::host_session::MAX_PEER_ENVIRONMENT);
+    let peer = dispatched_peer(&[
+        peer_envelope(&[("HOME", "/home/login"), ("BIG", &big)]),
+        peer_envelope(&[("HOME", "/home/second")]),
+    ]);
+    assert_eq!(peer, None);
+}

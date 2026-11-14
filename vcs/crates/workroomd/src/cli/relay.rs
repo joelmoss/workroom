@@ -23,7 +23,7 @@ use wr_protocol::frame::{Frame, FrameKind};
 ///
 /// **It never writes a byte of its own to stdout.** The client handshakes with the daemon THROUGH
 /// this process, and anything else on the stream is a banner the handshake rejects. The one thing
-/// it adds goes the other way, to the daemon: its ssh variables, after the client's greeting
+/// it adds goes the other way, to the daemon: its login environment, after the client's greeting
 /// (`forward_greeting`).
 pub fn run_relay(args: &[String]) -> ExitCode {
     let Some(socket) = flag(args, "--socket").map(PathBuf::from) else {
@@ -48,7 +48,7 @@ pub fn run_relay(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let peer = peer_frame(|name| std::env::var_os(name));
+    let peer = peer_frame(std::env::vars_os());
     std::thread::spawn(move || {
         let mut stdin = crate::daemon::transport::FdStream::stdin();
         if forward_greeting(&mut stdin, &mut to_daemon, peer.as_deref()).is_ok() {
@@ -118,23 +118,17 @@ pub fn run_relay(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The `Peer` envelope this relay sends the daemon: sshd's `SSH_CONNECTION` and `SSH_CLIENT`, which
-/// the daemon sets on the host-environment sessions this connection creates, so a prompt that
-/// shows the hostname over ssh still does (ADR 0074). None when sshd set neither.
-fn peer_frame(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<Vec<u8>> {
-    use std::os::unix::ffi::OsStrExt;
-    let mut payload = Vec::new();
-    for name in crate::terminal::host_session::PEER_VARIABLES {
-        if let Some(value) = var(name) {
-            payload.extend_from_slice(name.as_bytes());
-            payload.push(b'=');
-            payload.extend_from_slice(value.as_bytes());
-            payload.push(0);
-        }
-    }
-    if payload.is_empty() {
-        return None;
-    }
+/// The `Peer` envelope this relay sends the daemon: the environment of the ssh login it runs in,
+/// `environment`, less its terminal and the session's metadata
+/// (`host_session::encode_login_environment`). The daemon builds the host-environment sessions
+/// this connection creates from it, as an ssh login would have been: its `PATH`, `HOME` and
+/// `SHELL`, which the daemon's own lookup can get wrong, and sshd's `SSH_CONNECTION` and
+/// `SSH_CLIENT`, so a prompt that shows the hostname over ssh still does (ADR 0074). None when
+/// there is nothing to send.
+fn peer_frame(
+    environment: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Option<Vec<u8>> {
+    let payload = crate::terminal::host_session::encode_login_environment(environment)?;
     let frame = Frame::new(FrameKind::Peer, payload);
     Some(Envelope::new(Service::Control, 0, frame.encode()).encode())
 }

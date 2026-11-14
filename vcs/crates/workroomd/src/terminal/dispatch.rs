@@ -28,9 +28,12 @@ pub(crate) struct Attachment {
     token: u64,
     /// Ends this connection: a probed client that stops answering is closed with it (ADR 0075).
     closer: Closer,
-    /// The ssh variables this connection's `relay` passed on (`FrameKind::Peer`), set on the
-    /// host-environment sessions it creates (ADR 0074).
+    /// The environment of the ssh login this connection's `relay` runs in (`FrameKind::Peer`),
+    /// which the host-environment sessions it creates are built from (ADR 0074). None until a
+    /// `Peer` frame came, and for one that carried none.
     peer: Option<Vec<(OsString, OsString)>>,
+    /// A `Peer` frame came: any later one is ignored.
+    peer_taken: bool,
 }
 
 impl Attachment {
@@ -41,6 +44,7 @@ impl Attachment {
             token: 0,
             closer,
             peer: None,
+            peer_taken: false,
         }
     }
 
@@ -180,7 +184,7 @@ pub(crate) fn dispatch(
                     let host = sessions
                         .hooks()
                         .host
-                        .session(&request.env, attachment.peer.as_deref().unwrap_or_default());
+                        .session(&request.env, attachment.peer.as_deref());
                     (host.environment, host.shell, host.resources)
                 } else {
                     (
@@ -325,31 +329,16 @@ pub(crate) fn dispatch(
                 format!("no session {}", id.to_hyphenated()).into_bytes(),
             )),
         },
-        // What `relay` knows about this connection: its ssh variables, and nothing else is taken.
-        // Never answered: the relay sends it into the client's stream, which expects no reply.
+        // What `relay` knows about this connection: the environment of the ssh login it runs in,
+        // held to the login variables (`host_session::login_environment`). Never answered: the
+        // relay sends it into the client's stream, which expects no reply.
         FrameKind::Peer => {
             // The first one only: the relay sends one, straight after the greeting, so any later
             // one is the client's own and changes nothing.
-            if attachment.peer.is_some() {
-                return None;
+            if !attachment.peer_taken {
+                attachment.peer_taken = true;
+                attachment.peer = crate::terminal::host_session::login_environment(&frame.payload);
             }
-            attachment.peer = Some(frame
-                .payload
-                .split(|byte| *byte == 0)
-                .filter_map(|entry| {
-                    let split = entry.iter().position(|byte| *byte == b'=')?;
-                    let key = OsStr::from_bytes(&entry[..split]);
-                    crate::terminal::host_session::PEER_VARIABLES
-                        .iter()
-                        .any(|name| key == *name)
-                        .then(|| {
-                            (
-                                key.to_os_string(),
-                                OsStr::from_bytes(&entry[split + 1..]).into(),
-                            )
-                        })
-                })
-                .collect());
             None
         }
         FrameKind::KillAll => {

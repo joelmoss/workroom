@@ -131,19 +131,30 @@ impl Drop for Scratch {
 struct Host {
     store: SessionStore,
     socket: PathBuf,
+    /// The home of the ssh login `relay` runs in.
+    home: PathBuf,
 }
 
 impl Host {
     fn serve(scratch: &Scratch, store: SessionStore, environment: &[(&str, &str)]) -> Host {
-        store.set_host_origin(HostOrigin {
-            environment: environment
-                .iter()
-                .map(|(k, v)| (OsString::from(k), OsString::from(v)))
-                .collect(),
-            shell: "/bin/sh".into(),
-            home: scratch.home(),
-            user: "fixture".into(),
-        });
+        Host::serve_as(
+            scratch,
+            store,
+            HostOrigin {
+                environment: environment
+                    .iter()
+                    .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+                    .collect(),
+                shell: "/bin/sh".into(),
+                home: scratch.home(),
+                user: "fixture".into(),
+            },
+        )
+    }
+
+    /// As `serve`, with the daemon's environment and account entry both `origin`.
+    fn serve_as(scratch: &Scratch, store: SessionStore, origin: HostOrigin) -> Host {
+        store.set_host_origin(origin);
         store.keep_host_resources(scratch.0.join("ghostty"));
         let socket = scratch.0.join("d.sock");
         let listener = UnixListener::bind(&socket).expect("bind");
@@ -157,17 +168,21 @@ impl Host {
                 });
             }
         });
-        Host { store, socket }
+        Host {
+            store,
+            socket,
+            home: scratch.home(),
+        }
     }
 
-    /// What a pane on the Mac runs: `attach --dial` to this host's `relay`, which has the ssh
-    /// variables sshd would have given it.
+    /// What a pane on the Mac runs: `attach --dial` to this host's `relay`, which has the
+    /// environment of the ssh login it runs in (`LOGIN`, with the scratch home), never the Mac's.
     fn dial(&self, env: &[(&str, &str)]) -> Command {
         let mut command = Command::new(daemon_binary());
         command
-            .args(["attach", "--dial", "/usr/bin/env"])
-            .arg(format!("SSH_CONNECTION={SSH_CONNECTION}"))
-            .arg(format!("SSH_CLIENT={SSH_CLIENT}"))
+            .args(["attach", "--dial", "/usr/bin/env", "-i"])
+            .arg(format!("HOME={}", self.home.display()))
+            .args(LOGIN.iter().map(|(key, value)| format!("{key}={value}")))
             .arg(daemon_binary())
             .args(["relay", "--socket"])
             .arg(&self.socket)
@@ -190,6 +205,20 @@ impl Drop for Host {
 const CLEAR_WAITING_LINE: &str = "\x1b8\x1b[J";
 const SSH_CONNECTION: &str = "10.0.0.1 51234 10.0.0.2 22";
 const SSH_CLIENT: &str = "10.0.0.1 51234 22";
+
+/// What the ssh login `relay` runs in has, besides its `HOME`: what sshd and the user's account
+/// gave it, and a terminal of its own that must not reach the session.
+const LOGIN: [(&str, &str); 9] = [
+    ("PATH", "/login/bin:/usr/bin:/bin"),
+    ("SHELL", "/bin/sh"),
+    ("USER", "login"),
+    ("LOGNAME", "login"),
+    ("FROM_LOGIN", "yes"),
+    ("SSH_CONNECTION", SSH_CONNECTION),
+    ("SSH_CLIENT", SSH_CLIENT),
+    ("SSH_TTY", "/dev/pts/4"),
+    ("TERM", "dumb"),
+];
 
 /// What the Mac's pane has in its environment, much of which must never reach the host.
 const MAC: [(&str, &str); 14] = [
@@ -258,23 +287,49 @@ fn contains(lines: &[String], entry: &str) -> bool {
     lines.iter().any(|line| line == entry)
 }
 
-/// The host builds the session (ADR 0074): its own environment, the account's home, shell and
-/// user, the relay's ssh variables, and from the Mac only the terminal and locale.
+/// The host builds the session (ADR 0074): the environment of the ssh login `relay` runs in, and
+/// from the Mac only the terminal and locale. Not the daemon's own, which is whatever started it.
 #[test]
-fn a_dialed_session_gets_the_hosts_environment_and_only_the_terminal_and_locale_from_the_mac() {
+fn a_dialed_session_gets_the_ssh_logins_environment_and_only_the_terminal_and_locale_from_the_mac()
+{
     let scratch = Scratch::new("env");
     let host = Host::serve(&scratch, SessionStore::new(), &DAEMON);
     let lines = session_environment(&host);
+    assert_login_environment(&lines, &scratch);
+}
+
+/// A host whose users come from a directory service: the daemon's static lookup finds no entry,
+/// so its account is a synthetic one with `/` for a home and no shell. The ssh login had the real
+/// ones, and the session gets them.
+#[test]
+fn a_dialed_session_on_a_host_without_a_passwd_entry_gets_the_ssh_logins_home_and_shell() {
+    let scratch = Scratch::new("nss");
+    let host = Host::serve_as(
+        &scratch,
+        SessionStore::new(),
+        HostOrigin {
+            environment: vec![(OsString::from("PATH"), OsString::from("/daemon/bin"))],
+            shell: String::new(),
+            home: PathBuf::from("/"),
+            user: String::new(),
+        },
+    );
+    let lines = session_environment(&host);
+    assert_login_environment(&lines, &scratch);
+    assert!(!contains(&lines, "HOME=/"), "{lines:?}");
+}
+
+fn assert_login_environment(lines: &[String], scratch: &Scratch) {
     let home = format!("HOME={}", scratch.home().display());
     let ssh_connection = format!("SSH_CONNECTION={SSH_CONNECTION}");
     let ssh_client = format!("SSH_CLIENT={SSH_CLIENT}");
     for entry in [
         home.as_str(),
         "SHELL=/bin/sh",
-        "USER=fixture",
-        "LOGNAME=fixture",
-        "PATH=/host/bin:/usr/bin:/bin",
-        "FROM_DAEMON=yes",
+        "USER=login",
+        "LOGNAME=login",
+        "PATH=/login/bin:/usr/bin:/bin",
+        "FROM_LOGIN=yes",
         "COLORTERM=truecolor",
         "TERM_PROGRAM=ghostty",
         "TERM_PROGRAM_VERSION=1.2.3",
@@ -283,18 +338,20 @@ fn a_dialed_session_gets_the_hosts_environment_and_only_the_terminal_and_locale_
         ssh_connection.as_str(),
         ssh_client.as_str(),
     ] {
-        assert!(contains(&lines, entry), "{entry} in {lines:?}");
+        assert!(contains(lines, entry), "{entry} in {lines:?}");
     }
-    let names = names(&lines);
+    assert!(!contains(lines, "TERM=dumb"), "{lines:?}");
+    let names = names(lines);
     for absent in [
         "SECRET",
         "SSH_TTY",
+        "FROM_DAEMON",
         "WORKROOM_SESSION_RESOURCES",
         "WORKROOM_SESSION_SHELL",
     ] {
         assert!(
             !names.contains(&absent),
-            "{absent} reached the host: {lines:?}"
+            "{absent} reached the session: {lines:?}"
         );
     }
     assert!(
@@ -487,7 +544,8 @@ fn a_dialed_link_that_drops_exits_255_and_leaves_the_session_running() {
     let pid = scratch.0.join("relay.pid");
     // `<&0`: a non-interactive shell gives a background command /dev/null for stdin otherwise.
     let relay = format!(
-        "'{}' relay --socket '{}' <&0 & echo $! > '{}'; wait",
+        "/usr/bin/env -i HOME='{}' SHELL=/bin/sh PATH=/usr/bin:/bin '{}' relay --socket '{}' <&0 & echo $! > '{}'; wait",
+        scratch.home().display(),
         daemon_binary().display(),
         host.socket.display(),
         pid.display()
@@ -597,9 +655,10 @@ fn own_account() -> (String, String) {
     }
 }
 
-/// A real `workroomd serve`, as a host runs it: the session's `HOME` and `SHELL` come from the
-/// account entry, not the daemon's environment, and Ghostty's resources are beside its socket. A
-/// command session, so no shell or profile of the developer's runs.
+/// A real `workroomd serve`, as a host runs it, reached by a relay with no login environment to
+/// pass on: the session's `HOME` and `SHELL` come from the account entry, not the daemon's
+/// environment, and Ghostty's resources are beside its socket. A command session, so no shell or
+/// profile of the developer's runs.
 #[test]
 fn a_served_daemon_takes_home_and_shell_from_the_account_and_resources_beside_its_socket() {
     let scratch = Scratch::new("served");
@@ -628,7 +687,7 @@ fn a_served_daemon_takes_home_and_shell_from_the_account_and_resources_beside_it
     let cwd = scratch.0.to_string_lossy().into_owned();
     env.push(("WORKROOM_SESSION_CWD", cwd.as_str()));
     let output = Command::new(daemon_binary())
-        .args(["attach", "--dial"])
+        .args(["attach", "--dial", "/usr/bin/env", "-i"])
         .arg(daemon_binary())
         .args(["relay", "--socket"])
         .arg(&socket)
