@@ -251,6 +251,40 @@ final class RailwayAPITests: XCTestCase {
     } catch RailwayAPIError.malformed {}
   }
 
+  /// A token provider that hands out its token only once its task is cancelled.
+  private struct SlowTokens: RailwayAccessTokenProviding {
+    func accessToken() async throws -> String {
+      try? await Task.sleep(for: .seconds(30))
+      return "at-1"
+    }
+    func accessTokenRejected(_ token: String) async {}
+  }
+
+  /// Value: protects=a call cancelled before its request goes out sends nothing and says so, so a
+  /// create cancelled then drops its intent (review 4, X4); fails_when=a cancelled call still
+  /// sends, or reports that Railway may have acted; seam=RailwayAPI.query over StubRailway
+  func testACallCancelledBeforeSendingSendsNothing() async throws {
+    let railway = StubRailway()
+    railway.answer("me", data: ["me": ["email": "a@b.c"]])
+    let delivery = RailwayDelivery()
+    let api = RailwayAPI(transport: railway, tokens: SlowTokens())
+    let call = Task {
+      try await api.query("query { me { email } }", as: Me.self, delivery: delivery)
+    }
+    call.cancel()
+    do {
+      _ = try await call.value
+      XCTFail("a cancelled call went through")
+    } catch is CancellationError {}
+    XCTAssertTrue(railway.graphQLRequests.isEmpty)
+    XCTAssertFalse(delivery.mayHaveActed)
+
+    let sent = RailwayDelivery()
+    _ = try await RailwayAPI(transport: railway, tokens: Tokens(["at-1"]))
+      .query("query { me { email } }", as: Me.self, delivery: sent)
+    XCTAssertTrue(sent.mayHaveActed)
+  }
+
   /// Value: protects=a listing whose cursors keep advancing without end (a Railway bug, a hostile
   /// answer) fails after `RailwayAPI.maxPages` pages rather than asking forever (review 4, Y2);
   /// fails_when=the pager has no bound, or stops early and hands back part of the list;
