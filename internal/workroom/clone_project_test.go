@@ -224,3 +224,112 @@ func processAlive(pid int) bool {
 	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
 	return err == nil && !strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
 }
+
+// Value: protects=the inline clone error shows git's own failure lines without progress chatter;
+// fails_when=progress counters or "Cloning into" leak into the error, or a non-fatal line is dropped;
+// why_new=real-git tests only hit the 'does not appear' failure, not ssh-style or CR-redrawn output; seam=none;
+// no_claim=does not run git
+func TestCloneErrorLines(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"empty", "", ""},
+		{"progress only", "Cloning into 'x'...\nReceiving objects:  50% (1/2)\rReceiving objects: 100% (2/2), done.\n", ""},
+		{"fatal kept", "Cloning into 'x'...\nfatal: repository 'y' does not exist\n", "fatal: repository 'y' does not exist"},
+		{"non-fatal ssh line kept", "Cloning into 'x'...\r\nPermission denied (publickey).\nfatal: Could not read from remote repository.\n",
+			"Permission denied (publickey).\nfatal: Could not read from remote repository."},
+		{"CR-redrawn counters between errors", "remote: Counting objects: 10% (1/10)\rremote: Counting objects: 100% (10/10), done.\nfatal: early EOF\n", "fatal: early EOF"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := cloneErrorLines(c.in); got != c.want {
+				t.Fatalf("cloneErrorLines(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// startHangingClone starts a clone that hangs in its transport until ctx is cancelled, and returns
+// once git is running, with a channel for CloneProject's error.
+func startHangingClone(t *testing.T, svc *Service, ctx context.Context, dest string) <-chan error {
+	t.Helper()
+	requireGit(t)
+	tools := t.TempDir()
+	pidFile := filepath.Join(tools, "helper.pid")
+	helper := filepath.Join(tools, "hang.sh")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\necho $$ > "+pidFile+"\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_ALLOW_PROTOCOL", "ext")
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.CloneProject(ctx, "ext::"+helper, dest, &bytes.Buffer{})
+		done <- err
+	}()
+	waitForPid(t, pidFile)
+	return done
+}
+
+func awaitCancelled(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errs.ErrCancelled) {
+			t.Fatalf("err = %v, want ErrCancelled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("CloneProject did not return after the cancel")
+	}
+}
+
+// Value: protects=a failed clone never deletes another clone sharing a newly created parent;
+// fails_when=cleanup removes the topmost created folder wholesale; why_new=existing cleanup tests run
+// one clone at a time; seam=none; no_claim=does not run two real clones (the sibling's files stand in)
+func TestCloneProject_CancelLeavesASiblingInACreatedParent(t *testing.T) {
+	svc, _ := newCreateSvc(t)
+	parent := filepath.Join(t.TempDir(), "new")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := startHangingClone(t, svc, ctx, filepath.Join(parent, "a"))
+
+	// Another clone, into new/b, writes while this one is running.
+	sibling := filepath.Join(parent, "b", "README")
+	if err := os.MkdirAll(filepath.Dir(sibling), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sibling, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	awaitCancelled(t, done)
+
+	if _, err := os.Stat(sibling); err != nil {
+		t.Fatalf("the sibling clone's file was deleted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(parent, "a")); !os.IsNotExist(err) {
+		t.Fatalf("new/a left behind (stat err %v)", err)
+	}
+}
+
+// Value: protects=cancelling a clone into an existing empty folder never deletes what another run
+// put there meanwhile; fails_when=cleanup empties the destination wholesale; why_new=the existing
+// empty-folder test has no concurrent writer; seam=none; no_claim=the other run is simulated by a file
+func TestCloneProject_CancelLeavesAConcurrentWinnersClone(t *testing.T) {
+	svc, _ := newCreateSvc(t)
+	dest := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := startHangingClone(t, svc, ctx, dest)
+
+	winner := filepath.Join(dest, "README")
+	if err := os.WriteFile(winner, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	awaitCancelled(t, done)
+
+	if _, err := os.Stat(winner); err != nil {
+		t.Fatalf("the concurrent clone's file was deleted: %v", err)
+	}
+	if got := run(t, dest, "ls", "-A"); got != "README" {
+		t.Fatalf("destination holds %q, want only the other run's README", got)
+	}
+}
