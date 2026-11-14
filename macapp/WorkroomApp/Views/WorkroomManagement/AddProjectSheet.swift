@@ -120,7 +120,10 @@ enum AddProjectSheetModel {
     guard FileManager.default.fileExists(atPath: p, isDirectory: &isDir) else { return nil }
     guard isDir.boolValue else { return "That's a file, not a folder." }
     let entries = (try? FileManager.default.contentsOfDirectory(atPath: p)) ?? []
-    return entries.allSatisfy(finderJunk.contains) ? nil : "That folder isn't empty."
+    // A `.clone-*` folder is a clone's staging: the CLI sweeps it when its clone is dead and refuses
+    // the folder itself when one is still running, so it's the CLI's call, not this check's.
+    let ignorable = entries.allSatisfy { finderJunk.contains($0) || $0.hasPrefix(".clone-") }
+    return ignorable ? nil : "That folder isn't empty."
   }
 
   /// What Finder leaves in a folder it has shown, which doesn't make it non-empty: the CLI's own
