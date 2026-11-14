@@ -302,15 +302,18 @@ struct HostOptionsFields: View {
         OptionPicker(
           "CPU", option: $options.cpu, values: Array(1...max(plan.maxCPUs, 1)),
           label: { "\($0)" },
-          choices: HostOptionChoices(providerDefault: defaults.cpu, below: inherited?.cpu))
+          choices: HostOptionChoices(providerDefault: defaults.cpu, below: inherited?.cpu),
+          help: cpuHelp)
         OptionPicker(
           "Memory", option: $options.memory,
           values: (1...max(plan.maxMemoryGB, 1)).map { "\($0)GB" }, label: { $0 },
-          choices: HostOptionChoices(providerDefault: nil, below: inherited?.memory))
+          choices: HostOptionChoices(providerDefault: nil, below: inherited?.memory),
+          help: memoryHelp)
         OptionPicker(
           "Disk", option: $options.disk, values: diskSizes(plan).map { "\($0)GB" },
           label: { $0 },
-          choices: HostOptionChoices(providerDefault: defaults.disk, below: inherited?.disk))
+          choices: HostOptionChoices(providerDefault: defaults.disk, below: inherited?.disk),
+          help: diskHelp)
       } else {
         sizeTextFields
       }
@@ -329,15 +332,32 @@ struct HostOptionsFields: View {
         providerDefault: defaults.cpu.map { "\($0)" },
         below: inherited.map {
           HostOptions.Resolved(value: $0.cpu.value.map { "\($0)" }, source: $0.cpu.source)
-        }))
+        }),
+      help: cpuHelp + " A whole number.")
     OptionTextField(
       "Memory", option: $options.memory,
-      choices: HostOptionChoices(providerDefault: nil, below: inherited?.memory))
+      choices: HostOptionChoices(providerDefault: nil, below: inherited?.memory),
+      help: memoryHelp + " In GB, such as 4GB.")
     if provider == .exeDev {
       OptionTextField(
         "Disk", option: $options.disk,
-        choices: HostOptionChoices(providerDefault: nil, below: inherited?.disk))
+        choices: HostOptionChoices(providerDefault: nil, below: inherited?.disk),
+        help: diskHelp + " In GB, such as 25GB.")
     }
+  }
+
+  /// The size fields' tooltips, for this provider.
+  private var cpuHelp: String {
+    "The host's vCPUs, up to what your \(provider.displayName) plan allows."
+  }
+  private var memoryHelp: String {
+    provider == .railway
+      ? "The host's memory, up to what the workspace's Railway plan allows. Railway bills the "
+        + "memory a host uses."
+      : "The host's memory, up to what your \(provider.displayName) plan allows."
+  }
+  private var diskHelp: String {
+    "The host's disk, up to what your \(provider.displayName) plan allows."
   }
 
   /// Railway's region and size (#633). The size goes up to the plan's maximum; a plan Workroom
@@ -356,15 +376,14 @@ struct HostOptionsFields: View {
         "CPU", option: $options.cpu, values: Array(1...max(size.maxVCPU, 1)),
         label: { "\($0) vCPU" },
         choices: HostOptionChoices(providerDefault: size.vcpu, below: inherited?.cpu),
-        help: "The host's vCPUs, up to what the workspace's Railway plan allows."
+        help: cpuHelp
       )
       .accessibilityIdentifier("hostOptions.railway.cpu")
       OptionPicker(
         "Memory", option: $options.memory,
         values: (1...max(size.maxMemoryGB, 1)).map { "\($0)GB" }, label: { $0 },
         choices: HostOptionChoices(providerDefault: "\(size.memoryGB)GB", below: inherited?.memory),
-        help: "The host's memory, up to what the workspace's Railway plan allows. Railway bills "
-          + "the memory a host uses."
+        help: memoryHelp
       )
       .accessibilityIdentifier("hostOptions.railway.memory")
     } else {
@@ -385,10 +404,7 @@ struct HostOptionsFields: View {
       OptionTextField(
         imageKind.fieldLabel, option: $options.image,
         choices: HostOptionChoices(providerDefault: nil, below: inherited?.image),
-        suggestions: listed ?? [],
-        help: imageKind == .checkpoint
-          ? "A checkpoint in this Mac's Railway environment to start the host from. Empty starts "
-            + "from Railway's default image." : nil)
+        suggestions: listed ?? [], help: imageKind.fieldHelp)
     }
     if case .value(let name)? = options.image, let listed, !listed.contains(name) {
       Text(provider.hostImageKind == .checkpoint ? Self.missingCheckpoint : Self.missingSnapshot)
@@ -422,7 +438,10 @@ struct HostOptionsFields: View {
       values: [1, 2, 4, 8].filter { $0 <= (catalog.boxdSize?.maxVCPU ?? 8) },
       label: Self.boxdSize,
       choices: HostOptionChoices(providerDefault: defaults.cpu, below: inherited?.cpu),
-      fadesAll: snapshot
+      fadesAll: snapshot,
+      help: snapshot
+        ? "A snapshot keeps its own size."
+        : "The machine's size: its vCPUs, with 4 GB of memory each, up to your boxd org's quota."
     )
     .disabled(snapshot)
     if snapshot {
@@ -509,13 +528,13 @@ private struct OptionPicker<Value: Hashable & Codable & Sendable>: View {
   let choices: HostOptionChoices<Value>
   /// Fades every row whole: a boxd size a snapshot decides, so the value shown isn't one chosen.
   let fadesAll: Bool
-  /// The tooltip, for a field whose title doesn't say enough.
-  let help: String?
+  /// The tooltip: what the option sets.
+  let help: String
 
   init(
     _ title: String, option: Binding<HostOption<Value>?>, values: [Value],
     label: @escaping (Value) -> String, choices: HostOptionChoices<Value>, fadesAll: Bool = false,
-    help: String? = nil
+    help: String
   ) {
     self.title = title
     _option = option
@@ -544,7 +563,7 @@ private struct OptionPicker<Value: Hashable & Codable & Sendable>: View {
           .tag(choices.stored(for: value))
       }
     }
-    .help(help ?? "")
+    .help(help)
   }
 
   /// One row: its value, then its mark faded, or all of it faded where `fadesAll`.
@@ -587,12 +606,12 @@ private struct OptionTextField: View {
   @Binding var option: HostOption<String>?
   let choices: HostOptionChoices<String>
   let suggestions: [String]
-  /// The tooltip, for a field whose title doesn't say enough.
-  let help: String?
+  /// The tooltip: what the option sets.
+  let help: String
 
   init(
     _ title: String, option: Binding<HostOption<String>?>, choices: HostOptionChoices<String>,
-    suggestions: [String] = [], help: String? = nil
+    suggestions: [String] = [], help: String
   ) {
     self.title = title
     _option = option
@@ -615,7 +634,7 @@ private struct OptionTextField: View {
         TextField(title, text: text, prompt: Text(placeholder))
           .labelsHidden()
           .disabled(option == .providerDefault)
-          .help(help ?? "")
+          .help(help)
         if !suggestions.isEmpty || belowsOwn != nil || option == .providerDefault {
           Menu {
             ForEach(suggestions, id: \.self) { name in Button(name) { option = .value(name) } }
@@ -632,6 +651,7 @@ private struct OptionTextField: View {
           .menuStyle(.borderlessButton)
           .menuIndicator(.hidden)
           .fixedSize()
+          .help("\(title) choices: a listed value, or what this level inherits")
           .accessibilityLabel("\(title) choices")
           .accessibilityIdentifier("hostOptions.choices.\(title)")
         }

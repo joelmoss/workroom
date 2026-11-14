@@ -19,6 +19,21 @@ public enum HostImageKind: Sendable {
     }
   }
 
+  /// The host option field's tooltip.
+  public var fieldHelp: String {
+    switch self {
+    case .snapshot:
+      "A snapshot in this boxd account to start the machine from. Empty starts from boxd's "
+        + "default image."
+    case .containerImage:
+      "A container image, named with its registry, to start the VM from. Empty starts from "
+        + "exe.dev's default image."
+    case .checkpoint:
+      "A checkpoint in this Mac's Railway environment to start the host from. Empty starts "
+        + "from Railway's default image."
+    }
+  }
+
   /// The label for what a workroom's host was made from, in its Details pane.
   public var madeFromLabel: String {
     switch self {
