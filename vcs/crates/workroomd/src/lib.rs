@@ -47,8 +47,8 @@ pub mod testing {
     pub use crate::terminal::program_status::{Connection, dispatch};
     pub use crate::terminal::pty::{Pty, Size};
     pub use crate::terminal::screens::Screens;
-    pub use crate::util::ready_to_fork;
     pub use crate::terminal::session::{
         KEEPALIVE_PROBE, KEEPALIVE_VARIABLE, READ_CHUNK, SessionId, SessionSpec, SessionStore,
     };
+    pub use crate::util::ready_to_fork;
 }
