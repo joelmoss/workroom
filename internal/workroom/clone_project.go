@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -29,23 +30,25 @@ import (
 // GIT_TERMINAL_PROMPT=0, so missing credentials fail fast instead of hanging. It inherits none of
 // the repository variables (GIT_DIR, GIT_INDEX_FILE, …) a git hook or alias would pass down.
 //
+//	sweep a dead clone's staging in path and beside it ── ctx cancelled ──► ErrCancelled
 //	stat(path)
 //	 ├── a file ─────────────────────► ErrNotDirectory
-//	 ├── a folder with files in it ──► ErrDestinationNotEmpty
-//	 ├── an empty folder ──► git clone --progress -- url path/.clone-*   (the staging folder)
+//	 ├── a folder with files in it ──► ErrDestinationNotEmpty (naming any staging in the way)
+//	 ├── an empty folder ──► lock path/.clone-*.lock; git clone --progress -- url path/.clone-*
 //	 │                        └── ok ─► move each entry up into path ─┐
 //	 │                                   └── a name taken meanwhile ──► ErrDestinationNotEmpty
-//	 └── missing ──► make missing parents; git clone --progress -- url <parent>/.<name>.clone-* (0755 less umask)
+//	 └── missing ──► make missing parents; lock <parent>/.<name>.clone-*.lock;
+//	                 git clone --progress -- url <parent>/.<name>.clone-* (0755 less umask)
 //	                  └── ok ─► rename staging to path ─────────────┐
 //	                             └── path created meanwhile ──► ErrDestinationNotEmpty
 //	  either clone ├── ctx cancelled ──► ErrCancelled                │
 //	               └── git fails ──────► ErrCloneFailed, with git's own error lines
 //	                                                                 ▼
-//	                                      register ── fails ──► ErrConfigWrite; the clone is kept
+//	                                      remove the lock; register ── fails ──► ErrConfigWrite; the clone is kept
 //
 // The clone happens in a staging folder of its own and is moved into place, so a failure or a
-// cancel before then only ever removes that staging folder and what it moved, plus any parent folder
-// this run made that is still empty. An existing folder is cloned into, never replaced, so it keeps
+// cancel before then only ever removes that staging folder, its lock file and what it moved, plus any
+// parent folder this run made that is still empty. An existing folder is cloned into, never replaced, so it keeps
 // its mode, ACLs, xattrs and Finder tags, the staging folder never crosses filesystems (an external
 // drive's root, a mount point), and nothing renames over a directory, which Windows can't do.
 // Nothing another run or the user wrote is touched: a concurrent clone into the same path or a
@@ -67,18 +70,21 @@ func (s *Service) CloneProject(ctx context.Context, url, path string, progress i
 
 	// Staging a crashed or killed clone left behind would make the destination look taken. What is
 	// provably dead is swept first (not under Pretend, which only looks past it).
-	host, hostOK := s.stagingHost()
+	host, hostOK := machineHost()
 	if !hostOK {
 		host = "" // without a machine id no owned staging can be told apart from another machine's
 	}
 	staleInside, staleBeside := staleStagingFor(canon, host)
-	if !s.Pretend {
-		for _, dir := range append(staleInside, staleBeside...) {
-			removeStaleStaging(dir)
+	var ignore []string
+	if s.Pretend {
+		for _, st := range staleInside {
+			ignore = append(ignore, st.paths()...)
 		}
-		staleInside = nil
+		releaseAll(append(staleInside, staleBeside...))
+	} else if err := removeStale(ctx, progress, append(staleInside, staleBeside...)); err != nil {
+		return AddProjectResult{}, err
 	}
-	existed, err := cloneDestination(canon, staleInside)
+	existed, err := cloneDestination(canon, ignore)
 	if err != nil {
 		return AddProjectResult{}, err
 	}
@@ -90,7 +96,7 @@ func (s *Service) CloneProject(ctx context.Context, url, path string, progress i
 	if err != nil {
 		return AddProjectResult{}, err
 	}
-	stage, err := makeStaging(canon, existed, s.stagingOwner())
+	stage, lock, err := makeStaging(canon, existed, stagingOwner())
 	if err != nil {
 		removeEmptyDirs(made)
 		return AddProjectResult{}, err
@@ -105,10 +111,13 @@ func (s *Service) CloneProject(ctx context.Context, url, path string, progress i
 			_ = os.RemoveAll(filepath.Join(canon, name))
 		}
 		_ = os.RemoveAll(stage)
+		// The lock goes last, so no sweep sees the staging unlocked, and before the parents, which
+		// it may be the last thing in.
+		releaseStagingLock(lock, stage)
 		removeEmptyDirs(made)
 	}()
 
-	if err := runClone(ctx, url, stage, progress); err != nil {
+	if err := runClone(ctx, url, stage, progress, lock); err != nil {
 		return AddProjectResult{}, err
 	}
 	if existed {
@@ -120,6 +129,7 @@ func (s *Service) CloneProject(ctx context.Context, url, path string, progress i
 		return AddProjectResult{}, err
 	}
 	published = true
+	releaseStagingLock(lock, stage)
 
 	// The clone now exists, so resolve it: a path under a symlinked parent is stored in its
 	// symlink-evaluated form, as an existing project's is.
@@ -132,30 +142,49 @@ func (s *Service) CloneProject(ctx context.Context, url, path string, progress i
 	return AddProjectResult{Path: canon, VCS: "git"}, nil
 }
 
-// makeStaging makes the folder the clone runs in: inside canon (.clone-*) when canon already
+// makeStaging makes the folder the clone runs in: inside canon (.clone-*, 0700) when canon already
 // exists, else beside it (.<name>.clone-*), made 0755 less the umask since it becomes canon itself.
-func makeStaging(canon string, existed bool, owner string) (string, error) {
-	if existed {
-		stage, err := os.MkdirTemp(canon, ".clone-"+owner)
-		if err != nil {
-			return "", fmt.Errorf("%w: create staging folder in %s: %v", errs.ErrConfigWrite, canon, err)
-		}
-		return stage, nil
+// Its lock file (the staging name plus .lock, beside the folder) is made and locked first, so a
+// sweep never sees this run's staging unlocked; lock is nil where there is no lock (Windows, a
+// filesystem without flock), which leaves the pid in the name to speak for the run.
+func makeStaging(canon string, existed bool, owner string) (stage string, lock *os.File, err error) {
+	parent, prefix, mode := canon, ".clone-"+owner, fs.FileMode(0o700)
+	if !existed {
+		// The new project folder takes the user's umask like any folder they make, so a private
+		// umask keeps a private repo private.
+		parent, prefix, mode = filepath.Dir(canon), "."+filepath.Base(canon)+".clone-"+owner, 0o755
 	}
-	// os.Mkdir rather than MkdirTemp (always 0700, then chmodded): the new project folder takes the
-	// user's umask like any folder they make, so a private umask keeps a private repo private.
-	parent, prefix := filepath.Dir(canon), "."+filepath.Base(canon)+".clone-"+owner
 	for range 100 {
 		stage := filepath.Join(parent, prefix+strconv.FormatUint(uint64(rand.Uint32()), 36))
-		err := os.Mkdir(stage, 0o755)
-		if err == nil {
-			return stage, nil
+		lock, err := createStagingLock(stage + ".lock")
+		switch {
+		case errors.Is(err, fs.ErrExist), errors.Is(err, errLockLost):
+			continue
+		case errors.Is(err, errLockUnsupported):
+			lock = nil
+		case err != nil:
+			return "", nil, fmt.Errorf("%w: create staging lock for %s: %v", errs.ErrConfigWrite, canon, err)
 		}
+		err = os.Mkdir(stage, mode)
+		if err == nil {
+			return stage, lock, nil
+		}
+		releaseStagingLock(lock, stage)
 		if !errors.Is(err, fs.ErrExist) {
-			return "", fmt.Errorf("%w: create staging folder for %s: %v", errs.ErrConfigWrite, canon, err)
+			return "", nil, fmt.Errorf("%w: create staging folder for %s: %v", errs.ErrConfigWrite, canon, err)
 		}
 	}
-	return "", fmt.Errorf("%w: create staging folder for %s: no free name", errs.ErrConfigWrite, canon)
+	return "", nil, fmt.Errorf("%w: create staging folder for %s: no free name", errs.ErrConfigWrite, canon)
+}
+
+// releaseStagingLock removes a staging folder's lock file and then closes it. It never unlocks
+// (LOCK_UN would release git's inherited hold too); closing drops only this process's.
+func releaseStagingLock(lock *os.File, stage string) {
+	if lock == nil {
+		return
+	}
+	_ = os.Remove(stage + ".lock")
+	_ = lock.Close()
 }
 
 // renameInto renames the staging folder to canon, which did not exist when the clone started. If
@@ -173,8 +202,8 @@ func renameInto(stage, canon string) error {
 }
 
 // moveUp moves the clone out of a staging folder inside canon into canon itself, recording each
-// entry it moves. It refuses if anything but Finder junk has appeared in canon, or if a clone entry
-// would land on a name that is taken.
+// entry it moves. It refuses if anything but Finder junk and the staging's own lock file has appeared
+// in canon, or if a clone entry would land on a name that is taken.
 func moveUp(stage, canon string, placed *[]string) error {
 	// Junk the clone might also hold (a tracked .DS_Store) would otherwise clash with Finder's.
 	removeDirJunk(canon)
@@ -183,7 +212,7 @@ func moveUp(stage, canon string, placed *[]string) error {
 		return err
 	}
 	for _, e := range others {
-		if e.Name() != filepath.Base(stage) && !slices.Contains(finderJunk, e.Name()) {
+		if e.Name() != filepath.Base(stage) && e.Name() != filepath.Base(stage)+".lock" && !slices.Contains(finderJunk, e.Name()) {
 			return fmt.Errorf("%w: %s", errs.ErrDestinationNotEmpty, canon)
 		}
 	}
@@ -229,7 +258,7 @@ func cloneDestination(canon string, ignore []string) (bool, error) {
 		}
 		if !empty {
 			if blocking := stagingInTheWay(canon, ignore); len(blocking) > 0 {
-				return false, fmt.Errorf("%w: %s (a clone's staging folder is in the way: %s; remove it if no clone is running)",
+				return false, fmt.Errorf("%w: %s (a clone's staging is in the way: %s; remove it if no clone is running)",
 					errs.ErrDestinationNotEmpty, canon, strings.Join(blocking, ", "))
 			}
 			return false, fmt.Errorf("%w: %s", errs.ErrDestinationNotEmpty, canon)
@@ -288,13 +317,18 @@ func removeEmptyDirs(made []string) {
 // before a SIGKILL.
 const cloneKillGrace = 3 * time.Second
 
-// runClone runs git clone, streaming its stderr to progress and keeping its tail for the error.
-func runClone(ctx context.Context, url, dest string, progress io.Writer) error {
+// runClone runs git clone, streaming its stderr to progress and keeping its tail for the error. git
+// inherits lock (when there is one) as an extra open file, so it and every helper it starts hold the
+// staging's lock too: a clone whose CLI was SIGKILLed still counts as alive while any of them runs.
+func runClone(ctx context.Context, url, dest string, progress io.Writer, lock *os.File) error {
 	var stderr tailBuffer
 	cmd := exec.Command("git", "clone", "--progress", "--", url, dest)
 	cmd.Env = cloneEnvironment(os.Environ())
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.MultiWriter(progress, &stderr)
+	if lock != nil {
+		cmd.ExtraFiles = []*os.File{lock}
+	}
 	script.SetSession(cmd)
 	// A helper git started can hold the stderr pipe after git is gone; don't wait on it for long.
 	cmd.WaitDelay = 2 * time.Second
@@ -450,42 +484,22 @@ func removeDirJunk(dir string) {
 
 // Staging names carry their owner, `<host>-<pid>-` after the `.clone-` prefix, so a later clone can
 // tell a crashed run's leftovers from a clone still running, here or on another machine sharing the
-// volume. The host part is a machine id: 8 random hex digits made once and kept beside the config
-// file (so per machine and user, and unchanged by renaming the Mac or a network that rewrites its
-// hostname). stagingHost reports false when the id can't be read or made.
-func (s *Service) stagingHost() (string, bool) {
-	if s.Config == nil {
+// volume. The host part is machineHost: an 8-hex hash of the machine's hardware id, read rather than
+// stored, so it needs nothing written (--pretend stays read-only) and is unchanged by renaming the
+// machine or a network that rewrites its hostname. It reports false when the machine has no id.
+var machineHost = sync.OnceValues(func() (string, bool) {
+	id, ok := machineID()
+	if !ok {
 		return "", false
 	}
-	path := filepath.Join(filepath.Dir(s.Config.Path()), "machine-id")
-	if id, ok := readMachineID(path); ok {
-		return id, true
-	}
-	id := fmt.Sprintf("%08x", rand.Uint32())
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		// Another run may have just made it.
-		return readMachineID(path)
-	}
-	_, werr := f.WriteString(id + "\n")
-	if cerr := f.Close(); werr != nil || cerr != nil {
-		_ = os.Remove(path)
-		return "", false
-	}
-	return id, true
-}
+	return fnvHex(id), true
+})
 
-// readMachineID reads a machine-id file, accepting only the 8 hex digits stagingHost writes.
-func readMachineID(path string) (string, bool) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", false
-	}
-	id := strings.TrimSpace(string(b))
-	if len(id) != 8 || strings.Trim(id, "0123456789abcdef") != "" {
-		return "", false
-	}
-	return id, true
+// fnvHex is s as 8 hex digits: its FNV-32a hash.
+func fnvHex(s string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(s))
+	return fmt.Sprintf("%08x", h.Sum32())
 }
 
 // hostnameHash names staging when there is no machine id. Nothing is ever swept by it: an owned
@@ -495,78 +509,177 @@ func hostnameHash() string {
 	if err != nil {
 		name = "unknown"
 	}
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(name))
-	return fmt.Sprintf("%08x", h.Sum32())
+	return fnvHex(name)
 }
 
 // stagingOwner is the owner part of this process's staging names.
-func (s *Service) stagingOwner() string {
-	host, ok := s.stagingHost()
+func stagingOwner() string {
+	host, ok := machineHost()
 	if !ok {
 		host = hostnameHash()
 	}
 	return host + "-" + strconv.Itoa(os.Getpid()) + "-"
 }
 
-// staleStagingFor lists the staging folders a dead clone into canon left: inside canon (only when it
-// is a real folder) and beside it.
-func staleStagingFor(canon, host string) (inside, beside []string) {
+// Lock-file errors createStagingLock reports.
+var (
+	errLockUnsupported = errors.New("staging locks are not supported here")
+	errLockLost        = errors.New("a sweep took the staging lock")
+)
+
+// lockState is what probeStagingLock found a staging lock file to say about its clone.
+type lockState int
+
+const (
+	lockHeld        lockState = iota // its clone, or a git it started, is running
+	lockFree                         // nothing holds it: its clone is dead
+	lockMissing                      // there is no lock file
+	lockUnsupported                  // the platform or filesystem can't say
+)
+
+// staleStage is a dead clone's leftovers: its staging folder ("" when only an orphan lock file is
+// left) and its lock file ("" when it has none), with that lock held by this process while the
+// sweep removes them, so the dead run's name can't be reused under it.
+type staleStage struct {
+	dir, lock string
+	held      *os.File
+}
+
+// paths are what the stale leftovers occupy.
+func (st staleStage) paths() []string {
+	var p []string
+	for _, path := range []string{st.dir, st.lock} {
+		if path != "" {
+			p = append(p, path)
+		}
+	}
+	return p
+}
+
+// name is how the sweep's progress line names the leftovers.
+func (st staleStage) name() string {
+	if st.dir != "" {
+		return filepath.Base(st.dir)
+	}
+	return filepath.Base(st.lock)
+}
+
+// remove removes the staging folder, checking once more that it is still a real folder and not a
+// symlink put in its place, then its lock file, and only then lets go of the lock.
+func (st staleStage) remove() {
+	if st.dir != "" {
+		if info, err := os.Lstat(st.dir); err == nil && info.IsDir() {
+			_ = os.RemoveAll(st.dir)
+		}
+	}
+	if st.held != nil {
+		_ = os.Remove(st.lock)
+		_ = st.held.Close()
+	}
+}
+
+// releaseAll lets go of the locks the sweep took, without removing anything.
+func releaseAll(stale []staleStage) {
+	for _, st := range stale {
+		if st.held != nil {
+			_ = st.held.Close()
+		}
+	}
+}
+
+// staleStagingFor lists what a dead clone into canon left: inside canon (only when it is a real
+// folder) and beside it.
+func staleStagingFor(canon, host string) (inside, beside []staleStage) {
 	if info, err := os.Lstat(canon); err == nil && info.IsDir() {
 		inside = staleStaging(canon, ".clone-", host)
 	}
 	return inside, staleStaging(filepath.Dir(canon), "."+filepath.Base(canon)+".clone-", host)
 }
 
-// staleStaging lists the entries of dir named prefix<host>-<pid>-… that are provably a dead clone's:
-// a real folder (never a symlink), made on this machine (host; "" when it has no machine id, which
-// sweeps no owned name), by a process that is no longer running.
-// Anything else stays (a live clone's, another machine's), except that a name without an owner, from
-// before staging names carried one, is taken as abandoned once it has been idle staleUnownedAfter.
-func staleStaging(dir, prefix, host string) []string {
+// staleStaging lists the entries of dir named prefix<host>-<pid>-… that are provably a dead clone's,
+// made on this machine (host; "" when it has no machine id, which sweeps nothing). A real folder
+// (never a symlink) is dead when its lock file is free, or, with no lock file to ask (staging from
+// before the lock, or where locks aren't supported), when its pid is no longer running; a held lock
+// keeps it whatever its pid, since git outlives a SIGKILLed CLI. A lock file whose folder is gone is
+// dead once free. A name without an owner is never removed: nothing can speak for it.
+func staleStaging(dir, prefix, host string) []staleStage {
+	if host == "" {
+		return nil
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
-	var stale []string
+	var stale []staleStage
 	for _, e := range entries {
-		rest, ok := strings.CutPrefix(e.Name(), prefix)
-		if !ok || e.Type()&fs.ModeType != fs.ModeDir {
+		name := e.Name()
+		stagingName, isLock := strings.CutSuffix(name, ".lock")
+		rest, ok := strings.CutPrefix(stagingName, prefix)
+		if !ok {
 			continue
 		}
-		path := filepath.Join(dir, e.Name())
 		parts := strings.SplitN(rest, "-", 3)
-		if len(parts) != 3 {
-			// No owner: named by a build before staging names carried one (#636). Only its age can
-			// speak for it, so it goes once nothing in it has changed for staleUnownedAfter.
-			if isUnownedStagingSuffix(rest, prefix == ".clone-") && looksUnfinished(path) &&
-				time.Since(lastStagingActivity(path)) > staleUnownedAfter {
-				stale = append(stale, path)
-			}
-			continue
-		}
-		if host == "" || parts[0] != host {
+		if len(parts) != 3 || parts[0] != host {
 			continue
 		}
 		pid, err := strconv.Atoi(parts[1])
-		if err != nil || pid <= 0 || processAlive(pid) {
+		if err != nil || pid <= 0 {
 			continue
 		}
-		stale = append(stale, path)
+		stage := filepath.Join(dir, stagingName)
+		if isLock {
+			if !e.Type().IsRegular() {
+				continue
+			}
+			if _, err := os.Lstat(stage); !os.IsNotExist(err) {
+				continue // judged with its folder
+			}
+			if held, state := probeStagingLock(stage + ".lock"); state == lockFree {
+				stale = append(stale, staleStage{lock: stage + ".lock", held: held})
+			}
+			continue
+		}
+		if e.Type()&fs.ModeType != fs.ModeDir {
+			continue
+		}
+		switch held, state := probeStagingLock(stage + ".lock"); state {
+		case lockFree:
+			stale = append(stale, staleStage{dir: stage, lock: stage + ".lock", held: held})
+		case lockMissing, lockUnsupported:
+			if !processAlive(pid) {
+				stale = append(stale, staleStage{dir: stage})
+			}
+		}
 	}
 	return stale
 }
 
-// removeStaleStaging removes a dead clone's staging folder, checking once more that it is still a
-// real folder and not a symlink put in its place.
-func removeStaleStaging(dir string) {
-	if info, err := os.Lstat(dir); err == nil && info.IsDir() {
-		_ = os.RemoveAll(dir)
+// removeStale removes what dead clones left, saying so on progress first. A cancel stops it at
+// once with ErrCancelled: a folder left half-removed is still a dead clone's, swept next time.
+func removeStale(ctx context.Context, progress io.Writer, stale []staleStage) error {
+	for i, st := range stale {
+		if ctx.Err() != nil {
+			releaseAll(stale[i:])
+			return errs.ErrCancelled
+		}
+		_, _ = fmt.Fprintf(progress, "Removing staging a crashed clone left: %s\n", st.name())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			st.remove()
+		}()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			releaseAll(stale[i+1:])
+			return errs.ErrCancelled
+		}
 	}
+	return nil
 }
 
-// dirIsEmptyExcept is dirIsEmpty, also passing over the given paths (a dead clone's staging, which
-// --pretend leaves in place).
+// dirIsEmptyExcept is dirIsEmpty, also passing over the given paths (a dead clone's staging and lock
+// file, which --pretend leaves in place).
 func dirIsEmptyExcept(dir string, ignore []string) (bool, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -581,71 +694,10 @@ func dirIsEmptyExcept(dir string, ignore []string) (bool, error) {
 	return true, nil
 }
 
-// staleUnownedAfter is how long an unowned staging folder must sit idle before it counts as a dead
-// clone's. Idle means nothing that a running clone keeps touching has changed: see
-// lastStagingActivity.
-const staleUnownedAfter = time.Hour
-
-// isUnownedStagingSuffix reports whether rest is the random tail an unowned staging name had: the
-// decimal digits os.MkdirTemp appends (inside, and beside before #636's final build), or the base-36
-// uint32 the #636 build's beside staging used (at most seven characters).
-func isUnownedStagingSuffix(rest string, inside bool) bool {
-	if n := len(rest); n == 0 || n > 10 {
-		return false
-	}
-	digits := true
-	for _, r := range rest {
-		switch {
-		case '0' <= r && r <= '9':
-		case 'a' <= r && r <= 'z' && !inside:
-			digits = false
-		default:
-			return false
-		}
-	}
-	return digits || len(rest) <= 7
-}
-
-// looksUnfinished reports whether a folder is what a clone killed partway leaves: empty, or a .git
-// with no index yet (git writes the index at checkout, its last step). A finished repository always
-// has an index, so a folder of the user's that merely matches the name is never taken for staging.
-func looksUnfinished(dir string) bool {
-	if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
-		return true
-	}
-	if info, err := os.Lstat(filepath.Join(dir, ".git")); err != nil || !info.IsDir() {
-		return false
-	}
-	_, err := os.Lstat(filepath.Join(dir, ".git", "index"))
-	return os.IsNotExist(err)
-}
-
-// lastStagingActivity is when a clone last visibly worked in its staging folder: the newest change
-// to the folder itself, its .git, .git/index (written at checkout) and .git/objects/pack and the
-// files in it, where a fetch's pack grows the whole time it downloads. A long clone that is still
-// running therefore never looks idle, without walking a large checkout.
-func lastStagingActivity(stage string) time.Time {
-	var newest time.Time
-	note := func(path string) {
-		if info, err := os.Lstat(path); err == nil && info.ModTime().After(newest) {
-			newest = info.ModTime()
-		}
-	}
-	pack := filepath.Join(stage, ".git", "objects", "pack")
-	for _, path := range []string{stage, filepath.Join(stage, ".git"), filepath.Join(stage, ".git", "index"), pack} {
-		note(path)
-	}
-	if entries, err := os.ReadDir(pack); err == nil {
-		for _, e := range entries {
-			note(filepath.Join(pack, e.Name()))
-		}
-	}
-	return newest
-}
-
-// stagingInTheWay names the .clone-* entries that alone keep dir from being empty (a clone still
-// running, another machine's, or one the sweep couldn't prove dead or remove), or nil when anything
-// else is there too.
+// stagingInTheWay names the staging-shaped entries (a .clone-* folder or .clone-*.lock file) that
+// alone keep dir from being empty: a clone still running, another machine's, one without an owner
+// in its name, or one the sweep couldn't remove. It is nil when anything else is there too, a
+// .clone-notes file of the user's included.
 func stagingInTheWay(dir string, ignore []string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -656,7 +708,8 @@ func stagingInTheWay(dir string, ignore []string) []string {
 		name := e.Name()
 		switch {
 		case slices.Contains(finderJunk, name) || slices.Contains(ignore, filepath.Join(dir, name)):
-		case strings.HasPrefix(name, ".clone-"):
+		case strings.HasPrefix(name, ".clone-") && (e.Type()&fs.ModeType == fs.ModeDir ||
+			e.Type().IsRegular() && strings.HasSuffix(name, ".lock")):
 			staging = append(staging, name)
 		default:
 			return nil

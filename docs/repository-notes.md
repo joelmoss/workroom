@@ -79,15 +79,23 @@ Release download counts are snapshotted daily, and before every `--clobber` uplo
   that is still empty, never another run's clone; once the clone is in place it is kept, and a
   registration failure reports `ConfigWriteFailed` saying the clone is at PATH but not registered;
   `--pretend` reports `would_clone`. Staging names carry their owner (`.clone-<host>-<pid>-…`,
-  the host a random 8-hex machine id made once in `machine-id` beside the config file, so per Mac
-  and user and unchanged by hostname changes), so a later clone into the same place first sweeps
-  staging a crashed or SIGKILLed clone left: only real folders, made with this machine id, by a pid
-  no longer running. Without a machine id (unreadable config folder) no owned staging is swept. A
-  refusal caused only by `.clone-*` folders names them. A live clone's or another machine's staging stays. An unowned name from the #636
-  build (`.clone-<digits>`, `.<name>.clone-<base36>`) is swept only when it looks unfinished (empty,
-  or `.git` without an index) and nothing a clone touches (`.git`, its index, the pack being
-  fetched) has changed for an hour; a finished repository with a lookalike name is never touched.
-  `--pretend` looks past stale staging without removing it. The app's emptiness check ignores
+  the host an 8-hex FNV-32a hash of the machine's hardware id: the Mac's `IOPlatformUUID` from
+  `ioreg`, Linux's `/etc/machine-id` (or `/var/lib/dbus/machine-id`), Windows' `MachineGuid`; read,
+  never written, so unchanged by hostname changes and `--pretend` stays read-only). While a clone
+  runs the CLI holds an exclusive `flock` on a lock file beside its staging (the staging name plus
+  `.lock`: `<parent>/.<name>.clone-….lock`, or `PATH/.clone-….lock` inside), made before the
+  staging folder and passed to git as an extra open file, so git and its helpers inherit the lock
+  and it stays held after a SIGKILLed CLI while any of them runs; it is removed on success, failure
+  and cancel. A later clone into the same place first sweeps what a crashed or killed clone left,
+  saying `Removing staging a crashed clone left: <name>` on the progress stream and stopping with
+  `Cancelled` on SIGTERM: only real folders named with this machine id, whose lock file is free
+  (whatever their pid), or, with no lock file (an earlier build's staging, or Windows and
+  filesystems without `flock`), whose pid is no longer running; a lock file whose staging is gone
+  goes once free. Without a machine id no owned staging is swept. A name without an owner (an
+  earlier build's `.clone-<digits>`) is never removed. A refusal caused only by staging-shaped
+  entries (`.clone-*` folders, `.clone-*.lock` files) names them; a user's `.clone-notes` file is
+  ordinary content. A live clone's or another machine's staging stays. `--pretend` looks past dead
+  staging and its lock file without removing them. The app's emptiness check ignores
   `.clone-*` and leaves that call to the CLI.
   `delete-project` is config-only unless: `--with-workrooms` cascades the per-workroom
   teardown (hard-deletes worktree dirs, branches kept); or `--from-disk` runs each workroom's
