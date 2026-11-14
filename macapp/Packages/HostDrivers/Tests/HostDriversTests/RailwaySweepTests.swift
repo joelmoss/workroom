@@ -403,6 +403,44 @@ final class RailwaySweepTests: XCTestCase {
       RailwayLostCreates.Failure.projectNotSeen.localizedDescription.contains("project"))
   }
 
+  /// Value: protects=one lost create resolves once: Release and Nightly, each destroying a
+  /// different candidate of it at the same moment, never both destroy one (review 6, finding 4);
+  /// fails_when=both destroys reach Railway, or the one that lost doesn't say it was resolved;
+  /// seam=two RailwayLostCreates (two apps) on one ledger over StubRailway, with a slow destroy
+  func testTwoAppsDestroyingOneLostCreatesCandidatesDestroyOnlyOne() async throws {
+    let intent = try await loseACreatesReply()
+    let railway = railway([
+      Self.sandbox("sbx-a", createdAt: Self.made(3, after: intent)),
+      Self.sandbox("sbx-b", createdAt: Self.made(4, after: intent)),
+    ])
+    railway.answer("sandboxDestroy") { request in
+      Thread.sleep(forTimeInterval: 0.3)
+      let variables = StubRailway.graphQLBody(request)["variables"] as? [String: Any] ?? [:]
+      let body = try JSONSerialization.data(withJSONObject: [
+        "data": ["sandboxDestroy": ["id": variables["id"]!, "status": "DESTROYING"]]
+      ])
+      return RailwayHTTPResponse(status: 200, body: body)
+    }
+    let release = lostCreates(railway)
+    let nightly = lostCreates(railway)
+    let creates = try await release.creates(grace: 0)
+    let create = try XCTUnwrap(creates.first)
+    async let a: Error? = {
+      do { try await release.destroy("sbx-a", of: create, recorded: []) } catch { return error }
+      return nil
+    }()
+    async let b: Error? = {
+      do { try await nightly.destroy("sbx-b", of: create, recorded: []) } catch { return error }
+      return nil
+    }()
+    let outcomes = await [a, b]
+    XCTAssertEqual(destroyed(railway).count, 1, "both apps destroyed a candidate")
+    XCTAssertEqual(
+      outcomes.compactMap { $0 as? RailwayLostCreates.Failure }, [.resolved], "\(outcomes)")
+    let left = try await ledger.entries()
+    XCTAssertEqual(left, [])
+  }
+
   /// Value: protects=the user can dismiss a lost create's notice without destroying anything, even
   /// signed out, and only that create's entry goes (review 5, D1); fails_when=dismissing destroys
   /// a sandbox, needs Railway, or takes another entry off; seam=RailwayLostCreates.dismiss over

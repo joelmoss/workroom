@@ -167,7 +167,27 @@ public struct RailwayLostCreates: Sendable {
   /// once Railway confirms it is gone. Only a sandbox that is a candidate now (`candidates`) is
   /// destroyed: one recorded, named by another create, gone or elsewhere since the user saw the
   /// list throws `notACandidate`. A destroy Railway didn't confirm keeps the entry.
+  ///
+  /// The check, the destroy and the drop hold `resolveLock` together, so Release and Nightly,
+  /// sharing the ledger, never each destroy a different candidate of one create: the second
+  /// finds it resolved. A lock of its own, not the ledger's, which isn't reentrant and which a
+  /// create takes to begin: holding it across Railway's calls would hold up every create.
   public func destroy(_ sandbox: String, of create: Create, recorded: Set<String>) async throws {
+    try await resolveLock.withLock {
+      try await destroyNow(sandbox, of: create, recorded: recorded)
+    }
+  }
+
+  /// Held while a lost create is resolved, by either app: long enough for a destroy's calls to
+  /// Railway (a listing, the destroy and its check), each bounded by the request's own timeout.
+  var resolveLock: CrossProcessLock {
+    CrossProcessLock(
+      path: ledger.directory.appendingPathComponent("lost-create.lock"), timeout: .seconds(300))
+  }
+
+  private func destroyNow(_ sandbox: String, of create: Create, recorded: Set<String>)
+    async throws
+  {
     guard
       try await ledger.entries().contains(where: { $0.intent == create.id && $0.sandbox == nil })
     else { throw Failure.resolved }
@@ -184,7 +204,7 @@ public struct RailwayLostCreates: Sendable {
 
   /// Takes `create` off the ledger, destroying nothing: the user has checked Railway themselves.
   public func dismiss(_ create: Create) async throws {
-    try await ledger.drop([create.id])
+    try await resolveLock.withLock { try await ledger.drop([create.id]) }
   }
 
   /// Railway's `DateTime`, ISO 8601 with or without fractional seconds.
