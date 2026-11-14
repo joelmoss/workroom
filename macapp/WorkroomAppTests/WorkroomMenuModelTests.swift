@@ -37,6 +37,20 @@ final class WorkroomMenuModelTests: XCTestCase {
     ]
   }
 
+  // MARK: A gone host
+
+  /// Value: protects=a workroom whose host its provider no longer has offers Remove Workroom and
+  /// nothing else, on every menu (#623 story 26, #629); fails_when=a run, label, split, close or
+  /// move item still shows for it; seam=WorkroomMenuModel.entries
+  func testAWorkroomWhoseHostIsGoneOffersOnlyRemove() {
+    let model = WorkroomMenuModel(
+      run: idle, closeName: "fix-auth", removableFromSplit: true, canOpenInSplit: true,
+      showsMoveToNewWindow: true, canMoveWorkroom: true,
+      workroom: .init(hasLabel: true, hostGone: true))
+    XCTAssertEqual(model.entries(for: .full), [.remove])
+    XCTAssertEqual(model.entries(for: .inspectorHeader), [.remove])
+  }
+
   // MARK: A root
 
   /// A project root on its tab chip: Close names the project, and there is nothing to label or

@@ -11,7 +11,8 @@ import WorkroomVCS
 /// `reachability.adopt` tells both what config records. Also the folders and CLIs every driver is
 /// made with.
 final class RemoteHosts: Sendable {
-  static let shared = RemoteHosts()
+  /// The app's, whose gone hosts the views read (`GoneHosts`).
+  static let shared = RemoteHosts(goneChanged: GoneHosts.record)
 
   /// Which driver a host is in (#309, #356): its kind (`HostKind`), and who that driver acts for.
   /// A container runtime on this Mac, and for Docker the context it names (nil names none); a boxd
@@ -135,6 +136,7 @@ final class RemoteHosts: Sendable {
     )? =
       nil,
     presence: (@Sendable (HostID) async -> HostPresence?)? = nil,
+    goneChanged: (@Sendable (HostID, Bool) -> Void)? = nil,
     pendingIn: URL? = RemoteHosts.pendingIn,
     railwayEnvironment: @escaping @Sendable () -> String? = RemoteHosts.railwaySweepEnvironment
   ) {
@@ -144,7 +146,7 @@ final class RemoteHosts: Sendable {
     reachability = HostReachability(
       registry: registry, connectHost: connectHost, isConnected: isConnected,
       startHost: startHost, now: now, relayHost: relayHost, connectDaemon: connectDaemon,
-      presence: presence)
+      presence: presence, goneChanged: goneChanged)
   }
 
   /// Where every driver writes its hosts' files.

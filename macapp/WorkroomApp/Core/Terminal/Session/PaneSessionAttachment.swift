@@ -201,7 +201,9 @@ final class PaneSessionAttachment {
   /// A pane on a remote host whose ssh lost the link reattaches, rather than sitting on a dead
   /// process while its session runs on: 255 is ssh's own failure, as after laptop sleep, a network
   /// change or the host rebooting. It reattaches as a restored pane, so a session that ended
-  /// meanwhile shows as ended. See `RemoteReconnectBackoff` for when it gives up.
+  /// meanwhile shows as ended. See `RemoteReconnectBackoff` for when it gives up: a host its
+  /// provider says is gone stops it at once, and its pane then gives way to the gone notice
+  /// (`TargetTerminalDetail`).
   ///
   /// ssh's status comes from what the attach wrapper recorded, never from the pane's exit status:
   /// libghostty runs every command under macOS `login`, which exits 0 whatever ran under it, so
@@ -227,7 +229,8 @@ final class PaneSessionAttachment {
         || (ended == .unrecorded && attachedByTheAppsReconnect && isRestored),
       let delay = backoff.next(
         attachedFor: attachedFor,
-        refused: service.remoteHostRefusedLastAttach(session))
+        refused: service.remoteHostRefusedLastAttach(session),
+        gone: service.remoteHostIsGone(session))
     else { return }
     let wasUp = linkWasUp
     let reconnect = DispatchWorkItem { [weak self] in
@@ -289,7 +292,8 @@ final class PaneSessionAttachment {
 /// `HostTerminalDriver.hostRefusedLastAttach`). The fifth of those within 30s of an attach stops
 /// the pane with ssh's message on screen, since retrying would only repeat it. Other failures in
 /// between do not restart that count, so a refusal that alternates with a host that is briefly
-/// unreachable still stops. A pane whose host is gone for good retries until it is closed.
+/// unreachable still stops. A pane whose host its provider says is gone (`GoneHosts`, #629) stops
+/// at once: that host never comes back.
 struct RemoteReconnectBackoff {
   static let ceiling: TimeInterval = 30
   static let maxRefusals = 5
@@ -298,7 +302,10 @@ struct RemoteReconnectBackoff {
 
   /// The wait before the next attach, or nil to stop. `attachedFor` is how long ago the attach
   /// that just failed began; longer than the ceiling is a link that dropped after it was up.
-  mutating func next(attachedFor: TimeInterval, refused: Bool) -> TimeInterval? {
+  mutating func next(attachedFor: TimeInterval, refused: Bool, gone: Bool = false)
+    -> TimeInterval?
+  {
+    if gone { return nil }
     if attachedFor > Self.ceiling {
       delay = 1
       refusals = 0

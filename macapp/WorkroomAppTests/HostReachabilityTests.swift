@@ -440,6 +440,51 @@ final class HostReachabilityTests: XCTestCase {
     XCTAssertEqual(connects.calls, 2)
   }
 
+  /// Value: protects=the views learn when a host goes and when it comes back, so a gone workroom
+  /// offers only Remove Workroom and its panes stop attaching (#629 story 26); fails_when=a gone
+  /// read isn't reported, is reported again on every read, or a host found again stays gone;
+  /// seam=HostReachability's gone hook, presence stubbed
+  func testAHostGoingAndComingBackIsReportedOnce() async throws {
+    let connects = Connects()
+    connects.hold(false)
+    let asked = Asleep()
+    let reported = Mutex<[Bool]>([])
+    let remote = RemoteHosts(
+      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
+      startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() },
+      goneChanged: { _, gone in reported.withLock { $0.append(gone) } }
+    ).reachability
+    let id = UUID()
+    let host = HostID.remote(id)
+    // A Railway workroom, whose driver says whether its host is there.
+    remote.adopt([
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "w", path: "/root/r", vcsName: "workroom/w", warnings: [],
+            host: HostDescriptor(
+              driver: HostKind.railway.driver, provisioner: RemoteWorkrooms.provisioner, id: id,
+              railway: RailwayHostRecord(
+                projectID: "prj", environmentID: "env", sandboxID: "sbx",
+                hostKey: "ssh-ed25519 AAAA")))
+        ])
+    ])
+
+    // Background reads, each past the last one's window, so each asks the provider again.
+    asked.set(presence: .gone)
+    for _ in 0..<2 {
+      try? await remote.ensureConnected(host)
+      connects.advance(HostReachability.retryAfter + .seconds(1))
+    }
+    XCTAssertEqual(asked.calls, 2)
+    XCTAssertEqual(reported.withLock { $0 }, [true])
+
+    asked.set(presence: .awake)
+    try await remote.ensureConnected(host)
+    XCTAssertEqual(reported.withLock { $0 }, [true, false])
+  }
+
   /// Only a host whose workroom the user opened has its container started before connecting: the
   /// status sweep connects to every remote workroom, and must not start them all (#309).
   func testOnlyAnOpenedHostIsStartedBeforeItsConnect() async throws {
