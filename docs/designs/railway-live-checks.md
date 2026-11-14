@@ -3,11 +3,11 @@
 Status: open. These checks are run by hand by the owner. ADRs [0074](../adr/0074-remote-panes-attach-from-the-mac-through-relay.md) and [0075](../adr/0075-the-daemon-closes-stale-remote-connections.md) stay proposed until both parts pass:
 
 1. The live Railway suite, `RailwayHostDriverLiveTests` (#634).
-2. The exe.dev, boxd and SSH host checks for the new attach path (#628).
+2. The exe.dev, boxd and SSH host checks for the new attach path (#628): the live suite `SSHFamilyHostsLiveTests`, and a real cut-off by hand.
 
 Afterwards, change the two ADRs' status lines as [After a pass](#after-a-pass) says, then delete this file or mark it done.
 
-No agent runs any of this. The suite calls the real Railway API, makes a sandbox that bills by the second, and pushes a branch as you.
+No agent runs part 1. Its suite calls the real Railway API, makes a sandbox that bills by the second, and pushes a branch as you. Part 2's suite makes, and destroys, an exe.dev VM and a boxd machine on your accounts and runs a daemon on your SSH host: run it, or have an agent run it, only when you mean to.
 
 ## 1. The live Railway suite
 
@@ -152,16 +152,84 @@ This complements the suite's `SIGSTOP`. Use the Dev app (`make app-run`) and a t
 
 ## 2. exe.dev, boxd and SSH host checks (#628)
 
-ADR 0074 changed the attach path for every ssh host, not only Railway. Every pane now runs the Mac's own `workroomd attach`, which starts `ssh -T … relay` itself. Run these on the `railway-hosts` build, on throwaway workrooms only, never a real project's workroom you care about.
+ADR 0074 changed the attach path for every ssh host, not only Railway. Every pane now runs the Mac's own `workroomd attach`, which starts `ssh -T … relay` itself.
 
-### Setup
+`macapp/Packages/HostDrivers/Tests/HostDriversTests/SSHFamilyHostsLiveTests.swift` runs checks A to G below on all three kinds of host. It uses the real drivers (`ExeDevHostDriver`, `BoxdHostDriver`, `SSHHostDriver`), the Dev app's own daemons, and real panes (`SSHTransport.attachCommand`, in part 1's pty harness). It takes about 5 minutes, most of it making the VM and the machine. It is skipped unless you enable it. Only the real cut-off stays manual ([Still by hand](#still-by-hand)).
+
+### Before you run the suite
+
+- **exe.dev**: `ssh exe.dev` in Terminal signs in without asking. The suite uses your own ssh, as the app does.
+- **boxd**: the `boxd` CLI is signed in (`boxd auth`). The suite looks for it at `~/.local/bin/boxd`; set `WR_BOXD_CLI` if it is elsewhere. The CLI writes each machine's stanza into `~/.ssh/config` and `~/.ssh/known_hosts`, inside its own blocks, as it always does. Destroying the machine takes them out.
+- **The SSH host**: an ssh alias that signs in without asking, with the host's key already in your `known_hosts`. It needs a Linux x86_64 or aarch64 login. Nothing of its login is touched (`authorized_keys`, sshd).
+- **A built Dev app**, as for part 1: `make app-build` from this checkout, or `WR_WORKROOM_APP`.
+- `/usr/bin/python3`, as for part 1.
+
+### Run the suite
+
+From the checkout's root, with the command sandbox off:
+
+```sh
+WR_SSH_FAMILY_LIVE_TESTS=1 WR_SSH_HOST=<ssh alias> \
+  swift test --package-path macapp/Packages/HostDrivers --filter SSHFamilyHostsLiveTests
+```
+
+| Variable | Meaning |
+|---|---|
+| `WR_SSH_FAMILY_LIVE_TESTS=1` | Required. Nothing runs without it. |
+| `WR_SSH_HOST` | The SSH host's ssh alias (or `user@host`). Required when the SSH host is among the hosts. |
+| `WR_SSH_FAMILY_HOSTS` | Optional. Which hosts to run, comma-separated, from `exedev`, `boxd` and `ssh`. The default is all three, in that order. |
+| `WR_BOXD_CLI` | Optional. The `boxd` CLI, if not at `~/.local/bin/boxd`. |
+| `WR_WORKROOM_APP` | Optional. A built `Workroom Dev.app` other than this checkout's. |
+
+Everything the suite makes is named after the run. `<run>` is six hex digits, printed first:
+
+- an exe.dev VM and a boxd machine, each `wrlive-<run>-<uuid>`, made with the drivers' own `create` and destroyed with their `destroy`;
+- on the SSH host, the driver's usual state directory under the run's name, `~/.local/state/workroom-live-<run>`, with this build's daemon in it, started as the app starts it;
+- on this Mac, `$TMPDIR/wr-family-live-<id>`: the drivers' host folders (ssh configs, attach logs), the pane output, and a throwaway key for the refused link.
+
+Each host runs these steps in order, one daemon session through them. A failed step is recorded, and the next one still runs. A host whose setup or bootstrap fails skips the rest.
+
+| Step | What it does | What it proves |
+|---|---|---|
+| set up the host | exe.dev and boxd: `driver.create()`. SSH host: `checkHost()`, and a note of what is already in its home | The drivers make a host, or reach one. |
+| daemon bootstrap | `DaemonBootstrap.ensure` with the Dev app's Linux daemon and Ghostty set, then a service connection | The daemon is installed and answers: supervised on exe.dev and boxd, started by the bootstrap on the SSH host. |
+| A. attach | A new session. The pane prints `tty`, `TERM`, `SSH_CONNECTION`, `SSH_TTY`, `HOME`, `SHELL`, `PATH` and any `WORKROOM_SESSION_*`. Then it reads the daemon's session list and the host's processes | "workroom: waiting…" is followed by the client's erase (DECRC, ED). The pane has a daemon pty, `xterm-ghostty` and `SSH_TTY` unset, and `SSH_CONNECTION` exactly when an ssh login on the host has it: exe.dev's and boxd's gateways give a login none (measured 2026-11-14), the SSH host's sshd does. `HOME` and `SHELL` are the host account's (`getent passwd`), and `PATH` has none of the Mac's. The shell has no `WORKROOM_SESSION_*`. The daemon lists the tab's workroom and title, and not the Mac's project path. The host runs exactly one `<daemon> relay --socket <socket>` and no `workroomd attach`. |
+| B. resize | `stty size` at 30×100, then after pty resizes to 40×120 and 24×80 | Each resize reaches the session. |
+| C. reattach | A `--no-create` pane, then its ssh killed on the Mac | The screen comes back without retyping. A killed ssh ends the pane with 255. It reads as a lost link, not a refusal, and the pane shows the retry notice. |
+| D. run command | A run session (`echo RUN-OUT-$((6*7)); sleep 600`), then `Restart` and `Quit` on the Control service | The command runs on the host, Restart runs it again, and Quit ends the session. |
+| E. refused link | An attach whose only known host key is a fresh, unrelated one, in a `known_hosts` on this Mac. On exe.dev and the SSH host, `UserKnownHostsFile` goes ahead of the route's own options. On boxd, the driver's own `known_hosts` holds it | The pane ends with 255, `hostRefusedLastAttach` is true, "Host key verification failed" is in the pane, and there is no retry notice. Then the real route attaches again. |
+| F. lost link | Kills the pane's `relay` on the host | 255, a lost link and the retry notice. A new attach restores the session. |
+| G. no daemon yet | Moves the host's daemon binary aside and attaches a new session. Then it moves the binary back, bootstraps and attaches again | "workroom: no daemon is installed at … yet", 255 and the retry notice. Then the session attaches. |
+| cleanup (teardown) | Runs even when the test fails or throws | Ends the run's sessions and puts a moved daemon back. Destroys every VM and machine named `wrlive-<run>-*`, then checks that `ssh exe.dev ls` and `boxd machine list` show none and boxd's stanza has left `~/.ssh/config`. On the SSH host, stops the run's daemon and removes its state directory, and any of `~/.local/state` and `~/.local` the run made. Then it checks that no process of the run is left and the home's listing is as it was. |
+
+Each step prints a line starting `family live: [<host>] — <step>`. Each finding prints `family live: FAILED: [<host>] …`. A clean run ends with `family live: cleaned up: nothing left behind` and `Executed 1 test, with 0 failures`. A failed run keeps `$TMPDIR/wr-family-live-<id>`, without its terminal home. `panes/` has each pane's output, and `hosts-<kind>/<host id>/attach-<session>.log` has ssh's messages.
+
+### If a suite run is killed
+
+A killed run gets no teardown. Its first lines name the run. Remove these, in this order:
+
+1. **Stray processes on this Mac**: `pkill -KILL -f 'wr-family-live-'`.
+2. **The VM**: `ssh exe.dev ls`, then `ssh exe.dev rm wrlive-<run>-<uuid>` for each of the run's.
+3. **The machine**: `boxd machine list`, then `boxd machine rm wrlive-<run>-<uuid>` for each of the run's. This also takes its stanza out of `~/.ssh/config`.
+4. **On the SSH host**: `pkill -f "$HOME/.local/state/workroom-live-<run>/"`, then `rm -rf ~/.local/state/workroom-live-<run>`. Then `rmdir ~/.local/state ~/.local`, which removes them only if they are empty, as they are when the run made them.
+5. **The local files**: `rm -rf "$TMPDIR"/wr-family-live-*`.
+
+### Still by hand
+
+The suite cuts a link by killing a process. A Mac that really goes offline is F.1, F.2 and F.4 below: do them on any one of the three hosts, with the Dev app. Also look once at C.1 (quit and relaunch the app) and at B's redraw in `vim`: they are the app's side of what the suite checks.
+
+### The checks by hand
+
+These are the checks the suite runs, for a run with the app.
+
+#### Setup
 
 1. `make app-build && make app-run` from the checkout. The Dev app pushes its new daemon (protocol 11) to each host before panes attach (ADR 0037). A host still on protocol 10 makes panes retry until it is updated.
 2. Have one throwaway workroom on each of: an exe.dev VM, a boxd machine, an SSH host.
 
 Do all of the following on each of the three hosts.
 
-### A. Attach
+#### A. Attach
 
 1. Open a terminal tab in the workroom.
    - Expect: "workroom: waiting for this terminal's host..." appears briefly, then is erased. The host's login shell prompt shows, with nothing left of the waiting line.
@@ -177,45 +245,45 @@ Do all of the following on each of the three hosts.
 4. On the host (`ssh <host>` separately): `ps -ef | grep -E 'workroomd (attach|relay)'`.
    - Expect: a `workroomd relay --socket …` per pane, and no `workroomd attach` process.
 5. In the pane: `env | grep WORKROOM_SESSION_`.
-   - Expect: `WORKROOM_SESSION_WORKROOM` and `WORKROOM_SESSION_TITLE` from the tab (metadata), and no `WORKROOM_SESSION_PROJECT` (the Mac path stays on the Mac).
+   - Expect: nothing. The tab's workroom and title are the session's metadata: the daemon keeps and lists them (#255), and the shell never sees them. The Mac's project path never reaches the host.
 
-### B. Resize
+#### B. Resize
 
 1. Run `vim` (or `htop`) in the pane, then resize the window and split the pane.
    - Expect: the program redraws at the new size each time. `stty size` afterwards matches the pane.
 
-### C. Reattach
+#### C. Reattach
 
 1. Quit Workroom Dev with the pane open (leave `top` running), then relaunch.
    - Expect: the pane reattaches to the same session, with its screen restored and `top` still running.
 2. With one remote pane attached, kill its ssh (the client's child) on the Mac: `pkill -x -P "$(pgrep -f 'workroomd attach' | paste -sd, -)" ssh`.
    - Expect: the client exits 255 and the pane shows the retry notice. Then it reattaches by itself (`--no-create`) to the same session, with its screen restored.
 
-### D. Run command
+#### D. Run command
 
 1. On a project with a run command, start the run tab on the remote workroom.
    - Expect: the run command runs on the host under the run supervisor. Stop and Restart work.
 
-### E. Refused link
+#### E. Refused link
 
-1. Make ssh refuse, one way per host type:
-   - SSH host and exe.dev: on the host, run `cp ~/.ssh/authorized_keys ~/.ssh/authorized_keys.bak && : > ~/.ssh/authorized_keys`. For exe.dev, do it from a shell already open on the VM. Expect `Permission denied (publickey)`.
-   - boxd: go to the host directory from A.2, beside the attach log. Back up `known_hosts`, then replace the key in it with another host's, keeping the first field: `cp known_hosts known_hosts.bak; ssh-keyscan -t ed25519 github.com | sed 's/^[^ ]*/<same host field>/' > known_hosts`. Expect `Host key verification failed.`
+1. Make ssh refuse. Change only this Mac's side, never a host's `authorized_keys`:
+   - boxd: go to the host directory from A.2, beside the attach log. Back up `known_hosts`, then replace the key in it with another host's, keeping the first field: `cp known_hosts known_hosts.bak; ssh-keyscan -t ed25519 github.com | sed 's/^[^ ]*/<same host field>/' > known_hosts`.
+   - SSH host and exe.dev: their panes use your own `known_hosts`, which you shouldn't edit. The suite's E covers them.
 2. Open a new tab in that workroom.
-   - Expect: ssh's own reason ("Host key verification failed." or "Permission denied (publickey)") shows in the pane, not the "Can't reach this terminal's host right now…" notice. The pane stops retrying after a few tries.
-3. Restore with `mv ~/.ssh/authorized_keys.bak ~/.ssh/authorized_keys` or `mv known_hosts.bak known_hosts`. Close the tab and open a new one. It attaches.
+   - Expect: ssh's own reason ("Host key verification failed.") shows in the pane, not the "Can't reach this terminal's host right now…" notice. The pane stops retrying after a few tries.
+3. Restore with `mv known_hosts.bak known_hosts`. Close the tab and open a new one. It attaches.
 
-### F. Lost link
+#### F. Lost link
 
 1. With a pane attached and `top` running, cut the network (turn Wi-Fi off) for about 90 s, or sleep the Mac for a couple of minutes.
    - Expect: the pane shows "Can't reach this terminal's host right now. Workroom will keep trying…" and retries with backoff.
 2. Restore the network, or wake the Mac.
    - Expect: the pane reattaches by itself, with its screen restored and `top` still running.
-3. On the host, run `sudo pkill -f 'workroomd relay'` while a pane is attached.
+3. On the host, while a pane is attached, kill your own daemon's relays: `pkill -f "$HOME/.local/state/<state directory>/daemon/workroomd relay"`. A shared host may run other users' relays.
    - Expect: the same retry notice, then a reattach.
 4. ADR 0075, on this host: after step 1, look on the host before the Mac comes back, using another machine or the provider's console. The pane's `workroomd relay` is gone within about a minute of the cut, and its session is listed unattached.
 
-### G. Host with no daemon yet, or the former layout (optional)
+#### G. Host with no daemon yet, or the former layout (optional)
 
 1. On a throwaway host, move the installed daemon aside (`mv ~/.local/state/workroom/daemon/workroomd{,.bak}`) and open a tab.
    - Expect: "workroom: no daemon is installed at … yet", then the retry notice. The app's bootstrap reinstalls the daemon and the pane attaches.
