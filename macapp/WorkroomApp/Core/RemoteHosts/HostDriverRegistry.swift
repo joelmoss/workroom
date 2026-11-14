@@ -362,8 +362,9 @@ final class HostDriverRegistry: @unchecked Sendable {
       // the fix, when the user's ssh can't sign in to exe.dev.
       return .exeDev(account: try await Self.exeDev().signedIn())
     case .railway:
-      // This Mac's environment in the `Workroom` project of the workspace the user picked, made
-      // on the first create (ADR 0071). Throws `RailwaySessionError.signedOut` when signed out.
+      // This Mac's environment in the project of the workspace the user picked, which setup made
+      // (ADR 0071, `RailwaySetup.place`); made here, in the `Workroom` project, only when setup
+      // never got that far. Throws `RailwaySessionError.signedOut` when signed out.
       let placement = RailwayAccount.placement
       guard let workspace = placement.read().selectedWorkspaceID ?? placement.read().workspaceID
       else { throw RemoteWorkrooms.Failure.railwayNotSetUp }

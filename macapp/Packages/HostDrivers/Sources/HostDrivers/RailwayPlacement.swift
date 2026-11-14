@@ -67,12 +67,12 @@ public final class RailwayPlacementStore: Sendable {
     }
   }
 
-  /// This Mac's environment in `projectID`, or with none the `Workroom` project, of `workspaceID`,
-  /// making whatever isn't recorded yet: the project is picked by name or made, then the
-  /// environment is made, named `environmentName`. Each id is recorded as soon as Railway returns
-  /// it, so a retry after a failure never makes a second project or environment. The setup sheet
-  /// runs it with the project the user picked; a create whose setup never placed this Mac runs it
-  /// with none.
+  /// This Mac's environment in the project `project` names, or with none the recorded project,
+  /// else the `Workroom` project, of `workspaceID`, making whatever isn't recorded yet: the
+  /// `Workroom` project is picked by name or made, then the environment is made, named
+  /// `environmentName`. Each id is recorded as soon as Railway returns it, so a retry after a
+  /// failure never makes a second project or environment. The setup sheet runs it with the project
+  /// the user picked; a create whose setup never placed this Mac runs it with none.
   ///
   /// Another workspace or project than the recorded one starts again there, but only once this
   /// Mac's environment holds no sandbox: the launch sweep lists only the current environment, so
@@ -80,23 +80,31 @@ public final class RailwayPlacementStore: Sendable {
   /// `RailwayPlacementError.environmentHoldsSandboxes`, or Railway's error when it can't list
   /// them, and the placement stays.
   public func ensure(
-    workspaceID: String, projectID: String? = nil, api: RailwayAPI, environmentName: String
+    workspaceID: String, project: RailwayProjectPick? = nil, api: RailwayAPI,
+    environmentName: String
   ) async throws -> (projectID: String, environmentID: String) {
     // One at a time: the creates a setup sheet carries on start together, and two would each
     // make a project and an environment.
     try await RailwaySerial.shared.run {
       try await self.ensureNow(
-        workspaceID: workspaceID, picked: projectID, api: api, environmentName: environmentName)
+        workspaceID: workspaceID, project: project, api: api, environmentName: environmentName)
     }
   }
 
   private func ensureNow(
-    workspaceID: String, picked: String?, api: RailwayAPI, environmentName: String
+    workspaceID: String, project: RailwayProjectPick?, api: RailwayAPI, environmentName: String
   ) async throws -> (projectID: String, environmentID: String) {
     var placement = read()
+    // The project picked, by id: nil for none, and for a `Workroom` project still to be made.
+    let picked: String?
+    switch project {
+    case nil: picked = nil
+    case .existing(let id): picked = id
+    case .workroom: picked = try await Self.workroomProject(in: workspaceID, api: api)
+    }
     let moves =
       placement.workspaceID != workspaceID
-      || (picked != nil && picked != placement.projectID)
+      || (project != nil && picked != placement.projectID)
     if moves {
       if let leaving = placement.environmentID {
         let live = try await api.sandboxes(environmentID: leaving).filter {
@@ -117,11 +125,8 @@ public final class RailwayPlacementStore: Sendable {
     if let recorded = placement.projectID {
       projectID = recorded
     } else {
-      let existing = try await api.projects(workspaceID: workspaceID).first {
-        $0.name == RailwayPlacement.projectName
-      }
-      if let existing {
-        projectID = existing.id
+      if let existing = try await Self.workroomProject(in: workspaceID, api: api) {
+        projectID = existing
       } else {
         projectID = try await api.createProject(
           name: RailwayPlacement.projectName, workspaceID: workspaceID)
@@ -133,6 +138,15 @@ public final class RailwayPlacementStore: Sendable {
       name: environmentName, projectID: projectID)
     try update { $0.environmentID = environmentID }
     return (projectID, environmentID)
+  }
+
+  /// The id of `workspaceID`'s project named `Workroom`, if it has one.
+  private static func workroomProject(in workspaceID: String, api: RailwayAPI) async throws
+    -> String?
+  {
+    try await api.projects(workspaceID: workspaceID).first {
+      $0.name == RailwayPlacement.projectName
+    }?.id
   }
 
   /// A name for this Mac's environment: its own name, and a random suffix, since two Macs can
@@ -150,6 +164,14 @@ public final class RailwayPlacementStore: Sendable {
   public static func randomSuffix() -> String {
     String(UUID().uuidString.lowercased().prefix(6))
   }
+}
+
+/// The project the setup sheet picked for this Mac's environment (story 14).
+public enum RailwayProjectPick: Hashable, Sendable {
+  /// A project already in the workspace, by id.
+  case existing(String)
+  /// The workspace's project named `Workroom`, made when it has none.
+  case workroom
 }
 
 /// Why this Mac's Railway hosts can't move to another workspace or project.

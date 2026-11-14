@@ -31,6 +31,9 @@ import HostDrivers
     private var _browserWaits = false
     private var _browserOpens = 0
     private var _tokenExchanges = 0
+    private var _projects: [String: [RailwayProject]] = [:]
+    private var _createdProjects: [String] = []
+    private var _createdEnvironments: [String] = []
 
     init(workspaces: [RailwayWorkspace]) { _workspaces = workspaces }
 
@@ -66,6 +69,15 @@ import HostDrivers
       get { locked { _browserWaits } }
       set { locked { _browserWaits = newValue } }
     }
+    /// Each workspace's projects, which a `projectCreate` adds to.
+    var projects: [String: [RailwayProject]] {
+      get { locked { _projects } }
+      set { locked { _projects = newValue } }
+    }
+    /// The projects made, as `<name> in <workspace>`.
+    var createdProjects: [String] { locked { _createdProjects } }
+    /// The environments made, as `<name> in <project>`.
+    var createdEnvironments: [String] { locked { _createdEnvironments } }
     var browserOpens: Int { locked { _browserOpens } }
     var tokenExchanges: Int { locked { _tokenExchanges } }
 
@@ -118,7 +130,43 @@ import HostDrivers
           "data": ["workspace": ["customer": ["isTrialing": trialing[id] ?? false]]]
         ])
       }
+      if let placed = place(query, variables: body?["variables"] as? [String: Any] ?? [:]) {
+        return Self.json(["data": placed])
+      }
       return Self.json(["errors": [["message": "RailwayStub has no answer for \(query)"]]])
+    }
+
+    /// The setup's placement calls (#629): a workspace's projects, making a project or an
+    /// environment, and an environment's sandboxes, of which a stub environment has none.
+    private func place(_ query: String, variables: [String: Any]) -> [String: Any]? {
+      let input = variables["input"] as? [String: Any] ?? [:]
+      if query.contains("projectCreate(") {
+        let workspace = input["workspaceId"] as? String ?? ""
+        let name = input["name"] as? String ?? ""
+        return locked {
+          _createdProjects.append("\(name) in \(workspace)")
+          let id = "prj-stub-\(_createdProjects.count)"
+          _projects[workspace, default: []].append(RailwayProject(id: id, name: name))
+          return ["projectCreate": ["id": id]]
+        }
+      }
+      if query.contains("environmentCreate(") {
+        let name = input["name"] as? String ?? ""
+        let project = input["projectId"] as? String ?? ""
+        return locked {
+          _createdEnvironments.append("\(name) in \(project)")
+          return ["environmentCreate": ["id": "env-stub-\(_createdEnvironments.count)"]]
+        }
+      }
+      if query.contains("projects(") {
+        let workspace = variables["workspaceId"] as? String ?? ""
+        let edges = (projects[workspace] ?? []).map { ["node": ["id": $0.id, "name": $0.name]] }
+        return ["projects": ["edges": edges]]
+      }
+      if query.contains("sandboxes(") {
+        return ["sandboxes": ["edges": [Any](), "pageInfo": ["hasNextPage": false]]]
+      }
+      return nil
     }
 
     private func token(_ request: URLRequest) -> RailwayHTTPResponse {

@@ -46,22 +46,90 @@ final class RailwaySetupTests: XCTestCase {
     XCTAssertEqual(again.selectedWorkspaceID, "ws-team")
   }
 
-  /// Value: protects=a Railway create asks for setup only when it's needed: signed out, or the
-  /// recorded project's workspace no longer shared (#629); fails_when=a ready account is asked
-  /// again, or an unready one goes ahead; seam=RailwaySetup.needed
-  func testACreateWaitsOnSetupUntilSignedInWithAReachableWorkspace() async throws {
+  /// Value: protects=a Railway create asks for setup only when it's needed: signed out, this Mac
+  /// not yet given its environment, or the recorded project's workspace no longer shared (#629);
+  /// fails_when=a ready account is asked again, or an unready one goes ahead;
+  /// seam=RailwaySetup.needed
+  func testACreateWaitsOnSetupUntilSignedInAndPlacedInAReachableWorkspace() async throws {
     let stub = RailwayStub(workspaces: [personal])
+    stub.projects = ["ws-personal": [RailwayProject(id: "prj-wr", name: "Workroom")]]
     let signedOut = await RailwaySetup.needed(
       account: stub.account(store: RailwayStub.MemoryStore()), placement: placement)
     XCTAssertNotNil(signedOut)
 
     let account = stub.account(store: RailwayStub.MemoryStore(RailwayStub.refreshToken))
+    let unplaced = await RailwaySetup.needed(account: account, placement: placement)
+    XCTAssertEqual(unplaced?.workspaceReady, true)
+
+    try placement.update {
+      $0 = RailwayPlacement(
+        selectedWorkspaceID: "ws-personal", workspaceID: "ws-personal", projectID: "prj-wr",
+        environmentID: "env-mac")
+    }
     let ready = await RailwaySetup.needed(account: account, placement: placement)
     XCTAssertNil(ready)
 
     try placement.update { $0.workspaceID = "ws-team" }
     let missing = await RailwaySetup.needed(account: account, placement: placement)
     XCTAssertEqual(missing?.neededWorkspaceMissing, true)
+  }
+
+  /// Value: protects=setup itself makes (or picks) the `Workroom` project and this Mac's
+  /// environment, and records them, so the first create makes nothing but its sandbox (#629, ADR
+  /// 0071); fails_when=the setup is ready with no environment recorded, choosing a workspace or
+  /// project makes anything, or a second project is made; seam=RailwaySetup over RailwayStub
+  func testSetupCreatesTheWorkroomProjectAndThisMacsEnvironment() async throws {
+    let stub = RailwayStub(workspaces: [personal])
+    stub.projects = ["ws-personal": [RailwayProject(id: "prj-app", name: "my-app")]]
+    let setup = setup(stub, store: RailwayStub.MemoryStore(RailwayStub.refreshToken))
+    await setup.refresh()
+
+    XCTAssertEqual(setup.projects, [RailwayProject(id: "prj-app", name: "my-app")])
+    XCTAssertEqual(setup.projectPick, .workroom, "no Workroom project to pick: make one")
+    XCTAssertTrue(setup.offersNewWorkroomProject)
+    XCTAssertTrue(setup.workspaceReady)
+    XCTAssertFalse(setup.isReady, "ready before this Mac has an environment")
+    XCTAssertTrue(stub.createdProjects.isEmpty && stub.createdEnvironments.isEmpty)
+
+    await setup.place()
+
+    XCTAssertTrue(setup.isReady, "\(String(describing: setup.placementProblem))")
+    XCTAssertEqual(stub.createdProjects, ["Workroom in ws-personal"])
+    let made = try XCTUnwrap(stub.createdEnvironments.first)
+    XCTAssertTrue(made.hasPrefix("mac-") && made.hasSuffix(" in prj-stub-1"), made)
+    let recorded = placement.read()
+    XCTAssertEqual(recorded.workspaceID, "ws-personal")
+    XCTAssertEqual(recorded.projectID, "prj-stub-1")
+    XCTAssertEqual(recorded.environmentID, "env-stub-1")
+    // The new project is now one to pick, and picked.
+    XCTAssertEqual(setup.projectPick, .existing("prj-stub-1"))
+    XCTAssertFalse(setup.offersNewWorkroomProject)
+  }
+
+  /// Value: protects=the user can keep their hosts in an existing project of the workspace (story
+  /// 14); fails_when=a Workroom project is made anyway, or the environment goes elsewhere;
+  /// seam=RailwaySetup.selectProject and place over RailwayStub
+  func testSetupPutsThisMacsEnvironmentInAPickedProject() async throws {
+    let stub = RailwayStub(workspaces: [personal])
+    stub.projects = [
+      "ws-personal": [
+        RailwayProject(id: "prj-app", name: "my-app"),
+        RailwayProject(id: "prj-wr", name: "Workroom"),
+      ]
+    ]
+    let setup = setup(stub, store: RailwayStub.MemoryStore(RailwayStub.refreshToken))
+    await setup.refresh()
+    XCTAssertEqual(setup.projectPick, .existing("prj-wr"), "the Workroom project isn't the default")
+    XCTAssertFalse(setup.offersNewWorkroomProject, "a second Workroom project is offered")
+
+    setup.selectProject(.existing("prj-app"))
+    XCTAssertTrue(stub.createdEnvironments.isEmpty, "choosing a project made an environment")
+    await setup.place()
+
+    XCTAssertTrue(setup.isReady)
+    XCTAssertTrue(stub.createdProjects.isEmpty)
+    XCTAssertEqual(stub.createdEnvironments.map { $0.hasSuffix(" in prj-app") }, [true])
+    XCTAssertEqual(placement.read().projectID, "prj-app")
   }
 
   /// Value: protects=a user Workroom has never signed in sees Sign in, and signing in through the
@@ -74,14 +142,14 @@ final class RailwaySetupTests: XCTestCase {
 
     await setup.refresh()
     XCTAssertEqual(setup.account, .signedOut(nil))
-    XCTAssertFalse(setup.isReady)
+    XCTAssertFalse(setup.workspaceReady)
 
     await setup.signIn()
 
     XCTAssertEqual(setup.account, .signedIn)
     XCTAssertEqual(setup.workspaces, [personal, team])
     XCTAssertEqual(setup.selectedWorkspaceID, "ws-personal")
-    XCTAssertTrue(setup.isReady)
+    XCTAssertTrue(setup.workspaceReady)
     XCTAssertEqual(try store.read(), RailwayStub.refreshToken)
   }
 
@@ -108,14 +176,14 @@ final class RailwaySetupTests: XCTestCase {
     await setup.refresh()
 
     XCTAssertTrue(setup.neededWorkspaceMissing)
-    XCTAssertFalse(setup.isReady)
+    XCTAssertFalse(setup.workspaceReady)
 
     stub.workspaces = [personal, team]
     await setup.signIn()
 
     XCTAssertFalse(setup.neededWorkspaceMissing)
     XCTAssertEqual(setup.selectedWorkspaceID, "ws-team")
-    XCTAssertTrue(setup.isReady)
+    XCTAssertTrue(setup.workspaceReady)
   }
 
   /// Value: protects=Trial and Free workspaces are refused with the reason, a paid one isn't, and
@@ -132,15 +200,15 @@ final class RailwaySetupTests: XCTestCase {
 
     XCTAssertEqual(setup.selectedWorkspaceID, "ws-team", "the first allowed workspace is picked")
     XCTAssertNil(setup.selectedRefusal)
-    XCTAssertTrue(setup.isReady)
+    XCTAssertTrue(setup.workspaceReady)
 
     await setup.select("ws-free")
     XCTAssertEqual(setup.selectedRefusal, .free)
-    XCTAssertFalse(setup.isReady)
+    XCTAssertFalse(setup.workspaceReady)
 
     await setup.select("ws-trial")
     XCTAssertEqual(setup.selectedRefusal, .trial)
-    XCTAssertFalse(setup.isReady)
+    XCTAssertFalse(setup.workspaceReady)
   }
 
   /// Value: protects=a sign-in Railway no longer accepts (a rotated refresh token used again, a
@@ -200,7 +268,7 @@ final class RailwaySetupTests: XCTestCase {
     XCTAssertEqual(setup.account, .signedIn)
     XCTAssertEqual(setup.workspaces, [personal])
     XCTAssertEqual(setup.signInProblem, "Sign-in was cancelled on Railway's page.")
-    XCTAssertTrue(setup.isReady)
+    XCTAssertTrue(setup.workspaceReady)
   }
 
   /// Value: protects=a sign-in waiting on the browser can be stopped, back to where it was;

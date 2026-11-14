@@ -99,7 +99,9 @@ import WorkroomVCS
     /// `-WorkroomUITestRailway signedOut|signedIn` (#627): Railway's account is `RailwayStub`, with
     /// the refresh token in memory (kept from before for `signedIn`), so the setup sheet signs in,
     /// lists workspaces and signs out with no Railway, browser or Keychain. Its workspaces: Personal
-    /// (Hobby), Codaset (Pro), Side projects (Free) and New team (on a Trial). Nil otherwise.
+    /// (Hobby), Codaset (Pro), Side projects (Free) and New team (on a Trial). Personal holds one
+    /// project, `my-app`, and no `Workroom` one; the setup's Use This Project makes them in the
+    /// stub. Nil otherwise.
     static var railwayAccount: RailwayAccount? {
       guard fixtureFlag, let scenario = text("WorkroomUITestRailway") else { return nil }
       let stub = RailwayStub(workspaces: [
@@ -109,6 +111,7 @@ import WorkroomVCS
         RailwayWorkspace(id: "ws-new", name: "New team", plan: .hobby),
       ])
       stub.trialing = ["ws-new": true]
+      stub.projects = ["ws-personal": [RailwayProject(id: "prj-app", name: "my-app")]]
       let kept = scenario == "signedIn" ? RailwayStub.refreshToken : nil
       return stub.account(store: RailwayStub.MemoryStore(kept))
     }

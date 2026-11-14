@@ -19,9 +19,12 @@ Workroom never runs your `railway` command or reads its `~/.railway` folder, so 
 The first time you create a workroom on Railway, the **Set up Railway** sheet opens. You can also open it from **Settings**, **Remote Hosts**, **Set Up Railway…**.
 
 1. **Account.** Click **Sign In with Railway**. Your browser opens Railway's page. Tick the workspaces Workroom may use, then approve. There is no token to copy. Each Workroom app (Workroom and Workroom Nightly) signs in once of its own.
-2. **Workspace.** Pick the workspace Workroom keeps its hosts in. Workroom uses a project named **Workroom** there, or makes one, and gives this Mac an environment of its own in it.
+2. **Workspace.** Pick the workspace Workroom keeps its hosts in.
+3. **Project.** Pick one of the workspace's projects, or **New project named Workroom**, then click **Use This Project**. Workroom makes the project if it's new, and gives this Mac an environment of its own in it, so another Mac's cleanup never touches this Mac's hosts. A project of their own keeps your hosts apart from your apps.
 
 Click **Create Workroom**, and the create carries on.
+
+To move this Mac's hosts to another workspace or project later, delete its Railway workrooms first. While this Mac's environment still has a sandbox, Workroom refuses the move and says why: it would lose track of that sandbox, which would keep billing.
 
 ## Create a workroom on Railway
 

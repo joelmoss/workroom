@@ -140,10 +140,11 @@ final class RailwayPlacementTests: XCTestCase {
     list(railway, ["sbx-live": "RUNNING", "sbx-old": "DESTROYED"])
     let api = RailwayAPI(transport: railway, tokens: Tokens())
 
-    for leave in [("ws-2", nil), ("ws-1", "prj-app")] as [(String, String?)] {
+    for leave in [("ws-2", nil), ("ws-1", .existing("prj-app"))] as [(String, RailwayProjectPick?)]
+    {
       do {
         _ = try await store.ensure(
-          workspaceID: leave.0, projectID: leave.1, api: api, environmentName: "mac-x-1")
+          workspaceID: leave.0, project: leave.1, api: api, environmentName: "mac-x-1")
         XCTFail("left an environment holding a sandbox for \(leave)")
       } catch RailwayPlacementError.environmentHoldsSandboxes(let count) {
         XCTAssertEqual(count, 1)
@@ -174,7 +175,7 @@ final class RailwayPlacementTests: XCTestCase {
     let railway = railway(projects: [["id": "prj-app", "name": "my-app"]])
     list(railway, [:])
     let placed = try await store.ensure(
-      workspaceID: "ws-1", projectID: "prj-app",
+      workspaceID: "ws-1", project: .existing("prj-app"),
       api: RailwayAPI(transport: railway, tokens: Tokens()), environmentName: "mac-x-1")
     XCTAssertEqual(placed.projectID, "prj-app")
     XCTAssertEqual(placed.environmentID, "env-mac")
@@ -183,6 +184,32 @@ final class RailwayPlacementTests: XCTestCase {
     XCTAssertEqual(
       store.read(),
       RailwayPlacement(workspaceID: "ws-1", projectID: "prj-app", environmentID: "env-mac"))
+  }
+
+  /// Value: protects=choosing a new `Workroom` project in the sheet makes one, even with another
+  /// project recorded in the workspace; fails_when=the recorded project is kept, or a second
+  /// Workroom project is made beside one; seam=ensure with `.workroom`
+  func testPickingANewWorkroomProjectMakesItOnce() async throws {
+    try store.update {
+      $0 = RailwayPlacement(workspaceID: "ws-1", projectID: "prj-app", environmentID: "env-1")
+    }
+    let railway = railway(projects: [["id": "prj-app", "name": "my-app"]])
+    list(railway, [:])
+    let api = RailwayAPI(transport: railway, tokens: Tokens())
+    let placed = try await store.ensure(
+      workspaceID: "ws-1", project: .workroom, api: api, environmentName: "mac-x-1")
+    XCTAssertEqual(placed.projectID, "prj-new")
+    XCTAssertEqual(sent(railway, "projectCreate").map { $0["name"] as? String }, ["Workroom"])
+
+    // Railway now lists it: picking it again makes nothing.
+    railway.answer(
+      "projects",
+      data: ["projects": ["edges": [["node": ["id": "prj-new", "name": "Workroom"]]]]])
+    let before = railway.graphQLRequests.count
+    let again = try await store.ensure(
+      workspaceID: "ws-1", project: .workroom, api: api, environmentName: "mac-x-1")
+    XCTAssertEqual(again.environmentID, placed.environmentID)
+    XCTAssertEqual(railway.graphQLRequests.count, before + 1, "more than the projects read")
   }
 
   func testTheEnvironmentIsNamedForTheMacWithASuffix() {
