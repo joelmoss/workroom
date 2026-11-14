@@ -38,7 +38,9 @@ final class RailwayHostOptionsUITests: XCTestCase {
     XCTAssertTrue(pane.waitForExistence(timeout: 10))
     pane.click()
 
-    let region = element(app, "hostOptions.railway.region")
+    // The pop-up itself: a Form row gives its label the picker's identifier too, and clicking the
+    // label doesn't open the menu.
+    let region = app.popUpButtons["hostOptions.railway.region"]
     XCTAssertTrue(region.waitForExistence(timeout: 10), "Railway has no host options")
     region.scrollIntoView(in: app, maxScrolls: 30)
     region.click()
@@ -50,7 +52,7 @@ final class RailwayHostOptionsUITests: XCTestCase {
     }
     app.typeKey(.escape, modifierFlags: [])
 
-    let cpu = element(app, "hostOptions.railway.cpu")
+    let cpu = app.popUpButtons["hostOptions.railway.cpu"]
     XCTAssertTrue(cpu.waitForExistence(timeout: 5), "no Railway CPU picker")
     cpu.scrollIntoView(in: app, maxScrolls: 30)
     cpu.click()
