@@ -62,7 +62,9 @@ Railway has no GitHub integration for sandboxes, so Workroom gives each sandbox 
 - The sandbox's git uses it for github.com, and any GitHub remote, in its `git@github.com:` or `ssh://` form too, goes over HTTPS with it.
 - Each time Workroom connects to the sandbox, it checks the copy against this Mac's current token and replaces it if you rotated it.
 
-The token has the scope you gave `gh`, and anything running in the workroom can read it.
+The token has the scope you gave `gh`, and anything running in the workroom can read it. So can anyone who can open a shell on the sandbox, which every member of your Railway workspace can.
+
+A checkpoint you take on Railway's dashboard or with its CLI keeps the token file. Workroom removes it only from a sandbox it makes from a checkpoint itself, so a sandbox someone restores from that checkpoint outside Workroom still holds the token. If a checkpoint like that leaves your hands, revoke the token on GitHub and run `gh auth login` again; Workroom gives your sandboxes the new one on their next connect.
 
 ## Signed out
 
