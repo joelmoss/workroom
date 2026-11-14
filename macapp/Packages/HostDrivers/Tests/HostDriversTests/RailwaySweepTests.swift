@@ -358,6 +358,61 @@ final class RailwaySweepTests: XCTestCase {
     }
   }
 
+  /// Tokens that hand out one until `fail` is set, then throw it, as a sign-out, a failed refresh
+  /// or a cancel does before a request goes out.
+  private final class FailingTokens: RailwayAccessTokenProviding, Sendable {
+    let failure = Mutex<(any Error)?>(nil)
+    func accessToken() async throws -> String {
+      if let error = failure.withLock({ $0 }) { throw error }
+      return "at-1"
+    }
+    func accessTokenRejected(_ token: String) async {}
+  }
+
+  /// Value: protects=a create whose `sandboxCreate` never reached Railway (signed out, a refresh
+  /// that failed, a cancel before sending, a second token that failed after a 401) drops its
+  /// intent, so no phantom intent is later matched by time to another Mac's sandbox, while one
+  /// whose request went out and lost its answer keeps it (review 4, X4); fails_when=a failure
+  /// before anything was sent keeps the intent, or a lost link after sending drops it;
+  /// seam=create over StubRailway with a token provider that fails from the create's request on
+  func testACreateThatSentNothingToRailwayDropsItsIntent() async throws {
+    let rows: [(name: String, failure: any Error, answer: Int?, kept: Bool)] = [
+      ("signed out", RailwaySessionError.signedOut, nil, false),
+      ("refresh failed", URLError(.notConnectedToInternet), nil, false),
+      ("cancelled before sending", CancellationError(), nil, false),
+      ("a 401, then no token", RailwaySessionError.signedOut, 401, false),
+      ("the link lost after sending", URLError(.networkConnectionLost), 0, true),
+    ]
+    for row in rows {
+      try await ledger.update { $0 = [] }
+      try? FileManager.default.removeItem(at: keys.appendingPathComponent("id_ed25519"))
+      let railway = railway([])
+      let tokens = FailingTokens()
+      switch row.answer {
+      case nil:
+        // The Mac's key is registered: the create's next request is its sandboxCreate.
+        railway.answer("sshPublicKeyCreate") { _ in
+          tokens.failure.withLock { $0 = row.failure }
+          return RailwayHTTPResponse(
+            status: 200, body: Data(#"{"data":{"sshPublicKeyCreate":{"id":"key-1"}}}"#.utf8))
+        }
+      case 401:
+        railway.answer("sandboxCreate") { _ in
+          tokens.failure.withLock { $0 = row.failure }
+          return RailwayHTTPResponse(status: 401, body: Data())
+        }
+      default:
+        railway.answer("sandboxCreate") { _ in throw row.failure }
+      }
+      do {
+        _ = try await driver(railway, tokens: tokens).create()
+        XCTFail("\(row.name): the create went through")
+      } catch {}
+      let left = try await ledger.entries()
+      XCTAssertEqual(left.count, row.kept ? 1 : 0, row.name)
+    }
+  }
+
   /// Value: protects=a sweep that needs a listing Railway couldn't give is owed again, and one
   /// destroy Railway refused is reported without stopping the rest; fails_when=a signed-out
   /// listing reads as an empty environment and drops the intent, or a refused destroy is lost, ends

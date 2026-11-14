@@ -164,14 +164,16 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       let intent = try await ledger.begin(
         environmentID: configuration.environmentID, workspaceID: configuration.workspaceID)
       let sandbox: String
+      let delivery = RailwayDelivery()
       do {
         sandbox = try await api.createSandbox(
-          environmentID: configuration.environmentID, options: sandboxOptions)
+          environmentID: configuration.environmentID, options: sandboxOptions, delivery: delivery)
       } catch {
-        // Railway said no (a 4xx), so made nothing. Anything else (the link, a cancel, an answer
-        // that couldn't be read, a server error, a 2xx with errors) may have lost the reply to a
-        // sandbox that exists, which the sweep reconciles by when it was made.
-        if Self.isRefusal(error) { try? await ledger.drop([intent]) }
+        // Nothing reached Railway (signed out, a refresh that failed, a cancel before sending),
+        // or Railway said no (a 4xx), so made nothing. Anything else (the link, a cancel, an
+        // answer that couldn't be read, a server error, a 2xx with errors) may have lost the
+        // reply to a sandbox that exists, which the sweep reconciles by when it was made.
+        if !delivery.mayHaveActed || Self.isRefusal(error) { try? await ledger.drop([intent]) }
         throw error
       }
       // Held from here, so recording, destroying or undoing this host takes its entry off by
@@ -895,7 +897,8 @@ extension RailwayHostDriver {
 extension RailwayAPI {
   /// A sandbox in `environmentID` that never idles out (ADR 0071), made with `options`: its id.
   public func createSandbox(
-    environmentID: String, options: RailwaySandboxOptions = RailwaySandboxOptions()
+    environmentID: String, options: RailwaySandboxOptions = RailwaySandboxOptions(),
+    delivery: RailwayDelivery? = nil
   ) async throws -> String {
     struct Answer: Decodable {
       struct Sandbox: Decodable { let id: String }
@@ -904,7 +907,8 @@ extension RailwayAPI {
     return try await query(
       "mutation sandboxCreate($input: SandboxCreateInput!) { sandboxCreate(input: $input) "
         + "{ id status } }",
-      variables: ["input": options.input(environmentID: environmentID)], as: Answer.self
+      variables: ["input": options.input(environmentID: environmentID)], as: Answer.self,
+      delivery: delivery
     ).sandboxCreate.id
   }
 
