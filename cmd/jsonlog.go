@@ -45,8 +45,17 @@ func (l *jsonLogWriter) Write(b []byte) (int, error) {
 		l.emit(string(l.buf[:i]))
 		l.buf = l.buf[i+1:]
 	}
+	// Output that never sends a newline (a hostile git server's endless sideband text) is emitted in
+	// maxLogLine pieces rather than held: the buffer stays bounded and nothing is lost.
+	for len(l.buf) >= maxLogLine {
+		l.emit(string(l.buf[:maxLogLine]))
+		l.buf = l.buf[maxLogLine:]
+	}
 	return len(b), nil
 }
+
+// maxLogLine is the most of one line jsonLogWriter holds before emitting it as an event of its own.
+const maxLogLine = 1 << 20
 
 // Flush emits any trailing output not terminated by a newline. Call once after the
 // script finishes.

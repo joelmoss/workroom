@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -504,6 +505,50 @@ func TestCloneProject_NewFolderIs0755(t *testing.T) {
 	if got := info.Mode().Perm(); got != 0o755 {
 		t.Fatalf("new folder mode = %o, want 0755", got)
 	}
+}
+
+// Value: protects=a new clone folder honours the user's umask, so a private umask keeps a private
+// repo private; fails_when=the folder's mode is forced after creation; why_new=the 0755 test runs
+// under the default umask only; seam=none; no_claim=does not check files git writes inside
+func TestCloneProject_NewFolderHonoursUmask(t *testing.T) {
+	svc, _ := newCreateSvc(t)
+	origin := bareRepo(t)
+	dest := filepath.Join(t.TempDir(), "api")
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+
+	if _, err := svc.CloneProject(context.Background(), "file://"+origin, dest, &bytes.Buffer{}); err != nil {
+		t.Fatalf("clone failed: %v", err)
+	}
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("new folder mode under umask 077 = %o, want 0700", got)
+	}
+}
+
+// Value: protects=a symlink at the destination that points nowhere is refused, not replaced by the
+// clone; fails_when=cloneDestination follows the link and calls the path missing; why_new=no test
+// puts a symlink at the destination; seam=none; no_claim=does not cover a link to a folder (resolved
+// by CanonicalPath before this check)
+func TestCloneProject_RefusesADanglingSymlink(t *testing.T) {
+	svc, cfg := newCreateSvc(t)
+	origin := bareRepo(t)
+	dest := filepath.Join(t.TempDir(), "api")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "unmounted", "drive"), dest); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := svc.CloneProject(context.Background(), "file://"+origin, dest, &bytes.Buffer{})
+	if !errors.Is(err, errs.ErrNotDirectory) {
+		t.Fatalf("err = %v, want ErrNotDirectory", err)
+	}
+	if info, err := os.Lstat(dest); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the symlink was replaced (lstat err %v)", err)
+	}
+	assertNoProjects(t, cfg)
 }
 
 // Value: protects=Finder junk that appears in the destination while the clone runs doesn't fail it,

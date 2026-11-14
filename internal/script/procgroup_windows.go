@@ -22,3 +22,6 @@ func KillProcessGroup(cmd *exec.Cmd) {
 func KillProcessGroupHard(cmd *exec.Cmd) {
 	KillProcessGroup(cmd)
 }
+
+// ProcessGroupAlive reports whether any process is left in the child's group. Windows has none.
+func ProcessGroupAlive(_ *exec.Cmd) bool { return false }

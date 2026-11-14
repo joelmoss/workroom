@@ -35,3 +35,9 @@ func KillProcessGroupHard(cmd *exec.Cmd) {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 }
+
+// ProcessGroupAlive reports whether any process is left in the child's group. A live member keeps
+// the group id allocated, so signalling the group then cannot reach anyone else.
+func ProcessGroupAlive(cmd *exec.Cmd) bool {
+	return cmd.Process != nil && syscall.Kill(-cmd.Process.Pid, 0) == nil
+}

@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -31,7 +34,7 @@ import (
 //	 ├── an empty folder ──► git clone --progress -- url path/.clone-*   (the staging folder)
 //	 │                        └── ok ─► move each entry up into path ─┐
 //	 │                                   └── a name taken meanwhile ──► ErrDestinationNotEmpty
-//	 └── missing ──► make missing parents; git clone --progress -- url <parent>/.<name>.clone-* (0755)
+//	 └── missing ──► make missing parents; git clone --progress -- url <parent>/.<name>.clone-* (0755 less umask)
 //	                  └── ok ─► rename staging to path ─────────────┐
 //	                             └── path created meanwhile ──► ErrDestinationNotEmpty
 //	  either clone ├── ctx cancelled ──► ErrCancelled                │
@@ -116,7 +119,7 @@ func (s *Service) CloneProject(ctx context.Context, url, path string, progress i
 }
 
 // makeStaging makes the folder the clone runs in: inside canon (.clone-*) when canon already
-// exists, else beside it (.<name>.clone-*), made 0755 since it becomes canon itself.
+// exists, else beside it (.<name>.clone-*), made 0755 less the umask since it becomes canon itself.
 func makeStaging(canon string, existed bool) (string, error) {
 	if existed {
 		stage, err := os.MkdirTemp(canon, ".clone-")
@@ -125,16 +128,20 @@ func makeStaging(canon string, existed bool) (string, error) {
 		}
 		return stage, nil
 	}
-	stage, err := os.MkdirTemp(filepath.Dir(canon), "."+filepath.Base(canon)+".clone-")
-	if err != nil {
-		return "", fmt.Errorf("%w: create staging folder for %s: %v", errs.ErrConfigWrite, canon, err)
+	// os.Mkdir rather than MkdirTemp (always 0700, then chmodded): the new project folder takes the
+	// user's umask like any folder they make, so a private umask keeps a private repo private.
+	parent, prefix := filepath.Dir(canon), "."+filepath.Base(canon)+".clone-"
+	for range 100 {
+		stage := filepath.Join(parent, prefix+strconv.FormatUint(uint64(rand.Uint32()), 36))
+		err := os.Mkdir(stage, 0o755)
+		if err == nil {
+			return stage, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", fmt.Errorf("%w: create staging folder for %s: %v", errs.ErrConfigWrite, canon, err)
+		}
 	}
-	// MkdirTemp makes it 0700; a new project folder is 0755 like any other.
-	if err := os.Chmod(stage, 0o755); err != nil {
-		_ = os.Remove(stage)
-		return "", fmt.Errorf("%w: create staging folder for %s: %v", errs.ErrConfigWrite, canon, err)
-	}
-	return stage, nil
+	return "", fmt.Errorf("%w: create staging folder for %s: no free name", errs.ErrConfigWrite, canon)
 }
 
 // renameInto renames the staging folder to canon, which did not exist when the clone started. If
@@ -192,6 +199,11 @@ func moveUp(stage, canon string, placed *[]string) error {
 // cloneDestination checks canon can take a clone, reporting whether it already exists as an empty
 // folder (false when it is missing).
 func cloneDestination(canon string) (bool, error) {
+	// A symlink left at canon is one CanonicalPath couldn't resolve: it points nowhere (an unmounted
+	// drive, say). It is refused, not taken for a missing folder and replaced by the clone.
+	if info, err := os.Lstat(canon); err == nil && info.Mode()&fs.ModeSymlink != 0 {
+		return false, errs.ErrNotDirectory
+	}
 	info, err := os.Stat(canon)
 	switch {
 	case err == nil && !info.IsDir():
@@ -279,6 +291,13 @@ func runClone(ctx context.Context, url, dest string, progress io.Writer) error {
 		case <-done:
 			return
 		}
+		// Both may be ready at once: once git is reaped its group id is free for reuse, so never
+		// signal it after done.
+		select {
+		case <-done:
+			return
+		default:
+		}
 		script.KillProcessGroup(cmd)
 		select {
 		case <-done:
@@ -290,9 +309,12 @@ func runClone(ctx context.Context, url, dest string, progress io.Writer) error {
 	close(done)
 
 	if ctx.Err() != nil {
-		// git is gone; whatever of its group ignored the SIGTERM (a helper still holding stderr) is
-		// SIGKILLed now rather than left running.
-		script.KillProcessGroupHard(cmd)
+		// git is gone. A member of its group that ignored the SIGTERM (a helper still holding stderr)
+		// keeps the group id allocated, so SIGKILLing the group then reaches only it; with no member
+		// left the id is free for reuse and is not signalled.
+		if script.ProcessGroupAlive(cmd) {
+			script.KillProcessGroupHard(cmd)
+		}
 		return errs.ErrCancelled
 	}
 	if err != nil && errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
