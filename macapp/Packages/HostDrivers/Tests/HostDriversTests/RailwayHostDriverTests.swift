@@ -97,6 +97,8 @@ final class RailwayHostDriverTests: XCTestCase {
       data: ["sandbox": status.map { ["id": "sbx-1", "status": $0] as Any } ?? NSNull()])
     railway.answer(
       "sandboxDestroy", data: ["sandboxDestroy": ["id": "sbx-1", "status": "DESTROYING"]])
+    railway.answer(
+      "me", data: ["me": ["workspaces": [["id": "ws-1", "name": "Mine", "plan": "PRO"]]]])
     return railway
   }
 
@@ -112,12 +114,13 @@ final class RailwayHostDriverTests: XCTestCase {
   private var keys: URL { root.appendingPathComponent("railway") }
 
   private func driver(
-    _ railway: StubRailway, _ relay: StubRelay, tokens: Tokens = Tokens()
+    _ railway: StubRailway, _ relay: StubRelay, tokens: Tokens = Tokens(),
+    workspaceID: String? = "ws-1"
   ) -> RailwayHostDriver {
     RailwayHostDriver(
       configuration: .init(
-        environmentID: "env-1", projectID: "prj-1", keys: keys, relayHost: Self.relayHost,
-        hostSetup: .checkout, pollInterval: .milliseconds(1)),
+        environmentID: "env-1", projectID: "prj-1", workspaceID: workspaceID, keys: keys,
+        relayHost: Self.relayHost, hostSetup: .checkout, pollInterval: .milliseconds(1)),
       api: RailwayAPI(transport: railway, tokens: tokens),
       directory: root.appendingPathComponent("hosts"), runner: relay)
   }
@@ -330,6 +333,61 @@ final class RailwayHostDriverTests: XCTestCase {
     XCTAssertNil(unknown, "Railway couldn't say")
     XCTAssertFalse(driver.hostsSleep, "a Railway host never sleeps")
     XCTAssertEqual(relay.calls(to: "ssh").count, logins, "presence logged in")
+  }
+
+  /// Value: protects=a sandbox Railway answers with no such sandbox for is called gone, and its
+  /// delete completed, only when the sign-in can see this Mac's workspace: another account (or a
+  /// sign-in that lost the workspace) reads every sandbox as missing, and its workroom would be
+  /// removed while the sandbox bills on (review 3, C4); fails_when=a null read under an account
+  /// that can't see the workspace, with no workspace recorded, or with the workspaces unreadable,
+  /// reads as gone or completes a delete; seam=HostPresenceReporting and destroy over StubRailway
+  func testANullSandboxIsGoneOnlyWhenTheSignInSeesThisMacsWorkspace() async throws {
+    let railway = railway()
+    let driver = driver(railway, StubRelay())
+    let host = try await driver.create()
+    guard case .remote(let id) = host else { return XCTFail("\(host)") }
+    let descriptor = HostDescriptor(
+      driver: "railway", id: id,
+      railway: RailwayHostRecord(
+        projectID: "prj-1", environmentID: "env-1", sandboxID: "sbx-1", hostKey: Self.relayKey))
+    railway.answer("sandbox", data: ["sandbox": NSNull()])
+    railway.answer("sandboxDestroy") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Sandbox not found"}]}"#.utf8))
+    }
+
+    // Another account: it sees a workspace, but not this Mac's.
+    railway.answer(
+      "me", data: ["me": ["workspaces": [["id": "ws-other", "name": "Theirs", "plan": "PRO"]]]])
+    var presence = await driver.presence(host)
+    XCTAssertEqual(presence, .signedOut, "another account's null read")
+    do {
+      try await driver.destroy(host)
+      XCTFail("another account's null read completed the delete")
+    } catch {}
+
+    // Railway couldn't list the workspaces: unknown, never gone.
+    railway.answer("me") { _ in RailwayHTTPResponse(status: 502, body: Data("bad".utf8)) }
+    presence = await driver.presence(host)
+    XCTAssertNil(presence, "an unconfirmed null read")
+    do {
+      try await driver.destroy(host)
+      XCTFail("an unconfirmed null read completed the delete")
+    } catch {}
+
+    // No workspace recorded for this Mac: nothing to confirm against.
+    let unplaced = self.driver(railway, StubRelay(), workspaceID: nil)
+    try unplaced.adopt(descriptor)
+    railway.answer(
+      "me", data: ["me": ["workspaces": [["id": "ws-1", "name": "Mine", "plan": "PRO"]]]])
+    presence = await unplaced.presence(host)
+    XCTAssertNil(presence, "a null read with no workspace to confirm")
+
+    // This Mac's workspace is seen: the null read is gone, and the delete completes.
+    try driver.adopt(descriptor)
+    presence = await driver.presence(host)
+    XCTAssertEqual(presence, .gone)
+    try await driver.destroy(host)
   }
 
   /// Value: protects=a revoked or expired sign-in reads as signed out, so the workroom offers
