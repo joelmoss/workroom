@@ -705,6 +705,34 @@ final class RemoteHostsTests: XCTestCase {
       try JSONDecoder().decode(HostDescriptor.self, from: try JSONEncoder().encode(boxd)), boxd)
   }
 
+  /// Value: protects=a delete (Remove Workroom or Delete Project) whose gone host's provider can't
+  /// give an environment still goes ahead for the rest, leaving that host's delete to keep its
+  /// record (`RemoteWorkrooms.delete`), while a live host's failure still refuses the delete before
+  /// anything is removed (review 4, Y1); fails_when=Delete Project refuses for a gone host that
+  /// Remove Workroom takes, or a live host's failure is swallowed; seam=HostDriverRegistry's
+  /// environment(toDelete:gone:) with a driver seam that fails for one provider
+  @MainActor
+  func testAGoneHostsProviderFailingDoesNotStopTheDelete() throws {
+    let remote = RemoteHosts(makeDriver: { key -> any HostTerminalDriver in
+      if case .exeDev = key { throw HostDriverError.invalidConfiguration("exe.dev unavailable") }
+      return BoxdHostDriver(
+        configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd"), hostSetup: .bundled),
+        directory: FileManager.default.temporaryDirectory)
+    }).registry
+    let live = HostDescriptor(
+      driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+      org: "acme", account: "usr_1")
+    let gone = HostDescriptor(
+      driver: HostKind.exeDev.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+      account: "me@x.dev")
+    XCTAssertThrowsError(try remote.environment(toDelete: [live, gone], gone: []))
+    let deletion = try XCTUnwrap(try remote.environment(toDelete: [live, gone], gone: [gone.id!]))
+    XCTAssertNotNil(deletion.environment(for: live))
+    XCTAssertNil(deletion.environment(for: gone))
+    XCTAssertNil(try remote.environment(toDelete: [gone], gone: [gone.id!]))
+    XCTAssertThrowsError(try remote.environment(toDelete: [gone], gone: [live.id!]))
+  }
+
   /// A delete of a remote provider's host asks for that provider's driver and environment, never
   /// Docker's; the environment's daemon socket is the driver's own, on the host's home disk, never
   /// the container image's tmpfs `/run/workroom` one; its git never borrows the Mac's `gh`
