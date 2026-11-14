@@ -79,7 +79,7 @@ final class RailwaySweepTests: XCTestCase {
       ])
       return RailwayHTTPResponse(status: 200, body: body)
     }
-    railway.answer("sshPublicKeys", data: ["sshPublicKeys": ["edges": []]])
+    railway.answer("sshPublicKeys", data: ["sshPublicKeys": StubRailway.lastPage([])])
     railway.answer("sshPublicKeyCreate", data: ["sshPublicKeyCreate": ["id": "key-1"]])
     railway.answer(
       "sandboxCreate", data: ["sandboxCreate": ["id": "sbx-1", "status": "CREATING"]])

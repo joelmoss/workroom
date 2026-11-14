@@ -187,7 +187,9 @@ final class RailwayAPITests: XCTestCase {
   }
 
   /// A `sandboxes` page of `id`, saying there is a next page after `cursor` (none for nil).
-  private static func page(_ id: String, next cursor: String?) throws -> RailwayHTTPResponse {
+  private static func page(_ id: String, next cursor: String?, hasNext: Bool? = nil) throws
+    -> RailwayHTTPResponse
+  {
     let row: [String: Any] = [
       "id": id, "status": "RUNNING", "createdAt": "2026-11-01T09:00:00Z", "environmentId": "env-1",
     ]
@@ -198,7 +200,7 @@ final class RailwayAPITests: XCTestCase {
           "sandboxes": [
             "edges": [["cursor": id, "node": row]],
             "pageInfo": [
-              "hasNextPage": cursor != nil, "endCursor": cursor ?? NSNull(),
+              "hasNextPage": hasNext ?? (cursor != nil), "endCursor": cursor ?? NSNull(),
             ] as [String: Any],
           ]
         ]
@@ -206,10 +208,12 @@ final class RailwayAPITests: XCTestCase {
   }
 
   /// Value: protects=an environment with more sandboxes than one page (Railway's cap is up to
-  /// 100) is listed whole, and a cursor Railway repeats ends the listing rather than looping
-  /// forever (review #8); fails_when=only the first page is read, or a repeated `endCursor` is
-  /// asked for again and again; seam=RailwayAPI.sandboxes over StubRailway
-  func testSandboxesReadsEveryPageAndStopsWhenTheCursorDoesNotAdvance() async throws {
+  /// 100) is listed whole, and a cursor Railway repeats, or a next page with no cursor, fails the
+  /// listing rather than looping forever or handing back part of it, from which the sweep could
+  /// match the wrong sandbox (review #8, review 3 C3); fails_when=only the first page is read, a
+  /// repeated `endCursor` is asked for again and again, or a partial list is returned;
+  /// seam=RailwayAPI.sandboxes over StubRailway
+  func testSandboxesReadsEveryPageAndFailsWhenTheCursorDoesNotAdvance() async throws {
     let railway = StubRailway()
     railway.answer("sandboxes") { request in
       let after = (StubRailway.graphQLBody(request)["variables"] as? [String: Any])?["after"]
@@ -231,9 +235,65 @@ final class RailwayAPITests: XCTestCase {
       else { throw URLError(.cancelled) }
       return try Self.page("sbx-a", next: "page-2")
     }
-    let listed = try await RailwayAPI(transport: stuck, tokens: Tokens(["at-1"]))
-      .sandboxes(environmentID: "env-1")
+    do {
+      let listed = try await RailwayAPI(transport: stuck, tokens: Tokens(["at-1"]))
+        .sandboxes(environmentID: "env-1")
+      XCTFail("a repeated cursor handed back part of the list: \(listed.map(\.id))")
+    } catch RailwayAPIError.malformed {}
     XCTAssertEqual(asked.withLock { $0 }, 2, "asked again for a cursor that didn't advance")
-    XCTAssertEqual(listed.map(\.id), ["sbx-a", "sbx-a"])
+
+    let cursorless = StubRailway()
+    cursorless.answer("sandboxes") { _ in try Self.page("sbx-a", next: nil, hasNext: true) }
+    do {
+      _ = try await RailwayAPI(transport: cursorless, tokens: Tokens(["at-1"]))
+        .sandboxes(environmentID: "env-1")
+      XCTFail("a next page with no cursor handed back part of the list")
+    } catch RailwayAPIError.malformed {}
+  }
+
+  /// Value: protects=the Mac's key is found on an account with more ssh keys than one page, so
+  /// it isn't registered again, and the listing fails rather than loops on a repeated cursor
+  /// (review 3, I3); fails_when=only the first page is read, or a repeated cursor is followed;
+  /// seam=RailwayAPI.sshPublicKeys over StubRailway
+  func testSSHPublicKeysReadsEveryPage() async throws {
+    @Sendable func keys(_ key: String, next: String?) throws -> RailwayHTTPResponse {
+      RailwayHTTPResponse(
+        status: 200,
+        body: try JSONSerialization.data(withJSONObject: [
+          "data": [
+            "sshPublicKeys": [
+              "edges": [["node": ["id": key, "publicKey": key]]],
+              "pageInfo": [
+                "hasNextPage": next != nil, "endCursor": next.map { $0 as Any } ?? NSNull(),
+              ],
+            ]
+          ]
+        ]))
+    }
+    let railway = StubRailway()
+    railway.answer("sshPublicKeys") { request in
+      let after = (StubRailway.graphQLBody(request)["variables"] as? [String: Any])?["after"]
+      return try after == nil
+        ? keys("ssh-ed25519 AAAA1", next: "c1") : keys("ssh-ed25519 AAAA2", next: nil)
+    }
+    let all = try await RailwayAPI(transport: railway, tokens: Tokens(["at-1"])).sshPublicKeys()
+    XCTAssertEqual(all, ["ssh-ed25519 AAAA1", "ssh-ed25519 AAAA2"])
+
+    let stuck = StubRailway()
+    let asked = Mutex(0)
+    stuck.answer("sshPublicKeys") { _ in
+      guard
+        asked.withLock({
+          $0 += 1
+          return $0
+        }) <= 10
+      else { throw URLError(.cancelled) }
+      return try keys("ssh-ed25519 AAAA1", next: "c1")
+    }
+    do {
+      _ = try await RailwayAPI(transport: stuck, tokens: Tokens(["at-1"])).sshPublicKeys()
+      XCTFail("a repeated cursor handed back part of the keys")
+    } catch RailwayAPIError.malformed {}
+    XCTAssertEqual(asked.withLock { $0 }, 2)
   }
 }

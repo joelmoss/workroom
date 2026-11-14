@@ -88,7 +88,7 @@ final class RailwayHostDriverTests: XCTestCase {
   /// A Railway that makes sandbox `sbx-1`, RUNNING at once, and knows no ssh key.
   private func railway(status: String? = "RUNNING") -> StubRailway {
     let railway = StubRailway()
-    railway.answer("sshPublicKeys", data: ["sshPublicKeys": ["edges": []]])
+    railway.answer("sshPublicKeys", data: ["sshPublicKeys": StubRailway.lastPage([])])
     railway.answer("sshPublicKeyCreate", data: ["sshPublicKeyCreate": ["id": "key-1"]])
     railway.answer(
       "sandboxCreate", data: ["sandboxCreate": ["id": "sbx-1", "status": "CREATING"]])
@@ -173,9 +173,9 @@ final class RailwayHostDriverTests: XCTestCase {
     railway.answer(
       "sshPublicKeys",
       data: [
-        "sshPublicKeys": [
-          "edges": [["node": ["id": "key-1", "publicKey": "ssh-ed25519 AAAAMacKey other-comment"]]]
-        ]
+        "sshPublicKeys": StubRailway.lastPage([
+          ["id": "key-1", "publicKey": "ssh-ed25519 AAAAMacKey other-comment"]
+        ])
       ])
     let before = railway.graphQLRequests.count
     _ = try await driver(railway, relay).create()

@@ -764,22 +764,19 @@ extension RailwayAPI {
       variables: ["id": .string(id), "environmentId": .string(environmentID)], as: Answer.self)
   }
 
-  /// The user's own ssh keys on the account, as their public key lines.
+  /// The user's own ssh keys on the account, as their public key lines, page by page.
   public func sshPublicKeys() async throws -> [String] {
-    struct Answer: Decodable {
-      struct Connection: Decodable {
-        struct Edge: Decodable {
-          struct Node: Decodable { let publicKey: String }
-          let node: Node
-        }
-        let edges: [Edge]
-      }
-      let sshPublicKeys: Connection
-    }
-    return try await query(
-      "query sshPublicKeys { sshPublicKeys { edges { node { id publicKey } } } }",
-      as: Answer.self
-    ).sshPublicKeys.edges.map(\.node.publicKey)
+    struct Key: Decodable, Sendable { let publicKey: String }
+    struct Answer: Decodable { let sshPublicKeys: RailwayConnection<Key> }
+    return try await pages { after in
+      var variables: [String: RailwayJSON] = ["first": 100]
+      if let after { variables["after"] = .string(after) }
+      return try await query(
+        "query sshPublicKeys($first: Int, $after: String) { sshPublicKeys(first: $first, after: "
+          + "$after) { edges { node { id publicKey } } pageInfo { hasNextPage endCursor } } }",
+        variables: variables, as: Answer.self
+      ).sshPublicKeys
+    }.map(\.publicKey)
   }
 
   public func createSSHPublicKey(name: String, publicKey: String) async throws {
@@ -813,37 +810,51 @@ public struct RailwaySandbox: Decodable, Equatable, Sendable {
 extension RailwayAPI {
   /// Every sandbox in `environmentID`, page by page; destroyed ones are listed too.
   public func sandboxes(environmentID: String) async throws -> [RailwaySandbox] {
-    struct Answer: Decodable {
-      struct Connection: Decodable {
-        struct Edge: Decodable { let node: RailwaySandbox }
-        struct PageInfo: Decodable {
-          let hasNextPage: Bool
-          let endCursor: String?
-        }
-        let edges: [Edge]
-        let pageInfo: PageInfo
-      }
-      let sandboxes: Connection
-    }
-    var all: [RailwaySandbox] = []
-    var after: String?
-    var seen: Set<String> = []
-    repeat {
+    struct Answer: Decodable { let sandboxes: RailwayConnection<RailwaySandbox> }
+    return try await pages { after in
       var variables: [String: RailwayJSON] = [
         "environmentId": .string(environmentID), "first": 100,
       ]
       if let after { variables["after"] = .string(after) }
-      let page = try await query(
+      return try await query(
         "query sandboxes($environmentId: String!, $first: Int, $after: String) { sandboxes("
           + "environmentId: $environmentId, first: $first, after: $after) { edges { node { id "
           + "status createdAt environmentId } } pageInfo { hasNextPage endCursor } } }",
         variables: variables, as: Answer.self
       ).sandboxes
-      all += page.edges.map(\.node)
-      // A cursor that doesn't advance (one already asked for) would ask for its pages forever.
-      let next = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : nil
-      after = next.flatMap { seen.insert($0).inserted ? $0 : nil }
-    } while after != nil
+    }
+  }
+
+  /// Every node of a Relay connection, asking for each page after the last one's `endCursor`. A
+  /// next page with no cursor, or a cursor already asked for, fails the whole listing
+  /// (`malformed`): it would ask for its pages forever, and part of a list read as all of it
+  /// lets the sweep match the wrong sandbox, or registers a key Railway already has.
+  func pages<Node: Decodable & Sendable>(
+    _ page: (_ after: String?) async throws -> RailwayConnection<Node>
+  ) async throws -> [Node] {
+    var all: [Node] = []
+    var after: String?
+    var seen: Set<String> = []
+    repeat {
+      let connection = try await page(after)
+      all += connection.edges.map(\.node)
+      guard connection.pageInfo.hasNextPage else { break }
+      guard let next = connection.pageInfo.endCursor, seen.insert(next).inserted else {
+        throw RailwayAPIError.malformed("a next page whose cursor doesn't advance")
+      }
+      after = next
+    } while true
     return all
   }
+}
+
+/// A page of a Railway (Relay) connection.
+struct RailwayConnection<Node: Decodable & Sendable>: Decodable, Sendable {
+  struct Edge: Decodable, Sendable { let node: Node }
+  struct PageInfo: Decodable, Sendable {
+    let hasNextPage: Bool
+    let endCursor: String?
+  }
+  let edges: [Edge]
+  let pageInfo: PageInfo
 }
