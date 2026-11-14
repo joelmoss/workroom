@@ -42,6 +42,12 @@ public final class RailwayPlacementStore: Sendable {
 
   public init(file: URL) { self.file = file }
 
+  /// The lock file Release and Nightly share for a placement (`ensure`), beside the placement.
+  /// A file of its own: the placement is written atomically, which replaces its inode.
+  public var lockFile: URL {
+    file.deletingLastPathComponent().appendingPathComponent("placement.lock")
+  }
+
   public func read() -> RailwayPlacement {
     lock.withLock { _ in decoded() }
   }
@@ -84,12 +90,21 @@ public final class RailwayPlacementStore: Sendable {
     environmentName: String
   ) async throws -> (projectID: String, environmentID: String) {
     // One at a time: the creates a setup sheet carries on start together, and two would each
-    // make a project and an environment.
-    try await RailwaySerial.shared.run {
-      try await self.ensureNow(
-        workspaceID: workspaceID, project: project, api: api, environmentName: environmentName)
+    // make a project and an environment. Across Release and Nightly too, which share the file:
+    // the whole transaction holds the placement's lock, and reads the placement only once it
+    // has it, so what the other app made meanwhile is used, not made again.
+    let lock = CrossProcessLock(path: lockFile, timeout: Self.lockTimeout)
+    return try await RailwaySerial.shared.run {
+      try await lock.withLock {
+        try await self.ensureNow(
+          workspaceID: workspaceID, project: project, api: api, environmentName: environmentName)
+      }
     }
   }
+
+  /// How long a placement waits for the other app's: it holds the lock across its calls to
+  /// Railway (a listing, a project, an environment), each bounded by the request's own timeout.
+  static let lockTimeout: Duration = .seconds(300)
 
   private func ensureNow(
     workspaceID: String, project: RailwayProjectPick?, api: RailwayAPI, environmentName: String
@@ -191,8 +206,8 @@ public enum RailwayPlacementError: LocalizedError, Equatable {
 }
 
 /// Runs this Mac's Railway setup steps one at a time, in order: making the placement, and making
-/// and registering the Mac's key and pinning the relay's, which concurrent first creates would
-/// otherwise each do.
+/// and registering the Mac's key, which concurrent first creates would otherwise each do. In this
+/// app only: the placement and the key each take a file lock the other build shares too.
 public actor RailwaySerial {
   public static let shared = RailwaySerial()
   private var tail: Task<Void, Never>?
