@@ -173,9 +173,9 @@ final class RailwayPlacementTests: XCTestCase {
     XCTAssertEqual(listed(railway), ["env-1"])
   }
 
-  /// Value: protects=no sandbox is left billing in an environment no sweep lists again: the
-  /// launch sweep lists only this Mac's current environment, so leaving one that still holds a
-  /// sandbox, recorded or not, would orphan it; fails_when=the placement moves while the old
+  /// Value: protects=no sandbox is left billing in an environment this Mac has left: leaving one
+  /// that still holds a sandbox, recorded or not, would orphan it; fails_when=the placement
+  /// moves while the old
   /// environment holds a live sandbox, or while Railway can't list it; seam=ensure
   func testLeavingAnEnvironmentThatStillHoldsASandboxIsRefused() async throws {
     let before = RailwayPlacement(workspaceID: "ws-1", projectID: "prj-1", environmentID: "env-1")

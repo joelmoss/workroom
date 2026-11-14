@@ -209,7 +209,7 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
     var record = held
     // A record an older build wrote names no workspace: resolved once, or left unknown, which
     // leaves a "no such sandbox" read unconfirmed.
-    record.workspaceID = try? await workspace(of: id, held)
+    record.workspaceID = try? await workspace(of: id, held, lookingAgain: true)
     if let failure = await destroySandbox(record) {
       try Task.checkCancellation()
       throw HostDriverError.provisioning(failure)
@@ -251,10 +251,13 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   /// on the held record, so it is looked up once and the next write of the record keeps it
   /// (`record(_:in:)`). Nil when it can't be told, which is remembered for this driver's life, so
   /// a host polled for its presence lists the workspaces and their projects once, not at every
-  /// read; throws when Railway can't list them.
-  func workspace(of id: UUID, _ record: RailwayHostRecord) async throws -> String? {
+  /// read; `lookingAgain` (a destroy the user asked for, perhaps after signing in to another
+  /// account) asks anyway. Throws when Railway can't list them.
+  func workspace(of id: UUID, _ record: RailwayHostRecord, lookingAgain: Bool = false)
+    async throws -> String?
+  {
     if let workspace = record.workspaceID { return workspace }
-    if unresolved.withLock({ $0.contains(id) }) { return nil }
+    if !lookingAgain, unresolved.withLock({ $0.contains(id) }) { return nil }
     var found: String?
     if record.environmentID == configuration.environmentID {
       found = configuration.workspaceID
@@ -482,7 +485,10 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       let status = try await api.sandboxStatus(held.sandboxID, environmentID: held.environmentID)
       if let status { return Self.isGone(status) ? .gone : .awake }
       var record = held
-      guard let workspace = try await workspace(of: id, held) else { return nil }
+      // With no project recorded, nothing can confirm the read either way.
+      guard held.projectID != nil, let workspace = try await workspace(of: id, held) else {
+        return nil
+      }
       record.workspaceID = workspace
       return try await api.confirmsMissing(record) ? .gone : .signedOut
     } catch RailwaySessionError.signedOut {
@@ -873,23 +879,47 @@ public struct RailwaySandbox: Decodable, Equatable, Sendable {
 }
 
 extension RailwayAPI {
-  /// Every live sandbox in `environmentID`, page by page: Railway's `active` filter leaves out
-  /// destroyed ones, so the page cap counts live sandboxes. Callers still check each status.
+  /// Every live sandbox in `environmentID`, page by page: Railway's `active` filter (ADR 0071)
+  /// leaves out destroyed ones, so the page cap counts live sandboxes. A Railway that refuses the
+  /// argument by name is asked again without it, destroyed ones and all. Callers still check each
+  /// status.
   public func sandboxes(environmentID: String) async throws -> [RailwaySandbox] {
+    do {
+      return try await sandboxes(environmentID: environmentID, active: true)
+    } catch let error as RailwayAPIError where Self.refusesActive(error) {
+      return try await sandboxes(environmentID: environmentID, active: false)
+    }
+  }
+
+  private func sandboxes(environmentID: String, active: Bool) async throws -> [RailwaySandbox] {
     struct Answer: Decodable { let sandboxes: RailwayConnection<RailwaySandbox> }
     return try await pages { after in
       var variables: [String: RailwayJSON] = [
-        "environmentId": .string(environmentID), "first": 100, "active": true,
+        "environmentId": .string(environmentID), "first": 100,
       ]
+      if active { variables["active"] = true }
       if let after { variables["after"] = .string(after) }
+      let filter = active ? ", $active: Boolean" : ""
+      let argument = active ? ", active: $active" : ""
       return try await query(
-        "query sandboxes($environmentId: String!, $first: Int, $after: String, $active: "
-          + "Boolean) { sandboxes(environmentId: $environmentId, first: $first, after: $after, "
-          + "active: $active) { edges { node { id status createdAt environmentId } } pageInfo { "
-          + "hasNextPage endCursor } } }",
+        "query sandboxes($environmentId: String!, $first: Int, $after: String\(filter)) { "
+          + "sandboxes(environmentId: $environmentId, first: $first, after: $after\(argument)) "
+          + "{ edges { node { id status createdAt environmentId } } pageInfo { hasNextPage "
+          + "endCursor } } }",
         variables: variables, as: Answer.self
       ).sandboxes
     }
+  }
+
+  /// Whether Railway refused the `active` argument itself (a schema without it).
+  static func refusesActive(_ error: RailwayAPIError) -> Bool {
+    let messages: [String]
+    switch error {
+    case .graphQL(let said): messages = said
+    case .http(status: 400, message: let said): messages = [said]
+    default: return false
+    }
+    return messages.contains { $0.contains("\"active\"") || $0.contains("argument 'active'") }
   }
 
   /// The most pages a listing reads (`pages`): 10,000 sandboxes at 100 a page, far past what an
@@ -900,7 +930,8 @@ extension RailwayAPI {
   /// Every node of a Relay connection, asking for each page after the last one's `endCursor`. A
   /// next page with no cursor, or a cursor already asked for, fails the whole listing
   /// (`malformed`): it would ask for its pages forever, and part of a list read as all of it
-  /// lets the sweep match the wrong sandbox, or registers a key Railway already has.
+  /// would let a placement leave an environment that still holds a sandbox, offer a lost
+  /// create the wrong candidates, or register a key Railway already has.
   func pages<Node: Decodable & Sendable>(
     _ page: (_ after: String?) async throws -> RailwayConnection<Node>
   ) async throws -> [Node] {

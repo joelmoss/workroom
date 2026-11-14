@@ -603,7 +603,7 @@ final class RailwayHostDriverTests: XCTestCase {
     let fresh = self.driver(railway, StubRelay())
     try fresh.adopt(unprojected)
     presence = await fresh.presence(host)
-    XCTAssertNotEqual(presence, .gone, "a null read with no project recorded")
+    XCTAssertNil(presence, "a null read with no project recorded")
 
     railway.answer(
       "projects", data: ["projects": ["edges": [["node": ["id": "prj-1", "name": "Workroom"]]]]])
@@ -614,8 +614,9 @@ final class RailwayHostDriverTests: XCTestCase {
   }
 
   /// Value: protects=a record an older build wrote whose workspace can't be told costs its poll one
-  /// status read, not a listing of every workspace's projects each time (review 5, D2.4);
-  /// fails_when=every presence read of such a host lists the workspaces and their projects again;
+  /// status read, not a listing of every workspace's projects each time, while a delete the user
+  /// asks for still looks again (review 5, D2.4); fails_when=every presence read of such a host
+  /// lists the workspaces and their projects again, or the remembered miss blocks a delete;
   /// seam=HostPresenceReporting over StubRailway, counting requests
   func testALegacyRecordWhoseWorkspaceCantBeToldIsLookedUpOnce() async throws {
     let railway = railway(status: nil)
@@ -636,6 +637,17 @@ final class RailwayHostDriverTests: XCTestCase {
     }
     XCTAssertEqual(asked("me { workspaces"), 1)
     XCTAssertEqual(asked("projects("), 1)
+
+    // Signed in to the account that sees it now: a delete the user asks for looks again, and
+    // completes on the null read.
+    railway.answer(
+      "projects",
+      data: ["projects": ["edges": [["node": ["id": "prj-gone", "name": "Workroom"]]]]])
+    railway.answer("sandboxDestroy") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Sandbox not found"}]}"#.utf8))
+    }
+    try await driver.destroy(.remote(id))
   }
 
   /// Value: protects=deleting the workroom stops the bill (user story 27); fails_when=the sandbox

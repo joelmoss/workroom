@@ -12,6 +12,7 @@ import WorkroomVCS
 struct DetailsPanel: View {
   @EnvironmentObject var store: AppStore
   @ObservedObject private var goneHosts = GoneHosts.shared
+  @ObservedObject private var lostCreates = RailwayLostCreatesModel.shared
   @Environment(\.themeTokens) private var tokens
 
   var body: some View {
@@ -126,8 +127,10 @@ extension DetailsPanel {
   @ViewBuilder
   fileprivate func railway(_ target: TerminalTarget) -> some View {
     if target.hostPlace == .railway, let sid = store.inspectorTargetID {
+      // Always drawn, so the ledger is read as the pane appears.
       RailwayHostNote(sid: sid)
-      RailwayLostCreatesNotice()
+        .task(id: sid) { await lostCreates.refresh() }
+      if !lostCreates.creates.isEmpty { RailwayLostCreatesNotice() }
     }
   }
 }

@@ -81,8 +81,8 @@ public final class RailwayPlacementStore: Sendable {
   /// the user picked; a create whose setup never placed this Mac runs it with none.
   ///
   /// Another workspace or project than the recorded one starts again there, but only once this
-  /// Mac's environment holds no sandbox: the launch sweep lists only the current environment, so
-  /// one left behind, recorded or not, would bill with no sweep to find it. Otherwise it throws
+  /// Mac's environment holds no sandbox: one left behind, recorded or not, would bill with no
+  /// workroom here to delete it. Otherwise it throws
   /// `RailwayPlacementError.environmentHoldsSandboxes`, or Railway's error when it can't list
   /// them, and the placement stays. A listing is trusted only when the sign-in sees the workspace
   /// the environment is in, which lists as empty otherwise: else it throws

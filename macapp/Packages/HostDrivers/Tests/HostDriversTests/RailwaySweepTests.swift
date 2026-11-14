@@ -388,6 +388,102 @@ final class RailwaySweepTests: XCTestCase {
     XCTAssertEqual(none, [])
   }
 
+  /// Value: protects=the lost-create cells beyond today's environment (review 5, D1 and D2.11): an
+  /// entry made in an environment the placement left lists and destroys there; one in a workspace
+  /// the sign-in can't see lists nothing (an unseen environment would list as empty) but can
+  /// still be dismissed; a legacy entry with no placement to place it can't list; and a create
+  /// already resolved, by the other build perhaps, destroys nothing; fails_when=candidates come
+  /// from or a destroy goes to another environment, an unseen workspace is listed, or a resolved
+  /// create's candidate is destroyed; seam=RailwayLostCreates over StubRailway and the ledger
+  func testALostCreateIsResolvedInItsOwnEnvironmentOrSaysWhyNot() async throws {
+    let started = Self.longAgo
+    let at = Self.iso(started.addingTimeInterval(4))
+    try await ledger.update {
+      $0 = [
+        .init(started: started, environmentID: "env-old", workspaceID: "ws-old"),
+        .init(started: started, environmentID: "env-hidden", workspaceID: "ws-hidden"),
+        .init(started: started),
+      ]
+    }
+    let railway = railway([Self.sandbox("sbx-old", createdAt: at, environment: "env-old")])
+    // A legacy entry with no placement to say where it was made.
+    let unplaced = RailwayLostCreates(
+      api: RailwayAPI(transport: railway, tokens: Tokens()), directory: keys, placement: nil)
+    let creates = try await unplaced.creates()
+    XCTAssertEqual(creates.count, 3)
+    let old = try XCTUnwrap(creates.first { $0.environmentID == "env-old" })
+    let hidden = try XCTUnwrap(creates.first { $0.environmentID == "env-hidden" })
+    let legacy = try XCTUnwrap(creates.first { $0.environmentID == nil })
+
+    let found = try await unplaced.candidates(of: old, recorded: [])
+    XCTAssertEqual(found.map(\.id), ["sbx-old"])
+    try await unplaced.destroy("sbx-old", of: old, recorded: [])
+    XCTAssertEqual(
+      requests(railway, "sandboxDestroy").map {
+        "\($0["id"] as? String ?? "?")@\($0["environmentId"] as? String ?? "?")"
+      }, ["sbx-old@env-old"])
+
+    let listed = requests(railway, "sandboxes").count
+    do {
+      _ = try await unplaced.candidates(of: hidden, recorded: [])
+      XCTFail("listed an environment the sign-in can't see")
+    } catch RailwayLostCreates.Failure.workspaceNotSeen {}
+    XCTAssertEqual(requests(railway, "sandboxes").count, listed)
+    try await unplaced.dismiss(hidden)
+
+    do {
+      _ = try await unplaced.candidates(of: legacy, recorded: [])
+      XCTFail("listed for an entry with no environment")
+    } catch RailwayLostCreates.Failure.placeUnknown {}
+
+    // Resolved already (its destroy above took it off): its candidate is left alone.
+    try await unplaced.dismiss(legacy)
+    do {
+      try await unplaced.destroy("sbx-old", of: old, recorded: [])
+      XCTFail("a resolved create destroyed a sandbox")
+    } catch RailwayLostCreates.Failure.resolved {}
+    XCTAssertEqual(requests(railway, "sandboxDestroy").count, 1)
+    let left = try await ledger.entries()
+    XCTAssertEqual(left, [])
+  }
+
+  /// Value: protects=a Railway whose `sandboxes` has no `active` argument still lists, without it,
+  /// rather than failing every placement move and lost create's candidates (review 5, D2.6, whose
+  /// argument no live check has read yet); fails_when=a refusal naming the argument fails the
+  /// listing, or any other GraphQL error is retried; seam=RailwayAPI.sandboxes over StubRailway
+  func testAListingFallsBackWhenRailwayRefusesTheActiveFilter() async throws {
+    let railway = railway([])
+    railway.answer("sandboxes") { request in
+      let variables = StubRailway.graphQLBody(request)["variables"] as? [String: Any] ?? [:]
+      let answer: [String: Any] =
+        variables["active"] != nil
+        ? ["errors": [["message": #"Unknown argument "active" on field "Query.sandboxes"."#]]]
+        : [
+          "data": [
+            "sandboxes": StubRailway.lastPage([
+              ["id": "sbx-a", "status": "RUNNING", "environmentId": "env-1"]
+            ])
+          ]
+        ]
+      return RailwayHTTPResponse(
+        status: 200, body: try JSONSerialization.data(withJSONObject: answer))
+    }
+    let api = RailwayAPI(transport: railway, tokens: Tokens())
+    let listed = try await api.sandboxes(environmentID: "env-1")
+    XCTAssertEqual(listed.map(\.id), ["sbx-a"])
+
+    railway.answer("sandboxes") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Railway is down"}]}"#.utf8))
+    }
+    let before = requests(railway, "sandboxes").count
+    do {
+      _ = try await api.sandboxes(environmentID: "env-1")
+      XCTFail("a failed listing read as a list")
+    } catch RailwayAPIError.graphQL {}
+    XCTAssertEqual(requests(railway, "sandboxes").count, before + 1, "another error was retried")
+  }
+
   /// Value: protects=a ledger an earlier build wrote, with the candidates it kept for an ambiguous
   /// lost reply, still reads, so its lost create is listed rather than set aside unreadable
   /// (review 5, D1); fails_when=the old `candidates` key makes the ledger unreadable;
@@ -456,7 +552,7 @@ final class RailwaySweepTests: XCTestCase {
 
   /// Value: protects=a create whose `sandboxCreate` never reached Railway (signed out, a refresh
   /// that failed, a cancel before sending, a second token that failed after a 401) drops its
-  /// intent, so no phantom intent is later matched by time to another Mac's sandbox, while one
+  /// intent, so no phantom lost create is shown for the user to resolve, while one
   /// whose request went out and lost its answer keeps it (review 4, X4); fails_when=a failure
   /// before anything was sent keeps the intent, or a lost link after sending drops it;
   /// seam=create over StubRailway with a token provider that fails from the create's request on
@@ -567,8 +663,8 @@ final class RailwaySweepTests: XCTestCase {
   }
 
   /// Value: protects=every way a create ends takes its own ledger entry off, whether or not
-  /// Railway's sandbox id made it into the entry, so no entry outlives its sandbox to be matched,
-  /// by time, to another Mac's (review 3, I2 and I6); fails_when=an entry whose id write failed
+  /// Railway's sandbox id made it into the entry, so no entry outlives its sandbox to be shown
+  /// as a lost create (review 3, I2 and I6); fails_when=an entry whose id write failed
   /// stays after its host is recorded, destroyed or undone, or a named entry stays after a
   /// destroy or an undo; seam=create, recorded, destroy and the create's undo over StubRailway
   /// and the ledger, with the ledger's folder read-only while the id is written

@@ -1077,9 +1077,7 @@ final class RemoteHostsTests: XCTestCase {
     try await settle(remote)
     XCTAssertTrue(railway.sent.isEmpty, "\(railway.sent)")
 
-    // A lost reply whose window holds every sandbox here, with no record of this environment: a
-    // sandbox no record names says nothing then (a create retried in the window, its record lost
-    // with the config), so nothing is listed, and the intent waits.
+    // A lost reply: nothing is listed for it, and the intent waits for the user.
     let january = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-01-01T00:00:01Z"))
     try await ledger.update { $0 = [.init(started: january)] }
     remote = launch()

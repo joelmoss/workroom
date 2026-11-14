@@ -5,21 +5,17 @@ import SwiftUI
 /// of this Mac's whose reply Railway never sent, with the sandboxes it may have made, read fresh
 /// each time it shows. Workroom never guesses which was the create's: the user destroys the one
 /// they know was (confirmed, since it destroys whatever is on it) or dismisses the notice. Shown in
-/// a Railway workroom's Details pane and in Settings ▸ Remote Hosts ▸ Railway. Draws nothing while
-/// there is none.
+/// a Railway workroom's Details pane and in Settings ▸ Remote Hosts ▸ Railway, each of which
+/// mounts it only while there is one and reads the ledger as it appears (`refresh`).
 struct RailwayLostCreatesNotice: View {
   @ObservedObject private var model = RailwayLostCreatesModel.shared
 
   var body: some View {
-    // Something always drawn: with nothing to show yet, an empty view never appears, so its
-    // `.task` would never read the ledger.
     VStack(alignment: .leading, spacing: 12) {
-      Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
       ForEach(model.creates) { create in
         RailwayLostCreateNotice(create: create)
       }
     }
-    .task { await model.refresh() }
   }
 }
 
@@ -29,7 +25,10 @@ private struct RailwayLostCreateNotice: View {
   @ObservedObject private var model = RailwayLostCreatesModel.shared
   /// Nil until read, and while a read is under way.
   @State private var candidates: [RailwaySandbox]?
+  /// Why the candidates couldn't be read; cleared by each read.
   @State private var problem: String?
+  /// Why a Destroy or Dismiss failed; kept across the read a failed Destroy starts.
+  @State private var actionProblem: String?
   @State private var confirming: RailwaySandbox?
   @State private var busy = false
   /// Bumped to read the candidates again.
@@ -50,8 +49,8 @@ private struct RailwayLostCreateNotice: View {
       .font(.caption).foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
       candidateList
-      if let problem {
-        Text(problem).font(.caption).foregroundStyle(.red)
+      ForEach([actionProblem, problem].compactMap { $0 }, id: \.self) { said in
+        Text(said).font(.caption).foregroundStyle(.red)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("railway.lostCreate.problem")
       }
@@ -141,12 +140,12 @@ private struct RailwayLostCreateNotice: View {
   private func destroy(_ sandbox: RailwaySandbox) {
     confirming = nil
     busy = true
-    problem = nil
+    actionProblem = nil
     Task {
       do {
         try await model.destroy(sandbox.id, of: create)
       } catch {
-        problem = error.localizedDescription
+        actionProblem = error.localizedDescription
         reads += 1
       }
       busy = false
@@ -155,9 +154,9 @@ private struct RailwayLostCreateNotice: View {
 
   private func dismiss() {
     busy = true
-    problem = nil
+    actionProblem = nil
     Task {
-      do { try await model.dismiss(create) } catch { problem = error.localizedDescription }
+      do { try await model.dismiss(create) } catch { actionProblem = error.localizedDescription }
       busy = false
     }
   }
