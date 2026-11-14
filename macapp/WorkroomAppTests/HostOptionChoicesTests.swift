@@ -84,6 +84,18 @@ final class ProjectHostOptionsTests: XCTestCase {
 /// The host option catalog every Settings pane and the Configure… panel share (#575).
 @MainActor
 final class HostOptionsCatalogTests: XCTestCase {
+  /// Value: protects=configuring a project's first Railway workroom; fails_when=a Mac with no
+  /// Railway environment yet gets "Couldn't load Railway host options" instead of the fields, so
+  /// nothing can be configured until a workroom is made; why_new=owner report 2026-11-14;
+  /// seam=the catalog's own read, with the test process's empty placement and stubbed sign-in
+  func testRailwayBeforeSetupOffersItsOptionsWithNoCheckpoints() async {
+    XCTAssertNil(RailwayAccount.placement.read().environmentID, "the test's placement is empty")
+    let catalog = HostOptionsCatalog()
+    await catalog.load(.railway)
+    XCTAssertNil(catalog.failure[.railway], "a Mac not set up yet still gets the fields")
+    XCTAssertEqual(catalog.railway?.checkpoints, [], "a new environment holds no checkpoints")
+  }
+
   /// Value: protects=moving between Remote Hosts, Projects and Configure… reuses a read under two
   /// minutes old, a failed read is retried, and Settings opening reads afresh; fails_when=a fresh
   /// read is repeated, an old or failed one kept, Settings opening reads nothing itself, or the

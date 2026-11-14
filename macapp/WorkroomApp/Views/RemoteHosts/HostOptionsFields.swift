@@ -122,9 +122,7 @@ final class HostOptionsCatalog: ObservableObject {
     case .railway:
       // This Mac's environment as setup recorded it: a read never makes a project or environment.
       guard let environment = RailwayAccount.placement.read().environmentID else {
-        return .failed(
-          "Railway isn't set up yet, so its checkpoints can't be listed. Creating a Railway "
-            + "workroom sets it up.")
+        return await railwayBeforeSetup()
       }
       key = .railway(environment: environment)
     case .container, .ssh:
@@ -148,6 +146,20 @@ final class HostOptionsCatalog: ObservableObject {
         "\(name) isn't set up, or couldn't be reached: \(reason)\(reason.hasSuffix(".") ? "" : ".")"
           + " Creating a \(name) workroom sets it up.")
     }
+  }
+
+  /// Railway's options on a Mac with no environment yet (options can be saved before the first
+  /// workroom, story 40): no checkpoints, since a new environment holds none, and the plan's size
+  /// when the sign-in tells which workspace this Mac's workrooms go in. A Mac not signed in yet
+  /// still gets the region and image fields.
+  private func railwayBeforeSetup() async -> Reading {
+    let recorded = RailwayAccount.placement.read().workspaceID
+    let granted = try? await RailwayAccount.shared.api.grantedWorkspaces()
+    let workspace =
+      granted?.first { $0.id == recorded } ?? (granted?.count == 1 ? granted?.first : nil)
+    return .railway(
+      RailwayHostOptions(
+        checkpoints: [], size: workspace.flatMap { RailwayHostOptions.Size(plan: $0.plan) }))
   }
 }
 
