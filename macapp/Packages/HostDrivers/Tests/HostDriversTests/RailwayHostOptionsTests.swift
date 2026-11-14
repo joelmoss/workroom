@@ -351,7 +351,8 @@ final class RailwayHostOptionsTests: XCTestCase {
     XCTAssertTrue(manager.fileExists(atPath: layouts.appendingPathComponent("l1").path))
     XCTAssertThrowsError(try DaemonBootstrap.screens(besideSocket: "daemon/workroomd.sock"))
     XCTAssertEqual(
-      try DaemonBootstrap.screens(besideSocket: "/root/daemon/workroomd.sock"), "/root/daemon/screens")
+      try DaemonBootstrap.screens(besideSocket: "/root/daemon/workroomd.sock"),
+      "/root/daemon/screens")
   }
 
   private func shell(_ command: String, stdin: String = "") throws -> (

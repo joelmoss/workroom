@@ -189,7 +189,8 @@ final class RailwayHostDriverTests: XCTestCase {
     railway.answer("projects") { request in
       let variables = StubRailway.graphQLBody(request)["variables"] as? [String: Any] ?? [:]
       let projects: [[String: Any]] =
-        variables["workspaceId"] as? String == "ws-old" ? [["id": "prj-old", "name": "Workroom"]] : []
+        variables["workspaceId"] as? String == "ws-old"
+        ? [["id": "prj-old", "name": "Workroom"]] : []
       return RailwayHTTPResponse(
         status: 200,
         body: try JSONSerialization.data(withJSONObject: [
