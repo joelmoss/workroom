@@ -38,6 +38,11 @@ fn ended(request: &AttachRequest, no_spawn: bool) -> ExitCode {
     let mut stdout = std::io::stdout();
     let _ = write!(stdout, "\r\nworkroom: {notice}\r\n");
     let _ = stdout.flush();
+    hold()
+}
+
+/// Holds the pane on what it shows, with input going nowhere, until its user closes it.
+fn hold() -> ExitCode {
     let _raw = RawMode::enter();
     let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
     ExitCode::SUCCESS
@@ -45,6 +50,9 @@ fn ended(request: &AttachRequest, no_spawn: bool) -> ExitCode {
 
 /// What a remote pane says when its session has ended and no record of it was kept.
 const ENDED_NOTICE: &str = "This terminal has ended. Close it to start again.";
+/// How the daemon's `Failure` for a session that has ended begins (`terminal::dispatch`): before
+/// `Attached` a refusal, and after a record's screen the end of it.
+const SESSION_ENDED: &[u8] = b"session ended: ";
 /// What a run session's pane says when its session has ended.
 const RUN_ENDED_NOTICE: &str = "The run command that was running here has ended.";
 
@@ -424,6 +432,9 @@ pub fn run_attach(args: &[String]) -> ExitCode {
                 if replaced {
                     eprintln!("workroomd: {}\r", String::from_utf8_lossy(&reason));
                 }
+                // The link first: a pane holding on its notice needs no relay or daemon
+                // connection behind it.
+                drop(link);
                 return ended(&request, no_spawn);
             }
             // A session that could not be created or attached. See the main loop's `Failure` arm
@@ -524,7 +535,19 @@ pub fn run_attach(args: &[String]) -> ExitCode {
                                     && frame.payload.starts_with(b"no session ") =>
                             {
                                 drop(_raw);
+                                drop(link);
                                 return ended(&request, no_spawn);
+                            }
+                            // A remote pane shown the record of a session that ended with its
+                            // host, notice and all: the daemon says it is over and closes the
+                            // connection, which is no lost link to attach again. The pane keeps
+                            // the screen.
+                            FrameKind::Failure
+                                if request.existing_only
+                                    && frame.payload.starts_with(SESSION_ENDED) =>
+                            {
+                                drop(link);
+                                return hold();
                             }
                             FrameKind::Failure => {
                                 eprintln!("workroomd: {}", String::from_utf8_lossy(&frame.payload));

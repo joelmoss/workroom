@@ -245,3 +245,100 @@ fn a_truncated_descriptor_list_decodes_to_what_survived() {
     // Cut mid-descriptor: no panic, no phantom entry.
     assert!(decode_descriptor_list(&full[..20]).is_empty());
 }
+
+/// A `Peer` frame as `relay` sends it: NUL-terminated `KEY=VALUE` entries, on Control.
+fn peer_envelope(entries: &[(&str, &str)]) -> Envelope {
+    let mut payload = Vec::new();
+    for (key, value) in entries {
+        payload.extend_from_slice(format!("{key}={value}").as_bytes());
+        payload.push(0);
+    }
+    Envelope::new(
+        Service::Control,
+        0,
+        Frame::new(FrameKind::Peer, payload).encode(),
+    )
+}
+
+/// Hands `envelopes` to one connection's dispatch, and returns what it kept of the peer.
+fn dispatched_peer(envelopes: &[Envelope]) -> Option<Vec<(OsString, OsString)>> {
+    let sessions = SessionStore::new();
+    let mut attachment = Attachment::new(Arc::new(|| {}));
+    let writer: SharedWriter = Arc::new(std::sync::Mutex::new(Box::new(std::io::sink())));
+    for envelope in envelopes {
+        let reply = dispatch(
+            envelope,
+            &sessions,
+            &mut attachment,
+            "test",
+            &writer,
+            &|_| true,
+        );
+        assert!(reply.is_none(), "a Peer frame is never answered");
+    }
+    attachment.peer
+}
+
+/// Only a connection's first `Peer` frame counts: the relay sends one, right after the greeting,
+/// and a later one (anything the client itself put on the stream) changes nothing.
+#[test]
+fn only_the_first_peer_frame_on_a_connection_is_taken() {
+    let peer = dispatched_peer(&[
+        peer_envelope(&[("SSH_CONNECTION", "10.0.0.1 1 10.0.0.2 22")]),
+        peer_envelope(&[("SSH_CONNECTION", "192.0.2.9 2 192.0.2.10 22")]),
+    ]);
+    assert_eq!(
+        peer,
+        Some(env(&[("SSH_CONNECTION", "10.0.0.1 1 10.0.0.2 22")]))
+    );
+}
+
+/// The daemon holds a `Peer` frame to the login environment itself, whatever a relay sends: the
+/// Mac's terminal, the ssh terminal and the session's metadata never come from it, and neither does
+/// an entry that is no variable at all.
+#[test]
+fn a_peer_frame_lets_only_the_login_environment_through() {
+    let peer = dispatched_peer(&[peer_envelope(&[
+        ("PATH", "/login/bin:/usr/bin"),
+        ("HOME", "/home/login"),
+        ("SHELL", "/bin/bash"),
+        ("USER", "login"),
+        ("SSH_CONNECTION", "10.0.0.1 1 10.0.0.2 22"),
+        ("SSH_TTY", "/dev/pts/3"),
+        (
+            "WORKROOM_SESSION_ID",
+            "6B9B968D-0BD7-4172-850A-A373DA73BC70",
+        ),
+        ("WORKROOM_SESSION_COMMAND", "rm -rf ~"),
+        ("TERM", "dumb"),
+        ("COLORTERM", "no"),
+        ("TERM_PROGRAM", "tmux"),
+        ("TERM_PROGRAM_VERSION", "3"),
+        ("TERMINFO", "/elsewhere"),
+        ("GHOSTTY_RESOURCES_DIR", "/elsewhere"),
+        ("", "no-name"),
+        ("PWD", "/home/login"),
+    ])]);
+    assert_eq!(
+        peer,
+        Some(env(&[
+            ("PATH", "/login/bin:/usr/bin"),
+            ("HOME", "/home/login"),
+            ("SHELL", "/bin/bash"),
+            ("USER", "login"),
+            ("SSH_CONNECTION", "10.0.0.1 1 10.0.0.2 22"),
+        ]))
+    );
+}
+
+/// A `Peer` frame over the bound is not taken at all, and nor is one after it: the session falls
+/// back to the account entry rather than to a cut environment.
+#[test]
+fn an_oversized_peer_frame_is_not_taken() {
+    let big = "x".repeat(crate::terminal::host_session::MAX_PEER_ENVIRONMENT);
+    let peer = dispatched_peer(&[
+        peer_envelope(&[("HOME", "/home/login"), ("BIG", &big)]),
+        peer_envelope(&[("HOME", "/home/second")]),
+    ]);
+    assert_eq!(peer, None);
+}
