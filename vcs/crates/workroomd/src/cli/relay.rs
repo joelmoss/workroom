@@ -165,3 +165,6 @@ fn forward_greeting(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
