@@ -183,6 +183,8 @@ struct OnboardingWindow: View {
       // this window and costs nothing once `RootView` later re-applies the same value.
       NSApp.appearance = themePreference.nsAppearance
     }
+    // ⌘W and the red button close the wizard mid-clone; the clone goes with it, not on unseen.
+    .onDisappear { clone.cancel() }
     .onChange(of: step) {
       // The one place finishing the wizard sets the completion flag — firing on entry to `.done` by
       // any path (skip or a successful add), not gated behind which button later closes the window

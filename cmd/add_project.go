@@ -76,8 +76,10 @@ func runAddProject(svc *workroom.Service, path string, create bool, out io.Write
 
 // runCloneProject clones url into path, registers it and prints its envelope, streaming git's
 // output to logSink as NDJSON. SIGTERM (the app's Cancel), SIGINT or SIGHUP cancels the clone: git's
-// process group is killed, the destination is put back as it was found, and the run reports
-// Cancelled. The handler forwards and stops, never re-raising, as script.Run's does.
+// process group is SIGTERMed (then SIGKILLed if it lingers), the destination is put back as it was
+// found, and the run reports Cancelled. A clone that is in place but can't be registered is kept and
+// reported as ConfigWriteFailed. The handler forwards and stops, never re-raising, as script.Run's
+// does.
 func runCloneProject(svc *workroom.Service, url, path string, out, logSink io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stop()

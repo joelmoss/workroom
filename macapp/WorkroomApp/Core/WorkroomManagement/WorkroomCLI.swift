@@ -120,10 +120,18 @@ private final class CancelSignal: Sendable {
 /// the fallback error path (a non-zero exit without a decodable stdout envelope).
 /// `@unchecked Sendable` because the file handle's readability callbacks are
 /// serialized, and the lock guards the buffers regardless.
+///
+/// Both buffers are capped at `limit`: a clone has no timeout, so a git server that streams
+/// progress forever would otherwise grow them until the app ran out of memory. `raw` keeps the
+/// newest bytes, the end of stderr being where a failure says why; a line longer than the cap is
+/// no NDJSON event the CLI writes, so it is dropped through to its newline.
 private final class StderrCollector: @unchecked Sendable {
+  private static let limit = 1 << 20
   private let lock = NSLock()
   private var raw = Data()
   private var pending = Data()
+  /// Skipping the rest of an over-long line, up to and including its newline.
+  private var discarding = false
   private let onEvent: ((StreamEvent) -> Void)?
 
   init(onEvent: ((StreamEvent) -> Void)?) { self.onEvent = onEvent }
@@ -131,25 +139,35 @@ private final class StderrCollector: @unchecked Sendable {
   func consume(_ data: Data) {
     lock.lock()
     raw.append(data)
+    if raw.count > Self.limit { raw.removeFirst(raw.count - Self.limit) }
     var events: [StreamEvent] = []
     if onEvent != nil {
       pending.append(data)
       while let nl = pending.firstIndex(of: 0x0A) {
         let line = Data(pending[pending.startIndex..<nl])
         pending = Data(pending[(nl + 1)...])
+        if discarding {
+          discarding = false
+          continue
+        }
         if let event = try? JSONDecoder().decode(StreamEvent.self, from: line) {
           events.append(event)
         }
+      }
+      if pending.count > Self.limit {
+        pending = Data()
+        discarding = true
       }
     }
     lock.unlock()
     if let onEvent { events.forEach(onEvent) }
   }
 
+  /// Decoded leniently: the cap can cut `raw` partway through a multi-byte character.
   var rawString: String {
     lock.lock()
     defer { lock.unlock() }
-    return String(data: raw, encoding: .utf8) ?? ""
+    return String(decoding: raw, as: UTF8.self)
   }
 }
 
@@ -161,8 +179,8 @@ protocol WorkroomCLIProtocol: Sendable {
   func addProject(_ path: String, create: Bool) async throws -> String
   /// Clones `url` into `path` and registers the clone (#620), handing `onLog` each line of git's
   /// progress as it arrives. It has no timeout; cancelling the calling task cancels the clone, and
-  /// it returns once the CLI has put the destination back as it found it. Returns the canonical
-  /// path the CLI registered.
+  /// it returns once the CLI has put the destination back as it found it, or has been killed for
+  /// taking more than 5 seconds to. Returns the canonical path the CLI registered.
   func cloneProject(_ url: String, into path: String, onLog: @escaping @Sendable (String) -> Void)
     async throws -> String
   func create(
@@ -661,9 +679,11 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   /// device, never the app's own stdin.
   ///
   /// A nil `timeout` never times out. With `cancellable`, cancelling the calling task sends the
-  /// child SIGTERM, with no SIGKILL after it: the child is trusted to clean up and exit, and `run`
-  /// returns only once it has, so a retry never races its cleanup. Without it (every command but a
-  /// clone) a cancelled task still lets the child finish, so no script is cut off partway.
+  /// child SIGTERM: the child is trusted to clean up and exit, and `run` returns only once it has,
+  /// so a retry never races its cleanup. A child still running 5 seconds later gets SIGKILL, so a
+  /// wedged one can't hold the caller forever; that one's cleanup may be left unfinished. Without
+  /// `cancellable` (every command but a clone) a cancelled task still lets the child finish, so no
+  /// script is cut off partway.
   private func run(
     _ args: [String], timeout: TimeInterval?, userInitiated: Bool = false, stdin: Data? = nil,
     cancellable: Bool = false, onEvent: ((StreamEvent) -> Void)? = nil
@@ -769,7 +789,14 @@ final class WorkroomCLI: WorkroomCLIProtocol {
         try proc.run()
         // `nonisolated(unsafe)`: `Process` isn't Sendable, but `terminate()` is thread-safe.
         nonisolated(unsafe) let running = proc
-        cancel?.onFire { if running.isRunning { running.terminate() } }
+        cancel?.onFire {
+          guard running.isRunning else { return }
+          running.terminate()
+          // A CLI stuck past SIGTERM would hold the caller at "Cancelling…" for good.
+          DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+            if running.isRunning { kill(running.processIdentifier, SIGKILL) }
+          }
+        }
         if let inPipe, let stdin {
           DispatchQueue.global().async {
             let handle = inPipe.fileHandleForWriting
