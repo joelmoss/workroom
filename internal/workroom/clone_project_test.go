@@ -307,6 +307,7 @@ func TestCloneProject_CancelLeavesASiblingInACreatedParent(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(parent, "a")); !os.IsNotExist(err) {
 		t.Fatalf("new/a left behind (stat err %v)", err)
 	}
+	assertNoStaging(t, filepath.Join(parent, "a"))
 }
 
 // Value: protects=cancelling a clone into an existing empty folder never deletes what another run
@@ -331,5 +332,99 @@ func TestCloneProject_CancelLeavesAConcurrentWinnersClone(t *testing.T) {
 	}
 	if got := run(t, dest, "ls", "-A"); got != "README" {
 		t.Fatalf("destination holds %q, want only the other run's README", got)
+	}
+	assertNoStaging(t, dest)
+}
+
+// assertNoStaging checks no staging folder for dest is left beside it or inside it.
+func assertNoStaging(t *testing.T, dest string) {
+	t.Helper()
+	for _, pattern := range []string{
+		filepath.Join(filepath.Dir(dest), "."+filepath.Base(dest)+".clone-*"),
+		filepath.Join(dest, ".clone-*"),
+	} {
+		if left, _ := filepath.Glob(pattern); len(left) > 0 {
+			t.Fatalf("staging folder left behind: %v", left)
+		}
+	}
+}
+
+// fillingRemote is a clone URL for origin whose transport first writes README into dest, as another
+// run filling the destination mid-clone would, then serves origin normally.
+func fillingRemote(t *testing.T, origin, dest string) string {
+	t.Helper()
+	helper := filepath.Join(t.TempDir(), "fill.sh")
+	body := "#!/bin/sh\necho x > '" + filepath.Join(dest, "README") + "'\nexec git-upload-pack '" + origin + "'\n"
+	if err := os.WriteFile(helper, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_ALLOW_PROTOCOL", "ext:file")
+	return "ext::" + helper
+}
+
+// readOnlyParent makes an empty dest inside a parent this user cannot write to, like an empty
+// external volume's root under /Volumes.
+func readOnlyParent(t *testing.T) string {
+	t.Helper()
+	parent := t.TempDir()
+	dest := filepath.Join(parent, "dest")
+	if err := os.Mkdir(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+	return dest
+}
+
+// Value: protects=cloning into an empty folder works when its parent is not writable (an external
+// drive's root); fails_when=staging always goes beside the destination; why_new=every other test has
+// a writable parent; seam=none; no_claim=does not test a real mount point (EXDEV path)
+func TestCloneProject_EmptyFolderUnderReadOnlyParent(t *testing.T) {
+	svc, cfg := newCreateSvc(t)
+	origin := bareRepo(t)
+	dest := readOnlyParent(t)
+
+	res, err := svc.CloneProject(context.Background(), "file://"+origin, dest, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("clone into an empty folder under a read-only parent: %v", err)
+	}
+	if got := run(t, res.Path, "git", "log", "--format=%s"); got != "init" {
+		t.Fatalf("clone has log %q, want the origin's commit", got)
+	}
+	assertNoStaging(t, dest)
+	assertRegistered(t, cfg, res.Path, true)
+}
+
+// Value: protects=a destination another run fills mid-clone is refused and left intact;
+// fails_when=the clone is moved over the other run's files or its staging is left behind;
+// why_new=no test reaches the move-into-place refusal; seam=none; no_claim=the other run is a file
+func TestCloneProject_DestinationFilledMeanwhile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dest func(t *testing.T) string
+	}{
+		{"staged beside", func(t *testing.T) string { return filepath.Join(t.TempDir(), "dest") }},
+		{"staged inside", readOnlyParent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, cfg := newCreateSvc(t)
+			origin := bareRepo(t)
+			dest := tc.dest(t)
+			if err := os.MkdirAll(dest, 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := svc.CloneProject(context.Background(), fillingRemote(t, origin, dest), dest, &bytes.Buffer{})
+			if !errors.Is(err, errs.ErrDestinationNotEmpty) {
+				t.Fatalf("err = %v, want ErrDestinationNotEmpty", err)
+			}
+			if got := run(t, dest, "ls", "-A"); got != "README" {
+				t.Fatalf("destination holds %q, want only the other run's README", got)
+			}
+			assertNoStaging(t, dest)
+			assertNoProjects(t, cfg)
+		})
 	}
 }
