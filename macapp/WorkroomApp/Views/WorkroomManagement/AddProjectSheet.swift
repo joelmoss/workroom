@@ -257,6 +257,8 @@ struct AddProjectFields: View {
   @State private var lastAutoFill: String?
   /// The parent "Choose…" picked in clone mode, which later URL edits clone into.
   @State private var cloneParent: String?
+  /// Clone mode starts at the URL: "Clone into" follows it, so it is where typing begins.
+  @FocusState private var urlFieldFocused: Bool
   @Environment(\.themeTokens) private var tokens
 
   private var projectFolder: String {
@@ -295,6 +297,7 @@ struct AddProjectFields: View {
           .textFieldStyle(.roundedBorder)
           .lineLimit(1)
           .help("The repository to clone: an https://, ssh:// or git@host:owner/repo URL.")
+          .focused($urlFieldFocused)
           .accessibilityIdentifier("addProject.urlField")
         }
       }
@@ -355,9 +358,12 @@ struct AddProjectFields: View {
       if mode == .clone { reseed() }
     }
     .onChange(of: path) { _, _ in clone.clearError() }
-    .onChange(of: mode) { _, _ in
+    .onChange(of: mode) { _, now in
       clone.clearError()
       reseed()
+      // A turn later, not now: the URL field only appears with this mode change, and focus set
+      // before it exists is dropped, leaving the cursor where it was.
+      if now == .clone { Task { @MainActor in urlFieldFocused = true } }
     }
     .fileImporter(isPresented: $showChooser, allowedContentTypes: [.folder]) { result in
       // Existing mode: the picked folder IS the project. Create mode: it's a base

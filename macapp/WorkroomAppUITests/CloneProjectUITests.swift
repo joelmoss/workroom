@@ -26,8 +26,14 @@ final class CloneProjectUITests: XCTestCase {
     sheet.radioButtons["Clone a repository…"].click()
     let urlField = sheet.textFields["addProject.urlField"]
     XCTAssertTrue(urlField.waitForExistence(timeout: 4))
-    urlField.click()
+    // Typed with no click first: choosing clone mode puts the cursor in the URL field.
+    let focused = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "hasKeyboardFocus == true"), object: urlField)
+    XCTAssertEqual(
+      XCTWaiter().wait(for: [focused], timeout: 4), .completed,
+      "choosing clone mode should focus Repository URL")
     urlField.typeText(url)
+    XCTAssertEqual(urlField.value as? String, url)
     return sheet
   }
 
