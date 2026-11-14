@@ -561,9 +561,11 @@ fn a_dialed_link_that_drops_exits_255_and_leaves_the_session_running() {
     let scratch = Scratch::new("drop");
     let host = Host::serve(&scratch, SessionStore::new(), &DAEMON);
     let pid = scratch.0.join("relay.pid");
-    // `<&0`: a non-interactive shell gives a background command /dev/null for stdin otherwise.
+    // A non-interactive shell gives a background command /dev/null for stdin, and dash (Linux's
+    // /bin/sh) does that before the command's own redirections, so `<&0` would copy /dev/null:
+    // stdin is kept on fd 3 first and handed to the relay from there.
     let relay = format!(
-        "/usr/bin/env -i HOME='{}' SHELL=/bin/sh PATH=/usr/bin:/bin '{}' relay --socket '{}' <&0 & echo $! > '{}'; wait",
+        "exec 3<&0; /usr/bin/env -i HOME='{}' SHELL=/bin/sh PATH=/usr/bin:/bin '{}' relay --socket '{}' <&3 3<&- & echo $! > '{}'; wait",
         scratch.home().display(),
         daemon_binary().display(),
         host.socket.display(),
