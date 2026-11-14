@@ -412,21 +412,81 @@ struct ConnectionServices {
 /// says so, and a quiet one of those is just quiet.
 ///
 /// A watchdog thread waits on a channel the read loop ticks on every read, and ends the connection
-/// through its `Closer` when no tick comes in time. Only what is received counts: the daemon's own
-/// writes (output, program status) say nothing about whether anyone is still there. The thread ends
-/// with the connection, when the read loop drops the sender.
+/// through its `Closer` when no tick comes in time. What is received counts, and so does a large
+/// write the client is taking: a reply bigger than one `WRITE_CHUNK` ticks after each chunk the
+/// link accepts (`ProgressWriter`), since over a slow link it can hold the writer, and the read
+/// loop's next reply behind it, for longer than the deadline. A small write says nothing (it lands
+/// in the socket's buffer whether or not anyone is there), and a write to a client that is gone
+/// stops making progress once the buffers fill, so it is still closed. The thread ends with the
+/// connection, when the `Deadline` is dropped and takes the sender with it.
 struct Deadline {
     after: Duration,
     closer: crate::daemon::transport::Closer,
     peer: String,
-    heard: Option<std::sync::mpsc::Sender<()>>,
+    heard: Heard,
+}
+
+/// The watchdog's channel, once it runs: shared by the read loop and the connection's writer.
+type Heard = Arc<Mutex<Option<std::sync::mpsc::Sender<()>>>>;
+
+/// Ticks `heard`, if the watchdog runs.
+fn tick(heard: &Heard) {
+    if let Some(sender) = crate::util::lock_or_recover(heard).as_ref() {
+        let _ = sender.send(());
+    }
+}
+
+/// How much of a write goes to the link at a time, so a large one's progress is seen as it goes.
+const WRITE_CHUNK: usize = 16 * 1024;
+
+/// The connection's writer: a write larger than `WRITE_CHUNK` goes out a chunk at a time, ticking
+/// the deadline after each the link accepts (`Deadline`).
+struct ProgressWriter {
+    inner: Box<dyn std::io::Write + Send>,
+    heard: Heard,
+}
+
+impl std::io::Write for ProgressWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner.write(&buf[..buf.len().min(WRITE_CHUNK)])
+    }
+
+    fn write_all(&mut self, mut buf: &[u8]) -> std::io::Result<()> {
+        let large = buf.len() > WRITE_CHUNK;
+        while !buf.is_empty() {
+            match self.inner.write(&buf[..buf.len().min(WRITE_CHUNK)]) {
+                Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+                Ok(n) => {
+                    buf = &buf[n..];
+                    if large {
+                        tick(&self.heard);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl Drop for Deadline {
+    /// Ends the watchdog with the connection: the writer outlives it (a session holds it), so the
+    /// sender can't go with the writer.
+    fn drop(&mut self) {
+        crate::util::lock_or_recover(&self.heard).take();
+    }
 }
 
 impl Deadline {
     /// Starts the watchdog, once. A thread the OS will not give leaves the connection with no
     /// deadline, as it was before this existed.
     fn start(&mut self) {
-        if self.heard.is_some() {
+        if crate::util::lock_or_recover(&self.heard).is_some() {
             return;
         }
         let (heard, ticks) = std::sync::mpsc::channel::<()>();
@@ -451,15 +511,13 @@ impl Deadline {
                 }
             });
         if started.is_ok() {
-            self.heard = Some(heard);
+            *crate::util::lock_or_recover(&self.heard) = Some(heard);
         }
     }
 
     /// Something arrived from the client.
     fn heard(&self) {
-        if let Some(heard) = &self.heard {
-            let _ = heard.send(());
-        }
+        tick(&self.heard);
     }
 }
 
@@ -493,7 +551,11 @@ pub fn handle_connection_with<T: Transport>(
     // SESSION holds it now — its reader outlives this connection, and the next client may arrive
     // over a different kind of stream. Contention is negligible: the command loop writes only
     // replies, and the reader holds the lock for one write at a time.
-    let writer: SharedWriter = Arc::new(Mutex::new(Box::new(writer)));
+    let heard: Heard = Arc::new(Mutex::new(None));
+    let writer: SharedWriter = Arc::new(Mutex::new(Box::new(ProgressWriter {
+        inner: Box::new(writer),
+        heard: Arc::clone(&heard),
+    })));
 
     let send = |bytes: &[u8]| rpc::write(&writer, bytes);
 
@@ -526,7 +588,7 @@ pub fn handle_connection_with<T: Transport>(
             after: deadline,
             closer: Arc::clone(&closer),
             peer: peer.clone(),
-            heard: None,
+            heard,
         },
         peer,
         partial: crate::daemon::rpc::PartialRequests::default(),

@@ -106,6 +106,70 @@ fn a_pinging_connection_that_keeps_pinging_is_kept() {
     assert!(!served.is_finished(), "a pinging connection was closed");
 }
 
+/// A large File reply over a slow link: while the daemon is still writing it, and the app is
+/// still taking it, the stream is alive. The app keeps pinging, but the daemon's read loop takes
+/// the first ping and then waits to write its answer behind the reply, so no later ping is read
+/// until the reply is done. The reply, larger than the socket's buffer and read slowly for
+/// several deadlines, arrives whole.
+#[test]
+fn a_large_reply_read_slowly_outlasts_the_deadline() {
+    let root = std::env::temp_dir().join(format!("wr-deadline-slow-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let bytes: Vec<u8> = (0..600_000u32).map(|n| (n % 251) as u8).collect();
+    std::fs::write(root.join("big.bin"), &bytes).unwrap();
+
+    let (mut client, served) = connect();
+    announce(&mut client);
+    let stream = client.take_stream();
+    let request = serde_json::json!({
+        "version": 1, "method": "read", "root": root, "path": "big.bin",
+        "symlinks": "refuse", "max_bytes": 8 * 1024 * 1024,
+    });
+    client.send_payload(Service::File, stream, serde_json::to_vec(&request).unwrap());
+
+    // 4 KiB every 5 ms: the 800 KB of base64 takes about a second, three deadlines and more.
+    let started = Instant::now();
+    let mut decoder = wr_protocol::envelope::EnvelopeDecoder::new();
+    let mut assembled = Vec::new();
+    let mut buffer = [0u8; 4096];
+    let mut pinged = Instant::now();
+    'read: while Instant::now() < started + Duration::from_secs(30) {
+        if pinged.elapsed() > DEADLINE / 6 {
+            let ping = client.take_stream();
+            client.send(Service::Control, ping, Frame::control(FrameKind::List));
+            pinged = Instant::now();
+        }
+        let Some(n) = client.read_some(&mut buffer, Instant::now() + Duration::from_secs(2)) else {
+            break;
+        };
+        decoder.push(&buffer[..n]);
+        while let Some(envelope) = decoder.next_envelope().unwrap() {
+            if envelope.service != Service::File || envelope.stream != stream {
+                continue;
+            }
+            let (last, body) = envelope.payload.split_first().unwrap();
+            assembled.extend_from_slice(body);
+            if *last == 1 {
+                break 'read;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(
+        !client.closed && !served.is_finished(),
+        "the stream was closed while the reply was still being taken, after {:?}",
+        started.elapsed()
+    );
+    assert!(
+        started.elapsed() > DEADLINE * 2,
+        "the reply came too fast to test anything: {:?}",
+        started.elapsed()
+    );
+    let reply: serde_json::Value = serde_json::from_slice(&assembled).expect("a whole JSON reply");
+    assert_eq!(reply["result"]["size"], bytes.len());
+}
+
 /// An older app, or any local connection, never said it pings: silence never closes it.
 #[test]
 fn a_connection_that_never_announced_is_never_closed() {
