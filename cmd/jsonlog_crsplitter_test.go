@@ -67,3 +67,26 @@ func TestJSONLogWriterSplitsAnOverlongLine(t *testing.T) {
 		t.Fatalf("events carry %d bytes, want all %d", total, 20*len(chunk))
 	}
 }
+
+// Value: protects=splitting an endless line never cuts a multi-byte character in two; fails_when=the
+// split is by byte alone; why_new=the overlong test uses ASCII; seam=none; no_claim=none beyond protects
+func TestJSONLogWriterSplitsOnACharacterBoundary(t *testing.T) {
+	var out bytes.Buffer
+	w := newJSONLogWriter(&out, "clone")
+	text := bytes.Repeat([]byte("é"), maxLogLine) // two bytes each, so a byte cut lands mid-character
+	if _, err := w.Write(text); err != nil {
+		t.Fatal(err)
+	}
+	w.Flush()
+	got := ""
+	for _, line := range bytes.Split(bytes.TrimSuffix(out.Bytes(), []byte("\n")), []byte("\n")) {
+		var ev struct{ Text string }
+		if err := json.Unmarshal(line, &ev); err != nil {
+			t.Fatal(err)
+		}
+		got += ev.Text
+	}
+	if got != string(text) {
+		t.Fatalf("characters were split: %d bytes back, want %d", len(got), len(text))
+	}
+}
