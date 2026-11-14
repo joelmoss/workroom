@@ -251,6 +251,30 @@ final class RailwayAPITests: XCTestCase {
     } catch RailwayAPIError.malformed {}
   }
 
+  /// Value: protects=a listing whose cursors keep advancing without end (a Railway bug, a hostile
+  /// answer) fails after `RailwayAPI.maxPages` pages rather than asking forever (review 4, Y2);
+  /// fails_when=the pager has no bound, or stops early and hands back part of the list;
+  /// seam=RailwayAPI.sandboxes over StubRailway
+  func testAListingWithEndlessPagesFailsAfterItsBound() async throws {
+    let railway = StubRailway()
+    let asked = Mutex(0)
+    railway.answer("sandboxes") { _ in
+      let n = asked.withLock {
+        $0 += 1
+        return $0
+      }
+      // Bounded, so the defect fails the test instead of hanging it.
+      guard n <= RailwayAPI.maxPages + 50 else { throw URLError(.cancelled) }
+      return try Self.page("sbx-\(n)", next: "page-\(n + 1)")
+    }
+    do {
+      let listed = try await RailwayAPI(transport: railway, tokens: Tokens(["at-1"]))
+        .sandboxes(environmentID: "env-1")
+      XCTFail("an endless listing handed back \(listed.count) sandboxes")
+    } catch RailwayAPIError.malformed {}
+    XCTAssertEqual(asked.withLock { $0 }, RailwayAPI.maxPages)
+  }
+
   /// Value: protects=the Mac's key is found on an account with more ssh keys than one page, so
   /// it isn't registered again, and the listing fails rather than loops on a repeated cursor
   /// (review 3, I3); fails_when=only the first page is read, or a repeated cursor is followed;

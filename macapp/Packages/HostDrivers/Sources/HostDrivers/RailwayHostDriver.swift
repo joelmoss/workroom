@@ -1008,6 +1008,10 @@ extension RailwayAPI {
     }
   }
 
+  /// The most pages a listing reads (`pages`): far past any account's sandboxes (100 a page, and
+  /// Railway caps an environment at 100) or ssh keys.
+  public static let maxPages = 100
+
   /// Every node of a Relay connection, asking for each page after the last one's `endCursor`. A
   /// next page with no cursor, or a cursor already asked for, fails the whole listing
   /// (`malformed`): it would ask for its pages forever, and part of a list read as all of it
@@ -1019,6 +1023,9 @@ extension RailwayAPI {
     var after: String?
     var seen: Set<String> = []
     repeat {
+      guard seen.count < Self.maxPages else {
+        throw RailwayAPIError.malformed("a listing of more than \(Self.maxPages) pages")
+      }
       let connection = try await page(after)
       all += connection.edges.map(\.node)
       guard connection.pageInfo.hasNextPage else { break }
