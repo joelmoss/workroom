@@ -472,5 +472,7 @@ struct AddProjectSheet: View {
     .frame(width: 460)
     .interactiveDismissDisabled(clone.isRunning)
     .onAppear { pathFieldFocused = true }
+    // The sheet can still go with its window; a clone left running would finish unseen.
+    .onDisappear { clone.cancel() }
   }
 }

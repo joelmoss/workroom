@@ -9,8 +9,16 @@ import "os/exec"
 // ponytail: grandchildren orphaned on Windows; Job Objects if it ever matters.
 func SetProcessGroup(_ *exec.Cmd) {}
 
+// SetSession is a no-op: Windows has no POSIX sessions or controlling terminals.
+func SetSession(_ *exec.Cmd) {}
+
 func KillProcessGroup(cmd *exec.Cmd) {
 	if cmd.Process != nil {
 		_ = cmd.Process.Kill()
 	}
+}
+
+// KillProcessGroupHard is KillProcessGroup: Process.Kill is already unconditional on Windows.
+func KillProcessGroupHard(cmd *exec.Cmd) {
+	KillProcessGroup(cmd)
 }

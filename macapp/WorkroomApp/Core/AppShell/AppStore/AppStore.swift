@@ -2057,7 +2057,7 @@ final class AppStore: ObservableObject {
     #endif
     do {
       let canonical = try await cli.addProject(path, create: create)
-      try await selectAddedProject(canonical)
+      try await selectAddedProject(canonical, surfaceErrors: true)
       return .success(())
     } catch {
       present(error)
@@ -2070,8 +2070,11 @@ final class AppStore: ObservableObject {
   /// its root, mirroring workroom creation rather than leaving the user on the "Nothing selected"
   /// empty state (issue #104). A new project has no workrooms, so the root is the only sensible
   /// terminal to open.
-  private func selectAddedProject(_ canonical: String) async throws {
-    await reload()
+  ///
+  /// `surfaceErrors` is whether a failed reload presents its alert. Without it a failed reload
+  /// still throws, as the project then isn't in the list, so the caller can show it inline.
+  private func selectAddedProject(_ canonical: String, surfaceErrors: Bool) async throws {
+    await load(warnings: "fast", surfaceErrors: surfaceErrors)
     guard let match = projectStore.project(at: canonical) else {
       throw NSError(
         domain: "Workroom.AppStore", code: 1,
@@ -2125,7 +2128,7 @@ final class AppStore: ObservableObject {
     #endif
     do {
       let canonical = try await cli.cloneProject(url, into: path, onLog: onProgress)
-      try await selectAddedProject(canonical)
+      try await selectAddedProject(canonical, surfaceErrors: false)
       return .success(())
     } catch {
       return .failure(error)
