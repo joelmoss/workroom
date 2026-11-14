@@ -221,6 +221,12 @@ final class AddProjectSheetModelTests: XCTestCase {
       AddProjectSheetModel.isValid(mode: .clone, path: dest, url: url),
       "a user's own .clone-* file is content, not staging")
     try FileManager.default.removeItem(atPath: dest + "/.clone-notes")
+    try FileManager.default.createSymbolicLink(
+      atPath: dest + "/.clone-link", withDestinationPath: NSTemporaryDirectory())
+    XCTAssertFalse(
+      AddProjectSheetModel.isValid(mode: .clone, path: dest, url: url),
+      "a symlink is never taken for staging, as in the CLI")
+    try FileManager.default.removeItem(atPath: dest + "/.clone-link")
     XCTAssertTrue(FileManager.default.createFile(atPath: dest + "/README", contents: nil))
     XCTAssertFalse(
       AddProjectSheetModel.isValid(mode: .clone, path: dest, url: url),

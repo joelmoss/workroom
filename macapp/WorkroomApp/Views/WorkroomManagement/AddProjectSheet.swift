@@ -123,14 +123,15 @@ enum AddProjectSheetModel {
     // A `.clone-*` folder (and its `.clone-*.lock` file) is a clone's staging: the CLI sweeps it when
     // its clone is provably dead and refuses the folder, naming it, when not, so it's the CLI's call.
     // Any other `.clone-*` entry is the user's and counts as content.
+    // Judged by the entry itself, never a symlink's target, as the CLI does: a real folder, or a
+    // regular `.lock` file.
     let ignorable = entries.allSatisfy { name in
       if finderJunk.contains(name) { return true }
       guard name.hasPrefix(".clone-") else { return false }
-      if name.hasSuffix(".lock") { return true }
-      var isEntryDir: ObjCBool = false
       let full = (p as NSString).appendingPathComponent(name)
-      return FileManager.default.fileExists(atPath: full, isDirectory: &isEntryDir)
-        && isEntryDir.boolValue
+      let type =
+        (try? FileManager.default.attributesOfItem(atPath: full))?[.type] as? FileAttributeType
+      return name.hasSuffix(".lock") ? type == .typeRegular : type == .typeDirectory
     }
     return ignorable ? nil : "That folder isn't empty."
   }
