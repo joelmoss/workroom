@@ -485,6 +485,54 @@ final class HostReachabilityTests: XCTestCase {
     XCTAssertEqual(reported.withLock { $0 }, [true, false])
   }
 
+  /// Value: protects=a host that connects is not gone, whatever an earlier read said, so a boxd box
+  /// read as gone in another account comes back once the user opens it (review #3);
+  /// fails_when=gone is cleared only by a presence read, which a click on a box that sleeps never
+  /// makes, or a host already connected keeps reading as gone; seam=HostReachability's gone hook,
+  /// presence and the connect stubbed
+  func testAHostThatConnectsIsNoLongerGone() async throws {
+    let connects = Connects()
+    connects.hold(false)
+    let asked = Asleep()
+    let reported = Mutex<[Bool]>([])
+    let up = Mutex(false)
+    let remote = RemoteHosts(
+      connectHost: { try await connects.connect($0) }, isConnected: { _ in up.withLock { $0 } },
+      startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() },
+      goneChanged: { _, gone in reported.withLock { $0.append(gone) } }
+    ).reachability
+    let id = UUID()
+    let host = HostID.remote(id)
+    remote.adopt([
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "w", path: "/home/boxd/r", vcsName: "workroom/w", warnings: [],
+            host: HostDescriptor(
+              driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: id,
+              account: "usr_1"))
+        ])
+    ])
+
+    asked.set(presence: .gone)
+    try? await remote.ensureConnected(host)
+    XCTAssertEqual(reported.withLock { $0 }, [true])
+
+    // A click: a box that sleeps isn't asked about first, and the connect goes through.
+    try await remote.ensureConnected(host, wake: true)
+    XCTAssertEqual(connects.calls, 1)
+    XCTAssertEqual(reported.withLock { $0 }, [true, false], "a connected host stayed gone")
+
+    // Gone again, then found connected by another way (a pane's attach): no longer gone either.
+    connects.advance(HostReachability.retryAfter + .seconds(1))
+    try? await remote.ensureConnected(host)
+    XCTAssertEqual(reported.withLock { $0 }, [true, false, true])
+    up.withLock { $0 = true }
+    try await remote.ensureConnected(host)
+    XCTAssertEqual(reported.withLock { $0 }, [true, false, true, false])
+  }
+
   /// Only a host whose workroom the user opened has its container started before connecting: the
   /// status sweep connects to every remote workroom, and must not start them all (#309).
   func testOnlyAnOpenedHostIsStartedBeforeItsConnect() async throws {

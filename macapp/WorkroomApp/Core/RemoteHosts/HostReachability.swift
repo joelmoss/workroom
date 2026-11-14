@@ -217,6 +217,7 @@ final class HostReachability: @unchecked Sendable {
     // An opened host is up already: there is nothing to start, and later probes mustn't start it.
     if up {
       _ = lock.withLock { activated.remove(host) }
+      found(host)
       // A relay that didn't take on this connection is tried again, at most once a `retryAfter`.
       if case .remote(let id) = host,
         let tried = lock.withLock({ relayPending[id] }), now() - tried >= Self.retryAfter
@@ -246,9 +247,7 @@ final class HostReachability: @unchecked Sendable {
     let background = !opened && !wake && !selected
     if background || !hostsSleep(host) {
       let presence = await presence(host)
-      if presence != .gone, lock.withLock({ gone.remove(host) }) != nil {
-        goneChanged?(host, false)
-      }
+      if presence != .gone { found(host) }
       switch presence {
       case .asleep: throw RepositoryRoutingError.asleep(host)
       case .gone:
@@ -299,6 +298,8 @@ final class HostReachability: @unchecked Sendable {
       defer { lock.withLock { if connecting[host]?.task == task { connecting[host] = nil } } }
       try await task.value
       lock.withLock { failedAt[host] = nil }
+      // Whatever a read said before: a host that connects is there.
+      found(host)
     } catch is CancellationError {
       throw CancellationError()
     } catch {
@@ -313,6 +314,12 @@ final class HostReachability: @unchecked Sendable {
       if olderLayout { throw RepositoryRoutingError.olderLayout(host) }
       throw RepositoryRoutingError.unavailable(host)
     }
+  }
+
+  /// `host` is there (it connected, or its provider no longer says it is gone): no longer gone,
+  /// which the views hear once.
+  private func found(_ host: HostID) {
+    if lock.withLock({ gone.remove(host) }) != nil { goneChanged?(host, false) }
   }
 
   /// A container's postStartCommand, on the first connect after each start of it (#308, eng review
