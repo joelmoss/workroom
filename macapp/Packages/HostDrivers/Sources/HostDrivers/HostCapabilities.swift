@@ -96,9 +96,10 @@ extension HostRecording {
 /// Mac's create ledger, ADR 0071, #630).
 public protocol UnrecordedHostSweeping: HostDriver {
   /// Destroys every host this Mac's creates made that no record in `recorded` names, and never
-  /// one they didn't. Throws when the provider can't list the hosts it needs to, so the sweep is
-  /// owed again; returns the destroys that failed.
-  func sweep(keeping recorded: Set<String>) async throws -> [String]
+  /// one they didn't. `recordsHere`: config records a host of this driver's, so a host it doesn't
+  /// name isn't merely in a lost config. Throws when the provider can't list the hosts it needs
+  /// to, so the sweep is owed again; returns the destroys that failed.
+  func sweep(keeping recorded: Set<String>, recordsHere: Bool) async throws -> [String]
 }
 
 /// A driver that puts each workroom in a folder of its own on a host it did not make (an SSH host,

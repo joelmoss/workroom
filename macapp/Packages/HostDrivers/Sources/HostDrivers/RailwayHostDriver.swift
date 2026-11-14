@@ -583,16 +583,22 @@ extension RailwayHostDriver {
   ///   None there drops the entry. More candidates than lost intents, or more than one left for
   ///   an intent, destroys none and says so. The residual risk is another Mac's create landing
   ///   alone in that window just as this Mac's reply was lost.
+  ///   Only with `recordsHere`, when config names a host in this environment: otherwise config
+  ///   may be lost, or a throwaway `HOME`'s, and a create retried in the window, whose sandbox
+  ///   only its record names, would read as the lost reply's. Such intents wait for a launch
+  ///   whose config does.
   /// - Kept: whatever `recorded` names (which also takes its entry off), every sandbox this driver
   ///   holds, and any entry younger than `grace`, which may be a create still under way in the
   ///   other build sharing the ledger (Release and Nightly, ADR 0036).
   ///
   /// With no entry due, Railway isn't asked anything.
-  public func sweep(keeping recorded: Set<String>) async throws -> [String] {
-    try await sweep(keeping: recorded, grace: Self.sweepGrace)
+  public func sweep(keeping recorded: Set<String>, recordsHere: Bool) async throws -> [String] {
+    try await sweep(keeping: recorded, recordsHere: recordsHere, grace: Self.sweepGrace)
   }
 
-  public func sweep(keeping recorded: Set<String>, grace: TimeInterval) async throws -> [String] {
+  public func sweep(
+    keeping recorded: Set<String>, recordsHere: Bool = true, grace: TimeInterval
+  ) async throws -> [String] {
     let now = Date()
     let held = Set(hosts.withLock { $0.values.map(\.sandboxID) })
     let entries = try await ledger.update {
@@ -613,7 +619,7 @@ extension RailwayHostDriver {
       }
     }
     let lost = due.filter { $0.sandbox == nil }.sorted { $0.started < $1.started }
-    if !lost.isEmpty {
+    if !lost.isEmpty, recordsHere {
       do {
         let (settled, said) = try await reconcile(
           lost, accounted: recorded.union(held).union(entries.compactMap(\.sandbox)))

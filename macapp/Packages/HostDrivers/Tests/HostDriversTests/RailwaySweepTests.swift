@@ -137,7 +137,7 @@ final class RailwaySweepTests: XCTestCase {
       Self.sandbox("sbx-orphan"), Self.sandbox("sbx-kept"), Self.sandbox("sbx-unledgered"),
     ])
     try await ledgered(["sbx-orphan", "sbx-kept"])
-    let failures = try await driver(railway).sweep(keeping: ["sbx-kept"])
+    let failures = try await driver(railway).sweep(keeping: ["sbx-kept"], recordsHere: true)
     XCTAssertEqual(failures, [])
     XCTAssertEqual(destroyed(railway), ["sbx-orphan"])
     XCTAssertTrue(requests(railway, "sandboxes").isEmpty, "listed with every reply in hand")
@@ -159,7 +159,7 @@ final class RailwaySweepTests: XCTestCase {
     try await ledgered(["sbx-other-build", nil], started: Date())
     let before = railway.graphQLRequests.count
 
-    let failures = try await driver.sweep(keeping: [])
+    let failures = try await driver.sweep(keeping: [], recordsHere: true)
     XCTAssertEqual(failures, [])
     XCTAssertEqual(destroyed(railway), [])
     XCTAssertEqual(railway.graphQLRequests.count, before, "a sweep with nothing due asked Railway")
@@ -202,10 +202,20 @@ final class RailwaySweepTests: XCTestCase {
         "sbx-gone", status: "DESTROYED", createdAt: Self.iso(intent.started.addingTimeInterval(1))
       ),
     ])
+    // With no record of this environment (a lost config, a throwaway HOME), a sandbox no record
+    // names says nothing: it may be a retried create's, only its lost record naming it. Kept, and
+    // the intent waits.
+    let unconfigured = try await driver(listed).sweep(keeping: [], recordsHere: false, grace: 0)
+    XCTAssertEqual(unconfigured, [])
+    XCTAssertEqual(destroyed(listed), [])
+    XCTAssertTrue(requests(listed, "sandboxes").isEmpty)
+    var left = try await ledger.entries()
+    XCTAssertEqual(left.count, 1, "the lost reply was dropped unmatched")
+
     let failures = try await driver(listed).sweep(keeping: ["sbx-recorded"], grace: 0)
     XCTAssertEqual(failures, [])
     XCTAssertEqual(destroyed(listed), ["sbx-lost"])
-    let left = try await ledger.entries()
+    left = try await ledger.entries()
     XCTAssertEqual(left, [])
   }
 
@@ -220,7 +230,7 @@ final class RailwaySweepTests: XCTestCase {
       Self.sandbox("sbx-a", createdAt: Self.iso(started.addingTimeInterval(3))),
       Self.sandbox("sbx-b", createdAt: Self.iso(started.addingTimeInterval(5))),
     ])
-    let failures = try await driver(ambiguous).sweep(keeping: [])
+    let failures = try await driver(ambiguous).sweep(keeping: [], recordsHere: true)
     XCTAssertEqual(destroyed(ambiguous), [])
     XCTAssertEqual(failures.count, 1, "\(failures)")
     XCTAssertTrue(failures.first?.contains("sbx-a, sbx-b") == true, "\(failures)")
@@ -229,7 +239,7 @@ final class RailwaySweepTests: XCTestCase {
 
     try await ledgered([nil], started: started)
     let empty = railway([Self.sandbox("sbx-later", createdAt: Self.iso(Date()))])
-    let none = try await driver(empty).sweep(keeping: [])
+    let none = try await driver(empty).sweep(keeping: [], recordsHere: true)
     XCTAssertEqual(none, [])
     XCTAssertEqual(destroyed(empty), [])
     left = try await ledger.entries()
@@ -261,7 +271,7 @@ final class RailwaySweepTests: XCTestCase {
     try await ledgered([nil])
     do {
       _ = try await driver(railway([Self.sandbox("sbx-a")]), tokens: SignedOut()).sweep(
-        keeping: [])
+        keeping: [], recordsHere: true)
       XCTFail("a signed-out sweep read as an empty environment")
     } catch RailwaySessionError.signedOut {}
     var left = try await ledger.entries()
@@ -280,7 +290,7 @@ final class RailwaySweepTests: XCTestCase {
     }
     railway.answer("sandbox", data: ["sandbox": ["id": "sbx-stuck", "status": "RUNNING"]])
     try await ledgered(["sbx-stuck", "sbx-b"])
-    let failures = try await driver(railway).sweep(keeping: [])
+    let failures = try await driver(railway).sweep(keeping: [], recordsHere: true)
     XCTAssertEqual(failures.count, 1, "\(failures)")
     XCTAssertTrue(failures.first?.contains("sbx-stuck") == true, "\(failures)")
     XCTAssertEqual(destroyed(railway), ["sbx-stuck", "sbx-b"])

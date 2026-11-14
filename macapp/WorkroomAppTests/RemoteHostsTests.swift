@@ -972,6 +972,18 @@ final class RemoteHostsTests: XCTestCase {
     try await settle(remote)
     XCTAssertTrue(railway.sent.isEmpty, "\(railway.sent)")
 
+    // A lost reply whose window holds every sandbox here, with no record of this environment: a
+    // sandbox no record names says nothing then (a create retried in the window, its record lost
+    // with the config), so nothing is listed, and the intent waits.
+    let january = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-01-01T00:00:01Z"))
+    try await ledger.update { $0 = [.init(started: january)] }
+    remote = launch()
+    remote.reachability.adopt(projects([elsewhere]))
+    try await settle(remote)
+    XCTAssertTrue(railway.sent.isEmpty, "\(railway.sent)")
+    let waiting = try await ledger.entries()
+    XCTAssertEqual(waiting.count, 1)
+
     // A create left sbx-orphan in the ledger: only it goes, never the unledgered sbx-live.
     try await ledger.update { $0 = [.init(started: longAgo, sandbox: "sbx-orphan")] }
     remote = launch()
