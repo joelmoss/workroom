@@ -229,6 +229,70 @@ final class RailwayHostDriverTests: XCTestCase {
     XCTAssertEqual(lookups.count, 1, "the legacy record's workspace was asked again")
   }
 
+  /// Value: protects=a host whose record names no project (an older build's) can still be found
+  /// gone and removed: its project is looked up from its environment, once, and kept on the
+  /// record, and an environment Railway won't name stays unknown, never gone (review 6, finding
+  /// 5); fails_when=such a host's presence is nil forever, it reads gone without its project
+  /// seen, or the project is asked of Railway on every read; seam=HostPresenceReporting and
+  /// destroy over StubRailway, with the driver the app makes for another environment
+  func testAHostWithNoProjectRecordedIsConfirmedGoneAgainstItsEnvironmentsProject() async throws {
+    let railway = railway()
+    railway.answer("sandbox", data: ["sandbox": NSNull()])
+    railway.answer("sandboxDestroy") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Sandbox not found"}]}"#.utf8))
+    }
+    railway.answer(
+      "me", data: ["me": ["workspaces": [["id": "ws-old", "name": "Before", "plan": "PRO"]]]])
+    railway.answer(
+      "projects", data: ["projects": ["edges": [["node": ["id": "prj-old", "name": "Workroom"]]]]])
+    let id = UUID()
+    // The app's driver for an environment other than the placement's, after each launch.
+    func launch() throws -> RailwayHostDriver {
+      let driver = RailwayHostDriver(
+        configuration: .init(
+          environmentID: "env-old", projectID: nil, workspaceID: nil, keys: keys,
+          relayHost: Self.relayHost, hostSetup: .checkout, pollInterval: .milliseconds(1)),
+        api: RailwayAPI(transport: railway, tokens: Tokens()),
+        directory: root.appendingPathComponent("hosts"), runner: StubRelay())
+      try driver.adopt(
+        HostDescriptor(
+          driver: "railway", id: id,
+          railway: RailwayHostRecord(
+            projectID: nil, environmentID: "env-old", sandboxID: "sbx-old", hostKey: "",
+            workspaceID: "ws-old")))
+      return driver
+    }
+    func lookups() -> Int {
+      railway.graphQLRequests.map(StubRailway.graphQLBody).filter {
+        ($0["query"] as? String)?.contains("environment(") == true
+      }.count
+    }
+
+    // Railway won't name the environment's project: unknown, and not asked again at each read.
+    railway.answer("environment") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Not Authorized"}]}"#.utf8))
+    }
+    let unnamed = try launch()
+    for _ in 0..<2 {
+      let presence = await unnamed.presence(.remote(id))
+      XCTAssertNil(presence, "gone with no project to confirm against")
+    }
+    XCTAssertEqual(lookups(), 1, "the project was asked at every read")
+
+    railway.answer(
+      "environment", data: ["environment": ["id": "env-old", "projectId": "prj-old"]])
+    let driver = try launch()
+    for _ in 0..<2 {
+      let presence = await driver.presence(.remote(id))
+      XCTAssertEqual(presence, .gone)
+    }
+    XCTAssertEqual(record(driver, .remote(id))?.projectID, "prj-old")
+    XCTAssertEqual(lookups(), 2, "the project was asked again once found")
+    try await driver.destroy(.remote(id))
+  }
+
   /// Value: protects=the Mac reaches its host with a key of its own, registered once on the
   /// account and shared by Release and Nightly; fails_when=a key is made or registered on every
   /// create, or one Railway already has is registered again; seam=create over StubRailway
@@ -593,7 +657,8 @@ final class RailwayHostDriverTests: XCTestCase {
       XCTFail("a null read with the project unseen completed the delete")
     } catch {}
 
-    // No project recorded: nothing to confirm the read against.
+    // No project recorded: the placement's, for a sandbox in its environment (review 6, finding
+    // 5), which the sign-in still can't see, so never gone.
     guard case .remote(let id) = host else { return XCTFail("\(host)") }
     let unprojected = HostDescriptor(
       driver: "railway", id: id,
@@ -603,7 +668,7 @@ final class RailwayHostDriverTests: XCTestCase {
     let fresh = self.driver(railway, StubRelay())
     try fresh.adopt(unprojected)
     presence = await fresh.presence(host)
-    XCTAssertNil(presence, "a null read with no project recorded")
+    XCTAssertEqual(presence, .signedOut, "a null read with no project recorded")
 
     railway.answer(
       "projects", data: ["projects": ["edges": [["node": ["id": "prj-1", "name": "Workroom"]]]]])

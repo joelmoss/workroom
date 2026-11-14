@@ -116,6 +116,9 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   /// Hosts whose record names no workspace and whose workspace couldn't be told
   /// (`workspace(of:_:)`): not looked up again this session.
   private let unresolved = Mutex<Set<UUID>>([])
+  /// Hosts whose record names no project and whose environment's project Railway wouldn't name
+  /// (`project(of:_:)`): not looked up again this session.
+  private let unprojected = Mutex<Set<UUID>>([])
 
   public init(
     configuration: Configuration, api: RailwayAPI, directory: URL,
@@ -207,9 +210,10 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   public func destroy(_ host: HostID) async throws {
     let (id, held) = try record(of: host)
     var record = held
-    // A record an older build wrote names no workspace: resolved once, or left unknown, which
-    // leaves a "no such sandbox" read unconfirmed.
-    record.workspaceID = try? await workspace(of: id, held, lookingAgain: true)
+    // A record an older build wrote names no project or workspace: resolved once, or left
+    // unknown, which leaves a "no such sandbox" read unconfirmed.
+    record.projectID = try? await project(of: id, held, lookingAgain: true)
+    record.workspaceID = try? await workspace(of: id, record, lookingAgain: true)
     if let failure = await destroySandbox(record) {
       try Task.checkCancellation()
       throw HostDriverError.provisioning(failure)
@@ -243,6 +247,27 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   /// Whether this sign-in can see `workspaceID` (`RailwayAPI.sees(workspace:)`).
   func seesWorkspace(_ workspaceID: String?) async throws -> Bool {
     try await api.sees(workspace: workspaceID)
+  }
+
+  /// The project host `id`'s sandbox is in: its record's; for a record an older build wrote
+  /// without one, this driver's when the sandbox is in its environment, else the one Railway says
+  /// its environment is in. Kept on the held record once found; nil when Railway won't name it,
+  /// remembered for this driver's life as `workspace(of:_:)` does, and asked again for
+  /// `lookingAgain`. Throws when Railway can't be asked.
+  func project(of id: UUID, _ record: RailwayHostRecord, lookingAgain: Bool = false)
+    async throws -> String?
+  {
+    if let project = record.projectID { return project }
+    if !lookingAgain, unprojected.withLock({ $0.contains(id) }) { return nil }
+    var found: String?
+    if record.environmentID == configuration.environmentID { found = configuration.projectID }
+    if found == nil { found = try await api.project(ofEnvironment: record.environmentID) }
+    if let found {
+      hosts.withLock { $0[id]?.projectID = found }
+    } else {
+      unprojected.withLock { _ = $0.insert(id) }
+    }
+    return found
   }
 
   /// The workspace host `id`'s sandbox is in: its record's; for a record an older build wrote
@@ -485,8 +510,9 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       let status = try await api.sandboxStatus(held.sandboxID, environmentID: held.environmentID)
       if let status { return Self.isGone(status) ? .gone : .awake }
       var record = held
-      // With no project recorded, nothing can confirm the read either way.
-      guard held.projectID != nil, let workspace = try await workspace(of: id, held) else {
+      // With no project known, nothing can confirm the read either way.
+      record.projectID = try await project(of: id, held)
+      guard record.projectID != nil, let workspace = try await workspace(of: id, record) else {
         return nil
       }
       record.workspaceID = workspace
@@ -636,7 +662,10 @@ extension RailwayHostDriver {
     do {
       for entry in due {
         guard let sandbox = entry.sandbox else { continue }
-        let (environment, workspace, project) = place(of: entry)
+        var (environment, workspace, project) = place(of: entry)
+        // An entry from before entries named their project is in the one Railway says its
+        // environment is in; unknown leaves a "no such sandbox" read unconfirmed.
+        if project == nil { project = try? await api.project(ofEnvironment: environment) }
         // Today's environment is this sign-in's to act on; an older one only if it sees it.
         if environment != configuration.environmentID {
           if granted == nil { granted = Set(try await api.grantedWorkspaces().map(\.id)) }

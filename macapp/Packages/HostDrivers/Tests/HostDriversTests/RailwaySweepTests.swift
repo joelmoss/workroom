@@ -912,6 +912,36 @@ final class RailwaySweepTests: XCTestCase {
     XCTAssertTrue(failures.contains { $0.contains("sbx-hidden") }, "\(failures)")
   }
 
+  /// Value: protects=a swept entry from another environment that names no project (an older
+  /// build's) still resolves once its sandbox is gone: its project is looked up from its
+  /// environment, and one Railway won't name stays owed, never taken for gone (review 6, finding
+  /// 5); fails_when=such an entry's "no such sandbox" never confirms, or confirms with no project
+  /// seen; seam=RailwayHostDriver.sweep over StubRailway and the ledger
+  func testASweptEntryWithNoProjectResolvesAgainstItsEnvironmentsProject() async throws {
+    try writeLedger([("sbx-old", "env-old", "ws-old")])
+    let railway = railway([])
+    railway.answer("sandboxDestroy") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Sandbox not found"}]}"#.utf8))
+    }
+    railway.answer("sandbox", data: ["sandbox": NSNull()])
+    railway.answer("environment") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Not Authorized"}]}"#.utf8))
+    }
+    var failures = try await driver(railway).sweep(keeping: [])
+    XCTAssertEqual(failures.count, 1, "\(failures)")
+    var left = try await ledger.entries()
+    XCTAssertEqual(left.count, 1, "an unconfirmed entry was taken off")
+
+    railway.answer(
+      "environment", data: ["environment": ["id": "env-old", "projectId": "prj-1"]])
+    failures = try await driver(railway).sweep(keeping: [])
+    XCTAssertEqual(failures, [])
+    left = try await ledger.entries()
+    XCTAssertEqual(left, [])
+  }
+
   // MARK: Release and Nightly together
 
   /// A `flock` on `file` from another open file, as the other build holds it, until `release`.
