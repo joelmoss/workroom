@@ -157,6 +157,11 @@ final class PersistentSessionService {
   private let hostUpdates: (HostID) async -> AsyncStream<HostConnectionManager.Snapshot>
   /// A test's answer to `retag`, in place of this Mac's daemon. Nil for `shared`.
   private var retagOverride: ((UUID, String) async -> Bool)?
+  /// What a remote pane says while it waits on its host (`HostReachability.waitingNotice`); a
+  /// test's own answer in place of it.
+  var waitingNotice: (HostID) -> String? = {
+    RemoteHosts.shared.reachability.waitingNotice(for: $0)
+  }
   /// Reports that a pane reattached through the v2.0.0 `workroom-session` shim (#591): Sentry for
   /// `shared`, a counter for a test.
   private let reportShimReattach: () -> Void
@@ -672,7 +677,7 @@ final class PersistentSessionService {
         }
         // A host whose daemon is too old for this attach, which the app couldn't update yet: the
         // pane says so when its attach drops, rather than that the host can't be reached.
-        if let notice = RemoteHosts.shared.reachability.waitingNotice(for: host) {
+        if let notice = waitingNotice(host) {
           return SSHTransport.withRetryNotice(notice, command)
         }
         return command

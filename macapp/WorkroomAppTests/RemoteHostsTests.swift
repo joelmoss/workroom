@@ -65,6 +65,36 @@ final class RemoteHostsTests: XCTestCase {
       calls.joined(separator: "\n"))
   }
 
+  /// Value: protects=a pane on a host whose daemon the app couldn't update yet says why it waits
+  /// when its attach drops (review #2); fails_when=the pane's command doesn't carry the app's
+  /// notice, carries it for a probe, or carries one when there's nothing to say; seam=
+  /// PersistentSessionService.attachCommand with the notice stubbed
+  @MainActor
+  func testAPaneOnAHostWithAnOlderDaemonCarriesWhyItWaits() throws {
+    let id = UUID()
+    let host = HostID.remote(id)
+    let session = UUID()
+    let sessions = PersistentSessionService.shared
+    let notice = Mutex<String?>("This terminal's host runs an older Workroom daemon (busy).")
+    sessions.waitingNotice = { $0 == host ? notice.withLock { $0 } : nil }
+    defer {
+      sessions.waitingNotice = { RemoteHosts.shared.reachability.waitingNotice(for: $0) }
+      sessions.forgetRemoteSession(session)
+    }
+    sessions.registerRemoteSession(
+      session, on: host, via: MachineDriver(made: id), workingDirectory: "/home/boxd/r")
+    let pane = UUID()
+    let waiting = try XCTUnwrap(sessions.attachCommand(forSession: session, by: pane))
+    XCTAssertTrue(waiting.hasPrefix("/usr/bin/env 'WORKROOM_RETRY_NOTICE="), waiting)
+    XCTAssertTrue(waiting.contains("older Workroom daemon (busy)"), waiting)
+    let probe = try XCTUnwrap(sessions.attachCommand(forSession: session))
+    XCTAssertFalse(probe.contains("WORKROOM_RETRY_NOTICE"), "a probe carried the pane's notice")
+    notice.withLock { $0 = nil }
+    let plain = try XCTUnwrap(sessions.attachCommand(forSession: session, by: pane))
+    XCTAssertFalse(plain.contains("WORKROOM_RETRY_NOTICE"), plain)
+    sessions.paneDetached(session, by: pane)
+  }
+
   /// Which panes the app counts as attached to a host: a pane attaching reconnects its host
   /// (`attachCommand`, #380), so a registration alone, an attach no pane runs, or a pane on a host
   /// the driver can't reach must not count, and each pane clears only its own.
