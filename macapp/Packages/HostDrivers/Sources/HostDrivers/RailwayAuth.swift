@@ -275,9 +275,11 @@ public enum RailwaySessionError: Error, Equatable, LocalizedError {
 /// The Railway sign-in this app holds (ADR 0073): the refresh token in the store, and the hour's
 /// access token in memory. It is the one owner that refreshes: callers asking together share one
 /// refresh, and under the shared lock it reads the store again first, so a refresh token another
-/// app rotated meanwhile is the one sent. It always stores the newest refresh token before handing
-/// out the access token. Only Railway refusing the refresh token (`invalid_grant`) signs out; the
-/// network or Railway's servers failing keeps the sign-in.
+/// app rotated meanwhile is the one sent. It stores the newest refresh token before handing out
+/// the access token; a store that refuses it (a locked Keychain) keeps the sign-in, with the
+/// newest token held in memory and written again at each chance. Only Railway refusing the
+/// refresh token (`invalid_grant`) signs out; the network, Railway's servers or the store failing
+/// keeps the sign-in.
 public actor RailwaySession: RailwayAccessTokenProviding {
   /// Refreshes this long before the access token's hour ends.
   static let expiryMargin: TimeInterval = 120
@@ -290,6 +292,10 @@ public actor RailwaySession: RailwayAccessTokenProviding {
   private var refreshing: Task<String, Error>?
   /// Bumped by each sign-in and sign-out, so a refresh that started before one stores nothing.
   private var generation = 0
+  /// A refresh token Railway rotated to that the store refused (a locked Keychain), with the one
+  /// it replaced, which Railway has revoked. Kept in memory, used while the store still holds
+  /// the replaced one, and written again at each chance, so a failed write never signs out.
+  private var unsaved: (replaced: String, newest: String)?
 
   public init(
     client: RailwayOAuthClient, store: any RailwayTokenStore, lock: any RailwayRefreshLock,
@@ -311,6 +317,7 @@ public actor RailwaySession: RailwayAccessTokenProviding {
     }
     generation += 1
     refreshing = nil
+    unsaved = nil
     try store.write(refresh)
     access = (tokens.accessToken, expiry(of: tokens))
   }
@@ -321,10 +328,12 @@ public actor RailwaySession: RailwayAccessTokenProviding {
     generation += 1
     refreshing = nil
     access = nil
+    unsaved = nil
     try store.delete()
   }
 
   public func accessToken() async throws -> String {
+    if unsaved != nil, refreshing == nil { _ = try? storedToken(generation) }
     if let access, access.expires > now() { return access.token }
     if let refreshing { return try await refreshing.value }
     // Set before the first suspension: the actor is re-entrant.
@@ -365,27 +374,51 @@ public actor RailwaySession: RailwayAccessTokenProviding {
     return tokens.accessToken
   }
 
-  /// The stored refresh token, unless the user signed out since `generation`.
+  /// The current refresh token, unless the user signed out since `generation`: the stored one,
+  /// or the newest the store refused while the store still holds the one it replaced, which is
+  /// written again first. Anything else in the store (another app rotated it) wins.
   private func storedToken(_ generation: Int) throws -> String? {
     guard generation == self.generation else { throw RailwaySessionError.signedOut }
-    return try store.read()
+    let stored = try store.read()
+    guard let pending = unsaved else { return stored }
+    guard stored == pending.replaced else {
+      unsaved = nil
+      return stored
+    }
+    if (try? store.write(pending.newest)) != nil { unsaved = nil }
+    return pending.newest
   }
 
   /// Refreshes with `token` and stores the newest refresh token before anything uses the answer,
-  /// unless the user signed out meanwhile.
+  /// unless the user signed out meanwhile. A store that refuses it keeps the sign-in: the newest
+  /// token is held in memory (`unsaved`) and written again later.
   private func refresh(_ token: String, generation: Int) async throws -> RailwayTokens {
     let tokens = try await client.refresh(token)
     guard generation == self.generation else { throw RailwaySessionError.signedOut }
     if let newest = tokens.refreshToken, !newest.isEmpty, newest != token {
-      try store.write(newest)
+      do {
+        try store.write(newest)
+        unsaved = nil
+      } catch {
+        // What the store holds is `token`, or a token the memory already stood in for.
+        let replaced = unsaved.map(\.replaced) ?? token
+        unsaved = (replaced, newest)
+      }
     }
     return tokens
   }
 
-  /// Empties the store of a refused `token`, unless another app has already replaced it.
+  /// Empties the store of a refused `token`, unless another app has already replaced it. A
+  /// refused token held only in memory takes the revoked one it replaced with it.
   private func forget(_ token: String, generation: Int) throws {
     guard generation == self.generation else { return }
-    if try store.read() == token { try store.delete() }
+    let stored = try store.read()
+    if let pending = unsaved, pending.newest == token {
+      unsaved = nil
+      if stored == pending.replaced { try store.delete() }
+      return
+    }
+    if stored == token { try store.delete() }
   }
 
   private func expiry(of tokens: RailwayTokens) -> Date {
