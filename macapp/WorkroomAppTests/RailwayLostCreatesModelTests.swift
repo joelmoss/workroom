@@ -54,10 +54,11 @@ final class RailwayLostCreatesModelTests: XCTestCase {
   /// ledger, with a short grace
   func testALostCreateShowsOnceItLeavesItsGraceWithoutAnotherRead() async throws {
     try await seed(started: Date())
-    let model = model(stub(started: Date()), recorded: [], grace: 0.5)
+    // Long enough that the first read lands inside the grace on a slow CI runner: 0.5 s didn't.
+    let model = model(stub(started: Date()), recorded: [], grace: 3)
     await model.refresh()
     XCTAssertEqual(model.creates, [], "a create within its grace showed")
-    let deadline = Date().addingTimeInterval(5)
+    let deadline = Date().addingTimeInterval(15)
     while model.creates.isEmpty, Date() < deadline {
       try await Task.sleep(for: .milliseconds(50))
     }
