@@ -204,6 +204,22 @@ final class AddProjectSheetModelTests: XCTestCase {
       AddProjectSheetModel.footer(mode: .clone))
   }
 
+  /// A crashed clone's hidden staging folder doesn't make the sheet refuse the folder: the CLI
+  /// sweeps it if its clone is dead, and refuses with DestinationNotEmpty if one is still running.
+  func testCloneStagingLeftoversDoNotBlockTheFolder() throws {
+    let url = "git@github.com:acme/api.git"
+    let dest = NSTemporaryDirectory() + "addproj-staging-\(UUID().uuidString)"
+    try FileManager.default.createDirectory(
+      atPath: dest + "/.clone-0badc0de-123-abc/.git", withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: dest) }
+
+    XCTAssertTrue(AddProjectSheetModel.isValid(mode: .clone, path: dest, url: url))
+    XCTAssertTrue(FileManager.default.createFile(atPath: dest + "/README", contents: nil))
+    XCTAssertFalse(
+      AddProjectSheetModel.isValid(mode: .clone, path: dest, url: url),
+      "real content still counts")
+  }
+
   /// The remote-projects message belongs to "From existing path…" only: in clone mode a URL is
   /// the point, and create mode names a new folder.
   func testRemoteFooterShowsOnlyForExistingPath() {

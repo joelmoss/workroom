@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"io/fs"
 	"math/rand/v2"
@@ -64,7 +65,20 @@ func (s *Service) CloneProject(ctx context.Context, url, path string, progress i
 		return AddProjectResult{}, err
 	}
 
-	existed, err := cloneDestination(canon)
+	// Staging a crashed or killed clone left behind would make the destination look taken. What is
+	// provably dead is swept first (not under Pretend, which only looks past it).
+	host, hostOK := s.stagingHost()
+	if !hostOK {
+		host = "" // without a machine id no owned staging can be told apart from another machine's
+	}
+	staleInside, staleBeside := staleStagingFor(canon, host)
+	if !s.Pretend {
+		for _, dir := range append(staleInside, staleBeside...) {
+			removeStaleStaging(dir)
+		}
+		staleInside = nil
+	}
+	existed, err := cloneDestination(canon, staleInside)
 	if err != nil {
 		return AddProjectResult{}, err
 	}
@@ -76,7 +90,7 @@ func (s *Service) CloneProject(ctx context.Context, url, path string, progress i
 	if err != nil {
 		return AddProjectResult{}, err
 	}
-	stage, err := makeStaging(canon, existed)
+	stage, err := makeStaging(canon, existed, s.stagingOwner())
 	if err != nil {
 		removeEmptyDirs(made)
 		return AddProjectResult{}, err
@@ -120,9 +134,9 @@ func (s *Service) CloneProject(ctx context.Context, url, path string, progress i
 
 // makeStaging makes the folder the clone runs in: inside canon (.clone-*) when canon already
 // exists, else beside it (.<name>.clone-*), made 0755 less the umask since it becomes canon itself.
-func makeStaging(canon string, existed bool) (string, error) {
+func makeStaging(canon string, existed bool, owner string) (string, error) {
 	if existed {
-		stage, err := os.MkdirTemp(canon, ".clone-")
+		stage, err := os.MkdirTemp(canon, ".clone-"+owner)
 		if err != nil {
 			return "", fmt.Errorf("%w: create staging folder in %s: %v", errs.ErrConfigWrite, canon, err)
 		}
@@ -130,7 +144,7 @@ func makeStaging(canon string, existed bool) (string, error) {
 	}
 	// os.Mkdir rather than MkdirTemp (always 0700, then chmodded): the new project folder takes the
 	// user's umask like any folder they make, so a private umask keeps a private repo private.
-	parent, prefix := filepath.Dir(canon), "."+filepath.Base(canon)+".clone-"
+	parent, prefix := filepath.Dir(canon), "."+filepath.Base(canon)+".clone-"+owner
 	for range 100 {
 		stage := filepath.Join(parent, prefix+strconv.FormatUint(uint64(rand.Uint32()), 36))
 		err := os.Mkdir(stage, 0o755)
@@ -198,7 +212,7 @@ func moveUp(stage, canon string, placed *[]string) error {
 
 // cloneDestination checks canon can take a clone, reporting whether it already exists as an empty
 // folder (false when it is missing).
-func cloneDestination(canon string) (bool, error) {
+func cloneDestination(canon string, ignore []string) (bool, error) {
 	// A symlink left at canon is one CanonicalPath couldn't resolve: it points nowhere (an unmounted
 	// drive, say). It is refused, not taken for a missing folder and replaced by the clone.
 	if info, err := os.Lstat(canon); err == nil && info.Mode()&fs.ModeSymlink != 0 {
@@ -209,11 +223,15 @@ func cloneDestination(canon string) (bool, error) {
 	case err == nil && !info.IsDir():
 		return false, errs.ErrNotDirectory
 	case err == nil:
-		empty, err := dirIsEmpty(canon)
+		empty, err := dirIsEmptyExcept(canon, ignore)
 		if err != nil {
 			return false, err
 		}
 		if !empty {
+			if blocking := stagingInTheWay(canon, ignore); len(blocking) > 0 {
+				return false, fmt.Errorf("%w: %s (a clone's staging folder is in the way: %s; remove it if no clone is running)",
+					errs.ErrDestinationNotEmpty, canon, strings.Join(blocking, ", "))
+			}
 			return false, fmt.Errorf("%w: %s", errs.ErrDestinationNotEmpty, canon)
 		}
 		return true, nil
@@ -428,4 +446,221 @@ func removeDirJunk(dir string) {
 	for _, name := range finderJunk {
 		_ = os.Remove(filepath.Join(dir, name))
 	}
+}
+
+// Staging names carry their owner, `<host>-<pid>-` after the `.clone-` prefix, so a later clone can
+// tell a crashed run's leftovers from a clone still running, here or on another machine sharing the
+// volume. The host part is a machine id: 8 random hex digits made once and kept beside the config
+// file (so per machine and user, and unchanged by renaming the Mac or a network that rewrites its
+// hostname). stagingHost reports false when the id can't be read or made.
+func (s *Service) stagingHost() (string, bool) {
+	if s.Config == nil {
+		return "", false
+	}
+	path := filepath.Join(filepath.Dir(s.Config.Path()), "machine-id")
+	if id, ok := readMachineID(path); ok {
+		return id, true
+	}
+	id := fmt.Sprintf("%08x", rand.Uint32())
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		// Another run may have just made it.
+		return readMachineID(path)
+	}
+	_, werr := f.WriteString(id + "\n")
+	if cerr := f.Close(); werr != nil || cerr != nil {
+		_ = os.Remove(path)
+		return "", false
+	}
+	return id, true
+}
+
+// readMachineID reads a machine-id file, accepting only the 8 hex digits stagingHost writes.
+func readMachineID(path string) (string, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	id := strings.TrimSpace(string(b))
+	if len(id) != 8 || strings.Trim(id, "0123456789abcdef") != "" {
+		return "", false
+	}
+	return id, true
+}
+
+// hostnameHash names staging when there is no machine id. Nothing is ever swept by it: an owned
+// sweep needs a machine id.
+func hostnameHash() string {
+	name, err := os.Hostname()
+	if err != nil {
+		name = "unknown"
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(name))
+	return fmt.Sprintf("%08x", h.Sum32())
+}
+
+// stagingOwner is the owner part of this process's staging names.
+func (s *Service) stagingOwner() string {
+	host, ok := s.stagingHost()
+	if !ok {
+		host = hostnameHash()
+	}
+	return host + "-" + strconv.Itoa(os.Getpid()) + "-"
+}
+
+// staleStagingFor lists the staging folders a dead clone into canon left: inside canon (only when it
+// is a real folder) and beside it.
+func staleStagingFor(canon, host string) (inside, beside []string) {
+	if info, err := os.Lstat(canon); err == nil && info.IsDir() {
+		inside = staleStaging(canon, ".clone-", host)
+	}
+	return inside, staleStaging(filepath.Dir(canon), "."+filepath.Base(canon)+".clone-", host)
+}
+
+// staleStaging lists the entries of dir named prefix<host>-<pid>-… that are provably a dead clone's:
+// a real folder (never a symlink), made on this machine (host; "" when it has no machine id, which
+// sweeps no owned name), by a process that is no longer running.
+// Anything else stays (a live clone's, another machine's), except that a name without an owner, from
+// before staging names carried one, is taken as abandoned once it has been idle staleUnownedAfter.
+func staleStaging(dir, prefix, host string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var stale []string
+	for _, e := range entries {
+		rest, ok := strings.CutPrefix(e.Name(), prefix)
+		if !ok || e.Type()&fs.ModeType != fs.ModeDir {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		parts := strings.SplitN(rest, "-", 3)
+		if len(parts) != 3 {
+			// No owner: named by a build before staging names carried one (#636). Only its age can
+			// speak for it, so it goes once nothing in it has changed for staleUnownedAfter.
+			if isUnownedStagingSuffix(rest, prefix == ".clone-") && looksUnfinished(path) &&
+				time.Since(lastStagingActivity(path)) > staleUnownedAfter {
+				stale = append(stale, path)
+			}
+			continue
+		}
+		if host == "" || parts[0] != host {
+			continue
+		}
+		pid, err := strconv.Atoi(parts[1])
+		if err != nil || pid <= 0 || processAlive(pid) {
+			continue
+		}
+		stale = append(stale, path)
+	}
+	return stale
+}
+
+// removeStaleStaging removes a dead clone's staging folder, checking once more that it is still a
+// real folder and not a symlink put in its place.
+func removeStaleStaging(dir string) {
+	if info, err := os.Lstat(dir); err == nil && info.IsDir() {
+		_ = os.RemoveAll(dir)
+	}
+}
+
+// dirIsEmptyExcept is dirIsEmpty, also passing over the given paths (a dead clone's staging, which
+// --pretend leaves in place).
+func dirIsEmptyExcept(dir string, ignore []string) (bool, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range entries {
+		if slices.Contains(finderJunk, e.Name()) || slices.Contains(ignore, filepath.Join(dir, e.Name())) {
+			continue
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+// staleUnownedAfter is how long an unowned staging folder must sit idle before it counts as a dead
+// clone's. Idle means nothing that a running clone keeps touching has changed: see
+// lastStagingActivity.
+const staleUnownedAfter = time.Hour
+
+// isUnownedStagingSuffix reports whether rest is the random tail an unowned staging name had: the
+// decimal digits os.MkdirTemp appends (inside, and beside before #636's final build), or the base-36
+// uint32 the #636 build's beside staging used (at most seven characters).
+func isUnownedStagingSuffix(rest string, inside bool) bool {
+	if n := len(rest); n == 0 || n > 10 {
+		return false
+	}
+	digits := true
+	for _, r := range rest {
+		switch {
+		case '0' <= r && r <= '9':
+		case 'a' <= r && r <= 'z' && !inside:
+			digits = false
+		default:
+			return false
+		}
+	}
+	return digits || len(rest) <= 7
+}
+
+// looksUnfinished reports whether a folder is what a clone killed partway leaves: empty, or a .git
+// with no index yet (git writes the index at checkout, its last step). A finished repository always
+// has an index, so a folder of the user's that merely matches the name is never taken for staging.
+func looksUnfinished(dir string) bool {
+	if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
+		return true
+	}
+	if info, err := os.Lstat(filepath.Join(dir, ".git")); err != nil || !info.IsDir() {
+		return false
+	}
+	_, err := os.Lstat(filepath.Join(dir, ".git", "index"))
+	return os.IsNotExist(err)
+}
+
+// lastStagingActivity is when a clone last visibly worked in its staging folder: the newest change
+// to the folder itself, its .git, .git/index (written at checkout) and .git/objects/pack and the
+// files in it, where a fetch's pack grows the whole time it downloads. A long clone that is still
+// running therefore never looks idle, without walking a large checkout.
+func lastStagingActivity(stage string) time.Time {
+	var newest time.Time
+	note := func(path string) {
+		if info, err := os.Lstat(path); err == nil && info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+	}
+	pack := filepath.Join(stage, ".git", "objects", "pack")
+	for _, path := range []string{stage, filepath.Join(stage, ".git"), filepath.Join(stage, ".git", "index"), pack} {
+		note(path)
+	}
+	if entries, err := os.ReadDir(pack); err == nil {
+		for _, e := range entries {
+			note(filepath.Join(pack, e.Name()))
+		}
+	}
+	return newest
+}
+
+// stagingInTheWay names the .clone-* entries that alone keep dir from being empty (a clone still
+// running, another machine's, or one the sweep couldn't prove dead or remove), or nil when anything
+// else is there too.
+func stagingInTheWay(dir string, ignore []string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var staging []string
+	for _, e := range entries {
+		name := e.Name()
+		switch {
+		case slices.Contains(finderJunk, name) || slices.Contains(ignore, filepath.Join(dir, name)):
+		case strings.HasPrefix(name, ".clone-"):
+			staging = append(staging, name)
+		default:
+			return nil
+		}
+	}
+	return staging
 }

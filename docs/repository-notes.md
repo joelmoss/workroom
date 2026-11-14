@@ -78,7 +78,17 @@ Release download counts are snapshotted daily, and before every `--clobber` uplo
   or cancel before then removes only that staging folder, what it moved and any parent it made
   that is still empty, never another run's clone; once the clone is in place it is kept, and a
   registration failure reports `ConfigWriteFailed` saying the clone is at PATH but not registered;
-  `--pretend` reports `would_clone`.
+  `--pretend` reports `would_clone`. Staging names carry their owner (`.clone-<host>-<pid>-…`,
+  the host a random 8-hex machine id made once in `machine-id` beside the config file, so per Mac
+  and user and unchanged by hostname changes), so a later clone into the same place first sweeps
+  staging a crashed or SIGKILLed clone left: only real folders, made with this machine id, by a pid
+  no longer running. Without a machine id (unreadable config folder) no owned staging is swept. A
+  refusal caused only by `.clone-*` folders names them. A live clone's or another machine's staging stays. An unowned name from the #636
+  build (`.clone-<digits>`, `.<name>.clone-<base36>`) is swept only when it looks unfinished (empty,
+  or `.git` without an index) and nothing a clone touches (`.git`, its index, the pack being
+  fetched) has changed for an hour; a finished repository with a lookalike name is never touched.
+  `--pretend` looks past stale staging without removing it. The app's emptiness check ignores
+  `.clone-*` and leaves that call to the CLI.
   `delete-project` is config-only unless: `--with-workrooms` cascades the per-workroom
   teardown (hard-deletes worktree dirs, branches kept); or `--from-disk` runs each workroom's
   teardown, drops the project from config, and returns `trash_paths` (project root first, then
