@@ -238,7 +238,7 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // supervised one for the socket (#228). It also changes what a lost daemon connection means:
     // see the main loop's `Ok(0) | Err(_)` arm.
     // A dialed daemon is a host's, so it is `--no-spawn` too, and more: this process runs on the
-    // Mac, so it never falls back to a shell, which would be the Mac's (see `Dialed`).
+    // Mac, so it never falls back to a shell, which would be the Mac's (see `open_dialed`).
     let no_spawn = dialed.is_some() || args.iter().any(|arg| arg == "--no-spawn");
     if dialed.is_some() {
         // Only what a host session may take from the Mac (ADR 0074): the host gives it the rest,
@@ -295,11 +295,11 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // (see `unreachable`). A peer that answers and fails the handshake is not a daemon that will
     // work if asked again.
     let run = crate::terminal::run::is_requested(&request.env);
-    // Whether the "waiting for this terminal's host" line has been cleared (`Dialed::greeted`).
+    // Whether the "waiting for this terminal's host" line has been cleared (`clear_waiting_line`).
     let mut cleared = false;
     let mut open = || -> Result<Link, Unopened> {
         if let Some(command) = dialed {
-            return Dialed::open(command, &mut cleared);
+            return open_dialed(command, &mut cleared);
         }
         let socket = socket.as_deref().expect("a socket when nothing is dialed");
         let stream = match serve::connect(socket) {
@@ -796,7 +796,7 @@ enum Unopened {
     Unreachable(&'static str),
     /// A peer that is no working daemon: a local pane becomes a shell (`fall_back_to_shell`).
     Broken(&'static str),
-    /// Decided already, and said on stderr: a dialed host's answer (`Dialed`).
+    /// Decided already, and said on stderr: a dialed host's answer (`open_dialed`).
     Exit(ExitCode),
 }
 
@@ -806,85 +806,81 @@ enum Unopened {
 /// This process runs on the Mac, so whatever goes wrong it never falls back to a shell, and it
 /// ends with a status the app's attach wrapper reads: 255 for a link worth trying again, any other
 /// for one that will not work until someone acts.
-struct Dialed;
-
-impl Dialed {
-    fn open(command: &[String], cleared: &mut bool) -> Result<Link, Unopened> {
-        // ssh's own messages go where the pane's wrapper sends them (`-E`), and what the host's
-        // shell writes to stderr, such as a guard script's reason, reaches the pane.
-        let child = Command::new(&command[0])
-            .args(&command[1..])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn();
-        let mut child = match child {
-            Ok(child) => child,
-            Err(e) => {
-                eprintln!("workroomd: could not start {}: {e}\r", command[0]);
-                return Err(Unopened::Exit(ExitCode::FAILURE));
-            }
-        };
-        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+fn open_dialed(command: &[String], cleared: &mut bool) -> Result<Link, Unopened> {
+    // ssh's own messages go where the pane's wrapper sends them (`-E`), and what the host's
+    // shell writes to stderr, such as a guard script's reason, reaches the pane.
+    let child = Command::new(&command[0])
+        .args(&command[1..])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn();
+    let mut child = match child {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("workroomd: could not start {}: {e}\r", command[0]);
             return Err(Unopened::Exit(ExitCode::FAILURE));
-        };
-        let mut link = Link {
-            reader: Box::new(stdout),
-            writer: Arc::new(Mutex::new(Box::new(stdin))),
-            child: Some(child),
-        };
-        match handshake(&mut link) {
-            Ok(version) if version < MIN_HOST_ATTACH_VERSION => {
-                // The app pushes the newest daemon before its panes attach (ADR 0037), so this is a
-                // host it has not updated yet.
-                eprintln!(
-                    "workroomd: this host's daemon speaks protocol {version}, older than this \
-                     Workroom's; waiting for it to be updated\r"
-                );
-                Err(Unopened::Exit(ExitCode::from(255)))
+        }
+    };
+    let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        return Err(Unopened::Exit(ExitCode::FAILURE));
+    };
+    let mut link = Link {
+        reader: Box::new(stdout),
+        writer: Arc::new(Mutex::new(Box::new(stdin))),
+        child: Some(child),
+    };
+    match handshake(&mut link) {
+        Ok(version) if version < MIN_HOST_ATTACH_VERSION => {
+            // The app pushes the newest daemon before its panes attach (ADR 0037), so this is a
+            // host it has not updated yet.
+            eprintln!(
+                "workroomd: this host's daemon speaks protocol {version}, older than this \
+                 Workroom's; waiting for it to be updated\r"
+            );
+            Err(Unopened::Exit(ExitCode::from(255)))
+        }
+        Ok(_) => {
+            if !*cleared {
+                *cleared = true;
+                clear_waiting_line();
             }
-            Ok(_) => {
-                if !*cleared {
-                    *cleared = true;
-                    Self::greeted();
-                }
-                Ok(link)
-            }
-            Err(HandshakeError::Closed) => {
-                let mut child = link.child.take().expect("a dialed link has its command");
-                Err(Unopened::Exit(Self::ended(&mut child)))
-            }
-            Err(HandshakeError::NotADaemon) => {
-                eprintln!(
-                    "workroomd: the host answered with something other than its daemon's greeting\r"
-                );
-                Err(Unopened::Exit(ExitCode::FAILURE))
-            }
+            Ok(link)
+        }
+        Err(HandshakeError::Closed) => {
+            let mut child = link.child.take().expect("a dialed link has its command");
+            Err(Unopened::Exit(dialed_exit_status(&mut child)))
+        }
+        Err(HandshakeError::NotADaemon) => {
+            eprintln!(
+                "workroomd: the host answered with something other than its daemon's greeting\r"
+            );
+            Err(Unopened::Exit(ExitCode::FAILURE))
         }
     }
+}
 
-    /// Clears the line the attach wrapper wrote while it waited for the host: back to the cursor
-    /// it saved ahead of the line (DECRC), and erase from there (ED), however many rows it wrapped
-    /// onto. ssh's `LocalCommand` did this when the pane's ssh had a terminal; it would now write
-    /// into the framed stream.
-    fn greeted() {
-        let mut stdout = std::io::stdout();
-        let _ = stdout.write_all(b"\x1b8\x1b[J");
-        let _ = stdout.flush();
-    }
+/// Clears the line the attach wrapper wrote while it waited for the host: back to the cursor
+/// it saved ahead of the line (DECRC), and erase from there (ED), however many rows it wrapped
+/// onto. ssh's `LocalCommand` did this when the pane's ssh had a terminal; it would now write
+/// into the framed stream.
+fn clear_waiting_line() {
+    let mut stdout = std::io::stdout();
+    let _ = stdout.write_all(b"\x1b8\x1b[J");
+    let _ = stdout.flush();
+}
 
-    /// The status for a dialed command that ended before its daemon greeted. 255 is ssh's own
-    /// failure, 127 a host with no daemon binary yet, and `DAEMON_UNAVAILABLE` a `relay` with no
-    /// daemon behind it: all a link to try again. A command killed by a signal, or one that ended
-    /// cleanly with nothing said, is too. Any other status is the host's refusal, whose reason it
-    /// wrote to stderr, and is passed on as it is.
-    fn ended(child: &mut Child) -> ExitCode {
-        let status = child.wait().ok().and_then(|status| status.code());
-        match status {
-            None | Some(0 | 127 | 255) => ExitCode::from(255),
-            Some(code) if code == i32::from(DAEMON_UNAVAILABLE) => ExitCode::from(255),
-            Some(code) => ExitCode::from(code.clamp(1, 254) as u8),
-        }
+/// The status for a dialed command that ended before its daemon greeted. 255 is ssh's own
+/// failure, 127 a host with no daemon binary yet, and `DAEMON_UNAVAILABLE` a `relay` with no
+/// daemon behind it: all a link to try again. A command killed by a signal, or one that ended
+/// cleanly with nothing said, is too. Any other status is the host's refusal, whose reason it
+/// wrote to stderr, and is passed on as it is.
+fn dialed_exit_status(child: &mut Child) -> ExitCode {
+    let status = child.wait().ok().and_then(|status| status.code());
+    match status {
+        None | Some(0 | 127 | 255) => ExitCode::from(255),
+        Some(code) if code == i32::from(DAEMON_UNAVAILABLE) => ExitCode::from(255),
+        Some(code) => ExitCode::from(code.clamp(1, 254) as u8),
     }
 }
 
