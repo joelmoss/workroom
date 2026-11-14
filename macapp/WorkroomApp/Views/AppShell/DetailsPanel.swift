@@ -192,16 +192,7 @@ extension DetailsPanel {
   private func ports(_ target: TerminalTarget) -> some View {
     if let place = target.portsPlace {
       Divider()
-      PortsSection(model: .model(for: place), host: Self.portsHost(target.hostPlace))
-    }
-  }
-
-  /// What a Ports row calls the host its ports are on.
-  private static func portsHost(_ kind: HostKind?) -> String {
-    switch kind {
-    case .container: "container"
-    case .railway: "sandbox"
-    default: "host"
+      PortsSection(model: .model(for: place), host: target.hostPlace?.hostNoun ?? "host")
     }
   }
 

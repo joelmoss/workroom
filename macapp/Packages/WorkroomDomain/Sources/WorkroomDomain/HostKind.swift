@@ -107,6 +107,15 @@ public enum HostKind: Hashable, Sendable {
     }
   }
 
+  /// What a Ports row calls one of its hosts: "container", "sandbox", or "host".
+  public var hostNoun: String {
+    switch self {
+    case .container: "container"
+    case .railway: "sandbox"
+    case .boxd, .exeDev, .ssh: "host"
+    }
+  }
+
   /// How the user gives this kind's hosts GitHub access, said after git's own words when a clone
   /// fails, or nil where Workroom gives it (a container takes the Mac's `gh` through the relay,
   /// #309). A remote provider's host fetches and pushes with the provider's own credentials, or
