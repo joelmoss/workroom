@@ -20,7 +20,8 @@ for interface changes, follow native macOS interaction conventions.
 
 ## Isolation
 
-- One `make app-*` at a time in this workroom: builds share its DerivedData. Other workrooms can
+- `make app-*` builds and tests in this workroom take turns (a checkout lock: they share its
+  DerivedData); a second one waits and says who holds it. Other workrooms can
   run independently under their own Debug identities.
 - Preserve `APP_ID_FLAGS` on every app build. Use `make app-identity` to identify this workroom's
   app. Stop only that identity through `Scripts/stop-dev-app.sh`; never kill apps by name.

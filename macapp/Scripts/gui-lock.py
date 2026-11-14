@@ -6,6 +6,7 @@
     gui-lock.py status                                         # who holds it; never waits
     gui-lock.py vm-slot   [--slots N] [--label TEXT] -- COMMAND [ARG...]  # a Tart guest (app-uitest-vm)
     gui-lock.py vm-status [--slots N]                          # who holds the VM slots; never waits
+    gui-lock.py checkout  --checkout DIR [--label TEXT] -- COMMAND [ARG...]  # one build per checkout
 
 Runs COMMAND while holding a machine-wide lock, then exits with COMMAND's status.
 
@@ -50,12 +51,23 @@ because an uncounted third guest fails to boot and takes its run down with it; W
 not apply to it. WR_VM_LOCK_TIMEOUT works as WR_GUI_LOCK_TIMEOUT does. `vm-status` exits 1 while
 every slot is held.
 
+Checkout lock. The `make app-*` targets that build or test (see CHECKOUT_LOCKED_TARGETS in
+mk/app.mk) share their checkout's macapp/DerivedData, and two at once in one checkout corrupt it: a
+second xcodebuild fails codesign with "different Team IDs" or "bundle format unrecognized" and
+reads as a code bug. `checkout` is an exclusive flock keyed by the checkout's real path, kept under
+WR_GUI_LOCK_DIR (not in DerivedData, which `make app-clean` deletes). Other checkouts never wait on
+it. COMMAND runs with WR_CHECKOUT_LOCK_HELD set to the key, so a `make` it starts in the same
+checkout does not wait for its own parent. WR_CHECKOUT_LOCK_TIMEOUT works as WR_GUI_LOCK_TIMEOUT
+does; WR_GUI_LOCK=off does not apply, since the build folder is shared however the tests run. If
+the lock files cannot be created, COMMAND runs without it and a warning says so.
+
 Standard library only, and Python 3.9 (Xcode's python3) compatible, so it runs anywhere xcodebuild
 does.
 """
 
 import errno
 import fcntl
+import hashlib
 import os
 import signal
 import subprocess
@@ -424,6 +436,58 @@ def vm_status(slots):
     return 1 if busy >= slots else 0
 
 
+CHECKOUT_HELD = "WR_CHECKOUT_LOCK_HELD"
+
+
+def checkout_key(checkout):
+    real = os.path.realpath(checkout)
+    return "checkout-" + hashlib.sha1(real.encode("utf-8", "surrogateescape")).hexdigest()[:12]
+
+
+def run_checkout_locked(checkout, label, command):
+    """Run COMMAND holding CHECKOUT's build lock, waiting for another run in that checkout."""
+    key = checkout_key(checkout)
+    if os.environ.get(CHECKOUT_HELD) == key:
+        # A make started by a run that already holds this checkout's lock.
+        return run_unlocked(command)
+    try:
+        root = lock_dir()
+        lock = open_lock_file(os.path.join(root, key + ".lock"))
+    except OSError as error:
+        log("cannot use the checkout lock (%s); running without it, so another make app-* in "
+            "%s can share its DerivedData" % (error, checkout))
+        return run_unlocked(command)
+    deadline, timeout = deadline_from("WR_CHECKOUT_LOCK_TIMEOUT")
+    holders = key + ".holders"
+    record = None
+    previous = {}
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        previous[signum] = signal.signal(signum, raise_interrupted)
+    try:
+        try:
+            waiting = ("waiting for this checkout's macapp/DerivedData (one make app-* build or "
+                       "test at a time in %s)" % checkout)
+            if not wait_for(lambda: try_flock(lock, fcntl.LOCK_EX), root, "checkout", deadline,
+                            waiting, holders):
+                log("gave up after WR_CHECKOUT_LOCK_TIMEOUT=%s seconds" % timeout)
+                return EX_TEMPFAIL
+            record = write_holder(root, "build", label, holders)
+        except Interrupted as interrupted:
+            return 128 + interrupted.signum
+        env = dict(os.environ)
+        env[CHECKOUT_HELD] = key
+        return run_holding(command, env)
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+        if record is not None:
+            try:
+                os.unlink(record)
+            except OSError:
+                pass
+        os.close(lock)
+
+
 def status():
     """Print the current holders. Exit 1 while a UI-test run holds the session, else 0."""
     try:
@@ -447,7 +511,8 @@ def usage(message=None):
         "usage: gui-lock.py shared|exclusive [--label TEXT] -- COMMAND [ARG...]\n"
         "       gui-lock.py status\n"
         "       gui-lock.py vm-slot [--slots N] [--label TEXT] -- COMMAND [ARG...]\n"
-        "       gui-lock.py vm-status [--slots N]\n")
+        "       gui-lock.py vm-status [--slots N]\n"
+        "       gui-lock.py checkout --checkout DIR [--label TEXT] -- COMMAND [ARG...]\n")
     return 2
 
 
@@ -466,9 +531,14 @@ def main(argv):
     mode = argv[0]
     if mode == "status" and len(argv) == 1:
         return status()
-    if mode not in ("shared", "exclusive", "vm-slot", "vm-status"):
+    if mode not in ("shared", "exclusive", "vm-slot", "vm-status", "checkout"):
         return usage("unknown mode %r" % mode)
     rest = argv[1:]
+    checkout = None
+    if mode == "checkout":
+        if rest[:1] != ["--checkout"] or len(rest) < 2:
+            return usage("checkout needs --checkout DIR")
+        checkout, rest = rest[1], rest[2:]
     slots = DEFAULT_VM_SLOTS
     if mode in ("vm-slot", "vm-status"):
         slots, rest = parse_slots(rest)
@@ -484,6 +554,8 @@ def main(argv):
     if rest[:1] != ["--"] or len(rest) < 2:
         return usage("expected -- COMMAND")
     command = rest[1:]
+    if mode == "checkout":
+        return run_checkout_locked(checkout, label, command)
     if mode == "vm-slot":
         # Before the WR_GUI_LOCK=off check on purpose: that switch is for the GUI session, which a
         # guest does not use, and the guest count is a limit this Mac enforces whatever it says.

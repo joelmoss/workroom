@@ -39,6 +39,18 @@ APP_ID_FLAGS := WORKROOM_DEV_ID_SUFFIX=$(APP_DEV_ID_SUFFIX)
 # `WR_GUI_LOCK=off` skips it (a run inside a VM, or when you know the screen is free).
 gui_lock = $(if $(filter off 0 no false,$(WR_GUI_LOCK)),,python3 "$(CURDIR)/macapp/Scripts/gui-lock.py" $(1) --label "$(2) $(CURDIR)" --)
 
+# The targets that build, test or delete this checkout's macapp/DerivedData run one at a time per
+# checkout: two at once corrupt it, and the second run's codesign failure ("different Team IDs",
+# "bundle format unrecognized") reads as a code bug. Their recipe lines run through
+# macapp/Scripts/checkout-lock-shell, which holds this checkout's lock (gui-lock.py checkout) and
+# says who it is waiting for. Other workrooms never wait on it, and a make a locked line starts in
+# this checkout doesn't wait on its parent. Targets that only call `$(MAKE) app-test` (red-proof,
+# the benchmarks) are left off, since the inner run takes the lock.
+CHECKOUT_LOCKED_TARGETS := app-build app-run app-test app-uitest app-uitest-vm app-generate \
+  app-lsp app-clean
+$(CHECKOUT_LOCKED_TARGETS): SHELL := $(CURDIR)/macapp/Scripts/checkout-lock-shell
+$(CHECKOUT_LOCKED_TARGETS): export WR_CHECKOUT_LOCK_LABEL = $@
+
 # Extra xcodebuild build-setting overrides, appended to app-build/app-test. Empty locally so
 # ⌘R-style automatic signing is used; CI sets this to ad-hoc / no-team signing because hosted
 # runners have no signing cert or DEVELOPMENT_TEAM (e.g.

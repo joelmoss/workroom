@@ -433,5 +433,139 @@ class VmSlotTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2, args)
 
 
+class CheckoutLockTests(unittest.TestCase):
+    """`checkout`: one `make app-*` build or test at a time per checkout, since they share its
+    macapp/DerivedData (make's SHELL for those targets, macapp/Scripts/checkout-lock-shell)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gui-lock-checkout-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.env = dict(os.environ)
+        self.env["WR_GUI_LOCK_DIR"] = os.path.join(self.tmp, "locks")
+        for name in ("WR_GUI_LOCK", "WR_CHECKOUT_LOCK_TIMEOUT", "WR_CHECKOUT_LOCK_HELD"):
+            self.env.pop(name, None)
+        self.checkout = os.path.join(self.tmp, "checkout")
+        os.mkdir(self.checkout)
+
+    def build(self, name, checkout=None, env=None, command=None):
+        return Run(self, name, "checkout", env=env, command=command, label="make " + name,
+                   options=["--checkout", checkout or self.checkout])
+
+    def test_two_runs_in_one_checkout_take_turns(self):
+        first = self.build("first")
+        self.assertTrue(first.wait_started())
+        second = self.build("second")
+        self.assertTrue(second.stays_blocked(), "a second build started in the same DerivedData")
+        self.assertEqual(first.finish_after_release(), 0)
+        self.assertTrue(second.wait_started(), "the second build never got the checkout")
+        second.release()
+        code, _, err = second.finish()
+        self.assertEqual(code, 0)
+        self.assertIn("waiting for this checkout's macapp/DerivedData", err)
+        self.assertIn("make first", err, "the waiting run must name the run in its way")
+
+    def test_other_checkouts_build_at_once(self):
+        other = os.path.join(self.tmp, "other")
+        os.mkdir(other)
+        first = self.build("first")
+        second = self.build("second", checkout=other)
+        self.assertTrue(first.wait_started())
+        self.assertTrue(second.wait_started(), "two workrooms' builds must not exclude each other")
+        self.assertEqual(first.finish_after_release(), 0)
+        self.assertEqual(second.finish_after_release(), 0)
+
+    def test_a_symlinked_path_is_the_same_checkout(self):
+        alias = os.path.join(self.tmp, "alias")
+        os.symlink(self.checkout, alias)
+        first = self.build("first")
+        self.assertTrue(first.wait_started())
+        second = self.build("second", checkout=alias)
+        self.assertTrue(second.stays_blocked())
+
+    def test_a_make_started_under_the_lock_does_not_wait_for_it(self):
+        # A locked recipe that runs `$(MAKE) app-test` must not deadlock on its own lock.
+        started = os.path.join(self.tmp, "inner.started")
+        release = os.path.join(self.tmp, "inner.release")
+        inner = [sys.executable, HELPER, "checkout", "--checkout", self.checkout, "--",
+                 sys.executable, "-c", BLOCKER, started, release, "0"]
+        outer = self.build("outer", command=inner)
+        deadline = time.time() + PROMPTLY
+        while not os.path.exists(started) and time.time() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(os.path.exists(started), "the nested run waited on its parent's lock")
+        open(release, "w").close()
+        self.assertEqual(outer.finish()[0], 0)
+
+    def test_a_killed_holder_frees_the_checkout(self):
+        first = self.build("first")
+        self.assertTrue(first.wait_started())
+        second = self.build("second")
+        self.assertTrue(second.stays_blocked())
+        first.process.kill()
+        self.assertTrue(second.wait_started())
+
+    def test_exit_status_is_the_commands(self):
+        self.assertEqual(self.build("fails", command=[sys.executable, "-c", "exit(3)"])
+                         .finish()[0], 3)
+
+    def test_timeout_gives_up_with_ex_tempfail(self):
+        first = self.build("first")
+        self.assertTrue(first.wait_started())
+        second = self.build("second", env={"WR_CHECKOUT_LOCK_TIMEOUT": "0.5"})
+        code, _, err = second.finish()
+        self.assertEqual(code, 75)
+        self.assertFalse(second.has_started())
+        self.assertIn("WR_CHECKOUT_LOCK_TIMEOUT", err)
+
+    def test_gui_lock_off_does_not_bypass_it(self):
+        # WR_GUI_LOCK=off is for the GUI session; DerivedData is shared however tests run.
+        first = self.build("first")
+        self.assertTrue(first.wait_started())
+        second = self.build("second", env={"WR_GUI_LOCK": "off"})
+        self.assertTrue(second.stays_blocked())
+
+    def test_checkout_is_required(self):
+        result = subprocess.run(
+            [sys.executable, HELPER, "checkout", "--", "true"], env=self.env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(result.returncode, 2)
+
+
+class CheckoutLockShellTests(unittest.TestCase):
+    """make runs a locked target's recipe lines as `checkout-lock-shell -c LINE`."""
+
+    SHELL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkout-lock-shell")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gui-lock-shell-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.env = dict(os.environ)
+        self.env["WR_GUI_LOCK_DIR"] = os.path.join(self.tmp, "locks")
+        self.env.pop("WR_CHECKOUT_LOCK_HELD", None)
+
+    def test_runs_the_line_in_the_callers_directory_with_its_status(self):
+        result = subprocess.run(
+            [self.SHELL, "-c", "pwd; echo \"$WR_CHECKOUT_LOCK_HELD\"; exit 4"], cwd=self.tmp,
+            env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True)
+        self.assertEqual(result.returncode, 4, result.stderr)
+        cwd, held = result.stdout.splitlines()
+        self.assertEqual(os.path.realpath(cwd), os.path.realpath(self.tmp))
+        self.assertTrue(held.startswith("checkout-"), held)
+
+    def test_make_runs_a_locked_target_through_it(self):
+        makefile = os.path.join(self.tmp, "Makefile")
+        with open(makefile, "w") as handle:
+            handle.write("locked: SHELL := %s\nlocked:\n\t@echo \"$$WR_CHECKOUT_LOCK_HELD\"\n"
+                         "plain:\n\t@echo \"[$$WR_CHECKOUT_LOCK_HELD]\"\n" % self.SHELL)
+        result = subprocess.run(
+            ["make", "-s", "-f", makefile, "locked", "plain"], cwd=self.tmp, env=self.env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        locked, plain = result.stdout.splitlines()
+        self.assertTrue(locked.startswith("checkout-"), locked)
+        self.assertEqual(plain, "[]")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
