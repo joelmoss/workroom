@@ -860,13 +860,18 @@ extension RailwayAPI {
   public func sshPublicKeys() async throws -> [String] {
     struct Key: Decodable, Sendable { let publicKey: String }
     struct Answer: Decodable { let sshPublicKeys: RailwayConnection<Key> }
+    // The first page is asked for as the live checks have it, with no arguments; only a later
+    // page names `after` (Relay's argument, which Railway's other connections take).
+    let fields = "{ edges { node { id publicKey } } pageInfo { hasNextPage endCursor } }"
     return try await pages { after in
-      var variables: [String: RailwayJSON] = ["first": 100]
-      if let after { variables["after"] = .string(after) }
+      guard let after else {
+        return try await query(
+          "query sshPublicKeys { sshPublicKeys \(fields) }", as: Answer.self
+        ).sshPublicKeys
+      }
       return try await query(
-        "query sshPublicKeys($first: Int, $after: String) { sshPublicKeys(first: $first, after: "
-          + "$after) { edges { node { id publicKey } } pageInfo { hasNextPage endCursor } } }",
-        variables: variables, as: Answer.self
+        "query sshPublicKeys($after: String) { sshPublicKeys(after: $after) \(fields) }",
+        variables: ["after": .string(after)], as: Answer.self
       ).sshPublicKeys
     }.map(\.publicKey)
   }
