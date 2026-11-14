@@ -705,6 +705,27 @@ final class RemoteHostsTests: XCTestCase {
       try JSONDecoder().decode(HostDescriptor.self, from: try JSONEncoder().encode(boxd)), boxd)
   }
 
+  /// Value: protects=a presence update that reaches the main actor after a newer one (its hop
+  /// overtaken) never overwrites it, so a host found again isn't shown gone, nor a gone one
+  /// live (review 4, Y4); fails_when=updates apply in arrival order rather than the order they
+  /// were recorded; seam=GoneHosts.apply with the numbers `record` gives; no_claim=the hops'
+  /// scheduling itself, which can't be made to reorder on demand
+  @MainActor
+  func testAStaleGoneUpdateNeverOverwritesANewerOne() {
+    let gone = GoneHosts()
+    let id = UUID()
+    let first = GoneHosts.nextSequence()
+    let second = GoneHosts.nextSequence()
+    gone.apply(id, gone: true, sequence: second)
+    gone.apply(id, gone: false, sequence: first)
+    XCTAssertTrue(gone.contains(id), "the older update overwrote the newer one")
+    let third = GoneHosts.nextSequence()
+    gone.apply(id, gone: false, sequence: third)
+    XCTAssertFalse(gone.contains(id))
+    gone.set(id, gone: true)
+    XCTAssertTrue(gone.contains(id), "a direct set lost to an earlier number")
+  }
+
   /// Value: protects=a delete (Remove Workroom or Delete Project) whose gone host's provider can't
   /// give an environment still goes ahead for the rest, leaving that host's delete to keep its
   /// record (`RemoteWorkrooms.delete`), while a live host's failure still refuses the delete before
