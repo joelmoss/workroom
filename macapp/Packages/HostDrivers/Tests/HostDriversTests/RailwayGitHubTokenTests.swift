@@ -112,7 +112,11 @@ final class RailwayGitHubTokenTests: XCTestCase {
         $0.stdin.map { String(decoding: $0, as: UTF8.self) }?
           .contains("credential.https://github.com.helper") == true
       }, "no login set up git")
-    XCTAssertEqual(git.args.last, "sh -s -- '/root/.local/state/workroom/gh-token'")
+    // The script itself is run against a real git below
+    // (`testTheGitSetupAnswersGitHubFromTheTokenFileForEveryRemoteForm`); here it must only be
+    // handed the file the token went to.
+    XCTAssertTrue(
+      git.args.last?.contains(RailwayHostDriver.gitHubTokenPath) == true, "\(git.args)")
   }
 
   /// Value: protects=a Mac signed out of gh bills no sandbox it would have to destroy;
