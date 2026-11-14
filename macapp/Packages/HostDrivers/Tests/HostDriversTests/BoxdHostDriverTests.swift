@@ -446,6 +446,33 @@ final class BoxdHostDriverTests: XCTestCase {
     XCTAssertNil(timedOut, "a CLI that never answered was taken for an answer")
   }
 
+  /// Value: protects=switching boxd to another account or org never makes a workroom's machine
+  /// read as gone, which would offer only Remove Workroom for a host that exists (review #3);
+  /// fails_when=presence takes "not found" for gone without checking the account and org it was
+  /// asked in; seam=HostPresenceReporting over the stub CLI
+  func testNotFoundIsGoneOnlyInTheMachinesOwnAccountAndOrg() async throws {
+    func presence(account: String?, org: String?, signedIn auth: String) async -> HostPresence? {
+      let cli = StubCLI([
+        "auth --json": Self.ok(auth), "machine get": Self.failed("error: VM 'x' not found"),
+      ])
+      return await BoxdHostDriver(
+        configuration: .init(
+          cli: URL(fileURLWithPath: "/nonexistent/boxd"), org: org, account: account,
+          home: signedInHome(), hostSetup: .checkout),
+        directory: FileManager.default.temporaryDirectory, runner: cli
+      ).presence(.remote(UUID()))
+    }
+    let otherAccount = await presence(
+      account: "usr_mine", org: nil, signedIn: #"{"active_org":null,"user_id":"usr_other"}"#)
+    XCTAssertNotEqual(otherAccount, .gone, "another account's not found read as gone")
+    let otherOrg = await presence(
+      account: "usr_mine", org: "acme", signedIn: #"{"active_org":null,"user_id":"usr_mine"}"#)
+    XCTAssertNotEqual(otherOrg, .gone, "another org's not found read as gone")
+    let mine = await presence(
+      account: "usr_mine", org: "acme", signedIn: #"{"active_org":"acme","user_id":"usr_mine"}"#)
+    XCTAssertEqual(mine, .gone)
+  }
+
   // Value: protects=no boxd command runs without a sign-in, and one with a sign-in runs on it;
   // fails_when=the credential guard in cli(...) is removed, or the token is passed to boxd;
   // why_new=the old test stubbed a CLI that fails signed out, but boxd starts its browser sign-in;

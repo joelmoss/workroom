@@ -236,12 +236,15 @@ final class HostDriverRegistry: @unchecked Sendable {
     // another Mac names that Mac's.
     let railwayEnvironment = railwayEnvironment()
     let railway = railwayEnvironment.map { DriverKey.railway(environment: $0) }
-    // Every record's sandbox, not only those this build adopts.
+    // Every record's sandbox, not only those this build adopts. Only what this Mac's create ledger
+    // names is ever swept, so another Mac in the environment never makes a live sandbox look like
+    // this Mac's orphan.
     let sandboxes = Set(descriptors.compactMap { $0.railway?.sandboxID })
-    // With no record naming the environment, only what a create left pending goes: a lost config,
-    // another Mac's, or a launch with a throwaway `HOME` (which doesn't isolate Railway's folder)
-    // names none, and every live sandbox would look unrecorded.
-    let railwayOnlyPending = !descriptors.contains {
+    // A create whose reply was lost is matched by time to a sandbox no record names, which is
+    // evidence only when config records this environment at all: a lost config, a copied one or a
+    // throwaway `HOME` (which doesn't isolate Railway's folder) names none, and a create retried
+    // in that window would read as the lost one's. Those wait for a launch whose config does.
+    let railwayRecordsHere = descriptors.contains {
       $0.railway?.environmentID == railwayEnvironment
     }
     guard
@@ -300,7 +303,7 @@ final class HostDriverRegistry: @unchecked Sendable {
                   return (key, ["Railway: this host cannot be swept"], true)
                 }
                 return (
-                  key, try await driver.sweep(keeping: sandboxes, onlyPending: railwayOnlyPending),
+                  key, try await driver.sweep(keeping: sandboxes, recordsHere: railwayRecordsHere),
                   true
                 )
               } catch {

@@ -223,6 +223,23 @@ final class SSHTransportShellTests: XCTestCase {
     XCTAssertFalse(retried.output.contains(timeout), retried.output)
   }
 
+  // Value: protects=a pane waiting on a host whose daemon the app couldn't update yet says so,
+  // rather than that the host can't be reached (review #2); fails_when=the app's notice doesn't
+  // replace the retry notice, or reaches the pane for anything but a lost link; seam=the pane's
+  // attach command with `SSHTransport.withRetryNotice`
+  func testAPaneSaysWhatTheAppSaysItIsWaitingFor() throws {
+    let notice = "This terminal's host runs an older Workroom daemon (it's busy)."
+    for status in [Int32(255), 1] {
+      let client = try FakeClient(exiting: status)
+      defer { try? FileManager.default.removeItem(at: client.root) }
+      let pane = try runPane(
+        SSHTransport.withRetryNotice(notice, paneCommand(client: client, session: UUID())))
+      XCTAssertEqual(pane.status, status, pane.output)
+      XCTAssertEqual(pane.output.contains(notice), status == 255, pane.output)
+      XCTAssertFalse(pane.output.contains(SSHTransport.retryNotice), pane.output)
+    }
+  }
+
   /// Runs what a pane's ssh runs on the host, for a daemon socket under `root`.
   private func runOnHost(root: String) throws -> (status: Int32, output: String) {
     let process = Process()

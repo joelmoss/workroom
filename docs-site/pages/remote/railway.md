@@ -20,7 +20,7 @@ The first time you create a workroom on Railway, the **Set up Railway** sheet op
 
 1. **Account.** Click **Sign In with Railway**. Your browser opens Railway's page. Tick the workspaces Workroom may use, then approve. There is no token to copy. Each Workroom app (Workroom and Workroom Nightly) signs in once of its own.
 2. **Workspace.** Pick the workspace Workroom keeps its hosts in.
-3. **Project.** Pick one of the workspace's projects, or **New project named Workroom**, then click **Use This Project**. Workroom makes the project if it's new, and gives this Mac an environment of its own in it, so another Mac's cleanup never touches this Mac's hosts. A project of their own keeps your hosts apart from your apps.
+3. **Project.** Pick one of the workspace's projects, or **New project named Workroom**, then click **Use This Project**. Workroom makes the project if it's new, and gives this Mac an environment of its own in it, so another Mac's cleanup never touches this Mac's hosts. At launch Workroom removes only sandboxes this Mac made whose workroom was never saved (after a crash, say), so even two Macs that end up sharing an environment, as a Mac restored from another's backup does, never remove each other's. A project of their own keeps your hosts apart from your apps.
 
 Click **Create Workroom**, and the create carries on.
 
@@ -62,7 +62,9 @@ Railway has no GitHub integration for sandboxes, so Workroom gives each sandbox 
 - The sandbox's git uses it for github.com, and any GitHub remote, in its `git@github.com:` or `ssh://` form too, goes over HTTPS with it.
 - Each time Workroom connects to the sandbox, it checks the copy against this Mac's current token and replaces it if you rotated it.
 
-The token has the scope you gave `gh`, and anything running in the workroom can read it.
+The token has the scope you gave `gh`, and anything running in the workroom can read it. So can anyone who can open a shell on the sandbox, which every member of your Railway workspace can.
+
+A checkpoint you take on Railway's dashboard or with its CLI keeps the token file. Workroom removes it only from a sandbox it makes from a checkpoint itself, so a sandbox someone restores from that checkpoint outside Workroom still holds the token. If a checkpoint like that leaves your hands, revoke the token on GitHub and run `gh auth login` again; Workroom gives your sandboxes the new one on their next connect.
 
 ## Signed out
 

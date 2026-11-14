@@ -65,6 +65,36 @@ final class RemoteHostsTests: XCTestCase {
       calls.joined(separator: "\n"))
   }
 
+  /// Value: protects=a pane on a host whose daemon the app couldn't update yet says why it waits
+  /// when its attach drops (review #2); fails_when=the pane's command doesn't carry the app's
+  /// notice, carries it for a probe, or carries one when there's nothing to say; seam=
+  /// PersistentSessionService.attachCommand with the notice stubbed
+  @MainActor
+  func testAPaneOnAHostWithAnOlderDaemonCarriesWhyItWaits() throws {
+    let id = UUID()
+    let host = HostID.remote(id)
+    let session = UUID()
+    let sessions = PersistentSessionService.shared
+    let notice = Mutex<String?>("This terminal's host runs an older Workroom daemon (busy).")
+    sessions.waitingNotice = { $0 == host ? notice.withLock { $0 } : nil }
+    defer {
+      sessions.waitingNotice = { RemoteHosts.shared.reachability.waitingNotice(for: $0) }
+      sessions.forgetRemoteSession(session)
+    }
+    sessions.registerRemoteSession(
+      session, on: host, via: MachineDriver(made: id), workingDirectory: "/home/boxd/r")
+    let pane = UUID()
+    let waiting = try XCTUnwrap(sessions.attachCommand(forSession: session, by: pane))
+    XCTAssertTrue(waiting.hasPrefix("/usr/bin/env 'WORKROOM_RETRY_NOTICE="), waiting)
+    XCTAssertTrue(waiting.contains("older Workroom daemon (busy)"), waiting)
+    let probe = try XCTUnwrap(sessions.attachCommand(forSession: session))
+    XCTAssertFalse(probe.contains("WORKROOM_RETRY_NOTICE"), "a probe carried the pane's notice")
+    notice.withLock { $0 = nil }
+    let plain = try XCTUnwrap(sessions.attachCommand(forSession: session, by: pane))
+    XCTAssertFalse(plain.contains("WORKROOM_RETRY_NOTICE"), plain)
+    sessions.paneDetached(session, by: pane)
+  }
+
   /// Which panes the app counts as attached to a host: a pane attaching reconnects its host
   /// (`attachCommand`, #380), so a registration alone, an attach no pane runs, or a pane on a host
   /// the driver can't reach must not count, and each pane clears only its own.
@@ -911,13 +941,12 @@ final class RemoteHostsTests: XCTestCase {
     func accessTokenRejected(_ token: String) async {}
   }
 
-  /// Value: protects=no sandbox in this Mac's environment is left billing that no workroom names,
-  /// once per launch, no other environment is ever listed or touched, and a config that names
-  /// nothing here (lost, another Mac's, a throwaway HOME) takes only what a create left pending
-  /// (ADR 0071, #630); fails_when=adopt doesn't sweep Railway, sweeps an environment a record names
-  /// instead of this Mac's, destroys a recorded sandbox, destroys an unpending one with no record
-  /// naming this environment, or sweeps twice a launch; seam=HostDriverRegistry.adopt with
-  /// makeDriver and the environment seam
+  /// Value: protects=no sandbox this Mac made is left billing that no workroom names, once per
+  /// launch, no other environment is ever listed or touched, and only what this Mac's create
+  /// ledger names goes, whatever config says (ADR 0071 and its amendment, #630); fails_when=adopt
+  /// doesn't sweep Railway, sweeps an environment a record names instead of this Mac's, destroys a
+  /// recorded sandbox, destroys an unledgered one, or sweeps twice a launch;
+  /// seam=HostDriverRegistry.adopt with makeDriver and the environment seam
   func testALaunchSweepsThisMacsRailwayEnvironmentOnce() async throws {
     let railway = SweptRailway(["sbx-orphan", "sbx-kept", "sbx-live"])
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -960,7 +989,10 @@ final class RemoteHostsTests: XCTestCase {
     let here = RailwayHostRecord(
       projectID: "prj", environmentID: "env-1", sandboxID: "sbx-kept", hostKey: "k")
 
-    // No config at all, then one naming only another Mac's environment, with nothing pending:
+    let ledger = RailwayCreateLedger(directory: root)
+    let longAgo = Date().addingTimeInterval(-2 * RailwayHostDriver.sweepGrace)
+
+    // No config at all, then one naming only another Mac's environment, with nothing ledgered:
     // nothing is even listed.
     var remote = launch()
     remote.reachability.adopt([])
@@ -970,29 +1002,81 @@ final class RemoteHostsTests: XCTestCase {
     try await settle(remote)
     XCTAssertTrue(railway.sent.isEmpty, "\(railway.sent)")
 
-    // A create left sbx-orphan pending: only it goes, never the unrecorded sbx-live.
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    try JSONEncoder().encode(["sbx-orphan"]).write(
-      to: root.appendingPathComponent("pending-sandboxes.json"))
+    // A lost reply whose window holds every sandbox here, with no record of this environment: a
+    // sandbox no record names says nothing then (a create retried in the window, its record lost
+    // with the config), so nothing is listed, and the intent waits.
+    let january = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-01-01T00:00:01Z"))
+    try await ledger.update { $0 = [.init(started: january)] }
+    remote = launch()
+    remote.reachability.adopt(projects([elsewhere]))
+    try await settle(remote)
+    XCTAssertTrue(railway.sent.isEmpty, "\(railway.sent)")
+    let waiting = try await ledger.entries()
+    XCTAssertEqual(waiting.count, 1)
+
+    // A create left sbx-orphan in the ledger: only it goes, never the unledgered sbx-live.
+    try await ledger.update { $0 = [.init(started: longAgo, sandbox: "sbx-orphan")] }
     remote = launch()
     remote.reachability.adopt(projects([elsewhere]))
     try await settle(remote)
     XCTAssertEqual(railway.destroyed, ["sbx-orphan"])
 
-    // A config naming this environment: everything else unrecorded goes, once a launch, after a
-    // held sweep.
+    // A config naming this environment changes nothing: a lost reply is matched by time, once a
+    // launch, after a held sweep, and nothing made long before it goes.
+    try await ledger.update { $0 = [.init(started: longAgo)] }
     remote = launch()
     remote.reachability.adopt(projects([here, elsewhere]), sweep: false)
     try await settle(remote)
-    XCTAssertEqual(railway.variables("sandboxes").count, 1, "a held sweep ran")
+    XCTAssertTrue(railway.variables("sandboxes").isEmpty, "a held sweep ran")
     remote.reachability.adopt(projects([here, elsewhere]))
     try await settle(remote)
-    XCTAssertEqual(railway.destroyed, ["sbx-orphan", "sbx-live"])
+    XCTAssertEqual(railway.variables("sandboxes").count, 1)
+    XCTAssertEqual(railway.destroyed, ["sbx-orphan"])
     let sent = railway.variables("sandboxes") + railway.variables("sandboxDestroy")
     XCTAssertEqual(Set(sent.compactMap { $0["environmentId"] as? String }), ["env-1"])
+    try await ledger.update { $0 = [.init(started: longAgo)] }
     remote.reachability.adopt(projects([here, elsewhere]))
     try await settle(remote)
-    XCTAssertEqual(railway.variables("sandboxes").count, 2, "swept twice in a launch")
+    XCTAssertEqual(railway.variables("sandboxes").count, 1, "swept twice in a launch")
+  }
+
+  /// Value: protects=a Railway sandbox leaves this Mac's create ledger only once config holds its
+  /// record, so a config write that fails leaves it for the sweep (review #1); fails_when=the
+  /// create's recorder takes it off before or without the write succeeding, or never does;
+  /// seam=RemoteWorkrooms.Recorder.forgettingPending with a RailwayHostDriver and its ledger
+  func testARailwaySandboxLeavesTheLedgerOnlyOnceItsRecordIsWritten() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-railway-record-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+    let driver = RailwayHostDriver(
+      configuration: .init(
+        environmentID: "env-1", projectID: nil, keys: root, relayHost: "relay.invalid",
+        hostSetup: .bundled),
+      api: RailwayAPI(transport: SweptRailway([]), tokens: RailwayToken()), directory: root)
+    let ledger = RailwayCreateLedger(directory: root)
+    try await ledger.update { $0 = [.init(started: Date(), sandbox: "sbx-1")] }
+    let descriptor = HostDescriptor(
+      driver: HostKind.railway.driver, id: UUID(),
+      railway: RailwayHostRecord(
+        projectID: nil, environmentID: "env-1", sandboxID: "sbx-1", hostKey: "k"))
+    func recorder(failing: Bool) -> RemoteWorkrooms.Recorder {
+      RemoteWorkrooms.Recorder(
+        reserve: { _, _ in "w" },
+        record: { _, _ in if failing { throw CocoaError(.fileWriteNoPermission) } },
+        forget: { _ in }
+      ).forgettingPending(in: nil, driver: driver)
+    }
+
+    do {
+      try await recorder(failing: true).record("w", descriptor)
+      XCTFail("the write went through")
+    } catch {}
+    var left = try await ledger.entries()
+    XCTAssertEqual(left.compactMap(\.sandbox), ["sbx-1"], "forgotten before the write succeeded")
+
+    try await recorder(failing: false).record("w", descriptor)
+    left = try await ledger.entries()
+    XCTAssertEqual(left, [], "kept after its record was written")
   }
 
   /// An exe.dev host (#259) is its own driver key, keyed by its account: never Docker's or boxd's.

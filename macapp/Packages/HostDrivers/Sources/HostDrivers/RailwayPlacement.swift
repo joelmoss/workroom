@@ -43,20 +43,13 @@ public final class RailwayPlacementStore: Sendable {
   public init(file: URL) { self.file = file }
 
   public func read() -> RailwayPlacement {
-    lock.withLock { _ in
-      (try? Data(contentsOf: file)).flatMap {
-        try? JSONDecoder().decode(RailwayPlacement.self, from: $0)
-      } ?? RailwayPlacement()
-    }
+    lock.withLock { _ in decoded() }
   }
 
   /// Changes the placement and writes it whole.
   public func update(_ change: (inout RailwayPlacement) -> Void) throws {
     try lock.withLock { _ in
-      var placement =
-        (try? Data(contentsOf: file)).flatMap {
-          try? JSONDecoder().decode(RailwayPlacement.self, from: $0)
-        } ?? RailwayPlacement()
+      var placement = decoded()
       change(&placement)
       try FileManager.default.createDirectory(
         at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
@@ -65,6 +58,13 @@ public final class RailwayPlacementStore: Sendable {
       encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
       try encoder.encode(placement).write(to: file, options: .atomic)
     }
+  }
+
+  /// The file's placement, or none for a missing or unreadable file. Under `lock`.
+  private func decoded() -> RailwayPlacement {
+    (try? Data(contentsOf: file)).flatMap {
+      try? JSONDecoder().decode(RailwayPlacement.self, from: $0)
+    } ?? RailwayPlacement()
   }
 
   /// This Mac's environment in the project `project` names, or with none the recorded project,

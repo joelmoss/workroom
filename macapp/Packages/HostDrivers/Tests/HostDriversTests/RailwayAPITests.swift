@@ -171,4 +171,55 @@ final class RailwayAPITests: XCTestCase {
     XCTAssertTrue(RailwayPlanRefusal.free.reason.contains("Hobby or Pro"))
     XCTAssertTrue(RailwayPlanRefusal.trial.reason.contains("5 minutes"))
   }
+
+  /// A `sandboxes` page of `id`, saying there is a next page after `cursor` (none for nil).
+  private static func page(_ id: String, next cursor: String?) throws -> RailwayHTTPResponse {
+    let row: [String: Any] = [
+      "id": id, "status": "RUNNING", "createdAt": "2026-11-01T09:00:00Z", "environmentId": "env-1",
+    ]
+    return RailwayHTTPResponse(
+      status: 200,
+      body: try JSONSerialization.data(withJSONObject: [
+        "data": [
+          "sandboxes": [
+            "edges": [["cursor": id, "node": row]],
+            "pageInfo": [
+              "hasNextPage": cursor != nil, "endCursor": cursor ?? NSNull(),
+            ] as [String: Any],
+          ]
+        ]
+      ]))
+  }
+
+  /// Value: protects=an environment with more sandboxes than one page (Railway's cap is up to
+  /// 100) is listed whole, and a cursor Railway repeats ends the listing rather than looping
+  /// forever (review #8); fails_when=only the first page is read, or a repeated `endCursor` is
+  /// asked for again and again; seam=RailwayAPI.sandboxes over StubRailway
+  func testSandboxesReadsEveryPageAndStopsWhenTheCursorDoesNotAdvance() async throws {
+    let railway = StubRailway()
+    railway.answer("sandboxes") { request in
+      let after = (StubRailway.graphQLBody(request)["variables"] as? [String: Any])?["after"]
+      return try Self.page(after == nil ? "sbx-a" : "sbx-b", next: after == nil ? "page-2" : nil)
+    }
+    let api = RailwayAPI(transport: railway, tokens: Tokens(["at-1"]))
+    let all = try await api.sandboxes(environmentID: "env-1")
+    XCTAssertEqual(all.map(\.id), ["sbx-a", "sbx-b"])
+
+    let stuck = StubRailway()
+    let asked = Mutex(0)
+    stuck.answer("sandboxes") { _ in
+      // Bounded, so the defect fails the test instead of hanging it.
+      guard
+        asked.withLock({
+          $0 += 1
+          return $0
+        }) <= 10
+      else { throw URLError(.cancelled) }
+      return try Self.page("sbx-a", next: "page-2")
+    }
+    let listed = try await RailwayAPI(transport: stuck, tokens: Tokens(["at-1"]))
+      .sandboxes(environmentID: "env-1")
+    XCTAssertEqual(asked.withLock { $0 }, 2, "asked again for a cursor that didn't advance")
+    XCTAssertEqual(listed.map(\.id), ["sbx-a", "sbx-a"])
+  }
 }

@@ -137,6 +137,8 @@ final class RemoteHosts: Sendable {
       nil,
     presence: (@Sendable (HostID) async -> HostPresence?)? = nil,
     goneChanged: (@Sendable (HostID, Bool) -> Void)? = nil,
+    daemonVersion: (@Sendable (HostID) async -> UInt16?)? = nil,
+    updateDaemon: (@Sendable (HostID) async throws -> DaemonBootstrap.Outcome.Daemon)? = nil,
     pendingIn: URL? = RemoteHosts.pendingIn,
     railwayEnvironment: @escaping @Sendable () -> String? = RemoteHosts.railwaySweepEnvironment
   ) {
@@ -146,7 +148,8 @@ final class RemoteHosts: Sendable {
     reachability = HostReachability(
       registry: registry, connectHost: connectHost, isConnected: isConnected,
       startHost: startHost, now: now, relayHost: relayHost, connectDaemon: connectDaemon,
-      presence: presence, goneChanged: goneChanged)
+      presence: presence, goneChanged: goneChanged, daemonVersion: daemonVersion,
+      updateDaemon: updateDaemon)
   }
 
   /// Where every driver writes its hosts' files.

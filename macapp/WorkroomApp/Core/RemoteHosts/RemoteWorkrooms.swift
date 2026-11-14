@@ -224,15 +224,20 @@ enum RemoteWorkrooms {
     var hasWorkrooms: @Sendable (UUID) async throws -> Bool = { _ in false }
 
     /// This recorder, taking each machine a record names off the pending list in `directory`
-    /// once the record is written (#373): from then on config names it, so only a machine whose
-    /// record was never written is left for the sweep.
-    func forgettingPending(in directory: URL?) -> Recorder {
-      guard let directory else { return self }
+    /// (#373), and off `driver`'s own (Railway's create ledger, `HostRecording.recorded`), once
+    /// the record is written: from then on config names it, so only a machine whose record was
+    /// never written is left for the sweep.
+    func forgettingPending(in directory: URL?, driver: (any HostDriver)? = nil) -> Recorder {
+      let recording = driver as? any HostRecording
+      guard directory != nil || recording != nil else { return self }
       var recorder = self
       let record = self.record
       recorder.record = { workroom, descriptor in
         try await record(workroom, descriptor)
-        PendingMachines.forget(Set([descriptor.id].compactMap { $0 }), in: directory)
+        if let directory {
+          PendingMachines.forget(Set([descriptor.id].compactMap { $0 }), in: directory)
+        }
+        await recording?.recorded(descriptor)
       }
       return recorder
     }
@@ -322,7 +327,7 @@ enum RemoteWorkrooms {
       ProvisioningProgress.reportStep?(.repository)
       throw error
     }
-    let recorder = recorder.forgettingPending(in: pendingIn)
+    let recorder = recorder.forgettingPending(in: pendingIn, driver: driver)
     let origin = "\(repository.owner)/\(repository.name)"
     let path = path ?? clonePath(for: repository, on: key)
     let workroomID = UUID()
