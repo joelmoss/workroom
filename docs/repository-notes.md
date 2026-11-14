@@ -95,8 +95,9 @@ Release download counts are snapshotted daily, and before every `--clobber` uplo
   earlier build's `.clone-<digits>`) is never removed. A refusal caused only by staging-shaped
   entries (`.clone-*` folders, `.clone-*.lock` files) names them; a user's `.clone-notes` file is
   ordinary content. A live clone's or another machine's staging stays. `--pretend` looks past dead
-  staging and its lock file without removing them. The app's emptiness check ignores
-  `.clone-*` and leaves that call to the CLI.
+  staging and its lock file without removing them. The app's emptiness check passes over
+  the same staging-shaped entries (a real `.clone-*` folder or a regular `.clone-*.lock` file,
+  judged without following symlinks) and leaves that call to the CLI.
   `delete-project` is config-only unless: `--with-workrooms` cascades the per-workroom
   teardown (hard-deletes worktree dirs, branches kept); or `--from-disk` runs each workroom's
   teardown, drops the project from config, and returns `trash_paths` (project root first, then
