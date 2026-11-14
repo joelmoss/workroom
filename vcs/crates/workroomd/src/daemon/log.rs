@@ -155,10 +155,17 @@ pub fn redirect_stderr(socket: &Path) {
     }
 }
 
-/// Whether stderr is `path`'s file. `/dev/fd/2` is stderr itself on both macOS and Linux, and std's
-/// metadata spares the platform-dependent field types of a raw `stat`.
+/// Whether stderr is `path`'s file. Stderr is read with `fstat` on the descriptor itself, never by
+/// looking up `/dev/fd/2`: on a busy Mac that lookup now and then fails with EBADF while fd 2 is
+/// open, and a spawned daemon then logged its whole life to /dev/null (#639). std's metadata spares
+/// the platform-dependent field types of a raw `stat`.
 fn stderr_is(path: &Path) -> bool {
-    match (std::fs::metadata(path), std::fs::metadata("/dev/fd/2")) {
+    // SAFETY: std holds fd 2 by number and nothing owns it; `ManuallyDrop` keeps this borrow of it
+    // from closing it.
+    let stderr = std::mem::ManuallyDrop::new(unsafe {
+        <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(libc::STDERR_FILENO)
+    });
+    match (std::fs::metadata(path), stderr.metadata()) {
         (Ok(file), Ok(stderr)) => {
             file.dev() == stderr.dev() && file.ino() == stderr.ino() && file.rdev() == stderr.rdev()
         }
