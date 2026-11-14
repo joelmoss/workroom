@@ -607,7 +607,7 @@ func TestRunClone_WaitDelayAfterSuccessIsSuccess(t *testing.T) {
 	}
 	t.Setenv("PATH", tools+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	if err := runClone(context.Background(), "file:///x.git", filepath.Join(t.TempDir(), "d"), &bytes.Buffer{}); err != nil {
+	if err := runClone(context.Background(), "file:///x.git", filepath.Join(t.TempDir(), "d"), &bytes.Buffer{}, nil); err != nil {
 		t.Fatalf("runClone = %v, want success", err)
 	}
 }
@@ -745,7 +745,7 @@ func TestCloneProject_SweepsADeadClonesStagingInside(t *testing.T) {
 	svc, _ := newCreateSvc(t)
 	origin := bareRepo(t)
 	dest := t.TempDir()
-	stale := filepath.Join(dest, stagingName(".clone-", hostOf(t, svc), deadPid(t)))
+	stale := filepath.Join(dest, stagingName(".clone-", hostOf(t), deadPid(t)))
 	mkStaging(t, stale)
 
 	res, err := svc.CloneProject(context.Background(), "file://"+origin, dest, &bytes.Buffer{})
@@ -767,7 +767,7 @@ func TestCloneProject_SweepLeavesStagingThatMayBeInUse(t *testing.T) {
 	svc, _ := newCreateSvc(t)
 	origin := bareRepo(t)
 	for _, tc := range []struct{ name, entry string }{
-		{"live process", stagingName(".clone-", hostOf(t, svc), os.Getpid())},
+		{"live process", stagingName(".clone-", hostOf(t), os.Getpid())},
 		{"another machine", stagingName(".clone-", "0badc0de", deadPid(t))},
 		{"old unnamed", ".clone-123456"},
 	} {
@@ -787,7 +787,7 @@ func TestCloneProject_SweepLeavesStagingThatMayBeInUse(t *testing.T) {
 	t.Run("symlink", func(t *testing.T) {
 		dest := t.TempDir()
 		target := t.TempDir()
-		link := filepath.Join(dest, stagingName(".clone-", hostOf(t, svc), deadPid(t)))
+		link := filepath.Join(dest, stagingName(".clone-", hostOf(t), deadPid(t)))
 		if err := os.Symlink(target, link); err != nil {
 			t.Fatal(err)
 		}
@@ -809,8 +809,8 @@ func TestCloneProject_SweepsDeadStagingBeside(t *testing.T) {
 	origin := bareRepo(t)
 	parent := t.TempDir()
 	dest := filepath.Join(parent, "api")
-	stale := filepath.Join(parent, stagingName(".api.clone-", hostOf(t, svc), deadPid(t)))
-	live := filepath.Join(parent, stagingName(".api.clone-", hostOf(t, svc), os.Getpid()))
+	stale := filepath.Join(parent, stagingName(".api.clone-", hostOf(t), deadPid(t)))
+	live := filepath.Join(parent, stagingName(".api.clone-", hostOf(t), os.Getpid()))
 	mkStaging(t, stale)
 	mkStaging(t, live)
 
@@ -833,7 +833,7 @@ func TestCloneProject_PretendIgnoresButKeepsDeadStaging(t *testing.T) {
 	svc.Pretend = true
 	origin := bareRepo(t)
 	dest := t.TempDir()
-	stale := filepath.Join(dest, stagingName(".clone-", hostOf(t, svc), deadPid(t)))
+	stale := filepath.Join(dest, stagingName(".clone-", hostOf(t), deadPid(t)))
 	mkStaging(t, stale)
 
 	res, err := svc.CloneProject(context.Background(), "file://"+origin, dest, &bytes.Buffer{})
@@ -845,89 +845,182 @@ func TestCloneProject_PretendIgnoresButKeepsDeadStaging(t *testing.T) {
 	}
 }
 
-// Value: protects=a clone's staging is named after this machine's persisted id and its process, which
+// Value: protects=a clone's staging is named after this machine's hardware id and its process, which
 // the sweep relies on; fails_when=CloneProject names staging without its owner; why_new=no test reads
 // the names a real clone makes; seam=none; no_claim=none beyond protects
 func TestCloneProject_StagingNamesItsOwner(t *testing.T) {
-	svc, _ := newCreateSvc(t)
-	want := hostOf(t, svc) + "-" + strconv.Itoa(os.Getpid()) + "-"
-	stage, err := makeStaging(t.TempDir(), true, svc.stagingOwner())
+	want := hostOf(t) + "-" + strconv.Itoa(os.Getpid()) + "-"
+	stage, lock, err := makeStaging(t.TempDir(), true, stagingOwner())
 	if err != nil {
 		t.Fatal(err)
 	}
+	releaseStagingLock(lock, stage)
 	if base := filepath.Base(stage); !strings.HasPrefix(base, ".clone-"+want) {
 		t.Fatalf("inside staging %q doesn't name its owner %q", base, want)
 	}
-	stage, err = makeStaging(filepath.Join(t.TempDir(), "api"), false, svc.stagingOwner())
+	stage, lock, err = makeStaging(filepath.Join(t.TempDir(), "api"), false, stagingOwner())
 	if err != nil {
 		t.Fatal(err)
 	}
+	releaseStagingLock(lock, stage)
 	if base := filepath.Base(stage); !strings.HasPrefix(base, ".api.clone-"+want) {
 		t.Fatalf("beside staging %q doesn't name its owner %q", base, want)
 	}
 }
 
-// hostOf is the machine id svc names its staging with; the test fails if it has none.
-func hostOf(t *testing.T, svc *Service) string {
+// hostOf is this machine's id, which staging is named with and swept by; the test is skipped on a
+// machine without one (a container with no /etc/machine-id), where nothing owned is ever swept.
+func hostOf(t *testing.T) string {
 	t.Helper()
-	host, ok := svc.stagingHost()
+	host, ok := machineHost()
 	if !ok {
-		t.Fatal("no machine id")
+		t.Skip("this machine has no hardware id")
 	}
 	return host
 }
 
-// Value: protects=the machine id is made once and then stable, unique to its config folder, never
-// the hostname; fails_when=it is derived from the hostname or regenerated each run; why_new=identity
-// is what keeps one Mac from sweeping another's live clone; seam=none; no_claim=none beyond protects
-func TestStagingHost_PersistsAMachineID(t *testing.T) {
-	svc, cfg := newCreateSvc(t)
-	first := hostOf(t, svc)
-	again := hostOf(t, &Service{Config: cfg})
-	if first != again {
-		t.Fatalf("machine id changed between runs: %q then %q", first, again)
+// Value: protects=the machine id is read once from the hardware and is the same on every call, never
+// the hostname; fails_when=it is random per call or derived from the hostname; why_new=identity is
+// what keeps one Mac from sweeping another's live clone; seam=none; no_claim=does not compare two
+// machines
+func TestMachineHost_IsStable(t *testing.T) {
+	first := hostOf(t)
+	if again, ok := machineHost(); !ok || again != first {
+		t.Fatalf("machine id changed between calls: %q then %q", first, again)
 	}
-	other, _ := newCreateSvc(t)
-	if hostOf(t, other) == first {
-		t.Fatalf("two config folders share machine id %q", first)
+	if len(first) != 8 || strings.Trim(first, "0123456789abcdef") != "" {
+		t.Fatalf("machine id %q is not 8 hex digits", first)
 	}
 	if first == hostnameHash() {
 		t.Fatal("machine id is the hostname hash")
 	}
-	b, err := os.ReadFile(filepath.Join(filepath.Dir(cfg.Path()), "machine-id"))
-	if err != nil || strings.TrimSpace(string(b)) != first {
-		t.Fatalf("machine-id file holds %q (err %v), want %q", b, err, first)
+}
+
+// Value: protects=the IOPlatformUUID is read out of ioreg's output exactly; fails_when=another key,
+// the quotes or an empty value is taken for the id; why_new=a Mac's id comes only from this parse;
+// seam=none; no_claim=does not run ioreg
+func TestParseIOPlatformUUID(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"typical", "+-o J316sAP  <class IOPlatformExpertDevice>\n    {\n      \"IOPlatformSerialNumber\" = \"C02XYZ\"\n" +
+			"      \"IOPlatformUUID\" = \"8A1B2C3D-0000-1111-2222-333344445555\"\n    }\n", "8A1B2C3D-0000-1111-2222-333344445555"},
+		{"missing", "    \"IOPlatformSerialNumber\" = \"C02XYZ\"\n", ""},
+		{"empty value", "    \"IOPlatformUUID\" = \"\"\n", ""},
+		{"empty output", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseIOPlatformUUID(tc.in); got != tc.want {
+				t.Fatalf("parseIOPlatformUUID = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Value: protects=a Linux machine-id file is used only when it holds an id; fails_when=a blank or
+// systemd's "uninitialized" placeholder becomes an id every such machine shares; why_new=Linux's id
+// comes only from this parse; seam=none; no_claim=does not read /etc/machine-id
+func TestParseMachineIDFile(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"4c4c4544004b4d10804bb4c04f4b4d32\n", "4c4c4544004b4d10804bb4c04f4b4d32"},
+		{"", ""},
+		{" \n", ""},
+		{"uninitialized\n", ""},
+	} {
+		if got := parseMachineIDFile(tc.in); got != tc.want {
+			t.Fatalf("parseMachineIDFile(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 
 // Value: protects=without a machine id the sweep removes no owned staging, since it can't tell this
-// machine's from another's; fails_when=a failed id falls back to matching the hostname; why_new=the
-// fail-safe path is otherwise unexercised; seam=none; no_claim=none beyond protects
-func TestCloneProject_NoMachineIDSweepsNoOwnedStaging(t *testing.T) {
-	cfgDir := t.TempDir()
-	cfg, err := config.New(filepath.Join(cfgDir, "config.json"))
-	if err != nil {
-		t.Fatal(err)
+// machine's from another's; fails_when=an empty host matches a name with an empty host part, or any
+// owned name; why_new=the fail-safe path is otherwise unexercised; seam=staleStaging takes the host;
+// no_claim=does not see CloneProject's choice of host, nor run on a machine without an id
+func TestStaleStaging_NoMachineIDSweepsNoOwnedStaging(t *testing.T) {
+	dir := t.TempDir()
+	mkStaging(t, filepath.Join(dir, stagingName(".clone-", "", deadPid(t))))
+	mkStaging(t, filepath.Join(dir, stagingName(".clone-", hostnameHash(), deadPid(t))))
+	mkStaging(t, filepath.Join(dir, stagingName(".clone-", "0badc0de", deadPid(t))))
+	if stale := staleStaging(dir, ".clone-", ""); len(stale) != 0 {
+		t.Fatalf("swept without a machine id: %+v", stale)
 	}
-	svc := &Service{Config: cfg}
-	origin := bareRepo(t)
-	if err := os.Chmod(cfgDir, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(cfgDir, 0o755) })
-	if _, ok := svc.stagingHost(); ok {
-		t.Skip("config folder is writable here (running as root?)")
-	}
-	dest := t.TempDir()
-	kept := filepath.Join(dest, stagingName(".clone-", hostnameHash(), deadPid(t)))
-	mkStaging(t, kept)
+}
 
-	_, err = svc.CloneProject(context.Background(), "file://"+origin, dest, &bytes.Buffer{})
-	if !errors.Is(err, errs.ErrDestinationNotEmpty) {
-		t.Fatalf("err = %v, want ErrDestinationNotEmpty", err)
+// Value: protects=staging without an owner in its name (an earlier build's, or a folder of the
+// user's) is never removed, however old and unfinished it looks, and the refusal names it;
+// fails_when=an unowned name is swept by age or shape; why_new=the unowned sweep was dropped;
+// seam=none; no_claim=does not run the old build
+func TestCloneProject_KeepsUnownedStaging(t *testing.T) {
+	svc, _ := newCreateSvc(t)
+	origin := bareRepo(t)
+	dest := t.TempDir()
+	kept := filepath.Join(dest, ".clone-123456789")
+	unfinishedStaging(t, kept, 2*time.Hour)
+
+	_, err := svc.CloneProject(context.Background(), "file://"+origin, dest, &bytes.Buffer{})
+	if !errors.Is(err, errs.ErrDestinationNotEmpty) || !strings.Contains(err.Error(), ".clone-123456789") {
+		t.Fatalf("err = %v, want ErrDestinationNotEmpty naming .clone-123456789", err)
 	}
-	if _, err := os.Stat(kept); err != nil {
-		t.Fatalf("owned staging was swept without a machine id: %v", err)
+	if _, err := os.Stat(filepath.Join(kept, ".git")); err != nil {
+		t.Fatalf("unowned staging was removed: %v", err)
+	}
+}
+
+// Value: protects=the sweep says what it removes before it removes it; fails_when=staging vanishes
+// silently; why_new=the sweep had no output; seam=none; no_claim=does not read the app's log
+func TestCloneProject_SweepSaysWhatItRemoves(t *testing.T) {
+	svc, _ := newCreateSvc(t)
+	origin := bareRepo(t)
+	dest := t.TempDir()
+	name := stagingName(".clone-", hostOf(t), deadPid(t))
+	mkStaging(t, filepath.Join(dest, name))
+
+	var progress bytes.Buffer
+	if _, err := svc.CloneProject(context.Background(), "file://"+origin, dest, &progress); err != nil {
+		t.Fatalf("clone failed: %v", err)
+	}
+	if want := "Removing staging a crashed clone left: " + name + "\n"; !strings.HasPrefix(progress.String(), want) {
+		t.Fatalf("progress = %q, want it to start with %q", progress.String(), want)
+	}
+}
+
+// Value: protects=a cancel during the sweep stops it and reports ErrCancelled rather than going on to
+// clone; fails_when=the sweep ignores ctx; why_new=the sweep had no cancel path; seam=none;
+// no_claim=does not cancel midway through a large RemoveAll
+func TestCloneProject_SweepHonoursCancel(t *testing.T) {
+	svc, _ := newCreateSvc(t)
+	origin := bareRepo(t)
+	dest := t.TempDir()
+	stale := filepath.Join(dest, stagingName(".clone-", hostOf(t), deadPid(t)))
+	mkStaging(t, stale)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var progress bytes.Buffer
+	_, err := svc.CloneProject(ctx, "file://"+origin, dest, &progress)
+	if !errors.Is(err, errs.ErrCancelled) {
+		t.Fatalf("err = %v, want ErrCancelled", err)
+	}
+	if strings.Contains(progress.String(), "Removing") {
+		t.Fatalf("a sweep cancelled before it began started removing: %q", progress.String())
+	}
+	if _, err := os.Stat(stale); err != nil {
+		t.Fatalf("a sweep cancelled before it began removed the staging: %v", err)
+	}
+}
+
+// Value: protects=only staging-shaped entries are named as in the way; a user's file that merely
+// starts with .clone- is ordinary content; fails_when=the refusal blames a user's .clone-notes file;
+// why_new=the refusal matched any .clone- prefix; seam=none; no_claim=none beyond protects
+func TestCloneProject_RefusalNamesOnlyStagingShapes(t *testing.T) {
+	svc, _ := newCreateSvc(t)
+	origin := bareRepo(t)
+	dest := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dest, ".clone-notes"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.CloneProject(context.Background(), "file://"+origin, dest, &bytes.Buffer{})
+	if !errors.Is(err, errs.ErrDestinationNotEmpty) || strings.Contains(err.Error(), "in the way") {
+		t.Fatalf("err = %v, want a plain ErrDestinationNotEmpty", err)
 	}
 }
 
@@ -938,7 +1031,7 @@ func TestCloneProject_RefusalNamesBlockingStaging(t *testing.T) {
 	svc, _ := newCreateSvc(t)
 	origin := bareRepo(t)
 	dest := t.TempDir()
-	live := stagingName(".clone-", hostOf(t, svc), os.Getpid())
+	live := stagingName(".clone-", hostOf(t), os.Getpid())
 	mkStaging(t, filepath.Join(dest, live))
 
 	_, err := svc.CloneProject(context.Background(), "file://"+origin, dest, &bytes.Buffer{})
@@ -958,9 +1051,9 @@ func ageTree(t *testing.T, age time.Duration, paths ...string) {
 	}
 }
 
-// legacyStaging makes an unowned staging folder (the #636 naming) with a pack in progress, every
-// part age old.
-func legacyStaging(t *testing.T, path string, age time.Duration) string {
+// unfinishedStaging makes what a clone killed partway leaves: a .git with a pack in progress and no
+// index, every part age old.
+func unfinishedStaging(t *testing.T, path string, age time.Duration) {
 	t.Helper()
 	pack := filepath.Join(path, ".git", "objects", "pack")
 	if err := os.MkdirAll(pack, 0o755); err != nil {
@@ -971,126 +1064,6 @@ func legacyStaging(t *testing.T, path string, age time.Duration) string {
 		t.Fatal(err)
 	}
 	ageTree(t, age, path, filepath.Join(path, ".git"), filepath.Join(path, ".git", "objects"), pack, tmp)
-	return tmp
-}
-
-// Value: protects=an unowned staging folder left by the #636 build is swept once it has been idle
-// over an hour, inside and beside; fails_when=unowned names are never swept, or swept by name alone;
-// why_new=owned-name tests can't reach the age rule; seam=none; no_claim=does not run the old build
-func TestCloneProject_SweepsIdleUnownedStaging(t *testing.T) {
-	svc, _ := newCreateSvc(t)
-	origin := bareRepo(t)
-	t.Run("inside", func(t *testing.T) {
-		dest := t.TempDir()
-		stale := filepath.Join(dest, ".clone-123456789")
-		legacyStaging(t, stale, 2*time.Hour)
-		if _, err := svc.CloneProject(context.Background(), "file://"+origin, dest, &bytes.Buffer{}); err != nil {
-			t.Fatalf("retry over idle unowned staging: %v", err)
-		}
-		if _, err := os.Stat(stale); !os.IsNotExist(err) {
-			t.Fatalf("idle unowned staging is still there (stat err %v)", err)
-		}
-	})
-	t.Run("beside", func(t *testing.T) {
-		parent := t.TempDir()
-		stale := filepath.Join(parent, ".api.clone-1x2y3z")
-		legacyStaging(t, stale, 2*time.Hour)
-		if _, err := svc.CloneProject(context.Background(), "file://"+origin, filepath.Join(parent, "api"), &bytes.Buffer{}); err != nil {
-			t.Fatalf("clone failed: %v", err)
-		}
-		if _, err := os.Stat(stale); !os.IsNotExist(err) {
-			t.Fatalf("idle unowned staging is still there (stat err %v)", err)
-		}
-	})
-}
-
-// Value: protects=an unowned staging folder that may belong to a clone still running is kept: one
-// idle under an hour, or whose pack is still being written; fails_when=age is read from the folder's
-// own time only, missing a long fetch; why_new=no test pairs an old folder with fresh activity;
-// seam=none; no_claim=does not run a real long fetch
-func TestCloneProject_SweepKeepsActiveUnownedStaging(t *testing.T) {
-	svc, _ := newCreateSvc(t)
-	origin := bareRepo(t)
-	for _, tc := range []struct {
-		name  string
-		setup func(t *testing.T, path string)
-	}{
-		{"idle under an hour", func(t *testing.T, path string) { legacyStaging(t, path, 30*time.Minute) }},
-		{"old folder, pack still growing", func(t *testing.T, path string) {
-			tmp := legacyStaging(t, path, 2*time.Hour)
-			ageTree(t, time.Minute, tmp)
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dest := t.TempDir()
-			kept := filepath.Join(dest, ".clone-987654321")
-			tc.setup(t, kept)
-			_, err := svc.CloneProject(context.Background(), "file://"+origin, dest, &bytes.Buffer{})
-			if !errors.Is(err, errs.ErrDestinationNotEmpty) {
-				t.Fatalf("err = %v, want ErrDestinationNotEmpty", err)
-			}
-			if _, err := os.Stat(kept); err != nil {
-				t.Fatalf("possibly active staging was removed: %v", err)
-			}
-		})
-	}
-}
-
-// Value: protects=an old folder of the user's that merely matches an unowned staging name is never
-// swept: a finished repository (it has an index), a folder without .git, or a name the old build
-// couldn't have made; fails_when=the sweep trusts name and age alone; why_new=the other unowned
-// tests use real staging shapes only; seam=none; no_claim=none beyond protects
-func TestCloneProject_SweepKeepsLookalikeFolders(t *testing.T) {
-	svc, _ := newCreateSvc(t)
-	origin := bareRepo(t)
-	for _, tc := range []struct {
-		name, entry string
-		setup       func(t *testing.T, path string)
-	}{
-		{"finished repository", ".clone-123", func(t *testing.T, path string) {
-			legacyStaging(t, path, 2*time.Hour)
-			index := filepath.Join(path, ".git", "index")
-			if err := os.WriteFile(index, nil, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			ageTree(t, 2*time.Hour, path, filepath.Join(path, ".git"), index)
-		}},
-		{"no .git", ".clone-456", func(t *testing.T, path string) {
-			if err := os.MkdirAll(path, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			notes := filepath.Join(path, "notes.txt")
-			if err := os.WriteFile(notes, []byte("x"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			ageTree(t, 2*time.Hour, path, notes)
-		}},
-		{"letters inside", ".clone-backup", func(t *testing.T, path string) { legacyStaging(t, path, 2*time.Hour) }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dest := t.TempDir()
-			kept := filepath.Join(dest, tc.entry)
-			tc.setup(t, kept)
-			_, err := svc.CloneProject(context.Background(), "file://"+origin, dest, &bytes.Buffer{})
-			if !errors.Is(err, errs.ErrDestinationNotEmpty) {
-				t.Fatalf("err = %v, want ErrDestinationNotEmpty", err)
-			}
-			if _, err := os.Stat(kept); err != nil {
-				t.Fatalf("a lookalike folder was removed: %v", err)
-			}
-		})
-	}
-	t.Run("beside, name too long for the old build", func(t *testing.T) {
-		parent := t.TempDir()
-		kept := filepath.Join(parent, ".api.clone-mybackups")
-		legacyStaging(t, kept, 2*time.Hour)
-		if _, err := svc.CloneProject(context.Background(), "file://"+origin, filepath.Join(parent, "api"), &bytes.Buffer{}); err != nil {
-			t.Fatalf("clone failed: %v", err)
-		}
-		if _, err := os.Stat(kept); err != nil {
-			t.Fatalf("a lookalike folder beside was removed: %v", err)
-		}
-	})
 }
 
 // Value: protects=a process this user may not signal (EPERM) counts as running, so its staging is

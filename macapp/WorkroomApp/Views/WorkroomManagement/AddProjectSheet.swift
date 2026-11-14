@@ -120,9 +120,18 @@ enum AddProjectSheetModel {
     guard FileManager.default.fileExists(atPath: p, isDirectory: &isDir) else { return nil }
     guard isDir.boolValue else { return "That's a file, not a folder." }
     let entries = (try? FileManager.default.contentsOfDirectory(atPath: p)) ?? []
-    // A `.clone-*` folder is a clone's staging: the CLI sweeps it when its clone is dead and refuses
-    // the folder itself when one is still running, so it's the CLI's call, not this check's.
-    let ignorable = entries.allSatisfy { finderJunk.contains($0) || $0.hasPrefix(".clone-") }
+    // A `.clone-*` folder (and its `.clone-*.lock` file) is a clone's staging: the CLI sweeps it when
+    // its clone is provably dead and refuses the folder, naming it, when not, so it's the CLI's call.
+    // Any other `.clone-*` entry is the user's and counts as content.
+    let ignorable = entries.allSatisfy { name in
+      if finderJunk.contains(name) { return true }
+      guard name.hasPrefix(".clone-") else { return false }
+      if name.hasSuffix(".lock") { return true }
+      var isEntryDir: ObjCBool = false
+      let full = (p as NSString).appendingPathComponent(name)
+      return FileManager.default.fileExists(atPath: full, isDirectory: &isEntryDir)
+        && isEntryDir.boolValue
+    }
     return ignorable ? nil : "That folder isn't empty."
   }
 

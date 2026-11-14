@@ -213,7 +213,14 @@ final class AddProjectSheetModelTests: XCTestCase {
       atPath: dest + "/.clone-0badc0de-123-abc/.git", withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(atPath: dest) }
 
+    XCTAssertTrue(
+      FileManager.default.createFile(atPath: dest + "/.clone-0badc0de-123-abc.lock", contents: nil))
     XCTAssertTrue(AddProjectSheetModel.isValid(mode: .clone, path: dest, url: url))
+    XCTAssertTrue(FileManager.default.createFile(atPath: dest + "/.clone-notes", contents: nil))
+    XCTAssertFalse(
+      AddProjectSheetModel.isValid(mode: .clone, path: dest, url: url),
+      "a user's own .clone-* file is content, not staging")
+    try FileManager.default.removeItem(atPath: dest + "/.clone-notes")
     XCTAssertTrue(FileManager.default.createFile(atPath: dest + "/README", contents: nil))
     XCTAssertFalse(
       AddProjectSheetModel.isValid(mode: .clone, path: dest, url: url),
