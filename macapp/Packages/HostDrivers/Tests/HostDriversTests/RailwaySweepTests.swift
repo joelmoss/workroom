@@ -246,21 +246,38 @@ final class RailwaySweepTests: XCTestCase {
     XCTAssertEqual(left, [])
   }
 
-  /// Value: protects=a create Railway refused leaves no intent to reconcile, so no later sandbox
-  /// is ever matched to it; fails_when=a refused create keeps its intent; seam=create over
-  /// StubRailway and the ledger
-  func testACreateRailwayRefusedLeavesNoIntent() async throws {
-    let railway = railway([])
-    railway.answer("sandboxCreate") { _ in
-      RailwayHTTPResponse(
-        status: 200, body: Data(#"{"errors":[{"message":"Sandbox limit reached"}]}"#.utf8))
+  /// Value: protects=only an answer that says Railway made nothing drops a create's intent, so a
+  /// sandbox a failed-looking reply did make is still swept, never left billing (review 3, C1);
+  /// fails_when=a server error, an unreadable body, or a 200 with errors (partial data) drops the
+  /// intent, or a client error (4xx, a refused sign-in) keeps it; seam=create over StubRailway and
+  /// the ledger
+  func testOnlyAClientErrorDropsACreatesIntent() async throws {
+    let errors = #"{"errors":[{"message":"Sandbox limit reached"}]}"#
+    let rows: [(name: String, status: Int, body: String, kept: Bool)] = [
+      ("503 with GraphQL errors", 503, errors, true),
+      ("503 unreadable", 503, "<html>bad gateway</html>", true),
+      ("500 empty", 500, "", true),
+      ("200 with errors and partial data",
+        200, #"{"data":{"sandboxCreate":null},"errors":[{"message":"timeout"}]}"#, true),
+      ("200 with errors", 200, errors, true),
+      ("200 unreadable", 200, "not json", true),
+      ("400", 400, errors, false),
+      ("422", 422, #"{"errors":[{"message":"bad input"}]}"#, false),
+      ("401 twice", 401, "", false),
+    ]
+    for row in rows {
+      try await ledger.update { $0 = [] }
+      let railway = railway([])
+      railway.answer("sandboxCreate") { _ in
+        RailwayHTTPResponse(status: row.status, body: Data(row.body.utf8))
+      }
+      do {
+        _ = try await driver(railway).create()
+        XCTFail("\(row.name): the create went through")
+      } catch {}
+      let left = try await ledger.entries()
+      XCTAssertEqual(left.count, row.kept ? 1 : 0, row.name)
     }
-    do {
-      _ = try await driver(railway).create()
-      XCTFail("the create went through")
-    } catch {}
-    let left = try await ledger.entries()
-    XCTAssertEqual(left, [])
   }
 
   /// Value: protects=a sweep that needs a listing Railway couldn't give is owed again, and one

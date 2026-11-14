@@ -97,7 +97,8 @@ final class RailwayAPITests: XCTestCase {
     }
   }
 
-  /// Value: protects=a server failure says its status, not a decoding error; seam=RailwayAPI
+  /// Value: protects=a server failure says its status, not a decoding error, even with GraphQL
+  /// errors in its body (review 3, C1); fails_when=a 5xx reads as Railway refusing; seam=RailwayAPI
   func testAServerFailureSaysItsStatus() async {
     let railway = StubRailway()
     railway.answer("me") { _ in RailwayHTTPResponse(status: 503, body: Data("down".utf8)) }
@@ -107,6 +108,19 @@ final class RailwayAPITests: XCTestCase {
       XCTFail("a 503 decoded")
     } catch {
       XCTAssertEqual(error as? RailwayAPIError, .http(status: 503, message: "down"))
+    }
+
+    // GraphQL errors on a server failure are still the server's failure, with Railway's words.
+    let erring = StubRailway()
+    erring.answer("me") { _ in
+      RailwayHTTPResponse(status: 502, body: Data(#"{"errors":[{"message":"Upstream"}]}"#.utf8))
+    }
+    do {
+      _ = try await RailwayAPI(transport: erring, tokens: Tokens(["x"]))
+        .query("query { me { email } }", as: Me.self)
+      XCTFail("a 502 decoded")
+    } catch {
+      XCTAssertEqual(error as? RailwayAPIError, .http(status: 502, message: "Upstream"))
     }
   }
 

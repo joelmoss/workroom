@@ -159,9 +159,9 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
         sandbox = try await api.createSandbox(
           environmentID: configuration.environmentID, options: sandboxOptions)
       } catch {
-        // Railway said no, so made nothing. Anything else (the link, a cancel, an answer that
-        // couldn't be read, a server error) may have lost the reply to a sandbox that exists,
-        // which the sweep reconciles by when it was made.
+        // Railway said no (a 4xx), so made nothing. Anything else (the link, a cancel, an answer
+        // that couldn't be read, a server error, a 2xx with errors) may have lost the reply to a
+        // sandbox that exists, which the sweep reconciles by when it was made.
         if Self.isRefusal(error) { try? await ledger.drop([intent]) }
         throw error
       }
@@ -559,13 +559,15 @@ extension RailwayHostDriver {
   /// This Mac's creates (`RailwayCreateLedger`), beside its Railway key.
   var ledger: RailwayCreateLedger { RailwayCreateLedger(directory: configuration.keys) }
 
-  /// Whether `error` is Railway answering no, so a `sandboxCreate` made nothing: a GraphQL error,
-  /// a refused sign-in, or a client error. A server error or a lost link may have made one.
+  /// Whether `error` is Railway answering no, so a `sandboxCreate` made nothing: a refused
+  /// sign-in, or a client error (4xx). Anything else may have made one: a server error, a 2xx
+  /// with GraphQL errors (it can carry partial data), an answer that couldn't be read, a lost
+  /// link, or no HTTP status at all.
   static func isRefusal(_ error: any Error) -> Bool {
     switch error as? RailwayAPIError {
-    case .graphQL, .unauthorized: true
-    case .http(let status, _): status < 500
-    case .malformed, nil: false
+    case .unauthorized: true
+    case .http(let status, _): (400..<500).contains(status)
+    case .graphQL, .malformed, nil: false
     }
   }
 
