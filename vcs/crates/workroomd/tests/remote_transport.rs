@@ -62,6 +62,70 @@ fn attach_frame(id: [u8; 16]) -> Frame {
     Frame::new(FrameKind::Attach, request.encode())
 }
 
+/// How long a step that waits on a login shell may take. Generous, because only a failure waits it
+/// out: on a loaded machine, with every test here starting shells at once, a shell has taken
+/// seconds to start, and the fixed sleeps that used to stand in for these waits lost the race
+/// (#638).
+const SHELL_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Waits for the daemon's `Attached` on Control `stream`, the answer to an attach sent on Terminal
+/// `stream`. From then on the session has this client: what it types waits in the pty until the
+/// shell reads it, and a link dropped now cannot cost the attach. A refusal fails the test, naming
+/// itself.
+fn wait_attached(client: &mut Client, stream: u32) {
+    let deadline = Instant::now() + SHELL_DEADLINE;
+    loop {
+        if let Some(index) = client
+            .other
+            .iter()
+            .position(|e| e.service == Service::Control && e.stream == stream)
+        {
+            let envelope = client.other.remove(index);
+            let mut frames = FrameDecoder::new();
+            frames.push(&envelope.payload);
+            let frame = frames
+                .next_frame()
+                .expect("a frame")
+                .expect("a whole frame");
+            assert_eq!(frame.kind, FrameKind::Attached, "{frame:?}");
+            return;
+        }
+        assert!(
+            client.failures.is_empty(),
+            "the attach was refused: {:?}",
+            client.failures
+        );
+        assert!(
+            client.pump(deadline),
+            "no Attached on stream {stream} within {SHELL_DEADLINE:?}"
+        );
+    }
+}
+
+/// Waits until the daemon has dealt with everything sent before this on the connection, by sending
+/// a `List` on Control `stream` and waiting for its answer: the connection's reader takes requests
+/// in order. For a frame that has no answer of its own, such as a Resize.
+fn wait_settled(client: &mut Client, stream: u32) {
+    client.send(Service::Control, stream, Frame::control(FrameKind::List));
+    client.envelope(Service::Control, stream, SHELL_DEADLINE);
+}
+
+/// Types `line` and waits for the shell to have run it, which `line` shows by printing `marker`.
+/// The marker must not appear in `line` itself, or the terminal's echo of it would do.
+fn run_in_shell(client: &mut Client, line: &str, marker: &str) {
+    assert!(!line.contains(marker), "{line:?} echoes its own marker");
+    client.send(
+        Service::Terminal,
+        1,
+        Frame::new(FrameKind::Input, format!("{line}\n").into_bytes()),
+    );
+    let seen = client.read_until(marker, SHELL_DEADLINE);
+    assert!(
+        seen.contains(marker),
+        "the shell never ran {line:?}; got {seen:?}"
+    );
+}
+
 /// The property a socket hides: a remote stream can deliver a frame in pieces.
 #[test]
 fn a_frame_split_byte_by_byte_still_works() {
@@ -69,8 +133,9 @@ fn a_frame_split_byte_by_byte_still_works() {
     let (mut client, handle) = serve_over_pipe(sessions.clone());
     client.handshake();
     client.send_bytewise(Service::Terminal, 1, attach_frame([2u8; 16]));
+    // Answered at all, the attach was decoded from its bytes.
+    wait_attached(&mut client, 1);
 
-    std::thread::sleep(Duration::from_millis(400));
     client.send_bytewise(
         Service::Terminal,
         1,
@@ -93,13 +158,8 @@ fn the_session_survives_the_stream_dropping() {
     let (mut client, handle) = serve_over_pipe(sessions.clone());
     client.handshake();
     client.send(Service::Terminal, 1, attach_frame([3u8; 16]));
-    std::thread::sleep(Duration::from_millis(400));
-    client.send(
-        Service::Terminal,
-        1,
-        Frame::new(FrameKind::Input, b"MARK=kept\n".to_vec()),
-    );
-    std::thread::sleep(Duration::from_millis(300));
+    wait_attached(&mut client, 1);
+    run_in_shell(&mut client, "MARK=kept; echo MARKED-$((1+1))", "MARKED-2");
 
     // Drop the link.
     close(&client.writer);
@@ -118,13 +178,13 @@ fn the_session_survives_the_stream_dropping() {
     let (mut second, handle) = serve_over_pipe(sessions.clone());
     second.handshake();
     second.send(Service::Terminal, 1, attach_frame([3u8; 16]));
-    std::thread::sleep(Duration::from_millis(400));
+    wait_attached(&mut second, 1);
     second.send(
         Service::Terminal,
         1,
         Frame::new(FrameKind::Input, b"echo VALUE=$MARK\n".to_vec()),
     );
-    let seen = second.read_until("VALUE=kept", Duration::from_secs(10));
+    let seen = second.read_until("VALUE=kept", SHELL_DEADLINE);
     assert!(
         seen.contains("VALUE=kept"),
         "the shell was restarted rather than reattached; got {seen:?}"
@@ -204,6 +264,28 @@ fn a_restored_pane_is_shown_the_record_of_a_session_that_ended_with_its_host() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Waits for the line the kill tests type, `trap '' HUP; echo READY-$((1+1)); exec sleep 100`, to
+/// have run: READY-2 says the trap is set, and `sleep` in the foreground says the exec is done, so
+/// what holds the pty is a process that declines SIGHUP.
+fn wait_until_sleep_holds_the_pty(client: &mut Client, sessions: &SessionStore, id: [u8; 16]) {
+    let seen = client.read_until("READY-2", SHELL_DEADLINE);
+    assert!(
+        seen.contains("READY-2"),
+        "the shell never set its trap; got {seen:?}"
+    );
+    assert!(
+        common::wait_for(SHELL_DEADLINE, || sessions.list().iter().any(|s| s.id
+            == SessionId(id)
+            && s.foreground.as_deref() == Some("sleep"))),
+        "the shell never exec'd sleep: {:?}",
+        sessions
+            .list()
+            .iter()
+            .map(|s| &s.foreground)
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Ending a session whose shell declines SIGHUP takes the daemon `SIGHUP_GRACE` and then a SIGKILL.
 /// That wait must not hold up the connection the kill arrived on: the app's service connection to
 /// a host carries its VCS, File and forwarding requests too (#283). A request sent right behind the
@@ -225,8 +307,7 @@ fn a_slow_kill_does_not_hold_up_its_connection() {
             b"trap '' HUP; echo READY-$((1+1)); exec sleep 100\n".to_vec(),
         ),
     );
-    client.read_until("READY-2", Duration::from_secs(10));
-    std::thread::sleep(Duration::from_millis(300));
+    wait_until_sleep_holds_the_pty(&mut client, &sessions, id);
 
     let started = Instant::now();
     client.send(
@@ -291,8 +372,7 @@ fn a_second_kill_waits_for_the_first() {
             b"trap '' HUP; echo READY-$((1+1)); exec sleep 100\n".to_vec(),
         ),
     );
-    client.read_until("READY-2", Duration::from_secs(10));
-    std::thread::sleep(Duration::from_millis(300));
+    wait_until_sleep_holds_the_pty(&mut client, &sessions, id);
 
     let started = Instant::now();
     client.send(
@@ -570,23 +650,8 @@ fn serve_stdio_is_the_remote_entry_point() {
         greeting.push(byte[0]);
     }
 
-    input
-        .write_all(&Envelope::new(Service::Terminal, 1, attach_frame([9u8; 16]).encode()).encode())
-        .expect("attach");
-    input.flush().expect("flush");
-    std::thread::sleep(Duration::from_millis(400));
-    input
-        .write_all(
-            &Envelope::new(
-                Service::Terminal,
-                1,
-                Frame::new(FrameKind::Input, b"echo REMOTE-ENTRY-OK\n".to_vec()).encode(),
-            )
-            .encode(),
-        )
-        .expect("input");
-    input.flush().expect("flush");
-
+    // Output is read on a thread of its own from here, which says when the attach is answered.
+    let (attached_tx, attached_rx) = std::sync::mpsc::channel();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut decoder = EnvelopeDecoder::new();
@@ -602,7 +667,12 @@ fn serve_stdio_is_the_remote_entry_point() {
                 let mut frames = FrameDecoder::new();
                 frames.push(&envelope.payload);
                 while let Ok(Some(frame)) = frames.next_frame() {
-                    if frame.kind == FrameKind::Output {
+                    // The attach's answer: `Attached` on Control, or a refusal.
+                    if (envelope.service == Service::Control && envelope.stream == 1)
+                        || frame.kind == FrameKind::Failure
+                    {
+                        let _ = attached_tx.send(frame.kind);
+                    } else if frame.kind == FrameKind::Output {
                         seen.extend_from_slice(&frame.payload);
                         let text = String::from_utf8_lossy(&seen).into_owned();
                         if text.contains("REMOTE-ENTRY-OK") {
@@ -616,8 +686,29 @@ fn serve_stdio_is_the_remote_entry_point() {
         let _ = tx.send(String::from_utf8_lossy(&seen).into_owned());
     });
 
+    input
+        .write_all(&Envelope::new(Service::Terminal, 1, attach_frame([9u8; 16]).encode()).encode())
+        .expect("attach");
+    input.flush().expect("flush");
+    assert_eq!(
+        attached_rx.recv_timeout(SHELL_DEADLINE).ok(),
+        Some(FrameKind::Attached),
+        "the attach was not answered Attached"
+    );
+    input
+        .write_all(
+            &Envelope::new(
+                Service::Terminal,
+                1,
+                Frame::new(FrameKind::Input, b"echo REMOTE-ENTRY-OK\n".to_vec()).encode(),
+            )
+            .encode(),
+        )
+        .expect("input");
+    input.flush().expect("flush");
+
     let seen = rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(SHELL_DEADLINE)
         .unwrap_or_else(|_| String::from("<nothing>"));
     assert!(seen.contains("REMOTE-ENTRY-OK"), "got {seen:?}");
 
@@ -654,7 +745,7 @@ fn a_second_client_takes_the_size_only_by_acting() {
     let (mut first, first_handle) = serve_over_pipe(sessions.clone());
     first.handshake();
     first.send(Service::Terminal, 1, attach_frame([9u8; 16]));
-    std::thread::sleep(Duration::from_millis(400));
+    wait_attached(&mut first, 1);
 
     // A second window on the same session, with a window of its own.
     let (mut second, second_handle) = serve_over_pipe(sessions.clone());
@@ -672,21 +763,21 @@ fn a_second_client_takes_the_size_only_by_acting() {
         1,
         Frame::new(FrameKind::Attach, request.encode()),
     );
-    std::thread::sleep(Duration::from_millis(400));
+    wait_attached(&mut second, 1);
 
     // Attaching does not take the size, and neither does resizing in the background.
     let mut payload = Vec::new();
     payload.extend_from_slice(&200u16.to_be_bytes());
     payload.extend_from_slice(&50u16.to_be_bytes());
     second.send(Service::Terminal, 1, Frame::new(FrameKind::Resize, payload));
-    std::thread::sleep(Duration::from_millis(200));
+    wait_settled(&mut second, 2);
 
     first.send(
         Service::Terminal,
         1,
         Frame::new(FrameKind::Input, b"stty size\n".to_vec()),
     );
-    let seen = first.read_until("24 80", Duration::from_secs(10));
+    let seen = first.read_until("24 80", SHELL_DEADLINE);
     assert!(
         seen.contains("24 80"),
         "a second client's resize must not move the pty; the shell reported {seen:?}"
@@ -698,7 +789,7 @@ fn a_second_client_takes_the_size_only_by_acting() {
         1,
         Frame::new(FrameKind::Input, b"stty size\n".to_vec()),
     );
-    let seen = second.read_until("50 200", Duration::from_secs(10));
+    let seen = second.read_until("50 200", SHELL_DEADLINE);
     assert!(
         seen.contains("50 200"),
         "typing must claim the size and apply what was recorded; the shell reported {seen:?}"
@@ -717,13 +808,13 @@ fn a_resize_reaches_the_shell() {
     let (mut client, handle) = serve_over_pipe(sessions.clone());
     client.handshake();
     client.send(Service::Terminal, 1, attach_frame([4u8; 16]));
-    std::thread::sleep(Duration::from_millis(400));
+    wait_attached(&mut client, 1);
 
     let mut payload = Vec::new();
     payload.extend_from_slice(&120u16.to_be_bytes());
     payload.extend_from_slice(&40u16.to_be_bytes());
     client.send(Service::Terminal, 1, Frame::new(FrameKind::Resize, payload));
-    std::thread::sleep(Duration::from_millis(200));
+    wait_settled(&mut client, 2);
 
     // Ask the shell itself rather than trusting the frame was accepted: `stty size` reports what
     // the pty actually carries, which is the only thing a program in it will ever see.
@@ -732,7 +823,7 @@ fn a_resize_reaches_the_shell() {
         1,
         Frame::new(FrameKind::Input, b"stty size\n".to_vec()),
     );
-    let seen = client.read_until("40 120", Duration::from_secs(10));
+    let seen = client.read_until("40 120", SHELL_DEADLINE);
     assert!(
         seen.contains("40 120"),
         "the pty was not resized; the shell reported {seen:?}"
@@ -751,14 +842,14 @@ fn a_zero_resize_is_ignored() {
     let (mut client, handle) = serve_over_pipe(sessions.clone());
     client.handshake();
     client.send(Service::Terminal, 1, attach_frame([5u8; 16]));
-    std::thread::sleep(Duration::from_millis(400));
+    wait_attached(&mut client, 1);
 
     client.send(
         Service::Terminal,
         1,
         Frame::new(FrameKind::Resize, vec![0, 0, 0, 0]),
     );
-    std::thread::sleep(Duration::from_millis(200));
+    wait_settled(&mut client, 2);
     client.send(
         Service::Terminal,
         1,
@@ -766,7 +857,7 @@ fn a_zero_resize_is_ignored() {
     );
 
     // Still the size it was attached at, not a default and not 0x0.
-    let seen = client.read_until("24 80", Duration::from_secs(10));
+    let seen = client.read_until("24 80", SHELL_DEADLINE);
     assert!(seen.contains("24 80"), "got {seen:?}");
 
     close(&client.writer);
@@ -1071,10 +1162,10 @@ fn start_daemon(socket: &Path) -> Spawned {
             .spawn()
             .expect("spawn daemon"),
     );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !socket.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    assert!(
+        common::wait_listening(socket, SHELL_DEADLINE),
+        "the daemon never listened on {socket:?}"
+    );
     daemon
 }
 
@@ -1091,13 +1182,12 @@ fn a_relay_reaches_the_same_daemon_after_the_link_drops() {
     first
         .client
         .send(Service::Terminal, 1, attach_frame([0x28; 16]));
-    std::thread::sleep(Duration::from_millis(400));
-    first.client.send(
-        Service::Terminal,
-        1,
-        Frame::new(FrameKind::Input, b"MARK=kept\n".to_vec()),
+    wait_attached(&mut first.client, 1);
+    run_in_shell(
+        &mut first.client,
+        "MARK=kept; echo MARKED-$((1+1))",
+        "MARKED-2",
     );
-    std::thread::sleep(Duration::from_millis(300));
     drop(first);
 
     let mut second = Relay::spawn(relay_command(&socket));
@@ -1105,15 +1195,13 @@ fn a_relay_reaches_the_same_daemon_after_the_link_drops() {
     second
         .client
         .send(Service::Terminal, 1, attach_frame([0x28; 16]));
-    std::thread::sleep(Duration::from_millis(400));
+    wait_attached(&mut second.client, 1);
     second.client.send(
         Service::Terminal,
         1,
         Frame::new(FrameKind::Input, b"echo VALUE=$MARK\n".to_vec()),
     );
-    let seen = second
-        .client
-        .read_until("VALUE=kept", Duration::from_secs(10));
+    let seen = second.client.read_until("VALUE=kept", SHELL_DEADLINE);
 
     // EOF on stdin ends the relay by itself, which is how it learns that sshd lost the link.
     drop(second.stdin.take());
