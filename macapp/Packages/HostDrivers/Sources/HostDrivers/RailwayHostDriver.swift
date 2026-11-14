@@ -152,10 +152,23 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       return (identity, hostKey, try await self.macGitHubToken())
     }
     let sandbox = try await ProvisioningProgress.step(.machine) {
-      try await api.createSandbox(
-        environmentID: configuration.environmentID, options: sandboxOptions)
+      // Written down before Railway is asked: the sweep destroys only what the ledger names.
+      let intent = try await ledger.begin()
+      let sandbox: String
+      do {
+        sandbox = try await api.createSandbox(
+          environmentID: configuration.environmentID, options: sandboxOptions)
+      } catch {
+        // Railway said no, so made nothing. Anything else (the link, a cancel, an answer that
+        // couldn't be read, a server error) may have lost the reply to a sandbox that exists,
+        // which the sweep reconciles by when it was made.
+        if Self.isRefusal(error) { try? await ledger.drop([intent]) }
+        throw error
+      }
+      // Best-effort: an intent with no id is still reconciled by its time.
+      try? await ledger.name(intent, sandbox: sandbox)
+      return sandbox
     }
-    markPending(sandbox)
     let id = UUID()
     let record = RailwayHostRecord(
       projectID: configuration.projectID, environmentID: configuration.environmentID,
@@ -181,7 +194,7 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       throw HostDriverError.provisioning(failure)
     }
     hosts.withLock { $0[id] = nil }
-    forgetPending([record.sandboxID])
+    try? await ledger.forget([record.sandboxID])
     try? FileManager.default.removeItem(at: hostDirectory(id))
   }
 
@@ -194,7 +207,7 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
     try? FileManager.default.removeItem(at: hostDirectory(id))
     guard let failure else {
       hosts.withLock { $0[id] = nil }
-      forgetPending([record.sandboxID])
+      try? await ledger.forget([record.sandboxID])
       throw error
     }
     throw HostDriverError.leftBehind(
@@ -359,10 +372,10 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   private func macKey() async throws -> String {
     let key = configuration.keys.appendingPathComponent("id_ed25519")
     let manager = FileManager.default
-    if !manager.fileExists(atPath: key.path) {
-      try manager.createDirectory(
-        at: configuration.keys, withIntermediateDirectories: true,
-        attributes: [.posixPermissions: 0o700])
+    // Made under the lock Release and Nightly share, looked for again inside it: the other app
+    // may be making it now, and two would each register a key and keep only one.
+    try await keysLock.withLock {
+      guard !manager.fileExists(atPath: key.path) else { return }
       let made = await runner.run(
         "/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "workroom", "-f", key.path],
         in: NSHomeDirectory(), timeout: 30)
@@ -391,11 +404,11 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   /// pinned. Never scanned again once pinned.
   private func pinnedRelayKey() async throws -> String {
     let pin = configuration.keys.appendingPathComponent("relay_host_key")
-    if let pinned = try? String(contentsOf: pin, encoding: .utf8)
-      .trimmingCharacters(in: .whitespacesAndNewlines), !pinned.isEmpty
-    {
-      return pinned
+    func pinned() -> String? {
+      (try? String(contentsOf: pin, encoding: .utf8))
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
     }
+    if let pinned = pinned() { return pinned }
     let scan = await runner.run(
       "/usr/bin/ssh-keyscan", ["-t", "ed25519", configuration.relayHost], in: NSHomeDirectory(),
       timeout: 30)
@@ -409,11 +422,18 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
           + ": \(scan.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
     }
     let key = "\(fields[1]) \(fields[2])"
-    try FileManager.default.createDirectory(
-      at: configuration.keys, withIntermediateDirectories: true,
-      attributes: [.posixPermissions: 0o700])
-    try (key + "\n").write(to: pin, atomically: true, encoding: .utf8)
-    return key
+    // Written once, under the lock the other app shares: a pin it wrote meanwhile is kept.
+    return try await keysLock.withLock {
+      if let pinned = pinned() { return pinned }
+      try (key + "\n").write(to: pin, atomically: true, encoding: .utf8)
+      return key
+    }
+  }
+
+  /// Held while the Mac's key or the relay's pin is made (`CrossProcessLock`): Release and Nightly
+  /// share the folder. Never across a call to Railway. Taken inside `RailwaySerial`.
+  private var keysLock: CrossProcessLock {
+    CrossProcessLock(path: configuration.keys.appendingPathComponent("keys.lock"))
   }
 
   // MARK: Presence
@@ -443,10 +463,17 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
 
   // MARK: Records
 
+  /// Only fills in `descriptor`: the create's ledger entry stays until the record is written
+  /// (`recorded`), so a sandbox whose config write fails or never happens is still swept.
   public func record(_ host: HostID, in descriptor: inout HostDescriptor) {
     guard case .remote(let id) = host, let record = hosts.withLock({ $0[id] }) else { return }
     descriptor.railway = record
-    forgetPending([record.sandboxID])
+  }
+
+  /// `descriptor` is in config now: its sandbox comes off the ledger, for its record to answer for.
+  public func recorded(_ descriptor: HostDescriptor) async {
+    guard let sandbox = descriptor.railway?.sandboxID else { return }
+    try? await ledger.forget([sandbox])
   }
 
   public func adopt(_ descriptor: HostDescriptor) throws {
@@ -511,97 +538,152 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
 // MARK: The launch sweep (#630)
 
 extension RailwayHostDriver {
-  /// Destroys every sandbox in this Mac's environment that no host record names (ADR 0071): what a
-  /// crash between `sandboxCreate` and its record left, or a create whose cleanup failed. A sandbox
-  /// has no name or label, so the environment is all that says it is this Mac's; another Mac's
-  /// environment is never listed. Throws when Railway can't list the sandboxes (signed out,
-  /// offline), so the sweep is owed again; returns the destroys that failed.
-  ///
-  /// Kept besides `recorded`: every sandbox this driver holds, whose create may not have recorded
-  /// it yet, and any made within `sweepGrace`, which may be a create still under way in the other
-  /// build
-  /// sharing this environment (Release and Nightly, ADR 0036). A sandbox whose age Railway doesn't
-  /// give in a form this reads counts as new.
-  ///
-  /// `onlyPending` takes only the sandboxes a create made that no record has named since
-  /// (`pendingSandboxes`): for when no record names this environment, which is also what a lost
-  /// config, or a launch with a throwaway `HOME` (which doesn't isolate this folder), reads, where
-  /// every live sandbox would otherwise look unrecorded. With none pending it lists nothing.
-  public func sweep(keeping recorded: Set<String>, onlyPending: Bool = false) async throws
-    -> [String]
-  {
-    let now = Date()
-    let environment = configuration.environmentID
-    forgetPending(recorded)
-    let pending = onlyPending ? pendingSandboxes : []
-    if onlyPending && pending.isEmpty { return [] }
-    let kept = recorded.union(hosts.withLock { $0.values.map(\.sandboxID) })
-    func old(_ sandbox: RailwaySandbox) -> Bool {
-      guard let made = sandbox.createdAt.flatMap(Self.date) else { return false }
-      return now.timeIntervalSince(made) >= Self.sweepGrace
+  /// This Mac's creates (`RailwayCreateLedger`), beside its Railway key.
+  var ledger: RailwayCreateLedger { RailwayCreateLedger(directory: configuration.keys) }
+
+  /// Whether `error` is Railway answering no, so a `sandboxCreate` made nothing: a GraphQL error,
+  /// a refused sign-in, or a client error. A server error or a lost link may have made one.
+  static func isRefusal(_ error: any Error) -> Bool {
+    switch error as? RailwayAPIError {
+    case .graphQL, .unauthorized: true
+    case .http(let status, _): status < 500
+    case .malformed, nil: false
     }
+  }
+
+  /// Destroys the sandboxes this Mac made that no host record names (ADR 0071 and its amendment):
+  /// what a crash between `sandboxCreate` and its record left, or a create whose cleanup failed.
+  /// Only a sandbox this Mac's create ledger accounts for is ever destroyed: a sandbox has no name
+  /// or label, and another Mac sharing the environment (a copied placement) has live hosts that no
+  /// record here names. Returns the destroys that failed; throws only when Railway can't list the
+  /// sandboxes a lost reply needs (signed out, offline), so the sweep is owed again.
+  ///
+  /// - An entry with its sandbox's id is destroyed by that id, with no listing.
+  /// - An entry whose reply was lost (no id) is matched by time: the one live sandbox in the
+  ///   environment that nothing names (no record, no other entry, no host this driver holds) and
+  ///   that Railway made from `reconcileBefore` before the intent to `reconcileAfter` after it.
+  ///   None there drops the entry. More candidates than lost intents, or more than one left for
+  ///   an intent, destroys none and says so. The residual risk is another Mac's create landing
+  ///   alone in that window just as this Mac's reply was lost.
+  /// - Kept: whatever `recorded` names (which also takes its entry off), every sandbox this driver
+  ///   holds, and any entry younger than `grace`, which may be a create still under way in the
+  ///   other build sharing the ledger (Release and Nightly, ADR 0036).
+  ///
+  /// With no entry due, Railway isn't asked anything.
+  public func sweep(keeping recorded: Set<String>) async throws -> [String] {
+    try await sweep(keeping: recorded, grace: Self.sweepGrace)
+  }
+
+  public func sweep(keeping recorded: Set<String>, grace: TimeInterval) async throws -> [String] {
+    let now = Date()
+    let held = Set(hosts.withLock { $0.values.map(\.sandboxID) })
+    let entries = try await ledger.update {
+      $0.removeAll { $0.sandbox.map(recorded.contains) ?? false }
+    }
+    let due = entries.filter {
+      now.timeIntervalSince($0.started) >= grace && !($0.sandbox.map(held.contains) ?? false)
+    }
+    guard !due.isEmpty else { return [] }
     var failures: [String] = []
-    for sandbox in try await api.sandboxes(environmentID: environment)
-    where sandbox.environmentID == environment && !kept.contains(sandbox.id)
-      && !["DESTROYED", "DESTROYING"].contains(sandbox.status) && old(sandbox)
-      && (!onlyPending || pending.contains(sandbox.id))
-    {
-      let record = RailwayHostRecord(
-        projectID: configuration.projectID, environmentID: environment, sandboxID: sandbox.id,
-        hostKey: "")
-      if let failure = await destroySandbox(record) {
+    var done: Set<UUID> = []
+    for entry in due {
+      guard let sandbox = entry.sandbox else { continue }
+      if let failure = await destroySandbox(sweptRecord(sandbox)) {
         failures.append(failure)
       } else {
-        forgetPending([sandbox.id])
+        done.insert(entry.intent)
       }
     }
+    let lost = due.filter { $0.sandbox == nil }.sorted { $0.started < $1.started }
+    if !lost.isEmpty {
+      do {
+        let (settled, said) = try await reconcile(
+          lost, accounted: recorded.union(held).union(entries.compactMap(\.sandbox)))
+        done.formUnion(settled)
+        failures += said
+      } catch {
+        // What was destroyed by id stays destroyed; the lost replies are owed again.
+        try? await ledger.drop(done)
+        throw error
+      }
+    }
+    try? await ledger.drop(done)
     return failures
   }
 
-  /// The sandboxes a create made that no record has named since, kept beside the Mac's Railway key
-  /// so Release and Nightly, which share the environment, share them too. A create writes its
-  /// sandbox down the moment Railway names it; recording, destroying or sweeping it takes it off.
-  public var pendingSandboxes: Set<String> {
-    Self.pendingLock.withLock { readPending() }
+  private func sweptRecord(_ sandbox: String) -> RailwayHostRecord {
+    RailwayHostRecord(
+      projectID: configuration.projectID, environmentID: configuration.environmentID,
+      sandboxID: sandbox, hostKey: "")
   }
 
-  private static let pendingLock = NSLock()
-  private var pendingFile: URL {
-    configuration.keys.appendingPathComponent("pending-sandboxes.json")
-  }
-
-  private func readPending() -> Set<String> {
-    Set((try? JSONDecoder().decode([String].self, from: Data(contentsOf: pendingFile))) ?? [])
-  }
-
-  /// Best-effort: a sandbox not written down is still swept once a record names this environment.
-  private func markPending(_ sandbox: String) {
-    Self.pendingLock.withLock {
-      let pending = readPending().union([sandbox])
-      try? FileManager.default.createDirectory(
-        at: configuration.keys, withIntermediateDirectories: true,
-        attributes: [.posixPermissions: 0o700])
-      try? JSONEncoder().encode(pending.sorted()).write(to: pendingFile, options: .atomic)
+  /// Matches each create whose reply was lost (`lost`) to the sandbox Railway made for it, by
+  /// time, and destroys it (see `sweep`): the intents now settled, and what failed.
+  private func reconcile(_ lost: [RailwayCreateLedger.Entry], accounted: Set<String>)
+    async throws -> (done: Set<UUID>, failures: [String])
+  {
+    let environment = configuration.environmentID
+    let live = try await api.sandboxes(environmentID: environment).filter {
+      $0.environmentID == environment && !["DESTROYED", "DESTROYING"].contains($0.status)
+        && !accounted.contains($0.id)
     }
-  }
-
-  private func forgetPending(_ sandboxes: Set<String>) {
-    guard !sandboxes.isEmpty else { return }
-    Self.pendingLock.withLock {
-      let before = readPending()
-      let pending = before.subtracting(sandboxes)
-      guard pending != before else { return }
-      if pending.isEmpty {
-        try? FileManager.default.removeItem(at: pendingFile)
+    func candidates(_ entry: RailwayCreateLedger.Entry) -> [String] {
+      live.filter { sandbox in
+        guard let made = sandbox.createdAt.flatMap(Self.date) else { return false }
+        let offset = made.timeIntervalSince(entry.started)
+        return offset >= -Self.reconcileBefore && offset <= Self.reconcileAfter
+      }.map(\.id)
+    }
+    let all = Set(lost.flatMap(candidates))
+    guard all.count <= lost.count else {
+      return (
+        Set(lost.map(\.intent)),
+        [
+          "Railway sandboxes \(all.sorted().joined(separator: ", ")): \(lost.count) of this Mac's"
+            + " creates lost Railway's reply, and Workroom can't tell which of these were theirs,"
+            + " so it left them all"
+        ]
+      )
+    }
+    var done: Set<UUID> = []
+    var failures: [String] = []
+    var claimed: Set<String> = []
+    for entry in lost {
+      let left = candidates(entry).filter { !claimed.contains($0) }
+      guard left.count <= 1 else {
+        failures.append(
+          "Railway sandboxes \(left.sorted().joined(separator: ", ")): a create of this Mac's lost"
+            + " Railway's reply, and Workroom can't tell which was its, so it left them")
+        done.insert(entry.intent)
+        continue
+      }
+      guard let sandbox = left.first else {
+        done.insert(entry.intent)
+        continue
+      }
+      claimed.insert(sandbox)
+      if let failure = await destroySandbox(sweptRecord(sandbox)) {
+        failures.append(failure)
       } else {
-        try? JSONEncoder().encode(pending.sorted()).write(to: pendingFile, options: .atomic)
+        done.insert(entry.intent)
       }
     }
+    return (done, failures)
   }
 
-  /// How old an unrecorded sandbox must be before the sweep takes it: longer than any create takes
-  /// to record its host (the boot and setup a create waits on), as `PendingMachines.grace`.
+  /// This Mac's creates no record has named yet: their sandboxes, for those Railway answered.
+  public var pendingSandboxes: Set<String> {
+    get async { Set(((try? await ledger.entries()) ?? []).compactMap(\.sandbox)) }
+  }
+
+  /// How old a ledger entry must be before the sweep takes it: longer than any create takes to
+  /// record its host (the boot and setup a create waits on), as `PendingMachines.grace`.
   public static let sweepGrace: TimeInterval = PendingMachines.grace
+  /// How long before a lost reply's intent Railway's clock may put its sandbox (the two clocks
+  /// differ), and how long after it: the create's own request, its token refresh and the call,
+  /// each bounded, has reached Railway by then.
+  public static let reconcileBefore: TimeInterval = 120
+  public static let reconcileAfter: TimeInterval = 300
 
   /// Railway's `DateTime`, ISO 8601 with or without fractional seconds.
   static func date(_ text: String) -> Date? {

@@ -82,16 +82,23 @@ public protocol HostRecording: HostDriver {
   func record(_ host: HostID, in descriptor: inout HostDescriptor)
   /// Takes back what `descriptor` recorded, as a reload does; nothing for a host already held.
   func adopt(_ descriptor: HostDescriptor) throws
+  /// `descriptor` was written to config: what a create kept for the sweep until a record named
+  /// its host can go (Railway's create ledger). Called only once the write succeeded.
+  func recorded(_ descriptor: HostDescriptor) async
+}
+
+extension HostRecording {
+  public func recorded(_ descriptor: HostDescriptor) async {}
 }
 
 /// A driver whose hosts carry no name or label tying them to a workroom, so the launch's sweep
-/// lists the provider's and destroys every one no host record names (Railway's sandboxes in this
-/// Mac's environment, ADR 0071, #630).
+/// destroys the ones this Mac made that no host record names (Railway's sandboxes, from this
+/// Mac's create ledger, ADR 0071, #630).
 public protocol UnrecordedHostSweeping: HostDriver {
-  /// Destroys every host no record in `recorded` names; with `onlyPending`, only those a create
-  /// left pending. Throws when the provider can't list its hosts, so the sweep is owed again;
-  /// returns the destroys that failed.
-  func sweep(keeping recorded: Set<String>, onlyPending: Bool) async throws -> [String]
+  /// Destroys every host this Mac's creates made that no record in `recorded` names, and never
+  /// one they didn't. Throws when the provider can't list the hosts it needs to, so the sweep is
+  /// owed again; returns the destroys that failed.
+  func sweep(keeping recorded: Set<String>) async throws -> [String]
 }
 
 /// A driver that puts each workroom in a folder of its own on a host it did not make (an SSH host,
