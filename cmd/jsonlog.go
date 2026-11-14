@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"unicode/utf8"
 )
 
 // jsonLogWriter turns raw setup/teardown script output into newline-delimited JSON
@@ -47,15 +48,21 @@ func (l *jsonLogWriter) Write(b []byte) (int, error) {
 	}
 	// Output that never sends a newline (a hostile git server's endless sideband text) is emitted in
 	// maxLogLine pieces rather than held: the buffer stays bounded and nothing is lost.
-	for len(l.buf) >= maxLogLine {
-		l.emit(string(l.buf[:maxLogLine]))
-		l.buf = l.buf[maxLogLine:]
+	for len(l.buf) > maxLogLine {
+		cut := maxLogLine
+		for cut > maxLogLine-utf8.UTFMax && !utf8.RuneStart(l.buf[cut]) {
+			cut-- // never split a character across two events
+		}
+		l.emit(string(l.buf[:cut]))
+		l.buf = l.buf[cut:]
 	}
 	return len(b), nil
 }
 
 // maxLogLine is the most of one line jsonLogWriter holds before emitting it as an event of its own.
-const maxLogLine = 1 << 20
+// Small enough that the event stays under the app's 1 MiB line limit even when every byte needs a
+// six-byte JSON escape.
+const maxLogLine = 128 << 10
 
 // Flush emits any trailing output not terminated by a newline. Call once after the
 // script finishes.
