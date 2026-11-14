@@ -69,7 +69,7 @@ The first time you use boxd or exe.dev, the **Check ... account** step waits for
 
 ## Choose a host's image and size
 
-A boxd or exe.dev workroom's host can start from your own image and have the size you choose. On boxd the image is a snapshot of one of your machines. On exe.dev it is a container image.
+A boxd, exe.dev or Railway workroom's host can start from your own image and have the size you choose. On boxd the image is a snapshot of one of your machines. On exe.dev it is a container image. On Railway it is a checkpoint, and you also choose the region: see [Region, size and checkpoint](railway.md#region-size-and-checkpoint).
 
 You can choose them in three places, and the most specific one wins, setting by setting:
 

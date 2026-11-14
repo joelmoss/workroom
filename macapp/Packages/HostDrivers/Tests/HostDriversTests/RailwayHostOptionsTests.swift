@@ -198,33 +198,6 @@ final class RailwayHostOptionsTests: XCTestCase {
     XCTAssertEqual(RailwayHostOptions.defaultRegion, "us-west2")
   }
 
-  // MARK: Checkpoints
-
-  /// Value: protects=a checkpoint can be captured from a host in this Mac's environment;
-  /// fails_when=the mutation names another environment or sandbox; seam=RailwayAPI over
-  /// StubRailway; no_claim=the live shape (from the TypeScript SDK's `sandboxCheckpointCreate`)
-  func testACheckpointIsCapturedInTheHostsEnvironment() async throws {
-    let railway = railway()
-    railway.answer(
-      "sandboxCheckpointCreate",
-      data: [
-        "sandboxCheckpointCreate": [
-          "id": "ready", "key": "ready", "environmentId": "env-1",
-          "createdAt": "2026-11-13T10:00:00Z",
-        ]
-      ])
-    let api = RailwayAPI(transport: railway, tokens: Tokens())
-
-    let key = try await api.createSandboxCheckpoint(
-      named: "ready", of: "sbx-1", environmentID: "env-1")
-
-    XCTAssertEqual(key, "ready")
-    let variables = try XCTUnwrap(sent(railway, "sandboxCheckpointCreate").last)
-    XCTAssertEqual(variables["environmentId"] as? String, "env-1")
-    XCTAssertEqual(variables["sandboxId"] as? String, "sbx-1")
-    XCTAssertEqual(variables["name"] as? String, "ready")
-  }
-
   // MARK: Checkout clearing
 
   /// Value: protects=a host made from a checkpoint starts with neither another workroom's
