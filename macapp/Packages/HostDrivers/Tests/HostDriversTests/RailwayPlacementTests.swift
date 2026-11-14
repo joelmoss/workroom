@@ -86,19 +86,103 @@ final class RailwayPlacementTests: XCTestCase {
     XCTAssertEqual(sent(railway, "projectCreate").count, 1, "a second project was made")
   }
 
-  /// Value: protects=picking another workspace puts new hosts there; fails_when=the old
-  /// workspace's project or environment is used in the new one; seam=ensure
+  /// `env-1`'s sandboxes as Railway lists them, each with its status.
+  private func list(_ railway: StubRailway, _ sandboxes: [String: String]) {
+    railway.answer(
+      "sandboxes",
+      data: [
+        "sandboxes": [
+          "edges": sandboxes.map { id, status in
+            [
+              "node": [
+                "id": id, "status": status, "createdAt": "2026-01-01T00:00:00Z",
+                "environmentId": "env-1",
+              ]
+            ]
+          },
+          "pageInfo": ["hasNextPage": false],
+        ]
+      ])
+  }
+
+  private func listed(_ railway: StubRailway) -> [String] {
+    railway.graphQLRequests.map(StubRailway.graphQLBody)
+      .filter { ($0["query"] as? String)?.contains("sandboxes(") == true }
+      .compactMap { ($0["variables"] as? [String: Any])?["environmentId"] as? String }
+  }
+
+  /// Value: protects=picking another workspace puts new hosts there once this Mac's environment
+  /// holds nothing; fails_when=the old workspace's project or environment is used in the new one,
+  /// or the old environment isn't checked first; seam=ensure
   func testAnotherWorkspaceStartsAgainThere() async throws {
     try store.update {
       $0 = RailwayPlacement(workspaceID: "ws-1", projectID: "prj-1", environmentID: "env-1")
     }
     let railway = railway(projects: [])
+    list(railway, ["sbx-old": "DESTROYED"])
     let placed = try await store.ensure(
       workspaceID: "ws-2", api: RailwayAPI(transport: railway, tokens: Tokens()),
       environmentName: "mac-x-1")
     XCTAssertEqual(placed.projectID, "prj-new")
     XCTAssertEqual(placed.environmentID, "env-mac")
     XCTAssertEqual(store.read().workspaceID, "ws-2")
+    XCTAssertEqual(listed(railway), ["env-1"])
+  }
+
+  /// Value: protects=no sandbox is left billing in an environment no sweep lists again: the
+  /// launch sweep lists only this Mac's current environment, so leaving one that still holds a
+  /// sandbox, recorded or not, would orphan it; fails_when=the placement moves while the old
+  /// environment holds a live sandbox, or while Railway can't list it; seam=ensure
+  func testLeavingAnEnvironmentThatStillHoldsASandboxIsRefused() async throws {
+    let before = RailwayPlacement(workspaceID: "ws-1", projectID: "prj-1", environmentID: "env-1")
+    try store.update { $0 = before }
+    let railway = railway(projects: [["id": "prj-app", "name": "my-app"]])
+    list(railway, ["sbx-live": "RUNNING", "sbx-old": "DESTROYED"])
+    let api = RailwayAPI(transport: railway, tokens: Tokens())
+
+    for leave in [("ws-2", nil), ("ws-1", "prj-app")] as [(String, String?)] {
+      do {
+        _ = try await store.ensure(
+          workspaceID: leave.0, projectID: leave.1, api: api, environmentName: "mac-x-1")
+        XCTFail("left an environment holding a sandbox for \(leave)")
+      } catch RailwayPlacementError.environmentHoldsSandboxes(let count) {
+        XCTAssertEqual(count, 1)
+      }
+    }
+    XCTAssertEqual(store.read(), before)
+    XCTAssertTrue(sent(railway, "projectCreate").isEmpty)
+    XCTAssertTrue(sent(railway, "environmentCreate").isEmpty)
+
+    // Railway can't list it: the placement stays too.
+    railway.answer("sandboxes") { _ in
+      RailwayHTTPResponse(status: 200, body: Data(#"{"errors":[{"message":"busy"}]}"#.utf8))
+    }
+    do {
+      _ = try await store.ensure(workspaceID: "ws-2", api: api, environmentName: "mac-x-1")
+      XCTFail("left an environment Railway couldn't list")
+    } catch RailwayAPIError.graphQL {}
+    XCTAssertEqual(store.read(), before)
+  }
+
+  /// Value: protects=the setup sheet's pick of an existing project (story 14) gets this Mac's
+  /// environment in it; fails_when=a project is made beside the picked one, or the recorded
+  /// project is kept; seam=ensure with a project
+  func testAPickedProjectGetsThisMacsEnvironment() async throws {
+    try store.update {
+      $0 = RailwayPlacement(workspaceID: "ws-1", projectID: "prj-1", environmentID: "env-1")
+    }
+    let railway = railway(projects: [["id": "prj-app", "name": "my-app"]])
+    list(railway, [:])
+    let placed = try await store.ensure(
+      workspaceID: "ws-1", projectID: "prj-app",
+      api: RailwayAPI(transport: railway, tokens: Tokens()), environmentName: "mac-x-1")
+    XCTAssertEqual(placed.projectID, "prj-app")
+    XCTAssertEqual(placed.environmentID, "env-mac")
+    XCTAssertTrue(sent(railway, "projectCreate").isEmpty)
+    XCTAssertEqual(sent(railway, "environmentCreate").first?["projectId"] as? String, "prj-app")
+    XCTAssertEqual(
+      store.read(),
+      RailwayPlacement(workspaceID: "ws-1", projectID: "prj-app", environmentID: "env-mac"))
   }
 
   func testTheEnvironmentIsNamedForTheMacWithASuffix() {
