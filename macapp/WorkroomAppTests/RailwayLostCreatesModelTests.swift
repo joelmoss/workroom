@@ -36,12 +36,32 @@ final class RailwayLostCreatesModelTests: XCTestCase {
     return stub
   }
 
-  private func model(_ stub: RailwayStub, recorded: Set<String>?) -> RailwayLostCreatesModel {
+  private func model(
+    _ stub: RailwayStub, recorded: Set<String>?,
+    grace: TimeInterval = RailwayHostDriver.sweepGrace
+  ) -> RailwayLostCreatesModel {
     let api = stub.account(store: RailwayStub.MemoryStore(RailwayStub.refreshToken)).api
     let directory = self.directory!
     return RailwayLostCreatesModel(
       lost: { RailwayLostCreates(api: api, directory: directory, placement: nil) },
-      recorded: { recorded })
+      recorded: { recorded }, grace: grace)
+  }
+
+  /// Value: protects=a lost create shows in a Settings or Details view already open when it
+  /// leaves its grace, with no other read to bring it up (review 6, finding 3); fails_when=the
+  /// model reads the ledger once while the entry is young and never again, so the notice stays
+  /// hidden while a sandbox may bill; seam=RailwayLostCreatesModel.refresh over RailwayStub and a
+  /// ledger, with a short grace
+  func testALostCreateShowsOnceItLeavesItsGraceWithoutAnotherRead() async throws {
+    try await seed(started: Date())
+    let model = model(stub(started: Date()), recorded: [], grace: 0.5)
+    await model.refresh()
+    XCTAssertEqual(model.creates, [], "a create within its grace showed")
+    let deadline = Date().addingTimeInterval(5)
+    while model.creates.isEmpty, Date() < deadline {
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    XCTAssertEqual(model.creates.count, 1, "the lost create never showed")
   }
 
   private func seed(started: Date) async throws {

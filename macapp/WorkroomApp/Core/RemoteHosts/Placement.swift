@@ -32,7 +32,14 @@ struct ProvisionedHostPlacement: Placement {
     guard let driver = environment.driver as? any ProvisioningHostDriver else {
       throw HostDriverError.invalidConfiguration("This host cannot be provisioned")
     }
-    return try await driver.create()
+    do {
+      return try await driver.create()
+    } catch {
+      // A Railway create whose reply was lost leaves its entry on the ledger, to show as a lost
+      // create once its grace is over.
+      if driver is RailwayHostDriver { RailwayLostCreatesModel.createFailed() }
+      throw error
+    }
   }
 
   func unmake(_ host: HostID) async -> String? {

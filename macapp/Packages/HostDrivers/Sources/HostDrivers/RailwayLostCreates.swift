@@ -114,6 +114,16 @@ public struct RailwayLostCreates: Sendable {
     }.sorted { $0.started < $1.started }.map(create)
   }
 
+  /// When the next entry with no sandbox leaves `grace`, so `creates` lists it: the earliest of
+  /// those still within it. Nil when there is none. Never asks Railway.
+  public func nextDue(now: Date = Date(), grace: TimeInterval = RailwayHostDriver.sweepGrace)
+    async throws -> Date?
+  {
+    try await ledger.entries().filter {
+      $0.sandbox == nil && now.timeIntervalSince($0.started) < grace
+    }.map { $0.started.addingTimeInterval(grace) }.min()
+  }
+
   private func create(_ entry: RailwayCreateLedger.Entry) -> Create {
     guard let environment = entry.environmentID else {
       return Create(

@@ -24,17 +24,24 @@ final class RailwayLostCreatesModel: ObservableObject {
 
   private let lost: @Sendable () -> RailwayLostCreates
   private let recorded: @Sendable () -> Set<String>?
+  /// How old an entry must be to show (`RailwayLostCreates.creates`).
+  private let grace: TimeInterval
+  /// The read due when the next young entry leaves its grace, so a view already open shows it.
+  private var wake: Task<Void, Never>?
 
   /// Seams, the app's own by default: the lost creates (this Mac's Railway folder and sign-in),
-  /// and the sandboxes config's records name (`HostDriverRegistry.railwayRecordedSandboxes`).
+  /// the sandboxes config's records name (`HostDriverRegistry.railwayRecordedSandboxes`), and the
+  /// grace an entry waits out before it shows.
   init(
     lost: @escaping @Sendable () -> RailwayLostCreates = RailwayLostCreatesModel.appLostCreates,
     recorded: @escaping @Sendable () -> Set<String>? = {
       RemoteHosts.shared.registry.railwayRecordedSandboxes
-    }
+    },
+    grace: TimeInterval = RailwayHostDriver.sweepGrace
   ) {
     self.lost = lost
     self.recorded = recorded
+    self.grace = grace
   }
 
   /// This Mac's: its Railway folder's ledger, its sign-in, and its placement for an entry from
@@ -49,10 +56,38 @@ final class RailwayLostCreatesModel: ObservableObject {
       })
   }
 
-  /// Reads the ledger again (no call to Railway).
+  /// Reads the ledger again (no call to Railway), and reads it again when the next entry still
+  /// within its grace leaves it: a create that lost its reply only shows once its grace is over,
+  /// and a view already open would otherwise never read it.
   func refresh() async {
     let lost = self.lost
-    creates = (try? await Task.detached { try await lost().creates() }.value) ?? []
+    let grace = self.grace
+    let read = try? await Task.detached {
+      let ledger = lost()
+      let now = Date()
+      return (
+        try await ledger.creates(now: now, grace: grace),
+        try await ledger.nextDue(now: now, grace: grace)
+      )
+    }.value
+    creates = read?.0 ?? []
+    wake?.cancel()
+    wake = nil
+    guard let due = read?.1 else { return }
+    // A little after, so the entry is past its grace when read.
+    let delay = max(0, due.timeIntervalSinceNow) + 0.1
+    wake = Task { [weak self] in
+      try? await Task.sleep(for: .seconds(delay))
+      guard !Task.isCancelled, let self else { return }
+      self.wake = nil
+      await self.refresh()
+    }
+  }
+
+  /// A Railway create failed, which may have left an entry with no sandbox on the ledger: read it
+  /// again, which also schedules the read for when that entry leaves its grace.
+  nonisolated static func createFailed() {
+    Task { @MainActor in await shared.refresh() }
   }
 
   /// The sandboxes `create` may have made, read from Railway now.

@@ -18,6 +18,9 @@ final class GoneHosts: ObservableObject {
   private var applied: [UUID: UInt64] = [:]
   /// Numbers each update as it is recorded, from any thread, in the order recorded.
   private nonisolated static let sequence = Mutex<UInt64>(0)
+  /// The hosts the last prune kept, and the number taken as it ran: an update numbered before it
+  /// for any other host is ignored (`apply`).
+  private var pruned: (present: Set<UUID>, before: UInt64)?
 
   /// Whether host `id` is gone; false for no host.
   func contains(_ id: UUID?) -> Bool { id.map(hosts.contains) ?? false }
@@ -30,6 +33,9 @@ final class GoneHosts: ObservableObject {
   /// Applies update number `sequence` for `id`, unless a newer one was applied already.
   func apply(_ id: UUID, gone: Bool, sequence: UInt64) {
     guard sequence > applied[id, default: 0] else { return }
+    // A read numbered before the last prune, for a host that prune didn't keep, is for a host
+    // since removed: still in flight, it would put it back.
+    if let pruned, !pruned.present.contains(id), sequence < pruned.before { return }
     applied[id] = sequence
     guard hosts.contains(id) != gone else { return }
     if gone { hosts.insert(id) } else { hosts.remove(id) }
@@ -45,6 +51,7 @@ final class GoneHosts: ObservableObject {
   /// Forgets every host but `present` (the hosts config records now), and the numbers applied to
   /// them, so neither grows with every workroom ever removed.
   func prune(keeping present: Set<UUID>) {
+    pruned = (present, Self.nextSequence())
     applied = applied.filter { present.contains($0.key) }
     let kept = hosts.intersection(present)
     if kept != hosts { hosts = kept }

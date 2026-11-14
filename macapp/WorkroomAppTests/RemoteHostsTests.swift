@@ -743,9 +743,26 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertFalse(gone.contains(removed), "a removed host stayed gone")
     gone.apply(kept, gone: false, sequence: newer - 1)
     XCTAssertTrue(gone.contains(kept), "the kept host lost its newest number")
-    // A removed host's number went with it: even its oldest update applies again.
-    gone.apply(removed, gone: true, sequence: 1)
-    XCTAssertTrue(gone.contains(removed), "a removed host's number was kept")
+  }
+
+  /// Value: protects=a presence read still in flight for a host that was removed never puts it
+  /// back once the gone set has forgotten it, while a host recorded since still shows (review 6,
+  /// finding 6); fails_when=a removed host's late update re-adds it, or a newly recorded host's
+  /// first update is dropped; seam=GoneHosts.prune then apply with the numbers `record` gives
+  @MainActor
+  func testALateUpdateForARemovedHostDoesNotBringItBack() {
+    let gone = GoneHosts()
+    let removed = UUID()
+    gone.apply(removed, gone: false, sequence: GoneHosts.nextSequence())
+    // Numbered as its read began, before the host was removed; it lands after.
+    let inFlight = GoneHosts.nextSequence()
+    gone.prune(keeping: [])
+    gone.apply(removed, gone: true, sequence: inFlight)
+    XCTAssertFalse(gone.contains(removed), "a removed host's late update brought it back")
+
+    let added = UUID()
+    gone.apply(added, gone: true, sequence: GoneHosts.nextSequence())
+    XCTAssertTrue(gone.contains(added), "a host recorded since lost its first update")
   }
 
   /// Value: protects=a delete (Remove Workroom or Delete Project) whose gone host's provider can't
