@@ -471,7 +471,7 @@ actor LiveRun {
     let service = try await DaemonClient.connect(host: host, stream: stream)
     clients.append(service)
     try await service.announcePinging()
-    // Long enough that an answering pane would have missed three probes, were it not answering.
+    // Time for both logins to show up in the host's process list and Railway's session list.
     try await Task.sleep(for: .seconds(5))
 
     let relays = try await hostLines(driver, host, Self.relays).filter {
@@ -629,7 +629,7 @@ actor LiveRun {
   /// The pane's ssh, the attach client's child: every process of the attach has the session's
   /// log path in its arguments, and only ssh is `/usr/bin/ssh`.
   private func sshPID(of session: UUID) -> Int32? {
-    let found = try? Self.run(["pgrep", "-f", "^/usr/bin/ssh .*attach-\(session.uuidString)"])
+    let found = try? Self.run(["pgrep", "-n", "-f", "^/usr/bin/ssh .*attach-\(session.uuidString)"])
     return found?.output.split(separator: "\n").first.flatMap { Int32($0) }
   }
 
@@ -690,7 +690,9 @@ actor LiveRun {
         left.append("project \(projectName) (\(projectID)): \(error.localizedDescription)")
       }
     }
-    if let api, let publicKey {
+    // From disk too: a create that failed after registering the key never handed it back.
+    let keyFile = directory.appendingPathComponent("keys/id_ed25519.pub")
+    if let api, let publicKey = publicKey ?? (try? String(contentsOf: keyFile, encoding: .utf8)) {
       do {
         try await api.deleteSSHPublicKey(matching: publicKey)
       } catch {
