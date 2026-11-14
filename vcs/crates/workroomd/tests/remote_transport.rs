@@ -1024,6 +1024,9 @@ fn stale_socket(path: &Path) {
         *slot = *byte as libc::c_char;
     }
     let length = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    // Or the child can die of SIGKILL before it binds, when another test thread logs its first
+    // line as this forks: see `ready_to_fork`.
+    workroomd::testing::ready_to_fork();
     // SAFETY: Between `fork` and `_exit` the child calls only async-signal-safe functions, and
     // allocates nothing: the address was built above.
     let pid = unsafe { libc::fork() };
