@@ -32,6 +32,7 @@ Run commands from the repository root; `make` lists available targets.
 - `make vcs-test`: run CI's Rust tests on its pinned toolchain: the whole `vcs/` workspace, then `workroomd` with `terminal-state` (in its own target dir, `vcs/target/terminal-state`). Narrow both with `VCS_TEST_FLAGS="-p workroomd --test <name>"`. No `PATH` changes needed.
 - `make vcs-lint`: run rustfmt, clippy and `cargo doc -D warnings` over the `vcs/` Rust workspace, with and without `terminal-state`, on CI's Rust 1.99.1. For Linux-only code from a Mac, use `make vcs-lint-linux` (container prerequisites in `CONTRIBUTING.md`).
 - `make actions-lint`: lint `.github/workflows`, the composite actions and `dependabot.yml` with jactionlint, shellcheck included.
+- `make pre-push`: before every push, run CI's cheap gates (scripts, docs, Go, Rust on macOS and Linux, Swift lint and packages) and get one summary. It says when the branch is behind `origin/master`; merge that first, since CI tests the merge.
 
 Use `macapp/project.yml` for project configuration; do not edit generated `.xcodeproj` files.
 
@@ -78,7 +79,7 @@ Preserve the CLI `--json` contract; breaking changes require a `schema_version` 
 
 ### Pull requests
 
-For CI waits, use the transition watcher and review hand-off in [PR watching](docs/agents/pr-watching.md).
+After every push to a PR branch, run the watcher in [PR watching](docs/agents/pr-watching.md) and report its verdict before calling the work done.
 
 ### Issue tracker
 
