@@ -432,6 +432,30 @@ final class HostDriverRegistry: @unchecked Sendable {
     return environments.isEmpty ? nil : Deletion(environments: environments)
   }
 
+  /// What deleting `hosts` needs, where a host its provider says is gone (`gone`, `GoneHosts`) can't
+  /// stop the delete: its environment is asked for apart, and a failure is logged and leaves it
+  /// none, so its own delete keeps its record, failed, and says why (`RemoteWorkrooms.delete`).
+  /// Another build's live host still refuses the whole delete. Remove Workroom and Delete Project
+  /// both ask through here.
+  @MainActor
+  func environment(toDelete hosts: [HostDescriptor], gone: Set<UUID>) throws -> Deletion? {
+    let isGone = { (host: HostDescriptor) in host.id.map(gone.contains) ?? false }
+    _ = try RemoteWorkrooms.checkDeletable(hosts)
+    var environments = try environment(toDelete: hosts.filter { !isGone($0) })?.environments ?? [:]
+    for host in hosts where isGone(host) {
+      do {
+        let found = try environment(toDelete: [host])?.environments ?? [:]
+        environments.merge(found) { kept, _ in kept }
+      } catch {
+        let id = host.id?.uuidString ?? "?"
+        Self.logger.error(
+          "deleting gone host \(id, privacy: .public): \(error.localizedDescription, privacy: .public)"
+        )
+      }
+    }
+    return environments.isEmpty ? nil : Deletion(environments: environments)
+  }
+
   /// `key`'s driver when it is a remote provider's that keeps its hosts' records (`HostRecording`):
   /// an SSH host's home, a Railway host's sandbox. A container runtime's records go to its driver
   /// with its runtime (`adoptLogged`), which a pane must not probe for.

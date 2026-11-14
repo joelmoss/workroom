@@ -164,14 +164,16 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       let intent = try await ledger.begin(
         environmentID: configuration.environmentID, workspaceID: configuration.workspaceID)
       let sandbox: String
+      let delivery = RailwayDelivery()
       do {
         sandbox = try await api.createSandbox(
-          environmentID: configuration.environmentID, options: sandboxOptions)
+          environmentID: configuration.environmentID, options: sandboxOptions, delivery: delivery)
       } catch {
-        // Railway said no (a 4xx), so made nothing. Anything else (the link, a cancel, an answer
-        // that couldn't be read, a server error, a 2xx with errors) may have lost the reply to a
-        // sandbox that exists, which the sweep reconciles by when it was made.
-        if Self.isRefusal(error) { try? await ledger.drop([intent]) }
+        // Nothing reached Railway (signed out, a refresh that failed, a cancel before sending),
+        // or Railway said no (a 4xx), so made nothing. Anything else (the link, a cancel, an
+        // answer that couldn't be read, a server error, a 2xx with errors) may have lost the
+        // reply to a sandbox that exists, which the sweep reconciles by when it was made.
+        if !delivery.mayHaveActed || Self.isRefusal(error) { try? await ledger.drop([intent]) }
         throw error
       }
       // Held from here, so recording, destroying or undoing this host takes its entry off by
@@ -183,7 +185,7 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
     let id = UUID()
     let record = RailwayHostRecord(
       projectID: configuration.projectID, environmentID: configuration.environmentID,
-      sandboxID: sandbox, hostKey: hostKey)
+      sandboxID: sandbox, hostKey: hostKey, workspaceID: configuration.workspaceID)
     hosts.withLock { $0[id] = record }
     do {
       try await ProvisioningProgress.step(.boot) { try await awaitRunning(record) }
@@ -199,8 +201,12 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
 
   /// Destroys the sandbox. One already gone counts as destroyed, so a retry gets past it.
   public func destroy(_ host: HostID) async throws {
-    let (id, record) = try record(of: host)
-    if let failure = await destroySandbox(record, workspaceID: configuration.workspaceID) {
+    let (id, held) = try record(of: host)
+    var record = held
+    // A record an older build wrote names no workspace: resolved once, or left unknown, which
+    // leaves a "no such sandbox" read unconfirmed.
+    record.workspaceID = try? await workspace(of: id, held)
+    if let failure = await destroySandbox(record) {
       try Task.checkCancellation()
       throw HostDriverError.provisioning(failure)
     }
@@ -214,8 +220,7 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   private func undo(_ error: any Error, id: UUID, record: RailwayHostRecord) async throws
     -> Never
   {
-    let workspace = configuration.workspaceID
-    let failure = await Task { await self.destroySandbox(record, workspaceID: workspace) }.value
+    let failure = await Task { await self.destroySandbox(record) }.value
     try? FileManager.default.removeItem(at: hostDirectory(id))
     guard let failure else {
       hosts.withLock { $0[id] = nil }
@@ -228,22 +233,22 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
 
   /// Nil once the sandbox is gone, whether this destroyed it or it already was. Railway's answer
   /// for a sandbox it no longer has isn't documented, so a refusal is checked against the
-  /// sandbox's status rather than its words. `workspaceID` is the workspace the sandbox is in,
-  /// which a "no such sandbox" read is confirmed against (`seesWorkspace`).
-  private func destroySandbox(_ record: RailwayHostRecord, workspaceID: String?) async -> String? {
+  /// sandbox's status rather than its words. The record's workspace is the one a "no such
+  /// sandbox" read is confirmed against (`seesWorkspace`).
+  private func destroySandbox(_ record: RailwayHostRecord) async -> String? {
     do {
       try await api.destroySandbox(record.sandboxID, environmentID: record.environmentID)
       return nil
     } catch {
       // A read that went through and found it destroyed is gone; one that found no such sandbox
-      // is gone only when this sign-in can see its workspace. A read that failed leaves the
-      // destroy unconfirmed.
+      // is gone only when this sign-in can see its workspace. Anything else (failed or still
+      // destroying, which may bill on), or a read that failed, leaves the destroy unconfirmed.
       do {
         let status = try await api.sandboxStatus(
           record.sandboxID, environmentID: record.environmentID)
         if let status {
-          if Self.isGone(status) { return nil }
-        } else if try await seesWorkspace(workspaceID) {
+          if status == "DESTROYED" { return nil }
+        } else if try await seesWorkspace(record.workspaceID) {
           return nil
         } else {
           return "Railway sandbox \(record.sandboxID): Railway's sign-in can't see the workspace "
@@ -261,6 +266,29 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   func seesWorkspace(_ workspaceID: String?) async throws -> Bool {
     guard let workspaceID else { return false }
     return try await api.grantedWorkspaces().contains { $0.id == workspaceID }
+  }
+
+  /// The workspace host `id`'s sandbox is in: its record's; for a record an older build wrote
+  /// without one, this driver's when the sandbox is in its environment, else the workspace whose
+  /// projects include the record's project, of those the sign-in sees. Whatever is found is kept
+  /// on the held record, so it is looked up once and the next write of the record keeps it
+  /// (`record(_:in:)`). Nil when it can't be told; throws when Railway can't list them.
+  func workspace(of id: UUID, _ record: RailwayHostRecord) async throws -> String? {
+    if let workspace = record.workspaceID { return workspace }
+    var found: String?
+    if record.environmentID == configuration.environmentID {
+      found = configuration.workspaceID
+    }
+    if found == nil, let project = record.projectID {
+      for workspace in try await api.grantedWorkspaces()
+      where try await api.projects(workspaceID: workspace.id).contains(where: { $0.id == project })
+      {
+        found = workspace.id
+        break
+      }
+    }
+    if let found { hosts.withLock { $0[id]?.workspaceID = found } }
+    return found
   }
 
   /// How many reads in a row a new sandbox may be unknown to Railway before the create takes it
@@ -306,7 +334,7 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       + [
         id.uuidString.lowercased(), configuration.daemonSocket,
         // Where the daemon really keeps them, which a checkpoint's copy has to clear.
-        DaemonBootstrap.screens(besideSocket: configuration.daemonSocket),
+        try DaemonBootstrap.screens(besideSocket: configuration.daemonSocket),
       ]
       .map(PosixShell.quoted).joined(separator: " ")
     try await login(
@@ -464,12 +492,12 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   /// Mac's workspace (`seesWorkspace`); under an account that can't, it is signed out. A sign-in
   /// Railway no longer takes is signed out; anything else Railway couldn't answer is nil.
   public func presence(_ host: HostID) async -> HostPresence? {
-    guard let (_, record) = try? record(of: host) else { return nil }
+    guard let (id, record) = try? record(of: host) else { return nil }
     do {
       let status = try await api.sandboxStatus(
         record.sandboxID, environmentID: record.environmentID)
       if let status { return Self.isGone(status) ? .gone : .awake }
-      guard let workspace = configuration.workspaceID else { return nil }
+      guard let workspace = try await workspace(of: id, record) else { return nil }
       return try await seesWorkspace(workspace) ? .gone : .signedOut
     } catch RailwaySessionError.signedOut {
       return .signedOut
@@ -592,9 +620,15 @@ extension RailwayHostDriver {
   ///   environment that nothing names (no record, no other entry, no host this driver holds) and
   ///   that Railway made from `reconcileBefore` before the intent to `reconcileAfter` after it.
   ///   None there drops the entry. More candidates than lost intents, or more than one left for
-  ///   an intent, destroys none, says so, and keeps the intents for a later sweep, which can tell
-  ///   once a candidate is recorded or destroyed. The residual risk is another Mac's create
-  ///   landing alone in that window just as this Mac's reply was lost.
+  ///   an intent, or one an earlier ambiguous intent may own, destroys none, says so, and keeps
+  ///   each such intent with the candidates found (`Entry.candidates`: a crowded window's whole
+  ///   set, for each of its intents; nor does one ever narrow to a candidate another intent still
+  ///   holds among several). A later sweep looks only
+  ///   among those, and destroys the one left once a record (or another of this Mac's creates)
+  ///   names all the rest: a candidate that merely vanished settles nothing, as it may have been
+  ///   this create's own and the one left another Mac's. One still ambiguous `ambiguousLifetime`
+  ///   after its create is dropped, naming its candidates. The residual risk is another Mac's
+  ///   create landing alone in that window just as this Mac's reply was lost.
   ///   Only with `recordsHere`, when config names a host in this environment: otherwise config
   ///   may be lost, or a throwaway `HOME`'s, and a create retried in the window, whose sandbox
   ///   only its record names, would read as the lost reply's. Such intents wait for a launch
@@ -628,6 +662,13 @@ extension RailwayHostDriver {
     let accounted = recorded.union(held).union(entries.compactMap(\.sandbox))
     var failures: [String] = []
     var done: Set<UUID> = []
+    var ambiguous: [UUID: [String]] = [:]
+    // What was settled goes, and a newly ambiguous intent keeps its candidates, even when a later
+    // step throws.
+    func write() async {
+      try? await ledger.drop(done)
+      try? await ledger.keep(candidates: ambiguous)
+    }
     var visibility = WorkspaceVisibility(driver: self)
     do {
       for entry in due {
@@ -642,8 +683,8 @@ extension RailwayHostDriver {
               + "Workroom kept it, to destroy when signed in to the account that made it")
           continue
         }
-        let record = sweptRecord(sandbox, environmentID: environment)
-        if let failure = await destroySandbox(record, workspaceID: workspace) {
+        let record = sweptRecord(sandbox, environmentID: environment, workspaceID: workspace)
+        if let failure = await destroySandbox(record) {
           failures.append(failure)
         } else {
           done.insert(entry.intent)
@@ -662,19 +703,20 @@ extension RailwayHostDriver {
                 + "in to the account that made them")
             continue
           }
-          let (settled, said) = try await reconcile(
+          let reconciled = try await reconcile(
             group, in: environment, workspaceID: place(of: group[0]).1,
-            accounted: accounted, claimed: &claimed)
-          done.formUnion(settled)
-          failures += said
+            accounted: accounted, claimed: &claimed, now: now)
+          done.formUnion(reconciled.done)
+          ambiguous.merge(reconciled.ambiguous) { $1 }
+          failures += reconciled.failures
         }
       }
     } catch {
       // What was destroyed stays destroyed; the rest is owed again.
-      try? await ledger.drop(done)
+      await write()
       throw error
     }
-    try? await ledger.drop(done)
+    await write()
     return failures
   }
 
@@ -702,19 +744,79 @@ extension RailwayHostDriver {
     }
   }
 
-  private func sweptRecord(_ sandbox: String, environmentID: String) -> RailwayHostRecord {
+  private func sweptRecord(_ sandbox: String, environmentID: String, workspaceID: String?)
+    -> RailwayHostRecord
+  {
     RailwayHostRecord(
       projectID: configuration.projectID, environmentID: environmentID, sandboxID: sandbox,
-      hostKey: "")
+      hostKey: "", workspaceID: workspaceID)
+  }
+
+  /// What reconciling lost replies settled: the intents done, the candidates of those found
+  /// ambiguous for the first time (to keep on their entries), and what couldn't be done.
+  private struct Reconciled {
+    var done: Set<UUID> = []
+    var ambiguous: [UUID: [String]] = [:]
+    var failures: [String] = []
   }
 
   /// Matches each create whose reply was lost (`lost`, all in `environment`) to the sandbox
-  /// Railway made for it, by time, and destroys it (see `sweep`): the intents now settled, and
-  /// what couldn't be done. An intent that can't be told apart stays on the ledger.
+  /// Railway made for it, and destroys it (see `sweep`). An intent already found ambiguous looks
+  /// only among the candidates it kept then (`Entry.candidates`); any other, by time, in a
+  /// listing. An intent that can't be told apart stays on the ledger, with its candidates, until
+  /// `ambiguousLifetime`.
   private func reconcile(
     _ lost: [RailwayCreateLedger.Entry], in environment: String, workspaceID: String?,
-    accounted: Set<String>, claimed: inout Set<String>
-  ) async throws -> (done: Set<UUID>, failures: [String]) {
+    accounted: Set<String>, claimed: inout Set<String>, now: Date
+  ) async throws -> Reconciled {
+    var result = Reconciled()
+    func destroy(_ sandbox: String, for entry: RailwayCreateLedger.Entry) async {
+      claimed.insert(sandbox)
+      let record = sweptRecord(sandbox, environmentID: environment, workspaceID: workspaceID)
+      if let failure = await destroySandbox(record) {
+        result.failures.append(failure)
+      } else {
+        result.done.insert(entry.intent)
+      }
+    }
+    func ambiguity(_ sandboxes: [String]) -> String {
+      "Railway sandboxes \(sandboxes.sorted().joined(separator: ", ")): a create of this Mac's "
+        + "lost Railway's reply, and Workroom can't tell which was its, so it left them, and will "
+        + "look again at the next launch, once Workroom records all but one of them"
+    }
+    // Already ambiguous: only a candidate a record (or another of this Mac's creates) names is
+    // ruled out. One that vanished from Railway may have been this create's own, so it still
+    // counts, and the one left may be another Mac's host.
+    let kept = lost.filter { $0.candidates != nil }
+    func unnamed(_ entry: RailwayCreateLedger.Entry) -> [String] {
+      (entry.candidates ?? []).filter { !accounted.contains($0) && !claimed.contains($0) }
+    }
+    func aged(_ entry: RailwayCreateLedger.Entry) -> Bool {
+      now.timeIntervalSince(entry.started) >= Self.ambiguousLifetime
+    }
+    // What an intent still ambiguous may own: no other intent narrows to it.
+    let contested = Set(kept.filter { unnamed($0).count > 1 && !aged($0) }.flatMap(unnamed))
+    for entry in kept {
+      let left = unnamed(entry)
+      if left.count == 1, let sandbox = left.first, !contested.contains(sandbox) {
+        await destroy(sandbox, for: entry)
+      } else if left.isEmpty {
+        result.done.insert(entry.intent)
+      } else if aged(entry) {
+        result.done.insert(entry.intent)
+        result.failures.append(
+          "Railway sandboxes \(left.sorted().joined(separator: ", ")): a create of this Mac's "
+            + "lost Railway's reply, and Workroom still can't tell which was its, so it has "
+            + "stopped looking. Check them on Railway's dashboard, and destroy any no workroom "
+            + "uses")
+      } else {
+        result.failures.append(ambiguity(left))
+      }
+    }
+    let fresh = lost.filter { $0.candidates == nil }
+    guard !fresh.isEmpty else { return result }
+    // A sandbox an ambiguous intent may own can't be told to be a fresh one's either.
+    let disputed = Set(kept.flatMap { $0.candidates ?? [] })
     let live = try await api.sandboxes(environmentID: environment).filter {
       $0.environmentID == environment && !["DESTROYED", "DESTROYING"].contains($0.status)
         && !accounted.contains($0.id)
@@ -726,41 +828,26 @@ extension RailwayHostDriver {
         return offset >= -Self.reconcileBefore && offset <= Self.reconcileAfter
       }.map(\.id)
     }
-    let all = Set(lost.flatMap(candidates))
-    guard all.count <= lost.count else {
-      return (
-        [],
-        [
-          "Railway sandboxes \(all.sorted().joined(separator: ", ")): \(lost.count) of this Mac's"
-            + " creates lost Railway's reply, and Workroom can't tell which of these were theirs,"
-            + " so it left them all, and will look again at the next launch"
-        ]
-      )
-    }
-    var done: Set<UUID> = []
-    var failures: [String] = []
-    for entry in lost {
-      let left = candidates(entry).filter { !claimed.contains($0) }
-      guard left.count <= 1 else {
-        failures.append(
-          "Railway sandboxes \(left.sorted().joined(separator: ", ")): a create of this Mac's lost"
-            + " Railway's reply, and Workroom can't tell which was its, so it left them, and will"
-            + " look again at the next launch")
+    let all = Set(fresh.flatMap(candidates))
+    let crowded = all.count > fresh.count || !all.isDisjoint(with: disputed)
+    for entry in fresh {
+      let found = candidates(entry)
+      let left = found.filter { !claimed.contains($0) }
+      guard !crowded || found.isEmpty, left.count <= 1 else {
+        // Kept with what this sweep found, the only sandboxes a later one may take for it: the
+        // whole crowded window's, so no intent of it later narrows to one candidate alone.
+        let candidates = crowded ? all.sorted() : found
+        result.ambiguous[entry.intent] = candidates
+        result.failures.append(ambiguity(candidates))
         continue
       }
       guard let sandbox = left.first else {
-        done.insert(entry.intent)
+        result.done.insert(entry.intent)
         continue
       }
-      claimed.insert(sandbox)
-      let record = sweptRecord(sandbox, environmentID: environment)
-      if let failure = await destroySandbox(record, workspaceID: workspaceID) {
-        failures.append(failure)
-      } else {
-        done.insert(entry.intent)
-      }
+      await destroy(sandbox, for: entry)
     }
-    return (done, failures)
+    return result
   }
 
   /// Takes the entry of `sandbox`'s create off the ledger, by its intent when this driver made
@@ -802,6 +889,9 @@ extension RailwayHostDriver {
   /// each bounded, has reached Railway by then.
   public static let reconcileBefore: TimeInterval = 120
   public static let reconcileAfter: TimeInterval = 300
+  /// How long after its create a lost reply that can't be told apart is looked for: then it is
+  /// dropped, and the sweep says which sandboxes to check on Railway's dashboard.
+  public static let ambiguousLifetime: TimeInterval = 14 * 24 * 3600
 
   /// Railway's `DateTime`, ISO 8601 with or without fractional seconds.
   static func date(_ text: String) -> Date? {
@@ -818,7 +908,8 @@ extension RailwayHostDriver {
 extension RailwayAPI {
   /// A sandbox in `environmentID` that never idles out (ADR 0071), made with `options`: its id.
   public func createSandbox(
-    environmentID: String, options: RailwaySandboxOptions = RailwaySandboxOptions()
+    environmentID: String, options: RailwaySandboxOptions = RailwaySandboxOptions(),
+    delivery: RailwayDelivery? = nil
   ) async throws -> String {
     struct Answer: Decodable {
       struct Sandbox: Decodable { let id: String }
@@ -827,7 +918,8 @@ extension RailwayAPI {
     return try await query(
       "mutation sandboxCreate($input: SandboxCreateInput!) { sandboxCreate(input: $input) "
         + "{ id status } }",
-      variables: ["input": options.input(environmentID: environmentID)], as: Answer.self
+      variables: ["input": options.input(environmentID: environmentID)], as: Answer.self,
+      delivery: delivery
     ).sandboxCreate.id
   }
 
@@ -845,15 +937,20 @@ extension RailwayAPI {
     ).sandbox?.status
   }
 
+  /// Asks Railway to destroy the sandbox. An answer naming no sandbox, even without errors,
+  /// throws (`malformed`): it confirms nothing, so the caller reads the sandbox's status.
   public func destroySandbox(_ id: String, environmentID: String) async throws {
     struct Answer: Decodable {
       struct Sandbox: Decodable { let id: String }
       let sandboxDestroy: Sandbox?
     }
-    _ = try await query(
+    let answer = try await query(
       "mutation sandboxDestroy($id: String!, $environmentId: String!) { sandboxDestroy(id: $id, "
         + "environmentId: $environmentId) { id status } }",
       variables: ["id": .string(id), "environmentId": .string(environmentID)], as: Answer.self)
+    guard answer.sandboxDestroy != nil else {
+      throw RailwayAPIError.malformed("Railway's destroy named no sandbox")
+    }
   }
 
   /// The user's own ssh keys on the account, as their public key lines, page by page.
@@ -922,6 +1019,11 @@ extension RailwayAPI {
     }
   }
 
+  /// The most pages a listing reads (`pages`): 10,000 sandboxes at 100 a page, far past what an
+  /// environment holds (Railway caps its live ones at 100, though destroyed ones are listed too),
+  /// and far past any account's ssh keys.
+  public static let maxPages = 100
+
   /// Every node of a Relay connection, asking for each page after the last one's `endCursor`. A
   /// next page with no cursor, or a cursor already asked for, fails the whole listing
   /// (`malformed`): it would ask for its pages forever, and part of a list read as all of it
@@ -933,6 +1035,9 @@ extension RailwayAPI {
     var after: String?
     var seen: Set<String> = []
     repeat {
+      guard seen.count < Self.maxPages else {
+        throw RailwayAPIError.malformed("a listing of more than \(Self.maxPages) pages")
+      }
       let connection = try await page(after)
       all += connection.edges.map(\.node)
       guard connection.pageInfo.hasNextPage else { break }

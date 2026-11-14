@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// What Railway answered over HTTP: its status and body.
 public struct RailwayHTTPResponse: Sendable, Equatable {
@@ -103,6 +104,20 @@ public enum RailwayAPIError: Error, Equatable, LocalizedError {
   }
 }
 
+/// Whether a call (`RailwayAPI.query`) sent a request Railway may have acted on: one went out and
+/// came back as anything but a refused token (401), or never came back. False when the call
+/// failed before sending (signed out, a refresh that failed, a cancel), so a mutation's caller
+/// knows nothing was made.
+public final class RailwayDelivery: Sendable {
+  private let sent = Mutex(false)
+
+  public init() {}
+
+  public var mayHaveActed: Bool { sent.withLock { $0 } }
+
+  func mark(sent value: Bool) { sent.withLock { $0 = value } }
+}
+
 /// Railway's public GraphQL API (`backboard.railway.com/graphql/v2`), called with the OAuth
 /// access token (ADR 0073), never the `railway` CLI. Small and general: `query` sends one document
 /// and decodes its `data`, or throws Railway's error messages. The Railway driver's calls are
@@ -119,24 +134,28 @@ public struct RailwayAPI: Sendable {
   }
 
   /// Sends `document` (a query or a mutation) with `variables`, and decodes its `data` as `T`.
-  /// A 401 tells the token provider and tries once more with a new token.
+  /// A 401 tells the token provider and tries once more with a new token. `delivery` hears
+  /// whether a request went out that Railway may have acted on.
   public func query<T: Decodable>(
-    _ document: String, variables: [String: RailwayJSON] = [:], as type: T.Type = T.self
+    _ document: String, variables: [String: RailwayJSON] = [:], as type: T.Type = T.self,
+    delivery: RailwayDelivery? = nil
   ) async throws -> T {
     var body: [String: RailwayJSON] = ["query": .string(document)]
     if !variables.isEmpty { body["variables"] = .object(variables) }
     let payload = try JSONEncoder().encode(RailwayJSON.object(body))
 
-    var response = try await send(payload, token: try await tokens.accessToken())
+    var response = try await send(
+      payload, token: try await tokens.accessToken(), delivery: delivery)
     if response.answer.status == 401 {
       await tokens.accessTokenRejected(response.token)
-      response = try await send(payload, token: try await tokens.accessToken())
+      response = try await send(
+        payload, token: try await tokens.accessToken(), delivery: delivery)
       if response.answer.status == 401 { throw RailwayAPIError.unauthorized }
     }
     return try Self.decode(response.answer, as: T.self)
   }
 
-  private func send(_ payload: Data, token: String) async throws
+  private func send(_ payload: Data, token: String, delivery: RailwayDelivery?) async throws
     -> (answer: RailwayHTTPResponse, token: String)
   {
     var request = URLRequest(url: Self.endpoint)
@@ -145,7 +164,13 @@ public struct RailwayAPI: Sendable {
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("application/json", forHTTPHeaderField: "Accept")
     request.httpBody = payload
-    return (try await transport.send(request), token)
+    // A cancel before the request goes out sends nothing.
+    try Task.checkCancellation()
+    delivery?.mark(sent: true)
+    let answer = try await transport.send(request)
+    // Railway refused the token: that request did nothing.
+    if answer.status == 401 { delivery?.mark(sent: false) }
+    return (answer, token)
   }
 
   private struct Message: Decodable { let message: String }

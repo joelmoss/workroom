@@ -23,6 +23,18 @@ socket=$2
 screens=$3
 etc=${WORKROOM_ETC:-/etc}
 
+# Every folder removed below is derived from these: a relative one would resolve against wherever
+# the login lands.
+for path in "$socket" "$screens"; do
+  case $path in
+  /*) ;;
+  *)
+    echo "railway.sh: refusing a relative path: $path" >&2
+    exit 64
+    ;;
+  esac
+done
+
 daemon_dir=${socket%/*}
 # The daemon keeps its layouts beside its screens (`layout::dir_beside`).
 layouts="${screens%/*}/layouts"

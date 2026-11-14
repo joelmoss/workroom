@@ -146,9 +146,16 @@ enum RemoteWorkrooms {
     case teardownScriptFailed(String)
     /// The host's teardown script is not one this Mac has approved, so it did not run (#363).
     case teardownScriptNotTrusted(ScriptTrust)
+    /// Its provider said the host is gone, but its destroy didn't confirm it (why), so the workroom
+    /// was kept, marked failed: the host may still be billed for (#629).
+    case goneHostUnconfirmed(String)
 
     var errorDescription: String? {
       switch self {
+      case .goneHostUnconfirmed(let why):
+        return "Its host's provider no longer lists it as running, but Workroom couldn't confirm "
+          + "the host is gone, so it kept the workroom: the host may still be billed for. "
+          + "\(why)\(why.hasSuffix(".") ? "" : ".") Remove it again once that's fixed."
       case .teardownScriptFailed(let why):
         return why
       case .teardownScriptNotTrusted(let script):
@@ -530,6 +537,10 @@ enum RemoteWorkrooms {
   /// nothing taken down (`Failure.teardownScriptFailed`), so deleting again retries. When part of the
   /// host's own teardown fails, the entry keeps what is still live, as `failed`, so deleting it
   /// again finishes the job. `environment` is needed only for a live one.
+  ///
+  /// `hostGone`: its provider says the host is gone (`GoneHosts`), so no teardown script runs
+  /// there; its destroy still must confirm it, else the entry is kept, `failed`, and the delete
+  /// says why (`Failure.goneHostUnconfirmed`).
   static func delete(
     _ name: String, host: HostDescriptor, environment: RemoteProvisioning.Environment?,
     recorder: Recorder, teardown: Teardown? = nil, hostGone: Bool = false,
@@ -548,42 +559,48 @@ enum RemoteWorkrooms {
       try await recorder.forget(name)
     }
     guard try checkDeletable([host]) else { return try await forget() }
-    if hostGone, let id = host.id {
-      // Its provider no longer has it (`GoneHosts`): no script can run there, and the provider's
-      // own cleanup (a failed sandbox's destroy, the driver's files) is tried but can't stop the
-      // workroom going.
-      let box = HostID.remote(id)
-      await reachability.disconnect(box)
-      if let environment {
-        do { try await RemoteProvisioning.tearDown(host: box, in: environment) } catch {
-          teardown?.onLine("Its host was already gone: \(error.localizedDescription)")
-        }
-      }
-      await reachability.forgetRelay(id)
-      return try await forget()
+    // What a delete that didn't finish keeps: the record, marked failed, so deleting again
+    // finishes the job without its script. With the driver's newest record of it (a Railway
+    // host's workspace, resolved once).
+    func keepFailed(_ box: HostID) async {
+      var remaining = host
+      remaining.lifecycle = .failed
+      (environment?.driver as? any HostRecording)?.record(box, in: &remaining)
+      await recordLeftBehind(box) { try await recorder.record(name, remaining) }
     }
     // `checkDeletable` found it live, so it has a box.
-    guard let environment, let id = host.id else { throw Failure.signedOut }
+    guard let id = host.id else { throw Failure.signedOut }
     let box = HostID.remote(id)
-    try await runTeardown(
-      teardown, of: name, recorded: host, on: box, in: environment, reachability: reachability
-    ) {
-      // `deletionKey`, as the host's own delete finds its driver: a descriptor from before the
-      // `driver` field is Docker's.
-      guard let driver = environment.driver as? any HostTerminalDriver,
-        let key = try? HostDriverRegistry.deletionKey(host)
-      else {
-        throw Failure.teardownScriptFailed("teardown script failed: this host's driver is unknown")
+    guard let environment else {
+      // A host its provider says is gone (`GoneHosts`) is forgotten only once its destroy
+      // confirms it: with no provider to ask, it may still be billed for.
+      guard hostGone else { throw Failure.signedOut }
+      await keepFailed(box)
+      throw Failure.goneHostUnconfirmed(
+        "Workroom couldn't reach its provider to confirm it. Sign in to it")
+    }
+    // No script can run on a host its provider says is gone.
+    if !hostGone {
+      try await runTeardown(
+        teardown, of: name, recorded: host, on: box, in: environment, reachability: reachability
+      ) {
+        // `deletionKey`, as the host's own delete finds its driver: a descriptor from before the
+        // `driver` field is Docker's.
+        guard let driver = environment.driver as? any HostTerminalDriver,
+          let key = try? HostDriverRegistry.deletionKey(host)
+        else {
+          throw Failure.teardownScriptFailed(
+            "teardown script failed: this host's driver is unknown")
+        }
+        return (key, driver)
       }
-      return (key, driver)
     }
     await reachability.disconnect(box)
     do {
       try await RemoteProvisioning.tearDown(host: box, in: environment)
     } catch RemoteProvisioning.Failure.rollbackIncomplete(let cause, let liveHost, let left) {
-      var remaining = host
-      remaining.lifecycle = .failed
-      await recordLeftBehind(liveHost) { try await recorder.record(name, remaining) }
+      await keepFailed(liveHost)
+      if hostGone { throw Failure.goneHostUnconfirmed(left.joined(separator: "; ")) }
       throw RemoteProvisioning.Failure.rollbackIncomplete(
         cause: cause, host: liveHost, cleanup: left)
     }

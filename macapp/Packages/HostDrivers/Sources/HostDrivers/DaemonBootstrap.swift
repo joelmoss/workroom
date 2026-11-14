@@ -45,9 +45,14 @@ import os
 public enum DaemonBootstrap {
   /// Where a daemon this bootstrap starts keeps its screens: beside its socket. It keeps its pane
   /// layouts beside those (`<socket's folder>/layouts`). A host setup that clears a copied disk's
-  /// screens (railway.sh) derives the same paths from the socket.
-  public static func screens(besideSocket socket: String) -> String {
-    (socket as NSString).deletingLastPathComponent + "/screens"
+  /// screens (railway.sh) derives the same paths from the socket, and removes them, so a relative
+  /// socket, which would resolve against wherever a login lands, is refused.
+  public static func screens(besideSocket socket: String) throws -> String {
+    guard socket.hasPrefix("/") else {
+      throw HostDriverError.invalidConfiguration(
+        "the daemon's socket must be an absolute path, not \(socket)")
+    }
+    return (socket as NSString).deletingLastPathComponent + "/screens"
   }
 
   public struct Outcome: Equatable, Sendable {
@@ -314,7 +319,7 @@ public enum DaemonBootstrap {
     let directory = (socket as NSString).deletingLastPathComponent
     let result = try await run(
       script: "start", in: scripts, on: host, driver: driver, input: nil,
-      arguments: [binary, socket, screens(besideSocket: socket), "never"])
+      arguments: [binary, socket, try screens(besideSocket: socket), "never"])
     guard result.status == 0, reports(in: result.output)["serving"]?.first == "yes" else {
       let reason = reports(in: result.output)["error"]?.joined(separator: " ")
       throw Error.installFailed(

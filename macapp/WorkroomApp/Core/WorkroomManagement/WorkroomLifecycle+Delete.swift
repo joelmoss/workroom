@@ -25,19 +25,21 @@ extension WorkroomLifecycle {
     guard !isCreatingWorkroom(workroom, in: project) else { return }
     // A remote workroom's delete takes its host down (#253): what that needs is checked before the
     // optimistic removal below forgets its label. A host its provider says is gone (`GoneHosts`,
-    // #629) needs nothing of it: its delete runs no teardown there, and only tries the provider's
-    // cleanup when it can (`RemoteWorkrooms.delete`'s `hostGone`).
+    // #629) runs no teardown there, and is forgotten only once its provider's destroy confirms it
+    // (`RemoteWorkrooms.delete`'s `hostGone`); a provider that can't be asked is logged, and that
+    // delete keeps the workroom, saying why.
     let hostGone = GoneHosts.shared.contains(workroom.host?.id)
     var remote: RemoteProvisioning.Environment?
     if let host = workroom.host {
       do {
-        remote = try RemoteHosts.shared.registry.environment(toDelete: [host])?
-          .environment(for: host)
-      } catch  where !hostGone {
+        remote = try RemoteHosts.shared.registry.environment(
+          toDelete: [host], gone: hostGone ? Set([host.id].compactMap { $0 }) : []
+        )?.environment(for: host)
+      } catch {
         window.present(error)
         window.modals.errorTitle = "Can't delete \(workroom.displayName)"
         return
-      } catch {}
+      }
     }
     // Was the deleted workroom the one selected in the asking window? Captured before
     // `removeFromWindows` mutates selection, so the issue #80 fallback below can re-point only when
@@ -298,8 +300,9 @@ extension WorkroomLifecycle {
     let bases = BaseRetirement.bases(of: project.host)
     let remote: HostDriverRegistry.Deletion?
     do {
+      // A gone host's provider can't stop the delete, as in Remove Workroom (`deleteWorkroom`).
       remote = try RemoteHosts.shared.registry.environment(
-        toDelete: remoteWorkrooms.compactMap(\.host) + bases)
+        toDelete: remoteWorkrooms.compactMap(\.host) + bases, gone: goneHosts)
     } catch {
       window.present(error)
       window.modals.errorTitle = "Can't delete \(project.displayName)"

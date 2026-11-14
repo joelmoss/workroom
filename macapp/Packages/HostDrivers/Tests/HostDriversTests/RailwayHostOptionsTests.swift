@@ -286,7 +286,7 @@ final class RailwayHostOptionsTests: XCTestCase {
     try "old".write(to: screens.appendingPathComponent("s1"), atomically: true, encoding: .utf8)
     try "old".write(to: layouts.appendingPathComponent("l1"), atomically: true, encoding: .utf8)
     XCTAssertEqual(
-      DaemonBootstrap.screens(besideSocket: socket), screens.path, "the daemon's own screens")
+      try DaemonBootstrap.screens(besideSocket: socket), screens.path, "the daemon's own screens")
 
     // The setup command create sends, with the daemon's socket in the throwaway state folder.
     let relay = StubRelay()
@@ -324,6 +324,35 @@ final class RailwayHostOptionsTests: XCTestCase {
       id.uuidString.lowercased() + "\n")
     XCTAssertEqual(try manager.contentsOfDirectory(atPath: screens.path), [])
     XCTAssertFalse(manager.fileExists(atPath: layouts.appendingPathComponent("l1").path))
+  }
+
+  /// Value: protects=the host setup never removes folders derived from a relative socket path,
+  /// which would resolve against wherever the login lands, and the driver never derives one
+  /// (review 4, Y3); fails_when=railway.sh runs `rm -rf` on paths from a relative socket, or
+  /// `DaemonBootstrap.screens` derives screens from one; seam=railway.sh run against a throwaway
+  /// folder, and DaemonBootstrap.screens
+  func testTheHostSetupRefusesARelativeSocketPath() throws {
+    let manager = FileManager.default
+    let screens = root.appendingPathComponent("daemon/screens")
+    let layouts = root.appendingPathComponent("daemon/layouts")
+    let etc = root.appendingPathComponent("etc")
+    for dir in [screens, layouts, etc] {
+      try manager.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+    try "keep".write(to: screens.appendingPathComponent("s1"), atomically: true, encoding: .utf8)
+    try "keep".write(to: layouts.appendingPathComponent("l1"), atomically: true, encoding: .utf8)
+    let script = try HostSetup.checkout.script("railway")
+    let run = try shell(
+      "cd \(PosixShell.quoted(root.path)) && WORKROOM_ETC=\(PosixShell.quoted(etc.path)) "
+        + "sh -s -- \(UUID().uuidString.lowercased()) daemon/workroomd.sock daemon/screens",
+      stdin: script)
+    XCTAssertNotEqual(run.status, 0, run.output)
+    XCTAssertTrue(manager.fileExists(atPath: screens.appendingPathComponent("s1").path))
+    XCTAssertTrue(manager.fileExists(atPath: layouts.appendingPathComponent("l1").path))
+    XCTAssertThrowsError(try DaemonBootstrap.screens(besideSocket: "daemon/workroomd.sock"))
+    XCTAssertEqual(
+      try DaemonBootstrap.screens(besideSocket: "/root/daemon/workroomd.sock"),
+      "/root/daemon/screens")
   }
 
   private func shell(_ command: String, stdin: String = "") throws -> (
