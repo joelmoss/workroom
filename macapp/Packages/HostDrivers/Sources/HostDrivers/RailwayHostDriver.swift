@@ -817,6 +817,7 @@ extension RailwayAPI {
     }
     var all: [RailwaySandbox] = []
     var after: String?
+    var seen: Set<String> = []
     repeat {
       var variables: [String: RailwayJSON] = [
         "environmentId": .string(environmentID), "first": 100,
@@ -829,7 +830,9 @@ extension RailwayAPI {
         variables: variables, as: Answer.self
       ).sandboxes
       all += page.edges.map(\.node)
-      after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : nil
+      // A cursor that doesn't advance (one already asked for) would ask for its pages forever.
+      let next = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : nil
+      after = next.flatMap { seen.insert($0).inserted ? $0 : nil }
     } while after != nil
     return all
   }
