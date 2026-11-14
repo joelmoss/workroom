@@ -222,20 +222,36 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       try await api.destroySandbox(record.sandboxID, environmentID: record.environmentID)
       return nil
     } catch {
-      if let status = try? await api.sandboxStatus(
-        record.sandboxID, environmentID: record.environmentID), Self.isGone(status)
-      {
-        return nil
-      }
+      // A read that went through and found no such sandbox (nil) is as gone as a destroyed one;
+      // only a read that failed leaves the destroy unconfirmed.
+      do {
+        let status = try await api.sandboxStatus(
+          record.sandboxID, environmentID: record.environmentID)
+        if Self.isGone(status) { return nil }
+      } catch {}
       return "Railway sandbox \(record.sandboxID): \(error.localizedDescription)"
     }
   }
 
+  /// How many reads in a row a new sandbox may be unknown to Railway before the create takes it
+  /// for gone: one just made can lag in its reads.
+  static let unknownTries = 5
+
   /// Until Railway says the sandbox runs. One that failed, or went, never will.
   private func awaitRunning(_ record: RailwayHostRecord) async throws {
+    var unknown = 0
     for _ in 0..<configuration.readyTries {
       let status = try await api.sandboxStatus(
         record.sandboxID, environmentID: record.environmentID)
+      if status == nil {
+        unknown += 1
+        if unknown < Self.unknownTries {
+          try await Task.sleep(for: configuration.pollInterval)
+          continue
+        }
+      } else {
+        unknown = 0
+      }
       switch status {
       case "RUNNING": return
       case "CREATING": try await Task.sleep(for: configuration.pollInterval)

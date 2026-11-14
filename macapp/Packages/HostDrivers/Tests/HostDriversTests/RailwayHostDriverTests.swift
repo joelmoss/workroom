@@ -380,6 +380,57 @@ final class RailwayHostDriverTests: XCTestCase {
     } catch {}
   }
 
+  /// Value: protects=a delete whose sandbox Railway no longer has at all completes (review #5);
+  /// fails_when=Railway's successful "no such sandbox" (a null sandbox) reads as a failed read, so
+  /// the delete fails for good; seam=ProvisioningHostDriver.destroy over StubRailway
+  func testDeletingASandboxRailwayNoLongerHasCompletes() async throws {
+    let railway = railway()
+    let driver = driver(railway, StubRelay())
+    let host = try await driver.create()
+    railway.answer("sandboxDestroy") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Sandbox not found"}]}"#.utf8))
+    }
+    railway.answer("sandbox", data: ["sandbox": NSNull()])
+    try await driver.destroy(host)
+
+    // Railway couldn't say at all: the delete fails, to be tried again.
+    try driver.adopt(
+      HostDescriptor(
+        driver: "railway", id: { if case .remote(let id) = host { id } else { UUID() } }(),
+        railway: RailwayHostRecord(
+          projectID: "prj-1", environmentID: "env-1", sandboxID: "sbx-1", hostKey: "k")))
+    railway.answer("sandbox") { _ in RailwayHTTPResponse(status: 502, body: Data("bad".utf8)) }
+    do {
+      try await driver.destroy(host)
+      XCTFail("a sandbox Railway couldn't read was taken for destroyed")
+    } catch {}
+  }
+
+  /// Value: protects=a new sandbox Railway briefly doesn't list yet still becomes a host, and one
+  /// that stays unknown fails the create (review #5); fails_when=the first null status fails the
+  /// create, or a sandbox that never appears is waited on forever; seam=create over StubRailway
+  func testACreateRidesOutABriefNullStatus() async throws {
+    let railway = railway()
+    let reads = Mutex(0)
+    railway.answer("sandbox") { _ in
+      let read = reads.withLock { $0 += 1; return $0 }
+      let sandbox: Any = read <= 2 ? NSNull() : ["id": "sbx-1", "status": "RUNNING"]
+      return RailwayHTTPResponse(
+        status: 200,
+        body: try JSONSerialization.data(withJSONObject: ["data": ["sandbox": sandbox]]))
+    }
+    _ = try await driver(railway, StubRelay()).create()
+
+    let never = self.railway(status: nil)
+    do {
+      _ = try await driver(never, StubRelay()).create()
+      XCTFail("a sandbox Railway never listed became a host")
+    } catch HostDriverError.provisioning(let said) {
+      XCTAssertTrue(said.contains("gone"), said)
+    }
+  }
+
   /// Value: protects=a workroom reached again after a relaunch, from config alone; fails_when=a
   /// fresh driver can't attach to, read or delete a recorded host; seam=HostRecording.adopt, then
   /// HostTerminalDriver and HostPresenceReporting
