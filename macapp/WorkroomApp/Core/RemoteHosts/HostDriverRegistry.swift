@@ -500,6 +500,7 @@ final class HostDriverRegistry: @unchecked Sendable {
       configuration: .init(
         environmentID: environment,
         projectID: placement.environmentID == environment ? placement.projectID : nil,
+        workspaceID: placement.environmentID == environment ? placement.workspaceID : nil,
         keys: RailwayAccount.directory, relayHost: relay, hostSetup: .bundled,
         gitHubToken: gitHubToken),
       api: RailwayAccount.shared.api, directory: RemoteHosts.hosts)

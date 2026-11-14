@@ -99,4 +99,50 @@ final class HostOptionsTests: XCTestCase {
     let again = try JSONDecoder().decode(HostDescriptor.self, from: JSONEncoder().encode(made))
     XCTAssertEqual(again.madeWith, ResolvedHostOptions(image: "snap", cpu: 2))
   }
+
+  // MARK: Railway (#633)
+
+  /// Value: protects=a Railway host's region, size and checkpoint are chosen like other
+  /// providers' host options, the most specific level winning (story 21); fails_when=Railway
+  /// resolves to no options, a level's region is ignored, or a checkpoint drops the size (Railway
+  /// sizes a checkpoint restore); why_new=#633; seam=HostOptions.resolve; no_claim=Railway's API
+  func testRailwayResolvesRegionSizeAndCheckpointFromTheMostSpecificLevel() throws {
+    let settings = HostOptions(
+      cpu: .value(4), memory: .value("8GB"), region: .value("europe-west4-drams3a"))
+    let project = HostOptions(image: .value("prepared"), region: .value("us-east4-eqdc4a"))
+    let create = HostOptions(cpu: .value(16))
+
+    let resolved = try XCTUnwrap(
+      HostOptions.resolve(for: .railway, create: create, project: project, settings: settings))
+
+    XCTAssertEqual(resolved.region, .init(value: "us-east4-eqdc4a", source: .project))
+    XCTAssertEqual(resolved.cpu, .init(value: 16, source: .create))
+    XCTAssertFalse(resolved.sizeTakenBySnapshot)
+    XCTAssertEqual(
+      resolved.options,
+      ResolvedHostOptions(image: "prepared", cpu: 16, memory: "8GB", region: "us-east4-eqdc4a"))
+  }
+
+  /// Value: protects=a region chosen in Settings never leaks into another provider's create;
+  /// fails_when=exe.dev or boxd send a region; why_new=#633 added region; seam=HostOptions.resolve
+  func testOnlyRailwayTakesARegion() throws {
+    let settings = HostOptions(region: .value("asia-southeast1-eqsg3a"))
+    for kind in [HostKind.boxd, .exeDev] {
+      let resolved = try XCTUnwrap(
+        HostOptions.resolve(for: kind, create: nil, project: nil, settings: settings))
+      XCTAssertNil(resolved.options.region, kind.driver)
+    }
+  }
+
+  /// Value: protects=options saved before #633 still read back, and a region round-trips;
+  /// fails_when=region is a required key; seam=Codable
+  func testStoredOptionsWithoutARegionDecode() throws {
+    let stored = #"{"cpu":{"value":{"_0":2}}}"#
+    XCTAssertEqual(
+      try JSONDecoder().decode(HostOptions.self, from: Data(stored.utf8)),
+      HostOptions(cpu: .value(2)))
+    let regioned = HostOptions(region: .value("us-west2"))
+    XCTAssertEqual(
+      try JSONDecoder().decode(HostOptions.self, from: JSONEncoder().encode(regioned)), regioned)
+  }
 }

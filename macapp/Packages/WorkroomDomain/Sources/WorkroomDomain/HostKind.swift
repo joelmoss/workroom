@@ -160,7 +160,8 @@ public enum HostKind: Hashable, Sendable {
     }
   }
 
-  /// Whether a create of this kind takes host options (#575): boxd's and exe.dev's. A container's
+  /// Whether a create of this kind takes host options (#575): boxd's, exe.dev's and Railway's
+  /// (#633). A container's
   /// image and size are devcontainer.json's (ADR 0060), and an SSH host is the user's own.
   public var takesHostOptions: Bool { hostOptionsKey != nil }
 
@@ -170,7 +171,8 @@ public enum HostKind: Hashable, Sendable {
     switch self {
     case .boxd: "boxd"
     case .exeDev: "exeDev"
-    case .container, .ssh, .railway: nil
+    case .railway: "railway"
+    case .container, .ssh: nil
     }
   }
 
@@ -180,7 +182,8 @@ public enum HostKind: Hashable, Sendable {
     switch self {
     case .boxd: .snapshot
     case .exeDev: .containerImage
-    case .container, .ssh, .railway: nil
+    case .railway: .checkpoint
+    case .container, .ssh: nil
     }
   }
 }

@@ -31,12 +31,14 @@ final class HostKindTests: XCTestCase {
   /// Value: protects=the host options a user saved in Settings; fails_when=a kind's key is taken
   /// from its `driver` (`exedev`), and every saved exe.dev option is lost; why_new=HostProvider's
   /// raw value was the key; seam=none; no_claim=Defaults itself
-  func testOnlyBoxdAndExeDevTakeHostOptionsUnderTheirSavedKeys() {
+  func testBoxdExeDevAndRailwayTakeHostOptionsUnderTheirSavedKeys() {
     XCTAssertEqual(
-      Self.every.filter(\.takesHostOptions), [.boxd, .exeDev], "the Settings order changed")
-    XCTAssertEqual(Self.every.compactMap(\.hostOptionsKey), ["boxd", "exeDev"])
+      Self.every.filter(\.takesHostOptions), [.boxd, .exeDev, .railway],
+      "the Settings order changed")
+    XCTAssertEqual(Self.every.compactMap(\.hostOptionsKey), ["boxd", "exeDev", "railway"])
     XCTAssertEqual(HostKind.boxd.hostImageKind, .snapshot)
     XCTAssertEqual(HostKind.exeDev.hostImageKind, .containerImage)
+    XCTAssertEqual(HostKind.railway.hostImageKind, .checkpoint)
     for kind in Self.every where !kind.takesHostOptions {
       XCTAssertNil(kind.hostImageKind, kind.driver)
       XCTAssertNil(

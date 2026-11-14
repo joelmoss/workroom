@@ -447,9 +447,9 @@ private struct NewWorkroomsSection: View {
   }
 }
 
-/// The host options every boxd and exe.dev workroom is created with (#575, ADR 0065): one group per
-/// provider, shown whether or not it is set up, saving as they change. Settings ▸ Projects and
-/// the New Workroom dialog's Configure… panel choose over them.
+/// The host options every boxd, exe.dev and Railway workroom is created with (#575, #633, ADR
+/// 0065): one group per provider, shown whether or not it is set up, saving as they change.
+/// Settings ▸ Projects and the New Workroom dialog's Configure… panel choose over them.
 private struct RemoteHostsSettingsPane: View {
   @Default(.hostOptions) private var hostOptions
   @ObservedObject private var catalog = HostOptionsCatalog.shared
