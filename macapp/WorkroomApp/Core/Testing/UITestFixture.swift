@@ -114,7 +114,42 @@ import WorkroomVCS
       stub.trialing = ["ws-new": true]
       stub.projects = ["ws-personal": [RailwayProject(id: "prj-app", name: "my-app")]]
       let kept = scenario == "signedIn" || scenario == "gone" ? RailwayStub.refreshToken : nil
+      if railwayLostCreate { seedRailwayLostCreate(in: stub) }
       return stub.account(store: RailwayStub.MemoryStore(kept))
+    }
+
+    /// `-WorkroomUITestRailwayLostCreate 1` (review 5 of #623): this test process's Railway
+    /// ledger holds a create from two hours ago in `env-uitest` (Personal) whose reply was lost,
+    /// and Railway lists two sandboxes there: `railwayLostCandidate`, made just after it, which no
+    /// record names, and the fixture workroom's own `sbx-uitest`, which its record does.
+    static var railwayLostCreate: Bool {
+      fixtureFlag && flag("WorkroomUITestRailwayLostCreate")
+    }
+
+    static let railwayLostCandidate = "sbx-lost-uitest"
+
+    private static func seedRailwayLostCreate(in stub: RailwayStub) {
+      let started = Date().addingTimeInterval(-2 * 3600)
+      let iso = ISO8601DateFormatter()
+      stub.sandboxes = [
+        [
+          "id": railwayLostCandidate, "status": "RUNNING", "environmentId": "env-uitest",
+          "createdAt": iso.string(from: started.addingTimeInterval(5)),
+        ],
+        [
+          "id": "sbx-uitest", "status": "RUNNING", "environmentId": "env-uitest",
+          "createdAt": iso.string(from: started.addingTimeInterval(3)),
+        ],
+      ]
+      let entry = RailwayCreateLedger.Entry(
+        started: started, environmentID: "env-uitest", workspaceID: "ws-personal")
+      let encoder = JSONEncoder()
+      encoder.dateEncodingStrategy = .iso8601
+      let ledger = RailwayCreateLedger(directory: RailwayAccount.directory)
+      try? FileManager.default.createDirectory(
+        at: ledger.directory, withIntermediateDirectories: true)
+      try? encoder.encode([entry]).write(
+        to: ledger.directory.appendingPathComponent("create-ledger.json"))
     }
 
     /// `-WorkroomUITestRailwayWorkroom 1` (#629): the project also lists `railwayWorkroomName`, a

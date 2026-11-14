@@ -455,6 +455,7 @@ private struct RemoteHostsSettingsPane: View {
   @ObservedObject private var catalog = HostOptionsCatalog.shared
   /// The Railway setup sheet open from here (#627), made fresh each time it opens.
   @State private var railwaySetup: RailwaySetup?
+  @ObservedObject private var lostCreates = RailwayLostCreatesModel.shared
 
   var body: some View {
     Form {
@@ -474,10 +475,13 @@ private struct RemoteHostsSettingsPane: View {
           Text("Account")
           Text("Login with Railway, and the workspace Workroom keeps its hosts in.")
         }
+        // A create that may have left a sandbox: shown here too, since it has no workroom.
+        if !lostCreates.creates.isEmpty { RailwayLostCreatesNotice() }
       }
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)
+    .task { await lostCreates.refresh() }
     .sheet(
       isPresented: Binding(
         get: { railwaySetup != nil }, set: { if !$0 { railwaySetup = nil } })

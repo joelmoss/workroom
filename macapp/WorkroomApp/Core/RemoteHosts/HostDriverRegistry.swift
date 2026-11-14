@@ -35,6 +35,9 @@ final class HostDriverRegistry: @unchecked Sendable {
   private var sweeping: Set<DriverKey> = []
   /// A call reached the sweep while a delete was in flight and left it for later (#296).
   private var held = false
+  /// Every Railway sandbox config's records named at the last `adopt`: nil before the first, when
+  /// nothing is known to be recorded, so no lost create's candidate may be destroyed yet.
+  private var recordedSandboxes: Set<String>?
   /// Seams, nil in the app: making a provider's or an SSH host's driver, and a container runtime's.
   private let makeDriver: (@Sendable (DriverKey) throws -> any HostTerminalDriver)?
   private let makeContainerDriver: (@Sendable (DriverKey) throws -> ContainerHostDriver)?
@@ -181,6 +184,10 @@ final class HostDriverRegistry: @unchecked Sendable {
     }
   }
 
+  /// Every Railway sandbox config's records named at the last `adopt`, which a lost create's
+  /// candidates leave out (`RailwayLostCreatesModel`); nil before config was first read.
+  var railwayRecordedSandboxes: Set<String>? { lock.withLock { recordedSandboxes } }
+
   /// How many sweeps are running, for tests to wait on `finishSweep`.
   var sweepsRunning: Int { lock.withLock { sweeping.count } }
 
@@ -246,12 +253,10 @@ final class HostDriverRegistry: @unchecked Sendable {
     // names is ever swept, so another Mac in the environment never makes a live sandbox look like
     // this Mac's orphan.
     let sandboxes = Set(descriptors.compactMap { $0.railway?.sandboxID })
-    // A create whose reply was lost is matched by time to a sandbox no record names, which is
-    // evidence only when config records this environment at all: a lost config, a copied one or a
-    // throwaway `HOME` (which doesn't isolate Railway's folder) names none, and a create retried
-    // in that window would read as the lost one's. Those wait for a launch whose config does.
-    let railwayRecordsHere = descriptors.contains {
-      $0.railway?.environmentID == railwayEnvironment
+    // With a delete in flight, `projects` leaves out hosts config still records: what was known
+    // stays known.
+    lock.withLock {
+      recordedSandboxes = sweep ? sandboxes : recordedSandboxes.map { $0.union(sandboxes) }
     }
     guard
       !recorded.isEmpty || !already.isEmpty || !marked.isEmpty || !machines.isEmpty
@@ -309,7 +314,8 @@ final class HostDriverRegistry: @unchecked Sendable {
                   return (key, ["Railway: this host cannot be swept"], true)
                 }
                 return (
-                  key, try await driver.sweep(keeping: sandboxes, recordsHere: railwayRecordsHere),
+                  key,
+                  try await driver.sweep(keeping: sandboxes, grace: RailwayHostDriver.sweepGrace),
                   true
                 )
               } catch {

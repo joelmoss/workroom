@@ -95,6 +95,8 @@ final class RailwaySweepTests: XCTestCase {
           ]
         ]
       ])
+    railway.answer(
+      "projects", data: ["projects": ["edges": [["node": ["id": "prj-1", "name": "Workroom"]]]]])
     return railway
   }
 
@@ -148,7 +150,7 @@ final class RailwaySweepTests: XCTestCase {
       Self.sandbox("sbx-orphan"), Self.sandbox("sbx-kept"), Self.sandbox("sbx-unledgered"),
     ])
     try await ledgered(["sbx-orphan", "sbx-kept"])
-    let failures = try await driver(railway).sweep(keeping: ["sbx-kept"], recordsHere: true)
+    let failures = try await driver(railway).sweep(keeping: ["sbx-kept"])
     XCTAssertEqual(failures, [])
     XCTAssertEqual(destroyed(railway), ["sbx-orphan"])
     XCTAssertTrue(requests(railway, "sandboxes").isEmpty, "listed with every reply in hand")
@@ -170,7 +172,7 @@ final class RailwaySweepTests: XCTestCase {
     try await ledgered(["sbx-other-build", nil], started: Date())
     let before = railway.graphQLRequests.count
 
-    let failures = try await driver.sweep(keeping: [], recordsHere: true)
+    let failures = try await driver.sweep(keeping: [])
     XCTAssertEqual(failures, [])
     XCTAssertEqual(destroyed(railway), [])
     XCTAssertEqual(railway.graphQLRequests.count, before, "a sweep with nothing due asked Railway")
@@ -180,12 +182,9 @@ final class RailwaySweepTests: XCTestCase {
 
   // MARK: A reply that was lost
 
-  /// Value: protects=a create whose reply was lost still leaves nothing billing: its sandbox is
-  /// the one nothing names that Railway made just after the intent, and only it goes;
-  /// fails_when=the create forgets the intent, writes it after asking Railway, or the sweep
-  /// destroys another Mac's sandbox made outside the window, a recorded one, or one with a
-  /// createdAt it can't read; seam=create and RailwayHostDriver.sweep over StubRailway
-  func testACreateWhoseReplyWasLostIsReconciledByWhenItsSandboxWasMade() async throws {
+  /// A create whose `sandboxCreate` reply was lost after it was sent: its intent is on the ledger
+  /// with no sandbox, written before Railway was asked.
+  private func loseACreatesReply() async throws -> RailwayCreateLedger.Entry {
     let failing = railway([])
     let keys = self.keys
     let intentFirst = Mutex<Bool?>(nil)
@@ -201,167 +200,209 @@ final class RailwaySweepTests: XCTestCase {
     } catch {}
     XCTAssertEqual(intentFirst.withLock { $0 }, true, "Railway was asked before the intent")
     let entries = try await ledger.entries()
+    XCTAssertEqual(entries.count, 1)
     let intent = try XCTUnwrap(entries.first)
     XCTAssertNil(intent.sandbox)
-
-    let listed = railway([
-      Self.sandbox("sbx-lost", createdAt: Self.iso(intent.started.addingTimeInterval(4))),
-      Self.sandbox("sbx-other-mac", createdAt: Self.iso(intent.started.addingTimeInterval(-3600))),
-      Self.sandbox("sbx-recorded", createdAt: Self.iso(intent.started.addingTimeInterval(2))),
-      Self.sandbox("sbx-unparsed", createdAt: "soon"),
-      Self.sandbox(
-        "sbx-gone", status: "DESTROYED", createdAt: Self.iso(intent.started.addingTimeInterval(1))
-      ),
-    ])
-    // With no record of this environment (a lost config, a throwaway HOME), a sandbox no record
-    // names says nothing: it may be a retried create's, only its lost record naming it. Kept, and
-    // the intent waits.
-    let unconfigured = try await driver(listed).sweep(keeping: [], recordsHere: false, grace: 0)
-    XCTAssertEqual(unconfigured, [])
-    XCTAssertEqual(destroyed(listed), [])
-    XCTAssertTrue(requests(listed, "sandboxes").isEmpty)
-    var left = try await ledger.entries()
-    XCTAssertEqual(left.count, 1, "the lost reply was dropped unmatched")
-
-    let failures = try await driver(listed).sweep(keeping: ["sbx-recorded"], grace: 0)
-    XCTAssertEqual(failures, [])
-    XCTAssertEqual(destroyed(listed), ["sbx-lost"])
-    left = try await ledger.entries()
-    XCTAssertEqual(left, [])
+    return intent
   }
 
-  /// Value: protects=when the window holds more sandboxes than lost replies, none is destroyed,
-  /// since one may be another Mac's, and the intent stays, said at every sweep, until a later one
-  /// can tell (a candidate recorded or destroyed meanwhile); and a window with none settles its
-  /// intent (review 3, I1); fails_when=the sweep guesses among candidates, drops an ambiguous
-  /// intent after one report, or keeps an intent that matched nothing forever;
-  /// seam=RailwayHostDriver.sweep over StubRailway and the ledger
-  func testALostReplyThatCannotBeToldApartDestroysNothing() async throws {
-    let started = Self.longAgo
-    try await ledgered([nil], started: started)
-    let ambiguous = railway([
-      Self.sandbox("sbx-a", createdAt: Self.iso(started.addingTimeInterval(3))),
-      Self.sandbox("sbx-b", createdAt: Self.iso(started.addingTimeInterval(5))),
-    ])
-    for sweep in 1...2 {
-      let failures = try await driver(ambiguous).sweep(keeping: [], recordsHere: true)
-      XCTAssertEqual(destroyed(ambiguous), [], "sweep \(sweep)")
-      XCTAssertEqual(failures.count, 1, "sweep \(sweep): \(failures)")
-      XCTAssertTrue(failures.first?.contains("sbx-a, sbx-b") == true, "\(failures)")
-      let left = try await ledger.entries()
-      XCTAssertEqual(left.count, 1, "sweep \(sweep): the ambiguous intent was dropped")
-    }
-    // sbx-b is recorded now (another workroom's host): sbx-a is the lost reply's.
-    let resolved = try await driver(ambiguous).sweep(keeping: ["sbx-b"], recordsHere: true)
-    XCTAssertEqual(resolved, [])
-    XCTAssertEqual(destroyed(ambiguous), ["sbx-a"])
-    var left = try await ledger.entries()
-    XCTAssertEqual(left, [])
-
-    try await ledgered([nil], started: started)
-    let empty = railway([Self.sandbox("sbx-later", createdAt: Self.iso(Date()))])
-    let none = try await driver(empty).sweep(keeping: [], recordsHere: true)
-    XCTAssertEqual(none, [])
-    XCTAssertEqual(destroyed(empty), [])
-    left = try await ledger.entries()
-    XCTAssertEqual(left, [])
-  }
-
-  /// Value: protects=a lost reply found ambiguous keeps the candidates of that first sweep, and a
-  /// later one destroys only from inside them, and only once all but one are named by a record:
-  /// a candidate that merely vanishes (destroyed on the dashboard, perhaps the lost reply's own)
-  /// settles nothing, so another Mac's host left alone in the window is never destroyed; a
-  /// sandbox made later in the window is no candidate; and an intent still ambiguous after
-  /// `ambiguousLifetime` is dropped, saying so (review 4, X2); fails_when=the sweep destroys the
-  /// one candidate left after another disappeared, matches a sandbox outside the first sweep's
-  /// set, or keeps an ambiguous intent forever; seam=RailwayHostDriver.sweep over StubRailway and
-  /// the ledger
-  func testAnAmbiguousLostReplyDestroysOnlyFromItsFirstCandidatesOnceTheRestAreNamed()
-    async throws
+  /// Sandboxes made `seconds` after `entry`'s intent, by Railway's clock.
+  private static func made(_ seconds: TimeInterval, after entry: RailwayCreateLedger.Entry)
+    -> String
   {
-    let started = Self.longAgo
-    try await ledgered([nil], started: started)
-    let at = { (seconds: TimeInterval) in Self.iso(started.addingTimeInterval(seconds)) }
-    let first = railway([
-      Self.sandbox("sbx-a", createdAt: at(3)), Self.sandbox("sbx-b", createdAt: at(5)),
-    ])
-    _ = try await driver(first).sweep(keeping: [], recordsHere: true)
-    var left = try await ledger.entries()
-    XCTAssertEqual(left.first?.candidates.map(Set.init), ["sbx-a", "sbx-b"])
-
-    // sbx-a is gone from Railway: still nothing to tell by.
-    let vanished = railway([Self.sandbox("sbx-b", createdAt: at(5))])
-    let failures = try await driver(vanished).sweep(keeping: [], recordsHere: true)
-    XCTAssertEqual(destroyed(vanished), [], "a vanished candidate settled the intent")
-    XCTAssertEqual(failures.count, 1, "\(failures)")
-    left = try await ledger.entries()
-    XCTAssertEqual(left.count, 1)
-
-    // sbx-a is recorded now (another workroom's host here): sbx-b is the lost reply's, and
-    // sbx-c, made in the window since, is no candidate.
-    let named = railway([
-      Self.sandbox("sbx-b", createdAt: at(5)), Self.sandbox("sbx-c", createdAt: at(9)),
-    ])
-    let resolved = try await driver(named).sweep(keeping: ["sbx-a"], recordsHere: true)
-    XCTAssertEqual(resolved, [])
-    XCTAssertEqual(destroyed(named), ["sbx-b"])
-    left = try await ledger.entries()
-    XCTAssertEqual(left, [])
-
-    // Still ambiguous after its lifetime: dropped, and said.
-    let old = Date().addingTimeInterval(-RailwayHostDriver.ambiguousLifetime - 60)
-    try await ledger.update {
-      $0 = [.init(started: old, candidates: ["sbx-a", "sbx-b"])]
-    }
-    let aged = railway([])
-    let said = try await driver(aged).sweep(keeping: [], recordsHere: true)
-    XCTAssertEqual(destroyed(aged), [])
-    XCTAssertEqual(said.count, 1, "\(said)")
-    XCTAssertTrue(said.first?.contains("sbx-a, sbx-b") == true, "\(said)")
-    left = try await ledger.entries()
-    XCTAssertEqual(left, [])
+    iso(entry.started.addingTimeInterval(seconds))
   }
 
-  /// Value: protects=lost replies that crowd one window (more candidates than intents), or a new
-  /// one whose candidate an older ambiguous intent may own, stay ambiguous at every later sweep
-  /// of the same sandboxes: no intent narrows to one candidate another intent still disputes
-  /// (review 4, X2); fails_when=a later sweep destroys the one candidate an intent kept from a
-  /// crowded window, or one an older intent still holds among several; seam=RailwayHostDriver.sweep
-  /// over StubRailway and the ledger
-  func testCrowdedLostRepliesStayAmbiguousAtEverySweep() async throws {
-    let started = Self.longAgo
-    let at = { (seconds: TimeInterval) in Self.iso(started.addingTimeInterval(seconds)) }
-    // a and b are only in the first intent's window; c is in both.
-    try await ledger.update {
-      $0 = [.init(started: started), .init(started: started.addingTimeInterval(200))]
-    }
-    let crowded = railway([
-      Self.sandbox("sbx-a", createdAt: at(3)), Self.sandbox("sbx-b", createdAt: at(5)),
-      Self.sandbox("sbx-c", createdAt: at(250)),
+  /// The lost creates this Mac's ledger holds, as the app lists them: with no grace, so a create
+  /// just made counts.
+  private func lostCreates(
+    _ railway: StubRailway, tokens: any RailwayAccessTokenProviding = Tokens()
+  )
+    -> RailwayLostCreates
+  {
+    RailwayLostCreates(
+      api: RailwayAPI(transport: railway, tokens: tokens), directory: keys,
+      placement: .init(environmentID: "env-1", workspaceID: "ws-1", projectID: "prj-1"))
+  }
+
+  /// Value: protects=Workroom never guesses which sandbox a lost create made: however close to the
+  /// intent Railway made a sandbox nothing names, no sweep destroys it, nor lists the environment
+  /// to look (review 5, D1, the owner's decision); fails_when=any sweep, at this launch or a
+  /// relaunch, destroys a sandbox whose id this Mac's ledger never held, or drops the lost entry;
+  /// seam=create and RailwayHostDriver.sweep over StubRailway and the ledger
+  func testTheSweepNeverDestroysASandboxWhoseIDItNeverSawWhateverItsTiming() async throws {
+    let intent = try await loseACreatesReply()
+    let listed = railway([
+      Self.sandbox("sbx-at-once", createdAt: Self.made(0, after: intent)),
+      Self.sandbox("sbx-just-after", createdAt: Self.made(4, after: intent)),
+      Self.sandbox("sbx-long-after", createdAt: Self.made(3600, after: intent)),
+      Self.sandbox("sbx-before", createdAt: Self.made(-3600, after: intent)),
     ])
     for sweep in 1...3 {
-      _ = try await driver(crowded).sweep(keeping: [], recordsHere: true)
-      XCTAssertEqual(destroyed(crowded), [], "crowded, sweep \(sweep)")
-      let left = try await ledger.entries()
-      XCTAssertEqual(left.count, 2, "crowded, sweep \(sweep)")
+      // A relaunch each time: a driver of its own.
+      let failures = try await driver(listed).sweep(keeping: [], grace: 0)
+      XCTAssertEqual(failures, [], "sweep \(sweep)")
     }
+    XCTAssertEqual(destroyed(listed), [])
+    XCTAssertTrue(requests(listed, "sandboxes").isEmpty, "a sweep listed the environment")
+    let left = try await ledger.entries()
+    XCTAssertEqual(left, [intent], "a sweep took the lost entry off")
+  }
 
-    // An older intent still holds a and b; a new one's window has only b.
+  /// Value: protects=a lost create stays until the user resolves it: listed after every sweep and
+  /// a relaunch, while one still within the grace (a create under way, perhaps in the other build)
+  /// and one whose sandbox Railway named are not (review 5, D1); fails_when=a lost entry is
+  /// forgotten by age or by a sweep, or a create under way or a named one shows as lost;
+  /// seam=RailwayLostCreates.creates and RailwayHostDriver.sweep over StubRailway and the ledger
+  func testALostCreateSurvivesEverySweepAndARelaunchUntilResolved() async throws {
+    let intent = try await loseACreatesReply()
+    let railway = railway([])
     try await ledger.update {
-      $0 = [
-        .init(started: started, candidates: ["sbx-a", "sbx-b"]),
-        .init(started: started.addingTimeInterval(1000)),
+      $0 += [
+        .init(started: Date(), environmentID: "env-1", workspaceID: "ws-1"),
+        .init(started: Self.longAgo, sandbox: "sbx-named", environmentID: "env-1"),
       ]
     }
-    let disputed = railway([
-      Self.sandbox("sbx-a", createdAt: at(3)), Self.sandbox("sbx-b", createdAt: at(1010)),
-    ])
-    for sweep in 1...3 {
-      _ = try await driver(disputed).sweep(keeping: [], recordsHere: true)
-      XCTAssertEqual(destroyed(disputed), [], "disputed, sweep \(sweep)")
-      let left = try await ledger.entries()
-      XCTAssertEqual(left.count, 2, "disputed, sweep \(sweep)")
+    let young = try await lostCreates(railway).creates()
+    XCTAssertEqual(young, [], "a lost create showed within the grace")
+
+    try await ledger.update { $0.removeAll { $0.sandbox == nil && $0.intent != intent.intent } }
+    try await ledger.update { entries in
+      for index in entries.indices where entries[index].intent == intent.intent {
+        entries[index].started = Self.longAgo
+      }
     }
+    for sweep in 1...3 {
+      _ = try await driver(railway).sweep(keeping: [])
+      let lost = try await lostCreates(railway).creates()
+      XCTAssertEqual(lost.map(\.id), [intent.intent], "sweep \(sweep)")
+      XCTAssertEqual(lost.first?.environmentID, "env-1")
+      XCTAssertEqual(lost.first?.workspaceID, "ws-1")
+    }
+  }
+
+  /// Value: protects=a lost create's candidates are the sandboxes it might have made, read fresh
+  /// each time and never written down as authority: live, unrecorded, named by no other create of
+  /// this Mac, in the entry's own environment, made near the intent (review 5, D1);
+  /// fails_when=a recorded, ledgered, destroyed, other-environment or far-off sandbox is offered,
+  /// a candidate that went is still offered, or the candidates reach the ledger;
+  /// seam=RailwayLostCreates.candidates over StubRailway and the ledger
+  func testALostCreatesCandidatesAreReadFreshAndNeverKept() async throws {
+    let intent = try await loseACreatesReply()
+    try await ledger.update {
+      $0.append(.init(started: Date(), sandbox: "sbx-ledgered", environmentID: "env-1"))
+    }
+    let before = try await ledger.entries()
+    let rows = [
+      Self.sandbox("sbx-a", createdAt: Self.made(3, after: intent)),
+      Self.sandbox("sbx-b", createdAt: Self.made(200, after: intent)),
+      Self.sandbox("sbx-recorded", createdAt: Self.made(2, after: intent)),
+      Self.sandbox("sbx-ledgered", createdAt: Self.made(2, after: intent)),
+      Self.sandbox("sbx-gone", status: "DESTROYED", createdAt: Self.made(1, after: intent)),
+      Self.sandbox("sbx-far", createdAt: Self.made(-3600, after: intent)),
+      Self.sandbox("sbx-unparsed", createdAt: "soon"),
+    ]
+    let railway = railway(rows)
+    let lost = try await lostCreates(railway).creates(grace: 0)
+    let create = try XCTUnwrap(lost.first)
+    let first = try await lostCreates(railway).candidates(of: create, recorded: ["sbx-recorded"])
+    XCTAssertEqual(first.map(\.id), ["sbx-a", "sbx-b"])
+    XCTAssertEqual(
+      requests(railway, "sandboxes").compactMap { $0["environmentId"] as? String }, ["env-1"])
+
+    // sbx-a is gone from Railway now: the next read doesn't offer it.
+    let later = self.railway(Array(rows.dropFirst()))
+    let second = try await lostCreates(later).candidates(of: create, recorded: ["sbx-recorded"])
+    XCTAssertEqual(second.map(\.id), ["sbx-b"])
+    let after = try await ledger.entries()
+    XCTAssertEqual(after, before, "reading candidates changed the ledger")
+  }
+
+  /// Value: protects=the user resolves a lost create by destroying the one candidate they choose,
+  /// and only a sandbox that is still a candidate: never a recorded one, one another create names,
+  /// or one in another environment, and the entry stays when Railway didn't confirm the destroy
+  /// (review 5, D1); fails_when=a destroy reaches a non-candidate, the entry outlives a confirmed
+  /// destroy, or goes with an unconfirmed one; seam=RailwayLostCreates.destroy over StubRailway
+  /// and the ledger
+  func testDestroyingALostCreatesCandidateResolvesIt() async throws {
+    let intent = try await loseACreatesReply()
+    let railway = railway([
+      Self.sandbox("sbx-a", createdAt: Self.made(3, after: intent)),
+      Self.sandbox("sbx-recorded", createdAt: Self.made(2, after: intent)),
+      Self.sandbox("sbx-far", createdAt: Self.made(-3600, after: intent)),
+    ])
+    let lost = lostCreates(railway)
+    let creates = try await lost.creates(grace: 0)
+    let create = try XCTUnwrap(creates.first)
+    for refused in ["sbx-recorded", "sbx-far", "sbx-nowhere"] {
+      do {
+        try await lost.destroy(refused, of: create, recorded: ["sbx-recorded"])
+        XCTFail("\(refused): destroyed a sandbox that is no candidate")
+      } catch RailwayLostCreates.Failure.notACandidate {}
+    }
+    XCTAssertEqual(destroyed(railway), [])
+
+    // Railway refuses, and still has it: unconfirmed, so the entry stays.
+    railway.answer("sandboxDestroy") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Railway is down"}]}"#.utf8))
+    }
+    railway.answer("sandbox", data: ["sandbox": ["id": "sbx-a", "status": "RUNNING"]])
+    do {
+      try await lost.destroy("sbx-a", of: create, recorded: ["sbx-recorded"])
+      XCTFail("an unconfirmed destroy resolved the lost create")
+    } catch RailwayLostCreates.Failure.unconfirmed {}
+    var left = try await ledger.entries()
+    XCTAssertEqual(left.map(\.intent), [intent.intent])
+
+    railway.answer(
+      "sandboxDestroy", data: ["sandboxDestroy": ["id": "sbx-a", "status": "DESTROYING"]])
+    try await lost.destroy("sbx-a", of: create, recorded: ["sbx-recorded"])
+    XCTAssertEqual(destroyed(railway), ["sbx-a"])
+    XCTAssertEqual(
+      requests(railway, "sandboxDestroy").compactMap { $0["environmentId"] as? String }.last,
+      "env-1")
+    left = try await ledger.entries()
+    XCTAssertEqual(left, [])
+  }
+
+  /// Value: protects=the user can dismiss a lost create's notice without destroying anything, even
+  /// signed out, and only that create's entry goes (review 5, D1); fails_when=dismissing destroys
+  /// a sandbox, needs Railway, or takes another entry off; seam=RailwayLostCreates.dismiss over
+  /// StubRailway and the ledger
+  func testDismissingALostCreateResolvesItWithoutDestroyingAnything() async throws {
+    let intent = try await loseACreatesReply()
+    try await ledger.update { $0.append(.init(started: Self.longAgo, sandbox: "sbx-named")) }
+    let railway = railway([Self.sandbox("sbx-a", createdAt: Self.made(3, after: intent))])
+    let lost = lostCreates(railway, tokens: SignedOut())
+    let creates = try await lost.creates(grace: 0)
+    let create = try XCTUnwrap(creates.first)
+    let asked = railway.graphQLRequests.count
+    try await lost.dismiss(create)
+    XCTAssertEqual(railway.graphQLRequests.count, asked, "dismissing asked Railway")
+    let left = try await ledger.entries()
+    XCTAssertEqual(left.compactMap(\.sandbox), ["sbx-named"])
+    let none = try await lost.creates(grace: 0)
+    XCTAssertEqual(none, [])
+  }
+
+  /// Value: protects=a ledger an earlier build wrote, with the candidates it kept for an ambiguous
+  /// lost reply, still reads, so its lost create is listed rather than set aside unreadable
+  /// (review 5, D1); fails_when=the old `candidates` key makes the ledger unreadable;
+  /// seam=RailwayCreateLedger.entries and RailwayLostCreates.creates over the ledger's file
+  func testALedgerAnEarlierBuildWroteWithCandidatesStillReads() async throws {
+    let intent = UUID()
+    let rows: [[String: Any]] = [
+      [
+        "intent": intent.uuidString, "started": Self.iso(Self.longAgo),
+        "environmentID": "env-1", "workspaceID": "ws-1", "candidates": ["sbx-a", "sbx-b"],
+      ]
+    ]
+    try FileManager.default.createDirectory(at: keys, withIntermediateDirectories: true)
+    try JSONSerialization.data(withJSONObject: rows).write(
+      to: keys.appendingPathComponent("create-ledger.json"))
+    let lost = try await lostCreates(railway([])).creates()
+    XCTAssertEqual(lost.map(\.id), [intent])
   }
 
   /// Value: protects=only an answer that says Railway made nothing drops a create's intent, so a
@@ -455,19 +496,19 @@ final class RailwaySweepTests: XCTestCase {
     }
   }
 
-  /// Value: protects=a sweep that needs a listing Railway couldn't give is owed again, and one
-  /// destroy Railway refused is reported without stopping the rest; fails_when=a signed-out
-  /// listing reads as an empty environment and drops the intent, or a refused destroy is lost, ends
-  /// the sweep, or leaves the ledger; seam=RailwayHostDriver.sweep over StubRailway
+  /// Value: protects=a sweep that needs the workspaces Railway couldn't list is owed again, and
+  /// one destroy Railway refused is reported without stopping the rest; fails_when=a signed-out
+  /// sweep reads as a workspace the sign-in can't see and drops the entry, or a refused destroy is
+  /// lost, ends the sweep, or leaves the ledger; seam=RailwayHostDriver.sweep over StubRailway
   func testASweepRailwayCannotAnswerThrowsAndARefusedDestroyIsReported() async throws {
-    try await ledgered([nil])
+    try writeLedger([("sbx-old", "env-old", "ws-old")])
     do {
       _ = try await driver(railway([Self.sandbox("sbx-a")]), tokens: SignedOut()).sweep(
-        keeping: [], recordsHere: true)
-      XCTFail("a signed-out sweep read as an empty environment")
+        keeping: [])
+      XCTFail("a signed-out sweep went through")
     } catch RailwaySessionError.signedOut {}
     var left = try await ledger.entries()
-    XCTAssertEqual(left.count, 1, "the lost reply wasn't owed again")
+    XCTAssertEqual(left.count, 1, "the entry wasn't owed again")
     try await ledger.update { $0 = [] }
 
     let railway = railway([Self.sandbox("sbx-stuck"), Self.sandbox("sbx-b")])
@@ -482,7 +523,7 @@ final class RailwaySweepTests: XCTestCase {
     }
     railway.answer("sandbox", data: ["sandbox": ["id": "sbx-stuck", "status": "RUNNING"]])
     try await ledgered(["sbx-stuck", "sbx-b"])
-    let failures = try await driver(railway).sweep(keeping: [], recordsHere: true)
+    let failures = try await driver(railway).sweep(keeping: [])
     XCTAssertEqual(failures.count, 1, "\(failures)")
     XCTAssertTrue(failures.first?.contains("sbx-stuck") == true, "\(failures)")
     XCTAssertEqual(destroyed(railway), ["sbx-stuck", "sbx-b"])
@@ -582,9 +623,10 @@ final class RailwaySweepTests: XCTestCase {
 
   /// Value: protects=a create whose undo couldn't destroy its sandbox keeps its ledger entry, named
   /// or not; the driver that holds the sandbox never sweeps it from under itself; and a relaunch's
-  /// sweep destroys it, by its id or, for a lost id, by its time (review 4, Y6: the undo-destroy-
-  /// fails and sweep-held cells); fails_when=a failed undo drops the entry, so the sandbox bills
-  /// with nothing to find it, or a sweep destroys a sandbox its own driver holds; seam=create, the
+  /// sweep destroys it by its id, or keeps an entry with no id for the user (review 4, Y6: the
+  /// undo-destroy-fails and sweep-held cells; review 5, D1); fails_when=a failed undo drops the
+  /// entry, so the sandbox bills with nothing to find it, a sweep destroys a sandbox its own
+  /// driver holds, or one whose id it never saw; seam=create, the
   /// create's undo and RailwayHostDriver.sweep over StubRailway and the ledger, the ledger's
   /// folder read-only while the id is written
   func testAnUndoThatCouldNotDestroyKeepsItsEntryForALaterSweep() async throws {
@@ -629,46 +671,22 @@ final class RailwaySweepTests: XCTestCase {
         "sandboxDestroy", data: ["sandboxDestroy": ["id": "sbx-1", "status": "DESTROYING"]])
       // The undo's own tries.
       let undone = requests(railway, "sandboxDestroy").count
-      let own = try await made.sweep(keeping: [], recordsHere: true, grace: 0)
+      let own = try await made.sweep(keeping: [], grace: 0)
       XCTAssertEqual(own, [], cell)
       XCTAssertEqual(
         requests(railway, "sandboxDestroy").count, undone,
         "\(cell): swept a sandbox its driver holds")
 
-      // A relaunch's sweep finds it.
-      let swept = try await driver(railway, keys: keys).sweep(
-        keeping: [], recordsHere: true, grace: 0)
+      // A relaunch's sweep destroys it by its id; one whose id never reached the ledger is never
+      // guessed at, and waits for the user (`RailwayLostCreates`).
+      let swept = try await driver(railway, keys: keys).sweep(keeping: [], grace: 0)
       XCTAssertEqual(swept, [], cell)
       XCTAssertEqual(
         requests(railway, "sandboxDestroy").dropFirst(undone).compactMap { $0["id"] as? String },
-        ["sbx-1"], cell)
+        named ? ["sbx-1"] : [], cell)
       left = try await ledger.entries()
-      XCTAssertEqual(left, [], cell)
+      XCTAssertEqual(left.count, named ? 0 : 1, cell)
     }
-  }
-
-  /// Value: protects=a lost reply made in an environment the placement has since left is
-  /// reconciled there, by listing that environment, when the sign-in sees its workspace (review 4,
-  /// Y6: the lost-reply × sweep-other-environment cell); fails_when=it is listed in today's
-  /// environment, dropped unlisted, or its sandbox destroyed in another environment;
-  /// seam=RailwayHostDriver.sweep over StubRailway and the ledger
-  func testALostReplyInAnEnvironmentTheMacLeftIsReconciledThere() async throws {
-    try writeLedger([(nil, "env-old", "ws-old")])
-    let railway = railway([
-      Self.sandbox(
-        "sbx-old", createdAt: Self.iso(Self.longAgo.addingTimeInterval(4)),
-        environment: "env-old")
-    ])
-    let failures = try await driver(railway).sweep(keeping: [], recordsHere: true)
-    XCTAssertEqual(failures, [])
-    XCTAssertEqual(
-      requests(railway, "sandboxes").compactMap { $0["environmentId"] as? String }, ["env-old"])
-    XCTAssertEqual(
-      requests(railway, "sandboxDestroy").map {
-        "\($0["id"] as? String ?? "?")@\($0["environmentId"] as? String ?? "?")"
-      }, ["sbx-old@env-old"])
-    let left = try await ledger.entries()
-    XCTAssertEqual(left, [])
   }
 
   // MARK: The environment each create was made in
@@ -703,7 +721,7 @@ final class RailwaySweepTests: XCTestCase {
       ("sbx-legacy", nil, nil),
     ])
     let railway = railway([])
-    let failures = try await driver(railway).sweep(keeping: [], recordsHere: true)
+    let failures = try await driver(railway).sweep(keeping: [])
 
     let destroys = requests(railway, "sandboxDestroy").map {
       "\($0["id"] as? String ?? "?")@\($0["environmentId"] as? String ?? "?")"

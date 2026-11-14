@@ -974,7 +974,7 @@ final class RemoteHostsTests: XCTestCase {
           rows.removeAll { $0 == id }
           return ["sandboxDestroy": ["id": id, "status": "DESTROYING"]]
         }
-        // The sign-in sees this Mac's workspace, so a lost reply may be reconciled.
+        // The sign-in sees this Mac's workspace.
         if query.contains("me {") {
           return ["me": ["workspaces": [["id": "ws-1", "name": "Mine", "plan": "PRO"]]]]
         }
@@ -1074,23 +1074,29 @@ final class RemoteHostsTests: XCTestCase {
     try await settle(remote)
     XCTAssertEqual(railway.destroyed, ["sbx-orphan"])
 
-    // A config naming this environment changes nothing: a lost reply is matched by time, once a
-    // launch, after a held sweep, and nothing made long before it goes.
-    try await ledger.update { $0 = [.init(started: longAgo)] }
+    // A config naming this environment changes nothing for a lost reply: it is never listed for
+    // nor guessed at, and waits for the user (review 5, D1). A ledgered sandbox goes once a
+    // launch, after a held sweep.
+    try await ledger.update {
+      $0 = [.init(started: longAgo), .init(started: longAgo, sandbox: "sbx-second")]
+    }
     remote = launch()
     remote.reachability.adopt(projects([here, elsewhere]), sweep: false)
     try await settle(remote)
-    XCTAssertTrue(railway.variables("sandboxes").isEmpty, "a held sweep ran")
+    XCTAssertEqual(railway.destroyed, ["sbx-orphan"], "a held sweep ran")
     remote.reachability.adopt(projects([here, elsewhere]))
     try await settle(remote)
-    XCTAssertEqual(railway.variables("sandboxes").count, 1)
-    XCTAssertEqual(railway.destroyed, ["sbx-orphan"])
-    let sent = railway.variables("sandboxes") + railway.variables("sandboxDestroy")
+    XCTAssertTrue(railway.variables("sandboxes").isEmpty, "the sweep listed for a lost reply")
+    XCTAssertEqual(railway.destroyed, ["sbx-orphan", "sbx-second"])
+    let sent = railway.variables("sandboxDestroy")
     XCTAssertEqual(Set(sent.compactMap { $0["environmentId"] as? String }), ["env-1"])
-    try await ledger.update { $0 = [.init(started: longAgo)] }
+    let lost = try await ledger.entries()
+    XCTAssertEqual(lost.count, 1, "the lost reply was dropped")
+    XCTAssertNil(lost.first?.sandbox)
+    try await ledger.update { $0.append(.init(started: longAgo, sandbox: "sbx-third")) }
     remote.reachability.adopt(projects([here, elsewhere]))
     try await settle(remote)
-    XCTAssertEqual(railway.variables("sandboxes").count, 1, "swept twice in a launch")
+    XCTAssertEqual(railway.destroyed, ["sbx-orphan", "sbx-second"], "swept twice in a launch")
   }
 
   /// Value: protects=a Railway sweep that fails says it was the sweep and Railway's own reason,

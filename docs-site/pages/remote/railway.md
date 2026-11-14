@@ -74,6 +74,18 @@ If your Railway sign-in is revoked or expires, a Railway workroom's **Details** 
 
 If a sandbox is destroyed outside Workroom, for example from Railway's dashboard, its workroom's pane says the host is gone, and its terminals stop trying to reach it. Its work went with it. **Remove Workroom…**, in the pane or when you right-click the workroom, is the only thing left to do.
 
+## A create that may have left a sandbox
+
+Sometimes a create asks Railway for a sandbox and Railway's answer never arrives, for example when the network drops at that moment. Railway may still have made the sandbox, and it bills until it's destroyed. Workroom can't tell which sandbox it was, so it never destroys one on its own.
+
+Instead, a Railway workroom's **Details**, and **Settings**, **Remote Hosts**, under **Railway**, show **A Railway create may have left a sandbox**. Under it are the sandboxes Railway made around that time that no workroom on this Mac uses. Workroom asks Railway for them each time the notice shows.
+
+- **Destroy…** destroys that sandbox, after you confirm. Do this only for a sandbox you know the failed create made. If a workroom on another Mac uses it, that workroom's work is lost.
+- **Dismiss** removes the notice without destroying anything. Use it once you've checked Railway's dashboard yourself.
+- **Check Again** asks Railway for the sandboxes again.
+
+The notice stays, across relaunches, until you do one of these.
+
 ## Delete the workroom
 
 Deleting the workroom destroys its sandbox and everything on it. See [Delete a remote workroom](overview.md#delete-a-remote-workroom).

@@ -54,6 +54,53 @@ final class RailwayWorkroomUITests: XCTestCase {
     app.typeKey(.escape, modifierFlags: [])
   }
 
+  /// Value: protects=a create whose reply was lost shows "A Railway create may have left a
+  /// sandbox" with the unrecorded sandbox it may have made and not the recorded one; Destroy asks
+  /// first, and confirmed, destroys it and resolves the notice (review 5 of #623, D1);
+  /// fails_when=the notice is missing, offers the workroom's own sandbox, destroys without asking,
+  /// or stays after the destroy; seam=the app through the UI test fixture, Railway stubbed
+  /// (`-WorkroomUITestRailwayLostCreate 1`); no_claim=Dismiss and the candidate rules
+  /// (RailwayLostCreatesModelTests, RailwaySweepTests)
+  func testALostRailwayCreateOffersItsCandidateToDestroy() {
+    let app = XCUIApplication()
+    app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launchArguments += ["-WorkroomUITestRailway", "signedIn"]
+    app.launchArguments += ["-WorkroomUITestRailwayWorkroom", "1"]
+    app.launchArguments += ["-WorkroomUITestRailwayLostCreate", "1"]
+    app.launch()
+    app.activate()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+
+    let row = element(app, "sidebar.workroom.uitest-railway")
+    XCTAssertTrue(row.waitForExistence(timeout: 10), "the Railway workroom isn't listed")
+    row.click()
+    let details = element(app, "activitySection.details")
+    XCTAssertTrue(details.waitForExistence(timeout: 5))
+    details.click()
+
+    XCTAssertTrue(
+      element(app, "railway.lostCreate.title").waitForExistence(timeout: 10),
+      "no notice of the lost create")
+    let destroy = element(app, "railway.lostCreate.destroy.sbx-lost-uitest")
+    XCTAssertTrue(destroy.waitForExistence(timeout: 10), "the candidate isn't offered")
+    XCTAssertFalse(
+      element(app, "railway.lostCreate.destroy.sbx-uitest").exists,
+      "the workroom's own sandbox is offered")
+    XCTAssertTrue(element(app, "railway.lostCreate.dismiss").exists)
+
+    destroy.click()
+    let confirm = app.buttons["Destroy Sandbox"]
+    XCTAssertTrue(confirm.waitForExistence(timeout: 5), "Destroy didn't ask first")
+    confirm.click()
+
+    let resolved = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "exists == NO"),
+      object: element(app, "railway.lostCreate.title"))
+    XCTAssertEqual(
+      XCTWaiter().wait(for: [resolved], timeout: 15), .completed, "the notice stayed")
+  }
+
   /// Value: protects=a revoked or expired Railway sign-in shows the workroom signed out, with Sign
   /// In, and signing in clears it; fails_when=the Details pane says nothing, or the button doesn't
   /// sign in; seam=the app through the UI test fixture, Railway stubbed

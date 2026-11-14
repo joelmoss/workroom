@@ -34,8 +34,19 @@ import HostDrivers
     private var _projects: [String: [RailwayProject]] = [:]
     private var _createdProjects: [String] = []
     private var _createdEnvironments: [String] = []
+    private var _sandboxes: [[String: String]] = []
+    private var _destroyed: [String] = []
 
     init(workspaces: [RailwayWorkspace]) { _workspaces = workspaces }
+
+    /// The sandboxes `sandboxes` lists, as its nodes (`id`, `status`, `createdAt`,
+    /// `environmentId`), whatever environment is asked for; a `sandboxDestroy` takes one off.
+    var sandboxes: [[String: String]] {
+      get { locked { _sandboxes } }
+      set { locked { _sandboxes = newValue } }
+    }
+    /// The sandboxes `sandboxDestroy` was asked to destroy.
+    var destroyed: [String] { locked { _destroyed } }
 
     private func locked<T>(_ body: () -> T) -> T { lock.withLock(body) }
 
@@ -137,7 +148,7 @@ import HostDrivers
     }
 
     /// The setup's placement calls (#629): a workspace's projects, making a project or an
-    /// environment, and an environment's sandboxes, of which a stub environment has none.
+    /// environment, and an environment's sandboxes (`sandboxes`); and a lost create's destroy.
     private func place(_ query: String, variables: [String: Any]) -> [String: Any]? {
       let input = variables["input"] as? [String: Any] ?? [:]
       if query.contains("projectCreate(") {
@@ -164,7 +175,16 @@ import HostDrivers
         return ["projects": ["edges": edges]]
       }
       if query.contains("sandboxes(") {
-        return ["sandboxes": ["edges": [Any](), "pageInfo": ["hasNextPage": false]]]
+        let edges = sandboxes.map { ["node": $0] }
+        return ["sandboxes": ["edges": edges, "pageInfo": ["hasNextPage": false]]]
+      }
+      if query.contains("sandboxDestroy(") {
+        let id = variables["id"] as? String ?? ""
+        return locked {
+          _destroyed.append(id)
+          _sandboxes.removeAll { $0["id"] as? String == id }
+          return ["sandboxDestroy": ["id": id, "status": "DESTROYING"]]
+        }
       }
       return nil
     }

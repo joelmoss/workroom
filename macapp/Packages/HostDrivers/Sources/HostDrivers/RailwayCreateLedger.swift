@@ -6,7 +6,9 @@ import Foundation
 /// environment and named by no record" is not enough to call a sandbox this Mac's: another Mac's
 /// live host reads exactly so. A create writes its intent here before it asks Railway for a
 /// sandbox, and fills in the sandbox's id when Railway answers; recording the host (its config
-/// write), destroying it, or sweeping it takes the entry off.
+/// write), destroying it, or sweeping it takes the entry off. An entry whose reply was lost (no
+/// id) is never swept: Workroom never guesses which sandbox it made, so it stays until the user
+/// destroys one of its candidates or dismisses it (`RailwayLostCreates`).
 ///
 /// Kept beside the Mac's Railway key (`Configuration.keys`), so Release and Nightly, which share
 /// the environment and config (ADR 0036), share it too. Every read-modify-write holds a `flock` on
@@ -25,20 +27,16 @@ public struct RailwayCreateLedger: Sendable {
     /// The workspace that environment is in, which the sign-in must see for the sweep to act on
     /// the entry.
     public var workspaceID: String?
-    /// For a lost reply (no `sandbox`) the first sweep couldn't tell apart: the sandboxes that
-    /// sweep found in its window, the only ones a later sweep may ever take for it.
-    public var candidates: [String]?
 
     public init(
       intent: UUID = UUID(), started: Date, sandbox: String? = nil, environmentID: String? = nil,
-      workspaceID: String? = nil, candidates: [String]? = nil
+      workspaceID: String? = nil
     ) {
       self.intent = intent
       self.started = started
       self.sandbox = sandbox
       self.environmentID = environmentID
       self.workspaceID = workspaceID
-      self.candidates = candidates
     }
   }
 
@@ -80,23 +78,6 @@ public struct RailwayCreateLedger: Sendable {
   public func drop(_ intents: Set<UUID>) async throws {
     guard !intents.isEmpty else { return }
     try await update { $0.removeAll { intents.contains($0.intent) } }
-  }
-
-  /// Keeps each intent's candidates (`Entry.candidates`), on an entry that has none yet: the
-  /// first ambiguous sweep's set is the one every later sweep looks in.
-  public func keep(candidates: [UUID: [String]]) async throws {
-    guard !candidates.isEmpty else { return }
-    try await update { entries in
-      for index in entries.indices where entries[index].candidates == nil {
-        if let found = candidates[entries[index].intent] { entries[index].candidates = found }
-      }
-    }
-  }
-
-  /// Takes off every entry naming one of `sandboxes`.
-  public func forget(_ sandboxes: Set<String>) async throws {
-    guard !sandboxes.isEmpty else { return }
-    try await update { $0.removeAll { $0.sandbox.map(sandboxes.contains) ?? false } }
   }
 
   /// Reads, changes and writes the ledger under the cross-process lock, and returns what it

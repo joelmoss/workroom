@@ -121,11 +121,13 @@ struct DetailsPanel: View {
 extension DetailsPanel {
   /// A Railway workroom's standing (#629): one Workroom can't check on because its Railway sign-in
   /// was revoked or expired is signed out, with Sign In. A gone one is `gone(_:)`'s, as any
-  /// provider's is.
+  /// provider's is. Then any create of this Mac's that may have left a sandbox (review 5 of #623),
+  /// which Settings ▸ Remote Hosts ▸ Railway shows too.
   @ViewBuilder
   fileprivate func railway(_ target: TerminalTarget) -> some View {
     if target.hostPlace == .railway, let sid = store.inspectorTargetID {
       RailwayHostNote(sid: sid)
+      RailwayLostCreatesNotice()
     }
   }
 }
