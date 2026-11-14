@@ -55,6 +55,9 @@ public struct RailwayLostCreates: Sendable {
     /// This sign-in can't see the workspace the create asked in, whose environment would list as
     /// empty.
     case workspaceNotSeen
+    /// This sign-in sees the workspace but not the project the create asked in (or Railway won't
+    /// name it), whose environment would list as empty too.
+    case projectNotSeen
     /// The sandbox is no longer one of the create's candidates (recorded, named by another create,
     /// gone, or elsewhere), so it isn't destroyed.
     case notACandidate(String)
@@ -70,6 +73,10 @@ public struct RailwayLostCreates: Sendable {
       case .workspaceNotSeen:
         "Railway's sign-in can't see the workspace this create asked in. Sign in to Railway with "
           + "the account that made it to see its sandboxes."
+      case .projectNotSeen:
+        "Railway's sign-in can't see the project this create asked in, so Workroom can't tell "
+          + "whether it left a sandbox, and one may still be billing. Sign in to Railway with the "
+          + "account that made it to see its sandboxes."
       case .notACandidate(let sandbox):
         "Railway sandbox \(sandbox) is no longer one this create may have made, so Workroom left "
           + "it alone."
@@ -124,23 +131,36 @@ public struct RailwayLostCreates: Sendable {
   public func candidates(of create: Create, recorded: Set<String>) async throws
     -> [RailwaySandbox]
   {
+    try await listing(of: create, recorded: recorded).candidates
+  }
+
+  /// `candidates`, with the project the create's environment is in, as it was proven seen.
+  private func listing(of create: Create, recorded: Set<String>) async throws
+    -> (candidates: [RailwaySandbox], projectID: String)
+  {
     guard let environment = create.environmentID else { throw Failure.placeUnknown }
-    // An environment in a workspace the sign-in can't see lists as empty, which would read as no
-    // candidates.
+    // An environment in a workspace, or a project, the sign-in can't see lists as empty, which
+    // would read as no candidates.
     guard try await api.sees(workspace: create.workspaceID) else {
       throw Failure.workspaceNotSeen
+    }
+    var project = create.projectID
+    if project == nil { project = try await api.project(ofEnvironment: environment) }
+    guard let project, try await api.sees(project: project, in: create.workspaceID) else {
+      throw Failure.projectNotSeen
     }
     let named = Set(try await ledger.entries().compactMap(\.sandbox))
     let from = create.started.addingTimeInterval(-Self.before)
     let to = create.started.addingTimeInterval(Self.after)
     let window = from...to
-    return try await api.sandboxes(environmentID: environment).filter { sandbox in
+    let candidates = try await api.sandboxes(environmentID: environment).filter { sandbox in
       guard sandbox.environmentID == environment, !RailwaySandbox.isEnding(sandbox.status),
         !recorded.contains(sandbox.id), !named.contains(sandbox.id),
         let made = sandbox.createdAt.flatMap(Self.date)
       else { return false }
       return window.contains(made)
     }.sorted { ($0.createdAt ?? "") < ($1.createdAt ?? "") }
+    return (candidates, project)
   }
 
   /// Destroys `sandbox`, which the user chose as `create`'s, and takes `create` off the ledger
@@ -151,10 +171,12 @@ public struct RailwayLostCreates: Sendable {
     guard
       try await ledger.entries().contains(where: { $0.intent == create.id && $0.sandbox == nil })
     else { throw Failure.resolved }
-    guard try await candidates(of: create, recorded: recorded).contains(where: { $0.id == sandbox })
-    else { throw Failure.notACandidate(sandbox) }
+    let listing = try await listing(of: create, recorded: recorded)
+    guard listing.candidates.contains(where: { $0.id == sandbox }) else {
+      throw Failure.notACandidate(sandbox)
+    }
     let record = RailwayHostRecord(
-      projectID: create.projectID, environmentID: create.environmentID ?? "", sandboxID: sandbox,
+      projectID: listing.projectID, environmentID: create.environmentID ?? "", sandboxID: sandbox,
       hostKey: "", workspaceID: create.workspaceID)
     if let failure = await api.destroyConfirmed(record) { throw Failure.unconfirmed(failure) }
     try await ledger.drop([create.id])

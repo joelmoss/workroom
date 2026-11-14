@@ -809,10 +809,37 @@ extension RailwayAPI {
   /// workspace but not the project reads every sandbox in it as missing too. False for a record
   /// naming no workspace or project; throws when Railway can't list them.
   func confirmsMissing(_ record: RailwayHostRecord) async throws -> Bool {
-    guard let workspace = record.workspaceID, let project = record.projectID,
-      try await sees(workspace: workspace)
-    else { return false }
-    return try await projects(workspaceID: workspace).contains { $0.id == project }
+    try await sees(project: record.projectID, in: record.workspaceID)
+  }
+
+  /// Whether this sign-in sees `workspaceID`, and `projectID` among its projects: what makes an
+  /// empty or "no such sandbox" answer for an environment in that project trustworthy, since a
+  /// sign-in granted the workspace but not the project reads its environments as empty. False for
+  /// no workspace or project; throws when Railway can't list them.
+  func sees(project projectID: String?, in workspaceID: String?) async throws -> Bool {
+    guard let workspaceID, let projectID, try await sees(workspace: workspaceID) else {
+      return false
+    }
+    return try await projects(workspaceID: workspaceID).contains { $0.id == projectID }
+  }
+
+  /// The project `environmentID` is in, as Railway names it: what a ledger entry or record from
+  /// before they named their project is checked against. Nil when Railway won't name it (an
+  /// environment this sign-in can't see answers with an error), which is unknown, never gone;
+  /// throws when Railway can't be asked.
+  func project(ofEnvironment environmentID: String) async throws -> String? {
+    struct Answer: Decodable {
+      struct Environment: Decodable { let projectId: String? }
+      let environment: Environment?
+    }
+    do {
+      return try await query(
+        "query environment($id: String!) { environment(id: $id) { id projectId } }",
+        variables: ["id": .string(environmentID)], as: Answer.self
+      ).environment?.projectId
+    } catch RailwayAPIError.graphQL {
+      return nil
+    }
   }
 
   /// The user's own ssh keys on the account, as their public key lines, page by page.

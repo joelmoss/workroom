@@ -142,7 +142,8 @@ import WorkroomVCS
         ],
       ]
       let entry = RailwayCreateLedger.Entry(
-        started: started, environmentID: "env-uitest", workspaceID: "ws-personal")
+        started: started, environmentID: "env-uitest", workspaceID: "ws-personal",
+        projectID: "prj-app")
       let encoder = JSONEncoder()
       encoder.dateEncodingStrategy = .iso8601
       let ledger = RailwayCreateLedger(directory: RailwayAccount.directory)

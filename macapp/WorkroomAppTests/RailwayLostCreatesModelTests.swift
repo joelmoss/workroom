@@ -21,6 +21,7 @@ final class RailwayLostCreatesModelTests: XCTestCase {
     let stub = RailwayStub(workspaces: [
       RailwayWorkspace(id: "ws-1", name: "Mine", plan: .hobby)
     ])
+    stub.projects = ["ws-1": [RailwayProject(id: "prj-1", name: "Workroom")]]
     let iso = ISO8601DateFormatter()
     stub.sandboxes = [
       [
@@ -50,7 +51,9 @@ final class RailwayLostCreatesModelTests: XCTestCase {
   /// A create that lost its reply, started at `started`, on the ledger in `directory`.
   nonisolated private static func seed(directory: URL, started: Date) async throws {
     try await RailwayCreateLedger(directory: directory).update {
-      $0.append(.init(started: started, environmentID: "env-1", workspaceID: "ws-1"))
+      $0.append(
+        .init(
+          started: started, environmentID: "env-1", workspaceID: "ws-1", projectID: "prj-1"))
     }
   }
 

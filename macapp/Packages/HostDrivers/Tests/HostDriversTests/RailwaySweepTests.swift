@@ -97,6 +97,8 @@ final class RailwaySweepTests: XCTestCase {
       ])
     railway.answer(
       "projects", data: ["projects": ["edges": [["node": ["id": "prj-1", "name": "Workroom"]]]]])
+    // Every environment a test names is in that project.
+    railway.answer("environment", data: ["environment": ["id": "env", "projectId": "prj-1"]])
     return railway
   }
 
@@ -366,6 +368,39 @@ final class RailwaySweepTests: XCTestCase {
       "env-1")
     left = try await ledger.entries()
     XCTAssertEqual(left, [])
+  }
+
+  /// Value: protects=a sign-in that sees a lost create's workspace but not its project never reads
+  /// the project's environment, which lists as empty to it, as holding no candidate, so the notice
+  /// never invites a Dismiss while a sandbox bills (review 6, finding 1); fails_when=candidates
+  /// come back empty, or the environment is listed, for a project the sign-in can't see, or for
+  /// one Railway won't name; seam=RailwayLostCreates.candidates over StubRailway and the ledger
+  func testALostCreateInAProjectTheSignInCantSeeSaysSoRatherThanListingNothing() async throws {
+    try await ledger.update {
+      $0 = [
+        .init(
+          started: Self.longAgo, environmentID: "env-1", workspaceID: "ws-1",
+          projectID: "prj-hidden"),
+        .init(started: Self.longAgo, environmentID: "env-unnamed", workspaceID: "ws-1"),
+      ]
+    }
+    let railway = railway([])
+    // Railway won't name the project of an environment this sign-in can't see.
+    railway.answer("environment") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Not Authorized"}]}"#.utf8))
+    }
+    let lost = RailwayLostCreates(
+      api: RailwayAPI(transport: railway, tokens: Tokens()), directory: keys, placement: nil)
+    for create in try await lost.creates() {
+      do {
+        let found = try await lost.candidates(of: create, recorded: [])
+        XCTFail("\(create.environmentID ?? "?"): listed \(found) for an unseen project")
+      } catch RailwayLostCreates.Failure.projectNotSeen {}
+    }
+    XCTAssertTrue(requests(railway, "sandboxes").isEmpty, "listed an unseen project's environment")
+    XCTAssertTrue(
+      RailwayLostCreates.Failure.projectNotSeen.localizedDescription.contains("project"))
   }
 
   /// Value: protects=the user can dismiss a lost create's notice without destroying anything, even
