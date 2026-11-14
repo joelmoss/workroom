@@ -105,6 +105,9 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   let api: RailwayAPI
   private let runner: any StatusCommandRunning
   private let hosts = Mutex<[UUID: RailwayHostRecord]>([:])
+  /// The ledger intent of each sandbox this driver's creates made that is still on the ledger, by
+  /// sandbox id.
+  private let intents = Mutex<[String: UUID]>([:])
 
   public init(
     configuration: Configuration, api: RailwayAPI, directory: URL,
@@ -152,8 +155,10 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       return (identity, hostKey, try await self.macGitHubToken())
     }
     let sandbox = try await ProvisioningProgress.step(.machine) {
-      // Written down before Railway is asked: the sweep destroys only what the ledger names.
-      let intent = try await ledger.begin()
+      // Written down before Railway is asked, with where it is asked: the sweep destroys only
+      // what the ledger names, in the environment it was made in.
+      let intent = try await ledger.begin(
+        environmentID: configuration.environmentID, workspaceID: configuration.workspaceID)
       let sandbox: String
       do {
         sandbox = try await api.createSandbox(
@@ -165,8 +170,10 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
         if Self.isRefusal(error) { try? await ledger.drop([intent]) }
         throw error
       }
-      // Best-effort: an intent with no id is still reconciled by its time.
-      try? await ledger.name(intent, sandbox: sandbox)
+      // Held from here, so recording, destroying or undoing this host takes its entry off by
+      // its intent even when the id never reached the ledger.
+      intents.withLock { $0[sandbox] = intent }
+      await nameIntent(intent, sandbox: sandbox)
       return sandbox
     }
     let id = UUID()
@@ -194,7 +201,7 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       throw HostDriverError.provisioning(failure)
     }
     hosts.withLock { $0[id] = nil }
-    try? await ledger.forget([record.sandboxID])
+    await settle(record.sandboxID)
     try? FileManager.default.removeItem(at: hostDirectory(id))
   }
 
@@ -203,11 +210,12 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   private func undo(_ error: any Error, id: UUID, record: RailwayHostRecord) async throws
     -> Never
   {
-    let failure = await Task { await self.destroySandbox(record, workspaceID: self.configuration.workspaceID) }.value
+    let workspace = configuration.workspaceID
+    let failure = await Task { await self.destroySandbox(record, workspaceID: workspace) }.value
     try? FileManager.default.removeItem(at: hostDirectory(id))
     guard let failure else {
       hosts.withLock { $0[id] = nil }
-      try? await ledger.forget([record.sandboxID])
+      await settle(record.sandboxID)
       throw error
     }
     throw HostDriverError.leftBehind(
@@ -511,7 +519,7 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   /// `descriptor` is in config now: its sandbox comes off the ledger, for its record to answer for.
   public func recorded(_ descriptor: HostDescriptor) async {
     guard let sandbox = descriptor.railway?.sandboxID else { return }
-    try? await ledger.forget([sandbox])
+    await settle(sandbox)
   }
 
   public func adopt(_ descriptor: HostDescriptor) throws {
@@ -595,20 +603,26 @@ extension RailwayHostDriver {
   /// what a crash between `sandboxCreate` and its record left, or a create whose cleanup failed.
   /// Only a sandbox this Mac's create ledger accounts for is ever destroyed: a sandbox has no name
   /// or label, and another Mac sharing the environment (a copied placement) has live hosts that no
-  /// record here names. Returns the destroys that failed; throws only when Railway can't list the
-  /// sandboxes a lost reply needs (signed out, offline), so the sweep is owed again.
+  /// record here names. Each entry is acted on in the environment it was made in, which may be one
+  /// the placement has since left. Returns what it couldn't do; throws only when Railway can't
+  /// say what an entry needs (the workspaces the sign-in sees, the sandboxes a lost reply needs:
+  /// signed out, offline), so the sweep is owed again.
   ///
   /// - An entry with its sandbox's id is destroyed by that id, with no listing.
-  /// - An entry whose reply was lost (no id) is matched by time: the one live sandbox in the
+  /// - An entry whose reply was lost (no id) is matched by time: the one live sandbox in its
   ///   environment that nothing names (no record, no other entry, no host this driver holds) and
   ///   that Railway made from `reconcileBefore` before the intent to `reconcileAfter` after it.
   ///   None there drops the entry. More candidates than lost intents, or more than one left for
-  ///   an intent, destroys none and says so. The residual risk is another Mac's create landing
-  ///   alone in that window just as this Mac's reply was lost.
+  ///   an intent, destroys none, says so, and keeps the intents for a later sweep, which can tell
+  ///   once a candidate is recorded or destroyed. The residual risk is another Mac's create
+  ///   landing alone in that window just as this Mac's reply was lost.
   ///   Only with `recordsHere`, when config names a host in this environment: otherwise config
   ///   may be lost, or a throwaway `HOME`'s, and a create retried in the window, whose sandbox
   ///   only its record names, would read as the lost reply's. Such intents wait for a launch
   ///   whose config does.
+  /// - Kept, unacted on: an entry in a workspace this sign-in can't see (another account's), for a
+  ///   sign-in that can; a lost reply needs its workspace seen even in today's environment, since
+  ///   an environment the sign-in can't see may list as empty, which would drop the intent.
   /// - Kept: whatever `recorded` names (which also takes its entry off), every sandbox this driver
   ///   holds, and any entry younger than `grace`, which may be a create still under way in the
   ///   other build sharing the ledger (Release and Nightly, ADR 0036).
@@ -623,52 +637,105 @@ extension RailwayHostDriver {
   ) async throws -> [String] {
     let now = Date()
     let held = Set(hosts.withLock { $0.values.map(\.sandboxID) })
+    let heldIntents = Set(intents.withLock { $0.values })
     let entries = try await ledger.update {
       $0.removeAll { $0.sandbox.map(recorded.contains) ?? false }
     }
     let due = entries.filter {
       now.timeIntervalSince($0.started) >= grace && !($0.sandbox.map(held.contains) ?? false)
+        && !heldIntents.contains($0.intent)
     }
     guard !due.isEmpty else { return [] }
+    let accounted = recorded.union(held).union(entries.compactMap(\.sandbox))
     var failures: [String] = []
     var done: Set<UUID> = []
-    for entry in due {
-      guard let sandbox = entry.sandbox else { continue }
-      if let failure = await destroySandbox(sweptRecord(sandbox), workspaceID: configuration.workspaceID) {
-        failures.append(failure)
-      } else {
-        done.insert(entry.intent)
+    var visibility = WorkspaceVisibility(driver: self)
+    do {
+      for entry in due {
+        guard let sandbox = entry.sandbox else { continue }
+        let (environment, workspace) = place(of: entry)
+        // Today's environment is this sign-in's to act on; an older one only if it sees it.
+        var actable = environment == configuration.environmentID
+        if !actable { actable = try await visibility.sees(workspace) }
+        guard actable else {
+          failures.append(
+            "Railway sandbox \(sandbox): made in a Railway workspace this sign-in can't see, so "
+              + "Workroom kept it, to destroy when signed in to the account that made it")
+          continue
+        }
+        let record = sweptRecord(sandbox, environmentID: environment)
+        if let failure = await destroySandbox(record, workspaceID: workspace) {
+          failures.append(failure)
+        } else {
+          done.insert(entry.intent)
+        }
       }
-    }
-    let lost = due.filter { $0.sandbox == nil }.sorted { $0.started < $1.started }
-    if !lost.isEmpty, recordsHere {
-      do {
-        let (settled, said) = try await reconcile(
-          lost, accounted: recorded.union(held).union(entries.compactMap(\.sandbox)))
-        done.formUnion(settled)
-        failures += said
-      } catch {
-        // What was destroyed by id stays destroyed; the lost replies are owed again.
-        try? await ledger.drop(done)
-        throw error
+      let lost = due.filter { $0.sandbox == nil }.sorted { $0.started < $1.started }
+      if !lost.isEmpty, recordsHere {
+        var claimed: Set<String> = []
+        for (environment, group) in Dictionary(grouping: lost, by: { place(of: $0).0 })
+          .sorted(by: { $0.key < $1.key })
+        {
+          guard try await visibility.sees(place(of: group[0]).1) else {
+            failures.append(
+              "\(group.count) of this Mac's Railway creates lost Railway's reply in a workspace "
+                + "this sign-in can't see, so Workroom will look for their sandboxes when signed "
+                + "in to the account that made them")
+            continue
+          }
+          let (settled, said) = try await reconcile(
+            group, in: environment, workspaceID: place(of: group[0]).1,
+            accounted: accounted, claimed: &claimed)
+          done.formUnion(settled)
+          failures += said
+        }
       }
+    } catch {
+      // What was destroyed stays destroyed; the rest is owed again.
+      try? await ledger.drop(done)
+      throw error
     }
     try? await ledger.drop(done)
     return failures
   }
 
-  private func sweptRecord(_ sandbox: String) -> RailwayHostRecord {
-    RailwayHostRecord(
-      projectID: configuration.projectID, environmentID: configuration.environmentID,
-      sandboxID: sandbox, hostKey: "")
+  /// The environment `entry`'s sandbox was asked for in, and its workspace: the placement's for
+  /// an entry from before entries named them.
+  private func place(of entry: RailwayCreateLedger.Entry) -> (String, String?) {
+    guard let environment = entry.environmentID else {
+      return (configuration.environmentID, configuration.workspaceID)
+    }
+    return (environment, entry.workspaceID)
   }
 
-  /// Matches each create whose reply was lost (`lost`) to the sandbox Railway made for it, by
-  /// time, and destroys it (see `sweep`): the intents now settled, and what failed.
-  private func reconcile(_ lost: [RailwayCreateLedger.Entry], accounted: Set<String>)
-    async throws -> (done: Set<UUID>, failures: [String])
-  {
-    let environment = configuration.environmentID
+  /// Which workspaces the sign-in sees, asked of Railway once a sweep, when an entry first needs
+  /// it.
+  private struct WorkspaceVisibility {
+    let driver: RailwayHostDriver
+    var granted: Set<String>?
+
+    init(driver: RailwayHostDriver) { self.driver = driver }
+
+    mutating func sees(_ workspace: String?) async throws -> Bool {
+      guard let workspace else { return false }
+      if granted == nil { granted = Set(try await driver.api.grantedWorkspaces().map(\.id)) }
+      return granted?.contains(workspace) ?? false
+    }
+  }
+
+  private func sweptRecord(_ sandbox: String, environmentID: String) -> RailwayHostRecord {
+    RailwayHostRecord(
+      projectID: configuration.projectID, environmentID: environmentID, sandboxID: sandbox,
+      hostKey: "")
+  }
+
+  /// Matches each create whose reply was lost (`lost`, all in `environment`) to the sandbox
+  /// Railway made for it, by time, and destroys it (see `sweep`): the intents now settled, and
+  /// what couldn't be done. An intent that can't be told apart stays on the ledger.
+  private func reconcile(
+    _ lost: [RailwayCreateLedger.Entry], in environment: String, workspaceID: String?,
+    accounted: Set<String>, claimed: inout Set<String>
+  ) async throws -> (done: Set<UUID>, failures: [String]) {
     let live = try await api.sandboxes(environmentID: environment).filter {
       $0.environmentID == environment && !["DESTROYED", "DESTROYING"].contains($0.status)
         && !accounted.contains($0.id)
@@ -683,24 +750,23 @@ extension RailwayHostDriver {
     let all = Set(lost.flatMap(candidates))
     guard all.count <= lost.count else {
       return (
-        Set(lost.map(\.intent)),
+        [],
         [
           "Railway sandboxes \(all.sorted().joined(separator: ", ")): \(lost.count) of this Mac's"
             + " creates lost Railway's reply, and Workroom can't tell which of these were theirs,"
-            + " so it left them all"
+            + " so it left them all, and will look again at the next launch"
         ]
       )
     }
     var done: Set<UUID> = []
     var failures: [String] = []
-    var claimed: Set<String> = []
     for entry in lost {
       let left = candidates(entry).filter { !claimed.contains($0) }
       guard left.count <= 1 else {
         failures.append(
           "Railway sandboxes \(left.sorted().joined(separator: ", ")): a create of this Mac's lost"
-            + " Railway's reply, and Workroom can't tell which was its, so it left them")
-        done.insert(entry.intent)
+            + " Railway's reply, and Workroom can't tell which was its, so it left them, and will"
+            + " look again at the next launch")
         continue
       }
       guard let sandbox = left.first else {
@@ -708,13 +774,40 @@ extension RailwayHostDriver {
         continue
       }
       claimed.insert(sandbox)
-      if let failure = await destroySandbox(sweptRecord(sandbox), workspaceID: configuration.workspaceID) {
+      let record = sweptRecord(sandbox, environmentID: environment)
+      if let failure = await destroySandbox(record, workspaceID: workspaceID) {
         failures.append(failure)
       } else {
         done.insert(entry.intent)
       }
     }
     return (done, failures)
+  }
+
+  /// Takes the entry of `sandbox`'s create off the ledger, by its intent when this driver made
+  /// it (so an entry whose id write failed goes too), and by the id otherwise.
+  func settle(_ sandbox: String) async {
+    let intent = intents.withLock { $0.removeValue(forKey: sandbox) }
+    try? await ledger.update { entries in
+      entries.removeAll { $0.intent == intent || $0.sandbox == sandbox }
+    }
+  }
+
+  /// Fills in the sandbox Railway made for `intent`, tried a few times: an entry left with no id
+  /// is reconciled by its time, a guess this Mac makes no more often than it must. Recording,
+  /// destroying or undoing the host takes the entry off by its intent either way (`settle`).
+  private func nameIntent(_ intent: UUID, sandbox: String) async {
+    for attempt in 0..<3 {
+      do {
+        try await ledger.name(intent, sandbox: sandbox)
+        return
+      } catch {
+        ProvisioningProgress.record(
+          "Writing Railway sandbox \(sandbox) to this Mac's create ledger failed (try "
+            + "\(attempt + 1) of 3): \(error.localizedDescription)")
+        try? await Task.sleep(for: configuration.pollInterval)
+      }
+    }
   }
 
   /// This Mac's creates no record has named yet: their sandboxes, for those Railway answered.

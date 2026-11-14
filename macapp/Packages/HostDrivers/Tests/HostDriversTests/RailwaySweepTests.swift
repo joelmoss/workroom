@@ -43,7 +43,7 @@ final class RailwaySweepTests: XCTestCase {
   ) -> RailwayHostDriver {
     RailwayHostDriver(
       configuration: .init(
-        environmentID: "env-1", projectID: "prj-1", keys: keys ?? self.keys,
+        environmentID: "env-1", projectID: "prj-1", workspaceID: "ws-1", keys: keys ?? self.keys,
         relayHost: RailwayHostDriverTests.relayHost, hostSetup: .checkout,
         pollInterval: .milliseconds(1)),
       api: RailwayAPI(transport: railway, tokens: tokens),
@@ -84,6 +84,17 @@ final class RailwaySweepTests: XCTestCase {
     railway.answer(
       "sandboxCreate", data: ["sandboxCreate": ["id": "sbx-1", "status": "CREATING"]])
     railway.answer("sandbox", data: ["sandbox": ["id": "sbx-1", "status": "RUNNING"]])
+    // The sign-in sees this Mac's workspace and the one its placement left.
+    railway.answer(
+      "me",
+      data: [
+        "me": [
+          "workspaces": [
+            ["id": "ws-1", "name": "Mine", "plan": "PRO"],
+            ["id": "ws-old", "name": "Before", "plan": "PRO"],
+          ]
+        ]
+      ])
     return railway
   }
 
@@ -220,8 +231,10 @@ final class RailwaySweepTests: XCTestCase {
   }
 
   /// Value: protects=when the window holds more sandboxes than lost replies, none is destroyed,
-  /// since one may be another Mac's; and a window with none settles its intent; fails_when=the
-  /// sweep guesses among candidates, or keeps an intent that matched nothing forever;
+  /// since one may be another Mac's, and the intent stays, said at every sweep, until a later one
+  /// can tell (a candidate recorded or destroyed meanwhile); and a window with none settles its
+  /// intent (review 3, I1); fails_when=the sweep guesses among candidates, drops an ambiguous
+  /// intent after one report, or keeps an intent that matched nothing forever;
   /// seam=RailwayHostDriver.sweep over StubRailway and the ledger
   func testALostReplyThatCannotBeToldApartDestroysNothing() async throws {
     let started = Self.longAgo
@@ -230,12 +243,20 @@ final class RailwaySweepTests: XCTestCase {
       Self.sandbox("sbx-a", createdAt: Self.iso(started.addingTimeInterval(3))),
       Self.sandbox("sbx-b", createdAt: Self.iso(started.addingTimeInterval(5))),
     ])
-    let failures = try await driver(ambiguous).sweep(keeping: [], recordsHere: true)
-    XCTAssertEqual(destroyed(ambiguous), [])
-    XCTAssertEqual(failures.count, 1, "\(failures)")
-    XCTAssertTrue(failures.first?.contains("sbx-a, sbx-b") == true, "\(failures)")
+    for sweep in 1...2 {
+      let failures = try await driver(ambiguous).sweep(keeping: [], recordsHere: true)
+      XCTAssertEqual(destroyed(ambiguous), [], "sweep \(sweep)")
+      XCTAssertEqual(failures.count, 1, "sweep \(sweep): \(failures)")
+      XCTAssertTrue(failures.first?.contains("sbx-a, sbx-b") == true, "\(failures)")
+      let left = try await ledger.entries()
+      XCTAssertEqual(left.count, 1, "sweep \(sweep): the ambiguous intent was dropped")
+    }
+    // sbx-b is recorded now (another workroom's host): sbx-a is the lost reply's.
+    let resolved = try await driver(ambiguous).sweep(keeping: ["sbx-b"], recordsHere: true)
+    XCTAssertEqual(resolved, [])
+    XCTAssertEqual(destroyed(ambiguous), ["sbx-a"])
     var left = try await ledger.entries()
-    XCTAssertEqual(left, [], "reported again at every launch")
+    XCTAssertEqual(left, [])
 
     try await ledgered([nil], started: started)
     let empty = railway([Self.sandbox("sbx-later", createdAt: Self.iso(Date()))])
@@ -346,6 +367,110 @@ final class RailwaySweepTests: XCTestCase {
     XCTAssertEqual(none, [])
     XCTAssertEqual(destroyed(recorded), [])
     XCTAssertTrue(requests(recorded, "sandboxes").isEmpty)
+  }
+
+  /// Value: protects=every way a create ends takes its own ledger entry off, whether or not
+  /// Railway's sandbox id made it into the entry, so no entry outlives its sandbox to be matched,
+  /// by time, to another Mac's (review 3, I2 and I6); fails_when=an entry whose id write failed
+  /// stays after its host is recorded, destroyed or undone, or a named entry stays after a
+  /// destroy or an undo; seam=create, recorded, destroy and the create's undo over StubRailway
+  /// and the ledger, with the ledger's folder read-only while the id is written
+  func testEveryWayOutOfACreateTakesItsEntryOff() async throws {
+    enum Way: String { case recorded, destroy, undo }
+    for (named, way) in [
+      (false, Way.recorded), (false, .destroy), (false, .undo), (true, .destroy), (true, .undo),
+    ] {
+      let cell = "\(named ? "named" : "lost-reply") entry × \(way)"
+      let keys = root.appendingPathComponent(UUID().uuidString)
+      try FileManager.default.createDirectory(
+        at: keys.appendingPathComponent("hosts"), withIntermediateDirectories: true)
+      let railway = railway([])
+      let path = keys.path
+      if !named {
+        // The id write fails: the folder is read-only from Railway's answer to the first read.
+        railway.answer("sandboxCreate") { _ in
+          chmod(path, 0o500)
+          return RailwayHTTPResponse(
+            status: 200,
+            body: Data(#"{"data":{"sandboxCreate":{"id":"sbx-1","status":"CREATING"}}}"#.utf8))
+        }
+      }
+      let status = way == .undo ? "FAILED" : "RUNNING"
+      railway.answer("sandbox") { _ in
+        chmod(path, 0o700)
+        return RailwayHTTPResponse(
+          status: 200,
+          body: Data(#"{"data":{"sandbox":{"id":"sbx-1","status":"\#(status)"}}}"#.utf8))
+      }
+      addTeardownBlock { chmod(path, 0o700) }
+      let driver = driver(railway, keys: keys)
+      let ledger = RailwayCreateLedger(directory: keys)
+      do {
+        let host = try await driver.create()
+        let during = try await ledger.entries()
+        XCTAssertEqual(during.count, 1, cell)
+        XCTAssertEqual(during.first?.sandbox, named ? "sbx-1" : nil, cell)
+        switch way {
+        case .recorded:
+          var descriptor = HostDescriptor(driver: "railway")
+          driver.record(host, in: &descriptor)
+          await driver.recorded(descriptor)
+        case .destroy: try await driver.destroy(host)
+        case .undo: XCTFail("\(cell): a failed sandbox became a host")
+        }
+      } catch {
+        XCTAssertEqual(way, .undo, "\(cell): \(error)")
+      }
+      let left = try await ledger.entries()
+      XCTAssertEqual(left, [], cell)
+    }
+  }
+
+  // MARK: The environment each create was made in
+
+  /// The ledger as a build before entries named their environment, or as this one writes them:
+  /// `(sandbox, environment, workspace)` per entry, made long ago.
+  private func writeLedger(_ entries: [(String?, String?, String?)]) throws {
+    let started = ISO8601DateFormatter().string(from: Self.longAgo)
+    let rows: [[String: Any]] = entries.map { sandbox, environment, workspace in
+      var row: [String: Any] = ["intent": UUID().uuidString, "started": started]
+      if let sandbox { row["sandbox"] = sandbox }
+      if let environment { row["environmentID"] = environment }
+      if let workspace { row["workspaceID"] = workspace }
+      return row
+    }
+    try FileManager.default.createDirectory(at: keys, withIntermediateDirectories: true)
+    try JSONSerialization.data(withJSONObject: rows).write(
+      to: keys.appendingPathComponent("create-ledger.json"))
+  }
+
+  /// Value: protects=a sandbox made before this Mac's placement moved is destroyed in the
+  /// environment it was made in, and one in a workspace this sign-in can't see is kept for a
+  /// sign-in that can, never dropped or destroyed by today's placement (review 3, C2);
+  /// fails_when=the sweep destroys by today's environment, drops an entry it can't see, lists an
+  /// environment it can't see, or reads a ledger from before entries named their environment as
+  /// empty; seam=RailwayHostDriver.sweep over StubRailway and the ledger
+  func testTheSweepDestroysEachEntryInTheEnvironmentItWasMadeIn() async throws {
+    try writeLedger([
+      ("sbx-old", "env-old", "ws-old"),
+      ("sbx-hidden", "env-hidden", "ws-hidden"),
+      (nil, "env-hidden", "ws-hidden"),
+      ("sbx-legacy", nil, nil),
+    ])
+    let railway = railway([])
+    let failures = try await driver(railway).sweep(keeping: [], recordsHere: true)
+
+    let destroys = requests(railway, "sandboxDestroy").map {
+      "\($0["id"] as? String ?? "?")@\($0["environmentId"] as? String ?? "?")"
+    }
+    XCTAssertEqual(Set(destroys), ["sbx-old@env-old", "sbx-legacy@env-1"])
+    XCTAssertFalse(
+      requests(railway, "sandboxes").contains { $0["environmentId"] as? String == "env-hidden" },
+      "listed an environment the sign-in can't see")
+    let left = try await ledger.entries()
+    XCTAssertEqual(left.count, 2, "\(left)")
+    XCTAssertTrue(left.allSatisfy { $0.environmentID == "env-hidden" }, "\(left)")
+    XCTAssertTrue(failures.contains { $0.contains("sbx-hidden") }, "\(failures)")
   }
 
   // MARK: Release and Nightly together

@@ -12,16 +12,29 @@ import Foundation
 /// the environment and config (ADR 0036), share it too. Every read-modify-write holds a `flock` on
 /// a lock file beside it (`CrossProcessLock`), so the two apps never lose each other's entries.
 public struct RailwayCreateLedger: Sendable {
-  /// One create: when it began, and the sandbox Railway named, once it did.
+  /// One create: when it began, where (the environment, and the workspace it is in), and the
+  /// sandbox Railway named, once it did. An entry a build before #623's review 3 wrote names no
+  /// environment or workspace: it was made in the placement's current ones.
   public struct Entry: Codable, Equatable, Sendable {
     public var intent: UUID
     public var started: Date
     public var sandbox: String?
+    /// The environment the sandbox was asked for in: the sweep destroys it there, whatever the
+    /// placement says now.
+    public var environmentID: String?
+    /// The workspace that environment is in, which the sign-in must see for the sweep to act on
+    /// the entry.
+    public var workspaceID: String?
 
-    public init(intent: UUID = UUID(), started: Date, sandbox: String? = nil) {
+    public init(
+      intent: UUID = UUID(), started: Date, sandbox: String? = nil, environmentID: String? = nil,
+      workspaceID: String? = nil
+    ) {
       self.intent = intent
       self.started = started
       self.sandbox = sandbox
+      self.environmentID = environmentID
+      self.workspaceID = workspaceID
     }
   }
 
@@ -39,10 +52,13 @@ public struct RailwayCreateLedger: Sendable {
     try await update { _ in }
   }
 
-  /// Writes a new create's intent, started `now`, before anything is made: a create whose intent
-  /// can't be written makes no sandbox, since no sweep would ever account for it.
-  public func begin(now: Date = Date()) async throws -> UUID {
-    let entry = Entry(started: now)
+  /// Writes a new create's intent, started `now` in `environmentID` (of `workspaceID`), before
+  /// anything is made: a create whose intent can't be written makes no sandbox, since no sweep
+  /// would ever account for it.
+  public func begin(environmentID: String, workspaceID: String?, now: Date = Date()) async throws
+    -> UUID
+  {
+    let entry = Entry(started: now, environmentID: environmentID, workspaceID: workspaceID)
     try await update { $0.append(entry) }
     return entry.intent
   }
