@@ -179,26 +179,40 @@ final class StatusCommandRunnerTests: XCTestCase {
     try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: project) }
     let identity = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
+    // Each call is timed and its whole outcome goes in the assertion: on CI's busy runners these
+    // setup calls once came back failed with empty stderr and nothing else to go on (#644).
+    func git(_ args: [String], in directory: URL, timeout: TimeInterval) async -> (
+      CommandResult, String
+    ) {
+      let start = Date()
+      let r = await runner.run("git", args, in: directory.path, timeout: timeout)
+      let took = String(format: "%.1f", Date().timeIntervalSince(start))
+      return (
+        r,
+        "\(args): exit \(r.exitCode), timedOut \(r.timedOut), signaled \(r.signaled), "
+          + "\(took)s of \(Int(timeout))s, stderr: \(r.stderr)"
+      )
+    }
+    // Setup, not what's tested: 30 s, so a loaded CI runner's slow git isn't read as a failure
+    // (CODING_STANDARDS.md, "Time budgets survive a busy CI runner").
     for args in [
       ["init", "-q"], identity + ["commit", "-q", "--allow-empty", "-m", "root"],
       ["worktree", "add", "-q", workroom.path],
     ] {
-      let r = await runner.run("git", args, in: project.path, timeout: 10)
-      XCTAssertTrue(r.ok, "\(args): \(r.stderr)")
+      let (r, said) = await git(args, in: project, timeout: 30)
+      XCTAssertTrue(r.ok, said)
     }
 
-    let top = await runner.run(
-      "git", ["rev-parse", "--show-toplevel"], in: workroom.path, timeout: 10)
-    XCTAssertTrue(top.ok, top.stderr)
+    let (top, topSaid) = await git(["rev-parse", "--show-toplevel"], in: workroom, timeout: 10)
+    XCTAssertTrue(top.ok, topSaid)
     let toplevel = URL(fileURLWithPath: top.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
     XCTAssertEqual(
       toplevel.resolvingSymlinksInPath().path, workroom.resolvingSymlinksInPath().path)
-    let status = await runner.run("git", ["status", "--porcelain"], in: workroom.path, timeout: 10)
-    XCTAssertTrue(status.ok, status.stderr)
-    let commit = await runner.run(
-      "git", identity + ["commit", "-q", "--allow-empty", "-m", "in workroom"], in: workroom.path,
-      timeout: 10)
-    XCTAssertTrue(commit.ok, commit.stderr)
+    let (status, statusSaid) = await git(["status", "--porcelain"], in: workroom, timeout: 10)
+    XCTAssertTrue(status.ok, statusSaid)
+    let (commit, commitSaid) = await git(
+      identity + ["commit", "-q", "--allow-empty", "-m", "in workroom"], in: workroom, timeout: 10)
+    XCTAssertTrue(commit.ok, commitSaid)
   }
 
   /// boxd takes an inherited `BOXD_TOKEN` over its saved sign-in, and then writes no ssh stanza for
