@@ -156,9 +156,70 @@ final class RailwayHostDriverTests: XCTestCase {
     XCTAssertEqual(
       record(driver, host),
       RailwayHostRecord(
-        projectID: "prj-1", environmentID: "env-1", sandboxID: "sbx-1", hostKey: Self.relayKey))
+        projectID: "prj-1", environmentID: "env-1", sandboxID: "sbx-1", hostKey: Self.relayKey,
+        workspaceID: "ws-1"))
     XCTAssertFalse(
       relay.calls.contains { $0.executable.hasSuffix("railway") }, "never the railway CLI")
+  }
+
+  /// Value: protects=a host in an environment the placement has since left (whose driver knows no
+  /// workspace) can still be found gone and removed: its record names its workspace, and a record
+  /// an older build wrote without one has it resolved from its project once, and kept on the
+  /// record the next write takes (review 4, X3); fails_when=such a host's null read never confirms,
+  /// so it can never be removed, or the workspace is asked of Railway again on every read;
+  /// seam=HostPresenceReporting, destroy and HostRecording over StubRailway, with the driver the
+  /// app makes for another environment
+  func testAHostInAnotherEnvironmentIsConfirmedGoneAgainstItsOwnWorkspace() async throws {
+    let railway = railway()
+    railway.answer("sandbox", data: ["sandbox": NSNull()])
+    railway.answer("sandboxDestroy") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Sandbox not found"}]}"#.utf8))
+    }
+    railway.answer(
+      "me",
+      data: [
+        "me": [
+          "workspaces": [
+            ["id": "ws-1", "name": "Mine", "plan": "PRO"],
+            ["id": "ws-old", "name": "Before", "plan": "PRO"],
+          ]
+        ]
+      ])
+    railway.answer("projects") { request in
+      let variables = StubRailway.graphQLBody(request)["variables"] as? [String: Any] ?? [:]
+      let projects: [[String: Any]] =
+        variables["workspaceId"] as? String == "ws-old" ? [["id": "prj-old", "name": "Workroom"]] : []
+      return RailwayHTTPResponse(
+        status: 200,
+        body: try JSONSerialization.data(withJSONObject: [
+          "data": ["projects": ["edges": projects.map { ["node": $0] }]]
+        ]))
+    }
+    for legacy in [false, true] {
+      // The app's driver for an environment other than the placement's knows no workspace.
+      let driver = RailwayHostDriver(
+        configuration: .init(
+          environmentID: "env-old", projectID: nil, workspaceID: nil, keys: keys,
+          relayHost: Self.relayHost, hostSetup: .checkout, pollInterval: .milliseconds(1)),
+        api: RailwayAPI(transport: railway, tokens: Tokens()),
+        directory: root.appendingPathComponent("hosts"), runner: StubRelay())
+      let id = UUID()
+      try driver.adopt(
+        HostDescriptor(
+          driver: "railway", id: id,
+          railway: RailwayHostRecord(
+            projectID: "prj-old", environmentID: "env-old", sandboxID: "sbx-old", hostKey: "",
+            workspaceID: legacy ? nil : "ws-old")))
+      let presence = await driver.presence(.remote(id))
+      XCTAssertEqual(presence, .gone, "legacy: \(legacy)")
+      XCTAssertEqual(record(driver, .remote(id))?.workspaceID, "ws-old", "legacy: \(legacy)")
+      try await driver.destroy(.remote(id))
+    }
+    let lookups = railway.graphQLRequests.map(StubRailway.graphQLBody).filter {
+      ($0["query"] as? String)?.contains("projects(") == true
+    }
+    XCTAssertLessThanOrEqual(lookups.count, 2, "the legacy record's workspace was asked again")
   }
 
   /// Value: protects=the Mac reaches its host with a key of its own, registered once on the

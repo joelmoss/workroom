@@ -183,7 +183,7 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
     let id = UUID()
     let record = RailwayHostRecord(
       projectID: configuration.projectID, environmentID: configuration.environmentID,
-      sandboxID: sandbox, hostKey: hostKey)
+      sandboxID: sandbox, hostKey: hostKey, workspaceID: configuration.workspaceID)
     hosts.withLock { $0[id] = record }
     do {
       try await ProvisioningProgress.step(.boot) { try await awaitRunning(record) }
@@ -199,8 +199,12 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
 
   /// Destroys the sandbox. One already gone counts as destroyed, so a retry gets past it.
   public func destroy(_ host: HostID) async throws {
-    let (id, record) = try record(of: host)
-    if let failure = await destroySandbox(record, workspaceID: configuration.workspaceID) {
+    let (id, held) = try record(of: host)
+    var record = held
+    // A record an older build wrote names no workspace: resolved once, or left unknown, which
+    // leaves a "no such sandbox" read unconfirmed.
+    record.workspaceID = try? await workspace(of: id, held)
+    if let failure = await destroySandbox(record) {
       try Task.checkCancellation()
       throw HostDriverError.provisioning(failure)
     }
@@ -214,8 +218,7 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   private func undo(_ error: any Error, id: UUID, record: RailwayHostRecord) async throws
     -> Never
   {
-    let workspace = configuration.workspaceID
-    let failure = await Task { await self.destroySandbox(record, workspaceID: workspace) }.value
+    let failure = await Task { await self.destroySandbox(record) }.value
     try? FileManager.default.removeItem(at: hostDirectory(id))
     guard let failure else {
       hosts.withLock { $0[id] = nil }
@@ -228,9 +231,9 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
 
   /// Nil once the sandbox is gone, whether this destroyed it or it already was. Railway's answer
   /// for a sandbox it no longer has isn't documented, so a refusal is checked against the
-  /// sandbox's status rather than its words. `workspaceID` is the workspace the sandbox is in,
-  /// which a "no such sandbox" read is confirmed against (`seesWorkspace`).
-  private func destroySandbox(_ record: RailwayHostRecord, workspaceID: String?) async -> String? {
+  /// sandbox's status rather than its words. The record's workspace is the one a "no such
+  /// sandbox" read is confirmed against (`seesWorkspace`).
+  private func destroySandbox(_ record: RailwayHostRecord) async -> String? {
     do {
       try await api.destroySandbox(record.sandboxID, environmentID: record.environmentID)
       return nil
@@ -243,7 +246,7 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
           record.sandboxID, environmentID: record.environmentID)
         if let status {
           if status == "DESTROYED" { return nil }
-        } else if try await seesWorkspace(workspaceID) {
+        } else if try await seesWorkspace(record.workspaceID) {
           return nil
         } else {
           return "Railway sandbox \(record.sandboxID): Railway's sign-in can't see the workspace "
@@ -261,6 +264,29 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   func seesWorkspace(_ workspaceID: String?) async throws -> Bool {
     guard let workspaceID else { return false }
     return try await api.grantedWorkspaces().contains { $0.id == workspaceID }
+  }
+
+  /// The workspace host `id`'s sandbox is in: its record's; for a record an older build wrote
+  /// without one, this driver's when the sandbox is in its environment, else the workspace whose
+  /// projects include the record's project, of those the sign-in sees. Whatever is found is kept
+  /// on the held record, so it is looked up once and the next write of the record keeps it
+  /// (`record(_:in:)`). Nil when it can't be told; throws when Railway can't list them.
+  func workspace(of id: UUID, _ record: RailwayHostRecord) async throws -> String? {
+    if let workspace = record.workspaceID { return workspace }
+    var found: String?
+    if record.environmentID == configuration.environmentID {
+      found = configuration.workspaceID
+    }
+    if found == nil, let project = record.projectID {
+      for workspace in try await api.grantedWorkspaces()
+      where try await api.projects(workspaceID: workspace.id).contains(where: { $0.id == project })
+      {
+        found = workspace.id
+        break
+      }
+    }
+    if let found { hosts.withLock { $0[id]?.workspaceID = found } }
+    return found
   }
 
   /// How many reads in a row a new sandbox may be unknown to Railway before the create takes it
@@ -464,12 +490,12 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   /// Mac's workspace (`seesWorkspace`); under an account that can't, it is signed out. A sign-in
   /// Railway no longer takes is signed out; anything else Railway couldn't answer is nil.
   public func presence(_ host: HostID) async -> HostPresence? {
-    guard let (_, record) = try? record(of: host) else { return nil }
+    guard let (id, record) = try? record(of: host) else { return nil }
     do {
       let status = try await api.sandboxStatus(
         record.sandboxID, environmentID: record.environmentID)
       if let status { return Self.isGone(status) ? .gone : .awake }
-      guard let workspace = configuration.workspaceID else { return nil }
+      guard let workspace = try await workspace(of: id, record) else { return nil }
       return try await seesWorkspace(workspace) ? .gone : .signedOut
     } catch RailwaySessionError.signedOut {
       return .signedOut
@@ -642,8 +668,8 @@ extension RailwayHostDriver {
               + "Workroom kept it, to destroy when signed in to the account that made it")
           continue
         }
-        let record = sweptRecord(sandbox, environmentID: environment)
-        if let failure = await destroySandbox(record, workspaceID: workspace) {
+        let record = sweptRecord(sandbox, environmentID: environment, workspaceID: workspace)
+        if let failure = await destroySandbox(record) {
           failures.append(failure)
         } else {
           done.insert(entry.intent)
@@ -702,10 +728,12 @@ extension RailwayHostDriver {
     }
   }
 
-  private func sweptRecord(_ sandbox: String, environmentID: String) -> RailwayHostRecord {
+  private func sweptRecord(_ sandbox: String, environmentID: String, workspaceID: String?)
+    -> RailwayHostRecord
+  {
     RailwayHostRecord(
       projectID: configuration.projectID, environmentID: environmentID, sandboxID: sandbox,
-      hostKey: "")
+      hostKey: "", workspaceID: workspaceID)
   }
 
   /// Matches each create whose reply was lost (`lost`, all in `environment`) to the sandbox
@@ -753,8 +781,8 @@ extension RailwayHostDriver {
         continue
       }
       claimed.insert(sandbox)
-      let record = sweptRecord(sandbox, environmentID: environment)
-      if let failure = await destroySandbox(record, workspaceID: workspaceID) {
+      let record = sweptRecord(sandbox, environmentID: environment, workspaceID: workspaceID)
+      if let failure = await destroySandbox(record) {
         failures.append(failure)
       } else {
         done.insert(entry.intent)
