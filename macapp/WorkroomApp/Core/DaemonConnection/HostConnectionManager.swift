@@ -348,6 +348,12 @@ actor HostConnectionManager {
     return connection.helloVersion >= DaemonHandshake.minRunVersion
   }
 
+  /// The protocol version `host`'s daemon greeted this connection with, or nil with no daemon
+  /// connection. Never connects.
+  func daemonVersion(on host: HostID) -> UInt16? {
+    (try? connected(host).1 as? DaemonClient)?.helloVersion
+  }
+
   /// Not lease-tracked either, and never connects, like `endSession`.
   func sessions(on host: HostID) async throws -> [SessionDescriptor] {
     try await connected(host).1.sessions()

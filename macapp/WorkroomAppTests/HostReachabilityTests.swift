@@ -533,6 +533,85 @@ final class HostReachabilityTests: XCTestCase {
     XCTAssertEqual(reported.withLock { $0 }, [true, false, true, false])
   }
 
+  /// Value: protects=a host whose daemon stayed on protocol 10 (the bootstrap kept it) is updated
+  /// once it can be, so its panes stop retrying forever, and they say why they wait meanwhile
+  /// (review #2); fails_when=a healthy connection to an older daemon skips the bootstrap for good,
+  /// the update is tried on every read rather than backed off, the connection isn't replaced once
+  /// the daemon is new, or the pane's notice never says why; seam=HostReachability with the
+  /// connect, version and bootstrap stubbed
+  func testAnOlderDaemonIsUpdatedWithBackoffAndThePaneSaysWhy() async throws {
+    struct State {
+      var up = true
+      var version: UInt16 = 10
+      var outcomes: [DaemonBootstrap.Outcome.Daemon] = [.keptOlder("the hand-off was refused")]
+      var updates = 0
+    }
+    let connects = Connects()
+    connects.hold(false)
+    let state = Mutex(State())
+    let remote = RemoteHosts(
+      connectHost: { host in
+        try await connects.connect(host)
+        state.withLock { $0.up = true }
+      }, isConnected: { _ in state.withLock { $0.up } }, startHost: { _ in },
+      now: { connects.now }, presence: { _ in .awake },
+      daemonVersion: { _ in state.withLock { $0.version } },
+      updateDaemon: { _ in
+        state.withLock {
+          $0.updates += 1
+          guard $0.outcomes.isEmpty else { return $0.outcomes.removeFirst() }
+          // Handed off: the old connection goes (the reachability disconnects it), and the next
+          // greets with the new program's version.
+          $0.up = false
+          $0.version = DaemonHandshake.minHostAttachVersion
+          return .handedOff
+        }
+      }
+    ).reachability
+    let id = UUID()
+    let host = HostID.remote(id)
+    remote.adopt([
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "w", path: "/root/r", vcsName: "workroom/w", warnings: [],
+            host: HostDescriptor(
+              driver: HostKind.railway.driver, provisioner: RemoteWorkrooms.provisioner, id: id,
+              railway: RailwayHostRecord(
+                projectID: "prj", environmentID: "env", sandboxID: "sbx",
+                hostKey: "ssh-ed25519 AAAA")))
+        ])
+    ])
+    func settle(_ updates: Int) async throws {
+      for _ in 0..<500 where state.withLock({ $0.updates }) < updates {
+        try await Task.sleep(for: .milliseconds(2))
+      }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+
+    // Connected to protocol 10: the update is tried, the daemon is kept, and the pane says why.
+    try await remote.ensureConnected(host)
+    try await settle(1)
+    XCTAssertEqual(state.withLock { $0.updates }, 1)
+    let notice = try XCTUnwrap(remote.waitingNotice(for: host))
+    XCTAssertTrue(notice.contains("the hand-off was refused"), notice)
+
+    // Within the backoff, reads don't try again.
+    try await remote.ensureConnected(host)
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertEqual(state.withLock { $0.updates }, 1, "tried again inside the backoff")
+
+    // Past it, the bootstrap updates the daemon: the connection is replaced, and once it greets
+    // with a version new enough the pane's notice goes.
+    connects.advance(HostReachability.olderDaemonRetry + .seconds(1))
+    try await remote.ensureConnected(host)
+    try await settle(2)
+    for _ in 0..<500 where connects.calls < 1 { try await Task.sleep(for: .milliseconds(2)) }
+    XCTAssertEqual(connects.calls, 1, "the connection to the old daemon was kept")
+    XCTAssertNil(remote.waitingNotice(for: host))
+  }
+
   /// Only a host whose workroom the user opened has its container started before connecting: the
   /// status sweep connects to every remote workroom, and must not start them all (#309).
   func testOnlyAnOpenedHostIsStartedBeforeItsConnect() async throws {

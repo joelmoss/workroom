@@ -305,13 +305,21 @@ public enum SSHTransport {
     : > "$log"; rm -f "${log%.log}.status"; \
     SHELL=/bin/sh "$@"; status=$?; echo "$status" > "${log%.log}.status"; \
     if [ "$status" = 255 ] && ! grep -qiF \(refusalPatterns) "$log"; then \
-    printf '\\r\\n%s\\r\\n' \(shellQuoted(retryNotice)) >&2; \
+    notice=${WORKROOM_RETRY_NOTICE:-\(shellQuoted(retryNotice))}; \
+    printf '\\r\\n%s\\r\\n' "$notice" >&2; \
     elif [ -s "$log" ]; then printf '\\r\\n'; cat "$log" >&2; fi; exit "$status"
     """
 
   /// `refusals` as `grep -e` arguments.
   private static let refusalPatterns = refusals.map { "-e " + shellQuoted($0) }.joined(
     separator: " ")
+
+  /// `command`, a pane's attach command, saying `notice` in place of `retryNotice` when its link
+  /// drops: what the app knows the pane waits for (an older daemon it couldn't update yet). The
+  /// wrapper reads it from its own environment; the attach client drops it, so no host sees it.
+  public static func withRetryNotice(_ notice: String, _ command: String) -> String {
+    "/usr/bin/env " + shellQuoted("WORKROOM_RETRY_NOTICE=\(notice)") + " " + command
+  }
 
   /// What a pane whose link dropped says while it keeps trying (#392).
   public static let retryNotice =

@@ -51,6 +51,17 @@ final class HostReachability: @unchecked Sendable {
   private let now: @Sendable () -> ContinuousClock.Instant
   /// Hears a host become gone, or be found again (`GoneHosts.record` in the app).
   private let goneChanged: (@Sendable (HostID, Bool) -> Void)?
+  /// The version `host`'s daemon greeted the service connection with; nil in the app
+  /// (`HostConnectionManager.daemonVersion`).
+  private let daemonVersionSeam: (@Sendable (HostID) async -> UInt16?)?
+  /// The bootstrap alone, which says what became of the host's daemon; nil in the app
+  /// (`DaemonBootstrap.ensure`).
+  private let updateDaemonSeam: (@Sendable (HostID) async throws -> DaemonBootstrap.Outcome.Daemon)?
+  /// Hosts whose daemon is too old for a pane's attach (`DaemonHandshake.minHostAttachVersion`),
+  /// which the bootstrap left as it was: when to try updating it again, how long the wait after
+  /// that is, why it was kept, and whether a try is under way.
+  private var olderDaemon:
+    [HostID: (next: ContinuousClock.Instant, wait: Duration, why: String?, trying: Bool)] = [:]
 
   init(
     registry: HostDriverRegistry,
@@ -63,9 +74,13 @@ final class HostReachability: @unchecked Sendable {
       @Sendable (HostID, any HostTerminalDriver) async throws -> DaemonClient
     )? = nil,
     presence: (@Sendable (HostID) async -> HostPresence?)? = nil,
-    goneChanged: (@Sendable (HostID, Bool) -> Void)? = nil
+    goneChanged: (@Sendable (HostID, Bool) -> Void)? = nil,
+    daemonVersion: (@Sendable (HostID) async -> UInt16?)? = nil,
+    updateDaemon: (@Sendable (HostID) async throws -> DaemonBootstrap.Outcome.Daemon)? = nil
   ) {
     self.registry = registry
+    self.daemonVersionSeam = daemonVersion
+    self.updateDaemonSeam = updateDaemon
     self.goneChanged = goneChanged
     self.connectHost = connectHost
     self.isConnected = isConnected
@@ -218,6 +233,9 @@ final class HostReachability: @unchecked Sendable {
     if up {
       _ = lock.withLock { activated.remove(host) }
       found(host)
+      // A connection to a daemon the bootstrap kept, too old for a pane: kept, while the update
+      // is tried again in the background, backed off.
+      await updateOlderDaemon(host)
       // A relay that didn't take on this connection is tried again, at most once a `retryAfter`.
       if case .remote(let id) = host,
         let tried = lock.withLock({ relayPending[id] }), now() - tried >= Self.retryAfter
@@ -300,6 +318,7 @@ final class HostReachability: @unchecked Sendable {
       lock.withLock { failedAt[host] = nil }
       // Whatever a read said before: a host that connects is there.
       found(host)
+      await updateOlderDaemon(host)
     } catch is CancellationError {
       throw CancellationError()
     } catch {
@@ -314,6 +333,86 @@ final class HostReachability: @unchecked Sendable {
       if olderLayout { throw RepositoryRoutingError.olderLayout(host) }
       throw RepositoryRoutingError.unavailable(host)
     }
+  }
+
+  /// How long after a kept older daemon the update is tried again, doubling to `olderDaemonCeiling`.
+  static let olderDaemonRetry: Duration = .seconds(30)
+  static let olderDaemonCeiling: Duration = .seconds(600)
+
+  /// When `host`'s service connection reaches a daemon too old for a pane's attach, which the
+  /// bootstrap left as it was (busy, refused, or the install failed): a connection that works
+  /// skips the bootstrap, so its panes would wait for an update nothing tries. The bootstrap is
+  /// tried again, in a task of its own, at most once a backoff (`olderDaemonRetry`, doubling), and
+  /// once it updated the daemon the connection is replaced. The pane says why it waits
+  /// (`waitingNotice`). A daemon new enough clears it.
+  private func updateOlderDaemon(_ host: HostID) async {
+    let version: UInt16?
+    if let daemonVersionSeam {
+      version = await daemonVersionSeam(host)
+    } else {
+      version = await HostConnectionManager.shared.daemonVersion(on: host)
+    }
+    guard let version, version < DaemonHandshake.minHostAttachVersion else {
+      _ = lock.withLock { olderDaemon.removeValue(forKey: host) }
+      return
+    }
+    let now = now()
+    let due = lock.withLock { () -> Bool in
+      var entry = olderDaemon[host] ?? (now, Self.olderDaemonRetry, nil, false)
+      defer { olderDaemon[host] = entry }
+      guard !entry.trying, now >= entry.next else { return false }
+      entry.trying = true
+      return true
+    }
+    guard due else { return }
+    Task { await self.retryBootstrap(host) }
+  }
+
+  private func retryBootstrap(_ host: HostID) async {
+    var why: String?
+    var updated = false
+    do {
+      let daemon: DaemonBootstrap.Outcome.Daemon
+      if let updateDaemonSeam {
+        daemon = try await updateDaemonSeam(host)
+      } else {
+        let driver = try heldDriver(host)
+        daemon = try await DaemonBootstrap.ensure(
+          host: host, driver: driver, socket: driver.daemonSocket
+        ).daemon
+      }
+      switch daemon {
+      case .current, .installed, .handedOff, .keptNewer: updated = true
+      case .keptOlder(let reason): why = reason
+      }
+    } catch {
+      why = error.localizedDescription
+    }
+    lock.withLock {
+      guard var entry = olderDaemon[host] else { return }
+      entry.trying = false
+      entry.why = why ?? entry.why
+      entry.next = now() + entry.wait
+      entry.wait = min(entry.wait * 2, Self.olderDaemonCeiling)
+      olderDaemon[host] = entry
+    }
+    Self.logger.notice(
+      "older daemon on \(String(describing: host), privacy: .public): \(updated ? "updated" : (why ?? "kept"), privacy: .public)"
+    )
+    guard updated else { return }
+    // The connection still speaks to the old program: the next one reaches the new.
+    await disconnect(host)
+    lock.withLock { failedAt[host] = nil }
+    try? await ensureConnected(host)
+  }
+
+  /// What a pane on `host` says while it waits to attach, when its host's daemon is too old for
+  /// it and couldn't be updated yet (ADR 0074): nil otherwise, for the pane's usual notice.
+  func waitingNotice(for host: HostID) -> String? {
+    guard let entry = lock.withLock({ olderDaemon[host] }) else { return nil }
+    let why = entry.why.map { " (\($0))" } ?? ""
+    return "This terminal's host runs an older Workroom daemon, which Workroom couldn't update yet"
+      + "\(why). Workroom will keep trying, and your session will be restored once it's updated."
   }
 
   /// `host` is there (it connected, or its provider no longer says it is gone): no longer gone,

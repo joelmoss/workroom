@@ -35,6 +35,10 @@ public enum DaemonHandshake {
   /// remote service stream and the daemon may close it after 60 s of silence (ADR 0075). An older
   /// daemon drops it unanswered and has no deadline, so it is never sent one.
   public static let minPingsVersion: UInt16 = 11
+  /// `MIN_HOST_ATTACH_VERSION`: the first peer version a pane's Mac-side attach client reaches
+  /// over `relay` (ADR 0074). A pane meeting an older daemon exits 255 and retries until the app
+  /// has updated the host's daemon.
+  public static let minHostAttachVersion: UInt16 = 11
   public static let magic: [UInt8] = Array("WRA1".utf8)
 
   public static func encodeHello(build: String) -> [UInt8] {

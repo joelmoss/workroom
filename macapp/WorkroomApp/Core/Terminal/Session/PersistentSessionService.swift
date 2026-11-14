@@ -670,6 +670,11 @@ final class PersistentSessionService {
           guard self.hasAttachedPane(on: host) else { return }
           try? await RemoteHosts.shared.reachability.ensureConnected(host)
         }
+        // A host whose daemon is too old for this attach, which the app couldn't update yet: the
+        // pane says so when its attach drops, rather than that the host can't be reached.
+        if let notice = RemoteHosts.shared.reachability.waitingNotice(for: host) {
+          return SSHTransport.withRetryNotice(notice, command)
+        }
         return command
       } catch {
         logger.error(
