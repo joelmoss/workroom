@@ -278,8 +278,10 @@ final class RailwaySweepTests: XCTestCase {
       ("503 with GraphQL errors", 503, errors, true),
       ("503 unreadable", 503, "<html>bad gateway</html>", true),
       ("500 empty", 500, "", true),
-      ("200 with errors and partial data",
-        200, #"{"data":{"sandboxCreate":null},"errors":[{"message":"timeout"}]}"#, true),
+      (
+        "200 with errors and partial data",
+        200, #"{"data":{"sandboxCreate":null},"errors":[{"message":"timeout"}]}"#, true
+      ),
       ("200 with errors", 200, errors, true),
       ("200 unreadable", 200, "not json", true),
       ("400", 400, errors, false),

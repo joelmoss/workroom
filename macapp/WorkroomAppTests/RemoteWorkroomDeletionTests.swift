@@ -406,10 +406,18 @@ final class RemoteTeardownTests: XCTestCase {
 
   private final class Driver: HostTerminalDriver, ProvisioningHostDriver, @unchecked Sendable {
     let log: Log
-    init(_ log: Log) { self.log = log }
+    /// What `destroy` throws, as a provider's own cleanup of a host it no longer has may.
+    let destroyFails: Bool
+    init(_ log: Log, destroyFails: Bool = false) {
+      self.log = log
+      self.destroyFails = destroyFails
+    }
     var daemonSocket: String { "/home/boxd/.workroom/workroomd.sock" }
     func create() async throws -> HostID { .remote(UUID()) }
-    func destroy(_ host: HostID) async throws { log.add("destroy") }
+    func destroy(_ host: HostID) async throws {
+      log.add("destroy")
+      if destroyFails { throw HostDriverError.provisioning("no such machine") }
+    }
     func openStream(to host: HostID) async throws -> HostStream {
       throw HostDriverError.provisioning("no stream")
     }
@@ -537,6 +545,37 @@ final class RemoteTeardownTests: XCTestCase {
     let log = Log()
     try await delete(host(), log, teardown: teardown(log, skip: true, result: .failed("no")))
     XCTAssertEqual(log.all, ["destroy", "forget w"])
+  }
+
+  /// Value: protects=Remove Workroom on a host its provider says is gone removes the workroom: no
+  /// teardown script is run on a host that isn't there, the provider's cleanup is tried but its
+  /// failure doesn't stop the delete, and the record and the host's forwards are forgotten
+  /// (review 3, C5); fails_when=the script runs and its failure stops the delete, a failed
+  /// cleanup of the gone host keeps the workroom, or the record stays; no_claim=GoneHosts itself
+  /// (HostReachabilityTests)
+  func testRemovingAWorkroomWhoseHostIsGoneSkipsItsTeardownAndForgetsIt() async throws {
+    for destroyFails in [true, false] {
+      let log = Log()
+      let driver = Driver(log, destroyFails: destroyFails)
+      try await RemoteWorkrooms.delete(
+        "w", host: host(),
+        environment: RemoteProvisioning.Environment(
+          driver: driver, daemonSocket: driver.daemonSocket),
+        recorder: recorder(log),
+        teardown: teardown(log, result: .failed("teardown script failed: couldn't reach the host")),
+        hostGone: true,
+        onForgotten: {
+          if case .host = $0 { log.add("forgot the host") }
+        })
+      XCTAssertEqual(log.all, ["destroy", "forgot the host", "forget w"], "\(destroyFails)")
+    }
+
+    // Signed out of its provider: nothing to clean up with, and the workroom still goes.
+    let log = Log()
+    try await RemoteWorkrooms.delete(
+      "w", host: host(), environment: nil, recorder: recorder(log),
+      teardown: teardown(log, result: .failed("no")), hostGone: true, onForgotten: { _ in })
+    XCTAssertEqual(log.all, ["forget w"])
   }
 
   /// Value: protects=a host a create left `creating` or a delete left `failed` is taken down

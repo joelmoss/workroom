@@ -572,7 +572,8 @@ actor LiveRun {
     try await driver.destroy(host)
     self.host = nil
     var status = try await api.sandboxStatus(record.sandboxID, environmentID: record.environmentID)
-    for _ in 0..<30 where !(status.map(RailwayHostDriver.isGone) ?? true) || status == "DESTROYING" {
+    for _ in 0..<30 where !(status.map(RailwayHostDriver.isGone) ?? true) || status == "DESTROYING"
+    {
       try await Task.sleep(for: .seconds(2))
       status = try await api.sandboxStatus(record.sandboxID, environmentID: record.environmentID)
     }

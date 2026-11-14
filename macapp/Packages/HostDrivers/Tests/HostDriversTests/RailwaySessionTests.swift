@@ -100,7 +100,8 @@ final class RailwaySessionTests: XCTestCase {
   // MARK: The session
 
   private func session(
-    _ railway: StubRailway, store: any RailwayTokenStore, now: @escaping @Sendable () -> Date = Date.init
+    _ railway: StubRailway, store: any RailwayTokenStore,
+    now: @escaping @Sendable () -> Date = Date.init
   ) -> RailwaySession {
     RailwaySession(client: client(railway), store: store, lock: InProcessRefreshLock(), now: now)
   }
@@ -252,14 +253,16 @@ final class RailwaySessionTests: XCTestCase {
     clock.withLock { $0 = $0.addingTimeInterval(3600) }
     railway.answerToken("refresh_token") { request in
       StubRailway.form(request)["refresh_token"] == "rt-3"
-        ? StubRailway.tokens(access: "at-4", refresh: "rt-4") : StubRailway.oauthError("invalid_grant")
+        ? StubRailway.tokens(access: "at-4", refresh: "rt-4")
+        : StubRailway.oauthError("invalid_grant")
     }
     let fourth = try await session.accessToken()
     XCTAssertEqual(fourth, "at-4")
     clock.withLock { $0 = $0.addingTimeInterval(3600) }
     railway.answerToken("refresh_token") { request in
       StubRailway.form(request)["refresh_token"] == "rt-4"
-        ? StubRailway.tokens(access: "at-5", refresh: "rt-5") : StubRailway.oauthError("invalid_grant")
+        ? StubRailway.tokens(access: "at-5", refresh: "rt-5")
+        : StubRailway.oauthError("invalid_grant")
     }
     let fifth = try await session.accessToken()
     XCTAssertEqual(fifth, "at-5", "a refresh sent a revoked token")

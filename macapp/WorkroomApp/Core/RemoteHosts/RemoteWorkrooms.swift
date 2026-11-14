@@ -532,7 +532,7 @@ enum RemoteWorkrooms {
   /// again finishes the job. `environment` is needed only for a live one.
   static func delete(
     _ name: String, host: HostDescriptor, environment: RemoteProvisioning.Environment?,
-    recorder: Recorder, teardown: Teardown? = nil,
+    recorder: Recorder, teardown: Teardown? = nil, hostGone: Bool = false,
     reachability: HostReachability = RemoteHosts.shared.reachability,
     onForgotten: @escaping @MainActor @Sendable (Forgotten) -> Void
   ) async throws {
@@ -548,6 +548,20 @@ enum RemoteWorkrooms {
       try await recorder.forget(name)
     }
     guard try checkDeletable([host]) else { return try await forget() }
+    if hostGone, let id = host.id {
+      // Its provider no longer has it (`GoneHosts`): no script can run there, and the provider's
+      // own cleanup (a failed sandbox's destroy, the driver's files) is tried but can't stop the
+      // workroom going.
+      let box = HostID.remote(id)
+      await reachability.disconnect(box)
+      if let environment {
+        do { try await RemoteProvisioning.tearDown(host: box, in: environment) } catch {
+          teardown?.onLine("Its host was already gone: \(error.localizedDescription)")
+        }
+      }
+      await reachability.forgetRelay(id)
+      return try await forget()
+    }
     // `checkDeletable` found it live, so it has a box.
     guard let environment, let id = host.id else { throw Failure.signedOut }
     let box = HostID.remote(id)

@@ -306,7 +306,8 @@ final class RailwayHostOptionsTests: XCTestCase {
       $0.trimmingCharacters(in: CharacterSet(charactersIn: "'"))
     }
     for path in arguments.dropFirst() {
-      XCTAssertTrue(path.hasPrefix(state.path), "the setup reaches outside the host's state: \(path)")
+      XCTAssertTrue(
+        path.hasPrefix(state.path), "the setup reaches outside the host's state: \(path)")
     }
     guard arguments.dropFirst().allSatisfy({ $0.hasPrefix(state.path) }) else { return }
 
