@@ -414,7 +414,10 @@ final class RailwayHostDriverTests: XCTestCase {
     let railway = railway()
     let reads = Mutex(0)
     railway.answer("sandbox") { _ in
-      let read = reads.withLock { $0 += 1; return $0 }
+      let read = reads.withLock {
+        $0 += 1
+        return $0
+      }
       let sandbox: Any = read <= 2 ? NSNull() : ["id": "sbx-1", "status": "RUNNING"]
       return RailwayHTTPResponse(
         status: 200,

@@ -209,7 +209,12 @@ final class RailwayAPITests: XCTestCase {
     let asked = Mutex(0)
     stuck.answer("sandboxes") { _ in
       // Bounded, so the defect fails the test instead of hanging it.
-      guard asked.withLock({ $0 += 1; return $0 }) <= 10 else { throw URLError(.cancelled) }
+      guard
+        asked.withLock({
+          $0 += 1
+          return $0
+        }) <= 10
+      else { throw URLError(.cancelled) }
       return try Self.page("sbx-a", next: "page-2")
     }
     let listed = try await RailwayAPI(transport: stuck, tokens: Tokens(["at-1"]))

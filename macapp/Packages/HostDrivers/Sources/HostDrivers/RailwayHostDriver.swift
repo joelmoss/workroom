@@ -422,7 +422,9 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
     let pin = configuration.keys.appendingPathComponent("relay_host_key")
     func pinned() -> String? {
       (try? String(contentsOf: pin, encoding: .utf8))
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap {
+          $0.isEmpty ? nil : $0
+        }
     }
     if let pinned = pinned() { return pinned }
     let scan = await runner.run(

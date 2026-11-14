@@ -327,7 +327,13 @@ final class RailwaySessionTests: XCTestCase {
     XCTAssertEqual(flock(fd, LOCK_EX | LOCK_NB), 0)
     let released = Mutex(false)
     let release = {
-      guard !released.withLock({ let was = $0; $0 = true; return was }) else { return }
+      guard
+        !released.withLock({
+          let was = $0
+          $0 = true
+          return was
+        })
+      else { return }
       flock(fd, LOCK_UN)
       close(fd)
     }
@@ -359,7 +365,9 @@ final class RailwaySessionTests: XCTestCase {
     release()
     _ = await waiter.value
     XCTAssertFalse(ran.withLock { $0 })
-    XCTAssertTrue(outcome.withLock { $0 } is CancellationError, "\(String(describing: outcome.withLock { $0 }))")
+    XCTAssertTrue(
+      outcome.withLock { $0 } is CancellationError, "\(String(describing: outcome.withLock { $0 }))"
+    )
   }
 
   /// Value: protects=a lock the other build never lets go (hung, or stopped in a debugger) fails

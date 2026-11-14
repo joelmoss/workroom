@@ -332,7 +332,13 @@ final class RailwaySweepTests: XCTestCase {
     XCTAssertEqual(flock(fd, LOCK_EX | LOCK_NB), 0)
     let released = Mutex(false)
     let release = {
-      guard !released.withLock({ let was = $0; $0 = true; return was }) else { return }
+      guard
+        !released.withLock({
+          let was = $0
+          $0 = true
+          return was
+        })
+      else { return }
       flock(fd, LOCK_UN)
       close(fd)
     }
