@@ -266,7 +266,14 @@ fn dispatched_peer(envelopes: &[Envelope]) -> Option<Vec<(OsString, OsString)>> 
     let mut attachment = Attachment::new(Arc::new(|| {}));
     let writer: SharedWriter = Arc::new(std::sync::Mutex::new(Box::new(std::io::sink())));
     for envelope in envelopes {
-        let reply = dispatch(envelope, &sessions, &mut attachment, "test", &writer, &|_| true);
+        let reply = dispatch(
+            envelope,
+            &sessions,
+            &mut attachment,
+            "test",
+            &writer,
+            &|_| true,
+        );
         assert!(reply.is_none(), "a Peer frame is never answered");
     }
     attachment.peer
@@ -298,7 +305,10 @@ fn a_peer_frame_lets_only_the_login_environment_through() {
         ("USER", "login"),
         ("SSH_CONNECTION", "10.0.0.1 1 10.0.0.2 22"),
         ("SSH_TTY", "/dev/pts/3"),
-        ("WORKROOM_SESSION_ID", "6B9B968D-0BD7-4172-850A-A373DA73BC70"),
+        (
+            "WORKROOM_SESSION_ID",
+            "6B9B968D-0BD7-4172-850A-A373DA73BC70",
+        ),
         ("WORKROOM_SESSION_COMMAND", "rm -rf ~"),
         ("TERM", "dumb"),
         ("COLORTERM", "no"),

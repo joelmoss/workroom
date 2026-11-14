@@ -89,7 +89,10 @@ fn a_greeting_is_followed_by_exactly_one_peer_frame() {
     );
     let mut rest = Vec::new();
     from.read_to_end(&mut rest).unwrap();
-    assert_eq!(rest, after, "the client's next envelope is left to the copy");
+    assert_eq!(
+        rest, after,
+        "the client's next envelope is left to the copy"
+    );
 }
 
 /// A login with nothing to pass on sends no `Peer` frame: no environment, or one of only what a

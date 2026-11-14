@@ -248,9 +248,8 @@ fn build(
         .or_else(|| (!origin.shell.is_empty()).then(|| origin.shell.clone()))
         .unwrap_or_else(|| crate::terminal::shell::POSIX_SHELL.to_string());
     let home = from_login("HOME").unwrap_or_else(|| origin.home.clone().into_os_string());
-    let user = from_login("USER").or_else(|| {
-        (!origin.user.is_empty()).then(|| OsString::from(&origin.user))
-    });
+    let user = from_login("USER")
+        .or_else(|| (!origin.user.is_empty()).then(|| OsString::from(&origin.user)));
     let logname = from_login("LOGNAME").or_else(|| user.clone());
     let mut set = |key: &str, value: OsString| {
         environment.retain(|(existing, _)| existing != key);

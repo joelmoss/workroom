@@ -14,10 +14,13 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use workroomd::testing::{
-    HostOrigin, KEEPALIVE_PROBE, KEEPALIVE_VARIABLE, SessionId, SessionStore, handle_connection,
+    HostOrigin, KEEPALIVE_PROBE, KEEPALIVE_VARIABLE, Screens, SessionId, SessionStore,
+    handle_connection,
 };
 use wr_protocol::envelope::Service;
 use wr_protocol::frame::{Frame, FrameKind};
@@ -131,6 +134,8 @@ impl Drop for Scratch {
 struct Host {
     store: SessionStore,
     socket: PathBuf,
+    /// The connections the daemon is serving.
+    connections: Arc<AtomicUsize>,
     /// The home of the ssh login `relay` runs in.
     home: PathBuf,
 }
@@ -159,18 +164,24 @@ impl Host {
         let socket = scratch.0.join("d.sock");
         let listener = UnixListener::bind(&socket).expect("bind");
         let served = store.clone();
+        let connections = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&connections);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
                 let sessions = served.clone();
+                let counted = Arc::clone(&counted);
+                counted.fetch_add(1, Ordering::SeqCst);
                 std::thread::spawn(move || {
                     let _ = handle_connection(stream, sessions);
+                    counted.fetch_sub(1, Ordering::SeqCst);
                 });
             }
         });
         Host {
             store,
             socket,
+            connections,
             home: scratch.home(),
         }
     }
@@ -178,9 +189,16 @@ impl Host {
     /// What a pane on the Mac runs: `attach --dial` to this host's `relay`, which has the
     /// environment of the ssh login it runs in (`LOGIN`, with the scratch home), never the Mac's.
     fn dial(&self, env: &[(&str, &str)]) -> Command {
+        self.dial_with(&[], env)
+    }
+
+    /// As `dial`, with `flags` for the attach.
+    fn dial_with(&self, flags: &[&str], env: &[(&str, &str)]) -> Command {
         let mut command = Command::new(daemon_binary());
         command
-            .args(["attach", "--dial", "/usr/bin/env", "-i"])
+            .arg("attach")
+            .args(flags)
+            .args(["--dial", "/usr/bin/env", "-i"])
             .arg(format!("HOME={}", self.home.display()))
             .args(LOGIN.iter().map(|(key, value)| format!("{key}={value}")))
             .arg(daemon_binary())
@@ -708,4 +726,80 @@ fn a_served_daemon_takes_home_and_shell_from_the_account_and_resources_beside_it
     }
     // Ended by this test, not left running: the daemon never idles out.
     let _ = common::control(&socket, Frame::control(FrameKind::KillAll));
+}
+
+/// A restored remote pane whose session has ended, attached with its stdin held open as a pane's
+/// is: what it shows by the time the daemon has closed its connection (so its `relay` has exited),
+/// which it must do while the pane still shows it. A pane with no keepalive and no deadline
+/// otherwise kept a relay and a daemon connection for as long as it stayed open.
+fn ended_pane_closes_its_connection(host: &Host) -> String {
+    let mut child = Spawned(
+        host.dial_with(&["--no-create"], &MAC)
+            .spawn()
+            .expect("attach"),
+    );
+    let mut output = ClientReader::new(&mut child);
+    let _stdin = child.stdin.take().unwrap();
+    // Shown first, so the connection has been made and answered before it is counted.
+    output.read_until("Close it to start again", Duration::from_secs(10));
+    let closed = common::wait_for(Duration::from_secs(5), || {
+        host.connections.load(Ordering::SeqCst) == 0
+    });
+    let seen = output
+        .read_until("\0never", Duration::from_millis(300))
+        .to_string();
+    assert!(seen.contains("Close it to start again"), "{seen:?}");
+    assert!(closed, "the ended pane's connection stayed open: {seen:?}");
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the pane stopped showing its end: {seen:?}"
+    );
+    seen
+}
+
+/// A restored remote pane whose session ended and left no record is refused, and the daemon then
+/// closes the connection: the pane says so and holds, with no relay behind it.
+#[test]
+fn a_refused_restored_remote_pane_has_its_connection_closed() {
+    let scratch = Scratch::new("refused");
+    let host = Host::serve(&scratch, SessionStore::new(), &DAEMON);
+    let seen = ended_pane_closes_its_connection(&host);
+    assert_eq!(
+        seen.matches("Close it to start again").count(),
+        1,
+        "{seen:?}"
+    );
+}
+
+/// A restored remote pane shown the record of a session that ended with its host (#232): once
+/// the screen is out, the daemon closes the connection, and the pane keeps the screen with its one
+/// notice, rather than reading the close as a lost link to attach again.
+#[test]
+fn a_restored_remote_pane_shown_its_record_has_its_connection_closed() {
+    if !cfg!(feature = "terminal-state") {
+        eprintln!("skipping: built without the terminal-state feature, so no record repaints");
+        return;
+    }
+    let scratch = Scratch::new("record");
+    let store = SessionStore::new();
+    store
+        .hooks()
+        .screens
+        .keep(Screens::open(&scratch.0.join("screens")).expect("records"));
+    let id = parse_session_id(OsStr::new(SESSION)).unwrap();
+    store
+        .hooks()
+        .screens
+        .get()
+        .expect("screens")
+        .save(SessionId(id.0), 80, 24, b"RECORD-MARK\r\n$ ")
+        .expect("record");
+    let host = Host::serve(&scratch, store, &DAEMON);
+    let seen = ended_pane_closes_its_connection(&host);
+    assert!(seen.contains("RECORD-MARK"), "{seen:?}");
+    assert_eq!(
+        seen.matches("Close it to start again").count(),
+        1,
+        "{seen:?}"
+    );
 }

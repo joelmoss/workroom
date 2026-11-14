@@ -142,23 +142,53 @@ pub(crate) fn dispatch(
                     .screens
                     .get()
                     .and_then(|screens| screens.render(id, request.columns, request.rows));
+                //
+                // A remote pane's connection (`AttachRequest::host_environment`) is then closed, so
+                // its `relay` exits: attached to no session, it has no keepalive probe and no
+                // service deadline (ADR 0075), and would otherwise last as long as the pane stays
+                // open. After its screen it is first told the session ended, so its client holds
+                // the screen rather than reading the close as a lost link to attach again.
+                let refusal = || {
+                    Frame::new(
+                        FrameKind::Failure,
+                        format!("session ended: {}", id.to_hyphenated()).into_bytes(),
+                    )
+                };
+                let remote = request.host_environment;
                 if let Some(screen) = ended {
                     let attached = Frame::control(FrameKind::Attached).encode();
                     if send(&Envelope::new(Service::Control, envelope.stream, attached).encode()) {
+                        let mut shown = true;
                         for chunk in screen.chunks(crate::terminal::session::READ_CHUNK) {
                             let output = Frame::new(FrameKind::Output, chunk.to_vec()).encode();
                             let output = Envelope::new(Service::Terminal, envelope.stream, output);
                             if !send(&output.encode()) {
+                                shown = false;
                                 break;
                             }
                         }
+                        if shown && remote {
+                            let ended = Envelope::new(
+                                Service::Terminal,
+                                envelope.stream,
+                                refusal().encode(),
+                            );
+                            send(&ended.encode());
+                        }
+                    }
+                    if remote {
+                        (attachment.closer)();
                     }
                     return None;
                 }
-                return reply(Frame::new(
-                    FrameKind::Failure,
-                    format!("session ended: {}", id.to_hyphenated()).into_bytes(),
-                ));
+                if remote {
+                    let refused =
+                        Envelope::new(envelope.service, envelope.stream, refusal().encode());
+                    send(&refused.encode());
+                    (attachment.closer)();
+                    return None;
+                }
+                return reply(refusal());
             }
             // Create on first attach, reattach afterwards. One code path, so a client that
             // crashed and came back does not have to know which case it is in.
