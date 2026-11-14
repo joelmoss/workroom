@@ -188,6 +188,15 @@ final class HostDriverRegistry: @unchecked Sendable {
   /// candidates leave out (`RailwayLostCreatesModel`); nil before config was first read.
   var railwayRecordedSandboxes: Set<String>? { lock.withLock { recordedSandboxes } }
 
+  /// Config's records name `sandboxes` (`adopt`, and a fixture launch, which never adopts). Not
+  /// `complete` with a delete in flight, when the projects leave out hosts config still records:
+  /// what was known stays known.
+  func noteRecordedSandboxes(_ sandboxes: Set<String>, complete: Bool = true) {
+    lock.withLock {
+      recordedSandboxes = complete ? sandboxes : recordedSandboxes.map { $0.union(sandboxes) }
+    }
+  }
+
   /// How many sweeps are running, for tests to wait on `finishSweep`.
   var sweepsRunning: Int { lock.withLock { sweeping.count } }
 
@@ -253,11 +262,7 @@ final class HostDriverRegistry: @unchecked Sendable {
     // names is ever swept, so another Mac in the environment never makes a live sandbox look like
     // this Mac's orphan.
     let sandboxes = Set(descriptors.compactMap { $0.railway?.sandboxID })
-    // With a delete in flight, `projects` leaves out hosts config still records: what was known
-    // stays known.
-    lock.withLock {
-      recordedSandboxes = sweep ? sandboxes : recordedSandboxes.map { $0.union(sandboxes) }
-    }
+    noteRecordedSandboxes(sandboxes, complete: sweep)
     guard
       !recorded.isEmpty || !already.isEmpty || !marked.isEmpty || !machines.isEmpty
         || railway != nil

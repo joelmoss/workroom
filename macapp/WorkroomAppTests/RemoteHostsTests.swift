@@ -726,6 +726,28 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertTrue(gone.contains(id), "a direct set lost to an earlier number")
   }
 
+  /// Value: protects=the gone set and the update numbers it keeps hold only hosts config still
+  /// records, so neither grows with every workroom removed, and a host still recorded keeps both
+  /// (review 5, D2.7); fails_when=a removed host's entry stays, or a recorded host loses its gone
+  /// state or its newest number, so a stale update could overwrite it; seam=GoneHosts.prune
+  @MainActor
+  func testGoneHostsForgetsHostsNoLongerRecorded() {
+    let gone = GoneHosts()
+    let kept = UUID()
+    let removed = UUID()
+    let newer = GoneHosts.nextSequence() + 10
+    gone.apply(kept, gone: true, sequence: newer)
+    gone.apply(removed, gone: true, sequence: GoneHosts.nextSequence())
+    gone.prune(keeping: [kept])
+    XCTAssertTrue(gone.contains(kept))
+    XCTAssertFalse(gone.contains(removed), "a removed host stayed gone")
+    gone.apply(kept, gone: false, sequence: newer - 1)
+    XCTAssertTrue(gone.contains(kept), "the kept host lost its newest number")
+    // A removed host's number went with it: even its oldest update applies again.
+    gone.apply(removed, gone: true, sequence: 1)
+    XCTAssertTrue(gone.contains(removed), "a removed host's number was kept")
+  }
+
   /// Value: protects=a delete (Remove Workroom or Delete Project) whose gone host's provider can't
   /// give an environment still goes ahead for the rest, leaving that host's delete to keep its
   /// record (`RemoteWorkrooms.delete`), while a live host's failure still refuses the delete before

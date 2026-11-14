@@ -12,7 +12,7 @@ import WorkroomVCS
 /// made with.
 final class RemoteHosts: Sendable {
   /// The app's, whose gone hosts the views read (`GoneHosts`).
-  static let shared = RemoteHosts(goneChanged: GoneHosts.record)
+  static let shared = RemoteHosts(goneChanged: { GoneHosts.record($0, gone: $1, sequence: $2) })
 
   /// Which driver a host is in (#309, #356): its kind (`HostKind`), and who that driver acts for.
   /// A container runtime on this Mac, and for Docker the context it names (nil names none); a boxd
@@ -136,7 +136,7 @@ final class RemoteHosts: Sendable {
     )? =
       nil,
     presence: (@Sendable (HostID) async -> HostPresence?)? = nil,
-    goneChanged: (@Sendable (HostID, Bool) -> Void)? = nil,
+    goneChanged: (@Sendable (HostID, Bool, UInt64) -> Void)? = nil,
     daemonVersion: (@Sendable (HostID) async -> UInt16?)? = nil,
     updateDaemon: (@Sendable (HostID) async throws -> DaemonBootstrap.Outcome.Daemon)? = nil,
     pendingIn: URL? = RemoteHosts.pendingIn,

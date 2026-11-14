@@ -83,7 +83,10 @@ final class RailwayWorkroomUITests: XCTestCase {
       element(app, "railway.lostCreate.title").waitForExistence(timeout: 10),
       "no notice of the lost create")
     let destroy = element(app, "railway.lostCreate.destroy.sbx-lost-uitest")
-    XCTAssertTrue(destroy.waitForExistence(timeout: 10), "the candidate isn't offered")
+    let problem = element(app, "railway.lostCreate.problem")
+    XCTAssertTrue(
+      destroy.waitForExistence(timeout: 10),
+      "the candidate isn't offered: \(problem.exists ? problem.label : "no problem shown")")
     XCTAssertFalse(
       element(app, "railway.lostCreate.destroy.sbx-uitest").exists,
       "the workroom's own sandbox is offered")

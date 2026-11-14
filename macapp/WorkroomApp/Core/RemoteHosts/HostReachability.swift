@@ -49,8 +49,9 @@ final class HostReachability: @unchecked Sendable {
   private let presenceSeam: (@Sendable (HostID) async -> HostPresence?)?
   private let startHost: (@Sendable (HostID) async throws -> Void)?
   private let now: @Sendable () -> ContinuousClock.Instant
-  /// Hears a host become gone, or be found again (`GoneHosts.record` in the app).
-  private let goneChanged: (@Sendable (HostID, Bool) -> Void)?
+  /// Hears a host become gone, or be found again, with the update's number, taken under `lock`
+  /// as the change is made (`GoneHosts.record` in the app).
+  private let goneChanged: (@Sendable (HostID, Bool, UInt64) -> Void)?
   /// The version `host`'s daemon greeted the service connection with; nil in the app
   /// (`HostConnectionManager.daemonVersion`).
   private let daemonVersionSeam: (@Sendable (HostID) async -> UInt16?)?
@@ -74,7 +75,7 @@ final class HostReachability: @unchecked Sendable {
       @Sendable (HostID, any HostTerminalDriver) async throws -> DaemonClient
     )? = nil,
     presence: (@Sendable (HostID) async -> HostPresence?)? = nil,
-    goneChanged: (@Sendable (HostID, Bool) -> Void)? = nil,
+    goneChanged: (@Sendable (HostID, Bool, UInt64) -> Void)? = nil,
     daemonVersion: (@Sendable (HostID) async -> UInt16?)? = nil,
     updateDaemon: (@Sendable (HostID) async throws -> DaemonBootstrap.Outcome.Daemon)? = nil
   ) {
@@ -269,11 +270,13 @@ final class HostReachability: @unchecked Sendable {
       switch presence {
       case .asleep: throw RepositoryRoutingError.asleep(host)
       case .gone:
-        let newly = lock.withLock {
+        // Numbered under the lock that orders the change, so a found update that overtakes this
+        // one's callback still carries the later number (`GoneHosts.apply`).
+        let newly = lock.withLock { () -> UInt64? in
           failedAt[host] = (now(), false)
-          return gone.insert(host).inserted
+          return gone.insert(host).inserted ? GoneHosts.nextSequence() : nil
         }
-        if newly { goneChanged?(host, true) }
+        if let newly { goneChanged?(host, true, newly) }
         throw RepositoryRoutingError.gone(host)
       // Its relay key still reaches it, so what the user asked for still connects; a background
       // read says why it couldn't check (#629).
@@ -418,7 +421,9 @@ final class HostReachability: @unchecked Sendable {
   /// `host` is there (it connected, or its provider no longer says it is gone): no longer gone,
   /// which the views hear once.
   private func found(_ host: HostID) {
-    if lock.withLock({ gone.remove(host) }) != nil { goneChanged?(host, false) }
+    // Numbered under the lock, as a gone update is.
+    let found = lock.withLock { gone.remove(host) != nil ? GoneHosts.nextSequence() : nil }
+    if let found { goneChanged?(host, false, found) }
   }
 
   /// A container's postStartCommand, on the first connect after each start of it (#308, eng review

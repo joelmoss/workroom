@@ -1682,6 +1682,10 @@ final class AppStore: ObservableObject {
     private func loadFixture() {
       let fixtures = applyingDeletionTombstones(UITestFixture.projects())
       projectStore.projects = fixtures
+      // No host is adopted in a fixture launch, but a lost Railway create's candidates still
+      // leave out what its records name (review 5 of #623).
+      RemoteHosts.shared.registry.noteRecordedSandboxes(
+        Set(fixtures.flatMap { $0.workrooms.compactMap { $0.host?.railway?.sandboxID } }))
       // Host option reads are the fixture's, never a provider's (#575). Each reload sets the same.
       HostOptionsCatalog.shared.fetch = UITestFixture.hostOptionsFetch()
       // A container create mid-download, still unnamed (#309, #483). Once: a reload re-enters here.
@@ -1864,6 +1868,12 @@ final class AppStore: ObservableObject {
     // delete that fails keeps them (#296).
     let deleting = !lifecycle.deletingProjects.isEmpty || !lifecycle.deletingWorkrooms.isEmpty
     RemoteHosts.shared.reachability.adopt(fresh, sweep: !deleting)
+    // What no record names any more is forgotten; not with a delete in flight, whose workroom
+    // `fresh` leaves out though a failed delete keeps it.
+    if !deleting {
+      GoneHosts.shared.prune(
+        keeping: Set(fresh.flatMap { $0.workrooms.compactMap { $0.host?.id } }))
+    }
     // Older builds' base machines go, once per launch; the same in-flight-delete hold as the sweep.
     if !deleting {
       BaseRetirement.retireOnce(fresh, effects: BaseRetirement.live(cli: cli)) { [weak self] in

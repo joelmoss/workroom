@@ -52,6 +52,11 @@ final class HostReachabilityTests: XCTestCase {
     ).reachability
   }
 
+  /// Waits for `semaphore`, at most ten seconds: a synchronous wait, for a detached task.
+  private static func block(on semaphore: DispatchSemaphore) -> DispatchTimeoutResult {
+    semaphore.wait(timeout: .now() + 10)
+  }
+
   /// The inspector's panels ask together when a remote workroom is selected: one connect serves
   /// them all, where a second would be refused while the first is running.
   func testCallersAtOnceShareOneConnect() async throws {
@@ -452,7 +457,7 @@ final class HostReachabilityTests: XCTestCase {
     let remote = RemoteHosts(
       connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
       startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() },
-      goneChanged: { _, gone in reported.withLock { $0.append(gone) } }
+      goneChanged: { _, gone, _ in reported.withLock { $0.append(gone) } }
     ).reachability
     let id = UUID()
     let host = HostID.remote(id)
@@ -485,6 +490,136 @@ final class HostReachabilityTests: XCTestCase {
     XCTAssertEqual(reported.withLock { $0 }, [true, false])
   }
 
+  /// Value: protects=the two signed-out cells no test held (review 5, D2.11): inside a failed
+  /// connect's backoff window a background read answers from the backoff, asking Railway nothing;
+  /// past it, it asks and says signed out, connecting nothing; and an opened workroom's connect
+  /// that succeeds while signed out clears the backoff, so the next background read says signed
+  /// out rather than unreachable; fails_when=a read inside the window asks Railway or connects,
+  /// a signed-out background read connects, or a connect that worked leaves the host backed off;
+  /// seam=HostReachability with presence and the connect stubbed
+  func testASignedOutRailwayHostInsideItsBackoffAndAfterAConnectThatWorks() async throws {
+    let connects = Connects()
+    connects.hold(false)
+    let asked = Asleep()
+    let remote = RemoteHosts(
+      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
+      startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() }
+    ).reachability
+    let id = UUID()
+    let host = HostID.remote(id)
+    remote.adopt([
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "w", path: "/root/r", vcsName: "workroom/w", warnings: [],
+            host: HostDescriptor(
+              driver: HostKind.railway.driver, provisioner: RemoteWorkrooms.provisioner, id: id,
+              railway: RailwayHostRecord(
+                projectID: "prj", environmentID: "env", sandboxID: "sbx",
+                hostKey: "ssh-ed25519 AAAA")))
+        ])
+    ])
+    func read() async -> RepositoryRoutingError? {
+      do {
+        try await remote.ensureConnected(host)
+        return nil
+      } catch {
+        return error as? RepositoryRoutingError
+      }
+    }
+
+    // A connect that failed starts the backoff.
+    asked.set(presence: .awake)
+    connects.fail(true)
+    _ = await read()
+    XCTAssertEqual(connects.calls, 1)
+    let before = asked.calls
+
+    // Signed out, inside the window: the backoff answers, and Railway isn't asked.
+    asked.set(presence: .signedOut)
+    let inside = await read()
+    XCTAssertEqual(inside, .unavailable(host))
+    XCTAssertEqual(asked.calls, before, "a read inside the backoff asked Railway")
+    XCTAssertEqual(connects.calls, 1)
+
+    // Past it: Railway is asked, says signed out, and nothing connects.
+    connects.advance(HostReachability.retryAfter + .seconds(1))
+    let past = await read()
+    XCTAssertEqual(past, .signedOut(host))
+    XCTAssertEqual(asked.calls, before + 1)
+    XCTAssertEqual(connects.calls, 1, "a signed-out background read connected")
+
+    // Backed off afresh, then the user opens it: its connect works though signed out, and clears
+    // the backoff, still inside its window.
+    asked.set(presence: .awake)
+    _ = await read()
+    XCTAssertEqual(connects.calls, 2)
+    asked.set(presence: .signedOut)
+    connects.fail(false)
+    remote.activate(host)
+    try await remote.ensureConnected(host)
+    XCTAssertEqual(connects.calls, 3)
+    let after = await read()
+    XCTAssertEqual(after, .signedOut(host), "a connect that worked left the host backed off")
+  }
+
+  /// Value: protects=a gone update and a found one that race reach the views in the order the
+  /// state changed, whichever callback runs first: each is numbered under the lock that orders
+  /// the change (review 5, D2.8); fails_when=the change that happened last carries the lower
+  /// number, so `GoneHosts` keeps the stale one; seam=HostReachability's gone hook, the gone
+  /// callback held until the found one has run
+  func testRacingGoneAndFoundUpdatesAreNumberedInTheOrderTheyHappened() async throws {
+    let connects = Connects()
+    connects.hold(false)
+    let asked = Asleep()
+    let reported = Mutex<[(gone: Bool, sequence: UInt64)]>([])
+    let goneEntered = DispatchSemaphore(value: 0)
+    let foundDone = DispatchSemaphore(value: 0)
+    let remote = RemoteHosts(
+      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
+      startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() },
+      goneChanged: { _, gone, sequence in
+        if gone {
+          goneEntered.signal()
+          // The found update overtakes this one's callback.
+          _ = foundDone.wait(timeout: .now() + 10)
+        }
+        reported.withLock { $0.append((gone, sequence)) }
+        if !gone { foundDone.signal() }
+      }
+    ).reachability
+    let id = UUID()
+    let host = HostID.remote(id)
+    remote.adopt([
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "w", path: "/root/r", vcsName: "workroom/w", warnings: [],
+            host: HostDescriptor(
+              driver: HostKind.railway.driver, provisioner: RemoteWorkrooms.provisioner, id: id,
+              railway: RailwayHostRecord(
+                projectID: "prj", environmentID: "env", sandboxID: "sbx",
+                hostKey: "ssh-ed25519 AAAA")))
+        ])
+    ])
+
+    asked.set(presence: .gone)
+    let goneRead = Task.detached { try? await remote.ensureConnected(host) }
+    let entered = await Task.detached { Self.block(on: goneEntered) }.value
+    XCTAssertEqual(entered, .success, "the gone update never came")
+    asked.set(presence: .awake)
+    remote.activate(host)
+    try await remote.ensureConnected(host, wake: true)
+    await goneRead.value
+
+    let calls = reported.withLock { $0 }
+    XCTAssertEqual(calls.map(\.gone), [false, true], "the callbacks didn't race as staged")
+    let last = try XCTUnwrap(calls.max { $0.sequence < $1.sequence })
+    XCTAssertFalse(last.gone, "the found update, which happened last, carries the lower number")
+  }
+
   /// Value: protects=a host that connects is not gone, whatever an earlier read said, so a boxd box
   /// read as gone in another account comes back once the user opens it (review #3);
   /// fails_when=gone is cleared only by a presence read, which a click on a box that sleeps never
@@ -499,7 +634,7 @@ final class HostReachabilityTests: XCTestCase {
     let remote = RemoteHosts(
       connectHost: { try await connects.connect($0) }, isConnected: { _ in up.withLock { $0 } },
       startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() },
-      goneChanged: { _, gone in reported.withLock { $0.append(gone) } }
+      goneChanged: { _, gone, _ in reported.withLock { $0.append(gone) } }
     ).reachability
     let id = UUID()
     let host = HostID.remote(id)

@@ -42,11 +42,24 @@ final class GoneHosts: ObservableObject {
     }
   }
 
-  /// `HostReachability`'s hook into the shared set, from any thread: numbered here, in the order
-  /// recorded, and applied on the main actor in that order whatever order the hops arrive in.
-  nonisolated static func record(_ host: HostID, gone: Bool) {
+  /// Forgets every host but `present` (the hosts config records now), and the numbers applied to
+  /// them, so neither grows with every workroom ever removed.
+  func prune(keeping present: Set<UUID>) {
+    applied = applied.filter { present.contains($0.key) }
+    let kept = hosts.intersection(present)
+    if kept != hosts { hosts = kept }
+  }
+
+  /// `HostReachability`'s hook into the shared set, from any thread: update number `sequence`
+  /// (`nextSequence`, taken as the change was made), applied on the main actor in that order
+  /// whatever order the hops arrive in.
+  nonisolated static func record(_ host: HostID, gone: Bool, sequence: UInt64) {
     guard case .remote(let id) = host else { return }
-    let number = nextSequence()
-    Task { @MainActor in shared.apply(id, gone: gone, sequence: number) }
+    Task { @MainActor in shared.apply(id, gone: gone, sequence: sequence) }
+  }
+
+  /// `record`, numbered now.
+  nonisolated static func record(_ host: HostID, gone: Bool) {
+    record(host, gone: gone, sequence: nextSequence())
   }
 }
