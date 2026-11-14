@@ -43,7 +43,10 @@ func createStagingLock(path string) (*os.File, error) {
 // settle is lockHeld, which keeps the staging.
 func probeStagingLock(path string) (*os.File, lockState) {
 	// O_NONBLOCK: a FIFO planted at the path would otherwise block this open until a writer came.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	// O_RDWR though nothing is written: on NFS, Linux turns flock into a byte-range lock, and an
+	// exclusive one needs a descriptor open for writing. No O_CREATE or O_TRUNC, so --pretend still
+	// changes nothing; an unwritable lock file fails the open and is judged held.
+	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return nil, lockMissing
