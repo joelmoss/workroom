@@ -68,8 +68,10 @@ Release download counts are snapshotted daily, and before every `--clobber` uplo
   missing or empty PATH (`ErrDestinationNotEmpty` otherwise), streams git's progress as `clone`
   log events on stderr, and fails with `CloneFailed` carrying git's own error lines; SIGTERM
   kills git's process group and reports `Cancelled`. It clones into a hidden staging folder
-  beside PATH (`.<name>.clone-*`) and renames it into place, so a failure or cancel removes only
-  that staging folder and any parent it made that is still empty, never another run's clone;
+  beside PATH (`.<name>.clone-*`) and renames it into place, or inside an existing empty PATH
+  whose parent is unwritable or on another device (`.clone-*`, an external drive's root), so a
+  failure or cancel removes only that staging folder, what it moved and any parent it made that is
+  still empty, never another run's clone;
   `--pretend` reports `would_clone`.
   `delete-project` is config-only unless: `--with-workrooms` cascades the per-workroom
   teardown (hard-deletes worktree dirs, branches kept); or `--from-disk` runs each workroom's

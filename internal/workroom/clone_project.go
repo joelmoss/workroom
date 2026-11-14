@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,8 +37,10 @@ import (
 //	              └── path filled meanwhile ──► ErrDestinationNotEmpty
 //
 // The clone happens in a staging folder of its own and is renamed into place, so a failure or a
-// cancel only ever removes that staging folder, plus any parent folder this run made that is still
-// empty. Nothing another run or the user wrote is touched: a concurrent clone into the same path or
+// cancel only ever removes that staging folder and what it moved, plus any parent folder this run
+// made that is still empty. The staging folder sits beside path, or inside an existing empty path
+// whose parent this user can't write to or that is on another device (an external drive's root, a
+// mount point), so it never has to cross filesystems. Nothing another run or the user wrote is touched: a concurrent clone into the same path or
 // a sibling, or a file saved into a parent folder meanwhile, survives.
 //
 // Cancelling ctx (the CLI cancels it on SIGTERM) kills git's whole process group, so a transport
@@ -63,24 +66,25 @@ func (s *Service) CloneProject(ctx context.Context, url, path string, progress i
 	if err != nil {
 		return AddProjectResult{}, err
 	}
-	stage, err := os.MkdirTemp(filepath.Dir(canon), "."+filepath.Base(canon)+".clone-")
+	stage, inside, err := makeStaging(canon, existed)
 	if err != nil {
 		removeEmptyDirs(made)
-		return AddProjectResult{}, fmt.Errorf("%w: create staging folder for %s: %v", errs.ErrConfigWrite, canon, err)
+		return AddProjectResult{}, err
 	}
+	var placed []string // what this run put at canon, once it is there
 	moved := false
 	defer func() {
 		if retErr == nil {
 			return
 		}
 		switch {
-		case !moved:
-			_ = os.RemoveAll(stage)
-		case existed:
-			// The rename put this run's clone, and only it, at canon.
-			_ = emptyDir(canon)
-		default:
+		case moved && !existed:
 			_ = os.RemoveAll(canon)
+		default:
+			for _, name := range placed {
+				_ = os.RemoveAll(filepath.Join(canon, name))
+			}
+			_ = os.RemoveAll(stage)
 		}
 		removeEmptyDirs(made)
 	}()
@@ -88,19 +92,13 @@ func (s *Service) CloneProject(ctx context.Context, url, path string, progress i
 	if err := runClone(ctx, url, stage, progress); err != nil {
 		return AddProjectResult{}, err
 	}
-	if existed {
-		// Finder's junk would make the rename refuse an otherwise empty folder.
-		if err := removeDirJunk(canon); err != nil {
-			return AddProjectResult{}, err
-		}
+	if inside {
+		err = moveUp(stage, canon, &placed)
+	} else {
+		err = renameInto(stage, canon, existed, &placed)
 	}
-	// rename(2) itself, not os.Rename, which refuses any existing folder: it replaces an empty one
-	// and refuses one that has filled up meanwhile.
-	if err := syscall.Rename(stage, canon); err != nil {
-		if errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST) {
-			return AddProjectResult{}, fmt.Errorf("%w: %s", errs.ErrDestinationNotEmpty, canon)
-		}
-		return AddProjectResult{}, fmt.Errorf("%w: move the clone to %s: %v", errs.ErrConfigWrite, canon, err)
+	if err != nil {
+		return AddProjectResult{}, err
 	}
 	moved = true
 
@@ -113,6 +111,83 @@ func (s *Service) CloneProject(ctx context.Context, url, path string, progress i
 		return AddProjectResult{}, err
 	}
 	return AddProjectResult{Path: canon, VCS: "git"}, nil
+}
+
+// makeStaging makes the folder the clone runs in: beside canon (.<name>.clone-*), or inside it
+// (.clone-*) when canon already exists and its parent is unwritable or on another device. It
+// reports which.
+func makeStaging(canon string, existed bool) (string, bool, error) {
+	parent := filepath.Dir(canon)
+	if !existed || sameDevice(parent, canon) {
+		stage, err := os.MkdirTemp(parent, "."+filepath.Base(canon)+".clone-")
+		if err == nil {
+			return stage, false, nil
+		}
+		if !existed || (!errors.Is(err, fs.ErrPermission) && !errors.Is(err, syscall.EROFS)) {
+			return "", false, fmt.Errorf("%w: create staging folder for %s: %v", errs.ErrConfigWrite, canon, err)
+		}
+	}
+	stage, err := os.MkdirTemp(canon, ".clone-")
+	if err != nil {
+		return "", false, fmt.Errorf("%w: create staging folder in %s: %v", errs.ErrConfigWrite, canon, err)
+	}
+	return stage, true, nil
+}
+
+// renameInto renames the staging folder onto canon, recording what it placed there.
+func renameInto(stage, canon string, existed bool, placed *[]string) error {
+	if existed {
+		// Finder's junk would make the rename refuse an otherwise empty folder.
+		if err := removeDirJunk(canon); err != nil {
+			return err
+		}
+	}
+	// rename(2) itself, not os.Rename, which refuses any existing folder: it replaces an empty one
+	// and refuses one that has filled up meanwhile.
+	if err := syscall.Rename(stage, canon); err != nil {
+		if errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST) {
+			return fmt.Errorf("%w: %s", errs.ErrDestinationNotEmpty, canon)
+		}
+		return fmt.Errorf("%w: move the clone to %s: %v", errs.ErrConfigWrite, canon, err)
+	}
+	entries, err := os.ReadDir(canon)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		*placed = append(*placed, e.Name())
+	}
+	return nil
+}
+
+// moveUp moves the clone out of a staging folder inside canon into canon itself, refusing if
+// anything else has appeared in canon, and recording each entry it moves.
+func moveUp(stage, canon string, placed *[]string) error {
+	if err := removeDirJunk(canon); err != nil {
+		return err
+	}
+	others, err := os.ReadDir(canon)
+	if err != nil {
+		return err
+	}
+	if len(others) != 1 || others[0].Name() != filepath.Base(stage) {
+		return fmt.Errorf("%w: %s", errs.ErrDestinationNotEmpty, canon)
+	}
+	entries, err := os.ReadDir(stage)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		to := filepath.Join(canon, e.Name())
+		if _, err := os.Lstat(to); err == nil {
+			return fmt.Errorf("%w: %s", errs.ErrDestinationNotEmpty, canon)
+		}
+		if err := os.Rename(filepath.Join(stage, e.Name()), to); err != nil {
+			return fmt.Errorf("%w: move the clone to %s: %v", errs.ErrConfigWrite, canon, err)
+		}
+		*placed = append(*placed, e.Name())
+	}
+	return os.Remove(stage)
 }
 
 // cloneDestination checks canon can take a clone, reporting whether it already exists as an empty
@@ -236,20 +311,6 @@ func cloneErrorLines(stderr string) string {
 func removeDirJunk(dir string) error {
 	for _, name := range finderJunk {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return nil
-}
-
-// emptyDir removes everything inside dir, leaving dir itself.
-func emptyDir(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
 			return err
 		}
 	}
