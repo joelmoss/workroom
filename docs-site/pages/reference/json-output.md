@@ -7,7 +7,7 @@ Add `--json` to a `workroom` command to get output a program can read. The macOS
 
 ## What you get
 
-With `--json`, a command prints exactly one JSON object on stdout, then exits with a [stable exit code](#exit-codes). Progress from setup and teardown scripts streams on stderr as one JSON object per line (NDJSON), so stdout stays a single object. Errors are an object too.
+With `--json`, a command prints exactly one JSON object on stdout, then exits with a [stable exit code](#exit-codes). Progress from setup and teardown scripts, and from a clone, streams on stderr as one JSON object per line (NDJSON), so stdout stays a single object. Errors are an object too.
 
 In `--json` mode a command never prompts. `workroom delete` needs `--confirm NAME`, and anything that would ask a question fails instead.
 
@@ -58,7 +58,7 @@ Creating a workroom is not transactional. When the setup script fails, the workr
 
 Each line on stderr is one JSON object with a `type`. Read it line by line while the command runs.
 
-A `log` event is one line of a script's output. `phase` is `setup` or `teardown`:
+A `log` event is one line of a script's output, or of git's output while `add-project --clone` clones. `phase` is `setup`, `teardown` or `clone`. Each time git redraws a progress counter in place, the new value arrives as an event of its own:
 
 ```json
 { "type": "log", "phase": "setup", "text": "npm install…" }
@@ -113,7 +113,7 @@ Branch on the exit code when you don't need the details.
 | `SetupScriptFailed` | 5 | The setup script returned non-zero. |
 | `TeardownScriptFailed` | 5 | The teardown script returned non-zero. |
 | `ConfigReadFailed` | 6 | The config file could not be read or parsed. |
-| `ConfigWriteFailed` | 6 | The config file could not be written. |
+| `ConfigWriteFailed` | 6 | The config file could not be written. After `add-project --clone`, the message says the clone is at the path but not registered; the clone is kept. |
 | `VCSCommandFailed` | 1 | An underlying `git` command failed. |
 | `InternalError` | 1 | Anything else. |
 
@@ -131,7 +131,7 @@ These kinds are returned as well:
 | `RemoteProjectUnsupported` | 3 | `add-project` was given a remote path such as `host:path` or `ssh://…`. |
 | `RemoteWorkroomUnsupported` | 3 | `delete` or `delete-project` was asked to act on a remote workroom. |
 | `CloneFailed` | 1 | `add-project --clone` could not clone the repository. The message carries git's own error, such as `Permission denied (publickey).`; git never prompts, so missing credentials fail here. Nothing was registered. |
-| `DestinationNotEmpty` | 3 | `add-project --clone` was given a folder that already has files in it. Nothing was cloned. |
+| `DestinationNotEmpty` | 3 | `add-project --clone` was given a folder that already has files in it, or the folder gained files while the clone ran. No clone is left behind. |
 | `StartCommitUnusable` | 3 | A create answering an earlier one's question was given a `start_commit` that is no longer where it starts, as when the project's base branch changed in between. Nothing was created; create again without it. |
 
 ### The ScriptNotTrusted envelope
