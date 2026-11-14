@@ -1,6 +1,6 @@
 # Railway hosts: live checks
 
-Status: open. These checks are run by hand by the owner. ADRs [0074](../adr/0074-remote-panes-attach-from-the-mac-through-relay.md) and [0075](../adr/0075-the-daemon-closes-stale-remote-connections.md) stay proposed until both parts pass:
+Status: done 2026-11-14 (ADRs 0074 and 0075 accepted). These checks are run by hand by the owner. ADRs [0074](../adr/0074-remote-panes-attach-from-the-mac-through-relay.md) and [0075](../adr/0075-the-daemon-closes-stale-remote-connections.md) stay proposed until both parts pass:
 
 1. The live Railway suite, `RailwayHostDriverLiveTests` (#634).
 2. The exe.dev, boxd and SSH host checks for the new attach path (#628): the live suite `SSHFamilyHostsLiveTests`, and a real cut-off by hand.
