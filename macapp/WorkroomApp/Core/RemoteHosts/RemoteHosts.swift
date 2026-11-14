@@ -79,8 +79,10 @@ final class RemoteHosts: Sendable {
 
     /// That user's home, which holds the clone: a Railway sandbox logs in as root.
     var loginHome: String {
-      if case .railway = self { return "/root" }
-      return "/home/\(loginUser)"
+      switch self {
+      case .container, .boxd, .exeDev, .ssh: "/home/\(loginUser)"
+      case .railway: "/root"
+      }
     }
 
     /// The container runtime, or nil for a remote provider.

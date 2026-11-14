@@ -33,7 +33,7 @@ import WorkroomSystem
 /// `HostStream`s over ssh, as on every ssh host.
 public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDriver,
   HostPresenceReporting, HostRecording, GitHubTokenCarrying, HostOptionsReading,
-  CheckoutClearingDriver, @unchecked Sendable
+  CheckoutClearingDriver, UnrecordedHostSweeping, @unchecked Sendable
 {
   public struct Configuration: Sendable {
     /// This Mac's environment in the `Workroom` project, where every sandbox it makes goes.
@@ -237,8 +237,7 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   }
 
   /// Runs `railway.sh` on the new host, over the relay: its identity file and the daemon's
-  /// folders. A login the relay drops while the sandbox comes up is tried again; a refusal (a
-  /// changed host key, a key Railway doesn't know) is final, with its reason.
+  /// folders. The first login to a new sandbox, so one the relay drops is tried again (`login`).
   private func setUp(_ id: UUID, _ record: RailwayHostRecord, identity: String) async throws {
     let script = try configuration.hostSetup.script("railway")
     let config = try SSHTransport.writeConfiguration(
@@ -247,24 +246,10 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       "sh -s -- "
       + [id.uuidString.lowercased(), configuration.daemonSocket, configuration.screens]
       .map(PosixShell.quoted).joined(separator: " ")
-    ProvisioningProgress.record("$ \(command)")
-    var said = ""
-    for attempt in 0..<5 {
-      if attempt > 0 { try await Task.sleep(for: configuration.pollInterval) }
-      let result = await runner.run(
-        "/usr/bin/ssh", ["-F", config.path, SSHTransport.alias, command],
-        in: NSHomeDirectory(), timeout: 120, stdin: Data(script.utf8))
-      try Task.checkCancellation()
-      ProvisioningProgress.record(result.stdout)
-      ProvisioningProgress.record(result.stderr)
-      if result.ok { return }
-      said = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-      if SSHTransport.isRefusal(said) { throw HostDriverError.provisioning(Self.refusal(said)) }
-      // Only ssh's own failure, 255, is a link that may still come up.
-      guard result.exitCode == 255 else { break }
-    }
-    throw HostDriverError.provisioning(
-      "setting up Railway's sandbox \(record.sandboxID) failed: \(said)")
+    try await login(
+      config, command, stdin: Data(script.utf8),
+      failure: "setting up Railway's sandbox \(record.sandboxID) failed", timeout: 120,
+      attempts: 5)
   }
 
   /// What a create says when the relay refused it.
@@ -341,21 +326,30 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       + "&& echo rewritten; fi"
   }
 
-  /// One login to the host through the relay, running `command` with `stdin`. The log gets the
-  /// command and what it printed, never `stdin`.
-  func login(_ config: URL, _ command: String, stdin: Data, failure: String) async throws {
+  /// A login to the host through the relay, running `command` with `stdin`, up to `attempts`
+  /// times: a login the relay drops (ssh's own failure, 255) while the sandbox comes up is tried
+  /// again; a refusal (a changed host key, a key Railway doesn't know) is final, with its reason.
+  /// The log gets the command and what it printed, never `stdin`.
+  func login(
+    _ config: URL, _ command: String, stdin: Data, failure: String, timeout: TimeInterval = 60,
+    attempts: Int = 1
+  ) async throws {
     ProvisioningProgress.record("$ \(command)")
-    let result = await runner.run(
-      "/usr/bin/ssh", ["-F", config.path, SSHTransport.alias, command], in: NSHomeDirectory(),
-      timeout: 60, stdin: stdin)
-    try Task.checkCancellation()
-    ProvisioningProgress.record(result.stdout)
-    ProvisioningProgress.record(result.stderr)
-    guard result.ok else {
-      let said = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+    var said = ""
+    for attempt in 0..<attempts {
+      if attempt > 0 { try await Task.sleep(for: configuration.pollInterval) }
+      let result = await runner.run(
+        "/usr/bin/ssh", ["-F", config.path, SSHTransport.alias, command], in: NSHomeDirectory(),
+        timeout: timeout, stdin: stdin)
+      try Task.checkCancellation()
+      ProvisioningProgress.record(result.stdout)
+      ProvisioningProgress.record(result.stderr)
+      if result.ok { return }
+      said = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
       if SSHTransport.isRefusal(said) { throw HostDriverError.provisioning(Self.refusal(said)) }
-      throw HostDriverError.provisioning("\(failure): \(said)")
+      guard result.exitCode == 255 else { break }
     }
+    throw HostDriverError.provisioning("\(failure): \(said)")
   }
 
   // MARK: Keys
@@ -524,7 +518,8 @@ extension RailwayHostDriver {
   /// offline), so the sweep is owed again; returns the destroys that failed.
   ///
   /// Kept besides `recorded`: every sandbox this driver holds, whose create may not have recorded
-  /// it yet, and any made within `grace`, which may be a create still under way in the other build
+  /// it yet, and any made within `sweepGrace`, which may be a create still under way in the other
+  /// build
   /// sharing this environment (Release and Nightly, ADR 0036). A sandbox whose age Railway doesn't
   /// give in a form this reads counts as new.
   ///
@@ -532,10 +527,10 @@ extension RailwayHostDriver {
   /// (`pendingSandboxes`): for when no record names this environment, which is also what a lost
   /// config, or a launch with a throwaway `HOME` (which doesn't isolate this folder), reads, where
   /// every live sandbox would otherwise look unrecorded. With none pending it lists nothing.
-  public func sweep(
-    keeping recorded: Set<String>, onlyPending: Bool = false, now: Date = Date(),
-    grace: TimeInterval = sweepGrace
-  ) async throws -> [String] {
+  public func sweep(keeping recorded: Set<String>, onlyPending: Bool = false) async throws
+    -> [String]
+  {
+    let now = Date()
     let environment = configuration.environmentID
     forgetPending(recorded)
     let pending = onlyPending ? pendingSandboxes : []
@@ -543,7 +538,7 @@ extension RailwayHostDriver {
     let kept = recorded.union(hosts.withLock { $0.values.map(\.sandboxID) })
     func old(_ sandbox: RailwaySandbox) -> Bool {
       guard let made = sandbox.createdAt.flatMap(Self.date) else { return false }
-      return now.timeIntervalSince(made) >= grace
+      return now.timeIntervalSince(made) >= Self.sweepGrace
     }
     var failures: [String] = []
     for sandbox in try await api.sandboxes(environmentID: environment)
