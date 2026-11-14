@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 )
 
@@ -35,5 +36,34 @@ func TestCRSplitter(t *testing.T) {
 				t.Fatalf("got %q, want %q", out.String(), c.want)
 			}
 		})
+	}
+}
+
+// Value: protects=output that never sends a newline can't grow the CLI's line buffer without limit,
+// and none of it is lost; fails_when=jsonLogWriter only emits at newline; why_new=no test feeds an
+// overlong line; seam=none; no_claim=does not check the app's own cap
+func TestJSONLogWriterSplitsAnOverlongLine(t *testing.T) {
+	var out bytes.Buffer
+	w := newJSONLogWriter(&out, "clone")
+	chunk := bytes.Repeat([]byte("x"), 64<<10)
+	for i := 0; i < 20; i++ { // 1.25 MiB with no newline
+		if _, err := w.Write(chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(w.buf) > maxLogLine {
+		t.Fatalf("buffer holds %d bytes, want at most %d", len(w.buf), maxLogLine)
+	}
+	w.Flush()
+	total := 0
+	for _, line := range bytes.Split(bytes.TrimSuffix(out.Bytes(), []byte("\n")), []byte("\n")) {
+		var ev struct{ Text string }
+		if err := json.Unmarshal(line, &ev); err != nil {
+			t.Fatalf("event %q: %v", line[:min(len(line), 60)], err)
+		}
+		total += len(ev.Text)
+	}
+	if total != 20*len(chunk) {
+		t.Fatalf("events carry %d bytes, want all %d", total, 20*len(chunk))
 	}
 }

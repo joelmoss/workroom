@@ -74,7 +74,7 @@ Release download counts are snapshotted daily, and before every `--clobber` uplo
   exited), and reports `Cancelled`. An existing empty PATH is cloned into, never replaced: git
   clones into a hidden `.clone-*` inside it and the entries move up (Finder junk is tolerated), so
   the folder keeps its mode, ACLs, xattrs and tags and nothing crosses filesystems; a missing PATH
-  is cloned into a hidden `.<name>.clone-*` beside it, made 0755 and renamed into place. A failure
+  is cloned into a hidden `.<name>.clone-*` beside it, made 0755 less the umask and renamed into place. A failure
   or cancel before then removes only that staging folder, what it moved and any parent it made
   that is still empty, never another run's clone; once the clone is in place it is kept, and a
   registration failure reports `ConfigWriteFailed` saying the clone is at PATH but not registered;
