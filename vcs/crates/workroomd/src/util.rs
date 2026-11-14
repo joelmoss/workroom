@@ -103,5 +103,34 @@ pub(crate) fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// Call before every `fork` this crate makes, so the child is not killed before it can exec.
+///
+/// On macOS, `fork` runs libSystem's child handlers, and libnotify's (`_notify_fork_child`) takes
+/// libnotify's one-time setup gate. When another thread was inside that setup as the fork
+/// happened, the child inherits the gate held by a thread it does not have, aborts with "os_once_t
+/// is corrupt", and dies of SIGKILL before it can exec. The setup is lazy, and its usual first
+/// caller is `localtime_r` (the time zone registers for change notices), which every `note!`'s
+/// timestamp makes. So one thread's first log line, racing another's first `forkpty`, cost a
+/// session its shell the moment it started (#638): measured, 16 forking processes in 1000 under
+/// load lost a child, and none once libnotify was set up first.
+///
+/// Doing the setup here, before forking, closes that: a thread that finds another inside the gate
+/// waits for it, and once set up it never runs again. Elsewhere it does nothing.
+pub fn ready_to_fork() {
+    #[cfg(target_vendor = "apple")]
+    {
+        static READY: std::sync::Once = std::sync::Once::new();
+        unsafe extern "C" {
+            // `<notify.h>`: `bool notify_is_valid_token(int val)`, in libSystem. Like every libnotify
+            // call, it sets up libnotify's globals first.
+            fn notify_is_valid_token(val: libc::c_int) -> bool;
+        }
+        READY.call_once(|| {
+            // SAFETY: takes an integer, returns a bool, and only reads libnotify's own token table.
+            let _ = unsafe { notify_is_valid_token(0) };
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests;
