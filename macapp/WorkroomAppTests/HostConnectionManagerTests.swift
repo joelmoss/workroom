@@ -279,6 +279,57 @@ final class HostConnectionManagerTests: XCTestCase {
     XCTAssertEqual(after, before, "a dropped link was still pinged")
   }
 
+  // Value: protects=App Nap never delays a remote stream's 15 s ping past its daemon's 60 s
+  // deadline (review #10): an activity that allows idle system sleep is held while any remote
+  // stream pings, once however many do, and let go when the last is dropped; fails_when=a remote
+  // stream pings with no activity held, a second stream begins another, a local one begins one,
+  // or the activity outlives the last remote stream; why_new=new behaviour; seam=the manager's
+  // activity seam
+  func testAnActivityIsHeldWhileAnyRemoteStreamPings() async throws {
+    final class Activities: @unchecked Sendable {
+      private let lock = NSLock()
+      private var began = 0
+      private var ended: [ObjectIdentifier] = []
+      private var tokens: [ObjectIdentifier] = []
+      var counts: (began: Int, ended: Int, matched: Bool) {
+        lock.withLock { (began, ended.count, Set(ended).isSubset(of: Set(tokens))) }
+      }
+      func begin() -> any NSObjectProtocol {
+        let token = NSObject()
+        lock.withLock {
+          began += 1
+          tokens.append(ObjectIdentifier(token))
+        }
+        return token
+      }
+      func end(_ token: any NSObjectProtocol) {
+        lock.withLock { ended.append(ObjectIdentifier(token as AnyObject)) }
+      }
+    }
+    let activities = Activities()
+    let manager = HostConnectionManager(
+      pingInterval: .milliseconds(40),
+      pingActivity: .init(begin: { activities.begin() }, end: { activities.end($0) }))
+    let local = try await manager.connect(host: .local) { ConnectionFixture() }
+    XCTAssertEqual(activities.counts.began, 0, "a local stream began an activity")
+
+    let first = try await manager.connect(host: .remote(UUID())) { ConnectionFixture() }
+    let second = try await manager.connect(host: .remote(UUID())) { ConnectionFixture() }
+    XCTAssertEqual(activities.counts.began, 1)
+    XCTAssertEqual(activities.counts.ended, 0)
+
+    await manager.disconnect(first)
+    XCTAssertEqual(activities.counts.ended, 0, "let go while a remote stream still pings")
+    await manager.disconnect(second)
+    XCTAssertEqual(activities.counts.ended, 1)
+    XCTAssertTrue(activities.counts.matched)
+    await manager.disconnect(local)
+    XCTAssertEqual(activities.counts.began, 1)
+    XCTAssertEqual(
+      HostConnectionManager.PingActivity.options,
+      [.userInitiatedAllowingIdleSystemSleep, .latencyCritical])
+  }
+
   // Value: protects=ADR 0075's rule that no local connection gets the daemon's deadline, so this
   // Mac's own daemon never closes the app's stream; fails_when=a local stream is announced or
   // pinged; why_new=new behaviour; seam=none
