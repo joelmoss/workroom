@@ -196,20 +196,69 @@ public struct InProcessRefreshLock: RailwayRefreshLock {
 /// An exclusive `flock` on a file every sharing app names, held while one refreshes.
 public struct FileRefreshLock: RailwayRefreshLock {
   public let path: URL
+  /// How long a refresh waits for the other app to let go before it fails (`timedOut`), which
+  /// keeps the sign-in: only Railway refusing the refresh token signs out.
+  public let timeout: Duration
 
-  public init(path: URL) { self.path = path }
+  public init(path: URL, timeout: Duration = CrossProcessLock.timeout) {
+    self.path = path
+    self.timeout = timeout
+  }
 
   public func withLock<T: Sendable>(_ body: @Sendable () async throws -> T) async throws -> T {
+    try await CrossProcessLock(path: path, timeout: timeout).withLock(body)
+  }
+}
+
+/// Why a cross-process lock wasn't taken.
+public enum RailwayRefreshLockError: Error, Equatable, LocalizedError {
+  /// Another app held the lock file named here for longer than the wait's bound.
+  case timedOut(String)
+
+  public var errorDescription: String? {
+    switch self {
+    case .timedOut(let name):
+      "Another Workroom app held its lock (\(name)) for too long. Try again."
+    }
+  }
+}
+
+/// An exclusive `flock` on `path`, shared by every app that names it (Release and Nightly), held
+/// for the length of a body. The wait polls rather than blocking a thread, so it ends when its
+/// task is cancelled, and it gives up after `timeout` (`RailwayRefreshLockError.timedOut`). `path`
+/// is a lock file of its own, never a file written atomically, which replaces the inode and the
+/// lock with it. Two holders in one process exclude each other too: each opens its own file.
+public struct CrossProcessLock: Sendable {
+  /// How long a wait lasts by default: far longer than any holder's work.
+  public static let timeout: Duration = .seconds(30)
+  static let poll: Duration = .milliseconds(20)
+
+  public let path: URL
+  public let timeout: Duration
+
+  public init(path: URL, timeout: Duration = CrossProcessLock.timeout) {
+    self.path = path
+    self.timeout = timeout
+  }
+
+  public func withLock<T>(_ body: () async throws -> T) async throws -> T {
     try FileManager.default.createDirectory(
-      at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+      at: path.deletingLastPathComponent(), withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700])
     let fd = open(path.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
     guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     defer { close(fd) }
-    // A blocking lock, off the cooperative pool.
-    let locked: Bool = await withCheckedContinuation { done in
-      DispatchQueue.global().async { done.resume(returning: flock(fd, LOCK_EX) == 0) }
+    let deadline = ContinuousClock.now + timeout
+    while flock(fd, LOCK_EX | LOCK_NB) != 0 {
+      let failure = errno
+      guard failure == EWOULDBLOCK || failure == EINTR else {
+        throw POSIXError(POSIXErrorCode(rawValue: failure) ?? .EIO)
+      }
+      guard ContinuousClock.now < deadline else {
+        throw RailwayRefreshLockError.timedOut(path.lastPathComponent)
+      }
+      try await Task.sleep(for: Self.poll)
     }
-    guard locked else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     defer { flock(fd, LOCK_UN) }
     return try await body()
   }

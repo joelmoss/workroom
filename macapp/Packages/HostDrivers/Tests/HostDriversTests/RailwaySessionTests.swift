@@ -318,4 +318,71 @@ final class RailwaySessionTests: XCTestCase {
 
     XCTAssertEqual(order.withLock { $0 }, ["a-in", "a-out", "b-in"])
   }
+
+  /// A `flock` held on `path` from another open file, as the other build holds it, until
+  /// `release`.
+  private func holdLock(_ path: URL) throws -> () -> Void {
+    let fd = open(path.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+    XCTAssertGreaterThanOrEqual(fd, 0)
+    XCTAssertEqual(flock(fd, LOCK_EX | LOCK_NB), 0)
+    let released = Mutex(false)
+    let release = {
+      guard !released.withLock({ let was = $0; $0 = true; return was }) else { return }
+      flock(fd, LOCK_UN)
+      close(fd)
+    }
+    addTeardownBlock(release)
+    return release
+  }
+
+  /// Value: protects=a refresh waiting on the other build's lock ends when its caller is
+  /// cancelled, rather than holding a thread and the session until the other build lets go;
+  /// fails_when=the wait ignores cancellation; seam=FileRefreshLock on a temporary file held from
+  /// another open file
+  func testAWaitForTheFileLockEndsWhenCancelled() async throws {
+    let path = FileManager.default.temporaryDirectory
+      .appendingPathComponent("railway-lock-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: path) }
+    let release = try holdLock(path)
+    let ran = Mutex(false)
+    let ended = expectation(description: "the wait ended")
+    let outcome = Mutex<(any Error)?>(nil)
+    let waiter = Task {
+      do {
+        try await FileRefreshLock(path: path).withLock { ran.withLock { $0 = true } }
+      } catch { outcome.withLock { $0 = error } }
+      ended.fulfill()
+    }
+    try await Task.sleep(for: .milliseconds(100))
+    waiter.cancel()
+    await fulfillment(of: [ended], timeout: 2)
+    release()
+    _ = await waiter.value
+    XCTAssertFalse(ran.withLock { $0 })
+    XCTAssertTrue(outcome.withLock { $0 } is CancellationError, "\(String(describing: outcome.withLock { $0 }))")
+  }
+
+  /// Value: protects=a lock the other build never lets go (hung, or stopped in a debugger) fails
+  /// the refresh after a bound, with an error that keeps the sign-in; fails_when=the wait has no
+  /// bound, or its failure signs the user out; seam=FileRefreshLock and RailwaySession over
+  /// StubRailway
+  func testAWaitForTheFileLockGivesUpAfterItsBoundAndKeepsTheSignIn() async throws {
+    let path = FileManager.default.temporaryDirectory
+      .appendingPathComponent("railway-lock-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: path) }
+    _ = try holdLock(path)
+    let lock = FileRefreshLock(path: path, timeout: .milliseconds(200))
+    do {
+      try await lock.withLock {}
+      XCTFail("the wait never gave up")
+    } catch RailwayRefreshLockError.timedOut {}
+
+    let store = MemoryTokenStore("rt-1")
+    let session = RailwaySession(client: client(StubRailway()), store: store, lock: lock)
+    do {
+      _ = try await session.accessToken()
+      XCTFail("a refresh behind a held lock went ahead")
+    } catch RailwayRefreshLockError.timedOut {}
+    XCTAssertEqual(store.token, "rt-1")
+  }
 }
