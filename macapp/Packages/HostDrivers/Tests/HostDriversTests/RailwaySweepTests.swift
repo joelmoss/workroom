@@ -322,6 +322,48 @@ final class RailwaySweepTests: XCTestCase {
     XCTAssertEqual(left, [])
   }
 
+  /// Value: protects=lost replies that crowd one window (more candidates than intents), or a new
+  /// one whose candidate an older ambiguous intent may own, stay ambiguous at every later sweep
+  /// of the same sandboxes: no intent narrows to one candidate another intent still disputes
+  /// (review 4, X2); fails_when=a later sweep destroys the one candidate an intent kept from a
+  /// crowded window, or one an older intent still holds among several; seam=RailwayHostDriver.sweep
+  /// over StubRailway and the ledger
+  func testCrowdedLostRepliesStayAmbiguousAtEverySweep() async throws {
+    let started = Self.longAgo
+    let at = { (seconds: TimeInterval) in Self.iso(started.addingTimeInterval(seconds)) }
+    // a and b are only in the first intent's window; c is in both.
+    try await ledger.update {
+      $0 = [.init(started: started), .init(started: started.addingTimeInterval(200))]
+    }
+    let crowded = railway([
+      Self.sandbox("sbx-a", createdAt: at(3)), Self.sandbox("sbx-b", createdAt: at(5)),
+      Self.sandbox("sbx-c", createdAt: at(250)),
+    ])
+    for sweep in 1...3 {
+      _ = try await driver(crowded).sweep(keeping: [], recordsHere: true)
+      XCTAssertEqual(destroyed(crowded), [], "crowded, sweep \(sweep)")
+      let left = try await ledger.entries()
+      XCTAssertEqual(left.count, 2, "crowded, sweep \(sweep)")
+    }
+
+    // An older intent still holds a and b; a new one's window has only b.
+    try await ledger.update {
+      $0 = [
+        .init(started: started, candidates: ["sbx-a", "sbx-b"]),
+        .init(started: started.addingTimeInterval(1000)),
+      ]
+    }
+    let disputed = railway([
+      Self.sandbox("sbx-a", createdAt: at(3)), Self.sandbox("sbx-b", createdAt: at(1010)),
+    ])
+    for sweep in 1...3 {
+      _ = try await driver(disputed).sweep(keeping: [], recordsHere: true)
+      XCTAssertEqual(destroyed(disputed), [], "disputed, sweep \(sweep)")
+      let left = try await ledger.entries()
+      XCTAssertEqual(left.count, 2, "disputed, sweep \(sweep)")
+    }
+  }
+
   /// Value: protects=only an answer that says Railway made nothing drops a create's intent, so a
   /// sandbox a failed-looking reply did make is still swept, never left billing (review 3, C1);
   /// fails_when=a server error, an unreadable body, or a 200 with errors (partial data) drops the

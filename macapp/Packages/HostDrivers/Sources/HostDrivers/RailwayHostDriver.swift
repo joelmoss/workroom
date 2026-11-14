@@ -621,7 +621,9 @@ extension RailwayHostDriver {
   ///   that Railway made from `reconcileBefore` before the intent to `reconcileAfter` after it.
   ///   None there drops the entry. More candidates than lost intents, or more than one left for
   ///   an intent, or one an earlier ambiguous intent may own, destroys none, says so, and keeps
-  ///   each such intent with the candidates found (`Entry.candidates`). A later sweep looks only
+  ///   each such intent with the candidates found (`Entry.candidates`: a crowded window's whole
+  ///   set, for each of its intents; nor does one ever narrow to a candidate another intent still
+  ///   holds among several). A later sweep looks only
   ///   among those, and destroys the one left once a record (or another of this Mac's creates)
   ///   names all the rest: a candidate that merely vanished settles nothing, as it may have been
   ///   this create's own and the one left another Mac's. One still ambiguous `ambiguousLifetime`
@@ -786,22 +788,29 @@ extension RailwayHostDriver {
     // ruled out. One that vanished from Railway may have been this create's own, so it still
     // counts, and the one left may be another Mac's host.
     let kept = lost.filter { $0.candidates != nil }
+    func unnamed(_ entry: RailwayCreateLedger.Entry) -> [String] {
+      (entry.candidates ?? []).filter { !accounted.contains($0) && !claimed.contains($0) }
+    }
+    func aged(_ entry: RailwayCreateLedger.Entry) -> Bool {
+      now.timeIntervalSince(entry.started) >= Self.ambiguousLifetime
+    }
+    // What an intent still ambiguous may own: no other intent narrows to it.
+    let contested = Set(kept.filter { unnamed($0).count > 1 && !aged($0) }.flatMap(unnamed))
     for entry in kept {
-      let candidates = entry.candidates ?? []
-      let unnamed = candidates.filter { !accounted.contains($0) && !claimed.contains($0) }
-      if unnamed.count == 1, let sandbox = unnamed.first {
+      let left = unnamed(entry)
+      if left.count == 1, let sandbox = left.first, !contested.contains(sandbox) {
         await destroy(sandbox, for: entry)
-      } else if unnamed.isEmpty {
+      } else if left.isEmpty {
         result.done.insert(entry.intent)
-      } else if now.timeIntervalSince(entry.started) >= Self.ambiguousLifetime {
+      } else if aged(entry) {
         result.done.insert(entry.intent)
         result.failures.append(
-          "Railway sandboxes \(unnamed.sorted().joined(separator: ", ")): a create of this Mac's "
+          "Railway sandboxes \(left.sorted().joined(separator: ", ")): a create of this Mac's "
             + "lost Railway's reply, and Workroom still can't tell which was its, so it has "
             + "stopped looking. Check them on Railway's dashboard, and destroy any no workroom "
             + "uses")
       } else {
-        result.failures.append(ambiguity(unnamed))
+        result.failures.append(ambiguity(left))
       }
     }
     let fresh = lost.filter { $0.candidates == nil }
@@ -825,9 +834,11 @@ extension RailwayHostDriver {
       let found = candidates(entry)
       let left = found.filter { !claimed.contains($0) }
       guard !crowded || found.isEmpty, left.count <= 1 else {
-        // Kept, with what this sweep found, the only sandboxes a later one may take for it.
-        result.ambiguous[entry.intent] = found
-        result.failures.append(ambiguity(found))
+        // Kept with what this sweep found, the only sandboxes a later one may take for it: the
+        // whole crowded window's, so no intent of it later narrows to one candidate alone.
+        let candidates = crowded ? all.sorted() : found
+        result.ambiguous[entry.intent] = candidates
+        result.failures.append(ambiguity(candidates))
         continue
       }
       guard let sandbox = left.first else {
@@ -1008,8 +1019,9 @@ extension RailwayAPI {
     }
   }
 
-  /// The most pages a listing reads (`pages`): far past any account's sandboxes (100 a page, and
-  /// Railway caps an environment at 100) or ssh keys.
+  /// The most pages a listing reads (`pages`): 10,000 sandboxes at 100 a page, far past what an
+  /// environment holds (Railway caps its live ones at 100, though destroyed ones are listed too),
+  /// and far past any account's ssh keys.
   public static let maxPages = 100
 
   /// Every node of a Relay connection, asking for each page after the last one's `endCursor`. A
