@@ -245,3 +245,43 @@ fn a_truncated_descriptor_list_decodes_to_what_survived() {
     // Cut mid-descriptor: no panic, no phantom entry.
     assert!(decode_descriptor_list(&full[..20]).is_empty());
 }
+
+/// A `Peer` frame as `relay` sends it: NUL-terminated `KEY=VALUE` entries, on Control.
+fn peer_envelope(entries: &[(&str, &str)]) -> Envelope {
+    let mut payload = Vec::new();
+    for (key, value) in entries {
+        payload.extend_from_slice(format!("{key}={value}").as_bytes());
+        payload.push(0);
+    }
+    Envelope::new(
+        Service::Control,
+        0,
+        Frame::new(FrameKind::Peer, payload).encode(),
+    )
+}
+
+/// Hands `envelopes` to one connection's dispatch, and returns what it kept of the peer.
+fn dispatched_peer(envelopes: &[Envelope]) -> Option<Vec<(OsString, OsString)>> {
+    let sessions = SessionStore::new();
+    let mut attachment = Attachment::new(Arc::new(|| {}));
+    let writer: SharedWriter = Arc::new(std::sync::Mutex::new(Box::new(std::io::sink())));
+    for envelope in envelopes {
+        let reply = dispatch(envelope, &sessions, &mut attachment, "test", &writer, &|_| true);
+        assert!(reply.is_none(), "a Peer frame is never answered");
+    }
+    attachment.peer
+}
+
+/// Only a connection's first `Peer` frame counts: the relay sends one, right after the greeting,
+/// and a later one (anything the client itself put on the stream) changes nothing.
+#[test]
+fn only_the_first_peer_frame_on_a_connection_is_taken() {
+    let peer = dispatched_peer(&[
+        peer_envelope(&[("SSH_CONNECTION", "10.0.0.1 1 10.0.0.2 22")]),
+        peer_envelope(&[("SSH_CONNECTION", "192.0.2.9 2 192.0.2.10 22")]),
+    ]);
+    assert_eq!(
+        peer,
+        Some(env(&[("SSH_CONNECTION", "10.0.0.1 1 10.0.0.2 22")]))
+    );
+}

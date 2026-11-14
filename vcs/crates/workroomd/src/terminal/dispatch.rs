@@ -30,7 +30,7 @@ pub(crate) struct Attachment {
     closer: Closer,
     /// The ssh variables this connection's `relay` passed on (`FrameKind::Peer`), set on the
     /// host-environment sessions it creates (ADR 0074).
-    peer: Vec<(OsString, OsString)>,
+    peer: Option<Vec<(OsString, OsString)>>,
 }
 
 impl Attachment {
@@ -40,7 +40,7 @@ impl Attachment {
             id: None,
             token: 0,
             closer,
-            peer: Vec::new(),
+            peer: None,
         }
     }
 
@@ -180,7 +180,7 @@ pub(crate) fn dispatch(
                     let host = sessions
                         .hooks()
                         .host
-                        .session(&request.env, &attachment.peer);
+                        .session(&request.env, attachment.peer.as_deref().unwrap_or_default());
                     (host.environment, host.shell, host.resources)
                 } else {
                     (
@@ -328,7 +328,12 @@ pub(crate) fn dispatch(
         // What `relay` knows about this connection: its ssh variables, and nothing else is taken.
         // Never answered: the relay sends it into the client's stream, which expects no reply.
         FrameKind::Peer => {
-            attachment.peer = frame
+            // The first one only: the relay sends one, straight after the greeting, so any later
+            // one is the client's own and changes nothing.
+            if attachment.peer.is_some() {
+                return None;
+            }
+            attachment.peer = Some(frame
                 .payload
                 .split(|byte| *byte == 0)
                 .filter_map(|entry| {
@@ -344,7 +349,7 @@ pub(crate) fn dispatch(
                             )
                         })
                 })
-                .collect();
+                .collect());
             None
         }
         FrameKind::KillAll => {
