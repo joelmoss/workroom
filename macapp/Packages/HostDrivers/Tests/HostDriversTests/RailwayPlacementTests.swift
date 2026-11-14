@@ -21,10 +21,23 @@ final class RailwayPlacementTests: XCTestCase {
     store = RailwayPlacementStore(file: root.appendingPathComponent("placement.json"))
   }
 
-  private func railway(projects: [[String: String]]) -> StubRailway {
+  /// A Railway whose workspaces each list `projects`, and `ws-1` also `prj-1`, the project a
+  /// placement leaving `env-1` is in, unless `seesLeaving` is false.
+  private func railway(projects: [[String: String]], seesLeaving: Bool = true) -> StubRailway {
     let railway = StubRailway()
-    railway.answer(
-      "projects", data: ["projects": ["edges": projects.map { ["node": $0] }]])
+    railway.answer("projects") { request in
+      let variables = StubRailway.graphQLBody(request)["variables"] as? [String: Any] ?? [:]
+      var listed = projects
+      if seesLeaving, variables["workspaceId"] as? String == "ws-1",
+        !listed.contains(where: { $0["id"] == "prj-1" })
+      {
+        listed.append(["id": "prj-1", "name": "This Mac's"])
+      }
+      let body = try JSONSerialization.data(withJSONObject: [
+        "data": ["projects": ["edges": listed.map { ["node": $0] }]]
+      ])
+      return RailwayHTTPResponse(status: 200, body: body)
+    }
     railway.answer("projectCreate", data: ["projectCreate": ["id": "prj-new"]])
     railway.answer("environmentCreate", data: ["environmentCreate": ["id": "env-mac"]])
     // The sign-in sees the workspace this Mac's environment is in.
@@ -232,6 +245,26 @@ final class RailwayPlacementTests: XCTestCase {
       XCTAssertEqual(store.read(), before)
     }
     XCTAssertEqual(listed(railway), [], "listed an environment the sign-in can't see")
+  }
+
+  /// Value: protects=a sign-in that sees the workspace this Mac's environment is in but not its
+  /// project, which lists the environment as empty, never moves the placement off it, so its
+  /// sandboxes never lose their sweep (review 6, finding 2); fails_when=the placement moves, or
+  /// the environment is listed, with its project unseen; seam=ensure over StubRailway
+  func testLeavingAnEnvironmentInAProjectTheSignInCantSeeIsRefused() async throws {
+    let before = RailwayPlacement(workspaceID: "ws-1", projectID: "prj-1", environmentID: "env-1")
+    try store.update { $0 = before }
+    // The sign-in sees ws-1, but only another project in it.
+    let railway = railway(projects: [["id": "prj-other", "name": "Other"]], seesLeaving: false)
+    list(railway, [:])
+    do {
+      _ = try await store.ensure(
+        workspaceID: "ws-2", api: RailwayAPI(transport: railway, tokens: Tokens()),
+        environmentName: "mac-x-1")
+      XCTFail("left an environment whose project the sign-in can't see")
+    } catch RailwayPlacementError.projectNotSeen {}
+    XCTAssertEqual(store.read(), before)
+    XCTAssertEqual(listed(railway), [], "listed an environment in an unseen project")
   }
 
   /// Value: protects=a placement an older build wrote with no workspace can still move: its

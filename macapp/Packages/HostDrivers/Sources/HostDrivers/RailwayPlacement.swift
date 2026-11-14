@@ -140,6 +140,15 @@ public final class RailwayPlacementStore: Sendable {
         guard let from, seen.contains(from) else {
           throw RailwayPlacementError.workspaceNotSeen
         }
+        // Nor may one that sees the workspace but not the environment's project. A placement
+        // with no project recorded is in the one Railway says its environment is in.
+        var leavingProject = placement.projectID
+        if leavingProject == nil {
+          leavingProject = try await api.project(ofEnvironment: leaving)
+        }
+        guard try await api.sees(project: leavingProject, in: from) else {
+          throw RailwayPlacementError.projectNotSeen
+        }
         let live = try await api.sandboxes(environmentID: leaving).filter {
           !RailwaySandbox.isEnding($0.status)
         }
@@ -214,9 +223,17 @@ public enum RailwayPlacementError: LocalizedError, Equatable {
   /// Railway's sign-in can't see the workspace this Mac's environment is in (another account, or
   /// none recorded), so its listing of the environment's sandboxes can't be trusted as empty.
   case workspaceNotSeen
+  /// Railway's sign-in sees that workspace but not the project this Mac's environment is in (or
+  /// none is recorded), which lists the environment as empty too.
+  case projectNotSeen
 
   public var errorDescription: String? {
     switch self {
+    case .projectNotSeen:
+      return "Railway's sign-in can't see the project this Mac's Railway environment is in, so "
+        + "Workroom can't tell whether sandboxes are still there, and would lose track of them in "
+        + "another workspace or project. Sign in to Railway with the account that set it up, then "
+        + "try again."
     case .workspaceNotSeen:
       return "Railway's sign-in can't see the workspace this Mac's Railway environment is in, so "
         + "Workroom can't tell whether sandboxes are still there, and would lose track of them in "
