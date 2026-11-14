@@ -15,7 +15,8 @@ final class RailwayWorkroomUITests: XCTestCase {
   /// Value: protects=a Railway workroom whose sandbox was destroyed outside Workroom shows gone,
   /// with Remove Workroom as its only action, and no pane retrying it (#623 story 26, #629);
   /// fails_when=its pane, Details or context menu still offers anything else; seam=the app
-  /// through the UI test fixture, Railway stubbed with no sandboxes
+  /// through the UI test fixture, its host marked gone (`-WorkroomUITestRailway gone`);
+  /// no_claim=the presence read that marks it (HostReachabilityTests)
   func testAGoneRailwayWorkroomOffersOnlyRemove() {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
@@ -32,22 +33,24 @@ final class RailwayWorkroomUITests: XCTestCase {
 
     // The pane: the gone notice and Remove Workroom, not a terminal retrying the host.
     XCTAssertTrue(
-      element(app, "terminal.removeGoneWorkroom").waitForExistence(timeout: 30),
+      app.staticTexts["Host gone"].waitForExistence(timeout: 10),
       "the pane doesn't say the host is gone")
-
-    let details = element(app, "activitySection.details")
-    XCTAssertTrue(details.waitForExistence(timeout: 5))
-    details.click()
-    XCTAssertTrue(element(app, "details.hostGone").waitForExistence(timeout: 10))
-    XCTAssertTrue(element(app, "details.removeGoneWorkroom").exists)
+    XCTAssertTrue(app.buttons["Remove Workroom…"].exists)
+    XCTAssertFalse(
+      app.descendants(matching: .any).matching(identifier: "terminal.surface").firstMatch.exists,
+      "a terminal is mounted over the gone host")
 
     // The row's menu: Remove Workroom… and nothing else.
     row.rightClick()
-    let remove = app.menuItems["Remove Workroom…"]
-    XCTAssertTrue(remove.waitForExistence(timeout: 5), "the menu has no Remove Workroom…")
-    for other in ["Run", "Set Label…", "Delete Workroom…", "Open (split right)"] {
-      XCTAssertFalse(app.menuItems[other].exists, "a gone workroom's menu offers \(other)")
-    }
+    // The menu holding Remove Workroom…: the row's, not one of the menu bar's.
+    let menu = app.menus.containing(
+      NSPredicate(format: "title == %@", "Remove Workroom…")
+    ).firstMatch
+    XCTAssertTrue(menu.waitForExistence(timeout: 5), "no context menu")
+    XCTAssertTrue(menu.menuItems["Remove Workroom…"].exists, "the menu has no Remove Workroom…")
+    XCTAssertEqual(
+      menu.menuItems.allElementsBoundByIndex.map(\.title).filter { !$0.isEmpty },
+      ["Remove Workroom…"], "a gone workroom's menu offers more")
     app.typeKey(.escape, modifierFlags: [])
   }
 

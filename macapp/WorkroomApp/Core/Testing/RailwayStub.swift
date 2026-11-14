@@ -32,7 +32,6 @@ import HostDrivers
     private var _browserOpens = 0
     private var _tokenExchanges = 0
     private var _projects: [String: [RailwayProject]] = [:]
-    private var _sandboxesGone = false
     private var _createdProjects: [String] = []
     private var _createdEnvironments: [String] = []
 
@@ -74,11 +73,6 @@ import HostDrivers
     var projects: [String: [RailwayProject]] {
       get { locked { _projects } }
       set { locked { _projects = newValue } }
-    }
-    /// Railway has no sandbox of any id: each one's status is null, which is gone.
-    var sandboxesGone: Bool {
-      get { locked { _sandboxesGone } }
-      set { locked { _sandboxesGone = newValue } }
     }
     /// The projects made, as `<name> in <workspace>`.
     var createdProjects: [String] { locked { _createdProjects } }
@@ -172,8 +166,6 @@ import HostDrivers
       if query.contains("sandboxes(") {
         return ["sandboxes": ["edges": [Any](), "pageInfo": ["hasNextPage": false]]]
       }
-      // A sandbox's status: none, so it reads as destroyed outside Workroom (#629).
-      if query.contains("sandbox("), sandboxesGone { return ["sandbox": NSNull()] }
       return nil
     }
 

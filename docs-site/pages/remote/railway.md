@@ -70,7 +70,7 @@ If your Railway sign-in is revoked or expires, a Railway workroom's **Details** 
 
 ## A sandbox that is gone
 
-If a sandbox is destroyed outside Workroom, for example from Railway's dashboard, its workroom's pane and **Details** say the host is gone, and its terminals stop trying to reach it. Its work went with it. **Remove Workroom…**, in the pane, in **Details** or when you right-click the workroom, is the only thing left to do.
+If a sandbox is destroyed outside Workroom, for example from Railway's dashboard, its workroom's pane says the host is gone, and its terminals stop trying to reach it. Its work went with it. **Remove Workroom…**, in the pane or when you right-click the workroom, is the only thing left to do.
 
 ## Delete the workroom
 

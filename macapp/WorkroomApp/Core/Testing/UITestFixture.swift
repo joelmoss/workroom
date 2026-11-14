@@ -101,8 +101,8 @@ import WorkroomVCS
     /// `gone`), so the setup sheet signs in, lists workspaces and signs out with no Railway,
     /// browser or Keychain. Its workspaces: Personal (Hobby), Codaset (Pro), Side projects (Free)
     /// and New team (on a Trial). Personal holds one project, `my-app`, and no `Workroom` one; the
-    /// setup's Use This Project makes them in the stub. `gone` has Railway hold no sandbox, so
-    /// the fixture's Railway workroom reads as gone. Nil otherwise.
+    /// setup's Use This Project makes them in the stub. `gone` is signed in, with the fixture's
+    /// Railway workroom's host gone (`railwayWorkroom`). Nil otherwise.
     static var railwayAccount: RailwayAccount? {
       guard fixtureFlag, let scenario = text("WorkroomUITestRailway") else { return nil }
       let stub = RailwayStub(workspaces: [
@@ -113,8 +113,6 @@ import WorkroomVCS
       ])
       stub.trialing = ["ws-new": true]
       stub.projects = ["ws-personal": [RailwayProject(id: "prj-app", name: "my-app")]]
-      // `gone`: signed in, and Railway has none of the sandboxes asked about (#629).
-      stub.sandboxesGone = scenario == "gone"
       let kept = scenario == "signedIn" || scenario == "gone" ? RailwayStub.refreshToken : nil
       return stub.account(store: RailwayStub.MemoryStore(kept))
     }
@@ -127,6 +125,8 @@ import WorkroomVCS
     }
 
     static let railwayWorkroomName = "uitest-railway"
+    /// Its host's id.
+    static let railwayWorkroomHostID = UUID(uuidString: "6A1D0E3C-5B2F-4C7E-9D10-29A7F0C4B6E1")!
     /// The relay a fixture launch's Railway driver logs in through: `.invalid` never resolves.
     static let railwayRelay = "relay.railway.invalid"
     /// The gh token a test process's Railway driver carries to its hosts: a fake, so no test reads
@@ -1223,12 +1223,17 @@ import WorkroomVCS
             warnings: []))
       }
       if railwayWorkroom {
+        // A fixture launch reads no host's presence (its services are stand-ins), so `gone` says
+        // what a read would have: the sandbox was destroyed outside Workroom (#629).
+        if text("WorkroomUITestRailway") == "gone" {
+          GoneHosts.record(.remote(railwayWorkroomHostID), gone: true)
+        }
         workrooms.append(
           Workroom(
             name: railwayWorkroomName, path: "/root/\(projectName)", vcsName: vcs, warnings: [],
             host: HostDescriptor(
               driver: HostKind.railway.driver, provisioner: RemoteWorkrooms.provisioner,
-              id: UUID(uuidString: "6A1D0E3C-5B2F-4C7E-9D10-29A7F0C4B6E1"),
+              id: railwayWorkroomHostID,
               railway: RailwayHostRecord(
                 projectID: "prj-uitest", environmentID: "env-uitest", sandboxID: "sbx-uitest",
                 hostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIUITestUITestUITestUITestUITestUITe"))
