@@ -31,7 +31,7 @@ New projects start in your home folder. To start them somewhere else, set **Sett
 
 ### Clone a repository
 
-Type the repository's URL: an `https://`, `ssh://` or `git://` URL, or `git@host:owner/repo.git`. **Clone into** fills itself with the repository's name inside your default project folder, and you can change it. It must be a folder that does not exist yet, or an empty one.
+Type the repository's URL: an `https://`, `ssh://` or `git://` URL, or `git@host:owner/repo.git`. **Clone into** fills itself with the repository's name inside your default project folder, and you can change it. **Choose…** picks the folder to clone inside: the repository gets its own folder in it. The destination must be a folder that does not exist yet, or an empty one.
 
 While the clone runs, the sheet shows git's progress. **Cancel** stops the clone and puts the folder back as it was. If the clone fails, git's error appears in the sheet, so you can fix the URL or folder and try again. Once the clone finishes, the project is selected and a terminal opens on it.
 

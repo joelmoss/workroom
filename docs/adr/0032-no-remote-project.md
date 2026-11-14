@@ -4,4 +4,4 @@
 
 A remote repository can be *cloned* into a local project ([#620](https://github.com/joelmoss/workroom/issues/620)): `add-project --clone <URL> <PATH>` clones it to a local path and registers that path. It still can't be registered without a local copy, so the clone's destination is always a local path and `RemoteProjectUnsupported` still applies to the PATH argument.
 
-Source: [`docs/designs/remote-workrooms.md`](../designs/remote-workrooms.md) ("Phase 4", the remote project passage), [`cmd/add_project.go`](../../cmd/add_project.go) (`isRemotePath` and `runAddProject`), [`internal/errs/errs.go`](../../internal/errs/errs.go) (`RemoteProjectUnsupported`).
+Source: [`docs/designs/remote-workrooms.md`](../designs/remote-workrooms.md) ("Phase 4", the remote project passage), [`cmd/add_project.go`](../../cmd/add_project.go) (`runAddProject` and `runCloneProject`), [`internal/workroom/add_project.go`](../../internal/workroom/add_project.go) (`isRemotePath`), [`internal/workroom/clone_project.go`](../../internal/workroom/clone_project.go) (`CloneProject`), [`internal/errs/errs.go`](../../internal/errs/errs.go) (`RemoteProjectUnsupported`).
