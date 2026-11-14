@@ -27,13 +27,18 @@ import (
 //	stat(path)
 //	 ├── a file ─────────────────────► ErrNotDirectory
 //	 ├── a folder with files in it ──► ErrDestinationNotEmpty
-//	 ├── missing ──► MkdirAll           (the topmost folder made is removed on failure)
-//	 └── an empty folder ──────────────  (emptied again on failure, but kept)
+//	 └── missing, or an empty folder
 //	        ▼
-//	 git clone --progress -- url path
+//	 make missing parents; git clone --progress -- url <parent>/.<name>.clone-*   (the staging folder)
 //	  ├── ctx cancelled ──► ErrCancelled
 //	  ├── git fails ──────► ErrCloneFailed, with git's own error lines
-//	  └── ok ─► register
+//	  └── ok ─► rename staging onto path ─► register
+//	              └── path filled meanwhile ──► ErrDestinationNotEmpty
+//
+// The clone happens in a staging folder of its own and is renamed into place, so a failure or a
+// cancel only ever removes that staging folder, plus any parent folder this run made that is still
+// empty. Nothing another run or the user wrote is touched: a concurrent clone into the same path or
+// a sibling, or a file saved into a parent folder meanwhile, survives.
 //
 // Cancelling ctx (the CLI cancels it on SIGTERM) kills git's whole process group, so a transport
 // helper or ssh it started dies with it. Under Pretend nothing is cloned or written.
@@ -46,7 +51,7 @@ func (s *Service) CloneProject(ctx context.Context, url, path string, progress i
 		return AddProjectResult{}, err
 	}
 
-	made, err := cloneDestination(canon)
+	existed, err := cloneDestination(canon)
 	if err != nil {
 		return AddProjectResult{}, err
 	}
@@ -54,32 +59,50 @@ func (s *Service) CloneProject(ctx context.Context, url, path string, progress i
 		return AddProjectResult{Path: canon, VCS: "git", WouldClone: true}, nil
 	}
 
-	if made == "" {
-		// An empty folder: Finder's junk would make git call it non-empty.
-		if err := removeDirJunk(canon); err != nil {
-			return AddProjectResult{}, err
-		}
-	} else if err := os.MkdirAll(canon, 0o755); err != nil {
-		if errors.Is(err, syscall.ENOTDIR) {
-			return AddProjectResult{}, errs.ErrNotDirectory
-		}
-		return AddProjectResult{}, fmt.Errorf("%w: create directory %s: %v", errs.ErrConfigWrite, canon, err)
+	made, err := mkdirParents(filepath.Dir(canon))
+	if err != nil {
+		return AddProjectResult{}, err
 	}
-	// Whatever fails past here, the destination is left as it was found.
+	stage, err := os.MkdirTemp(filepath.Dir(canon), "."+filepath.Base(canon)+".clone-")
+	if err != nil {
+		removeEmptyDirs(made)
+		return AddProjectResult{}, fmt.Errorf("%w: create staging folder for %s: %v", errs.ErrConfigWrite, canon, err)
+	}
+	moved := false
 	defer func() {
 		if retErr == nil {
 			return
 		}
-		if made != "" {
-			_ = os.RemoveAll(made)
-		} else {
+		switch {
+		case !moved:
+			_ = os.RemoveAll(stage)
+		case existed:
+			// The rename put this run's clone, and only it, at canon.
 			_ = emptyDir(canon)
+		default:
+			_ = os.RemoveAll(canon)
 		}
+		removeEmptyDirs(made)
 	}()
 
-	if err := runClone(ctx, url, canon, progress); err != nil {
+	if err := runClone(ctx, url, stage, progress); err != nil {
 		return AddProjectResult{}, err
 	}
+	if existed {
+		// Finder's junk would make the rename refuse an otherwise empty folder.
+		if err := removeDirJunk(canon); err != nil {
+			return AddProjectResult{}, err
+		}
+	}
+	// rename(2) itself, not os.Rename, which refuses any existing folder: it replaces an empty one
+	// and refuses one that has filled up meanwhile.
+	if err := syscall.Rename(stage, canon); err != nil {
+		if errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST) {
+			return AddProjectResult{}, fmt.Errorf("%w: %s", errs.ErrDestinationNotEmpty, canon)
+		}
+		return AddProjectResult{}, fmt.Errorf("%w: move the clone to %s: %v", errs.ErrConfigWrite, canon, err)
+	}
+	moved = true
 
 	// The clone now exists, so resolve it: a path under a symlinked parent is stored in its
 	// symlink-evaluated form, as an existing project's is.
@@ -92,35 +115,69 @@ func (s *Service) CloneProject(ctx context.Context, url, path string, progress i
 	return AddProjectResult{Path: canon, VCS: "git"}, nil
 }
 
-// cloneDestination checks canon can take a clone and reports the topmost folder a clone into it
-// has to make: canon or a missing ancestor, or "" when canon is already an empty folder.
-func cloneDestination(canon string) (string, error) {
+// cloneDestination checks canon can take a clone, reporting whether it already exists as an empty
+// folder (false when it is missing).
+func cloneDestination(canon string) (bool, error) {
 	info, err := os.Stat(canon)
 	switch {
 	case err == nil && !info.IsDir():
-		return "", errs.ErrNotDirectory
+		return false, errs.ErrNotDirectory
 	case err == nil:
 		empty, err := dirIsEmpty(canon)
 		if err != nil {
-			return "", err
+			return false, err
 		}
 		if !empty {
-			return "", fmt.Errorf("%w: %s", errs.ErrDestinationNotEmpty, canon)
+			return false, fmt.Errorf("%w: %s", errs.ErrDestinationNotEmpty, canon)
 		}
-		return "", nil
+		return true, nil
 	case errors.Is(err, syscall.ENOTDIR):
-		return "", errs.ErrNotDirectory
+		return false, errs.ErrNotDirectory
 	case !os.IsNotExist(err):
-		return "", err
+		return false, err
 	}
-	top := canon
-	for parent := filepath.Dir(top); parent != top; parent = filepath.Dir(top) {
-		if _, err := os.Stat(parent); err == nil {
+	return false, nil
+}
+
+// mkdirParents makes dir and any missing folders above it, returning the ones this call created,
+// outermost first. A folder another process creates meanwhile is used but not claimed.
+func mkdirParents(dir string) ([]string, error) {
+	var missing []string
+	for d := dir; ; d = filepath.Dir(d) {
+		if _, err := os.Stat(d); err == nil {
+			break
+		} else if errors.Is(err, syscall.ENOTDIR) {
+			return nil, errs.ErrNotDirectory
+		}
+		missing = append(missing, d)
+		if filepath.Dir(d) == d {
 			break
 		}
-		top = parent
 	}
-	return top, nil
+	var made []string
+	for i := len(missing) - 1; i >= 0; i-- {
+		err := os.Mkdir(missing[i], 0o755)
+		switch {
+		case err == nil:
+			made = append(made, missing[i])
+		case errors.Is(err, os.ErrExist):
+		case errors.Is(err, syscall.ENOTDIR):
+			removeEmptyDirs(made)
+			return nil, errs.ErrNotDirectory
+		default:
+			removeEmptyDirs(made)
+			return nil, fmt.Errorf("%w: create directory %s: %v", errs.ErrConfigWrite, missing[i], err)
+		}
+	}
+	return made, nil
+}
+
+// removeEmptyDirs removes the folders mkdirParents made, innermost first, leaving any that something
+// else has written into.
+func removeEmptyDirs(made []string) {
+	for i := len(made) - 1; i >= 0; i-- {
+		_ = os.Remove(made[i])
+	}
 }
 
 // runClone runs git clone, streaming its stderr to progress and keeping it for the error.

@@ -67,8 +67,10 @@ Release download counts are snapshotted daily, and before every `--clobber` uplo
   `add-project PATH --clone URL` (issue #620, the "Clone a repository…" mode) clones URL into a
   missing or empty PATH (`ErrDestinationNotEmpty` otherwise), streams git's progress as `clone`
   log events on stderr, and fails with `CloneFailed` carrying git's own error lines; SIGTERM
-  kills git's process group and reports `Cancelled`. On any failure it removes the folders it
-  made, or empties a folder that was already there; `--pretend` reports `would_clone`.
+  kills git's process group and reports `Cancelled`. It clones into a hidden staging folder
+  beside PATH (`.<name>.clone-*`) and renames it into place, so a failure or cancel removes only
+  that staging folder and any parent it made that is still empty, never another run's clone;
+  `--pretend` reports `would_clone`.
   `delete-project` is config-only unless: `--with-workrooms` cascades the per-workroom
   teardown (hard-deletes worktree dirs, branches kept); or `--from-disk` runs each workroom's
   teardown, drops the project from config, and returns `trash_paths` (project root first, then
