@@ -69,6 +69,13 @@ Pages use GitHub-flavoured Markdown (tables, task lists, strikethrough, autolink
 - Headings use `##` to `####`, written ATX-style (`## Heading`). Setext (underlined) headings are not used.
 - A heading that ends in ` {nightly}` marks that section as Nightly only. The renderer removes the marker
   and shows a badge in its place.
+- Anything added since the latest stable release ships only in Nightly until the next one, so its docs say
+  so. `make docs-check` fails on a page, heading or table row that is new since the latest stable tag and
+  unmarked: mark the page `nightly: true`, end the heading with ` {nightly}`, or start the row's
+  description with `Nightly only.` A section inside a marked one needs no marker of its own. When an
+  addition describes stable behaviour (a fix to how a shipped feature is documented), put
+  `<!-- stable -->` on its own line before the heading (or before a page's first heading, for the whole
+  page), or inside the table row. Prose isn't checked: write `Nightly only.` in it yourself.
 - Alerts are written as `> [!NOTE]`, `> [!TIP]`, `> [!IMPORTANT]`, `> [!WARNING]` or `> [!CAUTION]`.
 - `<kbd>` is the only raw HTML allowed, used for keys. A combination is one `<kbd>`: `<kbd>⌘D</kbd>`, `<kbd>⌃Tab</kbd>`. HTML comments are allowed
   and never shown.
