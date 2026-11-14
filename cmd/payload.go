@@ -20,10 +20,12 @@ type versionPayload struct {
 	Version             string `json:"version"`
 }
 
-// addProjectPayload is `add-project`'s. WouldCreate is set only under --pretend, false included.
+// addProjectPayload is `add-project`'s. Under --pretend, WouldClone is set with --clone and
+// WouldCreate otherwise, false included.
 type addProjectPayload struct {
 	Path        string `json:"path"`
 	VCS         string `json:"vcs"`
+	WouldClone  *bool  `json:"would_clone,omitempty"`
 	WouldCreate *bool  `json:"would_create,omitempty"`
 }
 

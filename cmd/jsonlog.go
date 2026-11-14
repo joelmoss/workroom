@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"unicode/utf8"
 )
 
 // jsonLogWriter turns raw setup/teardown script output into newline-delimited JSON
@@ -45,8 +46,23 @@ func (l *jsonLogWriter) Write(b []byte) (int, error) {
 		l.emit(string(l.buf[:i]))
 		l.buf = l.buf[i+1:]
 	}
+	// Output that never sends a newline (a hostile git server's endless sideband text) is emitted in
+	// maxLogLine pieces rather than held: the buffer stays bounded and nothing is lost.
+	for len(l.buf) > maxLogLine {
+		cut := maxLogLine
+		for cut > maxLogLine-utf8.UTFMax && !utf8.RuneStart(l.buf[cut]) {
+			cut-- // never split a character across two events
+		}
+		l.emit(string(l.buf[:cut]))
+		l.buf = l.buf[cut:]
+	}
 	return len(b), nil
 }
+
+// maxLogLine is the most of one line jsonLogWriter holds before emitting it as an event of its own.
+// Small enough that the event stays under the app's 1 MiB line limit even when every byte needs a
+// six-byte JSON escape.
+const maxLogLine = 128 << 10
 
 // Flush emits any trailing output not terminated by a newline. Call once after the
 // script finishes.
@@ -70,4 +86,32 @@ func (l *jsonLogWriter) emit(line string) {
 		return
 	}
 	_, _ = l.w.Write(append(data, '\n'))
+}
+
+// crSplitter turns each lone \r into \n before passing output on, so a writer that splits lines on
+// \n also ends one where git redraws a progress counter in place. A \r\n stays one line end. Only
+// clone output goes through it: a script's CRLF output must not gain events.
+type crSplitter struct {
+	w      io.Writer
+	lastCR bool // the last byte was a \r, so a \n next is its pair
+}
+
+func (c *crSplitter) Write(b []byte) (int, error) {
+	out := make([]byte, 0, len(b))
+	for _, ch := range b {
+		switch {
+		case ch == '\n' && c.lastCR:
+			c.lastCR = false
+		case ch == '\r':
+			out = append(out, '\n')
+			c.lastCR = true
+		default:
+			out = append(out, ch)
+			c.lastCR = false
+		}
+	}
+	if _, err := c.w.Write(out); err != nil {
+		return 0, err
+	}
+	return len(b), nil
 }

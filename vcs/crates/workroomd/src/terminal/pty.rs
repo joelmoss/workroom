@@ -149,6 +149,7 @@ impl Pty {
         // Before the fork: the child may not ask anything that could allocate or take a lock.
         // SAFETY: getdtablesize takes no arguments.
         let descriptor_limit = unsafe { libc::getdtablesize() };
+        crate::util::ready_to_fork();
         let mut master: libc::c_int = -1;
         // SAFETY: `master` is a live int forkpty writes the master descriptor to; null name and
         // termios are allowed; `size` is a live winsize forkpty only reads.

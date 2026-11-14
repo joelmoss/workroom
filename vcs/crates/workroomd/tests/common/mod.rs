@@ -96,9 +96,20 @@ pub fn start_daemon_with(socket: &Path, flags: &[&std::ffi::OsStr]) -> Spawned {
         .spawn()
         .expect("spawn daemon");
     let child = Spawned(child);
-    wait_for(Duration::from_secs(5), || socket.exists());
-    assert!(socket.exists(), "daemon never bound its socket");
+    assert!(
+        wait_listening(socket, Duration::from_secs(30)),
+        "daemon never listened on its socket"
+    );
     child
+}
+
+/// Waits until a daemon accepts connections on `socket`, true once one has. Not just until the
+/// file exists: std's `UnixListener::bind` makes the file at `bind` and only then calls `listen`,
+/// and a client that connects in between is refused, which a loaded machine stretches far enough
+/// for a relay to give up with "no daemon listening" (#638). The connection made here is closed
+/// before it greets, which the daemon drops without a word.
+pub fn wait_listening(socket: &Path, timeout: Duration) -> bool {
+    wait_for(timeout, || UnixStream::connect(socket).is_ok())
 }
 
 pub fn wait_for(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
@@ -274,6 +285,9 @@ pub struct RpcClient<R: Read = UnixStream, W: Write = UnixStream> {
     pub seen: Vec<u8>,
     /// Envelopes for every service but Terminal, in arrival order, kept until asked for.
     pub other: Vec<wr_protocol::envelope::Envelope>,
+    /// The text of every Terminal `Failure` so far, such as a refused attach: kept, so a test
+    /// waiting on a reply that will never come can say why.
+    pub failures: Vec<String>,
     /// The stream the next `request` takes. Stream 0 is the daemon's events, never a request's.
     pub next_stream: u32,
     /// The stream ended. `read_until` and `pump` stop on it; `next` and `next_on` panic on it, so a
@@ -312,6 +326,7 @@ impl<R: Read, W: Write> RpcClient<R, W> {
             decoder: wr_protocol::envelope::EnvelopeDecoder::new(),
             seen: Vec::new(),
             other: Vec::new(),
+            failures: Vec::new(),
             next_stream: 1,
             closed: false,
         }
@@ -422,6 +437,9 @@ impl<R: Read, W: Write> RpcClient<R, W> {
             while let Some(frame) = frames.next_frame().expect("a malformed frame") {
                 if frame.kind == FrameKind::Output {
                     self.seen.extend_from_slice(&frame.payload);
+                } else if frame.kind == FrameKind::Failure {
+                    self.failures
+                        .push(String::from_utf8_lossy(&frame.payload).into_owned());
                 }
             }
         }

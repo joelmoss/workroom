@@ -226,6 +226,10 @@ struct RootView: View {
             showAddProject = false
             Task { await store.addProject(path, create: create) }
           },
+          onClone: { url, path, onProgress in
+            await store.cloneProject(url, into: path, onProgress: onProgress)
+          },
+          onCloned: { showAddProject = false },
           onCancel: { showAddProject = false }
         )
       }

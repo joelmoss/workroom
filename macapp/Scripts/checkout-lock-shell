@@ -1,0 +1,11 @@
+#!/bin/sh
+# make's SHELL for the app-* targets that build or test in macapp/DerivedData (mk/app.mk,
+# CHECKOUT_LOCKED_TARGETS). make runs each recipe line as `checkout-lock-shell -c LINE`; this runs
+# it under /bin/sh holding this checkout's build lock (gui-lock.py checkout), so a second make
+# app-* in the same checkout waits instead of corrupting the build folder. A file make can exec,
+# because make 3.81 (macOS's) has no .SHELLFLAGS to pass the lock's arguments through SHELL.
+[ "$1" = -c ] && [ $# -eq 2 ] || { echo "usage: checkout-lock-shell -c LINE" >&2; exit 2; }
+here=$(cd "$(dirname "$0")" && pwd) || exit 2
+checkout=$(cd "$here/../.." && pwd) || exit 2
+exec python3 "$here/gui-lock.py" checkout --checkout "$checkout" \
+  --label "make ${WR_CHECKOUT_LOCK_LABEL:-app-*} in $checkout" -- /bin/sh -c "$2"

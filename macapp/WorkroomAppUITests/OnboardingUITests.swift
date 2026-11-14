@@ -89,6 +89,8 @@ final class OnboardingUITests: XCTestCase {
     XCTAssertTrue(pathField.waitForExistence(timeout: 4))
     window.radioButtons["Create new directory…"].click()
     pathField.click()
+    // Create mode seeds the field with the default project folder (#620): replace it.
+    pathField.typeKey("a", modifierFlags: .command)
     pathField.typeText(projectDir.path)
 
     let addButton = window.buttons["Add Project"]

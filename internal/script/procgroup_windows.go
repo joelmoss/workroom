@@ -7,10 +7,21 @@ import "os/exec"
 // OS; the caller's timeout still gets its process back.
 //
 // ponytail: grandchildren orphaned on Windows; Job Objects if it ever matters.
-func setProcessGroup(_ *exec.Cmd) {}
+func SetProcessGroup(_ *exec.Cmd) {}
 
-func killProcessGroup(cmd *exec.Cmd) {
+// SetSession is a no-op: Windows has no POSIX sessions or controlling terminals.
+func SetSession(_ *exec.Cmd) {}
+
+func KillProcessGroup(cmd *exec.Cmd) {
 	if cmd.Process != nil {
 		_ = cmd.Process.Kill()
 	}
 }
+
+// KillProcessGroupHard is KillProcessGroup: Process.Kill is already unconditional on Windows.
+func KillProcessGroupHard(cmd *exec.Cmd) {
+	KillProcessGroup(cmd)
+}
+
+// ProcessGroupAlive reports whether any process is left in the child's group. Windows has none.
+func ProcessGroupAlive(_ *exec.Cmd) bool { return false }

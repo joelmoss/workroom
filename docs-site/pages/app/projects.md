@@ -18,16 +18,29 @@ To hide or show the sidebar, use **View ▸ Projects** (<kbd>⌃⌘S</kbd>).
 ## Add a project
 
 1. Click the **+** at the bottom right of the sidebar, or choose **File ▸ New Project…**. With no projects yet, the sidebar is hidden and the main window shows an **Add Project…** button instead.
-2. Choose one of the two sources:
+2. Choose one of the three sources:
    - **From existing path…** adds a Git repository that is already on disk.
    - **Create new directory…** makes a new folder and runs `git init` in it.
+   - **Clone a repository…** clones a repository from a URL into a new folder, then adds the clone. Nightly only.
 3. Type the full path in the field, or click **Choose…** to pick a folder. A leading `~` works.
-4. Click **Add Project**.
+4. Click **Add Project**, or **Clone Project** when cloning.
 
 The **Add Project** button stays off until the path is absolute. In **Create new directory…** mode it also stays off if the path is an existing file, and a folder that does not exist yet is created and initialised as a Git repository. **From existing path…** needs a folder that is already a Git repository.
 
+Nightly only. New projects start in your home folder. To start them somewhere else, set **Settings ▸ General ▸ Default project folder**. It is where **Clone a repository…** clones to and **Create new directory…** creates in, and where **Choose…** opens.
+
+### Clone a repository {nightly}
+
+Type the repository's URL: an `https://`, `ssh://` or `git://` URL, or `git@host:owner/repo.git`. **Clone into** fills itself with the repository's name inside your default project folder, and you can change it. **Choose…** picks the folder to clone inside: the repository gets its own folder in it. The destination must be a folder that does not exist yet, or an empty one. If an earlier clone there crashed or was force-quit, cloning again first removes the hidden folder it left. Workroom removes only what it can tell is left over, never a clone that may still be running. If a hidden folder it keeps is all that is in the way, the error names it, so you can delete it once no clone is running.
+
+While the clone runs, the sheet shows git's progress. **Cancel** stops the clone and puts the folder back as it was. If the clone fails, git's error appears in the sheet, so you can fix the URL or folder and try again. Once the clone finishes, the project is selected and a terminal opens on it.
+
+Git can't ask for a password, passphrase or host-key confirmation here. It signs in with what works without asking: SSH keys loaded in your SSH agent or Keychain, and git credential helpers such as the macOS Keychain or `gh auth`. A repository you can't reach that way fails with git's own message, such as `Permission denied (publickey).`
+
+The clone is a full clone of the repository's default branch.
+
 > [!NOTE]
-> Workroom does not accept a path on another computer, such as `ssh://…` or `host:repo`. Add the project from a local repository. A remote workroom always belongs to a local project. See [Remote workrooms](../remote/overview.md).
+> Workroom does not accept a path on another computer as a project, such as `ssh://…` or `host:repo`. To work on a remote repository, clone it with **Clone a repository…** (Nightly only). A remote workroom always belongs to a local project. See [Remote workrooms](../remote/overview.md).
 
 ## Project settings
 

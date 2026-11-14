@@ -64,6 +64,40 @@ Release download counts are snapshotted daily, and before every `--clobber` uplo
   Git repo is used as-is, and a non-empty non-repo dir or a file path is rejected
   (`ErrUnsupportedVCS` / `ErrNotDirectory`); `--create --pretend` is a dry-run (reports
   `would_create`, mutates nothing). Backs the app's "Create new directory…" mode (issue #103).
+  `add-project PATH --clone URL` (issue #620, the "Clone a repository…" mode) clones URL into a
+  missing or empty PATH (`ErrDestinationNotEmpty` otherwise), streams git's progress as `clone`
+  log events on stderr, and fails with `CloneFailed` carrying git's own error lines (the last
+  64 KiB of its stderr, progress filtered out). git runs in a session of its own (no controlling
+  terminal and `GIT_TERMINAL_PROMPT=0`, so ssh and https credentials fail fast rather than prompt) without the
+  repository-scoped `GIT_*` variables a hook or alias passes down (`GIT_DIR`, `GIT_INDEX_FILE`…).
+  SIGTERM SIGTERMs git's process group, SIGKILLs whatever outlives it (after 3 s, or once git has
+  exited), and reports `Cancelled`. An existing empty PATH is cloned into, never replaced: git
+  clones into a hidden `.clone-*` inside it and the entries move up (Finder junk is tolerated), so
+  the folder keeps its mode, ACLs, xattrs and tags and nothing crosses filesystems; a missing PATH
+  is cloned into a hidden `.<name>.clone-*` beside it, made 0755 less the umask and renamed into place. A failure
+  or cancel before then removes only that staging folder, what it moved and any parent it made
+  that is still empty, never another run's clone; once the clone is in place it is kept, and a
+  registration failure reports `ConfigWriteFailed` saying the clone is at PATH but not registered;
+  `--pretend` reports `would_clone`. Staging names carry their owner (`.clone-<host>-<pid>-…`,
+  the host an 8-hex FNV-32a hash of the machine's hardware id: the Mac's `IOPlatformUUID` from
+  `ioreg`, Linux's `/etc/machine-id` (or `/var/lib/dbus/machine-id`), Windows' `MachineGuid`; read,
+  never written, so unchanged by hostname changes and `--pretend` stays read-only). While a clone
+  runs the CLI holds an exclusive `flock` on a lock file beside its staging (the staging name plus
+  `.lock`: `<parent>/.<name>.clone-….lock`, or `PATH/.clone-….lock` inside), made before the
+  staging folder and passed to git as an extra open file, so git and its helpers inherit the lock
+  and it stays held after a SIGKILLed CLI while any of them runs; it is removed on success, failure
+  and cancel. A later clone into the same place first sweeps what a crashed or killed clone left,
+  saying `Removing staging a crashed clone left: <name>` on the progress stream and stopping with
+  `Cancelled` on SIGTERM: only real folders named with this machine id, whose lock file is free
+  (whatever their pid), or, with no lock file (an earlier build's staging, or Windows and
+  filesystems without `flock`), whose pid is no longer running; a lock file whose staging is gone
+  goes once free. Without a machine id no owned staging is swept. A name without an owner (an
+  earlier build's `.clone-<digits>`) is never removed. A refusal caused only by staging-shaped
+  entries (`.clone-*` folders, `.clone-*.lock` files) names them; a user's `.clone-notes` file is
+  ordinary content. A live clone's or another machine's staging stays. `--pretend` looks past dead
+  staging and its lock file without removing them. The app's emptiness check passes over
+  the same staging-shaped entries (a real `.clone-*` folder or a regular `.clone-*.lock` file,
+  judged without following symlinks) and leaves that call to the CLI.
   `delete-project` is config-only unless: `--with-workrooms` cascades the per-workroom
   teardown (hard-deletes worktree dirs, branches kept); or `--from-disk` runs each workroom's
   teardown, drops the project from config, and returns `trash_paths` (project root first, then

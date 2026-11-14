@@ -13,6 +13,7 @@ Settings that belong to one project, such as its run command, are in the [Projec
 | --- | --- |
 | **Confirm before quitting** | Asks before Workroom quits. It is on by default. |
 | **Global show/hide hotkey (⌘§)** | Registers <kbd>⌘§</kbd> to show or hide Workroom from any app, and the Quick Terminal's shortcut (<kbd>⌥§</kbd> unless you change it in [Terminal](#quick-terminal)). It is on by default. |
+| **Default project folder** | Nightly only. The folder new projects start in, shown as its full path: where **Clone a repository…** clones to and **Create new directory…** creates in, and where **Choose…** opens in the New Project sheet. Your home folder is the default. **Choose…** picks another, and **Use Home**, shown only then, goes back. See [Add a project](projects.md#add-a-project). |
 
 **Workroom ▸ Confirm Before Quitting** in the menu is the same switch.
 

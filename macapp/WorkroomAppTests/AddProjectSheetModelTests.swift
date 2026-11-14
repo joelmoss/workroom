@@ -75,6 +75,177 @@ final class AddProjectSheetModelTests: XCTestCase {
       AddProjectSheetModel.footer(mode: .createNew))
   }
 
+  // MARK: Clone a repository… (issue #620)
+
+  func testCloneURLAcceptsWhatGitCallsRemote() {
+    for url in [
+      "https://github.com/acme/api", "ssh://git@host/acme/api.git", "git://host/acme/api",
+      "git@github.com:acme/api.git", "  https://github.com/acme/api  ",
+    ] {
+      XCTAssertTrue(AddProjectSheetModel.isCloneURL(url), url)
+    }
+    for url in ["", "/abs/repo", "~/code/repo", "acme/api", "file:///tmp/repo.git", "relative"] {
+      XCTAssertFalse(AddProjectSheetModel.isCloneURL(url), url)
+    }
+  }
+
+  func testRepoNameComesFromTheURLsLastComponent() {
+    XCTAssertEqual(AddProjectSheetModel.repoName(fromURL: "git@github.com:acme/api.git"), "api")
+    XCTAssertEqual(AddProjectSheetModel.repoName(fromURL: "https://github.com/acme/api"), "api")
+    XCTAssertEqual(AddProjectSheetModel.repoName(fromURL: "https://github.com/acme/api/"), "api")
+    XCTAssertEqual(
+      AddProjectSheetModel.repoName(fromURL: "https://github.com/acme/api.git/"), "api")
+    XCTAssertEqual(AddProjectSheetModel.repoName(fromURL: "host:repo"), "repo")
+    XCTAssertNil(AddProjectSheetModel.repoName(fromURL: ""))
+    XCTAssertNil(AddProjectSheetModel.repoName(fromURL: "https://"))
+    XCTAssertNil(AddProjectSheetModel.repoName(fromURL: "https://github.com/"), "a host alone")
+  }
+
+  func testCloneDestinationIsTheRepoNameUnderTheParent() {
+    XCTAssertEqual(
+      AddProjectSheetModel.cloneDestination(
+        url: "git@github.com:acme/api.git", parent: "/Users/me/dev"),
+      "/Users/me/dev/api")
+    XCTAssertEqual(
+      AddProjectSheetModel.cloneDestination(
+        url: "https://github.com/acme/api", parent: "/Users/me/dev/"),
+      "/Users/me/dev/api")
+    XCTAssertNil(AddProjectSheetModel.cloneDestination(url: "", parent: "/Users/me/dev"))
+  }
+
+  /// "Clone into" follows the URL until the user types their own path, then stays theirs.
+  func testCloneIntoFollowsTheURLUntilEdited() {
+    let parent = "/Users/me/dev"
+    func seed(_ current: String, _ last: String?, _ url: String) -> String? {
+      AddProjectSheetModel.seededPath(
+        mode: .clone, current: current, lastAutoFill: last, url: url, parent: parent)
+    }
+    XCTAssertEqual(
+      seed("", nil, "git@github.com:acme/api.git"), "/Users/me/dev/api", "empty: filled")
+    XCTAssertEqual(
+      seed("/Users/me/dev/api", "/Users/me/dev/api", "git@github.com:acme/web.git"),
+      "/Users/me/dev/web", "still ours: follows the URL")
+    XCTAssertNil(
+      seed("/Volumes/x/mine", "/Users/me/dev/api", "git@github.com:acme/web.git"),
+      "typed by hand: left alone")
+    XCTAssertEqual(
+      seed("/Users/me/dev/api", "/Users/me/dev/api", ""), "", "URL cleared: our fill goes too")
+    XCTAssertNil(seed("", nil, "https://"), "no repo name yet: nothing to fill")
+  }
+
+  /// The path field is shared by every mode: what one mode seeded is replaced by the next mode's
+  /// seed, so Create's "parent/" never leaks into Clone or From existing path….
+  func testModeSwitchReseedsOnlyWhatTheSheetWrote() {
+    let parent = "/Users/me/dev"
+    func seed(_ mode: AddProjectMode, _ current: String, _ last: String?, url: String = "")
+      -> String?
+    {
+      AddProjectSheetModel.seededPath(
+        mode: mode, current: current, lastAutoFill: last, url: url, parent: parent)
+    }
+    XCTAssertEqual(seed(.createNew, "", nil), "/Users/me/dev/")
+    XCTAssertEqual(
+      seed(.clone, "/Users/me/dev/", "/Users/me/dev/", url: "https://github.com/acme/api"),
+      "/Users/me/dev/api", "Create's seed gives way to Clone's")
+    XCTAssertEqual(seed(.existing, "/Users/me/dev/", "/Users/me/dev/"), "", "and to no seed at all")
+    XCTAssertNil(seed(.existing, "", nil), "already empty")
+    XCTAssertNil(seed(.clone, "/Users/me/repo", "/Users/me/dev/"), "a typed path survives")
+    XCTAssertNil(seed(.createNew, "/Users/me/repo", nil), "a typed path survives")
+  }
+
+  func testDefaultProjectFolderIsHomeWhenUnset() {
+    XCTAssertEqual(AddProjectSheetModel.projectFolder(setting: ""), NSHomeDirectory())
+    XCTAssertEqual(AddProjectSheetModel.projectFolder(setting: "~/dev"), NSHomeDirectory() + "/dev")
+    XCTAssertEqual(AddProjectSheetModel.projectFolder(setting: "/Volumes/code"), "/Volumes/code")
+  }
+
+  func testCloneIsValidOnlyForAURLAndANewOrEmptyFolder() throws {
+    let url = "git@github.com:acme/api.git"
+    let root = NSTemporaryDirectory() + "addproj-clone-\(UUID().uuidString)"
+    let empty = root + "/empty"
+    let junk = root + "/junk"
+    let full = root + "/full"
+    let file = root + "/file"
+    for dir in [empty, junk, full] {
+      try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    }
+    defer { try? FileManager.default.removeItem(atPath: root) }
+    XCTAssertTrue(FileManager.default.createFile(atPath: junk + "/.DS_Store", contents: nil))
+    XCTAssertTrue(FileManager.default.createFile(atPath: full + "/README", contents: nil))
+    XCTAssertTrue(FileManager.default.createFile(atPath: file, contents: nil))
+
+    XCTAssertTrue(AddProjectSheetModel.isValid(mode: .clone, path: root + "/new/api", url: url))
+    XCTAssertTrue(AddProjectSheetModel.isValid(mode: .clone, path: empty, url: url))
+    XCTAssertTrue(
+      AddProjectSheetModel.isValid(mode: .clone, path: junk, url: url), ".DS_Store only")
+    XCTAssertFalse(AddProjectSheetModel.isValid(mode: .clone, path: full, url: url))
+    XCTAssertFalse(AddProjectSheetModel.isValid(mode: .clone, path: file, url: url))
+    XCTAssertFalse(AddProjectSheetModel.isValid(mode: .clone, path: "relative/api", url: url))
+    XCTAssertFalse(AddProjectSheetModel.isValid(mode: .clone, path: "", url: url))
+    XCTAssertFalse(AddProjectSheetModel.isValid(mode: .clone, path: empty, url: ""))
+    XCTAssertFalse(AddProjectSheetModel.isValid(mode: .clone, path: empty, url: "acme/api"))
+
+    XCTAssertEqual(
+      AddProjectSheetModel.footer(mode: .clone, path: full, url: url), "That folder isn't empty.")
+    XCTAssertEqual(
+      AddProjectSheetModel.footer(mode: .clone, path: file, url: url),
+      "That's a file, not a folder.")
+    XCTAssertEqual(
+      AddProjectSheetModel.footer(mode: .clone, path: "relative/api", url: url),
+      "Type the full path to clone into.")
+    XCTAssertEqual(
+      AddProjectSheetModel.footer(mode: .clone, path: "", url: url),
+      "Type the full path to clone into.", "a URL but no folder says why Clone is off")
+    XCTAssertTrue(
+      AddProjectSheetModel.footer(mode: .clone, path: empty, url: "acme/api")
+        .hasPrefix("Enter a repository URL"))
+    XCTAssertEqual(
+      AddProjectSheetModel.footer(mode: .clone, path: empty, url: url),
+      AddProjectSheetModel.footer(mode: .clone))
+  }
+
+  /// A crashed clone's hidden staging folder doesn't make the sheet refuse the folder: the CLI
+  /// sweeps it if its clone is dead, and refuses with DestinationNotEmpty if one is still running.
+  func testCloneStagingLeftoversDoNotBlockTheFolder() throws {
+    let url = "git@github.com:acme/api.git"
+    let dest = NSTemporaryDirectory() + "addproj-staging-\(UUID().uuidString)"
+    try FileManager.default.createDirectory(
+      atPath: dest + "/.clone-0badc0de-123-abc/.git", withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: dest) }
+
+    XCTAssertTrue(
+      FileManager.default.createFile(atPath: dest + "/.clone-0badc0de-123-abc.lock", contents: nil))
+    XCTAssertTrue(AddProjectSheetModel.isValid(mode: .clone, path: dest, url: url))
+    XCTAssertTrue(FileManager.default.createFile(atPath: dest + "/.clone-notes", contents: nil))
+    XCTAssertFalse(
+      AddProjectSheetModel.isValid(mode: .clone, path: dest, url: url),
+      "a user's own .clone-* file is content, not staging")
+    try FileManager.default.removeItem(atPath: dest + "/.clone-notes")
+    try FileManager.default.createSymbolicLink(
+      atPath: dest + "/.clone-link", withDestinationPath: NSTemporaryDirectory())
+    XCTAssertFalse(
+      AddProjectSheetModel.isValid(mode: .clone, path: dest, url: url),
+      "a symlink is never taken for staging, as in the CLI")
+    try FileManager.default.removeItem(atPath: dest + "/.clone-link")
+    XCTAssertTrue(FileManager.default.createFile(atPath: dest + "/README", contents: nil))
+    XCTAssertFalse(
+      AddProjectSheetModel.isValid(mode: .clone, path: dest, url: url),
+      "real content still counts")
+  }
+
+  /// The remote-projects message belongs to "From existing path…" only: in clone mode a URL is
+  /// the point, and create mode names a new folder.
+  func testRemoteFooterShowsOnlyForExistingPath() {
+    let remote = "git@github.com:a/b.git"
+    XCTAssertTrue(
+      AddProjectSheetModel.footer(mode: .existing, path: remote).contains("Remote projects"))
+    XCTAssertFalse(
+      AddProjectSheetModel.footer(mode: .createNew, path: remote).contains("Remote projects"))
+    XCTAssertFalse(
+      AddProjectSheetModel.footer(mode: .clone, path: "/x/api", url: remote).contains(
+        "Remote projects"))
+  }
+
   /// codex C10: the FakeWorkroomCLI seam can't prove the real decode, so assert
   /// AddProjectResponse parses the actual success-envelope shape, ignoring the
   /// envelope-header keys.

@@ -2067,25 +2067,80 @@ final class AppStore: ObservableObject {
     #endif
     do {
       let canonical = try await cli.addProject(path, create: create)
-      await reload()
-      // Select the freshly added project (by the canonical path the CLI registered —
-      // it resolves symlinks and ~, so it's more reliable than the typed path) and
-      // open a terminal on its root, mirroring workroom creation rather than leaving
-      // the user on the "Nothing selected" empty state (issue #104). A new project
-      // has no workrooms, so the root is the only sensible terminal to open.
-      guard let match = projectStore.project(at: canonical) else {
-        throw NSError(
-          domain: "Workroom.AppStore", code: 1,
-          userInfo: [
-            NSLocalizedDescriptionKey:
-              "The project was registered, but could not be loaded. Refresh to try again."
-          ])
-      }
-      selectedProjectID = match.id
-      selectedTargetID = .root(project: match.path)
+      try await selectAddedProject(canonical, surfaceErrors: true)
       return .success(())
     } catch {
       present(error)
+      return .failure(error)
+    }
+  }
+
+  /// Reloads, then selects the freshly added project (by the canonical path the CLI registered —
+  /// it resolves symlinks and ~, so it's more reliable than the typed path) and opens a terminal on
+  /// its root, mirroring workroom creation rather than leaving the user on the "Nothing selected"
+  /// empty state (issue #104). A new project has no workrooms, so the root is the only sensible
+  /// terminal to open.
+  ///
+  /// `surfaceErrors` is whether a failed reload presents its alert. Without it a failed reload
+  /// still throws, as the project then isn't in the list, so the caller can show it inline.
+  private func selectAddedProject(_ canonical: String, surfaceErrors: Bool) async throws {
+    await load(warnings: "fast", surfaceErrors: surfaceErrors)
+    guard let match = projectStore.project(at: canonical) else {
+      throw NSError(
+        domain: "Workroom.AppStore", code: 1,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "The project was registered, but could not be loaded. Refresh to try again."
+        ])
+    }
+    selectedProjectID = match.id
+    selectedTargetID = .root(project: match.path)
+  }
+
+  /// Clones `url` into `path` and adds the clone as a project (#620), handing `onProgress` each
+  /// line of git's progress. Unlike `addProject` it presents nothing: the New Project sheet stays
+  /// open through a clone and shows its error inline, so an alert would land behind it. Cancelling
+  /// the calling task cancels the clone; it returns once the CLI has cleaned up.
+  func cloneProject(
+    _ url: String, into path: String, onProgress: @escaping @Sendable (String) -> Void
+  ) async -> Result<Void, Error> {
+    #if DEBUG
+      // Never the real CLI under the fixture (see `addProject`): a simulated clone, with progress,
+      // that a URL naming "fixture-clone-fails" makes fail, one naming "fixture-clone-hangs"
+      // keeps running until it is cancelled, and that honours cancellation.
+      if AppEnvironment.current.isFixture {
+        let canonical = AddProjectSheetModel.normalize(path)
+        do {
+          for line in [
+            "Cloning into '\(canonical)'...", "Receiving objects:  50% (1/2)",
+            "Receiving objects: 100% (2/2), done.",
+          ] {
+            onProgress(line)
+            try await Task.sleep(for: .milliseconds(400))
+          }
+          if url.contains("fixture-clone-hangs") { try await Task.sleep(for: .seconds(600)) }
+        } catch {
+          return .failure(WorkroomCLIError.cli(kind: "Cancelled", message: "operation cancelled"))
+        }
+        if url.contains("fixture-clone-fails") {
+          return .failure(
+            WorkroomCLIError.cli(
+              kind: "CloneFailed",
+              message: "git clone failed: git@github.com: Permission denied (publickey)."))
+        }
+        if !projectStore.projects.contains(where: { $0.path == canonical }) {
+          projectStore.projects.append(Project(path: canonical, vcs: "git", workrooms: []))
+        }
+        selectedProjectID = canonical
+        selectedTargetID = .root(project: canonical)
+        return .success(())
+      }
+    #endif
+    do {
+      let canonical = try await cli.cloneProject(url, into: path, onLog: onProgress)
+      try await selectAddedProject(canonical, surfaceErrors: false)
+      return .success(())
+    } catch {
       return .failure(error)
     }
   }

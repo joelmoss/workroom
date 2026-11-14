@@ -312,6 +312,8 @@ private struct GeneralSettingsPane: View {
   @Default(.confirmOnQuit) private var confirmOnQuit
   @Default(.quitWithRunningServers) private var quitWithRunningServers
   @Default(.globalHotkey) private var globalHotkey
+  // "" = the home folder.
+  @Default(.defaultProjectFolder) private var projectFolder
 
   var body: some View {
     Form {
@@ -333,10 +335,43 @@ private struct GeneralSettingsPane: View {
       Toggle("Global show/hide hotkey (⌘§)", isOn: $globalHotkey)
         .help("Register the system-wide ⌘§ shortcut to show or hide Workroom.")
 
+      LabeledContent("Default project folder") {
+        HStack {
+          Text(AddProjectSheetModel.projectFolder(setting: projectFolder))
+            .monospaced()
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .accessibilityIdentifier("settings.control.defaultProjectFolderPath")
+          if !projectFolder.isEmpty {
+            Button("Use Home") { projectFolder = "" }
+              .help("Start new projects in your home folder.")
+              .accessibilityIdentifier("settings.control.defaultProjectFolderReset")
+          }
+          Button("Choose…", action: chooseProjectFolder)
+            .help("Choose the folder new projects start in.")
+            .accessibilityIdentifier("settings.control.defaultProjectFolder")
+        }
+      }
+      .help(
+        "Where New Project clones a repository or creates a new directory, and where its "
+          + "Choose… button opens.")
+
       NewWorkroomsSection()
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)
+  }
+
+  private func chooseProjectFolder() {
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    panel.canCreateDirectories = true
+    panel.allowsMultipleSelection = false
+    panel.directoryURL = URL(
+      fileURLWithPath: AddProjectSheetModel.projectFolder(setting: projectFolder))
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    projectFolder = url.path == NSHomeDirectory() ? "" : url.path
   }
 }
 

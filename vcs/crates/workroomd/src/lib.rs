@@ -53,4 +53,5 @@ pub mod testing {
     pub use crate::terminal::session::{
         KEEPALIVE_PROBE, KEEPALIVE_VARIABLE, READ_CHUNK, SessionId, SessionSpec, SessionStore,
     };
+    pub use crate::util::ready_to_fork;
 }

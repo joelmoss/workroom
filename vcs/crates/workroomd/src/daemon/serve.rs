@@ -764,6 +764,8 @@ pub fn spawn_daemon(binary: &Path, socket: &Path) -> std::io::Result<()> {
             Ok(())
         });
     }
+    // `pre_exec` makes std fork rather than `posix_spawn`.
+    crate::util::ready_to_fork();
     command.spawn().map(|_| ())
 }
 
