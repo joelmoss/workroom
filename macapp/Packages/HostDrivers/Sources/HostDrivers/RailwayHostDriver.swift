@@ -14,9 +14,10 @@ import WorkroomSystem
 ///   no systemd and an empty machine id, so it gets Workroom's identity file, and the daemon is
 ///   started from an ssh login, which it outlives (`startsDaemon`).
 /// - **The relay.** `ssh.railway.com`, user `sbx:<environment>:<sandbox>`, with a key Workroom
-///   makes for this Mac and registers on the account, and the relay's host key pinned on first use
-///   (Railway publishes none). The pin is written once and never replaced: a relay presenting
-///   another key fails ssh's own check, which is a refusal the pane stops on.
+///   makes for this Mac and registers on the account. The relay's host key ships in the app
+///   (`relayHostKey`; Railway publishes none) and is the only one any login trusts, whatever a
+///   record or an older build's pin says: a relay presenting another key fails ssh's own check,
+///   a refusal the pane stops on, until an update of Workroom ships the new key.
 /// - **Records.** A sandbox has no name or label, so the record (`RailwayHostRecord`, through
 ///   `HostRecording`) is all that ties it to its workroom; a driver made after a relaunch reaches
 ///   only the hosts it adopted.
@@ -41,8 +42,8 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
     public var projectID: String?
     /// The workspace the project is in, whose plan caps a host's size (#633); nil reads no plan.
     public var workspaceID: String?
-    /// This Mac's folder for its Railway ssh key (`id_ed25519`) and the relay's pinned host key
-    /// (`relay_host_key`): one for Release and Nightly, a Dev build's own.
+    /// This Mac's folder for its Railway ssh key (`id_ed25519`) and create ledger: one for
+    /// Release and Nightly, a Dev build's own.
     public var keys: URL
     /// The relay every login goes through.
     public var relayHost: String
@@ -87,6 +88,12 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   public static let driverName = HostKind.railway.driver
   /// Railway's ssh relay (from its CLI's source, not its docs: ADR 0071).
   public static let relay = "ssh.railway.com"
+  /// The relay's host key, `<type> <base64>`, as the live spike of 2026-11-13 read it on every
+  /// connection (ADR 0071's amendment): shipped in the app, so the first login is checked as
+  /// strongly as the rest. Railway publishes none; a relay presenting another key is refused
+  /// until an update of Workroom ships the new one.
+  public static let relayHostKey =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ8X3z81/tuP7CvmK3ZqWgwEvHUR6b04oi2lQJGld2C1"
   /// Every sandbox logs in as root, whose home holds the daemon's state and the clone (spike).
   public static let user = "root"
   public static let stateDirectory = "/root/.local/state/workroom"
@@ -147,10 +154,9 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       if let checkpoint = sandboxOptions.checkpoint {
         try await self.checkHeld(checkpoint: checkpoint)
       }
-      // One create at a time makes the key and the pin; the rest find them.
-      let (identity, hostKey) = try await RailwaySerial.shared.run {
-        (try await self.macKey(), try await self.pinnedRelayKey())
-      }
+      // One create at a time makes the key; the rest find it.
+      let identity = try await RailwaySerial.shared.run { try await self.macKey() }
+      let hostKey = Self.relayHostKey
       // Read before anything is made: a Mac signed out of gh bills no sandbox.
       return (identity, hostKey, try await self.macGitHubToken())
     }
@@ -313,9 +319,10 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
     if lowered.contains("host key verification failed")
       || lowered.contains("remote host identification has changed")
     {
-      return "Railway's ssh relay presented a different host key from the one Workroom pinned "
-        + "for it, so Workroom refused to connect: someone may be intercepting the connection. "
-        + "ssh said: \(said)"
+      return "Railway's ssh relay presented a host key other than the one this version of "
+        + "Workroom ships for it, so Workroom refused to connect. Either the relay's key changed, "
+        + "and Workroom needs an update: update Workroom, then try again. Or someone is "
+        + "intercepting the connection. ssh said: \(said)"
     }
     return "Railway's ssh relay refused Workroom's key: \(said)"
   }
@@ -442,40 +449,8 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
     line.split(separator: " ").prefix(2).joined(separator: " ")
   }
 
-  /// The relay's host key, `<type> <base64>`: read from the pin, or on first use scanned and
-  /// pinned. Never scanned again once pinned.
-  private func pinnedRelayKey() async throws -> String {
-    let pin = configuration.keys.appendingPathComponent("relay_host_key")
-    func pinned() -> String? {
-      (try? String(contentsOf: pin, encoding: .utf8))
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap {
-          $0.isEmpty ? nil : $0
-        }
-    }
-    if let pinned = pinned() { return pinned }
-    let scan = await runner.run(
-      "/usr/bin/ssh-keyscan", ["-t", "ed25519", configuration.relayHost], in: NSHomeDirectory(),
-      timeout: 30)
-    guard
-      let fields = scan.stdout.split(separator: "\n").lazy
-        .filter({ !$0.hasPrefix("#") }).map({ $0.split(separator: " ") })
-        .first(where: { $0.count >= 3 })
-    else {
-      throw HostDriverError.provisioning(
-        "Workroom couldn't read the host key of Railway's ssh relay (\(configuration.relayHost))"
-          + ": \(scan.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
-    }
-    let key = "\(fields[1]) \(fields[2])"
-    // Written once, under the lock the other app shares: a pin it wrote meanwhile is kept.
-    return try await keysLock.withLock {
-      if let pinned = pinned() { return pinned }
-      try (key + "\n").write(to: pin, atomically: true, encoding: .utf8)
-      return key
-    }
-  }
-
-  /// Held while the Mac's key or the relay's pin is made (`CrossProcessLock`): Release and Nightly
-  /// share the folder. Never across a call to Railway. Taken inside `RailwaySerial`.
+  /// Held while the Mac's key is made (`CrossProcessLock`): Release and Nightly share the folder.
+  /// Never across a call to Railway. Taken inside `RailwaySerial`.
   private var keysLock: CrossProcessLock {
     CrossProcessLock(path: configuration.keys.appendingPathComponent("keys.lock"))
   }
@@ -531,11 +506,13 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
 
   // MARK: ssh
 
+  /// The login to `record`'s sandbox through the relay, trusting only the shipped relay key: a
+  /// record from a build that pinned on first use may hold another.
   func target(_ record: RailwayHostRecord, identity: String) -> SSHTransport.Host {
     SSHTransport.Host(
       address: configuration.relayHost, port: 22,
       user: "sbx:\(record.environmentID):\(record.sandboxID)", identityFile: identity,
-      hostKey: record.hostKey, daemonSocket: configuration.daemonSocket)
+      hostKey: Self.relayHostKey, daemonSocket: configuration.daemonSocket)
   }
 
   private func target(_ host: HostID) throws -> (UUID, SSHTransport.Host) {

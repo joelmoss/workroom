@@ -160,7 +160,9 @@ on branch `prototype/railway-sandbox-spike` (local only until pushed). Everythin
   **no systemd, no `loginctl`, no sshd** (the relay terminates ssh). `/etc/machine-id` is **empty**, on a fork too.
   VMs come pre-booted from a pool (`init` had 75 min uptime at create).
 - Relay: target `sbx:<environmentId>:<sandboxId>@ssh.railway.com`; one host key, `ssh-ed25519
-  AAAAC3NzaC1lZDI1NTE5AAAAIJ8X3z81/tuP7CvmK3ZqWgwEvHUR6b04oi2lQJGld2C1`, the same on every read. It runs each
+  AAAAC3NzaC1lZDI1NTE5AAAAIJ8X3z81/tuP7CvmK3ZqWgwEvHUR6b04oi2lQJGld2C1`, the same on every read. Workroom
+  ships this key and trusts no other ([ADR 0071](../adr/0071-railway-hosts-never-idle-out-and-each-mac-has-its-own-environment.md)'s
+  amendment of 2026-11-14). It runs each
   remote command as `bash -c 'if [ -f /etc/environment ]; then set -a; . /etc/environment; set +a; fi; <cmd>'`.
 - `ssh -T` is byte-clean: 1 MiB random up, down and echoed, sha256 equal, nothing on stderr. Two concurrent logins
   and ControlMaster work. `ssh -L` works (5 MiB through a forward, sha256 equal).
