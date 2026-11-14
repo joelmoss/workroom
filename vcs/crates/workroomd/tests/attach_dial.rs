@@ -74,7 +74,7 @@ fn a_host_that_cannot_reach_its_daemon_yet_exits_with_the_retry_status() {
 }
 
 /// A host that refuses for good says why on stderr and exits non-zero, as a host with only the
-/// former `wr-agent` layout does, and the pane stops rather than retrying.
+/// daemon's former layout (ADR 0057) does, and the pane stops rather than retrying.
 #[test]
 fn a_host_that_refuses_says_why_and_does_not_ask_for_a_retry() {
     let (_, err, code) = dial(
@@ -451,7 +451,8 @@ fn pty(rows: u16, columns: u16) -> (OwnedFd, OwnedFd) {
             &mut secondary,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut size,
+            // A raw pointer: Linux's openpty takes the size `*const`, macOS's `*mut`.
+            &raw mut size,
         )
     };
     assert_eq!(rc, 0, "openpty: {}", std::io::Error::last_os_error());

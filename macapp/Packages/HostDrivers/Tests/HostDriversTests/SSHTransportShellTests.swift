@@ -262,7 +262,7 @@ final class SSHTransportShellTests: XCTestCase {
   // with no daemon yet stops the pane, a former-layout host is retried forever, or the relay is
   // not what runs; why_new=the host side is now a guard in front of `relay` (#628); seam=the
   // command a pane's ssh runs on the host
-  /// No daemon yet exits 255 (retry); only the former `wr-agent` exits 1 with its reason on
+  /// No daemon yet exits 255 (retry); only the daemon's former layout (ADR 0057) exits 1 with its reason on
   /// stderr (stop); an installed daemon's `relay` replaces the shell, on the pane's socket.
   func testTheHostSideRelaysToTheInstalledDaemonOrSaysWhyNot() throws {
     let root = "/private/tmp/host-relay-\(UUID().uuidString)"

@@ -224,7 +224,9 @@ final class VCSCommitIntegrationTests: XCTestCase {
     write("#!/bin/sh\nsleep 30\n", to: ".git/hooks/post-commit", in: dir)
     sh("chmod +x .git/hooks/post-commit", in: dir)
     var landing = writer()
-    landing.commitTimeout = 1
+    // Long enough for the commit itself to land on a slow CI runner before the hook's sleep
+    // runs the clock out: 1 s lost that race there once, failing with HEAD still unborn.
+    landing.commitTimeout = 5
 
     let result = await landing.commit(
       path: dir, projectRoot: dir,
@@ -293,7 +295,9 @@ final class VCSCommitIntegrationTests: XCTestCase {
       runner: HeadReadsFailOnceItExists(failure: failure),
       makeProvider: { _ in GitProvider() as LocalVCSProviding },
       gate: RepositoryWriteGate(maxChainWait: 5))
-    landing.commitTimeout = 1
+    // Long enough for the commit itself to land on a slow CI runner before the hook's sleep
+    // runs the clock out: 1 s lost that race there once, failing with HEAD still unborn.
+    landing.commitTimeout = 5
 
     let result = await landing.commit(
       path: dir, projectRoot: dir,
