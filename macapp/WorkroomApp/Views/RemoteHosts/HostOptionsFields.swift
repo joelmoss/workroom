@@ -633,6 +633,7 @@ private struct OptionTextField: View {
           .menuIndicator(.hidden)
           .fixedSize()
           .accessibilityLabel("\(title) choices")
+          .accessibilityIdentifier("hostOptions.choices.\(title)")
         }
       }
     }

@@ -52,13 +52,14 @@ final class RailwayHostOptionsUITests: XCTestCase {
 
     let cpu = element(app, "hostOptions.railway.cpu")
     XCTAssertTrue(cpu.waitForExistence(timeout: 5), "no Railway CPU picker")
+    cpu.scrollIntoView(in: app, maxScrolls: 30)
     cpu.click()
     XCTAssertTrue(app.menuItems["8 vCPU"].waitForExistence(timeout: 5), "the plan's maximum")
     XCTAssertFalse(app.menuItems["9 vCPU"].exists, "a CPU past the Hobby plan's maximum")
     app.typeKey(.escape, modifierFlags: [])
     XCTAssertTrue(element(app, "hostOptions.railway.memory").exists, "no Railway memory picker")
 
-    let checkpoints = app.menuButtons["Checkpoint choices"].firstMatch
+    let checkpoints = element(app, "hostOptions.choices.Checkpoint")
     XCTAssertTrue(checkpoints.waitForExistence(timeout: 5), "no checkpoint menu")
     checkpoints.scrollIntoView(in: app, maxScrolls: 30)
     checkpoints.click()
