@@ -202,10 +202,9 @@ final class HostDriverRegistry: @unchecked Sendable {
     }
     // An SSH host's home and a Railway host's sandbox are in its record, which its driver must
     // hold before a pane, a read or a delete reaches it.
-    for descriptor in recorded where descriptor.kind == .ssh || descriptor.kind == .railway {
-      guard let key = DriverKey(descriptor), descriptor.kind != .ssh || descriptor.sshHome != nil
-      else { continue }
-      do { try (driver(key) as? any HostRecording)?.adopt(descriptor) } catch {
+    for descriptor in recorded {
+      guard let key = DriverKey(descriptor) else { continue }
+      do { try recordingDriver(key)?.adopt(descriptor) } catch {
         Self.logger.error("host record: \(error.localizedDescription, privacy: .public)")
       }
     }
@@ -297,7 +296,7 @@ final class HostDriverRegistry: @unchecked Sendable {
               // Owed again when Railway can't list (signed out, offline); a destroy it refused is
               // tried at the next launch.
               do {
-                guard let driver = try self.driver(key) as? RailwayHostDriver else {
+                guard let driver = try self.driver(key) as? any UnrecordedHostSweeping else {
                   return (key, ["Railway: this host cannot be swept"], true)
                 }
                 return (
@@ -363,8 +362,9 @@ final class HostDriverRegistry: @unchecked Sendable {
       // the fix, when the user's ssh can't sign in to exe.dev.
       return .exeDev(account: try await Self.exeDev().signedIn())
     case .railway:
-      // This Mac's environment in the `Workroom` project of the workspace the user picked, made
-      // on the first create (ADR 0071). Throws `RailwaySessionError.signedOut` when signed out.
+      // This Mac's environment in the project of the workspace the user picked, which setup made
+      // (ADR 0071, `RailwaySetup.place`); made here, in the `Workroom` project, only when setup
+      // never got that far. Throws `RailwaySessionError.signedOut` when signed out.
       let placement = RailwayAccount.placement
       guard let workspace = placement.read().selectedWorkspaceID ?? placement.read().workspaceID
       else { throw RemoteWorkrooms.Failure.railwayNotSetUp }
@@ -413,10 +413,7 @@ final class HostDriverRegistry: @unchecked Sendable {
     var environments: [DriverKey: RemoteProvisioning.Environment] = [:]
     for host in hosts where RemoteWorkrooms.isLive(host) {
       let key = try Self.deletionKey(host)
-      switch key {
-      case .ssh, .railway: try (driver(key) as? any HostRecording)?.adopt(host)
-      default: break
-      }
+      try recordingDriver(key)?.adopt(host)
       if environments[key] == nil { environments[key] = try environment(key).1 }
       // Taking a box down needs it on its driver, whatever a reload adopted: one that has not
       // adopted it yet would read the box as unknown. A boxd driver needs nothing adopted.
@@ -424,6 +421,14 @@ final class HostDriverRegistry: @unchecked Sendable {
       adoptLogged(host, into: try container(key))
     }
     return environments.isEmpty ? nil : Deletion(environments: environments)
+  }
+
+  /// `key`'s driver when it is a remote provider's that keeps its hosts' records (`HostRecording`):
+  /// an SSH host's home, a Railway host's sandbox. A container runtime's records go to its driver
+  /// with its runtime (`adoptLogged`), which a pane must not probe for.
+  private func recordingDriver(_ key: DriverKey) throws -> (any HostRecording)? {
+    guard key.isRemoteProvider else { return nil }
+    return try driver(key) as? any HostRecording
   }
 
   /// `descriptor`'s host taken on by `driver`, unless it holds it already; a record it can't take
@@ -496,11 +501,12 @@ final class HostDriverRegistry: @unchecked Sendable {
         gitHubToken = { UITestFixture.railwayGitHubToken }
       }
     #endif
+    // The project and workspace are only known for the environment setup placed.
+    let placed = placement.environmentID == environment ? placement : nil
     return RailwayHostDriver(
       configuration: .init(
-        environmentID: environment,
-        projectID: placement.environmentID == environment ? placement.projectID : nil,
-        workspaceID: placement.environmentID == environment ? placement.workspaceID : nil,
+        environmentID: environment, projectID: placed?.projectID,
+        workspaceID: placed?.workspaceID,
         keys: RailwayAccount.directory, relayHost: relay, hostSetup: .bundled,
         gitHubToken: gitHubToken),
       api: RailwayAccount.shared.api, directory: RemoteHosts.hosts)

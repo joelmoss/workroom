@@ -19,9 +19,12 @@ Workroom never runs your `railway` command or reads its `~/.railway` folder, so 
 The first time you create a workroom on Railway, the **Set up Railway** sheet opens. You can also open it from **Settings**, **Remote Hosts**, **Set Up Railway…**.
 
 1. **Account.** Click **Sign In with Railway**. Your browser opens Railway's page. Tick the workspaces Workroom may use, then approve. There is no token to copy. Each Workroom app (Workroom and Workroom Nightly) signs in once of its own.
-2. **Workspace.** Pick the workspace Workroom keeps its hosts in. Workroom uses a project named **Workroom** there, or makes one, and gives this Mac an environment of its own in it.
+2. **Workspace.** Pick the workspace Workroom keeps its hosts in.
+3. **Project.** Pick one of the workspace's projects, or **New project named Workroom**, then click **Use This Project**. Workroom makes the project if it's new, and gives this Mac an environment of its own in it, so another Mac's cleanup never touches this Mac's hosts. A project of their own keeps your hosts apart from your apps.
 
 Click **Create Workroom**, and the create carries on.
+
+To move this Mac's hosts to another workspace or project later, delete its Railway workrooms first. While this Mac's environment still has a sandbox, Workroom refuses the move and says why: it would lose track of that sandbox, which would keep billing.
 
 ## Create a workroom on Railway
 
@@ -29,9 +32,27 @@ Click **Create Workroom**, and the create carries on.
 2. Under **Remote**, choose **Railway**.
 3. Watch the checklist in the pane.
 
-The sandbox uses Railway's default image, region and size. Its idle timeout is off, so it keeps running, and Railway keeps billing for it, until you delete the workroom.
+The sandbox is made in the region and size your host options say, from Railway's default image or a checkpoint (see [Region, size and checkpoint](#region-size-and-checkpoint)). Its idle timeout is off, so it keeps running, and Railway keeps billing for it, until you delete the workroom.
 
 The first workroom on a Mac makes an SSH key for Railway in Workroom's own folder and adds it to your Railway account. Workroom reaches the sandbox through Railway's SSH relay, and remembers the relay's host key the first time. If the relay later shows a different key, Workroom refuses to connect and says why.
+
+## Region, size and checkpoint
+
+A Railway workroom's host takes three settings. Choose them in [Settings ▸ Remote Hosts](../app/settings.md#remote-hosts), in [Settings ▸ Projects](../app/settings.md#projects), or for one workroom with the **Configure** button (sliders icon) beside **Railway** in the **New Workroom** dialog. The most specific one wins. See [Choose a host's image and size](overview.md#choose-a-hosts-image-and-size).
+
+- **Region.** Where Railway runs the sandbox: US West (California), Railway's default; US East (Virginia); EU West (Amsterdam); or Southeast Asia (Singapore). One near you answers faster.
+- **CPU** and **Memory.** Up to what your workspace's Railway plan allows. If Workroom can't read the plan, type them instead. Railway bills the memory a sandbox uses.
+- **Checkpoint.** A saved copy of a sandbox's disk to start from, with your tools already installed. Empty starts from Railway's default image.
+
+### Start from a checkpoint
+
+Workroom offers the checkpoints in this Mac's own environment of your Railway project, and only those: a checkpoint another Mac made is in that Mac's environment, so this Mac can't use it. This Mac's environment is named `mac-<your Mac's name>-<six characters>`.
+
+To make one, set a Railway workroom's sandbox up as you want it, then capture it as a checkpoint from the sandbox's page on Railway's dashboard, or with `railway sandbox checkpoint create` in a terminal. Run `railway sandbox checkpoint create --help` to see how to name the sandbox and the checkpoint. Workroom has no button for it.
+
+A sandbox made from a checkpoint of a used workroom starts clean: Workroom removes that workroom's checkout and its copy of your `gh` token, then clones afresh and writes this Mac's token. Anything installed outside the checkout, such as your toolchain, stays.
+
+If the setting warns that there's no checkpoint of that name, it was made in another Mac's environment or has since been deleted, and a create from it is refused before any sandbox is made.
 
 ## GitHub on the sandbox
 
@@ -49,7 +70,7 @@ If your Railway sign-in is revoked or expires, a Railway workroom's **Details** 
 
 ## A sandbox that is gone
 
-If a sandbox is destroyed outside Workroom, for example from Railway's dashboard, its workroom's **Details** says the host is gone. Its work went with it. Click **Remove Workroom…** to remove the workroom.
+If a sandbox is destroyed outside Workroom, for example from Railway's dashboard, its workroom's pane says the host is gone, and its terminals stop trying to reach it. Its work went with it. **Remove Workroom…**, in the pane or when you right-click the workroom, is the only thing left to do.
 
 ## Delete the workroom
 

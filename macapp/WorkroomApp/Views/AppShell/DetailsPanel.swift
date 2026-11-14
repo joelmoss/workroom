@@ -11,6 +11,7 @@ import WorkroomVCS
 /// and a workroom on this Mac reaches its ports directly, so neither shows one.
 struct DetailsPanel: View {
   @EnvironmentObject var store: AppStore
+  @ObservedObject private var goneHosts = GoneHosts.shared
   @Environment(\.themeTokens) private var tokens
 
   var body: some View {
@@ -26,6 +27,34 @@ struct DetailsPanel: View {
 
   @ViewBuilder
   private func details(_ target: TerminalTarget) -> some View {
+    if goneHosts.contains(target.remoteHost) {
+      gone(target)
+    } else {
+      present(target)
+    }
+  }
+
+  /// A workroom whose host its provider no longer has (#629): where it ran, and Remove Workroom,
+  /// its only action. Nothing to copy, configure or forward on a host that isn't there.
+  private func gone(_ target: TerminalTarget) -> some View {
+    VStack(alignment: .leading, spacing: 12) {
+      fact("Running on", target.hostKind ?? "This Mac")
+      VStack(alignment: .leading, spacing: 6) {
+        Text(RepositoryRoutingError.goneMessage)
+          .font(.caption).foregroundStyle(.secondary)
+          .accessibilityIdentifier("details.hostGone")
+        Button("Remove Workroom…") {
+          if let sid = target.id.sidebarID { store.requestDeleteWorkroom(sid) }
+        }
+        .help("Remove this workroom: its host is gone, and its work with it.")
+        .accessibilityIdentifier("details.removeGoneWorkroom")
+      }
+    }
+    .padding(12)
+  }
+
+  @ViewBuilder
+  private func present(_ target: TerminalTarget) -> some View {
     VStack(alignment: .leading, spacing: 0) {
       VStack(alignment: .leading, spacing: 12) {
         // The provider's name links to the machine's page on its dashboard.
@@ -90,9 +119,9 @@ struct DetailsPanel: View {
 }
 
 extension DetailsPanel {
-  /// A Railway workroom's standing (#629): a sandbox Railway no longer has is gone, with Remove
-  /// Workroom; one Workroom can't check on because its Railway sign-in was revoked or expired is
-  /// signed out, with Sign In.
+  /// A Railway workroom's standing (#629): one Workroom can't check on because its Railway sign-in
+  /// was revoked or expired is signed out, with Sign In. A gone one is `gone(_:)`'s, as any
+  /// provider's is.
   @ViewBuilder
   fileprivate func railway(_ target: TerminalTarget) -> some View {
     if target.hostPlace == .railway, let sid = store.inspectorTargetID {
@@ -101,10 +130,9 @@ extension DetailsPanel {
   }
 }
 
-/// What the Details pane says of a Railway workroom that is gone or signed out, with the one
-/// thing to do about it.
+/// What the Details pane says of a Railway workroom that is signed out, with the one thing to do
+/// about it.
 struct RailwayHostNote: View {
-  @EnvironmentObject var store: AppStore
   @EnvironmentObject var vcsStatus: VCSStatusService
   let sid: SidebarID
   private var failure: VCSStatusFailure? { vcsStatus.workroomStatuses[sid]?.failure }
@@ -118,16 +146,7 @@ struct RailwayHostNote: View {
     // `.task` would never read the sign-in.
     VStack(alignment: .leading, spacing: 0) {
       Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
-      if failure == .gone {
-        VStack(alignment: .leading, spacing: 6) {
-          Text(RepositoryRoutingError.goneMessage)
-            .font(.caption).foregroundStyle(.secondary)
-            .accessibilityIdentifier("details.railwayGone")
-          Button("Remove Workroom…") { store.requestDeleteWorkroom(sid) }
-            .help("Remove this workroom: its Railway sandbox is gone, and its work with it.")
-            .accessibilityIdentifier("details.railwayRemove")
-        }
-      } else if signedIn == false || (failure == .signedOut && signedIn != true) {
+      if signedIn == false || (failure == .signedOut && signedIn != true) {
         VStack(alignment: .leading, spacing: 6) {
           Text(RepositoryRoutingError.signedOutMessage)
             .font(.caption).foregroundStyle(.secondary)
@@ -192,16 +211,7 @@ extension DetailsPanel {
   private func ports(_ target: TerminalTarget) -> some View {
     if let place = target.portsPlace {
       Divider()
-      PortsSection(model: .model(for: place), host: Self.portsHost(target.hostPlace))
-    }
-  }
-
-  /// What a Ports row calls the host its ports are on.
-  private static func portsHost(_ kind: HostKind?) -> String {
-    switch kind {
-    case .container: "container"
-    case .railway: "sandbox"
-    default: "host"
+      PortsSection(model: .model(for: place), host: target.hostPlace?.hostNoun ?? "host")
     }
   }
 

@@ -1,10 +1,11 @@
 import HostDrivers
 import SwiftUI
 
-/// Login with Railway and the workspace for the `Workroom` project (`RailwaySetup`, #627): sign
-/// in with the browser, pick one of the workspaces the user shared, and see why a Trial or Free
-/// workspace can't hold hosts. Opened from Settings, it closes with Done; before a create, Create
-/// Workroom carries on once the setup is ready.
+/// Login with Railway, the workspace and the project for this Mac's hosts (`RailwaySetup`, #627,
+/// #629): sign in with the browser, pick one of the workspaces the user shared (and see why a
+/// Trial or Free one can't hold hosts), then one of its projects or a new `Workroom` one, where Use
+/// This Project makes this Mac's environment. Opened from Settings, it closes with Done; before a
+/// create, Create Workroom carries on once the setup is ready.
 struct RailwaySetupSheet: View {
   let setup: RailwaySetup
   var onCreate: (() -> Void)?
@@ -22,6 +23,7 @@ struct RailwaySetupSheet: View {
     ) {
       SetupStep(title: "Account", state: accountState) { accountContent }
       SetupStep(title: "Workspace", state: workspaceState) { workspaceContent }
+      SetupStep(title: "Project", state: projectState) { projectContent }
     }
     .task { await setup.refresh() }
     .confirmationDialog(
@@ -94,7 +96,7 @@ struct RailwaySetupSheet: View {
 
   private var workspaceState: SetupStepState {
     guard setup.account == .signedIn else { return .locked }
-    return setup.isReady ? .done : .current
+    return setup.workspaceReady ? .done : .current
   }
 
   @ViewBuilder private var workspaceContent: some View {
@@ -114,9 +116,7 @@ struct RailwaySetupSheet: View {
       .accessibilityIdentifier("railwaySetup.noWorkspaces")
       signInButton("Sign In Again", identifier: "railwaySetup.signInAgain")
     } else {
-      SetupDetail(
-        "Workroom keeps its hosts in a project named Workroom in this workspace. These are the "
-          + "workspaces you shared.")
+      SetupDetail("The workspace Workroom keeps its hosts in. These are the workspaces you shared.")
       Picker(
         "Workspace",
         selection: Binding(
@@ -136,6 +136,66 @@ struct RailwaySetupSheet: View {
       }
       signInButton("Share Other Workspaces…", identifier: "railwaySetup.signInAgain")
         .buttonStyle(.link)
+    }
+  }
+
+  // MARK: Project
+
+  private var projectState: SetupStepState {
+    guard setup.workspaceReady else { return .locked }
+    if setup.placing || (setup.projects == nil && setup.projectsProblem == nil) { return .waiting }
+    return setup.isPlaced ? .done : .current
+  }
+
+  @ViewBuilder private var projectContent: some View {
+    if !setup.workspaceReady {
+      SetupDetail("Then pick the project in that workspace this Mac's hosts go in.")
+    } else if let problem = setup.projectsProblem {
+      SetupProblem(problem).accessibilityIdentifier("railwaySetup.projectsProblem")
+      Button("Try Again") { Task { await setup.loadProjects() } }
+        .help("Read the workspace's projects again.")
+        .accessibilityIdentifier("railwaySetup.projectsRetry")
+    } else if let projects = setup.projects {
+      SetupDetail(
+        "This Mac gets an environment of its own in the project, so another Mac's cleanup never "
+          + "touches its hosts. A project of their own keeps them apart from your apps.")
+      Picker(
+        "Project",
+        selection: Binding(
+          get: { setup.projectPick ?? .workroom },
+          set: { setup.selectProject($0) })
+      ) {
+        ForEach(projects) { project in
+          Text(project.name).tag(RailwayProjectPick.existing(project.id))
+        }
+        if setup.offersNewWorkroomProject {
+          Text("New project named \(RailwayPlacement.projectName)")
+            .tag(RailwayProjectPick.workroom)
+        }
+      }
+      .pickerStyle(.radioGroup)
+      .labelsHidden()
+      .disabled(setup.placing)
+      .help("The project this Mac's Railway hosts go in.")
+      .accessibilityIdentifier("railwaySetup.project")
+      if let problem = setup.placementProblem {
+        SetupProblem(problem).accessibilityIdentifier("railwaySetup.placementProblem")
+      }
+      if setup.isPlaced {
+        SetupDetail("This Mac's hosts go in this project.")
+          .accessibilityIdentifier("railwaySetup.placed")
+      } else {
+        Button(setup.placing ? "Setting Up…" : "Use This Project") {
+          Task { await setup.place() }
+        }
+        .disabled(setup.placing || setup.projectPick == nil)
+        .help(
+          "Make this Mac's environment in the project, creating the project first if it's new."
+        )
+        .accessibilityIdentifier("railwaySetup.useProject")
+      }
+    } else {
+      SetupDetail("Reading the workspace's projects…")
     }
   }
 

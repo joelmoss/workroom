@@ -631,6 +631,14 @@ final class PersistentSessionService {
     return remote.driver.hostRefusedLastAttach(of: sessionID, on: remote.host)
   }
 
+  /// Whether a remote session's host is one its provider says is gone (`GoneHosts`, #629).
+  func remoteHostIsGone(_ sessionID: UUID) -> Bool {
+    guard let remote = remoteSessions[sessionID], case .remote(let id) = remote.host else {
+      return false
+    }
+    return GoneHosts.shared.contains(id)
+  }
+
   /// How a remote session's last attach ended: a lost link (ssh's 255) is what a pane answers by
   /// attaching again (#241, #392). `.finished` for a session that is not remote.
   func remoteLastAttach(_ sessionID: UUID) -> LastAttach {

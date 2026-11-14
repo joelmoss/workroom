@@ -46,14 +46,22 @@ final class SSHTransportShellTests: XCTestCase {
         }, uniquingKeysWith: { _, last in last })
     }
 
-    init(exiting status: Int32 = 0) throws {
+    /// `logging`, when given, is what its ssh says in the log the pane names with `-E`.
+    init(exiting status: Int32 = 0, logging: String? = nil) throws {
       root = URL(fileURLWithPath: "/private/tmp/attach-client-\(UUID().uuidString)")
       try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
       let here = root.path
+      let log =
+        logging.map {
+          "previous=; for argument in \"$@\"; do [ \"$previous\" = -E ] && "
+            + "printf '%s\\n' \(SSHTransport.shellQuoted($0)) > \"$argument\"; "
+            + "previous=$argument; done"
+        } ?? ""
       try """
       #!/bin/sh
       for argument in "$@"; do printf '%s\\n' "$argument"; done > '\(here)/argv'
       env > '\(here)/env'
+      \(log)
       exit \(status)
       """.write(toFile: path, atomically: true, encoding: .utf8)
       try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
@@ -183,6 +191,36 @@ final class SSHTransportShellTests: XCTestCase {
       XCTAssertEqual(SSHTransport.lastAttach(of: session, in: client.root), lastAttach)
       XCTAssertFalse(SSHTransport.refusedLastAttach(of: session, in: client.root))
     }
+  }
+
+  // Value: protects=a pane stops on a host that refused it for good and keeps trying through a
+  // lost link (#241); fails_when=a refusal in ssh's log isn't read as one, a refusal shows the
+  // retry notice instead of ssh's reason, or a lost link stops showing it; seam=the pane's attach
+  // command and `SSHTransport.refusedLastAttach`
+  /// A changed host key, which ssh logs and exits 255 for, is a refusal: its reason is on screen
+  /// and no retry notice is. A link that timed out, also 255, is not: the notice says the pane
+  /// keeps trying, and ssh's reason stays in the log.
+  func testARefusedAttachShowsSshsReasonAndALostLinkShowsTheRetryNotice() throws {
+    let refusal = "Host key verification failed."
+    let refused = try FakeClient(exiting: 255, logging: refusal)
+    defer { try? FileManager.default.removeItem(at: refused.root) }
+    let session = UUID()
+    let pane = try runPane(paneCommand(client: refused, session: session))
+    XCTAssertEqual(pane.status, 255, pane.output)
+    XCTAssertTrue(SSHTransport.refusedLastAttach(of: session, in: refused.root))
+    XCTAssertTrue(pane.output.contains(refusal), pane.output)
+    XCTAssertFalse(pane.output.contains(SSHTransport.retryNotice), pane.output)
+
+    let timeout = "ssh: connect to host ssh.example.invalid port 22: Operation timed out"
+    let lost = try FakeClient(exiting: 255, logging: timeout)
+    defer { try? FileManager.default.removeItem(at: lost.root) }
+    let dropped = UUID()
+    let retried = try runPane(paneCommand(client: lost, session: dropped))
+    XCTAssertEqual(retried.status, 255, retried.output)
+    XCTAssertFalse(SSHTransport.refusedLastAttach(of: dropped, in: lost.root))
+    XCTAssertEqual(SSHTransport.lastAttach(of: dropped, in: lost.root), .lostLink)
+    XCTAssertTrue(retried.output.contains(SSHTransport.retryNotice), retried.output)
+    XCTAssertFalse(retried.output.contains(timeout), retried.output)
   }
 
   /// Runs what a pane's ssh runs on the host, for a daemon socket under `root`.

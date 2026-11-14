@@ -186,23 +186,4 @@ extension RailwayAPI {
       variables: ["environmentId": .string(environmentID)], as: Answer.self
     ).sandboxCheckpoints.map(\.key)
   }
-
-  /// Captures `sandbox`'s disk as the checkpoint `name` in `environmentID`: its name.
-  public func createSandboxCheckpoint(
-    named name: String, of sandbox: String, environmentID: String
-  ) async throws -> String {
-    struct Answer: Decodable {
-      struct Checkpoint: Decodable { let key: String }
-      let sandboxCheckpointCreate: Checkpoint
-    }
-    return try await query(
-      "mutation sandboxCheckpointCreate($environmentId: String!, $name: String!, $sandboxId: "
-        + "String!) { sandboxCheckpointCreate(environmentId: $environmentId, name: $name, "
-        + "sandboxId: $sandboxId) { id key environmentId createdAt } }",
-      variables: [
-        "environmentId": .string(environmentID), "name": .string(name),
-        "sandboxId": .string(sandbox),
-      ], as: Answer.self
-    ).sandboxCheckpointCreate.key
-  }
 }

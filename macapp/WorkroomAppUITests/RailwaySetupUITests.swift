@@ -89,6 +89,26 @@ final class RailwaySetupUITests: XCTestCase {
         timeout: 5) == .completed, "a Pro workspace isn't refused")
   }
 
+  /// The Project step offers the workspace's projects and a new `Workroom` one; Use This Project
+  /// makes this Mac's environment there (#629, story 14).
+  func testTheProjectStepOffersExistingProjectsOrANewWorkroomOne() {
+    let app = launch("signedIn")
+    openRailwaySetup(app)
+
+    XCTAssertTrue(radio(app, "my-app").waitForExistence(timeout: 10), "an existing project")
+    let new = radio(app, "New project named Workroom")
+    XCTAssertTrue(new.exists, "a new Workroom project")
+    XCTAssertEqual(new.value as? Int, 1, "the new Workroom project isn't the default")
+
+    let use = element(app, "railwaySetup.useProject")
+    XCTAssertTrue(use.waitForExistence(timeout: 5))
+    use.click()
+
+    XCTAssertTrue(element(app, "railwaySetup.placed").waitForExistence(timeout: 10))
+    XCTAssertTrue(radio(app, "Workroom").exists, "the made project isn't listed")
+    XCTAssertFalse(radio(app, "New project named Workroom").exists, "a second is offered")
+  }
+
   /// The `Workroom` project's workspace isn't among those granted: the sheet says so and offers
   /// to sign in again.
   func testAnUngrantedWorkspaceIsSaidWithSignInAgain() {

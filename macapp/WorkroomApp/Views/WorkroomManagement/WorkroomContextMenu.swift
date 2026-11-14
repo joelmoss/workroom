@@ -85,6 +85,8 @@ struct WorkroomMenuModel: Equatable {
     case label(exists: Bool)
     case removeLabel
     case delete(enabled: Bool)
+    /// "Remove Workroom…", a gone host's only item.
+    case remove
   }
 
   /// What a workroom offers that a project root, never labelled or deleted, does not.
@@ -92,6 +94,9 @@ struct WorkroomMenuModel: Equatable {
     var hasLabel = false
     /// Its setup is still running against the worktree, so it can't be deleted (issue #116).
     var isCreating = false
+    /// Its host's provider says the host is gone (`GoneHosts`, #629): removing it is all that's
+    /// left.
+    var hostGone = false
   }
 
   var run: RunMenuState
@@ -117,6 +122,8 @@ struct WorkroomMenuModel: Equatable {
   var workroom: WorkroomState? = nil
 
   func entries(for style: Style) -> [Entry] {
+    // A workroom whose host is gone has nothing left to run, open, label or move.
+    if workroom?.hostGone == true { return [.remove] }
     var entries: [Entry] = []
     var top: [Entry] = []
     if style != .inspectorHeader {
@@ -226,6 +233,10 @@ struct WorkroomMenuItems: View {
         Label("Delete Workroom…", systemImage: "trash")
       }
       .disabled(!enabled)
+    case .remove:
+      Button(role: .destructive, action: actions.delete) {
+        Label("Remove Workroom…", systemImage: "trash")
+      }
     }
   }
 }
@@ -250,7 +261,8 @@ extension WorkroomMenuModel {
       workroom: pair.map {
         WorkroomState(
           hasLabel: $0.workroom.label != nil,
-          isCreating: lifecycle.isCreatingWorkroom($0.workroom, in: $0.project))
+          isCreating: lifecycle.isCreatingWorkroom($0.workroom, in: $0.project),
+          hostGone: GoneHosts.shared.contains($0.workroom.host?.id))
       })
   }
 }

@@ -73,6 +73,8 @@ struct SidebarRootRowAdapter: View, Equatable {
 struct SidebarWorkroomRowAdapter: View, Equatable {
   @EnvironmentObject private var store: AppStore
   @EnvironmentObject private var lifecycle: WorkroomLifecycle
+  /// Rarely changes: a host going, or being found again.
+  @ObservedObject private var goneHosts = GoneHosts.shared
   let workroom: Workroom
   let projectPath: String
   let hovered: Bool
@@ -96,7 +98,8 @@ struct SidebarWorkroomRowAdapter: View, Equatable {
       creationRun: lifecycle.creationRun(
         for: .workroom(project: projectPath, name: workroom.name)
       ).map(SidebarCreationRunRef.init),
-      subtree: store.sidebarSubtree(of: target), activity: store.sidebarActivity(of: target.id))
+      subtree: store.sidebarSubtree(of: target), activity: store.sidebarActivity(of: target.id),
+      hostGone: goneHosts.contains(workroom.host?.id))
   }
 }
 

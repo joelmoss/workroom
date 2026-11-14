@@ -9,6 +9,10 @@ import HostDrivers
 ///   `Workroom` project (ADR 0071). When the workspace of the project already recorded isn't among
 ///   them, the sheet says so and offers to sign in again. Trial and Free are refused with the
 ///   reason: Railway destroys their idle sandboxes after 5 minutes, and that can't be turned off.
+/// - **Project.** One of the workspace's projects, or a new one named `Workroom` (story 14). Use
+///   This Project records it and makes this Mac's environment in it (ADR 0071), so a create makes
+///   only its sandbox. Choosing a workspace or project makes nothing until then. A create whose
+///   setup never got this far makes them itself (`HostDriverRegistry.key(for:)`).
 ///
 /// Signing out is allowed, after `signOutWarning`.
 @MainActor
@@ -44,9 +48,21 @@ final class RailwaySetup: RemoteSetup {
   private(set) var selectedWorkspaceID: String?
   /// The workspace holding the project already recorded, which the sign-in must reach.
   let neededWorkspaceID: String?
+  /// The selected workspace's projects, in Railway's order: nil until read.
+  private(set) var projects: [RailwayProject]?
+  /// Why its projects couldn't be read.
+  private(set) var projectsProblem: String?
+  /// The project this Mac's environment goes in.
+  private(set) var projectPick: RailwayProjectPick?
+  /// Use This Project is running.
+  private(set) var placing = false
+  /// Why the last Use This Project failed.
+  private(set) var placementProblem: String?
+  /// The placement as last read or written.
+  private(set) var placed: RailwayPlacement
 
   private let railway: RailwayAccount
-  /// Where the picked workspace is kept, for the first create to make the project in.
+  /// Where the picked workspace, project and environment are kept.
   private let placement: RailwayPlacementStore
   /// The sign-in waiting on the browser, which closing the sheet stops.
   private var signingIn: Task<Result<Void, Error>, Never>?
@@ -59,11 +75,13 @@ final class RailwaySetup: RemoteSetup {
     railway = account
     self.neededWorkspaceID = neededWorkspaceID
     self.placement = placement
-    selectedWorkspaceID = placement.read().selectedWorkspaceID
+    placed = placement.read()
+    selectedWorkspaceID = placed.selectedWorkspaceID
   }
 
-  /// The setup a Railway create waits on, or nil when Workroom is signed in and the workspace
-  /// picked (and holding the project already recorded) is one the sign-in reaches.
+  /// The setup a Railway create waits on, or nil when Workroom is signed in, the workspace
+  /// picked (and holding the project already recorded) is one the sign-in reaches, and this Mac
+  /// has its environment there.
   static func needed(
     account: RailwayAccount = .shared, placement: RailwayPlacementStore = RailwayAccount.placement
   ) async -> RailwaySetup? {
@@ -92,9 +110,90 @@ final class RailwaySetup: RemoteSetup {
     workspace.refusal(trialing: trialing[workspace.id])
   }
 
-  var isReady: Bool {
+  /// Signed in, with a workspace that can hold hosts: the Project step is next.
+  var workspaceReady: Bool {
     account == .signedIn && selectedWorkspace != nil && selectedRefusal == nil
       && !neededWorkspaceMissing
+  }
+
+  /// This Mac has its environment in the picked project of the selected workspace.
+  var isPlaced: Bool {
+    guard placed.environmentID != nil, placed.workspaceID == selectedWorkspaceID,
+      let recorded = placed.projectID
+    else { return false }
+    return projectPick == nil || projectPick == .existing(recorded)
+  }
+
+  var isReady: Bool { workspaceReady && isPlaced }
+
+  /// Whether the Project step offers a new project named `Workroom`: only where the workspace has
+  /// none of that name, so a second is never made beside it.
+  var offersNewWorkroomProject: Bool {
+    !(projects ?? []).contains { $0.name == RailwayPlacement.projectName }
+  }
+
+  /// Picks the project this Mac's environment goes in. Nothing is made until `place`.
+  func selectProject(_ pick: RailwayProjectPick) {
+    projectPick = pick
+    placementProblem = nil
+  }
+
+  /// Use This Project: records the picked project, making a `Workroom` one when that's the pick,
+  /// and makes this Mac's environment in it. Refused, with why, while this Mac's environment
+  /// elsewhere still holds a sandbox (`RailwayPlacementError`).
+  func place() async {
+    guard workspaceReady, let workspace = selectedWorkspaceID, let pick = projectPick, !placing
+    else { return }
+    placing = true
+    placementProblem = nil
+    do {
+      _ = try await placement.ensure(
+        workspaceID: workspace, project: pick, api: railway.api,
+        environmentName: RailwayPlacementStore.environmentName())
+    } catch {
+      placementProblem = error.localizedDescription
+    }
+    placed = placement.read()
+    placing = false
+    guard !isCancelled else { return }
+    if placementProblem == nil, let recorded = placed.projectID {
+      projectPick = .existing(recorded)
+      await loadProjects()
+    }
+  }
+
+  /// Reads the selected workspace's projects again, as Try Again does.
+  func loadProjects() async {
+    guard let workspace = selectedWorkspaceID, workspaceReady else {
+      projects = nil
+      return
+    }
+    projectsProblem = nil
+    do {
+      let listed = try await railway.api.projects(workspaceID: workspace)
+      guard !isCancelled, selectedWorkspaceID == workspace else { return }
+      projects = listed
+      projectPick = defaultProject(among: listed, in: workspace)
+    } catch {
+      guard !isCancelled else { return }
+      projects = nil
+      projectsProblem = error.localizedDescription
+    }
+  }
+
+  /// The project already recorded in this workspace, else the one named `Workroom`, else a new one.
+  private func defaultProject(among listed: [RailwayProject], in workspace: String)
+    -> RailwayProjectPick
+  {
+    let ids = listed.map(\.id)
+    if let pick = projectPick, case .existing(let id) = pick, ids.contains(id) { return pick }
+    if placed.workspaceID == workspace, let recorded = placed.projectID, ids.contains(recorded) {
+      return .existing(recorded)
+    }
+    if let named = listed.first(where: { $0.name == RailwayPlacement.projectName }) {
+      return .existing(named.id)
+    }
+    return .workroom
   }
 
   /// Reads the account: the kept sign-in, and its workspaces.
@@ -160,8 +259,13 @@ final class RailwaySetup: RemoteSetup {
   /// Picks the workspace the `Workroom` project goes in.
   func select(_ id: String) async {
     guard workspaces.contains(where: { $0.id == id }) else { return }
+    guard id != selectedWorkspaceID else { return }
     selectedWorkspaceID = id
     remember(id)
+    projects = nil
+    projectPick = nil
+    placementProblem = nil
+    await loadProjects()
   }
 
   /// Keeps the picked workspace for the next create. A failed write leaves the pick on screen.
@@ -196,6 +300,7 @@ final class RailwaySetup: RemoteSetup {
       account = .signedIn
       selectedWorkspaceID = defaultSelection()
       remember(selectedWorkspaceID)
+      await loadProjects()
     } catch RailwaySessionError.signedOut {
       clear()
       account = .signedOut("Your Railway sign-in has ended. Sign in again to carry on.")
@@ -209,6 +314,10 @@ final class RailwaySetup: RemoteSetup {
     workspaces = []
     trialing = [:]
     selectedWorkspaceID = nil
+    projects = nil
+    projectsProblem = nil
+    projectPick = nil
+    placementProblem = nil
   }
 
   /// The project's workspace, else the one already picked, else the first allowed, else the first.

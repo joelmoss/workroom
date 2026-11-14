@@ -49,6 +49,8 @@ final class HostReachability: @unchecked Sendable {
   private let presenceSeam: (@Sendable (HostID) async -> HostPresence?)?
   private let startHost: (@Sendable (HostID) async throws -> Void)?
   private let now: @Sendable () -> ContinuousClock.Instant
+  /// Hears a host become gone, or be found again (`GoneHosts.record` in the app).
+  private let goneChanged: (@Sendable (HostID, Bool) -> Void)?
 
   init(
     registry: HostDriverRegistry,
@@ -60,9 +62,11 @@ final class HostReachability: @unchecked Sendable {
     connectDaemon: (
       @Sendable (HostID, any HostTerminalDriver) async throws -> DaemonClient
     )? = nil,
-    presence: (@Sendable (HostID) async -> HostPresence?)? = nil
+    presence: (@Sendable (HostID) async -> HostPresence?)? = nil,
+    goneChanged: (@Sendable (HostID, Bool) -> Void)? = nil
   ) {
     self.registry = registry
+    self.goneChanged = goneChanged
     self.connectHost = connectHost
     self.isConnected = isConnected
     self.startHost = startHost
@@ -242,14 +246,17 @@ final class HostReachability: @unchecked Sendable {
     let background = !opened && !wake && !selected
     if background || !hostsSleep(host) {
       let presence = await presence(host)
-      if presence != .gone { _ = lock.withLock { gone.remove(host) } }
+      if presence != .gone, lock.withLock({ gone.remove(host) }) != nil {
+        goneChanged?(host, false)
+      }
       switch presence {
       case .asleep: throw RepositoryRoutingError.asleep(host)
       case .gone:
-        lock.withLock {
+        let newly = lock.withLock {
           failedAt[host] = (now(), false)
-          gone.insert(host)
+          return gone.insert(host).inserted
         }
+        if newly { goneChanged?(host, true) }
         throw RepositoryRoutingError.gone(host)
       // Its relay key still reaches it, so what the user asked for still connects; a background
       // read says why it couldn't check (#629).

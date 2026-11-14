@@ -84,6 +84,16 @@ public protocol HostRecording: HostDriver {
   func adopt(_ descriptor: HostDescriptor) throws
 }
 
+/// A driver whose hosts carry no name or label tying them to a workroom, so the launch's sweep
+/// lists the provider's and destroys every one no host record names (Railway's sandboxes in this
+/// Mac's environment, ADR 0071, #630).
+public protocol UnrecordedHostSweeping: HostDriver {
+  /// Destroys every host no record in `recorded` names; with `onlyPending`, only those a create
+  /// left pending. Throws when the provider can't list its hosts, so the sweep is owed again;
+  /// returns the destroys that failed.
+  func sweep(keeping recorded: Set<String>, onlyPending: Bool) async throws -> [String]
+}
+
 /// A driver that puts each workroom in a folder of its own on a host it did not make (an SSH host,
 /// ADR 0056). A create makes the folder and marks it; only a folder the mark names is removed.
 public protocol FolderPlacingDriver: HostTerminalDriver {
