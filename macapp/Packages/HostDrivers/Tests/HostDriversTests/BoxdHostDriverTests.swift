@@ -91,6 +91,8 @@ final class BoxdHostDriverTests: XCTestCase {
     private var orgs: [String?]
     /// Cancels the calling task from inside the CLI call naming this command.
     var cancelling: String?
+    /// Called with each call's arguments, before it is answered.
+    var onCall: (@Sendable ([String]) -> Void)?
     /// Where pending machines are written down, read at each call into `pendingAt` (#373).
     var pendingIn: URL?
     private var pending: [String: [PendingMachines.Entry]] = [:]
@@ -128,6 +130,7 @@ final class BoxdHostDriverTests: XCTestCase {
       async -> CommandResult
     {
       lock.withLock { calls.append(args) }
+      onCall?(args)
       let command = args.prefix(2).joined(separator: " ")
       if let pendingIn {
         let entries = PendingMachines.entries(in: pendingIn)
@@ -165,7 +168,7 @@ final class BoxdHostDriverTests: XCTestCase {
     return BoxdHostDriver(
       configuration: .init(
         cli: URL(fileURLWithPath: "/nonexistent/boxd"), sshConfig: empty, knownHosts: empty,
-        home: home ?? signedInHome(), hostSetup: .checkout),
+        home: home ?? signedInHome(), hostSetup: .checkout, sshDetailsWait: 0),
       directory: empty, runner: cli)
   }
 
@@ -197,6 +200,58 @@ final class BoxdHostDriverTests: XCTestCase {
       XCTAssertTrue(detail.contains("no ssh details"), detail)
     }
     XCTAssertEqual(cli.commands, ["machine new", "machine remove"], "the machine was kept")
+  }
+
+  /// boxd 0.3.5's `machine new` returns before its background sync has written the machine's host
+  /// key (measured 2026-11-14: about 0.3 s later). The driver waits for it rather than taking the
+  /// new machine for one it can't reach.
+  func testACreateWaitsForSSHDetailsTheCLIWritesAfterNewReturns() async throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-boxd-late-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+    let config = folder.appendingPathComponent("config")
+    let known = folder.appendingPathComponent("known_hosts")
+    let cli = StubCLI([
+      "machine new": Self.ok(#"{"name":"x"}"#),
+      "machine remove": Self.ok(#"{"status":"destroyed"}"#),
+    ])
+    cli.onCall = { args in
+      guard args.prefix(2) == ["machine", "new"], args.count > 2 else { return }
+      let name = args[2]
+      Task.detached {
+        try? await Task.sleep(for: .milliseconds(600))
+        // Port 1 on this Mac refuses at once, so the setup that follows fails fast.
+        try? """
+        # BEGIN boxd
+        Host \(name).boxd
+            HostName 127.0.0.1
+            Port 1
+            User boxd
+            IdentityFile "/nonexistent/key"
+        # END boxd
+        """.write(to: config, atomically: true, encoding: .utf8)
+        try? """
+        # BEGIN boxd-hosts
+        [127.0.0.1]:1 ssh-ed25519 GATEWAY
+        # END boxd-hosts
+        """.write(to: known, atomically: true, encoding: .utf8)
+      }
+    }
+    let driver = BoxdHostDriver(
+      configuration: .init(
+        cli: URL(fileURLWithPath: "/nonexistent/boxd"), sshConfig: config, knownHosts: known,
+        home: signedInHome(), hostSetup: .checkout),
+      directory: folder.appendingPathComponent("hosts"), runner: cli)
+    do {
+      _ = try await driver.create()
+      XCTFail("a machine no setup reached became a host")
+    } catch HostDriverError.invalidConfiguration(let detail) {
+      XCTFail("the ssh details written after `new` returned weren't waited for: \(detail)")
+    } catch {
+      // The setup over ssh failed, as it must against port 1: the details were read.
+    }
+    XCTAssertEqual(cli.commands.last, "machine remove", "the machine was kept")
   }
 
   /// Host options (#575) reach `machine new`: a size on a fresh machine, a snapshot on its own

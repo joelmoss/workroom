@@ -59,6 +59,10 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
     public var home: URL
     /// The host-setup scripts the app bundles, which `create` runs on each new machine.
     public var hostSetup: HostSetup
+    /// How long `create` waits for the CLI to write a new machine's ssh details: boxd 0.3.5's
+    /// `machine new` returns before its background sync writes the host key (measured 2026-11-14,
+    /// about 0.3 s later).
+    public var sshDetailsWait: TimeInterval
 
     public init(
       cli: URL, prefix: String = "workroom", org: String? = nil, account: String? = nil,
@@ -68,7 +72,8 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
         ".ssh/config"),
       knownHosts: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
         ".ssh/known_hosts"),
-      home: URL = FileManager.default.homeDirectoryForCurrentUser, hostSetup: HostSetup
+      home: URL = FileManager.default.homeDirectoryForCurrentUser, hostSetup: HostSetup,
+      sshDetailsWait: TimeInterval = 15
     ) {
       self.cli = cli
       self.prefix = prefix
@@ -80,6 +85,7 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
       self.knownHosts = knownHosts
       self.home = home
       self.hostSetup = hostSetup
+      self.sshDetailsWait = sshDetailsWait
     }
   }
 
@@ -151,6 +157,7 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
       }
       try await ProvisioningProgress.step(.setup) {
         let script = try configuration.hostSetup.systemdScript()
+        try await awaitSSHDetails(of: id)
         let user = try ssh(id).user
         let command =
           "sudo sh -s -- "
@@ -750,6 +757,16 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
   }
 
   // MARK: ssh
+
+  /// Until the CLI has written machine `id`'s ssh details, polling every 0.25 s up to
+  /// `sshDetailsWait`; after that, `ssh(id)`'s own failure.
+  private func awaitSSHDetails(of id: UUID) async throws {
+    let deadline = Date().addingTimeInterval(configuration.sshDetailsWait)
+    while (try? ssh(id)) == nil, Date() < deadline {
+      try await Task.sleep(for: .milliseconds(250))
+    }
+    _ = try ssh(id)
+  }
 
   /// The machine's ssh details, from the CLI's blocks in the user's ssh files.
   private func ssh(_ id: UUID) throws -> SSHTransport.Host {
