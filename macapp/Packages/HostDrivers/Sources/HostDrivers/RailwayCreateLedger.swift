@@ -25,16 +25,20 @@ public struct RailwayCreateLedger: Sendable {
     /// The workspace that environment is in, which the sign-in must see for the sweep to act on
     /// the entry.
     public var workspaceID: String?
+    /// For a lost reply (no `sandbox`) the first sweep couldn't tell apart: the sandboxes that
+    /// sweep found in its window, the only ones a later sweep may ever take for it.
+    public var candidates: [String]?
 
     public init(
       intent: UUID = UUID(), started: Date, sandbox: String? = nil, environmentID: String? = nil,
-      workspaceID: String? = nil
+      workspaceID: String? = nil, candidates: [String]? = nil
     ) {
       self.intent = intent
       self.started = started
       self.sandbox = sandbox
       self.environmentID = environmentID
       self.workspaceID = workspaceID
+      self.candidates = candidates
     }
   }
 
@@ -76,6 +80,17 @@ public struct RailwayCreateLedger: Sendable {
   public func drop(_ intents: Set<UUID>) async throws {
     guard !intents.isEmpty else { return }
     try await update { $0.removeAll { intents.contains($0.intent) } }
+  }
+
+  /// Keeps each intent's candidates (`Entry.candidates`), on an entry that has none yet: the
+  /// first ambiguous sweep's set is the one every later sweep looks in.
+  public func keep(candidates: [UUID: [String]]) async throws {
+    guard !candidates.isEmpty else { return }
+    try await update { entries in
+      for index in entries.indices where entries[index].candidates == nil {
+        if let found = candidates[entries[index].intent] { entries[index].candidates = found }
+      }
+    }
   }
 
   /// Takes off every entry naming one of `sandboxes`.

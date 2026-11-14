@@ -267,6 +267,61 @@ final class RailwaySweepTests: XCTestCase {
     XCTAssertEqual(left, [])
   }
 
+  /// Value: protects=a lost reply found ambiguous keeps the candidates of that first sweep, and a
+  /// later one destroys only from inside them, and only once all but one are named by a record:
+  /// a candidate that merely vanishes (destroyed on the dashboard, perhaps the lost reply's own)
+  /// settles nothing, so another Mac's host left alone in the window is never destroyed; a
+  /// sandbox made later in the window is no candidate; and an intent still ambiguous after
+  /// `ambiguousLifetime` is dropped, saying so (review 4, X2); fails_when=the sweep destroys the
+  /// one candidate left after another disappeared, matches a sandbox outside the first sweep's
+  /// set, or keeps an ambiguous intent forever; seam=RailwayHostDriver.sweep over StubRailway and
+  /// the ledger
+  func testAnAmbiguousLostReplyDestroysOnlyFromItsFirstCandidatesOnceTheRestAreNamed()
+    async throws
+  {
+    let started = Self.longAgo
+    try await ledgered([nil], started: started)
+    let at = { (seconds: TimeInterval) in Self.iso(started.addingTimeInterval(seconds)) }
+    let first = railway([
+      Self.sandbox("sbx-a", createdAt: at(3)), Self.sandbox("sbx-b", createdAt: at(5)),
+    ])
+    _ = try await driver(first).sweep(keeping: [], recordsHere: true)
+    var left = try await ledger.entries()
+    XCTAssertEqual(left.first?.candidates.map(Set.init), ["sbx-a", "sbx-b"])
+
+    // sbx-a is gone from Railway: still nothing to tell by.
+    let vanished = railway([Self.sandbox("sbx-b", createdAt: at(5))])
+    let failures = try await driver(vanished).sweep(keeping: [], recordsHere: true)
+    XCTAssertEqual(destroyed(vanished), [], "a vanished candidate settled the intent")
+    XCTAssertEqual(failures.count, 1, "\(failures)")
+    left = try await ledger.entries()
+    XCTAssertEqual(left.count, 1)
+
+    // sbx-a is recorded now (another workroom's host here): sbx-b is the lost reply's, and
+    // sbx-c, made in the window since, is no candidate.
+    let named = railway([
+      Self.sandbox("sbx-b", createdAt: at(5)), Self.sandbox("sbx-c", createdAt: at(9)),
+    ])
+    let resolved = try await driver(named).sweep(keeping: ["sbx-a"], recordsHere: true)
+    XCTAssertEqual(resolved, [])
+    XCTAssertEqual(destroyed(named), ["sbx-b"])
+    left = try await ledger.entries()
+    XCTAssertEqual(left, [])
+
+    // Still ambiguous after its lifetime: dropped, and said.
+    let old = Date().addingTimeInterval(-RailwayHostDriver.ambiguousLifetime - 60)
+    try await ledger.update {
+      $0 = [.init(started: old, candidates: ["sbx-a", "sbx-b"])]
+    }
+    let aged = railway([])
+    let said = try await driver(aged).sweep(keeping: [], recordsHere: true)
+    XCTAssertEqual(destroyed(aged), [])
+    XCTAssertEqual(said.count, 1, "\(said)")
+    XCTAssertTrue(said.first?.contains("sbx-a, sbx-b") == true, "\(said)")
+    left = try await ledger.entries()
+    XCTAssertEqual(left, [])
+  }
+
   /// Value: protects=only an answer that says Railway made nothing drops a create's intent, so a
   /// sandbox a failed-looking reply did make is still swept, never left billing (review 3, C1);
   /// fails_when=a server error, an unreadable body, or a 200 with errors (partial data) drops the

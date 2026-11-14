@@ -618,9 +618,13 @@ extension RailwayHostDriver {
   ///   environment that nothing names (no record, no other entry, no host this driver holds) and
   ///   that Railway made from `reconcileBefore` before the intent to `reconcileAfter` after it.
   ///   None there drops the entry. More candidates than lost intents, or more than one left for
-  ///   an intent, destroys none, says so, and keeps the intents for a later sweep, which can tell
-  ///   once a candidate is recorded or destroyed. The residual risk is another Mac's create
-  ///   landing alone in that window just as this Mac's reply was lost.
+  ///   an intent, or one an earlier ambiguous intent may own, destroys none, says so, and keeps
+  ///   each such intent with the candidates found (`Entry.candidates`). A later sweep looks only
+  ///   among those, and destroys the one left once a record (or another of this Mac's creates)
+  ///   names all the rest: a candidate that merely vanished settles nothing, as it may have been
+  ///   this create's own and the one left another Mac's. One still ambiguous `ambiguousLifetime`
+  ///   after its create is dropped, naming its candidates. The residual risk is another Mac's
+  ///   create landing alone in that window just as this Mac's reply was lost.
   ///   Only with `recordsHere`, when config names a host in this environment: otherwise config
   ///   may be lost, or a throwaway `HOME`'s, and a create retried in the window, whose sandbox
   ///   only its record names, would read as the lost reply's. Such intents wait for a launch
@@ -654,6 +658,13 @@ extension RailwayHostDriver {
     let accounted = recorded.union(held).union(entries.compactMap(\.sandbox))
     var failures: [String] = []
     var done: Set<UUID> = []
+    var ambiguous: [UUID: [String]] = [:]
+    // What was settled goes, and a newly ambiguous intent keeps its candidates, even when a later
+    // step throws.
+    func write() async {
+      try? await ledger.drop(done)
+      try? await ledger.keep(candidates: ambiguous)
+    }
     var visibility = WorkspaceVisibility(driver: self)
     do {
       for entry in due {
@@ -688,19 +699,20 @@ extension RailwayHostDriver {
                 + "in to the account that made them")
             continue
           }
-          let (settled, said) = try await reconcile(
+          let reconciled = try await reconcile(
             group, in: environment, workspaceID: place(of: group[0]).1,
-            accounted: accounted, claimed: &claimed)
-          done.formUnion(settled)
-          failures += said
+            accounted: accounted, claimed: &claimed, now: now)
+          done.formUnion(reconciled.done)
+          ambiguous.merge(reconciled.ambiguous) { $1 }
+          failures += reconciled.failures
         }
       }
     } catch {
       // What was destroyed stays destroyed; the rest is owed again.
-      try? await ledger.drop(done)
+      await write()
       throw error
     }
-    try? await ledger.drop(done)
+    await write()
     return failures
   }
 
@@ -736,13 +748,64 @@ extension RailwayHostDriver {
       hostKey: "", workspaceID: workspaceID)
   }
 
+  /// What reconciling lost replies settled: the intents done, the candidates of those found
+  /// ambiguous for the first time (to keep on their entries), and what couldn't be done.
+  private struct Reconciled {
+    var done: Set<UUID> = []
+    var ambiguous: [UUID: [String]] = [:]
+    var failures: [String] = []
+  }
+
   /// Matches each create whose reply was lost (`lost`, all in `environment`) to the sandbox
-  /// Railway made for it, by time, and destroys it (see `sweep`): the intents now settled, and
-  /// what couldn't be done. An intent that can't be told apart stays on the ledger.
+  /// Railway made for it, and destroys it (see `sweep`). An intent already found ambiguous looks
+  /// only among the candidates it kept then (`Entry.candidates`); any other, by time, in a
+  /// listing. An intent that can't be told apart stays on the ledger, with its candidates, until
+  /// `ambiguousLifetime`.
   private func reconcile(
     _ lost: [RailwayCreateLedger.Entry], in environment: String, workspaceID: String?,
-    accounted: Set<String>, claimed: inout Set<String>
-  ) async throws -> (done: Set<UUID>, failures: [String]) {
+    accounted: Set<String>, claimed: inout Set<String>, now: Date
+  ) async throws -> Reconciled {
+    var result = Reconciled()
+    func destroy(_ sandbox: String, for entry: RailwayCreateLedger.Entry) async {
+      claimed.insert(sandbox)
+      let record = sweptRecord(sandbox, environmentID: environment, workspaceID: workspaceID)
+      if let failure = await destroySandbox(record) {
+        result.failures.append(failure)
+      } else {
+        result.done.insert(entry.intent)
+      }
+    }
+    func ambiguity(_ sandboxes: [String]) -> String {
+      "Railway sandboxes \(sandboxes.sorted().joined(separator: ", ")): a create of this Mac's "
+        + "lost Railway's reply, and Workroom can't tell which was its, so it left them, and will "
+        + "look again at the next launch, once Workroom records all but one of them"
+    }
+    // Already ambiguous: only a candidate a record (or another of this Mac's creates) names is
+    // ruled out. One that vanished from Railway may have been this create's own, so it still
+    // counts, and the one left may be another Mac's host.
+    let kept = lost.filter { $0.candidates != nil }
+    for entry in kept {
+      let candidates = entry.candidates ?? []
+      let unnamed = candidates.filter { !accounted.contains($0) && !claimed.contains($0) }
+      if unnamed.count == 1, let sandbox = unnamed.first {
+        await destroy(sandbox, for: entry)
+      } else if unnamed.isEmpty {
+        result.done.insert(entry.intent)
+      } else if now.timeIntervalSince(entry.started) >= Self.ambiguousLifetime {
+        result.done.insert(entry.intent)
+        result.failures.append(
+          "Railway sandboxes \(unnamed.sorted().joined(separator: ", ")): a create of this Mac's "
+            + "lost Railway's reply, and Workroom still can't tell which was its, so it has "
+            + "stopped looking. Check them on Railway's dashboard, and destroy any no workroom "
+            + "uses")
+      } else {
+        result.failures.append(ambiguity(unnamed))
+      }
+    }
+    let fresh = lost.filter { $0.candidates == nil }
+    guard !fresh.isEmpty else { return result }
+    // A sandbox an ambiguous intent may own can't be told to be a fresh one's either.
+    let disputed = Set(kept.flatMap { $0.candidates ?? [] })
     let live = try await api.sandboxes(environmentID: environment).filter {
       $0.environmentID == environment && !["DESTROYED", "DESTROYING"].contains($0.status)
         && !accounted.contains($0.id)
@@ -754,41 +817,24 @@ extension RailwayHostDriver {
         return offset >= -Self.reconcileBefore && offset <= Self.reconcileAfter
       }.map(\.id)
     }
-    let all = Set(lost.flatMap(candidates))
-    guard all.count <= lost.count else {
-      return (
-        [],
-        [
-          "Railway sandboxes \(all.sorted().joined(separator: ", ")): \(lost.count) of this Mac's"
-            + " creates lost Railway's reply, and Workroom can't tell which of these were theirs,"
-            + " so it left them all, and will look again at the next launch"
-        ]
-      )
-    }
-    var done: Set<UUID> = []
-    var failures: [String] = []
-    for entry in lost {
-      let left = candidates(entry).filter { !claimed.contains($0) }
-      guard left.count <= 1 else {
-        failures.append(
-          "Railway sandboxes \(left.sorted().joined(separator: ", ")): a create of this Mac's lost"
-            + " Railway's reply, and Workroom can't tell which was its, so it left them, and will"
-            + " look again at the next launch")
+    let all = Set(fresh.flatMap(candidates))
+    let crowded = all.count > fresh.count || !all.isDisjoint(with: disputed)
+    for entry in fresh {
+      let found = candidates(entry)
+      let left = found.filter { !claimed.contains($0) }
+      guard !crowded || found.isEmpty, left.count <= 1 else {
+        // Kept, with what this sweep found, the only sandboxes a later one may take for it.
+        result.ambiguous[entry.intent] = found
+        result.failures.append(ambiguity(found))
         continue
       }
       guard let sandbox = left.first else {
-        done.insert(entry.intent)
+        result.done.insert(entry.intent)
         continue
       }
-      claimed.insert(sandbox)
-      let record = sweptRecord(sandbox, environmentID: environment, workspaceID: workspaceID)
-      if let failure = await destroySandbox(record) {
-        failures.append(failure)
-      } else {
-        done.insert(entry.intent)
-      }
+      await destroy(sandbox, for: entry)
     }
-    return (done, failures)
+    return result
   }
 
   /// Takes the entry of `sandbox`'s create off the ledger, by its intent when this driver made
@@ -830,6 +876,9 @@ extension RailwayHostDriver {
   /// each bounded, has reached Railway by then.
   public static let reconcileBefore: TimeInterval = 120
   public static let reconcileAfter: TimeInterval = 300
+  /// How long after its create a lost reply that can't be told apart is looked for: then it is
+  /// dropped, and the sweep says which sandboxes to check on Railway's dashboard.
+  public static let ambiguousLifetime: TimeInterval = 14 * 24 * 3600
 
   /// Railway's `DateTime`, ISO 8601 with or without fractional seconds.
   static func date(_ text: String) -> Date? {
