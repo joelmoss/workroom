@@ -11,7 +11,8 @@ import WorkroomVCS
 /// `reachability.adopt` tells both what config records. Also the folders and CLIs every driver is
 /// made with.
 final class RemoteHosts: Sendable {
-  static let shared = RemoteHosts()
+  /// The app's, whose gone hosts the views read (`GoneHosts`).
+  static let shared = RemoteHosts(goneChanged: { GoneHosts.record($0, gone: $1, sequence: $2) })
 
   /// Which driver a host is in (#309, #356): its kind (`HostKind`), and who that driver acts for.
   /// A container runtime on this Mac, and for Docker the context it names (nil names none); a boxd
@@ -21,6 +22,9 @@ final class RemoteHosts: Sendable {
     case boxd(org: String?, account: String?)
     /// An exe.dev account, `whoami`'s email (#259).
     case exeDev(account: String?)
+    /// A Railway environment of this Mac's (#629): the one a host's record names, or the one a
+    /// create makes its sandbox in.
+    case railway(environment: String)
     case ssh(destination: String)
 
     /// The driver a recorded host is in, or nil for a descriptor of no driver this build knows, and
@@ -34,6 +38,9 @@ final class RemoteHosts: Sendable {
         self = .ssh(destination: destination)
       case .boxd: self = .boxd(org: descriptor.org, account: descriptor.account)
       case .exeDev: self = .exeDev(account: descriptor.account)
+      case .railway:
+        guard let environment = descriptor.railway?.environmentID else { return nil }
+        self = .railway(environment: environment)
       case .container(let runtime):
         self.init(runtime: runtime, context: descriptor.container?.context)
       case nil: return nil
@@ -51,6 +58,7 @@ final class RemoteHosts: Sendable {
       case .container(let runtime, _): .container(runtime)
       case .boxd: .boxd
       case .exeDev: .exeDev
+      case .railway: .railway
       case .ssh: .ssh
       }
     }
@@ -65,7 +73,16 @@ final class RemoteHosts: Sendable {
       case .container: RemoteWorkrooms.user
       case .boxd: BoxdHostDriver.user
       case .exeDev: ExeDevHostDriver.user
+      case .railway: RailwayHostDriver.user
       case .ssh: ""
+      }
+    }
+
+    /// That user's home, which holds the clone: a Railway sandbox logs in as root.
+    var loginHome: String {
+      switch self {
+      case .container, .boxd, .exeDev, .ssh: "/home/\(loginUser)"
+      case .railway: "/root"
       }
     }
 
@@ -89,7 +106,7 @@ final class RemoteHosts: Sendable {
     var account: String? {
       switch self {
       case .boxd(_, let account), .exeDev(let account): account
-      case .container, .ssh: nil
+      case .container, .railway, .ssh: nil
       }
     }
   }
@@ -119,15 +136,20 @@ final class RemoteHosts: Sendable {
     )? =
       nil,
     presence: (@Sendable (HostID) async -> HostPresence?)? = nil,
-    pendingIn: URL? = RemoteHosts.pendingIn
+    goneChanged: (@Sendable (HostID, Bool, UInt64) -> Void)? = nil,
+    daemonVersion: (@Sendable (HostID) async -> UInt16?)? = nil,
+    updateDaemon: (@Sendable (HostID) async throws -> DaemonBootstrap.Outcome.Daemon)? = nil,
+    pendingIn: URL? = RemoteHosts.pendingIn,
+    railwayEnvironment: @escaping @Sendable () -> String? = RemoteHosts.railwaySweepEnvironment
   ) {
     registry = HostDriverRegistry(
       makeDriver: makeDriver, makeContainerDriver: makeContainerDriver, sweepDriver: sweepDriver,
-      pendingIn: pendingIn)
+      pendingIn: pendingIn, railwayEnvironment: railwayEnvironment)
     reachability = HostReachability(
       registry: registry, connectHost: connectHost, isConnected: isConnected,
       startHost: startHost, now: now, relayHost: relayHost, connectDaemon: connectDaemon,
-      presence: presence)
+      presence: presence, goneChanged: goneChanged, daemonVersion: daemonVersion,
+      updateDaemon: updateDaemon)
   }
 
   /// Where every driver writes its hosts' files.
@@ -141,6 +163,12 @@ final class RemoteHosts: Sendable {
   /// `hosts`, except under test (a hosted unit run or a UI-test launch), which must never sweep
   /// the developer's own runtime.
   static var pendingIn: URL? { AppEnvironment.current.isTestProcess ? nil : hosts }
+
+  /// This Mac's Railway environment, whose unrecorded sandboxes the launch sweep destroys (#630),
+  /// or nil before setup made one. Nil under test too, as `pendingIn` is.
+  @Sendable static func railwaySweepEnvironment() -> String? {
+    AppEnvironment.current.isTestProcess ? nil : RailwayAccount.placement.read().environmentID
+  }
 
   /// `Application Support/Workroom/<bundle id>/remote`.
   static var directory: URL {

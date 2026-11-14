@@ -355,6 +355,8 @@ struct ChangesPanel: View {
     case .staleWorkingCopy: return "The working tree changed while it was read. Try again."
     case .asleep: return RepositoryRoutingError.asleepMessage
     case .olderLayout: return HostID.olderLayoutMessage
+    case .signedOut: return RepositoryRoutingError.signedOutMessage
+    case .gone: return RepositoryRoutingError.goneMessage
     }
   }
 }

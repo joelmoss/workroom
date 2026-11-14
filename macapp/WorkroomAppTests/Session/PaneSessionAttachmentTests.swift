@@ -48,6 +48,15 @@ final class RemoteReconnectBackoffTests: XCTestCase {
     XCTAssertNil(backoff.next(attachedFor: 1, refused: true))
   }
 
+  /// Value: protects=a pane whose host its provider no longer has stops attaching, rather than
+  /// retrying a host that will never come back (#629); fails_when=a gone host is retried, even
+  /// after a link that was up; seam=RemoteReconnectBackoff.next
+  func testAGoneHostStopsAtOnce() {
+    var backoff = RemoteReconnectBackoff()
+    XCTAssertNil(backoff.next(attachedFor: 3600, refused: false, gone: true))
+    XCTAssertNil(backoff.next(attachedFor: 1, refused: false, gone: true))
+  }
+
   /// An attach that stayed up past the ceiling was a working link: its drop starts over.
   func testALinkThatWasUpStartsTheBackoffAgain() {
     var backoff = RemoteReconnectBackoff()

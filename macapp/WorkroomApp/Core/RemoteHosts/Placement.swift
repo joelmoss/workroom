@@ -28,11 +28,19 @@ struct ProvisionedHostPlacement: Placement {
   var credentialHint: String? { environment.credentialHint }
 
   func make() async throws -> HostID {
-    if let makeHost = environment.makeHost { return try await makeHost() }
-    guard let driver = environment.driver as? any ProvisioningHostDriver else {
-      throw HostDriverError.invalidConfiguration("This host cannot be provisioned")
+    do {
+      // A create with host options goes through `makeHost`, which is the driver's create too.
+      if let makeHost = environment.makeHost { return try await makeHost() }
+      guard let driver = environment.driver as? any ProvisioningHostDriver else {
+        throw HostDriverError.invalidConfiguration("This host cannot be provisioned")
+      }
+      return try await driver.create()
+    } catch {
+      // A Railway create whose reply was lost leaves its entry on the ledger, to show as a lost
+      // create once its grace is over.
+      if environment.driver is RailwayHostDriver { RailwayLostCreatesModel.createFailed() }
+      throw error
     }
-    return try await driver.create()
   }
 
   func unmake(_ host: HostID) async -> String? {

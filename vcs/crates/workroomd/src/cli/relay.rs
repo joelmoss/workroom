@@ -6,6 +6,8 @@ use std::process::ExitCode;
 
 use super::{DAEMON_UNAVAILABLE, flag};
 use crate::daemon::serve;
+use wr_protocol::envelope::{Envelope, Hello, Service};
+use wr_protocol::frame::{Frame, FrameKind};
 
 /// Copies bytes between stdin/stdout and a running daemon's socket, and does nothing else.
 ///
@@ -20,7 +22,9 @@ use crate::daemon::serve;
 /// host must not have. So no daemon means a fast failure the driver can report.
 ///
 /// **It never writes a byte of its own to stdout.** The client handshakes with the daemon THROUGH
-/// this process, and anything else on the stream is a banner the handshake rejects.
+/// this process, and anything else on the stream is a banner the handshake rejects. The one thing
+/// it adds goes the other way, to the daemon: its login environment, after the client's greeting
+/// (`forward_greeting`).
 pub fn run_relay(args: &[String]) -> ExitCode {
     let Some(socket) = flag(args, "--socket").map(PathBuf::from) else {
         eprintln!("error: relay needs --socket <path>");
@@ -44,11 +48,12 @@ pub fn run_relay(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let peer = peer_frame(std::env::vars_os());
     std::thread::spawn(move || {
-        let _ = std::io::copy(
-            &mut crate::daemon::transport::FdStream::stdin(),
-            &mut to_daemon,
-        );
+        let mut stdin = crate::daemon::transport::FdStream::stdin();
+        if forward_greeting(&mut stdin, &mut to_daemon, peer.as_deref()).is_ok() {
+            let _ = std::io::copy(&mut stdin, &mut to_daemon);
+        }
         let _ = to_daemon.shutdown(std::net::Shutdown::Write);
     });
 
@@ -112,3 +117,54 @@ pub fn run_relay(args: &[String]) -> ExitCode {
     }
     ExitCode::SUCCESS
 }
+
+/// The `Peer` envelope this relay sends the daemon: the environment of the ssh login it runs in,
+/// `environment`, less its terminal and the session's metadata
+/// (`host_session::encode_login_environment`). The daemon builds the host-environment sessions
+/// this connection creates from it, as an ssh login would have been: its `PATH`, `HOME` and
+/// `SHELL`, which the daemon's own lookup can get wrong, and sshd's `SSH_CONNECTION` and
+/// `SSH_CLIENT`, so a prompt that shows the hostname over ssh still does (ADR 0074). None when
+/// there is nothing to send.
+fn peer_frame(
+    environment: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Option<Vec<u8>> {
+    let payload = crate::terminal::host_session::encode_login_environment(environment)?;
+    let frame = Frame::new(FrameKind::Peer, payload);
+    Some(Envelope::new(Service::Control, 0, frame.encode()).encode())
+}
+
+/// Copies the client's greeting to the daemon byte for byte, and then `peer`, so the daemon reads
+/// it as the first envelope after the greeting and before anything the client sends. A daemon
+/// rejects anything before a peer's `Hello`, so the greeting is read exactly and no further. A
+/// stream that is no greeting (a client that is not one of ours) is passed on as it came.
+///
+/// Sent to any daemon: one older than the `Peer` frame drops it, as it drops any frame kind it
+/// does not know.
+fn forward_greeting(
+    from: &mut impl Read,
+    to: &mut impl Write,
+    peer: Option<&[u8]>,
+) -> std::io::Result<()> {
+    let mut greeting = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match Hello::decode(&greeting) {
+            Ok(Some(_)) => break,
+            Err(_) => return to.write_all(&greeting),
+            Ok(None) => {}
+        }
+        if from.read(&mut byte)? == 0 {
+            to.write_all(&greeting)?;
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        greeting.push(byte[0]);
+    }
+    to.write_all(&greeting)?;
+    if let Some(peer) = peer {
+        to.write_all(peer)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

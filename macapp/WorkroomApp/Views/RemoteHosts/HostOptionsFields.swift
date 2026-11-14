@@ -3,7 +3,8 @@ import SwiftUI
 import WorkroomDomain
 
 /// What the host option fields learn from the provider (#575): a boxd account's snapshots and its
-/// org's default size and quota, and an exe.dev plan's limits and default disk. Read when the
+/// org's default size and quota, an exe.dev plan's limits and default disk, and the checkpoints in
+/// this Mac's Railway environment with its plan's sizes (#633). Read when the
 /// fields appear, off the main path; a create never waits on them. Nil until read, and still nil
 /// when the read failed, which `failure` says.
 ///
@@ -22,6 +23,7 @@ final class HostOptionsCatalog: ObservableObject {
     var snapshots: [String]?
     var boxdSize: BoxdHostDriver.DefaultSize?
     var plan: ExeDevHostDriver.PlanLimits?
+    var railway: RailwayHostOptions?
     var failure: [HostKind: String] = [:]
     /// The providers whose read is over, whether it worked or not.
     var finished: Set<HostKind> = []
@@ -31,6 +33,7 @@ final class HostOptionsCatalog: ObservableObject {
   var snapshots: [String]? { found.snapshots }
   var boxdSize: BoxdHostDriver.DefaultSize? { found.boxdSize }
   var plan: ExeDevHostDriver.PlanLimits? { found.plan }
+  var railway: RailwayHostOptions? { found.railway }
   var failure: [HostKind: String] { found.failure }
   var finished: Set<HostKind> { found.finished }
   /// When each provider was last read well.
@@ -42,6 +45,7 @@ final class HostOptionsCatalog: ObservableObject {
   enum Reading {
     case boxd(snapshots: [String], size: BoxdHostDriver.DefaultSize?)
     case exeDev(ExeDevHostDriver.PlanLimits)
+    case railway(RailwayHostOptions)
     /// What to say instead: the provider isn't installed, set up or reachable.
     case failed(String)
   }
@@ -79,6 +83,8 @@ final class HostOptionsCatalog: ObservableObject {
       next.boxdSize = size
     case .exeDev(let limits):
       next.plan = limits
+    case .railway(let options):
+      next.railway = options
     case .failed:
       break
     }
@@ -113,6 +119,12 @@ final class HostOptionsCatalog: ObservableObject {
       key = .boxd(org: nil, account: nil)
     case .exeDev:
       key = .exeDev(account: nil)
+    case .railway:
+      // This Mac's environment as setup recorded it: a read never makes a project or environment.
+      guard let environment = RailwayAccount.placement.read().environmentID else {
+        return await railwayBeforeSetup()
+      }
+      key = .railway(environment: environment)
     case .container, .ssh:
       return .failed("\(provider.displayName) hosts take no host options.")
     }
@@ -124,6 +136,7 @@ final class HostOptionsCatalog: ObservableObject {
       switch try await reading.readHostOptions() {
       case .boxd(let snapshots, let size): return .boxd(snapshots: snapshots, size: size)
       case .exeDev(let limits): return .exeDev(limits)
+      case .railway(let options): return .railway(options)
       }
     } catch {
       // Usually a provider not set up yet (story 40): options can still be saved before signing up.
@@ -133,6 +146,20 @@ final class HostOptionsCatalog: ObservableObject {
         "\(name) isn't set up, or couldn't be reached: \(reason)\(reason.hasSuffix(".") ? "" : ".")"
           + " Creating a \(name) workroom sets it up.")
     }
+  }
+
+  /// Railway's options on a Mac with no environment yet (options can be saved before the first
+  /// workroom, story 40): no checkpoints, since a new environment holds none, and the plan's size
+  /// when the sign-in tells which workspace this Mac's workrooms go in. A Mac not signed in yet
+  /// still gets the region and image fields.
+  private func railwayBeforeSetup() async -> Reading {
+    let recorded = RailwayAccount.placement.read().workspaceID
+    let granted = try? await RailwayAccount.shared.api.grantedWorkspaces()
+    let workspace =
+      granted?.first { $0.id == recorded } ?? (granted?.count == 1 ? granted?.first : nil)
+    return .railway(
+      RailwayHostOptions(
+        checkpoints: [], size: workspace.flatMap { RailwayHostOptions.Size(plan: $0.plan) }))
   }
 }
 
@@ -287,50 +314,122 @@ struct HostOptionsFields: View {
         OptionPicker(
           "CPU", option: $options.cpu, values: Array(1...max(plan.maxCPUs, 1)),
           label: { "\($0)" },
-          choices: HostOptionChoices(providerDefault: defaults.cpu, below: inherited?.cpu))
+          choices: HostOptionChoices(providerDefault: defaults.cpu, below: inherited?.cpu),
+          help: cpuHelp)
         OptionPicker(
           "Memory", option: $options.memory,
           values: (1...max(plan.maxMemoryGB, 1)).map { "\($0)GB" }, label: { $0 },
-          choices: HostOptionChoices(providerDefault: nil, below: inherited?.memory))
+          choices: HostOptionChoices(providerDefault: nil, below: inherited?.memory),
+          help: memoryHelp)
         OptionPicker(
           "Disk", option: $options.disk, values: diskSizes(plan).map { "\($0)GB" },
           label: { $0 },
-          choices: HostOptionChoices(providerDefault: defaults.disk, below: inherited?.disk))
+          choices: HostOptionChoices(providerDefault: defaults.disk, below: inherited?.disk),
+          help: diskHelp)
       } else {
-        OptionTextField(
-          "CPU", option: cpuText,
-          choices: HostOptionChoices(
-            providerDefault: defaults.cpu.map { "\($0)" },
-            below: inherited.map {
-              HostOptions.Resolved(value: $0.cpu.value.map { "\($0)" }, source: $0.cpu.source)
-            }))
-        OptionTextField(
-          "Memory", option: $options.memory,
-          choices: HostOptionChoices(providerDefault: nil, below: inherited?.memory))
-        OptionTextField(
-          "Disk", option: $options.disk,
-          choices: HostOptionChoices(providerDefault: nil, below: inherited?.disk))
+        sizeTextFields
       }
+    case .railway:
+      railwayFields
     case .container, .ssh:
       EmptyView()
     }
   }
 
-  /// The host image, called what it is for the provider: a snapshot lists the account's own.
+  /// CPU, memory and disk as text, when the plan can't be read.
+  @ViewBuilder private var sizeTextFields: some View {
+    OptionTextField(
+      "CPU", option: cpuText,
+      choices: HostOptionChoices(
+        providerDefault: defaults.cpu.map { "\($0)" },
+        below: inherited.map {
+          HostOptions.Resolved(value: $0.cpu.value.map { "\($0)" }, source: $0.cpu.source)
+        }),
+      help: cpuHelp + " A whole number.")
+    OptionTextField(
+      "Memory", option: $options.memory,
+      choices: HostOptionChoices(providerDefault: nil, below: inherited?.memory),
+      help: memoryHelp + " In GB, such as 4GB.")
+    if provider == .exeDev {
+      OptionTextField(
+        "Disk", option: $options.disk,
+        choices: HostOptionChoices(providerDefault: nil, below: inherited?.disk),
+        help: diskHelp + " In GB, such as 25GB.")
+    }
+  }
+
+  /// The size fields' tooltips, for this provider.
+  private var cpuHelp: String {
+    "The host's vCPUs, up to what your \(provider.displayName) plan allows."
+  }
+  private var memoryHelp: String {
+    provider == .railway
+      ? "The host's memory, up to what the workspace's Railway plan allows. Railway bills the "
+        + "memory a host uses."
+      : "The host's memory, up to what your \(provider.displayName) plan allows."
+  }
+  private var diskHelp: String {
+    "The host's disk, up to what your \(provider.displayName) plan allows."
+  }
+
+  /// Railway's region and size (#633). The size goes up to the plan's maximum; a plan Workroom
+  /// doesn't know takes it typed.
+  @ViewBuilder private var railwayFields: some View {
+    OptionPicker(
+      "Region", option: $options.region, values: RailwayHostOptions.regions.map(\.id),
+      label: RailwayHostOptions.regionName,
+      choices: HostOptionChoices(
+        providerDefault: RailwayHostOptions.defaultRegion, below: inherited?.region),
+      help: "Where Railway runs this host: one near you answers faster."
+    )
+    .accessibilityIdentifier("hostOptions.railway.region")
+    if let size = catalog.railway?.size {
+      OptionPicker(
+        "CPU", option: $options.cpu, values: Array(1...max(size.maxVCPU, 1)),
+        label: { "\($0) vCPU" },
+        choices: HostOptionChoices(providerDefault: size.vcpu, below: inherited?.cpu),
+        help: cpuHelp
+      )
+      .accessibilityIdentifier("hostOptions.railway.cpu")
+      OptionPicker(
+        "Memory", option: $options.memory,
+        values: (1...max(size.maxMemoryGB, 1)).map { "\($0)GB" }, label: { $0 },
+        choices: HostOptionChoices(providerDefault: "\(size.memoryGB)GB", below: inherited?.memory),
+        help: memoryHelp
+      )
+      .accessibilityIdentifier("hostOptions.railway.memory")
+    } else {
+      sizeTextFields
+    }
+  }
+
+  /// The host image, called what it is for the provider: a snapshot lists the account's own, a
+  /// checkpoint this Mac's environment's own.
   @ViewBuilder private var imageField: some View {
-    let snapshots = provider.hostImageKind == .snapshot ? catalog.snapshots : nil
+    let listed: [String]? =
+      switch provider.hostImageKind {
+      case .snapshot: catalog.snapshots
+      case .checkpoint: catalog.railway?.checkpoints
+      default: nil
+      }
     if let imageKind = provider.hostImageKind {
       OptionTextField(
         imageKind.fieldLabel, option: $options.image,
         choices: HostOptionChoices(providerDefault: nil, below: inherited?.image),
-        suggestions: snapshots ?? [])
+        suggestions: listed ?? [], help: imageKind.fieldHelp)
     }
-    if case .value(let name)? = options.image, let snapshots, !snapshots.contains(name) {
-      Text(Self.missingSnapshot)
+    if case .value(let name)? = options.image, let listed, !listed.contains(name) {
+      Text(provider.hostImageKind == .checkpoint ? Self.missingCheckpoint : Self.missingSnapshot)
         .font(.footnote)
         .foregroundStyle(tokens.warning)
+        .accessibilityIdentifier("hostOptions.missingImage")
     }
   }
+
+  /// A saved checkpoint name this Mac's Railway environment doesn't hold: another Mac's, or one
+  /// since deleted. A create from it is refused before any host is made.
+  private static let missingCheckpoint = AttributedString(
+    "No checkpoint of that name in this Mac's Railway environment: a create from it is refused.")
 
   /// A saved snapshot name the signed-in boxd account doesn't have, with "help" linking to how
   /// snapshots are made and listed.
@@ -351,7 +450,10 @@ struct HostOptionsFields: View {
       values: [1, 2, 4, 8].filter { $0 <= (catalog.boxdSize?.maxVCPU ?? 8) },
       label: Self.boxdSize,
       choices: HostOptionChoices(providerDefault: defaults.cpu, below: inherited?.cpu),
-      fadesAll: snapshot
+      fadesAll: snapshot,
+      help: snapshot
+        ? "A snapshot keeps its own size."
+        : "The machine's size: its vCPUs, with 4 GB of memory each, up to your boxd org's quota."
     )
     .disabled(snapshot)
     if snapshot {
@@ -369,6 +471,7 @@ struct HostOptionsFields: View {
     switch provider {
     case .boxd: (catalog.boxdSize?.vcpu, nil)
     case .exeDev: (ExeDevHostDriver.defaultCPUs, catalog.plan?.defaultDiskGB.map { "\($0)GB" })
+    case .railway: (catalog.railway?.size?.vcpu, nil)
     case .container, .ssh: (nil, nil)
     }
   }
@@ -417,7 +520,8 @@ extension HostOptions {
     }
     self.init(
       image: option(resolution.image), cpu: option(resolution.cpu),
-      memory: option(resolution.memory), disk: option(resolution.disk))
+      memory: option(resolution.memory), disk: option(resolution.disk),
+      region: option(resolution.region))
   }
 }
 
@@ -436,10 +540,13 @@ private struct OptionPicker<Value: Hashable & Codable & Sendable>: View {
   let choices: HostOptionChoices<Value>
   /// Fades every row whole: a boxd size a snapshot decides, so the value shown isn't one chosen.
   let fadesAll: Bool
+  /// The tooltip: what the option sets.
+  let help: String
 
   init(
     _ title: String, option: Binding<HostOption<Value>?>, values: [Value],
-    label: @escaping (Value) -> String, choices: HostOptionChoices<Value>, fadesAll: Bool = false
+    label: @escaping (Value) -> String, choices: HostOptionChoices<Value>, fadesAll: Bool = false,
+    help: String
   ) {
     self.title = title
     _option = option
@@ -447,6 +554,7 @@ private struct OptionPicker<Value: Hashable & Codable & Sendable>: View {
     self.label = label
     self.choices = choices
     self.fadesAll = fadesAll
+    self.help = help
   }
 
   var body: some View {
@@ -467,6 +575,7 @@ private struct OptionPicker<Value: Hashable & Codable & Sendable>: View {
           .tag(choices.stored(for: value))
       }
     }
+    .help(help)
   }
 
   /// One row: its value, then its mark faded, or all of it faded where `fadesAll`.
@@ -509,15 +618,18 @@ private struct OptionTextField: View {
   @Binding var option: HostOption<String>?
   let choices: HostOptionChoices<String>
   let suggestions: [String]
+  /// The tooltip: what the option sets.
+  let help: String
 
   init(
     _ title: String, option: Binding<HostOption<String>?>, choices: HostOptionChoices<String>,
-    suggestions: [String] = []
+    suggestions: [String] = [], help: String
   ) {
     self.title = title
     _option = option
     self.choices = choices
     self.suggestions = suggestions
+    self.help = help
   }
 
   /// The level below's own value, when it names one other than the provider's default.
@@ -534,6 +646,7 @@ private struct OptionTextField: View {
         TextField(title, text: text, prompt: Text(placeholder))
           .labelsHidden()
           .disabled(option == .providerDefault)
+          .help(help)
         if !suggestions.isEmpty || belowsOwn != nil || option == .providerDefault {
           Menu {
             ForEach(suggestions, id: \.self) { name in Button(name) { option = .value(name) } }
@@ -550,7 +663,9 @@ private struct OptionTextField: View {
           .menuStyle(.borderlessButton)
           .menuIndicator(.hidden)
           .fixedSize()
+          .help("\(title) choices: a listed value, or what this level inherits")
           .accessibilityLabel("\(title) choices")
+          .accessibilityIdentifier("hostOptions.choices.\(title)")
         }
       }
     }

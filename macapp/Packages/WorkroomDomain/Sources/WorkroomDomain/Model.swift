@@ -127,6 +127,9 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
   /// The host options a boxd or exe.dev host was created with (#575), for the Details pane; nil
   /// on a host made before them.
   public var madeWith: ResolvedHostOptions? = nil
+  /// How `RailwayHostDriver` reaches a Railway host again (ADR 0071, #629): its sandbox, the
+  /// environment and project it is in, and the relay host key pinned when it was made.
+  public var railway: RailwayHostRecord? = nil
 
   /// Whether git's credentials on this host come through the Mac's relay (#309).
   public var isRelayed: Bool { credentials == "relay" }
@@ -152,6 +155,7 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     case sshDestination = "ssh_destination"
     case sshHome = "ssh_home"
     case madeWith = "made_with"
+    case railway
   }
 
   public init(
@@ -160,7 +164,7 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     cloneURL: String? = nil, path: String? = nil, container: ContainerHostRecord? = nil,
     bases: [HostDescriptor]? = nil, credentials: String? = nil, org: String? = nil,
     account: String? = nil, sshDestination: String? = nil, sshHome: String? = nil,
-    madeWith: ResolvedHostOptions? = nil
+    madeWith: ResolvedHostOptions? = nil, railway: RailwayHostRecord? = nil
   ) {
     self.state = state
     self.driver = driver
@@ -178,6 +182,7 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     self.sshDestination = sshDestination
     self.sshHome = sshHome
     self.madeWith = madeWith
+    self.railway = railway
   }
 
   public init(from decoder: Decoder) throws {
@@ -198,6 +203,43 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     sshDestination = try? fields?.decodeIfPresent(String.self, forKey: .sshDestination)
     sshHome = try? fields?.decodeIfPresent(String.self, forKey: .sshHome)
     madeWith = try? fields?.decodeIfPresent(ResolvedHostOptions.self, forKey: .madeWith)
+    railway = try? fields?.decodeIfPresent(RailwayHostRecord.self, forKey: .railway)
+  }
+}
+
+/// What a Railway host's descriptor records (ADR 0071): the sandbox Railway made, in this Mac's
+/// environment of the `Workroom` project, and the workspace that is in. A sandbox has
+/// no name or label, so nothing but this record ties it to its workroom.
+public struct RailwayHostRecord: Codable, Hashable, Sendable {
+  public var projectID: String?
+  public var environmentID: String
+  public var sandboxID: String
+  /// The relay's host key as an older build pinned it on first use, `<type> <base64>`. Kept so
+  /// those builds still read the record; ignored now that the relay's key ships in the app
+  /// (`RailwayHostDriver.relayHostKey`), the only one any login trusts.
+  public var hostKey: String
+  /// The workspace the environment is in, which a "no such sandbox" read is confirmed against: a
+  /// sign-in that can't see it reads every sandbox in it as missing. Nil in a record an older
+  /// build wrote, which the driver resolves from the environment's project once.
+  public var workspaceID: String?
+
+  public init(
+    projectID: String?, environmentID: String, sandboxID: String, hostKey: String,
+    workspaceID: String? = nil
+  ) {
+    self.projectID = projectID
+    self.environmentID = environmentID
+    self.sandboxID = sandboxID
+    self.hostKey = hostKey
+    self.workspaceID = workspaceID
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case projectID = "project_id"
+    case environmentID = "environment_id"
+    case sandboxID = "sandbox_id"
+    case hostKey = "host_key"
+    case workspaceID = "workspace_id"
   }
 }
 

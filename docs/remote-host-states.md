@@ -110,3 +110,7 @@ last workroom on that host.
 | Unreachable delete | fails, entry kept | same; Delete Anyway forgets and names the folder left behind |
 | Shared state after delete | one host per workroom | drop connection/status watch only after the last workroom; forwards go with their own workroom |
 | Wake/network ping | 2 s rule | same |
+
+A Railway sandbox is its workroom's own host, so its port forwards are one list for the host, as a
+container's are: loopback ports on the sandbox, carried over its daemon connection through
+Railway's ssh relay, like an SSH host's.

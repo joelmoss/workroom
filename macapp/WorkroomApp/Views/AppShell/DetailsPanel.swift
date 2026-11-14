@@ -1,14 +1,18 @@
 import AppKit
 import DevContainer
+import HostDrivers
 import SwiftUI
 import WorkroomDomain
+import WorkroomVCS
 
 /// The inspector's **Details** pane: the selected workroom itself rather than its repository. Where
-/// it runs (this Mac, a container, a boxd or exe.dev machine) and its path there, then, for a
-/// container workroom, its Ports list. A remote provider publishes its machines' ports itself, and a
-/// workroom on this Mac reaches its ports directly, so neither shows one.
+/// it runs (this Mac, a container, a remote host) and its path there, then, for a container, SSH
+/// or Railway workroom, its Ports list. boxd and exe.dev publish their machines' ports themselves,
+/// and a workroom on this Mac reaches its ports directly, so neither shows one.
 struct DetailsPanel: View {
   @EnvironmentObject var store: AppStore
+  @ObservedObject private var goneHosts = GoneHosts.shared
+  @ObservedObject private var lostCreates = RailwayLostCreatesModel.shared
   @Environment(\.themeTokens) private var tokens
 
   var body: some View {
@@ -24,6 +28,34 @@ struct DetailsPanel: View {
 
   @ViewBuilder
   private func details(_ target: TerminalTarget) -> some View {
+    if goneHosts.contains(target.remoteHost) {
+      gone(target)
+    } else {
+      present(target)
+    }
+  }
+
+  /// A workroom whose host its provider no longer has (#629): where it ran, and Remove Workroom,
+  /// its only action. Nothing to copy, configure or forward on a host that isn't there.
+  private func gone(_ target: TerminalTarget) -> some View {
+    VStack(alignment: .leading, spacing: 12) {
+      fact("Running on", target.hostKind ?? "This Mac")
+      VStack(alignment: .leading, spacing: 6) {
+        Text(RepositoryRoutingError.goneMessage)
+          .font(.caption).foregroundStyle(.secondary)
+          .accessibilityIdentifier("details.hostGone")
+        Button("Remove Workroom…") {
+          if let sid = target.id.sidebarID { store.requestDeleteWorkroom(sid) }
+        }
+        .help("Remove this workroom: its host is gone, and its work with it.")
+        .accessibilityIdentifier("details.removeGoneWorkroom")
+      }
+    }
+    .padding(12)
+  }
+
+  @ViewBuilder
+  private func present(_ target: TerminalTarget) -> some View {
     VStack(alignment: .leading, spacing: 0) {
       VStack(alignment: .leading, spacing: 12) {
         // The provider's name links to the machine's page on its dashboard.
@@ -42,13 +74,14 @@ struct DetailsPanel: View {
         }
         devContainer(target)
         hostOptions(target)
+        railway(target)
       }
       .padding(12)
       ports(target)
     }
   }
 
-  /// The host options a boxd or exe.dev workroom was made with (#575). Nothing for one made before
+  /// The host options a boxd, exe.dev or Railway workroom was made with (#575, #633). Nothing for one made before
   /// them, or on the provider's defaults.
   @ViewBuilder
   private func hostOptions(_ target: TerminalTarget) -> some View {
@@ -62,6 +95,7 @@ struct DetailsPanel: View {
         made.cpu.map { "\($0) CPU" }, made.memory, made.disk.map { "\($0) disk" },
       ].compactMap { $0 }
       if !size.isEmpty { fact("Size", size.joined(separator: ", ")) }
+      if let region = made.region { fact("Region", RailwayHostOptions.regionName(region)) }
     }
   }
 
@@ -81,6 +115,89 @@ struct DetailsPanel: View {
         ref: RemoteWorkrooms.splitBase(
           store.projectStore.effectiveBaseBranch(for: project) ?? "HEAD", remotes: ["origin"]
         ).branch)
+    }
+  }
+}
+
+extension DetailsPanel {
+  /// A Railway workroom's standing (#629): one Workroom can't check on because its Railway sign-in
+  /// was revoked or expired is signed out, with Sign In. A gone one is `gone(_:)`'s, as any
+  /// provider's is. Then any create of this Mac's that may have left a sandbox (review 5 of #623),
+  /// which Settings ▸ Remote Hosts ▸ Railway shows too.
+  @ViewBuilder
+  fileprivate func railway(_ target: TerminalTarget) -> some View {
+    if target.hostPlace == .railway, let sid = store.inspectorTargetID {
+      // Always drawn, so the ledger is read as the pane appears.
+      RailwayHostNote(sid: sid)
+        .task(id: sid) { await lostCreates.refresh() }
+      if !lostCreates.creates.isEmpty { RailwayLostCreatesNotice() }
+    }
+  }
+}
+
+/// What the Details pane says of a Railway workroom that is signed out, with the one thing to do
+/// about it.
+struct RailwayHostNote: View {
+  @EnvironmentObject var vcsStatus: VCSStatusService
+  let sid: SidebarID
+  private var failure: VCSStatusFailure? { vcsStatus.workroomStatuses[sid]?.failure }
+  /// Whether this build holds a Railway sign-in: nil until read.
+  @State private var signedIn: Bool?
+  @State private var signingIn = false
+  @State private var problem: String?
+  /// Whether a sign-in finished here since the workroom last reported signed out: its next read
+  /// is still to come, so the note steps aside until then.
+  @State private var signedInHere = false
+
+  var body: some View {
+    // Something always drawn: with nothing to show yet, an empty view never appears, so its
+    // `.task` would never read the sign-in.
+    VStack(alignment: .leading, spacing: 0) {
+      Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
+      if Self.shows(signedIn: signedIn, failure: failure, signedInHere: signedInHere) {
+        VStack(alignment: .leading, spacing: 6) {
+          Text(RepositoryRoutingError.signedOutMessage)
+            .font(.caption).foregroundStyle(.secondary)
+            .accessibilityIdentifier("details.railwaySignedOut")
+          if let problem {
+            Text(problem).font(.caption).foregroundStyle(.red)
+          }
+          Button(signingIn ? "Finish Signing In in Your Browser…" : "Sign In to Railway…") {
+            signIn()
+          }
+          .disabled(signingIn)
+          .help("Open Railway's sign-in page in your browser.")
+          .accessibilityIdentifier("details.railwaySignIn")
+        }
+      }
+    }
+    .task(id: failure) {
+      signedInHere = false
+      signedIn = await RailwayAccount.shared.session.isSignedIn
+    }
+  }
+
+  /// Whether the note and its Sign In button show: with no sign-in, and for a workroom Railway
+  /// reports signed out even with one held, as when the sign-in leaves out its workspace, unless
+  /// a sign-in just finished here and the workroom hasn't been read with it yet.
+  static func shows(signedIn: Bool?, failure: VCSStatusFailure?, signedInHere: Bool) -> Bool {
+    signedIn == false || (failure == .signedOut && !signedInHere)
+  }
+
+  private func signIn() {
+    signingIn = true
+    problem = nil
+    Task {
+      do {
+        try await RailwayAccount.shared.signInWithBrowser()
+        signedInHere = true
+      } catch is CancellationError {
+      } catch {
+        problem = error.localizedDescription
+      }
+      signingIn = false
+      // The next status sweep reads the workroom again with the new sign-in.
+      signedIn = await RailwayAccount.shared.session.isSignedIn
     }
   }
 }
@@ -107,18 +224,13 @@ private struct DevContainerNote: View {
 
 extension DetailsPanel {
 
-  /// Only where ports can be forwarded: a container workroom this app reaches. Nowhere else has
-  /// anything to configure here.
+  /// Only where ports can be forwarded: a remote workroom this app reaches on a host whose ports
+  /// Workroom forwards (`TerminalTarget.portsPlace`). Nowhere else has anything to configure here.
   @ViewBuilder
   private func ports(_ target: TerminalTarget) -> some View {
-    if case .container = target.hostPlace, let host = target.remoteHost {
+    if let place = target.portsPlace {
       Divider()
-      PortsSection(model: .model(for: .remote(host)))
-    } else if target.hostPlace == .ssh, let host = target.remoteHost,
-      let workroom = target.remoteWorkroomID
-    {
-      Divider()
-      PortsSection(model: .model(for: .remote(host), workroom: workroom))
+      PortsSection(model: .model(for: place), host: target.hostPlace?.hostNoun ?? "host")
     }
   }
 
@@ -242,12 +354,14 @@ struct InspectorWorkroomHeader: View {
   }
 }
 
-/// Ports forwarded from a container workroom's host to this Mac (issues #208, #254): the ones its
+/// Ports forwarded from a remote workroom's host to this Mac (issues #208, #254, #632): the ones its
 /// dev container declares, and any the user adds. Nothing is persisted across launches: the daemon
 /// closes every forwarded socket when the client detaches, so a list restored at launch would name
 /// addresses that no longer answer; the declared ones are forwarded again instead.
 private struct PortsSection: View {
   @ObservedObject var model: PortForwardingModel
+  /// What the host is called in the rows and the `+` tooltip: "container", "sandbox" or "host".
+  let host: String
   /// A new row's port field is showing, after `+`.
   @State private var adding = false
   @FocusState private var fieldFocused: Bool
@@ -259,7 +373,7 @@ private struct PortsSection: View {
         Text("Ports").font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
         Spacer(minLength: 0)
         InspectorHeaderButton(
-          systemImage: "plus", help: "Forward a port from this workroom's container"
+          systemImage: "plus", help: "Forward a port from this workroom's \(host)"
         ) {
           adding = true
           fieldFocused = true
@@ -328,8 +442,8 @@ private struct PortsSection: View {
     let address = "localhost:\(forward.localPort)"
     VStack(alignment: .leading, spacing: 1) {
       HStack(spacing: 6) {
-        // Mac first, arrow the way a connection goes: from the address here into the container.
-        Text("\(address) → container \(String(forward.remotePort))")
+        // Mac first, arrow the way a connection goes: from the address here into the host.
+        Text("\(address) → \(host) \(String(forward.remotePort))")
           .font(.system(.caption, design: .monospaced))
           .foregroundStyle(tokens.fgMuted)
           .textSelection(.enabled)

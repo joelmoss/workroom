@@ -1,15 +1,18 @@
 import SwiftUI
+import WorkroomVCS
 
 /// The terminal body for one target (issue #23). Lifted out of `RootView.targetDetail` so the detail
 /// pane and each workroom pane render identical terminal UI. Carries **no** navigation title or
 /// toolbar — the caller owns that chrome (`WorkroomPaneLeaf`'s title bar since issue #139).
 ///
-/// Two states withhold the terminal, inside one `ZStack` so this view keeps a single structural
+/// Three states withhold the terminal, inside one `ZStack` so this view keeps a single structural
 /// position in its parent:
 ///
 /// - **The directory is gone** (deleted on disk). Don't mount a terminal over a dead path. Every
 ///   visible workroom is guarded here, focused or not (issue #23 follow-up). The way out is the title
 ///   bar's ✕.
+/// - **Its host is gone** (`GoneHosts`, #629): its provider no longer has it, so the pane offers
+///   Remove Workroom instead of a terminal that would only retry.
 /// - **This workroom is still being created** (#483): its run's `CreationPane`, from the click until
 ///   the run ends. Each pane draws its OWN run (issue #167, defect 4), so the two halves of a
 ///   create-as-split each show their own create.
@@ -23,6 +26,8 @@ struct TargetTerminalDetail: View {
   var workroomIsSplit: Bool = false
   @EnvironmentObject var store: AppStore
   @EnvironmentObject private var lifecycle: WorkroomLifecycle
+  /// Rarely changes, so observing it costs this view nothing between a host going and coming back.
+  @ObservedObject private var goneHosts = GoneHosts.shared
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
@@ -36,6 +41,21 @@ struct TargetTerminalDetail: View {
         CreationPaneAdapter(run: run, isActive: surfaceActive)
           .zIndex(1)
           .transition(.opacity)
+      } else if goneHosts.contains(target.remoteHost) {
+        // Its provider no longer has its host (#629): no pane mounts to retry it, and removing
+        // the workroom is all that's left.
+        ContentUnavailableView {
+          Label("Host gone", systemImage: "xmark.icloud")
+        } description: {
+          Text(RepositoryRoutingError.goneMessage)
+        } actions: {
+          Button("Remove Workroom…") {
+            if let sid = target.id.sidebarID { store.requestDeleteWorkroom(sid) }
+          }
+          .help("Remove this workroom: its host is gone, and its work with it.")
+          .accessibilityIdentifier("terminal.removeGoneWorkroom")
+        }
+        .accessibilityIdentifier("terminal.hostGone")
       } else if target.opensTerminals {
         WorkroomTerminalsView(
           target: target, panes: store.terminals, surfaceActive: surfaceActive,

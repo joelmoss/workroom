@@ -96,6 +96,86 @@ import WorkroomVCS
       flag(defaultsKey)
     }
 
+    /// `-WorkroomUITestRailway signedOut|signedIn|gone` (#627, #629): Railway's account is
+    /// `RailwayStub`, with the refresh token in memory (kept from before for `signedIn` and
+    /// `gone`), so the setup sheet signs in, lists workspaces and signs out with no Railway,
+    /// browser or Keychain. Its workspaces: Personal (Hobby), Codaset (Pro), Side projects (Free)
+    /// and New team (on a Trial). Personal holds one project, `my-app`, and no `Workroom` one; the
+    /// setup's Use This Project makes them in the stub. `gone` is signed in, with the fixture's
+    /// Railway workroom's host gone (`railwayWorkroom`). Nil otherwise.
+    static var railwayAccount: RailwayAccount? {
+      guard fixtureFlag, let scenario = text("WorkroomUITestRailway") else { return nil }
+      let stub = RailwayStub(workspaces: [
+        RailwayWorkspace(id: "ws-personal", name: "Personal", plan: .hobby),
+        RailwayWorkspace(id: "ws-codaset", name: "Codaset", plan: .pro),
+        RailwayWorkspace(id: "ws-side", name: "Side projects", plan: .free),
+        RailwayWorkspace(id: "ws-new", name: "New team", plan: .hobby),
+      ])
+      stub.trialing = ["ws-new": true]
+      stub.projects = ["ws-personal": [RailwayProject(id: "prj-app", name: "my-app")]]
+      let kept = scenario == "signedIn" || scenario == "gone" ? RailwayStub.refreshToken : nil
+      if railwayLostCreate { seedRailwayLostCreate(in: stub) }
+      return stub.account(store: RailwayStub.MemoryStore(kept))
+    }
+
+    /// `-WorkroomUITestRailwayLostCreate 1` (review 5 of #623): this test process's Railway
+    /// ledger holds a create from two hours ago in `env-uitest` (Personal) whose reply was lost,
+    /// and Railway lists two sandboxes there: `railwayLostCandidate`, made just after it, which no
+    /// record names, and the fixture workroom's own `sbx-uitest`, which its record does.
+    static var railwayLostCreate: Bool {
+      fixtureFlag && flag("WorkroomUITestRailwayLostCreate")
+    }
+
+    static let railwayLostCandidate = "sbx-lost-uitest"
+
+    private static func seedRailwayLostCreate(in stub: RailwayStub) {
+      let started = Date().addingTimeInterval(-2 * 3600)
+      let iso = ISO8601DateFormatter()
+      stub.sandboxes = [
+        [
+          "id": railwayLostCandidate, "status": "RUNNING", "environmentId": "env-uitest",
+          "createdAt": iso.string(from: started.addingTimeInterval(5)),
+        ],
+        [
+          "id": "sbx-uitest", "status": "RUNNING", "environmentId": "env-uitest",
+          "createdAt": iso.string(from: started.addingTimeInterval(3)),
+        ],
+      ]
+      let entry = RailwayCreateLedger.Entry(
+        started: started, environmentID: "env-uitest", workspaceID: "ws-personal",
+        projectID: "prj-app")
+      let encoder = JSONEncoder()
+      encoder.dateEncodingStrategy = .iso8601
+      let ledger = RailwayCreateLedger(directory: RailwayAccount.directory)
+      try? FileManager.default.createDirectory(
+        at: ledger.directory, withIntermediateDirectories: true)
+      try? encoder.encode([entry]).write(
+        to: ledger.directory.appendingPathComponent("create-ledger.json"))
+    }
+
+    /// `-WorkroomUITestRailwayWorkroom 1` (#629): the project also lists `railwayWorkroomName`, a
+    /// workroom on a Railway sandbox. Its relay is a name that never resolves (`railwayRelay`), and
+    /// Railway is `RailwayStub`, so nothing reaches Railway.
+    static var railwayWorkroom: Bool {
+      fixtureFlag && flag("WorkroomUITestRailwayWorkroom")
+    }
+
+    static let railwayWorkroomName = "uitest-railway"
+    /// Its host's id.
+    static let railwayWorkroomHostID = UUID(uuidString: "6A1D0E3C-5B2F-4C7E-9D10-29A7F0C4B6E1")!
+    /// The relay a fixture launch's Railway driver logs in through: `.invalid` never resolves.
+    static let railwayRelay = "relay.railway.invalid"
+    /// The gh token a test process's Railway driver carries to its hosts: a fake, so no test reads
+    /// this Mac's own (ADR 0072).
+    static let railwayGitHubToken = "gho_FAKE_uitest_fixture"
+
+    /// `-WorkroomUITestRailwayNeededWorkspace <id>`: the workspace of the `Workroom` project the
+    /// fixture's Railway setup checks the sign-in reaches (#627).
+    static var railwayNeededWorkspace: String? {
+      guard fixtureFlag else { return nil }
+      return text("WorkroomUITestRailwayNeededWorkspace")
+    }
+
     /// Where a session-restore UI test wants its `session.json` (`-WorkroomUITestSessionFile <path>`).
     ///
     /// **In fixture mode the session store is a no-op unless this is set** (see
@@ -767,6 +847,11 @@ import WorkroomVCS
           return .boxd(snapshots: ["uitest-snapshot"], size: nil)
         case .exeDev:
           return .exeDev(.init(maxCPUs: 4, maxMemoryGB: 8, defaultDiskGB: 20, maxDiskGB: 100))
+        case .railway:
+          return .railway(
+            RailwayHostOptions(
+              checkpoints: ["uitest-checkpoint"],
+              size: RailwayHostOptions.Size(plan: .hobby)))
         case .container, .ssh:
           // As the real read says: these take no host options, so no step asks for them.
           return .failed("\(provider.displayName) hosts take no host options.")
@@ -1172,6 +1257,23 @@ import WorkroomVCS
           Workroom(
             name: scriptedWorkroomName, path: scriptedWorkroomDirectory.path, vcsName: vcs,
             warnings: []))
+      }
+      if railwayWorkroom {
+        // A fixture launch reads no host's presence (its services are stand-ins), so `gone` says
+        // what a read would have: the sandbox was destroyed outside Workroom (#629).
+        if text("WorkroomUITestRailway") == "gone" {
+          GoneHosts.record(.remote(railwayWorkroomHostID), gone: true)
+        }
+        workrooms.append(
+          Workroom(
+            name: railwayWorkroomName, path: "/root/\(projectName)", vcsName: vcs, warnings: [],
+            host: HostDescriptor(
+              driver: HostKind.railway.driver, provisioner: RemoteWorkrooms.provisioner,
+              id: railwayWorkroomHostID,
+              railway: RailwayHostRecord(
+                projectID: "prj-uitest", environmentID: "env-uitest", sandboxID: "sbx-uitest",
+                hostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIUITestUITestUITestUITestUITestUITe"))
+          ))
       }
       for dir in dirs {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

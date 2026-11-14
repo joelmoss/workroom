@@ -6,11 +6,12 @@ import WorkroomDomain
 import WorkroomSystem
 import WorkroomVCS
 
-/// The forwards on one container workroom's host: the ones its dev container declares
+/// The forwards on one remote workroom's host: the ones its dev container declares
 /// (`forwardDeclared`) and the ones the user adds, and the listeners serving them.
 ///
-/// One model per HOST (`model(for:)`); a container workroom is its own host (#254), so each has its
-/// own list. A remote provider's workroom has none: boxd and exe.dev publish a machine's ports
+/// One model per HOST (`model(for:)`); a container workroom and a Railway workroom are each their
+/// own host (#254, #632), so each has its own list, and a workroom on an SSH host has one of its
+/// own (`Place`). boxd and exe.dev workrooms have none: those providers publish a machine's ports
 /// themselves (`boxd machine proxy`, `ssh exe.dev share port`), and a workroom on this Mac reaches
 /// its ports directly.
 @MainActor
@@ -39,6 +40,35 @@ final class PortForwardingModel: ObservableObject {
     }
     guard let model = models.removeValue(forKey: host) else { return }
     for entry in model.forwards { model.remove(entry.id) }
+  }
+
+  /// Which Ports list a remote workroom shows: its host's, or for a workroom on an SSH host its
+  /// own (`HostKind.portForwards`). nil for one with no list: a boxd or exe.dev workroom, whose
+  /// provider publishes its ports itself, or one whose host this app can't reach. Every forward
+  /// rides the host's daemon connection, so a Railway sandbox's go through Railway's relay as an
+  /// SSH host's go through ssh (#632).
+  struct Place: Hashable {
+    let host: HostID
+    let workroom: UUID?
+
+    init(host: HostID, workroom: UUID?) {
+      self.host = host
+      self.workroom = workroom
+    }
+
+    init?(kind: HostKind?, host: UUID?, workroom: UUID?) {
+      guard let forwards = kind?.portForwards, let host else { return nil }
+      switch forwards {
+      case .perHost: self.init(host: .remote(host), workroom: nil)
+      case .perWorkroom:
+        guard let workroom else { return nil }
+        self.init(host: .remote(host), workroom: workroom)
+      }
+    }
+  }
+
+  static func model(for place: Place) -> PortForwardingModel {
+    model(for: place.host, workroom: place.workroom)
   }
 
   static func model(for host: HostID, workroom: UUID? = nil) -> PortForwardingModel {

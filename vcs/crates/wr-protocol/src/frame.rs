@@ -53,6 +53,24 @@ pub enum FrameKind {
     /// "no session …" when the daemon holds no such session, which a client reads as the session
     /// being gone, and another `Failure` for a payload that is malformed.
     Retag = 0x27,
+    /// Says this connection pings: the app sends something on it at least every 15 s, so the
+    /// daemon may close it after 60 s with nothing received (ADR 0075). Sent once, on a remote
+    /// service stream, to a daemon at `MIN_PINGS_VERSION` or newer. No payload; `Acknowledged`.
+    Pings = 0x28,
+    /// The environment of the ssh login `relay` runs in (protocol 11, ADR 0074), as NUL-terminated
+    /// `KEY=VALUE` entries (workroomd's `host_session::encode_login_environment`): every variable
+    /// of the login but its terminal (`TERM`, `COLORTERM`, `TERM_PROGRAM*`, `TERMINFO`,
+    /// `GHOSTTY_*`), `SSH_TTY`, the session metadata (`WORKROOM_SESSION_*`) and what each process
+    /// sets for itself (`PWD`, `OLDPWD`, `SHLVL`, `_`), so its `PATH`, `HOME`, `SHELL`, `USER`,
+    /// `SSH_CONNECTION`, `SSH_CLIENT` and the rest (`host_session::is_login_variable`, which the
+    /// daemon holds the entries to again). At most `host_session::MAX_PEER_ENVIRONMENT` bytes, with
+    /// `HOME`, `SHELL`, `USER`, `LOGNAME`, `PATH` and the two ssh variables first, so a full budget
+    /// leaves out something else. Sent by `relay` alone, right after the client's greeting, and
+    /// never answered. The daemon builds the environment of each host-environment session this
+    /// connection creates from it, and the session keeps those values for its life: a later
+    /// attach over another connection, with a `Peer` frame of its own, changes nothing in it. An
+    /// older daemon drops it.
+    Peer = 0x29,
 
     Sessions = 0x31,
     Acknowledged = 0x32,
@@ -98,6 +116,8 @@ impl FrameKind {
             0x25 => Self::HandOff,
             0x26 => Self::Signal,
             0x27 => Self::Retag,
+            0x28 => Self::Pings,
+            0x29 => Self::Peer,
             0x31 => Self::Sessions,
             0x32 => Self::Acknowledged,
             _ => return None,
@@ -354,7 +374,7 @@ mod tests {
             }
             rows += 1;
         }
-        assert_eq!(rows, 18, "every row was read");
+        assert_eq!(rows, 20, "every row was read");
         // Every kind this codec defines has exactly one row, so a new kind cannot go uncovered.
         let defined: Vec<u8> = (0..=u8::MAX)
             .filter(|&b| FrameKind::from_u8(b).is_some())

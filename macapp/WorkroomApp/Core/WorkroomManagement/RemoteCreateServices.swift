@@ -67,6 +67,8 @@ struct RemoteCreateServices {
           return await ExeDevSetup.needed(driver: HostDriverRegistry.exeDev())
         case .boxd:
           return await BoxdSetup.needed()
+        case .railway:
+          return await RailwaySetup.needed()
         case .container:
           return nil
         case .ssh:

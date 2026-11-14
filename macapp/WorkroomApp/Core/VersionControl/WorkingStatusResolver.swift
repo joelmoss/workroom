@@ -55,6 +55,10 @@ struct WorkingStatusResolver: Sendable {
       status = WorkroomStatus(dirty: nil, failure: .asleep)
     } catch RepositoryRoutingError.olderLayout {
       status = WorkroomStatus(dirty: nil, failure: .olderLayout)
+    } catch RepositoryRoutingError.signedOut {
+      status = WorkroomStatus(dirty: nil, failure: .signedOut)
+    } catch RepositoryRoutingError.gone {
+      status = WorkroomStatus(dirty: nil, failure: .gone)
     } catch is RepositoryRoutingError, is HostConnectionError {
       status = WorkroomStatus(dirty: nil, failure: .unavailable)
     } catch is VCSTimeoutError, is VCSCancellationError {

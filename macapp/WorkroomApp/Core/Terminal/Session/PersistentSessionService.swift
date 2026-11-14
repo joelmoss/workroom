@@ -157,6 +157,11 @@ final class PersistentSessionService {
   private let hostUpdates: (HostID) async -> AsyncStream<HostConnectionManager.Snapshot>
   /// A test's answer to `retag`, in place of this Mac's daemon. Nil for `shared`.
   private var retagOverride: ((UUID, String) async -> Bool)?
+  /// What a remote pane says while it waits on its host (`HostReachability.waitingNotice`); a
+  /// test's own answer in place of it.
+  var waitingNotice: (HostID) -> String? = {
+    RemoteHosts.shared.reachability.waitingNotice(for: $0)
+  }
   /// Reports that a pane reattached through the v2.0.0 `workroom-session` shim (#591): Sentry for
   /// `shared`, a counter for a test.
   private let reportShimReattach: () -> Void
@@ -631,6 +636,14 @@ final class PersistentSessionService {
     return remote.driver.hostRefusedLastAttach(of: sessionID, on: remote.host)
   }
 
+  /// Whether a remote session's host is one its provider says is gone (`GoneHosts`, #629).
+  func remoteHostIsGone(_ sessionID: UUID) -> Bool {
+    guard let remote = remoteSessions[sessionID], case .remote(let id) = remote.host else {
+      return false
+    }
+    return GoneHosts.shared.contains(id)
+  }
+
   /// How a remote session's last attach ended: a lost link (ssh's 255) is what a pane answers by
   /// attaching again (#241, #392). `.finished` for a session that is not remote.
   func remoteLastAttach(_ sessionID: UUID) -> LastAttach {
@@ -661,6 +674,11 @@ final class PersistentSessionService {
           // Only while a pane is still attached: one that exited or closed meanwhile is not.
           guard self.hasAttachedPane(on: host) else { return }
           try? await RemoteHosts.shared.reachability.ensureConnected(host)
+        }
+        // A host whose daemon is too old for this attach, which the app couldn't update yet: the
+        // pane says so when its attach drops, rather than that the host can't be reached.
+        if let notice = waitingNotice(host) {
+          return SSHTransport.withRetryNotice(notice, command)
         }
         return command
       } catch {

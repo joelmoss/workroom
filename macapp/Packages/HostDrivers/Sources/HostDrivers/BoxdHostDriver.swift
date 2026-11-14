@@ -59,6 +59,10 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
     public var home: URL
     /// The host-setup scripts the app bundles, which `create` runs on each new machine.
     public var hostSetup: HostSetup
+    /// How long `create` waits for the CLI to write a new machine's ssh details: boxd 0.3.5's
+    /// `machine new` returns before its background sync writes the host key (measured 2026-11-14,
+    /// about 0.3 s later).
+    public var sshDetailsWait: TimeInterval
 
     public init(
       cli: URL, prefix: String = "workroom", org: String? = nil, account: String? = nil,
@@ -68,7 +72,8 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
         ".ssh/config"),
       knownHosts: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
         ".ssh/known_hosts"),
-      home: URL = FileManager.default.homeDirectoryForCurrentUser, hostSetup: HostSetup
+      home: URL = FileManager.default.homeDirectoryForCurrentUser, hostSetup: HostSetup,
+      sshDetailsWait: TimeInterval = 15
     ) {
       self.cli = cli
       self.prefix = prefix
@@ -80,6 +85,7 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
       self.knownHosts = knownHosts
       self.home = home
       self.hostSetup = hostSetup
+      self.sshDetailsWait = sshDetailsWait
     }
   }
 
@@ -151,6 +157,7 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
       }
       try await ProvisioningProgress.step(.setup) {
         let script = try configuration.hostSetup.systemdScript()
+        try await awaitSSHDetails(of: id)
         let user = try ssh(id).user
         let command =
           "sudo sh -s -- "
@@ -260,8 +267,8 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
 
   /// Refuses to act while boxd's active org or signed-in account is not this driver's
   /// (`Configuration.org`, `Configuration.account`).
-  private func checkOrg() async throws {
-    let account = try await signedIn()
+  private func checkOrg(timeout: TimeInterval = 120) async throws {
+    let account = try await signedIn(timeout: timeout)
     if let expected = configuration.account, account.userID != expected {
       throw HostDriverError.invalidConfiguration(
         "boxd is signed in to another account than the one this workroom's machines are in; sign"
@@ -276,9 +283,10 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
 
   /// The signed-in account, as `boxd auth --json` reports it. Throws, naming `boxd auth login`,
   /// when nobody is signed in.
-  public func signedIn() async throws -> Account {
+  public func signedIn(timeout: TimeInterval = 120) async throws -> Account {
     do {
-      return try decode(Account.self, await cli(["auth"]), "the signed-in account")
+      return try decode(
+        Account.self, await cli(["auth"], timeout: timeout), "the signed-in account")
     } catch let failure as CLIFailure {
       let advice = failure.said == Self.unreadableSignIn ? "" : " Sign in with `boxd auth login`."
       throw HostDriverError.provisioning("\(failure.localizedDescription).\(advice)")
@@ -357,8 +365,9 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
   /// expect, a machine without a status); `HostReachability` takes that as asleep for a background
   /// read.
   ///
-  /// `gone` when boxd answers that the machine is not found: deleted outside the app, or in an org
-  /// that isn't active. Any other error the CLI answers with (signed out, another account) counts
+  /// `gone` when boxd answers that the machine is not found while the driver's own account and org
+  /// are the ones signed in: deleted outside the app. In another account or org it reads as
+  /// asleep, since boxd says the same of a machine still running there. Any other error the CLI answers with (signed out, another account) counts
   /// as asleep: the read can't tell, and connecting would wake a box the user may be paying for,
   /// so a background read leaves it alone; opening the workroom still connects.
   public func presence(_ host: HostID) async -> HostPresence? {
@@ -371,7 +380,18 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
       guard let status = machine.status else { return nil }
       return Self.asleepStatuses.contains(status) ? .asleep : .awake
     } catch let failure as CLIFailure {
-      if failure.notFound { return .gone }
+      if failure.notFound {
+        // Gone only where the machine was made: in another account or org (one switched to since)
+        // boxd says the same of a machine still running there, which reads as asleep instead.
+        do {
+          try await checkOrg(timeout: Self.statusTimeout)
+          return .gone
+        } catch is CancellationError {
+          return nil
+        } catch {
+          return .asleep
+        }
+      }
       return failure.answered ? .asleep : nil
     } catch { return nil }
   }
@@ -737,6 +757,16 @@ public final class BoxdHostDriver: HostTerminalDriver, OptionedProvisioningDrive
   }
 
   // MARK: ssh
+
+  /// Until the CLI has written machine `id`'s ssh details, polling every 0.25 s up to
+  /// `sshDetailsWait`; after that, `ssh(id)`'s own failure.
+  private func awaitSSHDetails(of id: UUID) async throws {
+    let deadline = Date().addingTimeInterval(configuration.sshDetailsWait)
+    while (try? ssh(id)) == nil, Date() < deadline {
+      try await Task.sleep(for: .milliseconds(250))
+    }
+    _ = try ssh(id)
+  }
 
   /// The machine's ssh details, from the CLI's blocks in the user's ssh files.
   private func ssh(_ id: UUID) throws -> SSHTransport.Host {

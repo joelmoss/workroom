@@ -522,7 +522,7 @@ final class GhosttyApp {
 /// which setuid programs ignore (macOS's `top` stops at "Error opening terminal"), `sudo` drops,
 /// and `ssh` does not carry. Programs still learn about Ghostty from the `COLORTERM=truecolor` and
 /// `TERM_PROGRAM=ghostty` libghostty sets either way. Remote workrooms set their own `TERM`
-/// (`SSHTransport.remoteAttachCommand`).
+/// (`SSHTransport.clientVariables`).
 enum TerminalType: String, Sendable {
   case xterm256Color = "xterm-256color"
   case xtermGhostty = "xterm-ghostty"

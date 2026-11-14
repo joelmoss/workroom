@@ -204,6 +204,9 @@ targets:
         SUPublicEDKey: "JUdX5urBRS1a/heb5qKRuxdxQtHXS3WLGYd0+qI9P6k="
         SUEnableAutomaticChecks: true
         SUScheduledCheckInterval: 86400
+        # Login with Railway (ADR 0073): the client ID of Codaset's Native (Public) OAuth app.
+        # Public by design: a Native app has no secret and signs in with PKCE.
+        RailwayOAuthClientID: "rlwy_oaci_H1zdJw3FGIwJ4Uyzuvb6HQNu"
     settings:
       base:
         # Release identity (Debug overrides bundle id + name below to run side by side). The Swift

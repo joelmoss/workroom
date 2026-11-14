@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::daemon::rpc::{self, SharedWriter};
+use crate::daemon::transport::Closer;
 use crate::terminal::pty::Size;
 use crate::terminal::session::{RunSignalError, SessionId, SessionInfo, SessionSpec, SessionStore};
 use crate::terminal::shell;
@@ -20,15 +21,33 @@ use wr_protocol::terminal::{
 };
 
 /// The session one connection is attached to, if any, and which attachment of it this is.
-#[derive(Default)]
 pub(crate) struct Attachment {
     id: Option<SessionId>,
     /// Identifies THIS attachment, so ending this connection cannot detach a client that has since
     /// taken the session over.
     token: u64,
+    /// Ends this connection: a probed client that stops answering is closed with it (ADR 0075).
+    closer: Closer,
+    /// The environment of the ssh login this connection's `relay` runs in (`FrameKind::Peer`),
+    /// which the host-environment sessions it creates are built from (ADR 0074). None until a
+    /// `Peer` frame came, and for one that carried none.
+    peer: Option<Vec<(OsString, OsString)>>,
+    /// A `Peer` frame came: any later one is ignored.
+    peer_taken: bool,
 }
 
 impl Attachment {
+    /// The attachment of the connection `closer` ends, attached to nothing yet.
+    pub(crate) fn new(closer: Closer) -> Attachment {
+        Attachment {
+            id: None,
+            token: 0,
+            closer,
+            peer: None,
+            peer_taken: false,
+        }
+    }
+
     /// The connection has ended. The session keeps its reader; only the client goes. There is
     /// nothing to stop and nothing to join — which is also why a detached session keeps draining
     /// its pty instead of wedging the shell behind a full output queue.
@@ -70,9 +89,11 @@ pub(crate) fn dispatch(
             let request = AttachRequest::decode(&frame.payload)?;
             let id = request.id?;
             // A remote pane's attach asks to be probed, so a client whose Mac has gone stops
-            // counting as attached (#593). Read from the environment the relay forwards whole, so
-            // any relay carries it.
-            let keepalive = crate::terminal::session::keepalive_requested(&request.env);
+            // counting as attached (#593) and has this connection closed, which ends its relay
+            // (ADR 0075). Read from the environment the relay forwards whole, so any relay carries
+            // it.
+            let keepalive = crate::terminal::session::keepalive_requested(&request.env)
+                .then(|| Arc::clone(&attachment.closer));
             // A new session must register its first client before its reader starts: a command
             // such as `echo` can exit before attach, taking its output and exit status with it.
             let attach = || {
@@ -121,23 +142,53 @@ pub(crate) fn dispatch(
                     .screens
                     .get()
                     .and_then(|screens| screens.render(id, request.columns, request.rows));
+                //
+                // A remote pane's connection (`AttachRequest::host_environment`) is then closed, so
+                // its `relay` exits: attached to no session, it has no keepalive probe and no
+                // service deadline (ADR 0075), and would otherwise last as long as the pane stays
+                // open. After its screen it is first told the session ended, so its client holds
+                // the screen rather than reading the close as a lost link to attach again.
+                let refusal = || {
+                    Frame::new(
+                        FrameKind::Failure,
+                        format!("session ended: {}", id.to_hyphenated()).into_bytes(),
+                    )
+                };
+                let remote = request.host_environment;
                 if let Some(screen) = ended {
                     let attached = Frame::control(FrameKind::Attached).encode();
                     if send(&Envelope::new(Service::Control, envelope.stream, attached).encode()) {
+                        let mut shown = true;
                         for chunk in screen.chunks(crate::terminal::session::READ_CHUNK) {
                             let output = Frame::new(FrameKind::Output, chunk.to_vec()).encode();
                             let output = Envelope::new(Service::Terminal, envelope.stream, output);
                             if !send(&output.encode()) {
+                                shown = false;
                                 break;
                             }
                         }
+                        if shown && remote {
+                            let ended = Envelope::new(
+                                Service::Terminal,
+                                envelope.stream,
+                                refusal().encode(),
+                            );
+                            send(&ended.encode());
+                        }
+                    }
+                    if remote {
+                        (attachment.closer)();
                     }
                     return None;
                 }
-                return reply(Frame::new(
-                    FrameKind::Failure,
-                    format!("session ended: {}", id.to_hyphenated()).into_bytes(),
-                ));
+                if remote {
+                    let refused =
+                        Envelope::new(envelope.service, envelope.stream, refusal().encode());
+                    send(&refused.encode());
+                    (attachment.closer)();
+                    return None;
+                }
+                return reply(refusal());
             }
             // Create on first attach, reattach afterwards. One code path, so a client that
             // crashed and came back does not have to know which case it is in.
@@ -156,28 +207,52 @@ pub(crate) fn dispatch(
                 // invoked by the app" test — which reads exactly these variables — was true for
                 // anything the user typed in a pane, so the usage-instead-of-nested-shell guard
                 // could never fire there.
-                let child_environment: Vec<(OsString, OsString)> = request
-                    .env
-                    .iter()
-                    .filter(|(key, _)| !key.to_string_lossy().starts_with("WORKROOM_SESSION_"))
-                    .cloned()
-                    .collect();
+                //
+                // A remote pane attached from the Mac is built from this host instead, with only
+                // the client's terminal and locale (`host_session`, ADR 0074).
+                let (child_environment, session_shell, resources) = if request.host_environment {
+                    let host = sessions
+                        .hooks()
+                        .host
+                        .session(&request.env, attachment.peer.as_deref());
+                    (host.environment, host.shell, host.resources)
+                } else {
+                    (
+                        request
+                            .env
+                            .iter()
+                            .filter(|(key, _)| {
+                                !key.to_string_lossy().starts_with("WORKROOM_SESSION_")
+                            })
+                            .cloned()
+                            .collect(),
+                        shell::user_shell(request.shell.clone()),
+                        request
+                            .resources
+                            .clone()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                };
                 let mut invocation = shell::invocation(
                     &request
                         .command
                         .clone()
                         .unwrap_or_default()
                         .to_string_lossy(),
-                    &shell::user_shell(request.shell.clone()),
-                    &request
-                        .resources
-                        .clone()
-                        .unwrap_or_default()
-                        .to_string_lossy(),
+                    &session_shell,
+                    &resources,
                     &child_environment,
                 );
                 if crate::terminal::run::is_requested(&request.env) {
-                    match run_invocation(sessions, id, &request, invocation.environment) {
+                    let run_shell = if request.host_environment {
+                        Some(OsString::from(&session_shell))
+                    } else {
+                        request.shell.clone()
+                    };
+                    match run_invocation(sessions, id, &request, run_shell, invocation.environment)
+                    {
                         Ok(run) => invocation = run,
                         Err(reason) => {
                             return reply(Frame::new(FrameKind::Failure, reason.into_bytes()));
@@ -284,6 +359,18 @@ pub(crate) fn dispatch(
                 format!("no session {}", id.to_hyphenated()).into_bytes(),
             )),
         },
+        // What `relay` knows about this connection: the environment of the ssh login it runs in,
+        // held to the login variables (`host_session::login_environment`). Never answered: the
+        // relay sends it into the client's stream, which expects no reply.
+        FrameKind::Peer => {
+            // The first one only: the relay sends one, straight after the greeting, so any later
+            // one is the client's own and changes nothing.
+            if !attachment.peer_taken {
+                attachment.peer_taken = true;
+                attachment.peer = crate::terminal::host_session::login_environment(&frame.payload);
+            }
+            None
+        }
         FrameKind::KillAll => {
             crate::note!("kill of every session requested by {}", peer);
             sessions.kill_all();
@@ -330,6 +417,7 @@ fn run_invocation(
     sessions: &SessionStore,
     id: SessionId,
     request: &AttachRequest,
+    shell: Option<OsString>,
     mut environment: Vec<(OsString, OsString)>,
 ) -> Result<shell::Invocation, String> {
     let command = request.command.clone().unwrap_or_default();
@@ -343,7 +431,7 @@ fn run_invocation(
     let _ = std::fs::remove_file(&status);
     let binary = crate::daemon::handoff::own_binary()
         .map_err(|e| format!("could not find this daemon's own binary: {e}"))?;
-    if let Some(shell) = request.shell.clone().filter(|shell| !shell.is_empty()) {
+    if let Some(shell) = shell.filter(|shell| !shell.is_empty()) {
         environment.retain(|(key, _)| key != "SHELL");
         environment.push((OsString::from("SHELL"), shell));
     }

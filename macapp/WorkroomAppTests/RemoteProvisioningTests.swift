@@ -330,6 +330,22 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
     XCTAssertTrue(wired(ResolvedHostOptions(image: "img"), exeDev) == (true, false))
   }
 
+  // Value: protects=a Railway create takes its host options, and one from a checkpoint clears the
+  // source's checkout and gh token before the clone (#633, story 24); fails_when=Railway's options
+  // are dropped, or the clear is wired for Railway's default image; why_new=#633; seam=made(with:)
+  // no_claim=the clear's command (RailwayHostOptionsTests)
+  func testARailwayCheckpointCreateClearsTheCheckoutAndADefaultImageDoesNot() {
+    let railway = HostDriverRegistry.railway(environment: "env-test")
+    var checkpoint = environment(gitHubToken: nil, driver: railway)
+    checkpoint.made(with: ResolvedHostOptions(image: "prepared", region: "us-west2"), by: railway)
+    XCTAssertNotNil(checkpoint.makeHost)
+    XCTAssertNotNil(checkpoint.clearCheckout, "a checkpoint's checkout stays")
+    var fresh = environment(gitHubToken: nil, driver: railway)
+    fresh.made(with: ResolvedHostOptions(cpu: 4), by: railway)
+    XCTAssertNotNil(fresh.makeHost)
+    XCTAssertNil(fresh.clearCheckout, "a fresh sandbox's path was cleared")
+  }
+
   private func execs(of fake: FakeDaemon) throws -> [[String: Any]] {
     try fake.receivedExecs.map {
       try XCTUnwrap(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])

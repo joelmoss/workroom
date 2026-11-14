@@ -18,7 +18,7 @@ enum RemoteWorkrooms {
   static func unavailability(of kind: HostKind) -> String? {
     switch kind {
     case .container(let runtime): unavailability(of: runtime)
-    case .boxd, .exeDev, .ssh:
+    case .boxd, .exeDev, .railway, .ssh:
       // Never unavailable: a create first checks the user's account there and, when it isn't
       // ready, shows the provider's setup (`BoxdSetup`, `ExeDevSetup`), installing boxd too.
       nil
@@ -127,7 +127,7 @@ enum RemoteWorkrooms {
   static func clonePath(
     for repository: GitHubRepository, on key: RemoteHosts.DriverKey = .init()
   ) -> String {
-    "/home/\(key.loginUser)/\(repository.name)"
+    "\(key.loginHome)/\(repository.name)"
   }
 
   enum Failure: Error, LocalizedError, Equatable {
@@ -137,6 +137,8 @@ enum RemoteWorkrooms {
     case noAppleContainer
     case anotherBuildsHost(String)
     case boxdNotInstalled
+    /// No Railway workspace is picked yet: the setup sheet picks one (#629).
+    case railwayNotSetUp
     case baseBranchNotOnOrigin(String)
     case baseBranchOnOtherRemote(String)
     /// The workroom's teardown script failed on its host, or the host couldn't be reached to run it:
@@ -144,9 +146,16 @@ enum RemoteWorkrooms {
     case teardownScriptFailed(String)
     /// The host's teardown script is not one this Mac has approved, so it did not run (#363).
     case teardownScriptNotTrusted(ScriptTrust)
+    /// Its provider said the host is gone, but its destroy didn't confirm it (why), so the workroom
+    /// was kept, marked failed: the host may still be billed for (#629).
+    case goneHostUnconfirmed(String)
 
     var errorDescription: String? {
       switch self {
+      case .goneHostUnconfirmed(let why):
+        return "Its host's provider no longer lists it as running, but Workroom couldn't confirm "
+          + "the host is gone, so it kept the workroom: the host may still be billed for. "
+          + "\(why)\(why.hasSuffix(".") ? "" : ".") Remove it again once that's fixed."
       case .teardownScriptFailed(let why):
         return why
       case .teardownScriptNotTrusted(let script):
@@ -167,6 +176,8 @@ enum RemoteWorkrooms {
         return "This project's new workrooms start from \(base), on a remote other than origin. A "
           + "remote workroom's machine has only origin, so it can't start there. To make remote "
           + "workrooms, set a base branch on origin in Project Settings."
+      case .railwayNotSetUp:
+        return "Pick the Railway workspace Workroom keeps its hosts in: Settings, Set Up Railway."
       case .boxdNotInstalled:
         return "The boxd command wasn't found. Install it from boxd.sh, then sign in with "
           + "`boxd auth login`."
@@ -220,15 +231,20 @@ enum RemoteWorkrooms {
     var hasWorkrooms: @Sendable (UUID) async throws -> Bool = { _ in false }
 
     /// This recorder, taking each machine a record names off the pending list in `directory`
-    /// once the record is written (#373): from then on config names it, so only a machine whose
-    /// record was never written is left for the sweep.
-    func forgettingPending(in directory: URL?) -> Recorder {
-      guard let directory else { return self }
+    /// (#373), and off `driver`'s own (Railway's create ledger, `HostRecording.recorded`), once
+    /// the record is written: from then on config names it, so only a machine whose record was
+    /// never written is left for the sweep.
+    func forgettingPending(in directory: URL?, driver: (any HostDriver)? = nil) -> Recorder {
+      let recording = driver as? any HostRecording
+      guard directory != nil || recording != nil else { return self }
       var recorder = self
       let record = self.record
       recorder.record = { workroom, descriptor in
         try await record(workroom, descriptor)
-        PendingMachines.forget(Set([descriptor.id].compactMap { $0 }), in: directory)
+        if let directory {
+          PendingMachines.forget(Set([descriptor.id].compactMap { $0 }), in: directory)
+        }
+        await recording?.recorded(descriptor)
       }
       return recorder
     }
@@ -318,7 +334,7 @@ enum RemoteWorkrooms {
       ProvisioningProgress.reportStep?(.repository)
       throw error
     }
-    let recorder = recorder.forgettingPending(in: pendingIn)
+    let recorder = recorder.forgettingPending(in: pendingIn, driver: driver)
     let origin = "\(repository.owner)/\(repository.name)"
     let path = path ?? clonePath(for: repository, on: key)
     let workroomID = UUID()
@@ -521,9 +537,13 @@ enum RemoteWorkrooms {
   /// nothing taken down (`Failure.teardownScriptFailed`), so deleting again retries. When part of the
   /// host's own teardown fails, the entry keeps what is still live, as `failed`, so deleting it
   /// again finishes the job. `environment` is needed only for a live one.
+  ///
+  /// `hostGone`: its provider says the host is gone (`GoneHosts`), so no teardown script runs
+  /// there; its destroy still must confirm it, else the entry is kept, `failed`, and the delete
+  /// says why (`Failure.goneHostUnconfirmed`).
   static func delete(
     _ name: String, host: HostDescriptor, environment: RemoteProvisioning.Environment?,
-    recorder: Recorder, teardown: Teardown? = nil,
+    recorder: Recorder, teardown: Teardown? = nil, hostGone: Bool = false,
     reachability: HostReachability = RemoteHosts.shared.reachability,
     onForgotten: @escaping @MainActor @Sendable (Forgotten) -> Void
   ) async throws {
@@ -539,28 +559,48 @@ enum RemoteWorkrooms {
       try await recorder.forget(name)
     }
     guard try checkDeletable([host]) else { return try await forget() }
+    // What a delete that didn't finish keeps: the record, marked failed, so deleting again
+    // finishes the job without its script. With the driver's newest record of it (a Railway
+    // host's workspace, resolved once).
+    func keepFailed(_ box: HostID) async {
+      var remaining = host
+      remaining.lifecycle = .failed
+      (environment?.driver as? any HostRecording)?.record(box, in: &remaining)
+      await recordLeftBehind(box) { try await recorder.record(name, remaining) }
+    }
     // `checkDeletable` found it live, so it has a box.
-    guard let environment, let id = host.id else { throw Failure.signedOut }
+    guard let id = host.id else { throw Failure.signedOut }
     let box = HostID.remote(id)
-    try await runTeardown(
-      teardown, of: name, recorded: host, on: box, in: environment, reachability: reachability
-    ) {
-      // `deletionKey`, as the host's own delete finds its driver: a descriptor from before the
-      // `driver` field is Docker's.
-      guard let driver = environment.driver as? any HostTerminalDriver,
-        let key = try? HostDriverRegistry.deletionKey(host)
-      else {
-        throw Failure.teardownScriptFailed("teardown script failed: this host's driver is unknown")
+    guard let environment else {
+      // A host its provider says is gone (`GoneHosts`) is forgotten only once its destroy
+      // confirms it: with no provider to ask, it may still be billed for.
+      guard hostGone else { throw Failure.signedOut }
+      await keepFailed(box)
+      throw Failure.goneHostUnconfirmed(
+        "Workroom couldn't reach its provider to confirm it. Sign in to it")
+    }
+    // No script can run on a host its provider says is gone.
+    if !hostGone {
+      try await runTeardown(
+        teardown, of: name, recorded: host, on: box, in: environment, reachability: reachability
+      ) {
+        // `deletionKey`, as the host's own delete finds its driver: a descriptor from before the
+        // `driver` field is Docker's.
+        guard let driver = environment.driver as? any HostTerminalDriver,
+          let key = try? HostDriverRegistry.deletionKey(host)
+        else {
+          throw Failure.teardownScriptFailed(
+            "teardown script failed: this host's driver is unknown")
+        }
+        return (key, driver)
       }
-      return (key, driver)
     }
     await reachability.disconnect(box)
     do {
       try await RemoteProvisioning.tearDown(host: box, in: environment)
     } catch RemoteProvisioning.Failure.rollbackIncomplete(let cause, let liveHost, let left) {
-      var remaining = host
-      remaining.lifecycle = .failed
-      await recordLeftBehind(liveHost) { try await recorder.record(name, remaining) }
+      await keepFailed(liveHost)
+      if hostGone { throw Failure.goneHostUnconfirmed(left.joined(separator: "; ")) }
       throw RemoteProvisioning.Failure.rollbackIncomplete(
         cause: cause, host: liveHost, cleanup: left)
     }

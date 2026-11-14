@@ -24,12 +24,17 @@ extension WorkroomLifecycle {
     // affordances are disabled while creating; this is the chokepoint that guarantees it.
     guard !isCreatingWorkroom(workroom, in: project) else { return }
     // A remote workroom's delete takes its host down (#253): what that needs is checked before the
-    // optimistic removal below forgets its label.
+    // optimistic removal below forgets its label. A host its provider says is gone (`GoneHosts`,
+    // #629) runs no teardown there, and is forgotten only once its provider's destroy confirms it
+    // (`RemoteWorkrooms.delete`'s `hostGone`); a provider that can't be asked is logged, and that
+    // delete keeps the workroom, saying why.
+    let hostGone = GoneHosts.shared.contains(workroom.host?.id)
     var remote: RemoteProvisioning.Environment?
     if let host = workroom.host {
       do {
-        remote = try RemoteHosts.shared.registry.environment(toDelete: [host])?
-          .environment(for: host)
+        remote = try RemoteHosts.shared.registry.environment(
+          toDelete: [host], gone: hostGone ? Set([host.id].compactMap { $0 }) : []
+        )?.environment(for: host)
       } catch {
         window.present(error)
         window.modals.errorTitle = "Can't delete \(workroom.displayName)"
@@ -63,7 +68,8 @@ extension WorkroomLifecycle {
     stopRuns([targetID]) {
       await self.reap([targetID])
       self.startWorkroomTeardown(
-        workroom, in: project, remote: remote, skipTeardown: skipTeardown, from: window)
+        workroom, in: project, remote: remote, skipTeardown: skipTeardown, hostGone: hostGone,
+        from: window)
     }
   }
 
@@ -72,7 +78,7 @@ extension WorkroomLifecycle {
   /// (issue #7) — the worktree must not be deleted while its dev server still holds the directory.
   private func startWorkroomTeardown(
     _ workroom: Workroom, in project: Project, remote: RemoteProvisioning.Environment?,
-    skipTeardown: Bool, from window: any LifecycleWindow
+    skipTeardown: Bool, hostGone: Bool, from window: any LifecycleWindow
   ) {
     let targetID = TargetID.workroom(project: project.path, name: workroom.name)
     Task {
@@ -84,7 +90,7 @@ extension WorkroomLifecycle {
             recorder: remoteRecorder(project: project.path, cli: window.services.cli),
             teardown: Self.remoteTeardown(
               of: workroom, in: project, log: log, skip: skipTeardown, cli: window.services.cli),
-            onForgotten: Self.forgetRemote)
+            hostGone: hostGone, onForgotten: Self.forgetRemote)
         } else {
           try await window.services.cli.delete(
             name: workroom.name, project: project.path, skipTeardown: skipTeardown
@@ -288,12 +294,15 @@ extension WorkroomLifecycle {
     // What that needs is checked here, before the local cleanup below kills this project's shells
     // and forgets its labels.
     let remoteWorkrooms = project.workrooms.filter(\.isRemote)
+    // Those whose provider says their host is gone: no teardown runs there (#629).
+    let goneHosts = Set(remoteWorkrooms.compactMap(\.host?.id).filter(GoneHosts.shared.contains))
     // An older build's bases that launch has not retired yet (its provider signed out, say).
     let bases = BaseRetirement.bases(of: project.host)
     let remote: HostDriverRegistry.Deletion?
     do {
+      // A gone host's provider can't stop the delete, as in Remove Workroom (`deleteWorkroom`).
       remote = try RemoteHosts.shared.registry.environment(
-        toDelete: remoteWorkrooms.compactMap(\.host) + bases)
+        toDelete: remoteWorkrooms.compactMap(\.host) + bases, gone: goneHosts)
     } catch {
       window.present(error)
       window.modals.errorTitle = "Can't delete \(project.displayName)"
@@ -332,7 +341,7 @@ extension WorkroomLifecycle {
             recorder: recorder,
             teardown: Self.remoteTeardown(
               of: workroom, in: project, log: log, skip: skipTeardown, cli: window.services.cli),
-            onForgotten: Self.forgetRemote)
+            hostGone: host.id.map(goneHosts.contains) ?? false, onForgotten: Self.forgetRemote)
         }
         // Each base on its own runtime and context (#309). Config keeps the ones still to go, so
         // a failure part-way leaves what is live recorded for the next delete.

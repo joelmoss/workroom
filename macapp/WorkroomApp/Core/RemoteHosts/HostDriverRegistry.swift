@@ -35,6 +35,9 @@ final class HostDriverRegistry: @unchecked Sendable {
   private var sweeping: Set<DriverKey> = []
   /// A call reached the sweep while a delete was in flight and left it for later (#296).
   private var held = false
+  /// Every Railway sandbox config's records named at the last `adopt`: nil before the first, when
+  /// nothing is known to be recorded, so no lost create's candidate may be destroyed yet.
+  private var recordedSandboxes: Set<String>?
   /// Seams, nil in the app: making a provider's or an SSH host's driver, and a container runtime's.
   private let makeDriver: (@Sendable (DriverKey) throws -> any HostTerminalDriver)?
   private let makeContainerDriver: (@Sendable (DriverKey) throws -> ContainerHostDriver)?
@@ -44,6 +47,9 @@ final class HostDriverRegistry: @unchecked Sendable {
   /// Where `adopt` looks for the runtimes with containers pending
   /// (`ContainerHostDriver.pending(in:)`), or nil to look nowhere.
   private let pendingIn: URL?
+  /// This Mac's Railway environment, whose sandboxes no record names `adopt` sweeps (#630), or nil
+  /// to sweep none.
+  private let railwayEnvironment: @Sendable () -> String?
 
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "RemoteWorkrooms")
@@ -54,12 +60,14 @@ final class HostDriverRegistry: @unchecked Sendable {
     sweepDriver: (
       @Sendable (ContainerHostDriver, Set<UUID>, Set<String>, Bool) async -> [String]
     )? = nil,
-    pendingIn: URL? = RemoteHosts.pendingIn
+    pendingIn: URL? = RemoteHosts.pendingIn,
+    railwayEnvironment: @escaping @Sendable () -> String? = RemoteHosts.railwaySweepEnvironment
   ) {
     self.makeDriver = makeDriver
     self.makeContainerDriver = makeContainerDriver
     self.sweepDriver = sweepDriver
     self.pendingIn = pendingIn
+    self.railwayEnvironment = railwayEnvironment
   }
 
   /// The driver for `key`, made on first use. A container driver needs that runtime's CLI and this
@@ -81,6 +89,7 @@ final class HostDriverRegistry: @unchecked Sendable {
           // Not kept while the CLI is missing, so installing it later takes without a relaunch.
           guard cli != nil else { return driver }
         case .exeDev(let account): driver = Self.exeDev(account: account)
+        case .railway(let environment): driver = Self.railway(environment: environment)
         case .ssh(let destination): driver = Self.ssh(destination: destination)
         }
       }
@@ -160,12 +169,31 @@ final class HostDriverRegistry: @unchecked Sendable {
     }
   }
 
+  /// What the log says of a Railway sweep that threw, owed again: whichever step failed (a
+  /// listing, the workspaces, the ledger), in Railway's or the system's own words.
+  nonisolated static func railwaySweepFailure(_ error: any Error) -> String {
+    "Railway sweep: \(error.localizedDescription)"
+  }
+
   /// Ends `key`'s sweep: done for the launch when it ran, and owed again when its runtime could not
   /// list its containers (down at launch, say), so a later reload sweeps it (#284).
   func finishSweep(_ key: DriverKey, ran: Bool) {
     lock.withLock {
       sweeping.remove(key)
       if ran { swept.insert(key) }
+    }
+  }
+
+  /// Every Railway sandbox config's records named at the last `adopt`, which a lost create's
+  /// candidates leave out (`RailwayLostCreatesModel`); nil before config was first read.
+  var railwayRecordedSandboxes: Set<String>? { lock.withLock { recordedSandboxes } }
+
+  /// Config's records name `sandboxes` (`adopt`, and a fixture launch, which never adopts). Not
+  /// `complete` with a delete in flight, when the projects leave out hosts config still records:
+  /// what was known stays known.
+  func noteRecordedSandboxes(_ sandboxes: Set<String>, complete: Bool = true) {
+    lock.withLock {
+      recordedSandboxes = complete ? sandboxes : recordedSandboxes.map { $0.union(sandboxes) }
     }
   }
 
@@ -179,8 +207,9 @@ final class HostDriverRegistry: @unchecked Sendable {
   /// Takes on every host `projects` record, each into the driver for its Docker context, so their
   /// panes and services reach them after a relaunch, then sweeps once per launch what carries this
   /// app's labels and no record names, and the remote provider machines a create left pending
-  /// (#373). Does nothing, and never touches Docker, when nothing is recorded, nothing has been
-  /// made, and no create left a container or machine pending (#284). `sweep: false`
+  /// (#373), and the sandboxes in this Mac's Railway environment no record names (#630). Does
+  /// nothing, and never touches Docker, when nothing is recorded, nothing has been made, no create
+  /// left a container or machine pending (#284), and Railway has no environment here. `sweep: false`
   /// holds the sweep for a later call: a list with a delete in flight leaves out hosts config
   /// still records (#296). `relayed` hears each recorded workroom host whose git credentials come
   /// through the Mac's relay (#309).
@@ -193,10 +222,12 @@ final class HostDriverRegistry: @unchecked Sendable {
     let recorded = descriptors.filter {
       DriverKey($0) != nil && RemoteWorkrooms.ownsHost($0)
     }
-    for descriptor in recorded where descriptor.kind == .ssh {
-      guard let key = DriverKey(descriptor), descriptor.sshHome != nil else { continue }
-      do { try (driver(key) as? any HostRecording)?.adopt(descriptor) } catch {
-        Self.logger.error("SSH host record: \(error.localizedDescription, privacy: .public)")
+    // An SSH host's home and a Railway host's sandbox are in its record, which its driver must
+    // hold before a pane, a read or a delete reaches it.
+    for descriptor in recorded {
+      guard let key = DriverKey(descriptor) else { continue }
+      do { try recordingDriver(key)?.adopt(descriptor) } catch {
+        Self.logger.error("host record: \(error.localizedDescription, privacy: .public)")
       }
     }
     // An older build's base, until `BaseRetirement` removes it: it never relays.
@@ -223,7 +254,19 @@ final class HostDriverRegistry: @unchecked Sendable {
     let machines = (pendingIn.map(PendingMachines.entries(in:)) ?? []).filter {
       !recordedIDs.contains($0.id)
     }
-    guard !recorded.isEmpty || !already.isEmpty || !marked.isEmpty || !machines.isEmpty else {
+    // This Mac's Railway environment (ADR 0071), never one a record names: a config copied from
+    // another Mac names that Mac's.
+    let railwayEnvironment = railwayEnvironment()
+    let railway = railwayEnvironment.map { DriverKey.railway(environment: $0) }
+    // Every record's sandbox, not only those this build adopts. Only what this Mac's create ledger
+    // names is ever swept, so another Mac in the environment never makes a live sandbox look like
+    // this Mac's orphan.
+    let sandboxes = Set(descriptors.compactMap { $0.railway?.sandboxID })
+    noteRecordedSandboxes(sandboxes, complete: sweep)
+    guard
+      !recorded.isEmpty || !already.isEmpty || !marked.isEmpty || !machines.isEmpty
+        || railway != nil
+    else {
       return
     }
     // A descriptor with no container record yet goes to its runtime's driver that names no
@@ -249,7 +292,8 @@ final class HostDriverRegistry: @unchecked Sendable {
       }
     }
     let machineKeys = Set(machines.compactMap(\.key))
-    let claimed = claimSweep(Set(drivers.keys).union(machineKeys), allowed: sweep)
+    let claimed = claimSweep(
+      Set(drivers.keys).union(machineKeys).union(railway.map { [$0] } ?? []), allowed: sweep)
     guard !claimed.isEmpty else { return }
     // Every driver keeps every recorded host, not only its own: two contexts can name one daemon
     // (the nil driver's current context and that context by name), and a sweep that kept only its
@@ -266,7 +310,24 @@ final class HostDriverRegistry: @unchecked Sendable {
     Task.detached(priority: .utility) {
       await withTaskGroup(of: (DriverKey, [String], Bool).self) { group in
         for key in claimed {
-          if let driver = drivers[key] {
+          if key == railway {
+            group.addTask {
+              // Owed again when Railway can't list (signed out, offline); a destroy it refused is
+              // tried at the next launch.
+              do {
+                guard let driver = try self.driver(key) as? any UnrecordedHostSweeping else {
+                  return (key, ["Railway: this host cannot be swept"], true)
+                }
+                return (
+                  key,
+                  try await driver.sweep(keeping: sandboxes, grace: RailwayHostDriver.sweepGrace),
+                  true
+                )
+              } catch {
+                return (key, [Self.railwaySweepFailure(error)], false)
+              }
+            }
+          } else if let driver = drivers[key] {
             group.addTask {
               let failures = await sweep(driver, known, images, onlyPending)
               return (
@@ -320,6 +381,17 @@ final class HostDriverRegistry: @unchecked Sendable {
       // The account exe.dev knows the user's key as, which a new base is made in. Throws, naming
       // the fix, when the user's ssh can't sign in to exe.dev.
       return .exeDev(account: try await Self.exeDev().signedIn())
+    case .railway:
+      // This Mac's environment in the project of the workspace the user picked, which setup made
+      // (ADR 0071, `RailwaySetup.place`); made here, in the `Workroom` project, only when setup
+      // never got that far. Throws `RailwaySessionError.signedOut` when signed out.
+      let placement = RailwayAccount.placement
+      guard let workspace = placement.read().selectedWorkspaceID ?? placement.read().workspaceID
+      else { throw RemoteWorkrooms.Failure.railwayNotSetUp }
+      let placed = try await placement.ensure(
+        workspaceID: workspace, api: RailwayAccount.shared.api,
+        environmentName: RailwayPlacementStore.environmentName())
+      return .railway(environment: placed.environmentID)
     }
   }
 
@@ -361,7 +433,7 @@ final class HostDriverRegistry: @unchecked Sendable {
     var environments: [DriverKey: RemoteProvisioning.Environment] = [:]
     for host in hosts where RemoteWorkrooms.isLive(host) {
       let key = try Self.deletionKey(host)
-      if case .ssh = key { try (driver(key) as? any HostRecording)?.adopt(host) }
+      try recordingDriver(key)?.adopt(host)
       if environments[key] == nil { environments[key] = try environment(key).1 }
       // Taking a box down needs it on its driver, whatever a reload adopted: one that has not
       // adopted it yet would read the box as unknown. A boxd driver needs nothing adopted.
@@ -369,6 +441,38 @@ final class HostDriverRegistry: @unchecked Sendable {
       adoptLogged(host, into: try container(key))
     }
     return environments.isEmpty ? nil : Deletion(environments: environments)
+  }
+
+  /// What deleting `hosts` needs, where a host its provider says is gone (`gone`, `GoneHosts`) can't
+  /// stop the delete: its environment is asked for apart, and a failure is logged and leaves it
+  /// none, so its own delete keeps its record, failed, and says why (`RemoteWorkrooms.delete`).
+  /// Another build's live host still refuses the whole delete. Remove Workroom and Delete Project
+  /// both ask through here.
+  @MainActor
+  func environment(toDelete hosts: [HostDescriptor], gone: Set<UUID>) throws -> Deletion? {
+    let isGone = { (host: HostDescriptor) in host.id.map(gone.contains) ?? false }
+    _ = try RemoteWorkrooms.checkDeletable(hosts)
+    var environments = try environment(toDelete: hosts.filter { !isGone($0) })?.environments ?? [:]
+    for host in hosts where isGone(host) {
+      do {
+        let found = try environment(toDelete: [host])?.environments ?? [:]
+        environments.merge(found) { kept, _ in kept }
+      } catch {
+        let id = host.id?.uuidString ?? "?"
+        Self.logger.error(
+          "deleting gone host \(id, privacy: .public): \(error.localizedDescription, privacy: .public)"
+        )
+      }
+    }
+    return environments.isEmpty ? nil : Deletion(environments: environments)
+  }
+
+  /// `key`'s driver when it is a remote provider's that keeps its hosts' records (`HostRecording`):
+  /// an SSH host's home, a Railway host's sandbox. A container runtime's records go to its driver
+  /// with its runtime (`adoptLogged`), which a pane must not probe for.
+  private func recordingDriver(_ key: DriverKey) throws -> (any HostRecording)? {
+    guard key.isRemoteProvider else { return nil }
+    return try driver(key) as? any HostRecording
   }
 
   /// `descriptor`'s host taken on by `driver`, unless it holds it already; a record it can't take
@@ -426,6 +530,30 @@ final class HostDriverRegistry: @unchecked Sendable {
   static func exeDev(account: String? = nil) -> ExeDevHostDriver {
     ExeDevHostDriver(
       configuration: .init(account: account, hostSetup: .bundled), directory: RemoteHosts.hosts)
+  }
+
+  /// A Railway driver making its sandboxes in `environment`, and reaching any host it adopts.
+  static func railway(environment: String) -> RailwayHostDriver {
+    let placement = RailwayAccount.placement.read()
+    var relay = RailwayHostDriver.relay
+    // The host's git pushes in the user's name with the Mac's gh token (ADR 0072).
+    var gitHubToken: @Sendable () async throws -> String = CredentialRelay.gitHubToken
+    #if DEBUG
+      // A test's panes and connects reach nothing, and never read this Mac's gh.
+      if AppEnvironment.current.isTestProcess {
+        relay = UITestFixture.railwayRelay
+        gitHubToken = { UITestFixture.railwayGitHubToken }
+      }
+    #endif
+    // The project and workspace are only known for the environment setup placed.
+    let placed = placement.environmentID == environment ? placement : nil
+    return RailwayHostDriver(
+      configuration: .init(
+        environmentID: environment, projectID: placed?.projectID,
+        workspaceID: placed?.workspaceID,
+        keys: RailwayAccount.directory, relayHost: relay, hostSetup: .bundled,
+        gitHubToken: gitHubToken),
+      api: RailwayAccount.shared.api, directory: RemoteHosts.hosts)
   }
 
   /// An SSH host's driver, its home not yet known: a key's, or the one the host check makes.

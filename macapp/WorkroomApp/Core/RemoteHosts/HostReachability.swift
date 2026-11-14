@@ -23,6 +23,9 @@ final class HostReachability: @unchecked Sendable {
   /// When each host's last attempt failed, which answers for it for `retryAfter`, and whether it
   /// failed for an older layout (#525), which the backoff keeps saying.
   private var failedAt: [HostID: (at: ContinuousClock.Instant, olderLayout: Bool)] = [:]
+  /// The hosts their provider last said are gone, which the backoff keeps saying, so the status
+  /// shows gone (with Remove Workroom) rather than unreachable (#629).
+  private var gone: Set<HostID> = []
   /// When boxd last said each host was asleep, which answers for it for `retryAfter` (#356).
   private var asleepAt: [HostID: ContinuousClock.Instant] = [:]
   /// The host of the workroom selected in each window (one `AppStore` per window), which a
@@ -46,6 +49,20 @@ final class HostReachability: @unchecked Sendable {
   private let presenceSeam: (@Sendable (HostID) async -> HostPresence?)?
   private let startHost: (@Sendable (HostID) async throws -> Void)?
   private let now: @Sendable () -> ContinuousClock.Instant
+  /// Hears a host become gone, or be found again, with the update's number, taken under `lock`
+  /// as the change is made (`GoneHosts.record` in the app).
+  private let goneChanged: (@Sendable (HostID, Bool, UInt64) -> Void)?
+  /// The version `host`'s daemon greeted the service connection with; nil in the app
+  /// (`HostConnectionManager.daemonVersion`).
+  private let daemonVersionSeam: (@Sendable (HostID) async -> UInt16?)?
+  /// The bootstrap alone, which says what became of the host's daemon; nil in the app
+  /// (`DaemonBootstrap.ensure`).
+  private let updateDaemonSeam: (@Sendable (HostID) async throws -> DaemonBootstrap.Outcome.Daemon)?
+  /// Hosts whose daemon is too old for a pane's attach (`DaemonHandshake.minHostAttachVersion`),
+  /// which the bootstrap left as it was: when to try updating it again, how long the wait after
+  /// that is, why it was kept, and whether a try is under way.
+  private var olderDaemon:
+    [HostID: (next: ContinuousClock.Instant, wait: Duration, why: String?, trying: Bool)] = [:]
 
   init(
     registry: HostDriverRegistry,
@@ -57,9 +74,15 @@ final class HostReachability: @unchecked Sendable {
     connectDaemon: (
       @Sendable (HostID, any HostTerminalDriver) async throws -> DaemonClient
     )? = nil,
-    presence: (@Sendable (HostID) async -> HostPresence?)? = nil
+    presence: (@Sendable (HostID) async -> HostPresence?)? = nil,
+    goneChanged: (@Sendable (HostID, Bool, UInt64) -> Void)? = nil,
+    daemonVersion: (@Sendable (HostID) async -> UInt16?)? = nil,
+    updateDaemon: (@Sendable (HostID) async throws -> DaemonBootstrap.Outcome.Daemon)? = nil
   ) {
     self.registry = registry
+    self.daemonVersionSeam = daemonVersion
+    self.updateDaemonSeam = updateDaemon
+    self.goneChanged = goneChanged
     self.connectHost = connectHost
     self.isConnected = isConnected
     self.startHost = startHost
@@ -88,6 +111,18 @@ final class HostReachability: @unchecked Sendable {
       if let connectDaemon { return try await connectDaemon(host, driver) }
       return try await DaemonBootstrap.connect(
         host: host, driver: driver, socket: driver.daemonSocket)
+    }
+    // A host whose git uses a copy of the Mac's gh token gets the current one (ADR 0072), so a
+    // token the user rotated doesn't live on there. A failure leaves the workroom usable except
+    // for git's remote commands, so it is logged; the next connect tries again.
+    if let carrying = driver as? any GitHubTokenCarrying {
+      do {
+        try await carrying.refreshGitHubToken(on: host)
+      } catch {
+        Self.logger.error(
+          "gh token for \(String(describing: host), privacy: .public): \(error.localizedDescription, privacy: .public)"
+        )
+      }
     }
     // A relayed workroom's git asks this Mac for credentials (#309): its listener goes with the
     // connection, and its secret with this launch, so it is set up again on every connect. A
@@ -198,6 +233,10 @@ final class HostReachability: @unchecked Sendable {
     // An opened host is up already: there is nothing to start, and later probes mustn't start it.
     if up {
       _ = lock.withLock { activated.remove(host) }
+      found(host)
+      // A connection to a daemon the bootstrap kept, too old for a pane: kept, while the update
+      // is tried again in the background, backed off.
+      await updateOlderDaemon(host)
       // A relay that didn't take on this connection is tried again, at most once a `retryAfter`.
       if case .remote(let id) = host,
         let tried = lock.withLock({ relayPending[id] }), now() - tried >= Self.retryAfter
@@ -215,19 +254,34 @@ final class HostReachability: @unchecked Sendable {
       now() - failed.at < Self.retryAfter
     {
       if failed.olderLayout { throw RepositoryRoutingError.olderLayout(host) }
+      if lock.withLock({ gone.contains(host) }) { throw RepositoryRoutingError.gone(host) }
       throw RepositoryRoutingError.unavailable(host)
     }
     // A boxd box wakes on an ssh login, so a background read must not connect to one that is
     // asleep: every status sweep would wake every box and keep it billing (#356). Only opening or
     // selecting the workroom, or something the user did (`wake`), wakes it. When boxd can't say,
     // the read leaves it be too. One boxd says is gone is reported as such, not as asleep.
-    if !opened, !wake, !selected {
-      switch await presence(host) {
+    // A host that never sleeps (Railway's) is asked about on every read, opened or not: asking
+    // wakes nothing, and a sandbox Railway destroyed then reads as gone rather than unreachable.
+    let background = !opened && !wake && !selected
+    if background || !hostsSleep(host) {
+      let presence = await presence(host)
+      if presence != .gone { found(host) }
+      switch presence {
       case .asleep: throw RepositoryRoutingError.asleep(host)
       case .gone:
-        lock.withLock { failedAt[host] = (now(), false) }
+        // Numbered under the lock that orders the change, so a found update that overtakes this
+        // one's callback still carries the later number (`GoneHosts.apply`).
+        let newly = lock.withLock { () -> UInt64? in
+          failedAt[host] = (now(), false)
+          return gone.insert(host).inserted ? GoneHosts.nextSequence() : nil
+        }
+        if let newly { goneChanged?(host, true, newly) }
         throw RepositoryRoutingError.gone(host)
-      case .awake, nil: break  // nil: a host that doesn't sleep (not boxd's)
+      // Its relay key still reaches it, so what the user asked for still connects; a background
+      // read says why it couldn't check (#629).
+      case .signedOut where background: throw RepositoryRoutingError.signedOut(host)
+      case .awake, .signedOut, nil: break  // nil: a host that doesn't sleep (not boxd's)
       }
     }
     do {
@@ -265,6 +319,9 @@ final class HostReachability: @unchecked Sendable {
       defer { lock.withLock { if connecting[host]?.task == task { connecting[host] = nil } } }
       try await task.value
       lock.withLock { failedAt[host] = nil }
+      // Whatever a read said before: a host that connects is there.
+      found(host)
+      await updateOlderDaemon(host)
     } catch is CancellationError {
       throw CancellationError()
     } catch {
@@ -279,6 +336,94 @@ final class HostReachability: @unchecked Sendable {
       if olderLayout { throw RepositoryRoutingError.olderLayout(host) }
       throw RepositoryRoutingError.unavailable(host)
     }
+  }
+
+  /// How long after a kept older daemon the update is tried again, doubling to `olderDaemonCeiling`.
+  static let olderDaemonRetry: Duration = .seconds(30)
+  static let olderDaemonCeiling: Duration = .seconds(600)
+
+  /// When `host`'s service connection reaches a daemon too old for a pane's attach, which the
+  /// bootstrap left as it was (busy, refused, or the install failed): a connection that works
+  /// skips the bootstrap, so its panes would wait for an update nothing tries. The bootstrap is
+  /// tried again, in a task of its own, at most once a backoff (`olderDaemonRetry`, doubling), and
+  /// once it updated the daemon the connection is replaced. The pane says why it waits
+  /// (`waitingNotice`). A daemon new enough clears it.
+  private func updateOlderDaemon(_ host: HostID) async {
+    let version: UInt16?
+    if let daemonVersionSeam {
+      version = await daemonVersionSeam(host)
+    } else {
+      version = await HostConnectionManager.shared.daemonVersion(on: host)
+    }
+    guard let version, version < DaemonHandshake.minHostAttachVersion else {
+      _ = lock.withLock { olderDaemon.removeValue(forKey: host) }
+      return
+    }
+    let now = now()
+    let due = lock.withLock { () -> Bool in
+      var entry = olderDaemon[host] ?? (now, Self.olderDaemonRetry, nil, false)
+      defer { olderDaemon[host] = entry }
+      guard !entry.trying, now >= entry.next else { return false }
+      entry.trying = true
+      return true
+    }
+    guard due else { return }
+    Task { await self.retryBootstrap(host) }
+  }
+
+  private func retryBootstrap(_ host: HostID) async {
+    var why: String?
+    var updated = false
+    do {
+      let daemon: DaemonBootstrap.Outcome.Daemon
+      if let updateDaemonSeam {
+        daemon = try await updateDaemonSeam(host)
+      } else {
+        let driver = try heldDriver(host)
+        daemon = try await DaemonBootstrap.ensure(
+          host: host, driver: driver, socket: driver.daemonSocket
+        ).daemon
+      }
+      switch daemon {
+      case .current, .installed, .handedOff, .keptNewer: updated = true
+      case .keptOlder(let reason): why = reason
+      }
+    } catch {
+      why = error.localizedDescription
+    }
+    lock.withLock {
+      guard var entry = olderDaemon[host] else { return }
+      entry.trying = false
+      entry.why = why ?? entry.why
+      entry.next = now() + entry.wait
+      entry.wait = min(entry.wait * 2, Self.olderDaemonCeiling)
+      olderDaemon[host] = entry
+    }
+    Self.logger.notice(
+      "older daemon on \(String(describing: host), privacy: .public): \(updated ? "updated" : (why ?? "kept"), privacy: .public)"
+    )
+    guard updated else { return }
+    // The connection still speaks to the old program: the next one reaches the new.
+    await disconnect(host)
+    lock.withLock { failedAt[host] = nil }
+    try? await ensureConnected(host)
+  }
+
+  /// What a pane on `host` says while it waits to attach, when its host's daemon is too old for
+  /// it and couldn't be updated yet (ADR 0074): nil otherwise, for the pane's usual notice.
+  func waitingNotice(for host: HostID) -> String? {
+    guard let entry = lock.withLock({ olderDaemon[host] }) else { return nil }
+    let why = entry.why.map { " (\($0))" } ?? ""
+    return "This terminal's host runs an older Workroom daemon, which Workroom couldn't update yet"
+      + "\(why). Workroom will keep trying, and your session will be restored once it's updated."
+  }
+
+  /// `host` is there (it connected, or its provider no longer says it is gone): no longer gone,
+  /// which the views hear once.
+  private func found(_ host: HostID) {
+    // Numbered under the lock, as a gone update is.
+    let found = lock.withLock { gone.remove(host) != nil ? GoneHosts.nextSequence() : nil }
+    if let found { goneChanged?(host, false, found) }
   }
 
   /// A container's postStartCommand, on the first connect after each start of it (#308, eng review
@@ -321,6 +466,14 @@ final class HostReachability: @unchecked Sendable {
   /// `retryAfter` about a box it called asleep.
   // ponytail: one `machine get` per host per window; one `machine list` per sweep is the upgrade
   // if many boxd workrooms make it slow.
+  /// Whether `host`'s driver says its hosts sleep; true for one that reports no presence.
+  private func hostsSleep(_ host: HostID) -> Bool {
+    guard case .remote(let id) = host,
+      let reporting = registry.existingDriver(holding: id) as? any HostPresenceReporting
+    else { return true }
+    return reporting.hostsSleep
+  }
+
   private func presence(_ host: HostID) async -> HostPresence? {
     guard case .remote(let id) = host,
       let reporting = registry.existingDriver(holding: id) as? any HostPresenceReporting
@@ -334,12 +487,16 @@ final class HostReachability: @unchecked Sendable {
     } else {
       presence = await reporting.presence(host)
     }
-    lock.withLock { asleepAt[host] = presence == .asleep || presence == nil ? now() : nil }
+    let sleeps = reporting.hostsSleep
+    lock.withLock {
+      asleepAt[host] = presence == .asleep || (presence == nil && sleeps) ? now() : nil
+    }
     // boxd could not say (no CLI, a timeout, output it did not expect, the read cancelled): a
     // background read leaves the box be rather than wake it, and says why. Opening the workroom,
     // selecting it or a click still connects. Remembered as asleep is, so an outage asks boxd once a
-    // `retryAfter` rather than on every read.
+    // `retryAfter` rather than on every read. A host that never sleeps is simply connected to.
     guard let presence else {
+      guard sleeps else { return nil }
       Self.logger.notice(
         "boxd could not say whether host \(id, privacy: .public) is asleep; left it be")
       return .asleep

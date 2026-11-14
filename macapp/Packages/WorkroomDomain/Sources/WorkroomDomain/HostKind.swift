@@ -24,10 +24,12 @@ public enum HostKind: Hashable, Sendable {
   case container(ContainerRuntime)
   case boxd
   case exeDev
+  /// A Railway sandbox (ADR 0071, #629).
+  case railway
   case ssh
 
   /// The remote providers, in the order the New Workroom menu and picker list them (#259).
-  public static let remoteProviders: [HostKind] = [.boxd, .exeDev, .ssh]
+  public static let remoteProviders: [HostKind] = [.boxd, .exeDev, .railway, .ssh]
 
   /// The remote providers that take host options, in Settings' order (#575).
   public static let optionedProviders = remoteProviders.filter(\.takesHostOptions)
@@ -47,6 +49,7 @@ public enum HostKind: Hashable, Sendable {
     case .container(let runtime): runtime.rawValue
     case .boxd: "boxd"
     case .exeDev: "exedev"
+    case .railway: "railway"
     case .ssh: "ssh"
     }
   }
@@ -65,6 +68,7 @@ public enum HostKind: Hashable, Sendable {
     case .container(let runtime): runtime.displayName
     case .boxd: "boxd"
     case .exeDev: "exe.dev"
+    case .railway: "Railway"
     case .ssh: "SSH"
     }
   }
@@ -73,24 +77,57 @@ public enum HostKind: Hashable, Sendable {
   /// is on the local network, a remote provider's machine is in the cloud.
   public var icon: String { isRemoteProvider ? "cloud" : "network" }
 
+  /// Which Ports list its hosts' port forwards are kept in (CONTEXT "Port forward"), or nil for a
+  /// provider that publishes a host's ports itself (boxd, exe.dev). Every forward rides the host's
+  /// daemon connection, so a Railway sandbox's go through Railway's relay as an SSH host's go
+  /// through ssh (#632).
+  public enum PortForwards: Hashable, Sendable {
+    /// One list for the host: a container or a Railway sandbox is its workroom's own host.
+    case perHost
+    /// One list per workroom: an SSH host holds many workrooms (#378).
+    case perWorkroom
+  }
+
+  public var portForwards: PortForwards? {
+    switch self {
+    case .container, .railway: .perHost
+    case .ssh: .perWorkroom
+    case .boxd, .exeDev: nil
+    }
+  }
+
   /// One of its hosts, in a sentence: "a Docker container on this Mac", "a boxd machine".
   public var hostPhrase: String {
     switch self {
     case .container(let runtime): "\(runtime.containerPhrase) on this Mac"
     case .boxd: "a boxd machine"
     case .exeDev: "an exe.dev VM"
+    case .railway: "a Railway sandbox"
     case .ssh: "an SSH host"
+    }
+  }
+
+  /// What a Ports row calls one of its hosts: "container", "sandbox", or "host".
+  public var hostNoun: String {
+    switch self {
+    case .container: "container"
+    case .railway: "sandbox"
+    case .boxd, .exeDev, .ssh: "host"
     }
   }
 
   /// How the user gives this kind's hosts GitHub access, said after git's own words when a clone
   /// fails, or nil where Workroom gives it (a container takes the Mac's `gh` through the relay,
-  /// #309). A remote provider's host fetches and pushes with the provider's own credentials, so
-  /// it keeps working with this Mac closed. Worded for the one cause Workroom can't tell apart
+  /// #309). A remote provider's host fetches and pushes with the provider's own credentials, or
+  /// a Railway sandbox with its copy of the Mac's `gh` token (ADR 0072), so it keeps working with
+  /// this Mac closed. Worded for the one cause Workroom can't tell apart
   /// from git's message: the clone fails the same way for a network or GitHub outage.
   public var credentialHint: String? {
     switch self {
     case .container: nil
+    case .railway:
+      "If GitHub refused the clone: a Railway sandbox clones with this Mac's gh token. Check "
+        + "that `gh auth status` shows you signed in to github.com with access to the repository."
     case .ssh:
       "If GitHub refused the clone, set up credentials on the host: a GitHub SSH key for an "
         + "SSH URL, or `gh auth login` and `gh auth setup-git` for HTTPS."
@@ -110,7 +147,7 @@ public enum HostKind: Hashable, Sendable {
   /// serves `/vm/<name>` behind its sign-in.
   public func dashboardURL(machine: String) -> URL? {
     switch self {
-    case .container, .ssh: return nil
+    case .container, .ssh, .railway: return nil
     case .boxd:
       var url = URLComponents(string: "https://app.boxd.sh/machines")!
       url.queryItems = [URLQueryItem(name: "m", value: machine)]
@@ -127,11 +164,13 @@ public enum HostKind: Hashable, Sendable {
     case .container(.apple): "apple"
     case .boxd: "boxd"
     case .exeDev: "exedev"
+    case .railway: "railway"
     case .ssh: "ssh"
     }
   }
 
-  /// Whether a create of this kind takes host options (#575): boxd's and exe.dev's. A container's
+  /// Whether a create of this kind takes host options (#575): boxd's, exe.dev's and Railway's
+  /// (#633). A container's
   /// image and size are devcontainer.json's (ADR 0060), and an SSH host is the user's own.
   public var takesHostOptions: Bool { hostOptionsKey != nil }
 
@@ -141,6 +180,7 @@ public enum HostKind: Hashable, Sendable {
     switch self {
     case .boxd: "boxd"
     case .exeDev: "exeDev"
+    case .railway: "railway"
     case .container, .ssh: nil
     }
   }
@@ -151,6 +191,7 @@ public enum HostKind: Hashable, Sendable {
     switch self {
     case .boxd: .snapshot
     case .exeDev: .containerImage
+    case .railway: .checkpoint
     case .container, .ssh: nil
     }
   }

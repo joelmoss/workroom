@@ -20,9 +20,10 @@ You choose where a workroom goes when you create it. Click the **+** on a projec
 | **Apple Container** | A container on this Mac, run by Apple's `container` tool. | [Containers](containers.md) |
 | **boxd** | A machine in the boxd cloud. | [boxd](boxd.md) |
 | **exe.dev** | A VM in the exe.dev cloud. | [exe.dev](exe-dev.md) |
+| **Railway** | Nightly only. A sandbox in your Railway account. | [Railway](railway.md) |
 | **SSH** | A folder on a Linux server you already reach with ssh. | [SSH hosts](ssh.md) |
 
-In the menu, Docker and Apple Container sit under **Local containers**, and boxd, exe.dev and SSH sit under **Remote**. A choice that cannot be used right now is dimmed, and says why next to its name. For example, a container runtime that is not installed says `not installed`.
+In the menu, Docker and Apple Container sit under **Local containers**, and boxd, exe.dev, Railway and SSH sit under **Remote**. A choice that cannot be used right now is dimmed, and says why next to its name. For example, a container runtime that is not installed says `not installed`.
 
 ## What a project needs
 
@@ -68,7 +69,7 @@ The first time you use boxd or exe.dev, the **Check ... account** step waits for
 
 ## Choose a host's image and size
 
-A boxd or exe.dev workroom's host can start from your own image and have the size you choose. On boxd the image is a snapshot of one of your machines. On exe.dev it is a container image.
+A boxd, exe.dev or Railway workroom's host can start from your own image and have the size you choose. On boxd the image is a snapshot of one of your machines. On exe.dev it is a container image. On Railway it is a checkpoint, and you also choose the region: see [Region, size and checkpoint](railway.md#region-size-and-checkpoint).
 
 You can choose them in three places, and the most specific one wins, setting by setting:
 

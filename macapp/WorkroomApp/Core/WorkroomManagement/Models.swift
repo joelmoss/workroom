@@ -45,6 +45,11 @@ struct TerminalTarget: Identifiable, Hashable {
 
   var isMissing: Bool { unavailability != nil }
 
+  /// Its Ports list in the Details pane (#632), or nil for none (`PortForwardingModel.Place`).
+  var portsPlace: PortForwardingModel.Place? {
+    .init(kind: hostPlace, host: remoteHost, workroom: remoteWorkroomID)
+  }
+
   /// The tooltip of a remote workroom's icon: what kind of host it is, and the machine to look for
   /// in its provider's dashboard.
   var hostTooltip: String {
@@ -188,6 +193,14 @@ extension Workroom {
   var isContainer: Bool { host?.kind?.isRemoteProvider == false }
   var isSSH: Bool { host?.kind == .ssh }
 
+  /// Its Ports list (#632), or nil for none, as `TerminalTarget.portsPlace`: the list the
+  /// selection forwards its dev container's declared ports into.
+  var portsPlace: PortForwardingModel.Place? {
+    .init(
+      kind: host.flatMap(RemoteHosts.DriverKey.init)?.kind, host: reachableHost,
+      workroom: host?.workroomID)
+  }
+
   /// Only a serving host is reachable: one creating, failed, destroyed or in a state this build
   /// doesn't know is not. Only one this build owns (`RemoteWorkrooms.ownsHost`): another build's
   /// container takes its key. An SSH host's destination must check out (`DriverKey`).
@@ -273,7 +286,7 @@ extension HostDescriptor {
       return "Docker container\(context) on this Mac"
     case .container(.apple):
       return "Apple container on this Mac"
-    case .boxd, .exeDev, nil:
+    case .boxd, .exeDev, .railway, nil:
       let provider = kind?.displayName ?? driver
       return provider.map { "Remote workroom on \($0)" } ?? "Remote workroom"
     }
@@ -282,8 +295,11 @@ extension HostDescriptor {
   /// The name the host's provider lists it under, so it can be found in boxd's or exe.dev's
   /// dashboard, or in `docker ps`: every driver names a host `workroom-<id>`.
   var machineName: String? {
-    kind == .ssh
-      ? sshDestination
-      : (isDestroyed ? nil : id.map(ContainerHostDriver.containerName))
+    switch kind {
+    case .ssh: sshDestination
+    // A Railway sandbox has no name: its id is what the dashboard lists (#629).
+    case .railway: isDestroyed ? nil : railway?.sandboxID
+    default: isDestroyed ? nil : id.map(ContainerHostDriver.containerName)
+    }
   }
 }

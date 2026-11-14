@@ -181,6 +181,15 @@ pub fn run_serve(
         .hooks()
         .runs
         .keep(crate::terminal::run::dir_beside(&socket));
+    // Where the bootstrap puts Ghostty's terminfo and shell integration on a host
+    // (`DaemonInstall.resources`), for a remote pane's session attached from the Mac (ADR 0074).
+    if let Some(folder) = socket.parent() {
+        daemon
+            .sessions
+            .hooks()
+            .host
+            .keep_resources(folder.join("ghostty"));
+    }
     crate::terminal::run::spawn_watcher(daemon.sessions.clone());
     handoff::install(handoff::Context {
         socket: socket.clone(),

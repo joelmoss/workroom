@@ -2554,18 +2554,25 @@ fn a_child_seen_to_have_exited_is_left_for_the_end_to_reap() {
 }
 
 /// A probed client that stops answering gives up the size, as one that detaches does, so the one
-/// still answering, a Mac someone is at, gets its own window's size at once (#593). Then the
-/// first answer from the one that went quiet counts it as attached again without taking the size
-/// back: that needs an act, as ever.
+/// still answering, a Mac someone is at, gets its own window's size at once (#593), and its
+/// connection is closed, once (ADR 0075). On a connection that closing does not end, the first
+/// answer from the one that went quiet counts it as attached again without taking the size back:
+/// that needs an act, as ever.
 #[cfg(feature = "terminal-state")]
 #[test]
-fn a_probed_client_that_stops_answering_gives_up_the_size() {
+fn a_probed_client_that_stops_answering_gives_up_the_size_and_is_closed() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     let store = SessionStore::with_keepalive_interval(Duration::from_millis(30));
     let session = id(0xA1);
     sized_session(&store, session);
     let quiet_writer: SharedWriter = Arc::new(Mutex::new(Box::new(Capture::default())));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&closes);
+    let closer: crate::daemon::transport::Closer = Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+    });
     let (_, quiet) = store
-        .attach_client(session, quiet_writer, 1, Size::cells(80, 24), true)
+        .attach_client(session, quiet_writer, 1, Size::cells(80, 24), Some(closer))
         .expect("attach the probed client");
     let (_answering, answering) = attach_sized(&store, session, 100, 30);
     assert_eq!(
@@ -2581,6 +2588,12 @@ fn a_probed_client_that_stops_answering_gives_up_the_size() {
     }
     assert_eq!(pty_size(&store, session), (100, 30));
     assert!(store.list()[0].attached, "the answering client is attached");
+    while closes.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < deadline, "the quiet client was not closed");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(30 * 4));
+    assert_eq!(closes.load(Ordering::SeqCst), 1, "closed again");
 
     store.write_input(session, quiet, b"\x1b[?25930;0$y");
     assert_eq!(
@@ -2602,7 +2615,13 @@ fn a_stale_client_left_on_its_own_is_not_handed_the_size() {
     sized_session(&store, session);
     let quiet_writer: SharedWriter = Arc::new(Mutex::new(Box::new(Capture::default())));
     store
-        .attach_client(session, quiet_writer, 1, Size::cells(80, 24), true)
+        .attach_client(
+            session,
+            quiet_writer,
+            1,
+            Size::cells(80, 24),
+            Some(Arc::new(|| {})),
+        )
         .expect("attach the probed client");
     let (_other, other) = attach_sized(&store, session, 100, 30);
     let deadline = Instant::now() + Duration::from_secs(5);

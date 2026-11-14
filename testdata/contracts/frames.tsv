@@ -22,6 +22,8 @@ killAll	2400000000	-
 handOff	2500000000	-
 signal	2600000000	-
 retag	2700000000	-
+pings	2800000000	-
+peer	2900000000	-
 sessions	3100000000	-
 acknowledged	3200000000	-
 error:frameTooLarge	9900100001	-

@@ -269,6 +269,12 @@ struct RootView: View {
             "This removes \(target.workroom.path) on \(target.workroom.host?.sshDestination ?? "its host"), "
               + "including changes and commits that aren't pushed. The server and its other folders stay."
           )
+        } else if let target = modals.pendingDeletion, target.workroom.isRemote,
+          GoneHosts.shared.contains(target.workroom.host?.id)
+        {
+          Text(
+            "Its host is already gone, with everything on it. This removes the workroom from "
+              + "Workroom.")
         } else if let target = modals.pendingDeletion, target.workroom.isRemote {
           Text(
             "This destroys the workroom's remote machine and everything on it, including changes "
@@ -384,6 +390,8 @@ struct RootView: View {
       BoxdSetupSheet(setup: setup, onCreate: create, onCancel: cancel)
     } else if let setup = pending.setup as? SSHHostSetup {
       SSHHostSetupSheet(setup: setup, onCreate: create, onCancel: cancel)
+    } else if let setup = pending.setup as? RailwaySetup {
+      RailwaySetupSheet(setup: setup, onCreate: create, onCancel: cancel)
     }
   }
 

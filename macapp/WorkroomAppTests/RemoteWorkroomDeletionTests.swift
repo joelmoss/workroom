@@ -45,6 +45,31 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     XCTAssertEqual(calls.all, ["forget gone", "forget crashed"])
   }
 
+  /// A Railway workroom's Ports list is its sandbox's (#632), so deleting the workroom stops its
+  /// forwards with the host, as a container's do, and nothing reconnects a sandbox that is gone.
+  @MainActor
+  func testDeletingARailwayWorkroomStopsItsHostsForwards() async throws {
+    let calls = Calls()
+    let id = UUID()
+    let host = HostDescriptor(
+      state: "destroyed", driver: HostKind.railway.driver, provisioner: mine, id: id,
+      workroomID: UUID(),
+      railway: RailwayHostRecord(
+        projectID: "prj", environmentID: "env", sandboxID: "sbx", hostKey: "ssh-ed25519 AAAA"))
+    let ports = PortForwardingModel.model(for: .init(host: .remote(id), workroom: nil))
+    XCTAssertTrue(PortForwardingModel.models[.remote(id)] === ports)
+    let forgotten = Mutex<[RemoteWorkrooms.Forgotten]>([])
+    try await RemoteWorkrooms.delete(
+      "w", host: host, environment: nil, recorder: calls.recorder,
+      onForgotten: { event in
+        forgotten.withLock { $0.append(event) }
+        WorkroomLifecycle.forgetRemote(event)
+      })
+    XCTAssertEqual(forgotten.withLock { $0 }, [.host(.remote(id))])
+    XCTAssertEqual(calls.all, ["forget w"])
+    XCTAssertNil(PortForwardingModel.models[.remote(id)], "the sandbox's forwards outlived it")
+  }
+
   /// Another build's host takes another build's key, so this one refuses it and records nothing;
   /// one already destroyed is anyone's to drop.
   func testAnotherBuildsLiveWorkroomIsRefusedBeforeAnythingIsDone() async throws {
@@ -381,10 +406,18 @@ final class RemoteTeardownTests: XCTestCase {
 
   private final class Driver: HostTerminalDriver, ProvisioningHostDriver, @unchecked Sendable {
     let log: Log
-    init(_ log: Log) { self.log = log }
+    /// What `destroy` throws, as a provider's own cleanup of a host it no longer has may.
+    let destroyFails: Bool
+    init(_ log: Log, destroyFails: Bool = false) {
+      self.log = log
+      self.destroyFails = destroyFails
+    }
     var daemonSocket: String { "/home/boxd/.workroom/workroomd.sock" }
     func create() async throws -> HostID { .remote(UUID()) }
-    func destroy(_ host: HostID) async throws { log.add("destroy") }
+    func destroy(_ host: HostID) async throws {
+      log.add("destroy")
+      if destroyFails { throw HostDriverError.provisioning("no such machine") }
+    }
     func openStream(to host: HostID) async throws -> HostStream {
       throw HostDriverError.provisioning("no stream")
     }
@@ -512,6 +545,48 @@ final class RemoteTeardownTests: XCTestCase {
     let log = Log()
     try await delete(host(), log, teardown: teardown(log, skip: true, result: .failed("no")))
     XCTAssertEqual(log.all, ["destroy", "forget w"])
+  }
+
+  /// Value: protects=Remove Workroom on a host its provider says is gone runs no teardown script
+  /// there, and forgets the record only once the provider's destroy confirms the host is gone: a
+  /// destroy that fails, or no provider to ask (signed out), keeps the record, marked failed, and
+  /// says why, since the host may still bill (review 3, C5; review 4, X1); fails_when=the script
+  /// runs, or the record is forgotten when the destroy failed or never ran; no_claim=GoneHosts
+  /// itself (HostReachabilityTests), what a Railway destroy confirms (RailwayHostDriverTests)
+  func testRemovingAWorkroomWhoseHostIsGoneForgetsItOnlyOnceItsDestroyIsConfirmed() async throws {
+    for destroyFails in [false, true] {
+      let log = Log()
+      let driver = Driver(log, destroyFails: destroyFails)
+      do {
+        try await RemoteWorkrooms.delete(
+          "w", host: host(),
+          environment: RemoteProvisioning.Environment(
+            driver: driver, daemonSocket: driver.daemonSocket),
+          recorder: recorder(log),
+          teardown: teardown(
+            log, result: .failed("teardown script failed: couldn't reach the host")),
+          hostGone: true,
+          onForgotten: {
+            if case .host = $0 { log.add("forgot the host") }
+          })
+        XCTAssertFalse(destroyFails, "a failed destroy forgot the workroom")
+        XCTAssertEqual(log.all, ["destroy", "forgot the host", "forget w"])
+      } catch RemoteWorkrooms.Failure.goneHostUnconfirmed(let why) {
+        XCTAssertTrue(destroyFails, "\(why)")
+        XCTAssertTrue(why.contains("no such machine"), why)
+        XCTAssertEqual(log.all, ["destroy", "record failed"])
+      }
+    }
+
+    // Signed out of its provider: nothing can confirm it, so the workroom stays.
+    let log = Log()
+    do {
+      try await RemoteWorkrooms.delete(
+        "w", host: host(), environment: nil, recorder: recorder(log),
+        teardown: teardown(log, result: .failed("no")), hostGone: true, onForgotten: { _ in })
+      XCTFail("a gone host no provider confirmed was forgotten")
+    } catch RemoteWorkrooms.Failure.goneHostUnconfirmed {}
+    XCTAssertEqual(log.all, ["record failed"])
   }
 
   /// Value: protects=a host a create left `creating` or a delete left `failed` is taken down

@@ -29,6 +29,8 @@ pub struct Hooks {
     /// Publishes each session's program status to subscribed connections (#358). Its boot names
     /// the store.
     pub program_status: Arc<Hub>,
+    /// What a remote pane's session attached from the Mac is built from (ADR 0074).
+    pub host: crate::terminal::host_session::HostSource,
 }
 
 impl Hooks {

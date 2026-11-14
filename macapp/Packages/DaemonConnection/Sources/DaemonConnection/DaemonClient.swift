@@ -331,6 +331,19 @@ public final class DaemonClient: @unchecked Sendable {
     return DaemonControl.killed(frame)
   }
 
+  /// Tells the daemon this connection pings, so it closes the connection once nothing has come from
+  /// it for 60 s (ADR 0075). Only a caller that then pings well inside that may ask:
+  /// `HostConnectionManager`, for a remote host. Nothing is sent to a daemon that predates it, which
+  /// has no deadline. Throws when the daemon did not acknowledge it.
+  public func announcePinging() async throws {
+    guard helloVersion >= DaemonHandshake.minPingsVersion else { return }
+    let reply = try await request(
+      bytes: Data(DaemonControl.pings()), timeout: 10, service: .control)
+    guard let frame = try? DaemonControl.firstFrame(of: reply), frame.kind == .acknowledged else {
+      throw HostConnectionError.serviceUnavailable("The daemon did not take the ping announcement.")
+    }
+  }
+
   /// Asks a run session's supervisor to restart, stop or quit (#522), on this connection's Control
   /// service. Throws when the daemon could not be asked or did not answer: the signal may or may
   /// not have been sent, which a caller must not read as the run being gone.

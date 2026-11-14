@@ -383,17 +383,17 @@ final class AppStore: ObservableObject {
     commitHistory.focus(target: inspectorTarget)
   }
 
-  /// Forward the ports the selected container workroom's dev container declares, once a launch
-  /// (`PortForwardingModel.forwardDeclared`). On selection, not when the Ports list shows: opening
-  /// the workroom is when its dev server is wanted, whatever the inspector is showing. The read
-  /// connects the host, as every inspector read does, and selecting it has already started it.
+  /// Forward the ports the selected remote workroom's dev container declares, once a launch
+  /// (`PortForwardingModel.forwardDeclared`), on every host whose ports Workroom forwards
+  /// (`Workroom.portsPlace`). On selection, not when the Ports list shows: opening the workroom is
+  /// when its dev server is wanted, whatever the inspector is showing. The read connects the host,
+  /// as every inspector read does, and selecting it has already started it.
   private func forwardDeclaredPorts() {
-    guard let workroom = selectedWorkroom, workroom.isContainer || workroom.isSSH,
+    guard let workroom = selectedWorkroom, let place = workroom.portsPlace,
       let id = workroom.reachableHost,
       let location = try? RepositoryLocation.remote(host: id, path: workroom.path)
     else { return }
-    let model = PortForwardingModel.model(
-      for: .remote(id), workroom: workroom.isSSH ? workroom.host?.workroomID : nil)
+    let model = PortForwardingModel.model(for: place)
     guard !model.declared else { return }
     Task {
       await model.forwardDeclared {
@@ -1682,6 +1682,10 @@ final class AppStore: ObservableObject {
     private func loadFixture() {
       let fixtures = applyingDeletionTombstones(UITestFixture.projects())
       projectStore.projects = fixtures
+      // No host is adopted in a fixture launch, but a lost Railway create's candidates still
+      // leave out what its records name (review 5 of #623).
+      RemoteHosts.shared.registry.noteRecordedSandboxes(
+        Set(fixtures.flatMap { $0.workrooms.compactMap { $0.host?.railway?.sandboxID } }))
       // Host option reads are the fixture's, never a provider's (#575). Each reload sets the same.
       HostOptionsCatalog.shared.fetch = UITestFixture.hostOptionsFetch()
       // A container create mid-download, still unnamed (#309, #483). Once: a reload re-enters here.
@@ -1864,6 +1868,12 @@ final class AppStore: ObservableObject {
     // delete that fails keeps them (#296).
     let deleting = !lifecycle.deletingProjects.isEmpty || !lifecycle.deletingWorkrooms.isEmpty
     RemoteHosts.shared.reachability.adopt(fresh, sweep: !deleting)
+    // What no record names any more is forgotten; not with a delete in flight, whose workroom
+    // `fresh` leaves out though a failed delete keeps it.
+    if !deleting {
+      GoneHosts.shared.prune(
+        keeping: Set(fresh.flatMap { $0.workrooms.compactMap { $0.host?.id } }))
+    }
     // Older builds' base machines go, once per launch; the same in-flight-delete hold as the sweep.
     if !deleting {
       BaseRetirement.retireOnce(fresh, effects: BaseRetirement.live(cli: cli)) { [weak self] in

@@ -8,13 +8,26 @@ import WorkroomDomain
 
 /// What a driver's provider says of a host without reaching it, for a background read that must
 /// not wake it (#356).
-public enum HostPresence: Equatable, Sendable { case awake, asleep, gone }
+public enum HostPresence: Equatable, Sendable {
+  case awake, asleep, gone
+  /// The provider can't be asked until the user signs in to it again: Workroom's own sign-in to it
+  /// was revoked or expired (Railway, #629).
+  case signedOut
+}
 
-/// A driver whose hosts sleep, and whose provider can say so without the ssh login that would wake
-/// one (boxd).
+/// A driver whose provider can say whether a host is there without an ssh login: boxd, whose
+/// login would wake a sleeping box, and Railway, whose sandbox's status says it is gone.
 public protocol HostPresenceReporting: HostDriver {
-  /// Whether `host` is awake, asleep or gone; nil when the provider could not say.
+  /// Whether `host` is awake, asleep, gone or out of reach until a sign-in; nil when the provider
+  /// could not say.
   func presence(_ host: HostID) async -> HostPresence?
+  /// Whether this provider's hosts sleep, so a read that can't say must leave one be rather than
+  /// wake it (boxd). A host that never sleeps (Railway) is simply connected to.
+  var hostsSleep: Bool { get }
+}
+
+extension HostPresenceReporting {
+  public var hostsSleep: Bool { true }
 }
 
 /// A driver whose hosts can be stopped, and started again on this Mac (containers, #309).
@@ -34,16 +47,25 @@ public protocol ReconnectingHostDriver: HostDriver {
   func invalidateConnection() async
 }
 
-/// A driver that makes a host with the host options a create resolved (#575: boxd, exe.dev).
+/// A driver that makes a host with the host options a create resolved (#575: boxd, exe.dev;
+/// #633: Railway).
 public protocol OptionedProvisioningDriver: ProvisioningHostDriver {
   func create(options: ResolvedHostOptions) async throws -> HostID
 }
 
 /// A driver whose host made from an image can still hold another workroom's checkout: boxd's images
-/// are snapshots of used machines (#575).
+/// are snapshots of used machines (#575), Railway's checkpoints copies of used sandboxes (#633).
 public protocol CheckoutClearingDriver: HostDriver {
   /// Removes a checkout of `cloneURL` at `path` on `host`, and nothing else there.
   func clearCheckout(at path: String, of cloneURL: String, on host: HostID) async throws
+}
+
+/// A driver whose hosts' git uses a copy of the Mac's `gh` token, because their provider has no
+/// git integration (Railway, ADR 0072).
+public protocol GitHubTokenCarrying: HostDriver {
+  /// Compares `host`'s copy with the Mac's current token and rewrites it when they differ: on
+  /// every connect, so a token the user rotated or revoked doesn't live on there.
+  func refreshGitHubToken(on host: HostID) async throws
 }
 
 /// A driver whose provider gives each repository its hosts may clone access to, which Workroom
@@ -60,6 +82,23 @@ public protocol HostRecording: HostDriver {
   func record(_ host: HostID, in descriptor: inout HostDescriptor)
   /// Takes back what `descriptor` recorded, as a reload does; nothing for a host already held.
   func adopt(_ descriptor: HostDescriptor) throws
+  /// `descriptor` was written to config: what a create kept for the sweep until a record named
+  /// its host can go (Railway's create ledger). Called only once the write succeeded.
+  func recorded(_ descriptor: HostDescriptor) async
+}
+
+extension HostRecording {
+  public func recorded(_ descriptor: HostDescriptor) async {}
+}
+
+/// A driver whose hosts carry no name or label tying them to a workroom, so the launch's sweep
+/// destroys the ones this Mac made that no host record names (Railway's sandboxes, from this
+/// Mac's create ledger, ADR 0071, #630).
+public protocol UnrecordedHostSweeping: HostDriver {
+  /// Destroys every host this Mac's creates named, older than `grace`, that no record in
+  /// `recorded` names, and never one whose name they never had. Throws when the provider can't
+  /// say what a host needs, so the sweep is owed again; returns the destroys that failed.
+  func sweep(keeping recorded: Set<String>, grace: TimeInterval) async throws -> [String]
 }
 
 /// A driver that puts each workroom in a folder of its own on a host it did not make (an SSH host,
@@ -81,6 +120,8 @@ public enum HostOptionsFacts: Equatable, Sendable {
   /// The account's snapshots and the org's default size, nil when that one read failed.
   case boxd(snapshots: [String], size: BoxdHostDriver.DefaultSize?)
   case exeDev(ExeDevHostDriver.PlanLimits)
+  /// This Mac's environment's checkpoints and the plan's sizes (#633).
+  case railway(RailwayHostOptions)
 }
 
 /// A driver whose provider says what host options it takes (#575).

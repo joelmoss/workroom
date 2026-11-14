@@ -65,6 +65,36 @@ final class RemoteHostsTests: XCTestCase {
       calls.joined(separator: "\n"))
   }
 
+  /// Value: protects=a pane on a host whose daemon the app couldn't update yet says why it waits
+  /// when its attach drops (review #2); fails_when=the pane's command doesn't carry the app's
+  /// notice, carries it for a probe, or carries one when there's nothing to say; seam=
+  /// PersistentSessionService.attachCommand with the notice stubbed
+  @MainActor
+  func testAPaneOnAHostWithAnOlderDaemonCarriesWhyItWaits() throws {
+    let id = UUID()
+    let host = HostID.remote(id)
+    let session = UUID()
+    let sessions = PersistentSessionService.shared
+    let notice = Mutex<String?>("This terminal's host runs an older Workroom daemon (busy).")
+    sessions.waitingNotice = { $0 == host ? notice.withLock { $0 } : nil }
+    defer {
+      sessions.waitingNotice = { RemoteHosts.shared.reachability.waitingNotice(for: $0) }
+      sessions.forgetRemoteSession(session)
+    }
+    sessions.registerRemoteSession(
+      session, on: host, via: MachineDriver(made: id), workingDirectory: "/home/boxd/r")
+    let pane = UUID()
+    let waiting = try XCTUnwrap(sessions.attachCommand(forSession: session, by: pane))
+    XCTAssertTrue(waiting.hasPrefix("/usr/bin/env 'WORKROOM_RETRY_NOTICE="), waiting)
+    XCTAssertTrue(waiting.contains("older Workroom daemon (busy)"), waiting)
+    let probe = try XCTUnwrap(sessions.attachCommand(forSession: session))
+    XCTAssertFalse(probe.contains("WORKROOM_RETRY_NOTICE"), "a probe carried the pane's notice")
+    notice.withLock { $0 = nil }
+    let plain = try XCTUnwrap(sessions.attachCommand(forSession: session, by: pane))
+    XCTAssertFalse(plain.contains("WORKROOM_RETRY_NOTICE"), plain)
+    sessions.paneDetached(session, by: pane)
+  }
+
   /// Which panes the app counts as attached to a host: a pane attaching reconnects its host
   /// (`attachCommand`, #380), so a registration alone, an attach no pane runs, or a pane on a host
   /// the driver can't reach must not count, and each pane clears only its own.
@@ -675,6 +705,94 @@ final class RemoteHostsTests: XCTestCase {
       try JSONDecoder().decode(HostDescriptor.self, from: try JSONEncoder().encode(boxd)), boxd)
   }
 
+  /// Value: protects=a presence update that reaches the main actor after a newer one (its hop
+  /// overtaken) never overwrites it, so a host found again isn't shown gone, nor a gone one
+  /// live (review 4, Y4); fails_when=updates apply in arrival order rather than the order they
+  /// were recorded; seam=GoneHosts.apply with the numbers `record` gives; no_claim=the hops'
+  /// scheduling itself, which can't be made to reorder on demand
+  @MainActor
+  func testAStaleGoneUpdateNeverOverwritesANewerOne() {
+    let gone = GoneHosts()
+    let id = UUID()
+    let first = GoneHosts.nextSequence()
+    let second = GoneHosts.nextSequence()
+    gone.apply(id, gone: true, sequence: second)
+    gone.apply(id, gone: false, sequence: first)
+    XCTAssertTrue(gone.contains(id), "the older update overwrote the newer one")
+    let third = GoneHosts.nextSequence()
+    gone.apply(id, gone: false, sequence: third)
+    XCTAssertFalse(gone.contains(id))
+    gone.set(id, gone: true)
+    XCTAssertTrue(gone.contains(id), "a direct set lost to an earlier number")
+  }
+
+  /// Value: protects=the gone set and the update numbers it keeps hold only hosts config still
+  /// records, so neither grows with every workroom removed, and a host still recorded keeps both
+  /// (review 5, D2.7); fails_when=a removed host's entry stays, or a recorded host loses its gone
+  /// state or its newest number, so a stale update could overwrite it; seam=GoneHosts.prune
+  @MainActor
+  func testGoneHostsForgetsHostsNoLongerRecorded() {
+    let gone = GoneHosts()
+    let kept = UUID()
+    let removed = UUID()
+    let newer = GoneHosts.nextSequence() + 10
+    gone.apply(kept, gone: true, sequence: newer)
+    gone.apply(removed, gone: true, sequence: GoneHosts.nextSequence())
+    gone.prune(keeping: [kept])
+    XCTAssertTrue(gone.contains(kept))
+    XCTAssertFalse(gone.contains(removed), "a removed host stayed gone")
+    gone.apply(kept, gone: false, sequence: newer - 1)
+    XCTAssertTrue(gone.contains(kept), "the kept host lost its newest number")
+  }
+
+  /// Value: protects=a presence read still in flight for a host that was removed never puts it
+  /// back once the gone set has forgotten it, while a host recorded since still shows (review 6,
+  /// finding 6); fails_when=a removed host's late update re-adds it, or a newly recorded host's
+  /// first update is dropped; seam=GoneHosts.prune then apply with the numbers `record` gives
+  @MainActor
+  func testALateUpdateForARemovedHostDoesNotBringItBack() {
+    let gone = GoneHosts()
+    let removed = UUID()
+    gone.apply(removed, gone: false, sequence: GoneHosts.nextSequence())
+    // Numbered as its read began, before the host was removed; it lands after.
+    let inFlight = GoneHosts.nextSequence()
+    gone.prune(keeping: [])
+    gone.apply(removed, gone: true, sequence: inFlight)
+    XCTAssertFalse(gone.contains(removed), "a removed host's late update brought it back")
+
+    let added = UUID()
+    gone.apply(added, gone: true, sequence: GoneHosts.nextSequence())
+    XCTAssertTrue(gone.contains(added), "a host recorded since lost its first update")
+  }
+
+  /// Value: protects=a delete (Remove Workroom or Delete Project) whose gone host's provider can't
+  /// give an environment still goes ahead for the rest, leaving that host's delete to keep its
+  /// record (`RemoteWorkrooms.delete`), while a live host's failure still refuses the delete before
+  /// anything is removed (review 4, Y1); fails_when=Delete Project refuses for a gone host that
+  /// Remove Workroom takes, or a live host's failure is swallowed; seam=HostDriverRegistry's
+  /// environment(toDelete:gone:) with a driver seam that fails for one provider
+  @MainActor
+  func testAGoneHostsProviderFailingDoesNotStopTheDelete() throws {
+    let remote = RemoteHosts(makeDriver: { key -> any HostTerminalDriver in
+      if case .exeDev = key { throw HostDriverError.invalidConfiguration("exe.dev unavailable") }
+      return BoxdHostDriver(
+        configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd"), hostSetup: .bundled),
+        directory: FileManager.default.temporaryDirectory)
+    }).registry
+    let live = HostDescriptor(
+      driver: HostKind.boxd.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+      org: "acme", account: "usr_1")
+    let gone = HostDescriptor(
+      driver: HostKind.exeDev.driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+      account: "me@x.dev")
+    XCTAssertThrowsError(try remote.environment(toDelete: [live, gone], gone: []))
+    let deletion = try XCTUnwrap(try remote.environment(toDelete: [live, gone], gone: [gone.id!]))
+    XCTAssertNotNil(deletion.environment(for: live))
+    XCTAssertNil(deletion.environment(for: gone))
+    XCTAssertNil(try remote.environment(toDelete: [gone], gone: [gone.id!]))
+    XCTAssertThrowsError(try remote.environment(toDelete: [gone], gone: [live.id!]))
+  }
+
   /// A delete of a remote provider's host asks for that provider's driver and environment, never
   /// Docker's; the environment's daemon socket is the driver's own, on the host's home disk, never
   /// the container image's tmpfs `/run/workroom` one; its git never borrows the Mac's `gh`
@@ -805,6 +923,269 @@ final class RemoteHostsTests: XCTestCase {
     // Docker, `runtimeIsMissing` is false for any host, and no seam-free way picks the runtime
     // lookup (`RemoteHosts.executable`, fixed paths). Kept for CI; eng review D6.
     XCTAssertFalse(remote.registry.runtimeIsMissing(for: .remote(id)))
+  }
+
+  /// Value: protects=a Railway workroom is reached and deleted after a relaunch from config alone
+  /// (#629); fails_when=its record isn't adopted at reload or at delete, so every pane, read and
+  /// delete reads the host as unknown; or its clone goes in /home/root; seam=HostDriverRegistry
+  @MainActor func testARailwayWorkroomIsReachedAndDeletedAfterARelaunch() throws {
+    let id = UUID()
+    let record = RailwayHostRecord(
+      projectID: "prj", environmentID: "env-1", sandboxID: "sbx-1", hostKey: "ssh-ed25519 AAAA")
+    let host = HostDescriptor(
+      driver: HostKind.railway.driver, provisioner: RemoteWorkrooms.provisioner, id: id,
+      railway: record)
+    let key = try XCTUnwrap(RemoteHosts.DriverKey(host))
+    XCTAssertEqual(key, .railway(environment: "env-1"))
+    XCTAssertNil(
+      RemoteHosts.DriverKey(HostDescriptor(driver: HostKind.railway.driver, id: id)),
+      "a Railway host with no record names no driver")
+    let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
+    XCTAssertEqual(RemoteWorkrooms.clonePath(for: repository, on: key), "/root/r")
+    XCTAssertEqual(host.machineName, "sbx-1")
+
+    let remote = RemoteHosts()
+    remote.reachability.adopt([
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(name: "w", path: "/root/r", vcsName: "workroom/w", warnings: [], host: host)
+        ])
+    ])
+    let driver = try XCTUnwrap(
+      remote.registry.existingDriver(holding: id) as? RailwayHostDriver)
+    XCTAssertEqual(driver.configuration.environmentID, "env-1")
+    // Held, so a pane, a read and a delete reach it (an attach would write its ssh files).
+    var adopted = HostDescriptor(driver: HostKind.railway.driver)
+    driver.record(.remote(id), in: &adopted)
+    XCTAssertEqual(adopted.railway, record)
+    XCTAssertFalse(remote.registry.runtimeIsMissing(for: .remote(id)))
+
+    // A delete straight after launch, before any reload adopted it.
+    let fresh = RemoteHosts().registry
+    let deletion = try XCTUnwrap(try fresh.environment(toDelete: [host]))
+    let environment = try XCTUnwrap(deletion.environment(for: host))
+    XCTAssertEqual(environment.daemonSocket, "/root/.local/state/workroom/daemon/workroomd.sock")
+    XCTAssertNil(environment.gitHubToken)
+    var recorded = HostDescriptor(driver: HostKind.railway.driver)
+    (try fresh.driver(key) as? any HostRecording)?.record(.remote(id), in: &recorded)
+    XCTAssertEqual(recorded.railway, record)
+  }
+
+  /// Railway at HTTP for the launch sweep (#630): lists the sandboxes it holds, all made long ago,
+  /// and destroys what it's asked, recording each GraphQL request's query and variables.
+  private final class SweptRailway: RailwayHTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _sent: [[String: Any]] = []
+    private var rows: [String]
+    init(_ rows: [String]) { self.rows = rows }
+
+    var sent: [[String: Any]] { lock.withLock { _sent } }
+    func variables(_ field: String) -> [[String: Any]] {
+      sent.filter { ($0["query"] as? String)?.contains("\(field)(") == true }
+        .map { $0["variables"] as? [String: Any] ?? [:] }
+    }
+    var destroyed: [String] { variables("sandboxDestroy").compactMap { $0["id"] as? String } }
+
+    func send(_ request: URLRequest) async throws -> RailwayHTTPResponse {
+      let body =
+        (try? JSONSerialization.jsonObject(with: request.httpBody ?? Data())) as? [String: Any]
+        ?? [:]
+      let query = body["query"] as? String ?? ""
+      let variables = body["variables"] as? [String: Any] ?? [:]
+      let environment = variables["environmentId"] as? String ?? ""
+      let data: [String: Any]? = lock.withLock {
+        _sent.append(body)
+        if query.contains("sandboxes(") {
+          let edges = rows.map { id -> [String: Any] in
+            [
+              "cursor": id,
+              "node": [
+                "id": id, "status": "RUNNING", "createdAt": "2026-01-01T00:00:00Z",
+                "environmentId": environment,
+              ],
+            ]
+          }
+          return ["sandboxes": ["edges": edges, "pageInfo": ["hasNextPage": false]]]
+        }
+        if query.contains("sandboxDestroy(") {
+          let id = variables["id"] as? String ?? ""
+          rows.removeAll { $0 == id }
+          return ["sandboxDestroy": ["id": id, "status": "DESTROYING"]]
+        }
+        // The sign-in sees this Mac's workspace.
+        if query.contains("me {") {
+          return ["me": ["workspaces": [["id": "ws-1", "name": "Mine", "plan": "PRO"]]]]
+        }
+        return nil
+      }
+      guard let data else {
+        return RailwayHTTPResponse(
+          status: 200, body: Data(#"{"errors":[{"message":"no stub"}]}"#.utf8))
+      }
+      return RailwayHTTPResponse(
+        status: 200, body: try JSONSerialization.data(withJSONObject: ["data": data]))
+    }
+  }
+
+  private struct RailwayToken: RailwayAccessTokenProviding {
+    func accessToken() async throws -> String { "at" }
+    func accessTokenRejected(_ token: String) async {}
+  }
+
+  /// Value: protects=no sandbox this Mac made is left billing that no workroom names, once per
+  /// launch, no other environment is ever listed or touched, and only what this Mac's create
+  /// ledger names goes, whatever config says (ADR 0071 and its amendment, #630); fails_when=adopt
+  /// doesn't sweep Railway, sweeps an environment a record names instead of this Mac's, destroys a
+  /// recorded sandbox, destroys an unledgered one, or sweeps twice a launch;
+  /// seam=HostDriverRegistry.adopt with makeDriver and the environment seam
+  func testALaunchSweepsThisMacsRailwayEnvironmentOnce() async throws {
+    let railway = SweptRailway(["sbx-orphan", "sbx-kept", "sbx-live"])
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-railway-sweep-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+    /// A launch: a registry of its own over the same Railway and the same Railway folder.
+    func launch() -> RemoteHosts {
+      RemoteHosts(
+        makeDriver: { key in
+          guard case .railway(let environment) = key else {
+            throw HostDriverError.invalidConfiguration("\(key)")
+          }
+          return RailwayHostDriver(
+            configuration: .init(
+              environmentID: environment, projectID: nil, workspaceID: "ws-1", keys: root,
+              relayHost: "relay.invalid", hostSetup: .bundled),
+            api: RailwayAPI(transport: railway, tokens: RailwayToken()), directory: root)
+        }, railwayEnvironment: { "env-1" })
+    }
+    func settle(_ remote: RemoteHosts) async throws {
+      for _ in 0..<500 where remote.registry.sweepsRunning > 0 {
+        try await Task.sleep(for: .milliseconds(2))
+      }
+    }
+    func projects(_ records: [RailwayHostRecord]) -> [Project] {
+      [
+        Project(
+          path: "/proj", vcs: "git",
+          workrooms: records.map {
+            Workroom(
+              name: $0.sandboxID, path: "/root/r", vcsName: "workroom/w", warnings: [],
+              host: HostDescriptor(
+                driver: HostKind.railway.driver, provisioner: RemoteWorkrooms.provisioner,
+                id: UUID(), railway: $0))
+          })
+      ]
+    }
+    let elsewhere = RailwayHostRecord(
+      projectID: "prj", environmentID: "env-other", sandboxID: "sbx-elsewhere", hostKey: "k")
+    let here = RailwayHostRecord(
+      projectID: "prj", environmentID: "env-1", sandboxID: "sbx-kept", hostKey: "k")
+
+    let ledger = RailwayCreateLedger(directory: root)
+    let longAgo = Date().addingTimeInterval(-2 * RailwayHostDriver.sweepGrace)
+
+    // No config at all, then one naming only another Mac's environment, with nothing ledgered:
+    // nothing is even listed.
+    var remote = launch()
+    remote.reachability.adopt([])
+    try await settle(remote)
+    remote = launch()
+    remote.reachability.adopt(projects([elsewhere]))
+    try await settle(remote)
+    XCTAssertTrue(railway.sent.isEmpty, "\(railway.sent)")
+
+    // A lost reply: nothing is listed for it, and the intent waits for the user.
+    let january = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-01-01T00:00:01Z"))
+    try await ledger.update { $0 = [.init(started: january)] }
+    remote = launch()
+    remote.reachability.adopt(projects([elsewhere]))
+    try await settle(remote)
+    XCTAssertTrue(railway.sent.isEmpty, "\(railway.sent)")
+    let waiting = try await ledger.entries()
+    XCTAssertEqual(waiting.count, 1)
+
+    // A create left sbx-orphan in the ledger: only it goes, never the unledgered sbx-live.
+    try await ledger.update { $0 = [.init(started: longAgo, sandbox: "sbx-orphan")] }
+    remote = launch()
+    remote.reachability.adopt(projects([elsewhere]))
+    try await settle(remote)
+    XCTAssertEqual(railway.destroyed, ["sbx-orphan"])
+
+    // A config naming this environment changes nothing for a lost reply: it is never listed for
+    // nor guessed at, and waits for the user (review 5, D1). A ledgered sandbox goes once a
+    // launch, after a held sweep.
+    try await ledger.update {
+      $0 = [.init(started: longAgo), .init(started: longAgo, sandbox: "sbx-second")]
+    }
+    remote = launch()
+    remote.reachability.adopt(projects([here, elsewhere]), sweep: false)
+    try await settle(remote)
+    XCTAssertEqual(railway.destroyed, ["sbx-orphan"], "a held sweep ran")
+    remote.reachability.adopt(projects([here, elsewhere]))
+    try await settle(remote)
+    XCTAssertTrue(railway.variables("sandboxes").isEmpty, "the sweep listed for a lost reply")
+    XCTAssertEqual(railway.destroyed, ["sbx-orphan", "sbx-second"])
+    let sent = railway.variables("sandboxDestroy")
+    XCTAssertEqual(Set(sent.compactMap { $0["environmentId"] as? String }), ["env-1"])
+    let lost = try await ledger.entries()
+    XCTAssertEqual(lost.count, 1, "the lost reply was dropped")
+    XCTAssertNil(lost.first?.sandbox)
+    try await ledger.update { $0.append(.init(started: longAgo, sandbox: "sbx-third")) }
+    remote.reachability.adopt(projects([here, elsewhere]))
+    try await settle(remote)
+    XCTAssertEqual(railway.destroyed, ["sbx-orphan", "sbx-second"], "swept twice in a launch")
+  }
+
+  /// Value: protects=a Railway sweep that fails says it was the sweep and Railway's own reason,
+  /// whatever step failed (review 3, I5); fails_when=every failure is labelled as listing the
+  /// sandboxes (a workspace read, a ledger write) or loses Railway's words;
+  /// seam=HostDriverRegistry.railwaySweepFailure
+  func testARailwaySweepFailureSaysItWasTheSweepAndWhy() {
+    XCTAssertEqual(
+      HostDriverRegistry.railwaySweepFailure(RailwaySessionError.signedOut),
+      "Railway sweep: Workroom isn't signed in to Railway.")
+    XCTAssertEqual(
+      HostDriverRegistry.railwaySweepFailure(RailwayAPIError.http(status: 503, message: "down")),
+      "Railway sweep: Railway answered 503: down.")
+  }
+
+  /// Value: protects=a Railway sandbox leaves this Mac's create ledger only once config holds its
+  /// record, so a config write that fails leaves it for the sweep (review #1); fails_when=the
+  /// create's recorder takes it off before or without the write succeeding, or never does;
+  /// seam=RemoteWorkrooms.Recorder.forgettingPending with a RailwayHostDriver and its ledger
+  func testARailwaySandboxLeavesTheLedgerOnlyOnceItsRecordIsWritten() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-railway-record-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+    let driver = RailwayHostDriver(
+      configuration: .init(
+        environmentID: "env-1", projectID: nil, keys: root, relayHost: "relay.invalid",
+        hostSetup: .bundled),
+      api: RailwayAPI(transport: SweptRailway([]), tokens: RailwayToken()), directory: root)
+    let ledger = RailwayCreateLedger(directory: root)
+    try await ledger.update { $0 = [.init(started: Date(), sandbox: "sbx-1")] }
+    let descriptor = HostDescriptor(
+      driver: HostKind.railway.driver, id: UUID(),
+      railway: RailwayHostRecord(
+        projectID: nil, environmentID: "env-1", sandboxID: "sbx-1", hostKey: "k"))
+    func recorder(failing: Bool) -> RemoteWorkrooms.Recorder {
+      RemoteWorkrooms.Recorder(
+        reserve: { _, _ in "w" },
+        record: { _, _ in if failing { throw CocoaError(.fileWriteNoPermission) } },
+        forget: { _ in }
+      ).forgettingPending(in: nil, driver: driver)
+    }
+
+    do {
+      try await recorder(failing: true).record("w", descriptor)
+      XCTFail("the write went through")
+    } catch {}
+    var left = try await ledger.entries()
+    XCTAssertEqual(left.compactMap(\.sandbox), ["sbx-1"], "forgotten before the write succeeded")
+
+    try await recorder(failing: false).record("w", descriptor)
+    left = try await ledger.entries()
+    XCTAssertEqual(left, [], "kept after its record was written")
   }
 
   /// An exe.dev host (#259) is its own driver key, keyed by its account: never Docker's or boxd's.
@@ -1909,5 +2290,20 @@ final class RemoteHostsTests: XCTestCase {
       XCTAssertEqual(driver.provisioning?.context, key.context)
       XCTAssertEqual(driver.provisioning?.dialect, key.runtime == .apple ? .apple : .docker)
     }
+  }
+}
+
+/// The Details pane's Railway sign-in note (PR #635 review).
+final class RailwayHostNoteTests: XCTestCase {
+  /// Value: protects=the Sign In button for a Railway workroom reported signed out while a sign-in
+  /// is held, as when it leaves out the workroom's workspace; fails_when=a held sign-in hides the
+  /// note and its one recovery; seam=RailwayHostNote.shows
+  func testASignedOutWorkroomShowsTheSignInEvenWithASignInHeld() {
+    XCTAssertTrue(RailwayHostNote.shows(signedIn: true, failure: .signedOut, signedInHere: false))
+    XCTAssertTrue(RailwayHostNote.shows(signedIn: false, failure: nil, signedInHere: false))
+    XCTAssertFalse(
+      RailwayHostNote.shows(signedIn: true, failure: .signedOut, signedInHere: true),
+      "a sign-in that just finished here waits for the workroom's next read")
+    XCTAssertFalse(RailwayHostNote.shows(signedIn: true, failure: nil, signedInHere: false))
   }
 }

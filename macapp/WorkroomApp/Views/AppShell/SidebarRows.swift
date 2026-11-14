@@ -327,6 +327,9 @@ struct SidebarWorkroomRowModel: Equatable {
   let creationRun: SidebarCreationRunRef?
   let subtree: SidebarSubtreeState
   let activity: SidebarTargetActivity
+  /// Its host's provider says the host is gone (`GoneHosts`, #629): Remove Workroom is all it
+  /// offers.
+  var hostGone = false
 
   var id: SidebarID { .workroom(project: projectPath, name: workroom.name) }
   /// A remote workroom still being made: its row opens its creation pane (#483), but has nothing to
@@ -411,9 +414,12 @@ struct SidebarWorkroomRow: View, Equatable {
         .accessibilityIdentifier("sidebar.workroom.\(workroom.name).needsYou")
       }
       // The run's stop control is only present while its command is running, as on the root row.
-      RowRunButton(
-        target: target, projectPath: model.projectPath,
-        identifier: "sidebar.workroom.\(workroom.name).run")
+      // A gone host has nothing left to run or stop.
+      if !model.hostGone {
+        RowRunButton(
+          target: target, projectPath: model.projectPath,
+          identifier: "sidebar.workroom.\(workroom.name).run")
+      }
     }.frame(height: SidebarRowMetrics.rowHeight)
       .contentShape(Rectangle())
       .modifier(SidebarDragDim(id: id, drag: drag.drag))

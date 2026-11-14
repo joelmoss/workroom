@@ -141,11 +141,12 @@ final class ExeDevHostDriverTests: XCTestCase {
       to: .remote(id), session: UUID(), workingDirectory: "/home/exedev/r", restored: false,
       metadata: [])
     XCTAssertTrue(attach.contains("'exedev@\(driver.name(of: id)).exe.xyz'"), attach)
-    XCTAssertTrue(
-      attach.contains("'/usr/bin/env' 'SSH_AUTH_SOCK=/agent.sock' '/usr/bin/ssh'"), attach)
+    // The pane's client dials the VM with the user's ssh, which gets the agent (ADR 0074).
+    XCTAssertTrue(attach.contains(" 'SSH_AUTH_SOCK=/agent.sock' "), attach)
+    XCTAssertTrue(attach.contains(" 'attach' '--dial' '/usr/bin/ssh' "), attach)
     XCTAssertTrue(attach.contains("'HostKeyAlias=exe.dev'"), attach)
     XCTAssertFalse(attach.contains("'-F'"), attach)
-    XCTAssertFalse(attach.contains("WORKROOM_SESSION_RUN"), attach)
+    XCTAssertFalse(attach.contains("WORKROOM_SESSION_RUN=1"), attach)
     // A run tab's attach carries its run command through the driver to the VM (#522).
     let run = try driver.attachCommand(
       to: .remote(id), session: UUID(), workingDirectory: "/home/exedev/r", restored: false,
