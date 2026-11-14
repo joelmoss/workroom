@@ -269,6 +269,72 @@ final class RailwaySessionTests: XCTestCase {
     XCTAssertEqual(store.token, "rt-5")
   }
 
+  /// Value: protects=when Railway refuses the newest refresh token, held only in memory because
+  /// the store wouldn't take it, the sign-in ends: the store is emptied of the revoked token it
+  /// still holds, and that one is never sent (review 4, Y6); fails_when=the revoked stored token
+  /// is sent after the refusal, or stays in the store, so the session reads signed in;
+  /// seam=RailwaySession with a token store whose writes fail
+  func testAnUnsavedNewestTokenRailwayRefusesSignsOut() async throws {
+    let railway = StubRailway()
+    railway.answerToken("refresh_token") { request in
+      StubRailway.form(request)["refresh_token"] == "rt"
+        ? StubRailway.tokens(access: "at-2", refresh: "rt-2")
+        : StubRailway.oauthError("invalid_grant")
+    }
+    let clock = Mutex(Date(timeIntervalSince1970: 0))
+    let store = FlakyTokenStore()
+    let session = session(railway, store: store, now: { clock.withLock { $0 } })
+    try await session.signIn(
+      with: RailwayTokens(accessToken: "at", refreshToken: "rt", expiresIn: 60))
+    store.fail(100)
+    _ = try await session.accessToken()
+    XCTAssertEqual(store.token, "rt", "the store took the rotated token")
+
+    railway.answerToken("refresh_token") { _ in StubRailway.oauthError("invalid_grant") }
+    clock.withLock { $0 = $0.addingTimeInterval(3600) }
+    do {
+      _ = try await session.accessToken()
+      XCTFail("a refused unsaved token gave a token")
+    } catch {
+      XCTAssertEqual(error as? RailwaySessionError, .signedOut)
+    }
+    XCTAssertNil(store.token, "the revoked token stayed in the store")
+    let signedIn = await session.isSignedIn
+    XCTAssertFalse(signedIn)
+    XCTAssertEqual(railway.tokenRequests.map { $0["refresh_token"] }, ["rt", "rt-2"])
+  }
+
+  /// Value: protects=a newest refresh token held only in memory gives way to one another app
+  /// (Release beside Nightly) stored meanwhile: that one is sent, and the memory's is never
+  /// written over it (review 4, Y6); fails_when=the memory's token is sent or written over the
+  /// other app's, which revokes the sign-in; seam=RailwaySession with a token store whose writes
+  /// fail
+  func testAnUnsavedTokenGivesWayToOneAnotherAppStored() async throws {
+    let railway = StubRailway()
+    railway.answerToken("refresh_token") { request in
+      switch StubRailway.form(request)["refresh_token"] {
+      case "rt": StubRailway.tokens(access: "at-2", refresh: "rt-2")
+      case "rt-other": StubRailway.tokens(access: "at-3", refresh: "rt-3")
+      default: StubRailway.oauthError("invalid_grant")
+      }
+    }
+    let clock = Mutex(Date(timeIntervalSince1970: 0))
+    let store = FlakyTokenStore()
+    let session = session(railway, store: store, now: { clock.withLock { $0 } })
+    try await session.signIn(
+      with: RailwayTokens(accessToken: "at", refreshToken: "rt", expiresIn: 60))
+    store.fail(1)
+    _ = try await session.accessToken()
+    XCTAssertEqual(store.token, "rt")
+    try store.write("rt-other")  // Nightly signed in again meanwhile
+
+    clock.withLock { $0 = $0.addingTimeInterval(3600) }
+    let token = try await session.accessToken()
+    XCTAssertEqual(token, "at-3")
+    XCTAssertEqual(store.token, "rt-3")
+    XCTAssertEqual(railway.tokenRequests.map { $0["refresh_token"] }, ["rt", "rt-other"])
+  }
+
   /// Value: protects=a refresh token another app (Release beside Nightly) rotated meanwhile is
   /// read back from the shared store and used, rather than the rotated one this one remembered;
   /// fails_when=the stale one is sent, which revokes the whole authorization; seam=RailwaySession
