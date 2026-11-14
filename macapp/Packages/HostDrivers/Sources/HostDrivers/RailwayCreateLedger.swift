@@ -27,16 +27,21 @@ public struct RailwayCreateLedger: Sendable {
     /// The workspace that environment is in, which the sign-in must see for the sweep to act on
     /// the entry.
     public var workspaceID: String?
+    /// The project that environment is in, which the sign-in must see for Railway's "no such
+    /// sandbox" to confirm a destroy (`RailwayAPI.confirmsMissing`). Nil on an entry from before
+    /// review 5 of #623.
+    public var projectID: String?
 
     public init(
       intent: UUID = UUID(), started: Date, sandbox: String? = nil, environmentID: String? = nil,
-      workspaceID: String? = nil
+      workspaceID: String? = nil, projectID: String? = nil
     ) {
       self.intent = intent
       self.started = started
       self.sandbox = sandbox
       self.environmentID = environmentID
       self.workspaceID = workspaceID
+      self.projectID = projectID
     }
   }
 
@@ -57,10 +62,11 @@ public struct RailwayCreateLedger: Sendable {
   /// Writes a new create's intent, started `now` in `environmentID` (of `workspaceID`), before
   /// anything is made: a create whose intent can't be written makes no sandbox, since no sweep
   /// would ever account for it.
-  public func begin(environmentID: String, workspaceID: String?, now: Date = Date()) async throws
-    -> UUID
-  {
-    let entry = Entry(started: now, environmentID: environmentID, workspaceID: workspaceID)
+  public func begin(
+    environmentID: String, workspaceID: String?, projectID: String? = nil, now: Date = Date()
+  ) async throws -> UUID {
+    let entry = Entry(
+      started: now, environmentID: environmentID, workspaceID: workspaceID, projectID: projectID)
     try await update { $0.append(entry) }
     return entry.intent
   }

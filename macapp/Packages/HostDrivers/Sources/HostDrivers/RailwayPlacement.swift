@@ -127,11 +127,21 @@ public final class RailwayPlacementStore: Sendable {
         // An environment in a workspace the sign-in can't see lists as empty: only a sign-in that
         // sees it may trust the listing.
         let seen = try await api.grantedWorkspaces().map(\.id)
-        guard let from = placement.workspaceID, seen.contains(from) else {
+        // A placement an older build wrote with no workspace is in its project's.
+        var from = placement.workspaceID
+        if from == nil, let project = placement.projectID {
+          for workspace in seen
+          where try await api.projects(workspaceID: workspace).contains(where: { $0.id == project })
+          {
+            from = workspace
+            break
+          }
+        }
+        guard let from, seen.contains(from) else {
           throw RailwayPlacementError.workspaceNotSeen
         }
         let live = try await api.sandboxes(environmentID: leaving).filter {
-          !["DESTROYED", "DESTROYING"].contains($0.status)
+          !RailwaySandbox.isEnding($0.status)
         }
         guard live.isEmpty else {
           throw RailwayPlacementError.environmentHoldsSandboxes(live.count)

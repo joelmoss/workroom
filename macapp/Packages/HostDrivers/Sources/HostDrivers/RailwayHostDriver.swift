@@ -113,6 +113,9 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   /// The ledger intent of each sandbox this driver's creates made that is still on the ledger, by
   /// sandbox id.
   private let intents = Mutex<[String: UUID]>([:])
+  /// Hosts whose record names no workspace and whose workspace couldn't be told
+  /// (`workspace(of:_:)`): not looked up again this session.
+  private let unresolved = Mutex<Set<UUID>>([])
 
   public init(
     configuration: Configuration, api: RailwayAPI, directory: URL,
@@ -162,7 +165,8 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       // Written down before Railway is asked, with where it is asked: the sweep destroys only
       // what the ledger names, in the environment it was made in.
       let intent = try await ledger.begin(
-        environmentID: configuration.environmentID, workspaceID: configuration.workspaceID)
+        environmentID: configuration.environmentID, workspaceID: configuration.workspaceID,
+        projectID: configuration.projectID)
       let sandbox: String
       let delivery = RailwayDelivery()
       do {
@@ -245,9 +249,12 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   /// without one, this driver's when the sandbox is in its environment, else the workspace whose
   /// projects include the record's project, of those the sign-in sees. Whatever is found is kept
   /// on the held record, so it is looked up once and the next write of the record keeps it
-  /// (`record(_:in:)`). Nil when it can't be told; throws when Railway can't list them.
+  /// (`record(_:in:)`). Nil when it can't be told, which is remembered for this driver's life, so
+  /// a host polled for its presence lists the workspaces and their projects once, not at every
+  /// read; throws when Railway can't list them.
   func workspace(of id: UUID, _ record: RailwayHostRecord) async throws -> String? {
     if let workspace = record.workspaceID { return workspace }
+    if unresolved.withLock({ $0.contains(id) }) { return nil }
     var found: String?
     if record.environmentID == configuration.environmentID {
       found = configuration.workspaceID
@@ -260,7 +267,11 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
         break
       }
     }
-    if let found { hosts.withLock { $0[id]?.workspaceID = found } }
+    if let found {
+      hosts.withLock { $0[id]?.workspaceID = found }
+    } else {
+      unresolved.withLock { _ = $0.insert(id) }
+    }
     return found
   }
 
@@ -284,8 +295,8 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
         unknown = 0
       }
       switch status {
-      case "RUNNING": return
-      case "CREATING": try await Task.sleep(for: configuration.pollInterval)
+      case RailwaySandbox.running: return
+      case RailwaySandbox.creating: try await Task.sleep(for: configuration.pollInterval)
       default:
         throw HostDriverError.provisioning(
           "Railway's sandbox \(record.sandboxID) is \(status?.lowercased() ?? "gone") instead of"
@@ -461,17 +472,19 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
   // MARK: Presence
 
   /// The sandbox's status, read through the API: running (or still being made) is awake;
-  /// destroyed or failed is gone. Unknown to Railway is gone only when this sign-in can see this
-  /// Mac's workspace (`seesWorkspace`); under an account that can't, it is signed out. A sign-in
-  /// Railway no longer takes is signed out; anything else Railway couldn't answer is nil.
+  /// destroyed or failed is gone. Unknown to Railway is gone only when this sign-in can see the
+  /// sandbox's workspace and project (`RailwayAPI.confirmsMissing`); under an account that can't,
+  /// it is signed out. A sign-in Railway no longer takes is signed out; anything else Railway
+  /// couldn't answer is nil.
   public func presence(_ host: HostID) async -> HostPresence? {
-    guard let (id, record) = try? record(of: host) else { return nil }
+    guard let (id, held) = try? record(of: host) else { return nil }
     do {
-      let status = try await api.sandboxStatus(
-        record.sandboxID, environmentID: record.environmentID)
+      let status = try await api.sandboxStatus(held.sandboxID, environmentID: held.environmentID)
       if let status { return Self.isGone(status) ? .gone : .awake }
-      guard let workspace = try await workspace(of: id, record) else { return nil }
-      return try await seesWorkspace(workspace) ? .gone : .signedOut
+      var record = held
+      guard let workspace = try await workspace(of: id, held) else { return nil }
+      record.workspaceID = workspace
+      return try await api.confirmsMissing(record) ? .gone : .signedOut
     } catch RailwaySessionError.signedOut {
       return .signedOut
     } catch RailwayAPIError.unauthorized {
@@ -481,9 +494,7 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
     }
   }
 
-  static func isGone(_ status: String) -> Bool {
-    ["DESTROYED", "DESTROYING", "FAILED"].contains(status)
-  }
+  static func isGone(_ status: String) -> Bool { RailwaySandbox.isGone(status) }
 
   // MARK: Records
 
@@ -619,7 +630,7 @@ extension RailwayHostDriver {
     do {
       for entry in due {
         guard let sandbox = entry.sandbox else { continue }
-        let (environment, workspace) = place(of: entry)
+        let (environment, workspace, project) = place(of: entry)
         // Today's environment is this sign-in's to act on; an older one only if it sees it.
         if environment != configuration.environmentID {
           if granted == nil { granted = Set(try await api.grantedWorkspaces().map(\.id)) }
@@ -631,7 +642,7 @@ extension RailwayHostDriver {
           }
         }
         let record = RailwayHostRecord(
-          projectID: configuration.projectID, environmentID: environment, sandboxID: sandbox,
+          projectID: project, environmentID: environment, sandboxID: sandbox,
           hostKey: "", workspaceID: workspace)
         if let failure = await destroySandbox(record) {
           failures.append(failure)
@@ -648,13 +659,17 @@ extension RailwayHostDriver {
     return failures
   }
 
-  /// The environment `entry`'s sandbox was asked for in, and its workspace: the placement's for
-  /// an entry from before entries named them.
-  private func place(of entry: RailwayCreateLedger.Entry) -> (String, String?) {
+  /// The environment `entry`'s sandbox was asked for in, its workspace and its project: the
+  /// placement's for an entry from before entries named them, and the placement's project for
+  /// one in today's environment from before entries named it.
+  private func place(of entry: RailwayCreateLedger.Entry) -> (String, String?, String?) {
     guard let environment = entry.environmentID else {
-      return (configuration.environmentID, configuration.workspaceID)
+      return (configuration.environmentID, configuration.workspaceID, configuration.projectID)
     }
-    return (environment, entry.workspaceID)
+    let project =
+      entry.projectID
+      ?? (environment == configuration.environmentID ? configuration.projectID : nil)
+    return (environment, entry.workspaceID, project)
   }
 
   /// Takes the entry of `sandbox`'s create off the ledger, by its intent when this driver made
@@ -746,25 +761,28 @@ extension RailwayAPI {
   /// Destroys `record`'s sandbox: nil once it is gone, whether this destroyed it or it already
   /// was, else what is wrong. Railway's answer for a sandbox it no longer has isn't documented, so
   /// a refusal is checked against the sandbox's status rather than its words. The record's
-  /// workspace is the one a "no such sandbox" read is confirmed against (`sees(workspace:)`).
+  /// workspace and project are what a "no such sandbox" read is confirmed against
+  /// (`confirmsMissing`).
   func destroyConfirmed(_ record: RailwayHostRecord) async -> String? {
     do {
       try await destroySandbox(record.sandboxID, environmentID: record.environmentID)
       return nil
     } catch {
-      // A read that went through and found it destroyed is gone; one that found no such sandbox
-      // is gone only when this sign-in can see its workspace. Anything else (failed or still
-      // destroying, which may bill on), or a read that failed, leaves the destroy unconfirmed.
+      // A read that went through and found it destroyed is gone, and so is one that found it
+      // failed: Railway won't destroy a failed sandbox, and this destroy was tried. One that found
+      // no such sandbox is gone only when this sign-in can see its workspace and project.
+      // Anything else (still destroying, which may bill on), or a read that failed, leaves the
+      // destroy unconfirmed.
       do {
         let status = try await sandboxStatus(record.sandboxID, environmentID: record.environmentID)
         if let status {
-          if status == "DESTROYED" { return nil }
-        } else if try await sees(workspace: record.workspaceID) {
+          if status == RailwaySandbox.destroyed || status == RailwaySandbox.failed { return nil }
+        } else if try await confirmsMissing(record) {
           return nil
         } else {
           return "Railway sandbox \(record.sandboxID): Railway's sign-in can't see the workspace "
-            + "it was made in, so Workroom can't tell whether it is gone. Sign in to Railway "
-            + "with the account that made it, then try again."
+            + "or project it was made in, so Workroom can't tell whether it is gone. Sign in to "
+            + "Railway with the account that made it, then try again."
         }
       } catch {}
       return "Railway sandbox \(record.sandboxID): \(error.localizedDescription)"
@@ -772,11 +790,23 @@ extension RailwayAPI {
   }
 
   /// Whether this sign-in can see `workspaceID` (`me { workspaces }`): what makes Railway's "no
-  /// such sandbox" trustworthy, since an account that can't see the workspace reads every
-  /// sandbox in it as missing. False for no workspace; throws when Railway can't list them.
+  /// such sandbox" trustworthy, with the project (`confirmsMissing`), since an account that can't
+  /// see the workspace reads every sandbox in it as missing. False for no workspace; throws when
+  /// Railway can't list them.
   func sees(workspace workspaceID: String?) async throws -> Bool {
     guard let workspaceID else { return false }
     return try await grantedWorkspaces().contains { $0.id == workspaceID }
+  }
+
+  /// Whether Railway's "no such sandbox" for `record`'s sandbox can be trusted: this sign-in sees
+  /// its workspace, and its project among that workspace's projects. A sign-in granted the
+  /// workspace but not the project reads every sandbox in it as missing too. False for a record
+  /// naming no workspace or project; throws when Railway can't list them.
+  func confirmsMissing(_ record: RailwayHostRecord) async throws -> Bool {
+    guard let workspace = record.workspaceID, let project = record.projectID,
+      try await sees(workspace: workspace)
+    else { return false }
+    return try await projects(workspaceID: workspace).contains { $0.id == project }
   }
 
   /// The user's own ssh keys on the account, as their public key lines, page by page.
@@ -825,29 +855,46 @@ public struct RailwaySandbox: Decodable, Equatable, Sendable {
     case id, status, createdAt
     case environmentID = "environmentId"
   }
+
+  // Railway's sandbox statuses, as `sandboxStatus` and `sandboxes` read them.
+  public static let creating = "CREATING"
+  public static let running = "RUNNING"
+  public static let destroying = "DESTROYING"
+  public static let destroyed = "DESTROYED"
+  public static let failed = "FAILED"
+
+  /// Destroyed, or on its way: no longer a live sandbox.
+  public static func isEnding(_ status: String) -> Bool {
+    status == destroyed || status == destroying
+  }
+
+  /// What a workroom reads as its host gone: ending, or failed.
+  public static func isGone(_ status: String) -> Bool { isEnding(status) || status == failed }
 }
 
 extension RailwayAPI {
-  /// Every sandbox in `environmentID`, page by page; destroyed ones are listed too.
+  /// Every live sandbox in `environmentID`, page by page: Railway's `active` filter leaves out
+  /// destroyed ones, so the page cap counts live sandboxes. Callers still check each status.
   public func sandboxes(environmentID: String) async throws -> [RailwaySandbox] {
     struct Answer: Decodable { let sandboxes: RailwayConnection<RailwaySandbox> }
     return try await pages { after in
       var variables: [String: RailwayJSON] = [
-        "environmentId": .string(environmentID), "first": 100,
+        "environmentId": .string(environmentID), "first": 100, "active": true,
       ]
       if let after { variables["after"] = .string(after) }
       return try await query(
-        "query sandboxes($environmentId: String!, $first: Int, $after: String) { sandboxes("
-          + "environmentId: $environmentId, first: $first, after: $after) { edges { node { id "
-          + "status createdAt environmentId } } pageInfo { hasNextPage endCursor } } }",
+        "query sandboxes($environmentId: String!, $first: Int, $after: String, $active: "
+          + "Boolean) { sandboxes(environmentId: $environmentId, first: $first, after: $after, "
+          + "active: $active) { edges { node { id status createdAt environmentId } } pageInfo { "
+          + "hasNextPage endCursor } } }",
         variables: variables, as: Answer.self
       ).sandboxes
     }
   }
 
   /// The most pages a listing reads (`pages`): 10,000 sandboxes at 100 a page, far past what an
-  /// environment holds (Railway caps its live ones at 100, though destroyed ones are listed too),
-  /// and far past any account's ssh keys.
+  /// environment holds (Railway caps its live ones at 100, and only live ones are listed), and
+  /// far past any account's ssh keys.
   public static let maxPages = 100
 
   /// Every node of a Relay connection, asking for each page after the last one's `endCursor`. A

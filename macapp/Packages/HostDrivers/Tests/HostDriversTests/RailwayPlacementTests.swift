@@ -234,6 +234,25 @@ final class RailwayPlacementTests: XCTestCase {
     XCTAssertEqual(listed(railway), [], "listed an environment the sign-in can't see")
   }
 
+  /// Value: protects=a placement an older build wrote with no workspace can still move: its
+  /// workspace is the one of those the sign-in sees whose projects include its project, and the
+  /// move goes ahead on that environment's empty listing (review 5, D2.5); fails_when=a placement
+  /// with no workspace is refused for good, or moves without listing its environment; seam=ensure
+  /// over StubRailway
+  func testAPlacementWithNoWorkspaceMovesFromItsProjectsWorkspace() async throws {
+    try store.update {
+      $0 = RailwayPlacement(workspaceID: nil, projectID: "prj-1", environmentID: "env-1")
+    }
+    let railway = railway(projects: [["id": "prj-1", "name": "Workroom"]])
+    list(railway, ["sbx-old": "DESTROYED"])
+    let placed = try await store.ensure(
+      workspaceID: "ws-2", api: RailwayAPI(transport: railway, tokens: Tokens()),
+      environmentName: "mac-x-1")
+    XCTAssertEqual(placed.environmentID, "env-mac")
+    XCTAssertEqual(store.read().workspaceID, "ws-2")
+    XCTAssertEqual(listed(railway), ["env-1"])
+  }
+
   /// Value: protects=the setup sheet's pick of an existing project (story 14) gets this Mac's
   /// environment in it; fails_when=a project is made beside the picked one, or the recorded
   /// project is kept; seam=ensure with a project

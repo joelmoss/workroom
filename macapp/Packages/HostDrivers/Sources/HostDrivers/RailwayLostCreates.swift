@@ -116,7 +116,7 @@ public struct RailwayLostCreates: Sendable {
     let placed = placement?.environmentID == environment ? placement : nil
     return Create(
       id: entry.intent, started: entry.started, environmentID: environment,
-      workspaceID: entry.workspaceID, projectID: placed?.projectID)
+      workspaceID: entry.workspaceID, projectID: entry.projectID ?? placed?.projectID)
   }
 
   /// The sandboxes `create` may have made, read now (see the type), oldest first: none of them
@@ -135,8 +135,7 @@ public struct RailwayLostCreates: Sendable {
     let to = create.started.addingTimeInterval(Self.after)
     let window = from...to
     return try await api.sandboxes(environmentID: environment).filter { sandbox in
-      guard sandbox.environmentID == environment,
-        !["DESTROYED", "DESTROYING"].contains(sandbox.status),
+      guard sandbox.environmentID == environment, !RailwaySandbox.isEnding(sandbox.status),
         !recorded.contains(sandbox.id), !named.contains(sandbox.id),
         let made = sandbox.createdAt.flatMap(Self.date)
       else { return false }

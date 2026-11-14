@@ -309,6 +309,8 @@ final class RailwaySweepTests: XCTestCase {
     XCTAssertEqual(first.map(\.id), ["sbx-a", "sbx-b"])
     XCTAssertEqual(
       requests(railway, "sandboxes").compactMap { $0["environmentId"] as? String }, ["env-1"])
+    // Live ones only, so the pager's page cap counts live sandboxes (review 5, D2.6).
+    XCTAssertEqual(requests(railway, "sandboxes").first?["active"] as? Bool, true)
 
     // sbx-a is gone from Railway now: the next read doesn't offer it.
     let later = self.railway(Array(rows.dropFirst()))
@@ -645,14 +647,19 @@ final class RailwaySweepTests: XCTestCase {
             body: Data(#"{"data":{"sandboxCreate":{"id":"sbx-1","status":"CREATING"}}}"#.utf8))
         }
       }
-      // It fails to start, and Railway won't destroy it.
+      // It fails to start, and Railway won't destroy it: still destroying after the try, which
+      // may bill on.
+      let tried = Mutex(false)
       railway.answer("sandbox") { _ in
         chmod(path, 0o700)
+        let status = tried.withLock { $0 } ? "DESTROYING" : "FAILED"
         return RailwayHTTPResponse(
-          status: 200, body: Data(#"{"data":{"sandbox":{"id":"sbx-1","status":"FAILED"}}}"#.utf8))
+          status: 200,
+          body: Data(#"{"data":{"sandbox":{"id":"sbx-1","status":"\#(status)"}}}"#.utf8))
       }
       railway.answer("sandboxDestroy") { _ in
-        RailwayHTTPResponse(
+        tried.withLock { $0 = true }
+        return RailwayHTTPResponse(
           status: 200, body: Data(#"{"errors":[{"message":"Railway is down"}]}"#.utf8))
       }
       addTeardownBlock { chmod(path, 0o700) }

@@ -100,6 +100,9 @@ final class RailwayHostDriverTests: XCTestCase {
       "sandboxDestroy", data: ["sandboxDestroy": ["id": "sbx-1", "status": "DESTROYING"]])
     railway.answer(
       "me", data: ["me": ["workspaces": [["id": "ws-1", "name": "Mine", "plan": "PRO"]]]])
+    // The sign-in sees this Mac's project in it.
+    railway.answer(
+      "projects", data: ["projects": ["edges": [["node": ["id": "prj-1", "name": "Workroom"]]]]])
     return railway
   }
 
@@ -217,10 +220,13 @@ final class RailwayHostDriverTests: XCTestCase {
       XCTAssertEqual(record(driver, .remote(id))?.workspaceID, "ws-old", "legacy: \(legacy)")
       try await driver.destroy(.remote(id))
     }
+    // ws-1's projects are read only to look the legacy record's workspace up; ws-old's are also
+    // what each null read is confirmed against (review 5, D2.3).
     let lookups = railway.graphQLRequests.map(StubRailway.graphQLBody).filter {
       ($0["query"] as? String)?.contains("projects(") == true
+        && ($0["variables"] as? [String: Any])?["workspaceId"] as? String == "ws-1"
     }
-    XCTAssertLessThanOrEqual(lookups.count, 2, "the legacy record's workspace was asked again")
+    XCTAssertEqual(lookups.count, 1, "the legacy record's workspace was asked again")
   }
 
   /// Value: protects=the Mac reaches its host with a key of its own, registered once on the
@@ -458,15 +464,19 @@ final class RailwayHostDriverTests: XCTestCase {
       XCTFail("an unconfirmed null read completed the delete")
     } catch {}
 
-    // No workspace recorded for this Mac: nothing to confirm against.
+    // No workspace recorded for this Mac, nor one whose projects hold the record's: nothing to
+    // confirm against.
     let unplaced = self.driver(railway, StubRelay(), workspaceID: nil)
     try unplaced.adopt(descriptor)
     railway.answer(
       "me", data: ["me": ["workspaces": [["id": "ws-1", "name": "Mine", "plan": "PRO"]]]])
+    railway.answer("projects", data: ["projects": ["edges": [Any]()]])
     presence = await unplaced.presence(host)
     XCTAssertNil(presence, "a null read with no workspace to confirm")
 
     // This Mac's workspace is seen: the null read is gone, and the delete completes.
+    railway.answer(
+      "projects", data: ["projects": ["edges": [["node": ["id": "prj-1", "name": "Workroom"]]]]])
     try driver.adopt(descriptor)
     presence = await driver.presence(host)
     XCTAssertEqual(presence, .gone)
@@ -519,9 +529,9 @@ final class RailwayHostDriverTests: XCTestCase {
   }
 
   /// Value: protects=a destroy Railway refused is taken for done only when the sandbox reads as
-  /// destroyed, or as missing with the workspace seen: a failed or still-destroying sandbox may
-  /// bill on, so its record stays to be deleted again (review 4, X1); fails_when=FAILED or
-  /// DESTROYING after a refused destroy completes the delete; seam=ProvisioningHostDriver.destroy
+  /// destroyed or failed, or as missing with the workspace seen: a still-destroying sandbox may
+  /// bill on, so its record stays to be deleted again (review 4, X1); fails_when=DESTROYING or
+  /// RUNNING after a refused destroy completes the delete; seam=ProvisioningHostDriver.destroy
   /// over StubRailway
   func testARefusedDestroyIsConfirmedOnlyByADestroyedOrMissingSandbox() async throws {
     let railway = railway()
@@ -531,7 +541,7 @@ final class RailwayHostDriverTests: XCTestCase {
       RailwayHTTPResponse(
         status: 200, body: Data(#"{"errors":[{"message":"Sandbox is busy"}]}"#.utf8))
     }
-    for status in ["FAILED", "DESTROYING"] {
+    for status in ["RUNNING", "DESTROYING"] {
       railway.answer("sandbox", data: ["sandbox": ["id": "sbx-1", "status": status]])
       do {
         try await driver.destroy(host)
@@ -541,6 +551,91 @@ final class RailwayHostDriverTests: XCTestCase {
     }
     railway.answer("sandbox", data: ["sandbox": ["id": "sbx-1", "status": "DESTROYED"]])
     try await driver.destroy(host)
+  }
+
+  /// Value: protects=a workroom whose sandbox Railway marked FAILED can be removed: Railway won't
+  /// destroy a failed sandbox, and once a destroy was tried, FAILED counts as gone (review 5,
+  /// D2.2); fails_when=a refused destroy of a FAILED sandbox fails the delete for good;
+  /// seam=ProvisioningHostDriver.destroy over StubRailway
+  func testAFailedSandboxIsConfirmedGoneOnceADestroyWasTried() async throws {
+    let railway = railway()
+    let driver = driver(railway, StubRelay())
+    let host = try await driver.create()
+    railway.answer("sandboxDestroy") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Sandbox is not running"}]}"#.utf8))
+    }
+    railway.answer("sandbox", data: ["sandbox": ["id": "sbx-1", "status": "FAILED"]])
+    try await driver.destroy(host)
+    XCTAssertNotNil(variables(railway, "sandboxDestroy"), "no destroy was tried")
+  }
+
+  /// Value: protects=a "no such sandbox" read is trusted only when the sign-in can see the
+  /// sandbox's project as well as its workspace: a sign-in granted the workspace but not the
+  /// project reads every sandbox in it as missing (review 5, D2.3); fails_when=a null read under
+  /// a sign-in that can't see the record's project, or with no project recorded, reads as gone or
+  /// completes a delete; seam=HostPresenceReporting and destroy over StubRailway
+  func testANullSandboxIsGoneOnlyWhenTheSignInSeesItsProject() async throws {
+    let railway = railway()
+    let driver = driver(railway, StubRelay())
+    let host = try await driver.create()
+    railway.answer("sandbox", data: ["sandbox": NSNull()])
+    railway.answer("sandboxDestroy") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Sandbox not found"}]}"#.utf8))
+    }
+    railway.answer(
+      "projects", data: ["projects": ["edges": [["node": ["id": "prj-other", "name": "Apps"]]]]])
+    var presence = await driver.presence(host)
+    XCTAssertEqual(presence, .signedOut, "a null read with the project unseen")
+    do {
+      try await driver.destroy(host)
+      XCTFail("a null read with the project unseen completed the delete")
+    } catch {}
+
+    // No project recorded: nothing to confirm the read against.
+    guard case .remote(let id) = host else { return XCTFail("\(host)") }
+    let unprojected = HostDescriptor(
+      driver: "railway", id: id,
+      railway: RailwayHostRecord(
+        projectID: nil, environmentID: "env-1", sandboxID: "sbx-1", hostKey: "",
+        workspaceID: "ws-1"))
+    let fresh = self.driver(railway, StubRelay())
+    try fresh.adopt(unprojected)
+    presence = await fresh.presence(host)
+    XCTAssertNotEqual(presence, .gone, "a null read with no project recorded")
+
+    railway.answer(
+      "projects", data: ["projects": ["edges": [["node": ["id": "prj-1", "name": "Workroom"]]]]])
+    presence = await driver.presence(host)
+    XCTAssertEqual(presence, .gone)
+    try readopt(driver, host)
+    try await driver.destroy(host)
+  }
+
+  /// Value: protects=a record an older build wrote whose workspace can't be told costs its poll one
+  /// status read, not a listing of every workspace's projects each time (review 5, D2.4);
+  /// fails_when=every presence read of such a host lists the workspaces and their projects again;
+  /// seam=HostPresenceReporting over StubRailway, counting requests
+  func testALegacyRecordWhoseWorkspaceCantBeToldIsLookedUpOnce() async throws {
+    let railway = railway(status: nil)
+    let driver = driver(railway, StubRelay())
+    let id = UUID()
+    try driver.adopt(
+      HostDescriptor(
+        driver: "railway", id: id,
+        railway: RailwayHostRecord(
+          projectID: "prj-gone", environmentID: "env-old", sandboxID: "sbx-old", hostKey: "")))
+    func asked(_ field: String) -> Int {
+      railway.graphQLRequests.map(StubRailway.graphQLBody)
+        .filter { ($0["query"] as? String)?.contains(field) == true }.count
+    }
+    for _ in 0..<3 {
+      let presence = await driver.presence(.remote(id))
+      XCTAssertNil(presence)
+    }
+    XCTAssertEqual(asked("me { workspaces"), 1)
+    XCTAssertEqual(asked("projects("), 1)
   }
 
   /// Value: protects=deleting the workroom stops the bill (user story 27); fails_when=the sandbox
