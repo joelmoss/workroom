@@ -236,13 +236,13 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       return nil
     } catch {
       // A read that went through and found it destroyed is gone; one that found no such sandbox
-      // is gone only when this sign-in can see its workspace. A read that failed leaves the
-      // destroy unconfirmed.
+      // is gone only when this sign-in can see its workspace. Anything else (failed or still
+      // destroying, which may bill on), or a read that failed, leaves the destroy unconfirmed.
       do {
         let status = try await api.sandboxStatus(
           record.sandboxID, environmentID: record.environmentID)
         if let status {
-          if Self.isGone(status) { return nil }
+          if status == "DESTROYED" { return nil }
         } else if try await seesWorkspace(workspaceID) {
           return nil
         } else {
@@ -845,15 +845,20 @@ extension RailwayAPI {
     ).sandbox?.status
   }
 
+  /// Asks Railway to destroy the sandbox. An answer naming no sandbox, even without errors,
+  /// throws (`malformed`): it confirms nothing, so the caller reads the sandbox's status.
   public func destroySandbox(_ id: String, environmentID: String) async throws {
     struct Answer: Decodable {
       struct Sandbox: Decodable { let id: String }
       let sandboxDestroy: Sandbox?
     }
-    _ = try await query(
+    let answer = try await query(
       "mutation sandboxDestroy($id: String!, $environmentId: String!) { sandboxDestroy(id: $id, "
         + "environmentId: $environmentId) { id status } }",
       variables: ["id": .string(id), "environmentId": .string(environmentID)], as: Answer.self)
+    guard answer.sandboxDestroy != nil else {
+      throw RailwayAPIError.malformed("Railway's destroy named no sandbox")
+    }
   }
 
   /// The user's own ssh keys on the account, as their public key lines, page by page.

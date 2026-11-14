@@ -425,6 +425,62 @@ final class RailwayHostDriverTests: XCTestCase {
 
   // MARK: Delete and relaunch
 
+  /// `driver`'s host `host` adopted again from its record, as a delete that failed leaves it.
+  private func readopt(_ driver: RailwayHostDriver, _ host: HostID) throws {
+    guard case .remote(let id) = host else { return XCTFail("\(host)") }
+    try driver.adopt(
+      HostDescriptor(
+        driver: "railway", id: id,
+        railway: RailwayHostRecord(
+          projectID: "prj-1", environmentID: "env-1", sandboxID: "sbx-1", hostKey: "",
+          workspaceID: "ws-1")))
+  }
+
+  /// Value: protects=a destroy Railway answers with a null sandbox and no errors is confirmed by
+  /// the sandbox's status before the host is let go, so a record is never forgotten while its
+  /// sandbox bills on (review 4, X5); fails_when=a null answer counts as destroyed with the
+  /// sandbox still running; seam=ProvisioningHostDriver.destroy over StubRailway
+  func testANullDestroyAnswerIsConfirmedByTheSandboxsStatus() async throws {
+    let railway = railway()
+    let driver = driver(railway, StubRelay())
+    let host = try await driver.create()
+    railway.answer("sandboxDestroy", data: ["sandboxDestroy": NSNull()])
+    railway.answer("sandbox", data: ["sandbox": ["id": "sbx-1", "status": "RUNNING"]])
+    do {
+      try await driver.destroy(host)
+      XCTFail("a null destroy answer let a running sandbox go")
+    } catch {}
+
+    railway.answer("sandbox", data: ["sandbox": ["id": "sbx-1", "status": "DESTROYED"]])
+    try readopt(driver, host)
+    try await driver.destroy(host)
+  }
+
+  /// Value: protects=a destroy Railway refused is taken for done only when the sandbox reads as
+  /// destroyed, or as missing with the workspace seen: a failed or still-destroying sandbox may
+  /// bill on, so its record stays to be deleted again (review 4, X1); fails_when=FAILED or
+  /// DESTROYING after a refused destroy completes the delete; seam=ProvisioningHostDriver.destroy
+  /// over StubRailway
+  func testARefusedDestroyIsConfirmedOnlyByADestroyedOrMissingSandbox() async throws {
+    let railway = railway()
+    let driver = driver(railway, StubRelay())
+    let host = try await driver.create()
+    railway.answer("sandboxDestroy") { _ in
+      RailwayHTTPResponse(
+        status: 200, body: Data(#"{"errors":[{"message":"Sandbox is busy"}]}"#.utf8))
+    }
+    for status in ["FAILED", "DESTROYING"] {
+      railway.answer("sandbox", data: ["sandbox": ["id": "sbx-1", "status": status]])
+      do {
+        try await driver.destroy(host)
+        XCTFail("a refused destroy of a \(status) sandbox completed the delete")
+      } catch {}
+      try readopt(driver, host)
+    }
+    railway.answer("sandbox", data: ["sandbox": ["id": "sbx-1", "status": "DESTROYED"]])
+    try await driver.destroy(host)
+  }
+
   /// Value: protects=deleting the workroom stops the bill (user story 27); fails_when=the sandbox
   /// is kept, or one already gone fails the delete; seam=ProvisioningHostDriver.destroy
   func testDeletingTheWorkroomDestroysTheSandbox() async throws {

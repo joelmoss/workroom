@@ -208,20 +208,30 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
 }
 
 /// What a Railway host's descriptor records (ADR 0071): the sandbox Railway made, in this Mac's
-/// environment of the `Workroom` project, and the relay's host key as it was pinned. A sandbox has
+/// environment of the `Workroom` project, and the workspace that is in. A sandbox has
 /// no name or label, so nothing but this record ties it to its workroom.
 public struct RailwayHostRecord: Codable, Hashable, Sendable {
   public var projectID: String?
   public var environmentID: String
   public var sandboxID: String
-  /// The relay's host key, `<type> <base64>`: the only key a login to this host accepts.
+  /// The relay's host key as an older build pinned it on first use, `<type> <base64>`. Kept so
+  /// those builds still read the record; ignored now that the relay's key ships in the app
+  /// (`RailwayHostDriver.relayHostKey`), the only one any login trusts.
   public var hostKey: String
+  /// The workspace the environment is in, which a "no such sandbox" read is confirmed against: a
+  /// sign-in that can't see it reads every sandbox in it as missing. Nil in a record an older
+  /// build wrote, which the driver resolves from the environment's project once.
+  public var workspaceID: String?
 
-  public init(projectID: String?, environmentID: String, sandboxID: String, hostKey: String) {
+  public init(
+    projectID: String?, environmentID: String, sandboxID: String, hostKey: String,
+    workspaceID: String? = nil
+  ) {
     self.projectID = projectID
     self.environmentID = environmentID
     self.sandboxID = sandboxID
     self.hostKey = hostKey
+    self.workspaceID = workspaceID
   }
 
   enum CodingKeys: String, CodingKey {
@@ -229,6 +239,7 @@ public struct RailwayHostRecord: Codable, Hashable, Sendable {
     case environmentID = "environment_id"
     case sandboxID = "sandbox_id"
     case hostKey = "host_key"
+    case workspaceID = "workspace_id"
   }
 }
 
