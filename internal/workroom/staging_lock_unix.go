@@ -42,7 +42,8 @@ func createStagingLock(path string) (*os.File, error) {
 // lock file to judge by; lockUnsupported that the filesystem can't say. Anything else it can't
 // settle is lockHeld, which keeps the staging.
 func probeStagingLock(path string) (*os.File, lockState) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	// O_NONBLOCK: a FIFO planted at the path would otherwise block this open until a writer came.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return nil, lockMissing

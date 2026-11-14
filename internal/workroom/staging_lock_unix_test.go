@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/joelmoss/workroom/internal/errs"
 )
@@ -309,5 +310,31 @@ func TestRunClone_GitInheritsTheLock(t *testing.T) {
 	}
 	if lockIsHeld(t, stage+".lock") {
 		t.Fatal("the lock is still held after git and its helper are gone")
+	}
+}
+
+// Value: protects=a FIFO planted at a staging lock path can't hang the sweep (or --pretend) past
+// cancel; the staging is kept; fails_when=the probe opens the lock without O_NONBLOCK; why_new=every
+// other test uses regular lock files; seam=none; no_claim=does not cover other special files
+func TestProbeStagingLock_FIFODoesNotBlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".clone-x.lock")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan lockState, 1)
+	go func() {
+		f, state := probeStagingLock(path)
+		if f != nil {
+			_ = f.Close()
+		}
+		done <- state
+	}()
+	select {
+	case state := <-done:
+		if state != lockHeld {
+			t.Fatalf("FIFO lock judged %v, want lockHeld (kept)", state)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("probing a FIFO lock blocked")
 	}
 }
