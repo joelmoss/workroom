@@ -95,7 +95,7 @@ def evaluate(snapshot, expect):
     for key, status in sorted(entries):
         index = occurrences.get(key, 0)
         occurrences[key] = index + 1
-        rows[*key, index] = status
+        rows[(*key, index)] = status
     missing = tuple(sorted(set(expect) - names)) if not snapshot.get("isDraft") else ()
     return rows, missing
 
