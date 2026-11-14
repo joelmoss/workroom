@@ -150,6 +150,19 @@ This complements the suite's `SIGSTOP`. Use the Dev app (`make app-run`) and a t
 3. If you have a second machine that can reach the host, for example your own `railway ssh` into the sandbox, run the same `pgrep` there before this Mac comes back. The relays from step 1 should be gone.
 4. Turn Wi-Fi back on. The pane shows the retry notice, then reattaches with `top` still running. Once it is back, `pgrep` shows new relays only: none of step 1's pids are left.
 
+### Railway's API assumptions
+
+`RailwayAPIAssumptionsLiveTests`, in the same folder, checks three things the driver assumes of Railway's API and no offline test can: that `environment(id:) { projectId }` names an environment's project (what the sweep, a host's presence and a placement move fall back on for a record that names no project), that `sandboxes(active: true)` lists a sandbox while it is creating and running and leaves it out once destroyed (what the lost-create candidates and a placement move rely on), and how Railway treats a FAILED sandbox. It takes under a minute and needs only the Railway settings above:
+
+```sh
+WR_RAILWAY_LIVE_TESTS=1 WR_RAILWAY_SIGN_IN=1 WR_RAILWAY_WORKSPACE=<id> \
+  swift test --package-path macapp/Packages/HostDrivers --filter RailwayAPIAssumptionsLiveTests
+```
+
+It makes the project `workroom-api-checks` and its environment `api-checks` the first time and reuses them on every later run, since a member sign-in can delete neither. Every sandbox it makes it destroys. Each line it prints starts `railway api check:`.
+
+On 2026-11-14 the lookup named the project and the filter behaved as assumed. A FAILED sandbox couldn't be made: Railway refuses a create from a checkpoint that doesn't exist outright ("Sandbox checkpoint not found…"), so the check logs that and moves on. Whether Railway destroys or bills a FAILED sandbox, which the driver reads as gone once a destroy was tried, is still unchecked.
+
 ## 2. exe.dev, boxd and SSH host checks (#628)
 
 ADR 0074 changed the attach path for every ssh host, not only Railway. Every pane now runs the Mac's own `workroomd attach`, which starts `ssh -T … relay` itself.
