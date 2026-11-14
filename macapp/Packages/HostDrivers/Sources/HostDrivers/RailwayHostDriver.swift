@@ -334,7 +334,7 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       + [
         id.uuidString.lowercased(), configuration.daemonSocket,
         // Where the daemon really keeps them, which a checkpoint's copy has to clear.
-        DaemonBootstrap.screens(besideSocket: configuration.daemonSocket),
+        try DaemonBootstrap.screens(besideSocket: configuration.daemonSocket),
       ]
       .map(PosixShell.quoted).joined(separator: " ")
     try await login(
