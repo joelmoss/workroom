@@ -4,6 +4,9 @@
 #
 #   sh -s -- <host id> <daemon socket> <screens>
 #
+# <screens> is the daemon's own, beside its socket (`DaemonBootstrap.screens`), and its layouts
+# are beside that.
+#
 # A sandbox has no systemd and no sshd (the relay terminates ssh), so there is no identity unit or
 # supervisor to install: the app starts the daemon from an ssh login, and it outlives that login
 # (`DaemonBootstrap`, start.sh). Its /etc/machine-id is empty, on a fork too, so the host gets an

@@ -261,15 +261,21 @@ final class RailwayHostOptionsTests: XCTestCase {
   // MARK: A checkpoint's disk
 
   /// Value: protects=a host restored from a checkpoint of a used host gets its own identity and
-  /// none of the source's terminals or pane layouts; fails_when=railway.sh keeps the source's
-  /// machine id, screens or layouts because they are already there; why_new=#633 (checkpoints
-  /// copy the disk); seam=railway.sh, run against a throwaway /etc and state folder
-  func testTheHostSetupGivesACheckpointsCopyItsOwnIdentityAndNoOldScreens() throws {
+  /// none of the source's terminals or pane layouts, at the paths the daemon really keeps them
+  /// (beside its socket: `DaemonBootstrap`'s start), not paths of the setup's own (review 3, C7);
+  /// fails_when=railway.sh keeps the source's machine id, screens or layouts because they are
+  /// already there, or the driver's setup clears folders the daemon doesn't use; why_new=#633
+  /// (checkpoints copy the disk); seam=the setup command create sends over the relay, run with
+  /// railway.sh against a throwaway /etc and state folder
+  func testTheHostSetupGivesACheckpointsCopyItsOwnIdentityAndNoOldScreens() async throws {
     let manager = FileManager.default
     let etc = root.appendingPathComponent("etc")
     let state = root.appendingPathComponent("state")
-    let screens = state.appendingPathComponent("screens")
-    let layouts = state.appendingPathComponent("layouts")
+    let socket = state.appendingPathComponent("daemon/workroomd.sock").path
+    // Where the daemon keeps them: `DaemonBootstrap.start` serves `<socket's folder>/screens`,
+    // and the daemon keeps its layouts beside its screens.
+    let screens = state.appendingPathComponent("daemon/screens")
+    let layouts = state.appendingPathComponent("daemon/layouts")
     for dir in [etc, screens, layouts] {
       try manager.createDirectory(at: dir, withIntermediateDirectories: true)
     }
@@ -279,22 +285,42 @@ final class RailwayHostOptionsTests: XCTestCase {
       to: etc.appendingPathComponent("workroom-identity"), atomically: true, encoding: .utf8)
     try "old".write(to: screens.appendingPathComponent("s1"), atomically: true, encoding: .utf8)
     try "old".write(to: layouts.appendingPathComponent("l1"), atomically: true, encoding: .utf8)
+    XCTAssertEqual(
+      DaemonBootstrap.screens(besideSocket: socket), screens.path, "the daemon's own screens")
 
-    let id = "0a1b2c3d-0000-4000-8000-00000000abcd"
-    let script = try HostSetup.checkout.script("railway")
+    // The setup command create sends, with the daemon's socket in the throwaway state folder.
+    let relay = StubRelay()
+    let driver = RailwayHostDriver(
+      configuration: .init(
+        environmentID: "env-1", projectID: "prj-1", workspaceID: "ws-1",
+        keys: root.appendingPathComponent("railway"),
+        relayHost: RailwayHostDriverTests.relayHost, daemonSocket: socket,
+        hostSetup: .checkout, pollInterval: .milliseconds(1)),
+      api: RailwayAPI(transport: railway(), tokens: Tokens()),
+      directory: root.appendingPathComponent("hosts"), runner: relay)
+    let host = try await driver.create()
+    guard case .remote(let id) = host else { return XCTFail("\(host)") }
+    let setup = try XCTUnwrap(relay.calls(to: "ssh").first)
+    let command = try XCTUnwrap(setup.args.last)
+    let arguments = command.split(separator: " ").dropFirst(3).map {
+      $0.trimmingCharacters(in: CharacterSet(charactersIn: "'"))
+    }
+    for path in arguments.dropFirst() {
+      XCTAssertTrue(path.hasPrefix(state.path), "the setup reaches outside the host's state: \(path)")
+    }
+    guard arguments.dropFirst().allSatisfy({ $0.hasPrefix(state.path) }) else { return }
+
     let run = try shell(
-      "WORKROOM_ETC=\(PosixShell.quoted(etc.path)) sh -s -- \(id) "
-        + "\(PosixShell.quoted(state.appendingPathComponent("daemon/workroomd.sock").path)) "
-        + PosixShell.quoted(screens.path),
-      stdin: script)
+      "WORKROOM_ETC=\(PosixShell.quoted(etc.path)) \(command)",
+      stdin: String(decoding: try XCTUnwrap(setup.stdin), as: UTF8.self))
 
     XCTAssertEqual(run.status, 0, run.output)
     XCTAssertEqual(
       try String(contentsOf: etc.appendingPathComponent("machine-id"), encoding: .utf8),
-      "0a1b2c3d000040008000" + "00000000abcd\n")
+      id.uuidString.lowercased().replacingOccurrences(of: "-", with: "") + "\n")
     XCTAssertEqual(
       try String(contentsOf: etc.appendingPathComponent("workroom-identity"), encoding: .utf8),
-      id + "\n")
+      id.uuidString.lowercased() + "\n")
     XCTAssertEqual(try manager.contentsOfDirectory(atPath: screens.path), [])
     XCTAssertFalse(manager.fileExists(atPath: layouts.appendingPathComponent("l1").path))
   }

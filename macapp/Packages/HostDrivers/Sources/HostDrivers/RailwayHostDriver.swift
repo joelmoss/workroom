@@ -49,8 +49,8 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
     public var relayHost: String
     /// The name the Mac's key is registered under on the account.
     public var keyName: String
+    /// The daemon's socket, beside which it keeps its screens and layouts (`DaemonBootstrap`).
     public var daemonSocket: String
-    public var screens: String
     public var hostSetup: HostSetup
     /// How long between reads of a new sandbox's status, and how many before giving up.
     public var pollInterval: Duration
@@ -65,7 +65,6 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       relayHost: String = RailwayHostDriver.relay,
       keyName: String = "Workroom on \(ProcessInfo.processInfo.hostName)",
       daemonSocket: String = "\(RailwayHostDriver.stateDirectory)/daemon/workroomd.sock",
-      screens: String = "\(RailwayHostDriver.stateDirectory)/screens",
       hostSetup: HostSetup, pollInterval: Duration = .seconds(2), readyTries: Int = 150,
       gitHubToken: (@Sendable () async throws -> String)? = nil
     ) {
@@ -76,7 +75,6 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       self.relayHost = relayHost
       self.keyName = keyName
       self.daemonSocket = daemonSocket
-      self.screens = screens
       self.hostSetup = hostSetup
       self.pollInterval = pollInterval
       self.readyTries = readyTries
@@ -305,7 +303,11 @@ public final class RailwayHostDriver: HostTerminalDriver, OptionedProvisioningDr
       for: target(record, identity: identity), in: hostDirectory(id))
     let command =
       "sh -s -- "
-      + [id.uuidString.lowercased(), configuration.daemonSocket, configuration.screens]
+      + [
+        id.uuidString.lowercased(), configuration.daemonSocket,
+        // Where the daemon really keeps them, which a checkpoint's copy has to clear.
+        DaemonBootstrap.screens(besideSocket: configuration.daemonSocket),
+      ]
       .map(PosixShell.quoted).joined(separator: " ")
     try await login(
       config, command, stdin: Data(script.utf8),
