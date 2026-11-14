@@ -51,7 +51,8 @@ you touch the Makefile or the test launch paths:
   `Tests:` line. Setup (tart, the base image) and measurements are in
   `docs/designs/parallel-workroom-testing.md`.
 
-Within one workroom it is still one `make app-*` at a time: they share its DerivedData. And
+Within one workroom the build and test targets take turns, since they share its DerivedData: a second
+one waits on the checkout lock and says who holds it. And
 `make app-run` stops only copies of its own identity (`Scripts/stop-dev-app.sh`) — never kill the
 app by name, since every workroom's app, test host and XCUITest app is called "Workroom Dev".
 

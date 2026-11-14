@@ -25,7 +25,9 @@ Other workrooms of this repo may be building and testing at the same time as you
   get past it (it is for runs inside a VM). `python3 macapp/Scripts/gui-lock.py status` shows who
   holds the session. A UI-test run that stalls may be sitting on a macOS permission prompt — a
   workroom's app asks afresh — which only a person can answer: say so rather than waiting silently.
-- In your own workroom run one `make app-*` target at a time; they share its DerivedData.
+- In your own workroom the build and test targets take turns: they share its DerivedData, so a second one
+  waits, printing `waiting for this checkout's macapp/DerivedData` and who holds it. Let it wait. Never
+  stop a run that is inside `xcodebuild` to get past it: that leaves a half-written `Workroom Dev.app`.
 - Never stop the app with `pkill`/`killall` by name: every workroom's app is called "Workroom Dev".
 
 ## Pre-landing gate

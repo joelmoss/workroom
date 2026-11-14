@@ -146,8 +146,10 @@ to fail against the behaviour it replaces.
 | running UI tests | builds, then waits | builds, then queues | builds, then waits to relaunch |
 | running its dev app | runs | runs — but see below | runs (separate app) |
 
-Two runs **in the same workroom** still share one DerivedData, so run one `make app-*` at a time
-per workroom; Xcode's build-database lock rejects a second concurrent build there.
+Two runs **in the same workroom** still share one DerivedData, so the targets that build, test or
+delete it (`CHECKOUT_LOCKED_TARGETS` in `mk/app.mk`) take turns per workroom: a second one waits on
+the checkout lock (`gui-lock.py checkout`) and names the run it is waiting for, rather than failing
+codesign half-way through a corrupted build.
 
 ## What this does not solve
 
