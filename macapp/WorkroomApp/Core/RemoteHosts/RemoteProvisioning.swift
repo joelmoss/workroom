@@ -362,11 +362,14 @@ enum RemoteProvisioning {
   /// run go to `judge` first, and ones this Mac has not approved never run (#363). It never throws.
   ///
   /// `environment` goes on top of what the script runs with: a container's `remoteEnv` (#308).
+  /// `onRan` once the host says the script ran, passing or failing: not when it could not be
+  /// started (`run-script`'s own exit 126), nor when the host never answered.
   static func runScript(
     _ script: Script, workroom name: String, at path: String, hostKind: String,
     rootScript: URL?, daemonBinary: String, on host: HostID, driver: any HostDriver,
     judge: ScriptJudge, environment: [String: String] = [:],
-    onStart: @Sendable () -> Void = {}, onLine: @escaping @Sendable (String) -> Void,
+    onStart: @Sendable () -> Void = {}, onRan: @Sendable () -> Void = {},
+    onLine: @escaping @Sendable (String) -> Void,
     timeout: TimeInterval = scriptTimeout, slack: TimeInterval = 30
   ) async -> ScriptRun {
     let q = PosixShell.quoted
@@ -431,6 +434,7 @@ enum RemoteProvisioning {
       }
       // 124 and 126 are the daemon's only when it said so: a script can exit with either itself
       // (`timeout 30 ...` does). ssh's own 255 can't be told from a script's, so it says both.
+      if !(status == 126 && said.notStarted) { onRan() }
       switch status {
       case 0: return .passed
       case 124 where said.timedOut:
