@@ -23,12 +23,22 @@ struct ScriptCodeView: View {
     .task(id: "\(ThemeService.shared.generation)\u{1F}\(text)") { await render() }
   }
 
-  /// How tall the script's lines are, with the text view's insets, so a short script is drawn no
-  /// taller than it is. A long line that wraps adds rows this leaves out; the view scrolls then.
-  static func contentHeight(of text: String) -> CGFloat {
-    let lineHeight = NSLayoutManager().defaultLineHeight(for: PlainFileViewer.font)
-    return CGFloat(FileContentLoader.splitLines(text).count) * lineHeight + 16
+  /// How tall the script is drawn `width` points wide, with the text view's insets: each line
+  /// counts the rows it wraps to, so a script of a few long lines is not cut to a few rows. An
+  /// estimate (a monospaced font, the line-number gutter guessed), so the view still scrolls if short.
+  static func contentHeight(of text: String, width: CGFloat) -> CGFloat {
+    let font = PlainFileViewer.font
+    let lineHeight = NSLayoutManager().defaultLineHeight(for: font)
+    let charWidth = ("M" as NSString).size(withAttributes: [.font: font]).width
+    let columns = max(1, Int((width - gutterAllowance) / charWidth))
+    let rows = FileContentLoader.splitLines(text).reduce(0) { total, line in
+      total + max(1, (line.count + columns - 1) / columns)
+    }
+    return CGFloat(rows) * lineHeight + 16
   }
+
+  /// What the line numbers and the text's insets take from a row's width.
+  private static let gutterAllowance: CGFloat = 64
 
   /// Plain at once, then with syntax colours worked out off-main, as `PlainFileViewer` does; a
   /// script with no grammar stays plain.
@@ -55,13 +65,26 @@ struct ScriptBox: View {
   let name: String
   /// The box's accessibility identifier; its button's adds ".openInWindow".
   let id: String
+  /// The width it is first laid out at, to work out how many rows the script wraps to.
+  var idealWidth: CGFloat = 640
   @Environment(\.themeTokens) private var tokens
 
-  private static let maxHeight: CGFloat = 240
+  /// It never shrinks below this (or the script, if shorter), and opens no taller than `maxIdeal`;
+  /// past that it takes whatever height its container gives it, so a resized sheet grows it.
+  private static let minHeight: CGFloat = 120
+  private static let maxIdeal: CGFloat = 420
+
+  private var contentHeight: CGFloat {
+    ScriptCodeView.contentHeight(of: text, width: idealWidth)
+  }
 
   var body: some View {
     ScriptCodeView(text: text, name: name)
-      .frame(height: min(ScriptCodeView.contentHeight(of: text), Self.maxHeight))
+      .frame(
+        minHeight: min(contentHeight, Self.minHeight),
+        idealHeight: min(contentHeight, Self.maxIdeal),
+        maxHeight: .infinity
+      )
       .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: 6, style: .continuous)
