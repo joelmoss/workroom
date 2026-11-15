@@ -159,9 +159,11 @@ enum CreationPanePresentation {
         + "approve it to use it, or create the workroom on the default image."
     }
     if run.approvesOnHost {
-      return
-        "The new workroom's \(run.kind?.madeNoun ?? "machine") is ready, and \(script.displayFile) "
-        + "\(script.originLabel) is about to run there. It is new, or changed since it was "
+      // Named, project and workroom: it comes up minutes after New Workroom, maybe beside
+      // another create's.
+      return "The \(run.kind?.madeNoun ?? "machine") for \(run.name ?? "the new workroom") in "
+        + "\(run.project.displayName) is ready, and \(script.displayFile) \(script.originLabel) is "
+        + "about to run there. It is new, or changed since it was "
         + "approved on this Mac. Read it, then approve it to run it, or carry on without running "
         + "it. Not Now leaves the create waiting."
     }

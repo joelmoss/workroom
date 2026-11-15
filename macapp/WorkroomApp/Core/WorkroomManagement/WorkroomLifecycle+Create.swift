@@ -153,6 +153,10 @@ extension WorkroomLifecycle {
       return
     }
     let modals = window.modals
+    // Another script's approval is up (another create's, paused meanwhile): never swap it under
+    // the person reading it, or Approve would answer a script they didn't read. This create's
+    // pane keeps waiting, with Review Script… to ask once that sheet is gone.
+    if modals.errorMessage != nil, modals.errorApproval != nil { return }
     // The message first: setting it clears what the rest set.
     modals.errorMessage = CreationPanePresentation.setupApprovalMessage(for: run, script: script)
     modals.errorTitle =
