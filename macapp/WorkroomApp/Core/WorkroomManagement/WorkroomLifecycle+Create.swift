@@ -166,19 +166,15 @@ extension WorkroomLifecycle {
       Task { if let window { await self.skipSetupScript(run, from: window) } }
     }
     // With the machine up, the sheet's Cancel (and Escape) only puts it away: the pane still
-    // waits, with Review Script… and Cancel Creation, which deletes the machine.
-    if run.approvesOnHost {
-      modals.errorCancel = ErrorAction(label: "Not Now") {}
-      modals.errorApproval = ErrorAction(label: "Approve") { [weak window] in
-        Task { if let window { await self.approveSetupScript(run, from: window) } }
+    // waits, with Review Script… and Cancel Creation, which deletes the machine. Otherwise a stale
+    // sheet (the run approved or replaced since) cancels nothing.
+    modals.errorCancel =
+      run.approvesOnHost
+      ? ErrorAction(label: "Not Now") {}
+      : ErrorAction(label: "Cancel Creation") { [weak window] in
+        guard let window, self.creationRuns[run.id] === run else { return }
+        self.closeCreation(run, from: window)
       }
-      return
-    }
-    // A stale sheet (the run approved or replaced since) cancels nothing.
-    modals.errorCancel = ErrorAction(label: "Cancel Creation") { [weak window] in
-      guard let window, self.creationRuns[run.id] === run else { return }
-      self.closeCreation(run, from: window)
-    }
     modals.errorApproval = ErrorAction(label: "Approve") { [weak window] in
       Task { if let window { await self.approveSetupScript(run, from: window) } }
     }

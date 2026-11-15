@@ -159,6 +159,17 @@ enum CreationOutcome: Equatable {
   case composeRefused(file: String)
 }
 
+extension CreationOutcome {
+  /// A question for the user (a script to approve, where to start, the default image): nothing has
+  /// failed.
+  var waitsOnUser: Bool {
+    switch self {
+    case .scriptNotTrusted, .localWorkFound, .composeRefused: true
+    default: false
+    }
+  }
+}
+
 /// Where a local create starts when the main checkout has work the remote's copy of the base branch
 /// lacks: the CLI's `--start`.
 enum CreationStart: String, Equatable {
@@ -291,12 +302,7 @@ final class CreationRun: ObservableObject, Identifiable {
 
   /// Waiting on the user: its setup script's Approve (#363), or where to start, or the default
   /// image. Not running, and not failed either.
-  var awaitsApproval: Bool {
-    switch outcome {
-    case .scriptNotTrusted, .localWorkFound, .composeRefused: true
-    default: false
-    }
-  }
+  var awaitsApproval: Bool { outcome.waitsOnUser }
 
   /// The step running now, or waiting on the user.
   var runningStep: CreationStep? {

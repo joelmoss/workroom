@@ -49,3 +49,24 @@ import XCTest
     return nil
   }
 }
+
+/// The approval sheet's script box opens as tall as the script, wrapped lines included.
+@MainActor final class ScriptCodeViewHeightTests: XCTestCase {
+  /// Value: protects=a script of a few long lines is estimated by the rows it wraps to, not its
+  /// line count, and a wider box never estimates taller; fails_when=the estimate reverts to one row
+  /// per line (the sheet opens on a clipped script); why_new=nothing tests the estimate; seam=none;
+  /// no_claim=pixel-exact height (an estimate; the box scrolls if short)
+  func testTheHeightCountsWrappedRows() {
+    let long = String(repeating: "echo word ", count: 30)
+    let longScript = ["#!/bin/sh", long, long].joined(separator: "\n")
+    let shortScript = ["#!/bin/sh", "echo a", "echo b"].joined(separator: "\n")
+
+    let narrow = ScriptCodeView.contentHeight(of: longScript, width: 400)
+    let wide = ScriptCodeView.contentHeight(of: longScript, width: 2400)
+    let short = ScriptCodeView.contentHeight(of: shortScript, width: 400)
+
+    XCTAssertGreaterThan(narrow, short * 2, "the long lines' wrapped rows weren't counted")
+    XCTAssertEqual(wide, short, accuracy: 0.5, "unwrapped, three lines are three rows")
+    XCTAssertLessThanOrEqual(ScriptCodeView.contentHeight(of: longScript, width: 800), narrow)
+  }
+}
