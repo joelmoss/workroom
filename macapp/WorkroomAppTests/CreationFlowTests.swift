@@ -1631,10 +1631,10 @@ final class CreationFlowTests: XCTestCase {
     let driver = FakeDriver()
     let requests = Calls<String>()
     var services = services(driver: driver, daemon: nil)
-    let acmeBoxd = RemoteHosts.DriverKey.boxd(org: "acme", account: "u")
+    let boxd = RemoteHosts.DriverKey.boxd(org: "acme", account: "u")
     services.existingHost = { _ in
       RemoteCreateHost(
-        key: acmeBoxd, driver: driver,
+        key: boxd, driver: driver,
         environment: .init(driver: driver, daemonSocket: driver.daemonSocket))
     }
     services.script = { request in
