@@ -89,6 +89,7 @@ struct CodeTextView: NSViewRepresentable {
     coordinator.scrollObserver = NotificationCenter.default.addObserver(
       forName: NSView.boundsDidChangeNotification, object: textScroll.contentView, queue: .main
     ) { [weak coordinator] _ in MainActor.assumeIsolated { coordinator?.syncGutterScroll() } }
+    coordinator.observeTextFrame()
 
     setText(textView, coordinator: coordinator)
     coordinator.layout(in: container)
@@ -130,6 +131,7 @@ struct CodeTextView: NSViewRepresentable {
     if let observer = coordinator.scrollObserver {
       NotificationCenter.default.removeObserver(observer)
     }
+    coordinator.stopObservingTextFrame()
   }
 
   /// Holds the live views + bookkeeping across SwiftUI updates.
@@ -139,6 +141,7 @@ struct CodeTextView: NSViewRepresentable {
     weak var gutterScroll: NSScrollView?
     weak var gutterView: GutterView?
     var scrollObserver: NSObjectProtocol?
+    private var frameObserver: NSObjectProtocol?
     var appliedVersion = -1
     private(set) var gutterWidth: CGFloat = 44
     private var highlightedRanges: [NSRange] = []
@@ -164,6 +167,34 @@ struct CodeTextView: NSViewRepresentable {
           x: 0, y: 0, width: gutterWidth, height: max(bounds.height, textView.frame.height))
         gutterView.needsDisplay = true
       }
+      syncGutterScroll()
+    }
+
+    /// Re-lay the gutter out whenever the text view's frame changes. A resize re-wraps the text
+    /// (its container tracks the view's width), which moves every line below the first wrap and
+    /// changes the text's height; the gutter is otherwise only laid out when the text is replaced,
+    /// so its numbers would stay where the old wrapping put them.
+    func observeTextFrame() {
+      guard let textView, frameObserver == nil else { return }
+      textView.postsFrameChangedNotifications = true
+      frameObserver = NotificationCenter.default.addObserver(
+        forName: NSView.frameDidChangeNotification, object: textView, queue: .main
+      ) { [weak self] _ in MainActor.assumeIsolated { self?.textFrameDidChange() } }
+    }
+
+    func stopObservingTextFrame() {
+      if let frameObserver { NotificationCenter.default.removeObserver(frameObserver) }
+      frameObserver = nil
+    }
+
+    /// Size the gutter's document to the text's new height and redraw its numbers at the new line
+    /// fragments, keeping it scrolled with the text.
+    func textFrameDidChange() {
+      guard let textView, let gutterView else { return }
+      let visibleHeight = gutterScroll?.bounds.height ?? 0
+      gutterView.frame = NSRect(
+        x: 0, y: 0, width: gutterWidth, height: max(visibleHeight, textView.frame.height))
+      gutterView.needsDisplay = true
       syncGutterScroll()
     }
 
