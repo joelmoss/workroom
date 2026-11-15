@@ -330,6 +330,8 @@ struct SidebarWorkroomRowModel: Equatable {
   /// Its host's provider says the host is gone (`GoneHosts`, #629): Remove Workroom is all it
   /// offers.
   var hostGone = false
+  /// Its setup script never ran, and no create is left to ask (#363): the Details pane says so.
+  var setupPending = false
 
   var id: SidebarID { .workroom(project: projectPath, name: workroom.name) }
   /// A remote workroom still being made: its row opens its creation pane (#483), but has nothing to
@@ -383,6 +385,11 @@ struct SidebarWorkroomRow: View, Equatable {
       ForEach(workroom.warnings, id: \.kind) { warning in
         WarningGlyph()
           .help(warning.message)
+      }
+      if model.setupPending {
+        WarningGlyph()
+          .help("Its setup script hasn't run. Review it in the Details pane.")
+          .accessibilityIdentifier("sidebar.workroom.\(workroom.name).setupPending")
       }
       // Spinner/delete slot: a progress spinner while the workroom's setup runs (issue #116) or a
       // command runs (issue #28), swapped for the delete button on hover — so a workroom stays

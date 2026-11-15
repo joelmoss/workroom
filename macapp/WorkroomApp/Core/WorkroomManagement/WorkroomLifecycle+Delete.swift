@@ -13,9 +13,12 @@ extension WorkroomLifecycle {
   /// matches reality; on failure we reload (so it reappears if it still exists) and
   /// surface the error in `window`.
   /// `skipTeardown` runs no teardown script: Delete Anyway, after the script failed.
+  /// `keepsWhatRemains` keeps a remote workroom whose folder or host can't be removed, as any failed
+  /// delete does, even with `skipTeardown`: Cancel Creation runs no script, but never forgets a
+  /// folder it left.
   func deleteWorkroom(
     _ workroom: Workroom, in project: Project, skipTeardown: Bool = false,
-    from window: any LifecycleWindow
+    keepsWhatRemains: Bool = false, from window: any LifecycleWindow
   ) {
     let sid = SidebarID.workroom(project: project.path, name: workroom.name)
     let targetID = TargetID.workroom(project: project.path, name: workroom.name)
@@ -68,8 +71,8 @@ extension WorkroomLifecycle {
     stopRuns([targetID]) {
       await self.reap([targetID])
       self.startWorkroomTeardown(
-        workroom, in: project, remote: remote, skipTeardown: skipTeardown, hostGone: hostGone,
-        from: window)
+        workroom, in: project, remote: remote, skipTeardown: skipTeardown,
+        keepsWhatRemains: keepsWhatRemains, hostGone: hostGone, from: window)
     }
   }
 
@@ -78,7 +81,7 @@ extension WorkroomLifecycle {
   /// (issue #7) — the worktree must not be deleted while its dev server still holds the directory.
   private func startWorkroomTeardown(
     _ workroom: Workroom, in project: Project, remote: RemoteProvisioning.Environment?,
-    skipTeardown: Bool, hostGone: Bool, from window: any LifecycleWindow
+    skipTeardown: Bool, keepsWhatRemains: Bool, hostGone: Bool, from window: any LifecycleWindow
   ) {
     let targetID = TargetID.workroom(project: project.path, name: workroom.name)
     Task {
@@ -89,7 +92,8 @@ extension WorkroomLifecycle {
             workroom.name, host: host, environment: remote,
             recorder: remoteRecorder(project: project.path, cli: window.services.cli),
             teardown: Self.remoteTeardown(
-              of: workroom, in: project, log: log, skip: skipTeardown, cli: window.services.cli),
+              of: workroom, in: project, log: log, skip: skipTeardown,
+              keepsWhatRemains: keepsWhatRemains, cli: window.services.cli),
             hostGone: hostGone, onForgotten: Self.forgetRemote)
         } else {
           try await window.services.cli.delete(
@@ -119,12 +123,12 @@ extension WorkroomLifecycle {
   /// `log`: the checkout's copy, else the project root's.
   nonisolated static func remoteTeardown(
     of workroom: Workroom, in project: Project, log: ScriptLogSession?, skip: Bool,
-    cli: any WorkroomCLIProtocol
+    keepsWhatRemains: Bool = false, cli: any WorkroomCLIProtocol
   ) -> RemoteWorkrooms.Teardown {
     RemoteWorkrooms.Teardown(
       path: workroom.path,
       rootScript: URL(fileURLWithPath: project.path + "/scripts/workroom_teardown"), skip: skip,
-      judge: judge(.teardown, in: project.path, cli: cli),
+      keepsWhatRemains: keepsWhatRemains, judge: judge(.teardown, in: project.path, cli: cli),
       onLine: { line in DispatchQueue.main.async { log?.append(line) } })
   }
 

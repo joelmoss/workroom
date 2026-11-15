@@ -130,6 +130,13 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
   /// How `RailwayHostDriver` reaches a Railway host again (ADR 0071, #629): its sandbox, the
   /// environment and project it is in, and the relay host key pinned when it was made.
   public var railway: RailwayHostRecord? = nil
+  /// A remote create paused at its setup script, unapproved, and the app quit or the pane went
+  /// before it was answered (#363): the workroom is made, but its setup script has neither run nor
+  /// been skipped. nil (an older record) is not pending.
+  public var setupPending: Bool? = nil
+
+  /// Whether the setup script is still to be approved and run, or skipped (`setupPending`).
+  public var isSetupPending: Bool { setupPending == true }
 
   /// Whether git's credentials on this host come through the Mac's relay (#309).
   public var isRelayed: Bool { credentials == "relay" }
@@ -156,6 +163,7 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     case sshHome = "ssh_home"
     case madeWith = "made_with"
     case railway
+    case setupPending = "setup_pending"
   }
 
   public init(
@@ -164,7 +172,8 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     cloneURL: String? = nil, path: String? = nil, container: ContainerHostRecord? = nil,
     bases: [HostDescriptor]? = nil, credentials: String? = nil, org: String? = nil,
     account: String? = nil, sshDestination: String? = nil, sshHome: String? = nil,
-    madeWith: ResolvedHostOptions? = nil, railway: RailwayHostRecord? = nil
+    madeWith: ResolvedHostOptions? = nil, railway: RailwayHostRecord? = nil,
+    setupPending: Bool? = nil
   ) {
     self.state = state
     self.driver = driver
@@ -183,6 +192,7 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     self.sshHome = sshHome
     self.madeWith = madeWith
     self.railway = railway
+    self.setupPending = setupPending
   }
 
   public init(from decoder: Decoder) throws {
@@ -204,6 +214,7 @@ public struct HostDescriptor: Codable, Hashable, Sendable {
     sshHome = try? fields?.decodeIfPresent(String.self, forKey: .sshHome)
     madeWith = try? fields?.decodeIfPresent(ResolvedHostOptions.self, forKey: .madeWith)
     railway = try? fields?.decodeIfPresent(RailwayHostRecord.self, forKey: .railway)
+    setupPending = try? fields?.decodeIfPresent(Bool.self, forKey: .setupPending)
   }
 }
 
