@@ -116,6 +116,17 @@ public enum HostKind: Hashable, Sendable {
     }
   }
 
+  /// What a create of this kind makes for its workroom, and Cancel Creation deletes: "container",
+  /// "sandbox", "machine", or an SSH host's "folder on the server" (the server stays).
+  public var madeNoun: String {
+    switch self {
+    case .container: "container"
+    case .railway: "sandbox"
+    case .boxd, .exeDev: "machine"
+    case .ssh: "folder on the server"
+    }
+  }
+
   /// How the user gives this kind's hosts GitHub access, said after git's own words when a clone
   /// fails, or nil where Workroom gives it (a container takes the Mac's `gh` through the relay,
   /// #309). A remote provider's host fetches and pushes with the provider's own credentials, or

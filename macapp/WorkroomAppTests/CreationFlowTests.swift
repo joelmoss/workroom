@@ -1324,6 +1324,97 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(run.steps.first { $0.id == "script" }?.state, .failed)
   }
 
+  /// Value: protects=Approve on a paused remote create runs only the bytes the host holds once
+  /// judged again: a copy still unapproved afterwards pauses it again rather than running;
+  /// fails_when=the script runs unapproved or the create ends without asking again; why_new=the
+  /// other tests approve on the first judge; seam=none; no_claim=how the host's bytes changed
+  func testAHostScriptStillUnapprovedAfterApproveAsksAgain() async throws {
+    let fixture = try pausedRemoteCreate(unapprovedAfterApproval: 1)
+    defer { fixture.daemon.stop() }
+    let run = try await fixture.pause()
+
+    await fixture.store.lifecycle.approveSetupScript(run, from: fixture.store)
+    // The second judge pauses it again, on the same run and machine.
+    await waitUntil(
+      { fixture.scripts.count == 2 && fixture.store.lifecycle.hostScriptApprovals[run.id] != nil },
+      "the create didn't ask again")
+    XCTAssertEqual(run.outcome, .scriptNotTrusted(Self.hostScript))
+    XCTAssertEqual(run.steps.first { $0.id == "script" }?.state, .waitingForUser)
+
+    await fixture.store.lifecycle.approveSetupScript(run, from: fixture.store)
+    await fixture.task.value
+    XCTAssertEqual(run.outcome, .succeeded)
+    XCTAssertEqual(fixture.scripts.count, 3, "judged twice unapproved, then run once")
+    XCTAssertEqual(fixture.hosts.count, 1, "a second machine was made")
+  }
+
+  /// Value: protects=two Approves on a paused remote create (a double click) record the approval
+  /// and run the script once; fails_when=the second answers again, recording twice or running the
+  /// script twice; why_new=nothing exercises the take-before-await guard; seam=none;
+  /// no_claim=the button's own debounce
+  func testADoubleApproveRecordsAndRunsOnce() async throws {
+    let fixture = try pausedRemoteCreate()
+    defer { fixture.daemon.stop() }
+    let run = try await fixture.pause()
+
+    async let first: Void = fixture.store.lifecycle.approveSetupScript(run, from: fixture.store)
+    async let second: Void = fixture.store.lifecycle.approveSetupScript(run, from: fixture.store)
+    _ = await (first, second)
+    await fixture.task.value
+
+    XCTAssertEqual(run.outcome, .succeeded)
+    XCTAssertEqual(
+      fixture.cli.calls.filter { $0.hasPrefix("trust workroom_setup") }.count, 1,
+      "the approval was recorded twice")
+    XCTAssertEqual(fixture.scripts.count, 2, "judged once, then run once")
+  }
+
+  /// Value: protects=Cancel Creation on a paused remote create whose workroom can't be deleted
+  /// ends as one whose machine is still running, so Delete stays on offer; fails_when=the run is
+  /// discarded with the machine orphaned, or it never ends; why_new=the cancel test above deletes;
+  /// seam=none; no_claim=why the delete couldn't start (here: the workroom left the store)
+  func testCancellingWhenTheWorkroomCantBeDeletedKeepsDeleteOnOffer() async throws {
+    let fixture = try pausedRemoteCreate()
+    defer { fixture.daemon.stop() }
+    let run = try await fixture.pause()
+    let project = try XCTUnwrap(fixture.store.projectStore.projects.first)
+    fixture.store.projectStore.projects = [
+      Project(path: project.path, vcs: project.vcs, workrooms: [])
+    ]
+
+    fixture.store.lifecycle.closeCreation(run, from: fixture.store)
+    await fixture.task.value
+
+    guard case .remoteFailed(_, leftBehind: true) = run.outcome else {
+      return XCTFail("\(run.outcome)")
+    }
+    XCTAssertTrue(fixture.store.lifecycle.creationRuns[run.id] === run, "the run was discarded")
+    XCTAssertTrue(fixture.store.lifecycle.creatingWorkrooms.isEmpty, "Delete isn't allowed")
+  }
+
+  /// Value: protects=a paused remote create whose run is replaced (Try Again's path) is answered,
+  /// not left waiting, and deletes nothing; fails_when=the create never returns, the workroom
+  /// stays undeletable, or it is deleted; why_new=only a discarded run is tested; seam=none;
+  /// no_claim=the replacing run's own create
+  func testAPausedRemoteCreateReplacedByAnotherRunKeepsItsWorkroom() async throws {
+    let fixture = try pausedRemoteCreate()
+    defer { fixture.daemon.stop() }
+    let run = try await fixture.pause()
+
+    fixture.store.lifecycle.replaceCreationRun(
+      run,
+      with: CreationRun(
+        id: run.id, project: run.project, kind: run.kind, splitAnchor: nil,
+        previousSelection: nil))
+    await fixture.task.value
+
+    XCTAssertEqual(run.outcome, .cancelled)
+    XCTAssertTrue(fixture.store.lifecycle.hostScriptApprovals.isEmpty)
+    XCTAssertTrue(
+      fixture.store.lifecycle.creatingWorkrooms.isEmpty, "the workroom stayed undeletable")
+    XCTAssertFalse(fixture.cli.calls.contains("delete calm-river"), "it was deleted")
+  }
+
   /// A remote create that will pause at its setup script: the host's script is unapproved until the
   /// CLI records it, and `pause()` starts the create and waits for the question.
   private struct PausedRemoteCreate {
@@ -1348,8 +1439,10 @@ final class CreationFlowTests: XCTestCase {
     }
   }
 
+  /// `unapprovedAfterApproval`: how many more times the host's copy judges unapproved once an
+  /// approval is recorded, as a checkout that changed meanwhile would.
   private func pausedRemoteCreate(
-    cli type: RemoteFakeCLI.Type = RemoteFakeCLI.self
+    cli type: RemoteFakeCLI.Type = RemoteFakeCLI.self, unapprovedAfterApproval: Int = 0
   ) throws -> PausedRemoteCreate {
     let project = try projectWithASetupScript()
     let daemon = try FakeDaemon(version: 4, execResult: Self.gitSucceeds)
@@ -1359,12 +1452,17 @@ final class CreationFlowTests: XCTestCase {
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
     let hosts = Counter()
     let scripts = Counter()
+    let rejudged = Counter()
     var services = services(driver: FakeDriver(), daemon: daemon, hosts: hosts)
     // Approved only once the CLI records it, as `trust status --stdin` judges.
     services.script = { [cli] request in
       scripts.add()
       let approved = cli.calls.contains { $0.hasPrefix("trust workroom_setup") }
       guard approved else { return .notTrusted(Self.hostScript) }
+      if rejudged.count < unapprovedAfterApproval {
+        rejudged.add()
+        return .notTrusted(Self.hostScript)
+      }
       request.onStart()
       return .passed
     }

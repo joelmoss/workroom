@@ -27,18 +27,21 @@ struct ScriptCodeView: View {
   /// counts the rows it wraps to, so a script of a few long lines is not cut to a few rows. An
   /// estimate (a monospaced font, the line-number gutter guessed), so the view still scrolls if short.
   static func contentHeight(of text: String, width: CGFloat) -> CGFloat {
-    let font = PlainFileViewer.font
-    let lineHeight = NSLayoutManager().defaultLineHeight(for: font)
-    let charWidth = ("M" as NSString).size(withAttributes: [.font: font]).width
-    let columns = max(1, Int((width - gutterAllowance) / charWidth))
-    let rows = FileContentLoader.splitLines(text).reduce(0) { total, line in
-      total + max(1, (line.count + columns - 1) / columns)
+    let lines = FileContentLoader.splitLines(text)
+    let textWidth =
+      width - CodeTextView.gutterWidth(lineCount: lines.count)
+      - (CodeTextView.textInset.width + CodeTextView.linePadding) * 2
+    let columns = max(1, Int(textWidth / charWidth))
+    let rows = lines.reduce(0) { total, line in
+      total + max(1, (line.utf16.count + columns - 1) / columns)
     }
-    return CGFloat(rows) * lineHeight + 16
+    return CGFloat(rows) * lineHeight + CodeTextView.textInset.height * 2
   }
 
-  /// What the line numbers and the text's insets take from a row's width.
-  private static let gutterAllowance: CGFloat = 64
+  /// The script font's metrics, measured once: it never changes.
+  private static let lineHeight = NSLayoutManager().defaultLineHeight(for: PlainFileViewer.font)
+  private static let charWidth =
+    ("M" as NSString).size(withAttributes: [.font: PlainFileViewer.font]).width
 
   /// Plain at once, then with syntax colours worked out off-main, as `PlainFileViewer` does; a
   /// script with no grammar stays plain.
@@ -74,11 +77,8 @@ struct ScriptBox: View {
   private static let minHeight: CGFloat = 120
   private static let maxIdeal: CGFloat = 420
 
-  private var contentHeight: CGFloat {
-    ScriptCodeView.contentHeight(of: text, width: idealWidth)
-  }
-
   var body: some View {
+    let contentHeight = ScriptCodeView.contentHeight(of: text, width: idealWidth)
     ScriptCodeView(text: text, name: name)
       .frame(
         minHeight: min(contentHeight, Self.minHeight),

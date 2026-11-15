@@ -148,16 +148,6 @@ enum CreationPanePresentation {
     }
   }
 
-  /// What a remote create made for its workroom, as its approval and footer name it.
-  static func hostNoun(for kind: HostKind?) -> String {
-    switch kind {
-    case .container: "container"
-    case .ssh: "folder on the server"
-    case .railway: "sandbox"
-    default: "machine"
-    }
-  }
-
   /// The setup script approval sheet's message (#363): why the create stopped, for which project,
   /// and the ways on. Worded as the teardown's (`WorkroomLifecycle.teardownApprovalMessage`).
   @MainActor static func setupApprovalMessage(for run: CreationRun, script: ScriptTrust) -> String {
@@ -169,7 +159,8 @@ enum CreationPanePresentation {
         + "approve it to use it, or create the workroom on the default image."
     }
     if run.approvesOnHost {
-      return "The new workroom's \(hostNoun(for: run.kind)) is ready, and \(script.displayFile) "
+      return
+        "The new workroom's \(run.kind?.madeNoun ?? "machine") is ready, and \(script.displayFile) "
         + "\(script.originLabel) is about to run there. It is new, or changed since it was "
         + "approved on this Mac. Read it, then approve it to run it, or carry on without running "
         + "it. Not Now leaves the create waiting."
@@ -226,7 +217,7 @@ enum CreationPanePresentation {
   @MainActor static func footer(for run: CreationRun) -> Footer? {
     guard var footer = footer(for: run.outcome) else { return nil }
     if run.approvesOnHost, case .scriptNotTrusted(let script) = run.outcome {
-      let noun = hostNoun(for: run.kind)
+      let noun = run.kind?.madeNoun ?? "machine"
       footer = Footer(
         reason: "\(script.displayFile) needs approving before it runs on the new workroom's "
           + "\(noun). Cancel Creation deletes the workroom and its \(noun).",
@@ -236,8 +227,15 @@ enum CreationPanePresentation {
     return footer
   }
 
-  /// The footer a run's outcome shows, or nil while it runs or once it has ended well.
+  /// The footer a run's outcome shows, or nil while it runs or once it has ended well. A question
+  /// for the user is drawn plain, a failure in the failure colour.
   static func footer(for outcome: CreationOutcome) -> Footer? {
+    guard var footer = actions(for: outcome) else { return nil }
+    footer.waitsOnUser = outcome.waitsOnUser
+    return footer
+  }
+
+  private static func actions(for outcome: CreationOutcome) -> Footer? {
     switch outcome {
     case .running, .succeeded, .cancelled:
       nil
@@ -259,16 +257,16 @@ enum CreationPanePresentation {
       Footer(
         reason: "\(script.displayFile) \(script.originLabel) needs approving before the workroom "
           + "is made.",
-        primary: .reviewScript, secondary: .cancel, waitsOnUser: true)
+        primary: .reviewScript, secondary: .cancel)
     case .localWorkFound(let work):
       Footer(
         reason: "\(work.summary). Choose whether the new workroom includes it.",
-        primary: .chooseStart, secondary: .cancel, waitsOnUser: true)
+        primary: .chooseStart, secondary: .cancel)
     case .composeRefused(let file):
       Footer(
         reason: "\(file) describes Docker Compose services, and a container workroom runs one "
           + "container. It can be made from the default image instead.",
-        primary: .defaultImage, secondary: .cancel, waitsOnUser: true)
+        primary: .defaultImage, secondary: .cancel)
     }
   }
 

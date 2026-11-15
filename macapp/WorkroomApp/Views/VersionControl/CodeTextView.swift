@@ -54,7 +54,8 @@ struct CodeTextView: NSViewRepresentable {
     textView.drawsBackground = true
     textView.backgroundColor = NSColor(tokens.bg)
     textView.textColor = tokens.nsFg
-    textView.textContainerInset = NSSize(width: 6, height: 8)
+    textView.textContainerInset = Self.textInset
+    textContainer.lineFragmentPadding = Self.linePadding
     textView.minSize = NSSize(width: 0, height: 0)
     textView.maxSize = NSSize(
       width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -127,6 +128,18 @@ struct CodeTextView: NSViewRepresentable {
     coordinator.gutterView?.needsDisplay = true
   }
 
+  /// How wide the line-number gutter is for `lineCount` lines: room for their digits (two at least)
+  /// and its padding.
+  static func gutterWidth(lineCount: Int) -> CGFloat {
+    let digits = max(2, String(max(1, lineCount)).count)
+    return ceil(CGFloat(digits) * 7.0) + 22
+  }
+
+  /// The text view's inset on each side (`textContainerInset`), and the text container's own
+  /// padding on each side of a line.
+  static let textInset = NSSize(width: 6, height: 8)
+  static let linePadding: CGFloat = 5
+
   static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
     if let observer = coordinator.scrollObserver {
       NotificationCenter.default.removeObserver(observer)
@@ -149,8 +162,7 @@ struct CodeTextView: NSViewRepresentable {
     private var lastCurrent = -1
 
     func recomputeGutterWidth(lineCount: Int) {
-      let digits = max(2, String(max(1, lineCount)).count)
-      gutterWidth = ceil(CGFloat(digits) * 7.0) + 22
+      gutterWidth = CodeTextView.gutterWidth(lineCount: lineCount)
     }
 
     /// Position the gutter (fixed width, left) and the text scroll view (fills the rest), and size
@@ -162,9 +174,15 @@ struct CodeTextView: NSViewRepresentable {
       textScroll?.frame = NSRect(
         x: gutterWidth, y: 0, width: max(0, bounds.width - gutterWidth), height: bounds.height)
       textScroll?.autoresizingMask = [.width, .height]
+      sizeGutterDocument(visibleHeight: bounds.height)
+    }
+
+    /// The gutter's document as tall as the text (or the view, if taller), redrawn at the text's
+    /// line fragments and scrolled with it.
+    private func sizeGutterDocument(visibleHeight: CGFloat) {
       if let textView, let gutterView {
         gutterView.frame = NSRect(
-          x: 0, y: 0, width: gutterWidth, height: max(bounds.height, textView.frame.height))
+          x: 0, y: 0, width: gutterWidth, height: max(visibleHeight, textView.frame.height))
         gutterView.needsDisplay = true
       }
       syncGutterScroll()
@@ -187,16 +205,15 @@ struct CodeTextView: NSViewRepresentable {
       frameObserver = nil
     }
 
-    /// Size the gutter's document to the text's new height and redraw its numbers at the new line
-    /// fragments, keeping it scrolled with the text.
+    /// The text's height changed (a re-wrap): the gutter follows. A frame change that leaves the
+    /// height alone wraps no line differently (a wider or narrower view only ever takes rows from,
+    /// or adds rows to, each line), so it redraws nothing.
     func textFrameDidChange() {
-      guard let textView, let gutterView else { return }
-      let visibleHeight = gutterScroll?.bounds.height ?? 0
-      gutterView.frame = NSRect(
-        x: 0, y: 0, width: gutterWidth, height: max(visibleHeight, textView.frame.height))
-      gutterView.needsDisplay = true
-      syncGutterScroll()
+      guard let textView, textView.frame.height != lastTextHeight else { return }
+      lastTextHeight = textView.frame.height
+      sizeGutterDocument(visibleHeight: gutterScroll?.bounds.height ?? 0)
     }
+    private var lastTextHeight: CGFloat = -1
 
     func syncGutterScroll() {
       guard let textScroll, let gutterScroll else { return }

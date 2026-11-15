@@ -235,6 +235,34 @@ final class CreationPanePresentationTests: XCTestCase {
     }
   }
 
+  /// Value: protects=a remote create paused at its setup script names what Cancel Creation deletes
+  /// for its place (an SSH create its folder, not the server) and says Not Now only waits;
+  /// fails_when=a place's noun is wrong, or the on-host wording falls back to the local one;
+  /// why_new=only boxd's footer was asserted, incidentally; seam=none; no_claim=the rest of the prose
+  @MainActor func testAnOnHostApprovalNamesWhatEachPlaceMade() throws {
+    let script = ScriptTrust(
+      name: "workroom_setup", origin: "stdin", sha256: String(repeating: "a", count: 64),
+      text: "#!/bin/sh\n", trusted: false, exempt: false)
+    let places: [(HostKind, String)] = [
+      (.container(.docker), "container"), (.railway, "sandbox"), (.boxd, "machine"),
+      (.exeDev, "machine"), (.ssh, "folder on the server"),
+    ]
+    for (place, noun) in places {
+      let run = CreationRun(
+        project: Project(path: "/p", vcs: "git", workrooms: []), kind: place, splitAnchor: nil,
+        previousSelection: nil)
+      run.awaitApproval(of: script, onHost: true)
+      let footer = try XCTUnwrap(P.footer(for: run))
+      XCTAssertTrue(
+        footer.reason.contains("Cancel Creation deletes the workroom and its \(noun)."),
+        "\(place): \(footer.reason)")
+      let message = P.setupApprovalMessage(for: run, script: script)
+      XCTAssertTrue(
+        message.hasPrefix("The new workroom's \(noun) is ready"), "\(place): \(message)")
+      XCTAssertTrue(message.contains("Not Now leaves the create waiting"), message)
+    }
+  }
+
   /// Value: protects=#575, Try With Provider Defaults shows only on a create that used host
   /// options, failed making or setting up its host, and left nothing running; fails_when=it shows
   /// beside a left-behind machine (another paid host) or on a clone failure; no_claim=the rerun
