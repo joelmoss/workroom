@@ -258,7 +258,9 @@ final class CreationPanePresentationTests: XCTestCase {
         "\(place): \(footer.reason)")
       let message = P.setupApprovalMessage(for: run, script: script)
       XCTAssertTrue(
-        message.hasPrefix("The new workroom's \(noun) is ready"), "\(place): \(message)")
+        message.hasPrefix(
+          "The \(noun) for the new workroom in \(run.project.displayName) is ready"),
+        "\(place): \(message)")
       XCTAssertTrue(message.contains("Not Now leaves the create waiting"), message)
     }
   }

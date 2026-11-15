@@ -1348,6 +1348,31 @@ final class CreationFlowTests: XCTestCase {
     XCTAssertEqual(fixture.hosts.count, 1, "a second machine was made")
   }
 
+  /// Value: protects=a second create pausing at its setup script never swaps the approval sheet
+  /// already up for another under the person reading it (Approve would answer a script they
+  /// didn't read); the second waits with Review Script…; fails_when=the open sheet takes the second
+  /// create's script; why_new=creates overlap and ask minutes in; seam=none; no_claim=the drawing
+  func testASecondPausedCreateDoesNotSwapAnOpenApprovalSheet() async throws {
+    let fixture = try pausedRemoteCreate()
+    defer { fixture.daemon.stop() }
+    let run = try await fixture.pause()
+    let shown = try XCTUnwrap(fixture.store.modals.errorMessage)
+    XCTAssertTrue(shown.contains("calm-river"), shown)
+
+    let other = CreationRun(
+      project: run.project, kind: .container(.docker), splitAnchor: nil, previousSelection: nil)
+    fixture.store.lifecycle.register(other)
+    other.awaitApproval(of: Self.hostScript, onHost: true)
+    fixture.store.lifecycle.presentSetupApproval(other, in: fixture.store)
+
+    XCTAssertEqual(fixture.store.modals.errorMessage, shown, "the open sheet was swapped")
+    XCTAssertEqual(
+      CreationPanePresentation.footer(for: other)?.primary, .reviewScript,
+      "the second create can't ask again")
+    fixture.store.lifecycle.answerHostScriptApproval(of: run, with: .skipped)
+    await fixture.task.value
+  }
+
   /// Value: protects=two Approves on a paused remote create (a double click) record the approval
   /// and run the script once; fails_when=the second answers again, recording twice or running the
   /// script twice; why_new=nothing exercises the take-before-await guard; seam=none;
