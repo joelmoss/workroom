@@ -106,6 +106,10 @@ See [Environment variables](../reference/environment-variables.md) for the full 
 
 If the setup script fails, the workroom is kept until you choose. The pane offers **Open Anyway** or **Delete Workroom…**.
 
+Nightly only. A remote create asks about a new or changed setup script when the script is about to run, after the host is made and the repository cloned. The create waits at **Run setup script** with the script in a sheet. **Approve** runs it on the host. **Continue Without Script…** carries on without it. **Not Now** puts the sheet away and leaves the create waiting. In the pane, **Review Script…** opens the sheet again, and **Cancel Creation** deletes the workroom and its host. A container's `devcontainer.json` is still approved before the container is made.
+
+Nightly only. If Workroom quits, or you close the create's pane, while the script waits, the workroom stays. Its sidebar row shows a warning sign, and its Details pane says **Setup script not run**, with **Review Script…**, **Continue Without Script…** and **Delete Workroom…**. Its host keeps running until you choose.
+
 ## Delete a remote workroom
 
 Deleting a boxd, exe.dev or container workroom destroys its host and everything on it, including

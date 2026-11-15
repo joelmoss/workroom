@@ -52,7 +52,9 @@ If a step fails, the pane shows the reason under that step's row, with two butto
 
 **Open Anyway** opens the workroom's terminal even though setup failed. The run command does not start automatically.
 
-When the setup script needs your approval, a sheet shows it before anything is created, with **Continue Without Script…**, **Cancel Creation** and **Approve**. Continue Without Script asks first, then creates the workroom without running the script, and leaves it unapproved. **Review Script…** in the pane opens the sheet again. See [Prepare a project](../guides/prepare-a-project.md) for setup scripts and the approval step.
+When the setup script needs your approval, a sheet shows it, with **Continue Without Script…**, **Cancel Creation** and **Approve**. For a workroom on your Mac, it asks before anything is created. Continue Without Script asks first, then creates the workroom without running the script, and leaves it unapproved. **Review Script…** in the pane opens the sheet again. See [Prepare a project](../guides/prepare-a-project.md) for setup scripts and the approval step.
+
+Nightly only. A remote workroom asks later, once its host is ready and the script is about to run there. Its sheet offers **Not Now** in place of **Cancel Creation**, which leaves the create waiting. **Cancel Creation** in the pane deletes the workroom and its host. See [Setup and teardown scripts](../remote/overview.md#setup-and-teardown-scripts).
 
 ### Include work you haven't pushed
 

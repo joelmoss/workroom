@@ -32,6 +32,8 @@ The message is "script is not trusted on this Mac". The setup or teardown script
 
 In the app, a sheet shows the script. Creating a workroom offers **Approve**, **Continue Without Script…** and **Cancel Creation**; **Review Script…** in the creation pane opens it again. A delete's sheet offers **Approve**, **Delete Anyway** and **Cancel**. To create without the setup script from a terminal, run `workroom create --skip-setup`.
 
+Nightly only. A remote create asks once its host is ready, and its sheet offers **Not Now** in place of **Cancel Creation**. A remote workroom left waiting shows **Setup script not run** in its Details pane. See [Setup and teardown scripts](../remote/overview.md#setup-and-teardown-scripts).
+
 A `--json` or scripted call can't ask, so it exits with code 3. `workroom trust status` exits 2 when it can't tell, for example when the base branch can't be resolved. Fix that first. See [workroom trust](../cli/workroom-trust.md).
 
 ## A delete stopped and nothing was removed
