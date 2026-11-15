@@ -471,6 +471,8 @@ enum RemoteWorkrooms {
     let onLine: @Sendable (String) -> Void
     /// On top of what the script runs with: a container's `remoteEnv` (#308).
     var environment: [String: String] = [:]
+    /// Once the host says the script ran, passing or failing (`RemoteProvisioning.runScript`).
+    var onRan: @Sendable () -> Void = {}
   }
 
   /// Runs a workroom's script on its host, through the app's own connection to it
@@ -497,7 +499,7 @@ enum RemoteWorkrooms {
       hostKind: request.key.kind.workroomHost, rootScript: request.rootScript,
       daemonBinary: request.daemonBinary, on: request.host, driver: request.driver,
       judge: request.judge, environment: request.environment, onStart: request.onStart,
-      onLine: request.onLine)
+      onRan: request.onRan, onLine: request.onLine)
   }
 
   /// What a delete runs before the host goes: the workroom's teardown script, as the CLI runs a local

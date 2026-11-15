@@ -133,7 +133,7 @@ extension WorkroomLifecycle {
     let started = CreationWarningBox()
     let result = await runPendingSetupScript(
       workroom, in: project, judge: Self.judge(.setup, in: path, cli: cli),
-      onStart: { started.value = "started" },
+      onStart: {}, onRan: { started.value = "ran" },
       onLine: { line in Self.onMain { log.append(line) } }, from: window)
     await Self.drainMainQueue()  // the script's last lines
     switch result {
@@ -167,8 +167,8 @@ extension WorkroomLifecycle {
   /// (`RemoteCreateServices.script`), judged by `judge`. Its host is reached from its record.
   private func runPendingSetupScript(
     _ workroom: Workroom, in project: Project, judge: @escaping RemoteProvisioning.ScriptJudge,
-    onStart: @escaping @Sendable () -> Void, onLine: @escaping @Sendable (String) -> Void,
-    from window: any LifecycleWindow
+    onStart: @escaping @Sendable () -> Void, onRan: @escaping @Sendable () -> Void = {},
+    onLine: @escaping @Sendable (String) -> Void, from window: any LifecycleWindow
   ) async -> RemoteProvisioning.ScriptRun {
     let services = window.services.remoteCreate
     guard let descriptor = workroom.host, let id = descriptor.id else {
@@ -181,11 +181,12 @@ extension WorkroomLifecycle {
       return .failed("setup script failed: \(Self.errorText(error))")
     }
     let box = HostID.remote(id)
-    let request = RemoteWorkrooms.ScriptRequest(
+    var request = RemoteWorkrooms.ScriptRequest(
       script: .setup, workroom: workroom.name, path: workroom.path, host: box, key: host.key,
       driver: host.driver, daemonBinary: host.environment.daemonBinary(on: box),
       rootScript: URL(fileURLWithPath: project.path + "/scripts/workroom_setup"), judge: judge,
       onStart: onStart, onLine: onLine)
+    request.onRan = onRan
     return await services.script(request)
   }
 

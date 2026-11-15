@@ -808,19 +808,18 @@ extension WorkroomLifecycle {
     cli: any WorkroomCLIProtocol
   ) async -> HostSetupResult {
     let step = "script"
-    // Set once the script itself starts: a failure before (the connect, its check) ran nothing.
+    // Set once the host says the script ran: a failure before (the connect, its check, a script
+    // that couldn't be started) ran nothing.
     let started = CreationWarningBox()
-    let request = RemoteWorkrooms.ScriptRequest(
+    var request = RemoteWorkrooms.ScriptRequest(
       script: .setup, workroom: created.name, path: created.instance.path,
       host: created.instance.host, key: host.key, driver: host.driver,
       daemonBinary: host.environment.daemonBinary(on: created.instance.host),
       rootScript: URL(fileURLWithPath: run.project.path + "/scripts/workroom_setup"),
       judge: Self.judge(.setup, in: run.project.path, cli: cli),
-      onStart: {
-        started.value = "started"
-        Self.onMain { run.begin(step) }
-      },
+      onStart: { Self.onMain { run.begin(step) } },
       onLine: { line in Self.onMain { run.append(line, to: step) } }, environment: environment)
+    request.onRan = { started.value = "ran" }
     let result = await services.script(request)
     await Self.drainMainQueue()  // the script's last lines, before its row ends
     switch result {

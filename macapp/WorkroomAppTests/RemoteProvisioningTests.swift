@@ -621,12 +621,38 @@ final class RemoteScriptTests: XCTestCase {
   private func run(
     _ script: RemoteProvisioning.Script = .setup, driver: ShellHost = ShellHost(),
     lines: Lines = Lines(), judge: @escaping RemoteProvisioning.ScriptJudge = approveAll,
-    environment: [String: String] = [:]
+    environment: [String: String] = [:], ran: Counter = Counter()
   ) async -> RemoteProvisioning.ScriptRun {
     await RemoteProvisioning.runScript(
       script, workroom: "contract", at: checkout, hostKind: "boxd", rootScript: rootScript,
       daemonBinary: daemon, on: .local, driver: driver, judge: judge, environment: environment,
-      onStart: { lines.start() }, onLine: { lines.add($0) })
+      onStart: { lines.start() }, onRan: { ran.add() }, onLine: { lines.add($0) })
+  }
+
+  /// Value: protects=only a script the host ran, passing or failing, says it ran: one the daemon
+  /// couldn't start (not executable, its exit 126) or a host that never answered doesn't, so a
+  /// workroom's pending setup stays pending; fails_when=`onRan` fires at the start, before the
+  /// host's verdict; why_new=`onStart` fires before the exec; seam=none; no_claim=an older daemon
+  func testOnlyAScriptTheHostRanSaysItRan() async throws {
+    let passed = Counter()
+    try write("#!/bin/sh\nexit 0\n", to: "checkout/scripts/workroom_setup")
+    _ = await run(ran: passed)
+    XCTAssertEqual(passed.count, 1, "a passing script")
+
+    let failed = Counter()
+    try write("#!/bin/sh\nexit 3\n", to: "checkout/scripts/workroom_setup")
+    _ = await run(ran: failed)
+    XCTAssertEqual(failed.count, 1, "a failing script ran too")
+
+    let notStarted = Counter()
+    try write("#!/bin/sh\necho never\n", to: "checkout/scripts/workroom_setup", mode: 0o644)
+    guard case .failed(let why) = await run(ran: notStarted) else { return XCTFail("it ran") }
+    XCTAssertTrue(why.hasSuffix("could not be started"), why)
+    XCTAssertEqual(notStarted.count, 0, "a script that couldn't start said it ran")
+
+    let unreachable = Counter()
+    _ = await run(driver: ShellHost(execFails: true), ran: unreachable)
+    XCTAssertEqual(unreachable.count, 0, "an unreachable host said it ran")
   }
 
   /// A container's `remoteEnv` (#308) reaches the setup script, on top of the login shell's, and
