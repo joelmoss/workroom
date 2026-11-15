@@ -47,10 +47,11 @@ struct RemoteCreateServices {
     _ in .absent
   }
   /// The CLI's `trust status` at the origin branch the plan checks out, asked through the CLI it is
-  /// handed: the setup script a create would run, judged against this Mac's approvals (#363), and
-  /// the local work that start leaves out. Its last argument judges the devcontainer.json a container
-  /// create would use too (#308). A test's fakes approve every script and find no local work unless
-  /// they say.
+  /// handed: the commit that start names and the local work it leaves out. Its last argument judges
+  /// the devcontainer.json a container create would use (#308), before any container. The setup
+  /// script it also reports is not acted on: a remote create judges the host's copy when it is
+  /// about to run (#363, `script`). A test's fakes approve every script and find no local work
+  /// unless they say.
   var trustStatus:
     @MainActor (any WorkroomCLIProtocol, Project, RemoteCreatePlan, Bool) async throws ->
       TrustStatus = { _, _, _, _ in

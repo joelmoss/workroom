@@ -209,6 +209,32 @@ final class CreationPanePresentationTests: XCTestCase {
       ])
   }
 
+  /// Value: protects=a create waiting on the user (a setup script to approve, where to start, the
+  /// default image) is a question, not a failure: its reason is drawn plain while every failure's
+  /// stays in the failure colour; fails_when=a question reads as a failure, or a failure loses its
+  /// colour; no_claim=the colours themselves (the theme)
+  func testOnlyFailuresAreDrawnInTheFailureColour() throws {
+    let script = ScriptTrust(
+      name: "workroom_setup", origin: "base", sha256: String(repeating: "a", count: 64),
+      text: "#!/bin/sh\n", trusted: false, exempt: false)
+    let work = LocalWork(
+      branch: "main", remote: "origin", ahead: 1, uncommitted: false, summary: "1 commit")
+    let questions: [CreationOutcome] = [
+      .scriptNotTrusted(script), .localWorkFound(work), .composeRefused(file: "compose.json"),
+    ]
+    for outcome in questions {
+      XCTAssertEqual(P.footer(for: outcome)?.waitsOnUser, true, "\(outcome)")
+    }
+    let failures: [CreationOutcome] = [
+      .failedBeforeWorkroom(message: "x"), .setupScriptFailed(message: "x"),
+      .hookFailed(message: "x"), .remoteFailed(message: "x", leftBehind: false),
+      .remoteFailed(message: "x", leftBehind: true),
+    ]
+    for outcome in failures {
+      XCTAssertEqual(P.footer(for: outcome)?.waitsOnUser, false, "\(outcome)")
+    }
+  }
+
   /// Value: protects=#575, Try With Provider Defaults shows only on a create that used host
   /// options, failed making or setting up its host, and left nothing running; fails_when=it shows
   /// beside a left-behind machine (another paid host) or on a clone failure; no_claim=the rerun

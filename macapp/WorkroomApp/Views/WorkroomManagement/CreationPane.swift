@@ -478,7 +478,7 @@ private struct CreationFailureNotice: View {
       // said why.
       Text(footer.reason)
         .font(.callout)
-        .foregroundStyle(tokens.failure)
+        .foregroundStyle(footer.waitsOnUser ? tokens.fgMuted : tokens.failure)
         .fixedSize(horizontal: false, vertical: true)
         .textSelection(.enabled)
       buttons

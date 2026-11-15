@@ -64,6 +64,11 @@ final class WorkroomLifecycle: ObservableObject {
   /// (R2, #483). Only the first has its sheet up, one sheet at a time across every window.
   var remoteSetupWaits: [RemoteSetupWait] = []
 
+  /// Remote creates paused at their setup script, by run id, until it is approved, skipped or the
+  /// create cancelled (`CreationRun.approvesOnHost`). Each is answered once: taken out before it is
+  /// resumed.
+  var hostScriptApprovals: [UUID: CheckedContinuation<HostScriptAnswer, Never>] = [:]
+
   /// Target ids of workrooms with an in-flight optimistic deletion: dropped from the sidebar but
   /// their teardown (worktree/config removal) not yet finished. `AppStore.apply` filters these out of
   /// every incoming CLI `list`, so a stale snapshot taken before the teardown persisted can't
@@ -177,9 +182,31 @@ final class WorkroomLifecycle: ObservableObject {
   /// leaves in any window goes too. Does nothing for a run another (Try Again) has replaced.
   func discardCreationRun(_ run: CreationRun) {
     guard creationRuns[run.id] === run else { return }
+    // A create paused at its setup script must not wait forever, its workroom undeletable. Only
+    // Cancel Creation deletes it: dropped otherwise, it is kept.
+    answerHostScriptApproval(of: run, with: .dropped)
     creationRuns[run.id] = nil
     creationRunForTarget = creationRunForTarget.filter { $0.value != run.id }
     send(.targetRemoved(.creation(project: run.project.path, id: run.id)))
+  }
+
+  /// Takes out the paused remote create's wait for its setup script's answer, if `run` has one,
+  /// setting the run going again: whoever takes it answers it.
+  func takeHostScriptApproval(
+    of run: CreationRun
+  ) -> CheckedContinuation<HostScriptAnswer, Never>? {
+    guard let wait = hostScriptApprovals.removeValue(forKey: run.id) else { return nil }
+    run.resumeAfterApproval()
+    return wait
+  }
+
+  /// Answers the paused remote create's setup script question, if `run` has one waiting. Returns
+  /// whether it did.
+  @discardableResult
+  func answerHostScriptApproval(of run: CreationRun, with answer: HostScriptAnswer) -> Bool {
+    guard let wait = takeHostScriptApproval(of: run) else { return false }
+    wait.resume(returning: answer)
+    return true
   }
 
   /// Drops the run whose pane `id` is, if any.
@@ -189,6 +216,7 @@ final class WorkroomLifecycle: ObservableObject {
 
   /// Try Again: `retry` replaces `run`, in the same pane in every window.
   func replaceCreationRun(_ run: CreationRun, with retry: CreationRun) {
+    answerHostScriptApproval(of: run, with: .dropped)
     let pane = paneID(of: run)
     creationRunForTarget = creationRunForTarget.filter { $0.value != run.id }
     register(retry)
