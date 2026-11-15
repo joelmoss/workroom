@@ -165,6 +165,15 @@ extension WorkroomLifecycle {
     ) { [weak window] in
       Task { if let window { await self.skipSetupScript(run, from: window) } }
     }
+    // With the machine up, the sheet's Cancel (and Escape) only puts it away: the pane still
+    // waits, with Review Script… and Cancel Creation, which deletes the machine.
+    if run.approvesOnHost {
+      modals.errorCancel = ErrorAction(label: "Not Now") {}
+      modals.errorApproval = ErrorAction(label: "Approve") { [weak window] in
+        Task { if let window { await self.approveSetupScript(run, from: window) } }
+      }
+      return
+    }
     // A stale sheet (the run approved or replaced since) cancels nothing.
     modals.errorCancel = ErrorAction(label: "Cancel Creation") { [weak window] in
       guard let window, self.creationRuns[run.id] === run else { return }
@@ -176,10 +185,26 @@ extension WorkroomLifecycle {
   }
 
   /// Approve on a create its setup script stopped: the bytes shown are recorded as approved and the
-  /// create continues, in the same pane, from the start point the script was judged at.
+  /// create continues, in the same pane, from the start point the script was judged at. A remote
+  /// create paused on its machine runs the script there instead; a failure to record the approval
+  /// ends it as a failed setup script, its workroom and machine kept.
   func approveSetupScript(_ run: CreationRun, from window: any LifecycleWindow) async {
     guard creationRuns[run.id] === run, case .scriptNotTrusted(let script) = run.outcome
     else {
+      return
+    }
+    if run.approvesOnHost {
+      // Taken before the await, so a second click finds nothing to answer.
+      guard let wait = takeHostScriptApproval(of: run) else { return }
+      do {
+        try await window.services.cli.trustScript(
+          script.name, text: script.approvalBytes, project: run.project.path)
+        wait.resume(returning: .approved)
+      } catch {
+        wait.resume(
+          returning: .failed(
+            "couldn't approve \(script.displayFile): \(Self.errorText(error))"))
+      }
       return
     }
     do {
@@ -201,6 +226,11 @@ extension WorkroomLifecycle {
     else {
       return
     }
+    // On a remote create's machine: it carries on there without the script, never a new create.
+    if run.approvesOnHost {
+      answerHostScriptApproval(of: run, with: .skipped)
+      return
+    }
     if script.isDevContainer {
       await retryCreation(run, skipsDevContainer: true, startCommit: run.askedAt, from: window)
     } else {
@@ -215,6 +245,9 @@ extension WorkroomLifecycle {
   /// collapses to its sibling; a pane on its own gives way to what was selected before, if it still
   /// exists.
   func closeCreation(_ run: CreationRun, from window: any LifecycleWindow) {
+    // Cancel Creation on a remote create paused at its setup script: the create deletes its own
+    // workroom and machine, and the pane with them.
+    if answerHostScriptApproval(of: run, with: .cancelled) { return }
     window.closeCreationPane(paneID(of: run), returningTo: run.previousSelection)
     discardCreationRun(run)
   }
@@ -470,10 +503,12 @@ extension WorkroomLifecycle {
       let plan = try await services.plan(
         run.project, projectStore.effectiveBaseBranch(for: run.project))
       defaultNotUsed = plan.defaultNotUsed
-      // Before any machine is made, so a script this Mac won't run never costs a paid host (#363).
-      // A container create judges its devcontainer.json the same way (#308, eng review D4), unless
-      // it goes on the default image. A create needing neither judged isn't stopped when that can't
-      // be told; it then only goes without the local-work notice.
+      // A container create's devcontainer.json is judged before any container is made, since it
+      // decides what the container is (#308, eng review D4), unless it goes on the default image.
+      // The setup script is not: it is asked about once the machine is up and it is about to run
+      // there (`runRemoteSetupAsking`), from the bytes the host's checkout holds. A create judging
+      // no devcontainer.json isn't stopped when the start or local work can't be told; it then
+      // only goes without the local-work notice.
       let judgesDevContainer: Bool
       if case .container = place {
         judgesDevContainer = !run.skipsDevContainer
@@ -481,24 +516,15 @@ extension WorkroomLifecycle {
         judgesDevContainer = false
       }
       let status =
-        run.skipsSetup && !judgesDevContainer
-        ? (try? await services.trustStatus(window.services.cli, run.project, plan, false))
+        judgesDevContainer
+        ? try await services.trustStatus(window.services.cli, run.project, plan, true)
+        : (try? await services.trustStatus(window.services.cli, run.project, plan, false))
           ?? TrustStatus(trusted: true, scripts: [])
-        : try await services.trustStatus(
-          window.services.cli, run.project, plan, judgesDevContainer)
       // The file that decides the image first: it is what the create reads first.
       if judgesDevContainer, let config = status.scripts.first(where: { $0.isDevContainer }),
         !config.trusted
       {
         refuseCreation(run, config, from: window)
-        return
-      }
-      if !run.skipsSetup,
-        let script = status.scripts.first(where: {
-          $0.name == RemoteProvisioning.Script.setup.fileName && !$0.trusted
-        })
-      {
-        refuseCreation(run, script, from: window)
         return
       }
       // The judged bytes, which are what the container is made from (#308).
@@ -572,9 +598,24 @@ extension WorkroomLifecycle {
         run.begin("script")
         run.finish("script", as: .skipped(reason: Self.setupSkippedReason))
       } else {
-        setupFailure = await runRemoteSetup(
+        switch await runRemoteSetupAsking(
           run, created: created, host: host, services: services,
-          environment: prepared?.remoteEnvironment ?? [:], cli: window.services.cli)
+          environment: prepared?.remoteEnvironment ?? [:], from: window)
+        {
+        case .ran(let failure): setupFailure = failure
+        case .skipped:
+          run.begin("script")
+          run.finish("script", as: .skipped(reason: Self.setupSkippedReason))
+        case .cancelled:
+          cancelRemoteCreate(run, name: created.name, from: window)
+          return
+        case .dropped:
+          // Its pane went: the workroom and machine stay, now deletable, the script not run.
+          window.runCommand.disarmAutoRun(forWorkroom: id)
+          releaseCreatingWorkroom(id, from: window)
+          run.cancel()
+          return
+        }
       }
       releaseCreatingWorkroom(id, from: window)
       if let hookFailure {
@@ -753,7 +794,7 @@ extension WorkroomLifecycle {
     _ run: CreationRun, created: RemoteWorkrooms.Created, host: RemoteCreateHost,
     services: RemoteCreateServices, environment: [String: String] = [:],
     cli: any WorkroomCLIProtocol
-  ) async -> String? {
+  ) async -> HostSetupResult {
     let step = "script"
     let request = RemoteWorkrooms.ScriptRequest(
       script: .setup, workroom: created.name, path: created.instance.path,
@@ -766,19 +807,97 @@ extension WorkroomLifecycle {
     let result = await services.script(request)
     await Self.drainMainQueue()  // the script's last lines, before its row ends
     switch result {
-    case .absent, .passed: return nil
+    case .absent, .passed: return .ran(failure: nil)
     case .failed(let why):
       // A failure before the script started (the connect, its check, the root's copy) is still
       // the script's row's, not the checkout's still running before it.
       run.begin(step)
-      return why
+      return .ran(failure: why)
     case .notTrusted(let script):
-      // The check before the machine passed, so the host's checkout holds other bytes than the
-      // ones approved: a base that moved since, perhaps.
-      run.begin(step)
-      return "setup script failed: scripts/\(script.name) on the host is not the one approved on "
-        + "this Mac, so it did not run"
+      // The bytes the host's checkout holds, which are what would run.
+      return .notTrusted(script)
     }
+  }
+
+  /// One go at a remote create's setup script: it ran (failing with the reason, or not), or this
+  /// Mac has not approved the bytes the host holds.
+  private enum HostSetupResult {
+    case ran(failure: String?)
+    case notTrusted(ScriptTrust)
+  }
+
+  /// How a remote create's setup script step ended, once any approval it needed was answered.
+  private enum HostSetupEnd {
+    case ran(failure: String?)
+    case skipped
+    case cancelled
+    case dropped
+  }
+
+  /// A remote create's setup script, asked about when it is about to run (#363): the machine is up
+  /// and its checkout out, and the bytes judged are the ones it holds. Unapproved, the create
+  /// pauses with the script's row waiting and the approval sheet up. Approve records those bytes
+  /// and runs it, here, judged again (a checkout changed meanwhile asks again); Continue Without
+  /// Script carries on without it; Cancel Creation ends the create.
+  private func runRemoteSetupAsking(
+    _ run: CreationRun, created: RemoteWorkrooms.Created, host: RemoteCreateHost,
+    services: RemoteCreateServices, environment: [String: String],
+    from window: any LifecycleWindow
+  ) async -> HostSetupEnd {
+    while true {
+      let result = await runRemoteSetup(
+        run, created: created, host: host, services: services, environment: environment,
+        cli: window.services.cli)
+      guard case .notTrusted(let script) = result else {
+        if case .ran(let failure) = result { return .ran(failure: failure) }
+        return .ran(failure: nil)
+      }
+      // A run dropped meanwhile has no pane to ask in, and nobody would answer.
+      guard creationRuns[run.id] === run else { return .dropped }
+      run.awaitApproval(of: script, onHost: true)
+      announceCreation("\(script.displayFile) needs approving")
+      let answer = await withCheckedContinuation { continuation in
+        hostScriptApprovals[run.id] = continuation
+        presentSetupApproval(run, in: window)
+      }
+      switch answer {
+      case .approved: continue
+      case .skipped: return .skipped
+      case .cancelled: return .cancelled
+      case .dropped: return .dropped
+      case .failed(let why):
+        run.begin("script")
+        return .ran(failure: why)
+      }
+    }
+  }
+
+  /// Cancel Creation on a remote create paused at its setup script: its workroom is deleted, as
+  /// Delete Workroom would, taking its machine down, with no teardown script (no setup ran). When
+  /// that can't start, the create fails as one whose machine is still running, so Delete stays
+  /// on offer.
+  private func cancelRemoteCreate(
+    _ run: CreationRun, name: String, from window: any LifecycleWindow
+  ) {
+    let path = run.project.path
+    let id = TargetID.workroom(project: path, name: name)
+    window.runCommand.disarmAutoRun(forWorkroom: id)
+    releaseCreatingWorkroom(id, from: window)
+    if let project = projectStore.project(at: path),
+      let workroom = project.workrooms.first(where: { $0.name == name })
+    {
+      deleteWorkroom(workroom, in: project, skipTeardown: true, from: window)
+    }
+    guard deletingWorkrooms.contains(id) else {
+      failCreationRun(
+        run,
+        .remoteFailed(
+          message: "it was cancelled, but its workroom couldn't be deleted", leftBehind: true))
+      return
+    }
+    // The delete took the workroom's pane out of every window; the run goes with it.
+    run.cancel()
+    discardCreationRun(run)
   }
 
   /// A remote workroom's `script` judged by the CLI against `project`'s approvals (#363).

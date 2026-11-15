@@ -211,7 +211,9 @@ failed" and offer cleanup.
    Before it runs, the file is gated as setup is (#363): an unapproved one stops the delete with
    nothing removed (`ScriptNotTrusted`, exit 3) unless a terminal approves it. On a remote workroom
    the app reads the host's copy and asks the CLI to judge it (`trust status --stdin`) before
-   `workroomd run-script`, for setup and teardown alike.
+   `workroomd run-script`, for setup and teardown alike. That is the only check a remote create's
+   setup script gets: an unapproved one pauses the create there, its machine up, until it is
+   approved, skipped or the create cancelled (ADR 0054's amendment).
 4. **Remove the workspace:** `git worktree remove <path> --force` (this also removes the directory).
    **The branch is intentionally left intact.**
 5. **Update config:** remove the workroom entry. The project stays registered even with no

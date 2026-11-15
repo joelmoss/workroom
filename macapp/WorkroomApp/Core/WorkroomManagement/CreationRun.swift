@@ -145,8 +145,10 @@ enum CreationOutcome: Equatable {
   case hookFailed(message: String)
   /// A remote create that failed; `leftBehind` when its machine could not be taken down.
   case remoteFailed(message: String, leftBehind: Bool)
-  /// Stopped before anything was made: this Mac has not approved the setup script (#363). Approve
-  /// records it and starts the create again.
+  /// Waiting on Approve: this Mac has not approved the setup script (#363). A local create stopped
+  /// before anything was made, and Approve records it and starts the create again. A remote one
+  /// asks once its machine is up and the script is about to run (`CreationRun.approvesOnHost`), and
+  /// Approve records it and runs it there.
   case scriptNotTrusted(ScriptTrust)
   /// Stopped before anything was made: the main checkout has work the create would leave out, and
   /// the user chooses where it starts (`CreationStart`), which starts the create again.
@@ -287,8 +289,8 @@ final class CreationRun: ObservableObject, Identifiable {
 
   var isRunning: Bool { outcome == .running }
 
-  /// Stopped before anything was made, waiting on the user: its setup script's Approve (#363), or
-  /// where to start. Not running, and not failed either.
+  /// Waiting on the user: its setup script's Approve (#363), or where to start, or the default
+  /// image. Not running, and not failed either.
   var awaitsApproval: Bool {
     switch outcome {
     case .scriptNotTrusted, .localWorkFound, .composeRefused: true
@@ -364,17 +366,31 @@ final class CreationRun: ObservableObject, Identifiable {
     self.outcome = outcome
   }
 
-  /// The setup script needs approving before anything is made (#363): the step running now ends
-  /// done, the script's row (put back if the plan left it out) waits on the user, and the steps in
-  /// between stay pending, since Approve runs them.
-  /// `startCommit` is the start point the question was asked at.
-  func awaitApproval(of script: ScriptTrust, at startCommit: String? = nil) {
+  /// The setup script needs approving (#363): the step running now ends done, the script's row
+  /// (put back if the plan left it out) waits on the user, and the steps in between stay pending,
+  /// since Approve runs them. `startCommit` is the start point the question was asked at.
+  /// `onHost` when a remote create asks with its machine up, about to run the script there: the
+  /// answer then carries on in this run rather than starting the create again.
+  func awaitApproval(of script: ScriptTrust, at startCommit: String? = nil, onHost: Bool = false) {
     if let running = runningIndex { end(running, as: .done) }
     if let index = steps.firstIndex(where: { $0.id == "script" }) ?? restore("script") {
       steps[index].state = .waitingForUser
     }
     askedAt = startCommit
+    approvesOnHost = onHost
     outcome = .scriptNotTrusted(script)
+  }
+
+  /// A remote create's setup script was asked about with its machine up (`awaitApproval`'s
+  /// `onHost`): Approve runs it on that machine, Continue Without Script carries on without it,
+  /// and Cancel Creation deletes the workroom and its machine. Never a new create, which would
+  /// make a second machine.
+  private(set) var approvesOnHost = false
+
+  /// The answer to an on-host approval came: the run carries on.
+  func resumeAfterApproval() {
+    guard case .scriptNotTrusted = outcome else { return }
+    outcome = .running
   }
 
   /// The main checkout has work the create would leave out, so where it starts waits on the user:
@@ -455,4 +471,18 @@ final class CreationRun: ObservableObject, Identifiable {
       steps[i].state = .skipped(reason: nil)
     }
   }
+}
+
+/// The answer to a remote create paused at its setup script (`CreationRun.approvesOnHost`).
+enum HostScriptAnswer: Equatable, Sendable {
+  /// Approved and recorded: it runs.
+  case approved
+  /// Continue Without Script.
+  case skipped
+  /// Cancel Creation: the workroom and its machine are deleted.
+  case cancelled
+  /// The run went some other way: the create ends there, its workroom and machine kept, deletable.
+  case dropped
+  /// The approval couldn't be recorded: the create fails as a failed setup script would.
+  case failed(String)
 }

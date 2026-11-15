@@ -148,6 +148,16 @@ enum CreationPanePresentation {
     }
   }
 
+  /// What a remote create made for its workroom, as its approval and footer name it.
+  static func hostNoun(for kind: HostKind?) -> String {
+    switch kind {
+    case .container: "container"
+    case .ssh: "folder on the server"
+    case .railway: "sandbox"
+    default: "machine"
+    }
+  }
+
   /// The setup script approval sheet's message (#363): why the create stopped, for which project,
   /// and the ways on. Worded as the teardown's (`WorkroomLifecycle.teardownApprovalMessage`).
   @MainActor static func setupApprovalMessage(for run: CreationRun, script: ScriptTrust) -> String {
@@ -157,6 +167,12 @@ enum CreationPanePresentation {
         + "decides what the container mounts from this Mac and what runs there, and its "
         + "initializeCommand runs on this Mac itself. Read it, then "
         + "approve it to use it, or create the workroom on the default image."
+    }
+    if run.approvesOnHost {
+      return "The new workroom's \(hostNoun(for: run.kind)) is ready, and \(script.displayFile) "
+        + "\(script.originLabel) is about to run there. It is new, or changed since it was "
+        + "approved on this Mac. Read it, then approve it to run it, or carry on without running "
+        + "it. Not Now leaves the create waiting."
     }
     return "Creating a workroom in \(run.project.displayName) runs \(script.displayFile) "
       + "\(script.originLabel), and it is new, or changed since it was approved on this Mac. Read "
@@ -189,8 +205,15 @@ enum CreationPanePresentation {
     let secondary: Action
     /// A third button, beside the default: Try With Provider Defaults (#575).
     var alternative: Action? = nil
+    /// Whether Escape answers the secondary: not where Cancel deletes a machine.
+    var escapes = true
+    /// A question for the user (a setup script to approve, where to start, the default image):
+    /// nothing failed, so its reason is drawn plain. Only a failure is drawn in the failure colour.
+    var waitsOnUser = false
     /// What Escape answers: Close or Cancel, where it is shown (D16).
-    var escapeAction: Action? { [.close, .cancel].contains(secondary) ? secondary : nil }
+    var escapeAction: Action? {
+      escapes && [.close, .cancel].contains(secondary) ? secondary : nil
+    }
   }
 
   /// The row a failure's notice goes under: the step that failed, or the one waiting on the user (a
@@ -202,6 +225,13 @@ enum CreationPanePresentation {
   /// The footer `run` shows: its outcome's, with Try With Provider Defaults where it can help.
   @MainActor static func footer(for run: CreationRun) -> Footer? {
     guard var footer = footer(for: run.outcome) else { return nil }
+    if run.approvesOnHost, case .scriptNotTrusted(let script) = run.outcome {
+      let noun = hostNoun(for: run.kind)
+      footer = Footer(
+        reason: "\(script.displayFile) needs approving before it runs on the new workroom's "
+          + "\(noun). Cancel Creation deletes the workroom and its \(noun).",
+        primary: .reviewScript, secondary: .cancel, escapes: false, waitsOnUser: true)
+    }
     if run.offersProviderDefaults { footer.alternative = .providerDefaults }
     return footer
   }
@@ -229,16 +259,16 @@ enum CreationPanePresentation {
       Footer(
         reason: "\(script.displayFile) \(script.originLabel) needs approving before the workroom "
           + "is made.",
-        primary: .reviewScript, secondary: .cancel)
+        primary: .reviewScript, secondary: .cancel, waitsOnUser: true)
     case .localWorkFound(let work):
       Footer(
         reason: "\(work.summary). Choose whether the new workroom includes it.",
-        primary: .chooseStart, secondary: .cancel)
+        primary: .chooseStart, secondary: .cancel, waitsOnUser: true)
     case .composeRefused(let file):
       Footer(
         reason: "\(file) describes Docker Compose services, and a container workroom runs one "
           + "container. It can be made from the default image instead.",
-        primary: .defaultImage, secondary: .cancel)
+        primary: .defaultImage, secondary: .cancel, waitsOnUser: true)
     }
   }
 
