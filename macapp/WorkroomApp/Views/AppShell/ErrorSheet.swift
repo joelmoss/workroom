@@ -49,7 +49,9 @@ struct ErrorSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
       }
       if let script {
-        ScriptBox(text: script.text, name: script.name, id: "error.log")
+        ScriptBox(
+          text: script.text, name: script.name, id: "error.log",
+          idealWidth: Self.scriptIdealWidth - Spacing.xxl * 2)
       } else if let log {
         // Pinned to the bottom: a script's last lines are usually where it says what went wrong.
         textBox(log, maxHeight: 240, id: "error.log")
@@ -107,8 +109,7 @@ struct ErrorSheet: View {
       }
     }
     .padding(Spacing.xxl)
-    // Wider for a script to read before approving it.
-    .frame(width: script == nil ? 460 : 640)
+    .modifier(SheetSize(resizable: script != nil))
     .onExitCommand(perform: dismissCancelling)
     .confirmationDialog(
       action?.confirmation?.title ?? "", isPresented: $confirming, titleVisibility: .visible
@@ -127,6 +128,29 @@ struct ErrorSheet: View {
     // (see `VCSFailureSheet`).
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("error.sheet")
+  }
+
+  /// How wide a sheet with a script to read opens. It can be dragged wider and taller, and the
+  /// script grows with it.
+  static let scriptIdealWidth: CGFloat = 760
+
+  /// A plain error is a fixed 460 wide. A script to approve opens wider and as tall as the script
+  /// needs (to a cap), and can be resized, its script box taking the room.
+  private struct SheetSize: ViewModifier {
+    let resizable: Bool
+
+    func body(content: Content) -> some View {
+      if resizable {
+        content
+          .frame(
+            minWidth: 560, idealWidth: ErrorSheet.scriptIdealWidth, maxWidth: .infinity,
+            maxHeight: .infinity, alignment: .top
+          )
+          .presentationSizing(.fitted)
+      } else {
+        content.frame(width: 460)
+      }
+    }
   }
 
   /// Cancel, or Escape: the sheet goes, and with it whatever `cancel` does.
