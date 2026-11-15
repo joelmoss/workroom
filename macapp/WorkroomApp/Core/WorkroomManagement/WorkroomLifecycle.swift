@@ -69,6 +69,10 @@ final class WorkroomLifecycle: ObservableObject {
   /// resumed.
   var hostScriptApprovals: [UUID: CheckedContinuation<HostScriptAnswer, Never>] = [:]
 
+  /// The setup scripts running on workrooms whose setup was pending (`runPendingSetup`), by
+  /// workroom target id, each with its output as it comes.
+  var pendingSetupRuns: [TerminalTarget.ID: ScriptLogSession] = [:]
+
   /// Target ids of workrooms with an in-flight optimistic deletion: dropped from the sidebar but
   /// their teardown (worktree/config removal) not yet finished. `AppStore.apply` filters these out of
   /// every incoming CLI `list`, so a stale snapshot taken before the teardown persisted can't

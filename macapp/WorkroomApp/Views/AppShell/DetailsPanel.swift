@@ -1,4 +1,5 @@
 import AppKit
+import DesignSystem
 import DevContainer
 import HostDrivers
 import SwiftUI
@@ -72,6 +73,7 @@ struct DetailsPanel: View {
         if let note = target.remoteNote {
           Text(note).font(.caption2).foregroundStyle(.secondary)
         }
+        pendingSetup()
         devContainer(target)
         hostOptions(target)
         railway(target)
@@ -131,6 +133,111 @@ extension DetailsPanel {
       RailwayHostNote(sid: sid)
         .task(id: sid) { await lostCreates.refresh() }
       if !lostCreates.creates.isEmpty { RailwayLostCreatesNotice() }
+    }
+  }
+}
+
+extension DetailsPanel {
+  /// A remote workroom whose setup script never ran (#363): its create paused at the script and
+  /// the app quit, or the pane went, before it was answered.
+  @ViewBuilder
+  fileprivate func pendingSetup() -> some View {
+    if let sid = store.inspectorTargetID,
+      let (workroom, project) = store.workroomAndProject(for: sid),
+      store.lifecycle.isSetupPending(workroom, inProject: project.path)
+    {
+      let lifecycle = store.lifecycle
+      PendingSetupNote(
+        workroom: workroom,
+        run: lifecycle.pendingSetupRuns[
+          TargetID.workroom(project: project.path, name: workroom.name)],
+        onReview: { [store] in
+          await lifecycle.reviewPendingSetup(workroom, in: project, from: store)
+        },
+        skip: { [store] in
+          await lifecycle.skipPendingSetup(workroom.name, in: project.path, from: store)
+        },
+        delete: { [store] in store.requestDeleteWorkroom(sid) })
+    }
+  }
+}
+
+/// What the Details pane says of a workroom whose setup script is pending, with the ways on:
+/// Review Script…, Continue Without Script… and Delete Workroom…. While an approved script runs,
+/// its output.
+/// It takes its values and actions rather than the store: the Details pane also draws in windows
+/// that inject none.
+struct PendingSetupNote: View {
+  let workroom: Workroom
+  /// The approved script's output while it runs; nil otherwise.
+  let run: ScriptLogSession?
+  let onReview: @MainActor () async -> Void
+  let skip: @MainActor () async -> Void
+  let delete: @MainActor () -> Void
+  @State private var confirmingSkip = false
+  @State private var reviewing = false
+
+  var body: some View {
+    Notice {
+      Text("Setup script not run").font(FontRole.noticeTitle)
+        .accessibilityIdentifier("details.setupPending.title")
+      Text(Self.text(ssh: workroom.isSSH))
+        .font(FontRole.noticeBody).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    } accessory: {
+      if let run {
+        ScriptLogContent(session: run)
+          .frame(height: 160)
+          .accessibilityIdentifier("details.setupPending.log")
+      } else {
+        VStack(alignment: .leading, spacing: 6) {
+          HStack {
+            Button("Review Script…") { review() }
+              .disabled(reviewing)
+              .help("Read the setup script this workroom's host holds, then approve it to run it.")
+              .accessibilityIdentifier("details.setupPending.review")
+            Button("Continue Without Script…") { confirmingSkip = true }
+              .disabled(reviewing)
+              .help("Stop asking: the workroom stays as it is, and the setup script never runs.")
+              .accessibilityIdentifier("details.setupPending.skip")
+          }
+          Button("Delete Workroom…") { delete() }
+            .disabled(reviewing)
+            .help(
+              workroom.isSSH
+                ? "Delete this workroom and its folder on its SSH host."
+                : "Delete this workroom and take its machine down."
+            )
+            .accessibilityIdentifier("details.setupPending.delete")
+        }
+      }
+    }
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("details.setupPending")
+    .confirmationDialog(
+      "Carry on without running the setup script?", isPresented: $confirmingSkip
+    ) {
+      Button("Continue Without Script") { Task { await skip() } }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(
+        "The workroom stays as it is, and nothing the script would have set up is done. The "
+          + "script stays unapproved, so you'll be asked again next time.")
+    }
+  }
+
+  /// Why, and for a machine of its own, what it costs meanwhile.
+  static func text(ssh: Bool) -> String {
+    "This workroom was made, but its setup script hasn't run: Workroom quit, or its create's pane "
+      + "was closed, while the script waited for approval."
+      + (ssh ? "" : " Its machine keeps running until the workroom is deleted.")
+  }
+
+  private func review() {
+    reviewing = true
+    Task {
+      await onReview()
+      reviewing = false
     }
   }
 }

@@ -506,8 +506,15 @@ enum RemoteWorkrooms {
     /// The workroom's checkout on its host.
     let path: String
     let rootScript: URL?
-    /// Delete Anyway: the script failed, and the user chose to go on without it.
+    /// No teardown script runs: Delete Anyway, after the script failed, or Cancel Creation, before
+    /// any setup ran.
     var skip = false
+    /// What can't be removed keeps the workroom, as a failed delete does, even with `skip`: Cancel
+    /// Creation. Only Delete Anyway forgets what is left.
+    var keepsWhatRemains = false
+    /// Delete Anyway: the user chose to go on without the script, so a folder that can't be
+    /// removed is forgotten, named in the log.
+    var forgetsWhatRemains: Bool { skip && !keepsWhatRemains }
     /// Judges the bytes that would run (#363).
     let judge: RemoteProvisioning.ScriptJudge
     let onLine: @Sendable (String) -> Void
@@ -655,7 +662,7 @@ enum RemoteWorkrooms {
       // The guard precedes teardown too: its root fallback must never recreate a gone folder.
       state = try await driver.folderState(path: path, workroom: workroom)
     } catch {
-      guard teardown?.skip == true else { throw error }
+      guard teardown?.forgetsWhatRemains == true else { throw error }
       teardown?.onLine("Left \(path) on \(driver.destination): \(error.localizedDescription)")
       state = nil
     }
@@ -677,7 +684,7 @@ enum RemoteWorkrooms {
       if state != nil { try await driver.removeFolder(path: path, workroom: workroom) }
     } catch {
       // Delete Anyway explicitly forgets what could not be removed, naming the folder left there.
-      guard teardown?.skip == true || state == .gone else { throw error }
+      guard teardown?.forgetsWhatRemains == true || state == .gone else { throw error }
       teardown?.onLine("Left \(path) on \(driver.destination): \(error.localizedDescription)")
     }
     try await recorder.forget(name)

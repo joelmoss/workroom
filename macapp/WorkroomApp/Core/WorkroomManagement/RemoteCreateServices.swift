@@ -46,6 +46,12 @@ struct RemoteCreateServices {
   var script: @MainActor (RemoteWorkrooms.ScriptRequest) async -> RemoteProvisioning.ScriptRun = {
     _ in .absent
   }
+  /// How an existing remote workroom's host is reached, from its record, as a delete reaches it
+  /// (`HostDriverRegistry.environment(toDelete:)`): what runs a setup script left pending there
+  /// (`WorkroomLifecycle.runPendingSetup`). A test's fakes reach none unless they say.
+  var existingHost: @MainActor (HostDescriptor) throws -> RemoteCreateHost = { _ in
+    throw RemoteWorkrooms.Failure.signedOut
+  }
   /// The CLI's `trust status` at the origin branch the plan checks out, asked through the CLI it is
   /// handed: the commit that start names and the local work it leaves out. Its last argument judges
   /// the devcontainer.json a container create would use (#308), before any container. The setup
@@ -92,6 +98,17 @@ struct RemoteCreateServices {
         )
       },
       script: { request in await RemoteWorkrooms.runScript(request) },
+      existingHost: { descriptor in
+        guard
+          let environment = try RemoteHosts.shared.registry.environment(
+            toDelete: [descriptor], gone: []
+          )?.environment(for: descriptor),
+          let driver = environment.driver as? any HostTerminalDriver
+        else { throw RemoteWorkrooms.Failure.signedOut }
+        return RemoteCreateHost(
+          key: try HostDriverRegistry.deletionKey(descriptor), driver: driver,
+          environment: environment)
+      },
       trustStatus: { cli, project, plan, devcontainer in
         // origin named, so a branch like `release/1.0` is never read as a remote's.
         let base = plan.startBranch.map { "origin/\($0)" } ?? ""

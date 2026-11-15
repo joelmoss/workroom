@@ -324,6 +324,41 @@ final class SSHWorkroomTests: XCTestCase {
     XCTAssertTrue(calls.all.contains { $0.hasPrefix("Left /home/joel/workrooms/w on myserver:") })
   }
 
+  // Value: protects=Cancel Creation (no teardown script, but keeps what remains) on an SSH
+  // workroom whose folder can't be reached keeps the workroom and says why, as a failed delete
+  // does; only Delete Anyway forgets it; fails_when=skipping the script also forgets a folder left
+  // on the host; why_new=`skip` alone meant both until now; seam=none; no_claim=the app's sheet
+  func testCancelCreationKeepsAnSSHWorkroomWhoseFolderCantBeRemoved() async throws {
+    let calls = Calls()
+    let driver = SSHHostDriver(
+      configuration: .init(destination: "myserver", home: "/home/joel"),
+      directory: FileManager.default.temporaryDirectory,
+      runner: Runner(calls: calls, guardExit: 255))
+    let host = HostDescriptor(
+      driver: "ssh", provisioner: RemoteWorkrooms.provisioner,
+      id: SSHHostDriver.id(for: "myserver"), workroomID: UUID(),
+      path: "/home/joel/workrooms/w", sshDestination: "myserver", sshHome: "/home/joel")
+    let environment = RemoteProvisioning.Environment(
+      driver: driver, daemonSocket: driver.daemonSocket)
+    var teardown = RemoteWorkrooms.Teardown(
+      path: "/home/joel/workrooms/w", rootScript: nil, skip: true, keepsWhatRemains: true,
+      judge: { _ in throw HostDriverError.provisioning("unexpected script") },
+      onLine: { calls.add($0) })
+    do {
+      try await RemoteWorkrooms.delete(
+        "w", host: host, environment: environment, recorder: calls.recorder, teardown: teardown,
+        onForgotten: { _ in })
+      XCTFail("Cancel Creation forgot a folder it couldn't reach")
+    } catch SSHHostDriver.Failure.unreachable {}
+    XCTAssertFalse(calls.all.contains("forget w"))
+    XCTAssertFalse(calls.all.contains { $0.hasPrefix("Left ") })
+    teardown.keepsWhatRemains = false
+    try await RemoteWorkrooms.delete(
+      "w", host: host, environment: environment, recorder: calls.recorder, teardown: teardown,
+      onForgotten: { _ in })
+    XCTAssertTrue(calls.all.contains("forget w"), "Delete Anyway no longer forgets it")
+  }
+
   @MainActor
   func testPortListsArePerWorkroomWhileContainerListsStayPerHost() {
     let host = HostID.remote(UUID())
