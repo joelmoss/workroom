@@ -1,10 +1,13 @@
 import Defaults
 import Observation
+import WorkroomDomain
 
-/// Where the Settings window is: a pane, and in Projects, the project open in it (nil: the list).
+/// Where the Settings window is: a pane, and in Projects the project open in it, in Remote Hosts
+/// the provider open in it (nil: the pane's list).
 struct SettingsLocation: Equatable {
   var pane: SettingsPane
   var project: String?
+  var host: HostKind?
 }
 
 /// The places the Settings window's back and forward buttons walk, as System Settings' do: a new

@@ -16,7 +16,7 @@ Workroom never runs your `railway` command or reads its `~/.railway` folder, so 
 
 ## Set up Railway
 
-The first time you create a workroom on Railway, the **Set up Railway** sheet opens. You can also open it from **Settings**, **Remote Hosts**, **Set Up Railway…**.
+The first time you create a workroom on Railway, the **Set up Railway** sheet opens. You can also open it from **Settings**, **Remote Hosts**, **Railway**, **Set Up Railway…**.
 
 1. **Account.** Click **Sign In with Railway**. Your browser opens Railway's page. Tick the workspaces Workroom may use, then approve. There is no token to copy. Each Workroom app (Workroom and Workroom Nightly) signs in once of its own.
 2. **Workspace.** Pick the workspace Workroom keeps its hosts in.
@@ -78,7 +78,7 @@ If a sandbox is destroyed outside Workroom, for example from Railway's dashboard
 
 Sometimes a create asks Railway for a sandbox and Railway's answer never arrives, for example when the network drops at that moment. Railway may still have made the sandbox, and it bills until it's destroyed. Workroom can't tell which sandbox it was, so it never destroys one on its own.
 
-Instead, a Railway workroom's **Details**, and **Settings**, **Remote Hosts**, under **Railway**, show **A Railway create may have left a sandbox**. Under it are the sandboxes Railway made around that time that no workroom on this Mac uses. Workroom asks Railway for them each time the notice shows.
+Instead, a Railway workroom's **Details**, and **Settings**, **Remote Hosts**, **Railway**, show **A Railway create may have left a sandbox**. Under it are the sandboxes Railway made around that time that no workroom on this Mac uses. Workroom asks Railway for them each time the notice shows.
 
 - **Destroy…** destroys that sandbox, after you confirm. Do this only for a sandbox you know the failed create made. If a workroom on another Mac uses it, that workroom's work is lost.
 - **Dismiss** removes the notice without destroying anything. Use it once you've checked Railway's dashboard yourself.

@@ -34,9 +34,11 @@ final class RailwaySetupUITests: XCTestCase {
     let pane = element(app, "settingsPane.remoteHosts")
     XCTAssertTrue(pane.waitForExistence(timeout: 10))
     pane.click()
+    let railway = element(app, "settings.remoteHosts.railway")
+    XCTAssertTrue(railway.waitForExistence(timeout: 5), "no Railway row in Remote Hosts")
+    railway.click()
     let setUp = element(app, "settings.control.railwaySetup")
     XCTAssertTrue(setUp.waitForExistence(timeout: 5))
-    // Below the providers' host options.
     setUp.scrollIntoView(in: app, maxScrolls: 30)
     setUp.click()
   }

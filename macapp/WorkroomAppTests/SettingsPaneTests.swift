@@ -1,4 +1,5 @@
 import Defaults
+import WorkroomDomain
 import XCTest
 
 @testable import Workroom
@@ -71,6 +72,21 @@ final class SettingsPaneTests: XCTestCase {
     history.leave(terminal, for: SettingsLocation(pane: .agent))
     XCTAssertFalse(history.canGoForward, "a new choice kept the old forward steps")
     XCTAssertEqual(history.goBack(from: SettingsLocation(pane: .agent)), terminal)
+  }
+
+  /// Value: protects=Remote Hosts opens a provider's page as Projects opens a project: back
+  /// returns to the provider list, not the pane before it; fails_when=the provider isn't part of
+  /// where the window is; seam=none; no_claim=the pane's rendering
+  func testBackFromAProviderReturnsToTheProviderList() {
+    let projects = SettingsLocation(pane: .projects)
+    let hosts = SettingsLocation(pane: .remoteHosts)
+    let railway = SettingsLocation(pane: .remoteHosts, host: .railway)
+    var history = SettingsHistory()
+    history.leave(projects, for: hosts)
+    history.leave(hosts, for: railway)
+    XCTAssertNotEqual(hosts, railway)
+    XCTAssertEqual(history.goBack(from: railway), hosts, "back from a provider skipped its list")
+    XCTAssertEqual(history.goForward(from: hosts), railway, "forward lost the provider")
   }
 
   /// Value: protects=a main window's request opens Settings on that project, warned only when Run

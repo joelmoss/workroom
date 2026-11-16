@@ -37,6 +37,9 @@ final class RailwayHostOptionsUITests: XCTestCase {
     let pane = element(app, "settingsPane.remoteHosts")
     XCTAssertTrue(pane.waitForExistence(timeout: 10))
     pane.click()
+    let railway = element(app, "settings.remoteHosts.railway")
+    XCTAssertTrue(railway.waitForExistence(timeout: 5), "no Railway row in Remote Hosts")
+    railway.click()
 
     // The pop-up itself: a Form row gives its label the picker's identifier too, and clicking the
     // label doesn't open the menu.

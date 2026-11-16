@@ -115,7 +115,9 @@ The pane lists your projects. Click one to open its settings, and the back butto
 
 ## Remote Hosts
 
-What Workroom creates each new boxd and exe.dev workroom's host with. Existing workrooms keep the host they were made with. There is a group for each provider, shown whether or not you have set that provider up, and each setting saves as you change it. Each group's **info** link opens [Choose a host's image and size](../remote/overview.md#choose-a-hosts-image-and-size). In a list, the provider's own default is marked **(default)**, and choosing it leaves the choice to the provider. Where the provider doesn't say what its default is, the list shows **Provider default** instead.
+The pane lists the remote providers: boxd, exe.dev and Railway. Click one to open its page, and the back button to return to the list. Railway's row shows a warning when a create may have left a sandbox behind.
+
+A provider's page holds what Workroom creates each of its new workrooms' hosts with. Railway's page also has **Set Up Railway…**, to sign in, pick a workspace or sign out. Existing workrooms keep the host they were made with. Every provider is listed whether or not you have set it up, and each setting saves as you change it. Each page's **info** link opens [Choose a host's image and size](../remote/overview.md#choose-a-hosts-image-and-size). In a list, the provider's own default is marked **(default)**, and choosing it leaves the choice to the provider. Where the provider doesn't say what its default is, the list shows **Provider default** instead.
 
 | Setting | What it does |
 | --- | --- |

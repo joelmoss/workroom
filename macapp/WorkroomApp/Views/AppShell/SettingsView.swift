@@ -33,6 +33,8 @@ struct SettingsView: View {
   @State private var selection: SettingsPane = Defaults[.settingsSelectedPane]
   @State private var hovered: SettingsPane?
   @State private var history = SettingsHistory()
+  /// The provider open in Remote Hosts; nil shows the list of providers.
+  @State private var host: HostKind?
   @Environment(\.themeTokens) private var tokens
 
   /// The header strip's height, level with the window's traffic lights, as System Settings' is.
@@ -72,14 +74,16 @@ struct SettingsView: View {
   /// Where the window is now.
   private var location: SettingsLocation {
     SettingsLocation(
-      pane: selection, project: selection == .projects ? SettingsRoute.shared.project : nil)
+      pane: selection, project: selection == .projects ? SettingsRoute.shared.project : nil,
+      host: selection == .remoteHosts ? host : nil)
   }
 
-  /// The open project's name in Projects, else the pane's.
+  /// The open project's or provider's name, else the pane's.
   private var title: String {
     if let path = location.project, let project = ProjectStore.shared.project(at: path) {
       return project.displayName
     }
+    if let host = location.host { return host.displayName }
     return selection.label
   }
 
@@ -127,13 +131,15 @@ struct SettingsView: View {
     selection = location.pane
     Defaults[.settingsSelectedPane] = location.pane
     if location.pane == .projects { SettingsRoute.shared.project = location.project }
+    if location.pane == .remoteHosts { host = location.host }
   }
 
   private var sidebar: some View {
     List {
       ForEach(SettingsPane.allCases) { pane in
         Button {
-          // Projects opens on its list, as a System Settings pane opens on its top page.
+          // Projects and Remote Hosts open on their lists, as a System Settings pane opens on its
+          // top page.
           go(to: SettingsLocation(pane: pane))
         } label: {
           Label {
@@ -173,7 +179,9 @@ struct SettingsView: View {
     case .agent: CodingAgentSettingsPane()
     case .projects:
       ProjectsSettingsPane(open: { go(to: SettingsLocation(pane: .projects, project: $0)) })
-    case .remoteHosts: RemoteHostsSettingsPane()
+    case .remoteHosts:
+      RemoteHostsSettingsPane(
+        host: host, open: { go(to: SettingsLocation(pane: .remoteHosts, host: $0)) })
     case .about: AboutSettingsPane()
     }
   }
@@ -482,23 +490,77 @@ private struct NewWorkroomsSection: View {
   }
 }
 
-/// The host options every boxd, exe.dev and Railway workroom is created with (#575, #633, ADR
-/// 0065): one group per provider, shown whether or not it is set up, saving as they change.
-/// Settings ▸ Projects and the New Workroom dialog's Configure… panel choose over them.
+/// Settings ▸ Remote Hosts: a list of the providers, and a click opens one's page, as Projects
+/// does; the window's back button returns to the list. A provider's page holds the host options
+/// every workroom on it is created with (#575, #633, ADR 0065), shown whether or not it is set up
+/// and saving as they change, and for Railway its account (#627). Settings ▸ Projects and the New
+/// Workroom dialog's Configure… panel choose over these options.
 private struct RemoteHostsSettingsPane: View {
+  /// The provider open; nil shows the list.
+  let host: HostKind?
+  /// Opens a provider's page, as a step the window's back button undoes.
+  let open: (HostKind) -> Void
   @Default(.hostOptions) private var hostOptions
   @ObservedObject private var catalog = HostOptionsCatalog.shared
   /// The Railway setup sheet open from here (#627), made fresh each time it opens.
   @State private var railwaySetup: RailwaySetup?
   @ObservedObject private var lostCreates = RailwayLostCreatesModel.shared
+  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Form {
-      ForEach(HostKind.optionedProviders, id: \.self) { provider in
-        HostOptionsSection(
-          provider: provider, options: binding(provider), inherited: nil, catalog: catalog)
+      if let host {
+        page(host)
+      } else {
+        list
       }
-      Section("Railway") {
+    }
+    .formStyle(.grouped)
+    .scrollContentBackground(.hidden)
+    .task { await lostCreates.refresh() }
+    .sheet(
+      isPresented: Binding(
+        get: { railwaySetup != nil }, set: { if !$0 { railwaySetup = nil } })
+    ) {
+      if let railwaySetup {
+        RailwaySetupSheet(setup: railwaySetup, onCancel: { self.railwaySetup = nil })
+      }
+    }
+  }
+
+  /// One row per provider, each opening its page.
+  private var list: some View {
+    Section {
+      ForEach(HostKind.optionedProviders, id: \.self) { provider in
+        Button {
+          open(provider)
+        } label: {
+          HStack {
+            Text(provider.displayName)
+            Spacer()
+            // A create that may have left a sandbox, whose notice is on Railway's page.
+            if provider == .railway, !lostCreates.creates.isEmpty {
+              Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(tokens.warning)
+                .help("A Railway create may have left a sandbox behind. Open Railway to see it.")
+                .accessibilityLabel("Needs attention")
+            }
+            Image(systemName: "chevron.right")
+              .foregroundStyle(tokens.fgMuted)
+          }
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open \(provider.displayName)'s settings")
+        .accessibilityIdentifier("settings.remoteHosts.\(provider.driver)")
+      }
+    }
+  }
+
+  /// A provider's host options, and for Railway its account first, since they need it.
+  @ViewBuilder private func page(_ provider: HostKind) -> some View {
+    if provider == .railway {
+      Section {
         LabeledContent {
           Button("Set Up Railway…") {
             railwaySetup = RailwaySetup(
@@ -514,17 +576,8 @@ private struct RemoteHostsSettingsPane: View {
         if !lostCreates.creates.isEmpty { RailwayLostCreatesNotice() }
       }
     }
-    .formStyle(.grouped)
-    .scrollContentBackground(.hidden)
-    .task { await lostCreates.refresh() }
-    .sheet(
-      isPresented: Binding(
-        get: { railwaySetup != nil }, set: { if !$0 { railwaySetup = nil } })
-    ) {
-      if let railwaySetup {
-        RailwaySetupSheet(setup: railwaySetup, onCancel: { self.railwaySetup = nil })
-      }
-    }
+    HostOptionsSection(
+      provider: provider, options: binding(provider), inherited: nil, catalog: catalog)
   }
 
   private func binding(_ provider: HostKind) -> Binding<HostOptions> {
