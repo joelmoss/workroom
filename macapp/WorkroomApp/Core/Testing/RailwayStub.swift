@@ -118,7 +118,8 @@ import HostDrivers
         URLQueryItem(name: "state", value: value("state")),
       ]
       guard let target = callback.url else { return }
-      _ = try? await URLSession(configuration: .ephemeral).data(from: target)
+      // Followed in the background, as a browser does: the page waits for the sign-in to end.
+      Task { _ = try? await URLSession(configuration: .ephemeral).data(from: target) }
     }
 
     func send(_ request: URLRequest) async throws -> RailwayHTTPResponse {
