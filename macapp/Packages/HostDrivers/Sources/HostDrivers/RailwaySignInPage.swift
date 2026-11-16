@@ -13,21 +13,29 @@ public enum RailwaySignInPage {
   }
 
   static func html(_ outcome: Outcome) -> String {
-    let connected = outcome == .connected
-    let title =
-      connected ? "Workroom is connected to Railway" : "Workroom isn't connected to Railway"
-    let detail =
+    let check = #"<path d="M5 12.5l4.5 4.5L19 7.5" stroke-linejoin="round"/>"#
+    let cross = #"<path d="M6 6l12 12M18 6L6 18"/>"#
+    let notConnected = "Workroom isn't connected to Railway"
+    let (title, detail, mark, body) =
       switch outcome {
-      case .connected: "You can close this tab and go back to Workroom."
+      case .connected:
+        (
+          "Workroom is connected to Railway", "You can close this tab and go back to Workroom.",
+          check, "<body>"
+        )
       case .declined:
-        "Railway didn't approve the sign-in. Close this tab and try again from Workroom."
+        (
+          notConnected,
+          "Railway didn't approve the sign-in. Close this tab and try again from Workroom.",
+          cross, "<body class=\"off\">"
+        )
       case .failed:
-        "Workroom couldn't finish signing in to Railway. Close this tab and try again from Workroom."
+        (
+          notConnected,
+          "Workroom couldn't finish signing in to Railway. Close this tab and try again from Workroom.",
+          cross, "<body class=\"off\">"
+        )
       }
-    let mark =
-      connected
-      ? #"<path d="M5 12.5l4.5 4.5L19 7.5" stroke-linejoin="round"/>"#
-      : #"<path d="M6 6l12 12M18 6L6 18"/>"#
     return """
       <!doctype html><html lang="en"><meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -48,7 +56,7 @@ public enum RailwaySignInPage {
       p{margin:0;color:var(--muted);font-size:14px;max-width:44ch}
       footer{position:fixed;left:0;right:0;bottom:18px;font-size:12px;color:var(--muted)}
       </style>
-      <body class="\(connected ? "on" : "off")">
+      \(body)
       <div class="link">
       <svg width="64" height="64" viewBox="0 0 100 100" role="img" aria-label="Workroom"><rect width="100" height="100" rx="23" fill="#000"/><g fill="#ffe01b"><rect x="13.5" y="13.5" width="20" height="20"/><rect x="40" y="13.5" width="20" height="20"/><rect x="66.5" y="13.5" width="20" height="20"/><rect x="13.5" y="40" width="20" height="20"/><rect x="66.5" y="40" width="20" height="20"/><rect x="13.5" y="66.5" width="20" height="20"/><rect x="40" y="66.5" width="20" height="20"/><rect x="66.5" y="66.5" width="20" height="20"/></g></svg>
       <div class="line"><div class="knot"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" aria-hidden="true">\(mark)</svg></div></div>

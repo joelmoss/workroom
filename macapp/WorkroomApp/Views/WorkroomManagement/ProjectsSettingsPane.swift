@@ -33,26 +33,20 @@ struct ProjectsSettingsPane: View {
       Form {
         Section {
           ForEach(projects, id: \.path) { project in
-            Button {
-              open(project.path)
-            } label: {
-              HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                  Text(project.displayName)
-                  Text((project.path as NSString).abbreviatingWithTildeInPath)
-                    .font(.caption)
-                    .foregroundStyle(tokens.fgMuted)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                }
-                Spacer()
-                Image(systemName: "chevron.right")
+            SettingsNavigationRow(
+              id: "settings.projects.\(project.displayName)", action: { open(project.path) }
+            ) {
+              VStack(alignment: .leading, spacing: 2) {
+                Text(project.displayName)
+                Text((project.path as NSString).abbreviatingWithTildeInPath)
+                  .font(.caption)
                   .foregroundStyle(tokens.fgMuted)
+                  .lineLimit(1)
+                  .truncationMode(.middle)
               }
-              .contentShape(Rectangle())
+              Spacer()
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("settings.projects.\(project.displayName)")
+            .help("Open \(project.displayName)'s settings")
           }
         }
       }

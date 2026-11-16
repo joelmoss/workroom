@@ -103,10 +103,11 @@ public final class RailwayLoopbackRedirect: Sendable {
       defer { state.held = [] }
       return state.held
     }
-    for connection in held { respond(connection, page: outcome) }
+    for connection in held { respond(connection, body: RailwaySignInPage.html(outcome)) }
   }
 
-  /// Stops listening; a browser still waiting is told the sign-in didn't finish.
+  /// Stops listening; a browser still waiting is told the sign-in didn't finish, unless `reply`
+  /// already told it otherwise.
   public func cancel() {
     reply(.failed)
     listener.cancel()
@@ -152,8 +153,7 @@ public final class RailwayLoopbackRedirect: Sendable {
     let components = URLComponents(string: "http://127.0.0.1\(target)")
     guard parts.first == "GET", let components, components.path == "/callback" else {
       return respond(
-        connection, status: "404 Not Found",
-        html: "<!doctype html><meta charset=utf-8><title>Workroom</title><p>Not found.")
+        connection, status: "404 Not Found", type: "text/plain", body: "Not found.")
     }
     let items = components.queryItems ?? []
     func value(_ name: String) -> String? { items.first { $0.name == name }?.value }
@@ -162,19 +162,18 @@ public final class RailwayLoopbackRedirect: Sendable {
       if state.page == nil { state.held.append(connection) }
       return state.page
     }
-    if let page { respond(connection, page: page) }
+    if let page { respond(connection, body: RailwaySignInPage.html(page)) }
     finish(.success(callback))
   }
 
-  private func respond(_ connection: NWConnection, page: RailwaySignInPage.Outcome) {
-    respond(connection, status: "200 OK", html: RailwaySignInPage.html(page))
-  }
-
-  private func respond(_ connection: NWConnection, status: String, html: String) {
+  private func respond(
+    _ connection: NWConnection, status: String = "200 OK", type: String = "text/html",
+    body: String
+  ) {
     let response =
-      "HTTP/1.1 \(status)\r\nContent-Type: text/html; charset=utf-8\r\n"
-      + "Content-Length: \(html.utf8.count)\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n"
-      + html
+      "HTTP/1.1 \(status)\r\nContent-Type: \(type); charset=utf-8\r\n"
+      + "Content-Length: \(body.utf8.count)\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n"
+      + body
     connection.send(
       content: Data(response.utf8),
       completion: .contentProcessed { _ in connection.cancel() })

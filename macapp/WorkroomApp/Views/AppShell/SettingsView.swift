@@ -502,8 +502,6 @@ private struct RemoteHostsSettingsPane: View {
   let open: (HostKind) -> Void
   @Default(.hostOptions) private var hostOptions
   @ObservedObject private var catalog = HostOptionsCatalog.shared
-  /// The Railway setup sheet open from here (#627), made fresh each time it opens.
-  @State private var railwaySetup: RailwaySetup?
   @ObservedObject private var lostCreates = RailwayLostCreatesModel.shared
   @Environment(\.themeTokens) private var tokens
 
@@ -518,64 +516,33 @@ private struct RemoteHostsSettingsPane: View {
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)
     .task { await lostCreates.refresh() }
-    .sheet(
-      isPresented: Binding(
-        get: { railwaySetup != nil }, set: { if !$0 { railwaySetup = nil } })
-    ) {
-      if let railwaySetup {
-        RailwaySetupSheet(setup: railwaySetup, onCancel: { self.railwaySetup = nil })
-      }
-    }
   }
 
   /// One row per provider, each opening its page.
   private var list: some View {
     Section {
       ForEach(HostKind.optionedProviders, id: \.self) { provider in
-        Button {
-          open(provider)
-        } label: {
-          HStack {
-            Text(provider.displayName)
-            Spacer()
-            // A create that may have left a sandbox, whose notice is on Railway's page.
-            if provider == .railway, !lostCreates.creates.isEmpty {
-              Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(tokens.warning)
-                .help("A Railway create may have left a sandbox behind. Open Railway to see it.")
-                .accessibilityLabel("Needs attention")
-            }
-            Image(systemName: "chevron.right")
-              .foregroundStyle(tokens.fgMuted)
+        SettingsNavigationRow(
+          id: "settings.remoteHosts.\(provider.driver)", action: { open(provider) }
+        ) {
+          Text(provider.displayName)
+          Spacer()
+          // A create that may have left a sandbox, whose notice is on Railway's page.
+          if provider == .railway, !lostCreates.creates.isEmpty {
+            Image(systemName: "exclamationmark.triangle.fill")
+              .foregroundStyle(tokens.warning)
+              .help("A Railway create may have left a sandbox behind. Open Railway to see it.")
+              .accessibilityLabel("Needs attention")
           }
-          .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
         .help("Open \(provider.displayName)'s settings")
-        .accessibilityIdentifier("settings.remoteHosts.\(provider.driver)")
       }
     }
   }
 
   /// A provider's host options, and for Railway its account first, since they need it.
   @ViewBuilder private func page(_ provider: HostKind) -> some View {
-    if provider == .railway {
-      Section {
-        LabeledContent {
-          Button("Set Up Railway…") {
-            railwaySetup = RailwaySetup(
-              account: .shared, neededWorkspaceID: RailwayAccount.neededWorkspaceID)
-          }
-          .help("Sign in to Railway, pick its workspace, or sign out.")
-          .accessibilityIdentifier("settings.control.railwaySetup")
-        } label: {
-          Text("Account")
-          Text("Login with Railway, and the workspace Workroom keeps its hosts in.")
-        }
-        // A create that may have left a sandbox: shown here too, since it has no workroom.
-        if !lostCreates.creates.isEmpty { RailwayLostCreatesNotice() }
-      }
-    }
+    if provider == .railway { RailwayAccountSection(lostCreates: lostCreates) }
     HostOptionsSection(
       provider: provider, options: binding(provider), inherited: nil, catalog: catalog)
   }
@@ -584,6 +551,60 @@ private struct RemoteHostsSettingsPane: View {
     Binding(
       get: { hostOptions[provider: provider] ?? HostOptions() },
       set: { hostOptions[provider: provider] = $0 })
+  }
+}
+
+/// Railway's account on its Remote Hosts page (#627): Set Up Railway… and its sheet, and the
+/// notice of a create that may have left a sandbox, shown here too since it has no workroom.
+private struct RailwayAccountSection: View {
+  @ObservedObject var lostCreates: RailwayLostCreatesModel
+  /// The setup sheet open from here, made fresh each time it opens.
+  @State private var setup: RailwaySetup?
+
+  var body: some View {
+    Section {
+      LabeledContent {
+        Button("Set Up Railway…") {
+          setup = RailwaySetup(
+            account: .shared, neededWorkspaceID: RailwayAccount.neededWorkspaceID)
+        }
+        .help("Sign in to Railway, pick its workspace, or sign out.")
+        .accessibilityIdentifier("settings.control.railwaySetup")
+      } label: {
+        Text("Account")
+        Text("Login with Railway, and the workspace Workroom keeps its hosts in.")
+      }
+      if !lostCreates.creates.isEmpty { RailwayLostCreatesNotice() }
+    }
+    .sheet(
+      isPresented: Binding(get: { setup != nil }, set: { if !$0 { setup = nil } })
+    ) {
+      if let setup {
+        RailwaySetupSheet(setup: setup, onCancel: { self.setup = nil })
+      }
+    }
+  }
+}
+
+/// A Settings list row that opens a page, as System Settings' do: its content, then a chevron.
+/// Projects and Remote Hosts list with it.
+struct SettingsNavigationRow<Content: View>: View {
+  let id: String
+  let action: () -> Void
+  @ViewBuilder let content: Content
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    Button(action: action) {
+      HStack {
+        content
+        Image(systemName: "chevron.right")
+          .foregroundStyle(tokens.fgMuted)
+      }
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityIdentifier(id)
   }
 }
 
