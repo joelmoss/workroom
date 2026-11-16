@@ -5,8 +5,9 @@ import Synchronization
 /// The loopback redirect of Login with Railway (ADR 0073): an HTTP listener on `127.0.0.1` only,
 /// on a port the system picks for each sign-in, so no other program holding a fixed port can break
 /// sign-in. Its URI is `http://127.0.0.1:<port>/callback`, against the registered portless
-/// `http://127.0.0.1/callback`. It answers the browser's first request to `/callback` and ignores
-/// every other path (a favicon fetch).
+/// `http://127.0.0.1/callback`. Its first request to `/callback` ends the wait, every other path is
+/// ignored (a favicon fetch), and the browser's page waits for `reply`, so it tells the sign-in's
+/// real outcome rather than the redirect's.
 public final class RailwayLoopbackRedirect: Sendable {
   /// What the callback carried.
   public struct Callback: Sendable, Equatable {
@@ -21,6 +22,10 @@ public final class RailwayLoopbackRedirect: Sendable {
   private struct Wait {
     var outcome: Result<Callback, Error>?
     var waiter: CheckedContinuation<Callback, Error>?
+    /// Callback requests the browser is waiting on, until `reply`.
+    var held: [NWConnection] = []
+    /// The page `reply` chose; later callback requests (a reload) get it too.
+    var page: RailwaySignInPage.Outcome?
   }
   private let state = Mutex(Wait())
 
@@ -89,8 +94,21 @@ public final class RailwayLoopbackRedirect: Sendable {
     }
   }
 
-  /// Stops listening.
+  /// Answers the browser's callback requests, held and later, with the sign-in's outcome. The first
+  /// reply stands.
+  public func reply(_ outcome: RailwaySignInPage.Outcome) {
+    let held = state.withLock { state -> [NWConnection] in
+      guard state.page == nil else { return [] }
+      state.page = outcome
+      defer { state.held = [] }
+      return state.held
+    }
+    for connection in held { respond(connection, page: outcome) }
+  }
+
+  /// Stops listening; a browser still waiting is told the sign-in didn't finish.
   public func cancel() {
+    reply(.failed)
     listener.cancel()
     finish(.failure(CancellationError()))
   }
@@ -133,23 +151,26 @@ public final class RailwayLoopbackRedirect: Sendable {
     let target = parts.count >= 2 ? String(parts[1]) : ""
     let components = URLComponents(string: "http://127.0.0.1\(target)")
     guard parts.first == "GET", let components, components.path == "/callback" else {
-      return respond(connection, status: "404 Not Found", body: "Not found.")
+      return respond(
+        connection, status: "404 Not Found",
+        html: "<!doctype html><meta charset=utf-8><title>Workroom</title><p>Not found.")
     }
     let items = components.queryItems ?? []
     func value(_ name: String) -> String? { items.first { $0.name == name }?.value }
     let callback = Callback(code: value("code"), state: value("state"), error: value("error"))
-    respond(
-      connection, status: "200 OK",
-      body: callback.error == nil
-        ? "Workroom is signed in to Railway. You can close this tab and go back to Workroom."
-        : "Workroom wasn't signed in to Railway. You can close this tab and go back to Workroom.")
+    let page = state.withLock { state -> RailwaySignInPage.Outcome? in
+      if state.page == nil { state.held.append(connection) }
+      return state.page
+    }
+    if let page { respond(connection, page: page) }
     finish(.success(callback))
   }
 
-  private func respond(_ connection: NWConnection, status: String, body: String) {
-    let html =
-      "<!doctype html><meta charset=utf-8><title>Workroom</title>"
-      + "<body style=\"font:15px -apple-system,sans-serif;margin:3em\"><p>\(body)</p>"
+  private func respond(_ connection: NWConnection, page: RailwaySignInPage.Outcome) {
+    respond(connection, status: "200 OK", html: RailwaySignInPage.html(page))
+  }
+
+  private func respond(_ connection: NWConnection, status: String, html: String) {
     let response =
       "HTTP/1.1 \(status)\r\nContent-Type: text/html; charset=utf-8\r\n"
       + "Content-Length: \(html.utf8.count)\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n"
@@ -168,10 +189,19 @@ public struct RailwaySignIn: Sendable {
 
   public init(client: RailwayOAuthClient) { self.client = client }
 
-  /// Signs in. Cancelling the task (the sheet closed) stops the listener.
-  public func run(open: @Sendable (URL) async -> Void) async throws -> RailwayTokens {
+  /// Signs in, and `keep` keeps the tokens before the browser's page says Workroom is connected, so
+  /// a failed exchange or keep shows there too. Cancelling the task (the sheet closed) stops the
+  /// listener.
+  public func run(
+    open: @Sendable (URL) async -> Void,
+    keep: @Sendable (RailwayTokens) async throws -> Void = { _ in }
+  ) async throws -> RailwayTokens {
     let redirect = try await RailwayLoopbackRedirect.start()
-    defer { redirect.cancel() }
+    var page = RailwaySignInPage.Outcome.failed
+    defer {
+      redirect.reply(page)
+      redirect.cancel()
+    }
     let pkce = RailwayPKCE()
     let state = RailwayPKCE().verifier
     await open(
@@ -180,11 +210,17 @@ public struct RailwaySignIn: Sendable {
     let callback = try await redirect.callback()
     try Task.checkCancellation()
     guard callback.state == state else { throw RailwayOAuthError.stateMismatch }
-    if let error = callback.error { throw RailwayOAuthError.denied(error) }
+    if let error = callback.error {
+      page = .declined
+      throw RailwayOAuthError.denied(error)
+    }
     guard let code = callback.code, !code.isEmpty else {
       throw RailwayOAuthError.denied("no code")
     }
-    return try await client.exchange(
+    let tokens = try await client.exchange(
       code: code, redirectURI: redirect.uri, codeVerifier: pkce.verifier)
+    try await keep(tokens)
+    page = .connected
+    return tokens
   }
 }

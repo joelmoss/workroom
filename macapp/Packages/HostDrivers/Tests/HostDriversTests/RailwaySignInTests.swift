@@ -9,10 +9,13 @@ import XCTest
 /// redirect as Railway's consent page would. Railway itself is stubbed at HTTP.
 final class RailwaySignInTests: XCTestCase {
   /// Follows the authorization URL's redirect with `code` (and the request's own state unless
-  /// `state` overrides it), as the browser does once the user approves.
-  private static func browser(code: String = "the-code", state: String? = nil, error: String? = nil)
-    -> @Sendable (URL) async -> Void
-  {
+  /// `state` overrides it), as the browser does once the user approves. It follows in the
+  /// background, as a real browser does, because the page waits for the sign-in to end. `shown`
+  /// gets the page the browser was answered with.
+  private static func browser(
+    code: String = "the-code", state: String? = nil, error: String? = nil,
+    shown: Shown? = nil
+  ) -> @Sendable (URL) async -> Void {
     { url in
       let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
       let redirect = items.first { $0.name == "redirect_uri" }?.value ?? ""
@@ -22,7 +25,24 @@ final class RailwaySignInTests: XCTestCase {
         ?? [URLQueryItem(name: "code", value: code)]
       callback.queryItems?.append(
         URLQueryItem(name: "state", value: state ?? items.first { $0.name == "state" }?.value))
-      _ = try? await URLSession.shared.data(from: callback.url!)
+      let target = callback.url!
+      let follow = Task {
+        (try? await URLSession.shared.data(from: target)).map {
+          String(decoding: $0.0, as: UTF8.self)
+        }
+      }
+      shown?.task.withLock { $0 = follow }
+    }
+  }
+
+  /// The page a stand-in browser was shown.
+  final class Shown: Sendable {
+    let task = Mutex<Task<String?, Never>?>(nil)
+    var page: String? {
+      get async {
+        let task = task.withLock { $0 }
+        return await task?.value
+      }
     }
   }
 
@@ -159,9 +179,65 @@ final class RailwaySignInTests: XCTestCase {
     async let follow: Void = { _ = try? await URLSession.shared.data(from: callback.url!) }()
 
     let answer = try await redirect.callback()
+    redirect.reply(.connected)
     _ = await follow
 
     XCTAssertEqual(answer, RailwayLoopbackRedirect.Callback(code: "c", state: "s", error: nil))
+  }
+
+  /// Value: protects=the browser's page tells the sign-in's real outcome, not the redirect's: a
+  /// failed exchange or keep reads as not connected; fails_when=the page is answered before the
+  /// tokens are kept; seam=RailwaySignIn with a stand-in browser
+  func testTheBrowsersPageTellsHowTheSignInEnded() async throws {
+    func signIn(
+      token: StubRailway.Answer? = nil, error: String? = nil, state: String? = nil,
+      keep: @escaping @Sendable (RailwayTokens) async throws -> Void = { _ in }
+    ) async -> String? {
+      let railway = StubRailway()
+      railway.answerToken("authorization_code") {
+        try token?($0) ?? StubRailway.tokens(access: "at", refresh: "rt")
+      }
+      let shown = Shown()
+      _ = try? await RailwaySignIn(client: RailwayOAuthClient(clientID: "c", transport: railway))
+        .run(open: Self.browser(state: state, error: error, shown: shown), keep: keep)
+      return await shown.page
+    }
+    struct KeepFailed: Error {}
+    let kept = Mutex(false)
+
+    let connected = await signIn(keep: { _ in kept.withLock { $0 = true } })
+    let declined = await signIn(error: "access_denied")
+    let refused = await signIn(token: { _ in StubRailway.oauthError("invalid_grant") })
+    let unkept = await signIn(keep: { _ in throw KeepFailed() })
+    let forged = await signIn(state: "forged")
+
+    XCTAssertTrue(kept.withLock { $0 })
+    XCTAssertTrue(connected?.contains("<h1>Workroom is connected to Railway</h1>") == true)
+    XCTAssertTrue(connected?.contains("aria-label=\"Workroom\"") == true, "no Workroom icon")
+    XCTAssertTrue(declined?.contains("Railway didn't approve the sign-in.") == true)
+    for page in [refused, unkept, forged] {
+      XCTAssertTrue(page?.contains("<h1>Workroom isn't connected to Railway</h1>") == true)
+      XCTAssertTrue(page?.contains("Workroom couldn't finish signing in to Railway.") == true)
+    }
+  }
+
+  /// Value: protects=a reload of the callback after the sign-in ended gets the same page, not a
+  /// wait that never ends; seam=RailwayLoopbackRedirect
+  func testAReloadAfterTheReplyGetsTheSamePage() async throws {
+    let redirect = try await RailwayLoopbackRedirect.start()
+    defer { redirect.cancel() }
+    var callback = URLComponents(url: redirect.uri, resolvingAgainstBaseURL: false)!
+    callback.queryItems = [.init(name: "code", value: "c"), .init(name: "state", value: "s")]
+    let url = callback.url!
+    async let first = URLSession.shared.data(from: url)
+    _ = try await redirect.callback()
+    redirect.reply(.connected)
+    _ = try await first
+
+    let (data, _) = try await URLSession.shared.data(from: url)
+
+    XCTAssertTrue(
+      String(decoding: data, as: UTF8.self).contains("Workroom is connected to Railway"))
   }
 
   /// Value: protects=cancelling the sign-in (the sheet closed) ends the wait; seam=RailwaySignIn

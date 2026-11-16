@@ -27,8 +27,7 @@ final class RailwayAccount: Sendable {
 
   /// Signs in with the browser and keeps the sign-in. Cancelling the task stops it.
   func signInWithBrowser() async throws {
-    let tokens = try await signIn.run(open: open)
-    try await session.signIn(with: tokens)
+    _ = try await signIn.run(open: open, keep: { [session] in try await session.signIn(with: $0) })
   }
 
   /// The app's account: Railway itself, the refresh token in this build's Keychain item. In any
