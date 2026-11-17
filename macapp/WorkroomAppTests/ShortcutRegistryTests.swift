@@ -104,7 +104,8 @@ final class ShortcutRegistryTests: XCTestCase {
   }
 
   /// A real key event: ⇧ is left out of the character (⇧⌘` is "`", not "~"), ⌘ is kept so a
-  /// non-Latin layout reads its ⌘ layer's Latin letter. Reads the host's layout, a US one.
+  /// non-Latin layout reads its ⌘ layer's Latin letter. The character comes from the host's
+  /// layout, so this runs only where that layout types ` and t on those keys (a US one).
   func testAKeyEventReadsItsCharacterWithoutShift() throws {
     func press(_ keyCode: Int, _ flags: NSEvent.ModifierFlags, _ typed: String) -> KeyChord? {
       NSEvent.keyEvent(
@@ -113,6 +114,10 @@ final class ShortcutRegistryTests: XCTestCase {
         keyCode: UInt16(keyCode)
       ).flatMap(KeyChord.init)
     }
+    try XCTSkipUnless(
+      press(kVK_ANSI_Grave, [], "`")?.character == "`"
+        && press(kVK_ANSI_T, [], "t")?.character == "t",
+      "the host's keyboard layout doesn't type ` and t on those keys")
     XCTAssertEqual(press(kVK_ANSI_Grave, [.command, .shift], "~"), .key("`", [.command, .shift]))
     XCTAssertEqual(press(kVK_ANSI_T, .command, "t"), .key("t", .command))
   }
