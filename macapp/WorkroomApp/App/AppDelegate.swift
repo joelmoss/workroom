@@ -357,10 +357,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       default:
         // Everything else is its menu item's. A binding with ⌘ reaches the menu the usual way, after
         // the focused view declines it (`isAppShortcut` makes a terminal decline). One without ⌘
-        // (⌃R, ⌥E, F5) may never get that far, so ask the menu first; a disabled item declines,
-        // and the keys go on to the focused view, where a terminal still withholds reserved ones.
+        // (⌃R, ⌥E, F5) never gets that far from a focused terminal, which takes it as input, so ask
+        // the menu first there; a disabled item declines, and the terminal still withholds reserved
+        // keys. Only there: elsewhere (Settings, say) the window's own controls get the keys first,
+        // so Back rebound to ⌃[ steps Settings back rather than a workroom window behind it.
         if !chord.modifiers.contains(.command),
-          MainActor.assumeIsolated({ NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false })
+          MainActor.assumeIsolated({
+            window?.firstResponder is GhosttySurfaceView
+              && NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false
+          })
         {
           return nil
         }
