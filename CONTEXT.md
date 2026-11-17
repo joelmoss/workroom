@@ -219,5 +219,15 @@ _Avoid_: Alert (for an entry in that list)
 **Quick Terminal**:
 A window of terminals summoned from any app by a global shortcut, belonging to no workroom. Its terminals work like any other, but don't survive a quit.
 
+**Shortcut**:
+The keys bound to one of Workroom's own actions. The user can record another, reset it to its default, or unset it so the action has no keys and terminals get them back. Standard items macOS supplies (Quit, Hide, Settings…, Copy, Paste) are not shortcuts in this sense.
+_Avoid_: Hotkey, keybinding
+
+**Global shortcut**:
+A shortcut that works from any app, not only while Workroom is in front. There are two: Show/Hide Workroom and the Quick Terminal's.
+
+**Shortcut conflict**:
+Two shortcuts bound to the same keys. Keeping the new one unsets the other.
+
 **Theme**:
 A bundled colour scheme applied to the terminals and the interface.
