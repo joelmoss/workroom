@@ -117,6 +117,7 @@ final class ShortcutRecorderModel {
 
   /// Reset: back to the default. A default whose keys another action holds asks, as recording
   /// those keys would, rather than staying unset: whether the row was displaced, rebound or unset.
+  /// Nothing changes until the alert's Use, so Cancel keeps the row as it was.
   func reset(_ action: ShortcutAction) {
     stop()
     let table = shortcuts.table
@@ -126,8 +127,7 @@ final class ShortcutRecorderModel {
       problems[action] = "System Settings sets those keys for \(pinned.label)."
       return
     }
-    shortcuts.reset(action)
-    guard !conflicts.isEmpty else { return }
+    guard !conflicts.isEmpty else { return shortcuts.reset(action) }
     pending = PendingConflict(action: action, binding: binding, conflicts: conflicts)
   }
 

@@ -592,6 +592,16 @@ final class ShortcutRecorderModelTests: XCTestCase {
     XCTAssertEqual(pending.conflicts, [.fetch])
   }
 
+  func testCancellingResetKeepsAReboundRowsKeys() throws {
+    shortcuts.set(.chord(.key("y", .command)), for: .newTerminal)
+    shortcuts.set(.chord(.key("t", .command)), for: .fetch)
+    model.reset(.newTerminal)
+    XCTAssertNotNil(model.pending, "Reset asks to take ⌘T back from Fetch")
+    model.pending = nil  // the alert's Cancel
+    XCTAssertEqual(shortcuts.table.binding(for: .newTerminal), .chord(.key("y", .command)))
+    XCTAssertEqual(shortcuts.table.binding(for: .fetch), .chord(.key("t", .command)))
+  }
+
   func testResetTakesBackADefaultOtherKeysHoldByAsking() throws {
     shortcuts.set(.chord(.key("t", .command)), for: .fetch, unsetting: [.newTerminal])
     shortcuts.reset(.newTerminal)
