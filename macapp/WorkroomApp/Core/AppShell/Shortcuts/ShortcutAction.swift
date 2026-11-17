@@ -462,9 +462,15 @@ struct StandardShortcut: Sendable {
       chord: .named(kVK_Tab, [.command, .shift]), name: "Switch Apps", reservesFromTerminal: false),
     StandardShortcut(
       chord: .named(kVK_Space, .command), name: "Spotlight", reservesFromTerminal: false),
-    // AppKit's own: File ▸ Close All (the alternate of Close), Edit ▸ Emoji & Symbols.
+    // AppKit's own: File ▸ Close All (the alternate of Close), Edit ▸ Emoji & Symbols, and the ⌥
+    // alternates of Quit and Minimize, which some macOS versions add to the menu bar.
     StandardShortcut(
       chord: .key("w", [.command, .option]), name: "Close All", reservesFromTerminal: false),
+    StandardShortcut(
+      chord: .key("q", [.command, .option]), name: "Quit and Keep Windows",
+      reservesFromTerminal: false),
+    StandardShortcut(
+      chord: .key("m", [.command, .option]), name: "Minimize All", reservesFromTerminal: false),
     StandardShortcut(
       chord: .named(kVK_Space, [.command, .control]), name: "Emoji & Symbols",
       reservesFromTerminal: false),
