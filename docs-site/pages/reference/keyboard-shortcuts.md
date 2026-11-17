@@ -10,12 +10,13 @@ These are Workroom's default shortcuts. The glyphs are ⌘ Command, ⇧ Shift, �
 Every Workroom action has a row in **Settings ▸ Shortcuts**, including the ones with no shortcut yet, so you can give any of them one.
 
 - **Record** a shortcut by clicking its keys and pressing the new ones. Press Escape to cancel. A shortcut needs ⌘, ⌥ or ⌃; F1–F12 also work on their own.
-- **Reset** puts a changed shortcut back to its default. **Remove** leaves the action with no shortcut, and the keys go back to the terminal.
+- **Reset** puts a changed shortcut back to its default. When another action holds those keys now, Workroom asks first, as recording them would, and **Cancel** changes nothing. When System Settings gives them to another menu item, the row says so and stays as it is. **Remove** leaves the action with no shortcut, and the keys go back to the terminal.
 - **Conflicts:** when the keys belong to another action, Workroom asks first. Choosing **Use for …** takes them and leaves the other action with none.
 - **Tabs and panes by position:** each terminal tab 1–9, workroom tab 1–9 and pane direction has a shortcut of its own, so you can move just one. The last-used switchers take modifiers plus Tab; holding ⇧ steps back.
 - **Terminal programs:** a shortcut without ⌘ takes its keys from terminal programs, and the row says so.
 - **Keys you can't record:** standard macOS shortcuts such as ⌘Q, ⌘H, ⌘, and the Edit menu's ⌘C and ⌘V stay as macOS has them.
-- **System Settings:** a shortcut set for a Workroom menu item in **System Settings ▸ Keyboard ▸ Keyboard Shortcuts ▸ App Shortcuts** takes effect over Workroom's own, and its row shows it.
+- **System Settings:** a shortcut set for a Workroom menu item in **System Settings ▸ Keyboard ▸ Keyboard Shortcuts ▸ App Shortcuts**, under Workroom or under All Applications, takes effect over Workroom's own, and its row shows it.
+- **Other keyboard layouts:** a shortcut with ⌘ uses the letter the layout types with ⌘ held, so <kbd>⌘T</kbd> is still <kbd>⌘T</kbd> on a Russian or Greek layout.
 - **Search** by name, by what an action does, or by its keys ("⌘T", "cmd t"). The record button beside the search field finds the shortcut that holds the keys you press.
 - **Restore Defaults** puts every shortcut back.
 
