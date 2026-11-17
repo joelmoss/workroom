@@ -26,22 +26,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   }
 
   private var monitor: Any?
-  /// The global ⌘§ show/hide shortcut while enabled, else nil (issue #13). Registered/torn down by
-  /// `updateGlobalHotkey()` to follow the `globalHotkey` setting.
+  /// The global Show/Hide Workroom shortcut (issue #13) and the Quick Terminal's (issue #39), while
+  /// bound, each registered with Carbon under its own id. `updateGlobalShortcuts()` keeps them in
+  /// step with Settings ▸ Keyboard Shortcuts (#148).
   private var showHideHotkey: GlobalHotkey?
-  /// The global quick-terminal shortcut (⌥§ unless Settings records another) while enabled, else
-  /// nil (issue #39). Registered/torn down alongside `showHideHotkey` by `updateGlobalHotkey()`
-  /// under the same `globalHotkey` setting.
   private var quickTerminalHotkey: GlobalHotkey?
-  /// Re-registers the quick-terminal hotkey when Settings records a new shortcut.
-  private var quickTerminalShortcutObservation: Task<Void, Never>?
+  /// The chords those two are registered with (nil: not registered), so a change re-registers only
+  /// what moved.
+  private var registeredShowHide: KeyChord?
+  private var registeredQuickTerminal: KeyChord?
+  /// While a menu is open the global hotkeys are let go: macOS holds key presses until it closes
+  /// and would then deliver a held one late.
+  private var menuTracking = false
+  private var menuTrackingObservations: [Task<Void, Never>] = []
   /// The quick terminal (issue #39) — a ~/ shell in its own chrome-less window. One persistent
   /// controller; its window/surface come and go as it's summoned/closed.
   private let quickTerminal = QuickTerminalController()
   /// Retains the `.showQuickTerminal` observer (posted by the toolbar button) for the app's lifetime.
   private var quickTerminalObserver: NSObjectProtocol?
-  /// Observes the `globalHotkey` setting so toggling it takes effect immediately.
-  private var hotkeyObservation: Task<Void, Never>?
+  /// Re-registers the global hotkeys when one is rebound, or recording starts or stops.
+  private var globalsObservation: Task<Void, Never>?
   /// The system menu-bar item (issue #33) — an `NSStatusItem` owned here so a click can branch on the
   /// notification count (open the list, or just focus the app when there's nothing pending). Retained
   /// for the app's lifetime; created in `applicationDidFinishLaunching`.
@@ -51,8 +55,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   private var sigtermSource: DispatchSourceSignal?
   /// Retains the background-save observer (issue #46) for the app's lifetime.
   private var resignActiveObserver: Any?
-
-  deinit { hotkeyObservation?.cancel() }
 
   /// The store a shortcut in the key monitor below may act on: the one owning the window the event is
   /// actually headed for, and only while that window has no command-palette dialog up.
@@ -178,45 +180,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [quickTerminal] event in
+      // A Settings row is recording keys (#148): they're its, not shortcuts. Standing down here
+      // rather than relying on monitor order keeps ⌘W from closing Settings mid-recording.
+      if Shortcuts.recording { return event }
       let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
-      // The quick terminal's own keys (issue #39) when its window is key: ⌘W closes a pane, ⌘T a
-      // new tab, ⌘D / ⇧⌘D splits, ⌘1–9 its tabs, ⌃⌘arrows its panes. The menu's items for those
-      // target the main window's tabs, and the workroom handlers below resolve only registered
-      // windows' stores, so catch them here (like ⌘R / ⌘1–9 above). Gated on the key window being a
-      // QuickTerminalWindow, so they still act on a workroom everywhere else.
-      if (event.window ?? NSApp.keyWindow) is QuickTerminalWindow,
-        let key = QuickTerminalKey.classify(
-          flags: flags, characters: event.charactersIgnoringModifiers, keyCode: event.keyCode),
+      // Every shortcut below is the registry's (#148, ADR 0076): what the keys are bound to now,
+      // not literals. `match` is nil for keys no Workroom shortcut holds. Only a press with ⌘, ⌥
+      // or ⌃, or an F-key, can be one, so plain typing skips the lookup.
+      let chord =
+        !flags.isDisjoint(with: [.command, .option, .control])
+          || KeyChord.functionKeyCodes.contains(Int(event.keyCode))
+        ? KeyChord(event) : nil
+      let match = chord.flatMap { Shortcuts.current.match($0) }
+      // The Quick Terminal's own keys (issue #39) when its window is key: Close Tab closes a pane,
+      // New Terminal opens a tab, Split Right/Down split, Focus Terminal Tab 1–9 its tabs, Focus Pane
+      // its panes, on whatever keys those are bound to. The menu's items for those target the main
+      // window's tabs, and the workroom handlers below resolve only registered windows' stores, so
+      // catch them here. Gated on the key window being a QuickTerminalWindow, so they still act on
+      // a workroom everywhere else.
+      if (event.window ?? NSApp.keyWindow) is QuickTerminalWindow, let match,
+        let key = QuickTerminalKey(match),
         MainActor.assumeIsolated({ quickTerminal.perform(key) })
       {
         return nil
       }
-      // ⌘W on an auxiliary window (Settings, About) — a window with no AppStore (not a workroom
-      // window). The menu's "Close Tab" owns ⌘W app-wide but is disabled there (no focused
-      // terminal), so ⌘W would otherwise just beep. Close the window, as the standard File ▸ Close
-      // would. Workroom windows (store != nil) fall through so their "Close Tab" still fires.
-      if flags == .command, event.charactersIgnoringModifiers == "w",
-        let keyWindow = event.window ?? NSApp.keyWindow,
+      // Close Tab on an auxiliary window (Settings, About) — a window with no AppStore (not a
+      // workroom window). The menu's "Close Tab" owns its keys app-wide but is disabled there (no
+      // focused terminal), so they would otherwise just beep. Close the window, as the standard
+      // File ▸ Close would. Workroom windows (store != nil) fall through so their "Close Tab" fires.
+      if match?.action == .closeTab, let keyWindow = event.window ?? NSApp.keyWindow,
         MainActor.assumeIsolated({ WindowRegistry.shared.store(for: keyWindow) }) == nil
       {
         keyWindow.performClose(nil)
         return nil
       }
       // The window this event is headed for, resolved once for every branch below. `event.window` is
-      // nil for ⌘ key-equivalents, hence the `?? NSApp.keyWindow` — same idiom as the two ⌘W branches
-      // above. Those two run BEFORE this point on purpose: ⌘W acts on the modal in front (a sheet, the
-      // quick terminal), not on the window behind it, so it must keep working while a dialog is up.
+      // nil for ⌘ key-equivalents, hence the `?? NSApp.keyWindow` — same idiom as the two branches
+      // above. Those two run BEFORE this point on purpose: Close Tab acts on the modal in front (a
+      // sheet, the quick terminal), not on the window behind it, so it must keep working while a
+      // dialog is up.
       let window = event.window ?? NSApp.keyWindow
-      // ⌘` / ⇧⌘`: cycle key focus through the app's windows incl. the quick terminal (issue #87) —
-      // the standard "Move focus to next window" shortcut. Caught here, like ⌘1–9, so the focused
-      // terminal surface doesn't swallow the backtick as input. keyCode 50 is the grave (`) key,
-      // matched by code (not char) so it's layout-stable and ⇧⌘` reads as backward despite the "~".
-      // Consumed regardless (window cycling has no terminal use we want to preserve).
-      if event.keyCode == 50, flags == .command || flags == [.command, .shift] {
+      // Next / Previous Window (⌘` / ⇧⌘` by default): cycle key focus through the app's windows incl.
+      // the quick terminal (issue #87). Caught here so the focused terminal surface doesn't swallow
+      // the key as input. Consumed regardless (window cycling has no terminal use worth keeping).
+      if let match, match.action == .nextWindow || match.action == .previousWindow {
         // Alone among the branches here this one consults no store, so `shortcutStore` returning nil
         // wouldn't stop it — swallow explicitly while a dialog is up.
         if MainActor.assumeIsolated({ Self.hasModalPicker(window) }) { return nil }
-        let forward = flags == .command
+        let forward = match.action == .nextWindow
         MainActor.assumeIsolated { WindowRegistry.shared.cycleWindows(forward: forward) }
         return nil
       }
@@ -275,123 +286,112 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
           } ? nil : event
         }
       }
-      // ⌘1–9: focus the Nth tab (caught here so it fires before the terminal swallows the digit).
-      if flags == .command, let chars = event.charactersIgnoringModifiers,
-        let digit = Int(chars), (1...9).contains(digit)
-      {
-        Task { @MainActor in Self.shortcutStore(for: window)?.focusTerminalTab(at: digit - 1) }
-        return nil  // consume so it doesn't reach the terminal
-      }
-      // ⌥⌘1–9: switch to the Nth workroom tab (issue #23), the workroom-level counterpart to ⌘1–9.
-      // Caught here (like ⌘1–9) so it fires before the terminal. Consumed only when there's an Nth tab
-      // to switch to (focusWorkroomTab returns true), so ⌥⌘digit still reaches the terminal otherwise.
-      // (Digit chars don't collide with the ⌥⌘R / arrow-key checks below.)
-      if flags == [.command, .option], let chars = event.charactersIgnoringModifiers,
-        let digit = Int(chars), (1...9).contains(digit),
-        MainActor.assumeIsolated({
-          Self.shortcutStore(for: window)?.focusWorkroomTab(at: digit - 1) ?? false
-        })
-      {
+      // ⌥⌘S: the OS-standard "Toggle Sidebar" shortcut (Finder, Notes, etc. — AppKit's
+      // `toggleSidebar:` first-responder action). Not ours to rebind (the recorder refuses it), but
+      // RootView's NavigationSplitView still keeps a REAL native sidebar column, forced
+      // `.detailOnly`, purely for toolbar/title-bar layering (see RootView) — and AppKit auto-wires
+      // ITS default toggle to that column regardless of what our menu does. Left alone, ⌥⌘S pops that
+      // column open, truly empty: the "opens the sidebar as a thinner bar, with nothing in it" bug
+      // (issue #128). Catching it here stops it reaching AppKit's responder chain; since users expect
+      // ⌥⌘S to mean "toggle the sidebar" regardless of which one, it toggles our real one.
+      if match == nil, chord == .key("s", [.command, .option]) {
+        Task { @MainActor in Self.shortcutStore(for: window)?.toggleSidebar() }
         return nil
       }
-      // ⌘R: run-or-focus the selected workroom's run command (issue #7) — caught here so it fires
-      // before the terminal swallows it, like ⌘1–9. Consumed unconditionally (⌘R has no terminal use
-      // we want to preserve); a no-op when nothing's selected, but no command configured now opens the
-      // project's settings with a warning instead of doing nothing (issue #127).
-      if flags == .command, event.charactersIgnoringModifiers?.lowercased() == "r" {
+      guard let match, let chord else { return event }
+      if let index = match.action.terminalTabIndex {
+        // Focus the Nth tab, caught here so it fires before the terminal swallows the digit.
+        Task { @MainActor in Self.shortcutStore(for: window)?.focusTerminalTab(at: index) }
+        return nil
+      }
+      if let index = match.action.workroomTabIndex {
+        // The Nth workroom tab (issue #23). Consumed only when there's an Nth tab to switch to
+        // (focusWorkroomTab returns true), so the keys still reach the terminal otherwise.
+        let switched = MainActor.assumeIsolated {
+          Self.shortcutStore(for: window)?.focusWorkroomTab(at: index) ?? false
+        }
+        return switched ? nil : event
+      }
+      if let direction = match.action.paneDirection {
+        // Move focus between split panes (issue #3). Wraps at a split's edge; consumed only when
+        // focus actually moves, so with no other pane the keys reach the terminal.
+        let moved = MainActor.assumeIsolated {
+          Self.shortcutStore(for: window)?.focusPane(direction) ?? false
+        }
+        return moved ? nil : event
+      }
+      switch match.action {
+      case .run:
+        // Run-or-focus the selected workroom's run command (issue #7), caught here so it fires
+        // before the terminal. Consumed unconditionally; with no command configured it opens the
+        // project's settings with a warning instead of doing nothing (issue #127).
         Task { @MainActor in Self.shortcutStore(for: window)?.runOrFocusRunCommand() }
         return nil
-      }
-      // ⇧⌘R: stop the selected workroom's run command if it's running (issue #7). Caught here (not
-      // just the menu key-equivalent) so it fires reliably before the terminal, like ⌘R. No-op when
-      // nothing's running; consumed regardless (it's reserved in `isAppShortcut` anyway).
-      if flags == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "r" {
+      case .stop:
+        // Stop the run command if it's running (issue #7). No-op when nothing's running; consumed
+        // regardless (it's reserved in `isAppShortcut` anyway).
         Task { @MainActor in Self.shortcutStore(for: window)?.stopSelectedRunCommand() }
         return nil
-      }
-      // ⌥⌘R: restart the selected workroom's run command if it's running (issue #7). Caught here for
-      // reliability, like ⌘R/⇧⌘R. No-op when nothing's running. (The arrow-key checks below match by
-      // keyCode, so "r" doesn't collide with tab/pane navigation.)
-      if flags == [.command, .option], event.charactersIgnoringModifiers?.lowercased() == "r" {
+      case .restart:
         Task { @MainActor in Self.shortcutStore(for: window)?.restartSelectedRunCommand() }
         return nil
-      }
-      // ⌥⌘←/→: previous/next terminal tab (issue #29). Caught here like ⌘1–9 so it fires before the
-      // terminal; consumed when it switches a tab, and reserved in `isAppShortcut` anyway so it never
-      // reaches the terminal as input. (⌥⌘↑/↓ are unbound — they pass through to the terminal.)
-      if flags == [.command, .option], event.keyCode == 123 || event.keyCode == 124,
-        MainActor.assumeIsolated({
-          Self.shortcutStore(for: window)?.cycleTerminalTab(forward: event.keyCode == 124) ?? false
-        })
-      {
-        return nil
-      }
-      // ⇧⌥⌘←/→: previous/next workroom tab (issue #29), the workroom-level counterpart to ⌥⌘←/→.
-      // Consumed when it switches; reserved in `isAppShortcut` anyway, like ⌥⌘←/→.
-      if flags == [.command, .option, .shift], event.keyCode == 123 || event.keyCode == 124,
-        MainActor.assumeIsolated({
-          Self.shortcutStore(for: window)?.cycleWorkroomTab(forward: event.keyCode == 124) ?? false
-        })
-      {
-        return nil
-      }
-      // ⌃⌘arrows: move focus between split panes (issue #3) — moved off ⌥⌘arrows, which now cycles
-      // terminal tabs (issue #29). Wraps at a split's edge; consumed only when focus actually moves.
-      // (Virtual keycodes: left 123 / right 124 / down 125 / up 126.)
-      let arrows: [UInt16: PaneDirection] = [123: .left, 124: .right, 125: .down, 126: .up]
-      if flags == [.command, .control], let direction = arrows[event.keyCode],
-        MainActor.assumeIsolated({ Self.shortcutStore(for: window)?.focusPane(direction) ?? false })
-      {
-        return nil
-      }
-      // ⌃⌘S: toggle the Projects sidebar (issue #128). Caught here — not just left to the menu's
-      // key-equivalent — so it fires reliably even with a focused TUI (like ⌘1-9 above).
-      if flags == [.command, .control], event.charactersIgnoringModifiers?.lowercased() == "s" {
+      case .nextTerminalTab, .previousTerminalTab:
+        // Cycle terminal tabs (issue #29); consumed when it switches a tab, and reserved in
+        // `isAppShortcut` anyway so it never reaches the terminal as input.
+        let forward = match.action == .nextTerminalTab
+        let cycled = MainActor.assumeIsolated {
+          Self.shortcutStore(for: window)?.cycleTerminalTab(forward: forward) ?? false
+        }
+        return cycled ? nil : event
+      case .nextWorkroomTab, .previousWorkroomTab:
+        let forward = match.action == .nextWorkroomTab
+        let cycled = MainActor.assumeIsolated {
+          Self.shortcutStore(for: window)?.cycleWorkroomTab(forward: forward) ?? false
+        }
+        return cycled ? nil : event
+      case .projects:
+        // Toggle the Projects sidebar (issue #128), caught here — not just left to the menu's
+        // key-equivalent — so it fires reliably even with a focused TUI.
         Task { @MainActor in Self.shortcutStore(for: window)?.toggleSidebar() }
         return nil
+      default:
+        // Everything else is its menu item's. A binding with ⌘ reaches the menu the usual way, after
+        // the focused view declines it (`isAppShortcut` makes a terminal decline). One without ⌘
+        // (⌃R, ⌥E, F5) may never get that far, so ask the menu first; a disabled item declines,
+        // and the keys go on to the focused view, where a terminal still withholds reserved ones.
+        if !chord.modifiers.contains(.command),
+          MainActor.assumeIsolated({ NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false })
+        {
+          return nil
+        }
+        return event
       }
-      // ⌥⌘S: the OS-standard "Toggle Sidebar" shortcut (Finder, Notes, etc. — AppKit's
-      // `toggleSidebar:` first-responder action). We don't bind it to our own "Projects" menu item
-      // (that's ⌃⌘S, above), but RootView's NavigationSplitView still keeps a REAL native sidebar
-      // column, forced `.detailOnly`, purely for toolbar/title-bar layering (see RootView) — and
-      // AppKit auto-wires ITS default toggle to that column regardless of what our menu does. Left
-      // alone, ⌥⌘S pops that column open: truly empty (`Color.clear.frame(width: 0)`), which is the
-      // "opens the sidebar as a thinner bar, with nothing in it" bug (issue #128). Catching it here
-      // and consuming the event stops it from ever reaching AppKit's responder chain; since users
-      // expect ⌥⌘S to mean "toggle the sidebar" regardless of which one, map it onto our real
-      // `sidebarVisible` toggle rather than just swallowing it.
-      if flags == [.command, .option], event.charactersIgnoringModifiers?.lowercased() == "s" {
-        Task { @MainActor in Self.shortcutStore(for: window)?.toggleSidebar() }
-        return nil
-      }
-      // ⌥⌘B: secondary "Projects" sidebar toggle, mirroring ⌃⌘S above — caught here (not just left
-      // to a menu key-equivalent) so it fires reliably with a focused TUI too (issue #128).
-      if flags == [.command, .option], event.charactersIgnoringModifiers?.lowercased() == "b" {
-        Task { @MainActor in Self.shortcutStore(for: window)?.toggleSidebar() }
-        return nil
-      }
-      return event
     }
 
     // ⌘-click-to-open-in-editor and copy-on-select now live inside GhosttySurfaceView (we own the
     // NSView), so the SwiftTerm-era NSEvent monitors that worked around its public-not-open methods
     // are gone.
 
-    // Global ⌘§ to show/hide Workroom from anywhere (issue #13), gated by the `globalHotkey`
-    // setting. Register now, then re-run on each change of *that* key (scoped, unlike the old
-    // blanket didChangeNotification observer) so toggling the setting registers/unregisters it live.
-    updateGlobalHotkey()
-    hotkeyObservation = Task { @MainActor [weak self] in
-      for await _ in Defaults.updates(.globalHotkey, initial: false) {
-        self?.updateGlobalHotkey()
+    // The global shortcuts (#148): Show/Hide Workroom from anywhere (issue #13), and the Quick
+    // Terminal (issue #39). Registered now, then again whenever one is rebound or unset in Settings,
+    // a row starts or stops recording (so keys they hold can be recorded), or a menu opens or closes.
+    updateGlobalShortcuts()
+    globalsObservation = Task { @MainActor [weak self] in
+      for await _ in NotificationCenter.default.notifications(named: .shortcutsGlobalsChanged) {
+        self?.updateGlobalShortcuts()
       }
     }
-    quickTerminalShortcutObservation = Task { @MainActor [weak self] in
-      for await _ in Defaults.updates(.quickTerminalShortcut, initial: false) {
-        // Let the old keys go before claiming the new ones.
-        self?.quickTerminalHotkey = nil
-        self?.updateGlobalHotkey()
-      }
+    for (name, tracking) in [
+      (NSMenu.didBeginTrackingNotification, true), (NSMenu.didEndTrackingNotification, false),
+    ] {
+      menuTrackingObservations.append(
+        Task { @MainActor [weak self] in
+          for await _ in NotificationCenter.default.notifications(named: name) {
+            self?.menuTracking = tracking
+            self?.updateGlobalShortcuts()
+            if tracking { MenuBarRefresh.shared.menuOpened() }
+          }
+        })
     }
 
     // The main-toolbar Quick-Terminal button (issue #39) posts this; the controller lives here, out
@@ -466,41 +466,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     sigtermSource = source
   }
 
-  /// Register or tear down the global hotkeys — ⌘§ show/hide (issue #13) and ⌥§ quick terminal
-  /// (issue #39) — to match the `globalHotkey` setting. Idempotent — only (un)registers when the
-  /// desired state differs from the current one — so it's safe to call on launch and on every change.
-  /// Carbon's RegisterEventHotKey is system-wide and needs no permission; the key/modifiers live in
-  /// `GlobalHotkey.commandSection` / `.optionSection` (each with a distinct hotkey id so they coexist).
-  private func updateGlobalHotkey() {
+  /// Register the global hotkeys — Show/Hide Workroom (issue #13) and the Quick Terminal (issue
+  /// #39) — as Settings ▸ Keyboard Shortcuts binds them (#148): an unset one is not registered,
+  /// and none is while a row is recording or a menu is open. Re-registers only one whose chord
+  /// changed, so it's safe to call on launch and on every change. Carbon's RegisterEventHotKey is
+  /// system-wide and needs no permission.
+  @MainActor private func updateGlobalShortcuts() {
     // The "Workroom Dev" build runs alongside the release build, and a Carbon hotkey is
     // system-wide — two instances registering the same combo would fight over it. The release build
-    // owns the global hotkeys; the Debug build never claims them (so ⌥§ is button-only in Debug).
-    // Compiling the body out (rather than an early `return`) keeps both configs warning-clean and
-    // covers launch + the Settings toggle + the `globalHotkey` observer, which all route through here.
+    // owns the global hotkeys; the Debug build never claims them (so its menu items answer them).
+    // Compiling the body out (rather than an early `return`) keeps both configs warning-clean.
     #if !DEBUG
-      if Defaults[.globalHotkey] {
-        if showHideHotkey == nil {
-          showHideHotkey = GlobalHotkey.commandSection {
+      let shortcuts = Shortcuts.shared
+      let paused = shortcuts.isRecording || menuTracking
+      func wanted(_ action: ShortcutAction) -> KeyChord? {
+        guard !paused, case .chord(let chord)? = shortcuts.table.binding(for: action) else {
+          return nil
+        }
+        return chord
+      }
+      // Carbon registers by key code, so compare that too: the same character on another key moves.
+      func same(_ lhs: KeyChord?, _ rhs: KeyChord?) -> Bool {
+        lhs == rhs && lhs?.keyCode == rhs?.keyCode
+      }
+      let showHide = wanted(.showHideWorkroom)
+      if !same(showHide, registeredShowHide) {
+        showHideHotkey = nil  // GlobalHotkey.deinit unregisters
+        showHideHotkey = showHide.flatMap {
+          GlobalHotkey.register($0, id: 1) {
             MainActor.assumeIsolated { AppDelegate.toggleAppVisibility() }
           }
         }
-        if quickTerminalHotkey == nil {
-          // The controller, not `self`, as for the toolbar button's observer above.
-          quickTerminalHotkey = GlobalHotkey.quickTerminal(Defaults[.quickTerminalShortcut]) {
-            [quickTerminal] in
+        registeredShowHide = showHideHotkey == nil ? nil : showHide
+      }
+      let quick = wanted(.quickTerminal)
+      if !same(quick, registeredQuickTerminal) {
+        quickTerminalHotkey = nil
+        // The controller, not `self`, as for the toolbar button's observer above.
+        quickTerminalHotkey = quick.flatMap {
+          GlobalHotkey.register($0, id: 2) { [quickTerminal] in
             MainActor.assumeIsolated { quickTerminal.toggle() }
           }
         }
-      } else {
-        showHideHotkey = nil  // GlobalHotkey.deinit unregisters
-        quickTerminalHotkey = nil
+        registeredQuickTerminal = quickTerminalHotkey == nil ? nil : quick
       }
     #endif
   }
 
   /// Show/hide Workroom for the global hotkey: hide when we're frontmost, otherwise unhide and pull
   /// the app forward. Runs on the main thread (Carbon delivers hot-key events there).
-  @MainActor private static func toggleAppVisibility() {
+  @MainActor static func toggleAppVisibility() {
     if NSApp.isActive {
       NSApp.hide(nil)
     } else {

@@ -74,7 +74,7 @@ struct OpenInControl: View {
           // than the symbols to read the same size as them.
           ExternalEditorIcon(editor: remembered, size: PaneToolbarIcon.appIcon)
         }
-        .help("Open in \(remembered.name) (⇧⌘O)")
+        .help("Open in \(remembered.name)" + Shortcuts.shared.table.hint(for: .openInEditor))
         .accessibilityLabel("Open in \(remembered.name)")
         // A stable id beside the (editor-dependent) label, so a test can find this button without
         // knowing which editors the machine has installed — the reason it had no coverage before.
@@ -169,7 +169,7 @@ struct RunControls: View {
           } label: {
             Image(systemName: "arrow.clockwise")
           }
-          .help("Restart the run command (⌥⌘R)")
+          .help("Restart the run command" + Shortcuts.shared.table.hint(for: .restart))
           .accessibilityLabel("Restart")
           .accessibilityIdentifier("runCommand.restart")
 
@@ -178,7 +178,7 @@ struct RunControls: View {
           } label: {
             Image(systemName: "stop.fill")
           }
-          .help("Stop the run command (⇧⌘R)")
+          .help("Stop the run command" + Shortcuts.shared.table.hint(for: .stop))
           .accessibilityLabel("Stop")
           .accessibilityIdentifier("runCommand.stop")
         } else {
@@ -193,8 +193,9 @@ struct RunControls: View {
           }
           .help(
             runCommands.hasRunCommand(forProject: projectPath)
-              ? "Run the project command (⌘R)"
-              : "No run command configured — set one in Project Settings (⌘R)"
+              ? "Run the project command" + Shortcuts.shared.table.hint(for: .run)
+              : "No run command configured — set one in Project Settings"
+                + Shortcuts.shared.table.hint(for: .run)
           )
           .accessibilityLabel("Run")
           .accessibilityIdentifier("runCommand.run")

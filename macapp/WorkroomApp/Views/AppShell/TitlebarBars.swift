@@ -83,7 +83,10 @@ struct LeadingTitlebarBar: View {
         } label: {
           Image(systemName: "sidebar.left")
         }
-        .help(store.sidebarVisible ? "Hide sidebar (⌃⌘S)" : "Show sidebar (⌃⌘S)")
+        .help(
+          (store.sidebarVisible ? "Hide sidebar" : "Show sidebar")
+            + Shortcuts.shared.table.hint(for: .projects)
+        )
         .accessibilityLabel("Toggle sidebar")
         .accessibilityIdentifier("toolbar.toggleSidebar")
         // Hovering this button (while the sidebar is collapsed) peeks the sidebar via the edge-reveal
@@ -107,7 +110,7 @@ struct LeadingTitlebarBar: View {
       } label: {
         Image(systemName: "chevron.left")
       }
-      .help("Back (⌘[)")
+      .help("Back" + Shortcuts.shared.table.hint(for: .back))
       .accessibilityLabel("Back")
       .accessibilityIdentifier("toolbar.navigateBack")
       .disabled(!store.canGoBack)
@@ -117,7 +120,7 @@ struct LeadingTitlebarBar: View {
       } label: {
         Image(systemName: "chevron.right")
       }
-      .help("Forward (⌘])")
+      .help("Forward" + Shortcuts.shared.table.hint(for: .forward))
       .accessibilityLabel("Forward")
       .accessibilityIdentifier("toolbar.navigateForward")
       .disabled(!store.canGoForward)
@@ -142,7 +145,6 @@ struct TrailingTitlebarBar: View {
   @EnvironmentObject var modals: ModalState
 
   @Default(.theme) private var theme
-  @Default(.quickTerminalShortcut) private var quickTerminalShortcut
 
   /// The theme dropdown (issue #36), anchored to its own toolbar button.
   ///
@@ -199,7 +201,7 @@ struct TrailingTitlebarBar: View {
       } label: {
         Image(systemName: "paintpalette")
       }
-      .help("Theme (⌘⇧K)")
+      .help("Theme" + Shortcuts.shared.table.hint(for: .theme))
       .accessibilityLabel("Theme")
       .accessibilityIdentifier("toolbar.theme")
       .popover(isPresented: $showThemePicker, arrowEdge: .bottom) {
@@ -216,7 +218,7 @@ struct TrailingTitlebarBar: View {
         Image(systemName: "macwindow.badge.plus")
           .offset(y: 0.5)
       }
-      .help("Quick Terminal (\(quickTerminalShortcut.label))")
+      .help("Quick Terminal" + Shortcuts.shared.table.hint(for: .quickTerminal))
       .accessibilityLabel("Quick Terminal")
       .accessibilityIdentifier("toolbar.quickTerminal")
     }

@@ -132,7 +132,7 @@ private struct ActivityBarButton: View {
   /// so the dot has words.
   private var helpText: String {
     let action = active ? "Hide \(section.label)" : "Show \(section.label)"
-    let base = "\(action) (\(section.shortcutHint))"
+    let base = action + Shortcuts.shared.table.hint(for: section.shortcutAction)
     return badged ? "\(base) — working tree has changes" : base
   }
 }
@@ -183,11 +183,14 @@ struct NotificationsBarButton: View {
     // Enabled by what the popover lists, not the count: a request can be listed but not counted.
     .disabled(notifications.items.isEmpty)
     // The popover itself has no key equivalent (⌥⌘N was retired with issue #118), so the tooltip
-    // advertises ⇧⌘N — the View-menu "Next Notification" the ⌘-click mirrors.
+    // advertises Next Notification's keys, the Go-menu item the ⌘-click mirrors (#148: whatever
+    // they are now).
     .help(
       notifications.items.isEmpty
         ? "No notifications"
-        : "Show notifications (⌘-click or ⇧⌘N for next)"
+        : "Show notifications (⌘-click"
+          + (Shortcuts.shared.table.label(for: .nextNotification).map { " or \($0)" } ?? "")
+          + " for next)"
     )
     .accessibilityLabel(
       registry.aggregateUnread > 0

@@ -104,10 +104,10 @@ This is the algorithm commonmarker's `header_ids` option uses, so Codaset can re
 
 ## Keyboard shortcuts
 
-`pages/reference/keyboard-shortcuts.md` has a `##` heading per group the app's Keyboard Shortcuts sheet
-shows, and one table row per shortcut, written exactly `| <label> | <kbd><keys></kbd> |`, with no
-padding. `macapp/WorkroomAppTests/KeyboardShortcutsDocsTests.swift` fails when a shortcut in
-`KeyboardShortcutsView.swift` has no matching row.
+`pages/reference/keyboard-shortcuts.md` has a `##` heading per group Settings ▸ Keyboard Shortcuts
+shows, and one table row per default shortcut, written exactly `| <label> | <kbd><keys></kbd> |`, with no
+padding. `macapp/WorkroomAppTests/KeyboardShortcutsDocsTests.swift` fails when a default in the app's
+shortcut catalog (`ShortcutAction`) has no matching row, or a row matches no default.
 
 ## CLI reference
 

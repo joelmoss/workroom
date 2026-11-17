@@ -108,6 +108,20 @@ struct MultipleTerminalTabsKey: FocusedValueKey {
   typealias Value = Bool
 }
 
+/// The selected target's terminal tabs, the first nine, for Go ▸ Terminal Tab (#148). Their ids,
+/// not their titles: a title changes at a spinner's rate, and reading it here would rebuild the tab
+/// strip on every frame (`TitleLayoutBenchmarkTests`). The menu reads the titles itself. Published
+/// by WorkroomTerminalsView; empty while a modal is up, which disables the items.
+struct TerminalTabIDsKey: FocusedValueKey {
+  typealias Value = [UUID]
+}
+
+/// The window's workroom tabs' titles, in the bar's order, the first nine, for Go ▸ Workroom Tab
+/// (#148). Empty while a modal is up.
+struct WorkroomTabTitlesKey: FocusedValueKey {
+  typealias Value = [String]
+}
+
 /// Whether there's more than one workroom tab (issue #29) — published by RootView, so the Go-menu
 /// Previous/Next Workroom Tab items disable when there's nothing to cycle between.
 struct MultipleWorkroomTabsKey: FocusedValueKey {
@@ -215,5 +229,13 @@ extension FocusedValues {
   var canMoveWorkroom: Bool? {
     get { self[CanMoveWorkroomKey.self] }
     set { self[CanMoveWorkroomKey.self] = newValue }
+  }
+  var terminalTabIDs: [UUID]? {
+    get { self[TerminalTabIDsKey.self] }
+    set { self[TerminalTabIDsKey.self] = newValue }
+  }
+  var workroomTabTitles: [String]? {
+    get { self[WorkroomTabTitlesKey.self] }
+    set { self[WorkroomTabTitlesKey.self] = newValue }
   }
 }

@@ -35,56 +35,58 @@ final class QuickSwitcherTests: XCTestCase {
 
   // MARK: classify
 
+  private func classify(
+    _ flags: NSEvent.ModifierFlags, keyCode: UInt16 = 48, table: ShortcutTable = .defaults
+  ) -> (kind: QuickSwitcherKind, reverse: Bool)? {
+    QuickSwitcherKey.classify(keyCode: keyCode, flags: flags, table: table)
+  }
+
+  /// The two switchers' modifiers as Settings would save them (#148).
+  private func table(workrooms: KeyModifiers, panes: KeyModifiers) -> ShortcutTable {
+    ShortcutTable(overrides: [
+      ShortcutAction.lastUsedWorkroom.rawValue: .bound(.modifiers(workrooms)),
+      ShortcutAction.lastUsedPane.rawValue: .bound(.modifiers(panes)),
+    ])
+  }
+
   func testClassifyMapsTheTwoDefaultTriggers() {
-    XCTAssertEqual(
-      QuickSwitcherKey.classify(keyCode: 48, flags: [.option])?.kind, .workrooms, "⌥Tab")
-    XCTAssertEqual(QuickSwitcherKey.classify(keyCode: 48, flags: [.control])?.kind, .panes, "⌃Tab")
-    XCTAssertEqual(
-      QuickSwitcherKey.classify(keyCode: 48, flags: [.option, .shift])?.reverse, true, "⇧⌥Tab")
-    XCTAssertEqual(
-      QuickSwitcherKey.classify(keyCode: 48, flags: [.control, .shift])?.reverse, true, "⇧⌃Tab")
+    XCTAssertEqual(classify([.option])?.kind, .workrooms, "⌥Tab")
+    XCTAssertEqual(classify([.control])?.kind, .panes, "⌃Tab")
+    XCTAssertEqual(classify([.option, .shift])?.reverse, true, "⇧⌥Tab")
+    XCTAssertEqual(classify([.control, .shift])?.reverse, true, "⇧⌃Tab")
   }
 
   /// Bare Tab must reach the terminal (shell completion), and ⌘Tab belongs to the OS app switcher.
   func testClassifyRejectsBareTabAndCommandCombinations() {
-    XCTAssertNil(QuickSwitcherKey.classify(keyCode: 48, flags: []), "bare Tab is the terminal's")
-    XCTAssertNil(QuickSwitcherKey.classify(keyCode: 48, flags: [.shift]), "⇧Tab likewise")
-    XCTAssertNil(QuickSwitcherKey.classify(keyCode: 48, flags: [.command]), "⌘Tab is the OS")
-    XCTAssertNil(QuickSwitcherKey.classify(keyCode: 48, flags: [.command, .shift]))
+    XCTAssertNil(classify([]), "bare Tab is the terminal's")
+    XCTAssertNil(classify([.shift]), "⇧Tab likewise")
+    XCTAssertNil(classify([.command]), "⌘Tab is the OS")
+    XCTAssertNil(classify([.command, .shift]))
     XCTAssertNil(
-      QuickSwitcherKey.classify(keyCode: 48, flags: [.option, .control]),
+      classify([.option, .control]),
       "a combination matching neither configured modifier isn't ours")
   }
 
   func testClassifyRejectsOtherKeys() {
     for code: UInt16 in [0, 36, 50, 53, 123, 124] {
-      XCTAssertNil(QuickSwitcherKey.classify(keyCode: code, flags: [.option]), "keyCode \(code)")
+      XCTAssertNil(classify([.option], keyCode: code), "keyCode \(code)")
     }
   }
 
-  /// The trigger is a preference because a global-hotkey grabber (AltTab et al.) beats a local monitor.
+  /// The trigger is a shortcut because a global-hotkey grabber (AltTab et al.) beats a local monitor.
   func testClassifyHonoursConfiguredModifiers() {
-    let hit = QuickSwitcherKey.classify(
-      keyCode: 48, flags: [.command, .option],
-      workroomModifier: .commandOption, paneModifier: .commandControl)
-    XCTAssertEqual(hit?.kind, .workrooms)
+    let retuned = table(workrooms: [.command, .option], panes: [.command, .control])
+    XCTAssertEqual(classify([.command, .option], table: retuned)?.kind, .workrooms)
     XCTAssertNil(
-      QuickSwitcherKey.classify(
-        keyCode: 48, flags: [.option], workroomModifier: .commandOption,
-        paneModifier: .commandControl),
-      "the default ⌥Tab stops matching once retuned")
-    XCTAssertEqual(
-      QuickSwitcherKey.classify(
-        keyCode: 48, flags: [.command, .control], workroomModifier: .commandOption,
-        paneModifier: .commandControl)?.kind, .panes)
+      classify([.option], table: retuned), "the default ⌥Tab stops matching once retuned")
+    XCTAssertEqual(classify([.command, .control], table: retuned)?.kind, .panes)
   }
 
-  /// Both modifiers set the same is user error; ⌥Tab keeps working rather than becoming ambiguous.
-  func testClassifyPrefersWorkroomsOnATie() {
-    XCTAssertEqual(
-      QuickSwitcherKey.classify(
-        keyCode: 48, flags: [.option], workroomModifier: .option, paneModifier: .option)?.kind,
-      .workrooms)
+  /// An unset switcher has no trigger: its Tab goes to the terminal.
+  func testAnUnsetSwitcherIsNeverTriggered() {
+    let unset = ShortcutTable(overrides: [ShortcutAction.lastUsedWorkroom.rawValue: .unset])
+    XCTAssertNil(classify([.option], table: unset))
+    XCTAssertEqual(classify([.control], table: unset)?.kind, .panes)
   }
 
   // MARK: step arithmetic
@@ -252,11 +254,14 @@ final class QuickSwitcherTests: XCTestCase {
   }
 
   /// The chords the Go items render. Wrong glyphs here and macOS teaches the user the wrong shortcut.
-  func testEveryTriggerModifierHasAMatchingSwiftUIChord() {
-    XCTAssertEqual(SwitcherModifier.option.eventModifiers, [.option])
-    XCTAssertEqual(SwitcherModifier.control.eventModifiers, [.control])
-    XCTAssertEqual(SwitcherModifier.commandOption.eventModifiers, [.command, .option])
-    XCTAssertEqual(SwitcherModifier.commandControl.eventModifiers, [.command, .control])
+  func testEachSwitcherRendersItsModifiersWithTab() {
+    XCTAssertEqual(
+      ShortcutTable.defaults.chord(for: .lastUsedWorkroom)?.keyboardShortcut,
+      KeyboardShortcut(.tab, modifiers: .option))
+    XCTAssertEqual(
+      table(workrooms: [.command, .option], panes: .control).chord(for: .lastUsedWorkroom)?
+        .keyboardShortcut,
+      KeyboardShortcut(.tab, modifiers: [.command, .option]))
   }
 
   // MARK: pane stepping (the ⌃Tab commit path)

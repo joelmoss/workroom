@@ -56,12 +56,13 @@ enum ActivitySection: String, CaseIterable, Identifiable, Defaults.Serializable,
     }
   }
 
-  /// The View-menu shortcut hint shown in the icon's tooltip, for discoverability.
-  var shortcutHint: String {
+  /// The View-menu item whose shortcut the icon's tooltip shows, for discoverability (#148: its
+  /// keys as they are bound now).
+  var shortcutAction: ShortcutAction {
     switch self {
-    case .changes: return "⌥⌘C"
-    case .files: return "⌥⌘F"
-    case .details: return "⌥⌘I"
+    case .changes: return .changes
+    case .files: return .files
+    case .details: return .details
     }
   }
 }

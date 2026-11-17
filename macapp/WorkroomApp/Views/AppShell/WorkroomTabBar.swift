@@ -323,7 +323,8 @@ struct WorkroomTabBar: View {
   /// mouse route to a first workroom in a fresh window.
   private var addWorkroomButton: some View {
     glyphButton(
-      "plus", hovering: addHovering, help: "New workroom (⌘N)", label: "New workroom",
+      "plus", hovering: addHovering,
+      help: "New workroom" + Shortcuts.shared.table.hint(for: .newWorkroom), label: "New workroom",
       identifier: "NewWorkroom",
       onHover: { addHovering = $0 },
       action: { store.raiseWorkroomPicker(.new) })
@@ -334,7 +335,9 @@ struct WorkroomTabBar: View {
   /// size/style (a hover-washed rounded glyph).
   private var openWorkroomButton: some View {
     glyphButton(
-      "chevron.down", hovering: openHovering, help: "Open workroom (⌘O)", label: "Open workroom",
+      "chevron.down", hovering: openHovering,
+      help: "Open workroom" + Shortcuts.shared.table.hint(for: .openWorkroom),
+      label: "Open workroom",
       identifier: "OpenWorkroom",
       onHover: { openHovering = $0 },
       action: { store.raiseWorkroomPicker(.open) })

@@ -210,17 +210,17 @@ final class WorkroomWorkflowUITests: XCTestCase {
       waitForScreen(containing: "WRFOCUS5", in: app),
       "after the popover closes, typing reaches the terminal without a click")
 
-    // The main window must be key again: Keyboard Shortcuts… only opens its sheet when it is
-    // (`RootView`'s `.showKeyboardShortcuts` handler guards on `hostWindow?.isKeyWindow`).
-    let help = app.menuBars.menuBarItems["Help"]
-    help.click()
-    help.menuItems["Keyboard Shortcuts…"].click()
-    let shortcuts = app.sheets.firstMatch
+    // The main window must be key again: View ▸ Theme… only opens its dropdown when it is
+    // (`TrailingTitlebarBar`'s `.showThemePicker` handler guards on `hostWindow?.isKeyWindow`).
+    let view = app.menuBars.menuBarItems["View"]
+    view.click()
+    view.menuItems["Theme…"].click()
+    let themes = app.popovers.firstMatch
     XCTAssertTrue(
-      shortcuts.waitForExistence(timeout: 5),
-      "Keyboard Shortcuts… opens its sheet, so the window is key again after the popover")
-    shortcuts.buttons["Done"].click()
-    XCTAssertTrue(waitForDisappearance(shortcuts), "Done closes the shortcuts sheet")
+      themes.waitForExistence(timeout: 5),
+      "Theme… opens its dropdown, so the window is key again after the popover")
+    app.typeKey(.escape, modifierFlags: [])
+    XCTAssertTrue(waitForDisappearance(themes), "Escape closes the theme dropdown")
 
     // ⇧⌘N (Next Notification) opens the oldest pending notification's terminal and dismisses it — the
     // same `openOldestNotification` path a ⌘-click on the bell drives. The oldest is the ×3 "Tests

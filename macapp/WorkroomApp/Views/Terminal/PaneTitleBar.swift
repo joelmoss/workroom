@@ -298,15 +298,18 @@ struct PaneTitleBar: View {
       }
       if let moveToWorkroom { moveToWorkroom }
       PaneToolbarButton(
-        systemImage: "rectangle.trailinghalf.inset.filled", help: "Split right (⌘D)",
+        systemImage: "rectangle.trailinghalf.inset.filled",
+        help: "Split right" + Shortcuts.shared.table.hint(for: .splitRight),
         accessibilityLabel: "Split right", identifier: "pane.toolbar.splitRight",
         action: onSplitRight)
       PaneToolbarButton(
-        systemImage: "rectangle.bottomhalf.inset.filled", help: "Split down (⇧⌘D)",
+        systemImage: "rectangle.bottomhalf.inset.filled",
+        help: "Split down" + Shortcuts.shared.table.hint(for: .splitDown),
         accessibilityLabel: "Split down", identifier: "pane.toolbar.splitDown",
         action: onSplitDown)
       PaneToolbarButton(
-        systemImage: "xmark", help: "Close (⌘W)", accessibilityLabel: "Close pane",
+        systemImage: "xmark", help: "Close" + Shortcuts.shared.table.hint(for: .closeTab),
+        accessibilityLabel: "Close pane",
         identifier: "pane.toolbar.close", action: onClose)
     }
     .buttonStyle(

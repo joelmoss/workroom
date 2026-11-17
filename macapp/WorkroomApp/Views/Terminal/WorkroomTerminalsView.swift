@@ -74,7 +74,9 @@ struct WorkroomTerminalsView: View {
         ContentUnavailableView {
           Label("No terminal", systemImage: "terminal")
         } description: {
-          Text("Open one with ⌘T.")
+          Text(
+            Shortcuts.shared.table.label(for: .newTerminal).map { "Open one with \($0)." }
+              ?? "Open one with New Terminal.")
         } actions: {
           Button("New Terminal") { host.newTerminal(in: target) }
             .buttonStyle(.borderedProminent)
@@ -151,6 +153,9 @@ struct WorkroomTerminalsView: View {
     .focusedSceneValue(\.hasTerminal, !tabs.isEmpty && !modals.hasModalPresentation)
     // Drive the Go-menu Previous/Next Terminal Tab items (issue #29) — only meaningful with ≥2 tabs.
     .focusedSceneValue(\.multipleTerminalTabs, tabs.count > 1 && !modals.hasModalPresentation)
+    // Go ▸ Terminal Tab's items (#148): ids only, see `TerminalTabIDsKey`.
+    .focusedSceneValue(
+      \.terminalTabIDs, modals.hasModalPresentation ? [] : tabs.prefix(9).map(\.id))
   }
 
   /// The layout the content area renders: the focused tab's group when it has one, else that tab

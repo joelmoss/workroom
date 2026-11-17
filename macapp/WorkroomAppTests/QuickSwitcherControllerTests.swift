@@ -21,15 +21,14 @@ final class QuickSwitcherControllerTests: XCTestCase {
 
   override func setUp() async throws {
     try await super.setUp()
-    Defaults[.switcherWorkroomModifier] = .option
-    Defaults[.switcherPaneModifier] = .control
+    Shortcuts.shared.restoreDefaults()
     recency = SwitcherRecency()
     registry = WindowRegistry()
     windows = []
   }
 
   override func tearDown() async throws {
-    Defaults.reset(.switcherWorkroomModifier, .switcherPaneModifier)
+    Shortcuts.shared.restoreDefaults()
     try await super.tearDown()
   }
 
@@ -149,7 +148,7 @@ final class QuickSwitcherControllerTests: XCTestCase {
   }
 
   func testPollWatchesTheConfiguredModifierNotAHardcodedOne() throws {
-    Defaults[.switcherPaneModifier] = .commandControl
+    Shortcuts.shared.set(.modifiers([.command, .control]), for: .lastUsedPane)
     let store = seededStore()
     let (controller, recorder) = makeController(held: [.command, .control])
     _ = controller.handleTrigger(

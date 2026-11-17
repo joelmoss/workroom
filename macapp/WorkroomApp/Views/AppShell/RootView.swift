@@ -34,10 +34,6 @@ struct RootView: View {
   /// modes: add an existing repo, or create + git-init a new directory.
   @State private var showAddProject = false
 
-  /// Presents the keyboard-shortcuts reference, raised by the `Keyboard Shortcuts…` command via
-  /// notification (a menu command can't anchor a sheet).
-  @State private var showKeyboardShortcuts = false
-
   /// Whether the "What's New" dialog is up, mirrored from `WhatsNewLaunchCheck`, which owns it.
   @State private var whatsNewShown = false
 
@@ -432,13 +428,6 @@ struct RootView: View {
       .onChange(of: theme) { _ in applyAppearance() }
       // The theme picker is deliberately NOT here: it's a dropdown anchored to a toolbar button
       // (`TrailingTitlebarBar`), because a sheet is the wrong shape for a live preview.
-      .onReceive(NotificationCenter.default.publisher(for: .showKeyboardShortcuts)) { _ in
-        guard store.hostWindow?.isKeyWindow ?? false else { return }
-        showKeyboardShortcuts = true
-      }
-      .sheet(isPresented: $showKeyboardShortcuts) {
-        KeyboardShortcutsView()
-      }
       .modifier(WhatsNewLaunchCheck(store: store, presented: $whatsNewShown))
   }
 
@@ -494,7 +483,7 @@ struct RootView: View {
   /// menu item inert while it's up, and the whole point of it being a panel is that you keep using the
   /// app — ⌘⇧L especially — to see what the theme you just picked actually looks like.
   private var auxSheetPresented: Bool {
-    showAddProject || showKeyboardShortcuts || whatsNewShown
+    showAddProject || whatsNewShown
   }
 
   /// Pushes the chosen appearance onto the running app. nil (System) tells AppKit to
@@ -666,7 +655,10 @@ struct RootView: View {
         if projectStore.projects.isEmpty {
           Text("Add your first project!")
         } else {
-          Text("Select a project's root, or open (⌘O) or create (⌘N) a workroom to get started.")
+          Text(
+            "Select a project's root, or open\(Shortcuts.shared.table.hint(for: .openWorkroom)) "
+              + "or create\(Shortcuts.shared.table.hint(for: .newWorkroom)) a workroom to get "
+              + "started.")
         }
       } actions: {
         if projectStore.projects.isEmpty {

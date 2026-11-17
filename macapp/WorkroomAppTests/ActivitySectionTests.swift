@@ -41,7 +41,8 @@ final class ActivitySectionTests: XCTestCase {
   func testEveryCaseHasNonEmptyLabelAndShortcut() {
     for section in ActivitySection.allCases {
       XCTAssertFalse(section.label.isEmpty, "\(section) has an empty label")
-      XCTAssertFalse(section.shortcutHint.isEmpty, "\(section) has an empty shortcut hint")
+      XCTAssertNotNil(
+        ShortcutTable.defaults.label(for: section.shortcutAction), "\(section) has no default keys")
     }
   }
 

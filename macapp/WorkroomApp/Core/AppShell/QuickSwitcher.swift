@@ -21,49 +21,6 @@ enum SwitcherGate {
   case act(AppStore)
 }
 
-/// The modifier a quick switcher is triggered with. Stored as a preference because a global hotkey
-/// grabber wins over our local key monitor and there is no way to detect or beat one: AltTab,
-/// HyperSwitch and Contexts all bind ⌥Tab by default via a CGEvent tap, which is upstream of
-/// `NSApp.sendEvent`, so for those users the keystroke never reaches Workroom at all. Retuning the
-/// modifier is the only possible remedy (issue #132). ⌘ combinations that the OS owns (⌘Tab, ⇧⌘Tab)
-/// are deliberately not offered.
-enum SwitcherModifier: String, CaseIterable, Defaults.Serializable {
-  case option
-  case control
-  case commandOption
-  case commandControl
-
-  var flags: NSEvent.ModifierFlags {
-    switch self {
-    case .option: [.option]
-    case .control: [.control]
-    case .commandOption: [.command, .option]
-    case .commandControl: [.command, .control]
-    }
-  }
-
-  /// The same chord as SwiftUI states it, for the Go-menu items' key equivalents (D11) — which is how
-  /// macOS teaches a shortcut, so it has to track the preference rather than hard-code ⌥/⌃.
-  var eventModifiers: EventModifiers {
-    switch self {
-    case .option: [.option]
-    case .control: [.control]
-    case .commandOption: [.command, .option]
-    case .commandControl: [.command, .control]
-    }
-  }
-
-  /// Menu-style glyphs, for the keyboard-shortcuts sheet.
-  var display: String {
-    switch self {
-    case .option: "⌥"
-    case .control: "⌃"
-    case .commandOption: "⌥⌘"
-    case .commandControl: "⌃⌘"
-    }
-  }
-}
-
 /// The keystroke → switcher decision, as a pure function of what an `NSEvent` contributes plus the
 /// two configured modifiers (issue #132).
 ///
@@ -79,22 +36,20 @@ enum QuickSwitcherKey {
   static let tabKeyCode: UInt16 = 48
 
   /// The switcher this keystroke triggers, and whether ⇧ makes it step backwards. `nil` for anything
-  /// that isn't Tab with exactly one configured trigger modifier (⇧ aside).
+  /// that isn't Tab with a switcher's modifiers (⇧ aside). The modifiers are each switcher's
+  /// shortcut (#148): retunable because a global hotkey grabber like AltTab takes ⌥Tab before the
+  /// app sees it, and can't be detected. A tie goes to Workrooms, the first in the catalog.
   nonisolated static func classify(
-    keyCode: UInt16, flags: NSEvent.ModifierFlags,
-    workroomModifier: SwitcherModifier = Defaults[.switcherWorkroomModifier],
-    paneModifier: SwitcherModifier = Defaults[.switcherPaneModifier]
+    keyCode: UInt16, flags: NSEvent.ModifierFlags, table: ShortcutTable = Shortcuts.current
   ) -> (kind: QuickSwitcherKind, reverse: Bool)? {
-    guard keyCode == tabKeyCode else { return nil }
-    let relevant = flags.intersection([.command, .shift, .option, .control])
-    let reverse = relevant.contains(.shift)
-    let base = relevant.subtracting(.shift)
-    guard !base.isEmpty else { return nil }  // bare Tab belongs to the terminal (shell completion)
-    // Workrooms win a tie, so a user who sets both modifiers the same still gets a working ⌥Tab
-    // rather than an unreachable pane switcher.
-    if base == workroomModifier.flags { return (.workrooms, reverse) }
-    if base == paneModifier.flags { return (.panes, reverse) }
-    return nil
+    guard keyCode == tabKeyCode,
+      let match = table.match(.named(Int(keyCode), KeyModifiers(flags)))
+    else { return nil }
+    switch match.action {
+    case .lastUsedWorkroom: return (.workrooms, match.reverse)
+    case .lastUsedPane: return (.panes, match.reverse)
+    default: return nil
+    }
   }
 }
 

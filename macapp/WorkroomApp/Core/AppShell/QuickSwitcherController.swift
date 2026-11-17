@@ -159,8 +159,8 @@ final class QuickSwitcherController {
     originStore = store
     paneTargetID = kind == .panes ? store.selectedTargetID : nil
     triggerFlags =
-      (kind == .workrooms
-      ? Defaults[.switcherWorkroomModifier] : Defaults[.switcherPaneModifier]).flags
+      Shortcuts.current.binding(for: kind == .workrooms ? .lastUsedWorkroom : .lastUsedPane)?
+      .heldModifiers.eventFlags ?? []
     installObservers()
     startTimers(self)
     apply(effect)

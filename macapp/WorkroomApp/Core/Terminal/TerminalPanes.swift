@@ -46,6 +46,8 @@ struct TerminalTab: Identifiable {
   /// diff's filename). A view reads it through `TabTitleReader`, in a leaf, as a terminal's title
   /// changes many times a second.
   var title: String { content.title }
+  /// `title`, without observing a terminal's live title: for the menu bar (#148).
+  var untrackedTitle: String { content.untrackedTitle }
 
   /// The full repo-relative path of the file this tab shows (issue #136) — what the pane footer
   /// names, and the chip's tooltip. Nil for a terminal (its footer shows the cwd instead) and for a
@@ -132,6 +134,12 @@ enum TabContent {
     case .file(let f): return (f.path as NSString).lastPathComponent
     case .changeset(let c): return c.title
     }
+  }
+
+  /// `title`, without observing a terminal's live title (see `LiveTitle.untrackedText`).
+  var untrackedTitle: String {
+    if case .terminal(let s) = self { return s.titleCell.untrackedText ?? s.defaultTitle }
+    return title
   }
 
   /// The full repo-relative path of the file this content shows (issue #136) — see
@@ -351,6 +359,11 @@ protocol ContentDescriptor: Sendable {
 @Observable
 final class LiveTitle {
   var text: String?
+
+  /// `text`, read without registering an Observation access: for a reader that must not re-run
+  /// on every repaint, such as the menu bar (Go ▸ Terminal Tab, #148), which reads it afresh each
+  /// time a menu opens instead.
+  var untrackedText: String? { _text }
 }
 
 /// The state a terminal tab owns: what it was launched as, and the live title, cwd and progress its
