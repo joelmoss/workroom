@@ -173,10 +173,27 @@ final class Shortcuts {
   // MARK: System Settings
 
   /// System Settings ▸ Keyboard ▸ App Shortcuts, as macOS stores them: menu title → key equivalent,
-  /// in the app's domain (this app) merged over the global one (All Applications).
-  nonisolated static func readSystemSettings(_ defaults: UserDefaults) -> [String: KeyChord] {
-    guard let raw = defaults.dictionary(forKey: "NSUserKeyEquivalents") else { return [:] }
-    return raw.compactMapValues { ($0 as? String).flatMap(KeyChord.init(userKeyEquivalent:)) }
+  /// in the app's domain (this app) merged over the global one (All Applications). Each domain is
+  /// read on its own: a plain lookup stops at the first domain holding the key, so one Workroom
+  /// shortcut there would hide every All Applications one AppKit still applies.
+  /// A test process (`UserDefaults.app` is then a suite of its own) reads none: never the
+  /// developer's real App Shortcuts. A test hands its registry its own instead.
+  nonisolated static func readSystemSettings(_ suite: UserDefaults) -> [String: KeyChord] {
+    let key = "NSUserKeyEquivalents"
+    guard suite === UserDefaults.standard else { return [:] }
+    let global = suite.persistentDomain(forName: UserDefaults.globalDomain)?[key]
+    let app = Bundle.main.bundleIdentifier.flatMap { suite.persistentDomain(forName: $0) }?[key]
+    return mergeSystemSettings(app: app, global: global)
+  }
+
+  /// The app's App Shortcuts over All Applications'; a value that isn't a key equivalent is dropped.
+  nonisolated static func mergeSystemSettings(app: Any?, global: Any?) -> [String: KeyChord] {
+    func chords(_ raw: Any?) -> [String: KeyChord] {
+      ((raw as? [String: Any]) ?? [:]).compactMapValues {
+        ($0 as? String).flatMap(KeyChord.init(userKeyEquivalent:))
+      }
+    }
+    return chords(global).merging(chords(app)) { _, app in app }
   }
 
 }

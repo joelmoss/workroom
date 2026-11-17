@@ -1374,7 +1374,7 @@ final class GhosttySurfaceView: NSView {
   private func isAppShortcut(_ event: NSEvent) -> Bool {
     Self.isAppShortcut(
       modifierFlags: event.modifierFlags, keyCode: event.keyCode,
-      characters: event.characters(byApplyingModifiers: []) ?? event.charactersIgnoringModifiers)
+      characters: KeyChord.unshifted(event))
   }
 
   /// The reservation decision, as a pure function of what an `NSEvent` contributes (`characters`

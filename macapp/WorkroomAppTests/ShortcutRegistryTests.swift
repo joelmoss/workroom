@@ -103,6 +103,20 @@ final class ShortcutRegistryTests: XCTestCase {
     XCTAssertEqual(chord(kVK_Tab, .option, "\t"), .named(kVK_Tab, .option))
   }
 
+  /// A real key event: ⇧ is left out of the character (⇧⌘` is "`", not "~"), ⌘ is kept so a
+  /// non-Latin layout reads its ⌘ layer's Latin letter. Reads the host's layout, a US one.
+  func testAKeyEventReadsItsCharacterWithoutShift() throws {
+    func press(_ keyCode: Int, _ flags: NSEvent.ModifierFlags, _ typed: String) -> KeyChord? {
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0,
+        context: nil, characters: typed, charactersIgnoringModifiers: typed, isARepeat: false,
+        keyCode: UInt16(keyCode)
+      ).flatMap(KeyChord.init)
+    }
+    XCTAssertEqual(press(kVK_ANSI_Grave, [.command, .shift], "~"), .key("`", [.command, .shift]))
+    XCTAssertEqual(press(kVK_ANSI_T, .command, "t"), .key("t", .command))
+  }
+
   func testAKeyWithNoCharacterIsNoChord() {
     XCTAssertNil(chord(kVK_ANSI_A, .command, nil))
     XCTAssertNil(chord(kVK_ANSI_A, .command, "\u{F700}"))
@@ -224,6 +238,28 @@ final class ShortcutRegistryTests: XCTestCase {
     XCTAssertEqual(table.resolved[.theme]?.source, .systemSettings)
     XCTAssertEqual(table.match(.key("t", .command)), ShortcutMatch(.theme))
     XCTAssertEqual(table.resolved[.newTerminal]?.displacedBy, .theme)
+  }
+
+  /// All Applications' App Shortcuts count even when Workroom has one of its own, which wins.
+  func testSystemSettingsMergesTheAppsShortcutsOverAllApplications() {
+    let merged = Shortcuts.mergeSystemSettings(
+      app: ["Theme…": "@j", "Bad": 5], global: ["Theme…": "@k", "Fetch": "@^f"])
+    XCTAssertEqual(
+      merged, ["Theme…": .key("j", .command), "Fetch": .key("f", [.command, .control])])
+    XCTAssertEqual(Shortcuts.mergeSystemSettings(app: nil, global: "not a dictionary"), [:])
+  }
+
+  /// The real Carbon probe behind "Another app uses that shortcut.": keys this test holds are
+  /// taken, and free once let go.
+  func testTheAvailabilityProbeSeesAHeldShortcut() {
+    let chord = KeyChord.named(kVK_F19, [.command, .option, .control, .shift])
+    XCTAssertTrue(GlobalHotkey.isAvailable(chord), "nothing holds ⌃⌥⇧⌘F19")
+    var held = GlobalHotkey.register(chord, id: 2) {}
+    XCTAssertNotNil(held)
+    XCTAssertFalse(GlobalHotkey.isAvailable(chord), "held by us now")
+    held = nil
+    XCTAssertTrue(GlobalHotkey.isAvailable(chord), "let go again")
+    _ = held
   }
 
   func testRecordingKeysSystemSettingsHoldsIsRefused() {
@@ -416,8 +452,8 @@ final class ShortcutRegistryTests: XCTestCase {
       shortcuts.table.binding(for: .lastUsedWorkroom), .modifiers([.command, .control]))
     XCTAssertEqual(shortcuts.customCount, 2)
     XCTAssertNotNil(shortcuts.table.binding(for: .showHideWorkroom))
-    XCTAssertNil(suite.object(forKey: "quickTerminalShortcut"))
-    XCTAssertNil(suite.object(forKey: "switcher.workroomModifier"))
+    XCTAssertNotNil(suite.object(forKey: "quickTerminalShortcut"), "kept for an older build")
+    XCTAssertNotNil(suite.object(forKey: "switcher.workroomModifier"), "kept for an older build")
   }
 
   func testMigrationTurnsTheGlobalHotkeyToggleOffIntoUnsetGlobals() {
@@ -425,7 +461,9 @@ final class ShortcutRegistryTests: XCTestCase {
     let shortcuts = registry()
     XCTAssertNil(shortcuts.table.binding(for: .showHideWorkroom))
     XCTAssertNil(shortcuts.table.binding(for: .quickTerminal))
-    XCTAssertNil(suite.object(forKey: "globalHotkeyEnabled"))
+    XCTAssertEqual(
+      suite.object(forKey: "globalHotkeyEnabled") as? Bool, false,
+      "kept, so an older build still leaves its global hotkey off")
   }
 
   func testMigrationRunsOnce() {
@@ -544,6 +582,14 @@ final class ShortcutRecorderModelTests: XCTestCase {
     model.record(.key("`", [.command, .option]))
     XCTAssertEqual(
       shortcuts.table.binding(for: .newWindow), .chord(.key("`", [.command, .option])))
+  }
+
+  func testResetOfAnUnsetRowWhoseDefaultIsTakenAsks() throws {
+    shortcuts.unset(.newTerminal)
+    shortcuts.set(.chord(.key("t", .command)), for: .fetch)
+    model.reset(.newTerminal)
+    let pending = try XCTUnwrap(model.pending, "Reset asks to take ⌘T back from Fetch")
+    XCTAssertEqual(pending.conflicts, [.fetch])
   }
 
   func testResetTakesBackADefaultOtherKeysHoldByAsking() throws {

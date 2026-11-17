@@ -115,14 +115,12 @@ final class ShortcutRecorderModel {
     }
   }
 
-  /// Reset: back to the default. A default whose keys another action has taken meanwhile asks, as
-  /// recording those keys would, rather than staying unset.
+  /// Reset: back to the default. A default whose keys another action holds asks, as recording
+  /// those keys would, rather than staying unset: whether the row was displaced, rebound or unset.
   func reset(_ action: ShortcutAction) {
     stop()
     let table = shortcuts.table
-    guard table.resolved[action]?.displacedBy != nil, let binding = action.defaultBinding else {
-      return shortcuts.reset(action)
-    }
+    guard let binding = action.defaultBinding else { return shortcuts.reset(action) }
     let conflicts = table.conflicts(assigning: binding, to: action)
     if let pinned = conflicts.first(where: { table.resolved[$0]?.source == .systemSettings }) {
       problems[action] = "System Settings sets those keys for \(pinned.label)."
