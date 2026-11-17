@@ -55,6 +55,20 @@ final class SettingsRoute {
   /// Bumped on every `show`, so an open Settings window goes to the project asked for.
   private(set) var requests = 0
   private var requested: String?
+  private var requestedPane: SettingsPane?
+
+  /// Open on `pane` (#148: Keyboard Shortcuts… goes to its pane).
+  func show(pane: SettingsPane) {
+    requestedPane = pane
+    Defaults[.settingsSelectedPane] = pane
+    requests += 1
+  }
+
+  /// The pane a main window asked for that the Settings window has yet to go to.
+  func takePaneRequest() -> SettingsPane? {
+    defer { requestedPane = nil }
+    return requestedPane
+  }
 
   func show(project path: String, runWarning: Bool) {
     requested = path
@@ -93,6 +107,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Defaults.Serializable,
   case notifications
   case appearance
   case terminal
+  case keyboardShortcuts
   case agent
   case projects
   case remoteHosts
@@ -100,17 +115,27 @@ enum SettingsPane: String, CaseIterable, Identifiable, Defaults.Serializable,
 
   var id: Self { self }
 
-  /// The label shown in the sidebar row and as the detail pane's title.
+  /// The label shown in the sidebar row, and as the detail pane's title unless `title` differs.
   var label: String {
     switch self {
     case .general: return "General"
     case .notifications: return "Notifications"
     case .appearance: return "Appearance"
     case .terminal: return "Terminal"
+    case .keyboardShortcuts: return "Shortcuts"
     case .agent: return "AI Agents"
     case .projects: return "Projects"
     case .remoteHosts: return "Remote Hosts"
     case .about: return "About"
+    }
+  }
+
+  /// The detail pane's title: the sidebar's label, but Keyboard Shortcuts' is spelled out where
+  /// there's room.
+  var title: String {
+    switch self {
+    case .keyboardShortcuts: return "Keyboard Shortcuts"
+    default: return label
     }
   }
 
@@ -121,6 +146,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Defaults.Serializable,
     case .notifications: return "bell"
     case .appearance: return "paintbrush"
     case .terminal: return "terminal"
+    case .keyboardShortcuts: return "keyboard"
     case .agent: return "sparkles"
     case .projects: return "folder"
     case .remoteHosts: return "cloud"

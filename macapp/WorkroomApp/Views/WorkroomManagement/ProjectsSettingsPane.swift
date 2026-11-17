@@ -175,7 +175,8 @@ private struct ProjectSettingsForm: View {
       } footer: {
         Text(
           "Runs in a dedicated terminal at the workroom's directory, in your login shell. "
-            + "Start it from the toolbar Run button or ⌘R.")
+            + "Start it from the toolbar Run button"
+            + (Shortcuts.shared.table.label(for: .run).map { " or \($0)" } ?? "") + ".")
       }
       Section {
         HStack {

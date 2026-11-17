@@ -15,6 +15,10 @@ struct ExternalEditor: Identifiable {
     ("com.apple.dt.Xcode", "Xcode"),
   ]
 
+  /// Every title Room ▸ Open in can have, for System Settings' App Shortcuts, which key a menu
+  /// item by its title (#148).
+  static let allTitles = ["Open in Editor"] + supported.map { "Open in \($0.name)" }
+
   /// The supported editors currently installed, resolved to their app bundle URLs. **Cached** — see
   /// `EditorCache`: this is read straight from `OpenInControl.body`, which since issue #139 renders
   /// once per visible workroom pane, so the uncached version's three LaunchServices lookups per

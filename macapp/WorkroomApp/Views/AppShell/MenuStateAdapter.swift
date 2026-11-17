@@ -71,6 +71,9 @@ struct MenuStateAdapter: ViewModifier {
           hasRunTerminal: runCommand.hasAnyRunTerminal && !modal,
           // Go-menu Previous/Next Workroom Tab (issue #29) — only meaningful with ≥2 tabs.
           multipleWorkroomTabs: store.hasMultipleWorkroomTargets && !modal,
+          // Go ▸ Workroom Tab's items, by name, in the bar's order (#148).
+          workroomTabTitles: modal
+            ? [] : store.displayedWorkroomTargets().prefix(9).map(\.target.title),
           // Go-menu "Last-Used Workroom" (⌥⇥, issue #132). Counted across every window, so it
           // stays enabled when this window holds the only workroom and another window holds a
           // second one. Observation tracks the other windows' reads too, and they ask only whether
@@ -132,6 +135,7 @@ private struct MenuStateValues: ViewModifier {
   let vcsCanPull: Bool
   let hasRunTerminal: Bool
   let multipleWorkroomTabs: Bool
+  let workroomTabTitles: [String]
   let canSwitchWorkrooms: Bool
   let canOpenInEditor: Bool
   let canMoveWorkroom: Bool
@@ -156,6 +160,7 @@ private struct MenuStateValues: ViewModifier {
       .focusedSceneValue(\.runCommandActive, runCommandActive)
       .focusedSceneValue(\.hasRunTerminal, hasRunTerminal)
       .focusedSceneValue(\.multipleWorkroomTabs, multipleWorkroomTabs)
+      .focusedSceneValue(\.workroomTabTitles, workroomTabTitles)
       .focusedSceneValue(\.canSwitchWorkrooms, canSwitchWorkrooms)
       .focusedSceneValue(\.canOpenInEditor, canOpenInEditor)
       .focusedSceneValue(\.canMoveWorkroom, canMoveWorkroom)

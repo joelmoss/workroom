@@ -1,90 +1,233 @@
 import AppKit
-import Carbon.HIToolbox
+import DesignSystem
+import Observation
 import SwiftUI
 
-/// Records a global shortcut: click, press the keys, done. Escape cancels. A shortcut another app,
-/// or Workroom's own ⌘§, already holds is refused with the reason, keeping the current one.
-struct ShortcutRecorder: View {
-  @Binding var shortcut: GlobalShortcut
-  var defaultShortcut = GlobalShortcut.quickTerminalDefault
-  @State private var recording = false
-  @State private var monitor: Any?
-  @State private var problem: String?
+/// Records keys for Settings ▸ Keyboard Shortcuts (#148): one row at a time, or the search field's
+/// record button. Click, press the keys, done; Escape cancels.
+///
+/// While it records, `Shortcuts.isRecording` is on: the app's key monitor stands down and the global
+/// hotkeys are let go, so every press, including ⌘W and the keys a global shortcut holds, reaches
+/// this recorder rather than acting.
+@MainActor
+@Observable
+final class ShortcutRecorderModel {
+  /// What a recording is for.
+  enum Target: Equatable {
+    case action(ShortcutAction)
+    /// The search field's: find the row holding the keys.
+    case search
+  }
+
+  /// A recorded shortcut that takes keys other actions hold, awaiting the user's say.
+  struct PendingConflict: Identifiable, Equatable {
+    let id = UUID()
+    let action: ShortcutAction
+    let binding: ShortcutBinding
+    let conflicts: [ShortcutAction]
+  }
+
+  private(set) var target: Target?
+  /// Why the last press was refused, by row.
+  private(set) var problems: [ShortcutAction: String] = [:]
+  var pending: PendingConflict?
+  /// The keys the search's record button caught.
+  var searchChord: KeyChord?
+
+  private let shortcuts: Shortcuts
+  private let isGloballyAvailable: (KeyChord) -> Bool
+  @ObservationIgnored private var monitor: Any?
+  @ObservationIgnored private var resignObserver: NSObjectProtocol?
+
+  init(
+    shortcuts: Shortcuts = .shared,
+    isGloballyAvailable: @escaping (KeyChord) -> Bool = GlobalHotkey.isAvailable
+  ) {
+    self.shortcuts = shortcuts
+    self.isGloballyAvailable = isGloballyAvailable
+  }
+
+  func isRecording(_ target: Target) -> Bool { self.target == target }
+
+  func toggle(_ target: Target) {
+    self.target == target ? stop() : start(target)
+  }
+
+  func start(_ target: Target) {
+    stop()
+    if case .action(let action) = target { problems[action] = nil }
+    self.target = target
+    shortcuts.isRecording = true
+    // Local: only this app's key presses, while Settings is in front. Returning nil keeps the keys
+    // from also reaching the menu or the focused control.
+    monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+      let chord = KeyChord(event)
+      MainActor.assumeIsolated { self?.record(chord) }
+      return nil
+    }
+    // Clicking away, or another window coming forward, ends it: keys pressed there aren't for it.
+    resignObserver = NotificationCenter.default.addObserver(
+      forName: NSWindow.didResignKeyNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated { self?.stop() }
+    }
+  }
+
+  func stop() {
+    if let monitor { NSEvent.removeMonitor(monitor) }
+    monitor = nil
+    if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+    resignObserver = nil
+    target = nil
+    shortcuts.isRecording = false
+  }
+
+  /// One press while recording.
+  func record(_ chord: KeyChord?) {
+    switch target {
+    case .search:
+      if chord?.keyCode == KeyChord.escapeKeyCode, chord?.modifiers.isEmpty == true {
+        return stop()
+      }
+      searchChord = chord
+      stop()
+    case .action(let action):
+      switch ShortcutRecording.verdict(
+        for: action, chord: chord, table: shortcuts.table,
+        isGloballyAvailable: isGloballyAvailable)
+      {
+      case .cancel:
+        stop()
+      case .refuse(let reason):
+        // Keep recording, so the next press is the next try.
+        problems[action] = reason
+      case .accept(let binding, let conflicts):
+        problems[action] = nil
+        stop()
+        if conflicts.isEmpty {
+          shortcuts.set(binding, for: action)
+        } else {
+          pending = PendingConflict(action: action, binding: binding, conflicts: conflicts)
+        }
+      }
+    case nil:
+      break
+    }
+  }
+
+  /// Reset: back to the default. A default whose keys another action has taken meanwhile asks, as
+  /// recording those keys would, rather than staying unset.
+  func reset(_ action: ShortcutAction) {
+    stop()
+    let table = shortcuts.table
+    guard table.resolved[action]?.displacedBy != nil, let binding = action.defaultBinding else {
+      return shortcuts.reset(action)
+    }
+    let conflicts = table.conflicts(assigning: binding, to: action)
+    if let pinned = conflicts.first(where: { table.resolved[$0]?.source == .systemSettings }) {
+      problems[action] = "System Settings sets those keys for \(pinned.label)."
+      return
+    }
+    shortcuts.reset(action)
+    guard !conflicts.isEmpty else { return }
+    pending = PendingConflict(action: action, binding: binding, conflicts: conflicts)
+  }
+
+  /// The alert's "Use for …": take the keys, unsetting their holders.
+  func confirm(_ pending: PendingConflict) {
+    shortcuts.set(pending.binding, for: pending.action, unsetting: pending.conflicts)
+    self.pending = nil
+  }
+}
+
+/// A row's recorder: shows the shortcut, or "Record shortcut" when it has none, and records a
+/// new one when clicked. Drawn as a field, with a hover fill, rather than a push button.
+struct ShortcutRecorderButton: View {
+  let action: ShortcutAction
+  let model: ShortcutRecorderModel
+  let table: ShortcutTable
   @Environment(\.themeTokens) private var tokens
 
   var body: some View {
-    HStack {
-      if let problem {
-        Text(problem)
-          .font(.caption)
-          .foregroundStyle(tokens.failure)
-          .accessibilityIdentifier("settings.control.quickTerminalShortcutProblem")
+    let recording = model.isRecording(.action(action))
+    let keys = table.label(for: action)
+    Button {
+      model.toggle(.action(action))
+    } label: {
+      Group {
+        if recording {
+          Text("Type Shortcut…")
+        } else if let keys {
+          ShortcutKeysText(keys)
+        } else {
+          // No shortcut: muted and smaller, so the bound rows stand out. A hidden key glyph in
+          // the keys' own font keeps the field exactly as tall as one showing keys.
+          ZStack {
+            ShortcutKeysText("⌘").hidden()
+            Text("Record shortcut")
+              .font(.callout)
+              .foregroundStyle(tokens.fgMuted)
+          }
+        }
       }
-      if shortcut != defaultShortcut, !recording {
-        Button("Reset") { shortcut = defaultShortcut }
-          .help("Go back to \(defaultShortcut.label).")
-          .accessibilityIdentifier("settings.control.quickTerminalShortcutReset")
-      }
-      Button(recording ? "Type Shortcut…" : shortcut.label) {
-        recording ? stop() : start()
-      }
-      .accessibilityLabel(recording ? "Recording shortcut" : "Shortcut \(shortcut.label)")
-      .accessibilityIdentifier("settings.control.quickTerminalShortcut")
+      .frame(minWidth: 112)
     }
-    .onDisappear(perform: stop)
+    .buttonStyle(ShortcutFieldStyle(recording: recording))
+    .help(recording ? "Press the new keys, or Escape to cancel." : "Record a new shortcut.")
+    .accessibilityLabel(
+      recording
+        ? "Recording shortcut for \(action.label)"
+        : "\(action.label) shortcut \(keys ?? "None")"
+    )
+    .accessibilityIdentifier("settings.shortcuts.record.\(action.rawValue)")
+  }
+}
+
+/// The recorder's field: a bordered well that fills more strongly on hover and takes the accent while recording.
+private struct ShortcutFieldStyle: ButtonStyle {
+  let recording: Bool
+
+  func makeBody(configuration: Configuration) -> some View {
+    Field(configuration: configuration, recording: recording)
   }
 
-  private func start() {
-    problem = nil
-    recording = true
-    // Local: only this app's key presses, while Settings is in front. Returning nil keeps the keys
-    // from also reaching the menu or the focused control.
-    monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-      MainActor.assumeIsolated { record(event) }
-      return nil
-    }
-  }
+  private struct Field: View {
+    let configuration: Configuration
+    let recording: Bool
+    @Environment(\.themeTokens) private var tokens
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hovering = false
 
-  private func stop() {
-    if let monitor { NSEvent.removeMonitor(monitor) }
-    monitor = nil
-    recording = false
-  }
-
-  private func record(_ event: NSEvent) {
-    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-    if Int(event.keyCode) == kVK_Escape, flags.isEmpty { return stop() }
-    switch Self.verdict(
-      for: GlobalShortcut(
-        keyCode: Int(event.keyCode), flags: flags,
-        unshifted: event.characters(byApplyingModifiers: [])),
-      current: shortcut, isAvailable: GlobalHotkey.isAvailable)
-    {
-    case .use(let recorded):
-      shortcut = recorded
-      problem = nil
-      stop()
-    case .refuse(let reason):
-      // Keep recording, so the next press is the next try.
-      problem = reason
+    var body: some View {
+      let shape = RoundedRectangle(cornerRadius: Radius.s, style: .continuous)
+      configuration.label
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(
+          shape.fill(
+            recording
+              ? tokens.accentSoft
+              : (hovering && isEnabled || configuration.isPressed
+                ? tokens.tabActive : tokens.surface))
+        )
+        .overlay(shape.strokeBorder(recording ? tokens.accent : tokens.border, lineWidth: 1))
+        .contentShape(shape)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
     }
   }
+}
 
-  enum Verdict: Equatable {
-    case use(GlobalShortcut)
-    case refuse(String)
-  }
+/// A shortcut's glyphs ("⇧⌘P"), monospaced and spaced apart: run together, the modifier glyphs are
+/// hard to tell apart.
+struct ShortcutKeysText: View {
+  let keys: String
 
-  /// What a recorded press becomes. Pure, apart from the injected availability probe.
-  static func verdict(
-    for recorded: GlobalShortcut?, current: GlobalShortcut,
-    isAvailable: (GlobalShortcut) -> Bool
-  ) -> Verdict {
-    guard let recorded else { return .refuse("Include ⌘, ⌥ or ⌃.") }
-    // Our own registration holds the current one, so the probe would refuse it.
-    if recorded == current { return .use(recorded) }
-    if recorded == .showHide { return .refuse("Workroom's show/hide shortcut uses that.") }
-    guard isAvailable(recorded) else { return .refuse("Another app uses that shortcut.") }
-    return .use(recorded)
+  init(_ keys: String) { self.keys = keys }
+
+  var body: some View {
+    Text(keys)
+      .font(.system(.body, design: .monospaced))
+      .tracking(3)
   }
 }

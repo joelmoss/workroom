@@ -129,7 +129,8 @@ struct RightInspector: View {
       return AnyView(
         SectionHeader(
           title: "Changes", collapsed: $store.changesSectionCollapsed,
-          indicator: changesIndicator, indicatorLabel: changesIndicatorLabel, shortcut: "⌥⌘C"
+          indicator: changesIndicator, indicatorLabel: changesIndicatorLabel,
+          shortcut: Shortcuts.shared.table.label(for: .changes)
         ) {
           HStack(spacing: 0) {
             InspectorHeaderButton(
@@ -147,7 +148,9 @@ struct RightInspector: View {
         .environmentObject(store).environmentObject(notifications))
     case .files:
       return AnyView(
-        SectionHeader(title: "Files", collapsed: nil, shortcut: "⌥⌘F") {
+        SectionHeader(
+          title: "Files", collapsed: nil, shortcut: Shortcuts.shared.table.label(for: .files)
+        ) {
           InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh files") {
             store.fileTree.reload()
           }
@@ -155,15 +158,18 @@ struct RightInspector: View {
         .environmentObject(store).environmentObject(notifications))
     case .pullRequest:
       return AnyView(
-        SectionHeader(title: "Pull Request", collapsed: $store.prSectionCollapsed, shortcut: "⌥⌘P")
-        {
+        SectionHeader(
+          title: "Pull Request", collapsed: $store.prSectionCollapsed,
+          shortcut: Shortcuts.shared.table.label(for: .pullRequestPane)
+        ) {
           prHeaderAccessory
         }
         .environmentObject(store).environmentObject(notifications))
     case .history:
       return AnyView(
         SectionHeader(
-          title: "History", collapsed: $store.historySectionCollapsed, shortcut: "⌥⌘Y"
+          title: "History", collapsed: $store.historySectionCollapsed,
+          shortcut: Shortcuts.shared.table.label(for: .history)
         ) {
           // Disabled while collapsed: a collapsed section deliberately stops tracking the selection
           // (`historySectionShown` gates the re-point), so the model still points at whatever workroom

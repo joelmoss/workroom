@@ -513,7 +513,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
 
 /// Posted by the main-toolbar Quick-Terminal button; `AppDelegate` observes it and calls `show()`
 /// (the controller lives on the delegate, out of reach of the SwiftUI view). Same decoupled pattern
-/// as `.showThemePicker` / `.showKeyboardShortcuts`. The ⌥§ global hotkey calls the controller
+/// as `.showThemePicker`. The Quick Terminal's global shortcut calls the controller
 /// directly (it's registered in the delegate), so it doesn't go through this.
 extension Notification.Name {
   static let showQuickTerminal = Notification.Name("workroom.showQuickTerminal")
@@ -530,24 +530,36 @@ enum QuickTerminalKey: Equatable {
   /// ⌃⌘arrows, as in a workroom.
   case focusPane(PaneDirection)
 
+  /// The Quick Terminal key a press is, through the same shortcuts a workroom window uses (#148):
+  /// Close Tab, New Terminal, Split Right/Down, Focus Terminal Tab 1–9 and Focus Pane.
+  /// `characters` is the key's unshifted character.
   static func classify(
-    flags: NSEvent.ModifierFlags, characters: String?, keyCode: UInt16? = nil
+    flags: NSEvent.ModifierFlags, characters: String?, keyCode: UInt16? = nil,
+    table: ShortcutTable = Shortcuts.current
   ) -> QuickTerminalKey? {
-    let flags = flags.intersection([.command, .shift, .option, .control])
-    // Virtual keycodes, as the workroom handler reads them: left 123 / right 124 / down 125 / up 126.
-    let arrows: [UInt16: PaneDirection] = [123: .left, 124: .right, 125: .down, 126: .up]
-    if flags == [.command, .control], let keyCode, let direction = arrows[keyCode] {
-      return .focusPane(direction)
+    guard
+      let chord = KeyChord(
+        keyCode: keyCode.map(Int.init) ?? -1, flags: flags, unshifted: characters),
+      let match = table.match(chord)
+    else { return nil }
+    return QuickTerminalKey(match)
+  }
+
+  /// The Quick Terminal key a matched shortcut is, if it is one.
+  init?(_ match: ShortcutMatch) {
+    if let index = match.action.terminalTabIndex {
+      self = .selectTab(index)
+      return
     }
-    guard let key = characters?.lowercased() else { return nil }
-    switch (flags, key) {
-    case (.command, "w"): return .closePane
-    case (.command, "t"): return .newTab
-    case (.command, "d"): return .splitRight
-    case ([.command, .shift], "d"): return .splitDown
-    case (.command, _):
-      guard let digit = Int(key), (1...9).contains(digit) else { return nil }
-      return .selectTab(digit - 1)
+    if let direction = match.action.paneDirection {
+      self = .focusPane(direction)
+      return
+    }
+    switch match.action {
+    case .closeTab: self = .closePane
+    case .newTerminal: self = .newTab
+    case .splitRight: self = .splitRight
+    case .splitDown: self = .splitDown
     default: return nil
     }
   }

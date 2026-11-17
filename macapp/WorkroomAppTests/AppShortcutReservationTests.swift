@@ -6,19 +6,20 @@ import XCTest
 /// `GhosttySurfaceView.isAppShortcut` — which key combinations Workroom keeps for itself instead of
 /// letting them reach the terminal.
 ///
-/// This list is load-bearing and silently easy to get wrong. A menu shortcut that ISN'T reserved reaches
+/// This is load-bearing and silently easy to get wrong. A menu shortcut that ISN'T reserved reaches
 /// libghostty, and a TUI running in an enhanced keyboard mode (Claude, Codex) consumes it — so the menu
 /// item's key equivalent never fires and the shortcut appears simply not to work, but only while an
-/// agent is running. That has shipped twice (most recently issue #128). Until now the function was
-/// private and untested; it was split into a pure classifier so these can exist.
+/// agent is running. That has shipped twice (most recently issue #128). The registry decides now
+/// (#148, ADR 0076); these pin what the defaults reserve, and that a rebind moves the reservation.
 @MainActor
 final class AppShortcutReservationTests: XCTestCase {
 
   private func reserved(
-    _ key: String, _ flags: NSEvent.ModifierFlags, keyCode: UInt16 = 0
+    _ key: String, _ flags: NSEvent.ModifierFlags, keyCode: UInt16 = 0,
+    table: ShortcutTable = .defaults
   ) -> Bool {
     GhosttySurfaceView.isAppShortcut(
-      modifierFlags: flags, keyCode: keyCode, charactersIgnoringModifiers: key)
+      modifierFlags: flags, keyCode: keyCode, characters: key, table: table)
   }
 
   // MARK: Room menu's Fetch/Push/Pull (the new ones)
@@ -60,7 +61,9 @@ final class AppShortcutReservationTests: XCTestCase {
   func testExistingOptionCommandShortcutsStayReserved() {
     // ⌥⌘I = Details: a focused TUI would otherwise swallow it. ⌥⌘N/⌥⌘O are the File-menu
     // "…in Split" items (issue #163); ⌥⌘N was un-reserved with issue #118 and deliberately re-taken.
-    for key in ["r", "i", "c", "f", "y", "p", "s", "b", "n", "o"] {
+    // ⌥⌘S is macOS's Toggle Sidebar, caught for Projects. (⌥⌘B, a second Projects key, went with
+    // #148: an action has one shortcut.)
+    for key in ["r", "i", "c", "f", "y", "p", "s", "n", "o"] {
       XCTAssertTrue(reserved(key, [.command, .option]), "⌥⌘\(key.uppercased())")
     }
   }
@@ -136,15 +139,27 @@ final class AppShortcutReservationTests: XCTestCase {
   func testEmptyCharactersAreNotReserved() {
     XCTAssertFalse(
       GhosttySurfaceView.isAppShortcut(
-        modifierFlags: .command, keyCode: 0, charactersIgnoringModifiers: nil))
+        modifierFlags: .command, keyCode: 0, characters: nil, table: .defaults))
     XCTAssertFalse(
       GhosttySurfaceView.isAppShortcut(
-        modifierFlags: .command, keyCode: 0, charactersIgnoringModifiers: ""))
+        modifierFlags: .command, keyCode: 0, characters: "", table: .defaults))
+  }
+
+  /// A rebind takes the reservation with it, and Remove gives the keys back (#148).
+  func testTheReservationFollowsTheBinding() {
+    let table = ShortcutTable(overrides: [
+      ShortcutAction.run.rawValue: .bound(.chord(.key("j", .control))),
+      ShortcutAction.push.rawValue: .unset,
+    ])
+    XCTAssertTrue(reserved("j", .control, table: table), "⌃J is Run now")
+    XCTAssertFalse(reserved("r", .command, table: table), "⌘R is the terminal's again")
+    XCTAssertFalse(reserved("p", [.command, .shift], table: table), "Push has no shortcut")
+    XCTAssertTrue(reserved("q", .command, table: table), "Quit is never ours to give away")
   }
 
   /// Uppercase arrives when Shift is held; the classifier lowercases before matching.
   func testUppercaseCharactersMatch() {
-    XCTAssertTrue(reserved("P", [.command, .shift]), "⇧⌘P arrives as 'P'")
+    XCTAssertTrue(reserved("P", [.command, .shift]), "⇧⌘P read as 'P'")
     XCTAssertTrue(reserved("F", [.command, .shift, .option]))
   }
 }

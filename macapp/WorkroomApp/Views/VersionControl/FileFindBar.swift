@@ -37,7 +37,7 @@ struct FileFindBar: View {
         } label: {
           Image(systemName: "chevron.up")
         }
-        .help("Previous match (⇧⌘G)")
+        .help("Previous match" + Shortcuts.shared.table.hint(for: .findPrevious))
         .disabled(!model.hasMatches)
 
         Button {
@@ -45,7 +45,7 @@ struct FileFindBar: View {
         } label: {
           Image(systemName: "chevron.down")
         }
-        .help("Next match (⌘G)")
+        .help("Next match" + Shortcuts.shared.table.hint(for: .findNext))
         .disabled(!model.hasMatches)
 
         Button {

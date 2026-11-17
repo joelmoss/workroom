@@ -112,9 +112,6 @@ extension Defaults.Keys {
   static let closeCreationPaneWhenDone = Key<Bool>(
     "closeCreationPaneWhenDone", default: false, suite: .app)
 
-  /// Whether the global ⌘§ show/hide hotkey is registered (issue #13).
-  static let globalHotkey = Key<Bool>("globalHotkeyEnabled", default: true, suite: .app)
-
   /// The screen edge the Quick Terminal slides in from (Settings ▸ Terminal).
   static let quickTerminalEdge = Key<QuickTerminalEdge>(
     "quickTerminalEdge", default: .top, suite: .app)
@@ -126,10 +123,6 @@ extension Defaults.Keys {
   /// Slide the Quick Terminal away when it loses focus (Settings ▸ Terminal). On by default.
   static let quickTerminalHidesWhenUnfocused = Key<Bool>(
     "quickTerminalHidesWhenUnfocused", default: true, suite: .app)
-
-  /// The global shortcut that shows and hides the Quick Terminal (Settings ▸ Terminal).
-  static let quickTerminalShortcut = Key<GlobalShortcut>(
-    "quickTerminalShortcut", default: .quickTerminalDefault, suite: .app)
 
   /// The folder a new Quick Terminal shell starts in; "" = the home folder.
   static let quickTerminalDirectory = Key<String>(
@@ -271,15 +264,9 @@ extension Defaults.Keys {
   /// an ordering hint applied to whatever is currently active — stale ids resolve away harmlessly.
   static let workroomTabOrder = Key<[String]>("workroomsView.tabOrder", default: [], suite: .app)
 
-  /// Trigger modifiers for the two quick switchers (issue #132): ⌥Tab steps open workrooms across
-  /// every window, ⌃Tab steps the current workroom's panes. Retunable because a global hotkey grabber
-  /// beats our local key monitor and cannot be detected — AltTab, HyperSwitch and Contexts all take
-  /// ⌥Tab by default via a CGEvent tap, so for those users the default is unreachable and a different
-  /// modifier is the only fix. No Settings UI yet; `SwitcherModifier` owns the offered set.
-  static let switcherWorkroomModifier = Key<SwitcherModifier>(
-    "switcher.workroomModifier", default: .option, suite: .app)
-  static let switcherPaneModifier = Key<SwitcherModifier>(
-    "switcher.paneModifier", default: .control, suite: .app)
+  // The quick switchers' trigger modifiers (issue #132) and the Quick Terminal's and Show/Hide
+  // Workroom's global shortcuts are shortcuts like any other now, in `Shortcuts` (#148), which
+  // carried `switcher.*Modifier`, `quickTerminalShortcut` and `globalHotkeyEnabled` over once.
 
   /// When Workroom itself last fetched a project, keyed by the project's absolute path (fetch always
   /// runs at the project root, so this is per-project, never per-workroom). Path-keyed map for the

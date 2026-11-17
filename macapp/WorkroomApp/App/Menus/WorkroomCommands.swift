@@ -68,14 +68,16 @@ struct WorkroomCommands: Commands {
   // Drives the quick dark/light toggle (⌘⇧L, issue #57). RootView's `.onChange(of: theme)` applies
   // it through the single theme chokepoint; same key as the sidebar's 3-state cycle button.
   @Default(.theme) private var theme
-  /// The Quick Terminal item shows the recorded global shortcut as its equivalent.
-  @Default(.quickTerminalShortcut) private var quickTerminalShortcut
-  // The two quick-switcher trigger chords (issue #132). Read here so the Go-menu items re-render — and
-  // so their key equivalents follow the preference — when either is retuned in Settings.
-  @Default(.switcherWorkroomModifier) private var switcherWorkroomModifier
-  @Default(.switcherPaneModifier) private var switcherPaneModifier
+  /// The saved shortcut changes (#148). Never read for its value: holding it re-runs this body when
+  /// Settings saves one, which Observation of `Shortcuts.shared` alone doesn't do for `Commands`.
+  @Default(.shortcutOverridesRaw) private var shortcutOverrides
+  // Go ▸ Terminal Tab and Workroom Tab list these by name (#148).
+  @FocusedValue(\.terminalTabIDs) private var terminalTabIDs
+  @FocusedValue(\.workroomTabTitles) private var workroomTabTitles
   /// Opens a new Workroom window (issue #70) — a fresh `WindowSeed` so the window starts blank.
   @Environment(\.openWindow) private var openWindow
+  /// Keyboard Shortcuts… opens Settings at its pane (#148).
+  @Environment(\.openSettings) private var openSettings
 
   /// A `Binding<Bool>` onto a `Bool` property of the focused store — reads false and ignores writes
   /// when no window is focused (issue #70). Backs the menu toggles that drive per-window state.
@@ -175,23 +177,23 @@ struct WorkroomCommands: Commands {
     // `inspectorToggles` makes the bar + inspector re-render synchronously, even when the section
     // stays put (see `AppStore.apply`).
     Toggle("Details", isOn: paneBinding(.details))
-      .keyboardShortcut(shortcuts ? KeyboardShortcut("i", modifiers: [.command, .option]) : nil)
+      .shortcut(shortcuts ? .details : nil)
       .disabled(modalBlocked || noProjects)
     // Changes, History and Pull Request share the **Changes** pane (a stack), so "showing" one means
     // selecting that pane, opening the inspector, and expanding its sub-section; the checkmark is on
     // only when all three hold. Turning it off just collapses the sub-section. (History is ⌥⌘Y:
     // ⌥⌘H is macOS "Hide Others".)
     Toggle("Changes", isOn: subSectionBinding(\.changesSectionCollapsed))
-      .keyboardShortcut(shortcuts ? KeyboardShortcut("c", modifiers: [.command, .option]) : nil)
+      .shortcut(shortcuts ? .changes : nil)
       .disabled(modalBlocked || noProjects)
     Toggle("History", isOn: subSectionBinding(\.historySectionCollapsed))
-      .keyboardShortcut(shortcuts ? KeyboardShortcut("y", modifiers: [.command, .option]) : nil)
+      .shortcut(shortcuts ? .history : nil)
       .disabled(modalBlocked || noProjects)
     Toggle("Pull Request", isOn: subSectionBinding(\.prSectionCollapsed))
-      .keyboardShortcut(shortcuts ? KeyboardShortcut("p", modifiers: [.command, .option]) : nil)
+      .shortcut(shortcuts ? .pullRequestPane : nil)
       .disabled(modalBlocked || noProjects)
     Toggle("Files", isOn: paneBinding(.files))
-      .keyboardShortcut(shortcuts ? KeyboardShortcut("f", modifiers: [.command, .option]) : nil)
+      .shortcut(shortcuts ? .files : nil)
       .disabled(modalBlocked || noProjects)
   }
 
@@ -230,17 +232,18 @@ struct WorkroomCommands: Commands {
   /// Restart/Stop only while it's running.
   @ViewBuilder private var runItems: some View {
     Button("Run") { store?.runOrFocusRunCommand() }
-      .keyboardShortcut("r", modifiers: .command)
+      .shortcut(.run)
       .disabled(!workroomCommandEnabled(hasRunCommand))
     Button("Restart") { store?.restartSelectedRunCommand() }
-      .keyboardShortcut("r", modifiers: [.command, .option])
+      .shortcut(.restart)
       .disabled(!workroomCommandEnabled(runCommandActive))
     Button("Stop") { store?.stopSelectedRunCommand() }
-      .keyboardShortcut("r", modifiers: [.command, .shift])
+      .shortcut(.stop)
       .disabled(!workroomCommandEnabled(runCommandActive))
     // Jump to the run terminal if one exists — navigation only, so it's named distinctly from Run
     // (which starts the command). Disabled when there's none to go to.
     Button("Go to Run Terminal") { store?.revealRunTerminal() }
+      .shortcut(.goToRunTerminal)
       .disabled(!workroomCommandEnabled(hasRunTerminal))
   }
 
@@ -262,27 +265,28 @@ struct WorkroomCommands: Commands {
       Button("New Project…") {
         store?.modals.requestAddProject = true
       }
+      .shortcut(.newProject)
 
       Divider()
 
       Button("New Workroom…") { store?.raiseWorkroomPicker(.new) }
-        .keyboardShortcut("n", modifiers: .command)
+        .shortcut(.newWorkroom)
         .disabled(hasProjects != true)
       // (split right) (⌥⌘N, issue #163): same picker, but the pick lands BESIDE the current workroom
       // instead of replacing it. Needs an anchor, hence `hasWorkroomAnchor` — which, unlike
       // `workroomSelected`, is not modal-gated, so this behaves like ⌘N while a picker is open.
       Button("New Workroom (split right)") { store?.raiseWorkroomPicker(.new, split: true) }
-        .keyboardShortcut("n", modifiers: [.command, .option])
+        .shortcut(.newWorkroomSplit)
         .disabled(hasProjects != true || !workroomCommandEnabled(hasWorkroomAnchor))
       // Open workroom… (⌘O, issue #94): raises the open-existing picker (RootView observes
       // `requestOpenWorkroomPicker`); picking a root/workroom switches + focuses it. ⌘O moved here
       // from the Go-menu "Open in Editor" (which keeps its menu item, no shortcut). Disabled with no
       // projects, so ⌘O is a silent no-op rather than an empty picker.
       Button("Open Workroom…") { store?.raiseWorkroomPicker(.open) }
-        .keyboardShortcut("o", modifiers: .command)
+        .shortcut(.openWorkroom)
         .disabled(hasProjects != true)
       Button("Open Workroom (split right)") { store?.raiseWorkroomPicker(.open, split: true) }
-        .keyboardShortcut("o", modifiers: [.command, .option])
+        .shortcut(.openWorkroomSplit)
         .disabled(hasProjects != true || !workroomCommandEnabled(hasWorkroomAnchor))
 
       Divider()
@@ -292,7 +296,7 @@ struct WorkroomCommands: Commands {
       Button("New Terminal") {
         store?.newTerminalInSelectedTarget()
       }
-      .keyboardShortcut("t", modifiers: .command)
+      .shortcut(.newTerminal)
       .disabled(!workroomCommandEnabled(workroomSelected))
 
       // Quick terminal at ~/ in its own chrome-less window (issue #39) — same open/focus action as
@@ -304,10 +308,9 @@ struct WorkroomCommands: Commands {
       Button("Quick Terminal") {
         NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
       }
-      .keyboardShortcut(quickTerminalShortcut.keyboardShortcut)
-      // The shortcut may carry no ⌘ (⌥§ doesn't), so the key monitor's `flags.contains(.command)`
-      // path never sees it and nothing else would stop it opening a whole new window from behind a
-      // dialog.
+      .shortcut(.quickTerminal)
+      // The shortcut may carry no ⌘ (⌥§ doesn't), and nothing else would stop it opening a whole new
+      // window from behind a dialog.
       .disabled(modalBlocked)
 
       Divider()
@@ -317,7 +320,7 @@ struct WorkroomCommands: Commands {
       Button("Close Tab") {
         store?.closeCurrentTerminalTab()
       }
-      .keyboardShortcut("w", modifiers: .command)
+      .shortcut(.closeTab)
       .disabled(!workroomCommandEnabled(hasTerminal))
 
       // Bulk close (issue #72), no shortcuts. Labelled "Tabs" (not "Terminals") since they act on
@@ -325,10 +328,12 @@ struct WorkroomCommands: Commands {
       Button("Close Other Tabs") {
         store?.closeOtherTerminalTabsInSelectedTarget()
       }
+      .shortcut(.closeOtherTabs)
       .disabled(!workroomCommandEnabled(multipleTerminalTabs))
       Button("Close All Tabs") {
         store?.closeAllTerminalTabsInSelectedTarget()
       }
+      .shortcut(.closeAllTabs)
       .disabled(!workroomCommandEnabled(hasTerminal))
 
       // Gate the close-terminal confirmation (default on). A set-and-forget preference, so a divider
@@ -337,6 +342,7 @@ struct WorkroomCommands: Commands {
       // confirm alert unchecks this item, and vice versa.
       Divider()
       Toggle("Confirm Before Closing a Terminal", isOn: $confirmOnCloseTerminal)
+        .shortcut(.confirmBeforeClosingTerminal)
     }
   }
 
@@ -344,6 +350,7 @@ struct WorkroomCommands: Commands {
     #if DEBUG
       Self.bodyPasses += 1
     #endif
+    _ = shortcutOverrides
     let interval = Self.signposter.beginInterval("Workroom commands")
     defer { Self.signposter.endInterval("Workroom commands", interval) }
     return menuCommands
@@ -354,6 +361,7 @@ struct WorkroomCommands: Commands {
       // Sparkle update check, sitting directly beneath "About Workroom". Disabled while a check is
       // already running. See Core/AppShell/Updater.swift.
       Button("Check for Updates…") { updater.checkForUpdates() }
+        .shortcut(.checkForUpdates)
         .disabled(!updater.canCheckForUpdates)
     }
 
@@ -361,30 +369,40 @@ struct WorkroomCommands: Commands {
     // Settings… and above Services. Anchored `before: .systemServices`, NOT `after: .appSettings`:
     // the `Settings` scene injects the "Settings…" item at the END of the appSettings group, so
     // `after: .appSettings` lands ABOVE Settings… — anchoring before Services is the documented way
-    // to sit just below it. Keyboard Shortcuts has no accelerator (a ⌘-key would need reserving from
-    // the terminal in GhosttySurfaceView.isAppShortcut; the menu item is discovery enough) and posts
-    // a notification RootView observes to present the sheet (a menu command can't anchor one — same
-    // pattern as Theme… below).
+    // to sit just below it. Keyboard Shortcuts… opens Settings ▸ Keyboard Shortcuts (#148).
     CommandGroup(before: .systemServices) {
       // App menu: symlink the bundled CLI into the user's PATH (like VS Code's "Install 'code'
       // command"). Prompts for admin only if the target dir needs it. See CommandLineInstaller.
       Button("Install ‘workroom’ Command in PATH…") {
         Task { await CommandLineInstaller.runFromMenu() }
       }
-      Button("Keyboard Shortcuts…") {
-        NotificationCenter.default.post(name: .showKeyboardShortcuts, object: nil)
-      }
+      .shortcut(.installCommandLine)
+      Button("Keyboard Shortcuts…") { showKeyboardShortcuts() }
+        .shortcut(.keyboardShortcuts)
     }
 
-    // Help menu: the docs site, and the shortcuts sheet again where people look for help. Replaces
-    // macOS's default "Workroom Help", which needs a Help Book the app doesn't ship.
+    // Help menu: the docs site, and the shortcuts pane again where people look for help. Replaces
+    // macOS's default "Workroom Help", which needs a Help Book the app doesn't ship. Its Keyboard
+    // Shortcuts… has no key equivalent: the app menu's holds it.
     CommandGroup(replacing: .help) {
       Button("Workroom Documentation") {
         NSWorkspace.shared.open(URL(string: "https://codaset.dev/workroom/docs")!)
       }
-      Button("Keyboard Shortcuts…") {
-        NotificationCenter.default.post(name: .showKeyboardShortcuts, object: nil)
-      }
+      .shortcut(.documentation)
+      Button("Keyboard Shortcuts…") { showKeyboardShortcuts() }
+    }
+
+    // The app menu's Hide group, rebuilt so Show/Hide Workroom (the global shortcut's own item,
+    // #148) sits just below Hide. The standard items keep their standard keys, which aren't
+    // Workroom's to rebind (`StandardShortcut`).
+    CommandGroup(replacing: .appVisibility) {
+      Button("Hide \(Self.appName)") { NSApp.hide(nil) }
+        .keyboardShortcut("h", modifiers: .command)
+      Button("Show/Hide \(Self.appName)") { AppDelegate.toggleAppVisibility() }
+        .shortcut(.showHideWorkroom)
+      Button("Hide Others") { NSApp.hideOtherApplications(nil) }
+        .keyboardShortcut("h", modifiers: [.command, .option])
+      Button("Show All") { NSApp.unhideAllApplications(nil) }
     }
 
     // Sit the quit-confirmation toggle just above Quit (default on): `.appVisibility` is the
@@ -393,6 +411,7 @@ struct WorkroomCommands: Commands {
     CommandGroup(after: .appVisibility) {
       Divider()
       Toggle("Confirm Before Quitting", isOn: $confirmOnQuit)
+        .shortcut(.confirmBeforeQuitting)
     }
 
     // Replace the default "Show/Hide Sidebar" with a clearer "Projects" label — it's the projects
@@ -401,7 +420,7 @@ struct WorkroomCommands: Commands {
     // visibility. Keeps the conventional ⌃⌘S shortcut.
     CommandGroup(replacing: .sidebar) {
       Toggle("Projects", isOn: storeFlag(\.sidebarVisible))
-        .keyboardShortcut("s", modifiers: [.command, .control])
+        .shortcut(.projects)
         .disabled(modalBlocked || noProjects)
     }
 
@@ -410,7 +429,7 @@ struct WorkroomCommands: Commands {
       // section is active — the Changes/Files/History/Pull Request toggles below select a section
       // AND open the inspector; this one just shows/hides whatever section was last active.
       Toggle("Inspector", isOn: $showInspector)
-        .keyboardShortcut("b", modifiers: [.command])
+        .shortcut(.inspector)
         .disabled(modalBlocked || noProjects)
 
       inspectorPaneToggles(shortcuts: true)
@@ -419,7 +438,7 @@ struct WorkroomCommands: Commands {
       // that `TrailingTitlebarBar` — which owns the toolbar button the dropdown hangs off — observes.
       Divider()
       Button("Theme…") { NotificationCenter.default.post(name: .showThemePicker, object: nil) }
-        .keyboardShortcut("k", modifiers: [.command, .shift])
+        .shortcut(.theme)
         .disabled(modalBlocked)
 
       // Quick dark/light toggle (issue #57): flip the *currently visible* appearance. From System
@@ -429,21 +448,23 @@ struct WorkroomCommands: Commands {
       Button(theme.toggledLightDark.label + " Mode") {
         theme = theme.toggledLightDark
       }
-      .keyboardShortcut("l", modifiers: [.command, .shift])
+      .shortcut(.toggleLightDark)
       .disabled(modalBlocked)
 
-      // Split the focused pane with a new terminal beside it (issue #3): ⌘D right, ⇧⌘D down; left/up
-      // have no standard key, so they're menu-only.
+      // Split the focused pane with a new terminal beside it (issue #3): ⌘D right, ⇧⌘D down by
+      // default; left/up have no default key.
       Divider()
       Button("Split Right") { store?.splitFocusedRight() }
-        .keyboardShortcut("d", modifiers: .command)
+        .shortcut(.splitRight)
         .disabled(!workroomCommandEnabled(hasTerminal))
       Button("Split Left") { store?.splitFocusedLeft() }
+        .shortcut(.splitLeft)
         .disabled(!workroomCommandEnabled(hasTerminal))
       Button("Split Down") { store?.splitFocusedDown() }
-        .keyboardShortcut("d", modifiers: [.command, .shift])
+        .shortcut(.splitDown)
         .disabled(!workroomCommandEnabled(hasTerminal))
       Button("Split Up") { store?.splitFocusedUp() }
+        .shortcut(.splitUp)
         .disabled(!workroomCommandEnabled(hasTerminal))
 
       // Separate our View items from the system "Enter Full Screen" item that follows.
@@ -473,16 +494,16 @@ struct WorkroomCommands: Commands {
       Divider()
       // The Changes header's commit button.
       Button("Commit…") { store?.requestCommit(store?.inspectorTargetID) }
-        .keyboardShortcut(.return, modifiers: [.command, .option])
+        .shortcut(.commit)
         .disabled(!workroomCommandEnabled(canCommit))
       Button("Fetch") { store?.performRemoteAction(.fetch) }
-        .keyboardShortcut("f", modifiers: [.command, .shift, .option])
+        .shortcut(.fetch)
         .disabled(!workroomCommandEnabled(vcsCanFetch))
       Button("Push") { store?.performRemoteAction(.push) }
-        .keyboardShortcut("p", modifiers: [.command, .shift])
+        .shortcut(.push)
         .disabled(!workroomCommandEnabled(vcsCanPush))
       Button("Pull with Rebase") { store?.performRemoteAction(.pull) }
-        .keyboardShortcut("p", modifiers: [.command, .shift, .option])
+        .shortcut(.pullWithRebase)
         .disabled(!workroomCommandEnabled(vcsCanPull))
 
       // The Pull Request section's actions menu: only while the branch has a pull request.
@@ -491,11 +512,13 @@ struct WorkroomCommands: Commands {
         Button("Go to Pull Request") {
           if let url = URL(string: pullRequest.url) { NSWorkspace.shared.open(url) }
         }
+        .shortcut(.goToPullRequest)
         .disabled(detachedWindowKey)
         if let draftAction, let sid = inspectedWorkroom {
           Button(draftAction.label) {
             store?.performPRAction(draftAction, number: pullRequest.number, on: sid)
           }
+          .shortcut(.changeDraft)
           .disabled(!workroomCommandEnabled(canChangeDraft))
         }
       }
@@ -511,13 +534,14 @@ struct WorkroomCommands: Commands {
       Button("Open in \(ExternalEditor.remembered?.name ?? "Editor")") {
         store?.openSelectedInEditor()
       }
-      .keyboardShortcut("o", modifiers: [.command, .shift])
+      .shortcut(.openInEditor)
       .disabled(!workroomCommandEnabled(canOpenInEditor))
       Button("Reveal in Finder") {
         if let path = store?.selectedTarget?.path {
           NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
         }
       }
+      .shortcut(.revealInFinder)
       .disabled(!workroomCommandEnabled(revealInFinderEnabled))
 
       // The workroom's own items, as its right-click menu has them (`WorkroomContextMenu`): a root is
@@ -529,15 +553,18 @@ struct WorkroomCommands: Commands {
             workroom: pair.workroom, project: pair.project)
         }
       }
+      .shortcut(.editLabel)
       .disabled(!workroomCommandEnabled(canLabel))
       if let pair = selectedPair, pair.workroom.label != nil {
         Button("Remove Label") { store?.removeWorkroomLabel(pair.workroom, in: pair.project) }
+          .shortcut(.removeLabel)
           .disabled(!workroomCommandEnabled(canLabel))
       }
       // The selected workroom, every terminal of it, into a window of its own (#444).
       Button("Move Workroom into New Window") {
         if let store, let sid = store.selectedTargetID { store.moveWorkroomToNewWindow(sid) }
       }
+      .shortcut(.moveWorkroomToNewWindow)
       .disabled(!workroomCommandEnabled(canMoveWorkroom))
 
       Divider()
@@ -549,6 +576,7 @@ struct WorkroomCommands: Commands {
             workroom: pair.workroom, project: pair.project)
         }
       }
+      .shortcut(.deleteWorkroom)
       .disabled(!workroomCommandEnabled(canDelete))
     }
 
@@ -561,13 +589,13 @@ struct WorkroomCommands: Commands {
       // terminal (a workroom always opens with one; a lone file pane is the only gap).
       Divider()
       Button("Find…") { store?.startFindInFocusedPane() }
-        .keyboardShortcut("f", modifiers: .command)
+        .shortcut(.find)
         .disabled(!workroomCommandEnabled(hasTerminal))
       Button("Find Next") { store?.navigateFocusedPaneSearch(forward: true) }
-        .keyboardShortcut("g", modifiers: .command)
+        .shortcut(.findNext)
         .disabled(!workroomCommandEnabled(hasTerminal))
       Button("Find Previous") { store?.navigateFocusedPaneSearch(forward: false) }
-        .keyboardShortcut("g", modifiers: [.command, .shift])
+        .shortcut(.findPrevious)
         .disabled(!workroomCommandEnabled(hasTerminal))
 
       // Edit menu: toggle copy-on-select (checkmark reflects state). A divider sets it apart
@@ -576,22 +604,34 @@ struct WorkroomCommands: Commands {
       // mirrored by the Settings checkbox.
       Divider()
       Toggle("Copy on Select", isOn: $copyOnSelect)
+        .shortcut(.copyOnSelect)
     }
 
     // New Window lives at the top of the Window menu (not File) so it sits beside the other
     // window-management commands (Minimize, Zoom, …).
     CommandGroup(before: .windowSize) {
       Button("New Window") { openWindow(value: WindowSeed(id: UUID(), restore: false)) }
+        .shortcut(.newWindow)
+      // Cycle key focus through the app's windows, the Quick Terminal's too (issue #87). The key
+      // monitor catches the keys first, so a terminal can't swallow them; these items make the
+      // shortcut visible and mouse-reachable (#148). Always on: with one window it's a no-op.
+      Button("Next Window") { WindowRegistry.shared.cycleWindows(forward: true) }
+        .shortcut(.nextWindow)
+        .disabled(modalBlocked)
+      Button("Previous Window") { WindowRegistry.shared.cycleWindows(forward: false) }
+        .shortcut(.previousWindow)
+        .disabled(modalBlocked)
+      Divider()
       // Pop the focused detail panel into a window of its own, or put it back (issue #172). ONE item
       // that flips, rather than two: the two directions are mutually exclusive, the same key does
       // both, and a second permanently-greyed item would be noise. The title-bar buttons and the
       // tear-off drag are the discoverable paths; this makes both keyboard-reachable.
       if let detached = detachedFocus.keyTabID {
         Button("Move back to main window") { AppStore.dockDetachedPane(detached) }
-          .keyboardShortcut("o", modifiers: [.command, .control])
+          .shortcut(.movePaneWindow)
       } else {
         Button("Move pane into new window") { store?.detachFocusedPane() }
-          .keyboardShortcut("o", modifiers: [.command, .control])
+          .shortcut(.movePaneWindow)
           .disabled(!workroomCommandEnabled(workroomSelected))
       }
       Divider()
@@ -600,14 +640,14 @@ struct WorkroomCommands: Commands {
     newItemFileMenuCommands
 
     // Browser/Finder-style back/forward over the workroom + terminal history (issue #26), plus
-    // the ⇧⌘N jump to the oldest pending notification. ⌘[ / ⌘] are reserved from the terminal in
-    // GhosttySurfaceView.isAppShortcut so these key equivalents fire.
+    // the jump to the oldest pending notification. Every bound shortcut is reserved from the
+    // terminal (GhosttySurfaceView.isAppShortcut) so these key equivalents fire.
     CommandMenu("Go") {
       Button("Back") { store?.navigateBack() }
-        .keyboardShortcut("[", modifiers: .command)
+        .shortcut(.back)
         .disabled(!workroomCommandEnabled(canNavigateBack))
       Button("Forward") { store?.navigateForward() }
-        .keyboardShortcut("]", modifiers: .command)
+        .shortcut(.forward)
         .disabled(!workroomCommandEnabled(canNavigateForward))
 
       // Scroll the focused terminal to the top/bottom of its scrollback (issue #42). ⌘↑/⌘↓ — the
@@ -615,10 +655,10 @@ struct WorkroomCommands: Commands {
       // Disabled when no terminal is focused.
       Divider()
       Button("Scroll to Top") { store?.scrollFocusedTerminalToTop() }
-        .keyboardShortcut(.upArrow, modifiers: .command)
+        .shortcut(.scrollToTop)
         .disabled(!workroomCommandEnabled(hasTerminal))
       Button("Scroll to Bottom") { store?.scrollFocusedTerminalToBottom() }
-        .keyboardShortcut(.downArrow, modifiers: .command)
+        .shortcut(.scrollToBottom)
         .disabled(!workroomCommandEnabled(hasTerminal))
 
       // Cycle terminal tabs (⌥⌘←/→) and workroom tabs (⇧⌥⌘←/→) (issue #29). The keys are caught by
@@ -627,17 +667,45 @@ struct WorkroomCommands: Commands {
       // to cycle between (≤1 tab).
       Divider()
       Button("Next Terminal Tab") { store?.cycleTerminalTab(forward: true) }
-        .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+        .shortcut(.nextTerminalTab)
         .disabled(!workroomCommandEnabled(multipleTerminalTabs))
       Button("Previous Terminal Tab") { store?.cycleTerminalTab(forward: false) }
-        .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+        .shortcut(.previousTerminalTab)
         .disabled(!workroomCommandEnabled(multipleTerminalTabs))
       Button("Next Workroom Tab") { store?.cycleWorkroomTab(forward: true) }
-        .keyboardShortcut(.rightArrow, modifiers: [.command, .option, .shift])
+        .shortcut(.nextWorkroomTab)
         .disabled(!workroomCommandEnabled(multipleWorkroomTabs))
       Button("Previous Workroom Tab") { store?.cycleWorkroomTab(forward: false) }
-        .keyboardShortcut(.leftArrow, modifiers: [.command, .option, .shift])
+        .shortcut(.previousWorkroomTab)
         .disabled(!workroomCommandEnabled(multipleWorkroomTabs))
+
+      // The tabs by position (#148): the key monitor handles the keys first (Focus Terminal Tab and
+      // Switch to Workroom Tab, ⌘1–9 / ⌥⌘1–9 by default), so these items show them and make each
+      // tab mouse-reachable, named as its chip is.
+      Menu("Terminal Tab") {
+        ForEach(Array(terminalTabTitles.enumerated()), id: \.offset) { index, title in
+          Button(title) { store?.focusTerminalTab(at: index) }
+            .shortcut(ShortcutAction.terminalTabs[index])
+            .disabled(detachedWindowKey)
+        }
+      }
+      .disabled(!workroomCommandEnabled(terminalTabIDs.map { !$0.isEmpty }))
+      Menu("Workroom Tab") {
+        ForEach(Array((workroomTabTitles ?? []).enumerated()), id: \.offset) { index, title in
+          Button(title) { _ = store?.focusWorkroomTab(at: index) }
+            .shortcut(ShortcutAction.workroomTabs[index])
+            .disabled(detachedWindowKey)
+        }
+      }
+      .disabled(!workroomCommandEnabled(workroomTabTitles.map { !$0.isEmpty }))
+
+      // Move focus between split panes (issue #3); the key monitor handles the keys first.
+      Divider()
+      ForEach(ShortcutAction.paneFocus, id: \.self) { action in
+        Button(action.label) { _ = action.paneDirection.map { store?.focusPane($0) } }
+          .shortcut(action)
+          .disabled(!workroomCommandEnabled(hasTerminal))
+      }
 
       // The quick switchers (issue #132, D11), by recency rather than position — here because a
       // shortcut nobody can see is a shortcut nobody uses, and because this is the only way to reach
@@ -658,10 +726,10 @@ struct WorkroomCommands: Commands {
       // the key equivalent, which is what lets ⌃⇥ reach the detached pane's own TUI (issue #172).
       Divider()
       Button("Last-Used Workroom") { QuickSwitcher.stepFromKeyWindow(.workrooms) }
-        .keyboardShortcut(.tab, modifiers: switcherWorkroomModifier.eventModifiers)
+        .shortcut(.lastUsedWorkroom)
         .disabled(!workroomCommandEnabled(canSwitchWorkrooms))
       Button("Last-Used Pane") { QuickSwitcher.stepFromKeyWindow(.panes) }
-        .keyboardShortcut(.tab, modifiers: switcherPaneModifier.eventModifiers)
+        .shortcut(.lastUsedPane)
         .disabled(!workroomCommandEnabled(multipleTerminalTabs))
 
       Divider()
@@ -671,7 +739,7 @@ struct WorkroomCommands: Commands {
       Button("Next Notification") {
         store?.openOldestNotification()
       }
-      .keyboardShortcut("n", modifiers: [.command, .shift])
+      .shortcut(.nextNotification)
       .disabled(!workroomCommandEnabled(hasNotifications))
 
       // ⇧⌘M: the terminal that has waited longest for the user, across every window (#358);
@@ -681,11 +749,44 @@ struct WorkroomCommands: Commands {
           NSSound.beep()
         }
       }
-      .keyboardShortcut("m", modifiers: [.command, .shift])
+      .shortcut(.goToWaitingTerminal)
       .disabled(!workroomCommandEnabled(hasWaitingTerminals))
       .help(
         "Go to the terminal waiting longest for you (Next Notification goes through unread "
           + "notifications)")
     }
+  }
+
+  /// Go ▸ Terminal Tab's titles, read without observing them: a title changes at a spinner's rate,
+  /// and observing it would rebuild the whole menu bar on every frame. The items follow the
+  /// published ids (added, closed, reordered tabs), and `MenuBarRefresh` re-evaluates this body each
+  /// time a menu opens, so the names are current when they're seen.
+  private var terminalTabTitles: [String] {
+    _ = MenuBarRefresh.shared.opens
+    guard let ids = terminalTabIDs, !ids.isEmpty, let target = store?.selectedTarget,
+      let tabs = store?.terminals.tabs(for: target)
+    else { return [] }
+    let titles = Dictionary(
+      tabs.map { ($0.id, $0.untrackedTitle) }, uniquingKeysWith: { first, _ in first })
+    return ids.compactMap { titles[$0] }
+  }
+
+  /// Settings ▸ Keyboard Shortcuts (#148), whether the Settings window was open already or not.
+  private func showKeyboardShortcuts() {
+    SettingsRoute.shared.show(pane: .keyboardShortcuts)
+    openSettings()
+  }
+
+  private static var appName: String { ShortcutAction.appName }
+}
+
+extension View {
+  /// The key equivalent `action` is bound to now (#148, ADR 0076), or
+  /// none when it's unset or `action` is nil. Reads `Shortcuts.shared`, so a menu or view using it
+  /// follows every change made in Settings.
+  @MainActor
+  func shortcut(_ action: ShortcutAction?) -> some View {
+    keyboardShortcut(
+      action.flatMap { Shortcuts.shared.table.chord(for: $0) }?.keyboardShortcut)
   }
 }

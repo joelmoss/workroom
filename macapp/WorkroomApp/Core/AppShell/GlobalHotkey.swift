@@ -75,27 +75,19 @@ final class GlobalHotkey {
     if let eventHandlerRef { RemoveEventHandler(eventHandlerRef) }
   }
 
-  /// ⌘ + § (the section key — `kVK_ISO_Section`, layout-independent). Keeps the Carbon key/modifier
-  /// constants contained here so callers don't import Carbon. (Issue #13.)
-  static func commandSection(handler: @escaping () -> Void) -> GlobalHotkey? {
-    GlobalHotkey(keyCode: kVK_ISO_Section, carbonModifiers: cmdKey, id: 1, handler: handler)
-  }
-
-  /// The quick terminal's shortcut (issue #39), ⌥§ unless Settings records another. A distinct id
-  /// from `commandSection` so both hotkeys coexist (see `matches`).
-  static func quickTerminal(
-    _ shortcut: GlobalShortcut, handler: @escaping () -> Void
+  /// One of the two global shortcuts (#148): `id` 1 for Show/Hide Workroom, 2 for the Quick
+  /// Terminal, distinct so both coexist (see `matches`). Registered by the chord's key code.
+  static func register(
+    _ chord: KeyChord, id: Int, handler: @escaping () -> Void
   ) -> GlobalHotkey? {
-    GlobalHotkey(
-      keyCode: shortcut.keyCode, carbonModifiers: shortcut.carbonModifiers, id: 2,
-      handler: handler)
+    guard chord.keyCode >= 0 else { return nil }
+    return GlobalHotkey(
+      keyCode: chord.keyCode, carbonModifiers: chord.modifiers.carbon, id: id, handler: handler)
   }
 
-  /// Whether `shortcut` can be registered now: false when another app, or another of ours, holds
-  /// it. Registers it for a moment under an id nothing else uses, then lets it go.
-  static func isAvailable(_ shortcut: GlobalShortcut) -> Bool {
-    GlobalHotkey(
-      keyCode: shortcut.keyCode, carbonModifiers: shortcut.carbonModifiers, id: 3, handler: {})
-      != nil
+  /// Whether `chord` can be registered now: false when another app, or another of ours, holds it.
+  /// Registers it for a moment under an id nothing else uses, then lets it go.
+  static func isAvailable(_ chord: KeyChord) -> Bool {
+    register(chord, id: 3, handler: {}) != nil
   }
 }

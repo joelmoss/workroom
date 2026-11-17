@@ -1189,6 +1189,12 @@ import WorkroomVCS
       // evidence and this stamp, so a leftover value silently overrode a seeded `.never` and the
       // never-fetched state reported "just now" instead.
       Defaults[.vcsLastFetch] = [:]
+      // Every shortcut at its default (#148), for the same reason: changes PERSIST, and a test that
+      // rebinds one and then fails, or a test that runs before another, would leave ⌘T unbound for
+      // every later launch.
+      // Called from the App's init, on the main thread.
+      UserDefaults.app.removeObject(forKey: Shortcuts.overridesKey)
+      MainActor.assumeIsolated { Shortcuts.shared.refreshSystemSettings() }
       // The theme family, for the same reason as the collapse state and the fetch stamps: it PERSISTS.
       // Without this a theme test inherits whatever the developer last picked, and a test that applies
       // a theme leaves it applied for the next run.

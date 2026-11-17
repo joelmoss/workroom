@@ -32,7 +32,28 @@ final class SettingsPaneTests: XCTestCase {
   func testAllCasesOrderMatchesSidebarOrder() {
     XCTAssertEqual(
       SettingsPane.allCases,
-      [.general, .notifications, .appearance, .terminal, .agent, .projects, .remoteHosts, .about])
+      [
+        .general, .notifications, .appearance, .terminal, .keyboardShortcuts, .agent, .projects,
+        .remoteHosts, .about,
+      ])
+  }
+
+  /// The sidebar says Shortcuts; the pane's title spells it out.
+  func testKeyboardShortcutsIsShortcutsInTheSidebar() {
+    XCTAssertEqual(SettingsPane.keyboardShortcuts.label, "Shortcuts")
+    XCTAssertEqual(SettingsPane.keyboardShortcuts.title, "Keyboard Shortcuts")
+    XCTAssertEqual(SettingsPane.general.title, SettingsPane.general.label)
+  }
+
+  /// Keyboard Shortcuts… asks for its pane (#148): the Settings window goes there whether it was
+  /// open already or opens for it.
+  @MainActor func testAPaneRequestOpensThatPane() {
+    let route = SettingsRoute()
+    route.show(pane: .keyboardShortcuts)
+    XCTAssertEqual(Defaults[.settingsSelectedPane], .keyboardShortcuts)
+    XCTAssertEqual(route.takePaneRequest(), .keyboardShortcuts)
+    XCTAssertNil(route.takePaneRequest(), "a request is taken once")
+    XCTAssertNil(route.takeRequest(), "it asks for no project")
   }
 
   func testEveryCaseHasNonEmptyLabelAndSystemImage() {

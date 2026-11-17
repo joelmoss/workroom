@@ -1,80 +1,141 @@
 ---
 title: Keyboard shortcuts
-description: Every keyboard shortcut in the Workroom app, grouped the way the app's Keyboard Shortcuts sheet groups them.
+description: Every keyboard shortcut in the Workroom app, and how to change them in Settings ▸ Shortcuts.
 ---
 
-The app shows this list too: choose **Help ▸ Keyboard Shortcuts…** or **Workroom ▸ Keyboard Shortcuts…**. The glyphs are ⌘ Command, ⇧ Shift, ⌥ Option and ⌃ Control.
+These are Workroom's default shortcuts. The glyphs are ⌘ Command, ⇧ Shift, ⌥ Option and ⌃ Control. Nightly only: **Settings ▸ Shortcuts** changes them, grouped as below. Open it from **Workroom ▸ Keyboard Shortcuts…** or **Help ▸ Keyboard Shortcuts…**.
 
-## Tabs & Workrooms
+## Changing a shortcut {nightly}
+
+Every Workroom action has a row in **Settings ▸ Shortcuts**, including the ones with no shortcut yet, so you can give any of them one.
+
+- **Record** a shortcut by clicking its keys and pressing the new ones. Press Escape to cancel. A shortcut needs ⌘, ⌥ or ⌃; F1–F12 also work on their own.
+- **Reset** puts a changed shortcut back to its default. **Remove** leaves the action with no shortcut, and the keys go back to the terminal.
+- **Conflicts:** when the keys belong to another action, Workroom asks first. Choosing **Use for …** takes them and leaves the other action with none.
+- **Tabs and panes by position:** each terminal tab 1–9, workroom tab 1–9 and pane direction has a shortcut of its own, so you can move just one. The last-used switchers take modifiers plus Tab; holding ⇧ steps back.
+- **Terminal programs:** a shortcut without ⌘ takes its keys from terminal programs, and the row says so.
+- **Keys you can't record:** standard macOS shortcuts such as ⌘Q, ⌘H, ⌘, and the Edit menu's ⌘C and ⌘V stay as macOS has them.
+- **System Settings:** a shortcut set for a Workroom menu item in **System Settings ▸ Keyboard ▸ Keyboard Shortcuts ▸ App Shortcuts** takes effect over Workroom's own, and its row shows it.
+- **Search** by name, by what an action does, or by its keys ("⌘T", "cmd t"). The record button beside the search field finds the shortcut that holds the keys you press.
+- **Restore Defaults** puts every shortcut back.
+
+The two **Global** shortcuts work from any app; every other shortcut works while Workroom is in front. While the Quick Terminal is in front, New Terminal, Close Tab, Split Right, Split Down, Focus Terminal Tab 1–9 and Focus Pane Left, Right, Up and Down act on its own tabs and panes. See [Terminals and tabs](../app/terminals-and-tabs.md#quick-terminal).
+
+<!-- stable -->
+## Global
 
 | Action | Keys |
 | --- | --- |
-| Focus terminal tab 1–9 | <kbd>⌘1–9</kbd> |
-| Switch to workroom 1–9 | <kbd>⌥⌘1–9</kbd> |
-| Next terminal tab | <kbd>⌥⌘→</kbd> |
-| Previous terminal tab | <kbd>⌥⌘←</kbd> |
-| Next workroom tab | <kbd>⇧⌥⌘→</kbd> |
-| Previous workroom tab | <kbd>⇧⌥⌘←</kbd> |
-| Last-used workroom | <kbd>⌥⇥</kbd> |
-| Last-used pane | <kbd>⌃⇥</kbd> |
+| Show/Hide Workroom | <kbd>⌘§</kbd> |
+| Quick Terminal | <kbd>⌥§</kbd> |
 
-The last two switch to where you were last, not to the next one in position. The app stores their modifier keys as a preference so they can change, but it has no setting for them yet. The defaults above apply.
-
-## Splits & Panes
+<!-- stable -->
+## Projects & Workrooms
 
 | Action | Keys |
 | --- | --- |
-| Split Right | <kbd>⌘D</kbd> |
-| Split Down | <kbd>⇧⌘D</kbd> |
-| Move focus left | <kbd>⌃⌘←</kbd> |
-| Move focus right | <kbd>⌃⌘→</kbd> |
-| Move focus up | <kbd>⌃⌘↑</kbd> |
-| Move focus down | <kbd>⌃⌘↓</kbd> |
-| Move pane into / back from new window | <kbd>⌃⌘O</kbd> |
+| New Workroom… | <kbd>⌘N</kbd> |
+| New Workroom (split right) | <kbd>⌥⌘N</kbd> |
+| Open Workroom… | <kbd>⌘O</kbd> |
+| Open Workroom (split right) | <kbd>⌥⌘O</kbd> |
+| Open in Editor | <kbd>⇧⌘O</kbd> |
 
-## Terminals
+<!-- stable -->
+## Workroom Tabs
+
+| Action | Keys |
+| --- | --- |
+| Switch to Workroom Tab 1 | <kbd>⌥⌘1</kbd> |
+| Switch to Workroom Tab 2 | <kbd>⌥⌘2</kbd> |
+| Switch to Workroom Tab 3 | <kbd>⌥⌘3</kbd> |
+| Switch to Workroom Tab 4 | <kbd>⌥⌘4</kbd> |
+| Switch to Workroom Tab 5 | <kbd>⌥⌘5</kbd> |
+| Switch to Workroom Tab 6 | <kbd>⌥⌘6</kbd> |
+| Switch to Workroom Tab 7 | <kbd>⌥⌘7</kbd> |
+| Switch to Workroom Tab 8 | <kbd>⌥⌘8</kbd> |
+| Switch to Workroom Tab 9 | <kbd>⌥⌘9</kbd> |
+| Next Workroom Tab | <kbd>⌥⇧⌘→</kbd> |
+| Previous Workroom Tab | <kbd>⌥⇧⌘←</kbd> |
+| Last-Used Workroom | <kbd>⌥⇥</kbd> |
+
+<!-- stable -->
+## Terminal Tabs
 
 | Action | Keys |
 | --- | --- |
 | New Terminal | <kbd>⌘T</kbd> |
 | Close Tab | <kbd>⌘W</kbd> |
-| Scroll to Top | <kbd>⌘↑</kbd> |
-| Scroll to Bottom | <kbd>⌘↓</kbd> |
+| Focus Terminal Tab 1 | <kbd>⌘1</kbd> |
+| Focus Terminal Tab 2 | <kbd>⌘2</kbd> |
+| Focus Terminal Tab 3 | <kbd>⌘3</kbd> |
+| Focus Terminal Tab 4 | <kbd>⌘4</kbd> |
+| Focus Terminal Tab 5 | <kbd>⌘5</kbd> |
+| Focus Terminal Tab 6 | <kbd>⌘6</kbd> |
+| Focus Terminal Tab 7 | <kbd>⌘7</kbd> |
+| Focus Terminal Tab 8 | <kbd>⌘8</kbd> |
+| Focus Terminal Tab 9 | <kbd>⌘9</kbd> |
+| Next Terminal Tab | <kbd>⌥⌘→</kbd> |
+| Previous Terminal Tab | <kbd>⌥⌘←</kbd> |
 
-## Find
+<!-- stable -->
+## Panes & Splits
+
+| Action | Keys |
+| --- | --- |
+| Split Right | <kbd>⌘D</kbd> |
+| Split Down | <kbd>⇧⌘D</kbd> |
+| Focus Pane Left | <kbd>⌃⌘←</kbd> |
+| Focus Pane Right | <kbd>⌃⌘→</kbd> |
+| Focus Pane Up | <kbd>⌃⌘↑</kbd> |
+| Focus Pane Down | <kbd>⌃⌘↓</kbd> |
+| Last-Used Pane | <kbd>⌃⇥</kbd> |
+| Move Pane into New Window / Back | <kbd>⌃⌘O</kbd> |
+
+<!-- stable -->
+## In the Terminal
 
 | Action | Keys |
 | --- | --- |
 | Find… | <kbd>⌘F</kbd> |
 | Find Next | <kbd>⌘G</kbd> |
 | Find Previous | <kbd>⇧⌘G</kbd> |
+| Scroll to Top | <kbd>⌘↑</kbd> |
+| Scroll to Bottom | <kbd>⌘↓</kbd> |
 
-## Room
+<!-- stable -->
+## Run Command
 
 | Action | Keys |
 | --- | --- |
 | Run | <kbd>⌘R</kbd> |
 | Restart | <kbd>⌥⌘R</kbd> |
 | Stop | <kbd>⇧⌘R</kbd> |
-| Commit… | <kbd>⌥⌘↩</kbd> |
-| Fetch | <kbd>⇧⌥⌘F</kbd> |
-| Push | <kbd>⇧⌘P</kbd> |
-| Pull with Rebase | <kbd>⇧⌥⌘P</kbd> |
-| Open in Editor | <kbd>⇧⌘O</kbd> |
 
-## View
+<!-- stable -->
+## Version Control
 
 | Action | Keys |
 | --- | --- |
-| Toggle Projects sidebar | <kbd>⌃⌘S · ⌥⌘B</kbd> |
-| Toggle Inspector | <kbd>⌘B</kbd> |
-| Changes | <kbd>⌥⌘C</kbd> |
-| Pull Request | <kbd>⌥⌘P</kbd> |
-| Next Notification | <kbd>⇧⌘N</kbd> |
-| Theme… | <kbd>⇧⌘K</kbd> |
-| Toggle Light/Dark Mode | <kbd>⇧⌘L</kbd> |
+| Commit… | <kbd>⌥⌘↩</kbd> |
+| Fetch | <kbd>⌥⇧⌘F</kbd> |
+| Push | <kbd>⇧⌘P</kbd> |
+| Pull with Rebase | <kbd>⌥⇧⌘P</kbd> |
 
-## Navigation
+<!-- stable -->
+## Sidebar & Inspector
+
+| Action | Keys |
+| --- | --- |
+| Projects | <kbd>⌃⌘S</kbd> |
+| Inspector | <kbd>⌘B</kbd> |
+| Details | <kbd>⌥⌘I</kbd> |
+| Changes | <kbd>⌥⌘C</kbd> |
+| History | <kbd>⌥⌘Y</kbd> |
+| Pull Request | <kbd>⌥⌘P</kbd> |
+| Files | <kbd>⌥⌘F</kbd> |
+
+<!-- stable -->
+## Navigation & Attention
 
 | Action | Keys |
 | --- | --- |
@@ -83,29 +144,20 @@ The last two switch to where you were last, not to the next one in position. The
 | Next Notification | <kbd>⇧⌘N</kbd> |
 | Go to Terminal That Needs You | <kbd>⇧⌘M</kbd> |
 
-## App
+<!-- stable -->
+## Windows
 
 | Action | Keys |
 | --- | --- |
-| New Workroom | <kbd>⌘N</kbd> |
-| New Workroom (split right) | <kbd>⌥⌘N</kbd> |
-| Open workroom… | <kbd>⌘O</kbd> |
-| Open Workroom (split right) | <kbd>⌥⌘O</kbd> |
-| Settings | <kbd>⌘,</kbd> |
-| Quit | <kbd>⌘Q</kbd> |
-| Show/Hide Workroom (global) | <kbd>⌘§</kbd> |
-| Quick Terminal (global) | <kbd>⌥§</kbd> |
+| Next Window | <kbd>⌘`</kbd> |
+| Previous Window | <kbd>⇧⌘`</kbd> |
 
-<kbd>⌥§</kbd> is the default. You can change it in **Settings ▸ Terminal ▸ Quick Terminal**, and the app's Keyboard Shortcuts sheet shows the one you set. While the Quick Terminal is in front, <kbd>⌘T</kbd>, <kbd>⌘W</kbd>, <kbd>⌘D</kbd>, <kbd>⇧⌘D</kbd>, <kbd>⌘1–9</kbd> and <kbd>⌃⌘</kbd> with an arrow key act on its own tabs and panes. See [Terminals and tabs](../app/terminals-and-tabs.md#quick-terminal).
-
-## More
-
-The sheet doesn't list these, but the menus have them.
+<!-- stable -->
+## Appearance
 
 | Action | Keys |
 | --- | --- |
-| History | <kbd>⌥⌘Y</kbd> |
-| Files | <kbd>⌥⌘F</kbd> |
-| Details | <kbd>⌥⌘I</kbd> |
+| Theme… | <kbd>⇧⌘K</kbd> |
+| Toggle Light/Dark Mode | <kbd>⇧⌘L</kbd> |
 
-See [Details and ports](../app/details-and-ports.md).
+The last-used switchers switch to where you were last, not to the next one in position. See [Details and ports](../app/details-and-ports.md) for the inspector's Details.

@@ -15,7 +15,8 @@ For user-facing wording, follow [app copy](../app-copy.md).
   monitor branch consumes the event only when a switch actually happened, exactly as ⌥⌘digit and
   ⌥⌘arrows already do — same reasoning as the unreserved ⌃⌘arrows. `AppShortcutReservationTests` pins
   Tab as never-reserved so a later "defence in depth" edit can't take `<C-Tab>` from every TUI. Both
-  trigger modifiers are `Defaults` keys (`switcher*Modifier`) because a global-hotkey grabber
+  trigger modifiers are shortcuts in the registry (Last-Used Workroom / Last-Used Pane, recorded as
+  modifiers + Tab in Settings ▸ Keyboard Shortcuts, #148, ADR 0076) because a global-shortcut grabber
   (AltTab, HyperSwitch, Contexts all bind ⌥Tab) intercepts upstream of `NSApp.sendEvent`, where no
   local monitor can see the key and no API can detect the conflict.
   The Go menu's **Last-Used Workroom / Last-Used Pane** items carry the same key equivalents purely so

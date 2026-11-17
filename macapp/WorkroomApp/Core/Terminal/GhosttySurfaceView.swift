@@ -1234,6 +1234,18 @@ final class GhosttySurfaceView: NSView {
     let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
     let optionAsAlt = translatedOptionAsAlt(for: event)
 
+    // A shortcut bound without ⌘ (⌃R, ⌥E, F5, #148) is withheld here too, as the ⌘ path below
+    // withholds its own: the key monitor already offered it to the menu, and a disabled item must
+    // not hand reserved keys to the program in this terminal.
+    // Only a press with ⌃ or ⌥, or an F-key, can be one: plain typing skips the lookup.
+    if !flags.contains(.command), !hasMarkedText(),
+      !flags.isDisjoint(with: [.control, .option])
+        || KeyChord.functionKeyCodes.contains(Int(event.keyCode))
+    {
+      if handleScrollKeyEquivalent(event) { return }
+      if isAppShortcut(event) { return }
+    }
+
     // control-only (no ⌘/⌥), not composing: send the control keystroke directly.
     if flags.contains(.control), !flags.contains(.command), !flags.contains(.option),
       !hasMarkedText()
@@ -1356,79 +1368,34 @@ final class GhosttySurfaceView: NSView {
     insertText(insertString, replacementRange: NSRange(location: NSNotFound, length: 0))
   }
 
-  /// Workroom's app-owned shortcuts that must NOT reach the terminal (plan A3 — minimal allowlist:
-  /// only where Ghostty's behavior would diverge from Workroom's). ⌘1-9 are also caught by the
-  /// AppDelegate monitor; included here defensively. ⌘C/⌘V/etc. fall through to libghostty.
+  /// Workroom's app-owned shortcuts that must NOT reach the terminal (plan A3): every bound
+  /// shortcut that reserves its keys, and the standard macOS items whose keys must reach their menu
+  /// (⌘Q, ⌘H, ⌘M, ⌘,). ⌘C/⌘V/etc. fall through to libghostty.
   private func isAppShortcut(_ event: NSEvent) -> Bool {
     Self.isAppShortcut(
       modifierFlags: event.modifierFlags, keyCode: event.keyCode,
-      charactersIgnoringModifiers: event.charactersIgnoringModifiers)
+      characters: event.characters(byApplyingModifiers: []) ?? event.charactersIgnoringModifiers)
   }
 
-  /// The reservation decision, as a pure function of the three things an `NSEvent` contributes.
+  /// The reservation decision, as a pure function of what an `NSEvent` contributes (`characters`
+  /// is the key's unshifted character) and the shortcuts in effect (#148, ADR 0076).
   ///
-  /// Split out of the instance method so it can be unit-tested without fabricating an `NSEvent`. This
-  /// list is load-bearing and easy to forget: a menu shortcut that ISN'T here reaches the terminal, and
-  /// a TUI in an enhanced keyboard mode (Claude/Codex) consumes it, so the menu's key equivalent never
-  /// fires. That has shipped as a bug twice (most recently issue #128), which is why it now has tests.
+  /// Split out of the instance method so it can be unit-tested without fabricating an `NSEvent`. It
+  /// is load-bearing and easy to get wrong: a menu shortcut that ISN'T reserved reaches the terminal,
+  /// and a TUI in an enhanced keyboard mode (Claude/Codex) consumes it, so the menu's key equivalent
+  /// never fires. That has shipped as a bug twice (most recently issue #128), which is why the
+  /// registry, not a hand-kept list, now decides: a shortcut is reserved wherever it is bound.
+  /// The actions that hand their keys to the terminal when they can't act (Switch to Workroom Tab,
+  /// Focus Pane, the quick switchers) are never reserved: whether the app owns Tab or ⌃⌘arrows
+  /// depends on runtime state, and the key monitor runs before the terminal when it does act.
   static func isAppShortcut(
-    modifierFlags: NSEvent.ModifierFlags, keyCode: UInt16, charactersIgnoringModifiers: String?
+    modifierFlags: NSEvent.ModifierFlags, keyCode: UInt16, characters: String?,
+    table: ShortcutTable = Shortcuts.current
   ) -> Bool {
-    let flags = modifierFlags.intersection([.command, .shift, .option, .control])
-    // The arrow-key tab-navigation menu shortcuts, matched by keyCode (charactersIgnoringModifiers
-    // returns a function-key sentinel, not a letter, so the char checks below can't see them):
-    // ⌥⌘←/→ = prev/next terminal tab; ⇧⌥⌘←/→ = prev/next workroom tab (issue #29). Reserved like the
-    // Run keys so the menu key-equivalent wins over a TUI in an enhanced keyboard mode (Claude/Codex).
-    // ⌃⌘arrows (split-pane focus, issue #3) is monitor-only with no menu item, so it's deliberately
-    // NOT reserved. It wraps at a split's edge; with no other pane it reaches libghostty, whose macOS
-    // default binds it to `resize_split`, which Workroom ignores, so no program ever sees it.
-    if keyCode == 123 || keyCode == 124 {  // ← / →
-      if flags == [.command, .option] || flags == [.command, .option, .shift] { return true }
-    }
-    // ⌥⌘↩ = Room ▸ Commit…, matched by keyCode like the arrows.
-    if keyCode == 36, flags == [.command, .option] { return true }
-    guard let chars = charactersIgnoringModifiers, let ch = chars.first else { return false }
-    let key = Character(ch.lowercased())
-    // Menu commands that pair Command with Shift or Option fail the command-only guard below, so
-    // reserve them explicitly. Without this they reach the terminal, and a TUI in an enhanced
-    // keyboard mode (Claude/Codex) consumes the keystroke so the menu key-equivalent never fires.
-    // ⇧⌘D = Split Down; ⇧⌘G = Find Previous; ⇧⌘K = Theme picker (issue #36/#53); ⇧⌘L = dark/light
-    // toggle (issue #57); ⇧⌘N = Next Notification; ⇧⌘R = Stop run; ⌥⌘R = Restart run (issue #7).
-    // (⌥⌘N was the Notifications inspector toggle; removed with issue #118, so it's no longer
-    // reserved and passes through to the terminal.)
-    // ⇧⌘P = Push (Room) joins the list for the same reason as the rest. ⇧⌘M = Go to
-    // Terminal That Needs You (#358). ⇧⌘O = Room ▸ Open in <editor>.
-    if flags == [.command, .shift] {
-      return key == "d" || key == "g" || key == "k" || key == "l" || key == "n" || key == "r"
-        || key == "p" || key == "m" || key == "o"
-    }
-    // ⌥⇧⌘F = Fetch, ⌥⇧⌘P = Pull with Rebase (Room). Three-modifier combinations fail every
-    // guard below, so they need their own branch.
-    if flags == [.command, .shift, .option] {
-      return key == "f" || key == "p"
-    }
-    // ⌥⌘I = Details, ⌥⌘C = Changes, ⌥⌘F = Files, ⌥⌘Y = History, ⌥⌘P = Pull Request panel toggles; ⌥⌘S = the
-    // OS-standard Toggle Sidebar shortcut, caught (and aliased to Projects) by the AppDelegate
-    // monitor — reserved here too, defensively, like ⌘1-9 above (issue #128). ⌥⌘B is the secondary
-    // Projects sidebar toggle, same treatment.
-    if flags == [.command, .option] {
-      // n/o = New/Open Workroom (split right) (issue #163) — File-menu key equivalents, so they
-      // must be reserved here or a focused TUI swallows them before the menu ever sees the key.
-      return key == "r" || key == "i" || key == "c" || key == "f" || key == "y" || key == "p"
-        || key == "s" || key == "b" || key == "n" || key == "o"
-    }
-    // ⌃⌘S = Projects sidebar toggle (issue #128); ⌃⌘O = Move pane into new window (issue #172) — a
-    // Window-menu key equivalent, so it must be reserved here or a focused TUI swallows it before the
-    // menu ever sees the key.
-    if flags == [.command, .control] { return key == "s" || key == "o" }
-    guard flags == .command else { return false }
-    if ("1"..."9").contains(ch) { return true }  // focus tab N
-    // ⌘N is New Workroom (issue #81); ⌘T/⌘W/⌘O/⌘D are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system
-    // standards; ⌘[ / ⌘] are Back/Forward navigation (issue #26); ⌘R is Run (issue #7); ⌘F opens the
-    // scrollback find bar and ⌘G / ⇧⌘G step through matches; ⌘B toggles the Inspector panel — all
-    // reserved so the menu key-equivalent fires instead of being swallowed by the terminal (a no-op
-    // via the menu when no find bar is open).
-    return ["n", "t", "w", "o", "d", "q", "h", "m", ",", "[", "]", "r", "f", "g", "b"].contains(key)
+    guard
+      let chord = KeyChord(keyCode: Int(keyCode), flags: modifierFlags, unshifted: characters)
+    else { return false }
+    return table.isReserved(chord)
   }
 
   /// ⌘↑ / ⌘↓ jump the viewport to the top / bottom of the scrollback (issue #42). libghostty's macOS
@@ -1437,16 +1404,14 @@ final class GhosttySurfaceView: NSView {
   /// running. Command-only (any extra modifier falls through to the terminal, so ⇧⌘↑ / ⇧⌘↓ reach the
   /// engine's own `jump_to_prompt`). Returns true when it consumed the event.
   private func handleScrollKeyEquivalent(_ event: NSEvent) -> Bool {
-    guard surface != nil else { return false }
-    let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
-    guard flags == .command else { return false }
-    switch event.keyCode {
-    case 126:
+    guard surface != nil, let chord = KeyChord(event) else { return false }
+    switch Shortcuts.current.match(chord)?.action {
+    case .scrollToTop:
       performBindingAction("scroll_to_top")
-      return true  // ↑
-    case 125:
+      return true
+    case .scrollToBottom:
       performBindingAction("scroll_to_bottom")
-      return true  // ↓
+      return true
     default: return false
     }
   }

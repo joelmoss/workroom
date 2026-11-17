@@ -62,11 +62,14 @@ struct SettingsView: View {
       // Fresh host option reads each time Settings opens, so a snapshot saved meanwhile shows.
       HostOptionsCatalog.shared.markStale()
       if let project = SettingsRoute.shared.takeRequest() { SettingsRoute.shared.project = project }
+      _ = SettingsRoute.shared.takePaneRequest()  // `selection` already read it from Defaults
     }
-    // A main window asked for a project's settings while this window was open.
+    // A main window asked for a project's settings, or a pane, while this window was open.
     .onChange(of: SettingsRoute.shared.requests) {
       if let project = SettingsRoute.shared.takeRequest() {
         go(to: SettingsLocation(pane: .projects, project: project))
+      } else if let pane = SettingsRoute.shared.takePaneRequest() {
+        go(to: SettingsLocation(pane: pane))
       }
     }
   }
@@ -84,7 +87,7 @@ struct SettingsView: View {
       return project.displayName
     }
     if let host = location.host { return host.displayName }
-    return selection.label
+    return selection.title
   }
 
   /// Goes to `next` as a step back can undo.
@@ -102,7 +105,7 @@ struct SettingsView: View {
         Image(systemName: "chevron.left").frame(width: 22, height: 22)
       }
       .disabled(!history.canGoBack)
-      .keyboardShortcut("[", modifiers: .command)
+      .shortcut(.back)
       .help("Back")
       .accessibilityLabel("Back")
       Button {
@@ -111,7 +114,7 @@ struct SettingsView: View {
         Image(systemName: "chevron.right").frame(width: 22, height: 22)
       }
       .disabled(!history.canGoForward)
-      .keyboardShortcut("]", modifiers: .command)
+      .shortcut(.forward)
       .help("Forward")
       .accessibilityLabel("Forward")
       Text(title)
@@ -176,6 +179,7 @@ struct SettingsView: View {
     case .notifications: NotificationsSettingsPane()
     case .appearance: AppearanceSettingsPane()
     case .terminal: TerminalSettingsPane()
+    case .keyboardShortcuts: KeyboardShortcutsSettingsPane()
     case .agent: CodingAgentSettingsPane()
     case .projects:
       ProjectsSettingsPane(open: { go(to: SettingsLocation(pane: .projects, project: $0)) })
@@ -217,6 +221,7 @@ extension SettingsPane {
     case .notifications: .red
     case .appearance: .indigo
     case .terminal: Color(white: 0.25)
+    case .keyboardShortcuts: Color(white: 0.45)
     case .agent: .purple
     case .projects: .orange
     case .remoteHosts: .blue
@@ -319,7 +324,6 @@ private struct SettingsWindowThemer: NSViewRepresentable {
 private struct GeneralSettingsPane: View {
   @Default(.confirmOnQuit) private var confirmOnQuit
   @Default(.quitWithRunningServers) private var quitWithRunningServers
-  @Default(.globalHotkey) private var globalHotkey
   // "" = the home folder.
   @Default(.defaultProjectFolder) private var projectFolder
 
@@ -339,9 +343,6 @@ private struct GeneralSettingsPane: View {
           + "again in their tabs when you reopen Workroom. Updates always keep them running."
       )
       .accessibilityIdentifier("settings.control.quitWithRunningServers")
-
-      Toggle("Global show/hide hotkey (⌘§)", isOn: $globalHotkey)
-        .help("Register the system-wide ⌘§ shortcut to show or hide Workroom.")
 
       LabeledContent("Default project folder") {
         HStack {
@@ -876,13 +877,13 @@ private struct TerminalSettingsPane: View {
   }
 }
 
-/// Where the Quick Terminal slides in from, the folder its new shells start in, and its shortcut.
+/// Where the Quick Terminal slides in from and the folder its new shells start in. Its shortcut is
+/// in Settings ▸ Keyboard Shortcuts (#148).
 private struct QuickTerminalSection: View {
   @Default(.quickTerminalEdge) private var edge
   @Default(.quickTerminalHidesWhenUnfocused) private var hidesWhenUnfocused
   // "" = the home folder.
   @Default(.quickTerminalDirectory) private var directory
-  @Default(.quickTerminalShortcut) private var shortcut
 
   var body: some View {
     Section {
@@ -915,13 +916,6 @@ private struct QuickTerminalSection: View {
       .help(
         "The folder a new Quick Terminal shell starts in. A hidden Quick Terminal keeps its own "
           + "shell, and a folder that is gone opens your home folder.")
-
-      LabeledContent("Keyboard shortcut") {
-        ShortcutRecorder(shortcut: $shortcut)
-      }
-      .help(
-        "The global shortcut that shows and hides the Quick Terminal from any app. It works while "
-          + "Global show/hide hotkey is on in General.")
     } header: {
       Text("Quick Terminal")
     }

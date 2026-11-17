@@ -334,7 +334,7 @@ struct TerminalTabStrip: View {
     }
     .buttonStyle(.plain)
     .onHover { addHovering = $0 }
-    .help("New terminal (⌘T)")
+    .help("New terminal" + Shortcuts.shared.table.hint(for: .newTerminal))
     .accessibilityLabel("New terminal")
     .accessibilityIdentifier("NewTerminal")
   }
