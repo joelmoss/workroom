@@ -4,14 +4,14 @@ import Foundation
 extension Shortcuts {
   /// Carry the settings Settings ▸ Keyboard Shortcuts replaces into the user's changes, once: the
   /// Quick Terminal's recorded shortcut, the quick switchers' modifiers, and the global-hotkey
-  /// toggle, whose Off leaves both global shortcuts unset. The old keys are then removed.
-  /// The keys the settings before #148 were saved under, all removed once carried over.
+  /// toggle, whose Off leaves both global shortcuts unset. The old keys stay where they are, so an
+  /// older build the user goes back to still finds them; `migratedKey` stops a second migration.
+  /// The keys the settings before #148 were saved under.
   private enum LegacyKey {
     static let quickTerminal = "quickTerminalShortcut"
     static let workroomSwitcher = "switcher.workroomModifier"
     static let paneSwitcher = "switcher.paneModifier"
     static let globalHotkey = "globalHotkeyEnabled"
-    static let all = [quickTerminal, workroomSwitcher, paneSwitcher, globalHotkey]
   }
 
   static func migrate(_ suite: UserDefaults) {
@@ -43,7 +43,6 @@ extension Shortcuts {
       }
     }
     suite.set(encode(changes), forKey: Self.overridesKey)
-    LegacyKey.all.forEach(suite.removeObject(forKey:))
   }
 
   /// The Quick Terminal shortcut as it was saved before #148: `{keyCode, carbonModifiers, key}`.

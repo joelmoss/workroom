@@ -117,9 +117,8 @@ struct KeyChord: Codable, Hashable, Sendable {
   }
 
   /// A key press as a chord, or nil for a key that can't be one (a dead key, or one with no
-  /// character). `unshifted` is the key's character with no modifiers applied
-  /// (`NSEvent.characters(byApplyingModifiers: [])`). Says nothing about whether the press is
-  /// allowed as a shortcut: that is `ShortcutRecording`'s call.
+  /// character). `unshifted` is the key's character without ⇧ (`KeyChord.unshifted(_:)`). Says
+  /// nothing about whether the press is allowed as a shortcut: that is `ShortcutRecording`'s call.
   init?(keyCode: Int, flags: NSEvent.ModifierFlags, unshifted: String?) {
     let modifiers = KeyModifiers(flags)
     if Self.namedKeys[keyCode] != nil {
@@ -136,8 +135,16 @@ struct KeyChord: Codable, Hashable, Sendable {
   init?(_ event: NSEvent) {
     guard event.type == .keyDown || event.type == .keyUp else { return nil }
     self.init(
-      keyCode: Int(event.keyCode), flags: event.modifierFlags,
-      unshifted: event.characters(byApplyingModifiers: []) ?? event.charactersIgnoringModifiers)
+      keyCode: Int(event.keyCode), flags: event.modifierFlags, unshifted: Self.unshifted(event))
+  }
+
+  /// The key's character with every modifier but ⌘ left out. Shift is, so ⇧⌘` reads as "`", not
+  /// "~". ⌘ is kept because a held ⌘ picks the layout's ⌘ layer: on a non-Latin layout (Russian,
+  /// Greek, Hebrew) that is the Latin letter macOS menus match, where no modifiers at all gives the
+  /// layout's own letter and ⌘T would never be ⌘T.
+  static func unshifted(_ event: NSEvent) -> String? {
+    event.characters(byApplyingModifiers: event.modifierFlags.intersection(.command))
+      ?? event.charactersIgnoringModifiers
   }
 
   private static func isUnprintable(_ scalar: Unicode.Scalar) -> Bool {
