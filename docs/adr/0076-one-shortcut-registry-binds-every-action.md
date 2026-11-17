@@ -1,0 +1,11 @@
+# One shortcut registry binds every action, and each action carries its own pass-through rule
+
+Decided 2026-11-16 (triage of #148, the keyboard shortcuts editor).
+
+Every Workroom action's shortcut comes from one registry: its default, the user's change (a rebind or an explicit unset) and the binding in effect. The menus' key equivalents, the `AppDelegate` key monitor, the terminal's reserved-key check (`GhosttySurfaceView.isAppShortcut`), the two global shortcuts (Show/Hide Workroom and the Quick Terminal) and the Settings editor all read it. None of them hardcodes keys. Whether an action's keys reach the terminal when the action can't run (⌘R always consumed, ⌥⌘digit passed through with no Nth tab) belongs to the action, not to the keys, so a rebound action keeps its rule and an unset one gives its old keys back to the terminal. Only the user's changes are stored, so a new default reaches everyone who didn't change that shortcut. When a new default collides with keys the user recorded, the user's shortcut wins and the new action starts unset.
+
+Each tab position (Focus Terminal Tab 1–9, Switch to Workroom Tab 1–9) and each pane direction (Focus Pane Left, Right, Up, Down) is a shortcut of its own, not one row whose modifiers move all of them: a user can rebind one without the rest.
+
+Letters, digits and punctuation match by character, as macOS menus do. Arrows, Tab, Return, Space and F-keys match by key code. A shortcut set for a Workroom menu item in System Settings ▸ Keyboard ▸ App Shortcuts beats the registry's binding, so the editor shows it read-only and conflict checks count it. Standard items macOS supplies (Quit, Hide, Settings…, the Edit menu) are not in the registry, and their keys can't be recorded.
+
+Rejected: keeping the hardcoded `.keyboardShortcut` calls and monitor branches and only overlaying user changes on them. With that, a catalog, the menus, the monitor and the terminal check drift apart, which the hand-maintained read-only sheet already shows. Rejected: sindresorhus/KeyboardShortcuts. It solves global hotkeys, which Workroom already has. It matches by key code only, has no conflict check between an app's own shortcuts, records only whole shortcuts (no modifiers + Tab rows for the quick switchers), and stores to `UserDefaults.standard` under its own keys.
