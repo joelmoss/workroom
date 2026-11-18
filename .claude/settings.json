@@ -20,15 +20,6 @@
             "command": "grep -Eq '\"file_path\" *: *\"([^\"]*/)?go\\.sum\"' && { echo 'BLOCK: Do not edit go.sum directly. Use go mod tidy.' >&2; exit 2; } || true"
           }
         ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "f=\"$(git rev-parse --show-toplevel 2>/dev/null)/scripts/agent-hooks/no_shell_edits.py\"; [ -f \"$f\" ] && exec python3 \"$f\"; exit 0"
-          }
-        ]
       }
     ]
   }

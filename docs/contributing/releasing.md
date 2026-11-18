@@ -23,11 +23,9 @@ A push runs every job, and skips the `changes` job. On a PR, `changes` reads the
 the jobs it does not need, so a Go-only change runs no macOS job. The rules are in
 `scripts/ci/changed_areas.py`: each path runs the jobs whose tests or build read it, a path no rule
 names runs every job, and a skipped job still reports, as skipped. When a test starts reading a
-file outside its own tree, add that path to the rules. Those rules are also the source of truth for
-the local pre-gate: `test_changed_areas.py` fails when `.gstack/pregate.json` does not give a tree
-they send to jobs those jobs' gates. `test_tool_pins.py` fails when a pin is written two ways: Zig
-in the install-zig composite and `vcs/scripts/build-ghostty-vt.sh`, cargo-zigbuild anywhere but its
-composite, or Rust in the workflows and `mk/vcs.mk`. The build steps the three workflows share
+file outside its own tree, add that path to the rules. `test_tool_pins.py` fails when a pin is
+written two ways: Zig in the install-zig composite and `vcs/scripts/build-ghostty-vt.sh`,
+cargo-zigbuild anywhere but its composite, or Rust in the workflows and `mk/vcs.mk`. The build steps the three workflows share
 (Xcode, Go and Homebrew; Zig, the rustup targets and cargo-zigbuild; the signing certificate) are
 composite actions under `.github/actions/`.
 

@@ -281,8 +281,7 @@ Comparison grid:
 | D3 failure policy | approved (D3) | unchanged: bootstrap or script failure stops the delete, Delete Anyway | unchanged |
 | Setup's agent | plan: fresh host, bootstrapped by `provision` | unchanged | unchanged |
 Question D2:
-D2 — Bootstrap the agent before a remote teardown? <gstack-qid:plan-eng-review-r1-teardown-bootstrap>
-Project/branch/task: workroom/mild-spire, the plan to run setup and teardown scripts on every kind of workroom.
+D2 — Bootstrap the agent before a remote teardown?Project/branch/task: workroom/mild-spire, the plan to run setup and teardown scripts on every kind of workroom.
 ELI10: The teardown runs through a new `wr-agent run-script` command on the host. Remote workrooms made before this ships have an older agent with no such command. The app only swaps in its own agent when it connects to a host, and delete doesn't connect today. So deleting any existing remote workroom would hit "unknown command", fail the teardown and need Delete Anyway, every time.
 Stakes if we pick wrong: every remote workroom you have today shows a teardown failure on delete, and its teardown script never runs.
 Recommendation: A because one connect fixes every older host, and an unreachable host already fails into Delete Anyway (D3).
@@ -320,8 +319,7 @@ Comparison grid:
 | R1 bootstrap first | approved (D2) | unchanged | unchanged |
 | D3 failure policy | approved | unchanged | unchanged |
 Question D3:
-D3 — Run a remote workroom's teardown when its project is removed from Workroom only? <gstack-qid:plan-eng-review-r2-project-delete-scope>
-Project/branch/task: workroom/mild-spire, the plan to run setup and teardown scripts on every kind of workroom.
+D3 — Run a remote workroom's teardown when its project is removed from Workroom only?Project/branch/task: workroom/mild-spire, the plan to run setup and teardown scripts on every kind of workroom.
 ELI10: Deleting a project has three choices. "Remove from Workroom only" leaves local workrooms on disk, so it runs no teardown today. But it still destroys every remote workroom's machine. The rule we agreed is that a teardown runs before a workroom goes. Locally that never happens in this scope, but remotely it does, and the plan doesn't say which wins.
 Stakes if we pick wrong: a database or other resource a remote setup made outside the box is never cleaned up when the project is removed, and nothing says so.
 Recommendation: A because the machine really is destroyed, so the teardown's reason to exist holds, and D1 says the same event gets the same script.
@@ -358,8 +356,7 @@ Comparison grid:
 | R3 local teardown in config-only | none runs | none runs: the rule is "a teardown runs when the workroom itself is destroyed", which config-only does to remote workrooms and not to local ones | each local workroom's teardown runs too, though its worktree stays on disk |
 | R2 remote teardown in config-only | approved (D3): runs | unchanged | unchanged |
 Question D4:
-D4 — "Behave the same" in a config-only project delete: which rule? <gstack-qid:plan-eng-review-r3-local-config-only>
-Project/branch/task: workroom/mild-spire, the plan to run setup and teardown scripts on every kind of workroom.
+D4 — "Behave the same" in a config-only project delete: which rule?Project/branch/task: workroom/mild-spire, the plan to run setup and teardown scripts on every kind of workroom.
 ELI10: Your note on D3 can mean two things. One rule is "a teardown runs whenever a workroom is destroyed". Config-only destroys remote machines but leaves local worktrees on disk, so only the remote ones run their teardown. The other rule is "config-only runs every workroom's teardown". Then a local worktree you keep on disk loses whatever its setup made, such as its database, while its code stays.
 Stakes if we pick wrong: either a kept local worktree silently loses its database, or the two kinds follow a rule you didn't mean.
 Recommendation: A because a teardown undoes what setup made for a workroom that is going away, and a kept worktree isn't going away.
@@ -531,8 +528,7 @@ Comparison grid:
 | R1 bootstrap before teardown | approved (D2) | kept: `RemoteHosts.connect` runs `AgentBootstrap.connect` first | kept |
 | boxd, exe.dev | provider credentials | unchanged | unchanged |
 Question D5:
-D5 — Give container scripts the same git credentials the workroom's terminals get? <gstack-qid:plan-eng-review-r5-relay-for-scripts>
-Project/branch/task: workroom/mild-spire, the plan to run setup and teardown scripts on every kind of workroom.
+D5 — Give container scripts the same git credentials the workroom's terminals get?Project/branch/task: workroom/mild-spire, the plan to run setup and teardown scripts on every kind of workroom.
 ELI10: A Docker or Apple container workroom has no GitHub access of its own; its git borrows your Mac's through a small relay the app sets up whenever it connects. The plan runs the setup and teardown scripts before that relay exists. So a script that fetches a private dependency, like npm or bundler pulling from a private repo, fails, even though the clone worked. boxd and exe.dev aren't affected: they bring their own GitHub access.
 Stakes if we pick wrong: setup fails on container workrooms for any project with private git dependencies, which locally just works.
 Recommendation: A because the app's normal connect already does both jobs (bootstrap and relay), and local scripts have your git credentials.
@@ -570,8 +566,7 @@ Comparison grid:
 | D3 policy | approved | unchanged | unchanged |
 | C4 fresh state on retry | recorded | unchanged | unchanged |
 Question D6:
-D6 — Which failed deletes offer Delete Anyway? <gstack-qid:plan-eng-review-r6-teardown-failure-classification>
-Project/branch/task: workroom/mild-spire, the plan to run setup and teardown scripts on every kind of workroom.
+D6 — Which failed deletes offer Delete Anyway?Project/branch/task: workroom/mild-spire, the plan to run setup and teardown scripts on every kind of workroom.
 ELI10: Delete Anyway retries the delete without the teardown script, so it only helps when the script was the problem. Today a script that can't even start, for example one missing `chmod +x` (the README warns about this), is reported as an internal error, not a script failure. A teardown that hangs past the 10-minute limit is reported as a timeout. If the button keys on "script failed", those two common cases miss it. If it shows on every failure, it also appears when git itself failed, and pressing it fails the same way again.
 Stakes if we pick wrong: either a stuck delete with no way out for the most common script mistake, or a button that promises a fix it can't deliver.
 Recommendation: A because it fixes the misreport at its source, which also corrects the setup side, and the exit code then matches the README's 5.
@@ -737,19 +732,3 @@ REALITY: pr-count pass one PR (minimise-PRs rule), stacked on #495 docs/designs/
   label), so no decision.
 - (confidence 4/10) Silence bound 610 s against probe time plus a silent 600 s script: both end as
   failures either way; only the label could differ.
-
-## GSTACK REVIEW REPORT
-
-| Review | Trigger | Why | Runs | Status | Findings |
-|--------|---------|-----|------|--------|----------|
-| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
-| Outside Review | Codex via `/plan-eng-review` | Independent 2nd opinion | 1 | completed | 3 findings, all confirmed and resolved (R5, R6, C4) |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | ISSUES OPEN | 5 issues, 0 critical gaps; all resolved in the ledger |
-| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
-| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
-
-- **OUTSIDE COVERAGE:** Codex (gpt-6-astra), plan-review phase, completed, 3 findings (1 High, 2 Medium).
-- **CROSS-MODEL:** Codex found the relay gap, the stale-state retry and the start-error misclassification, none of which the native pass raised; the native pass found the agent-version, config-only and sheet-copy issues, which Codex did not repeat. No disagreements.
-- **VERDICT:** no review CLEAR (Eng Review found issues, all approved into the plan); eng review required: ISSUES OPEN means mapped work, not open decisions.
-
-NO UNRESOLVED DECISIONS

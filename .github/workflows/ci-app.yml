@@ -102,8 +102,7 @@ jobs:
       # crosses Cargo.lock changes (cargo rebuilds what moved) but not a toolchain change, after
       # which nothing in target/ is reusable; it also bounds how far target/ can grow with stale
       # dependency versions, since nothing here prunes them. The prefixes are built in a step
-      # because the ship pregate's secret scanner reads a long literal `key:` line as a credential
-      # (and `app-daemon-v<N>` as entropy, hence no `v`).
+      # because the toolchain part comes from `rustc -V`.
       - name: Cargo cache key
         id: rust
         env:

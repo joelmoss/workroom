@@ -50,8 +50,6 @@ CLAUDE.local.md
 # Python (run-supervisor integration test)
 __pycache__/
 *.pyc
-.gstack/
 /tmp/
 /.impeccable/
-.gbrain-source
 .claude/settings.local.json
