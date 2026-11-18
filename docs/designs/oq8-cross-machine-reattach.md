@@ -310,7 +310,6 @@ the owner removed that gate.
 - You chose the approach that meets every #255 criterion over the one with the least code, and
   left live mirroring until two-Mac use is real.
 
-<!-- gstack:office-hours:concerns:start -->
 ## Post-review fixes (R3-1 to R3-7, applied after the last review round)
 
 These amend the sections above; where they conflict, this section wins.
@@ -419,7 +418,6 @@ Stop: MAX_ITERATIONS
 **Remedy**
 
 > Verify in the agent that kill of a recorded session deletes the record, cite the exact test or line, or add a new agent test for it to Next Steps 1/2. State the app path that issues the kill for a recorded or ended pane and how it treats a 'no such session' answer.
-<!-- gstack:office-hours:concerns:end -->
 
 ## Implementation notes
 
@@ -513,8 +511,7 @@ Comparison grid:
 | F1 workroom ID bound | approved D2: 64 bytes, longer drops metadata | 2048 bytes (a macOS project path is at most 1024), title 256; longer still drops metadata | keep 64 bytes; local sessions with long paths stay metadata-less | send the SHA-256 hex (64 chars) of the workroom ID as metadata; every matching site compares hashes |
 | F2, A1, C3, T1, O2 | approved (D3-D7) | unchanged | unchanged | unchanged |
 Question D8:
-D8 — Reopened: the 64-byte workroom ID cap drops metadata for local workrooms with long paths. What bound instead? <gstack-qid:plan-eng-review-f1-id-bound-reopen>
-Project/branch/task: master, OQ8 for #255, session metadata bounds (reopens D2).
+D8 — Reopened: the 64-byte workroom ID cap drops metadata for local workrooms with long paths. What bound instead?Project/branch/task: master, OQ8 for #255, session metadata bounds (reopens D2).
 ELI10: D2 capped a session's workroom tag at 64 bytes. Codex showed local tags are "wr|<whole project path>|<name>", so almost any real local workroom is longer than 64 bytes, and those sessions would lose the tag the delete fix depends on. The list still needs a bound so one session can't break it.
 Stakes if we pick wrong: keeping 64 bytes leaves the local "delete ends its sessions" bug unfixed for most users.
 Recommendation: A because a 2048-byte bound covers any macOS path and still fits about 400 sessions in one list reply, with no change to how sessions are matched.
@@ -550,8 +547,7 @@ History: Reopened by Codex #6 (local IDs embed the project path, Models.swift wo
     | F1 metadata bounds | none, pending | workroom ID at most 64 bytes, title at most 256 bytes (cut at a UTF-8 boundary), creation order a u64; an over-long workroom ID drops the metadata, the attach still succeeds | none; an over-cap list answers `Failure` as today |
     | F2 layout request transport | pending | pending | pending |
     Question D2:
-    D2 — Bound session metadata so one long title can't break the whole session list? <gstack-qid:plan-eng-review-f1-metadata-bounds>
-    Project/branch/task: master, OQ8 for #255, session metadata in wr-agent's list reply.
+    D2 — Bound session metadata so one long title can't break the whole session list?    Project/branch/task: master, OQ8 for #255, session metadata in wr-agent's list reply.
     ELI10: The agent answers "which sessions exist" in one message with a size cap. Adding each session's workroom and title makes that message bigger. With no limit on a title, one huge title pushes the whole answer over the cap and the agent replies with an error instead, so every Mac loses the list at once: no restore, no append, no cleanup.
     Stakes if we pick wrong: a single pasted giant tab title silently disables session listing for every workroom on that host.
     Recommendation: A because the bound costs a few lines at attach and removes a whole-host failure mode the Swift daemon already hit (TODOS.md item 4).
@@ -595,8 +591,7 @@ Comparison grid:
 | F1 metadata bounds | approved (D2): 64-byte ID, 256-byte title | unchanged | unchanged |
 | F2 layout request transport | pending; design implies one Control frame | new `Service::Layout` (0x06), JSON on the chunked envelope, methods `capabilities`, `get`, `put`; `PROTOCOL_VERSION` 7 and `MIN_LAYOUT_VERSION` 7; blob cap 4 MiB (`SessionLimits.maxFileBytes`), carried as a JSON string | `GetLayout`/`PutLayout` Control frames; blob cap one frame less overhead (about 1 MiB); `PROTOCOL_VERSION` 7 |
 Question D3:
-D3 — Should layout requests use a chunked JSON service like File, or new Control frames? <gstack-qid:plan-eng-review-f2-layout-transport>
-Project/branch/task: master, OQ8 for #255, the agent's getLayout/putLayout requests.
+D3 — Should layout requests use a chunked JSON service like File, or new Control frames?Project/branch/task: master, OQ8 for #255, the agent's getLayout/putLayout requests.
 ELI10: The agent has two kinds of request channel. Control sends one fixed-size binary message (used for list and kill). File, VCS and Status send JSON split into chunks, so they can be large, and the app already has one shared function that talks to them. Putting layouts on the JSON kind reuses that function and lets a layout be as big as a whole session.json, which makes the "layout too big" fallback practically unreachable.
 Stakes if we pick wrong: Control frames cap a layout near 1 MiB and need their own binary encoder and decoder on both sides, plus the oversize fallback becomes a real path to test.
 Recommendation: A because it reuses AgentVCSConnection.request(_:service:) and the File service's capabilities/version pattern, matching D1's smaller arrangement.
@@ -640,8 +635,7 @@ Comparison grid:
 | F2 layout transport | approved (D3) | unchanged | unchanged |
 | A1 when the host layout is applied | unspecified | every remote target is held in `deferredTargetSessions` until `get` answers (or the agent lacks the Layout service), then restores the newer of host and held copy by revision; if `get` does not answer within 5 s, the held copy restores and the host layout is not applied this launch | restore the local copy at once, then swap to the host layout when it arrives if its revision is newer, keeping any pane whose session ID appears in both |
 Question D4:
-D4 — When should a Mac apply the host's layout for a remote workroom it opens? <gstack-qid:plan-eng-review-a1-open-timing>
-Project/branch/task: master, OQ8 for #255, AppStore+Session.swift restore of remote workrooms.
+D4 — When should a Mac apply the host's layout for a remote workroom it opens?Project/branch/task: master, OQ8 for #255, AppStore+Session.swift restore of remote workrooms.
 ELI10: At launch the app rebuilds every workroom straight from its own saved file. The host's layout only arrives a moment later over the network. Either the app waits for the host before showing that workroom's tabs, reusing the "hold until reachable" path that already exists, or it shows its own copy first and then swaps tabs under the user when the host answers.
 Stakes if we pick wrong: a live swap rearranges tabs a user may already be typing into; an unbounded wait leaves a workroom blank if the host is slow.
 Recommendation: A because it reuses deferredTargetSessions and restoreDeferredSession, never rearranges a pane in use, and a 5 s bound keeps a slow host from blanking the workroom.
@@ -684,8 +678,7 @@ Comparison grid:
 | F1, F2, A1 | approved (D2, D3, D4) | unchanged | unchanged |
 | C3 unknown tab kinds across builds | unspecified | accepted, same as session.json rollback; documented in the design; a breaking `schemaVersion` bump still makes a newer blob read-only (restore nothing, write nothing) for an older build | the blob records the writer's build; an older build that reads a blob written by a newer one restores it but never writes it back until a build at least as new writes again |
 Question D5:
-D5 — What happens when an older Workroom build rewrites a layout that a newer build added tab kinds to? <gstack-qid:plan-eng-review-c3-tab-kinds>
-Project/branch/task: master, OQ8 for #255, layout write-through across app builds.
+D5 — What happens when an older Workroom build rewrites a layout that a newer build added tab kinds to?Project/branch/task: master, OQ8 for #255, layout write-through across app builds.
 ELI10: The layout format is forgiving: an app that meets a tab type it doesn't know skips that one tab instead of failing. That's fine on one Mac. Shared between two Macs on different versions, the older app skips the new tab and then saves the layout without it, so the newer Mac loses that tab too. Only non-terminal tabs of the new type are affected; terminals come back through the append rule.
 Stakes if we pick wrong: B can freeze layout sync for days if one Mac stays on an older build; A can lose a new kind of diff or file tab when two builds share a workroom.
 Recommendation: A because it is the same trade the codec already accepts for rollbacks, it loses no session, and B silently stops one Mac's changes syncing.
@@ -727,8 +720,7 @@ Comparison grid:
 | F1, F2, A1, C3 | approved (D2-D5) | unchanged | unchanged |
 | T1 upgrade regression contract | none | preserve: a version-1 record still repaints, read as metadata-less; a hand-off table from the previous agent build is adopted with every shell, pid and screen, its sessions metadata-less. Intended change: new records and tables carry metadata. Assertions: two agent tests with checked-in version-1 record bytes and a previous-format table fixture | preserve the same two behaviors, proven only by the existing same-build tests plus a manual upgrade on the ssh fixture |
 Question D6:
-D6 — How do we prove the upgrade keeps old screen records and old agents' sessions? <gstack-qid:plan-eng-review-t1-upgrade-regression>
-Project/branch/task: master, OQ8 for #255, wr-agent screen record and hand-off formats.
+D6 — How do we prove the upgrade keeps old screen records and old agents' sessions?Project/branch/task: master, OQ8 for #255, wr-agent screen record and hand-off formats.
 ELI10: Adding metadata changes two on-disk/wire formats: the saved screen of each pane, and the table an old agent hands to a new one during an upgrade. If the new agent can't read the old ones, every host that upgrades loses its frozen screens or its running shells. Today's tests only check a build against itself.
 Stakes if we pick wrong: an upgrade on a real host could drop every running shell or every reboot-saved screen, exactly the work #232 and #230 exist to keep.
 Recommendation: A because checked-in old-format fixtures fail the moment a format change breaks old data, and a manual run proves it only once.
@@ -837,8 +829,7 @@ Comparison grid:
 | F1, F2, A1, C3, T1 | approved (D2-D6) | unchanged | unchanged | unchanged | unchanged |
 | O2 refused existing-only attach | fallback shell, untracked | the attach client shows an ended pane (the record's notice when one exists, else "This terminal has ended. Close it to start again.") and starts no shell; applies to remote panes, local unchanged | keep the fallback shell | investigate the local fallback's history (#192) for 30 min, change nothing | defer this proposal; pending |
 Question D7:
-D7 — When a restored pane's session is gone, should a remote pane show "ended" instead of quietly starting an untracked shell? <gstack-qid:plan-eng-review-o2-ended-pane>
-Project/branch/task: master, OQ8 for #255, wr-agent attach client fallback.
+D7 — When a restored pane's session is gone, should a remote pane show "ended" instead of quietly starting an untracked shell?Project/branch/task: master, OQ8 for #255, wr-agent attach client fallback.
 ELI10: When the app reopens a pane whose shell has ended, the agent's attach program currently starts a brand new shell itself. That shell isn't a real session: it isn't listed, doesn't survive a disconnect, and another Mac can't see it. With layouts shared across Macs, a stale layout will hit this often.
 Stakes if we pick wrong: users type into a shell that silently vanishes on the next network blip, and the design's "ended pane" promise is false.
 Recommendation: A because it makes the design's ended-pane rule true for remote panes with one branch in the attach client, matching the recorded-pane notice users already see.
@@ -889,8 +880,7 @@ Comparison grid:
 | F1, F2, A1, C3, T1, O2 | approved (D3-D8) | unchanged | unchanged | unchanged | unchanged |
 | O3 refused write | R3-3: re-apply "the one change" | snapshot last-writer-wins: a refused user-change write re-reads only the revision and writes this Mac's whole current snapshot (append rule already applied), at most 3 attempts; a refused seed still adopts the host (R3-3 unchanged there) | keep R3-3 as written | add an operation journal (tab open, close, move, split) replayed on the host layout | defer; pending |
 Question D9:
-D9 — When another Mac wrote first, should this Mac just overwrite with its whole layout (last writer wins) or replay its individual edits? <gstack-qid:plan-eng-review-o3-refused-write>
-Project/branch/task: master, OQ8 for #255, putLayout conflict handling.
+D9 — When another Mac wrote first, should this Mac just overwrite with its whole layout (last writer wins) or replay its individual edits?Project/branch/task: master, OQ8 for #255, putLayout conflict handling.
 ELI10: The app saves a whole picture of the layout, not a list of edits. So when its save is refused because another Mac saved first, there's no "one edit" to replay. Either it overwrites with its full picture (the last Mac to save wins, which the design already accepted before R3-3), or the app has to start recording every edit so it can merge them.
 Stakes if we pick wrong: B leaves an implementation nobody can build as written; C adds a merge engine for a case nothing in #255 needs.
 Recommendation: A because it is the snapshot model the app already has and the last-writer-wins trade the design accepted, and the append rule still keeps every session.
@@ -941,8 +931,7 @@ Comparison grid:
 | F1, F2, A1, C3, T1, O2, O3 | approved (D3-D9) | unchanged | unchanged | unchanged | unchanged |
 | O4 which window's tabs the host layout holds | unspecified | one owner window per workroom per Mac: the first window this launch to show it; only the owner restores the host layout and writes it; other windows' tabs for it stay in session.json only; ownership passes to another window showing the workroom when the owner closes or drops it | merge every window's tabs for the workroom into one layout (strips concatenated, split groups kept); Mac B restores them all into one window | whichever window changed last writes its own tabs | defer; pending |
 Question D10:
-D10 — If a workroom has tabs open in two windows on one Mac, whose tabs does the host layout hold? <gstack-qid:plan-eng-review-o4-window-owner>
-Project/branch/task: master, OQ8 for #255, layout capture across windows.
+D10 — If a workroom has tabs open in two windows on one Mac, whose tabs does the host layout hold?Project/branch/task: master, OQ8 for #255, layout capture across windows.
 ELI10: You can open the same workroom in two windows on one Mac, each with its own tabs. There's only one layout per workroom on the host. Without a rule, the two windows take turns overwriting it every time either changes, so the layout flips between them.
 Stakes if we pick wrong: C flips the host layout between windows on every edit; B moves a second window's tabs into one window on the other Mac.
 Recommendation: A because one owner window gives a stable layout, and the append rule still brings the other window's terminals to Mac B as tabs.
@@ -992,8 +981,7 @@ Comparison grid:
 | F1, F2, A1, C3, T1, O2, O3, O4 | approved (D3-D10) | unchanged | unchanged | unchanged | unchanged |
 | O5 last tab closed | old host layout kept, tabs return | the owner window writes an explicit empty layout (a blob with zero tabs, distinct from revision 0 "no layout yet"); the host path accepts it and restores no tabs (tagged live sessions still append) | keep: closed tabs return on next open | delete the host layout file instead (back to revision 0, so the next opener seeds from its own copy) | defer; pending |
 Question D11:
-D11 — When the last tab in a remote workroom is closed, how is that saved on the host? <gstack-qid:plan-eng-review-o5-empty-layout>
-Project/branch/task: master, OQ8 for #255, empty layout write.
+D11 — When the last tab in a remote workroom is closed, how is that saved on the host?Project/branch/task: master, OQ8 for #255, empty layout write.
 ELI10: Today the app never saves a workroom with no tabs: it just skips it. With a shared host layout, skipping means the host keeps the old tabs, so they come back the next time any Mac opens the workroom. The fix is to save "this workroom has no tabs" as its own state, different from "nobody has saved a layout yet".
 Stakes if we pick wrong: B brings back tabs the user closed; C lets another Mac's stale copy reseed the closed tabs.
 Recommendation: A because an explicit empty layout is the only option where closed stays closed on every Mac.
@@ -1043,8 +1031,7 @@ Comparison grid:
 | F1, F2, A1, C3, T1, O2-O5 | approved (D3-D11) | unchanged | unchanged | unchanged | unchanged |
 | O1 refill join | by tab key (broken) | by content: terminal by session ID, diff by path and source, file by path, changeset by commit; first match wins; no codec change | add an additive `paneKey` to TabSession, minted once and kept across restores; refill by it | keep; focus and popped-out frames are lost whenever another Mac writes | defer; pending |
 Question D12:
-D12 — How should a Mac put back its own focus and popped-out window positions after loading a layout another Mac saved? <gstack-qid:plan-eng-review-o1-refill-join>
-Project/branch/task: master, OQ8 for #255, per-Mac focusedKey/detachedFrame refill.
+D12 — How should a Mac put back its own focus and popped-out window positions after loading a layout another Mac saved?Project/branch/task: master, OQ8 for #255, per-Mac focusedKey/detachedFrame refill.
 ELI10: Each Mac keeps its own "which tab had focus" and "where was this popped-out pane" and re-attaches them to the shared layout by tab ID. But tab IDs are re-made every time the app restores, so after another Mac saves, none match. Either match tabs by what they show (same shell session, same file), or add a permanent ID to every tab.
 Stakes if we pick wrong: C loses focus and popped-out panes every time the other Mac touches the layout; B changes a stored-format field whose doc explicitly says it is not an identity.
 Recommendation: A because every tab kind already carries a natural identity, so the refill needs no format change.
@@ -1095,8 +1082,7 @@ Comparison grid:
 | F1, F2, A1, C3, T1, O1-O5 | approved (D3-D12) | unchanged | unchanged | unchanged | unchanged |
 | O7 build ordering and enforcement | R3-6 rule with no ordering | embed a monotonic build number at compile time (the build's commit count), reported by `wr-agent protocol`; the app pushes only when the host's number is lower (equal number, different hash, as in dev builds: push as today); the agent's hand-off refuses a program with a lower number. Residual accepted: an old app can still overwrite the binary while no agent listens; the next newer app re-upgrades it through hand-off, keeping shells | order by `PROTOCOL_VERSION` only: push only when the host's protocol is lower | keep today's hash rule; accept agents swapping between Macs on different builds | defer; pending |
 Question D13:
-D13 — How does the app tell a newer agent from an older one, so it never downgrades a host? <gstack-qid:plan-eng-review-o7-build-order>
-Project/branch/task: master, OQ8 for #255, AgentBootstrap push rule and agent hand-off.
+D13 — How does the app tell a newer agent from an older one, so it never downgrades a host?Project/branch/task: master, OQ8 for #255, AgentBootstrap push rule and agent hand-off.
 ELI10: The design says "only replace the host's agent with a newer one". But every agent today calls itself version 0.1.0, so nothing can say which is newer, and apps people already have installed will keep replacing any different agent. We need a number that goes up with every build, and the agent itself should refuse to be swapped for an older one.
 Stakes if we pick wrong: B stops bug-fix builds reaching hosts until the protocol changes; C lets two Macs keep swapping agents and losing the layout feature.
 Recommendation: A because a build number gives a real order, the agent-side refusal covers apps we can't update, and the leftover case heals on the next newer connect.
@@ -1148,8 +1134,7 @@ Comparison grid:
 | F1, F2, A1, C3, T1, O1-O5, O7 | approved (D3-D13) | unchanged | unchanged | unchanged | unchanged |
 | O8 unsent edit at quit | dropped from the host | quit sends each dirty remote workroom's layout with a 1 s total bound; any not acknowledged is marked "host layout stale" in session.json (R3-1's mark), so its own copy wins at next open and is written then | no quit write; mark every dirty remote workroom stale so the next launch writes it | keep: unsent edits reach the host only on the next change | defer; pending |
 Question D14:
-D14 — What happens to a layout change made just before quitting, which hasn't reached the host yet? <gstack-qid:plan-eng-review-o8-quit-flush>
-Project/branch/task: master, OQ8 for #255, quit-time layout write.
+D14 — What happens to a layout change made just before quitting, which hasn't reached the host yet?Project/branch/task: master, OQ8 for #255, quit-time layout write.
 ELI10: The app saves layouts to the host a moment after each change. If you change something and quit straight away, the app saves its own file but the host never hears about it. Either try a quick send at quit and remember anything that didn't make it, or just remember it and send it at the next launch.
 Stakes if we pick wrong: C means the other Mac opens yesterday's layout after you quit; B delays every last-second edit until this Mac relaunches.
 Recommendation: A because a 1 s bounded send makes the common case reach the other Mac at once, and the stale mark covers a slow or offline host without delaying quit.
@@ -1197,8 +1182,7 @@ Comparison grid:
 | D2-D14 | approved | unchanged | unchanged | unchanged |
 | TODO1 | untracked | add to TODOS.md under P1, blocking #255's live test | skip | build it in #255's PR |
 Question D15:
-D15 — Track "a second Mac can find a remote workroom and reach its host" as a TODO? <gstack-qid:plan-eng-review-todo1-discovery>
-Project/branch/task: master, OQ8 for #255, TODOS.md.
+D15 — Track "a second Mac can find a remote workroom and reach its host" as a TODO?Project/branch/task: master, OQ8 for #255, TODOS.md.
 ELI10: #255 can't be tested for real until a second Mac knows the workroom exists and has an ssh key the host accepts. Today only the Mac that made it knows either. That work is outside OQ8 and needs its own design (likely the Codaset broker as the registry).
 Stakes if we pick wrong: skipping it leaves #255's acceptance test blocked with nothing tracking why; building it now roughly doubles #255.
 Recommendation: A because it blocks #255's live test and needs its own design, so it should be tracked rather than folded in.
@@ -1242,8 +1226,7 @@ Comparison grid:
 | D2-D15 | approved | unchanged | unchanged | unchanged |
 | TODO2 | design follow-up only | add to TODOS.md under P2 | skip (design follow-up is enough) | build it in #255's PR |
 Question D16:
-D16 — Also track "tell a Mac its pane is sized for another Mac" in TODOS.md? <gstack-qid:plan-eng-review-todo2-size-owner>
-Project/branch/task: master, OQ8 for #255, TODOS.md.
+D16 — Also track "tell a Mac its pane is sized for another Mac" in TODOS.md?Project/branch/task: master, OQ8 for #255, TODOS.md.
 ELI10: When the other Mac owns a terminal's size, full-screen programs look broken on this Mac with no hint why until you type. You asked to record it as a follow-up; it now sits in the design doc. TODOS.md is where the repo tracks follow-ups, so this is whether it goes there too.
 Stakes if we pick wrong: left only in the design doc, it is easy to lose once #255 ships.
 Recommendation: A because TODOS.md is the repo's follow-up list and this needs both an agent frame and a pane marker.
@@ -1286,8 +1269,7 @@ Comparison grid:
 | D2-D16 | approved | unchanged | unchanged | unchanged |
 | TODO3 | design follow-up only | add to TODOS.md under P3 | skip | build it in #255's PR |
 Question D17:
-D17 — Track moving local workrooms' layouts to the local agent as a TODO? <gstack-qid:plan-eng-review-todo3-local-parity>
-Project/branch/task: master, OQ8 for #255, TODOS.md.
+D17 — Track moving local workrooms' layouts to the local agent as a TODO?Project/branch/task: master, OQ8 for #255, TODOS.md.
 ELI10: #255 stores layouts on the host only for remote workrooms. The parent design says local workrooms should eventually work the same way, so there's one restore path instead of two. Nothing needs it today; it's cleanup that removes a second code path.
 Stakes if we pick wrong: skipping it leaves two restore paths with nothing reminding anyone to merge them; building it now widens #255 to every local user.
 Recommendation: A because it's real parity debt the parent design names, but nothing is blocked by it, so P3.
@@ -1329,8 +1311,7 @@ Comparison grid:
 | D2-D17 | approved | unchanged | unchanged | unchanged |
 | TODO4 | design follow-up only | skip; the design records approach C, revisit when two-Mac use is real | add to TODOS.md under P3 | build it in #255's PR |
 Question D18:
-D18 — Track live layout mirroring between two open Macs as a TODO, or leave it in the design? <gstack-qid:plan-eng-review-todo4-live-mirror>
-Project/branch/task: master, OQ8 for #255, TODOS.md.
+D18 — Track live layout mirroring between two open Macs as a TODO, or leave it in the design?Project/branch/task: master, OQ8 for #255, TODOS.md.
 ELI10: With #255, two Macs share a workroom's layout but only pick up each other's changes when they reopen it. Live mirroring (or at least a "layout changed on another Mac" prompt) would fix that, but nobody uses two open Macs at once yet, so it's a guess at a need.
 Stakes if we pick wrong: a TODO for an unproven need adds noise; skipping risks forgetting it if two-Mac use takes off.
 Recommendation: A because there's no evidence of the need yet, and the design doc already records approach C and why it was deferred.
@@ -1479,19 +1460,3 @@ None in this review.
 
 ### Suppressed findings
 None below confidence 5.
-
-## GSTACK REVIEW REPORT
-
-| Review | Trigger | Why | Runs | Status | Findings |
-|--------|---------|-----|------|--------|----------|
-| CEO Review | `/plan-ceo-review` | Scope & strategy | 1 | ISSUES OPEN (2026-07-31, stale, other plan) | mode: SELECTIVE_EXPANSION, 1 critical gaps |
-| Outside Review | Codex (`codex exec`, plan-review phase) | Independent 2nd opinion | 31 | completed | 8 findings (5 P1), all resolved in D7-D14 |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 40 | ISSUES OPEN (mapped work, all decided) | 41 issues, 0 critical gaps |
-| Design Review | `/plan-design-review` | UI/UX gaps | 1 | ISSUES OPEN (2026-07-31, stale, other plan) | score: n/a, 3 unresolved (other plan) |
-| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
-
-- **OUTSIDE COVERAGE:** Codex (gpt-6.1-sol), plan-review phase, completed on 2026-10-05: 8 findings, every one resolved by an answered decision (D7-D14). Office-hours phase earlier: Codex cold read completed (premise 3 revised).
-- **CROSS-MODEL:** Codex and Claude agreed on the layout-on-host model; Codex found five gaps Claude's sections missed (pane identity, untracked fallback shell, unimplementable re-apply, multi-window ownership, build ordering), all verified in code before decisions.
-- **VERDICT:** Eng Review decided every finding (0 unresolved, 0 critical gaps); status stays ISSUES OPEN because the decisions map to implementation tasks T1-T9. No CEO or design review needed for this backend change.
-
-NO UNRESOLVED DECISIONS

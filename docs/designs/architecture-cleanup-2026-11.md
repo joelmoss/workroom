@@ -206,8 +206,7 @@ Comparison grid:
 | D2 app-wide store after 3.5 | approved | unchanged | unchanged | unchanged |
 
 Question D3:
-D3 — How should each workroom's panes be observed? <gstack-qid:plan-eng-review-per-target-observation>
-Project/branch/task: docs/architecture-cleanup-plan, eng review of the cleanup plan.
+D3 — How should each workroom's panes be observed?Project/branch/task: docs/architecture-cleanup-plan, eng review of the cleanup plan.
 ELI10: Step 3.1 bundles each workroom's tabs and splits into one value, kept in a dictionary on the pane store. Step 3.5 moves that store to Swift's `@Observable` so that a title change in one workroom only redraws views of that workroom. But `@Observable` watches whole properties, and reading one entry of a dictionary watches the whole dictionary. As planned, every workroom's change would still redraw every window, which is the WORKROOM-2B hang class that D2 must avoid.
 Stakes if we pick wrong: D2's app-wide store would republish every window on every title tick; hangs come back.
 Recommendation: A because it keeps the split and focus rules a pure, package-tested value while giving each workroom its own observable object, so views redraw per workroom.
@@ -253,8 +252,7 @@ Comparison grid:
 | #444 Q12 merge behaviour | supported, tested | kept | kept | removed |
 
 Question D4:
-D4 — Panes app-wide by tab, or per window? (D2 reopened) <gstack-qid:plan-eng-review-pane-ownership>
-Project/branch/task: docs/architecture-cleanup-plan, eng review of the cleanup plan.
+D4 — Panes app-wide by tab, or per window? (D2 reopened)Project/branch/task: docs/architecture-cleanup-plan, eng review of the cleanup plan.
 ELI10: You chose D2 because I told you a workroom lives in one window at a time. That is wrong. Two windows can show the same workroom with separate tabs, and moving one into the other merges them (#444 Q12, pinned by a test). So "one store keyed by workroom" cannot hold two windows' different tabs. The useful part of D2 survives: tabs can live app-wide by tab id, with each window keeping only its own arrangement of them.
 Stakes if we pick wrong: Built as D2 says, two-window workrooms break; kept per window, new per-tab state keeps getting dropped on moves.
 Recommendation: A because it keeps Q12 and still ends the hand-off of per-tab state: a move or merge only shifts tab ids between two windows' layouts.
@@ -482,19 +480,3 @@ None.
 - Outside voice: Codex (gpt-6-astra), completed, 3 findings (1 High, 2 Medium), all resolved
 - Parallelization: 6 lanes, 5 parallel / 1 sequential (V after A's 2.2)
 - Lake Score: 3/3
-
-## GSTACK REVIEW REPORT
-
-| Review | Trigger | Why | Runs | Status | Findings |
-|--------|---------|-----|------|--------|----------|
-| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
-| Outside Review | Codex via `/plan-eng-review` | Independent 2nd opinion | 1 | completed | 3 findings (1 High, 2 Medium), all resolved |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | issues_open | 9 issues, 0 critical gaps (all resolved in the plan) |
-| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
-| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
-
-- **OUTSIDE COVERAGE:** Codex, plan-review phase, completed; OV1–OV3 verified against code and resolved (D4, 0.6, 1.10).
-- **CROSS-MODEL:** native review plus six area reports against Codex. Codex alone caught the Q12 premise error; no native finding was contradicted.
-- **VERDICT:** ENG REVIEW done with every finding resolved in the plan. Status stays issues_open because issues were found (the rule counts resolved findings too). Ready to implement Phase 0.
-
-NO UNRESOLVED DECISIONS

@@ -292,7 +292,6 @@ boxd create no longer opens a sign-in page by itself.
 - You chose the shared protocol (B) over my recommended sibling sheet (A), taking on a rework of code
   that merged hours ago so the next provider doesn't copy it a third time.
 
-<!-- gstack:office-hours:concerns:start -->
 ## Reviewer Concerns
 
 Disposition: CONCERNS_RECORDED
@@ -385,7 +384,6 @@ Stop: MAX_ITERATIONS
 issues verified: 2 of 2
 
 Verification is deterministic: a fix counts when its `applied_text` is in the current design and absent from the round-3 snapshot. It confirms applied edits, never a review verdict; no reviewer was launched past the cap.
-<!-- gstack:office-hours:concerns:end -->
 
 ## Eng Review (plan-eng-review, 2026-10-13)
 
@@ -440,8 +438,7 @@ Comparison grid:
 | R1 token delivery | unspecified (runner has no env param), pending | `BOXD_TOKEN` in the child environment; add an `environment:` parameter to `StatusCommandRunning.run` in WorkroomSystem, used only by `BoxdHostDriver.cli(...)` | `--token <t>` on argv; no runner change |
 | Guard, account states, tests (approved) | approved D5 | unchanged | unchanged |
 Question D2:
-D2 — How should Workroom hand boxd the stored token? <gstack-qid:plan-eng-review-boxd-token-delivery>
-
+D2 — How should Workroom hand boxd the stored token?
 Project/branch/task: master, docs/designs/boxd-first-time-setup.md, driver fix (section 1).
 ELI10: To stop boxd ever opening a surprise sign-in page, Workroom hands boxd the saved sign-in token on every call. It can pass it as an environment variable, which needs a small new option on the shared command runner, or as a `--token` command-line flag, which needs no runner change. A command-line flag is visible to any other program you run that lists processes (`ps`) while boxd runs.
 Stakes if we pick wrong: Pick the flag and the token shows up in process listings for the seconds each call runs; pick the variable and the shared runner gains a parameter git's callers don't use.
@@ -667,8 +664,7 @@ Comparison grid:
 | R2 TODO | not recorded | add a P3 TODO to TODOS.md | not recorded |
 | Design and guard (approved) | approved | unchanged | unchanged |
 Question D2:
-D2 — Add a TODO to ask boxd for a non-interactive account check? <gstack-qid:plan-eng-review-todo-boxd-noninteractive>
-
+D2 — Add a TODO to ask boxd for a non-interactive account check?
 Project/branch/task: master, boxd first-time setup design.
 ELI10: Workroom has to read boxd's private sign-in file to avoid boxd opening a sign-in page by itself. If boxd offered a documented "just tell me if I'm signed in" flag, Workroom could drop that dependency and the "Workroom needs an update" lock-out case. Asking boxd is outside this repo, so the question is whether to track it.
 Stakes if we pick wrong: Skip it and the dependency on boxd's private file stays forgotten until boxd changes the file and boxd creates break.
@@ -850,19 +846,3 @@ REALITY: pr-count pass one PR, one commit per task (owner preference: minimise P
 - Outside voice: Codex, completed, 3 findings (all accepted)
 - Parallelization: 2 lanes, 2 parallel / 2 sequential
 - Lake Score: N/A (no answers scored for Completeness)
-
-## GSTACK REVIEW REPORT
-
-| Review | Trigger | Why | Runs | Status | Findings |
-|--------|---------|-----|------|--------|----------|
-| CEO Review | `/plan-ceo-review` | Scope & strategy | 1 | ISSUES OPEN (2026-07-31, older than 7 days, not this plan) | mode: n/a, 0 critical gaps recorded |
-| Outside Review | Codex (`codex-plan-review`, default-on in /plan-eng-review) | Independent 2nd opinion | 35 | completed, issues_found (2026-10-13) | 3 findings, all accepted |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 45 | ISSUES OPEN (this review, not yet logged at write time) | 17 issues, 0 critical gaps |
-| Design Review | `/plan-design-review` | UI/UX gaps | 1 | ISSUES OPEN (2026-07-31, older than 7 days, not this plan) | score: n/a |
-| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
-
-- **OUTSIDE COVERAGE:** Codex, plan-review phase, completed 2026-10-13, 3 findings (wrong-account GitHub connect, unrepairable inherited token, harness executable discovery); all accepted, 1-2 by revising the token rule, 3 as required harness work.
-- **CROSS-MODEL:** Claude and Codex (`gpt-6-astra`) agree on the credential guard and the harness gap; Codex found the inherited-token inconsistency Claude's own precedence rule introduced. Office-hours also had a Codex cold read (`gpt-6.1-sol`) that first raised the non-interactive check.
-- **VERDICT:** No review is CLEAR for this plan. Eng Review found 17 issues, all resolved into tasks T0-T6 with no open decisions; eng review required (status issues_open until the tasks land).
-
-NO UNRESOLVED DECISIONS
