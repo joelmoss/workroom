@@ -78,7 +78,7 @@ RULES = (
     # the script tests read) has no rule and so runs everything.
     (("*.go", ".golangci.yml", ".goreleaser.yml"), {"cli"}),
     # Read by no job's tests. The `workflows` job, which is never filtered, covers scripts/ci/.
-    (("docs/*", "*.md", ".agents/*", ".claude/*", ".out-of-scope/*", ".gstack/*", "scripts/ci/*",
+    (("docs/*", "*.md", ".agents/*", ".claude/*", ".out-of-scope/*", "scripts/ci/*",
       "MIT-LICENSE"), frozenset()),
 )
 

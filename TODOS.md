@@ -402,8 +402,8 @@ multiply toward `fs.inotify.max_user_watches`.
 (refcounts, canonical-path keys, start/stop races) in the daemon that owns terminals, and a
 shutdown-ordering case against per-connection teardown.
 
-**How to start:** find the `gstack-shortcut(dec-8742d8a5-42ac-4348-827b-9c15d9330f5a)` marker at the
-watcher creation site. Measure FSEvents duplication first; build the shared registry when the Linux
+**How to start:** find the "Shortcut: one OS watcher per subscription" comment at the
+watcher creation site (`vcs/crates/workroomd/src/vcs/watch.rs`). Measure FSEvents duplication first; build the shared registry when the Linux
 daemon lands.
 
 **Depends on:** Phase 3 Linux daemon, or a measured FSEvents problem.

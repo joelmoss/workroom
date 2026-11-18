@@ -343,9 +343,9 @@ impl Subscriptions {
         let (sender, receiver) = mpsc::sync_channel(INGRESS_CAPACITY);
         let dropped = Arc::new(AtomicBool::new(false));
         let handler_dropped = Arc::clone(&dropped);
-        // gstack-shortcut(dec-8742d8a5-42ac-4348-827b-9c15d9330f5a): one OS watcher per
-        // subscription, upgrade when two windows watching one workroom show up as duplicated
-        // watches in a profile, or when inotify's per-user watch limit is reachable (Phase 3, Linux).
+        // Shortcut: one OS watcher per subscription, upgrade when two windows watching one
+        // workroom show up as duplicated watches in a profile, or when inotify's per-user watch
+        // limit is reachable (Phase 3, Linux).
         // Sharing one watcher per root across subscriptions is the fix, recorded in TODOS.md.
         //
         // Symlinks are NOT followed: a committed link to `$HOME` (or `/`) would otherwise make a
