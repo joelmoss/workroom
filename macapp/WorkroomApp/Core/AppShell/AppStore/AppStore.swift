@@ -241,7 +241,7 @@ final class AppStore: ObservableObject {
     return Defaults[.sidebarVisible]
   }
 
-  /// Shows or hides the Projects sidebar (the title-bar button, ⌃⌘S, ⌥⌘S, ⌥⌘B): nothing with no
+  /// Shows or hides the Projects sidebar (the title-bar button, ⌃⌘S, ⌥⌘S): nothing with no
   /// projects, where it has nothing to list and stays hidden (`RootView.splitView`).
   func toggleSidebar() {
     if !projectStore.projects.isEmpty { sidebarVisible.toggle() }

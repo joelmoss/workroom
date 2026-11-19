@@ -154,7 +154,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
     XCTAssertTrue(AppStore().sidebarVisible, "and must reopen a persisted-visible sidebar")
   }
 
-  /// Value: protects=with no projects the sidebar toggles (⌃⌘S, ⌥⌘S, ⌥⌘B, the title-bar button) do
+  /// Value: protects=with no projects the sidebar toggles (⌃⌘S, ⌥⌘S, the title-bar button) do
   /// nothing, as the sidebar has nothing to list; fails_when=a toggle flips the setting with no
   /// projects, or stops flipping it with one; no_claim=the hidden button and disabled menu item
   @MainActor
