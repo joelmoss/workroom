@@ -88,6 +88,6 @@ To open an empty window of your own, choose **Window ▸ New Window**.
 
 ## Show or hide Workroom from anywhere
 
-<kbd>⌘§</kbd> hides Workroom when it is in front, and brings it back from any other app. It works system-wide. Nightly only: **Workroom ▸ Show/Hide Workroom** is the same command, and **Settings ▸ Shortcuts** changes its keys or removes it. See [Settings](settings.md#shortcuts).
+<kbd>⌘§</kbd> hides Workroom when it is in front, and brings it back from any other app. It works system-wide. **Workroom ▸ Show/Hide Workroom** is the same command, and **Settings ▸ Shortcuts** changes its keys or removes it. See [Settings](settings.md#shortcuts).
 
-To cycle through Workroom's windows, the Quick Terminal's too, press <kbd>⌘`</kbd>, or <kbd>⇧⌘`</kbd> to go the other way. Nightly only: **Window ▸ Next Window** and **Previous Window** do the same.
+To cycle through Workroom's windows, the Quick Terminal's too, press <kbd>⌘`</kbd>, or <kbd>⇧⌘`</kbd> to go the other way. **Window ▸ Next Window** and **Previous Window** do the same.

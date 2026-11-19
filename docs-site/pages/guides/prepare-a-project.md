@@ -84,7 +84,7 @@ that changed since you approved it, stops first and shows it to you:
   button at its top right opens it in a window of its own. Creating a workroom offers **Approve**,
   **Continue Without Script…** (creates the workroom without running it, after asking) and
   **Cancel Creation**. Deleting one offers **Approve**, **Delete Anyway** and **Cancel**. Return
-  never approves; click it. Nightly only: the sheet opens as tall as the script needs, and you can
+  never approves; click it. The sheet opens as tall as the script needs, and you can
   drag its edges to make it bigger.
 - In a terminal, `workroom create` and `workroom delete` print the script and ask.
   `workroom create --skip-setup` creates without running the setup script.
@@ -93,7 +93,7 @@ Skipping a script approves nothing, so the next create asks again. When you incl
 uncommitted changes in a new workroom and you've edited the setup script, it's your edited copy that
 needs approving, since that's the one that runs.
 
-Nightly only. A remote workroom asks later, once its host is ready and the setup script is about to
+A remote workroom asks later, once its host is ready and the setup script is about to
 run there. See [Setup and teardown scripts](../remote/overview.md#setup-and-teardown-scripts).
 
 A container workroom's `devcontainer.json` is approved the same way, in the app, before a create uses

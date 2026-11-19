@@ -1,7 +1,6 @@
 ---
 title: Railway
 description: Sign in to Railway once from the app, then create workrooms that run in Railway sandboxes.
-nightly: true
 ---
 
 [Railway](https://railway.com) runs each workroom in a sandbox of its own, in your Railway account. This page covers signing in, which Workroom walks you through, and creating and deleting a workroom on Railway. For what remote workrooms are, see [Remote workrooms](overview.md).
