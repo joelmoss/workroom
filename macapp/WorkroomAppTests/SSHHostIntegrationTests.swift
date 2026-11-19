@@ -91,12 +91,78 @@ final class SSHHostIntegrationTests: XCTestCase {
   private func fixture() throws -> Fixture {
     let environment = ProcessInfo.processInfo.environment
     guard environment["WR_SSH_FIXTURE_SUPERVISOR"] == "0",
+      environment["WR_SSH_FIXTURE_SYSTEMD"] != "1",
       let config = environment["WR_SSH_FIXTURE_CONFIG"],
       let daemon = environment["WR_SSH_FIXTURE_DAEMON"]
     else {
       throw XCTSkip("run with WR_FIXTURE_SUPERVISOR=0 through vcs/scripts/ssh-fixture/run.sh")
     }
     return Fixture(config: config, daemon: URL(fileURLWithPath: daemon))
+  }
+
+  /// The systemd variant (#665): logind, pam_systemd and linger as on a real server. Its tests
+  /// run only there, and the others skip it: it has no fake GitHub or fish user.
+  private func systemdFixture() throws -> Fixture {
+    let environment = ProcessInfo.processInfo.environment
+    guard environment["WR_SSH_FIXTURE_SYSTEMD"] == "1",
+      let config = environment["WR_SSH_FIXTURE_CONFIG"],
+      let daemon = environment["WR_SSH_FIXTURE_DAEMON"]
+    else {
+      throw XCTSkip("run through WR_FIXTURE_SYSTEMD=1 vcs/scripts/ssh-fixture/run.sh")
+    }
+    return Fixture(config: config, daemon: URL(fileURLWithPath: daemon))
+  }
+
+  /// Runs `script` on the fixture as `user` through the container runtime, which opens no login.
+  @discardableResult
+  nonisolated(nonsending) private func onBox(_ user: String, _ script: String) async throws
+    -> (ok: Bool, output: String)
+  {
+    let environment = ProcessInfo.processInfo.environment
+    let runtime = try XCTUnwrap(environment["WR_SSH_FIXTURE_RUNTIME_PATH"])
+    let container = try XCTUnwrap(environment["WR_SSH_FIXTURE_CONTAINER"])
+    let result = await StatusCommandRunner().run(
+      runtime, ["exec", "--user", user, container, "sh", "-c", script], in: NSHomeDirectory(),
+      timeout: 60)
+    return (result.ok, result.stdout + result.stderr)
+  }
+
+  /// No daemon or login of the user's left, logind ending a user's processes at logout or not,
+  /// and the user lingering or not.
+  private func systemdBox(killUserProcesses: Bool, linger: Bool) async throws {
+    let setup = try await onBox(
+      "root",
+      "loginctl disable-linger workroom; loginctl terminate-user workroom 2>/dev/null; "
+        + "pkill -KILL -f 'workroomd[^ ]* serve'; "
+        + "printf '[Login]\\nKillUserProcesses=\(killUserProcesses ? "yes" : "no")\\n' "
+        + "> /etc/systemd/logind.conf.d/fixture.conf && systemctl restart systemd-logind && "
+        + "loginctl \(linger ? "enable" : "disable")-linger workroom")
+    XCTAssertTrue(setup.ok, setup.output)
+  }
+
+  /// Closes every login the app holds to the host (the private ssh master included), waits until
+  /// sshd has none of the user's left, then 15 s more: longer than a user manager outlives the
+  /// last login by. Then whether the daemon still answers.
+  private func servingWithNoLoginOpen(_ driver: SSHHostDriver) async throws -> Bool {
+    for connection in connections { await connection.close() }
+    connections.removeAll()
+    await driver.invalidateConnection()
+    // The daemon relay's ssh session can outlive the client letting go of it; ending it on the
+    // server is the Mac going away, which is what this models.
+    try await onBox("root", "pkill -f '^sshd: workroom'")
+    var closed = false
+    for _ in 0..<80 where !closed {
+      closed = try await !onBox("root", "pgrep -f '^sshd: workroom'").ok
+      if !closed { try await Task.sleep(for: .milliseconds(250)) }
+    }
+    if !closed {
+      let processes = try await onBox("root", "ps -eo pid,ppid,args")
+      XCTFail("a login of the user's stayed open:\n\(processes.output)")
+    }
+    try await Task.sleep(for: .seconds(15))
+    let socket = PosixShell.quoted(driver.daemonSocket)
+    let binary = PosixShell.quoted(DaemonInstall.binary(besideSocket: driver.daemonSocket))
+    return try await onBox("workroom", "\(binary) list --socket \(socket)").ok
   }
 
   private func driver(_ fixture: Fixture, config: String? = nil) -> SSHHostDriver {
@@ -724,5 +790,93 @@ final class SSHHostIntegrationTests: XCTestCase {
       XCTAssertEqual(teardownOutput, "ssh \(workroom.name)")
     }
     XCTAssertTrue(records.descriptors.isEmpty)
+  }
+
+  // MARK: - A server whose logind ends a user's processes at logout (#665)
+
+  /// No linger: the daemon dies with the app's start login, and the connect fails saying why and
+  /// what fixes it. No pane attaches.
+  func testALogoutKillWithoutLingerFailsTheConnectNamingTheFix() async throws {
+    let fixture = try systemdFixture()
+    try await systemdBox(killUserProcesses: true, linger: false)
+    let driver = driver(fixture)
+    _ = try await driver.checkHost()
+    do {
+      _ = try await ensure(driver, daemon: fixture.daemon)
+      XCTFail("a daemon logout killed counted as connected")
+    } catch DaemonBootstrap.Error.installFailed(let detail) {
+      XCTAssertTrue(detail.contains("KillUserProcesses=yes"), detail)
+      XCTAssertTrue(detail.contains("run loginctl enable-linger on the server"), detail)
+      XCTAssertTrue(detail.contains("ask its administrator"), detail)
+    }
+    let socket = PosixShell.quoted(driver.daemonSocket)
+    let binary = PosixShell.quoted(DaemonInstall.binary(besideSocket: driver.daemonSocket))
+    let listing = try await onBox("workroom", "\(binary) list --socket \(socket)")
+    XCTAssertFalse(listing.ok, "a daemon is serving: \(listing.output)")
+  }
+
+  /// Linger on: the connect succeeds, the daemon outlives every login, a session made then is
+  /// still there on reconnect, and a hand-off to a newer build keeps it.
+  func testALingeringUsersDaemonOutlivesEveryLoginAndAHandOff() async throws {
+    let fixture = try systemdFixture()
+    try await systemdBox(killUserProcesses: true, linger: true)
+    let driver = driver(fixture)
+    _ = try await driver.checkHost()
+    let started = try await ensure(driver, daemon: fixture.daemon)
+    let pid = try XCTUnwrap(started.startedPID, "the app didn't report starting the daemon")
+    let unit = try await onBox("root", "cat /proc/\(pid)/cgroup")
+    XCTAssertTrue(unit.output.contains("/workroomd-"), "not a user unit: \(unit.output)")
+    _ = try await connect(driver).sessions()
+    let session = UUID()
+    let pane = try RemoteHostIntegrationTests.Pane(
+      command: driver.attachCommand(
+        to: driver.hostID, session: session, workingDirectory: driver.home, restored: false))
+    pane.type("echo LINGER-\"\"KEPT\n")
+    XCTAssertTrue(pane.read(until: "LINGER-KEPT").contains("LINGER-KEPT"))
+    pane.dropLink()
+    let serving = try await servingWithNoLoginOpen(driver)
+    XCTAssertTrue(serving, "the daemon died with no login open")
+
+    let again = try await ensure(driver, daemon: fixture.daemon)
+    XCTAssertNil(again.startedPID, "a live daemon was started again")
+    let sessions = try await connect(driver).sessions()
+    XCTAssertTrue(sessions.contains { $0.identifier.uuid == session })
+
+    var bytes = try Data(contentsOf: fixture.daemon)
+    let build = DaemonBootstrap.buildNumber(in: bytes)
+    let range = try XCTUnwrap(bytes.range(of: Data("WORKROOMD-BUILD:\(build);".utf8)))
+    bytes.replaceSubrange(range, with: Data("WORKROOMD-BUILD:\(build + 1);".utf8))
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let newer = directory.appendingPathComponent("workroomd-newer")
+    try bytes.write(to: newer)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: newer.path)
+    let upgraded = try await ensure(driver, daemon: newer)
+    XCTAssertEqual(upgraded.daemon, .handedOff)
+    let handedOff = try await servingWithNoLoginOpen(driver)
+    XCTAssertTrue(handedOff, "the handed-off daemon died with no login open")
+    let kept = try await onBox("root", "cat /proc/\(pid)/cgroup")
+    XCTAssertEqual(kept.output, unit.output, "the hand-off left its unit")
+    let restored = try RemoteHostIntegrationTests.Pane(
+      command: driver.attachCommand(
+        to: driver.hostID, session: session, workingDirectory: driver.home, restored: true))
+    defer { restored.dropLink() }
+    XCTAssertTrue(restored.read(until: "LINGER-KEPT").contains("LINGER-KEPT"))
+    restored.dropLink()
+    _ = try await connect(driver).endSession(session)
+  }
+
+  /// A default server (KillUserProcesses=no) without linger: today's start, which outlives every
+  /// login. A user unit there would stop with the user's manager soon after the last one.
+  func testADefaultServerKeepsTodaysStartAndItOutlivesEveryLogin() async throws {
+    let fixture = try systemdFixture()
+    try await systemdBox(killUserProcesses: false, linger: false)
+    let driver = driver(fixture)
+    _ = try await driver.checkHost()
+    let started = try await ensure(driver, daemon: fixture.daemon)
+    let pid = try XCTUnwrap(started.startedPID)
+    let scope = try await onBox("root", "cat /proc/\(pid)/cgroup")
+    XCTAssertTrue(scope.output.contains("/session-"), "not today's start: \(scope.output)")
+    let serving = try await servingWithNoLoginOpen(driver)
+    XCTAssertTrue(serving, "the daemon died with no login open")
   }
 }
