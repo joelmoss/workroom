@@ -96,5 +96,26 @@ The daemon runs until the server restarts or you end it. Workroom installs no sy
 uses no `sudo`. Its files live under `~/.local/state/workroom`; Release and Nightly share them,
 while a Dev build uses its own state folder.
 
-If the server ends the daemon whenever an ssh login closes, Workroom reports that rather than
-changing the server. Ask its administrator about the server's login-session policy.
+## Servers that end your processes at logout {nightly}
+
+Some servers set systemd-logind's `KillUserProcesses=yes`, which ends everything you started when
+your ssh login closes. On such a server, Workroom's daemon would die as soon as the login that
+started it closed, and every connect would fail.
+
+Turn on lingering for your user once, then connect again:
+
+```sh
+loginctl enable-linger
+```
+
+If the server doesn't let you, ask its administrator to run `loginctl enable-linger <your user>`.
+
+With lingering on, Workroom starts its daemon under your own systemd user manager, as a unit named
+`workroomd-<number>`, so it keeps running when your logins close. It runs without root, installs
+nothing, and is never restarted by systemd. Your terminals and its log (`workroomd.log` beside its
+socket) are the same either way. Without lingering, Workroom starts the daemon as before.
+
+Workroom never changes logind or lingering itself. If the daemon still dies at logout, the
+connect fails and the error says why. If you turn lingering off later, the daemon stops about ten
+seconds after your last login to the server closes, and your open terminals end with it. The next
+connect starts it again.
