@@ -230,6 +230,265 @@ final class DaemonBootstrapScriptTests: XCTestCase {
     XCTAssertEqual(again.output, "WRB serving yes\n", "the live daemon was started twice")
   }
 
+  /// How the host's systemd answers the start script (#665), through PATH shims: `loginctl` says
+  /// whether the user lingers, `systemd-run` runs its command as the user manager would (its own
+  /// environment, the unit's umask, no descriptors from ssh) or fails as a host's can, and
+  /// `systemctl` names the unit's main pid. Each records the argv it was given.
+  private struct Systemd {
+    enum Run { case starts, fails, missing }
+    var linger: String? = "yes"
+    var run: Run = .starts
+  }
+
+  /// A start-script run on a local host, with a stand-in daemon that records how it was started.
+  private struct StartHost {
+    let host: LocalHost
+    let shim: URL
+    let alive: URL
+    let pidFile: URL
+    let record: URL
+    var units: URL { shim.appendingPathComponent("units") }
+    var screens: String { host.directory.appendingPathComponent("screens").path }
+    func calls(_ tool: String) -> [String] {
+      ((try? String(contentsOf: shim.appendingPathComponent("\(tool).calls"), encoding: .utf8))
+        ?? "").split(separator: "\n").map(String.init)
+    }
+    var daemonPID: String? {
+      (try? String(contentsOf: pidFile, encoding: .utf8))?.trimmingCharacters(
+        in: .whitespacesAndNewlines)
+    }
+  }
+
+  private func startHost(systemd: Systemd?, setsid: Bool = true) throws -> StartHost {
+    let host = try localHost()
+    let shim = URL(
+      fileURLWithPath: try XCTUnwrap(host.driver.path.split(separator: ":").first).description)
+    func tool(_ name: String, _ body: String) throws {
+      let url = shim.appendingPathComponent(name)
+      try Data(("#!/bin/sh\n" + body).utf8).write(to: url)
+      try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+    let q = { (url: URL) in PosixShell.quoted(url.path) }
+    // macOS has no setsid utility; the Linux fixture exercises the real one. This shim keeps the
+    // actual backgrounding, descriptor redirections, argv and env -i in the script under test.
+    if setsid { try tool("setsid", "exec \"$@\"\n") }
+    let units = shim.appendingPathComponent("units")
+    try FileManager.default.createDirectory(at: units, withIntermediateDirectories: true)
+    if let systemd {
+      if let linger = systemd.linger {
+        try tool(
+          "loginctl",
+          "printf '%s\\n' \"$*\" >> \(q(shim.appendingPathComponent("loginctl.calls")))\n"
+            + "echo Linger=\(linger)\n")
+      }
+      try tool(
+        "systemctl",
+        """
+        printf '%s\\n' "$*" >> \(q(shim.appendingPathComponent("systemctl.calls")))
+        case $* in *' show '*) eval "unit=\\${$#}"; cat \(q(units))/"${unit%.service}" ;; esac
+        exit 0
+
+        """)
+      switch systemd.run {
+      case .missing: break
+      case .fails:
+        try tool(
+          "systemd-run",
+          "printf '%s\\n' \"$*\" >> \(q(shim.appendingPathComponent("systemd-run.calls")))\n"
+            + "echo 'Failed to connect to bus: No medium found' >&2\nexit 1\n")
+      case .starts:
+        try tool(
+          "systemd-run",
+          """
+          printf '%s\\n' "$*" >> \(q(shim.appendingPathComponent("systemd-run.calls")))
+          unit= mask=
+          while [ "$1" != -- ]; do
+            case $1 in --unit=*) unit=${1#--unit=} ;; UMask=*) mask=${1#UMask=} ;; esac
+            shift
+          done
+          shift
+          if [ -e \(q(units))/"$unit" ]; then
+            echo "Failed to start transient service unit: Unit $unit.service was already loaded or has a fragment file." >&2
+            exit 1
+          fi
+          ( umask "${mask:-022}"; exec /usr/bin/env -i PATH=/usr/bin:/bin MANAGER=yes "$@" ) \\
+            < /dev/null > /dev/null 2>&1 &
+          echo $! > \(q(units))/"$unit"
+
+          """)
+      }
+    }
+    let alive = host.directory.appendingPathComponent("alive")
+    let pidFile = host.directory.appendingPathComponent("pid")
+    let record = host.directory.appendingPathComponent("record")
+    let body = """
+      #!/bin/sh
+      case $1 in
+        list) test -f \(q(alive)); exit ;;
+        serve)
+          printf '%s\\n' "$*" "$HOME" "$USER" "$SHELL" "$PATH" "${MUST_NOT_LEAK:-unset}" "${MANAGER:-unset}" > \(q(record))
+          umask >> \(q(record))
+          echo $$ > \(q(pidFile))
+          : > \(q(alive))
+          exec /bin/sleep 30 ;;
+      esac
+      exit 1
+      """
+    try Data(body.utf8).write(to: URL(fileURLWithPath: host.binary))
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: host.binary)
+    try listen(on: host)
+    let started = StartHost(
+      host: host, shim: shim, alive: alive, pidFile: pidFile, record: record)
+    addTeardownBlock {
+      if let pid = started.daemonPID.flatMap(Int32.init) { kill(pid, SIGKILL) }
+    }
+    return started
+  }
+
+  /// start.sh run as `DaemonBootstrap` runs it over the app's ssh login: umask 027, the login's
+  /// environment plus a variable that must not reach the daemon.
+  private func runStart(_ start: StartHost) async throws -> (status: Int32, output: String) {
+    let arguments = [
+      "sh", "-c", try DaemonBootstrap.script(named: "start"), "start", start.host.binary,
+      start.host.socket, start.screens, "never",
+    ]
+    let command = arguments.map(PosixShell.quoted).joined(separator: " ")
+    let stream = try HostStream.spawn(
+      URL(fileURLWithPath: "/bin/sh"), ["-c", "umask 027; " + command],
+      environment: [
+        "PATH": start.host.driver.path, "HOME": start.host.directory.path, "USER": "server-user",
+        "SHELL": "/bin/sh", "MUST_NOT_LEAK": "from-ssh",
+      ], handshakeTimeout: 5, purpose: .exchange)
+    let begun = ContinuousClock.now
+    let result = try await stream.communicate(nil, timeout: 5)
+    XCTAssertLessThan(ContinuousClock.now - begun, .seconds(5), "ssh's descriptors stayed open")
+    return result
+  }
+
+  /// The daemon got the fixed argv, environment and the login's umask, however it was started.
+  private func assertPinned(
+    _ start: StartHost, file: StaticString = #filePath, line: UInt = #line
+  ) throws {
+    let lines = try String(contentsOf: start.record, encoding: .utf8).split(separator: "\n").map(
+      String.init)
+    XCTAssertEqual(
+      Array(lines.dropLast()),
+      [
+        "serve --socket \(start.host.socket) --idle-timeout never --screens \(start.screens)",
+        start.host.directory.path, "server-user", "/bin/sh", "/usr/local/bin:/usr/bin:/bin",
+        "unset", "unset",
+      ], file: file, line: line)
+    XCTAssertEqual(Int(try XCTUnwrap(lines.last), radix: 8), 0o27, file: file, line: line)
+  }
+
+  /// The unit name start.sh derives from the socket path: `cksum`'s CRC of it.
+  private func unitName(for socket: String) async throws -> String {
+    let stream = try HostStream.spawn(
+      URL(fileURLWithPath: "/bin/sh"), ["-c", "printf %s \"$1\" | cksum", "sh", socket],
+      environment: ["PATH": "/usr/bin:/bin"], handshakeTimeout: 5, purpose: .exchange)
+    let (_, output) = try await stream.communicate(nil, timeout: 5)
+    return "workroomd-" + (output.split(separator: " ").first.map(String.init) ?? "")
+  }
+
+  /// A user who lingers gets the daemon as a transient unit under their own systemd manager, which
+  /// logout doesn't end (#665): named from the socket, collected when it ends, output to null so
+  /// the daemon logs beside its socket, only its own process ended, and no restart policy. The
+  /// daemon still gets today's fixed argv and environment, and setsid isn't needed.
+  func testTheRealSSHStartRunsALingeringUsersDaemonAsAUserUnit() async throws {
+    let start = try startHost(systemd: Systemd(), setsid: false)
+    let (status, output) = try await runStart(start)
+    XCTAssertEqual(status, 0, output)
+    let pid = try XCTUnwrap(start.daemonPID, output)
+    XCTAssertTrue(output.contains("WRB started \(pid)\n"), output)
+    XCTAssertTrue(output.contains("WRB serving yes\n"), output)
+    XCTAssertFalse(output.contains("systemd-run-failed"), output)
+    XCTAssertEqual(start.calls("loginctl"), ["show-user server-user -p Linger"])
+    let unit = try await unitName(for: start.host.socket)
+    let runs = start.calls("systemd-run")
+    XCTAssertEqual(runs.count, 1, "\(runs)")
+    let run = try XCTUnwrap(runs.first)
+    for option in [
+      "--user", "--unit=\(unit)", "--collect", "-p KillMode=process", "-p UMask=0027",
+      "-p StandardInput=null", "-p StandardOutput=null", "-p StandardError=null",
+    ] {
+      XCTAssertTrue(run.contains(option), "no \(option) in \(run)")
+    }
+    XCTAssertFalse(run.contains("Restart"), run)
+    XCTAssertTrue(
+      start.calls("systemctl").contains("--user show -p MainPID --value \(unit).service"),
+      "\(start.calls("systemctl"))")
+    try assertPinned(start)
+  }
+
+  /// No linger, no `loginctl` or no `systemd-run`: today's detached start, unchanged (#665). A
+  /// default server's user manager stops soon after the last login, so a unit there would die.
+  func testTheRealSSHStartKeepsTodaysStartWithoutLingerOrSystemd() async throws {
+    for systemd in [
+      Systemd(linger: "no"), Systemd(linger: nil), Systemd(run: .missing), nil,
+    ] {
+      let start = try startHost(systemd: systemd)
+      let (status, output) = try await runStart(start)
+      XCTAssertEqual(status, 0, output)
+      let pid = try XCTUnwrap(start.daemonPID, output)
+      XCTAssertTrue(output.contains("WRB started \(pid)\n"), output)
+      XCTAssertTrue(output.contains("WRB serving yes\n"), output)
+      XCTAssertFalse(output.contains("systemd-run-failed"), output)
+      XCTAssertEqual(start.calls("systemd-run"), [], "\(String(describing: systemd))")
+      try assertPinned(start)
+    }
+  }
+
+  /// A lingering user whose systemd manager can't take the unit (no user bus, say) still gets a
+  /// daemon, the detached way, and the report says why the unit failed, so a later survival error
+  /// doesn't send them to enable the linger they already have.
+  func testTheRealSSHStartFallsBackAndSaysWhyWhenSystemdRunFails() async throws {
+    let start = try startHost(systemd: Systemd(run: .fails))
+    let (status, output) = try await runStart(start)
+    XCTAssertEqual(status, 0, output)
+    XCTAssertTrue(
+      output.contains("WRB systemd-run-failed Failed to connect to bus: No medium found\n"),
+      output)
+    let pid = try XCTUnwrap(start.daemonPID, output)
+    XCTAssertTrue(output.contains("WRB started \(pid)\n"), output)
+    XCTAssertTrue(output.contains("WRB serving yes\n"), output)
+    XCTAssertEqual(start.calls("systemd-run").count, 2, "both names were tried")
+    try assertPinned(start)
+  }
+
+  /// A unit a crashed daemon left a session's process in stays loaded, and its name can't be
+  /// reused until that process ends. The start takes a name of its own instead of falling back to
+  /// a daemon that logout would end (#665).
+  func testTheRealSSHStartTakesItsOwnUnitNameWhenALeftoverHoldsTheSharedOne() async throws {
+    let start = try startHost(systemd: Systemd())
+    let shared = try await unitName(for: start.host.socket)
+    // Loaded, as the shim's systemd-run sees a unit it already has.
+    try Data("1\n".utf8).write(to: start.units.appendingPathComponent(shared))
+    let (status, output) = try await runStart(start)
+    XCTAssertEqual(status, 0, output)
+    XCTAssertFalse(output.contains("systemd-run-failed"), output)
+    let runs = start.calls("systemd-run")
+    XCTAssertEqual(runs.count, 2, "\(runs)")
+    XCTAssertTrue(runs[0].contains("--unit=\(shared) "), runs[0])
+    XCTAssertNotNil(
+      runs[1].range(of: "--unit=\(shared)-[0-9]+ ", options: .regularExpression), runs[1])
+    let pid = try XCTUnwrap(start.daemonPID, output)
+    XCTAssertTrue(output.contains("WRB started \(pid)\n"), output)
+    try assertPinned(start)
+  }
+
+  /// A daemon that already answers is kept on either path: nothing is started.
+  func testTheRealSSHStartKeepsALiveDaemonWhetherTheUserLingersOrNot() async throws {
+    for systemd in [Systemd(), nil] {
+      let start = try startHost(systemd: systemd)
+      try Data().write(to: start.alive)
+      let (status, output) = try await runStart(start)
+      XCTAssertEqual(status, 0, output)
+      XCTAssertEqual(output, "WRB serving yes\n")
+      XCTAssertEqual(start.calls("systemd-run"), [])
+      XCTAssertEqual(start.calls("loginctl"), [])
+    }
+  }
+
   /// A host an older Nightly made before the daemon was renamed (#525) has `wr-agent` and no
   /// `workroomd`, and its supervisor only ever starts the old name. Nothing is pushed, and the
   /// connect fails saying to recreate the workroom (eng review D3).
