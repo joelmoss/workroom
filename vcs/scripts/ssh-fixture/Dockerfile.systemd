@@ -9,10 +9,11 @@ FROM debian:bookworm-slim
 
 # systemd-sysv: /sbin/init. libpam-systemd: an ssh login gets a session scope and starts the user's
 # manager, as on any systemd server. dbus and dbus-user-session: loginctl and systemd-run --user
-# talk over them. procps: pgrep and pkill for the tests.
+# talk over them. procps: pgrep and pkill for the tests. git: the app's host check refuses a
+# server without it.
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      systemd systemd-sysv libpam-systemd dbus dbus-user-session openssh-server procps \
+      systemd systemd-sysv libpam-systemd dbus dbus-user-session openssh-server procps git \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --create-home --shell /bin/bash --password '*' workroom \
  && printf '%s\n' \
