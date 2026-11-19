@@ -12,7 +12,7 @@ Settings that belong to one project, such as its run command, are in the [Projec
 | Setting | What it does |
 | --- | --- |
 | **Confirm before quitting** | Asks before Workroom quits. It is on by default. |
-| **Default project folder** | Nightly only. The folder new projects start in, shown as its full path: where **Clone a repository…** clones to and **Create new directory…** creates in, and where **Choose…** opens in the New Project sheet. Your home folder is the default. **Choose…** picks another, and **Use Home**, shown only then, goes back. See [Add a project](projects.md#add-a-project). |
+| **Default project folder** | The folder new projects start in, shown as its full path: where **Clone a repository…** clones to and **Create new directory…** creates in, and where **Choose…** opens in the New Project sheet. Your home folder is the default. **Choose…** picks another, and **Use Home**, shown only then, goes back. See [Add a project](projects.md#add-a-project). |
 
 **Workroom ▸ Confirm Before Quitting** in the menu is the same switch.
 
@@ -85,9 +85,9 @@ The **Stop Detached Terminals…** button counts the background terminals that n
 | **Slide away when it loses focus** | Hides the Quick Terminal when you click another window or switch to another app. On by default. Off leaves it up until you press its shortcut. |
 | **Opens in** | The folder a new Quick Terminal shell starts in, shown as its full path. Your home folder is the default. **Choose…** picks another, and **Use Home**, shown only then, goes back. If the folder is gone, it opens in your home folder. |
 
-A Quick Terminal that is only hidden keeps its shells, so a new folder applies from the next new tab. Its global shortcut is <kbd>⌥§</kbd> by default. Nightly only: change it in [Shortcuts](#shortcuts). See [Terminals and tabs](terminals-and-tabs.md#quick-terminal).
+A Quick Terminal that is only hidden keeps its shells, so a new folder applies from the next new tab. Its global shortcut is <kbd>⌥§</kbd> by default. Change it in [Shortcuts](#shortcuts). See [Terminals and tabs](terminals-and-tabs.md#quick-terminal).
 
-## Shortcuts {nightly}
+## Shortcuts
 
 Every Workroom shortcut, grouped by what it acts on, with the two global shortcuts first: **Show/Hide Workroom** (<kbd>⌘§</kbd>) and **Quick Terminal** (<kbd>⌥§</kbd>), which work from any app. Each row can be recorded, reset to its default or removed, and the search field finds a shortcut by its name, by what it does or by its keys. **Workroom ▸ Keyboard Shortcuts…** and **Help ▸ Keyboard Shortcuts…** open this pane. See [Keyboard shortcuts](../reference/keyboard-shortcuts.md) for the defaults and the rules for recording.
 

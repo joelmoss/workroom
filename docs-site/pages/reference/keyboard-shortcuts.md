@@ -3,9 +3,9 @@ title: Keyboard shortcuts
 description: Every keyboard shortcut in the Workroom app, and how to change them in Settings ▸ Shortcuts.
 ---
 
-These are Workroom's default shortcuts. The glyphs are ⌘ Command, ⇧ Shift, ⌥ Option and ⌃ Control. Nightly only: **Settings ▸ Shortcuts** changes them, grouped as below. Open it from **Workroom ▸ Keyboard Shortcuts…** or **Help ▸ Keyboard Shortcuts…**.
+These are Workroom's default shortcuts. The glyphs are ⌘ Command, ⇧ Shift, ⌥ Option and ⌃ Control. **Settings ▸ Shortcuts** changes them, grouped as below. Open it from **Workroom ▸ Keyboard Shortcuts…** or **Help ▸ Keyboard Shortcuts…**.
 
-## Changing a shortcut {nightly}
+## Changing a shortcut
 
 Every Workroom action has a row in **Settings ▸ Shortcuts**, including the ones with no shortcut yet, so you can give any of them one.
 
