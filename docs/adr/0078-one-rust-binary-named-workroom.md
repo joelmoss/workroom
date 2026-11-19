@@ -1,6 +1,6 @@
 # The Go CLI and workroomd become one Rust binary, named `workroom`, that is both the CLI and the daemon
 
-Decided 2026-11-19 (owner, after the terminal API design for #360). Status: accepted, not yet built (#667). Supersedes the "Go CLI stays on the Mac" half of [ADR 0030](0030-app-ships-and-pushes-linux-agent.md). It extends [ADR 0013](0013-cli-json-contract.md) and [ADR 0057](0057-wr-agent-became-workroomd-and-what-keeps-the-old-name.md).
+Decided 2026-11-19 (owner, after the terminal API design for #360). Status: accepted, not yet built (#667). Supersedes the "Go CLI stays on the Mac" half of [ADR 0030](0030-app-ships-and-pushes-linux-agent.md). It extends [ADR 0013](0013-cli-json-contract.md) and ADR 0057.
 
 Workroom had two programs:
 - **the Go `workroom` CLI:** the engine for workroom lifecycle, Mac only (ADR 0030)
