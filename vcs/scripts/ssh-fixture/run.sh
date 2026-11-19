@@ -27,6 +27,14 @@
 # To test the SSH driver starting its own daemon, set WR_FIXTURE_SUPERVISOR=0 and select
 # WorkroomAppTests/SSHHostIntegrationTests instead.
 #
+# WR_FIXTURE_SYSTEMD=1 builds the systemd variant (Dockerfile.systemd, #665) instead: systemd as
+# PID 1, logind with KillUserProcesses=yes, no supervisor, and only the `over_ssh_systemd_*` tests
+# by default (the plain fixture runs every other one). Docker needs the host's cgroups, writable:
+# systemd and the user's manager write there, and Docker mounts a container's own read-only, so
+# with a private cgroup namespace systemd never boots. WR_FIXTURE_RUN_FLAGS replaces those flags
+# (`--privileged` too, should a host's Docker refuse the mount). Apple's `container` runs each
+# container in its own VM, so it needs only the tmpfs mounts and a tty.
+#
 # xcodebuild hands a test only the variables prefixed TEST_RUNNER_, so each is exported twice.
 set -euo pipefail
 
@@ -35,6 +43,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 VCS_DIR="$(cd "$HERE/../.." && pwd)"
 RUNTIME="${WR_FIXTURE_RUNTIME:-docker}"
 SUPERVISOR="${WR_FIXTURE_SUPERVISOR:-1}"
+SYSTEMD="${WR_FIXTURE_SYSTEMD:-0}"
+# The systemd variant has no supervisor: the tests start the daemon.
+[ "$SYSTEMD" = 1 ] && SUPERVISOR=0
 NAME="wr-ssh-fixture-$$"
 # Fixed by entrypoint.sh.
 SOCKET="/run/workroom/workroomd.sock"
@@ -62,8 +73,13 @@ cleanup() {
 trap cleanup EXIT
 
 cp "$DAEMON" "$STAGE/workroomd"
-cp "$HERE/Dockerfile" "$HERE/entrypoint.sh" "$HERE/identity.sh" "$HERE/fake-github.py" \
-  "$HERE/git-credential-fixture" "$STAGE/"
+if [ "$SYSTEMD" = 1 ]; then
+  cp "$HERE/Dockerfile.systemd" "$STAGE/Dockerfile"
+  cp "$HERE/identity.sh" "$HERE/systemd-setup.sh" "$HERE/systemd-setup.service" "$STAGE/"
+else
+  cp "$HERE/Dockerfile" "$HERE/entrypoint.sh" "$HERE/identity.sh" "$HERE/fake-github.py" \
+    "$HERE/git-credential-fixture" "$STAGE/"
+fi
 # By image ID, not a tag: a tag is shared, and another run building it between here and `run` below
 # would swap in a different daemon. WR_FIXTURE_BUILD_FLAGS is word-split into extra build flags; CI
 # passes a GitHub Actions layer cache there so the apt layer is not rebuilt on every run.
@@ -75,7 +91,23 @@ IMAGE="$("$RUNTIME" build --quiet --build-arg FIXTURE=1 ${BUILD_FLAGS[@]+"${BUIL
 echo "ssh-fixture: $("$RUNTIME" run --rm --entrypoint workroomd "$IMAGE" protocol | head -1)"
 
 ssh-keygen -q -t ed25519 -N '' -C wr-ssh-fixture -f "$STAGE/id_ed25519"
-"$RUNTIME" run --detach --init --name "$NAME" --publish 127.0.0.1::22 \
+# `--init` reaps the plain fixture's orphans; the systemd variant's PID 1 is systemd itself.
+if [ "$SYSTEMD" = 1 ]; then
+  if [ -n "${WR_FIXTURE_RUN_FLAGS+set}" ]; then
+    read -r -a RUN_FLAGS <<< "$WR_FIXTURE_RUN_FLAGS"
+  elif [ "$(basename "$RUNTIME")" = container ]; then
+    RUN_FLAGS=(--tmpfs /run --tmpfs /run/lock --tmpfs /tmp --tty)
+  else
+    # `exec`: the fixture's daemon lives beside its socket in /run/workroom, and Docker's tmpfs
+    # is noexec otherwise.
+    RUN_FLAGS=(--cgroupns=host --volume /sys/fs/cgroup:/sys/fs/cgroup:rw
+      --tmpfs /run:exec --tmpfs /run/lock --tmpfs /tmp)
+  fi
+else
+  RUN_FLAGS=(--init)
+fi
+"$RUNTIME" run --detach ${RUN_FLAGS[@]+"${RUN_FLAGS[@]}"} --name "$NAME" \
+  --publish 127.0.0.1::22 \
   --env "AUTHORIZED_KEY=$(cat "$STAGE/id_ed25519.pub")" \
   --env "WR_FIXTURE_SUPERVISOR=$SUPERVISOR" "$IMAGE" >/dev/null
 PORT="$("$RUNTIME" port "$NAME" 22/tcp | head -1 | sed 's/.*://')"
@@ -138,20 +170,30 @@ done
 # RUNTIME and SCREENS: for the test that reboots the box (#232). IMAGE, RUNTIME_PATH, PUBLIC_KEY
 # and LABEL: for the app's tests that provision containers of their own from the image (#252),
 # and CLONE_TOKEN for the image's GitHub (fake-github.py).
-CLONE_TOKEN="$("$RUNTIME" exec "$NAME" cat /etc/workroom-fixture/clone-token)"
+CLONE_TOKEN=""
+if [ "$SYSTEMD" != 1 ]; then
+  CLONE_TOKEN="$("$RUNTIME" exec "$NAME" cat /etc/workroom-fixture/clone-token)"
+fi
 for pair in "CONFIG=$STAGE/ssh_config" "SOCKET=$SOCKET" "ADDRESS=127.0.0.1" "PORT=$PORT" \
   "USER=workroom" "IDENTITY=$STAGE/id_ed25519" "HOST_KEY=$HOST_KEY" "DAEMON=$STAGE/workroomd" \
   "CONTAINER=$NAME" "RUNTIME=$RUNTIME" "SCREENS=$SCREENS" "IMAGE=$IMAGE" \
   "RUNTIME_PATH=$(command -v "$RUNTIME")" "PUBLIC_KEY=$(cat "$STAGE/id_ed25519.pub")" \
-  "LABEL=$LABEL" "CLONE_TOKEN=$CLONE_TOKEN" "SUPERVISOR=$SUPERVISOR"; do
+  "LABEL=$LABEL" "CLONE_TOKEN=$CLONE_TOKEN" "SUPERVISOR=$SUPERVISOR" "SYSTEMD=$SYSTEMD"; do
   export "WR_SSH_FIXTURE_$pair" "TEST_RUNNER_WR_SSH_FIXTURE_$pair"
 done
 
 shift
 if [ "$#" -eq 0 ]; then
-  # One thread: the tests share one daemon, and the supervisor test kills it.
+  # One thread: the tests share one daemon, and the supervisor test kills it. The systemd
+  # variant's tests switch the box's logind and linger, so they share it one at a time too.
   cd "$VCS_DIR"
-  set -- cargo test -p workroomd --test remote_transport -- --ignored --test-threads=1
+  if [ "$SYSTEMD" = 1 ]; then
+    set -- cargo test -p workroomd --test remote_transport over_ssh_systemd_ -- --ignored \
+      --test-threads=1
+  else
+    set -- cargo test -p workroomd --test remote_transport -- --ignored \
+      --skip over_ssh_systemd_ --test-threads=1
+  fi
 fi
 if ! "$@"; then
   echo "error: the ssh fixture tests failed; the container's log:" >&2

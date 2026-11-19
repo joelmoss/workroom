@@ -1,0 +1,13 @@
+# The systemd fixture's boot (#665): what entrypoint.sh does before sshd in the plain fixture.
+[Unit]
+Description=Workroom ssh fixture setup
+Before=ssh.service
+ConditionPathExists=/proc/1/environ
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/systemd-setup.sh
+
+[Install]
+WantedBy=multi-user.target
