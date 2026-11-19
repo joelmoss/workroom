@@ -2542,3 +2542,270 @@ fn session_id_bytes(session: &str) -> Vec<u8> {
         .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).expect("a hex session id"))
         .collect()
 }
+
+// ---------------------------------------------------------------------------
+// The systemd variant of the fixture (#665): `WR_FIXTURE_SYSTEMD=1 run.sh`, a box that boots
+// systemd with logind and pam_systemd. These run only there, and the plain fixture skips them.
+// Each sets the box's logind and the user's linger as root, through the container runtime, then
+// starts the daemon with the app's own start script over one ssh login, as an SSH host's connect
+// does. Whether the daemon outlives logins is checked through the runtime too, which opens none.
+
+/// Where the app's start script puts the screens on the fixture.
+const SYSTEMD_SCREENS: &str = "/home/workroom/.local/state/workroom/screens";
+
+/// The systemd fixture, or `None` (and the test passes untested) on any other.
+fn systemd_fixture() -> Option<Fixture> {
+    if std::env::var("WR_SSH_FIXTURE_SYSTEMD").as_deref() != Ok("1") {
+        eprintln!("skipped: needs WR_FIXTURE_SYSTEMD=1 vcs/scripts/ssh-fixture/run.sh");
+        return None;
+    }
+    Some(fixture())
+}
+
+impl Fixture {
+    /// Runs `script` on the box as `user` through the container runtime: no ssh, so no login.
+    fn on_box(&self, user: &str, script: &str) -> (bool, String) {
+        let need = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("{name} is unset"));
+        let output = Command::new(need("WR_SSH_FIXTURE_RUNTIME"))
+            .args(["exec", "--user", user, &need("WR_SSH_FIXTURE_CONTAINER")])
+            .args(["sh", "-c", script])
+            .output()
+            .expect("run the container runtime");
+        (
+            output.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
+    }
+
+    /// A box with no daemon and no login of the user's left, logind set to end a user's processes
+    /// at logout or not, and the user lingering or not.
+    fn systemd_box(&self, kill_user_processes: bool, linger: bool) {
+        let kill = if kill_user_processes { "yes" } else { "no" };
+        let linger = if linger { "enable" } else { "disable" };
+        let (ok, output) = self.on_box(
+            "root",
+            &format!(
+                "loginctl disable-linger workroom; loginctl terminate-user workroom 2>/dev/null; \
+                 pkill -KILL -f '^{INSTALLED_DAEMON}[^ ]* serve'; rm -f {socket}; \
+                 printf '[Login]\\nKillUserProcesses={kill}\\n' \
+                   > /etc/systemd/logind.conf.d/fixture.conf && \
+                 systemctl restart systemd-logind && loginctl {linger}-linger workroom",
+                socket = self.socket
+            ),
+        );
+        assert!(ok, "the box wasn't set up: {output}");
+        self.wait_for_no_login();
+    }
+
+    /// Waits until no ssh login of the user's is open, as after the app's ssh ends. By sshd's own
+    /// processes, not logind's list: a session whose processes outlive it stays listed, closing.
+    fn wait_for_no_login(&self) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            if !self.on_box("root", "pgrep -f '^sshd: workroom'").0 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        panic!("the user's logins never closed");
+    }
+
+    /// The app's start, over one ssh login that then closes. Returns its report.
+    fn systemd_start(&self) -> String {
+        let (status, output) = self.bootstrap(
+            "start",
+            &[INSTALLED_DAEMON, &self.socket, SYSTEMD_SCREENS, "never"],
+            None,
+        );
+        assert_eq!(status, Some(0), "start: {output}");
+        assert_eq!(
+            reported(&output, "serving").as_deref(),
+            Some("yes"),
+            "{output}"
+        );
+        output
+    }
+
+    /// Whether a daemon answers on the socket, asked with no login open.
+    fn serving(&self) -> bool {
+        self.on_box(
+            "workroom",
+            &format!("{INSTALLED_DAEMON} list --socket {}", self.socket),
+        )
+        .0
+    }
+
+    /// The cgroup a process runs in, as `/proc/<pid>/cgroup` names it.
+    fn cgroup(&self, pid: u32) -> String {
+        let (ok, output) = self.on_box("root", &format!("cat /proc/{pid}/cgroup"));
+        assert!(ok, "no process {pid}: {output}");
+        output
+    }
+
+    /// No login open for 15 s, longer than the 10 s a user manager outlives the last login by,
+    /// then whether the daemon still answers.
+    fn serving_after_every_login_closed(&self) -> bool {
+        self.wait_for_no_login();
+        std::thread::sleep(Duration::from_secs(15));
+        self.serving()
+    }
+}
+
+/// A server whose logind ends a user's processes at logout, and a user who doesn't linger: the
+/// daemon dies with the start's ssh login, as the app's survival check then reports. The start
+/// itself can't tell, so it still says it served.
+#[test]
+#[ignore = "needs the systemd ssh fixture: WR_FIXTURE_SYSTEMD=1 vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_systemd_logout_ends_the_daemon_of_a_user_who_does_not_linger() {
+    let Some(fixture) = systemd_fixture() else {
+        return;
+    };
+    fixture.systemd_box(true, false);
+    let output = fixture.systemd_start();
+    assert!(
+        reported(&output, "systemd-run-failed").is_none(),
+        "{output}"
+    );
+    let pid: u32 = reported(&output, "started")
+        .and_then(|pid| pid.parse().ok())
+        .unwrap_or_else(|| panic!("no pid in {output}"));
+    // logind ends the login's scope as the ssh closes; its pid may already be gone.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while fixture.serving() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(!fixture.serving(), "logout didn't end the daemon");
+    assert!(
+        !fixture.on_box("root", &format!("kill -0 {pid}")).0,
+        "the daemon's process outlived the logout"
+    );
+}
+
+/// The same server, and a user who lingers: the daemon runs as a unit under the user's own
+/// systemd manager, outlives every login, keeps a session's shell for a reattach, and a hand-off
+/// to a newer build keeps its pid, its unit and the session.
+#[test]
+#[ignore = "needs the systemd ssh fixture: WR_FIXTURE_SYSTEMD=1 vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_systemd_a_lingering_users_daemon_outlives_every_login_and_a_hand_off() {
+    let Some(fixture) = systemd_fixture() else {
+        return;
+    };
+    fixture.systemd_box(true, true);
+    let output = fixture.systemd_start();
+    assert!(
+        reported(&output, "systemd-run-failed").is_none(),
+        "{output}"
+    );
+    let daemon: u32 = reported(&output, "started")
+        .and_then(|pid| pid.parse().ok())
+        .unwrap_or_else(|| panic!("no pid in {output}"));
+    let cgroup = fixture.cgroup(daemon);
+    assert!(
+        cgroup.contains("/user@") && cgroup.contains("/workroomd-"),
+        "not in a user unit: {cgroup}"
+    );
+
+    let session = "7b7b7b7b-0000-4000-8000-000000006650";
+    let mut pane = Pane::attach(&fixture, session, false);
+    std::thread::sleep(Duration::from_millis(500));
+    pane.type_line("echo SHELL=$$ MARK-$((600+65))");
+    let seen = pane.read_until("MARK-665", Duration::from_secs(10));
+    let shell = number_after(&seen, "SHELL=").unwrap_or_else(|| panic!("no shell pid in {seen:?}"));
+    drop(pane);
+
+    assert!(
+        fixture.serving_after_every_login_closed(),
+        "the daemon died with no login open"
+    );
+    assert!(
+        fixture
+            .on_box("root", &format!("kill -0 {daemon} {shell}"))
+            .0
+    );
+    let mut pane = Pane::attach(&fixture, session, true);
+    let seen = pane.read_until("MARK-665", Duration::from_secs(10));
+    assert!(seen.contains("MARK-665"), "the session was lost: {seen:?}");
+    drop(pane);
+
+    // A newer app: the same ELF with a byte appended, handed off to as the bootstrap does.
+    let elf = PathBuf::from(
+        std::env::var("WR_SSH_FIXTURE_DAEMON").expect("run.sh exports WR_SSH_FIXTURE_DAEMON"),
+    );
+    let newer = elf.with_file_name("workroomd-newer-systemd");
+    let mut bytes = std::fs::read(&elf).expect("read the daemon");
+    bytes.push(b'\n');
+    std::fs::write(&newer, &bytes).expect("write the newer daemon");
+    let newer_sha = sha256_hex(&newer);
+    let (status, output) = fixture.bootstrap(
+        "probe",
+        &[
+            INSTALLED_DAEMON,
+            &fixture.socket,
+            "1",
+            &newer_sha,
+            &newer_sha,
+            "/run/workroom/ghostty",
+        ],
+        None,
+    );
+    assert_eq!(status, Some(0), "probe: {output}");
+    let (status, output) = fixture.bootstrap(
+        "install",
+        &[INSTALLED_DAEMON, &fixture.socket, "1", &newer_sha],
+        Some(&newer),
+    );
+    assert_eq!(status, Some(0), "install: {output}");
+    assert_eq!(
+        reported(&output, "outcome").as_deref(),
+        Some("handed-off"),
+        "{output}"
+    );
+    assert_eq!(fixture.cgroup(daemon), cgroup, "the hand-off left its unit");
+    assert!(
+        fixture.serving_after_every_login_closed(),
+        "the handed-off daemon died with no login open"
+    );
+    assert!(
+        fixture
+            .on_box("root", &format!("kill -0 {daemon} {shell}"))
+            .0
+    );
+    let mut pane = Pane::attach(&fixture, session, true);
+    let seen = pane.read_until("MARK-665", Duration::from_secs(10));
+    assert!(
+        seen.contains("MARK-665"),
+        "the hand-off lost the session: {seen:?}"
+    );
+}
+
+/// A default server (KillUserProcesses=no) and a user who doesn't linger: today's start, in the
+/// login's session scope, which outlives every login. A unit there would stop with the user's
+/// manager about 10 s after the last login.
+#[test]
+#[ignore = "needs the systemd ssh fixture: WR_FIXTURE_SYSTEMD=1 vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_systemd_a_default_server_keeps_todays_start() {
+    let Some(fixture) = systemd_fixture() else {
+        return;
+    };
+    fixture.systemd_box(false, false);
+    let output = fixture.systemd_start();
+    assert!(
+        reported(&output, "systemd-run-failed").is_none(),
+        "{output}"
+    );
+    let pid: u32 = reported(&output, "started")
+        .and_then(|pid| pid.parse().ok())
+        .unwrap_or_else(|| panic!("no pid in {output}"));
+    assert!(
+        fixture.cgroup(pid).contains("/session-"),
+        "a user who doesn't linger got a unit"
+    );
+    assert!(
+        fixture.serving_after_every_login_closed(),
+        "the daemon died with no login open"
+    );
+}
