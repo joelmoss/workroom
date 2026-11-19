@@ -151,8 +151,7 @@ final class ViewMenuShortcutsUITests: XCTestCase {
   /// 1. Bugs 2a/2b/3 WITHOUT a focused terminal. These run first, before anything has clicked into
   ///    a terminal, and each toggles twice so the sidebar ends where it started. ⌃⌘S is our own
   ///    Projects shortcut; ⌥⌘S is the OS-standard Toggle Sidebar shortcut, which must not open the
-  ///    empty native column (it's aliased onto the same real sidebar toggle); ⌥⌘B is the secondary
-  ///    Projects toggle.
+  ///    empty native column (it's aliased onto the same real sidebar toggle).
   /// 2. Bug 1: Changes/Files/History/Pull Request shortcuts reach the menu with a TUI focused.
   /// 3. Bugs 2a/2b/3 again, WITH a focused terminal (the keystroke must beat the Ghostty surface).
   /// 4. Bug 4: ⌘B toggles the Inspector as a whole, independent of which section is active. It
@@ -165,8 +164,6 @@ final class ViewMenuShortcutsUITests: XCTestCase {
       app, label: "⌃⌘S", key: "s", modifiers: [.command, .control])
     assertSidebarShortcutHidesThenShows(
       app, label: "⌥⌘S", key: "s", modifiers: [.command, .option])
-    assertSidebarShortcutHidesThenShows(
-      app, label: "⌥⌘B", key: "b", modifiers: [.command, .option])
 
     // Bug 1: shortcuts reach the menu even with a TUI focused.
     focusATerminal(app)
@@ -195,9 +192,6 @@ final class ViewMenuShortcutsUITests: XCTestCase {
       message:
         "⌥⌘S should toggle the real Projects sidebar (not an empty native column), terminal focused"
     )
-    assertSidebarShortcutFlipsWithTerminalFocused(
-      app, key: "b", modifiers: [.command, .option],
-      message: "⌥⌘B should toggle the real Projects sidebar even with a terminal focused")
 
     // Bug 4: ⌘B toggles the whole Inspector.
     focusATerminal(app)
