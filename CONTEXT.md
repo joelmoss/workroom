@@ -24,7 +24,7 @@ _Avoid_: Workspace
 A project's own checkout, shown in the sidebar beside its workrooms.
 
 **Target**:
-A root or a workroom, as the thing a window selects and opens terminals in. A create's pane before its workroom has a name is one too, and so is the Quick Terminal, which has no sidebar row (`TargetID`).
+A root, a workroom, a terminal group or a standalone terminal, as the thing a window selects and opens terminals in. A create's pane before its workroom has a name is one too (`TargetID`).
 
 **Base branch**:
 The branch a new workroom starts from, set per project or for all projects.
@@ -75,6 +75,17 @@ Owns panes, tabs, splits, sessions, surfaces and run commands. The terminal is l
 
 **Tab**:
 One terminal, or one diff, file or changeset view, opened in a target.
+
+**Terminal name**:
+What a terminal is labelled with: the name the user gave it, kept across a quit, or else the title its program sets, or else "Terminal N". Any terminal can be renamed.
+
+**Standalone terminal**:
+A terminal that belongs to no project and no terminal group, with a sidebar row and a workroom tab of its own. It runs on this Mac, starts in the folder the user chose for them, and comes back after a quit like a workroom's terminals. The app calls it just a terminal; say standalone where it must be told apart.
+_Avoid_: Loose terminal, free terminal
+
+**Terminal group**:
+A set of terminals belonging to no project, with its own starting folder. A window selects and uses one as it does a workroom, but no branch or worktree backs it, so it has no version control, run commands or host. The user makes one by splitting a standalone terminal, dropping one standalone terminal on another, or asking for a new one. Until it is named it is labelled by its terminals' names and goes when one terminal is left, which becomes standalone again; once named it stays, even empty. Deleting one makes its terminals standalone.
+_Avoid_: Group (alone), workroom (for a terminal group)
 
 **Split**:
 A tree that lays several of a target's tabs, or several workrooms in a window, out side by side or stacked.
@@ -217,7 +228,7 @@ A badge or desktop banner raised when a program in a terminal asks for attention
 _Avoid_: Alert (for an entry in that list)
 
 **Quick Terminal**:
-A window of terminals summoned from any app by a global shortcut, belonging to no workroom. Its terminals work like any other, but don't survive a quit.
+The built-in terminal group, which can't be deleted, that a global shortcut also slides in from any app as a panel of its own. Its terminals are ordinary ones: they survive a quit and move in and out like any other. Until ADR 0077 is built, they end at quit.
 
 **Shortcut**:
 The keys bound to one of Workroom's own actions. The user can record another, reset it to its default, or unset it so the action has no keys and terminals get them back. Standard items macOS supplies (Quit, Hide, Settings…, Copy, Paste) are not shortcuts in this sense.
