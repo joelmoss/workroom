@@ -282,7 +282,9 @@ final class DaemonBootstrapTests: XCTestCase {
     XCTAssertTrue(driver.commands[1].contains("'start' '/run/workroom/workroomd' "))
   }
 
-  func testAnSSHStartThatDoesNotSurviveLogoutNamesLogind() async throws {
+  /// Linger off on a server whose logind ends a user's processes at logout (#665): the error names
+  /// the cause and the step that works, enabling linger, and never suggests changing logind.
+  func testAnSSHStartThatDoesNotSurviveLogoutNamesLogindAndLinger() async throws {
     let driver = StubDriver([
       probe(installed: digest, handOff: "no-socket"),
       .init(output: "WRB started 45\nWRB serving yes\n"),
@@ -293,11 +295,50 @@ final class DaemonBootstrapTests: XCTestCase {
       _ = try await ensure(driver)
       XCTFail("a daemon killed when ssh logged out counted as ready")
     } catch DaemonBootstrap.Error.installFailed(let detail) {
-      XCTAssertTrue(detail.contains("SSH login closed"), detail)
-      XCTAssertTrue(detail.contains("KillUserProcesses"), detail)
-      XCTAssertTrue(detail.contains("loginctl enable-linger"), detail)
+      XCTAssertEqual(
+        detail,
+        "the server ended the daemon when the app's SSH login closed: its systemd-logind setting "
+          + "KillUserProcesses=yes ends a user's processes at logout. To keep the daemon running, "
+          + "run loginctl enable-linger on the server, or ask its administrator to, then connect "
+          + "again.")
     }
     XCTAssertEqual(driver.commands.count, 3, "the survival check is a separate exec")
+  }
+
+  /// Linger was already on, but starting the daemon under the user's systemd manager failed and
+  /// the start fell back to one that logout ends (#665). Enabling linger would change nothing, so
+  /// the error says what failed instead.
+  func testAnSSHStartWhoseSystemdStartFailedSaysSoInsteadOfLinger() async throws {
+    let driver = StubDriver([
+      probe(installed: digest, handOff: "no-socket"),
+      .init(
+        output: "WRB systemd-run-failed Failed to connect to bus: No medium found\n"
+          + "WRB started 46\nWRB serving yes\n"),
+      .init(output: "", status: 92),
+    ])
+    driver.startsDaemon = true
+    do {
+      _ = try await ensure(driver)
+      XCTFail("a daemon killed when ssh logged out counted as ready")
+    } catch DaemonBootstrap.Error.installFailed(let detail) {
+      XCTAssertEqual(
+        detail,
+        "the server ended the daemon when the app's SSH login closed, and starting it under your "
+          + "systemd user manager failed: Failed to connect to bus: No medium found. Check that "
+          + "systemctl --user works on the server, then connect again.")
+    }
+  }
+
+  /// A systemd start that failed but whose fallback survived is no error: the daemon serves.
+  func testAFailedSystemdStartWhoseFallbackSurvivesConnects() async throws {
+    let driver = StubDriver([
+      probe(installed: digest, handOff: "no-socket"),
+      .init(output: "WRB systemd-run-failed no bus\nWRB started 47\nWRB serving yes\n"),
+      .init(output: ""),
+    ])
+    driver.startsDaemon = true
+    let outcome = try await ensure(driver)
+    XCTAssertEqual(outcome.startedPID, 47)
   }
 
   /// A link that dies mid-push (ssh's own 255, no report) is one failure classified one way,

@@ -333,9 +333,19 @@ public enum DaemonBootstrap {
       throw Error.transportFailed(answer.output.trimmingCharacters(in: .whitespacesAndNewlines))
     }
     guard answer.status == 0 else {
+      // With linger on, start.sh runs the daemon under the user's systemd manager, which logout
+      // doesn't end (#665). It reports why when that failed and it fell back to a plain start.
+      if let failure = reports(in: result.output)["systemd-run-failed"] {
+        throw Error.installFailed(
+          "the server ended the daemon when the app's SSH login closed, and starting it under your "
+            + "systemd user manager failed: \(failure.joined(separator: " ")). Check that "
+            + "systemctl --user works on the server, then connect again.")
+      }
       throw Error.installFailed(
-        "the server ended the daemon after the SSH login closed. Its systemd-logind KillUserProcesses setting may end background processes. Ask the server's administrator about loginctl enable-linger or that setting, then try again."
-      )
+        "the server ended the daemon when the app's SSH login closed: its systemd-logind setting "
+          + "KillUserProcesses=yes ends a user's processes at logout. To keep the daemon running, "
+          + "run loginctl enable-linger on the server, or ask its administrator to, then connect "
+          + "again.")
     }
     return reports(in: result.output)["started"]?.first.flatMap(Int32.init)
   }
