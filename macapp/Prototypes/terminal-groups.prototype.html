@@ -1,0 +1,415 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway. Not app code. Lives on branch prototype/terminal-groups once a verdict lands.
+
+  Question: how do terminals that belong to no project (ungrouped, or in user-made groups) sit in the
+  sidebar, and how do the title-bar tabs show workrooms, ungrouped terminals and groups side by side?
+
+  Three structurally different variants on one page, switched by ?variant=A|B|C (bottom bar, or ← →).
+  A — "Terminals" is a section shaped like a project: an Ungrouped row + group rows. One title-bar tab each.
+  B — Every ungrouped terminal is its own sidebar row and its own title-bar tab; groups hold tabs.
+  C — Groups are top-level peers of projects; ungrouped terminals are a row pinned to the sidebar's foot;
+      the title bar splits into a workrooms zone and a terminals zone.
+
+  Everything is in memory. Drag a terminal tab onto a sidebar row or a title-bar tab to move it.
+  Right-click a terminal tab for "Move to…". "State" (bottom right) shows the model after each action.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terminal groups prototype</title>
+<style>
+  :root {
+    --desk: #14151a; --win: #1b1c20; --side: #202126; --pane: #0f1013; --line: #2c2d33;
+    --text: #e4e5e8; --dim: #8b8d95; --faint: #5d5f66; --hover: #2a2b31; --sel: #34363d;
+    --accent: #ffd60a; --blue: #4c8dff; --green: #30d158;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--desk); color: var(--text); font: 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; height: 100vh; overflow: hidden; }
+  svg.i { width: 13px; height: 13px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+  .window { position: absolute; inset: 24px 24px 64px; background: var(--win); border: 1px solid #33343a; border-radius: 10px; display: grid; grid-template-rows: 38px 1fr; overflow: hidden; }
+
+  /* title bar */
+  .titlebar { display: flex; align-items: center; gap: 4px; padding: 0 10px; border-bottom: 1px solid var(--line); min-width: 0; }
+  .lights { display: flex; gap: 8px; margin-right: 14px; }
+  .lights i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+  .tb-btn { color: var(--dim); padding: 4px 6px; border-radius: 5px; display: flex; }
+  .tb-btn:hover { background: var(--hover); }
+  .chips { display: flex; align-items: center; gap: 2px; overflow-x: auto; min-width: 0; flex: 1; scrollbar-width: none; }
+  .chip { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 5px; color: var(--dim); white-space: nowrap; cursor: default; border: 1px solid transparent; position: relative; }
+  .chip:hover { background: var(--hover); color: var(--text); }
+  .chip.sel { color: var(--text); border-color: #4a4b52; background: #26272c; }
+  .chip.sel::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; background: var(--accent); }
+  .chip .sec { color: var(--faint); }
+  .chip .sec::before { content: "/ "; }
+  .chip .count { font-size: 10px; color: var(--faint); background: #2a2b31; border-radius: 4px; padding: 0 4px; }
+  .chip.drop, .row.drop { outline: 1px dashed var(--accent); outline-offset: -1px; }
+  .zone-label { font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); padding: 0 6px 0 10px; white-space: nowrap; }
+  .zone-div { width: 1px; height: 18px; background: #3a3b42; margin: 0 6px; flex: none; }
+
+  /* body */
+  .body { display: grid; grid-template-columns: 230px 1fr; min-height: 0; }
+  .sidebar { background: var(--side); border-right: 1px solid var(--line); padding: 8px 6px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+  .row { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 5px; color: var(--text); cursor: default; white-space: nowrap; }
+  .row:hover { background: var(--hover); }
+  .row.sel { background: var(--sel); }
+  .row.child { padding-left: 24px; }
+  .row.grandchild { padding-left: 40px; color: var(--dim); }
+  .row .chev { width: 10px; color: var(--faint); font-size: 9px; }
+  .row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .row .meta { color: var(--faint); font-size: 10.5px; }
+  .row .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+  .row .add { opacity: 0; color: var(--dim); padding: 0 4px; border-radius: 4px; }
+  .row:hover .add { opacity: 1; }
+  .row .add:hover { background: #3a3b42; color: var(--text); }
+  .section { font-size: 10px; letter-spacing: .07em; text-transform: uppercase; color: var(--faint); padding: 10px 8px 4px; display: flex; align-items: center; gap: 4px; }
+  .section .grow { flex: 1; }
+  .section .add { color: var(--dim); padding: 0 4px; border-radius: 4px; cursor: default; font-size: 13px; letter-spacing: 0; }
+  .section .add:hover { background: var(--hover); color: var(--text); }
+  .project { color: var(--dim); font-weight: 600; }
+  .spacer { flex: 1; }
+  .pinned { border-top: 1px solid var(--line); margin: 6px -6px -8px; padding: 6px 6px 8px; background: #1d1e22; }
+
+  .main { display: grid; grid-template-rows: auto auto 1fr; min-width: 0; min-height: 0; padding: 6px; gap: 0; }
+  .pane-head { display: flex; align-items: center; gap: 6px; color: var(--dim); padding: 2px 6px 6px; }
+  .strip { display: flex; align-items: center; gap: 2px; padding: 0 4px 6px; }
+  .ttab { display: flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 5px; color: var(--dim); cursor: default; }
+  .ttab:hover { background: var(--hover); }
+  .ttab.sel { color: var(--text); background: #26272c; box-shadow: inset 0 -2px 0 var(--blue); }
+  .ttab .x { color: var(--faint); padding: 0 2px; border-radius: 3px; }
+  .ttab .x:hover { color: var(--text); background: #3a3b42; }
+  .plus { color: var(--dim); padding: 2px 7px; border-radius: 5px; font-size: 14px; cursor: default; }
+  .plus:hover { background: var(--hover); color: var(--text); }
+  .term { background: var(--pane); border: 1px solid var(--line); border-radius: 6px; font: 12px/1.5 "SF Mono", Menlo, monospace; padding: 12px 14px; color: #cfd1d6; overflow: hidden; min-height: 0; }
+  .term .p { color: #c792ea; } .term .b { color: var(--accent); } .term .c { color: var(--faint); }
+  .empty { display: grid; place-items: center; color: var(--dim); background: var(--pane); border: 1px dashed var(--line); border-radius: 6px; }
+  .empty button, .menu button { font: inherit; }
+  .empty button { background: #2a2b31; color: var(--text); border: 1px solid #3a3b42; border-radius: 6px; padding: 6px 12px; margin-top: 8px; }
+
+  /* context menu */
+  .menu { position: fixed; background: #2a2b31; border: 1px solid #3c3d44; border-radius: 7px; padding: 4px; min-width: 200px; z-index: 50; box-shadow: 0 8px 24px #0008; }
+  .menu .h { color: var(--faint); font-size: 10.5px; padding: 4px 8px 2px; }
+  .menu button { display: flex; gap: 6px; align-items: center; width: 100%; text-align: left; background: none; border: 0; color: var(--text); padding: 4px 8px; border-radius: 4px; }
+  .menu button:hover:not(:disabled) { background: var(--blue); }
+  .menu button:disabled { color: var(--faint); }
+  .menu hr { border: 0; border-top: 1px solid #3c3d44; margin: 4px 0; }
+
+  /* prototype chrome (not part of the design) */
+  .switcher { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; background: #fff; color: #000; border-radius: 999px; padding: 4px; font: 600 12px -apple-system, sans-serif; box-shadow: 0 4px 18px #0009; z-index: 60; }
+  .switcher button { background: #000; color: #fff; border: 0; border-radius: 999px; width: 26px; height: 26px; font-size: 13px; cursor: pointer; }
+  .switcher span { padding: 0 10px; white-space: nowrap; }
+  .state-btn { position: fixed; right: 14px; bottom: 16px; background: #fff; color: #000; border: 0; border-radius: 999px; padding: 6px 12px; font: 600 11px -apple-system, sans-serif; cursor: pointer; z-index: 60; }
+  .state { position: fixed; right: 14px; bottom: 52px; width: 340px; max-height: 60vh; overflow: auto; background: #fff; color: #111; border-radius: 8px; padding: 10px 12px; font: 11px/1.4 Menlo, monospace; white-space: pre; z-index: 60; box-shadow: 0 6px 24px #000a; }
+  .note { position: fixed; left: 24px; bottom: 18px; color: var(--faint); font-size: 11px; max-width: 30vw; }
+</style>
+</head>
+<body>
+<div class="window">
+  <div class="titlebar" id="titlebar"></div>
+  <div class="body">
+    <div class="sidebar" id="sidebar"></div>
+    <div class="main" id="main"></div>
+  </div>
+</div>
+<div class="note" id="note"></div>
+<div class="switcher"><button id="prev" title="Previous variant (←)">‹</button><span id="vlabel"></span><button id="next" title="Next variant (→)">›</button></div>
+<button class="state-btn" id="stateBtn">State</button>
+<div class="state" id="state" hidden></div>
+
+<script>
+const VARIANTS = {
+  A: "A · Terminals section, shaped like a project",
+  B: "B · Each loose terminal is its own row and tab",
+  C: "C · Groups beside projects, two-zone title bar",
+};
+const NOTES = {
+  A: "Ungrouped terminals share one row and one title-bar tab, like a project's own checkout. Groups sit under it like workrooms.",
+  B: "No tabs inside for ungrouped terminals: each is a sidebar row and a title-bar tab of its own. ⌘T there makes another one.",
+  C: "Groups are top-level, reorderable among projects. Ungrouped terminals are pinned at the sidebar's foot. Title bar: workrooms | terminals.",
+};
+const ICON = {
+  house: '<path d="M2.5 7 8 2.5 13.5 7v6.5h-11z"/><path d="M6.5 13.5v-4h3v4"/>',
+  cube: '<path d="M8 1.8 13.5 5v6L8 14.2 2.5 11V5z"/><path d="M2.5 5 8 8.2 13.5 5M8 8.2v6"/>',
+  term: '<rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.6"/><path d="m4.5 6.3 2 1.7-2 1.7M8 10h3.5"/>',
+  group: '<rect x="1.8" y="4.2" width="10" height="8.8" rx="1.4"/><path d="M4.2 2.6h8.4a1.6 1.6 0 0 1 1.6 1.6v6.6"/>',
+  sidebar: '<rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.6"/><path d="M6 2.8v10.4"/>',
+};
+const svg = k => `<svg class="i" viewBox="0 0 16 16">${ICON[k]}</svg>`;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// ---- model (in memory) ----
+let nextId = 10;
+const S = {
+  projects: [
+    { name: "acme-app", workrooms: ["vivid-wheat", "sunny-bay", "nice-tree"], open: true },
+    { name: "codaset", workrooms: ["dusk-flora"], open: true },
+  ],
+  groups: [ { id: "g1", name: "Ops", open: true }, { id: "g2", name: "Servers", open: true } ],
+  // place: "root:<p>" | "wr:<p>/<n>" | "loose" | "grp:<id>"
+  terminals: [
+    { id: 1, title: "Terminal 1", cmd: "claude", place: "wr:acme-app/vivid-wheat" },
+    { id: 2, title: "Run", cmd: "bin/dev", place: "wr:acme-app/sunny-bay" },
+    { id: 3, title: "Terminal 1", cmd: "", place: "root:acme-app" },
+    { id: 4, title: "~", cmd: "", place: "loose" },
+    { id: 5, title: "dotfiles", cmd: "nvim ~/.zshrc", place: "loose" },
+    { id: 6, title: "prod logs", cmd: "ssh prod tail -f log/production.log", place: "grp:g1" },
+    { id: 7, title: "k9s", cmd: "k9s", place: "grp:g1" },
+    { id: 8, title: "postgres", cmd: "postgres -D /usr/local/var/pg", place: "grp:g2" },
+  ],
+  chipOrder: [], // view keys, in title-bar order
+  selected: "wr:acme-app/vivid-wheat", // a view key
+  active: {}, // view key -> terminal id
+};
+const params = new URLSearchParams(location.search);
+let V = VARIANTS[params.get("variant")] ? params.get("variant") : "A";
+
+const group = id => S.groups.find(g => g.id === id);
+const termsIn = place => S.terminals.filter(t => t.place === place);
+// A view key is what the sidebar selects and a title-bar tab shows: a place, or (variant B) "term:<id>".
+function viewTerms(key) {
+  if (key.startsWith("term:")) return S.terminals.filter(t => t.id === +key.slice(5));
+  return termsIn(key);
+}
+function viewKeyOf(t) { return V === "B" && t.place === "loose" ? `term:${t.id}` : t.place; }
+function keyExists(key) {
+  if (key === "loose") return V !== "B";
+  if (key.startsWith("term:")) return V === "B" && S.terminals.some(t => t.id === +key.slice(5) && t.place === "loose");
+  if (key.startsWith("grp:")) return !!group(key.slice(4));
+  if (key.startsWith("root:")) return S.projects.some(p => p.name === key.slice(5));
+  if (key.startsWith("wr:")) { const [p, n] = key.slice(3).split("/"); return S.projects.some(x => x.name === p && x.workrooms.includes(n)); }
+  return false;
+}
+function label(key) {
+  if (key.startsWith("root:")) return { icon: "house", main: key.slice(5) };
+  if (key.startsWith("wr:")) { const [p, n] = key.slice(3).split("/"); return { icon: "cube", main: p, sec: n }; }
+  if (key === "loose") return { icon: "term", main: V === "A" ? "Ungrouped" : "Terminals" };
+  if (key.startsWith("grp:")) return { icon: "group", main: group(key.slice(4))?.name ?? "?" };
+  const t = viewTerms(key)[0]; return { icon: "term", main: t ? t.title : "?" };
+}
+const isTerminalKey = k => k === "loose" || k.startsWith("grp:") || k.startsWith("term:");
+
+// Title-bar tabs: every view key with ≥1 terminal, in remembered order (new ones append).
+function chips() {
+  const live = new Set(S.terminals.map(viewKeyOf));
+  for (const k of live) if (!S.chipOrder.includes(k)) S.chipOrder.push(k);
+  return S.chipOrder.filter(k => live.has(k) && keyExists(k));
+}
+
+// ---- actions ----
+function select(key) { S.selected = key; render(); }
+function newTerminal(key) {
+  let place = key ?? S.selected;
+  if (!place || !keyExists(place)) place = "loose";
+  if (place.startsWith("term:")) place = "loose"; // B: ⌘T on a loose terminal makes another loose one
+  const t = { id: nextId++, title: place === "loose" || place.startsWith("grp:") ? "~" : `Terminal ${termsIn(place).length + 1}`, cmd: "", place };
+  S.terminals.push(t);
+  const vk = viewKeyOf(t);
+  S.active[vk] = t.id; S.selected = vk; render();
+}
+function closeTerminal(id) {
+  const t = S.terminals.find(x => x.id === id);
+  S.terminals = S.terminals.filter(x => x.id !== id);
+  if (t && V === "B" && t.place === "loose" && S.selected === `term:${id}`) {
+    const other = S.terminals.find(x => x.place === "loose"); S.selected = other ? `term:${other.id}` : "loose";
+  }
+  render();
+}
+function move(id, place) {
+  const t = S.terminals.find(x => x.id === id); if (!t || t.place === place) return;
+  t.place = place; const vk = viewKeyOf(t); S.active[vk] = id; S.selected = vk; render();
+}
+function newGroup(withTerminal) {
+  const name = prompt("Group name", "New Group"); if (!name) return;
+  const g = { id: `g${nextId++}`, name, open: true }; S.groups.push(g);
+  if (withTerminal != null) move(withTerminal, `grp:${g.id}`); else select(`grp:${g.id}`);
+}
+function groupMenu(e, g) {
+  menu(e, [
+    { label: "New Terminal in Group", run: () => newTerminal(`grp:${g.id}`) },
+    { label: "Rename…", run: () => { const n = prompt("Rename group", g.name); if (n) { g.name = n; render(); } } },
+    { sep: true },
+    { label: `Delete “${g.name}”…`, run: () => {
+      const n = termsIn(`grp:${g.id}`).length;
+      if (n && !confirm(`Delete ${g.name}? Its ${n} terminal${n > 1 ? "s" : ""} move to Ungrouped.`)) return;
+      termsIn(`grp:${g.id}`).forEach(t => t.place = "loose");
+      S.groups = S.groups.filter(x => x !== g); if (S.selected === `grp:${g.id}`) S.selected = "loose"; render();
+    } },
+  ]);
+}
+function moveMenu(e, t) {
+  const items = [{ head: "Move to…" }];
+  items.push({ label: "Ungrouped", icon: "term", disabled: t.place === "loose", run: () => move(t.id, "loose") });
+  for (const g of S.groups) items.push({ label: g.name, icon: "group", disabled: t.place === `grp:${g.id}`, run: () => move(t.id, `grp:${g.id}`) });
+  items.push({ label: "New Group…", run: () => newGroup(t.id) });
+  for (const p of S.projects) {
+    items.push({ sep: true }, { head: p.name });
+    items.push({ label: p.name, icon: "house", disabled: t.place === `root:${p.name}`, run: () => move(t.id, `root:${p.name}`) });
+    for (const w of p.workrooms) items.push({ label: w, icon: "cube", disabled: t.place === `wr:${p.name}/${w}`, run: () => move(t.id, `wr:${p.name}/${w}`) });
+  }
+  menu(e, items);
+}
+
+// ---- drag a terminal tab onto a row or a title-bar tab ----
+let dragging = null;
+function dropTarget(el, key) {
+  if (!key || key.startsWith("project:")) return;
+  const place = key.startsWith("term:") ? "loose" : key;
+  el.addEventListener("dragover", e => { if (dragging != null) { e.preventDefault(); el.classList.add("drop"); } });
+  el.addEventListener("dragleave", () => el.classList.remove("drop"));
+  el.addEventListener("drop", e => { e.preventDefault(); el.classList.remove("drop"); if (dragging != null) move(dragging, place); });
+}
+
+// ---- render ----
+function render() {
+  if (!keyExists(S.selected)) S.selected = V === "B" ? (S.terminals.find(t => t.place === "loose") ? `term:${S.terminals.find(t => t.place === "loose").id}` : "root:acme-app") : "loose";
+  renderTitlebar(); renderSidebar(); renderMain();
+  document.getElementById("vlabel").textContent = VARIANTS[V];
+  document.getElementById("note").textContent = NOTES[V];
+  document.getElementById("state").textContent = JSON.stringify({
+    variant: V, selected: S.selected, titleBarTabs: chips(),
+    groups: S.groups.map(g => `${g.id} ${g.name}`),
+    terminals: S.terminals.map(t => `#${t.id} ${t.title} → ${t.place}`),
+  }, null, 2);
+}
+
+function chipHTML(k) {
+  const l = label(k), n = viewTerms(k).length;
+  return `<div class="chip ${k === S.selected ? "sel" : ""}" data-key="${esc(k)}" title="${esc(l.main + (l.sec ? " / " + l.sec : ""))}">${svg(l.icon)}<span>${esc(l.main)}</span>${l.sec ? `<span class="sec">${esc(l.sec)}</span>` : ""}${isTerminalKey(k) && n > 1 ? `<span class="count">${n}</span>` : ""}</div>`;
+}
+function renderTitlebar() {
+  const tb = document.getElementById("titlebar");
+  const ks = chips();
+  let inner;
+  if (V === "C") {
+    const w = ks.filter(k => !isTerminalKey(k)), t = ks.filter(isTerminalKey);
+    inner = `<span class="zone-label">Workrooms</span>${w.map(chipHTML).join("")}<span class="zone-div"></span><span class="zone-label">Terminals</span>${t.map(chipHTML).join("") || '<span class="zone-label" style="text-transform:none;letter-spacing:0">none open</span>'}`;
+  } else inner = ks.map(chipHTML).join("");
+  tb.innerHTML = `<div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+    <span class="tb-btn">${svg("sidebar")}</span><span class="tb-btn">‹</span><span class="tb-btn">›</span>
+    <div class="chips">${inner}</div><span class="plus" title="New Terminal (⌘T) in the selection, or Ungrouped">+</span>`;
+  tb.querySelectorAll(".chip").forEach(c => { c.onclick = () => select(c.dataset.key); dropTarget(c, c.dataset.key); });
+  tb.querySelector(".plus").onclick = () => newTerminal();
+}
+
+function row(key, html, cls = "") {
+  return `<div class="row ${cls} ${key === S.selected ? "sel" : ""}" data-key="${esc(key)}">${html}</div>`;
+}
+function countMeta(key) { const n = viewTerms(key).length; return n ? `<span class="meta">${n}</span>` : ""; }
+function projectRows() {
+  let h = "";
+  for (const p of S.projects) {
+    h += `<div class="row project" data-project="${esc(p.name)}"><span class="chev">${p.open ? "▾" : "▸"}</span><span class="name">${esc(p.name)}</span></div>`;
+    if (!p.open) continue;
+    h += row(`root:${p.name}`, `${svg("house")}<span class="name">${esc(p.name)}</span>${countMeta(`root:${p.name}`)}`, "child");
+    for (const w of p.workrooms) h += row(`wr:${p.name}/${w}`, `${svg("cube")}<span class="name">${esc(w)}</span>${termsIn(`wr:${p.name}/${w}`).some(t => t.title === "Run") ? '<span class="dot" title="Running"></span>' : ""}${countMeta(`wr:${p.name}/${w}`)}`, "child");
+  }
+  return h;
+}
+function groupRow(g, cls, withChildren) {
+  let h = row(`grp:${g.id}`, `${withChildren ? `<span class="chev" data-toggle="${g.id}">${g.open ? "▾" : "▸"}</span>` : ""}${svg("group")}<span class="name">${esc(g.name)}</span>${countMeta(`grp:${g.id}`)}<span class="add" data-newin="grp:${g.id}" title="New Terminal in ${esc(g.name)}">+</span>`, cls);
+  if (withChildren && g.open) for (const t of termsIn(`grp:${g.id}`)) h += `<div class="row grandchild" data-focus="${t.id}" data-key="grp:${g.id}">${svg("term")}<span class="name">${esc(t.title)}</span></div>`;
+  return h;
+}
+let termsOpen = true;
+function renderSidebar() {
+  const sb = document.getElementById("sidebar");
+  let h = "";
+  if (V === "A") {
+    h += projectRows();
+    h += `<div class="row project" data-terms><span class="chev">${termsOpen ? "▾" : "▸"}</span><span class="name">Terminals</span><span class="add" data-newgroup title="New Group">+</span></div>`;
+    if (termsOpen) {
+      h += row("loose", `${svg("term")}<span class="name">Ungrouped</span>${countMeta("loose")}`, "child");
+      for (const g of S.groups) h += groupRow(g, "child", false);
+    }
+  } else if (V === "B") {
+    h += `<div class="section"><span>Terminals</span><span class="grow"></span><span class="add" data-newloose title="New Terminal">+</span><span class="add" data-newgroup title="New Group">${svg("group")}</span></div>`;
+    for (const t of termsIn("loose")) h += row(`term:${t.id}`, `${svg("term")}<span class="name">${esc(t.title)}</span><span class="meta">${esc(t.cmd.split(" ")[0] || "zsh")}</span>`);
+    for (const g of S.groups) h += groupRow(g, "", true);
+    h += `<div class="section"><span>Projects</span></div>` + projectRows();
+  } else {
+    // C: groups are peers of projects in one list; ungrouped pinned at the foot.
+    h += projectRows();
+    for (const g of S.groups) h += groupRow(g, "", false);
+    h += `<div class="row" data-newgroup style="color:var(--faint)"><span class="chev"></span>+ New Group</div>`;
+    h += `<div class="spacer"></div><div class="pinned">${row("loose", `${svg("term")}<span class="name">Terminals</span>${countMeta("loose")}<span class="add" data-newin="loose" title="New Terminal">+</span>`)}</div>`;
+  }
+  sb.innerHTML = h;
+  sb.querySelectorAll(".row[data-key]").forEach(r => {
+    r.onclick = e => {
+      if (e.target.closest("[data-newin],[data-toggle]")) return;
+      if (r.dataset.focus) S.active[r.dataset.key] = +r.dataset.focus;
+      select(r.dataset.key);
+    };
+    dropTarget(r, r.dataset.key);
+    const k = r.dataset.key;
+    if (k.startsWith("grp:")) r.oncontextmenu = e => { e.preventDefault(); groupMenu(e, group(k.slice(4))); };
+  });
+  sb.querySelectorAll("[data-project]").forEach(r => r.onclick = () => { const p = S.projects.find(x => x.name === r.dataset.project); p.open = !p.open; render(); });
+  sb.querySelectorAll("[data-terms]").forEach(r => r.onclick = e => { if (e.target.closest("[data-newgroup]")) return; termsOpen = !termsOpen; render(); });
+  sb.querySelectorAll("[data-toggle]").forEach(c => c.onclick = () => { const g = group(c.dataset.toggle); g.open = !g.open; render(); });
+  sb.querySelectorAll("[data-newin]").forEach(b => b.onclick = e => { e.stopPropagation(); newTerminal(b.dataset.newin); });
+  sb.querySelectorAll("[data-newgroup]").forEach(b => b.onclick = e => { e.stopPropagation(); newGroup(); });
+  sb.querySelectorAll("[data-newloose]").forEach(b => b.onclick = () => newTerminal("loose"));
+}
+
+function renderMain() {
+  const m = document.getElementById("main");
+  const k = S.selected, l = label(k), ts = viewTerms(k);
+  const single = k.startsWith("term:");
+  let active = ts.find(t => t.id === S.active[k]) ?? ts[0];
+  const head = `<div class="pane-head">${svg(l.icon)}<span>${esc(l.main)}${l.sec ? " / " + esc(l.sec) : ""}</span>${single ? '<span style="color:var(--faint)">· ungrouped</span>' : ""}</div>`;
+  const strip = single || !ts.length ? "<div></div>" : `<div class="strip">${ts.map(t => `<div class="ttab ${t === active ? "sel" : ""}" draggable="true" data-id="${t.id}">${svg("term")}<span>${esc(t.title)}</span><span class="x" data-close="${t.id}">×</span></div>`).join("")}<span class="plus" data-new>+</span></div>`;
+  let body;
+  if (!ts.length) body = `<div class="empty"><div style="text-align:center">No terminals in ${esc(l.main)}${l.sec ? " / " + esc(l.sec) : ""}<br><button data-new>New Terminal</button></div></div>`;
+  else {
+    const cwd = k.startsWith("wr:") ? `~/workrooms/${l.sec}` : k.startsWith("root:") ? `~/dev/${l.main}` : "~";
+    body = `<div class="term" ${single ? `draggable="true" data-id="${active.id}"` : ""}><span class="c">Last login: Thu Nov 19 09:12 on ttys004</span>
+<span class="p">${esc(cwd)}</span> <span class="b">❯</span> ${esc(active.cmd)}
+${active.cmd ? '<span class="c">…</span>\n' : ""}<span class="p">${esc(cwd)}</span> <span class="b">❯</span> ▍
+
+<span class="c">(prototype) Drag a tab onto a sidebar row or title-bar tab to move it. Right-click a tab for Move to….</span></div>`;
+  }
+  m.innerHTML = head + strip + body;
+  m.querySelectorAll("[draggable]").forEach(el => {
+    el.addEventListener("dragstart", e => { dragging = +el.dataset.id; e.dataTransfer.setData("text/plain", el.dataset.id); });
+    el.addEventListener("dragend", () => dragging = null);
+    el.oncontextmenu = e => { e.preventDefault(); moveMenu(e, S.terminals.find(t => t.id === +el.dataset.id)); };
+  });
+  m.querySelectorAll(".ttab").forEach(el => el.onclick = e => { if (e.target.dataset.close) return closeTerminal(+e.target.dataset.close); S.active[k] = +el.dataset.id; render(); });
+  m.querySelectorAll("[data-new]").forEach(b => b.onclick = () => newTerminal(k));
+}
+
+// ---- context menu ----
+function menu(e, items) {
+  closeMenu();
+  const el = document.createElement("div"); el.className = "menu"; el.id = "menu";
+  el.innerHTML = items.map((it, i) => it.sep ? "<hr>" : it.head ? `<div class="h">${esc(it.head)}</div>` : `<button data-i="${i}" ${it.disabled ? "disabled" : ""}>${it.icon ? svg(it.icon) : ""}${esc(it.label)}</button>`).join("");
+  document.body.appendChild(el);
+  el.style.left = Math.min(e.clientX, innerWidth - el.offsetWidth - 8) + "px";
+  el.style.top = Math.min(e.clientY, innerHeight - el.offsetHeight - 8) + "px";
+  el.querySelectorAll("button").forEach(b => b.onclick = () => { closeMenu(); items[+b.dataset.i].run(); });
+}
+function closeMenu() { document.getElementById("menu")?.remove(); }
+addEventListener("click", e => { if (!e.target.closest(".menu")) closeMenu(); });
+
+// ---- prototype switcher ----
+function setVariant(v) {
+  V = v; const u = new URL(location); u.searchParams.set("variant", v); history.replaceState(null, "", u);
+  S.chipOrder = S.chipOrder.filter(keyExists); render();
+}
+const keys = Object.keys(VARIANTS);
+const step = d => setVariant(keys[(keys.indexOf(V) + d + keys.length) % keys.length]);
+document.getElementById("prev").onclick = () => step(-1);
+document.getElementById("next").onclick = () => step(1);
+addEventListener("keydown", e => {
+  if (e.target.closest("input,textarea,[contenteditable]")) return;
+  if (e.key === "ArrowLeft") step(-1);
+  if (e.key === "ArrowRight") step(1);
+  if (e.key === "Escape") closeMenu();
+});
+document.getElementById("stateBtn").onclick = () => { const s = document.getElementById("state"); s.hidden = !s.hidden; };
+render();
+</script>
+</body>
+</html>
