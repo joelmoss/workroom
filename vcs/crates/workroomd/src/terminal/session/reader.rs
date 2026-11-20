@@ -205,7 +205,7 @@ pub(super) fn read_session(
                             Some((status.event(hooks.boot(), id), blocked))
                         });
                         if !held.waiters.is_empty() {
-                            waiting = Some((held.waiters.list(), shadow.seen()));
+                            waiting = Some((held.waiters.list(), shadow.seen_after_read()));
                         }
                         shadow.take_disturbed()
                     };

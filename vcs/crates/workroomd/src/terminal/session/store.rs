@@ -392,8 +392,9 @@ impl SessionStore {
 
     /// Lets each unprobed request alert whose sender is still running in the foreground a grace
     /// after it blocked, and is not the session's interactive shell (#481). `screens::tick` runs
-    /// it every `screens::INTERVAL`; as `compress_shadows`, it takes each shadow's lock on its own,
-    /// never a session's attachment lock.
+    /// it every `screens::INTERVAL`; as `compress_shadows`, it takes each shadow's lock on its own.
+    /// Only a session with an unprobed request has its attachment lock taken after, released, to
+    /// tell its waits (`program_status_changed`).
     pub fn promote_unprobed(&self, now: Instant) -> bool {
         let mut pending = false;
         let sessions: Vec<_> = {
@@ -411,11 +412,13 @@ impl SessionStore {
                 .collect()
         };
         for (id, pty, shadow, interactive) in sessions {
+            let mut looked = false;
             self.hooks.change_program_status(id, &shadow, |status| {
                 if !status.has_unprobed_request() {
                     return;
                 }
                 pending = true;
+                looked = true;
                 let foreground = pty.foreground_pgid();
                 let shell = interactive.then(|| pty.child_pid());
                 status.promote_unprobed(now, |group| {
@@ -424,6 +427,11 @@ impl SessionStore {
                         && crate::terminal::program_status::group_alive(group)
                 });
             });
+            // A promoted request is the one `sessions` reports, which a wait for `blocked` is
+            // waiting to see (#690); with the shadow's lock released, as a read tells them.
+            if looked {
+                self.program_status_changed(id);
+            }
         }
         pending
     }

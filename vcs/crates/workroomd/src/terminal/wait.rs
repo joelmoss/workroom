@@ -80,10 +80,14 @@ impl RunState {
 }
 
 /// What the shadow says after a read, for the waiters that look at it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Seen {
     /// The coding agent's state, as `sessions` reports it; `None` with no record.
     pub agent: Option<State>,
+    /// The states the read's events left the agent in, in order, when it had several
+    /// (`Store::apply_read`): one reported and replaced within the read still meets a wait for it.
+    /// Empty but straight after a read.
+    pub passed: Vec<State>,
     /// How many commands the shell has ended (OSC 133 D after a C) since the daemon started it.
     pub commands: u64,
     /// The last of them's exit code.
@@ -173,7 +177,11 @@ impl Waiter {
     /// The shadow's state after a read, or after the program status changed.
     pub fn shadow(&self, seen: &Seen) {
         self.update(|progress| match progress.condition {
-            Condition::Status(wanted) if seen.agent == Some(wanted) => Some(Met::Status(wanted)),
+            Condition::Status(wanted)
+                if seen.agent == Some(wanted) || seen.passed.contains(&wanted) =>
+            {
+                Some(Met::Status(wanted))
+            }
             Condition::CommandFinished if seen.commands > progress.commands_before => {
                 Some(Met::CommandFinished(seen.last_exit))
             }

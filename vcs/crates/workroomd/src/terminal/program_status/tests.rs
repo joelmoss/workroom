@@ -613,3 +613,27 @@ fn a_store_survives_serialization() {
     );
     assert_eq!((back.records[0].episode, back.records[0].notify), (1, true));
 }
+
+/// A read with several events names each state they left the coding agent in, so a wait for one
+/// reported and replaced within the read sees it (#690); one with a single event has its state
+/// after it, and names none.
+#[test]
+fn a_read_names_each_state_its_events_left_the_agent_in() {
+    let mut store = Store::default();
+    let passed = store.apply_read(
+        vec![
+            Event::Report(report("", State::Working)),
+            Event::Report(report("", State::Working)),
+            Event::Report(report("", State::Done)),
+        ],
+        7,
+        Instant::now(),
+    );
+    assert_eq!(passed, [State::Working, State::Done]);
+    let one = store.apply_read(
+        vec![Event::Report(report("", State::Idle))],
+        7,
+        Instant::now(),
+    );
+    assert!(one.is_empty(), "{one:?}");
+}
