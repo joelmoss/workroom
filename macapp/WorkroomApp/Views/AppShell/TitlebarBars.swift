@@ -152,6 +152,15 @@ struct TrailingTitlebarBar: View {
   /// broadcast to every window, and the key-window guard below is what decides which one opens.
   @State private var showThemePicker = false
 
+  /// The tab the dropdown opens on: the current appearance's (#735), worked out as it opens.
+  @State private var themePickerTab: ThemePickerTab = .dark
+
+  /// Open or close the dropdown, on the current appearance's tab when opening.
+  private func toggleThemePicker() {
+    if !showThemePicker { themePickerTab = .current() }
+    showThemePicker.toggle()
+  }
+
   /// The row's trailing inset — DERIVED, not chosen: the activity bar (always present, flush to the
   /// window's trailing edge) is directly below this row, so the last control's well is centred on that
   /// rail's icon column. Anything else reads as a random gap between the last button and the window
@@ -182,8 +191,8 @@ struct TrailingTitlebarBar: View {
       } label: {
         Image(systemName: appearance.symbol)
       }
-      .help("Theme: \(appearance.label) — click to switch to \(appearance.next.label)")
-      .accessibilityLabel("Theme: \(appearance.label)")
+      .help("Appearance: \(appearance.label) — click to switch to \(appearance.next.label)")
+      .accessibilityLabel("Appearance: \(appearance.label)")
       .accessibilityIdentifier("toolbar.appearance")
 
       // Theme (⌘⇧K) — a dropdown anchored here rather than a sheet or a window of its own, because
@@ -197,7 +206,7 @@ struct TrailingTitlebarBar: View {
       // anywhere else closes it, and anything that raises a dialog closes it too (below). It is
       // therefore deliberately absent from `ModalState.hasModalPresentation`.
       Button {
-        showThemePicker.toggle()
+        toggleThemePicker()
       } label: {
         Image(systemName: "paintpalette")
       }
@@ -205,7 +214,7 @@ struct TrailingTitlebarBar: View {
       .accessibilityLabel("Theme")
       .accessibilityIdentifier("toolbar.theme")
       .popover(isPresented: $showThemePicker, arrowEdge: .bottom) {
-        ThemePicker()
+        ThemePicker(tab: themePickerTab)
       }
 
       // Quick Terminal (⌥§ by default) — a shell in its own slide-in window, always at the trailing
@@ -238,7 +247,7 @@ struct TrailingTitlebarBar: View {
     // open the dropdown and then never close it, which is why `ThemePickerUITests` presses ⌘⇧K twice.
     .onReceive(NotificationCenter.default.publisher(for: .showThemePicker)) { _ in
       guard store.hostWindow?.isKeyWindow ?? false else { return }
-      showThemePicker.toggle()
+      toggleThemePicker()
     }
     // A popover dismisses itself on a click outside, but a *keyboard* command never sends that click, so
     // the two window-level changes a command can make close it explicitly: a dialog or sheet coming up

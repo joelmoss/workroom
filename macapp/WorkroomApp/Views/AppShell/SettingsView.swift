@@ -683,7 +683,38 @@ private struct AppearanceSettingsPane: View {
   @Default(.loadRemoteAvatars) private var loadRemoteAvatars
   @Default(.dimUnfocusedPanes) private var dimUnfocusedPanes
   @Default(.autoResizeSplitsEvenly) private var autoResizeSplitsEvenly
-  @State private var showThemePopover = false
+  /// The tab whose Settings row has the theme picker open, or nil when none does.
+  @State private var openThemeTab: ThemePickerTab?
+
+  /// One theme row: its value on a button that opens the theme picker on `tab`, anchored to the row.
+  private func themeRow(
+    _ title: String, value: String, tab: ThemePickerTab, id: String, help: String
+  ) -> some View {
+    LabeledContent(title) {
+      Button {
+        openThemeTab = tab
+      } label: {
+        HStack(spacing: 6) {
+          Text(value).lineLimit(1).truncationMode(.tail)
+          Image(systemName: "chevron.up.chevron.down").font(.caption2).accessibilityHidden(true)
+        }
+        // Fixed width so the button (and the popover anchored to it) doesn't shift left/right as
+        // the name changes length.
+        .frame(width: 160, alignment: .trailing)
+      }
+      .help(help)
+      .accessibilityIdentifier("settings.control.\(id)")
+      .popover(
+        isPresented: Binding(
+          get: { openThemeTab == tab },
+          set: { if !$0, openThemeTab == tab { openThemeTab = nil } }),
+        arrowEdge: .bottom
+      ) {
+        ThemePicker(tab: tab)
+      }
+    }
+    .help(help)
+  }
 
   /// The Glass slider's stops: 70, 75 … 100%, so 100% (off) is one clean stop at the end.
   private static let glassStep = 0.05
@@ -696,7 +727,7 @@ private struct AppearanceSettingsPane: View {
   }
 
   var body: some View {
-    let familySummary = ThemeCatalog.familySummary(light: lightTheme, dark: darkTheme)
+    let familyLabel = ThemeCatalog.familyLabel(light: lightTheme, dark: darkTheme)
     Form {
       Picker("Appearance", selection: $appearance) {
         ForEach(AppearanceMode.allCases, id: \.self) { mode in
@@ -705,28 +736,20 @@ private struct AppearanceSettingsPane: View {
       }
       .help("Match the system appearance, or force Light or Dark.")
 
-      // Theme family (issues #36, #733): choosing a family sets both the light theme and the dark
-      // theme; Appearance above decides which one shows. The row names the family the two themes
-      // match, or "Custom" with both names. The button opens the swatch picker (also ⌘⇧K).
-      LabeledContent("Theme family") {
-        Button {
-          showThemePopover = true
-        } label: {
-          HStack(spacing: 6) {
-            Text(familySummary).lineLimit(1).truncationMode(.tail)
-            Image(systemName: "chevron.up.chevron.down").font(.caption2)
-          }
-          // Fixed width so the button (and the popover anchored to it) doesn't shift left/right as
-          // the selected family name changes length.
-          .frame(width: 160, alignment: .trailing)
-        }
-        .popover(isPresented: $showThemePopover, arrowEdge: .bottom) {
-          ThemePicker()
-        }
-      }
-      .help(
-        "\(familySummary). Choose a theme family to set both the light theme and the dark theme; "
-          + "Appearance decides which one shows.")
+      // Theme family, Light theme and Dark theme (issues #36, #733, #735). Appearance above decides
+      // which theme shows. The family row names the family the two themes match, or "Custom"; each
+      // row opens the picker on its own tab (⌘⇧K opens it on the current appearance's).
+      themeRow(
+        "Theme family", value: familyLabel, tab: .family, id: "themeFamily",
+        help: "\(ThemeCatalog.familySummary(light: lightTheme, dark: darkTheme)). Choose a theme "
+          + "family to set both the light theme and the dark theme; Appearance decides which one "
+          + "shows.")
+      themeRow(
+        "Light theme", value: lightTheme, tab: .light, id: "lightTheme",
+        help: "\(lightTheme): the theme Workroom uses while the appearance is light.")
+      themeRow(
+        "Dark theme", value: darkTheme, tab: .dark, id: "darkTheme",
+        help: "\(darkTheme): the theme Workroom uses while the appearance is dark.")
 
       // Glass (#725): one slider, 70–100%, that frosts the main window, terminals included, at its
       // opacity. 100% is opaque, which is Glass off (and the default). Independent of the theme.

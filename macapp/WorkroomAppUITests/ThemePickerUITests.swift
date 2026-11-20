@@ -67,6 +67,9 @@ final class ThemePickerUITests: XCTestCase {
     // fixture's starting state.
     app.launchArguments += ["-WorkroomUITestLightTheme", "Workroom Light"]
     app.launchArguments += ["-WorkroomUITestDarkTheme", "Workroom"]
+    // Pinned Dark, so which side is showing, and so which tab ⌘⇧K opens, doesn't hang on the
+    // machine's appearance or on whatever the Dev app was last left on (#735).
+    app.launchArguments += ["-WorkroomUITestAppearance", "dark"]
     app.launchArguments += ["-WorkroomUITestGhosttyConfigFile", generatedConfURL.path]
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
@@ -101,8 +104,61 @@ final class ThemePickerUITests: XCTestCase {
   }
 
   private func row(_ app: XCUIApplication, _ name: String) -> XCUIElement {
-    app.descendants(matching: .any)
-      .matching(identifier: "theme-family-\(name)").firstMatch
+    element(app, "theme-family-\(name)")
+  }
+
+  private func element(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {
+    app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+  }
+
+  /// What an element shows: its accessibility value, or its label when it has no value.
+  private func text(of element: XCUIElement) -> String {
+    if let value = element.value as? String, !value.isEmpty { return value }
+    return element.label
+  }
+
+  /// Open Settings → Appearance, through the app menu as `SettingsSidebarUITests` does.
+  private func openAppearanceSettings(_ app: XCUIApplication) {
+    let appMenu = app.menuBarItems.element(boundBy: 1)
+    XCTAssertTrue(appMenu.waitForExistence(timeout: 10), "no app menu")
+    appMenu.click()
+    let settings = app.menuItems["Settings…"]
+    XCTAssertTrue(settings.waitForExistence(timeout: 5), "no Settings… menu item")
+    settings.click()
+    let pane = element(app, "settingsPane.appearance")
+    XCTAssertTrue(pane.waitForExistence(timeout: 10), "the Settings sidebar did not render")
+    pane.click()
+    XCTAssertTrue(
+      settingsRow(app, "themeFamily").waitForExistence(timeout: 5),
+      "Settings → Appearance has no Theme family row")
+  }
+
+  /// A Settings → Appearance theme row: `themeFamily`, `lightTheme` or `darkTheme`.
+  private func settingsRow(_ app: XCUIApplication, _ id: String) -> XCUIElement {
+    element(app, "settings.control.\(id)")
+  }
+
+  /// Wait for a Settings theme row to show `expected`. Polled: the Settings scene's `@Default`
+  /// invalidates asynchronously, so an immediate read can still show the previous value.
+  private func waitForSettingsRow(
+    _ app: XCUIApplication, _ id: String, toShow expected: String, timeout: TimeInterval = 5,
+    file: StaticString = #filePath, line: UInt = #line
+  ) {
+    let row = settingsRow(app, id)
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if row.exists, row.label == expected || (row.value as? String) == expected { return }
+      usleep(150_000)
+    }
+    XCTFail(
+      "the \(id) row shows '\(row.exists ? text(of: row) : "nothing")', expected '\(expected)'",
+      file: file, line: line)
+  }
+
+  /// Close the open picker with Esc, and prove it closed.
+  private func closePicker(_ app: XCUIApplication) {
+    app.typeKey(.escape, modifierFlags: [])
+    XCTAssertTrue(app.popovers.firstMatch.waitForNonExistence(timeout: 5), "Esc left the picker up")
   }
 
   /// The whole picker lifecycle in ONE launch (each launch costs a full app start), as an ordered
@@ -175,8 +231,13 @@ final class ThemePickerUITests: XCTestCase {
     // and the list scrolls the selected family into view, so that row is materialised. The family used by
     // the later steps is row 33 of 58, and a `LazyVStack` never builds it until the search filters it in
     // — which is exactly what failed an earlier version of this test against working code.
+    // Under the fixture's Dark appearance the button opens on the Dark tab (#735): its rows are dark
+    // themes, scrolled to the current one, and no family row is built.
     XCTAssertTrue(
-      row(app, "Workroom").waitForExistence(timeout: 3), "the dropdown rendered no rows")
+      element(app, "theme-dark-Workroom").waitForExistence(timeout: 3),
+      "the toolbar button did not open the picker on the Dark tab")
+    XCTAssertFalse(
+      element(app, "theme-family-Workroom").exists, "the Dark tab listed theme families")
 
     // Click in the DETAIL area (0.6 across), not the leading 0.25 a previous version used: the sidebar
     // occupies up to 360pt at the leading edge, so a click there can land on a workroom row, change the
@@ -229,6 +290,14 @@ final class ThemePickerUITests: XCTestCase {
     XCTAssertTrue(
       popover.waitForExistence(timeout: 5), "⌘⇧K did not open the dropdown after the dialog closed")
 
+    // ⌘⇧K opens on the current appearance's tab too, which is Dark here; families are a tab away.
+    XCTAssertTrue(
+      element(app, "theme-dark-Workroom").waitForExistence(timeout: 3),
+      "⌘⇧K did not open the picker on the Dark tab")
+    element(app, "theme-picker.tab.family").click()
+    XCTAssertTrue(
+      row(app, "Workroom").waitForExistence(timeout: 3), "the Family tab rendered no rows")
+
     // Search rather than scroll: with 58 rows the target may be far down the list, and searching is
     // also what a user does. The search field takes focus on open.
     app.typeText(family)
@@ -256,12 +325,110 @@ final class ThemePickerUITests: XCTestCase {
     // picker's starting state; the next launch re-seeds `Workroom` through the fixture.
     target.click()
 
-    let applied = waitForConfTheme(oneOf: [darkVariantFile, lightVariantFile])
-    XCTAssertNotNil(
-      applied, "no theme line in the generated ghostty.conf after picking '\(family)'")
+    // The appearance is pinned Dark, so the family's dark theme is the one the engine is handed.
+    let applied = waitForConfTheme(oneOf: [darkVariantFile])
+    XCTAssertEqual(
+      applied, darkVariantFile,
+      "the engine was handed '\(applied ?? "nil")' — expected the '\(family)' family's dark theme")
+  }
+
+  /// Choosing a family sets both themes and the Settings rows name it; then choosing one side alone
+  /// changes only that side, and the family row says "Custom" (#735). One launch for both, since the
+  /// second needs the first's family as its starting point. The appearance is Dark, so the generated
+  /// config names the dark theme each time.
+  func testAFamilySetsBothThemesAndChangingOneSideAloneShowsCustom() throws {
+    let app = launchedApp()
+    XCTAssertEqual(
+      waitForConfTheme(oneOf: ["Workroom"]), "Workroom", "the fixture's dark theme isn't showing")
+
+    openAppearanceSettings(app)
+    waitForSettingsRow(app, "themeFamily", toShow: "Workroom")
+    waitForSettingsRow(app, "lightTheme", toShow: "Workroom Light")
+    waitForSettingsRow(app, "darkTheme", toShow: "Workroom")
+
+    // The Theme family row opens the picker on the Family tab.
+    settingsRow(app, "themeFamily").click()
     XCTAssertTrue(
-      [darkVariantFile, lightVariantFile].contains(applied),
-      "the engine was handed '\(applied ?? "nil")' — expected '\(darkVariantFile)' (dark appearance) "
-        + "or '\(lightVariantFile)' (light appearance) for the '\(family)' family")
+      app.popovers.firstMatch.waitForExistence(timeout: 5), "the Theme family row opened no picker")
+    XCTAssertTrue(
+      row(app, "Workroom").waitForExistence(timeout: 3),
+      "the Theme family row did not open the picker on the Family tab")
+
+    app.typeText(family)
+    let target = row(app, family)
+    XCTAssertTrue(target.waitForExistence(timeout: 5), "'\(family)' is not on the Family tab")
+    target.click()
+    XCTAssertEqual(
+      waitForConfTheme(oneOf: [darkVariantFile]), darkVariantFile,
+      "choosing '\(family)' did not reach the engine")
+    closePicker(app)
+
+    waitForSettingsRow(app, "themeFamily", toShow: family)
+    waitForSettingsRow(app, "lightTheme", toShow: lightVariantFile)
+    waitForSettingsRow(app, "darkTheme", toShow: darkVariantFile)
+
+    // The Dark theme row opens the picker on the Dark tab, on the current dark theme.
+    settingsRow(app, "darkTheme").click()
+    XCTAssertTrue(
+      app.popovers.firstMatch.waitForExistence(timeout: 5), "the Dark theme row opened no picker")
+    XCTAssertTrue(
+      element(app, "theme-dark-\(darkVariantFile)").waitForExistence(timeout: 3),
+      "the Dark theme row did not open the picker on the Dark tab")
+    XCTAssertFalse(row(app, family).exists, "the Dark tab listed theme families")
+    XCTAssertFalse(
+      element(app, "theme-light-\(lightVariantFile)").exists, "the Dark tab listed a light theme")
+    XCTAssertFalse(
+      element(app, "theme-picker.note").exists,
+      "the Dark tab noted another mode while Dark is showing")
+
+    app.typeText("Nord")
+    let nord = element(app, "theme-dark-Nord")
+    XCTAssertTrue(nord.waitForExistence(timeout: 5), "'Nord' is not on the Dark tab")
+    nord.click()
+    XCTAssertEqual(
+      waitForConfTheme(oneOf: ["Nord"]), "Nord", "choosing the dark theme 'Nord' didn't show")
+    closePicker(app)
+
+    waitForSettingsRow(app, "themeFamily", toShow: "Custom")
+    waitForSettingsRow(app, "lightTheme", toShow: lightVariantFile)
+    waitForSettingsRow(app, "darkTheme", toShow: "Nord")
+  }
+
+  /// Browsing the side that isn't showing saves the choice without changing the generated config
+  /// (#735). The appearance is Dark, so the Light tab is the hidden side: it says so, an arrow key
+  /// there saves the light theme, and the engine keeps the dark theme it had.
+  func testBrowsingTheHiddenSideSavesWithoutChangingTheGeneratedConfig() throws {
+    let app = launchedApp()
+    XCTAssertEqual(
+      waitForConfTheme(oneOf: ["Workroom"]), "Workroom", "the fixture's dark theme isn't showing")
+
+    openAppearanceSettings(app)
+    settingsRow(app, "lightTheme").click()
+    XCTAssertTrue(
+      app.popovers.firstMatch.waitForExistence(timeout: 5), "the Light theme row opened no picker")
+    XCTAssertTrue(
+      element(app, "theme-light-Workroom Light").waitForExistence(timeout: 3),
+      "the Light theme row did not open the picker on the Light tab")
+    XCTAssertFalse(element(app, "theme-dark-Workroom").exists, "the Light tab listed a dark theme")
+
+    let note = element(app, "theme-picker.note")
+    XCTAssertTrue(note.waitForExistence(timeout: 3), "the Light tab doesn't say it applies later")
+    XCTAssertEqual(text(of: note), "Applies in Light mode")
+
+    app.typeText(lightVariantFile)
+    XCTAssertTrue(
+      element(app, "theme-light-\(lightVariantFile)").waitForExistence(timeout: 5),
+      "'\(lightVariantFile)' is not on the Light tab")
+    app.typeKey(.downArrow, modifierFlags: [])
+
+    // The positive signal first, so the unchanged config below can't be read before anything
+    // happened.
+    waitForSettingsRow(app, "lightTheme", toShow: lightVariantFile)
+    waitForSettingsRow(app, "themeFamily", toShow: "Custom")
+    waitForSettingsRow(app, "darkTheme", toShow: "Workroom")
+    usleep(1_000_000)
+    XCTAssertEqual(
+      confTheme(), "Workroom",
+      "browsing the hidden Light side changed the generated config, so the screen repainted")
   }
 }
