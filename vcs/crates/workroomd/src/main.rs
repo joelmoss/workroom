@@ -72,10 +72,11 @@ fn main() -> ExitCode {
     // Before anything is started, so no session's shell inherits the port.
     #[cfg(target_os = "macos")]
     cli::drop_inherited_exception_ports();
-    // The CLI's commands first; the daemon's subcommands, which ADR 0057 pins, fall through.
+    // The daemon's subcommands, which ADR 0057 pins, are decided here, in code the daemon build
+    // hashes (#680), and never reach the CLI's commands; everything else is the CLI's.
     let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    if let Some(code) = workroom::commands::dispatch(&raw) {
-        return code;
+    if !cli::route::is_daemon(&raw) {
+        return workroom::commands::run_cli(&raw);
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
