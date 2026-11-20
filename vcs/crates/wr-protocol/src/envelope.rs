@@ -27,14 +27,15 @@ use std::collections::VecDeque;
 /// an older daemon has no `vcs::dispatch` at all, so an unversioned capability probe would just
 /// hang until its own timeout; `Service::File` at 3, `Service::Status` at 4 and `Service::Forward`
 /// at 5, all for the same reason, as is the Control frame `HandOff` at 6, `Service::Layout` at 7,
-/// `Service::ProgramStatus` at 8, run sessions with their Control frame `Signal` at 9, the Control frame `Retag` at 10, and the Control
-/// frames `Pings` and `Peer` with host-environment attaches at 11 — `serve.rs`'s
-/// dispatch returns silently for a service byte it does not handle). `MIN_SUPPORTED` stays untouched by such bumps: negotiation still
+/// `Service::ProgramStatus` at 8, run sessions with their Control frame `Signal` at 9, the Control
+/// frame `Retag` at 10, the Control frames `Pings` and `Peer` with host-environment attaches at 11,
+/// and `Service::TerminalApi` at 12 — `serve.rs`'s dispatch returns silently for a service byte it
+/// does not handle). `MIN_SUPPORTED` stays untouched by such bumps: negotiation still
 /// takes the lower of the two sides' versions for the services both already understand (Terminal,
 /// Control), so a newer app still drives an older daemon left running rather than replacing it —
 /// only a version-gated service (checked against the peer's raw `Hello.protocol_version`, not the
 /// negotiated minimum) refuses to talk to a peer that predates it.
-pub const PROTOCOL_VERSION: u16 = 11;
+pub const PROTOCOL_VERSION: u16 = 12;
 pub const MIN_SUPPORTED_VERSION: u16 = 1;
 /// The minimum peer version that understands `Service::Vcs`. Checked directly against a peer's
 /// `Hello.protocol_version` by VCS clients — never folded into `negotiate`'s minimum, which would
@@ -79,6 +80,11 @@ pub const MIN_PINGS_VERSION: u16 = 11;
 /// sends, with no `PATH` or `HOME`, so a client that dials a host meets an older one with the
 /// retry status instead, while the app pushes the newest daemon (ADR 0037).
 pub const MIN_HOST_ATTACH_VERSION: u16 = 11;
+/// The minimum peer version that answers `Service::TerminalApi`, the terminal API (#360, ADR 0079).
+/// Same rule again, and it matters more here: an older daemon's envelope decoder fails the whole
+/// connection on a service byte it does not know, so a terminal API client checks the peer's raw
+/// `Hello.protocol_version` against this before it sends anything. The app never sends one.
+pub const MIN_TERMINAL_API_VERSION: u16 = 12;
 
 /// Sent first by both sides. The magic is here so a peer that is not a daemon at all — a login
 /// banner, an MOTD, an ssh warning printed onto the stream — fails immediately and legibly
@@ -110,6 +116,9 @@ pub enum Service {
     Layout = 0x06,
     /// Each session's program status, OSC 7501 (protocol 8) — see `program_status.rs`.
     ProgramStatus = 0x07,
+    /// The terminal API (protocol 12, ADR 0079): public JSON requests about sessions, for the
+    /// `workroom` commands, never the app — see `terminal/api.rs`.
+    TerminalApi = 0x08,
 }
 
 impl Service {
@@ -123,6 +132,7 @@ impl Service {
             0x05 => Self::Forward,
             0x06 => Self::Layout,
             0x07 => Self::ProgramStatus,
+            0x08 => Self::TerminalApi,
             _ => return None,
         })
     }
@@ -365,7 +375,6 @@ mod tests {
     fn program_status_is_service_7_from_protocol_8() {
         assert_eq!(Service::ProgramStatus as u8, 0x07);
         assert_eq!(Service::from_u8(0x07), Some(Service::ProgramStatus));
-        assert_eq!(Service::from_u8(0x08), None);
         assert_eq!(MIN_PROGRAM_STATUS_VERSION, 8);
     }
 
@@ -384,8 +393,18 @@ mod tests {
     /// `Pings`, the service-stream deadline's announcement (ADR 0075), pinned by the app too.
     #[test]
     fn pings_is_protocol_11() {
-        assert_eq!(PROTOCOL_VERSION, 11);
         assert_eq!(MIN_PINGS_VERSION, 11);
+    }
+
+    /// The terminal API (ADR 0079), pinned by the app too (`DaemonHandshake.minTerminalAPIVersion`),
+    /// which never sends it but must greet with the same protocol version.
+    #[test]
+    fn the_terminal_api_is_service_8_from_protocol_12() {
+        assert_eq!(PROTOCOL_VERSION, 12);
+        assert_eq!(MIN_TERMINAL_API_VERSION, 12);
+        assert_eq!(Service::TerminalApi as u8, 0x08);
+        assert_eq!(Service::from_u8(0x08), Some(Service::TerminalApi));
+        assert_eq!(Service::from_u8(0x09), None);
     }
 
     /// A remote pane attached from the Mac (ADR 0074): a client that dials the host needs a daemon

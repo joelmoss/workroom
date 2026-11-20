@@ -20,7 +20,8 @@ use crate::daemon::serve::BUILD;
 use wr_protocol::envelope::{
     Hello, MIN_FILE_VERSION, MIN_FORWARD_VERSION, MIN_HANDOFF_VERSION, MIN_HOST_ATTACH_VERSION,
     MIN_LAYOUT_VERSION, MIN_PINGS_VERSION, MIN_PROGRAM_STATUS_VERSION, MIN_RETAG_VERSION,
-    MIN_RUN_VERSION, MIN_SUPPORTED_VERSION, MIN_VCS_VERSION, PROTOCOL_VERSION, negotiate,
+    MIN_RUN_VERSION, MIN_SUPPORTED_VERSION, MIN_TERMINAL_API_VERSION, MIN_VCS_VERSION, PROTOCOL_VERSION,
+    negotiate,
 };
 
 pub fn flag(args: &[String], name: &str) -> Option<String> {
@@ -164,7 +165,7 @@ pub fn protocol() -> ExitCode {
          min-handoff {MIN_HANDOFF_VERSION} min-layout {MIN_LAYOUT_VERSION} \
          min-program-status {MIN_PROGRAM_STATUS_VERSION} min-run {MIN_RUN_VERSION} \
          min-retag {MIN_RETAG_VERSION} min-pings {MIN_PINGS_VERSION} \
-         min-host-attach {MIN_HOST_ATTACH_VERSION}"
+         min-host-attach {MIN_HOST_ATTACH_VERSION} min-terminal-api {MIN_TERMINAL_API_VERSION}"
     );
     println!("build {BUILD}");
     // The order between builds (#255): the app's probe reads it to decide whether to push.
