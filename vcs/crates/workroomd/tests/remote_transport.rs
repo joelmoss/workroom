@@ -1478,6 +1478,16 @@ fn fixture() -> Fixture {
     }
 }
 
+/// The plain fixture, or `None` (and the test passes untested) on the systemd variant (#665),
+/// which has none of the supervisor or fake GitHub these tests rely on.
+fn plain_fixture() -> Option<Fixture> {
+    if std::env::var("WR_SSH_FIXTURE_SYSTEMD").as_deref() == Ok("1") {
+        eprintln!("skipped: needs the plain fixture, not WR_FIXTURE_SYSTEMD=1");
+        return None;
+    }
+    Some(fixture())
+}
+
 impl Fixture {
     /// ssh to the fixture with ONLY the fixture's config (`-F`), so a developer's own
     /// `~/.ssh/config` cannot change what this test runs against.
@@ -1760,7 +1770,9 @@ impl Drop for Pane {
 #[test]
 #[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
 fn over_ssh_the_bootstrap_installs_hands_off_and_survives_a_crashed_restore() {
-    let fixture = fixture();
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
     let elf = PathBuf::from(
         std::env::var("WR_SSH_FIXTURE_DAEMON").expect("run.sh exports WR_SSH_FIXTURE_DAEMON"),
     );
@@ -2000,7 +2012,9 @@ fn number_after(text: &str, label: &str) -> Option<u32> {
 #[test]
 #[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
 fn over_ssh_a_job_outlives_a_dropped_link_and_the_screen_comes_back() {
-    let fixture = fixture();
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
     // The repaint half needs the shipped build. Without terminal-state the reattach is blank and
     // the failure below would blame the transport.
     let protocol = fixture.run("workroomd protocol");
@@ -2082,7 +2096,9 @@ fn over_ssh_a_job_outlives_a_dropped_link_and_the_screen_comes_back() {
 #[test]
 #[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
 fn over_ssh_a_restored_pane_is_shown_its_last_screen_after_a_reboot() {
-    let fixture = fixture();
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
     let protocol = fixture.run("workroomd protocol");
     assert!(
         protocol.contains("terminal-state yes"),
@@ -2175,7 +2191,9 @@ fn over_ssh_a_restored_pane_is_shown_its_last_screen_after_a_reboot() {
 #[test]
 #[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
 fn over_ssh_every_service_answers_through_the_relay() {
-    let fixture = fixture();
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
     let root = fixture
         .run(
             "set -e; rm -rf ~/relay-repo; git init -q ~/relay-repo; cd ~/relay-repo; \
@@ -2277,7 +2295,9 @@ fn over_ssh_every_service_answers_through_the_relay() {
 #[test]
 #[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
 fn over_ssh_two_clients_share_a_workroom_its_sessions_and_its_layout() {
-    let fixture = fixture();
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
     let session = "7E0E7E0E-0000-4000-8000-000000000255";
     let workroom = "4C0F5F2E-2B49-4C4D-9C1E-6A1B2B3C0255";
     let mut mac_a = Pane::attach_with(
@@ -2381,7 +2401,9 @@ fn over_ssh_two_clients_share_a_workroom_its_sessions_and_its_layout() {
 #[test]
 #[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
 fn over_ssh_the_supervisor_restarts_a_crashed_agent() {
-    let fixture = fixture();
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
     // Anchored on the supervisor's argv0, so it matches the supervised daemon and never this
     // command's own shell.
     let pid = |out: &str| out.trim().parse::<u32>().ok();
@@ -2418,7 +2440,9 @@ fn over_ssh_the_supervisor_restarts_a_crashed_agent() {
 #[test]
 #[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
 fn over_ssh_a_run_runs_on_the_host_and_answers_stop_restart_and_quit() {
-    let fixture = fixture();
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
     let session = "5a1e0f7e-0d6c-4c9f-9c3e-2b7f1d0a8e52";
     let status_file = format!(
         "{}/{session}.status",

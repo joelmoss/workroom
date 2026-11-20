@@ -92,7 +92,8 @@ files created by a container running as root can cause a permission error. Fix t
 permissions on the server, then retry. Workroom does not use `sudo` to remove them.
 
 Workroom leaves its daemon and installed files on the server, even after the last workroom goes.
-The daemon runs until the server restarts or you end it. Workroom installs no system service and
+The daemon runs until the server restarts or you end it (on a server that ends your processes at
+logout, see [below](#servers-that-end-your-processes-at-logout)). Workroom installs no system service and
 uses no `sudo`. Its files live under `~/.local/state/workroom`; Release and Nightly share them,
 while a Dev build uses its own state folder.
 
