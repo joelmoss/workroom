@@ -256,7 +256,7 @@ fn workspace_names(path: &str, vcs: &str) -> Option<Vec<String>> {
     if vcs != "git" {
         return None;
     }
-    let output = git_command(path)
+    let output = super::git::command(Path::new(path))
         .args(["worktree", "list", "--porcelain"])
         .output()
         .ok()?;
@@ -281,33 +281,6 @@ fn workspace_names(path: &str, vcs: &str) -> Option<Vec<String>> {
         }
     }
     Some(names)
-}
-
-/// The variables that point git at another repository, which a `workroom` run from a git hook or
-/// alias inherits and which outrank both the working directory and the ceiling.
-const GIT_REDIRECTS: [&str; 7] = [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_COMMON_DIR",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_CEILING_DIRECTORIES",
-];
-
-/// git, run in `dir` with the environment Go's executor gives it: no repository redirects, no
-/// credential prompt, and a ceiling so repository discovery stops at `dir`.
-fn git_command(dir: &str) -> std::process::Command {
-    let mut command = std::process::Command::new("git");
-    command.current_dir(dir).stdin(std::process::Stdio::null());
-    for key in GIT_REDIRECTS {
-        command.env_remove(key);
-    }
-    command.env("GIT_TERMINAL_PROMPT", "0");
-    if let Some(ceiling) = wr_vcs_git::diff::ceiling_directories(Path::new(dir)) {
-        command.env("GIT_CEILING_DIRECTORIES", ceiling);
-    }
-    command
 }
 
 /// The human list from the working directory, written to `out` as it goes: the workroom it is in,
