@@ -1,7 +1,7 @@
 //! The daemon build identity (#680): `protocol`'s `daemon-build <hash>`, which a running daemon
 //! compares with a binary it is offered to decide whether to hand off. A change to the CLI's
 //! `commands` module alone must leave it as it was, so a CLI-only update restarts nothing; any
-//! other source, the lock file or the Ghostty pin must change it.
+//! other source, the lock file, the Ghostty pin or the compiler must change it.
 //!
 //! The hash is `build.rs`'s, from `build/daemon_build.rs`, loaded here as it is there. The trees
 //! below are made up, laid out as `vcs/` is; the last test holds the real tree to the real binary.
@@ -51,8 +51,13 @@ fn write(root: &Path, path: &str, content: &str) {
     std::fs::write(path, content).expect("write");
 }
 
+/// A made-up compiler: these tests hold the hash to its inputs, not to the rustc at hand.
+const COMPILER: &str = "rustc 1.0.0 (abcdef012 2015-05-15); host: aarch64-apple-darwin";
+
 fn hash(root: &Path) -> String {
-    daemon_build::daemon_build(root, &[]).expect("hash").hash
+    daemon_build::daemon_build(root, &[], COMPILER)
+        .expect("hash")
+        .hash
 }
 
 /// A copy of the made-up tree with one file written, and its hash.
@@ -217,9 +222,49 @@ fn the_same_sources_anywhere_are_the_same_daemon_build() {
 fn the_features_are_part_of_the_daemon_build() {
     let workspace = Workspace::new("daemon-build-features");
     tree(&workspace.dir);
-    let without = daemon_build::daemon_build(&workspace.dir, &[]).expect("hash");
-    let with = daemon_build::daemon_build(&workspace.dir, &["terminal-state"]).expect("hash");
+    let without = daemon_build::daemon_build(&workspace.dir, &[], COMPILER).expect("hash");
+    let with =
+        daemon_build::daemon_build(&workspace.dir, &["terminal-state"], COMPILER).expect("hash");
     assert_ne!(without.hash, with.hash);
+}
+
+/// Release and Nightly build with whatever stable the runner has: the same sources compiled by
+/// another rustc are another daemon, so a CLI-only release on a new compiler still hands off.
+#[test]
+fn the_compiler_is_part_of_the_daemon_build() {
+    let workspace = Workspace::new("daemon-build-compiler");
+    tree(&workspace.dir);
+    let build = |compiler: &str| {
+        daemon_build::daemon_build(&workspace.dir, &[], compiler)
+            .expect("hash")
+            .hash
+    };
+    let base = build(COMPILER);
+    for other in [
+        "rustc 1.0.1 (abcdef012 2015-05-15); host: aarch64-apple-darwin",
+        "rustc 1.0.0 (abcdef013 2015-05-15); host: aarch64-apple-darwin",
+        "rustc 1.0.0 (abcdef012 2015-05-15); host: x86_64-apple-darwin",
+        "",
+    ] {
+        assert_ne!(build(other), base, "{other:?}");
+    }
+    // Framed by its length, so no bytes move between the compiler and what follows it: unframed,
+    // `a` then `features features x` and `afeatures ` then `features x` were the same input.
+    let with = |compiler: &str, features: &[&str]| {
+        daemon_build::daemon_build(&workspace.dir, features, compiler)
+            .expect("hash")
+            .hash
+    };
+    assert_ne!(with("a", &["features x"]), with("afeatures ", &["x"]));
+}
+
+/// `rustc -vV` reports on several lines, and the compiler is passed to the tests in one.
+#[test]
+fn the_compiler_is_its_report_on_one_line() {
+    assert_eq!(
+        daemon_build::compiler("rustc 1.0.0 (abc 2015-05-15)\nbinary: rustc\r\nhost: x\n\n"),
+        "rustc 1.0.0 (abc 2015-05-15); binary: rustc; host: x"
+    );
 }
 
 /// Cargo reruns `build.rs` only for what it names, so every place the hash reads is named: a
@@ -229,7 +274,7 @@ fn the_features_are_part_of_the_daemon_build() {
 fn cargo_watches_every_place_the_hash_reads() {
     let workspace = Workspace::new("daemon-build-roots");
     tree(&workspace.dir);
-    let roots = daemon_build::daemon_build(&workspace.dir, &[])
+    let roots = daemon_build::daemon_build(&workspace.dir, &[], COMPILER)
         .expect("hash")
         .roots;
     let relative: Vec<PathBuf> = roots
@@ -288,7 +333,8 @@ fn the_hash_is_sha256() {
 }
 
 /// The real tree, hashed now, is what the binary built from it states, and its marker says the
-/// same: so `build.rs` hashes this tree, with the features this binary was built with.
+/// same: so `build.rs` hashes this tree, with the features and the compiler this binary was built
+/// with (`WORKROOMD_COMPILER`, which `build.rs` passes here: no `RUSTC` is set for a test run).
 #[test]
 fn the_binary_states_the_daemon_build_of_its_own_sources() {
     let binary = daemon_binary();
@@ -307,7 +353,10 @@ fn the_binary_states_the_daemon_build_of_its_own_sources() {
         &[]
     };
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let hashed = daemon_build::daemon_build(&workspace, features).expect("hash the real tree");
+    let compiler = env!("WORKROOMD_COMPILER");
+    assert!(compiler.starts_with("rustc "), "{compiler:?}");
+    let hashed =
+        daemon_build::daemon_build(&workspace, features, compiler).expect("hash the real tree");
     assert_eq!(stated, hashed.hash);
     assert_eq!(stated.len(), 64, "{stated:?}");
 }

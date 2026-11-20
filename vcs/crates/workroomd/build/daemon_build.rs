@@ -1,5 +1,5 @@
 //! The daemon build identity (#680, ADR 0078): a hash of everything the daemon is built from
-//! except the CLI's `commands` module, so a change to CLI commands alone is the same daemon and a
+//! except the CLI's `commands` module, the compiler included, so a change to CLI commands alone is the same daemon and a
 //! running one is not handed off for it. `build.rs` stamps it into the binary; `protocol` states it
 //! as `daemon-build <hash>`, and a daemon offered a binary compares it with its own. So nothing a
 //! daemon runs may be in that module: which arguments are the daemon's is `src/cli/route.rs`'s.
@@ -29,13 +29,21 @@ const WORKSPACE_FILES: [&str; 3] = ["Cargo.toml", "Cargo.lock", "scripts/build-g
 /// The CLI's commands, relative to `vcs/`: what a change to alone hands nothing off.
 const COMMANDS: &str = "crates/workroomd/src/commands";
 
-/// The daemon build of the workspace at `workspace` (`vcs/`), built with `features`.
+/// The daemon build of the workspace at `workspace` (`vcs/`), built with `features` by
+/// `compiler` ([`compiler`]: what `rustc -vV` says). Release and Nightly build with whatever
+/// stable the runner has, so the same sources on a new rustc are a different daemon, and one
+/// running on the old one is handed off for it.
 ///
-/// Deterministic across machines and checkouts: the files are taken in the order of their paths
-/// relative to `workspace`, written with `/`, and each is framed by that path and its length, so
-/// no absolute path, time or listing order reaches the hash, and moving bytes between files or a
-/// file between paths changes it.
-pub fn daemon_build(workspace: &Path, features: &[&str]) -> std::io::Result<DaemonBuild> {
+/// Deterministic across checkouts: the files are taken in the order of their paths relative to
+/// `workspace`, written with `/`, and each is framed by that path and its length, so no absolute
+/// path, time or listing order reaches the hash, and moving bytes between files or a file between
+/// paths changes it. Across machines too, for one compiler on one kind of host: `rustc -vV` names
+/// its host, so a build on another kind of host is another daemon build.
+pub fn daemon_build(
+    workspace: &Path,
+    features: &[&str],
+    compiler: &str,
+) -> std::io::Result<DaemonBuild> {
     let mut roots = Vec::new();
     let mut files = Vec::new();
     for name in WORKSPACE_FILES {
@@ -59,6 +67,10 @@ pub fn daemon_build(workspace: &Path, features: &[&str]) -> std::io::Result<Daem
     let mut features: Vec<&str> = features.to_vec();
     features.sort_unstable();
     let mut input = Vec::new();
+    input.extend_from_slice(b"compiler ");
+    input.extend_from_slice(compiler.len().to_string().as_bytes());
+    input.push(0);
+    input.extend_from_slice(compiler.as_bytes());
     input.extend_from_slice(b"features ");
     input.extend_from_slice(features.join(",").as_bytes());
     input.push(0);
@@ -74,6 +86,18 @@ pub fn daemon_build(workspace: &Path, features: &[&str]) -> std::io::Result<Daem
     }
     let hash = sha256(&input).iter().map(|b| format!("{b:02x}")).collect();
     Ok(DaemonBuild { hash, roots })
+}
+
+/// The compiler as the daemon build names it: `rustc -vV`'s report (version, commit, host and
+/// LLVM), its lines trimmed and joined by `; `, so `build.rs` can also pass it to the tests in one
+/// `rustc-env` line.
+pub fn compiler(report: &str) -> String {
+    report
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// A directory's entries, without what an editor or Finder leaves, as (name, path).
