@@ -239,6 +239,18 @@ pub struct SessionInfo {
     pub metadata: Vec<(String, String)>,
 }
 
+/// One session as the terminal API lists it (`SessionStore::described`): its `SessionInfo`, and
+/// what only its shadow knows. Kept out of `SessionInfo` so the app's session list, which is
+/// pinned (ADR 0057), neither changes nor waits on a shadow lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Described {
+    pub info: SessionInfo,
+    /// The title its program last set (OSC 0 or 2), `None` until one does or in a build without
+    /// `terminal-state`.
+    pub title: Option<String>,
+    pub coding_agent: Option<crate::terminal::program_status::CodingAgent>,
+}
+
 pub struct Session {
     pub id: SessionId,
     /// Shared with the session's reader thread, which outlives any one connection. The `Arc` is

@@ -31,6 +31,27 @@ pub struct Disturbed {
     pub only_if_loading: bool,
 }
 
+/// The longest live title a session reports, cut at a character boundary: the label's cap
+/// (`dispatch::MAX_TITLE_BYTES`), so one program's title cannot fill a session listing.
+#[cfg(feature = "terminal-state")]
+const MAX_TITLE_BYTES: usize = 256;
+
+/// The OSC 2 that gives a terminal `title`, for a hand-off's screen (`SessionStore::frozen`):
+/// libghostty's formatter has no title extra, so without it the next program would forget the
+/// title until the program set it again. Control characters are dropped, so it cannot end early.
+pub fn title_sequence(title: &str) -> Vec<u8> {
+    let mut out = b"\x1b]2;".to_vec();
+    out.extend(
+        title
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect::<String>()
+            .bytes(),
+    );
+    out.push(0x07);
+    out
+}
+
 /// What a write from the pty asks of the session: bytes to answer the program with (a program
 /// status probe's reply), and `Some(blocked)` when its program status changed (#358).
 pub type Written = (Vec<u8>, Option<bool>);
@@ -256,6 +277,20 @@ impl Shadow {
             .is_none_or(|t| t.compression_supported())
     }
 
+    /// The session's live title (OSC 0 and 2, #683), at most `MAX_TITLE_BYTES`; `None` until its
+    /// program sets one.
+    pub fn title(&self) -> Option<String> {
+        let mut title = self.terminal.as_ref()?.title()?;
+        if title.len() > MAX_TITLE_BYTES {
+            let mut end = MAX_TITLE_BYTES;
+            while !title.is_char_boundary(end) {
+                end -= 1;
+            }
+            title.truncate(end);
+        }
+        Some(title)
+    }
+
     #[cfg(test)]
     pub fn memory(&self) -> Option<crate::terminal::vt::MemoryUsage> {
         self.terminal.as_ref().and_then(|t| t.memory())
@@ -286,6 +321,10 @@ impl Shadow {
         (Vec::new(), None)
     }
     pub fn status(&mut self) -> Option<&mut Store> {
+        None
+    }
+    /// No terminal, so no title is ever seen.
+    pub fn title(&self) -> Option<String> {
         None
     }
     pub fn resize(&mut self, _size: Size) {}
