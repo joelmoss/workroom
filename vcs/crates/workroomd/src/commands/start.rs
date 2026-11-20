@@ -3,7 +3,7 @@
 //! branch, and the local work that start leaves out of the main checkout (`Git.LocalWork`).
 //!
 //! Only what `trust status` needs today: no create's fetch step events, and no pinned start
-//! commit (ADR 0059), which `create` adds when it is ported (#672).
+//! commit (ADR 0059), which `create` adds when it is ported (#677).
 
 use std::path::Path;
 
