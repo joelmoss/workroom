@@ -25,9 +25,7 @@ fn a_message_cannot_start_a_line_of_its_own() {
 
 #[test]
 fn a_log_past_its_limit_moves_aside_and_writing_carries_on_in_a_fresh_one() {
-    let dir = std::env::temp_dir().join(format!("workroomd-log-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("dir");
+    let dir = crate::commands::Scratch::in_temp("workroomd-log");
     let path = dir.join("workroomd.log");
     let file = open_log(&path).expect("log");
     // SAFETY: `file` is open for the call; dup takes and returns plain integers.
@@ -58,8 +56,7 @@ fn a_log_past_its_limit_moves_aside_and_writing_carries_on_in_a_fresh_one() {
 /// The open that fails is the fresh file's, and a directory in its place makes it fail.
 #[test]
 fn a_rotation_that_cannot_open_a_fresh_log_leaves_the_log_in_place() {
-    let dir = std::env::temp_dir().join(format!("workroomd-log-stuck-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = crate::commands::Scratch::in_temp("workroomd-log-stuck");
     std::fs::create_dir_all(dir.join("workroomd.log.new")).expect("blocker");
     let path = dir.join("workroomd.log");
     let file = open_log(&path).expect("log");
@@ -83,9 +80,7 @@ fn a_rotation_that_cannot_open_a_fresh_log_leaves_the_log_in_place() {
 
 #[test]
 fn a_symlink_in_the_log_s_place_is_not_followed() {
-    let dir = std::env::temp_dir().join(format!("workroomd-log-link-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("dir");
+    let dir = crate::commands::Scratch::in_temp("workroomd-log-link");
     let target = dir.join("elsewhere");
     std::os::unix::fs::symlink(&target, dir.join("workroomd.log")).expect("link");
     let opened = open_log(&dir.join("workroomd.log")).is_ok();

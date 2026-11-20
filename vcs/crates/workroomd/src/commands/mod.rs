@@ -1469,12 +1469,27 @@ impl Scratch {
     /// another run's live directory, is skipped rather than reused, and only what this call
     /// created is ever removed.
     pub(crate) fn new(name: &str) -> Scratch {
+        Scratch::resolved(&format!("workroom-commands-{name}"))
+    }
+
+    /// As `in_temp`, symlink-resolved, for a test that compares real paths (`/tmp` is a symlink on
+    /// macOS).
+    pub(crate) fn resolved(stem: &str) -> Scratch {
+        let mut scratch = Scratch::in_temp(stem);
+        scratch.0 = scratch.0.canonicalize().expect("resolve scratch dir");
+        scratch
+    }
+
+    /// As `new`, named `{stem}-{pid}-{attempt}` in the temp dir and left as made, not
+    /// symlink-resolved: on macOS that adds `/private`, and a socket bound under it is capped at
+    /// 104 bytes.
+    pub(crate) fn in_temp(stem: &str) -> Scratch {
         let parent = std::env::temp_dir();
         let pid = std::process::id();
         for attempt in 0u32.. {
-            let dir = parent.join(format!("workroom-commands-{name}-{pid}-{attempt}"));
+            let dir = parent.join(format!("{stem}-{pid}-{attempt}"));
             match std::fs::create_dir(&dir) {
-                Ok(()) => return Scratch(dir.canonicalize().expect("resolve scratch dir")),
+                Ok(()) => return Scratch(dir),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => panic!("create {}: {error}", dir.display()),
             }
@@ -1484,9 +1499,73 @@ impl Scratch {
 }
 
 #[cfg(test)]
+impl std::ops::Deref for Scratch {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl AsRef<std::path::Path> for Scratch {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl AsRef<std::ffi::OsStr> for Scratch {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.0.as_os_str()
+    }
+}
+
+/// As its path, so a request can name it.
+#[cfg(test)]
+impl serde::Serialize for Scratch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+#[cfg(test)]
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A path not made yet, for the code under test to make, inside a `Scratch` (`in_temp`) that is
+/// removed with it.
+#[cfg(test)]
+pub(crate) struct Unmade {
+    path: std::path::PathBuf,
+    _scratch: Scratch,
+}
+
+#[cfg(test)]
+impl Unmade {
+    pub(crate) fn in_temp(stem: &str) -> Unmade {
+        let scratch = Scratch::in_temp(stem);
+        Unmade {
+            path: scratch.join("dir"),
+            _scratch: scratch,
+        }
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Deref for Unmade {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+#[cfg(test)]
+impl AsRef<std::path::Path> for Unmade {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.path
     }
 }
 

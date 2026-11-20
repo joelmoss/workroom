@@ -569,9 +569,7 @@ fn a_refused_id_is_not_created_until_its_window_passes() {
 /// them, an ended one is left behind, and a file that is not one costs only its refusals.
 #[test]
 fn refusals_outlive_the_store_that_made_them() {
-    let dir = std::env::temp_dir().join(format!("wr-refusals-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::commands::Scratch::in_temp("wr-refusals");
     let path = refusals_path(&dir.join("workroomd.sock"));
 
     let first = SessionStore::new();
@@ -1335,11 +1333,11 @@ fn measure_hand_off() {
         sessions: frozen,
         events: None,
     };
-    let path = std::env::temp_dir().join(format!("wr-measure-table-{}", std::process::id()));
+    let scratch = crate::commands::Scratch::in_temp("wr-measure-table");
+    let path = scratch.join("table");
     let started = Instant::now();
     std::fs::write(&path, table.encode()).expect("write");
     println!("encoded and wrote the table in {:?}", started.elapsed());
-    let _ = std::fs::remove_file(&path);
     store.kill_all();
 }
 
@@ -1448,8 +1446,8 @@ fn the_tick_promotes_a_running_sender_but_never_the_shell() {
 #[cfg(feature = "terminal-state")]
 #[test]
 fn a_report_from_a_program_that_has_gone_is_not_replayed() {
-    let gate = std::env::temp_dir().join(format!("wr-gone-{}", std::process::id()));
-    let _ = std::fs::remove_file(&gate);
+    let scratch = crate::commands::Scratch::in_temp("wr-gone");
+    let gate = scratch.join("gate");
     let store = SessionStore::new();
     let args = reporter_args(&gate, true);
     let e = env();
@@ -1481,8 +1479,8 @@ fn a_report_from_a_program_that_has_gone_is_not_replayed() {
 #[cfg(feature = "terminal-state")]
 #[test]
 fn a_hand_off_after_the_reporter_has_gone_is_frozen_idle() {
-    let gate = std::env::temp_dir().join(format!("wr-frozen-gone-{}", std::process::id()));
-    let _ = std::fs::remove_file(&gate);
+    let scratch = crate::commands::Scratch::in_temp("wr-frozen-gone");
+    let gate = scratch.join("gate");
     let store = SessionStore::new();
     let args = reporter_args(&gate, true);
     let e = env();
@@ -1514,8 +1512,8 @@ fn a_hand_off_after_the_reporter_has_gone_is_frozen_idle() {
 #[cfg(feature = "terminal-state")]
 #[test]
 fn an_adopted_report_is_dropped_once_its_sender_goes() {
-    let gate = std::env::temp_dir().join(format!("wr-adopt-gone-{}", std::process::id()));
-    let _ = std::fs::remove_file(&gate);
+    let scratch = crate::commands::Scratch::in_temp("wr-adopt-gone");
+    let gate = scratch.join("gate");
     // The report reaches this daemon only in the frozen screen, as after a hand-off: the program
     // sent it to the old daemon, so nothing the new one reads names its sender.
     let args = reporter_args(&gate, false);
@@ -2309,8 +2307,8 @@ fn kill_reaches_a_setsid_grandchild() {
         eprintln!("skipping: no perl to make a setsid'd grandchild with");
         return;
     };
-    let pid_file = std::env::temp_dir().join(format!("wr-setsid-{}.pid", std::process::id()));
-    let _ = std::fs::remove_file(&pid_file);
+    let scratch = crate::commands::Scratch::in_temp("wr-setsid");
+    let pid_file = scratch.join("grandchild.pid");
 
     let script = format!(
         "{perl} -MPOSIX=setsid -e 'setsid(); open(F, \">\", $ARGV[0]) or exit 1; \

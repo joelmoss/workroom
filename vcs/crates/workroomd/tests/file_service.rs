@@ -8,7 +8,7 @@ mod common;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 use wr_protocol::envelope::{Envelope, Service};
@@ -125,11 +125,11 @@ impl Drop for Client {
     }
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("wr-file-it-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    std::fs::canonicalize(&root).unwrap()
+/// A directory of this run's own, symlink-resolved, removed when the test ends.
+fn scratch(name: &str) -> common::Workspace {
+    let mut root = common::Workspace::under(&std::env::temp_dir(), &format!("wr-file-it-{name}"));
+    root.dir = std::fs::canonicalize(&root.dir).unwrap();
+    root
 }
 
 /// Real OS watch registration queued ahead of an independent VCS read on the same connection.

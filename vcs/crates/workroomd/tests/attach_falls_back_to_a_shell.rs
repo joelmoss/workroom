@@ -14,19 +14,17 @@
 
 #[allow(dead_code)] // not every helper is used here
 mod common;
-use common::{Spawned, daemon_binary};
+use common::{Spawned, Workspace, daemon_binary};
 
 use std::io::Read;
 use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// A short directory: a unix socket address is capped at 104 bytes and cargo's target dir is long.
-fn scratch(name: &str) -> PathBuf {
-    let dir = PathBuf::from(format!("/tmp/wr-fb-{}-{}", name, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+/// A short directory of this run's own, removed when the test ends: a unix socket address is capped
+/// at 104 bytes and cargo's target dir is long.
+fn scratch(name: &str) -> Workspace {
+    Workspace::under(Path::new("/tmp"), &format!("wr-fb-{name}"))
 }
 
 /// Runs `workroomd attach` with the app's environment contract and returns (stdout+stderr, code).
