@@ -22,7 +22,8 @@ import (
 // as the app runs it, byte for byte, with the temporary HOME and the random workroom name replaced
 // so the files stay stable. CLIContractTests.swift (macapp/Packages/WorkroomDomain/Tests) decodes
 // the same files with the app's own types, so a change on either side that breaks the other fails
-// a test. A
+// a test. The black-box suite the Rust port must pass (`make contract-test`, in
+// vcs/crates/workroomd/tests/commands_contract.rs) checks list.json too. A
 // deliberate contract change rewrites them:
 //
 //	go test ./cmd -run TestContract -update

@@ -94,3 +94,39 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+  # The CLI's black-box contract suite (#669), run against the Go CLI: the gate the Rust port must
+  # pass before the swap (ADR 0078). Its own job so `cli` doesn't wait on the Rust build. A plain
+  # `go build`, as `make contract-test` does, reports version `dev`, which the goldens hold anyway.
+  contract:
+    if: inputs.run
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # The same pin as ci-rust.yml (scripts/ci/test_tool_pins.py).
+      - name: Install Rust 1.99.1
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup default 1.99.1
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: vcs
+
+      - name: Build the Go CLI
+        run: go build -o "$RUNNER_TEMP/workroom" .
+
+      - name: Contract suite
+        run: |
+          WORKROOM_BIN="$RUNNER_TEMP/workroom" cargo test --manifest-path vcs/Cargo.toml \
+            -p workroomd --test commands_contract -- --ignored

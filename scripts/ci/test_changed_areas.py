@@ -121,6 +121,10 @@ class ChangedAreasTests(unittest.TestCase):
     def test_the_daemon_runs_rust_and_everything_that_bundles_it(self):
         self.assertEqual(needed("vcs/crates/workroomd/src/main.rs"), {"rust", "app", "scripts"})
 
+    def test_the_cli_contract_suite_also_runs_the_cli_job_that_runs_it(self):
+        self.assertEqual(needed("vcs/crates/workroomd/tests/commands_contract.rs"),
+                         {"cli", "rust", "app", "scripts"})
+
     def test_the_bootstrap_scripts_also_run_rust(self):
         self.assertEqual(needed("macapp/Resources/daemon-bootstrap/probe.sh"),
                          {"rust", "app", "scripts"})

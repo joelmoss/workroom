@@ -67,6 +67,8 @@ RULES = (
     # The daemon's far-side bootstrap, which remote_transport.rs runs too.
     (("macapp/Resources/daemon-bootstrap/*",), {"rust", "app", "scripts"}),
     (("macapp/*",), {"app", "scripts"}),
+    # The CLI's contract suite, which the cli workflow's `contract` job runs against the Go CLI.
+    (("vcs/crates/workroomd/tests/commands_contract.rs",), {"cli", "rust", "app", "scripts"}),
     # The app bundles the daemon and runs its macOS-only tests; the script tests build it.
     (("vcs/*",), {"rust", "app", "scripts"}),
     # The app's setup-go and the CLI it compiles read the toolchain from go.mod.

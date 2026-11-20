@@ -1,0 +1,63 @@
+{
+  "/Users/dev/src/app": {
+    "future_key": [
+      "x",
+      {
+        "k": "v"
+      }
+    ],
+    "trusted_scripts": {
+      "workroom_setup": "abc123"
+    },
+    "vcs": "git",
+    "workrooms": {
+      "local": {
+        "path": "/Users/dev/workrooms/local"
+      },
+      "remote": {
+        "host": {
+          "big": 18446744073709551616,
+          "driver": "container",
+          "empty_array": [],
+          "empty_object": {},
+          "escaped": "café / tab\t",
+          "html": "\u003ca href=\"x\"\u003e\u0026amp;\u003c/a\u003e",
+          "neg": -12,
+          "port": 2222,
+          "ratio": 0.1000,
+          "raw": "café ✓",
+          "separators": "a\u2028b\u2029c",
+          "state": "running",
+          "unknown": {
+            "a": [
+              {
+                "b": "c",
+                "y": null
+              }
+            ],
+            "z": 1
+          }
+        },
+        "label": "kept as written",
+        "path": "/home/workroom/remote"
+      }
+    }
+  },
+  "base_branch": "main",
+  "channel": "pre",
+  "workrooms_dir": "~/workrooms",
+  "zz_unknown_top": {
+    "nested": [
+      1,
+      2.50,
+      -0,
+      1e3,
+      1E-7,
+      null,
+      true,
+      false,
+      [],
+      {}
+    ]
+  }
+}
