@@ -5,15 +5,16 @@
 //!
 //! Without `WORKROOM_BIN` the binary under test is this crate's own `workroom`. A group's tests
 //! are `#[ignore]`d until its commands are ported to Rust, so a plain `cargo test` runs only the
-//! ported groups (`version_`, `list_`, `config_` and `include_archive_` today). `make
+//! ported groups (`version_`, `update_`, `list_`, `config_` and `include_archive_` today). `make
 //! contract-test` builds the Go CLI and runs every test against it with `--include-ignored`.
 //!
 //! The Mac-only commands' groups (`list_`, `config_`, `include_archive_`) are ignored off the Mac
 //! too, where the Rust binary answers them with `MacOnly` (ADR 0078): a plain `cargo test` on
-//! Linux runs `version_` alone, and `--include-ignored` against the Go CLI still runs everything.
+//! Linux runs `version_` and `update_` alone, and `--include-ignored` against the Go CLI still
+//! runs everything.
 //!
-//! Tests are named for their command group (`version_`, `list_`, `config_`, `include_archive_`),
-//! so a port can run only its own group's names against Rust.
+//! Tests are named for their command group (`version_`, `update_`, `list_`, `config_`,
+//! `include_archive_`), so a port can run only its own group's names against Rust.
 //!
 //! The JSON goldens are `testdata/contracts`, the files Go's contract tests
 //! (`cmd/contract_test.go`) and the app's `CLIContractTests.swift` check too, with the temporary
@@ -104,11 +105,16 @@ impl Home {
     /// Runs the binary under test with `args`, from `cwd`. An argument may be any bytes, as a
     /// shell can pass, not only UTF-8.
     fn run<S: AsRef<OsStr>>(&self, cwd: &Path, args: &[S]) -> Run {
+        self.run_program(&binary(), cwd, args)
+    }
+
+    /// Runs `program`, a copy of the binary under test, as [`Home::run`] runs that.
+    fn run_program<S: AsRef<OsStr>>(&self, program: &Path, cwd: &Path, args: &[S]) -> Run {
         let output = self
-            .command(binary(), cwd)
+            .command(program, cwd)
             .args(args)
             .output()
-            .unwrap_or_else(|error| panic!("run {}: {error}", binary().display()));
+            .unwrap_or_else(|error| panic!("run {}: {error}", program.display()));
         Run {
             args: args
                 .iter()
@@ -431,6 +437,218 @@ fn version_json_encodes_an_echoed_argument_as_go_does() {
         "stdout {:?} doesn't encode the message as Go does ({encoded:?})",
         run.stdout
     );
+}
+
+// --- update ---
+//
+// Only what ends before the network: a run that asked GitHub would print `Checking the … channel`
+// first, so each test checks it didn't. The releases themselves (each channel, checksums, the
+// swap) are `commands/update/tests.rs`'s, against a fake releases server.
+
+/// Whether the binary under test is the Go CLI, which has none of the daemon's subcommands.
+fn under_test_is_go() -> bool {
+    Command::new(binary())
+        .arg("protocol")
+        .env_clear()
+        .output()
+        .is_ok_and(|output| !output.status.success())
+}
+
+/// The binary under test copied to `relative` in `home`, for a run from there.
+fn copy_binary(home: &Home, relative: &str) -> PathBuf {
+    let copy = home.path(relative);
+    std::fs::create_dir_all(copy.parent().expect("parent")).expect("create folders");
+    std::fs::copy(binary(), &copy).expect("copy the binary under test");
+    copy
+}
+
+fn assert_never_checked(run: &Run) {
+    assert!(
+        !run.stdout.contains("Checking the"),
+        "`{}` asked for a release: {:?}",
+        run.args,
+        run.stdout
+    );
+}
+
+#[test]
+fn update_json_refuses_a_channel_it_cant_switch_to() {
+    let home = Home::new("update-channel");
+    for (channel, message) in [
+        (
+            "nightly",
+            "nightly is a separate install, not a channel switch",
+        ),
+        ("bogus", "invalid channel \"bogus\" (want stable or pre)"),
+        ("", "invalid channel \"\" (want stable or pre)"),
+    ] {
+        let run = home.run(&home.dir, &["update", "--json", "--channel", channel]);
+        run.assert_code(1).assert_quiet_stderr();
+        assert_never_checked(&run);
+        assert_eq!(run.error_kind(), "InternalError");
+        let envelope = run.envelope();
+        assert_eq!(envelope["command"], "update");
+        assert!(
+            envelope["error"]["message"]
+                .as_str()
+                .is_some_and(|text| text.starts_with(message)),
+            "--channel {channel:?}: {envelope}"
+        );
+    }
+    // Nothing was remembered.
+    assert!(!home.config_path().exists());
+}
+
+/// A usage error is reported before the command runs, so its envelope names no command.
+#[test]
+fn update_json_reports_a_usage_error_without_a_command() {
+    let home = Home::new("update-usage");
+    for (args, message) in [
+        (
+            &["update", "--json", "--channel"][..],
+            "flag needs an argument: --channel",
+        ),
+        (
+            &["update", "--json", "extra"][..],
+            "unknown command \"extra\" for \"workroom update\"",
+        ),
+        (
+            &["update", "--json", "--bogus"][..],
+            "unknown flag: --bogus",
+        ),
+    ] {
+        let run = home.run(&home.dir, args);
+        run.assert_code(1).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "InternalError");
+        let envelope = run.envelope();
+        assert_eq!(envelope["error"]["message"], message, "{args:?}");
+        assert!(envelope.get("command").is_none(), "{args:?}: {envelope}");
+    }
+}
+
+/// The copy inside the app bundle is the app's, which Sparkle updates. Go refused it as an
+/// `InternalError`; the Rust binary gives it its own kind, `ManagedInstall` (exit 3, ADR 0078).
+/// Go refused a dev build before it looked where it was, so it is checked only with a version, as
+/// `make contract-test` builds it; the Rust binary looks first.
+#[test]
+fn update_inside_the_app_bundle_is_a_managed_install() {
+    let home = Home::new("update-bundle");
+    if under_test_is_go() && is_dev_build(&home) {
+        return;
+    }
+    let bundled = copy_binary(
+        &home,
+        "Applications/Workroom.app/Contents/Resources/workroom",
+    );
+    let (kind, code) = if under_test_is_go() {
+        ("InternalError", 1)
+    } else {
+        ("ManagedInstall", 3)
+    };
+    let message = "this workroom is bundled inside the Workroom app and is managed by it";
+
+    let run = home.run_program(&bundled, &home.dir, &["update", "--json"]);
+    run.assert_code(code).assert_quiet_stderr();
+    assert_never_checked(&run);
+    assert_eq!(run.error_kind(), kind);
+    let envelope = run.envelope();
+    assert_eq!(envelope["command"], "update");
+    assert!(
+        envelope["error"]["message"]
+            .as_str()
+            .is_some_and(|text| text.starts_with(message)),
+        "{envelope}"
+    );
+
+    let plain = home.run_program(&bundled, &home.dir, &["update"]);
+    plain.assert_code(code);
+    assert_never_checked(&plain);
+    assert!(
+        plain.stderr.starts_with(&format!("Error: {message}")),
+        "stderr {:?}",
+        plain.stderr
+    );
+    // Reached through a link, as the app's /usr/local/bin link reaches it.
+    let link = home.path("bin/workroom");
+    std::fs::create_dir_all(home.path("bin")).expect("bin");
+    std::os::unix::fs::symlink(&bundled, &link).expect("link");
+    let linked = home.run_program(&link, &home.dir, &["update", "--json"]);
+    linked.assert_code(code);
+    assert_eq!(linked.error_kind(), kind);
+}
+
+/// On a host, the daemon bootstrap installed is bootstrap's to update: `<daemon dir>/workroomd`
+/// (ADR 0057), reached as itself or through the `workroom` link beside it. New with the Rust
+/// binary; Go would ask GitHub here, so it is skipped for Go.
+#[test]
+fn update_in_a_hosts_daemon_directory_is_a_managed_install() {
+    if under_test_is_go() {
+        return;
+    }
+    let home = Home::new("update-daemon-dir");
+    let daemon = copy_binary(&home, ".local/state/workroom/daemon/workroomd");
+    let link = home.path(".local/state/workroom/daemon/workroom");
+    std::os::unix::fs::symlink("workroomd", &link).expect("link");
+    for program in [&daemon, &link] {
+        let run = home.run_program(program, &home.dir, &["update", "--json"]);
+        run.assert_code(3).assert_quiet_stderr();
+        assert_never_checked(&run);
+        assert_eq!(run.error_kind(), "ManagedInstall", "{}", program.display());
+    }
+    // `--check` only reads, so it runs there too; only a dev build asks GitHub nothing.
+    if is_dev_build(&home) {
+        let check = home.run_program(&daemon, &home.dir, &["update", "--check", "--json"]);
+        check.assert_code(0);
+        assert_never_checked(&check);
+    }
+}
+
+/// Whether the binary under test reports the version a build without one has.
+fn is_dev_build(home: &Home) -> bool {
+    home.run(&home.dir, &["version"]).stdout == "dev\n"
+}
+
+/// `--check` on a dev build says it can't check, as text even under `--json`, as Go's does.
+/// Only a dev build is network-free, so a binary built with a version skips it.
+#[test]
+fn update_check_on_a_dev_build_says_it_cant_check() {
+    let home = Home::new("update-check-dev");
+    if !is_dev_build(&home) {
+        return;
+    }
+    for args in [&["update", "--check"][..], &["update", "-c", "--json"][..]] {
+        let run = home.run(&home.dir, args);
+        run.assert_code(0).assert_quiet_stderr();
+        assert_eq!(
+            run.stdout, "Running dev build \u{2014} cannot check for updates\n",
+            "{args:?}"
+        );
+    }
+}
+
+/// `update --help` explains its flags and the channels, as Go's does (its wording may change).
+#[test]
+fn update_help_explains_the_channels_and_its_flags() {
+    let home = Home::new("update-help");
+    let run = home.run(&home.dir, &["update", "--help"]);
+    run.assert_code(0).assert_quiet_stderr();
+    for text in [
+        "Check for and install the latest version of workroom from GitHub Releases.",
+        "  stable   GA releases only (default)\n",
+        "  pre      betas / release candidates, plus stable\n",
+        "Nightly is not a channel switch",
+        "--channel string",
+        "Release channel: stable or pre (remembered for next time)",
+        "-c, --check",
+        "Only check if an update is available",
+        "update, u",
+    ] {
+        assert!(
+            run.stdout.contains(text),
+            "{text:?} not in:\n{}",
+            run.stdout
+        );
+    }
 }
 
 // --- list ---

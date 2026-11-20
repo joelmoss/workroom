@@ -9,9 +9,9 @@
 //!
 //! The commands that read or write the Mac's config are Mac-only: listed in `--help` everywhere,
 //! marked "(Mac only)", and failing with `MacOnly` anywhere else. Until its own ticket ports it
-//! (#672–#679), each of those, and `update`, is a stub here; the Go CLI still runs them. `list`
-//! and `base --global` are ported (#671), on `config`, the Rust reader and writer of config.json,
-//! and so is `include-archive` (#675).
+//! (#672–#678), each of those is a stub here; the Go CLI still runs them. `list` and
+//! `base --global` are ported (#671), on `config`, the Rust reader and writer of config.json, and
+//! so is `include-archive` (#675). `update` is ported too (#679), which runs anywhere.
 //!
 //! The terminal API's commands (#360, ADR 0079) are born here and run anywhere: each is a thin
 //! client of the daemon's terminal API (`terminal_api`).
@@ -27,6 +27,7 @@ mod list;
 mod log;
 mod sessions;
 mod terminal_api;
+mod update;
 mod version;
 
 use std::ffi::OsString;
@@ -72,6 +73,8 @@ pub(crate) struct Context {
     json: bool,
     /// `--pretend`: go through the command without changing anything.
     pretend: bool,
+    /// `--verbose`: say more about what the command does.
+    verbose: bool,
     platform: Platform,
     env: fn(&str) -> Option<String>,
     /// Whether human output is coloured: stdout is a terminal and neither `NO_COLOR` nor a dumb
@@ -99,11 +102,16 @@ pub(crate) enum Outcome {
     /// A usage error the command found in its arguments: reported as a failure is, but with no
     /// command in the envelope, since Go checks arguments before the command runs.
     Usage(CliError),
+    /// Human output for stdout, then a failure reported as [`Outcome::Failed`] is: Go's `update`
+    /// prints its progress before it fails, `--json` or not.
+    PrintedThenFailed(String, CliError),
 }
 
 /// One of a command's own flags, beside the global ones.
 struct Flag {
     name: &'static str,
+    /// Its one-letter form (`-c`), which only a boolean flag has here.
+    short: Option<char>,
     /// Takes a value (`--name value` or `--name=value`), else is a boolean.
     takes_value: bool,
     usage: &'static str,
@@ -112,6 +120,16 @@ struct Flag {
     /// Must be given, as cobra's `MarkFlagRequired` makes a flag: a usage error before the command
     /// runs when it isn't (`missing_required`). Given empty, it is.
     required: bool,
+}
+
+impl Flag {
+    /// How pflag names it, in `--help` and in an error: `-c, --check`, or `--channel`.
+    fn spelled(&self) -> String {
+        match self.short {
+            Some(short) => format!("-{short}, --{}", self.name),
+            None => format!("--{}", self.name),
+        }
+    }
 }
 
 /// What a command was given besides the global flags.
@@ -168,6 +186,8 @@ struct Command {
     /// The usage line after `workroom `.
     usage: &'static str,
     short: &'static str,
+    /// What its own `--help` says first, when it says more than `short`.
+    long: Option<&'static str>,
     /// Left out of `--help`: commands the app runs, not people.
     hidden: bool,
     mac_only: bool,
@@ -202,11 +222,13 @@ const COMMANDS: &[Command] = &[
         aliases: &[],
         usage: "base",
         short: "Set or clear the branch new workrooms start from",
+        long: None,
         hidden: false,
         mac_only: true,
         flags: &[
             Flag {
                 name: "global",
+                short: None,
                 takes_value: false,
                 usage: "The default for every project that names no base branch",
                 default: "",
@@ -214,6 +236,7 @@ const COMMANDS: &[Command] = &[
             },
             Flag {
                 name: "project",
+                short: None,
                 takes_value: true,
                 usage: "Project directory (defaults to the current directory)",
                 default: "",
@@ -273,11 +296,13 @@ const COMMANDS: &[Command] = &[
         aliases: &[],
         usage: "include-archive",
         short: "Write the project's included files to a tar (used by the desktop app)",
+        long: None,
         hidden: true,
         mac_only: true,
         flags: &[
             Flag {
                 name: "output",
+                short: None,
                 takes_value: true,
                 usage: "The file to write the tar to",
                 default: "",
@@ -285,6 +310,7 @@ const COMMANDS: &[Command] = &[
             },
             Flag {
                 name: "project",
+                short: None,
                 takes_value: true,
                 usage: "Project directory (defaults to the current directory)",
                 default: "",
@@ -299,11 +325,13 @@ const COMMANDS: &[Command] = &[
         aliases: &["ls", "l"],
         usage: "list",
         short: "List all workrooms for the current project",
+        long: None,
         hidden: false,
         mac_only: true,
         flags: &[
             Flag {
                 name: "project",
+                short: None,
                 takes_value: true,
                 usage: "Limit JSON output to a single project directory",
                 default: "",
@@ -311,6 +339,7 @@ const COMMANDS: &[Command] = &[
             },
             Flag {
                 name: "warnings",
+                short: None,
                 takes_value: true,
                 usage: "Warning detail for --json: none, fast, or full",
                 default: "fast",
@@ -325,6 +354,7 @@ const COMMANDS: &[Command] = &[
         aliases: &[],
         usage: "sessions [TARGET]",
         short: "List the daemon's terminal sessions, or the one TARGET names",
+        long: None,
         hidden: false,
         mac_only: false,
         flags: &[],
@@ -350,20 +380,24 @@ const COMMANDS: &[Command] = &[
         true,
         "#674",
     ),
-    stub(
-        "update",
-        &["u"],
-        "update",
-        "Update workroom to the latest version",
-        false,
-        false,
-        "#679",
-    ),
+    Command {
+        name: "update",
+        aliases: &["u"],
+        usage: "update",
+        short: "Update workroom to the latest version",
+        long: Some(update::LONG),
+        hidden: false,
+        mac_only: false,
+        flags: update::FLAGS,
+        arity: Arity::None,
+        implementation: Implementation::Ported(update::run),
+    },
     Command {
         name: "version",
         aliases: &[],
         usage: "version",
         short: "Print the version",
+        long: None,
         hidden: false,
         mac_only: false,
         flags: &[],
@@ -386,6 +420,7 @@ const fn stub(
         aliases,
         usage,
         short,
+        long: None,
         hidden,
         mac_only,
         flags: &[],
@@ -412,6 +447,7 @@ pub fn run_cli(args: &[OsString]) -> ExitCode {
     let context = Context {
         json: false,
         pretend: false,
+        verbose: false,
         platform: Platform::current(),
         env,
         color: std::io::stdout().is_terminal()
@@ -430,6 +466,7 @@ struct Parsed {
     json: bool,
     help: bool,
     pretend: bool,
+    verbose: bool,
     positional: Vec<String>,
     values: Vec<(&'static str, String)>,
 }
@@ -469,10 +506,11 @@ fn parse(args: &[String], flags: &'static [Flag]) -> (Parsed, Option<String>) {
                 None => true,
                 Some(Some(on)) => on,
                 Some(None) => {
+                    let spelled = own.map_or_else(|| format!("--{name}"), Flag::spelled);
                     return (
                         parsed,
                         Some(format!(
-                            "invalid argument {:?} for \"--{name}\" flag: strconv.ParseBool: parsing {:?}: invalid syntax",
+                            "invalid argument {:?} for {spelled:?} flag: strconv.ParseBool: parsing {:?}: invalid syntax",
                             value.unwrap_or_default(),
                             value.unwrap_or_default()
                         )),
@@ -484,15 +522,19 @@ fn parse(args: &[String], flags: &'static [Flag]) -> (Parsed, Option<String>) {
                 ("json", None) => parsed.json = on,
                 ("help", None) => parsed.help = on,
                 ("pretend", None) => parsed.pretend = on,
-                ("verbose", None) => {}
+                ("verbose", None) => parsed.verbose = on,
                 _ => return (parsed, Some(format!("unknown flag: --{name}"))),
             }
         } else if let Some(shorts) = arg.strip_prefix('-').filter(|shorts| !shorts.is_empty()) {
             for short in shorts.chars() {
-                match short {
-                    'h' => parsed.help = true,
-                    'p' => parsed.pretend = true,
-                    'v' => {}
+                let own = flags
+                    .iter()
+                    .find(|flag| flag.short == Some(short) && !flag.takes_value);
+                match (short, own) {
+                    (_, Some(flag)) => parsed.values.push((flag.name, "true".to_string())),
+                    ('h', None) => parsed.help = true,
+                    ('p', None) => parsed.pretend = true,
+                    ('v', None) => parsed.verbose = true,
                     _ => {
                         return (
                             parsed,
@@ -565,6 +607,7 @@ fn run(args: &[String], mut context: Context) -> Output {
     let (parsed, error) = parse(args, command.map_or(&[], |command| command.flags));
     context.json = parsed.json;
     context.pretend = parsed.pretend;
+    context.verbose = parsed.verbose;
     // A stub's own flags aren't known yet, so it doesn't refuse them; it fails below anyway. Nor
     // does a Mac-only command away from the Mac: `MacOnly` is what it answers, whatever it was given.
     let refuses_nothing = command.is_some_and(|command| {
@@ -642,7 +685,7 @@ fn missing_required(flags: &[Flag], values: &[(&'static str, String)]) -> Option
 
 /// `outcome` as what the run writes, and its exit code.
 fn report(context: &Context, command: Option<&str>, outcome: Outcome) -> Output {
-    let (command, error) = match outcome {
+    let (printed, command, error) = match outcome {
         Outcome::Printed(text) | Outcome::Success(text) => return Output::stdout(text),
         Outcome::PrintedWithWarnings { stdout, warnings } => {
             return Output {
@@ -651,12 +694,13 @@ fn report(context: &Context, command: Option<&str>, outcome: Outcome) -> Output 
                 code: 0,
             };
         }
-        Outcome::Failed(error) => (command, error),
-        Outcome::Usage(error) => (None, error),
+        Outcome::Failed(error) => (String::new(), command, error),
+        Outcome::Usage(error) => (String::new(), None, error),
+        Outcome::PrintedThenFailed(text, error) => (text, command, error),
     };
     match error {
         error if context.json => Output {
-            stdout: envelope::failure(command, &error),
+            stdout: printed + &envelope::failure(command, &error),
             stderr: String::new(),
             code: error.kind.exit_code(),
         },
@@ -673,7 +717,7 @@ fn report(context: &Context, command: Option<&str>, outcome: Outcome) -> Output 
                 );
             }
             Output {
-                stdout: String::new(),
+                stdout: printed,
                 stderr,
                 code: error.kind.exit_code(),
             }
@@ -702,10 +746,14 @@ fn flag_table(own: &[Flag]) -> String {
         .map(|(name, usage)| (name.to_string(), usage.to_string()))
         .collect();
     for flag in own {
+        let spelled = match flag.short {
+            Some(_) => flag.spelled(),
+            None => format!("    {}", flag.spelled()),
+        };
         let name = if flag.takes_value {
-            format!("    --{} string", flag.name)
+            spelled + " string"
         } else {
-            format!("    --{}", flag.name)
+            spelled
         };
         let usage = if flag.default.is_empty() {
             flag.usage.to_string()
@@ -727,7 +775,7 @@ fn help(command: Option<&Command>) -> String {
         Some(command) => {
             let mut text = format!(
                 "{}{}\n\nUsage:\n  workroom {}\n",
-                command.short,
+                command.long.unwrap_or(command.short),
                 mark(command),
                 command.usage
             );
@@ -818,6 +866,7 @@ mod tests {
             Context {
                 json: false,
                 pretend: false,
+                verbose: false,
                 platform,
                 env: |_| None,
                 color: false,
@@ -967,6 +1016,7 @@ mod tests {
         const FLAGS: &[Flag] = &[
             Flag {
                 name: "provisioner",
+                short: None,
                 takes_value: true,
                 usage: "",
                 default: "",
@@ -974,6 +1024,7 @@ mod tests {
             },
             Flag {
                 name: "from",
+                short: None,
                 takes_value: true,
                 usage: "",
                 default: "",
@@ -981,6 +1032,7 @@ mod tests {
             },
             Flag {
                 name: "other",
+                short: None,
                 takes_value: true,
                 usage: "",
                 default: "",
@@ -1001,6 +1053,66 @@ mod tests {
                 &[("from", "a".into()), ("provisioner", String::new())]
             ),
             None
+        );
+    }
+
+    #[test]
+    fn a_commands_short_flags_and_verbose_parse_as_pflag_parses_them() {
+        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        let (parsed, error) = parse(&args(&["update", "-cv", "--check=false"]), update::FLAGS);
+        assert_eq!(error, None);
+        assert!(parsed.verbose && !parsed.pretend);
+        assert_eq!(
+            parsed.values,
+            [
+                ("check", "true".to_string()),
+                ("check", "false".to_string())
+            ]
+        );
+        let (parsed, _) = parse(&args(&["update", "--verbose=false"]), update::FLAGS);
+        assert!(!parsed.verbose);
+        let (_, error) = parse(&args(&["update", "--check=maybe"]), update::FLAGS);
+        assert_eq!(
+            error.as_deref(),
+            Some(
+                "invalid argument \"maybe\" for \"-c, --check\" flag: strconv.ParseBool: parsing \"maybe\": invalid syntax"
+            )
+        );
+        // Another command's short flags are unknown here.
+        let ((_, stderr), code) = run_on(Platform::Mac, &["version", "-c"]);
+        assert_eq!(
+            (stderr.as_str(), code),
+            ("Error: unknown shorthand flag: 'c' in -c\n", 1)
+        );
+    }
+
+    #[test]
+    fn updates_help_says_its_long_text_and_lists_its_short_flag() {
+        let ((text, _), _) = run_on(Platform::Other, &["update", "--help"]);
+        assert!(text.starts_with(update::LONG), "{text}");
+        assert!(
+            text.contains("  -c, --check            Only check if an update is available\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("      --channel string   Release channel: stable or pre"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn update_runs_away_from_the_mac_and_refuses_an_argument() {
+        let ((stdout, _), code) = run_on(Platform::Other, &["update", "--json", "extra"]);
+        assert_eq!(code, 1);
+        assert!(
+            stdout.contains(r#""message":"unknown command \"extra\" for \"workroom update\"""#),
+            "{stdout}"
+        );
+        let ((stdout, _), code) = run_on(Platform::Other, &["update", "--json", "--channel"]);
+        assert_eq!(code, 1);
+        assert!(
+            stdout.contains("flag needs an argument: --channel"),
+            "{stdout}"
         );
     }
 

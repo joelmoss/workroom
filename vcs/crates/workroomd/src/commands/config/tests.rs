@@ -14,6 +14,7 @@ fn context(env: fn(&str) -> Option<String>) -> Context {
     Context {
         json: true,
         pretend: false,
+        verbose: false,
         platform: Platform::Mac,
         env,
         color: false,

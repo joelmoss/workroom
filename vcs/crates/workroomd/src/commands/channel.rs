@@ -27,9 +27,6 @@
 //! anything else -> invalid    (not classifiable)
 //! ```
 
-// Nothing outside the tests calls this module yet; the tests do use it, hence `not(test)`.
-#![cfg_attr(not(test), expect(dead_code, reason = "first caller: update (#679)"))]
-
 /// The fixed GitHub release tag that hosts the rolling nightly build. Its assets and its single
 /// appcast item are overwritten in place each night, so its tag never changes.
 pub(crate) const NIGHTLY_TAG: &str = "nightly";
