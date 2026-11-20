@@ -60,8 +60,8 @@ final class ThemeService {
   /// else the Workroom default. Always sanitised (safe to write into the conf).
   nonisolated static func activeThemeName(isDark: Bool) -> String {
     let resolved =
-      ThemeCatalog.family(named: Defaults[.themeFamily])?.variant(isDark: isDark)
-      ?? ThemeCatalog.family(named: ThemeCatalog.defaultFamilyName)!.variant(isDark: isDark)
+      ThemeCatalog.family(named: Defaults[.themeFamily])?.theme(for: ThemeSide(isDark: isDark))
+      ?? ThemeCatalog.family(named: ThemeCatalog.defaultFamilyName)!.theme(for: ThemeSide(isDark: isDark))
     return ThemeCatalog.sanitizedThemeName(resolved)
   }
 
