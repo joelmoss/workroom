@@ -128,8 +128,9 @@ fn machine_id() -> Option<String> {
 }
 
 /// The IOPlatformUUID out of `ioreg -rd1 -c IOPlatformExpertDevice`, whose line for it is
-/// `"IOPlatformUUID" = "<uuid>"`; "" when it is missing or empty.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// `"IOPlatformUUID" = "<uuid>"`; "" when it is missing or empty. Built on the Mac, which reads it,
+/// and in tests everywhere.
+#[cfg(any(target_os = "macos", test))]
 pub(super) fn parse_ioplatform_uuid(output: &str) -> String {
     for line in output.lines() {
         let Some((key, value)) = line.trim().split_once('=') else {
@@ -145,8 +146,8 @@ pub(super) fn parse_ioplatform_uuid(output: &str) -> String {
 
 /// A systemd or D-Bus machine-id file's id; "" when it is blank or still holds the
 /// "uninitialized" placeholder systemd writes before first boot completes, which every such
-/// machine would share.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+/// machine would share. Built away from the Mac, which reads it, and in tests everywhere.
+#[cfg(any(not(target_os = "macos"), test))]
 pub(super) fn parse_machine_id_file(content: &str) -> String {
     let id = content.trim();
     if id == "uninitialized" {

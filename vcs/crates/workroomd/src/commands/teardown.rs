@@ -392,15 +392,108 @@ fn vcs_failed(detail: &str) -> CliError {
     )
 }
 
-/// How Go's `exec.ExitError` words an exit: `exit status N`, or `signal: …`.
+/// How Go's `exec.ExitError` words an exit (`os.ProcessState.String`): `exit status N`, or
+/// `signal: ` and the signal's name, with ` (core dumped)` after it when it dumped one.
 pub(super) fn go_exit(status: &std::process::ExitStatus) -> String {
     use std::os::unix::process::ExitStatusExt;
     match (status.code(), status.signal()) {
         (Some(code), _) => format!("exit status {code}"),
-        (None, Some(signal)) => format!("signal: {signal}"),
+        (None, Some(signal)) => {
+            let dumped = if status.core_dumped() {
+                " (core dumped)"
+            } else {
+                ""
+            };
+            format!("signal: {}{dumped}", go_signal_name(signal))
+        }
         (None, None) => "exit status -1".to_string(),
     }
 }
+
+/// Go's `syscall.Signal.String`: the name in the platform's `signals` table, or `signal N` for
+/// one it doesn't name.
+fn go_signal_name(signal: i32) -> String {
+    usize::try_from(signal)
+        .ok()
+        .and_then(|index| GO_SIGNALS.get(index))
+        .filter(|name| !name.is_empty())
+        .map_or_else(|| format!("signal {signal}"), |name| (*name).to_string())
+}
+
+/// Go's `signals` table in `syscall/zerrors_darwin_arm64.go` (amd64's is the same).
+#[cfg(target_os = "macos")]
+const GO_SIGNALS: [&str; 32] = [
+    "",
+    "hangup",
+    "interrupt",
+    "quit",
+    "illegal instruction",
+    "trace/BPT trap",
+    "abort trap",
+    "EMT trap",
+    "floating point exception",
+    "killed",
+    "bus error",
+    "segmentation fault",
+    "bad system call",
+    "broken pipe",
+    "alarm clock",
+    "terminated",
+    "urgent I/O condition",
+    "suspended (signal)",
+    "suspended",
+    "continued",
+    "child exited",
+    "stopped (tty input)",
+    "stopped (tty output)",
+    "I/O possible",
+    "cputime limit exceeded",
+    "filesize limit exceeded",
+    "virtual timer expired",
+    "profiling timer expired",
+    "window size changes",
+    "information request",
+    "user defined signal 1",
+    "user defined signal 2",
+];
+
+/// Go's `signals` table in `syscall/zerrors_linux_amd64.go`, the same on every Linux it builds
+/// for but MIPS, whose signal numbers differ.
+#[cfg(not(target_os = "macos"))]
+const GO_SIGNALS: [&str; 32] = [
+    "",
+    "hangup",
+    "interrupt",
+    "quit",
+    "illegal instruction",
+    "trace/breakpoint trap",
+    "aborted",
+    "bus error",
+    "floating point exception",
+    "killed",
+    "user defined signal 1",
+    "segmentation fault",
+    "user defined signal 2",
+    "broken pipe",
+    "alarm clock",
+    "terminated",
+    "stack fault",
+    "child exited",
+    "continued",
+    "stopped (signal)",
+    "stopped",
+    "stopped (tty input)",
+    "stopped (tty output)",
+    "urgent I/O condition",
+    "CPU time limit exceeded",
+    "file size limit exceeded",
+    "virtual timer expired",
+    "profiling timer expired",
+    "window changed",
+    "I/O possible",
+    "power failure",
+    "bad system call",
+];
 
 /// The script's combined output as `teardown` events, a line at a time.
 struct Events<W: Write>(LogWriter<W>);
@@ -413,5 +506,32 @@ impl<W: Write> Write for Events<W> {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::ExitStatus;
+
+    use super::go_exit;
+
+    #[test]
+    fn an_exit_is_worded_as_gos_exec_error() {
+        assert_eq!(go_exit(&ExitStatus::from_raw(3 << 8)), "exit status 3");
+        assert_eq!(
+            go_exit(&ExitStatus::from_raw(libc::SIGKILL)),
+            "signal: killed"
+        );
+        assert_eq!(
+            go_exit(&ExitStatus::from_raw(libc::SIGTERM)),
+            "signal: terminated"
+        );
+        assert_eq!(
+            go_exit(&ExitStatus::from_raw(libc::SIGSEGV | 0x80)),
+            "signal: segmentation fault (core dumped)"
+        );
+        // A number Go's table doesn't name.
+        assert_eq!(go_exit(&ExitStatus::from_raw(40)), "signal: signal 40");
     }
 }
