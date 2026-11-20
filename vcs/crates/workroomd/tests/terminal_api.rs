@@ -341,7 +341,8 @@ fn with_no_daemon_every_run_exits_7_daemon_unreachable() {
 }
 
 /// A daemon from before the terminal API would fail the whole connection on its service byte, so
-/// the CLI checks the greeting and sends it nothing.
+/// the CLI checks the greeting, sends it nothing, and exits 7 `DaemonTooOld`, saying it needs
+/// updating.
 #[test]
 fn a_daemon_older_than_the_terminal_api_is_sent_nothing() {
     use std::io::Read;
@@ -374,12 +375,10 @@ fn a_daemon_older_than_the_terminal_api_is_sent_nothing() {
     let run = workroom(Some(&socket), &["sessions", "--json"]);
     assert_eq!(run.code, 7, "{}", run.stdout);
     let envelope = run.envelope();
-    assert_eq!(envelope["error"]["kind"], "DaemonUnreachable");
+    assert_eq!(envelope["error"]["kind"], "DaemonTooOld");
+    let message = envelope["error"]["message"].as_str().unwrap();
     assert!(
-        envelope["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("predates the terminal API"),
+        message.contains("predates the terminal API") && message.contains("needs updating"),
         "{envelope}"
     );
     assert_eq!(

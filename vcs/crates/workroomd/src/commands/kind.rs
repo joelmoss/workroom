@@ -11,7 +11,7 @@
 //!
 //! Exit codes: 0 success, 1 internal, 2 usage or validation, 3 a precondition or something not
 //! found, 4 cancelled, 5 a setup or teardown script failed, 6 config couldn't be read or written,
-//! 7 no daemon could be reached, 8 a wait timed out.
+//! 7 no daemon could be reached, or the one reached is too old for the request, 8 a wait timed out.
 
 /// One failure class a command can end with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,8 +52,11 @@ pub(crate) enum Kind {
     TargetAmbiguous,
     /// A terminal API target that no session matches.
     TargetNotFound,
-    /// No daemon to ask: none is listening, none is named, or it predates the terminal API.
+    /// No daemon to ask: none is named, or none is listening where it was.
     DaemonUnreachable,
+    /// A daemon that predates the terminal API (below protocol 12): it needs updating, not
+    /// starting.
+    DaemonTooOld,
     /// A terminal API wait that ran out of time.
     WaitTimeout,
     /// A prompt to a coding agent that is working.
@@ -110,6 +113,7 @@ pub(crate) const ALL: &[Kind] = &[
     Kind::TargetAmbiguous,
     Kind::TargetNotFound,
     Kind::DaemonUnreachable,
+    Kind::DaemonTooOld,
     Kind::WaitTimeout,
     Kind::AgentBusy,
     Kind::NotAnAgent,
@@ -176,15 +180,16 @@ impl Kind {
             Kind::TargetAmbiguous => ("TargetAmbiguous", 3),
             Kind::TargetNotFound => ("TargetNotFound", 3),
             Kind::DaemonUnreachable => ("DaemonUnreachable", 7),
+            Kind::DaemonTooOld => ("DaemonTooOld", 7),
             Kind::WaitTimeout => ("WaitTimeout", 8),
-            // #360: past a target, bad input and the two new codes, "anything else is 1".
-            Kind::AgentBusy => ("AgentBusy", 1),
-            Kind::NotAnAgent => ("NotAnAgent", 1),
-            Kind::SessionEnded => ("SessionEnded", 1),
-            Kind::AlternateScreen => ("AlternateScreen", 1),
-            Kind::NoShellIntegration => ("NoShellIntegration", 1),
+            // A valid request the session can't take now: a precondition, as the CLI's others are.
+            Kind::AgentBusy => ("AgentBusy", 3),
+            Kind::NotAnAgent => ("NotAnAgent", 3),
+            Kind::SessionEnded => ("SessionEnded", 3),
+            Kind::AlternateScreen => ("AlternateScreen", 3),
+            Kind::NoShellIntegration => ("NoShellIntegration", 3),
             Kind::TooLarge => ("TooLarge", 2),
-            Kind::RefusedSelf => ("RefusedSelf", 1),
+            Kind::RefusedSelf => ("RefusedSelf", 3),
             Kind::InvalidRequest => ("InvalidRequest", 2),
             Kind::InternalError => ("InternalError", 1),
         }
@@ -274,6 +279,7 @@ mod tests {
                 "TargetAmbiguous",
                 "TargetNotFound",
                 "DaemonUnreachable",
+                "DaemonTooOld",
                 "WaitTimeout",
                 "AgentBusy",
                 "NotAnAgent",
@@ -297,17 +303,25 @@ mod tests {
         assert_eq!(Kind::InternalError.exit_code(), 1);
     }
 
-    /// #360's exit codes: a missing or ambiguous target is 3, as the CLI's other not-found errors
-    /// are, and the two new codes are the daemon being out of reach and a wait timing out.
+    /// #360's exit codes: a missing or ambiguous target, and a valid request the session can't
+    /// take now, are 3, as the CLI's other not-found and precondition errors are; bad input is 2;
+    /// and the new codes are the daemon being out of reach or too old (7) and a wait timing out (8).
     #[test]
     fn the_terminal_apis_kinds() {
         for (kind, code, exit) in [
             (Kind::TargetAmbiguous, "TargetAmbiguous", 3),
             (Kind::TargetNotFound, "TargetNotFound", 3),
-            (Kind::DaemonUnreachable, "DaemonUnreachable", 7),
-            (Kind::WaitTimeout, "WaitTimeout", 8),
+            (Kind::AgentBusy, "AgentBusy", 3),
+            (Kind::NotAnAgent, "NotAnAgent", 3),
+            (Kind::SessionEnded, "SessionEnded", 3),
+            (Kind::AlternateScreen, "AlternateScreen", 3),
+            (Kind::NoShellIntegration, "NoShellIntegration", 3),
+            (Kind::RefusedSelf, "RefusedSelf", 3),
             (Kind::TooLarge, "TooLarge", 2),
             (Kind::InvalidRequest, "InvalidRequest", 2),
+            (Kind::DaemonUnreachable, "DaemonUnreachable", 7),
+            (Kind::DaemonTooOld, "DaemonTooOld", 7),
+            (Kind::WaitTimeout, "WaitTimeout", 8),
         ] {
             assert_eq!((kind.code(), kind.exit_code()), (code, exit));
             assert_eq!(Kind::from_code(code), kind);
