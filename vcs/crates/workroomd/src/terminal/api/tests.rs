@@ -430,17 +430,26 @@ fn written_writer() -> (Written, SharedWriter) {
 /// other: its revision, its error and `more`, never a bare error.
 #[test]
 fn an_over_limit_reply_is_a_whole_too_large_reply() {
+    let too_large = json!({
+        "revision": REVISION,
+        "error": {"kind": "TooLarge", "message": "the reply is over 16 MiB"},
+        "more": false,
+    });
     let (written, writer) = written_writer();
     let huge = reply(Ok(json!({"text": "x".repeat(17 << 20)})), false);
     assert!(send(&writer, 1, huge));
-    assert_eq!(
-        written.replies(),
-        [json!({
-            "revision": REVISION,
-            "error": {"kind": "TooLarge", "message": "the reply is over 16 MiB"},
-            "more": false,
-        })]
+    assert_eq!(written.replies(), vec![too_large.clone()]);
+
+    // A wait's: a target of 9 MiB of quotes is named in its `TargetNotFound`, escaped twice over.
+    let store = SessionStore::new();
+    let (written, writer) = written_writer();
+    start_wait(
+        &mut Connection::default(),
+        &store,
+        json!({"target": "\"".repeat(9 << 20), "ended": true}),
+        &writer,
     );
+    assert_eq!(written.replies(), [too_large]);
 }
 
 /// A wait that fails at once answers on its stream as every method does: one reply, with its
