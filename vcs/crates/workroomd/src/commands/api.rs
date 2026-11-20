@@ -249,6 +249,7 @@ mod tests {
                 verbose: false,
                 platform,
                 env: |_| None,
+                daemon_above: || None,
                 color: false,
             },
         )

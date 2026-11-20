@@ -17,6 +17,7 @@ fn context(env: fn(&str) -> Option<String>) -> Context {
         verbose: false,
         platform: Platform::Mac,
         env,
+        daemon_above: || None,
         color: false,
     }
 }

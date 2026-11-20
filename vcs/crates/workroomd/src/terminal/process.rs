@@ -78,6 +78,16 @@ fn value_in_environment<'a>(entries: impl Iterator<Item = &'a [u8]>, key: &str) 
     })
 }
 
+/// A process's arguments, `argv[0]` first, as it was started (`KERN_PROCARGS2` on macOS,
+/// `/proc/<pid>/cmdline` on Linux), empty arguments left out. `None` when they can't be read: the
+/// process is gone, or belongs to another user.
+pub fn arguments(pid: i32) -> Option<Vec<String>> {
+    if pid <= 0 {
+        return None;
+    }
+    platform::arguments(pid)
+}
+
 /// A process's current working directory, for OSC 7.
 pub fn working_directory(pid: i32) -> Option<String> {
     if pid <= 0 {
@@ -108,9 +118,12 @@ mod platform {
     /// `KERN_PROCARGS2`, the exec-time argv snapshot. Layout: `argc` (i32), the exec path
     /// (NUL-terminated), NUL padding, then `argc` NUL-terminated argv strings.
     pub(super) fn executable_name(pid: i32) -> Option<String> {
+        name_from_argv(&arguments(pid)?)
+    }
+
+    pub(super) fn arguments(pid: i32) -> Option<Vec<String>> {
         let buffer = procargs2(pid)?;
-        let (argv, _) = split_procargs(&buffer)?;
-        name_from_argv(&argv)
+        split_procargs(&buffer).map(|(argv, _)| argv)
     }
 
     /// The environment follows argv in the same buffer, as NUL-terminated `KEY=value` strings with
@@ -263,14 +276,16 @@ mod platform {
     }
 
     fn cmdline(pid: i32) -> Vec<String> {
-        fs::read(format!("/proc/{pid}/cmdline"))
-            .map(|raw| {
-                raw.split(|b| *b == 0)
-                    .filter(|s| !s.is_empty())
-                    .map(|s| String::from_utf8_lossy(s).into_owned())
-                    .collect()
-            })
-            .unwrap_or_default()
+        arguments(pid).unwrap_or_default()
+    }
+
+    pub(super) fn arguments(pid: i32) -> Option<Vec<String>> {
+        fs::read(format!("/proc/{pid}/cmdline")).ok().map(|raw| {
+            raw.split(|b| *b == 0)
+                .filter(|s| !s.is_empty())
+                .map(|s| String::from_utf8_lossy(s).into_owned())
+                .collect()
+        })
     }
 
     pub(super) fn environment_value(pid: i32, key: &str) -> Option<String> {

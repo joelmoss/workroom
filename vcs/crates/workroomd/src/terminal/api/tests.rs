@@ -79,7 +79,7 @@ fn labels_and_titles_match_exactly() {
 }
 
 fn request(store: &SessionStore, request: Value) -> Result<Value, ApiError> {
-    handle(store, &serde_json::to_vec(&request).unwrap())
+    handle(store, &serde_json::to_vec(&request).unwrap(), None)
 }
 
 #[test]
@@ -99,7 +99,7 @@ fn a_request_that_is_not_a_method_call_is_invalid() {
         let error = request(&store, bad.clone()).expect_err(&bad.to_string());
         assert_eq!(error.kind, kind::INVALID_REQUEST, "{bad}");
     }
-    assert!(handle(&store, b"not json").is_err());
+    assert!(handle(&store, b"not json", None).is_err());
 }
 
 #[test]
