@@ -51,8 +51,6 @@ ghostty-vt = { path = "../ghostty-vt", optional = true }
 # The raw-mode test reads the pty's line discipline directly. `libc` is already a runtime
 # dependency, so this adds nothing to the graph — it only makes it visible to `tests/`.
 libc = "0.2"
-# The contract suite reads `include-archive`'s tar with it, whichever binary wrote the tar.
-tar = { version = "0.4", default-features = false }
 # Itself, with `test-support`, so `cargo test` builds the library with the test-only API that
 # `tests/` reaches through `workroom::testing`, and no build needs a flag for it.
 workroom = { path = ".", features = ["test-support"] }
