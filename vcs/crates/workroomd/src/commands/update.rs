@@ -375,7 +375,7 @@ impl Updater<'_> {
         let want = checksum_for(&String::from_utf8_lossy(&sums), &release.asset_name).ok_or_else(
             || CliError::internal(format!("no checksum entry for {}", release.asset_name)),
         )?;
-        let got = sha256_hex(archive);
+        let got = crate::util::sha256_hex(archive);
         if !got.eq_ignore_ascii_case(&want) {
             return Err(CliError::internal(format!(
                 "checksum mismatch for {} (expected {want}, got {got})",
@@ -549,14 +549,6 @@ fn checksum_for(sums: &str, asset: &str) -> Option<String> {
             _ => None,
         }
     })
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    ring::digest::digest(&ring::digest::SHA256, bytes)
-        .as_ref()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 /// A finished HTTP exchange.

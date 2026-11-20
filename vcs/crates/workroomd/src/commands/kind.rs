@@ -13,6 +13,8 @@
 //! found, 4 cancelled, 5 a setup or teardown script failed, 6 config couldn't be read or written,
 //! 7 no daemon could be reached, or the one reached is too old for the request, 8 a wait timed out.
 
+use super::trusted_script::ScriptPayload;
+
 /// One failure class a command can end with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -210,8 +212,8 @@ pub(crate) struct CliError {
     /// The sessions an ambiguous terminal API target matched, as the daemon listed them.
     pub(crate) matches: Vec<serde_json::Value>,
     /// The script a `ScriptNotTrusted` refused, as the envelope's `script` carries it for the app
-    /// to show and approve, already encoded as Go encodes it.
-    pub(crate) script: Option<String>,
+    /// to show and approve.
+    pub(crate) script: Option<Box<ScriptPayload>>,
 }
 
 impl CliError {
@@ -227,6 +229,23 @@ impl CliError {
     /// An unclassified failure, which a usage error is too.
     pub(crate) fn internal(message: impl Into<String>) -> CliError {
         CliError::new(Kind::InternalError, message)
+    }
+
+    /// Go's `ErrVCSCommand`, wrapping what failed in git's or the system's words.
+    pub(crate) fn vcs_failed(detail: &str) -> CliError {
+        CliError::new(
+            Kind::VcsCommandFailed,
+            format!("version control command failed: {detail}"),
+        )
+    }
+
+    /// Go's `ErrUnsupportedVCS`: the directory holds no git checkout.
+    pub(crate) fn unsupported_vcs() -> CliError {
+        CliError::new(
+            Kind::UnsupportedVcs,
+            "no supported VCS detected in this directory. Workroom requires Git to manage \
+             workrooms",
+        )
     }
 }
 

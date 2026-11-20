@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use super::*;
+use crate::util::sha256_hex;
 
 /// Each path's status and body.
 type Routes = HashMap<String, (u16, Vec<u8>)>;

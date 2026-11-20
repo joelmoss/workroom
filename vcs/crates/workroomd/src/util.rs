@@ -103,6 +103,16 @@ pub(crate) fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// The SHA-256 of `bytes`, in lowercase hex: a script's approval (`trusted_scripts`) and a release
+/// archive's checksum are both written this way.
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    ring::digest::digest(&ring::digest::SHA256, bytes)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 /// Call before every `fork` this crate makes, so the child is not killed before it can exec.
 ///
 /// On macOS, `fork` runs libSystem's child handlers, and libnotify's (`_notify_fork_child`) takes
