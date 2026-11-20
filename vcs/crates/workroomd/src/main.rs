@@ -1,4 +1,6 @@
-//! `workroomd serve | attach`, mirroring today's shipped `workroom-session daemon | attach`.
+//! One binary, `workroom`, in two roles (ADR 0078): `workroom <command>` is the CLI
+//! (`workroom::commands`), and the daemon's subcommands below are the daemon, `serve | attach`
+//! mirroring the earlier `workroom-session daemon | attach`.
 //!
 //! That shape is deliberate rather than inherited: `PaneSessionAttachment.launch` sets
 //! libghostty's `config.command` to a command LINE, so libghostty forks a *process* — meaning there
@@ -70,6 +72,11 @@ fn main() -> ExitCode {
     // Before anything is started, so no session's shell inherits the port.
     #[cfg(target_os = "macos")]
     cli::drop_inherited_exception_ports();
+    // The CLI's commands first; the daemon's subcommands, which ADR 0057 pins, fall through.
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if let Some(code) = workroom::commands::dispatch(&raw) {
+        return code;
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("protocol") => cli::protocol(),

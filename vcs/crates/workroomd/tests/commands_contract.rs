@@ -294,7 +294,6 @@ fn check_golden(owner: Owner, file: &str, got: &str) {
 // --- version ---
 
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
 fn version_prints_the_bare_version_the_json_reports() {
     let home = Home::new("version-bare");
     let bare = home.run(&home.dir, &["version"]);
@@ -312,7 +311,6 @@ fn version_prints_the_bare_version_the_json_reports() {
 }
 
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
 fn version_json_matches_the_golden() {
     let home = Home::new("version-json");
     let run = home.run(&home.dir, &["version", "--json"]);
@@ -328,7 +326,6 @@ fn version_json_matches_the_golden() {
 
 /// `--json` is a flag of every command, so it may come before the command too.
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
 fn version_json_flag_may_come_before_the_command() {
     let home = Home::new("version-json-first");
     let run = home.run(&home.dir, &["--json", "version"]);
@@ -343,7 +340,6 @@ fn version_json_flag_may_come_before_the_command() {
 /// The channel is config's `channel` when that is a non-empty string, whatever it says, and
 /// `stable` otherwise, including when config.json can't be read: `version` never fails on config.
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
 fn version_json_reports_the_configured_channel() {
     for (config, channel) in [
         (Some(r#"{"channel": "pre"}"#), "pre"),
@@ -369,7 +365,6 @@ fn version_json_reports_the_configured_channel() {
 /// `version` takes no arguments; an extra one is a usage error, in the envelope under `--json`
 /// and as an `Error:` line on stderr without it.
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
 fn version_refuses_an_argument() {
     let home = Home::new("version-extra");
     let json = home.run(&home.dir, &["version", "--json", "extra"]);
@@ -378,21 +373,29 @@ fn version_refuses_an_argument() {
     let plain = home.run(&home.dir, &["version", "extra"]);
     plain.assert_code(1);
     assert_eq!(plain.stdout, "");
-    assert!(plain.stderr.starts_with("Error: "), "stderr {:?}", plain.stderr);
+    assert!(
+        plain.stderr.starts_with("Error: "),
+        "stderr {:?}",
+        plain.stderr
+    );
 }
 
 /// The envelope is encoded as Go's encoder writes it, which serde_json's default does not: `<`,
 /// `>`, `&`, `/`, DEL and non-ASCII as they are; `"` and `\` escaped; U+2028 and U+2029 as
-/// ` ` and ` `; control characters as `\b`, `\f`, `\n`, `\r`, `\t` or `\u00XX`; and a
+/// six-character `\u` escapes; control characters as `\b`, `\f`, `\n`, `\r`, `\t` or a `\u`
+/// escape; and a
 /// byte that isn't UTF-8 as U+FFFD. An unknown flag's name is echoed in the message, so it carries
 /// each case to the encoder.
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
 fn version_json_encodes_an_echoed_argument_as_go_does() {
     use std::os::unix::ffi::OsStrExt;
     let home = Home::new("version-escaping");
-    let flag = OsStr::from_bytes(b"--x<&>\xe2\x80\xa8\xe2\x80\xa9\x01\x08\x0c\x1f\x7f\"\\/\xc3\xa9\xff");
-    let run = home.run(&home.dir, &[OsStr::new("version"), OsStr::new("--json"), flag]);
+    let flag =
+        OsStr::from_bytes(b"--x<&>\xe2\x80\xa8\xe2\x80\xa9\x01\x08\x0c\x1f\x7f\"\\/\xc3\xa9\xff");
+    let run = home.run(
+        &home.dir,
+        &[OsStr::new("version"), OsStr::new("--json"), flag],
+    );
     run.assert_code(1).assert_quiet_stderr();
     assert_eq!(run.error_kind(), "InternalError");
     let message = run.envelope()["error"]["message"]
@@ -400,10 +403,22 @@ fn version_json_encodes_an_echoed_argument_as_go_does() {
         .expect("message")
         .to_string();
     let echoed = "x<&>\u{2028}\u{2029}\u{1}\u{8}\u{c}\u{1f}\u{7f}\"\\/\u{e9}\u{fffd}";
-    assert!(message.contains(echoed), "message {message:?} doesn't echo the flag");
+    assert!(
+        message.contains(echoed),
+        "message {message:?} doesn't echo the flag"
+    );
     // Each escape spelled out: a backslash, then the escape's letters.
     let encoded = [
-        "x<&>", "\\u2028", "\\u2029", "\\u0001", "\\b", "\\f", "\\u001f", "\u{7f}", "\\\"", "\\\\",
+        "x<&>",
+        "\\u2028",
+        "\\u2029",
+        "\\u0001",
+        "\\b",
+        "\\f",
+        "\\u001f",
+        "\u{7f}",
+        "\\\"",
+        "\\\\",
         "/\u{e9}\u{fffd}",
     ]
     .concat();
@@ -448,7 +463,7 @@ const LIST_CONFIG: &str = r#"{
 }"#;
 
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
+#[ignore = "not ported to Rust yet"]
 fn list_json_matches_the_golden() {
     let home = Home::new("list-json");
     let app = home.repo("src/app");
@@ -484,7 +499,7 @@ fn list_json_matches_the_golden() {
 /// its wording, so these are pinned apart from the machine contract: a port that rewords them
 /// updates the strings here, keeping the information.
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
+#[ignore = "not ported to Rust yet"]
 fn list_human_text_from_each_kind_of_directory() {
     let home = Home::new("list-human");
     let elsewhere = home.path("elsewhere");
@@ -556,7 +571,7 @@ fn list_human_text_from_each_kind_of_directory() {
 }
 
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
+#[ignore = "not ported to Rust yet"]
 fn list_json_reports_a_bad_flag_value_as_an_error_envelope() {
     let home = Home::new("list-bad-warnings");
     let run = home.run(&home.dir, &["list", "--json", "--warnings=bad"]);
@@ -566,7 +581,7 @@ fn list_json_reports_a_bad_flag_value_as_an_error_envelope() {
 }
 
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
+#[ignore = "not ported to Rust yet"]
 fn list_json_reports_an_unknown_flag_as_an_error_envelope() {
     let home = Home::new("list-unknown-flag");
     let run = home.run(&home.dir, &["list", "--json", "--bogus"]);
@@ -581,7 +596,7 @@ fn list_json_reports_an_unknown_flag_as_an_error_envelope() {
 /// two-space indent, numbers exactly as written, `<`, `>`, `&`, U+2028 and U+2029 escaped, no
 /// trailing newline. The input is laid out unlike that on purpose.
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
+#[ignore = "not ported to Rust yet"]
 fn config_write_keeps_unknown_keys_and_host_descriptors_byte_for_byte() {
     let home = Home::new("config-roundtrip");
     let before = std::fs::read_to_string(golden_path("config-roundtrip-before.json"))
