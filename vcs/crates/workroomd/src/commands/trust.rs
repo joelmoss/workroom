@@ -17,8 +17,8 @@ use serde::Serialize;
 
 use super::config::{self, Config};
 use super::kind::CliError;
-use super::script::{self, Judge, Script, ScriptPayload};
 use super::start::{LocalWork, LocalWorkPayload};
+use super::trusted_script::{self, Judge, Script, ScriptPayload};
 use super::{Args, Context, Outcome};
 
 /// `trust`'s and `trust status`'s `--help`, after the short line.
@@ -114,19 +114,19 @@ fn judged(context: &Context, args: &Args) -> Result<Judged, CliError> {
             }
         }
     } else {
-        let Some(name) = script::known_name(stdin) else {
+        let Some(name) = trusted_script::known_name(stdin) else {
             return Err(CliError::internal(format!(
                 "--stdin takes {}, {} or {}, not {stdin:?}",
-                script::SETUP_SCRIPT,
-                script::TEARDOWN_SCRIPT,
-                script::DEV_CONTAINER
+                trusted_script::SETUP_SCRIPT,
+                trusted_script::TEARDOWN_SCRIPT,
+                trusted_script::DEV_CONTAINER
             )));
         };
         let mut text = Vec::new();
         std::io::stdin()
             .read_to_end(&mut text)
             .map_err(|error| CliError::internal(format!("read {}", config::os_error(&error))))?;
-        vec![judge.judge(name, script::Origin::Stdin, text)?]
+        vec![judge.judge(name, trusted_script::Origin::Stdin, text)?]
     };
     Ok(Judged {
         config,
@@ -293,9 +293,9 @@ pub(super) fn untrust(context: &Context, args: &Args) -> Outcome {
             config.untrust(
                 &dir,
                 &[
-                    script::SETUP_SCRIPT,
-                    script::TEARDOWN_SCRIPT,
-                    script::DEV_CONTAINER,
+                    trusted_script::SETUP_SCRIPT,
+                    trusted_script::TEARDOWN_SCRIPT,
+                    trusted_script::DEV_CONTAINER,
                 ],
             )?;
         }
@@ -313,11 +313,14 @@ pub(super) fn untrust(context: &Context, args: &Args) -> Outcome {
 
 /// Which of the project's scripts it has none of.
 fn absent(scripts: &[Script]) -> Vec<String> {
-    [script::SETUP_SCRIPT, script::TEARDOWN_SCRIPT]
-        .into_iter()
-        .filter(|name| !scripts.iter().any(|sc| sc.name == *name))
-        .map(|name| format!("No scripts/{name}."))
-        .collect()
+    [
+        trusted_script::SETUP_SCRIPT,
+        trusted_script::TEARDOWN_SCRIPT,
+    ]
+    .into_iter()
+    .filter(|name| !scripts.iter().any(|sc| sc.name == *name))
+    .map(|name| format!("No scripts/{name}."))
+    .collect()
 }
 
 /// Human output's colours, as Go's `ui` helpers (fatih/color) write them, when stdout takes them.
@@ -494,9 +497,9 @@ mod tests {
 
     fn script(text: &[u8]) -> Script {
         Script {
-            name: script::SETUP_SCRIPT,
+            name: trusted_script::SETUP_SCRIPT,
             file: "scripts/workroom_setup".to_string(),
-            origin: script::Origin::Base,
+            origin: trusted_script::Origin::Base,
             text: text.to_vec(),
             sha256: String::new(),
             exempt: false,
