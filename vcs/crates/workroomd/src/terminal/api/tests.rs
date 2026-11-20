@@ -149,17 +149,22 @@ fn an_empty_daemon_lists_no_sessions_and_resolves_nothing() {
     assert_eq!(error.kind, kind::TARGET_NOT_FOUND);
 }
 
-/// The reply's outer shape, the API's revision in `version`, and an ambiguous target's matches.
+/// The reply's outer shape, the API's revision in `revision` (not the other services' `version`),
+/// and an ambiguous target's matches.
 #[test]
 fn errors_reply_with_kind_message_and_matches() {
     let error = resolve(&listing(), "tests").unwrap_err();
     let wire = reply(Err(error));
-    assert_eq!(wire["version"], REVISION);
+    assert_eq!(wire["revision"], REVISION);
     assert_eq!(wire["error"]["kind"], "TargetAmbiguous");
     assert_eq!(wire["error"]["matches"].as_array().unwrap().len(), 2);
     let plain = reply(Err(ApiError::invalid("bad")));
     assert_eq!(
         plain,
-        json!({"version": REVISION, "error": {"kind": "InvalidRequest", "message": "bad"}})
+        json!({"revision": REVISION, "error": {"kind": "InvalidRequest", "message": "bad"}})
+    );
+    assert_eq!(
+        reply(Ok(json!({"sessions": []}))),
+        json!({"revision": REVISION, "result": {"sessions": []}})
     );
 }

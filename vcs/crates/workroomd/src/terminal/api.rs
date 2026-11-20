@@ -9,8 +9,8 @@
 //!
 //! Requests are JSON on the chunked request/reply envelope (`rpc::reassemble`, `rpc::send`), one
 //! stream each: `{"method": "<namespace>.<name>", "params": {…}}`, `params` optional. The reply is
-//! `{"version": REVISION, "result": …}` or `{"version": REVISION, "error": {"kind", "message"}}`,
-//! where `kind` is a code from the same registry every `workroom` command shares (ADR 0013), and an
+//! `{"revision": REVISION, "result": …}` or `{"revision": REVISION, "error": {"kind", "message"}}`
+//! (the API's number is `revision` everywhere, not the other services' `version`), where `kind` is a code from the same registry every `workroom` command shares (ADR 0013), and an
 //! ambiguous target's error lists the sessions it matched under `matches`. Nothing is ever sent
 //! unasked, which is what leaves a client that never calls the service unaffected by it.
 //!
@@ -22,7 +22,6 @@ use serde_json::{Value, json};
 use crate::daemon::rpc::{PartialRequests, SharedWriter};
 use crate::terminal::session::{CREATED_KEY, Described, SessionStore};
 use wr_protocol::envelope::{Envelope, Service};
-use wr_protocol::reply::Reply;
 
 /// The terminal API's revision, in every reply and in `api.describe`: raised by each release that
 /// adds a method or a field, and never lowered. A caller that needs a later addition checks it.
@@ -470,8 +469,13 @@ fn handle(sessions: &SessionStore, bytes: &[u8]) -> Result<Value, ApiError> {
     (method.run)(sessions, &params)
 }
 
+/// The reply on the wire: the API's `revision`, then its `result` or its `error`. Not
+/// `wr_protocol::reply::Reply`, whose number is `version`: this API's is `revision` everywhere.
 fn reply(result: Result<Value, ApiError>) -> Value {
-    json!(Reply::new(REVISION, result.map_err(|error| error.json())))
+    match result {
+        Ok(result) => json!({"revision": REVISION, "result": result}),
+        Err(error) => json!({"revision": REVISION, "error": error.json()}),
+    }
 }
 
 /// Answers one envelope on its own stream.
@@ -487,7 +491,10 @@ pub fn dispatch(
     }
     let send = |value: Value| {
         crate::daemon::rpc::send_with(writer, Service::TerminalApi, envelope.stream, value, || {
-            ApiError::new(kind::TOO_LARGE, "the reply is over 16 MiB").json()
+            reply(Err(ApiError::new(
+                kind::TOO_LARGE,
+                "the reply is over 16 MiB",
+            )))
         })
     };
     match crate::daemon::rpc::reassemble(partial, envelope) {

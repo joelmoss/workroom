@@ -508,7 +508,9 @@ fn every_method_publishes_schemas_its_replies_match() {
 
     let mut api = Api::connect(&socket);
     let described = api.call("api.describe", json!({}));
-    assert_eq!(described["version"], 1, "{described}");
+    // The API's number is `revision` on the wire too, not the other services' `version`.
+    assert_eq!(described["revision"], 1, "{described}");
+    assert!(described.get("version").is_none(), "{described}");
     let methods = described["result"]["methods"]
         .as_array()
         .expect("methods")
@@ -561,7 +563,7 @@ fn every_method_publishes_schemas_its_replies_match() {
     ];
     for (name, params, reply) in cases {
         assert_eq!(violation(&schema(name, "input"), &params, name), None);
-        assert_eq!(reply["version"], 1, "{reply}");
+        assert_eq!(reply["revision"], 1, "{reply}");
         assert_eq!(
             violation(&schema(name, "output"), &reply["result"], name),
             None,
@@ -697,7 +699,7 @@ fn api_describe_shows_one_methods_schemas_with_examples() {
 }
 
 /// `api call METHOD PARAMS` takes PARAMS inline, from `@FILE` or from stdin (`-`), and with none
-/// sends `{}`. Its envelope carries the method's reply: `method`, `version` and `result`.
+/// sends `{}`. Its envelope carries the method's reply: `method`, `revision` and `result`.
 #[test]
 fn api_call_takes_params_inline_from_a_file_and_from_stdin() {
     let workspace = Workspace::new("api-call");
@@ -714,7 +716,7 @@ fn api_call_takes_params_inline_from_a_file_and_from_stdin() {
         let envelope = run.envelope();
         assert_eq!(envelope["command"], "api call", "{envelope}");
         assert_eq!(envelope["method"], "session.resolve", "{envelope}");
-        assert_eq!(envelope["version"], 1, "{envelope}");
+        assert_eq!(envelope["revision"], 1, "{envelope}");
         envelope["result"]["session"]["id"].clone()
     };
     let call = |params: &str, stdin: Option<&str>| {
@@ -803,7 +805,7 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
         assert_eq!(violation(&schema["input"], params, name), None);
         let params = params.to_string();
         let called = api_json(&socket, &["call", name, &params]);
-        assert_eq!(called["version"], described["revision"], "{called}");
+        assert_eq!(called["revision"], described["revision"], "{called}");
         assert_eq!(
             violation(&schema["output"], &called["result"], name),
             None,
