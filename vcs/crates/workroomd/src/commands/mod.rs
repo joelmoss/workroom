@@ -11,9 +11,9 @@
 //! marked "(Mac only)", and failing with `MacOnly` anywhere else. Until its own ticket ports it
 //! (#672–#678), each of those is a stub here; the Go CLI still runs them. `list` and
 //! `base --global` are ported (#671), on `config`, the Rust reader and writer of config.json, and
-//! so are `include-archive` (#675), the rest of `base` and `host` (#673), and `claim-provisioned`
-//! and `delete-project` (#672; `add-project` is still Go's). `update` is ported too (#679), which
-//! runs anywhere.
+//! so are `include-archive` (#675), the rest of `base` and `host` (#673), and the app's project
+//! commands, `add-project`, `claim-provisioned` and `delete-project` (#672). `update` is ported
+//! too (#679), which runs anywhere.
 //!
 //! The terminal API's commands (#360, ADR 0079) are born here and run anywhere: each is a thin
 //! client of the daemon's terminal API (`terminal_api`).
@@ -22,6 +22,7 @@
 //! `__complete` answers them from `COMMANDS`, so every command's subcommands and flags, a stub's
 //! included, are offered as Go offers them.
 
+mod add_project;
 mod api;
 mod base;
 pub(crate) mod channel;
@@ -285,6 +286,9 @@ enum Implementation {
 const COMMANDS: &[Command] = &[
     Command {
         hidden: true,
+        // cobra's `MaximumNArgs(1)`, which `run` checks.
+        arity: Arity::Own,
+        implementation: Implementation::Ported(add_project::run),
         ..stub(
             "add-project",
             "add-project [PATH]",

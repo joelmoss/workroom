@@ -393,7 +393,7 @@ fn vcs_failed(detail: &str) -> CliError {
 }
 
 /// How Go's `exec.ExitError` words an exit: `exit status N`, or `signal: …`.
-fn go_exit(status: &std::process::ExitStatus) -> String {
+pub(super) fn go_exit(status: &std::process::ExitStatus) -> String {
     use std::os::unix::process::ExitStatusExt;
     match (status.code(), status.signal()) {
         (Some(code), _) => format!("exit status {code}"),

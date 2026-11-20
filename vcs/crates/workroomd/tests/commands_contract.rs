@@ -6,18 +6,18 @@
 //! Without `WORKROOM_BIN` the binary under test is this crate's own `workroom`. A group's tests
 //! are `#[ignore]`d until its commands are ported to Rust, so a plain `cargo test` runs only the
 //! ported groups (`version_`, `update_`, `list_`, `config_`, `include_archive_`, `base_`, `host_`,
-//! `completion_`, `delete_project_` and `claim_provisioned_` today; `add_project_` is still Go's).
-//! `make contract-test` builds the Go CLI and runs every test against it with `--include-ignored`.
+//! `completion_`, `add_project_`, `delete_project_` and `claim_provisioned_` today). `make
+//! contract-test` builds the Go CLI and runs every test against it with `--include-ignored`.
 //!
 //! The Mac-only commands' groups (`list_`, `config_`, `include_archive_`, `base_`, `host_`,
-//! `delete_project_`, `claim_provisioned_`) are ignored off the Mac too, where the Rust binary
-//! answers them with `MacOnly` (ADR 0078): a plain `cargo test` on Linux runs `version_`, `update_`
-//! and `completion_`, which work anywhere, and
+//! `add_project_`, `delete_project_`, `claim_provisioned_`) are ignored off the Mac too, where the
+//! Rust binary answers them with `MacOnly` (ADR 0078): a plain `cargo test` on Linux runs
+//! `version_`, `update_` and `completion_`, which work anywhere, and
 //! `--include-ignored` against the Go CLI still runs everything.
 //!
 //! Tests are named for their command group (`version_`, `update_`, `list_`, `config_`,
-//! `include_archive_`, `base_`, `host_`, `completion_`), so a port can run only its own group's
-//! names against Rust.
+//! `include_archive_`, `base_`, `host_`, `completion_`, `add_project_`, `delete_project_`,
+//! `claim_provisioned_`), so a port can run only its own group's names against Rust.
 //!
 //! The JSON goldens are `testdata/contracts`, the files Go's contract tests
 //! (`cmd/contract_test.go`) and the app's `CLIContractTests.swift` check too, with the temporary
@@ -2305,7 +2305,10 @@ fn git_output(home: &Home, dir: &Path, args: &[&str]) -> String {
 /// The goldens Go's `TestContractAddProject` records: a repository registered, a folder that is
 /// no repository refused, what a clone would do, and a full folder a clone refuses.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn add_project_json_matches_the_goldens() {
     let home = Home::new("add-project-goldens");
     let project = home.repo("src/app");
@@ -2386,7 +2389,10 @@ fn add_project_json_matches_the_goldens() {
 /// A relative path is registered by its canonical form, an existing entry keeps its other keys,
 /// and `--pretend` reports `would_create` without writing.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn add_project_registers_the_canonical_path_and_keeps_an_entry() {
     let home = Home::new("add-project-canonical");
     let project = home.repo("src/app");
@@ -2421,7 +2427,10 @@ fn add_project_registers_the_canonical_path_and_keeps_an_entry() {
 /// commit, initializes an empty folder (Finder's junk aside), registers a repository as it is,
 /// and refuses a file or a folder with files in it, leaving that as it was.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn add_project_create_initializes_an_empty_or_missing_folder() {
     let home = Home::new("add-project-create");
     let fresh = home.path("src/deep/new");
@@ -2523,7 +2532,10 @@ fn add_project_create_initializes_an_empty_or_missing_folder() {
 /// with two, with `--clone` and `--create` together, with a remote path, or with a config it can't
 /// read.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn add_project_refuses_what_it_cant_register() {
     let home = Home::new("add-project-refusals");
     let project = home.repo("src/app");
@@ -2608,7 +2620,10 @@ fn add_project_refuses_what_it_cant_register() {
 /// progress streams as `clone` events, the clone is registered, and no staging is left beside or
 /// inside it. A clone git refuses is `CloneFailed` and leaves nothing behind.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn add_project_clone_clones_registers_and_cleans_up() {
     let home = Home::new("add-project-clone");
     let origin_repo = home.repo("origin/app");
@@ -2745,7 +2760,10 @@ fn add_project_clone_clones_registers_and_cleans_up() {
 /// A clone whose staging another clone left in the way: one with no owner in its name is never
 /// removed, and is named in the refusal.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn add_project_clone_names_staging_it_cannot_prove_dead() {
     let home = Home::new("add-project-clone-staging");
     let origin = format!("file://{}", home.repo("origin/app").display());

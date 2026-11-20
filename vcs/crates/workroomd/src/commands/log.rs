@@ -2,13 +2,10 @@
 //! teardown script's output above all, goes to stderr as one JSON object per line, while stdout
 //! keeps its one envelope. The app reads it line by line as the script runs.
 //!
-//! The Rust copy of Go's `jsonLogWriter` (`cmd/jsonlog.go`), event for event.
-
-// `create` (#677) and `delete` (#678) are its first callers.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first callers: create (#677) and delete (#678)")
-)]
+//! The Rust copy of Go's `jsonLogWriter` and `crSplitter` (`cmd/jsonlog.go`), event for event.
+//!
+//! `delete-project`'s teardowns (`teardown`) and `add-project --clone`'s progress
+//! (`add_project`) write to it; `create` (#677) and `delete` (#678) will too.
 
 use std::io::Write;
 
@@ -117,6 +114,54 @@ fn is_continuation(byte: u8) -> bool {
     byte & 0xC0 == 0x80
 }
 
+/// Go's `crSplitter`: a [`LogWriter`] that also ends a line at each lone `\r`, so each redraw of
+/// git's progress counter is an event of its own. A `\r\n` stays one line end. Only clone output
+/// goes through it: a script's CRLF output must not gain events.
+pub(crate) struct CrSplitter<W: Write> {
+    log: LogWriter<W>,
+    /// The last byte was a `\r`, so a `\n` next is its pair.
+    last_cr: bool,
+}
+
+impl<W: Write> CrSplitter<W> {
+    pub(crate) fn new(log: LogWriter<W>) -> CrSplitter<W> {
+        CrSplitter {
+            log,
+            last_cr: false,
+        }
+    }
+
+    /// Sends what's left without a line end. Call once, after the clone ends.
+    pub(crate) fn flush_log(&mut self) {
+        self.log.flush();
+    }
+}
+
+impl<W: Write> Write for CrSplitter<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let mut out = Vec::with_capacity(bytes.len());
+        for &byte in bytes {
+            match byte {
+                b'\n' if self.last_cr => self.last_cr = false,
+                b'\r' => {
+                    out.push(b'\n');
+                    self.last_cr = true;
+                }
+                _ => {
+                    out.push(byte);
+                    self.last_cr = false;
+                }
+            }
+        }
+        self.log.feed(&out);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,6 +193,31 @@ mod tests {
         assert_eq!(
             events(&[b"<b>&\n"], "fetch"),
             "{\"type\":\"log\",\"phase\":\"setup\",\"step\":\"fetch\",\"text\":\"\\u003cb\\u003e\\u0026\"}\n"
+        );
+    }
+
+    #[test]
+    fn a_lone_cr_ends_a_line_and_a_crlf_split_across_writes_stays_one() {
+        let mut splitter = CrSplitter::new(LogWriter::new(Vec::new(), "clone"));
+        for piece in [&b"Receiving 1%\rReceiving 2%\r"[..], b"\ndone\r\n", b"tail"] {
+            splitter.write_all(piece).unwrap();
+        }
+        splitter.flush_log();
+        let texts: Vec<String> = String::from_utf8(splitter.log.out)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["text"].to_string()
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "\"Receiving 1%\"",
+                "\"Receiving 2%\"",
+                "\"done\"",
+                "\"tail\""
+            ]
         );
     }
 
