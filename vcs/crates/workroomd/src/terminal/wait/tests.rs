@@ -114,10 +114,19 @@ fn in_20s() -> Option<Instant> {
     Some(Instant::now() + std::time::Duration::from_secs(20))
 }
 
+/// The bytes a waiter's queue has allocated, and holds.
+fn queued(waiter: &Waiter) -> (usize, usize) {
+    let progress = lock_or_recover(&waiter.state);
+    let allocated = progress.queue.chunks.iter().map(Vec::capacity).sum();
+    (allocated, progress.queue.len)
+}
+
 /// The session's reader never waits on a regex: it only queues what it read, bounded, while the
 /// wait's own thread matches. Here that thread is stuck mid-match (its matcher held) while the
-/// reader hands over 1 MiB, a read at a time, and the reader still finishes; the queue stays
-/// within `QUEUE`, dropping the oldest. Once the thread runs, it matches what it kept.
+/// reader hands over 1 MiB, a read at a time, and the reader still finishes; the queue holds the
+/// first `QUEUE` of it, no more allocated than that and a chunk, and drops the rest. The thread,
+/// once it runs, matches what it kept, and with nothing there says it fell behind: the mark came
+/// after what was dropped, and a match may have been in it.
 #[test]
 fn the_reader_never_waits_on_a_match() {
     let waiter = output_waiter("MARK-[0-9]+");
@@ -138,19 +147,54 @@ fn the_reader_never_waits_on_a_match() {
         .recv_timeout(std::time::Duration::from_secs(20))
         .expect("the reader waited on the match");
     reader.join().unwrap();
-    {
-        let progress = lock_or_recover(&waiter.state);
-        assert!(
-            progress.queue.bytes.len() <= QUEUE,
-            "{}",
-            progress.queue.bytes.len()
-        );
-        assert!(progress.queue.lagged, "1 MiB fits no queue");
+    let (allocated, held) = queued(&waiter);
+    assert_eq!(
+        held, QUEUE,
+        "the first QUEUE of 1 MiB, read 1 KiB at a time"
+    );
+    assert!(allocated <= QUEUE + CHUNK, "{allocated}");
+    assert!(
+        lock_or_recover(&waiter.state).queue.lagged,
+        "1 MiB fits no queue"
+    );
+    drop(stuck);
+    assert_eq!(waiter.wait(in_20s()), Outcome::FellBehind);
+}
+
+/// A wait that fell behind still meets a match in what it kept, which came before anything it
+/// dropped. Many small reads share a chunk rather than take an allocation each.
+#[test]
+fn a_wait_that_fell_behind_matches_what_it_kept() {
+    let waiter = output_waiter("needle");
+    let stuck = lock_or_recover(&waiter.matcher);
+    for byte in b"a needle " {
+        waiter.output(&[*byte]);
     }
+    assert_eq!(queued(&waiter), (CHUNK, 9));
+    waiter.output(&vec![b'x'; QUEUE]);
+    assert!(lock_or_recover(&waiter.state).queue.lagged);
     drop(stuck);
     assert_eq!(
         waiter.wait(in_20s()),
-        Outcome::Met(Met::Output(b"MARK-1".to_vec()))
+        Outcome::Met(Met::Output(b"needle".to_vec()))
+    );
+}
+
+/// What the thread has taken and not matched yet counts against `QUEUE` with what is queued, so a
+/// wait matching one batch while the reader queues the next holds `QUEUE` in all, not twice it.
+#[test]
+fn a_batch_being_matched_counts_against_the_queue() {
+    let waiter = output_waiter("NEVER");
+    lock_or_recover(&waiter.state).in_hand = QUEUE - CHUNK;
+    waiter.output(&vec![b'x'; CHUNK]);
+    assert!(
+        !lock_or_recover(&waiter.state).queue.lagged,
+        "it fits beside"
+    );
+    waiter.output(b"x");
+    assert!(
+        lock_or_recover(&waiter.state).queue.lagged,
+        "one byte more doesn't"
     );
 }
 
@@ -179,8 +223,9 @@ fn queued_output_meets_the_wait_before_its_end_or_deadline() {
     assert_eq!(waiter.wait(in_20s()), Outcome::SessionEnded);
 }
 
-/// A session printing flat out (`yes`) keeps a regex wait's queue full, and the wait still times
-/// out at its deadline: the batch taken past it is the last.
+/// A session printing without end (`yes`) never leaves a regex wait's queue empty, and the wait
+/// still times out at its deadline: the batch taken past it is the last. The printer here keeps
+/// the queue within half its bound, so the wait never falls behind (which would end it sooner).
 #[test]
 fn a_wait_on_endless_output_still_times_out() {
     let waiter = output_waiter("NEVER");
@@ -189,7 +234,15 @@ fn a_wait_on_endless_output_still_times_out() {
         let (waiter, stop) = (std::sync::Arc::clone(&waiter), std::sync::Arc::clone(&stop));
         std::thread::spawn(move || {
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                waiter.output(b"y\r\n");
+                let held = {
+                    let progress = lock_or_recover(&waiter.state);
+                    progress.queue.len + progress.in_hand
+                };
+                if held < QUEUE / 2 {
+                    waiter.output(b"y\r\n");
+                } else {
+                    std::thread::yield_now();
+                }
             }
         })
     };
@@ -208,24 +261,21 @@ fn a_wait_on_endless_output_still_times_out() {
     assert_eq!(outcome, Ok(Outcome::TimedOut));
 }
 
-/// A lagged queue keeps the newest output, and starts matching it from a fresh window: no match
-/// joins text from either side of what was dropped, and the kept bytes, which may start inside a
-/// sequence, start where it is known to end.
+/// A lagged queue keeps the oldest output, contiguous with what came before it, and nothing after
+/// the read it dropped: no match joins text from either side of the gap.
 #[test]
-fn a_lagged_queue_matches_only_what_it_kept() {
+fn a_lagged_queue_keeps_only_what_came_before_the_gap() {
     let mut queue = Queue::default();
-    queue.push(b"needle ");
-    queue.push(&vec![b'x'; QUEUE]);
+    queue.push(&vec![b'x'; QUEUE - 4], 0);
+    queue.push(b"need", 0);
+    queue.push(b"le", 0);
     assert!(queue.lagged);
-    assert_eq!(queue.bytes.len(), QUEUE);
-    let mut matcher = Matcher::new("needle").unwrap();
-    assert_eq!(matcher.take(queue), None, "the needle was dropped");
-
-    let mut queue = Queue::default();
-    queue.push(&vec![b'x'; QUEUE]);
-    queue.push(b"\x1b]2;title NOPE\x07\r\nDONE\r\n");
-    let mut matcher = Matcher::new("NOPE|DONE").unwrap();
-    assert_eq!(matcher.take(queue), Some(b"DONE".to_vec()));
+    queue.push(b"\r\n", 0);
+    assert_eq!(queue.len, QUEUE);
+    let mut matcher = Matcher::new("needle|need\r").unwrap();
+    let mut matched = 0;
+    assert_eq!(matcher.take(queue, |n| matched += n), None);
+    assert_eq!(matched, QUEUE, "every chunk is counted as it is matched");
 }
 
 /// What `pattern` first matches in `chunks`, for a wait that joined the stream mid-sequence.

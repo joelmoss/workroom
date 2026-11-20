@@ -395,7 +395,8 @@ pub struct TakenScreen {
 /// only with every session lock released); a `Waiter.state` as a reader, the runs watcher or a
 /// program status change tells it what happened, and as its request waits on it, each with every
 /// session lock released; a `Waiter.matcher` by its wait's thread alone, which takes
-/// `Waiter.state` under it only to take the queued output, never while matching it; a `Transfer` as an encoder looks at it and finishes; a shadow as an encoder copies its pixels, as `compress_shadows` and
+/// `Waiter.state` under it only to take the queued output and to count each chunk it has
+/// matched, never while matching one; a `Transfer` as an encoder looks at it and finishes; a shadow as an encoder copies its pixels, as `compress_shadows` and
 /// `promote_unprobed` visit each one after releasing the map, and as the terminal API's
 /// `terminal.capture` reads one and `terminal.wait` checks a shell's marks (`SessionStore::shadow`,
 /// then the shadow's lock alone). The store map is released before a

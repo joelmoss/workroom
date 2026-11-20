@@ -80,6 +80,9 @@ pub mod kind {
     pub const SESSION_ENDED: &str = "SessionEnded";
     /// A wait that ran out of time.
     pub const WAIT_TIMEOUT: &str = "WaitTimeout";
+    /// A regex wait fell behind its session's output, and output it never matched was dropped:
+    /// what it waited for may have gone by unseen.
+    pub const WAIT_INTERRUPTED: &str = "WaitInterrupted";
     /// The request needs the shell's integration marks, and the session has sent none.
     pub const NO_SHELL_INTEGRATION: &str = "NoShellIntegration";
     /// A wait for a run to exit with one code, which it exited with another.

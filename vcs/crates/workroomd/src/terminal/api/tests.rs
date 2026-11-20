@@ -807,6 +807,67 @@ fn a_wait_with_no_thread_answers_and_holds_nothing() {
     store.kill(id);
 }
 
+/// A regex wait whose thread falls a queue behind its session's output answers `WaitInterrupted`
+/// once it has matched what it kept, which is nothing here: what it dropped may have held a match.
+/// The thread is held back from starting (the spawn seam) while the session prints twice the
+/// queue, and let go once all of it has been read.
+#[cfg(feature = "terminal-state")]
+#[test]
+fn a_regex_wait_that_falls_behind_is_interrupted() {
+    use std::sync::atomic::AtomicUsize;
+    type Work = Box<dyn FnOnce() + Send>;
+    static HELD: AtomicUsize = AtomicUsize::new(0);
+    static PARKED: std::sync::Mutex<Vec<Work>> = std::sync::Mutex::new(Vec::new());
+    fn park(work: Work) -> std::io::Result<()> {
+        crate::util::lock_or_recover(&PARKED).push(work);
+        Ok(())
+    }
+    let go = std::env::temp_dir().join(format!("wr-wait-behind-{}", std::process::id()));
+    let _ = std::fs::remove_file(&go);
+    let store = SessionStore::new();
+    let id = running(
+        &store,
+        0x34,
+        &format!(
+            "while [ ! -e '{go}' ]; do sleep 0.05; done; head -c {bytes} /dev/zero | tr '\\0' x; \
+             echo; echo PRINTED; sleep 30",
+            go = go.display(),
+            bytes = 2 * crate::terminal::wait::QUEUE,
+        ),
+    );
+    let (written, writer) = written_writer();
+    let mut waits = wait::Waits::with(wait::LIMITS, &HELD, Some(park));
+    start_wait(
+        &mut waits,
+        &store,
+        json!({"target": id.to_hyphenated(), "regex": "NEVER", "timeout_ms": 20000}),
+        &writer,
+    );
+    std::fs::write(&go, b"").expect("go");
+    // Read, and so handed to the waiter, a read before `PRINTED` reached the screen.
+    let shadow = store.shadow(id).expect("the session");
+    assert!(
+        eventually(|| crate::util::lock_or_recover(&shadow)
+            .screen_text()
+            .contains("PRINTED")),
+        "fixture: the output never arrived"
+    );
+    let work = crate::util::lock_or_recover(&PARKED)
+        .pop()
+        .expect("the wait's thread, held back");
+    std::thread::spawn(work);
+    let reply = the_reply(&written);
+    assert_eq!(reply["error"]["kind"], "WaitInterrupted", "{reply}");
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("fell behind")),
+        "{reply}"
+    );
+    store.kill(id);
+    let _ = std::fs::remove_file(&go);
+}
+
 fn written_writer() -> (Written, SharedWriter) {
     let written = Written::default();
     let writer: SharedWriter =
