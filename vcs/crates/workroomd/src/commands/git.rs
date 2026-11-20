@@ -33,6 +33,194 @@ pub(super) fn command(dir: &Path) -> Command {
     command
 }
 
+/// git `args` in `dir` as Go's `RealExecutor` runs it: both streams together, trimmed, and whether
+/// it exited 0. A git that can't be started is a failure with nothing said.
+pub(super) fn run(dir: &Path, args: &[&str]) -> (String, bool) {
+    match command(dir).args(args).output() {
+        Ok(output) => {
+            let mut said = output.stdout;
+            said.extend_from_slice(&output.stderr);
+            (
+                String::from_utf8_lossy(&said).trim().to_string(),
+                output.status.success(),
+            )
+        }
+        Err(_) => (String::new(), false),
+    }
+}
+
+/// git `args` in `dir` as Go's `gitOutput` runs it: its stdout, exact, or an error worded as Go's
+/// (`git <first arg>: exit status <n>: <stderr>`).
+pub(super) fn output(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let first = args.first().copied().unwrap_or_default();
+    let output = command(dir)
+        .args(args)
+        .output()
+        .map_err(|error| format!("git {first}: {}", super::config::os_error(&error)))?;
+    if output.status.success() {
+        return Ok(output.stdout);
+    }
+    let status = match output.status.code() {
+        Some(code) => format!("exit status {code}"),
+        None => "signal: killed".to_string(),
+    };
+    Err(format!(
+        "git {first}: {status}: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
+}
+
+/// The full hash of the commit `rev` ("" is HEAD) names. Go's `vcs.CommitAt`.
+pub(super) fn commit_at(dir: &Path, rev: &str) -> Result<String, String> {
+    let rev = if rev.is_empty() { "HEAD" } else { rev };
+    let out = output(
+        dir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{rev}^{{commit}}"),
+        ],
+    )?;
+    Ok(String::from_utf8_lossy(&out).trim().to_string())
+}
+
+/// Why [`file_at`] couldn't read a file from a commit.
+#[derive(Debug)]
+pub(super) enum FileAtError {
+    /// The file is a symlink pointing outside the repository, whose bytes depend on where the
+    /// checkout lands and so can't be read from the commit: Go's `ErrLinkOutside`.
+    LinkOutside,
+    /// git failed, in its words.
+    Git(String),
+}
+
+/// `path`'s contents in commit `rev` ("" is HEAD) as a checkout of it writes them, with the
+/// repository's filters and line-ending conversion applied, or none when `rev` has no file there
+/// (#363). A symlink anywhere along the path (the file itself, or a linked directory such as
+/// `scripts/`) is followed within the commit, as running the checkout's file follows it; one that
+/// leaves the repository is [`FileAtError::LinkOutside`]. A rev that names no commit, as HEAD in a
+/// repository with none, has no file, and neither has a path that is a directory or a submodule.
+/// Go's `vcs.FileAt`.
+pub(super) fn file_at(dir: &Path, rev: &str, path: &str) -> Result<Option<Vec<u8>>, FileAtError> {
+    let rev = if rev.is_empty() { "HEAD" } else { rev };
+    let commit = format!("{rev}^{{commit}}");
+    if output(dir, &["rev-parse", "--verify", "--quiet", &commit]).is_err() {
+        return Ok(None);
+    }
+    let mut path = path.to_string();
+    // A chain of links is followed only so far, as the system follows one only so far.
+    let mut hops = 0;
+    while hops <= 8 {
+        let parts: Vec<String> = path.split('/').map(str::to_string).collect();
+        let mut linked = false;
+        for i in 0..parts.len() {
+            let prefix = parts[..=i].join("/");
+            let mode = tree_mode(dir, rev, &prefix).map_err(FileAtError::Git)?;
+            match mode.as_str() {
+                "" => return Ok(None),
+                "120000" => {
+                    let target = output(dir, &["cat-file", "blob", &format!("{rev}:{prefix}")])
+                        .map_err(FileAtError::Git)?;
+                    let target = String::from_utf8_lossy(&target).into_owned();
+                    if target.starts_with('/') {
+                        return Err(FileAtError::LinkOutside);
+                    }
+                    let mut elements = vec![slash_dir(&prefix), target];
+                    elements.extend(parts[i + 1..].iter().cloned());
+                    let next = slash_join(&elements);
+                    if next == ".." || next.starts_with("../") {
+                        return Err(FileAtError::LinkOutside);
+                    }
+                    path = next;
+                    linked = true;
+                    hops += 1;
+                }
+                mode if i < parts.len() - 1 && mode != "040000" => return Ok(None),
+                mode if i == parts.len() - 1 && mode != "100644" && mode != "100755" => {
+                    return Ok(None);
+                }
+                _ => {}
+            }
+            if linked {
+                break;
+            }
+        }
+        if !linked {
+            return filtered_blob(dir, rev, &path)
+                .map(Some)
+                .map_err(FileAtError::Git);
+        }
+    }
+    Err(FileAtError::Git(format!(
+        "{path}: too many levels of symbolic links"
+    )))
+}
+
+/// `path` in `rev` converted by `rev`'s own `.gitattributes` (`--attr-source`), as a checkout of
+/// `rev` converts it: the root's attributes can differ, as when a branch changes its line endings.
+/// A git older than 2.40 has no `--attr-source` and falls back to the root's attributes.
+fn filtered_blob(dir: &Path, rev: &str, path: &str) -> Result<Vec<u8>, String> {
+    let object = format!("{rev}:{path}");
+    match output(
+        dir,
+        &[
+            &format!("--attr-source={rev}"),
+            "cat-file",
+            "--filters",
+            &object,
+        ],
+    ) {
+        Err(error) if error.contains("unknown option") => {
+            output(dir, &["cat-file", "--filters", &object])
+        }
+        result => result,
+    }
+}
+
+/// The mode of `path` in commit `rev`, such as 100755, 120000 (a symlink) or 040000 (a directory),
+/// or "" when `rev` has nothing there.
+fn tree_mode(dir: &Path, rev: &str, path: &str) -> Result<String, String> {
+    // Without a trailing slash, a directory is listed as its own entry, not its contents.
+    let listed = output(dir, &["ls-tree", "-z", rev, "--", path])?;
+    let listed = String::from_utf8_lossy(&listed);
+    let listed = listed.trim_matches(|c: char| c.is_ascii_whitespace());
+    Ok(listed.split(' ').next().unwrap_or_default().to_string())
+}
+
+/// Go's `path.Dir`: all but the last element of a slash-separated path, cleaned.
+fn slash_dir(path: &str) -> String {
+    match path.rfind('/') {
+        Some(slash) => super::config::clean(&path[..=slash]),
+        None => ".".to_string(),
+    }
+}
+
+/// Go's `path.Join`: the non-empty elements joined by slashes, cleaned, or "" for none.
+fn slash_join(elements: &[String]) -> String {
+    let parts: Vec<&str> = elements
+        .iter()
+        .map(String::as_str)
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return String::new();
+    }
+    super::config::clean(&parts.join("/"))
+}
+
+/// Whether git ignores `path`, relative to `dir`, in `dir`'s checkout: an untracked file a pull
+/// never brings. A tracked file is never ignored, and any trouble asking git counts as not. Go's
+/// `vcs.Ignored`.
+pub(super) fn ignored(dir: &Path, path: &str) -> bool {
+    command(dir)
+        .args(["check-ignore", "-q", "--", path])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// Whether `dir` is itself a git repository's root, by the rule git applies before walking up to
 /// an ancestor: a `.git` directory holding `HEAD`, `objects/` and `refs/`, or a `.git` file that
 /// starts with "gitdir:" (a linked worktree). An empty or partial `.git` is not one. Go's
