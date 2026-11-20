@@ -538,7 +538,15 @@ const COMMANDS: &[Command] = &[
         implementation: Implementation::Ported(help_command),
     },
     Command {
+        name: "host",
+        aliases: &[],
+        usage: "host",
+        short: "Set or clear a project's or workroom's host descriptor (used by the desktop app)",
+        long: None,
         hidden: true,
+        mac_only: true,
+        // Go gives the flags to `set` and `clear`, not to `host` itself.
+        flags: &[],
         subcommands: &[
             subcommand(
                 HOST,
@@ -558,14 +566,8 @@ const COMMANDS: &[Command] = &[
             ),
         ],
         arity: Arity::Own,
+        operands: Operands::Files,
         implementation: HOST,
-        ..stub(
-            "host",
-            "host",
-            "Set or clear a project's or workroom's host descriptor (used by the desktop app)",
-            &[],
-            "#673",
-        )
     },
     Command {
         name: "include-archive",
