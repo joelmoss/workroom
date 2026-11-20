@@ -91,8 +91,9 @@ fn a_request_that_is_not_a_method_call_is_invalid() {
         json!({"method": "session.nope"}),
         json!({"method": "session.list", "params": [1]}),
         json!({"method": "session.resolve"}),
-        json!({"method": "session.list", "params": {"scope": "workroom"}}),
-        json!({"method": "session.list", "params": {"scope": true}}),
+        json!({"method": "session.list", "params": {"all": "yes"}}),
+        json!({"method": "session.list", "params": {"all": 1}}),
+        json!({"method": "session.list", "params": {"all": null}}),
         json!({"method": "session.list", "caller": 7}),
         json!({"method": "api.describe", "params": {"method": "x.y"}}),
     ] {
@@ -204,7 +205,7 @@ fn an_empty_daemon_lists_no_sessions_and_resolves_nothing() {
     assert_eq!(
         request(
             &store,
-            json!({"method": "session.list", "params": {"scope": "caller"}, "caller": A}),
+            json!({"method": "session.list", "params": {"all": false}, "caller": A}),
         )
         .unwrap(),
         json!({"sessions": [], "caller": null})

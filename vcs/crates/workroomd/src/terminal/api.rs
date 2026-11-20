@@ -131,16 +131,16 @@ pub const METHODS: &[Method] = &[
     },
     Method {
         name: "session.list",
-        summary: "Every session the daemon holds, oldest first, or with `scope: \"caller\"` those \
-                  in the caller's scope.",
+        summary: "The sessions that share the caller's scope, oldest first, or with `all: true` \
+                  every session the daemon holds.",
         input: || {
             json!({
                 "type": "object",
-                "properties": {"scope": {
-                    "type": "string",
-                    "enum": ["all", "caller"],
-                    "description": "`all`, the default, lists every session. `caller` lists the \
-                                    sessions that share the caller's scope; every session when \
+                "properties": {"all": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "`true` lists every session. `false`, the default, lists the \
+                                    sessions that share the caller's scope: every session when \
                                     the request comes from no session, or from one with no scope.",
                 }},
             })
@@ -156,7 +156,7 @@ pub const METHODS: &[Method] = &[
             })
         },
         errors: &[],
-        params_example: || json!({"scope": "caller"}),
+        params_example: || json!({"all": false}),
         result_example: || {
             json!({
                 "sessions": [agent_session_example(), run_session_example()],
@@ -165,17 +165,10 @@ pub const METHODS: &[Method] = &[
         },
         run: |call| {
             let listing = listed(call.sessions);
-            let sessions = match call.params.get("scope") {
-                None => listing,
-                Some(Value::String(scope)) if scope == "all" => listing,
-                Some(Value::String(scope)) if scope == "caller" => {
-                    in_scope_of(listing, call.caller.as_deref())
-                }
-                Some(_) => {
-                    return Err(ApiError::invalid(
-                        "session.list's `scope` is \"all\" or \"caller\"",
-                    ));
-                }
+            let sessions = match call.params.get("all") {
+                Some(Value::Bool(true)) => listing,
+                None | Some(Value::Bool(false)) => in_scope_of(listing, call.caller.as_deref()),
+                Some(_) => return Err(ApiError::invalid("session.list's `all` is true or false")),
             };
             Ok(json!({"sessions": sessions, "caller": call.caller}))
         },
