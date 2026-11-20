@@ -2257,6 +2257,1479 @@ fn host_needs_a_registered_project_and_workroom() {
     assert_eq!(run.error_kind(), "ConfigReadFailed");
 }
 
+// --- add-project, delete-project and claim-provisioned (#672) ---
+//
+// The app's project commands, which it runs only with `--json`. Each test checks the envelope, the
+// config the run leaves and what is on disk: a delete that drops the wrong entry, or a clone that
+// leaves its staging behind, passes on the envelope alone.
+
+/// The names in `dir`, sorted.
+fn entries(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// config.json as the run left it, or "" when there is none.
+fn config_text(home: &Home) -> String {
+    std::fs::read_to_string(home.config_path()).unwrap_or_default()
+}
+
+/// What git prints for `args` in `dir`, which must succeed.
+fn git_output(home: &Home, dir: &Path, args: &[&str]) -> String {
+    let output = home
+        .command("git", dir)
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("UTF-8")
+}
+
+// --- add-project ---
+
+/// The goldens Go's `TestContractAddProject` records: a repository registered, a folder that is
+/// no repository refused, what a clone would do, and a full folder a clone refuses.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn add_project_json_matches_the_goldens() {
+    let home = Home::new("add-project-goldens");
+    let project = home.repo("src/app");
+    let run = home.run(
+        &home.dir,
+        &["add-project", &project.to_string_lossy(), "--json"],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    check_golden(
+        Owner::GoContractTests,
+        "add-project.json",
+        &home.normalize(&normalize_version(&run.stdout)),
+    );
+    assert_eq!(
+        home.normalize(&config_text(&home)),
+        "{\n  \"/Users/dev/src/app\": {\n    \"vcs\": \"git\",\n    \"workrooms\": {}\n  }\n}"
+    );
+
+    let plain = home.path("src/plain");
+    std::fs::create_dir_all(&plain).expect("plain");
+    let run = home.run(
+        &home.dir,
+        &["add-project", &plain.to_string_lossy(), "--json"],
+    );
+    run.assert_code(3).assert_quiet_stderr();
+    check_golden(
+        Owner::GoContractTests,
+        "add-project-unsupported-vcs.json",
+        &home.normalize(&normalize_version(&run.stdout)),
+    );
+
+    let origin = format!("file://{}", project.display());
+    let api = home.path("src/api");
+    let run = home.run(
+        &home.dir,
+        &[
+            "add-project",
+            &api.to_string_lossy(),
+            "--clone",
+            &origin,
+            "--json",
+            "--pretend",
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    check_golden(
+        Owner::GoContractTests,
+        "add-project-clone-pretend.json",
+        &home.normalize(&normalize_version(&run.stdout)),
+    );
+    assert!(!api.exists(), "--pretend cloned");
+
+    std::fs::write(plain.join("README"), "x").expect("README");
+    let run = home.run(
+        &home.dir,
+        &[
+            "add-project",
+            &plain.to_string_lossy(),
+            "--clone",
+            &origin,
+            "--json",
+        ],
+    );
+    run.assert_code(3).assert_quiet_stderr();
+    check_golden(
+        Owner::GoContractTests,
+        "add-project-destination-not-empty.json",
+        &home.normalize(&normalize_version(&run.stdout)),
+    );
+    assert_eq!(entries(&plain), ["README"]);
+    // Only the first add registered anything.
+    assert_eq!(
+        home.normalize(&config_text(&home)),
+        "{\n  \"/Users/dev/src/app\": {\n    \"vcs\": \"git\",\n    \"workrooms\": {}\n  }\n}"
+    );
+}
+
+/// A relative path is registered by its canonical form, an existing entry keeps its other keys,
+/// and `--pretend` reports `would_create` without writing.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn add_project_registers_the_canonical_path_and_keeps_an_entry() {
+    let home = Home::new("add-project-canonical");
+    let project = home.repo("src/app");
+    let key = project.to_string_lossy().into_owned();
+    home.write_config(&format!(
+        "{{\"{key}\": {{\"base_branch\": \"dev\", \"vcs\": \"jj\", \"workrooms\": {{\"w\": {{\"path\": \"/w\"}}}}}}, \"channel\": \"pre\"}}"
+    ));
+    let pretend = home.run(
+        &home.dir,
+        &["add-project", "src/app", "--json", "--pretend"],
+    );
+    pretend.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        home.normalize(&normalize_version(&pretend.stdout)),
+        "{\"cli_version\":\"dev\",\"command\":\"add-project\",\"ok\":true,\"path\":\"/Users/dev/src/app\",\"schema_version\":1,\"vcs\":\"git\",\"would_create\":false}\n"
+    );
+    assert!(
+        config_text(&home).starts_with("{\"/"),
+        "--pretend wrote config"
+    );
+
+    let run = home.run(&home.dir, &["add-project", "src/app/", "--json"]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(run.envelope()["path"], key.as_str());
+    assert_eq!(
+        home.normalize(&config_text(&home)),
+        "{\n  \"/Users/dev/src/app\": {\n    \"base_branch\": \"dev\",\n    \"vcs\": \"git\",\n    \"workrooms\": {\n      \"w\": {\n        \"path\": \"/w\"\n      }\n    }\n  },\n  \"channel\": \"pre\"\n}"
+    );
+}
+
+/// `--create` makes a missing folder (and its parents) and git-initializes it with one empty
+/// commit, initializes an empty folder (Finder's junk aside), registers a repository as it is,
+/// and refuses a file or a folder with files in it, leaving that as it was.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn add_project_create_initializes_an_empty_or_missing_folder() {
+    let home = Home::new("add-project-create");
+    let fresh = home.path("src/deep/new");
+    let fresh_arg = fresh.to_string_lossy().into_owned();
+
+    let pretend = home.run(
+        &home.dir,
+        &["add-project", &fresh_arg, "--create", "--json", "--pretend"],
+    );
+    pretend.assert_code(0).assert_quiet_stderr();
+    assert_eq!(pretend.envelope()["would_create"], true);
+    assert_eq!(pretend.envelope()["vcs"], "git");
+    assert!(!home.path("src").exists(), "--pretend made a folder");
+    assert_eq!(config_text(&home), "");
+
+    let run = home.run(
+        &home.dir,
+        &["add-project", &fresh_arg, "--create", "--json"],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        home.normalize(&normalize_version(&run.stdout)),
+        "{\"cli_version\":\"dev\",\"command\":\"add-project\",\"ok\":true,\"path\":\"/Users/dev/src/deep/new\",\"schema_version\":1,\"vcs\":\"git\"}\n"
+    );
+    assert_eq!(entries(&fresh), [".git"]);
+    assert_eq!(
+        git_output(&home, &fresh, &["log", "--format=%s"]),
+        "Initial commit\n"
+    );
+
+    let junk = home.path("src/junk");
+    std::fs::create_dir_all(&junk).expect("junk");
+    std::fs::write(junk.join(".DS_Store"), "x").expect("DS_Store");
+    let run = home.run(
+        &home.dir,
+        &["add-project", &junk.to_string_lossy(), "--create", "--json"],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(entries(&junk), [".DS_Store", ".git"]);
+
+    let repo = home.repo("src/repo");
+    let pretend = home.run(
+        &home.dir,
+        &[
+            "add-project",
+            &repo.to_string_lossy(),
+            "--create",
+            "--json",
+            "--pretend",
+        ],
+    );
+    pretend.assert_code(0).assert_quiet_stderr();
+    assert_eq!(pretend.envelope()["would_create"], false);
+    let run = home.run(
+        &home.dir,
+        &["add-project", &repo.to_string_lossy(), "--create", "--json"],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        git_output(&home, &repo, &["log", "--format=%s"]),
+        "first\n",
+        "a repository is registered as it is"
+    );
+
+    let full = home.path("src/full");
+    std::fs::create_dir_all(&full).expect("full");
+    std::fs::write(full.join("notes"), "x").expect("notes");
+    let run = home.run(
+        &home.dir,
+        &["add-project", &full.to_string_lossy(), "--create", "--json"],
+    );
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "UnsupportedVCS");
+    assert_eq!(entries(&full), ["notes"]);
+
+    let file = home.path("src/file");
+    std::fs::write(&file, "x").expect("file");
+    for path in [file.clone(), file.join("child")] {
+        let run = home.run(
+            &home.dir,
+            &["add-project", &path.to_string_lossy(), "--create", "--json"],
+        );
+        run.assert_code(3).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "NotADirectory");
+        assert_eq!(
+            run.envelope()["error"]["message"],
+            "path exists but is not a directory"
+        );
+    }
+    assert_eq!(std::fs::read_to_string(&file).expect("file"), "x");
+
+    assert_eq!(
+        home.normalize(&config_text(&home)),
+        "{\n  \"/Users/dev/src/deep/new\": {\n    \"vcs\": \"git\",\n    \"workrooms\": {}\n  },\n  \"/Users/dev/src/junk\": {\n    \"vcs\": \"git\",\n    \"workrooms\": {}\n  },\n  \"/Users/dev/src/repo\": {\n    \"vcs\": \"git\",\n    \"workrooms\": {}\n  }\n}"
+    );
+}
+
+/// Each way the command refuses before it touches anything: without `--json`, without a path,
+/// with two, with `--clone` and `--create` together, with a remote path, or with a config it can't
+/// read.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn add_project_refuses_what_it_cant_register() {
+    let home = Home::new("add-project-refusals");
+    let project = home.repo("src/app");
+    let project = project.to_string_lossy().into_owned();
+
+    let plain = home.run(&home.dir, &["add-project", &project]);
+    plain.assert_code(1);
+    assert_eq!(plain.stdout, "");
+    assert_eq!(
+        plain.stderr,
+        "Error: add-project is only available in --json mode\n"
+    );
+
+    for (args, code, kind, message, command) in [
+        (
+            &["add-project", "--json"][..],
+            1,
+            "InternalError",
+            "a path argument is required".to_string(),
+            true,
+        ),
+        (
+            &["add-project", "a", "b", "--json"],
+            1,
+            "InternalError",
+            "accepts at most 1 arg(s), received 2".to_string(),
+            false,
+        ),
+        (
+            &["add-project", "x", "--clone", "y", "--create", "--json"],
+            1,
+            "InternalError",
+            "--clone and --create cannot be used together".to_string(),
+            true,
+        ),
+        (
+            &["add-project", "host:repo", "--json"],
+            3,
+            "RemoteProjectUnsupported",
+            "remote projects are not supported: add the project from a local Git repository. A \
+             remote workroom belongs to a local project: host:repo"
+                .to_string(),
+            true,
+        ),
+        (
+            &[
+                "add-project",
+                "ssh://host/repo",
+                "--clone",
+                "file:///x",
+                "--json",
+            ],
+            3,
+            "RemoteProjectUnsupported",
+            "remote projects are not supported: add the project from a local Git repository. A \
+             remote workroom belongs to a local project: ssh://host/repo"
+                .to_string(),
+            true,
+        ),
+    ] {
+        let run = home.run(&home.dir, args);
+        run.assert_code(code).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), kind, "{args:?}");
+        let envelope = run.envelope();
+        assert_eq!(envelope["error"]["message"], message.as_str(), "{args:?}");
+        assert_eq!(
+            envelope.get("command").is_some(),
+            command,
+            "{args:?}: {envelope}"
+        );
+    }
+    assert_eq!(config_text(&home), "");
+
+    home.write_config("{bad");
+    let run = home.run(&home.dir, &["add-project", &project, "--json"]);
+    run.assert_code(6).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "ConfigReadFailed");
+    assert_eq!(config_text(&home), "{bad");
+}
+
+/// A real clone from a `file://` repository, into a missing folder and into an empty one: git's
+/// progress streams as `clone` events, the clone is registered, and no staging is left beside or
+/// inside it. A clone git refuses is `CloneFailed` and leaves nothing behind.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn add_project_clone_clones_registers_and_cleans_up() {
+    let home = Home::new("add-project-clone");
+    let origin_repo = home.repo("origin/app");
+    std::fs::write(origin_repo.join("README"), "hello\n").expect("README");
+    home.git(&origin_repo, &["add", "README"]);
+    home.git(
+        &origin_repo,
+        &["-c", "commit.gpgsign=false", "commit", "-q", "-m", "readme"],
+    );
+    let origin = format!("file://{}", origin_repo.display());
+    std::fs::create_dir_all(home.path("src")).expect("src");
+
+    let missing = home.path("src/deep/cloned");
+    let run = home.run(
+        &home.dir,
+        &[
+            "add-project",
+            &missing.to_string_lossy(),
+            "--clone",
+            &origin,
+            "--json",
+        ],
+    );
+    run.assert_code(0);
+    assert_eq!(
+        home.normalize(&normalize_version(&run.stdout)),
+        "{\"cli_version\":\"dev\",\"command\":\"add-project\",\"ok\":true,\"path\":\"/Users/dev/src/deep/cloned\",\"schema_version\":1,\"vcs\":\"git\"}\n"
+    );
+    let events: Vec<serde_json::Value> = run
+        .stderr
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("NDJSON"))
+        .collect();
+    assert!(!events.is_empty(), "no clone progress");
+    for event in &events {
+        assert_eq!(event["type"], "log", "{event}");
+        assert_eq!(event["phase"], "clone", "{event}");
+    }
+    assert!(
+        events[0]["text"].as_str().is_some_and(
+            |text| text.starts_with("Cloning into ") && text.contains("/.cloned.clone-")
+        ),
+        "{}",
+        events[0]
+    );
+    assert_eq!(entries(&missing), [".git", "README"]);
+    assert_eq!(entries(&home.path("src/deep")), ["cloned"]);
+    assert_eq!(
+        std::fs::read_to_string(missing.join("README")).expect("README"),
+        "hello\n"
+    );
+
+    let empty = home.path("src/empty");
+    std::fs::create_dir_all(&empty).expect("empty");
+    std::fs::write(empty.join(".DS_Store"), "x").expect("DS_Store");
+    let run = home.run(
+        &home.dir,
+        &[
+            "add-project",
+            &empty.to_string_lossy(),
+            "--clone",
+            &origin,
+            "--json",
+        ],
+    );
+    run.assert_code(0);
+    assert_eq!(run.envelope()["path"], empty.to_string_lossy().as_ref());
+    assert_eq!(entries(&empty), [".git", "README"]);
+
+    let before = entries(&home.path("src"));
+    let nowhere = format!("file://{}", home.path("nothing").display());
+    let failed = home.path("src/failed/deeper");
+    let run = home.run(
+        &home.dir,
+        &[
+            "add-project",
+            &failed.to_string_lossy(),
+            "--clone",
+            &nowhere,
+            "--json",
+        ],
+    );
+    run.assert_code(1);
+    assert_eq!(run.error_kind(), "CloneFailed");
+    let message = run.envelope()["error"]["message"]
+        .as_str()
+        .expect("message")
+        .to_string();
+    assert!(message.starts_with("git clone failed: "), "{message}");
+    assert!(!message.contains("Cloning into"), "{message}");
+    assert_eq!(
+        entries(&home.path("src")),
+        before,
+        "the failed clone left something"
+    );
+
+    let failed_empty = home.path("src/failed-empty");
+    std::fs::create_dir_all(&failed_empty).expect("failed-empty");
+    let run = home.run(
+        &home.dir,
+        &[
+            "add-project",
+            &failed_empty.to_string_lossy(),
+            "--clone",
+            &nowhere,
+            "--json",
+        ],
+    );
+    run.assert_code(1);
+    assert_eq!(run.error_kind(), "CloneFailed");
+    assert!(entries(&failed_empty).is_empty(), "its staging is left");
+
+    let file = home.path("src/file");
+    std::fs::write(&file, "x").expect("file");
+    let run = home.run(
+        &home.dir,
+        &[
+            "add-project",
+            &file.to_string_lossy(),
+            "--clone",
+            &origin,
+            "--json",
+        ],
+    );
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "NotADirectory");
+
+    assert_eq!(
+        home.normalize(&config_text(&home)),
+        "{\n  \"/Users/dev/src/deep/cloned\": {\n    \"vcs\": \"git\",\n    \"workrooms\": {}\n  },\n  \"/Users/dev/src/empty\": {\n    \"vcs\": \"git\",\n    \"workrooms\": {}\n  }\n}"
+    );
+}
+
+/// A clone whose staging another clone left in the way: one with no owner in its name is never
+/// removed, and is named in the refusal.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn add_project_clone_names_staging_it_cannot_prove_dead() {
+    let home = Home::new("add-project-clone-staging");
+    let origin = format!("file://{}", home.repo("origin/app").display());
+    let dest = home.path("src/app");
+    std::fs::create_dir_all(dest.join(".clone-unowned")).expect("staging");
+    let run = home.run(
+        &home.dir,
+        &[
+            "add-project",
+            &dest.to_string_lossy(),
+            "--clone",
+            &origin,
+            "--json",
+        ],
+    );
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "DestinationNotEmpty");
+    assert_eq!(
+        run.envelope()["error"]["message"],
+        format!(
+            "the destination folder is not empty: {} (a clone's staging is in the way: \
+             .clone-unowned; remove it if no clone is running)",
+            dest.display()
+        )
+    );
+    assert_eq!(entries(&dest), [".clone-unowned"]);
+}
+
+// --- delete-project ---
+
+/// The digest of the teardown script `project_with_workroom` writes, as `workroom trust` records
+/// it.
+const STOPPING_SHA256: &str = "46afe9251fa214a976ea23e0094166dceb1f79f39ef879bd4cc3d59b26808059";
+
+/// Go's `projectWithWorkroom`: a registered project with one real workroom, `calm-river`, whose
+/// approved teardown script prints a line. Returns the project.
+fn project_with_workroom(home: &Home, teardown: &str, digest: &str) -> PathBuf {
+    let project = home.repo("src/app");
+    let path = home.path("workrooms/calm-river");
+    home.git(
+        &project,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "workroom/calm-river",
+            &path.to_string_lossy(),
+        ],
+    );
+    write_file(
+        &project,
+        "scripts/workroom_teardown",
+        &format!("#!/bin/sh\n{teardown}"),
+        0o755,
+    );
+    home.write_config(&format!(
+        "{{\"{project}\": {{\"trusted_scripts\": {{\"workroom_teardown\": \"{digest}\"}}, \"vcs\": \"git\", \"workrooms\": {{\"calm-river\": {{\"path\": \"{path}\"}}}}}}}}",
+        project = project.display(),
+        path = path.display(),
+    ));
+    project
+}
+
+/// The goldens Go's `TestContractDeleteProject` records, mode by mode, with what each leaves on
+/// disk: the config-only mode and `--from-disk` remove no folder (the app trashes the paths it is
+/// given), and `--with-workrooms` removes the worktree but keeps its branch.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn delete_project_json_matches_the_goldens() {
+    for (file, flags) in [
+        ("delete-project.json", &[][..]),
+        ("delete-project-with-workrooms.json", &["--with-workrooms"]),
+        ("delete-project-from-disk.json", &["--from-disk"]),
+    ] {
+        let home = Home::new("delete-project-goldens");
+        let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+        let project_arg = project.to_string_lossy().into_owned();
+        let mut args = vec![
+            "delete-project",
+            &project_arg,
+            "--json",
+            "--confirm",
+            &project_arg,
+        ];
+        args.extend_from_slice(flags);
+        let run = home.run(&home.dir, &args);
+        run.assert_code(0);
+        check_golden(
+            Owner::GoContractTests,
+            file,
+            &home.normalize(&normalize_version(&run.stdout)),
+        );
+        check_golden(
+            Owner::GoContractTests,
+            &file.replace(".json", "-events.ndjson"),
+            &home.normalize(&run.stderr),
+        );
+        assert_eq!(config_text(&home), "{}", "{flags:?}");
+        assert!(project.join("scripts").exists(), "{flags:?}");
+        let worktree = home.path("workrooms/calm-river");
+        assert_eq!(
+            worktree.exists(),
+            flags != ["--with-workrooms"],
+            "{flags:?}"
+        );
+        assert_eq!(
+            git_output(&home, &project, &["branch", "--format=%(refname:short)"]),
+            "main\nworkroom/calm-river\n",
+            "{flags:?}"
+        );
+    }
+}
+
+/// `--pretend` skips only the teardown and the worktree's removal: each mode still drops the
+/// project from config, as Go's `delete-project` does.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn delete_project_pretend_still_drops_the_project_as_go_does() {
+    for flags in [&[][..], &["--with-workrooms"], &["--from-disk"]] {
+        let home = Home::new("delete-project-pretend");
+        let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+        let project_arg = project.to_string_lossy().into_owned();
+        let mut args = vec![
+            "delete-project",
+            &project_arg,
+            "--json",
+            "--confirm",
+            &project_arg,
+            "--pretend",
+        ];
+        args.extend_from_slice(flags);
+        let run = home.run(&home.dir, &args);
+        run.assert_code(0).assert_quiet_stderr();
+        assert_eq!(run.envelope()["ok"], true);
+        assert_eq!(config_text(&home), "{}", "{flags:?}");
+        assert!(home.path("workrooms/calm-river").exists(), "{flags:?}");
+    }
+}
+
+/// A relative path and its `--confirm` resolve to the canonical project, and a project whose
+/// folder is gone is still removable: only its entry goes, the rest of the config stays.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn delete_project_removes_only_the_entry_by_either_form_of_its_path() {
+    let home = Home::new("delete-project-forms");
+    let project = home.repo("src/app");
+    let gone = home.path("src/gone");
+    home.write_config(&format!(
+        "{{\"channel\": \"pre\", \"{}\": {{\"vcs\": \"git\", \"workrooms\": {{}}}}, \"{}\": {{\"vcs\": \"git\", \"workrooms\": {{\"w\": {{\"path\": \"/nowhere/w\"}}}}}}}}",
+        project.display(),
+        gone.display()
+    ));
+    let run = home.run(
+        &home.dir,
+        &[
+            "delete-project",
+            "src/app",
+            "--json",
+            "--confirm",
+            "src/app",
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        home.normalize(&normalize_version(&run.stdout)),
+        "{\"cli_version\":\"dev\",\"command\":\"delete-project\",\"ok\":true,\"path\":\"/Users/dev/src/app\",\"schema_version\":1,\"with_workrooms\":false}\n"
+    );
+    let gone_arg = gone.to_string_lossy().into_owned();
+    let run = home.run(
+        &home.dir,
+        &[
+            "delete-project",
+            "src/gone",
+            "--json",
+            "--confirm",
+            &gone_arg,
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(config_text(&home), "{\n  \"channel\": \"pre\"\n}");
+    assert!(project.exists());
+}
+
+/// Each refusal before anything is torn down, with the config left as it was: no `--json`, no
+/// path or two, a `--confirm` that doesn't match, a project with a remote workroom or its own
+/// host, and an unsafe path for `--from-disk` (the root, HOME, the workrooms folder, an ancestor
+/// of it or of another project).
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn delete_project_refuses_before_tearing_anything_down() {
+    let home = Home::new("delete-project-refusals");
+    let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+    let project_arg = project.to_string_lossy().into_owned();
+    let remote = home.path("src/remote");
+    let based = home.path("src/based");
+    let config = format!(
+        "{{\"{project}\": {{\"trusted_scripts\": {{\"workroom_teardown\": \"{STOPPING_SHA256}\"}}, \"vcs\": \"git\", \"workrooms\": {{\"calm-river\": {{\"path\": \"{path}\"}}}}}}, \"{remote}\": {{\"vcs\": \"git\", \"workrooms\": {{\"r\": {{\"host\": {{\"driver\": \"boxd\"}}, \"path\": \"/home/r\"}}, \"s\": {{\"host\": {{\"state\": \"destroyed\"}}, \"path\": \"/home/s\"}}}}}}, \"{based}\": {{\"host\": {{\"id\": \"B1\"}}, \"vcs\": \"git\", \"workrooms\": {{}}}}}}",
+        project = project.display(),
+        path = home.path("workrooms/calm-river").display(),
+        remote = remote.display(),
+        based = based.display(),
+    );
+    home.write_config(&config);
+
+    let plain = home.run(&home.dir, &["delete-project", &project_arg]);
+    plain.assert_code(1);
+    assert_eq!(plain.stdout, "");
+    assert_eq!(
+        plain.stderr,
+        "Error: delete-project is only available in --json mode\n"
+    );
+
+    let mismatch = "confirmation value does not match the workroom name: --confirm <path> is \
+                    required and must match the project path";
+    let remote_arg = remote.to_string_lossy().into_owned();
+    let based_arg = based.to_string_lossy().into_owned();
+    let home_arg = home.dir.to_string_lossy().into_owned();
+    let src_arg = home.path("src").to_string_lossy().into_owned();
+    let workrooms_arg = home.path("workrooms").to_string_lossy().into_owned();
+    let unsafe_path = |path: &str| {
+        format!("refusing to delete an unsafe or reserved path: refusing to delete {path:?}")
+    };
+    for (args, code, kind, message, command) in [
+        (
+            vec!["delete-project", "--json"],
+            1,
+            "InternalError",
+            "a path argument is required".to_string(),
+            true,
+        ),
+        (
+            vec!["delete-project", &project_arg, "x", "--json"],
+            1,
+            "InternalError",
+            "accepts at most 1 arg(s), received 2".to_string(),
+            false,
+        ),
+        (
+            vec!["delete-project", &project_arg, "--json"],
+            2,
+            "ConfirmationMismatch",
+            mismatch.to_string(),
+            true,
+        ),
+        (
+            vec![
+                "delete-project",
+                &project_arg,
+                "--json",
+                "--confirm",
+                "nope",
+                "--with-workrooms",
+            ],
+            2,
+            "ConfirmationMismatch",
+            mismatch.to_string(),
+            true,
+        ),
+        (
+            vec![
+                "delete-project",
+                &remote_arg,
+                "--json",
+                "--confirm",
+                &remote_arg,
+            ],
+            3,
+            "RemoteWorkroomUnsupported",
+            format!(
+                "not supported for a remote workroom yet: {remote_arg} has remote workrooms: r, s"
+            ),
+            true,
+        ),
+        (
+            vec![
+                "delete-project",
+                &based_arg,
+                "--json",
+                "--confirm",
+                &based_arg,
+                "--from-disk",
+            ],
+            3,
+            "RemoteWorkroomUnsupported",
+            format!(
+                "not supported for a remote workroom yet: {based_arg} has a remote host (its base machine)"
+            ),
+            true,
+        ),
+        (
+            vec![
+                "delete-project",
+                "/",
+                "--json",
+                "--confirm",
+                "/",
+                "--from-disk",
+            ],
+            2,
+            "UnsafeDeletePath",
+            unsafe_path("/"),
+            true,
+        ),
+        (
+            vec![
+                "delete-project",
+                &home_arg,
+                "--json",
+                "--confirm",
+                &home_arg,
+                "--from-disk",
+            ],
+            2,
+            "UnsafeDeletePath",
+            unsafe_path(&home_arg),
+            true,
+        ),
+        (
+            vec![
+                "delete-project",
+                &src_arg,
+                "--json",
+                "--confirm",
+                &src_arg,
+                "--from-disk",
+            ],
+            2,
+            "UnsafeDeletePath",
+            unsafe_path(&src_arg),
+            true,
+        ),
+        (
+            vec![
+                "delete-project",
+                &workrooms_arg,
+                "--json",
+                "--confirm",
+                &workrooms_arg,
+                "--from-disk",
+            ],
+            2,
+            "UnsafeDeletePath",
+            unsafe_path(&workrooms_arg),
+            true,
+        ),
+    ] {
+        let run = home.run(&home.dir, &args);
+        run.assert_code(code).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), kind, "{args:?}");
+        let envelope = run.envelope();
+        assert_eq!(envelope["error"]["message"], message.as_str(), "{args:?}");
+        assert_eq!(
+            envelope.get("command").is_some(),
+            command,
+            "{args:?}: {envelope}"
+        );
+        assert_eq!(config_text(&home), config, "{args:?}");
+    }
+    assert!(home.path("workrooms/calm-river").exists());
+}
+
+/// A teardown that fails stops the cascade with `TeardownScriptFailed`, its output streamed first,
+/// and leaves the project and its workroom registered and in place, in either mode.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn delete_project_keeps_the_project_when_a_teardown_fails() {
+    for flag in ["--with-workrooms", "--from-disk"] {
+        let home = Home::new("delete-project-teardown-fails");
+        let project = project_with_workroom(
+            &home,
+            "echo failing\nexit 3\n",
+            "6c0b3283060e825e71a20b65542912cc472c2589a65612149764cc58e7d66afc",
+        );
+        let before = config_text(&home);
+        let project_arg = project.to_string_lossy().into_owned();
+        let run = home.run(
+            &home.dir,
+            &[
+                "delete-project",
+                &project_arg,
+                "--json",
+                "--confirm",
+                &project_arg,
+                flag,
+            ],
+        );
+        run.assert_code(5);
+        assert_eq!(
+            run.stderr, "{\"type\":\"log\",\"phase\":\"teardown\",\"text\":\"failing\"}\n",
+            "{flag}"
+        );
+        assert_eq!(run.error_kind(), "TeardownScriptFailed", "{flag}");
+        assert_eq!(
+            run.envelope()["error"]["message"],
+            format!(
+                "teardown script failed: {}/scripts/workroom_teardown returned a non-zero exit code",
+                project.display()
+            )
+        );
+        assert_eq!(config_text(&home), before, "{flag}");
+        assert!(home.path("workrooms/calm-river").exists(), "{flag}");
+    }
+}
+
+/// A teardown script this Mac hasn't approved is refused with the script in the envelope, as the
+/// app reads it to ask, and nothing is torn down; `--skip-teardown` runs none and goes ahead.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn delete_project_refuses_an_unapproved_teardown_unless_skipped() {
+    for flag in ["--with-workrooms", "--from-disk"] {
+        let home = Home::new("delete-project-untrusted");
+        let project = project_with_workroom(&home, "echo hi\n", "deadbeef");
+        let before = config_text(&home);
+        let project_arg = project.to_string_lossy().into_owned();
+        let run = home.run(
+            &home.dir,
+            &[
+                "delete-project",
+                &project_arg,
+                "--json",
+                "--confirm",
+                &project_arg,
+                flag,
+            ],
+        );
+        run.assert_code(3).assert_quiet_stderr();
+        assert_eq!(
+            normalize_version(&run.stdout),
+            "{\"cli_version\":\"dev\",\"command\":\"delete-project\",\"error\":{\"kind\":\"ScriptNotTrusted\",\"message\":\"script is not trusted on this Mac: scripts/workroom_teardown in the project's root is new, or changed since it was approved. Review and approve it with `workroom trust`\"},\"ok\":false,\"schema_version\":1,\"script\":{\"bytes\":\"IyEvYmluL3NoCmVjaG8gaGkK\",\"exempt\":false,\"file\":\"scripts/workroom_teardown\",\"name\":\"workroom_teardown\",\"origin\":\"root\",\"sha256\":\"299001868fb8c02fd431c336c6d058f5558c5dff5b5af5e6fe04b870a6a9cbba\",\"text\":\"#!/bin/sh\\necho hi\\n\",\"trusted\":false}}\n",
+            "{flag}"
+        );
+        assert_eq!(config_text(&home), before, "{flag}");
+        assert!(home.path("workrooms/calm-river").exists(), "{flag}");
+
+        let run = home.run(
+            &home.dir,
+            &[
+                "delete-project",
+                &project_arg,
+                "--json",
+                "--confirm",
+                &project_arg,
+                flag,
+                "--skip-teardown",
+            ],
+        );
+        run.assert_code(0).assert_quiet_stderr();
+        assert_eq!(config_text(&home), "{}", "{flag}");
+        assert_eq!(
+            home.path("workrooms/calm-river").exists(),
+            flag == "--from-disk",
+            "{flag}"
+        );
+    }
+}
+
+/// A workroom's own copy of the teardown script is the one that runs, judged as the workroom's;
+/// a gitignored root copy needs no approval.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn delete_project_judges_the_workrooms_copy_and_exempts_an_ignored_root_copy() {
+    let home = Home::new("delete-project-script-origin");
+    let project = project_with_workroom(&home, "echo stopping\n", "deadbeef");
+    let worktree = home.path("workrooms/calm-river");
+    write_file(
+        &worktree,
+        "scripts/workroom_teardown",
+        "#!/bin/sh\necho mine\n",
+        0o755,
+    );
+    let project_arg = project.to_string_lossy().into_owned();
+    let run = home.run(
+        &home.dir,
+        &[
+            "delete-project",
+            &project_arg,
+            "--json",
+            "--confirm",
+            &project_arg,
+            "--with-workrooms",
+        ],
+    );
+    run.assert_code(3).assert_quiet_stderr();
+    let envelope = run.envelope();
+    assert_eq!(envelope["script"]["origin"], "workroom");
+    assert_eq!(envelope["script"]["text"], "#!/bin/sh\necho mine\n");
+    assert_eq!(
+        envelope["error"]["message"],
+        "script is not trusted on this Mac: scripts/workroom_teardown in the workroom is new, or \
+         changed since it was approved. Run the same command in a terminal to review and approve it"
+    );
+
+    std::fs::remove_file(worktree.join("scripts/workroom_teardown")).expect("remove copy");
+    std::fs::write(project.join(".gitignore"), "scripts/\n").expect("gitignore");
+    let run = home.run(
+        &home.dir,
+        &[
+            "delete-project",
+            &project_arg,
+            "--json",
+            "--confirm",
+            &project_arg,
+            "--with-workrooms",
+        ],
+    );
+    run.assert_code(0);
+    assert_eq!(
+        run.stderr,
+        "{\"type\":\"log\",\"phase\":\"teardown\",\"text\":\"stopping\"}\n"
+    );
+    assert!(!worktree.exists());
+}
+
+/// `--with-workrooms` deletes each workroom as `delete` does: one whose folder holds no git
+/// checkout is only forgotten, its folder left; a name `delete` refuses stops it with the project
+/// kept.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn delete_project_with_workrooms_deletes_each_as_delete_does() {
+    let home = Home::new("delete-project-cascade");
+    let project = home.repo("src/app");
+    let real = home.path("workrooms/calm-river");
+    home.git(
+        &project,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "workroom/calm-river",
+            &real.to_string_lossy(),
+        ],
+    );
+    let orphan = home.path("elsewhere/orphan");
+    std::fs::create_dir_all(&orphan).expect("orphan");
+    std::fs::write(orphan.join("notes"), "keep").expect("notes");
+    let config = |extra: &str| {
+        format!(
+            "{{\"{}\": {{\"vcs\": \"git\", \"workrooms\": {{\"calm-river\": {{\"path\": \"{}\"}}, \"orphan\": {{\"path\": \"{}\"}}{extra}}}}}}}",
+            project.display(),
+            real.display(),
+            orphan.display()
+        )
+    };
+    home.write_config(&config(", \"bad name\": {\"path\": \"/x\"}"));
+    let project_arg = project.to_string_lossy().into_owned();
+    let args = [
+        "delete-project",
+        &project_arg,
+        "--json",
+        "--confirm",
+        &project_arg,
+        "--with-workrooms",
+    ];
+    let run = home.run(&home.dir, &args);
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "InvalidName");
+    assert_eq!(
+        run.envelope()["error"]["message"],
+        "workroom name must be alphanumeric (dashes and underscores allowed), and must not start \
+         or end with a dash or underscore: \"bad name\""
+    );
+    assert_eq!(
+        config_text(&home),
+        config(", \"bad name\": {\"path\": \"/x\"}")
+    );
+
+    home.write_config(&config(""));
+    let run = home.run(&home.dir, &args);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(config_text(&home), "{}");
+    assert!(!real.exists());
+    assert_eq!(entries(&orphan), ["notes"]);
+
+    // A project that is itself a workroom is refused, as `delete` refuses it.
+    let inner = home.repo("src/inner");
+    std::fs::write(inner.join(".Workroom"), "").expect(".Workroom");
+    let inner_arg = inner.to_string_lossy().into_owned();
+    let inner_config = format!(
+        "{{\"{}\": {{\"vcs\": \"git\", \"workrooms\": {{\"w\": {{\"path\": \"/x/w\"}}}}}}}}",
+        inner.display()
+    );
+    home.write_config(&inner_config);
+    let run = home.run(
+        &home.dir,
+        &[
+            "delete-project",
+            &inner_arg,
+            "--json",
+            "--confirm",
+            &inner_arg,
+            "--with-workrooms",
+        ],
+    );
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "InWorkroom");
+    assert_eq!(config_text(&home), inner_config);
+
+    // A project folder that is no repository can't have its worktrees removed.
+    let plain = home.path("src/plain");
+    std::fs::create_dir_all(&plain).expect("plain");
+    let plain_arg = plain.to_string_lossy().into_owned();
+    let plain_config = format!(
+        "{{\"{}\": {{\"vcs\": \"git\", \"workrooms\": {{\"w\": {{\"path\": \"/x/w\"}}}}}}}}",
+        plain.display()
+    );
+    home.write_config(&plain_config);
+    let run = home.run(
+        &home.dir,
+        &[
+            "delete-project",
+            &plain_arg,
+            "--json",
+            "--confirm",
+            &plain_arg,
+            "--with-workrooms",
+        ],
+    );
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "UnsupportedVCS");
+    assert_eq!(config_text(&home), plain_config);
+}
+
+/// A config that can't be read fails the command and is left as it was.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn delete_project_reports_an_unreadable_config() {
+    let home = Home::new("delete-project-bad-config");
+    let project = home.repo("src/app");
+    home.write_config("{bad");
+    let project_arg = project.to_string_lossy().into_owned();
+    let run = home.run(
+        &home.dir,
+        &[
+            "delete-project",
+            &project_arg,
+            "--json",
+            "--confirm",
+            &project_arg,
+        ],
+    );
+    run.assert_code(6).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "ConfigReadFailed");
+    assert_eq!(config_text(&home), "{bad");
+}
+
+// --- claim-provisioned ---
+
+/// What another build's config holds: the `dev` build made the project host of `/p/a` (in the
+/// shape before a project had several bases), one of its workrooms, two of `/p/b`'s bases and the
+/// workroom `/p/c` already has one of under that name.
+const CLAIM_SHARED: &str = r#"{"workrooms_dir": "/w", "channel": "pre",
+ "/p/a": {"vcs": "git", "host": {"provisioner": "dev", "id": "B1", "driver": "boxd"},
+   "workrooms": {"r1": {"path": "/home/r1", "host": {"provisioner": "dev", "n": 1.50}},
+                 "r2": {"path": "/home/r2", "host": {"provisioner": "rel"}},
+                 "loc": {"path": "/x/loc"}}},
+ "/p/b": {"vcs": "git", "host": {"bases": [{"provisioner": "dev", "id": "B2"}, {"provisioner": "rel", "id": "B3"}, {"provisioner": "dev", "x": 1}]},
+   "workrooms": {}},
+ "/p/c": {"vcs": "git", "workrooms": {"same": {"path": "/home/same", "host": {"provisioner": "dev"}}}}
+}"#;
+
+/// This build's config before the claim.
+const CLAIM_MINE: &str = r#"{"/p/c": {"vcs": "git", "workrooms": {"same": {"path": "/mine/same"}}}, "/p/a": {"host": {"provisioner": "dev", "id": "B9"}}}"#;
+
+/// The shared config after `dev`'s entries left it.
+const CLAIM_SHARED_AFTER: &str = r#"{
+  "/p/a": {
+    "vcs": "git",
+    "workrooms": {
+      "loc": {
+        "path": "/x/loc"
+      },
+      "r2": {
+        "host": {
+          "provisioner": "rel"
+        },
+        "path": "/home/r2"
+      }
+    }
+  },
+  "/p/b": {
+    "host": {
+      "bases": [
+        {
+          "id": "B3",
+          "provisioner": "rel"
+        }
+      ]
+    },
+    "vcs": "git",
+    "workrooms": {}
+  },
+  "/p/c": {
+    "vcs": "git",
+    "workrooms": {}
+  },
+  "channel": "pre",
+  "workrooms_dir": "/w"
+}"#;
+
+/// This build's config after the claim: its own entries kept where names meet, the legacy host
+/// turned into a list of bases now it holds two, and the workrooms folder shared.
+const CLAIM_MINE_AFTER: &str = r#"{
+  "/p/a": {
+    "host": {
+      "bases": [
+        {
+          "id": "B9",
+          "provisioner": "dev"
+        },
+        {
+          "driver": "boxd",
+          "id": "B1",
+          "provisioner": "dev"
+        }
+      ]
+    },
+    "workrooms": {
+      "r1": {
+        "host": {
+          "n": 1.50,
+          "provisioner": "dev"
+        },
+        "path": "/home/r1"
+      }
+    }
+  },
+  "/p/b": {
+    "host": {
+      "bases": [
+        {
+          "id": "B2",
+          "provisioner": "dev"
+        },
+        {
+          "provisioner": "dev",
+          "x": 1
+        }
+      ]
+    },
+    "vcs": "git",
+    "workrooms": {}
+  },
+  "/p/c": {
+    "vcs": "git",
+    "workrooms": {
+      "same": {
+        "path": "/mine/same"
+      }
+    }
+  },
+  "workrooms_dir": "/w"
+}"#;
+
+/// Moves what the `dev` build made out of the shared config into this one, counting each entry
+/// that left, even one this config already had by that name. A second run finds nothing and
+/// rewrites neither file; nor does a run with no provisioner or one naming this config itself.
+/// `--pretend` is no dry run here, as in Go. Without `--json` a success prints nothing.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn claim_provisioned_moves_a_builds_entries_between_configs() {
+    let home = Home::new("claim-moves");
+    let shared = home.path("shared.json");
+    std::fs::write(&shared, CLAIM_SHARED).expect("shared");
+    home.write_config(CLAIM_MINE);
+    let shared_arg = shared.to_string_lossy().into_owned();
+    let run = home.run(
+        &home.dir,
+        &[
+            "claim-provisioned",
+            "--from",
+            &shared_arg,
+            "--provisioner",
+            "dev",
+            "--json",
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        normalize_version(&run.stdout),
+        "{\"cli_version\":\"dev\",\"command\":\"claim-provisioned\",\"moved\":5,\"ok\":true,\"schema_version\":1}\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&shared).expect("shared"),
+        CLAIM_SHARED_AFTER
+    );
+    assert_eq!(config_text(&home), CLAIM_MINE_AFTER);
+
+    // Nothing left to claim: neither file is rewritten.
+    let marked = "{\"marked\": true,\n \"/p/a\": {\"workrooms\": {}}}";
+    std::fs::write(
+        &shared,
+        CLAIM_SHARED_AFTER.replacen('{', "{\"marked\": true,", 1),
+    )
+    .expect("mark");
+    home.write_config(marked);
+    let config_dir = home.path(".config/workroom");
+    let before = entries(&config_dir);
+    for args in [
+        &[
+            "claim-provisioned",
+            "--from",
+            &shared_arg,
+            "--provisioner",
+            "dev",
+            "--json",
+        ][..],
+        &[
+            "claim-provisioned",
+            "--from",
+            &shared_arg,
+            "--provisioner",
+            "",
+            "--json",
+        ],
+        &[
+            "claim-provisioned",
+            "--from",
+            "",
+            "--provisioner",
+            "rel",
+            "--json",
+        ],
+        &[
+            "claim-provisioned",
+            "--from",
+            &home.config_path().to_string_lossy(),
+            "--provisioner",
+            "rel",
+            "--json",
+        ],
+    ] {
+        let run = home.run(&home.dir, args);
+        run.assert_code(0).assert_quiet_stderr();
+        assert_eq!(run.envelope()["moved"], 0, "{args:?}");
+        assert_eq!(config_text(&home), marked, "{args:?}");
+        assert!(
+            std::fs::read_to_string(&shared)
+                .expect("shared")
+                .starts_with("{\"marked\": true,"),
+            "{args:?}"
+        );
+    }
+    assert_eq!(entries(&config_dir), before);
+
+    let run = home.run(
+        &home.dir,
+        &[
+            "claim-provisioned",
+            "--from",
+            &shared_arg,
+            "--provisioner",
+            "rel",
+            "--pretend",
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(run.stdout, "");
+    let shared_now = std::fs::read_to_string(&shared).expect("shared");
+    assert!(
+        !shared_now.contains("\"rel\""),
+        "--pretend kept rel's entries: {shared_now}"
+    );
+    assert!(
+        config_text(&home).contains("\"B3\""),
+        "{}",
+        config_text(&home)
+    );
+}
+
+/// A shared config that doesn't exist holds nothing to claim, and no file is made for it.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn claim_provisioned_from_a_missing_config_moves_nothing() {
+    let home = Home::new("claim-missing");
+    let missing = home.path("missing.json");
+    let run = home.run(
+        &home.dir,
+        &[
+            "claim-provisioned",
+            "--from",
+            &missing.to_string_lossy(),
+            "--provisioner",
+            "dev",
+            "--json",
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(run.envelope()["moved"], 0);
+    assert!(!missing.exists());
+    assert!(!home.config_path().exists());
+}
+
+/// Both flags are required and it takes no argument: usage errors, so the envelope names no
+/// command.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn claim_provisioned_refuses_missing_flags_and_arguments() {
+    let home = Home::new("claim-usage");
+    for (args, message) in [
+        (
+            &["claim-provisioned", "--json"][..],
+            "required flag(s) \"from\", \"provisioner\" not set",
+        ),
+        (
+            &["claim-provisioned", "--from", "x", "--json"],
+            "required flag(s) \"provisioner\" not set",
+        ),
+        (
+            &[
+                "claim-provisioned",
+                "--from",
+                "x",
+                "--provisioner",
+                "p",
+                "extra",
+                "--json",
+            ],
+            "unknown command \"extra\" for \"workroom claim-provisioned\"",
+        ),
+    ] {
+        let run = home.run(&home.dir, args);
+        run.assert_code(1).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "InternalError");
+        let envelope = run.envelope();
+        assert_eq!(envelope["error"]["message"], message, "{args:?}");
+        assert!(envelope.get("command").is_none(), "{args:?}: {envelope}");
+    }
+}
+
+/// A config it can't read, either one, or this one it can't write, fails the claim with the shared
+/// config left as it was.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn claim_provisioned_reports_a_config_it_cant_read_or_write() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new("claim-config-errors");
+    let shared = home.path("shared.json");
+    let shared_arg = shared.to_string_lossy().into_owned();
+    let claim = [
+        "claim-provisioned",
+        "--from",
+        &shared_arg,
+        "--provisioner",
+        "dev",
+        "--json",
+    ];
+
+    std::fs::write(&shared, "{bad").expect("shared");
+    let run = home.run(&home.dir, &claim);
+    run.assert_code(6).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "ConfigReadFailed");
+    assert_eq!(
+        run.envelope()["error"]["message"],
+        format!(
+            "failed to read config {shared_arg}: invalid character 'b' looking for beginning of \
+             object key string"
+        )
+    );
+
+    std::fs::write(&shared, CLAIM_SHARED).expect("shared");
+    home.write_config("{bad");
+    let run = home.run(&home.dir, &claim);
+    run.assert_code(6).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "ConfigReadFailed");
+    assert_eq!(
+        std::fs::read_to_string(&shared).expect("shared"),
+        CLAIM_SHARED
+    );
+
+    home.write_config(CLAIM_MINE);
+    let config_dir = home.path(".config/workroom");
+    std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+    let run = home.run(&home.dir, &claim);
+    std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    run.assert_code(6).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "ConfigWriteFailed");
+    assert_eq!(
+        std::fs::read_to_string(&shared).expect("shared"),
+        CLAIM_SHARED
+    );
+    assert_eq!(config_text(&home), CLAIM_MINE);
+}
+
 // --- completion ---
 
 /// The variables a run adds to its environment, by name.
