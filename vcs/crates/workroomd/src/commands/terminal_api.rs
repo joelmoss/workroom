@@ -98,17 +98,15 @@ pub(super) fn stream(
     };
     let started = Instant::now();
     // A wait that may be sent again is pinned to the session its target names now, so the next
-    // program is asked about that one session, and can say it has gone ([`gone`]).
-    let pinned = pin(context, method, &params)?;
-    let params = match &pinned {
-        Some(id) => {
-            let mut params = params;
-            params["target"] = json!(id);
-            request = encode(&params);
-            params
-        }
-        None => params,
-    };
+    // program is asked about that one session, and can say it has gone ([`gone`]). It is sent
+    // the first time as it was given, so the daemon checks it as it would any request, and its
+    // errors name the target as typed.
+    let pinned = pin(context, method, &params);
+    let typed = params
+        .get("target")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     let mut answer = answer_timeout(method, &params);
     let mut stream = connect(&socket)?;
     let mut resumes = 0;
@@ -128,7 +126,10 @@ pub(super) fn stream(
                 Ok(reply) => reply,
                 Err(Ended::HungUp) if method == WAIT && !answered && resumes < MAX_RESUMES => {
                     resumes += 1;
-                    let (next, again) = resumed(&socket, &params, started)?;
+                    let (next, mut again) = resumed(&socket, &params, started)?;
+                    if let Some(id) = &pinned {
+                        again["target"] = json!(id);
+                    }
                     eprintln!(
                         "workroom: the daemon on {socket} was handed off during the wait; \
                          waiting on in the new one"
@@ -151,7 +152,7 @@ pub(super) fn stream(
                     && let Some(id) = &pinned
                     && error["kind"] == TARGET_NOT_FOUND
                 {
-                    let ended = gone(id, &params)?;
+                    let ended = gone(id, &typed, &params)?;
                     each(Replied {
                         revision: reply.get("revision").cloned().unwrap_or(Value::Null),
                         result: ended,
@@ -159,9 +160,19 @@ pub(super) fn stream(
                     });
                     return Ok(());
                 }
+                let mut message = error["message"]
+                    .as_str()
+                    .unwrap_or("the daemon refused")
+                    .to_string();
+                // Sent again by its id, the wait's errors still name the target as typed.
+                if resumes > 0
+                    && let Some(id) = &pinned
+                {
+                    message = message.replace(&format!("{id:?}"), &format!("{typed:?}"));
+                }
                 let mut failure = CliError::new(
                     Kind::from_code(error["kind"].as_str().unwrap_or_default()),
-                    error["message"].as_str().unwrap_or("the daemon refused"),
+                    message,
                 );
                 failure.matches = error["matches"].as_array().cloned().unwrap_or_default();
                 failure.details = error
@@ -192,30 +203,29 @@ const TARGET_NOT_FOUND: &str = crate::terminal::api::kind::TARGET_NOT_FOUND;
 const STATES: [&str; 3] = ["status", "run", "ended"];
 
 /// For a wait for a state, the id of the session its target names, by `session.resolve`, which
-/// resolves as `terminal.wait` does: what is sent, and sent again after a hand-off, in place of
-/// the target. A target that names no one session fails here as the wait would. `None` for any
-/// other request, which is sent as it is.
-fn pin(context: &Context, method: &str, params: &Value) -> Result<Option<String>, CliError> {
+/// resolves as `terminal.wait` does: what is sent again after a hand-off, in place of the target.
+/// `None` for any other request, and for a target that names no one session, or a daemon that
+/// can't be asked: the wait itself, sent as given, then fails as the daemon finds, bad input
+/// before an unknown target, and is never sent again.
+fn pin(context: &Context, method: &str, params: &Value) -> Option<String> {
     let state = STATES
         .iter()
         .any(|key| params.get(key).is_some_and(|value| !value.is_null()));
-    let Some(target) = params.get("target").and_then(Value::as_str) else {
-        return Ok(None);
-    };
+    let target = params.get("target").and_then(Value::as_str)?;
     if method != WAIT || !state {
-        return Ok(None);
+        return None;
     }
-    let resolved = reply(context, "session.resolve", json!({"target": target}))?;
-    Ok(resolved.result["session"]["id"]
+    let resolved = reply(context, "session.resolve", json!({"target": target})).ok()?;
+    resolved.result["session"]["id"]
         .as_str()
-        .map(str::to_string))
+        .map(str::to_string)
 }
 
 /// What a wait for a state, sent again after a hand-off, answers when the new program has no
-/// session `id`: it ended between the two programs, with nobody left to say so. Ended, for an
-/// `ended` wait (its exit code unknown), as the old program would have answered had it seen the
-/// end; `SessionEnded` for any other, as a wait whose session ends is.
-fn gone(id: &str, params: &Value) -> Result<Value, CliError> {
+/// session `id`, which `typed` named: it ended between the two programs, with nobody left to say
+/// so. Ended, for an `ended` wait (its exit code unknown), as the old program would have answered
+/// had it seen the end; `SessionEnded` for any other, as a wait whose session ends is.
+fn gone(id: &str, typed: &str, params: &Value) -> Result<Value, CliError> {
     if params.get("ended").is_some_and(|value| !value.is_null()) {
         return Ok(json!({
             "session": id,
@@ -229,8 +239,8 @@ fn gone(id: &str, params: &Value) -> Result<Value, CliError> {
     Err(CliError::new(
         Kind::SessionEnded,
         format!(
-            "session {id} ended during the daemon's hand-off, before what it was waited for \
-             happened"
+            "{typed:?} (session {id}) ended during the daemon's hand-off, before what it was \
+             waited for happened"
         ),
     ))
 }

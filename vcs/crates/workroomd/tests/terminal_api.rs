@@ -2184,10 +2184,31 @@ fn wait_for_a_run_state_with_its_exit_code() {
         (3, "ExitCodeMismatch".into()),
         "exited already with 3, so refused at once"
     );
+    let (code, refused) = wait(&socket, &["server", "--run", "running"]);
     assert_eq!(
-        failed(wait(&socket, &["server", "--run", "running"])),
+        failed((code, refused.clone())),
         (2, "InvalidRequest".into()),
         "a shell has no run state"
+    );
+    // Pinned to its session's id for a hand-off, the wait still names the target as typed.
+    let message = refused["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains(r#""server""#), "{message}");
+    // Bad input is refused as such before an unknown target is looked for, as any request is.
+    let bad = workroom(
+        Some(&socket),
+        &[
+            "api",
+            "call",
+            "terminal.wait",
+            r#"{"target":"nobody","status":"sleepy"}"#,
+            "--json",
+        ],
+    );
+    assert_eq!(
+        (bad.code, bad.envelope()["error"]["kind"].clone()),
+        (2, json!("InvalidRequest")),
+        "{}",
+        bad.stdout
     );
 }
 
