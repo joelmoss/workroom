@@ -464,6 +464,19 @@ fn a_command_outside_every_pane_is_the_pane_it_names() {
     let elsewhere = named(RUN);
     assert_eq!(elsewhere["caller"], RUN, "{elsewhere}");
     assert_eq!(listed_ids(&elsewhere), [RUN], "{elsewhere}");
+    // `session.list` keeps to the caller's scope unless asked for `all`, as `sessions` does.
+    let mut api = Api::connect(&socket);
+    let unasked = api.request(&json!({"method": "session.list", "caller": OTHER}));
+    assert_eq!(unasked["result"]["caller"], OTHER, "{unasked}");
+    let mut ours = vec![SHELL.to_string(), OTHER.to_string()];
+    ours.sort();
+    assert_eq!(listed_ids(&unasked["result"]), ours, "{unasked}");
+    let all = api.request(&json!({
+        "method": "session.list",
+        "params": {"all": true},
+        "caller": OTHER,
+    }));
+    assert_eq!(listed_ids(&all["result"]).len(), 3, "{all}");
     let gone = named("0b9d33c1-0000-4000-8000-000000000000");
     assert_eq!(gone["caller"], Value::Null, "{gone}");
     assert_eq!(listed_ids(&gone).len(), 3, "{gone}");
@@ -867,12 +880,13 @@ impl Api {
     }
 
     fn call(&mut self, method: &str, params: Value) -> Value {
+        self.request(&json!({"method": method, "params": params}))
+    }
+
+    /// Sends `request` whole, for one with more than a method and its params.
+    fn request(&mut self, request: &Value) -> Value {
         let stream = self.0.take_stream();
-        self.0.request(
-            Service::TerminalApi,
-            stream,
-            &json!({"method": method, "params": params}),
-        )
+        self.0.request(Service::TerminalApi, stream, request)
     }
 }
 
@@ -934,8 +948,8 @@ fn every_method_publishes_schemas_its_replies_match() {
         ),
         (
             "session.list",
-            json!({"scope": "caller"}),
-            &api.call("session.list", json!({"scope": "caller"})),
+            json!({"all": true}),
+            &api.call("session.list", json!({"all": true})),
         ),
         (
             "session.resolve",
@@ -1010,8 +1024,8 @@ fn api_list_names_every_method_the_daemon_has() {
         .map(|method| method["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, all);
-    let summary = "Every session the daemon holds, oldest first, or with `scope: \"caller\"` those \
-                   in the caller's scope.";
+    let summary = "The sessions that share the caller's scope, oldest first, or with `all: true` \
+                   every session the daemon holds.";
     assert_eq!(methods[1]["summary"], summary);
     // The listing names them; the schemas are `describe`'s.
     assert!(methods[1].get("input").is_none(), "{envelope}");

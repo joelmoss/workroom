@@ -18,9 +18,9 @@ struct Payload {
 }
 
 pub(super) fn run(context: &Context, args: &Args) -> Outcome {
-    let scope = if args.is_set("all") { "all" } else { "caller" };
+    let all = args.is_set("all");
     let reply = match args.positional.as_slice() {
-        [] => terminal_api::call(context, "session.list", json!({"scope": scope})).map(|result| {
+        [] => terminal_api::call(context, "session.list", json!({"all": all})).map(|result| {
             let sessions = result["sessions"].as_array().cloned().unwrap_or_default();
             (sessions, result["caller"].clone())
         }),
