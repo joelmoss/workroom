@@ -2451,6 +2451,109 @@ fn over_ssh_the_terminal_api_lists_and_resolves_the_hosts_sessions() {
     );
 }
 
+/// `workroom api` on a host (#685), as a coding agent in a remote pane runs it: `list` names the
+/// host daemon's methods, `describe` shows a method's schemas with examples, and `call` reaches a
+/// session the Mac opened with PARAMS inline, from a file on the host and from stdin.
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_api_lists_describes_and_calls_the_hosts_methods() {
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
+    let session = "7e0e7e0e-0000-4000-8000-000000000685";
+    let mut pane = Pane::attach_with(
+        &fixture,
+        session,
+        false,
+        "'WORKROOM_SESSION_TITLE=api call'",
+    );
+    pane.type_line("echo READY-\"\"685");
+    assert!(
+        pane.read_until("READY-685\r\n", Duration::from_secs(20))
+            .contains("READY-685\r\n")
+    );
+
+    // `workroom api <args>` on the host, after `before` in the same shell: (stdout, exit status).
+    let api = |before: &str, args: &str| {
+        let output = fixture
+            .ssh()
+            .arg(format!(
+                "{before} WORKROOM_DAEMON={} {INSTALLED_DAEMON} api {args}; echo \"exit=$?\"",
+                fixture.socket
+            ))
+            .output()
+            .expect("run api");
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let (envelope, status) = stdout
+            .rsplit_once("exit=")
+            .unwrap_or_else(|| panic!("no exit status: {stdout}"));
+        let envelope: Value = serde_json::from_str(envelope.trim())
+            .unwrap_or_else(|e| panic!("not one envelope ({e}): {stdout}"));
+        (envelope, status.trim().to_string())
+    };
+
+    let (listed, status) = api("", "list --json");
+    assert_eq!(status, "0", "{listed}");
+    let names: Vec<&str> = listed["methods"]
+        .as_array()
+        .expect("methods")
+        .iter()
+        .filter_map(|method| method["name"].as_str())
+        .collect();
+    for name in ["api.describe", "session.list", "session.resolve"] {
+        assert!(names.contains(&name), "{name} not in {listed}");
+    }
+
+    let (described, status) = api("", "describe session.resolve --json");
+    assert_eq!(status, "0", "{described}");
+    assert_eq!(described["method"]["name"], "session.resolve");
+    assert!(
+        described["method"]["output"]["examples"].is_array(),
+        "{described}"
+    );
+
+    let params = r#"'{"target":"api call"}'"#;
+    let inline = api("", &format!("call session.resolve {params} --json"));
+    let file = format!("/tmp/workroom-685-params-{}.json", std::process::id());
+    let from_file = api(
+        &format!("printf '%s' {params} > {file} &&"),
+        &format!("call session.resolve @{file} --json"),
+    );
+    let removed = fixture
+        .ssh()
+        .arg(format!("rm {file}"))
+        .status()
+        .expect("remove the params file");
+    assert!(removed.success(), "{file} was not written");
+    let from_stdin = api(
+        &format!("printf '%s' {params} |"),
+        "call session.resolve - --json",
+    );
+    for (how, (called, status)) in [
+        ("inline", inline),
+        ("@file", from_file),
+        ("stdin", from_stdin),
+    ] {
+        assert_eq!(status, "0", "{how}: {called}");
+        assert_eq!(called["method"], "session.resolve", "{how}: {called}");
+        assert_eq!(
+            called["result"]["session"]["id"], session,
+            "{how}: {called}"
+        );
+        assert_eq!(called["result"]["session"]["label"], "api call", "{how}");
+    }
+
+    let (bad, status) = api("", "call session.resolve '{not json' --json");
+    assert_eq!(status, "2", "{bad}");
+    assert_eq!(bad["error"]["kind"], "InvalidRequest", "{bad}");
+
+    pane.type_line("exit");
+    assert!(
+        pane.exit_code(Duration::from_secs(20)).is_some(),
+        "the session did not end"
+    );
+}
+
 /// Two Macs on one remote workroom (#255): Mac A's session carries its workroom and title to the
 /// host, Mac B finds it in the host's list and A's layout in the Layout service, and reattaches to
 /// the same shell; A dropping its link leaves B attached; a close on A ends the session for B too;
