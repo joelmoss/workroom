@@ -456,7 +456,8 @@ fn register(
         }
         let waiter = Arc::new(Waiter::new(condition, shadow.seen()));
         if request.include_screen {
-            waiter.screen(shadow.visible_text().as_bytes());
+            // A copy, matched on the wait's thread, never under these locks.
+            waiter.screen(shadow.screen_text().into_bytes());
         }
         Ok(waiter)
     });

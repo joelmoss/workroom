@@ -500,6 +500,53 @@ fn a_regex_wait_started_mid_sequence_skips_the_rest_of_it() {
     }
 }
 
+/// `include_screen` matches the visible screen, as documented: not the history that scrolled off
+/// it, and a line the pane wrapped as the program printed it.
+#[cfg(feature = "terminal-state")]
+#[test]
+fn include_screen_matches_the_visible_screen_only() {
+    let store = SessionStore::new();
+    // 30 lines push the first off the 24-row screen; at 80 columns, the last line wraps.
+    let id = running(
+        &store,
+        0x46,
+        r#"echo SCROLLED-OFF; seq 30; printf 'WRAP%.0s' $(seq 30); echo; sleep 30"#,
+    );
+    let shadow = store.shadow(id).expect("the session");
+    assert!(
+        eventually(|| crate::util::lock_or_recover(&shadow)
+            .screen_text()
+            .contains(&"WRAP".repeat(30))),
+        "fixture: the output never arrived"
+    );
+    let wait = |pattern: &str| {
+        let (written, writer) = written_writer();
+        let mut connection = Connection::default();
+        start_wait(
+            &mut connection.waits,
+            &store,
+            json!({
+                "target": id.to_hyphenated(),
+                "regex": pattern,
+                "include_screen": true,
+                // Met at once or never: the session prints nothing more.
+                "timeout_ms": 1000,
+            }),
+            &writer,
+        );
+        the_reply(&written)
+    };
+    let off = wait("SCROLLED-OFF");
+    assert_eq!(off["error"]["kind"], "WaitTimeout", "{off}");
+    let wrapped = wait("(WRAP){30}");
+    assert_eq!(
+        wrapped["result"]["match"]["text"],
+        "WRAP".repeat(30),
+        "{wrapped}"
+    );
+    store.kill(id);
+}
+
 /// A wait that could never be met is refused as such before any bound is looked at: a session with
 /// no shell integration is `NoShellIntegration` to a `command_finished` wait, even on a connection
 /// that holds all it may.

@@ -457,7 +457,24 @@ impl Shadow {
         self.marks.any
     }
 
-    /// The screen as plain text: for `wait --include-screen` (#690), and tests.
+    /// The visible screen as plain text, no history, its soft-wrapped lines joined: what
+    /// `wait --include-screen` (#690) matches, so a line the pane wrapped matches as the program
+    /// printed it. Bounded by the screen's size, so read under the session's locks, and matched
+    /// after. Empty when the screen can't be read.
+    pub fn screen_text(&self) -> String {
+        self.terminal
+            .as_ref()
+            .and_then(|terminal| {
+                terminal.capture_text(Capture {
+                    rows: Rows::Screen,
+                    unwrap: true,
+                    vt: false,
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn visible_text(&self) -> String {
         self.terminal
             .as_ref()
@@ -557,6 +574,11 @@ impl Shadow {
     pub fn has_shell_marks(&self) -> bool {
         false
     }
+    /// No terminal, so no screen; `terminal.wait` refuses `include_screen` before asking.
+    pub fn screen_text(&self) -> String {
+        String::new()
+    }
+    #[cfg(any(test, feature = "test-support"))]
     pub fn visible_text(&self) -> String {
         String::new()
     }
