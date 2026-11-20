@@ -83,6 +83,9 @@ libc = "0.2"
 # Itself, with `test-support`, so `cargo test` builds the library with the test-only API that
 # `tests/` reaches through `workroom::testing`, and no build needs a flag for it.
 workroom = { path = ".", features = ["test-support"] }
+# The regex wait's split-invariance test searches the whole stream with it, once, as the answer
+# its matcher must give however the stream was read. Already in the lockfile.
+regex = "1"
 
 [features]
 # The test-only API (`workroom::testing` and the methods only tests call). Not for production

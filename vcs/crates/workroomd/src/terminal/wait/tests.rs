@@ -492,3 +492,250 @@ fn backslash_a_is_the_start_of_the_waits_text() {
     assert_eq!(matcher.feed(&vec![b'x'; WINDOW * 2]), None);
     assert_eq!(matcher.feed(b"\nready\r\n"), None, "trimmed past the start");
 }
+
+/// The patterns the split-invariance test asks about: literals, line anchors, word boundaries
+/// (Unicode's, which the lazy DFA gives up on beside text that isn't ASCII, and ASCII's), an
+/// alternation whose longer branch needs more bytes, greedy repeats, a pattern across lines,
+/// Unicode text, and `\A`. Every one is bounded or settled by the DFA: the documented
+/// approximation (an unbounded pattern with a Unicode `\b`) is left out.
+const SPLIT_PATTERNS: &[&str] = &[
+    "READY",
+    "^READY$",
+    r"^DONE\r?\nREADY",
+    r"\bok\b",
+    "error|warn(ing)?",
+    r"TICK-\d+",
+    r"\d+$",
+    r"ready in \d{1,4} ms$",
+    "✓ done|écrit",
+    r"(?-u:\b)DONE",
+    r"\A(x{1,3}|READY)",
+    r"[^\r\n]{3}\r\nDONE",
+    // Every next byte ends a match at `DONE`'s end, but which one, and so its text, is the byte's.
+    "DONE$|ONE",
+];
+
+/// The answer the whole stream gives, worked out apart from the matcher: its escape sequences
+/// stripped by a pattern for the sequences the test makes, its other controls but `\t`, `\n` and
+/// `\r` dropped, and the `regex` crate's leftmost-first search of the whole of it, once, with the
+/// session's end at its end. Every pattern tested is far shorter than `WINDOW`, the one limit
+/// the matcher documents, so the window changes nothing here.
+///
+/// With it, whether the answer is due before the session ends: a match that a line's end and a
+/// byte more follow is settled by then, for every pattern tested.
+fn oracle(pattern: &str, stream: &[u8]) -> (Option<Vec<u8>>, bool) {
+    let sequences = regex::bytes::Regex::new(
+        r"(?-u)\x1b\[[0-?]*[ -/]*[@-~]|\x1b[\]_P^X][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[ -/]*[0-~]",
+    )
+    .unwrap();
+    let controls = regex::bytes::Regex::new(r"(?-u)[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]").unwrap();
+    let text = sequences.replace_all(stream, &b""[..]);
+    let text = controls.replace_all(&text, &b""[..]);
+    let found = regex::bytes::RegexBuilder::new(pattern)
+        .multi_line(true)
+        .crlf(true)
+        .build()
+        .unwrap()
+        .find(&text);
+    let due = found.is_some_and(|found| {
+        text[found.end()..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .is_some_and(|at| found.end() + at + 1 < text.len())
+    });
+    (found.map(|found| found.as_bytes().to_vec()), due)
+}
+
+/// What a wait answers for `stream`, read in `reads` (their lengths) and taken by its thread in
+/// batches (`batches[i]` reads each), as the session's reader and the wait's thread hand it over:
+/// queued, chunked and matched, and the session's end settling what is left. With it, whether it
+/// answered before the end.
+fn answered(
+    matcher: &Matcher,
+    stream: &[u8],
+    reads: &[usize],
+    batches: &[usize],
+) -> (Option<Vec<u8>>, bool) {
+    let mut matcher = matcher.clone();
+    let mut reads = reads.iter();
+    let mut at = 0;
+    for &batch in batches {
+        let mut queue = Queue::default();
+        for &read in reads.by_ref().take(batch) {
+            queue.push(&stream[at..at + read], 0);
+            at += read;
+        }
+        assert!(!queue.lagged, "the test's streams fit a queue");
+        if let Some(found) = matcher.take(queue, |_| {}) {
+            return (Some(found), true);
+        }
+    }
+    assert_eq!(at, stream.len(), "every read is taken");
+    (matcher.finish(), false)
+}
+
+/// Whether `answered` gave what `oracle` says, and early enough.
+fn agrees(answer: (Option<Vec<u8>>, bool), want: &(Option<Vec<u8>>, bool)) -> bool {
+    answer.0 == want.0 && (answer.1 || !want.1)
+}
+
+/// A small, seeded generator, so a failure names the case that reproduces it.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        usize::try_from(self.next() % n as u64).unwrap()
+    }
+
+    fn one_in(&mut self, n: usize) -> bool {
+        self.below(n) == 0
+    }
+}
+
+/// The pieces a generated stream is made of: text, line ends, CSI, OSC (BEL and ST), a kitty
+/// image's APC, a charset designation, a stray BEL, and multi-byte characters.
+const PIECES: &[&str] = &[
+    "READY",
+    "DONE",
+    "ok",
+    "okay",
+    "error",
+    "warn",
+    "warning",
+    "TICK-",
+    "7",
+    "42",
+    "ready in 312 ms",
+    "x",
+    " ",
+    "écrit",
+    "✓ done",
+    "日本",
+    "é",
+    "\r\n",
+    "\r\n",
+    "\n",
+    "\r",
+    "\x1b[1;32m",
+    "\x1b[0m",
+    "\x1b[2K",
+    "\x1b[?25l",
+    "\x1b]2;READY ok title\x07",
+    "\x1b]8;;https://x.test/DONE\x1b\\",
+    "\x1b_Ga=T,f=100;UkVBRFk=\x1b\\",
+    "\x1b(B",
+    "\x07",
+];
+
+fn stream(rng: &mut Rng) -> Vec<u8> {
+    let mut out = Vec::new();
+    for _ in 0..3 + rng.below(30) {
+        // Now and then a line longer than the window, so trims fall everywhere.
+        if rng.one_in(60) {
+            out.extend(std::iter::repeat_n(b'x', WINDOW + rng.below(3 * CHUNK)));
+        }
+        out.extend_from_slice(PIECES[rng.below(PIECES.len())].as_bytes());
+    }
+    out
+}
+
+/// `len` bytes cut into reads, each boundary a cut one time in `one_in`.
+fn cuts(rng: &mut Rng, len: usize, one_in: usize) -> Vec<usize> {
+    let mut reads = Vec::new();
+    let mut read = 0;
+    for _ in 0..len {
+        read += 1;
+        if rng.one_in(one_in) {
+            reads.push(read);
+            read = 0;
+        }
+    }
+    if read > 0 {
+        reads.push(read);
+    }
+    reads
+}
+
+/// A regex wait's answer, matched or not and the text it matched, is the same however its output
+/// arrives: in one read or split anywhere, inside an escape sequence or a character included, and
+/// however the wait's thread takes the reads in batches. Checked against the whole stream
+/// searched once ([`oracle`]): every split of small streams, and a seeded sweep of generated ones
+/// with lines longer than the window. No property-test crate: the workspace has none, and an
+/// exhaustive enumeration and a seeded generator need no dependency.
+#[test]
+fn a_regex_waits_answer_is_the_same_however_its_output_is_split() {
+    let matchers: Vec<(&str, Matcher)> = SPLIT_PATTERNS
+        .iter()
+        .map(|pattern| (*pattern, Matcher::new(pattern).expect("a valid pattern")))
+        .collect();
+    // Every way to split these into reads, each read its own batch.
+    for small in [
+        &b"\x1b[1mok\r\n"[..],
+        b"DONE\nREADY\n",
+        "é✓ done".as_bytes(),
+        b"TICK-12\x07\n",
+        b"\x1b]x\x07warn\n",
+        b"DONEx\n",
+    ] {
+        for (pattern, matcher) in &matchers {
+            let want = oracle(pattern, small);
+            for mask in 0u32..1 << (small.len() - 1) {
+                let mut reads = vec![1];
+                for at in 0..small.len() - 1 {
+                    match mask & (1 << at) {
+                        0 => *reads.last_mut().unwrap() += 1,
+                        _ => reads.push(1),
+                    }
+                }
+                let batches = vec![1; reads.len()];
+                let answer = answered(matcher, small, &reads, &batches);
+                assert!(
+                    agrees(answer.clone(), &want),
+                    "{pattern:?} over {small:?} read as {reads:?}: {answer:?}, not {want:?}"
+                );
+            }
+        }
+    }
+    // Generated streams, each read three ways and batched at random.
+    let mut rng = Rng(0x0690_5eed_cafe_f00d);
+    for case in 0..60 {
+        let stream = stream(&mut rng);
+        // A stream with a line longer than the window is read in fewer, longer reads, as a pty
+        // reads one: each read rescans the window, and a byte at a time would take minutes.
+        let fine = if stream.len() > WINDOW {
+            [300, 2_000]
+        } else {
+            [2, 9]
+        };
+        let ways: Vec<Vec<usize>> = [fine[0], fine[1], 400]
+            .into_iter()
+            .map(|one_in| cuts(&mut rng, stream.len(), one_in))
+            .collect();
+        for (pattern, matcher) in &matchers {
+            let want = oracle(pattern, &stream);
+            for reads in &ways {
+                let mut batches = Vec::new();
+                let mut left = reads.len();
+                while left > 0 {
+                    let batch = 1 + rng.below(left.min(8));
+                    batches.push(batch);
+                    left -= batch;
+                }
+                let answer = answered(matcher, &stream, reads, &batches);
+                assert!(
+                    agrees(answer.clone(), &want),
+                    "case {case}: {pattern:?} over {:?} read as {reads:?}, batched {batches:?}: \
+                     {answer:?}, not {want:?}",
+                    String::from_utf8_lossy(&stream)
+                );
+            }
+        }
+    }
+}
