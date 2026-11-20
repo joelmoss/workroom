@@ -93,6 +93,10 @@ pub(crate) fn failure(command: Option<&str>, error: &CliError) -> String {
         /// An ambiguous terminal API target's matches; left out otherwise, as Go has no such field.
         #[serde(skip_serializing_if = "<[_]>::is_empty")]
         matches: &'a [serde_json::Value],
+        /// A terminal API error's `details` (an `ExitCodeMismatch` run's exit code); left out
+        /// otherwise, as for `matches`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        details: Option<&'a serde_json::Value>,
     }
     #[derive(Serialize)]
     struct Envelope<'a> {
@@ -113,6 +117,7 @@ pub(crate) fn failure(command: Option<&str>, error: &CliError) -> String {
                 kind: error.kind.code(),
                 message: &error.message,
                 matches: &error.matches,
+                details: error.details.as_deref(),
             },
             ok: false,
             schema_version: SCHEMA_VERSION,

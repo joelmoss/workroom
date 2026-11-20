@@ -491,18 +491,22 @@ fn result(request: &Request, outcome: Outcome) -> Result<Value, ApiError> {
         Outcome::Met(Met::Status(state)) => reply["status"] = json!(state),
         Outcome::Met(Met::Run { state, exit_code }) => {
             // An exit, but not with the code asked for: answered now, since it will not exit
-            // again until it is restarted, and refused, so a script's `&&` stops there.
+            // again until it is restarted, and refused, so a script's `&&` stops there. The code
+            // it did exit with is in `details`, for a script to read.
             if let Some(wanted) = request.exit_code
                 && exit_code != Some(wanted)
             {
-                let exited = exit_code.map_or("an unknown code".into(), |code| code.to_string());
-                return Err(ApiError::new(
+                let exited =
+                    exit_code.map_or("an unknown code".into(), |code| format!("code {code}"));
+                let mut error = ApiError::new(
                     kind::EXIT_CODE_MISMATCH,
                     format!(
                         "session {}'s run exited with {exited}, not {wanted}",
                         request.id.to_hyphenated()
                     ),
-                ));
+                );
+                error.details = Some(json!({"exit_code": exit_code}));
+                return Err(error);
             }
             reply["run_state"] = json!(state.name());
             reply["exit_code"] = json!(exit_code);
