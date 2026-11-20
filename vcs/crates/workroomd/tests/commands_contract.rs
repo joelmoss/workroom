@@ -1175,6 +1175,14 @@ fn include_fixture(home: &Home) -> (PathBuf, bool) {
     write_file(&root, "secrets/a.json", "{}", 0o644);
     write_file(&root, "secrets/nested/b.txt", "bee", 0o640);
     write_file(&root, "bin.sh", "#!/bin/sh\n", 0o755);
+    // A whole-second mtime, as a restored file often has: its member needs no pax header at all.
+    std::fs::File::options()
+        .write(true)
+        .open(root.join("bin.sh"))
+        .and_then(|file| {
+            file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000))
+        })
+        .expect("set bin.sh's mtime");
     write_file(&root, "caf\u{e9}.key", "c", 0o644);
     write_file(&root, &long_include_path(), "long", 0o644);
     write_file(&root, "loose.txt", "not ignored", 0o644);
