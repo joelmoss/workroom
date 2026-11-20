@@ -2102,6 +2102,7 @@ dependencies = [
  "libc",
  "notify",
  "png",
+ "regex",
  "ring",
  "rustls",
  "serde",

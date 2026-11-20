@@ -1612,7 +1612,7 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
     let workspace = Workspace::new("api-call-schemas");
     let socket = workspace.socket();
     let _daemon = start_daemon(&socket);
-    let _first = open(&socket, OTHER, "tests", "wr-1", &workspace.dir);
+    let mut first = open(&socket, OTHER, "tests", "wr-1", &workspace.dir);
     let _second = open(&socket, RUN, "tests", "wr-1", &workspace.dir);
     listing_until(&socket, |listing| {
         listing.len() == 2 && listing.iter().all(|session| !session["cwd"].is_null())
@@ -1624,6 +1624,10 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
         ("session.list", json!({})),
         ("session.resolve", json!({"target": OTHER})),
         ("terminal.capture", json!({"target": OTHER, "lines": 2})),
+        (
+            "terminal.wait",
+            json!({"target": OTHER, "regex": "API-CALL-WAITED", "timeout_ms": 30000}),
+        ),
     ];
     let listed = api_json(&socket, &["list"]);
     for method in listed["methods"].as_array().expect("methods") {
@@ -1635,6 +1639,11 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
         // A capture needs a screen to read, which only terminal-state keeps.
         if name == "terminal.capture" && !has_terminal_state() {
             continue;
+        }
+        // Printed 3 s from now, once the wait has started; split in the typed line, so its echo
+        // is not the match.
+        if name == "terminal.wait" {
+            type_line(&mut first, "sleep 3; echo API-CALL'-'WAITED");
         }
         let described = api_json(&socket, &["describe", name]);
         let schema = &described["method"];

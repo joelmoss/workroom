@@ -191,7 +191,8 @@ fn describe_publishes_every_method_with_both_schemas() {
             "api.describe",
             "session.list",
             "session.resolve",
-            "terminal.capture"
+            "terminal.capture",
+            "terminal.wait"
         ]
     );
     for method in all["methods"].as_array().unwrap() {
@@ -371,4 +372,144 @@ fn a_stream_says_more_until_its_last_reply() {
     made.set(0);
     stream(results(100, made.clone()), |_| false);
     assert_eq!(made.get(), 2);
+}
+
+/// What a connection's writer was given.
+#[derive(Clone, Default)]
+struct Written(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Written {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Written {
+    /// The replies written, each one's chunks joined.
+    fn replies(&self) -> Vec<Value> {
+        let mut decoder = wr_protocol::envelope::EnvelopeDecoder::new();
+        decoder.push(&self.0.lock().unwrap());
+        let (mut replies, mut reply) = (Vec::new(), Vec::new());
+        while let Some(envelope) = decoder.next_envelope().unwrap() {
+            let (last, body) = envelope.payload.split_first().unwrap();
+            reply.extend_from_slice(body);
+            if *last == 1 {
+                replies.push(serde_json::from_slice(&std::mem::take(&mut reply)).unwrap());
+            }
+        }
+        replies
+    }
+}
+
+fn start_wait(
+    connection: &mut Connection,
+    store: &SessionStore,
+    params: Value,
+    writer: &SharedWriter,
+) {
+    let call = Call {
+        sessions: store,
+        params: &params,
+        caller: None,
+    };
+    wait::start(&mut connection.waits, &call, writer, 1);
+}
+
+fn written_writer() -> (Written, SharedWriter) {
+    let written = Written::default();
+    let writer: SharedWriter =
+        std::sync::Arc::new(std::sync::Mutex::new(Box::new(written.clone())));
+    (written, writer)
+}
+
+/// A reply over the 16 MiB one holds, a wait's included, goes out as a `TooLarge` reply like any
+/// other: its revision, its error and `more`, never a bare error.
+#[test]
+fn an_over_limit_reply_is_a_whole_too_large_reply() {
+    let (written, writer) = written_writer();
+    let huge = reply(Ok(json!({"text": "x".repeat(17 << 20)})), false);
+    assert!(send(&writer, 1, huge));
+    assert_eq!(
+        written.replies(),
+        [json!({
+            "revision": REVISION,
+            "error": {"kind": "TooLarge", "message": "the reply is over 16 MiB"},
+            "more": false,
+        })]
+    );
+}
+
+/// A wait that fails at once answers on its stream as every method does: one reply, with its
+/// revision and `more: false`.
+#[test]
+fn a_wait_replies_with_revision_and_more() {
+    let store = SessionStore::new();
+    let (written, writer) = written_writer();
+    let mut connection = Connection::default();
+    start_wait(
+        &mut connection,
+        &store,
+        json!({"target": "nobody", "ended": true}),
+        &writer,
+    );
+    let replies = written.replies();
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert_eq!(replies[0]["revision"], REVISION);
+    assert_eq!(replies[0]["more"], false);
+    assert_eq!(replies[0]["error"]["kind"], "TargetNotFound");
+}
+
+/// A caller that goes away takes its waits with it: nothing is left matching the session's output,
+/// and nothing is answered to nobody.
+#[test]
+fn a_connection_that_closes_ends_its_waits() {
+    use std::ffi::{OsStr, OsString};
+    let store = SessionStore::new();
+    let id = crate::terminal::session::SessionId([0x69; 16]);
+    let args = [OsString::from("-c"), OsString::from("sleep 30")];
+    store
+        .create(crate::terminal::session::SessionSpec {
+            id,
+            program: OsStr::new("/bin/sh"),
+            argv0: None,
+            args: &args,
+            env: &[],
+            cwd: None,
+            columns: 80,
+            rows: 24,
+            metadata: &[],
+            interactive: false,
+        })
+        .expect("a session");
+    let (written, writer) = written_writer();
+    let mut connection = Connection::default();
+    for pattern in ["never", "nor this"] {
+        start_wait(
+            &mut connection,
+            &store,
+            json!({"target": id.to_hyphenated(), "regex": pattern}),
+            &writer,
+        );
+    }
+    assert_eq!(store.waiter_count(id), 2);
+
+    drop(connection);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while store.waiter_count(id) > 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(
+        store.waiter_count(id),
+        0,
+        "a closed connection's waits are still held"
+    );
+    assert!(
+        written.0.lock().unwrap().is_empty(),
+        "a cancelled wait was answered"
+    );
+    store.kill(id);
 }

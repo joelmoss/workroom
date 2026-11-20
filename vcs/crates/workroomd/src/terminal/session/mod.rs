@@ -35,6 +35,7 @@ mod reader;
 mod refusals;
 mod store;
 mod terminate;
+mod waits;
 
 pub(crate) use freeze::{HANDOFF_FORMAT_DEADLINE, HANDOFF_IMAGE_DEADLINE};
 pub use hooks::Hooks;
@@ -120,6 +121,10 @@ struct Attached {
     /// reader on output and by `apply_size` on a resize, so an idle session is not rewritten to
     /// disk every tick. Here, under the lock both of them already take.
     changed: bool,
+    /// The terminal API's waits on this session (#690, `crate::terminal::wait`). Here, under the
+    /// lock the reader takes around every read, so a session with none pays one `is_empty` per
+    /// read, and one added is told of every byte read after it, and no byte before.
+    waiters: waits::Waiters,
 }
 
 impl Attached {
@@ -370,11 +375,13 @@ pub struct TakenScreen {
 ///    ├─ Runs.wake           `signal_run` (`Hooks::run_signalled`)
 ///    └─ attached            per session: `list` (`Session::info`), the end of `attach`, the freeze
 ///       ├─ shadow           per session: `attach`'s repaint, `apply_size`, `send_images`,
-///       │                   `send_probes`, a read
+///       │                   `send_probes`, a read, a wait starting (`add_waiter`)
 ///       │  ├─ Hub.boot      a status event built under it (a read, `change_program_status`)
+///       │  ├─ Waiter.state  a wait starting: the screen and the shadow's state it starts from
 ///       │  └─ Transfer      a client's image queues: `send_images` taking the next chunk
 ///       ├─ Transfer         a read stopping a client's transfer
-///       ├─ encoders         the image encoders' sender: `attach` starting a transfer
+///       ├─ Waiter.state     a wait starting on a session whose reader has just ended
+///       ├─ encoders        the image encoders' sender: `attach` starting a transfer
 ///       ├─ writer           a connection's writer: `attach`'s repaint
 ///       └─ KeptScreens.work raised on output and on a resize (`Hooks::screen_changed`)
 /// ```
@@ -385,7 +392,9 @@ pub struct TakenScreen {
 ///
 /// Taken alone, under nothing and with nothing under them: `Hub.subscribers` and each
 /// `Subscriber.queue` as a publish takes them (`Hub::publish` copies the list first, and publishes
-/// only with every session lock released); a `Transfer` as an encoder looks at it and finishes; a shadow as an encoder copies its pixels, as `compress_shadows` and
+/// only with every session lock released); a `Waiter.state` as a reader, the runs watcher or a
+/// program status change tells it what happened, and as its request waits on it, each with every
+/// session lock released; a `Transfer` as an encoder looks at it and finishes; a shadow as an encoder copies its pixels, as `compress_shadows` and
 /// `promote_unprobed` visit each one after releasing the map, and as the terminal API's
 /// `terminal.capture` reads one (`SessionStore::shadow`, then the shadow's lock alone). The store map is released before a
 /// reader starts (`create_then`), and before `changed_screens` or the keepalive ticker

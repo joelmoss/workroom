@@ -184,11 +184,13 @@ pub(super) fn read_session(
         //
         // The program status answer and event are taken under the same locks, as one step with
         // the bytes that produced them, and sent once they are released.
-        let (read, clients, answer, published) = {
+        // A wait (#690) is told of the read with the locks released, the shadow's state taken here.
+        let (read, clients, answer, published, waiting) = {
             let mut held = lock_or_recover(&attached);
             let read = pty.read(&mut buffer);
             let mut answer = Vec::new();
             let mut published = None;
+            let mut waiting = None;
             let clients = match read {
                 Ok(n) if n > 0 => {
                     let disturbed = {
@@ -202,6 +204,9 @@ pub(super) fn read_session(
                             let status = shadow.status()?;
                             Some((status.event(hooks.boot(), id), blocked))
                         });
+                        if !held.waiters.is_empty() {
+                            waiting = Some((held.waiters.list(), shadow.seen()));
+                        }
                         shadow.take_disturbed()
                     };
                     held.changed = true;
@@ -226,8 +231,14 @@ pub(super) fn read_session(
                 }
                 _ => Vec::new(),
             };
-            (read, clients, answer, published)
+            (read, clients, answer, published, waiting)
         };
+        if let (Some((waiters, seen)), Ok(n)) = (waiting, &read) {
+            for waiter in waiters {
+                waiter.output(&buffer[..*n]);
+                waiter.shadow(&seen);
+            }
+        }
         // Before the output goes to any client: a program sends its probe followed by a `CSI c`
         // the client answers, and reads the two answers in that order (#358, Step 0).
         if !answer.is_empty() {
@@ -313,6 +324,8 @@ pub(super) fn read_session(
             if !replaced {
                 hooks.program_ended(id, &shadow);
             }
+            // Not held: `kill` reaped the shell, so `status` is not its exit.
+            super::waits::end(&attached, held.then(|| exit_code(status)));
             for target in targets(&attached) {
                 let bytes = terminal_envelope(
                     target.stream,
@@ -384,6 +397,7 @@ pub(super) fn read_session(
                 if !replaced {
                     hooks.program_ended(id, &shadow);
                 }
+                super::waits::end(&attached, None);
                 return;
             }
         }

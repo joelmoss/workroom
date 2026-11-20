@@ -15,6 +15,7 @@ pub(crate) mod screens;
 pub(crate) mod session;
 pub(crate) mod shadow;
 pub(crate) mod shell;
+pub(crate) mod wait;
 
 /// The shadow terminal that makes a reattaching client see the session instead of a blank screen.
 /// Behind a feature because it links libghostty-vt — see the crate's Cargo.toml.

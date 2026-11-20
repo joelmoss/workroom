@@ -182,6 +182,7 @@ fn tick(sessions: &SessionStore, dir: &Path, published: &mut HashMap<SessionId, 
         }
         let line = line.to_string();
         if sessions.update_program_status(id, |status| status.set_run(line.clone())) {
+            sessions.run_changed(id, &line);
             published.insert(id, line);
         }
     }
