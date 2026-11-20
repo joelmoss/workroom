@@ -385,8 +385,9 @@ pub struct TakenScreen {
 ///
 /// Taken alone, under nothing and with nothing under them: `Hub.subscribers` and each
 /// `Subscriber.queue` as a publish takes them (`Hub::publish` copies the list first, and publishes
-/// only with every session lock released); a `Transfer` as an encoder looks at it and finishes; a shadow as an encoder copies its pixels, and as `compress_shadows` and
-/// `promote_unprobed` visit each one after releasing the map. The store map is released before a
+/// only with every session lock released); a `Transfer` as an encoder looks at it and finishes; a shadow as an encoder copies its pixels, as `compress_shadows` and
+/// `promote_unprobed` visit each one after releasing the map, and as the terminal API's
+/// `terminal.capture` reads one (`SessionStore::shadow`, then the shadow's lock alone). The store map is released before a
 /// reader starts (`create_then`), and before `changed_screens` or the keepalive ticker
 /// (`keepalive::tick`) takes any session's attachment lock.
 /// The forward, layout, watch and rpc locks never nest with these.

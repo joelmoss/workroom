@@ -52,6 +52,46 @@ pub fn title_sequence(title: &str) -> Vec<u8> {
     out
 }
 
+/// Which rows a capture reads (#686).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rows {
+    /// The visible screen.
+    Screen,
+    /// The visible screen and the newest this many rows of history above it.
+    WithHistory(u32),
+    /// The whole scrollback and the screen.
+    All,
+}
+
+/// What the terminal API's `terminal.capture` asks of a screen.
+#[derive(Clone, Copy, Debug)]
+pub struct Capture {
+    pub rows: Rows,
+    /// Join the rows of a line the pane soft-wrapped.
+    pub unwrap: bool,
+    /// Keep the escape codes (colours, styles) rather than plain text.
+    pub vt: bool,
+}
+
+/// A screen as a capture read it: its text, and the facts beside it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Captured {
+    pub text: String,
+    /// The cursor's row and column on the visible screen, from 0 at its top left.
+    pub cursor: (u16, u16),
+    /// Columns and rows.
+    pub size: (u16, u16),
+    /// Whether a full-screen program has the alternate screen up.
+    pub alternate: bool,
+    /// The live title (OSC 0 or 2).
+    pub title: Option<String>,
+}
+
+/// The rest of a capture, to run once the shadow's lock is released: a whole scrollback is
+/// formatted from a copy of the terminal, so the session's output never waits on it. `None` when
+/// the format failed.
+pub type CaptureJob = Box<dyn FnOnce() -> Option<Captured> + Send>;
+
 /// What a write from the pty asks of the session: bytes to answer the program with (a program
 /// status probe's reply), and `Some(blocked)` when its program status changed (#358).
 pub type Written = (Vec<u8>, Option<bool>);
@@ -291,6 +331,36 @@ impl Shadow {
         Some(title)
     }
 
+    /// A capture of this screen (#686), or `None` when there is no screen to read. Called under
+    /// the shadow's lock, which only the capture of the screen and a few rows of history keeps:
+    /// the whole scrollback is a copy of the terminal (`ShadowTerminal::snapshot`), formatted
+    /// by the job once the lock is released. The facts are this terminal's, read here. A screen
+    /// that is there but can't be read is a job that fails.
+    pub fn capture(&self, capture: Capture) -> Option<CaptureJob> {
+        let terminal = self.terminal.as_ref()?;
+        let failed: CaptureJob = Box::new(|| None);
+        let Some(facts) = terminal.screen_facts() else {
+            return Some(failed);
+        };
+        let facts = Captured {
+            title: self.title(),
+            ..facts
+        };
+        if capture.rows == Rows::All {
+            let Some(copy) = terminal.snapshot() else {
+                return Some(failed);
+            };
+            return Some(Box::new(move || {
+                let text = copy.capture_text(capture)?;
+                Some(Captured { text, ..facts })
+            }));
+        }
+        let captured = terminal
+            .capture_text(capture)
+            .map(|text| Captured { text, ..facts });
+        Some(Box::new(move || captured))
+    }
+
     #[cfg(test)]
     pub fn memory(&self) -> Option<crate::terminal::vt::MemoryUsage> {
         self.terminal.as_ref().and_then(|t| t.memory())
@@ -325,6 +395,11 @@ impl Shadow {
     }
     /// No terminal, so no title is ever seen.
     pub fn title(&self) -> Option<String> {
+        None
+    }
+    /// No terminal, so no screen to capture, whatever was asked.
+    pub fn capture(&self, Capture { rows, unwrap, vt }: Capture) -> Option<CaptureJob> {
+        let _asked = (rows, unwrap, vt);
         None
     }
     pub fn resize(&mut self, _size: Size) {}

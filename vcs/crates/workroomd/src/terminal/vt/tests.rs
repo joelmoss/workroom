@@ -1,4 +1,5 @@
 use super::*;
+use crate::terminal::shadow::{Capture, Rows};
 
 /// The whole point: a client repainted from `replay()` must end up in the same state as one
 /// that watched from byte zero. Anything less is a terminal that looks right and does not work.
@@ -1805,4 +1806,134 @@ fn a_virtual_placement_comes_back_without_moving_the_cursor() {
     let text = String::from_utf8_lossy(&ready(terminal.placement(7, false))).into_owned();
     assert!(text.contains("a=p,U=1,i=7"), "{text:?}");
     assert!(text.contains("c=4,r=2,z=0"), "{text:?}");
+}
+
+/// A capture (#686) of `terminal`, as the terminal API asks for one.
+fn captured(terminal: &ShadowTerminal, rows: Rows, unwrap: bool, vt: bool) -> String {
+    terminal
+        .capture_text(Capture { rows, unwrap, vt })
+        .expect("a capture")
+}
+
+/// Ten numbered lines into a 20 by 4 terminal, the last without a newline: four on the screen,
+/// six in the history.
+fn numbered() -> ShadowTerminal {
+    let mut terminal = ShadowTerminal::new(20, 4).expect("terminal");
+    let lines: Vec<String> = (0..10).map(|n| format!("line {n}")).collect();
+    terminal.write(lines.join("\r\n").as_bytes());
+    terminal
+}
+
+#[test]
+fn a_capture_is_the_visible_screen_as_plain_text() {
+    assert_eq!(
+        captured(&numbered(), Rows::Screen, false, false),
+        "line 6\nline 7\nline 8\nline 9"
+    );
+}
+
+#[test]
+fn a_capture_with_history_adds_that_many_rows_above_the_screen() {
+    let terminal = numbered();
+    assert_eq!(
+        captured(&terminal, Rows::WithHistory(2), false, false),
+        "line 4\nline 5\nline 6\nline 7\nline 8\nline 9"
+    );
+    // More rows than there are is all of them.
+    let all: Vec<String> = (0..10).map(|n| format!("line {n}")).collect();
+    assert_eq!(
+        captured(&terminal, Rows::WithHistory(500), false, false),
+        all.join("\n")
+    );
+    assert_eq!(captured(&terminal, Rows::All, false, false), all.join("\n"));
+}
+
+/// Trailing spaces and the blank rows below a short screen are not text.
+#[test]
+fn a_capture_trims_blank_rows_and_trailing_spaces() {
+    let mut terminal = ShadowTerminal::new(20, 6).expect("terminal");
+    terminal.write(b"$ ls   \r\n\r\nfile\r\n");
+    assert_eq!(
+        captured(&terminal, Rows::Screen, false, false),
+        "$ ls\n\nfile"
+    );
+    let blank = ShadowTerminal::new(20, 6).expect("terminal");
+    assert_eq!(captured(&blank, Rows::Screen, false, false), "");
+}
+
+/// A line longer than the pane is several rows, unless the capture unwraps it; a line that ended
+/// with a newline at the pane's width is not joined to the next.
+#[test]
+fn a_capture_unwraps_soft_wrapped_lines_only_when_asked() {
+    let mut terminal = ShadowTerminal::new(10, 6).expect("terminal");
+    terminal.write(b"0123456789abcdefghijKLM\r\n0123456789\r\nnext");
+    assert_eq!(
+        captured(&terminal, Rows::Screen, false, false),
+        "0123456789\nabcdefghij\nKLM\n0123456789\nnext"
+    );
+    assert_eq!(
+        captured(&terminal, Rows::Screen, true, false),
+        "0123456789abcdefghijKLM\n0123456789\nnext"
+    );
+}
+
+#[test]
+fn a_vt_capture_keeps_the_escape_codes() {
+    let mut terminal = ShadowTerminal::new(20, 4).expect("terminal");
+    terminal.write(b"\x1b[31mred\x1b[0m plain");
+    let plain = captured(&terminal, Rows::Screen, false, false);
+    assert_eq!(plain, "red plain");
+    let vt = captured(&terminal, Rows::Screen, false, true);
+    assert!(
+        vt.contains("\x1b[") && vt.contains("red") && vt.contains("plain"),
+        "{vt:?}"
+    );
+    assert_ne!(vt, plain);
+}
+
+/// A full-screen program's screen is what is captured, and it has no history of its own: the
+/// shell's lines under it are not in it, however many rows are asked for. Mode 47 counts as much
+/// as 1049.
+#[test]
+fn a_capture_on_the_alternate_screen_is_that_screen() {
+    for enter in [&b"\x1b[?1049h"[..], b"\x1b[?47h"] {
+        let mut terminal = numbered();
+        assert!(!terminal.screen_facts().expect("facts").alternate);
+        terminal.write(enter);
+        terminal.write(b"\x1b[H\x1b[2JFULL SCREEN");
+        let facts = terminal.screen_facts().expect("facts");
+        assert!(facts.alternate, "{enter:?}");
+        for rows in [Rows::Screen, Rows::WithHistory(100), Rows::All] {
+            assert_eq!(
+                captured(&terminal, rows, false, false),
+                "FULL SCREEN",
+                "{rows:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_captures_facts_are_the_cursor_and_size() {
+    let mut terminal = ShadowTerminal::new(30, 5).expect("terminal");
+    terminal.write(b"one\r\ntwo\r\nab");
+    let facts = terminal.screen_facts().expect("facts");
+    assert_eq!(facts.cursor, (2, 2), "row 2, column 2");
+    assert_eq!(facts.size, (30, 5));
+    assert!(!facts.alternate);
+    assert_eq!(facts.text, "");
+}
+
+/// The whole scrollback is formatted from a copy, which reads the same as the terminal it was
+/// taken from.
+#[test]
+fn a_copy_captures_what_the_terminal_does() {
+    let terminal = numbered();
+    let copy = terminal.snapshot().expect("a copy");
+    for unwrap in [false, true] {
+        assert_eq!(
+            captured(&copy, Rows::All, unwrap, false),
+            captured(&terminal, Rows::All, unwrap, false)
+        );
+    }
 }

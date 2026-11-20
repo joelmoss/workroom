@@ -25,6 +25,7 @@
 mod add_project;
 mod api;
 mod base;
+mod capture;
 pub(crate) mod channel;
 mod claim;
 mod complete;
@@ -400,6 +401,22 @@ const COMMANDS: &[Command] = &[
         arity: Arity::Own,
         operands: Operands::Files,
         implementation: BASE,
+    },
+    Command {
+        name: "capture",
+        aliases: &[],
+        usage: "capture TARGET",
+        short: "Print a terminal session's screen, or its history, as text",
+        long: None,
+        hidden: false,
+        mac_only: false,
+        flags: capture::FLAGS,
+        subcommands: &[],
+        // One TARGET, which `capture::run` checks.
+        arity: Arity::Own,
+        // A TARGET is a session the daemon knows, never a file, as `sessions`' is.
+        operands: Operands::Nothing,
+        implementation: Implementation::Ported(capture::run),
     },
     Command {
         hidden: true,
@@ -1591,6 +1608,25 @@ mod tests {
         for args in [
             &["__complete", "api", "describe", ""][..],
             &["__complete", "api", "call", "session.resolve", ""],
+        ] {
+            let ((stdout, _), code) = run_on(Platform::Other, args);
+            assert_eq!((stdout.as_str(), code), (":4\n", 0), "{args:?}");
+        }
+    }
+
+    /// `capture` is Rust's alone too (#686): completion offers it and its flags, and nothing for a
+    /// TARGET, which is a session, never a file name, as `sessions`' is.
+    #[test]
+    fn completion_offers_capture_and_its_flags() {
+        let ((stdout, _), _) = run_on(Platform::Other, &["__completeNoDesc", ""]);
+        assert!(stdout.lines().any(|line| line == "capture"), "{stdout}");
+        let ((stdout, _), _) = run_on(Platform::Other, &["__completeNoDesc", "capture", "--"]);
+        for flag in ["--all", "--lines", "--unwrap", "--vt", "--json"] {
+            assert!(stdout.lines().any(|line| line == flag), "{flag}: {stdout}");
+        }
+        for args in [
+            &["__complete", "capture", ""][..],
+            &["__complete", "capture", "server", ""],
         ] {
             let ((stdout, _), code) = run_on(Platform::Other, args);
             assert_eq!((stdout.as_str(), code), (":4\n", 0), "{args:?}");

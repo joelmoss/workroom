@@ -21,11 +21,20 @@
 //!
 //! The namespaces are `session.*`, `terminal.*`, `client.*` and `events.*` (#360), and `api.*`
 //! for the API describing itself.
+//!
+//! A method may answer with several replies on the request's stream, in order, each a whole reply
+//! of the shape above: `terminal.capture` with `all` sends a long history as chunks, the last of
+//! which says so (`last`), so no reply has to hold all of it.
+
+use std::ffi::OsStr;
+use std::ops::Range;
 
 use serde_json::{Value, json};
 
 use crate::daemon::rpc::{PartialRequests, SharedWriter};
 use crate::terminal::session::{CREATED_KEY, Described, SessionId, SessionStore};
+use crate::terminal::shadow::{Capture, Captured, Rows};
+use crate::util::lock_or_recover;
 use wr_protocol::envelope::{Envelope, Service};
 use wr_protocol::terminal::parse_session_id;
 
@@ -40,6 +49,10 @@ pub const PANE_VARIABLE: &str = "WORKROOM_PANE";
 /// The variable every session's shell is given its daemon's socket in (#684).
 pub const DAEMON_VARIABLE: &str = "WORKROOM_DAEMON";
 
+/// The most text one chunk of a streamed capture carries, in bytes: escaped as JSON, at most six
+/// times that, far under a reply's 16 MiB.
+pub const CAPTURE_CHUNK_BYTES: usize = 64 * 1024;
+
 /// The shortest id suffix a target resolves by, so that a short word is never read as an id.
 pub const MIN_SUFFIX: usize = 4;
 
@@ -53,6 +66,18 @@ pub mod kind {
     pub const INVALID_REQUEST: &str = "InvalidRequest";
     /// The request or its reply is over the service's limit.
     pub const TOO_LARGE: &str = "TooLarge";
+    /// The session the target named ended before it could be read.
+    pub const SESSION_ENDED: &str = "SessionEnded";
+    /// A capture from a daemon that keeps no copy of its sessions' screens (no terminal-state).
+    pub const SCREEN_UNAVAILABLE: &str = "ScreenUnavailable";
+    /// Anything else, such as a screen the formatter could not read.
+    pub const INTERNAL_ERROR: &str = "InternalError";
+}
+
+/// What a method answers with: one reply, or several on the request's stream, in order.
+pub enum Answer {
+    One(Value),
+    Stream(Box<dyn Iterator<Item = Value>>),
 }
 
 /// Why a request failed, as its reply's `error` carries it.
@@ -100,7 +125,7 @@ pub struct Method {
     pub params_example: fn() -> Value,
     /// A `result` it replies with, which `api.describe` lists under the output schema's `examples`.
     pub result_example: fn() -> Value,
-    run: fn(&Call) -> Result<Value, ApiError>,
+    run: fn(&Call) -> Result<Answer, ApiError>,
 }
 
 /// One request as a method sees it.
@@ -127,7 +152,7 @@ pub const METHODS: &[Method] = &[
         result_example: || {
             description(Some("session.list")).expect("session.list is a method to describe")
         },
-        run: describe,
+        run: |call| describe(call).map(Answer::One),
     },
     Method {
         name: "session.list",
@@ -170,7 +195,9 @@ pub const METHODS: &[Method] = &[
                 None | Some(Value::Bool(false)) => in_scope_of(listing, call.caller.as_deref()),
                 Some(_) => return Err(ApiError::invalid("session.list's `all` is true or false")),
             };
-            Ok(json!({"sessions": sessions, "caller": call.caller}))
+            Ok(Answer::One(
+                json!({"sessions": sessions, "caller": call.caller}),
+            ))
         },
     },
     Method {
@@ -205,8 +232,40 @@ pub const METHODS: &[Method] = &[
                 .and_then(Value::as_str)
                 .ok_or_else(|| ApiError::invalid("session.resolve needs a string `target`"))?;
             resolve(&listed(call.sessions), target)
-                .map(|session| json!({"session": session, "caller": call.caller}))
+                .map(|session| Answer::One(json!({"session": session, "caller": call.caller})))
         },
+    },
+    Method {
+        name: "terminal.capture",
+        summary: "A session's screen as text: the visible screen, trimmed, by default; with `lines`, \
+                  that many rows of history above it too; with `all`, the whole scrollback, as \
+                  several replies on the request's stream, each a chunk of whole lines (`chunk` \
+                  counts from 0, and the final one is `last`). `unwrap` joins lines the pane \
+                  soft-wrapped and `vt` keeps escape codes. Every reply also has the cursor, the \
+                  size, whether the alternate screen is up and the live title. The alternate \
+                  screen has no history of its own.",
+        input: capture_input,
+        output: capture_output,
+        errors: &[
+            kind::TARGET_NOT_FOUND,
+            kind::TARGET_AMBIGUOUS,
+            kind::SESSION_ENDED,
+            kind::SCREEN_UNAVAILABLE,
+        ],
+        params_example: || json!({"target": "dev server", "lines": 100, "unwrap": true}),
+        result_example: || {
+            json!({
+                "session": "c0ffee00-1111-4222-8333-44445555beef",
+                "text": "$ npm run dev\n\n> vite\n\n  VITE ready in 312 ms\n  Local: http://localhost:5173/",
+                "cursor": {"row": 6, "column": 0},
+                "alternate_screen": false,
+                "size": {"columns": 80, "rows": 24},
+                "title": null,
+                "chunk": 0,
+                "last": true,
+            })
+        },
+        run: capture,
     },
 ];
 
@@ -239,6 +298,71 @@ fn request_schema() -> Value {
     })
 }
 
+fn capture_input() -> Value {
+    let flag = |description: &str| json!({"type": "boolean", "description": description});
+    json!({
+        "type": "object",
+        "required": ["target"],
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": "A session's id or id suffix, its label, or its live title.",
+            },
+            "lines": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Rows of history above the visible screen to include.",
+            },
+            "all": flag("The whole scrollback, streamed in chunks. Not with `lines`."),
+            "unwrap": flag("Join lines the pane soft-wrapped."),
+            "vt": flag("Keep escape codes (colours, styles) instead of plain text."),
+        },
+    })
+}
+
+fn capture_output() -> Value {
+    let count = |description: &str| json!({"type": "integer", "description": description});
+    json!({
+        "type": "object",
+        "required": [
+            "session", "text", "cursor", "alternate_screen", "size", "title", "chunk", "last",
+        ],
+        "properties": {
+            "session": {"type": "string", "description": "The id of the session read."},
+            "text": {
+                "type": "string",
+                "description": "The rows, one line each (one per wrapped line with `unwrap`), \
+                                without a final newline. With `all`, this reply's chunk: whole \
+                                lines, which joined are the text.",
+            },
+            "cursor": {
+                "type": "object",
+                "description": "On the visible screen, from 0 at its top left.",
+                "required": ["row", "column"],
+                "properties": {"row": count("From the top."), "column": count("From the left.")},
+            },
+            "alternate_screen": {
+                "type": "boolean",
+                "description": "Whether a full-screen program has the alternate screen up.",
+            },
+            "size": {
+                "type": "object",
+                "required": ["columns", "rows"],
+                "properties": {"columns": count("Its width."), "rows": count("Its height.")},
+            },
+            "title": {
+                "type": ["string", "null"],
+                "description": "The live title its program last set (OSC 0 or 2).",
+            },
+            "chunk": count("This reply's place among a capture's chunks, from 0; 0 without `all`."),
+            "last": {
+                "type": "boolean",
+                "description": "Whether this is the capture's last reply; always without `all`.",
+            },
+        },
+    })
+}
+
 /// The sessions of `listing` (the listing's shape) that share `caller`'s scope: every one when
 /// there is no caller, or the caller has no scope (a session tagged with none).
 pub fn in_scope_of(listing: Vec<Value>, caller: Option<&str>) -> Vec<Value> {
@@ -253,6 +377,123 @@ pub fn in_scope_of(listing: Vec<Value>, caller: Option<&str>) -> Vec<Value> {
             .filter(|session| session["scope"] == scope)
             .collect(),
     }
+}
+
+/// `terminal.capture`: the parameters checked, the target resolved (which reads every session's
+/// live title, as `session.list` does), then the screen read under its own shadow lock, taken
+/// alone. Only that session's screen is formatted, and its whole scrollback from a copy once that
+/// lock is released (`Shadow::capture`).
+fn capture(call: &Call) -> Result<Answer, ApiError> {
+    let (sessions, params) = (call.sessions, call.params);
+    let target = params
+        .get("target")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::invalid("terminal.capture needs a string `target`"))?;
+    let flag = |name: &str| match params.get(name) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(on)) => Ok(*on),
+        Some(_) => Err(ApiError::invalid(format!(
+            "terminal.capture's `{name}` is a boolean"
+        ))),
+    };
+    let lines = match params.get("lines") {
+        None | Some(Value::Null) => None,
+        Some(lines) => Some(
+            lines
+                .as_u64()
+                .and_then(|lines| u32::try_from(lines).ok())
+                .ok_or_else(|| {
+                    ApiError::invalid("terminal.capture's `lines` is a whole number from 0")
+                })?,
+        ),
+    };
+    let (all, unwrap, vt) = (flag("all")?, flag("unwrap")?, flag("vt")?);
+    let rows = match (all, lines) {
+        (true, Some(_)) => {
+            return Err(ApiError::invalid(
+                "terminal.capture takes `lines` or `all`, not both",
+            ));
+        }
+        (true, None) => Rows::All,
+        (false, None | Some(0)) => Rows::Screen,
+        (false, Some(lines)) => Rows::WithHistory(lines),
+    };
+
+    let session = resolve(&listed(sessions), target)?;
+    let id = session["id"].as_str().unwrap_or_default().to_string();
+    let ended = || {
+        ApiError::new(
+            kind::SESSION_ENDED,
+            format!("session {id} ended before it could be read"),
+        )
+    };
+    let shadow = wr_protocol::terminal::parse_session_id(OsStr::new(&id))
+        .and_then(|parsed| sessions.shadow(parsed))
+        .ok_or_else(ended)?;
+    let job = lock_or_recover(&shadow)
+        .capture(Capture { rows, unwrap, vt })
+        .ok_or_else(|| {
+            ApiError::new(
+                kind::SCREEN_UNAVAILABLE,
+                "this daemon keeps no copy of its sessions' screens: it was built without \
+                 terminal-state",
+            )
+        })?;
+    let captured = job().ok_or_else(|| {
+        ApiError::new(
+            kind::INTERNAL_ERROR,
+            format!("session {id}'s screen could not be read"),
+        )
+    })?;
+    let reply = move |captured: &Captured, text: &str, chunk: usize, last: bool| {
+        json!({
+            "session": id,
+            "text": text,
+            "cursor": {"row": captured.cursor.0, "column": captured.cursor.1},
+            "alternate_screen": captured.alternate,
+            "size": {"columns": captured.size.0, "rows": captured.size.1},
+            "title": captured.title,
+            "chunk": chunk,
+            "last": last,
+        })
+    };
+    if !all {
+        return Ok(Answer::One(reply(&captured, &captured.text, 0, true)));
+    }
+    let pieces = chunks(&captured.text, CAPTURE_CHUNK_BYTES);
+    let count = pieces.len();
+    Ok(Answer::Stream(Box::new(
+        pieces.into_iter().enumerate().map(move |(chunk, range)| {
+            reply(&captured, &captured.text[range], chunk, chunk + 1 == count)
+        }),
+    )))
+}
+
+/// `text` cut into pieces of at most `max` bytes, each ending at a newline where one is in reach,
+/// else between characters. At least one piece, which an empty text's is.
+fn chunks(text: &str, max: usize) -> Vec<Range<usize>> {
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    while text.len() - start > max {
+        let mut reach = start + max;
+        while !text.is_char_boundary(reach) {
+            reach -= 1;
+        }
+        if reach == start {
+            // `max` is narrower than this character: it goes alone.
+            reach = start + 1;
+            while !text.is_char_boundary(reach) {
+                reach += 1;
+            }
+        }
+        let end = text[start..reach]
+            .rfind('\n')
+            .map_or(reach, |newline| start + newline + 1);
+        pieces.push(start..end);
+        start = end;
+    }
+    pieces.push(start..text.len());
+    pieces
 }
 
 fn describe_input() -> Value {
@@ -541,7 +782,7 @@ pub fn resolve(sessions: &[Value], target: &str) -> Result<Value, ApiError> {
 
 /// One request, separated from the transport so tests drive it directly. `peer` is the process
 /// that connected, when the transport knows it.
-fn handle(sessions: &SessionStore, bytes: &[u8], peer: Option<i32>) -> Result<Value, ApiError> {
+fn handle(sessions: &SessionStore, bytes: &[u8], peer: Option<i32>) -> Result<Answer, ApiError> {
     let request: Value = serde_json::from_slice(bytes)
         .map_err(|_| ApiError::invalid("a terminal API request is a JSON object"))?;
     let name = request
@@ -616,7 +857,11 @@ pub fn dispatch(
         })
     };
     match crate::daemon::rpc::reassemble(partial, envelope) {
-        Ok(Some(bytes)) => send(reply(handle(sessions, &bytes, peer))),
+        Ok(Some(bytes)) => match handle(sessions, &bytes, peer) {
+            Ok(Answer::One(result)) => send(reply(Ok(result))),
+            Ok(Answer::Stream(results)) => results.for_each(|result| send(reply(Ok(result)))),
+            Err(error) => send(reply(Err(error))),
+        },
         Ok(None) => {}
         Err(error) => send(reply(Err(ApiError::new(
             kind::TOO_LARGE,

@@ -79,7 +79,65 @@ fn labels_and_titles_match_exactly() {
 }
 
 fn request(store: &SessionStore, request: Value) -> Result<Value, ApiError> {
-    handle(store, &serde_json::to_vec(&request).unwrap(), None)
+    handle(store, &serde_json::to_vec(&request).unwrap(), None).map(|answer| match answer {
+        Answer::One(value) => value,
+        Answer::Stream(_) => panic!("a stream from {request}"),
+    })
+}
+
+/// A capture's parameters are checked before any session is looked for.
+#[test]
+fn a_capture_with_parameters_it_cannot_take_is_invalid() {
+    let store = SessionStore::new();
+    for params in [
+        json!({}),
+        json!({"target": 3}),
+        json!({"target": "x", "lines": -1}),
+        json!({"target": "x", "lines": 1.5}),
+        json!({"target": "x", "lines": "10"}),
+        json!({"target": "x", "lines": 5, "all": true}),
+        json!({"target": "x", "unwrap": "yes"}),
+        json!({"target": "x", "vt": 1}),
+    ] {
+        let error = request(
+            &store,
+            json!({"method": "terminal.capture", "params": params}),
+        )
+        .expect_err(&params.to_string());
+        assert_eq!(error.kind, kind::INVALID_REQUEST, "{params}");
+    }
+    let missing = request(
+        &store,
+        json!({"method": "terminal.capture", "params": {"target": "x", "lines": 0}}),
+    )
+    .unwrap_err();
+    assert_eq!(missing.kind, kind::TARGET_NOT_FOUND);
+}
+
+/// `--all`'s chunks are whole lines of at most `max` bytes, which together are the text; a line
+/// longer than that is cut between characters.
+#[test]
+fn a_long_capture_is_cut_into_chunks_of_whole_lines() {
+    let pieces = |text: &str, max: usize| -> Vec<String> {
+        chunks(text, max)
+            .into_iter()
+            .map(|range| text[range].to_string())
+            .collect()
+    };
+    assert_eq!(pieces("", 8), [""]);
+    assert_eq!(pieces("short", 8), ["short"]);
+    assert_eq!(pieces("ab\ncd\nef\ngh", 6), ["ab\ncd\n", "ef\ngh"]);
+    assert_eq!(pieces("ab\ncd\n", 6), ["ab\ncd\n"]);
+    assert_eq!(pieces("abcdefgh\nij", 4), ["abcd", "efgh", "\nij"]);
+    // Never inside a character: each é is two bytes.
+    assert_eq!(pieces("ééé", 3), ["é", "é", "é"]);
+    let text: String = (0..1000).map(|n| format!("line {n}\n")).collect();
+    let cut = pieces(&text, 100);
+    assert!(
+        cut.iter()
+            .all(|piece| piece.len() <= 100 && piece.ends_with('\n'))
+    );
+    assert_eq!(cut.concat(), text);
 }
 
 #[test]
@@ -114,7 +172,15 @@ fn describe_publishes_every_method_with_both_schemas() {
         .iter()
         .map(|method| method["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["api.describe", "session.list", "session.resolve"]);
+    assert_eq!(
+        names,
+        [
+            "api.describe",
+            "session.list",
+            "session.resolve",
+            "terminal.capture"
+        ]
+    );
     for method in all["methods"].as_array().unwrap() {
         for schema in ["input", "output"] {
             assert_eq!(method[schema]["type"], "object", "{method}");
