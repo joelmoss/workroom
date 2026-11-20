@@ -8,18 +8,31 @@ if [ "$(uname -s)" = Linux ]; then
   exec make -C "$ROOT" vcs-lint "VCS_RUST=$RUST_VERSION"
 fi
 
+# Docker and Podman come before Apple's `container`. Under container 1.7.1, Zig 0.17.1's fetch of
+# Ghostty's dependencies hung, then failed with TlsInitializationFailed, while curl in the same
+# image reached the same host and the same fetch under Docker succeeded (measured 2026-11-20). So a
+# cold Ghostty build fails there. WR_LINT_RUNTIME names one runtime instead, with no fallback.
+if [ -n "${WR_LINT_RUNTIME:-}" ]; then
+  candidates=("$WR_LINT_RUNTIME")
+else
+  candidates=(docker podman container)
+fi
 runtime=""
-for candidate in container docker podman; do
+for candidate in "${candidates[@]}"; do
   command -v "$candidate" >/dev/null 2>&1 || continue
-  case "$candidate" in
+  case "$(basename "$candidate")" in
     container) "$candidate" system status >/dev/null 2>&1 || continue ;;
     *) "$candidate" info >/dev/null 2>&1 || continue ;;
   esac
   runtime="$candidate"
   break
 done
+if [ -z "$runtime" ] && [ -n "${WR_LINT_RUNTIME:-}" ]; then
+  echo "vcs-lint-linux: WR_LINT_RUNTIME=$WR_LINT_RUNTIME isn't working; start it, or unset WR_LINT_RUNTIME to try Docker, Podman and container in turn." >&2
+  exit 1
+fi
 if [ -z "$runtime" ]; then
-  echo "vcs-lint-linux: no working container runtime; start container, Docker or Podman and retry." >&2
+  echo "vcs-lint-linux: no working container runtime; start Docker, Podman or container and retry." >&2
   exit 1
 fi
 

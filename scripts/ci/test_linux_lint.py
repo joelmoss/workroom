@@ -47,6 +47,7 @@ class LinuxLintTests(unittest.TestCase):
                 path.write_text(STUB.format(python=sys.executable))
                 path.chmod(0o755)
             env = os.environ.copy()
+            env.pop("WR_LINT_RUNTIME", None)
             env.update(PATH=f"{binary}:/usr/bin:/bin", XDG_CACHE_HOME=str(fixture / "cache"),
                        LINT_TEST_LOG=str(fixture / "calls.jsonl"), **overrides)
             result = subprocess.run(
@@ -62,11 +63,11 @@ class LinuxLintTests(unittest.TestCase):
         self.assertIn(["make", "-C", str(ROOT), "vcs-lint", f"VCS_RUST={RUST}"], calls)
         self.assertFalse(any(call[0] == "container" for call in calls))
 
-    def test_container_has_read_only_source_and_separate_caches(self):
+    def test_runtime_has_read_only_source_and_separate_caches(self):
         result, calls = self.run_launcher()
         self.assertEqual(result.returncode, 0, result.stderr)
-        build = next(call for call in calls if call[:2] == ["container", "build"])
-        run = next(call for call in calls if call[:2] == ["container", "run"])
+        build = next(call for call in calls if call[:2] == ["docker", "build"])
+        run = next(call for call in calls if call[:2] == ["docker", "run"])
         self.assertIn(f"RUST_VERSION={RUST}", build)
         self.assertIn(f"{ROOT}:/workroom:ro", run)
         self.assertIn("CARGO_HOME=/cache/cargo", run)
@@ -81,7 +82,7 @@ class LinuxLintTests(unittest.TestCase):
         # Docker Desktop's macOS bind mount has no exclusive flock, which Zig's cache needs (#599).
         result, calls = self.run_launcher()
         self.assertEqual(result.returncode, 0, result.stderr)
-        run = next(call for call in calls if call[:2] == ["container", "run"])
+        run = next(call for call in calls if call[:2] == ["docker", "run"])
         env = dict(run[i + 1].split("=", 1) for i, arg in enumerate(run) if arg == "--env")
         for key in ("ZIG_GLOBAL_CACHE_DIR", "WR_GHOSTTY_VT_ZIG_CACHE"):
             self.assertIn(key, env)
@@ -89,9 +90,31 @@ class LinuxLintTests(unittest.TestCase):
         self.assertEqual(env["WR_GHOSTTY_VT_CACHE"], "/cache/ghostty-vt")
 
     def test_installed_but_stopped_runtime_falls_back(self):
-        result, calls = self.run_launcher(LINT_TEST_OFF="container")
+        result, calls = self.run_launcher(LINT_TEST_OFF="docker")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(any(call[:2] == ["docker", "run"] for call in calls))
+        self.assertTrue(any(call[:2] == ["podman", "run"] for call in calls))
+
+    def test_docker_and_podman_come_before_apples_container(self):
+        # Zig's fetch of Ghostty's dependencies failed under container 1.7.1 and worked under Docker.
+        for off, picked in (("", "docker"), ("docker", "podman"), ("docker,podman", "container")):
+            with self.subTest(off=off):
+                result, calls = self.run_launcher(LINT_TEST_OFF=off)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                runs = [call[0] for call in calls if call[1:2] == ["run"]]
+                self.assertEqual(runs, [picked])
+
+    def test_wr_lint_runtime_picks_the_runtime(self):
+        result, calls = self.run_launcher(WR_LINT_RUNTIME="container")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any(call[:2] == ["container", "run"] for call in calls))
+        self.assertFalse(any(call[0] in ("docker", "podman") for call in calls))
+
+    def test_wr_lint_runtime_that_is_not_working_fails_naming_it(self):
+        result, calls = self.run_launcher(WR_LINT_RUNTIME="container", LINT_TEST_OFF="container")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("WR_LINT_RUNTIME=container", result.stderr)
+        self.assertFalse(any(call[0] in ("docker", "podman") for call in calls))
+        self.assertFalse(any(call[1:2] in (["build"], ["run"]) for call in calls))
 
     def test_sha256sum_fallback_is_available_to_linux_ci(self):
         result, calls = self.run_launcher(LINT_TEST_NO_SHASUM="1")
@@ -110,7 +133,7 @@ class LinuxLintTests(unittest.TestCase):
                 result, calls = self.run_launcher(**{f"LINT_TEST_{phase}_EXIT": str(status)})
                 self.assertEqual(result.returncode, status)
                 if phase == "BUILD":
-                    self.assertFalse(any(call[:2] == ["container", "run"] for call in calls))
+                    self.assertFalse(any(call[:2] == ["docker", "run"] for call in calls))
 
     def test_zig_image_pins_match_engine_and_ci(self):
         engine = (ROOT / "vcs/scripts/build-ghostty-vt.sh").read_text()

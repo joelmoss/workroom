@@ -6,7 +6,7 @@
 # out again; scripts/ci/test_tool_pins.py fails when the two differ.
 VCS_RUST := 1.99.1
 
-vcs-lint-linux: ## Run the pinned Rust lint gate inside Linux (container, Docker or Podman on macOS)
+vcs-lint-linux: ## Run the pinned Rust lint gate inside Linux (Docker, Podman or container on macOS; WR_LINT_RUNTIME= picks one)
 	bash vcs/scripts/lint-linux.sh "$(VCS_RUST)"
 
 vcs-lint: ## Lint the Rust workspace: rustfmt, clippy and rustdoc, each with and without terminal-state
