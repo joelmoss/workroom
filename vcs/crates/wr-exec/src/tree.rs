@@ -169,9 +169,26 @@ mod platform {
         bsdinfo(pid).map(|info| info.pbi_start_tvsec)
     }
 
-    /// This pid's parent.
+    /// This pid's parent, from `PROC_PIDT_SHORTBSDINFO`, which a user may read for root's
+    /// processes too. `PROC_PIDTBSDINFO` (`bsdinfo`) refuses them, so a walk up from a command
+    /// under `sudo` would stop at the first one.
     pub(super) fn parent(pid: i32) -> Option<i32> {
-        bsdinfo(pid).map(|info| info.pbi_ppid as i32)
+        // SAFETY: `proc_bsdshortinfo` is plain old data, for which all zeroes is a valid value.
+        let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
+        // SAFETY: the buffer is `info` itself and `size` is its exact size, so the call writes
+        // within it; `PROC_PIDT_SHORTBSDINFO` fills a `proc_bsdshortinfo`, and anything short of
+        // all of it is refused below rather than read.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDT_SHORTBSDINFO,
+                0,
+                &mut info as *mut _ as *mut libc::c_void,
+                size,
+            )
+        };
+        (written == size).then_some(info.pbsi_ppid as i32)
     }
 
     fn bsdinfo(pid: i32) -> Option<libc::proc_bsdinfo> {

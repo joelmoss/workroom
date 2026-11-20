@@ -31,3 +31,16 @@ fn ancestry_walks_up_to_init() {
     assert!(ancestry(1).is_empty());
     assert!(ancestry(0).is_empty());
 }
+
+/// A root-owned process's parent is read for a user too, so a walk from a command under `sudo`
+/// crosses it instead of stopping there. launchd is root's, and its parent is the kernel's 0.
+#[test]
+fn a_root_owned_process_has_a_parent_a_user_can_read() {
+    // SAFETY: `geteuid` takes no pointers and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        // Root reads every process with either call, so there is nothing to tell apart.
+        eprintln!("skipped: run as root");
+        return;
+    }
+    assert_eq!(platform::parent(1), Some(0));
+}
