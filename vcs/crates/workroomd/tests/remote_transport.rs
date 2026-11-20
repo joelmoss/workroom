@@ -2497,6 +2497,7 @@ fn over_ssh_api_lists_describes_and_calls_the_hosts_methods() {
 
     let (listed, status) = api("", "list --json");
     assert_eq!(status, "0", "{listed}");
+    assert_eq!(listed["command"], "api list", "{listed}");
     let names: Vec<&str> = listed["methods"]
         .as_array()
         .expect("methods")
@@ -2534,6 +2535,8 @@ fn over_ssh_api_lists_describes_and_calls_the_hosts_methods() {
     ] {
         assert_eq!(status, "0", "{how}: {called}");
         assert_eq!(called["method"], "session.resolve", "{how}: {called}");
+        // The host daemon's reply carries the API's number as `revision`, as the Mac's does.
+        assert_eq!(called["revision"], listed["revision"], "{how}: {called}");
         assert_eq!(
             called["result"]["session"]["id"], session,
             "{how}: {called}"
