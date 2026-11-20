@@ -418,6 +418,69 @@ fn a_command_in_a_pane_without_its_variables_is_known_by_its_process() {
     assert_eq!(stale["caller"], SHELL, "{stale}");
 }
 
+/// A pane opened before its daemon gave shells their variables has neither, so it is known by
+/// its process alone, and that holds across a hand-off: the program handed to keeps the pid, the
+/// shells' parent, and the arguments that name its socket.
+#[test]
+fn a_pane_without_its_variables_is_known_across_a_hand_off() {
+    let workspace = Workspace::new("api-peer-handoff");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    let _neighbour = open(&socket, OTHER, "tests", "wr-1", &workspace.dir);
+    let _elsewhere = open(&socket, RUN, "server", "wr-2", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 3);
+
+    // Started now, run after the hand-off: it waits for `go`.
+    let go = workspace.dir.join("go");
+    let out = workspace.dir.join("after-hand-off");
+    type_line(
+        &mut shell,
+        &format!(
+            "(while [ ! -e '{go}' ]; do sleep 0.05; done; \
+              env -i PATH=/usr/bin:/bin /bin/sh -c \"'{binary}' sessions --json; exit \\$?\" \
+              > '{out}.partial'; mv '{out}.partial' '{out}') &",
+            go = go.display(),
+            binary = common::daemon_binary().display(),
+            out = out.display(),
+        ),
+    );
+    // Typed before the hand-off, or the shell may not have read the line yet.
+    let started = workspace.dir.join("started");
+    shell_output(&mut shell, &workspace.dir, "started", "echo started");
+    assert!(started.exists());
+    drop(shell);
+
+    let next = workspace.dir.join("next-workroom");
+    std::fs::copy(common::daemon_binary(), &next).expect("copy");
+    let output = Command::new(common::daemon_binary())
+        .args(["hand-off", "--socket"])
+        .arg(&socket)
+        .arg("--binary")
+        .arg(&next)
+        .arg("--force")
+        .output()
+        .expect("hand-off");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "handed off",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::fs::write(&go, b"").expect("go");
+    assert!(
+        wait_for(Duration::from_secs(20), || out.exists()),
+        "the pane's command never ran"
+    );
+    let output = std::fs::read_to_string(&out).unwrap();
+    let envelope: Value = serde_json::from_str(&output)
+        .unwrap_or_else(|e| panic!("not one envelope ({e}): {output}"));
+    assert_eq!(envelope["caller"], SHELL, "{envelope}");
+    let mut ours = vec![SHELL.to_string(), OTHER.to_string()];
+    ours.sort();
+    assert_eq!(listed_ids(&envelope), ours, "{envelope}");
+}
+
 /// The live title follows the program's OSC 0 and OSC 2, beside the label the app gave, which it
 /// never changes. Needs the shadow terminal, which is what parses them.
 #[test]
