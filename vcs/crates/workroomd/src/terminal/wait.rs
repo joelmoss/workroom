@@ -4,7 +4,8 @@
 //!
 //! **Where it hears.** A waiter is held in its session's attachment state, which the session's
 //! reader already locks around every read, so a session nobody waits on pays one `is_empty` per
-//! read and nothing else. With a waiter, the reader hands it each read's bytes and the shadow's
+//! read, beside the shadow counting the OSC 133 marks among the program status events it already
+//! collects for each read (none, mostly). With a waiter, the reader hands it each read's bytes and the shadow's
 //! state ([`Seen`]) once the session's locks are released. A run's state comes from the runs
 //! watcher as it reads each new status line, and the session's end from its reader as it ends.
 //!
