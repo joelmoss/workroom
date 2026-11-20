@@ -410,6 +410,8 @@ mod tests {
             platform: super::super::Platform::current(),
             env: |_| None,
             color: false,
+            // Never looked for in tests (#684): a test run in a pane must not find a real daemon.
+            daemon_above: || None,
         }
     }
 
