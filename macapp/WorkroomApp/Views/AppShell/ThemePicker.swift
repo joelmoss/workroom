@@ -46,20 +46,45 @@ enum ThemePickerTab: String, CaseIterable, Identifiable {
 /// One row of the picker: a theme family on the Family tab, a theme on the Light or Dark tab.
 private enum ThemePickerEntry: Identifiable, Equatable {
   case family(ThemeFamily)
-  case theme(String, ThemeSide)
+  case theme(ListedTheme)
 
   var id: String {
     switch self {
     case .family(let family): return "family:\(family.name)"
-    case .theme(let name, let side): return "\(side.rawValue):\(name)"
+    case .theme(let theme): return "\(theme.side.rawValue):\(theme.name)"
     }
   }
 
   var name: String {
     switch self {
     case .family(let family): return family.name
-    case .theme(let name, _): return name
+    case .theme(let theme): return theme.name
     }
+  }
+}
+
+/// The picker's lists, read once per presentation (#737): the user's own theme files are read from
+/// disk when the list loads, not on every body pass, since each ↑/↓ applies a theme and re-renders
+/// every row. A plain class held in `@State`: a host re-render builds a throwaway instance whose init
+/// reads nothing, and only the instance SwiftUI keeps ever loads.
+@MainActor
+private final class ThemePickerLists {
+  private var themes: [ThemeSide: [ListedTheme]] = [:]
+  private var families: [ThemeFamily]?
+
+  func themes(on side: ThemeSide) -> [ListedTheme] {
+    if let cached = themes[side] { return cached }
+    let loaded = ThemeCatalog.themes(on: side)
+    themes[side] = loaded
+    return loaded
+  }
+
+  /// The families whose themes are both on their sides (`ThemeCatalog.availableFamilies`).
+  func availableFamilies() -> [ThemeFamily] {
+    if let families { return families }
+    let loaded = ThemeCatalog.availableFamilies()
+    families = loaded
+    return loaded
   }
 }
 
@@ -89,6 +114,7 @@ struct ThemePicker: View {
   @Default(.appearance) private var appearance
 
   @State private var tab: ThemePickerTab
+  @State private var lists = ThemePickerLists()
   @State private var query = ""
   /// Index into `entries` of the keyboard-highlighted row (↑/↓ move it, ⏎ dismisses).
   @State private var highlighted = 0
@@ -113,21 +139,12 @@ struct ThemePicker: View {
     return ThemeService.showingSide()
   }
 
-  /// Every bundled theme on `side`, Workroom's first and the rest in catalog (alphabetical) order, as
-  /// the Family tab puts Workroom first.
-  private static func themes(on side: ThemeSide) -> [String] {
-    let names = ThemeCatalog.bundledThemes.filter { $0.side == side }.map(\.name)
-    let first = ThemeCatalog.defaultFamily.theme(for: side)
-    guard names.contains(first) else { return names }
-    return [first] + names.filter { $0 != first }
-  }
-
   /// The current tab's rows, filtered by the shared search.
   private var entries: [ThemePickerEntry] {
     let all: [ThemePickerEntry]
     switch tab.side {
-    case nil: all = ThemeCatalog.families.map { .family($0) }
-    case let side?: all = Self.themes(on: side).map { .theme($0, side) }
+    case nil: all = lists.availableFamilies().map { .family($0) }
+    case let side?: all = lists.themes(on: side).map { .theme($0) }
     }
     let q = query.trimmingCharacters(in: .whitespaces)
     guard !q.isEmpty else { return all }
@@ -137,14 +154,15 @@ struct ThemePicker: View {
   private func isActive(_ entry: ThemePickerEntry) -> Bool {
     switch entry {
     case .family(let family): return family == activeFamily
-    case .theme(let name, let side): return name == (side == .dark ? darkTheme : lightTheme)
+    case .theme(let theme):
+      return theme.name == (theme.side == .dark ? darkTheme : lightTheme)
     }
   }
 
   private func choose(_ entry: ThemePickerEntry) {
     switch entry {
     case .family(let family): ThemeService.shared.applyFamily(family)
-    case .theme(let name, let side): ThemeService.shared.apply(theme: name, for: side)
+    case .theme(let theme): ThemeService.shared.apply(theme: theme.name, for: theme.side)
     }
   }
 
@@ -164,13 +182,14 @@ struct ThemePicker: View {
       )
       .contentShape(Rectangle())
       .onTapGesture { choose(entry) }
-    case .theme(let name, let side):
+    case .theme(let theme):
       ThemeRow(
-        name: name,
-        side: side,
+        name: theme.name,
+        side: theme.side,
+        isUserTheme: theme.isUserTheme,
         isActive: isActive(entry),
         isHighlighted: highlighted,
-        preview: ThemeService.themePreview(named: name)
+        preview: ThemeService.themePreview(named: theme.name)
       )
       .contentShape(Rectangle())
       .onTapGesture { choose(entry) }
@@ -414,11 +433,13 @@ struct FamilyRow: View {
   }
 }
 
-/// One theme row on the Light or Dark tab (#735): the theme's name and its single swatch.
+/// One theme row on the Light or Dark tab (#735): the theme's name and its single swatch, with a
+/// "Yours" label on the user's own theme files (#737).
 private struct ThemeRow: View {
   @Environment(\.themeTokens) private var tokens
   let name: String
   let side: ThemeSide
+  let isUserTheme: Bool
   let isActive: Bool
   var isHighlighted = false
   let preview: ThemePreview?
@@ -433,6 +454,7 @@ private struct ThemeRow: View {
           .lineLimit(1)
           .truncationMode(.tail)
           .help(name)
+        if isUserTheme { yoursLabel }
         Spacer(minLength: 0)
         if isActive {
           Image(systemName: "checkmark.circle.fill")
@@ -451,6 +473,21 @@ private struct ThemeRow: View {
     // the side in the identifier is what lets `ThemePickerUITests` tell which tab opened.
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("theme-\(side.rawValue)-\(name)")
+  }
+
+  /// Marks a theme as one of the user's own files. Its identifier names the row's theme, so
+  /// `ThemePickerUITests` can ask whether a given row carries it.
+  private var yoursLabel: some View {
+    Text("Yours")
+      .font(.system(size: 10, weight: .medium))
+      .foregroundStyle(tokens.fgMuted)
+      .padding(.horizontal, 5)
+      .padding(.vertical, 1)
+      .background(Capsule().strokeBorder(tokens.border, lineWidth: 0.5))
+      .fixedSize()
+      .help("Your own theme, from ~/.config/ghostty/themes")
+      .accessibilityLabel("Your own theme")
+      .accessibilityIdentifier("theme-\(side.rawValue)-\(name)-yours")
   }
 }
 

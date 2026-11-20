@@ -87,6 +87,7 @@ struct WorkroomApp: App {
     // the flag. See `UITestFixture.applyFixtureDefaults`.
     #if DEBUG
       UITestFixture.applyFixtureDefaults()
+      UITestFixture.applyUserThemeDirectory()
       UITestFixture.endLiveDaemonWhenTheAppExits()
     #endif
 
