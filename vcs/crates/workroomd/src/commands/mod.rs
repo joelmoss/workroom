@@ -20,6 +20,7 @@ mod base;
 pub(crate) mod channel;
 mod config;
 mod envelope;
+mod git;
 mod include_archive;
 mod kind;
 mod list;

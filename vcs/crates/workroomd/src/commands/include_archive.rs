@@ -17,7 +17,7 @@ use std::io::{self, BufWriter, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::Serialize;
 
@@ -188,31 +188,17 @@ impl From<GitFailure> for String {
 }
 
 /// Runs git in `root` with `stdin`, its whole stdout kept (an include of `node_modules/` lists a
-/// lot). The environment is this process's without the variables that would point git at another
-/// repository (`wr_vcs_git::diff::SCRUBBED`), with discovery stopped at `root`
-/// (`ceiling_directories`) and no credential prompt, as the Go CLI runs it. The failure's message
-/// is Go's: `git <subcommand>: exit status <code>: <stderr>`.
+/// lot), in the environment the Go CLI gives it (`git::command`). The failure's message is Go's:
+/// `git <subcommand>: exit status <code>: <stderr>`.
 fn git(root: &Path, args: &[&OsStr], stdin: Option<Vec<u8>>) -> Result<GitOutput, GitFailure> {
     let subcommand = args[0].to_string_lossy().into_owned();
-    let mut command = Command::new("git");
+    let mut command = super::git::command(root);
     command
-        .current_dir(root)
         .args(args)
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for key in wr_vcs_git::diff::SCRUBBED {
-        command.env_remove(key);
-    }
-    command
-        .env_remove("GIT_CEILING_DIRECTORIES")
-        .env("GIT_TERMINAL_PROMPT", "0");
-    if let Some(ceiling) = wr_vcs_git::diff::ceiling_directories(root) {
-        command.env("GIT_CEILING_DIRECTORIES", ceiling);
+    if stdin.is_some() {
+        command.stdin(Stdio::piped());
     }
     let failure = |code, detail: String, stderr: &[u8]| GitFailure {
         code,
