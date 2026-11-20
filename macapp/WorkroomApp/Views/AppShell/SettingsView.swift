@@ -722,7 +722,7 @@ private struct AppearanceSettingsPane: View {
   ) -> some View {
     let note = tab.side.flatMap { side in
       ThemeFallbackNote(
-        side: side, stored: value, showing: ThemeService.activeThemeName(isDark: side == .dark),
+        side: side, stored: value, showing: ThemeService.activeThemeName(for: side),
         storedSide: ThemeCatalog.side(ofThemeNamed: value))
     }
     return LabeledContent(title) {
