@@ -35,8 +35,8 @@ where local workrooms rely on it, and the table says why.
 |---|---|---|---|---|
 | 1 | Probe shell's session | A session of its own (`Setsid`) | A process group of its own | **Go's.** `workroom create` typed in a terminal relies on it: an interactive zsh in a background group of a terminal is stopped by SIGTTOU, so the read hangs until its 10 s limit and the script loses its environment. Applies to remote git's read at home too. |
 | 2 | A signal while the probe runs | Kills the shell, starts no script, re-raises | Recorded. The probe runs to its end (up to 10 s), the script starts, and then its tree is ended | **Go's, without the re-raise.** The shell is killed at once, no script starts, and the outcome is `Cancelled`. `run-script` still exits 128 plus the signal. A local cancel relies on this: it must not run a script it was told to stop. |
-| 3 | A signal ignored at start (nohup's SIGHUP, a background job's SIGINT) | No cancel during the probe; caught during the script | Always caught, overriding the ignore | **Go's probe rule, for the whole run:** ignored means no cancel. A local `workroom create &` in a script relies on it. The app never starts `run-script` with a signal ignored. |
-| 4 | Handler lifetime | Only for the run, then restored | For the whole process | **Go's.** An in-process caller carries on after the script (delete removes the worktree), and a SIGTERM then must end it as usual. Runs may nest. |
+| 3 | A signal ignored at start (nohup's SIGHUP, a background job's SIGINT) | No cancel during the probe; caught during the script | Always caught, overriding the ignore | **Go's.** Ignored means no cancel while the login shell is read; once the script is about to start it is caught, as both runners did. A `workroom create` run as a background job or under nohup relies on it, as Go's test pins. |
+| 4 | Handler lifetime | Only for the run, then restored | For the whole process | **Go's.** An in-process caller carries on after the script (delete removes the worktree), and a SIGTERM then must end it as usual. Runs may nest. For `run-script`, a signal in the instant between the script's exit and the process's now ends it by that signal instead of being recorded. |
 | 5 | A missing script | Passes, and no login shell is read | The probe runs, then exit 126, "could not be started: No such file or directory" | **Go's check, Rust's report.** `Absent` comes back before any probe, so a clone with no script has none of its rc-visible config read. `run-script` reports it as before (126, the same line). |
 | 6 | Wall clock | None. The app's own deadline SIGTERMs the CLI | `--timeout`, then 124 | **Optional.** `run-script` always has one. A local run has none, as in Go: a user who typed `workroom create` waits for a long setup, and the app's 600 s deadline still ends the CLI. |
 | 7 | Ending the tree | SIGTERM to the group, then waits for the script. No SIGKILL, and a `setsid` escaper survives | `wr_exec::end_tree`: records the tree, SIGTERMs the group, and SIGKILLs the recorded tree and the group after 2 s | **Rust's.** `kill_grace` is a field: the app SIGKILLs the CLI 2 s after its SIGTERM (`WorkroomCLI.swift`), so a local caller should pass less, for example 1 s, to report before then. |
@@ -51,6 +51,8 @@ where local workrooms rely on it, and the table says why.
 | 16 | A variable that isn't UTF-8 | Kept | Dropped | **Rust's.** |
 | 17 | Reason for a probe that prints nothing between the markers | `noPath` | `noMarkers` | **Rust's.** |
 | 18 | Marker | 26 base32 characters | 32 hex digits | Rust's. No visible effect. |
+| 19 | `WORKROOM_*` variables | Set by the runner: name, path, root path, its deprecated alias, `WORKROOM_HOST=local` | Whatever `--env` gives, which is the app's to choose | **Rust's,** with `script::local_variables` giving a local caller Go's five, checked against `testdata/script-env/local.txt`. |
+| 20 | A probe entry with an empty name (`=value`) | Dropped | Kept | **Rust's.** `env -0` doesn't print one. |
 
 Already the same in both: the `<shell> -lic` (or `/bin/sh -lc`) rule from `testdata/twins/login_shell.tsv`,
 the 10 s probe limit, the 1 MiB cap on what's kept of the shell's output, the 1 s wait for a background
@@ -60,14 +62,19 @@ script's stdin at `/dev/null` in a process group of its own in the caller's sess
 
 ## What hosts now do differently
 
-Rows 1, 2, 3 and 5 reach `run-script`, and row 1 reaches remote git's read at home as well:
+Rows 1 to 5 reach `run-script`, and row 1 reaches remote git's read at home as well:
 
-- The login shell is read in a session of its own. Without a terminal, which is how the app starts
-  `run-script`, nothing visible changes.
+- The login shell is read in a session of its own. Without a terminal nothing visible changes, and
+  the app starts `run-script` without one: its SSH transport sets `RequestTTY=no`, and its container
+  exec passes no `-t`.
 - A SIGTERM, SIGHUP or SIGINT while the login shell is read ends `run-script` at once, with the same
   exit code (128 plus the signal), and the script never starts. Before, it waited out the read and
   briefly started the script.
-- A signal `run-script` was started ignoring stays ignored. The app never starts it that way.
+- A signal `run-script` was started ignoring is no cancel during the read. None of the app's three
+  `run-script` commands (`RemoteProvisioning.runScript`, `ContainerCreate.runHook`,
+  `ContainerHostDriver.runPostStartIfNeeded`) starts it with one ignored.
+- A signal arriving in the instant after the script exits, before `run-script` does, ends it by that
+  signal rather than with the script's status.
 - A script missing when `run-script` starts still exits 126 with the same line, but no login shell
   is read first, so no fallback line comes before it. The app checks for the script first, so this
   only happens in a race.
@@ -76,8 +83,10 @@ Rows 1, 2, 3 and 5 reach `run-script`, and row 1 reaches remote git's read at ho
 
 Go's script tests are ported in `vcs/crates/workroomd/tests/script_runner.rs`. They run in-process
 through `workroom::script` for the local contract (`testdata/script-env/local.txt`), streaming,
-failures, a missing script, the fallback note, a background job and the wall clock. They run
-through `run-script` for what needs a process of its own: a misbehaving rc, a login `sh` for an
-unknown shell, the git pins, PATH order, a signal during the probe, an ignored signal, SIGHUP and
-SIGINT ending the tree, 124 and 126 with their lines, and a real terminal. The existing
+failures, a missing script, the fallback note, a background job and the wall clock, and a caller
+cancelled by SIGTERM that carries on with its handling restored (the test binary re-run as that
+caller). They run through `run-script` for what needs a process of its own: a misbehaving rc, a
+login `sh` for an unknown shell, the git pins, PATH order, a signal during the probe, an ignored
+signal during the probe and during the script, SIGHUP and SIGINT ending the tree, 124 and 126
+with their lines, and a real terminal. The existing
 `tests/run_script.rs` and `src/cli/run_script/tests.rs` pass unchanged.

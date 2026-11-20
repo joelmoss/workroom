@@ -490,20 +490,8 @@ fn a_signal_ignored_at_start_is_no_cancel() {
             "echo $$ > {}\nsleep 1\nexport READ_FINISHED=yes\n",
             pidfile.display()
         );
-        let inner = run_script(&root, &profile, &script, &root);
-        let mut command = Command::new("/bin/sh");
-        command
-            .arg("-c")
-            .arg(format!("trap '' {name}; exec \"$0\" \"$@\""))
-            .arg(inner.get_program())
-            .args(inner.get_args())
-            .envs(
-                inner
-                    .get_envs()
-                    .filter_map(|(key, value)| Some((key, value?))),
-            )
-            .stdout(Stdio::piped());
-        let mut run = Spawned(command.spawn().unwrap());
+        let mut command = ignoring(name, &run_script(&root, &profile, &script, &root));
+        let mut run = Spawned(command.stdout(Stdio::piped()).spawn().unwrap());
         wait_for("the shell to start", || pidfile.exists());
         // SAFETY: `kill` takes no pointers.
         unsafe { libc::kill(run.0.id() as i32, signal) };
@@ -512,6 +500,104 @@ fn a_signal_ignored_at_start_is_no_cancel() {
         let printed = std::io::read_to_string(stdout).unwrap();
         assert_eq!(status.code(), Some(0), "{name}");
         assert_eq!(printed, "read=yes\n", "{name}");
+    }
+}
+
+/// Once the script runs, an ignored signal ends it as any other does, as both runners had it.
+#[test]
+fn a_signal_ignored_at_start_still_ends_the_script() {
+    let root = scratch("ignored-script");
+    let started = root.join("started");
+    let script = executable(
+        &root.join("workroom_setup"),
+        &format!("#!/bin/sh\ntouch {}\nsleep 60\n", started.display()),
+    );
+    let mut command = ignoring("INT", &run_script(&root, "", &script, &root));
+    let mut run = Spawned(command.stdout(Stdio::null()).spawn().unwrap());
+    wait_for("the script to start", || started.exists());
+    // SAFETY: `kill` takes no pointers.
+    unsafe { libc::kill(run.0.id() as i32, libc::SIGINT) };
+    assert_eq!(run.0.wait().unwrap().code(), Some(128 + libc::SIGINT));
+}
+
+/// `inner`, started with signal `name` ignored, as a background job or nohup starts one.
+fn ignoring(name: &str, inner: &Command) -> Command {
+    let mut command = Command::new("/bin/sh");
+    command
+        .arg("-c")
+        .arg(format!("trap '' {name}; exec \"$0\" \"$@\""))
+        .arg(inner.get_program())
+        .args(inner.get_args())
+        .envs(
+            inner
+                .get_envs()
+                .filter_map(|(key, value)| Some((key, value?))),
+        );
+    command
+}
+
+/// An in-process caller is told it was cancelled and carries on, with its own handling of the
+/// signal back: Go's `Run` forwarded and returned, so `create` could still write its result. This
+/// test binary, run again for `in_process_child`, is that caller.
+#[test]
+fn an_in_process_run_is_cancelled_and_its_caller_carries_on() {
+    let root = scratch("in-process-cancel");
+    let pidfile = root.join("child.pid");
+    let mut caller = Spawned(
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "in_process_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("WR_SCRIPT_RUNNER_CHILD", &root)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_for("the script to start", || {
+        std::fs::read_to_string(&pidfile).is_ok_and(|pid| pid.trim().parse::<i32>().is_ok())
+    });
+    let child: i32 = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // SAFETY: `kill` takes no pointers.
+    unsafe { libc::kill(caller.0.id() as i32, libc::SIGTERM) };
+    let stdout = caller.0.stdout.take().unwrap();
+    let status = caller.0.wait().unwrap();
+    let printed = std::io::read_to_string(stdout).unwrap();
+    assert!(status.success(), "{status:?}: {printed}");
+    assert!(printed.contains("outcome=Cancelled(15)"), "{printed}");
+    assert!(printed.contains("restored=default"), "{printed}");
+    wait_for("the script's child to end", || !alive(child));
+}
+
+#[test]
+fn in_process_child() {
+    let Some(root) = std::env::var_os("WR_SCRIPT_RUNNER_CHILD").map(PathBuf::from) else {
+        return;
+    };
+    let path = executable(
+        &root.join("workroom_setup"),
+        &format!(
+            "#!/bin/sh\nsleep 60 &\necho $! > {}\nwait\n",
+            root.join("child.pid").display()
+        ),
+    );
+    let mut request = in_process(&path, &root, &[], plain_shell(&root, ""));
+    request.kill_grace = Duration::from_millis(500);
+    let (outcome, _) = combined(&request);
+    println!("outcome={outcome:?}");
+    // SAFETY: an all-zero sigaction is valid to write into, and a null new action changes nothing.
+    let mut current: libc::sigaction = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    unsafe { libc::sigaction(libc::SIGTERM, std::ptr::null(), &mut current) };
+    if current.sa_sigaction == libc::SIG_DFL {
+        println!("restored=default");
     }
 }
 
@@ -630,8 +716,11 @@ fn the_login_read_is_not_stopped_in_a_real_terminal() {
         .env("ZDOTDIR", &home)
         .env("SHELL", zsh)
         .stdin(Stdio::null())
-        .output()
-        .unwrap();
+        .output();
+    let Ok(output) = output else {
+        eprintln!("skipped: no `script` to make a terminal with: {output:?}");
+        return;
+    };
     let printed = String::from_utf8_lossy(&output.stdout);
     if !output.status.success() && !printed.contains("selected=") {
         eprintln!("skipped: no terminal to be had here: {printed}");
