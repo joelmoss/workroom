@@ -4534,6 +4534,93 @@ fn normalize_start(text: &str) -> String {
     }
 }
 
+/// Go's `aheadProject`: `src/<name>`, whose origin (`<name>.git`) has `main` and whose local `main`
+/// is one commit ahead of it, adding local.txt.
+fn ahead_project(home: &Home, name: &str) -> PathBuf {
+    let origin = format!("{name}.git");
+    home.git(&home.dir, &["init", "-q", "--bare", "-b", "main", &origin]);
+    let project = home.repo(&format!("src/{name}"));
+    write_file(&project, "base.txt", "base\n", 0o644);
+    home.git(&project, &["add", "base.txt"]);
+    commit(home, &project, "base");
+    let origin = home.path(&origin);
+    home.git(
+        &project,
+        &["remote", "add", "origin", &origin.to_string_lossy()],
+    );
+    home.git(&project, &["push", "-q", "-u", "origin", "main"]);
+    home.git(&project, &["remote", "set-head", "origin", "main"]);
+    write_file(&project, "local.txt", "unpushed\n", 0o644);
+    home.git(&project, &["add", "local.txt"]);
+    commit(home, &project, "local");
+    project
+}
+
+/// `trust status` judges the start a create would take, fetching first, and reports the local
+/// work it leaves out: the project's base on the remote it names (`upstream/main`), or the global
+/// base, which gives way to origin's default branch where the project lacks it (a start that
+/// warns, so no local work is reported). A project's own base that the remote can't be fetched to
+/// look for can't be told.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn trust_status_follows_the_start_a_create_would_take() {
+    let home = Home::new("trust-start");
+    let project = ahead_project(&home, "app");
+    let key = project.display().to_string();
+    let status = || {
+        let run = home.run(&project, &["trust", "status", "--json"]);
+        run.assert_code(0).assert_quiet_stderr();
+        run.envelope()
+    };
+    let upstream = home.path("app.git");
+    home.git(
+        &project,
+        &["remote", "add", "upstream", &upstream.to_string_lossy()],
+    );
+    home.write_config(&format!(
+        "{{\"{key}\": {{\"base_branch\": \"upstream/main\", \"vcs\": \"git\"}}}}"
+    ));
+    let envelope = status();
+    assert_eq!(envelope["local_work"]["remote"], "upstream", "{envelope}");
+    assert_eq!(envelope["local_work"]["ahead"], 1, "{envelope}");
+    assert_eq!(envelope.get("start"), None, "only --base reports a start");
+
+    home.write_config(&format!(
+        "{{\"base_branch\": \"nowhere\", \"{key}\": {{\"vcs\": \"git\"}}}}"
+    ));
+    let envelope = status();
+    assert_eq!(envelope.get("local_work"), None, "{envelope}");
+    assert_eq!(envelope["trusted"], true);
+
+    home.git(
+        &project,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &home.path("gone.git").to_string_lossy(),
+        ],
+    );
+    home.write_config(&format!(
+        "{{\"{key}\": {{\"base_branch\": \"nowhere\", \"vcs\": \"git\"}}}}"
+    ));
+    let run = home.run(&project, &["trust", "status", "--json"]);
+    run.assert_code(2).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "BaseBranchNotFound");
+    assert_eq!(
+        run.envelope()["error"]["message"],
+        "the base branch exists neither on its remote nor locally: 'nowhere' (could not fetch \
+         origin to look there)"
+    );
+    // Without a base, a failed fetch only warns: the last-fetched origin/main still starts it.
+    home.write_config(&format!("{{\"{key}\": {{\"vcs\": \"git\"}}}}"));
+    let envelope = status();
+    assert_eq!(envelope.get("local_work"), None, "{envelope}");
+}
+
 /// A project as `trust status` runs: the Go contract tests' own setups, so their goldens hold
 /// here. An unapproved setup script in the root (`trust-status.json`), and a project whose local
 /// `main` is one commit ahead of origin's, judged at origin's default branch as a remote create
@@ -4564,24 +4651,7 @@ fn trust_status_json_matches_the_goldens() {
         &normalized_stdout(&home, &run),
     );
 
-    home.git(
-        &home.dir,
-        &["init", "-q", "--bare", "-b", "main", "ahead.git"],
-    );
-    let ahead = home.repo("src/ahead");
-    write_file(&ahead, "base.txt", "base\n", 0o644);
-    home.git(&ahead, &["add", "base.txt"]);
-    commit(&home, &ahead, "base");
-    let origin = home.path("ahead.git");
-    home.git(
-        &ahead,
-        &["remote", "add", "origin", &origin.to_string_lossy()],
-    );
-    home.git(&ahead, &["push", "-q", "-u", "origin", "main"]);
-    home.git(&ahead, &["remote", "set-head", "origin", "main"]);
-    write_file(&ahead, "local.txt", "unpushed\n", 0o644);
-    home.git(&ahead, &["add", "local.txt"]);
-    commit(&home, &ahead, "local");
+    let ahead = ahead_project(&home, "ahead");
     let run = home.run(
         &home.dir,
         &[
