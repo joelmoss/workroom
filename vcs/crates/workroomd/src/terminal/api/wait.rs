@@ -8,11 +8,12 @@
 //! screen as it is then, with `include_screen`), and only a command that ends after it.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use super::{ApiError, Call, kind, listed, resolve};
+use super::{ApiError, Call, Slot, kind, listed, resolve};
 use crate::daemon::rpc::SharedWriter;
 use crate::terminal::program_status::State;
 use crate::terminal::session::{SessionId, SessionStore};
@@ -130,6 +131,8 @@ pub const ERRORS: &[&str] = &[
     kind::WAIT_TIMEOUT,
     kind::SESSION_ENDED,
     kind::NO_SHELL_INTEGRATION,
+    kind::BUSY,
+    kind::INTERNAL_ERROR,
 ];
 
 pub fn params_example() -> Value {
@@ -147,17 +150,93 @@ pub fn result_example() -> Value {
     })
 }
 
+/// The most waits held at once: on one session, from one connection, and on the whole daemon.
+/// Each wait is a thread and a matcher on its session's output, so they are bounded; one past a
+/// bound is refused with `Busy` rather than queued, and a retry once one has ended can succeed.
+/// Implementation limits, not contract (ADR 0079): a release may change them.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub session: usize,
+    pub connection: usize,
+    pub daemon: usize,
+}
+
+pub const LIMITS: Limits = Limits {
+    session: 32,
+    connection: 64,
+    daemon: 512,
+};
+
+/// The daemon's waits, each holding a `Slot` of `LIMITS.daemon` until its thread ends.
+static WAITS: AtomicUsize = AtomicUsize::new(0);
+
+/// How a wait's thread is started: `std::thread`, but for a test's seam.
+type Spawn = fn(Box<dyn FnOnce() + Send>) -> std::io::Result<()>;
+
+fn spawn_thread(work: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("terminal wait".into())
+        .spawn(work)
+        .map(drop)
+}
+
 /// One connection's waits, cancelled when it closes: a caller that has gone away is waited for by
 /// nobody, and must not leave a matcher on a session's output.
-#[derive(Default)]
-pub struct Waits(Vec<Arc<Waiter>>);
+pub struct Waits {
+    held: Vec<Arc<Waiter>>,
+    limits: Limits,
+    /// What the daemon's waits count against: `WAITS`, or a test's own.
+    daemon: &'static AtomicUsize,
+    spawn: Spawn,
+}
+
+impl Default for Waits {
+    fn default() -> Waits {
+        Waits {
+            held: Vec::new(),
+            limits: LIMITS,
+            daemon: &WAITS,
+            spawn: spawn_thread,
+        }
+    }
+}
+
+impl Waits {
+    /// A connection's waits under `limits`, counted against `daemon` and started by `spawn`, so a
+    /// test reaches each bound with a few waits and its own counter.
+    #[cfg(test)]
+    pub fn with(limits: Limits, daemon: &'static AtomicUsize, spawn: Option<Spawn>) -> Waits {
+        Waits {
+            held: Vec::new(),
+            limits,
+            daemon,
+            spawn: spawn.unwrap_or(spawn_thread),
+        }
+    }
+
+    /// How many waits the connection holds, ended ones not yet pruned included.
+    #[cfg(test)]
+    pub fn held_count(&self) -> usize {
+        self.held.len()
+    }
+}
 
 impl Drop for Waits {
     fn drop(&mut self) {
-        for waiter in &self.0 {
+        for waiter in &self.held {
             waiter.cancel();
         }
     }
+}
+
+fn busy(held: usize, on: &str) -> ApiError {
+    ApiError::new(
+        kind::BUSY,
+        format!(
+            "{held} waits are already held on {on}, the most it holds at once; try again when one \
+             has ended"
+        ),
+    )
 }
 
 /// A wait, parsed: what for, on which session, until when.
@@ -180,7 +259,7 @@ pub fn start(waits: &mut Waits, call: &Call, writer: &SharedWriter, stream: u32)
             super::send(&writer, stream, super::reply(result, false));
         }
     };
-    let (request, waiter) = match register(sessions, call.params) {
+    let (request, waiter, slot) = match register(waits, sessions, call.params) {
         Ok(started) => started,
         Err(error) => return send(Err(error)),
     };
@@ -188,25 +267,37 @@ pub fn start(waits: &mut Waits, call: &Call, writer: &SharedWriter, stream: u32)
         sessions.remove_waiter(request.id, &waiter);
         return send(result(&request, outcome));
     }
-    waits.0.retain(|held| held.outcome().is_none());
-    waits.0.push(Arc::clone(&waiter));
-    let sessions = sessions.clone();
-    let spawned = std::thread::Builder::new()
-        .name("terminal wait".into())
-        .spawn(move || {
-            let outcome = waiter.wait(request.deadline);
-            sessions.remove_waiter(request.id, &waiter);
-            if outcome != Outcome::Cancelled {
-                send(result(&request, outcome));
-            }
-        });
+    waits.held.push(Arc::clone(&waiter));
+    // What a thread that never starts needs to undo its wait: everything else is the thread's.
+    let (id, held, answer) = (request.id, Arc::clone(&waiter), send.clone());
+    let owned = sessions.clone();
+    let spawned = (waits.spawn)(Box::new(move || {
+        let _slot = slot;
+        let outcome = waiter.wait(request.deadline);
+        owned.remove_waiter(request.id, &waiter);
+        if outcome != Outcome::Cancelled {
+            send(result(&request, outcome));
+        }
+    }));
     if let Err(error) = spawned {
         crate::note!("terminal API: no thread for a wait: {error}");
+        sessions.remove_waiter(id, &held);
+        waits.held.retain(|waiter| !Arc::ptr_eq(waiter, &held));
+        answer(Err(ApiError::new(
+            kind::INTERNAL_ERROR,
+            format!("the daemon could not start a thread for the wait: {error}"),
+        )));
     }
 }
 
-/// Parses `params`, resolves the target and adds the waiter to its session.
-fn register(sessions: &SessionStore, params: &Value) -> Result<(Request, Arc<Waiter>), ApiError> {
+/// Parses `params`, resolves the target, takes a place under each of `waits`' limits, and adds the
+/// waiter to its session. Bad input and a target that names no one session are refused before any
+/// limit is looked at, so neither is ever `Busy`.
+fn register(
+    waits: &mut Waits,
+    sessions: &SessionStore,
+    params: &Value,
+) -> Result<(Request, Arc<Waiter>, Slot), ApiError> {
     let given: Vec<&str> = CONDITIONS
         .into_iter()
         .filter(|name| params.get(name).is_some_and(|value| !value.is_null()))
@@ -319,7 +410,15 @@ fn register(sessions: &SessionStore, params: &Value) -> Result<(Request, Arc<Wai
         include_screen,
         deadline,
     };
-    let added = sessions.add_waiter(id, |shadow| {
+    // Only waits not yet over count: a thread ending its wait leaves it here a moment longer.
+    waits.held.retain(|held| held.outcome().is_none());
+    if waits.held.len() >= waits.limits.connection {
+        return Err(busy(waits.held.len(), "this connection"));
+    }
+    let slot = Slot::acquire_from(waits.daemon, waits.limits.daemon)
+        .ok_or_else(|| busy(waits.limits.daemon, "this daemon"))?;
+    let most = waits.limits.session;
+    let added = sessions.add_waiter(id, |shadow, held| {
         if matches!(condition, Condition::CommandFinished) && !shadow.has_shell_marks() {
             return Err(ApiError::new(
                 kind::NO_SHELL_INTEGRATION,
@@ -328,6 +427,9 @@ fn register(sessions: &SessionStore, params: &Value) -> Result<(Request, Arc<Wai
                      command can't be seen"
                 ),
             ));
+        }
+        if held >= most {
+            return Err(busy(held, &format!("session {}", id.to_hyphenated())));
         }
         let waiter = Arc::new(Waiter::new(condition, shadow.seen()));
         if request.include_screen {
@@ -353,7 +455,7 @@ fn register(sessions: &SessionStore, params: &Value) -> Result<(Request, Arc<Wai
     {
         waiter.run(line.trim());
     }
-    Ok((request, waiter))
+    Ok((request, waiter, slot))
 }
 
 fn ended_error(request: &Request) -> ApiError {

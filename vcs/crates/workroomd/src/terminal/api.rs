@@ -82,8 +82,9 @@ pub mod kind {
     pub const WAIT_TIMEOUT: &str = "WaitTimeout";
     /// The request needs the shell's integration marks, and the session has sent none.
     pub const NO_SHELL_INTEGRATION: &str = "NoShellIntegration";
-    /// The daemon is at a limit on concurrent work (`MAX_CAPTURES` captures of history), so it
-    /// refuses rather than queue, and a retry once some has finished can succeed.
+    /// The daemon is at a limit on concurrent work (`MAX_CAPTURES` captures of history, or the
+    /// waits `wait::LIMITS` bounds), so it refuses rather than queue, and a retry once some has
+    /// finished can succeed.
     pub const BUSY: &str = "Busy";
     /// Anything else, such as a screen the daemon has no copy of (a build without terminal-state,
     /// or a shadow terminal that failed) or one the formatter could not read.
@@ -304,7 +305,10 @@ pub const METHODS: &[Method] = &[
         name: wait::NAME,
         summary: "Waits for one thing to happen in a session: a program status, a run state, \
                   output matching a regex, the session ending, or its shell's command finishing. \
-                  Answered when it happens, or with `WaitTimeout` once `timeout_ms` passes.",
+                  Answered when it happens, or with `WaitTimeout` once `timeout_ms` passes. A \
+                  session, a connection and the daemon each hold a few dozen or hundred waits at \
+                  once, and one past them is `Busy`, which a retry once one has ended can get \
+                  past.",
         input: wait::input,
         output: wait::output,
         errors: wait::ERRORS,
@@ -476,7 +480,7 @@ fn capture(call: &Call) -> Result<Answer, ApiError> {
         .ok_or_else(ended)?;
     // Taken alone, and released before any copy is formatted.
     let job = lock_or_recover(&shadow).capture(Capture { rows, unwrap, vt }, &mut || {
-        CaptureSlot::acquire().map(|slot| Box::new(slot) as Admitted)
+        Slot::capture().map(|slot| Box::new(slot) as Admitted)
     });
     let unreadable = {
         let message = format!("session {id}'s screen could not be read");
@@ -558,28 +562,29 @@ pub const MAX_CAPTURES: usize = 4;
 
 static CAPTURES: AtomicUsize = AtomicUsize::new(0);
 
-/// One of the `MAX_CAPTURES` places, held by a capture's pieces until they are dropped: when the
-/// stream ends, fails or its caller hangs up.
-struct CaptureSlot(&'static AtomicUsize);
+/// One of a daemon's few places for concurrent work, given back when dropped: one of the
+/// `MAX_CAPTURES`, held by a capture's pieces until the stream ends, fails or its caller hangs up,
+/// or one of a daemon's waits (`wait::Limits`), held by the wait's thread until it ends.
+struct Slot(&'static AtomicUsize);
 
-impl CaptureSlot {
-    fn acquire() -> Option<CaptureSlot> {
-        CaptureSlot::acquire_from(&CAPTURES, MAX_CAPTURES)
+impl Slot {
+    fn capture() -> Option<Slot> {
+        Slot::acquire_from(&CAPTURES, MAX_CAPTURES)
     }
 
     /// A place from `counter` if fewer than `max` are held. Split out so a test can exercise the
     /// cap against its own counter instead of racing every other capture for the shared one.
-    fn acquire_from(counter: &'static AtomicUsize, max: usize) -> Option<CaptureSlot> {
+    fn acquire_from(counter: &'static AtomicUsize, max: usize) -> Option<Slot> {
         counter
             .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < max).then_some(count + 1)
             })
             .ok()
-            .map(|_| CaptureSlot(counter))
+            .map(|_| Slot(counter))
     }
 }
 
-impl Drop for CaptureSlot {
+impl Drop for Slot {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::AcqRel);
     }
