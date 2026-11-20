@@ -2560,6 +2560,130 @@ fn over_ssh_api_lists_describes_and_calls_the_hosts_methods() {
     );
 }
 
+/// The terminal API knows which pane calls it on a host as on the Mac (#684): a remote pane's
+/// shell sees `WORKROOM_PANE` and `WORKROOM_DAEMON` and no `WORKROOM_SESSION_*`; `sessions` there
+/// keeps to the pane's workroom unless `--all`; and with the variables gone (`env -u`, `env -i`)
+/// the daemon still knows the pane from the caller's process (`SO_PEERCRED`, then its parents),
+/// and the CLI finds the daemon it runs under.
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_the_terminal_api_knows_which_pane_calls_it() {
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
+    let session = "7e0e7e0e-0000-4000-8000-000000000684";
+    let neighbour = "7e0e7e0e-0000-4000-8000-00000000684b";
+    let elsewhere = "7e0e7e0e-0000-4000-8000-00000000684c";
+    let workroom = "4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0684";
+    let in_workroom = |id: &str| format!("WORKROOM_SESSION_WORKROOM={id}");
+    let mut pane = Pane::attach_with(&fixture, session, false, &in_workroom(workroom));
+    let mut others = [
+        Pane::attach_with(&fixture, neighbour, false, &in_workroom(workroom)),
+        Pane::attach_with(
+            &fixture,
+            elsewhere,
+            false,
+            &in_workroom("4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c068c"),
+        ),
+    ];
+    let started = (0..80).any(|_| {
+        let output = fixture
+            .ssh()
+            .arg(format!(
+                "WORKROOM_DAEMON={} {INSTALLED_DAEMON} sessions --all --json",
+                fixture.socket
+            ))
+            .output()
+            .expect("list the host's sessions");
+        let listing = String::from_utf8_lossy(&output.stdout);
+        if [session, neighbour, elsewhere]
+            .iter()
+            .all(|id| listing.contains(id))
+        {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        false
+    });
+    assert!(started, "the three sessions never started on the host");
+
+    // A folder of this run's own on the host, made here and so removed at the end.
+    let dir = (0..)
+        .map(|attempt| format!("/tmp/wr-684-{}-{attempt}", std::process::id()))
+        .find(|dir| {
+            fixture
+                .ssh()
+                .arg(format!("mkdir {dir}"))
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+        .expect("a folder on the host");
+    let sessions = format!("{INSTALLED_DAEMON} sessions --json");
+    // Each through a `sh` of its own, so the CLI is the shell's grandchild at least. The marker is
+    // split in the line, so its echo is not mistaken for it.
+    pane.type_line(&format!(
+        "env | grep '^WORKROOM_' | sort > {dir}/env; \
+         sh -c '{sessions}; exit $?' > {dir}/scoped; \
+         sh -c '{sessions} --all; exit $?' > {dir}/all; \
+         env -u WORKROOM_PANE sh -c '{sessions}; exit $?' > {dir}/no-pane; \
+         env -i PATH=/usr/bin:/bin sh -c '{sessions}; exit $?' > {dir}/nothing; \
+         echo \"API-\"\"DONE\""
+    ));
+    assert!(
+        pane.read_until("API-DONE\r\n", Duration::from_secs(30))
+            .contains("API-DONE\r\n"),
+        "the pane never ran the commands"
+    );
+    let read = |name: &str| {
+        let output = fixture
+            .ssh()
+            .arg(format!("cat {dir}/{name}"))
+            .output()
+            .expect("read the pane's output");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let env = read("env");
+    assert_eq!(
+        env.lines().collect::<Vec<_>>(),
+        [
+            format!("WORKROOM_DAEMON={}", fixture.socket),
+            format!("WORKROOM_PANE={session}"),
+        ],
+        "{env}"
+    );
+    let listed = |name: &str| -> (Value, Vec<String>) {
+        let output = read(name);
+        let envelope: Value = serde_json::from_str(output.trim())
+            .unwrap_or_else(|e| panic!("{name}: not one envelope ({e}): {output}"));
+        let mut ids: Vec<String> = envelope["sessions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{name}: no sessions in {envelope}"))
+            .iter()
+            .map(|listed| listed["id"].as_str().unwrap().to_string())
+            .filter(|id| [session, neighbour, elsewhere].contains(&id.as_str()))
+            .collect();
+        ids.sort();
+        (envelope["caller"].clone(), ids)
+    };
+    let ours = vec![session.to_string(), neighbour.to_string()];
+    for name in ["scoped", "no-pane", "nothing"] {
+        assert_eq!(listed(name), (json!(session), ours.clone()), "{name}");
+    }
+    let (caller, all) = listed("all");
+    assert_eq!(caller, json!(session));
+    assert_eq!(all.len(), 3, "{all:?}");
+
+    let _ = fixture.ssh().arg(format!("rm -r {dir}")).status();
+    // End each shell, so the sessions leave the host's listing.
+    for pane in std::iter::once(&mut pane).chain(others.iter_mut()) {
+        pane.type_line("exit");
+        assert!(
+            pane.exit_code(Duration::from_secs(20)).is_some(),
+            "a session did not end"
+        );
+    }
+}
+
 /// Two Macs on one remote workroom (#255): Mac A's session carries its workroom and title to the
 /// host, Mac B finds it in the host's list and A's layout in the Layout service, and reattaches to
 /// the same shell; A dropping its link leaves B attached; a close on A ends the session for B too;
