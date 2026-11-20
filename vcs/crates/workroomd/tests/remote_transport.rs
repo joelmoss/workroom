@@ -2785,6 +2785,89 @@ fn over_ssh_capture_reads_a_host_panes_screen_and_history() {
     );
 }
 
+/// `workroom wait` on a host (#690), as a coding agent in a remote pane runs it: a regex counts
+/// only output from after the wait started, with escapes stripped, a timeout exits 8, and the
+/// session's end gives its shell's exit code. The host's daemon is the static musl build, with
+/// terminal-state, so `--include-screen` sees what is already there.
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_wait_sees_new_output_a_timeout_and_the_sessions_end() {
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
+    let session = "7e0e7e0e-0000-4000-8000-000000000690";
+    let mut pane = Pane::attach_with(
+        &fixture,
+        session,
+        false,
+        "'WORKROOM_SESSION_TITLE=wait pane'",
+    );
+    // Split in the typed line, so its echo is not the mark.
+    pane.type_line(r#"printf '\033[1mOLD\033[0m''MARK\n'"#);
+    assert!(
+        pane.read_until("MARK\r\n", Duration::from_secs(20))
+            .contains("OLD\x1b[0mMARK\r\n")
+    );
+
+    let wait = |args: &str| {
+        let output = fixture
+            .ssh()
+            .arg(format!(
+                "WORKROOM_DAEMON={} {INSTALLED_DAEMON} wait 'wait pane' {args} --json; echo \"exit=$?\"",
+                fixture.socket
+            ))
+            .output()
+            .expect("run wait");
+        let printed = String::from_utf8_lossy(&output.stdout).into_owned();
+        let (envelope, status) = printed
+            .rsplit_once("exit=")
+            .unwrap_or_else(|| panic!("no exit status in {printed:?}"));
+        let envelope: Value = serde_json::from_str(envelope.trim())
+            .unwrap_or_else(|e| panic!("not one envelope ({e}): {printed:?}"));
+        (status.trim().parse::<i32>().unwrap(), envelope)
+    };
+
+    let (code, old) = wait("--regex OLDMARK --timeout 1s");
+    assert_eq!(
+        (code, &old["error"]["kind"]),
+        (8, &json!("WaitTimeout")),
+        "{old}"
+    );
+    let (code, screen) = wait("--regex 'OLD(MARK)$' --include-screen --timeout 20s");
+    assert_eq!(code, 0, "{screen}");
+    assert_eq!(screen["match"]["text"], "OLDMARK", "{screen}");
+
+    pane.type_line(r#"i=0; while [ $i -lt 300 ]; do i=$((i+1)); echo "TICK-$i"; sleep 0.1; done"#);
+    let tick = |found: &Value| {
+        found["match"]["text"]
+            .as_str()
+            .and_then(|text| {
+                text.trim_start_matches("TICK-")
+                    .trim_end()
+                    .parse::<u32>()
+                    .ok()
+            })
+            .unwrap_or_else(|| panic!("not a tick: {found}"))
+    };
+    let (code, first) = wait(r"--regex 'TICK-\d+\r\n' --timeout 20s");
+    assert_eq!(code, 0, "{first}");
+    let (code, second) = wait(r"--regex 'TICK-\d+\r\n' --timeout 20s");
+    assert_eq!(code, 0, "{second}");
+    assert!(tick(&second) > tick(&first), "{second} came before {first}");
+
+    // ^C the ticker, then end the shell 5 s from now, by when the wait has started.
+    pane.type_line("\u{3}");
+    pane.type_line("sleep 5; exit 3");
+    let (code, ended) = wait("--ended --timeout 60s");
+    assert_eq!(code, 0, "{ended}");
+    assert_eq!(ended["session"], session, "{ended}");
+    assert_eq!(ended["exit_code"], 3, "{ended}");
+    assert!(
+        pane.exit_code(Duration::from_secs(20)).is_some(),
+        "the session did not end"
+    );
+}
+
 /// Two Macs on one remote workroom (#255): Mac A's session carries its workroom and title to the
 /// host, Mac B finds it in the host's list and A's layout in the Layout service, and reattaches to
 /// the same shell; A dropping its link leaves B attached; a close on A ends the session for B too;
