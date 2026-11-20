@@ -515,7 +515,8 @@ class ContainerIntegrationTestCase: XCTestCase {
 
   /// This build's daemon placed over another build's (T7): the bootstrap stages it, checks it runs,
   /// hands the running daemon off to it, keeping its sessions, and puts it in place. A copy of the
-  /// daemon with a byte added stands in for another build: an ELF ignores what follows it.
+  /// daemon with another daemon build in its marker stands in for another build (#680): a byte
+  /// added would be a change to CLI commands alone, which the daemon is not handed off for.
   func aNewerBuildIsPlacedAndHandedOff() async throws {
     let driver = driver()
     let host = try await create(driver, image: try await gitImage(driver))
@@ -527,8 +528,7 @@ class ContainerIntegrationTestCase: XCTestCase {
     XCTAssertTrue(pane.read(until: "KEPT-ACROSS").contains("KEPT-ACROSS"))
 
     let other = directory.appendingPathComponent("workroomd-other")
-    var bytes = try Data(contentsOf: daemon)
-    bytes.append(0)
+    let bytes = try DaemonHarness.anotherDaemonBuild(of: try Data(contentsOf: daemon))
     try bytes.write(to: other)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: other.path)
     let outcome = try await DaemonBootstrap.ensure(

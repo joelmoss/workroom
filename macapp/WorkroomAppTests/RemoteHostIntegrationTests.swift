@@ -520,9 +520,10 @@ final class RemoteHostIntegrationTests: XCTestCase {
   /// repainted by the new program and reaches the same shell.
   func testANewerAppHandsOffAndAnAttachedPaneComesBack() async throws {
     let fixture = try fixture()
-    // The same ELF with a byte appended: the loader ignores it, and both hashes notice.
+    // The same ELF as another daemon build (#680): what a running daemon hands off to.
     let newer = try bundledDaemon(
-      named: "workroomd-newer", try Data(contentsOf: fixture.daemon) + Data("\n".utf8))
+      named: "workroomd-newer",
+      try DaemonHarness.anotherDaemonBuild(of: try Data(contentsOf: fixture.daemon)))
     let id = UUID()
     let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
     // Whatever build is there, get it to the fixture's ELF first, so the hand-off below is real.
