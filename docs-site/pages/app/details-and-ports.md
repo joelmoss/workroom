@@ -22,7 +22,7 @@ Press <kbd>⌥⌘I</kbd> (**View ▸ Details**), or click **Details** at the top
 
 A remote workroom may also show a short note under these.
 
-Nightly only. **Setup script not run** appears when a remote workroom's create stopped while its setup script waited for approval. It offers **Review Script…**, **Continue Without Script…** and **Delete Workroom…**. See [Setup and teardown scripts](../remote/overview.md#setup-and-teardown-scripts).
+**Setup script not run** appears when a remote workroom's create stopped while its setup script waited for approval. It offers **Review Script…**, **Continue Without Script…** and **Delete Workroom…**. See [Setup and teardown scripts](../remote/overview.md#setup-and-teardown-scripts).
 
 Copy buttons briefly show **Copied!** just above the button after copying to the clipboard. The same
 confirmation appears when you copy a port address, an error report, or a path or branch name from a menu.
