@@ -92,11 +92,15 @@ impl SessionStore {
                 }
                 // One statement per lock: a guard taken inside the struct below would live to the
                 // end of it, and the second field would wait on the first's.
-                let screen = lock_or_recover(shadow).replay_for_within(
+                let mut screen = lock_or_recover(shadow).replay_for_within(
                     pty.foreground_pgid(),
                     share,
                     Some(format_until),
                 );
+                // The live title first, so the screen's own marks come after it (#683).
+                if let Some(title) = lock_or_recover(shadow).title() {
+                    screen.splice(0..0, crate::terminal::shadow::title_sequence(&title));
+                }
                 let program_status = lock_or_recover(shadow)
                     .status()
                     .cloned()

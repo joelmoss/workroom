@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use super::reader::read_session;
 use super::refusals::wall_now;
 use super::{
-    Attached, CREATED_KEY, Hooks, NEXT_SESSION, RunSignalError, Session, SessionError, SessionId,
-    SessionInfo, SessionParts, SessionSpec, SessionStore, TakenScreen, until,
+    Attached, CREATED_KEY, Described, Hooks, NEXT_SESSION, RunSignalError, Session, SessionError,
+    SessionId, SessionInfo, SessionParts, SessionSpec, SessionStore, TakenScreen, until,
 };
 use crate::terminal::program_status::Store;
 use crate::terminal::pty::Pty;
@@ -429,6 +429,32 @@ impl SessionStore {
             .collect();
         events.sort_by_key(|(id, _)| *id);
         events
+    }
+
+    /// Every live session as the terminal API lists it (#683), in id order: what `list` reports,
+    /// then its live title and coding agent, each read under its own shadow lock once the store's
+    /// is released.
+    pub fn described(&self) -> Vec<Described> {
+        let sessions: Vec<(SessionInfo, Arc<Mutex<Shadow>>)> = {
+            let sessions = lock_or_recover(&self.sessions);
+            sessions
+                .values()
+                .map(|session| (session.info(), Arc::clone(&session.shadow)))
+                .collect()
+        };
+        let mut described: Vec<Described> = sessions
+            .into_iter()
+            .map(|(info, shadow)| {
+                let mut shadow = lock_or_recover(&shadow);
+                Described {
+                    title: shadow.title(),
+                    coding_agent: shadow.status().and_then(|status| status.coding_agent()),
+                    info,
+                }
+            })
+            .collect();
+        described.sort_by_key(|session| session.info.id);
+        described
     }
 
     /// Applies `change` to `id`'s program status and publishes what it changed. False when there

@@ -2,6 +2,7 @@
 //! store, ptys and the shells and processes in them, input, the shadow screen, images, kept
 //! screens, run sessions and program status.
 
+pub(crate) mod api;
 pub(crate) mod dispatch;
 pub(crate) mod host_session;
 pub(crate) mod images;

@@ -714,6 +714,25 @@ impl<C: Callbacks> Terminal<C> {
         (rc == OK).then_some(usage)
     }
 
+    /// The title the program last set (OSC 0 or 2), empty when it set none.
+    pub fn title(&self) -> Option<String> {
+        let mut title = GhosttyString {
+            ptr: ptr::null(),
+            len: 0,
+        };
+        // SAFETY: DATA_TITLE's output type is a `GhosttyString`, and `title` is a live one.
+        let rc = unsafe {
+            ghostty_terminal_get(
+                self.inner,
+                GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_TITLE,
+                (&raw mut title).cast(),
+            )
+        };
+        // SAFETY: the title is borrowed until the next mutating call, which `&self` rules out
+        // until this has copied it.
+        (rc == OK).then(|| unsafe { copied(&title) })
+    }
+
     /// The 256 colours of `data`, one of the two `COLOR_PALETTE` kinds; `None` for any other kind.
     pub fn palette(&self, data: GhosttyTerminalData) -> Option<[[u8; 3]; 256]> {
         if data != GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLOR_PALETTE

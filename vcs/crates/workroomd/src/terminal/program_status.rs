@@ -172,6 +172,17 @@ pub struct Record {
     blocked_at: Option<Instant>,
 }
 
+/// A session's coding agent as the terminal API lists it (`Store::coding_agent`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CodingAgent {
+    pub state: State,
+    /// The program that reported, as its record or nearest ancestor names it; empty if none does.
+    pub app: String,
+    pub message: String,
+    /// Whether a record is blocked on the user and may alert (`Record::notify`).
+    pub waiting_on_user: bool,
+}
+
 /// How the shell's last long command ended (#473), kept apart from the records so no program's
 /// report, CLEAR or reset touches it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -463,6 +474,25 @@ impl Store {
             self.command = None;
             self.dirty = true;
         }
+    }
+
+    /// What the terminal API reports of the session's coding agent (#683): its newest record
+    /// waiting on the user, else its newest record; `None` with no record. The command result is
+    /// the shell's, not a program's, so it never counts.
+    pub fn coding_agent(&self) -> Option<CodingAgent> {
+        let waiting = |r: &&Record| r.state == State::Blocked && r.notify;
+        let record = self
+            .records
+            .iter()
+            .rev()
+            .find(waiting)
+            .or_else(|| self.records.last())?;
+        Some(CodingAgent {
+            state: record.state,
+            app: self.app_of(record).to_string(),
+            message: record.message.clone(),
+            waiting_on_user: self.records.iter().any(|r| waiting(&r)),
+        })
     }
 
     /// The app's "Clear status": every record, the command result, and `reporting`. Not

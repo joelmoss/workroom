@@ -401,6 +401,8 @@ struct ConnectionServices {
     layout_partial: crate::daemon::rpc::PartialRequests,
     subscriptions: crate::vcs::watch::Subscriptions,
     forwards: crate::host::forward::Forwards,
+    /// The terminal API's own, as the Layout service has (ADR 0079).
+    api_partial: crate::daemon::rpc::PartialRequests,
     /// Its program status subscription, ended with it like `subscriptions`.
     program_status: crate::terminal::program_status::Connection,
     /// The service-stream deadline, once the client says it pings.
@@ -593,6 +595,7 @@ pub fn handle_connection_with<T: Transport>(
         peer,
         partial: crate::daemon::rpc::PartialRequests::default(),
         layout_partial: crate::daemon::rpc::PartialRequests::default(),
+        api_partial: crate::daemon::rpc::PartialRequests::default(),
         subscriptions: crate::vcs::watch::Subscriptions::new(
             Arc::clone(&writer),
             Arc::clone(&closer),
@@ -686,6 +689,10 @@ fn dispatch(
     }
     if envelope.service == Service::ProgramStatus {
         crate::terminal::program_status::dispatch(envelope, sessions, &mut services.program_status);
+        return None;
+    }
+    if envelope.service == Service::TerminalApi {
+        crate::terminal::api::dispatch(&mut services.api_partial, envelope, sessions, writer);
         return None;
     }
     if envelope.service == Service::Control && is_pings(&envelope.payload) {

@@ -712,6 +712,11 @@ impl ShadowTerminal {
         self.terminal.mode(mode)
     }
 
+    /// The live title, as the program last set it with OSC 0 or 2; `None` when it set none.
+    pub fn title(&self) -> Option<String> {
+        self.terminal.title().filter(|title| !title.is_empty())
+    }
+
     /// How many bytes `replay` ends with for the parser continuation.
     pub fn continuation_len(&self) -> usize {
         self.terminal.continuation().len()
