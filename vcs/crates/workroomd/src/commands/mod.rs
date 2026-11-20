@@ -9,16 +9,20 @@
 //!
 //! The commands that read or write the Mac's config are Mac-only: listed in `--help` everywhere,
 //! marked "(Mac only)", and failing with `MacOnly` anywhere else. Until its own ticket ports it
-//! (#671–#679), each of those, and `update`, is a stub here; the Go CLI still runs them.
+//! (#672–#679), each of those, and `update`, is a stub here; the Go CLI still runs them. `list`
+//! and `base --global` are ported (#671), on `config`, the Rust reader and writer of config.json.
 
+mod base;
 pub(crate) mod channel;
+mod config;
 mod envelope;
 mod kind;
+mod list;
 mod log;
 mod version;
 
 use std::ffi::OsString;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
 use kind::{CliError, Kind};
@@ -58,8 +62,13 @@ impl Platform {
 /// What a command runs on, and the global flags it was given.
 pub(crate) struct Context {
     json: bool,
+    /// `--pretend`: go through the command without changing anything.
+    pretend: bool,
     platform: Platform,
     env: fn(&str) -> Option<String>,
+    /// Whether human output is coloured: stdout is a terminal and neither `NO_COLOR` nor a dumb
+    /// `TERM` says otherwise, as Go's colour package decides.
+    color: bool,
 }
 
 impl Context {
@@ -76,6 +85,53 @@ pub(crate) enum Outcome {
     Success(String),
     /// A failure, reported in the error envelope under `--json`, else as an `Error:` line.
     Failed(CliError),
+    /// A usage error the command found in its arguments: reported as a failure is, but with no
+    /// command in the envelope, since Go checks arguments before the command runs.
+    Usage(CliError),
+}
+
+/// One of a command's own flags, beside the global ones.
+struct Flag {
+    name: &'static str,
+    /// Takes a value (`--name value` or `--name=value`), else is a boolean.
+    takes_value: bool,
+    usage: &'static str,
+    /// The value `--help` shows as the default; "" for none.
+    default: &'static str,
+}
+
+/// What a command was given besides the global flags.
+pub(crate) struct Args {
+    /// The arguments after the command's name.
+    positional: Vec<String>,
+    /// Each of the command's own flags that was set, by name, with its value as given (a boolean
+    /// as `true` or `false`).
+    values: Vec<(&'static str, String)>,
+}
+
+impl Args {
+    /// The value the flag `name` was last given.
+    fn value(&self, name: &str) -> Option<&str> {
+        self.values
+            .iter()
+            .rev()
+            .find(|(flag, _)| *flag == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// Whether the boolean flag `name` is on.
+    fn is_set(&self, name: &str) -> bool {
+        self.value(name) == Some("true")
+    }
+}
+
+/// How a command takes arguments.
+#[derive(Clone, Copy)]
+enum Arity {
+    /// None: an extra one is a usage error, found before the command runs.
+    None,
+    /// Its own subcommands and arguments, which it checks itself.
+    Own,
 }
 
 /// One command of the CLI.
@@ -88,13 +144,15 @@ struct Command {
     /// Left out of `--help`: commands the app runs, not people.
     hidden: bool,
     mac_only: bool,
+    flags: &'static [Flag],
+    arity: Arity,
     implementation: Implementation,
 }
 
 /// Whether a command runs in this binary yet.
 #[derive(Clone, Copy)]
 enum Implementation {
-    Ported(fn(&Context) -> Outcome),
+    Ported(fn(&Context, &Args) -> Outcome),
     /// Still the Go CLI's, until `ticket` ports it.
     Stub {
         ticket: &'static str,
@@ -112,15 +170,30 @@ const COMMANDS: &[Command] = &[
         true,
         "#672",
     ),
-    stub(
-        "base",
-        &[],
-        "base",
-        "Set or clear the branch new workrooms start from",
-        false,
-        true,
-        "#673",
-    ),
+    Command {
+        name: "base",
+        aliases: &[],
+        usage: "base",
+        short: "Set or clear the branch new workrooms start from",
+        hidden: false,
+        mac_only: true,
+        flags: &[
+            Flag {
+                name: "global",
+                takes_value: false,
+                usage: "The default for every project that names no base branch",
+                default: "",
+            },
+            Flag {
+                name: "project",
+                takes_value: true,
+                usage: "Project directory (defaults to the current directory)",
+                default: "",
+            },
+        ],
+        arity: Arity::Own,
+        implementation: Implementation::Ported(base::run),
+    },
     stub(
         "claim-provisioned",
         &[],
@@ -175,15 +248,30 @@ const COMMANDS: &[Command] = &[
         true,
         "#675",
     ),
-    stub(
-        "list",
-        &["ls", "l"],
-        "list",
-        "List all workrooms for the current project",
-        false,
-        true,
-        "#671",
-    ),
+    Command {
+        name: "list",
+        aliases: &["ls", "l"],
+        usage: "list",
+        short: "List all workrooms for the current project",
+        hidden: false,
+        mac_only: true,
+        flags: &[
+            Flag {
+                name: "project",
+                takes_value: true,
+                usage: "Limit JSON output to a single project directory",
+                default: "",
+            },
+            Flag {
+                name: "warnings",
+                takes_value: true,
+                usage: "Warning detail for --json: none, fast, or full",
+                default: "fast",
+            },
+        ],
+        arity: Arity::None,
+        implementation: Implementation::Ported(list::run),
+    },
     stub(
         "trust",
         &[],
@@ -218,6 +306,8 @@ const COMMANDS: &[Command] = &[
         short: "Print the version",
         hidden: false,
         mac_only: false,
+        flags: &[],
+        arity: Arity::None,
         implementation: Implementation::Ported(version::run),
     },
 ];
@@ -238,6 +328,8 @@ const fn stub(
         short,
         hidden,
         mac_only,
+        flags: &[],
+        arity: Arity::None,
         implementation: Implementation::Stub { ticket },
     }
 }
@@ -256,28 +348,37 @@ pub fn run_cli(args: &[OsString]) -> ExitCode {
         .iter()
         .map(|arg| log::go_lossy(arg.as_encoded_bytes()))
         .collect();
-    let context = |json| Context {
-        json,
+    let env = |name: &str| std::env::var(name).ok();
+    let context = Context {
+        json: false,
+        pretend: false,
         platform: Platform::current(),
-        env: |name| std::env::var(name).ok(),
+        env,
+        color: std::io::stdout().is_terminal()
+            && env("NO_COLOR").is_none_or(|value| value.is_empty())
+            && env("TERM").as_deref() != Some("dumb"),
     };
-    let output = run(&args, &context);
+    let output = run(&args, context);
     let _ = std::io::stdout().write_all(output.stdout.as_bytes());
     let _ = std::io::stderr().write_all(output.stderr.as_bytes());
     ExitCode::from(output.code)
 }
 
-/// The global flags, and what is left once they are taken out.
+/// The global flags, the command's own, and what is left once they are taken out.
 #[derive(Default)]
 struct Parsed {
     json: bool,
     help: bool,
+    pretend: bool,
     positional: Vec<String>,
+    values: Vec<(&'static str, String)>,
 }
 
 /// Reads the arguments left to right, as Go's flag parser does: a bad flag stops it, with what was
 /// set before it (so `--json --bogus` reports in the envelope and `--bogus --json` doesn't).
-fn parse(args: &[String]) -> (Parsed, Option<String>) {
+/// `flags` are the command's own, beside the global ones. A flag that takes a value takes the next
+/// argument when it has no `=`, whatever that argument looks like, as pflag does.
+fn parse(args: &[String], flags: &'static [Flag]) -> (Parsed, Option<String>) {
     let mut parsed = Parsed::default();
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
@@ -290,6 +391,20 @@ fn parse(args: &[String]) -> (Parsed, Option<String>) {
                 Some((name, value)) => (name, Some(value)),
                 None => (long, None),
             };
+            let own = flags.iter().find(|flag| flag.name == name);
+            if let Some(flag) = own.filter(|flag| flag.takes_value) {
+                let value = match value {
+                    Some(value) => value.to_string(),
+                    None => match rest.next() {
+                        Some(next) => next.clone(),
+                        None => {
+                            return (parsed, Some(format!("flag needs an argument: --{name}")));
+                        }
+                    },
+                };
+                parsed.values.push((flag.name, value));
+                continue;
+            }
             let on = match value.map(parse_bool) {
                 None => true,
                 Some(Some(on)) => on,
@@ -304,17 +419,20 @@ fn parse(args: &[String]) -> (Parsed, Option<String>) {
                     );
                 }
             };
-            match name {
-                "json" => parsed.json = on,
-                "help" => parsed.help = on,
-                "pretend" | "verbose" => {}
+            match (name, own) {
+                (_, Some(flag)) => parsed.values.push((flag.name, on.to_string())),
+                ("json", None) => parsed.json = on,
+                ("help", None) => parsed.help = on,
+                ("pretend", None) => parsed.pretend = on,
+                ("verbose", None) => {}
                 _ => return (parsed, Some(format!("unknown flag: --{name}"))),
             }
         } else if let Some(shorts) = arg.strip_prefix('-').filter(|shorts| !shorts.is_empty()) {
             for short in shorts.chars() {
                 match short {
                     'h' => parsed.help = true,
-                    'p' | 'v' => {}
+                    'p' => parsed.pretend = true,
+                    'v' => {}
                     _ => {
                         return (
                             parsed,
@@ -357,8 +475,9 @@ impl Output {
     }
 }
 
-/// Runs `args`. Separate from [`dispatch`] so a test can choose the platform and the environment.
-fn run(args: &[String], context: &dyn Fn(bool) -> Context) -> Output {
+/// Runs `args` in `context`, whose global flags the run sets. Separate from [`dispatch`] so a test
+/// can choose the platform and the environment.
+fn run(args: &[String], mut context: Context) -> Output {
     // The command is the first argument that isn't a flag, as Go finds it before parsing.
     let name = args.iter().find(|arg| !arg.starts_with('-')).cloned();
     let command = match name.as_deref() {
@@ -383,13 +502,17 @@ fn run(args: &[String], context: &dyn Fn(bool) -> Context) -> Output {
             }
         },
     };
-    let (parsed, error) = parse(args);
-    let context = context(parsed.json);
-    // A stub's own flags aren't known yet, so it doesn't refuse them; it fails below anyway.
-    let stub = command
-        .is_some_and(|command| matches!(command.implementation, Implementation::Stub { .. }));
-    if let Some(message) = error.filter(|_| !stub) {
-        return report(&context, None, Outcome::Failed(CliError::internal(message)));
+    let (parsed, error) = parse(args, command.map_or(&[], |command| command.flags));
+    context.json = parsed.json;
+    context.pretend = parsed.pretend;
+    // A stub's own flags aren't known yet, so it doesn't refuse them; it fails below anyway. Nor
+    // does a Mac-only command away from the Mac: `MacOnly` is what it answers, whatever it was given.
+    let refuses_nothing = command.is_some_and(|command| {
+        matches!(command.implementation, Implementation::Stub { .. })
+            || (command.mac_only && context.platform != Platform::Mac)
+    });
+    if let Some(message) = error.filter(|_| !refuses_nothing) {
+        return report(&context, None, Outcome::Usage(CliError::internal(message)));
     }
     let Some(command) = command else {
         return Output::stdout(help(None));
@@ -397,14 +520,19 @@ fn run(args: &[String], context: &dyn Fn(bool) -> Context) -> Output {
     if parsed.help {
         return Output::stdout(help(Some(command)));
     }
-    // The only argument is the command's name; none of today's commands takes more. Go checks
-    // that before the command runs, so the envelope names no command.
-    if let (false, Some(extra)) = (stub, parsed.positional.get(1)) {
+    // Go checks a command's arguments before it runs, so the envelope names no command.
+    let args = Args {
+        positional: parsed.positional.iter().skip(1).cloned().collect(),
+        values: parsed.values,
+    };
+    if let (false, Arity::None, Some(extra)) =
+        (refuses_nothing, command.arity, args.positional.first())
+    {
         let message = format!(
             "unknown command {extra:?} for \"workroom {}\"",
             command.name
         );
-        return report(&context, None, Outcome::Failed(CliError::internal(message)));
+        return report(&context, None, Outcome::Usage(CliError::internal(message)));
     }
     let outcome = if command.mac_only && context.platform != Platform::Mac {
         Outcome::Failed(CliError::new(
@@ -416,7 +544,7 @@ fn run(args: &[String], context: &dyn Fn(bool) -> Context) -> Output {
         ))
     } else {
         match command.implementation {
-            Implementation::Ported(run) => run(&context),
+            Implementation::Ported(run) => run(&context, &args),
             Implementation::Stub { ticket } => Outcome::Failed(CliError::internal(format!(
                 "`workroom {}` isn't in this build yet ({ticket}); the Go CLI runs it until the \
                  switch (ADR 0078)",
@@ -429,14 +557,18 @@ fn run(args: &[String], context: &dyn Fn(bool) -> Context) -> Output {
 
 /// `outcome` as what the run writes, and its exit code.
 fn report(context: &Context, command: Option<&str>, outcome: Outcome) -> Output {
-    match outcome {
-        Outcome::Printed(text) | Outcome::Success(text) => Output::stdout(text),
-        Outcome::Failed(error) if context.json => Output {
+    let (command, error) = match outcome {
+        Outcome::Printed(text) | Outcome::Success(text) => return Output::stdout(text),
+        Outcome::Failed(error) => (command, error),
+        Outcome::Usage(error) => (None, error),
+    };
+    match error {
+        error if context.json => Output {
             stdout: envelope::failure(command, &error),
             stderr: String::new(),
             code: error.kind.exit_code(),
         },
-        Outcome::Failed(error) => Output {
+        error => Output {
             stdout: String::new(),
             stderr: format!("Error: {}\n", error.message),
             code: error.kind.exit_code(),
@@ -444,11 +576,44 @@ fn report(context: &Context, command: Option<&str>, outcome: Outcome) -> Output 
     }
 }
 
-const GLOBAL_FLAGS: &str = "  -h, --help      help
-      --json      Emit machine-readable JSON (exactly one object on stdout)
-  -p, --pretend   Run through the command without making changes (dry run)
-  -v, --verbose   Print detailed and verbose output
-";
+/// The flags every command takes, as `--help` lists them.
+const GLOBAL_FLAGS: &[(&str, &str)] = &[
+    ("-h, --help", "help"),
+    (
+        "    --json",
+        "Emit machine-readable JSON (exactly one object on stdout)",
+    ),
+    (
+        "-p, --pretend",
+        "Run through the command without making changes (dry run)",
+    ),
+    ("-v, --verbose", "Print detailed and verbose output"),
+];
+
+/// `--help`'s flag table: the global flags, then `own`, each usage in one column.
+fn flag_table(own: &[Flag]) -> String {
+    let mut rows: Vec<(String, String)> = GLOBAL_FLAGS
+        .iter()
+        .map(|(name, usage)| (name.to_string(), usage.to_string()))
+        .collect();
+    for flag in own {
+        let name = if flag.takes_value {
+            format!("    --{} string", flag.name)
+        } else {
+            format!("    --{}", flag.name)
+        };
+        let usage = if flag.default.is_empty() {
+            flag.usage.to_string()
+        } else {
+            format!("{} (default {:?})", flag.usage, flag.default)
+        };
+        rows.push((name, usage));
+    }
+    let width = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+    rows.iter()
+        .map(|(name, usage)| format!("  {name:width$}   {usage}\n"))
+        .collect()
+}
 
 /// `--help` for the CLI, or for one command.
 fn help(command: Option<&Command>) -> String {
@@ -468,7 +633,7 @@ fn help(command: Option<&Command>) -> String {
                     command.aliases.join(", ")
                 );
             }
-            text + "\nFlags:\n" + GLOBAL_FLAGS
+            text + "\nFlags:\n" + &flag_table(command.flags)
         }
         None => {
             // As cobra lays it out: sorted by name, `help` among them, each name padded to the
@@ -494,7 +659,7 @@ fn help(command: Option<&Command>) -> String {
                 text += &format!("  {name:width$} {short}\n");
             }
             text + "\nFlags:\n"
-                + GLOBAL_FLAGS
+                + &flag_table(&[])
                 + "\nUse \"workroom [command] --help\" for more information about a command.\n"
         }
     }
@@ -511,11 +676,16 @@ mod tests {
             stdout,
             stderr,
             code,
-        } = run(&args, &|json| Context {
-            json,
-            platform,
-            env: |_| None,
-        });
+        } = run(
+            &args,
+            Context {
+                json: false,
+                pretend: false,
+                platform,
+                env: |_| None,
+                color: false,
+            },
+        );
         ((stdout, stderr), code)
     }
 
@@ -545,6 +715,77 @@ mod tests {
             assert_eq!(code, 3, "{name}");
             assert!(plain.starts_with("Error: `workroom "), "{plain}");
         }
+    }
+
+    /// What `tests/commands_platform.rs` runs on a Linux host, and a ported command's own flags and
+    /// arguments, bad ones included: away from the Mac each is `MacOnly`, never a usage error.
+    #[test]
+    fn a_ported_mac_only_command_away_from_the_mac_is_mac_only_whatever_its_arguments() {
+        for args in [
+            &["list", "--json"][..],
+            &["ls", "--json"],
+            &["list", "--json", "--warnings=bad"],
+            &["list", "--json", "--bogus"],
+            &["list", "--json", "extra"],
+            &["base", "set", "main", "--json"],
+            &["base", "set", "--global", "main", "--json"],
+            &["create", "--json", "--no-editor"],
+            &["add-project", "/tmp/x", "--json"],
+        ] {
+            let ((stdout, _), code) = run_on(Platform::Other, args);
+            assert_eq!(code, 3, "{args:?}");
+            let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(envelope["error"]["kind"], "MacOnly", "{args:?}");
+        }
+    }
+
+    #[test]
+    fn a_commands_own_flag_takes_the_next_argument_or_its_equals_value() {
+        let (parsed, error) = parse(
+            &[
+                "list".to_string(),
+                "--warnings".to_string(),
+                "--json".to_string(),
+                "--project=".to_string(),
+            ],
+            find("list").unwrap().flags,
+        );
+        assert!(error.is_none());
+        assert!(!parsed.json, "--json was --warnings's value");
+        assert_eq!(
+            parsed.values,
+            [
+                ("warnings", "--json".to_string()),
+                ("project", String::new())
+            ]
+        );
+        let (_, error) = parse(
+            &["list".to_string(), "--project".to_string()],
+            find("list").unwrap().flags,
+        );
+        assert_eq!(error.as_deref(), Some("flag needs an argument: --project"));
+        let (parsed, _) = parse(
+            &[
+                "base".to_string(),
+                "--global=false".to_string(),
+                "-p".to_string(),
+            ],
+            find("base").unwrap().flags,
+        );
+        assert_eq!(parsed.values, [("global", "false".to_string())]);
+        assert!(parsed.pretend);
+    }
+
+    #[test]
+    fn a_commands_help_lists_its_own_flags() {
+        let ((text, _), _) = run_on(Platform::Mac, &["list", "--help"]);
+        assert!(
+            text.contains(
+                "      --warnings string   Warning detail for --json: none, fast, or full (default \"fast\")\n"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("  -h, --help              help\n"), "{text}");
     }
 
     #[test]
