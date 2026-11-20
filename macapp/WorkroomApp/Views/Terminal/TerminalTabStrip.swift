@@ -564,8 +564,12 @@ private struct TerminalTabChip: View {
       }
       // A content tab gets a leading glyph so it reads as not-a-terminal at a glance (#66 diff, #59
       // changeset). The symbol comes from `TabContent.glyph`, shared with the pane's own title bar
-      // (issue #150) so the two can't drift; nil for a terminal, which is the unmarked default.
-      if let glyph = tab.content.glyph {
+      // (issue #150) so the two can't drift. A terminal falls back to the `terminal` symbol (as its
+      // sidebar row does) unless something more specific already leads the chip: the run tab's
+      // run-state icon, or a recognized tool's favicon below.
+      if let glyph = tab.content.glyph
+        ?? (runState == nil && tab.recognizedTool == nil ? "terminal" : nil)
+      {
         Image(systemName: glyph)
           .font(.system(size: 9, weight: .semibold))
           .foregroundStyle(tokens.fgMuted)
