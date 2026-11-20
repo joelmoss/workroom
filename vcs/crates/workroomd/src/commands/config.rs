@@ -66,6 +66,16 @@ impl Config {
         })
     }
 
+    /// The config file at `path`, as Go's `config.New(path)` names one: "" is [`Config::new`]'s.
+    pub(crate) fn named(path: &str, context: &Context) -> Result<Config, CliError> {
+        if path.is_empty() {
+            return Config::new(context);
+        }
+        Ok(Config {
+            path: PathBuf::from(path),
+        })
+    }
+
     /// The config file at `path`, for a test that keeps its own.
     #[cfg(test)]
     pub(crate) fn at(path: PathBuf) -> Config {
@@ -173,9 +183,16 @@ impl Config {
         result
     }
 
+    /// The config, read under its lock, as a read that must not see another process's write half
+    /// done takes it.
+    pub(crate) fn read_locked(&self) -> Result<Json, CliError> {
+        let _lock = Lock::take(&self.path);
+        self.read()
+    }
+
     /// Reads the config, lets `change` edit it, and writes it back when `change` says to, all
     /// under the config's lock.
-    fn update(
+    pub(crate) fn update(
         &self,
         change: impl FnOnce(&mut Json) -> Result<bool, CliError>,
     ) -> Result<(), CliError> {
@@ -212,6 +229,55 @@ impl Config {
             } else {
                 top_level(data).insert("base_branch".to_string(), Json::String(branch.to_string()));
             }
+            Ok(true)
+        })
+    }
+
+    /// Drops workroom `name`'s entry from `project`, and does nothing when either isn't there.
+    pub(crate) fn remove_workroom(&self, project: &str, name: &str) -> Result<(), CliError> {
+        self.update(|data| {
+            let Some(workrooms) = data
+                .as_object_mut()
+                .and_then(|top| top.get_mut(project))
+                .and_then(Json::as_object_mut)
+                .and_then(|entry| entry.get_mut("workrooms"))
+                .and_then(Json::as_object_mut)
+            else {
+                return Ok(false);
+            };
+            workrooms.remove(name);
+            Ok(true)
+        })
+    }
+
+    /// Drops `project`'s entry, touching nothing on disk; a scalar setting's key is never one. A
+    /// project with a host descriptor, its own or a workroom's, is refused, checked again here
+    /// under the lock: a descriptor written since the caller looked is the only record of a
+    /// remote machine.
+    pub(crate) fn remove_project(&self, project: &str) -> Result<(), CliError> {
+        self.update(|data| {
+            if is_reserved(project) {
+                return Ok(false);
+            }
+            if let Some(entry) = data
+                .as_object()
+                .and_then(|top| top.get(project))
+                .and_then(Json::as_object)
+            {
+                let decoded = Project::decode(entry);
+                if decoded.host.is_some() || decoded.workrooms.values().any(Workroom::is_remote) {
+                    return Err(CliError::new(
+                        Kind::RemoteWorkroomUnsupported,
+                        format!(
+                            "not supported for a remote workroom yet: {project} has a remote host"
+                        ),
+                    ));
+                }
+            }
+            if let Json::Object(top) = data {
+                top.remove(project);
+            }
+            // Go writes the file back even when the key wasn't there.
             Ok(true)
         })
     }
@@ -300,7 +366,7 @@ const RESERVED_KEYS: [&str; 3] = ["workrooms_dir", "channel", "base_branch"];
 /// A registered project's entry to edit, else `ProjectNotFound`.
 fn project_entry<'a>(data: &'a mut Json, project: &str) -> Result<&'a mut Object, CliError> {
     data.as_object_mut()
-        .filter(|_| !RESERVED_KEYS.contains(&project))
+        .filter(|_| !is_reserved(project))
         .and_then(|top| top.get_mut(project))
         .and_then(Json::as_object_mut)
         .ok_or_else(|| project_not_found(project))
@@ -329,6 +395,12 @@ pub(crate) fn host_descriptor(text: &str) -> Option<Json> {
     json::parse_config(text.as_bytes())
         .ok()
         .filter(|host| *host != Json::Null)
+}
+
+/// Whether `key` is a scalar setting's at the top level rather than a project path (Go's
+/// `reservedKeys`).
+pub(crate) fn is_reserved(key: &str) -> bool {
+    RESERVED_KEYS.contains(&key)
 }
 
 /// The top level as an object to change. A `null` config becomes an empty object first, where Go
