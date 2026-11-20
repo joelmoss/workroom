@@ -271,8 +271,7 @@ impl SessionStore {
     }
 
     /// The session's shadow terminal, taken out of the store so the caller can hold it across a
-    /// read without keeping the store locked.
-    #[cfg(any(test, feature = "test-support"))]
+    /// read without keeping the store locked: the terminal API's capture (#686), and tests.
     pub fn shadow(&self, id: SessionId) -> Option<Arc<Mutex<Shadow>>> {
         let sessions = lock_or_recover(&self.sessions);
         sessions.get(&id).map(|session| Arc::clone(&session.shadow))

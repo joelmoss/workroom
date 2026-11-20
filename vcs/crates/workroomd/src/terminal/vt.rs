@@ -64,10 +64,13 @@
 use std::time::Instant;
 
 use ghostty_vt::sys::*;
-use ghostty_vt::{Callbacks, Extras, Placed, Point, ProgramStatus, Selection, Terminal, Title};
+use ghostty_vt::{
+    Callbacks, Extras, Lines, Placed, Point, ProgramStatus, Selection, Terminal, Title,
+};
 
 use crate::terminal::images::{ImageRef, Placement};
 use crate::terminal::program_status::{Event, Kind, Report, State};
+use crate::terminal::shadow::{Capture, Captured, Rows};
 
 /// Continuation tracking is a byte LIMIT, not a flag, and it must be set before the input that
 /// leaves the parser unfinished — enabling it afterwards makes that continuation permanently
@@ -1070,8 +1073,64 @@ impl ShadowTerminal {
         [ERASE, &out].concat()
     }
 
-    /// Plain-text screen contents. Used by tests and by the session list's preview; never sent to
-    /// a client, which gets `replay()`.
+    /// The rows `capture` names as text, for the terminal API's `terminal.capture` (#686): plain,
+    /// trimmed as Ghostty trims what it copies, or with its escape codes (and none of the
+    /// repaint's extras) for `vt`. The visible screen is the active one: a full-screen program's
+    /// alternate screen, which has no history. `None` when the rows or the format could not be
+    /// read; an empty screen is an empty string.
+    pub fn capture_text(&self, capture: Capture) -> Option<String> {
+        let selection = match capture.rows {
+            Rows::Screen => Some(self.tail_selection(0)?),
+            Rows::WithHistory(rows) => Some(self.tail_selection(rows)?),
+            Rows::All => None,
+        };
+        let emit = if capture.vt {
+            GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_VT
+        } else {
+            GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_PLAIN
+        };
+        let bytes = self.terminal.format_lines(
+            emit,
+            Extras::default(),
+            selection.as_ref(),
+            Lines {
+                unwrap: capture.unwrap,
+                trim: true,
+            },
+        )?;
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// The facts a capture reports beside its text, with no text: the cursor, the size, which
+    /// screen is up and the live title. `None` when they cannot be read.
+    pub fn screen_facts(&self) -> Option<Captured> {
+        let read = |data| {
+            self.get_u32(data)
+                .and_then(|value| u16::try_from(value).ok())
+        };
+        Some(Captured {
+            text: String::new(),
+            cursor: (
+                read(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_Y)?,
+                read(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_X)?,
+            ),
+            size: (
+                read(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS)?,
+                read(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS)?,
+            ),
+            alternate: self.terminal.on_alternate_screen()?,
+            title: self.title(),
+        })
+    }
+
+    /// A copy of this terminal to capture from once its lock is released (`clone_via_snapshot`):
+    /// about 27 ms on 50 MB of history, against formatting all of it under the lock.
+    pub fn snapshot(&self) -> Option<ShadowTerminal> {
+        self.clone_via_snapshot()
+    }
+
+    /// Plain-text screen contents, scrollback included and untrimmed. Used by tests; never sent to
+    /// a client, which gets `replay()`, nor to the terminal API, which gets `capture_text`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn visible_text(&self) -> String {
         let text = self.terminal.format(

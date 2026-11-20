@@ -977,6 +977,305 @@ fn every_method_publishes_schemas_its_replies_match() {
     assert_eq!(violation(&error_schema, &ambiguous["error"], "error"), None);
     let unknown = api.call("session.nope", json!({}));
     assert_eq!(unknown["error"]["kind"], "InvalidRequest", "{unknown}");
+
+    // A capture, which needs a screen to read.
+    if has_terminal_state() {
+        let params = json!({"target": RUN, "lines": 2, "unwrap": true});
+        assert_eq!(
+            violation(&schema("terminal.capture", "input"), &params, "capture"),
+            None
+        );
+        let capture = api.call("terminal.capture", params);
+        assert_eq!(
+            violation(
+                &schema("terminal.capture", "output"),
+                &capture["result"],
+                "capture"
+            ),
+            None,
+            "{capture}"
+        );
+        assert_eq!(capture["revision"], 1, "{capture}");
+    } else {
+        let capture = api.call("terminal.capture", json!({"target": RUN}));
+        assert_eq!(capture["error"]["kind"], "ScreenUnavailable", "{capture}");
+    }
+    let refused = api.call("terminal.capture", json!({"target": RUN, "lines": -1}));
+    assert_eq!(refused["error"]["kind"], "InvalidRequest", "{refused}");
+}
+
+/// Writes `lines` into a script in `dir` that clears the screen and its history, prints them, and
+/// then waits, so a session running it shows exactly them and nothing typed.
+fn known_content(dir: &Path, name: &str, lines: &str) -> String {
+    let script = dir.join(format!("{name}.sh"));
+    std::fs::write(
+        &script,
+        format!("printf '\\033[H\\033[2J\\033[3J'\n{lines}\nsleep 60\n"),
+    )
+    .expect("write the script");
+    format!("sh {}", script.display())
+}
+
+/// `workroom capture <args>` against `socket`, once its stdout satisfies `ready`.
+fn capture_until(socket: &Path, args: &[&str], ready: impl Fn(&Run) -> bool) -> Run {
+    let mut args = args.to_vec();
+    args.insert(0, "capture");
+    let mut last = None;
+    let reached = wait_for(Duration::from_secs(20), || {
+        let run = workroom(Some(socket), &args);
+        let done = ready(&run);
+        last = Some(run);
+        done
+    });
+    let last = last.expect("a run");
+    assert!(reached, "never ready: {:?} {:?}", last.stdout, last.stderr);
+    last
+}
+
+fn capture(socket: &Path, args: &[&str]) -> Run {
+    capture_until(socket, args, |_| true)
+}
+
+/// A line longer than any pane here, with no spaces, so nothing trims it where it wraps.
+fn long_line() -> String {
+    (0..30).map(|n| format!("w{n:02}-abcde")).collect()
+}
+
+/// `capture` and each of its options against a session showing known content: 40 lines of history,
+/// a coloured line, a line the pane wraps, and `END`.
+#[test]
+fn capture_reads_the_screen_its_history_and_wrapped_lines() {
+    let workspace = Workspace::new("api-capture");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+    if !has_terminal_state() {
+        // No shadow terminal, so no screen to read: a precondition the daemon can't meet.
+        let run = workroom(Some(&socket), &["capture", "server", "--json"]);
+        assert_eq!(run.code, 3, "{} {}", run.stdout, run.stderr);
+        assert_eq!(run.envelope()["error"]["kind"], "ScreenUnavailable");
+        return;
+    }
+    let long = long_line();
+    type_line(
+        &mut shell,
+        &known_content(
+            &workspace.dir,
+            "content",
+            &format!(
+                "i=0; while [ $i -lt 40 ]; do echo \"hist $i\"; i=$((i+1)); done\n\
+                 printf 'RED: \\033[31mred\\033[0m\\n'\necho {long}\necho END"
+            ),
+        ),
+    );
+    let plain = capture_until(&socket, &["server"], |run| run.stdout.ends_with("END\n"));
+    assert_eq!(plain.code, 0, "{}", plain.stderr);
+    assert_eq!(plain.stderr, "");
+
+    let json = capture(&socket, &["server", "--json"]);
+    assert_eq!(json.code, 0, "{}", json.stderr);
+    let envelope = json.envelope();
+    assert_eq!(envelope["ok"], true);
+    assert_eq!(envelope["command"], "capture");
+    assert_eq!(envelope["session"], SHELL);
+    assert_eq!(envelope["text"].as_str().unwrap(), plain.stdout.trim_end());
+    assert_eq!(envelope["alternate_screen"], false);
+    assert_eq!(envelope["title"], Value::Null);
+    assert_eq!(
+        (&envelope["chunk"], &envelope["last"]),
+        (&json!(0), &json!(true))
+    );
+    let columns = envelope["size"]["columns"].as_u64().unwrap() as usize;
+    let rows = envelope["size"]["rows"].as_u64().unwrap() as usize;
+    // Below END, at the start of the screen's last row.
+    assert_eq!(envelope["cursor"], json!({"row": rows - 1, "column": 0}));
+
+    // The screen: every row but the blank one under END. Above END are the long line's rows, the
+    // coloured line, and the newest of the history.
+    let wrapped = long.len().div_ceil(columns);
+    let screen: Vec<&str> = plain.stdout.lines().collect();
+    assert_eq!(screen.len(), rows - 1, "{screen:#?}");
+    let history_shown = rows - 1 - wrapped - 2;
+    assert_eq!(screen[0], format!("hist {}", 40 - history_shown));
+    assert_eq!(screen[history_shown], "RED: red");
+    assert_eq!(screen[history_shown + 1], &long[..columns]);
+    assert!(!plain.stdout.contains('\u{1b}'));
+
+    let more = capture(&socket, &["server", "--lines", "5"]);
+    let more: Vec<&str> = more.stdout.lines().collect();
+    assert_eq!(more.len(), screen.len() + 5);
+    assert_eq!(more[0], format!("hist {}", 40 - history_shown - 5));
+    assert_eq!(&more[5..], &screen[..]);
+
+    let all = capture(&socket, &["server", "--all"]);
+    assert_eq!(all.code, 0, "{}", all.stderr);
+    let all: Vec<&str> = all.stdout.lines().collect();
+    assert_eq!(all.len(), 40 + 1 + wrapped + 1, "{all:#?}");
+    assert_eq!(all[0], "hist 0");
+    assert_eq!(all.last(), Some(&"END"));
+
+    let unwrapped = capture(&socket, &["server", "--unwrap"]);
+    assert!(
+        unwrapped.stdout.lines().any(|line| line == long),
+        "{}",
+        unwrapped.stdout
+    );
+    assert!(!plain.stdout.lines().any(|line| line == long));
+    let unwrapped_all = capture(&socket, &["server", "--all", "--unwrap"]);
+    assert_eq!(unwrapped_all.stdout.lines().count(), 40 + 1 + 1 + 1);
+
+    let vt = capture(&socket, &["server", "--vt"]);
+    assert!(vt.stdout.contains("\u{1b}["), "{:?}", vt.stdout);
+    assert!(vt.stdout.contains("red") && vt.stdout.contains("END"));
+}
+
+/// A full-screen program's screen, title and cursor, and that it is on the alternate screen.
+#[test]
+fn capture_says_when_a_program_has_the_alternate_screen() {
+    if !has_terminal_state() {
+        eprintln!("skipped: needs a daemon built with terminal-state");
+        return;
+    }
+    let workspace = Workspace::new("api-capture-alt");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "editor", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+    type_line(&mut shell, "echo on the primary");
+    type_line(
+        &mut shell,
+        &known_content(
+            &workspace.dir,
+            "fullscreen",
+            "printf '\\033[?1049h\\033[H\\033[2J\\033]2;notes.md\\007FULL SCREEN\\r\\n  editing'",
+        ),
+    );
+    let run = capture_until(&socket, &["editor", "--json"], |run| {
+        run.code == 0 && run.envelope()["alternate_screen"] == true
+    });
+    let envelope = run.envelope();
+    assert_eq!(envelope["text"], "FULL SCREEN\n  editing", "{envelope}");
+    assert_eq!(envelope["title"], "notes.md");
+    assert_eq!(envelope["cursor"], json!({"row": 1, "column": 9}));
+    // No history on the alternate screen: the shell's is under it.
+    for flag in ["--lines=50", "--all"] {
+        let run = capture(&socket, &["editor", flag]);
+        assert_eq!(run.stdout, "FULL SCREEN\n  editing\n", "{flag}");
+    }
+}
+
+/// `--all` on a long history: one envelope per chunk under `--json`, numbered from 0 with only the
+/// last saying so, which together are the whole history; without `--json`, the same text.
+#[test]
+fn capture_all_streams_a_large_scrollback_in_chunks() {
+    if !has_terminal_state() {
+        eprintln!("skipped: needs a daemon built with terminal-state");
+        return;
+    }
+    let workspace = Workspace::new("api-capture-all");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "logs", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+    const LINES: usize = 30_000;
+    type_line(
+        &mut shell,
+        &known_content(
+            &workspace.dir,
+            "logs",
+            &format!(
+                "echo STARTED\nsleep 3\nprintf '\\033[H\\033[2J\\033[3J'\n\
+                 awk 'BEGIN {{ for (i = 0; i < {LINES}; i++) \
+                 printf \"line %05d the quick brown fox jumps over the lazy dog\\n\", i }}'\n\
+                 echo DONE"
+            ),
+        ),
+    );
+    // Detached once the script has started and before it prints, so nothing waits on this test
+    // reading the pane's output, and the typed line is not lost with the client.
+    capture_until(&socket, &["logs"], |run| run.stdout.contains("STARTED\n"));
+    drop(shell);
+    capture_until(&socket, &["logs"], |run| run.stdout.ends_with("DONE\n"));
+
+    let json = capture(&socket, &["logs", "--all", "--json"]);
+    assert_eq!(json.code, 0, "{}", json.stderr);
+    let envelopes: Vec<Value> = json
+        .stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one envelope per line"))
+        .collect();
+    assert!(envelopes.len() > 4, "{} chunks", envelopes.len());
+    let mut text = String::new();
+    for (index, envelope) in envelopes.iter().enumerate() {
+        assert_eq!(envelope["command"], "capture");
+        assert_eq!(envelope["chunk"], index, "{envelope}");
+        assert_eq!(envelope["last"], index + 1 == envelopes.len(), "{index}");
+        assert_eq!(envelope["session"], SHELL);
+        assert!(envelope["size"]["columns"].is_u64(), "{envelope}");
+        let chunk = envelope["text"].as_str().unwrap();
+        assert!(
+            chunk.len() <= 64 * 1024,
+            "chunk {index} is {} bytes",
+            chunk.len()
+        );
+        text += chunk;
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), LINES + 1);
+    for (n, line) in lines[..LINES].iter().enumerate() {
+        assert_eq!(
+            *line,
+            format!("line {n:05} the quick brown fox jumps over the lazy dog")
+        );
+    }
+    assert_eq!(lines[LINES], "DONE");
+
+    let plain = capture(&socket, &["logs", "--all"]);
+    assert_eq!(plain.stdout, text + "\n");
+}
+
+#[test]
+fn capture_refuses_a_bad_command_line_and_a_target_it_cannot_find() {
+    let workspace = Workspace::new("api-capture-usage");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let _shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+
+    for (args, message) in [
+        (&["capture", "--json"][..], "accepts 1 arg(s), received 0"),
+        (
+            &["capture", "a", "b", "--json"],
+            "accepts 1 arg(s), received 2",
+        ),
+        (
+            &["capture", "server", "--lines", "many", "--json"],
+            "invalid argument \"many\" for \"--lines\" flag",
+        ),
+        (
+            &["capture", "server", "--lines=-1", "--json"],
+            "invalid argument \"-1\" for \"--lines\" flag",
+        ),
+        (
+            &["capture", "server", "--all", "--lines", "3", "--json"],
+            "none of the others can be",
+        ),
+    ] {
+        let run = workroom(Some(&socket), args);
+        assert_eq!(run.code, 1, "{args:?} {}", run.stdout);
+        let envelope = run.envelope();
+        assert_eq!(envelope["error"]["kind"], "InternalError", "{args:?}");
+        let said = envelope["error"]["message"].as_str().unwrap();
+        assert!(said.contains(message), "{args:?}: {said}");
+    }
+    let missing = workroom(Some(&socket), &["capture", "nothing", "--json"]);
+    assert_eq!(missing.code, 3);
+    assert_eq!(missing.envelope()["error"]["kind"], "TargetNotFound");
+    assert_eq!(missing.envelope()["command"], "capture");
+    let unreachable = workroom_outside_any_daemon(&workspace.dir, &["capture", "server", "--json"]);
+    assert_eq!(unreachable.code, 7);
+    assert_eq!(unreachable.envelope()["error"]["kind"], "DaemonUnreachable");
 }
 
 /// `workroom api <args>` with `--json`, from a run that must succeed: its envelope.
@@ -1038,7 +1337,7 @@ fn api_list_names_every_method_the_daemon_has() {
     assert!(
         human
             .stdout
-            .contains(&format!("session.list     {summary}\n")),
+            .contains(&format!("session.list      {summary}\n")),
         "{}",
         human.stdout
     );
@@ -1193,6 +1492,7 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
         ("api.describe", json!({})),
         ("session.list", json!({})),
         ("session.resolve", json!({"target": OTHER})),
+        ("terminal.capture", json!({"target": OTHER, "lines": 2})),
     ];
     let listed = api_json(&socket, &["list"]);
     for method in listed["methods"].as_array().expect("methods") {
@@ -1201,6 +1501,10 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
             .iter()
             .find(|(case, _)| *case == name)
             .unwrap_or_else(|| panic!("{name} has no case here: add one"));
+        // A capture needs a screen to read, which only terminal-state keeps.
+        if name == "terminal.capture" && !has_terminal_state() {
+            continue;
+        }
         let described = api_json(&socket, &["describe", name]);
         let schema = &described["method"];
         assert_eq!(violation(&schema["input"], params, name), None);

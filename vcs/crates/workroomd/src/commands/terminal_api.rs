@@ -41,6 +41,23 @@ pub(super) struct Replied {
 
 /// [`call`], keeping the reply's `revision` beside its `result`.
 pub(super) fn reply(context: &Context, method: &str, params: Value) -> Result<Replied, CliError> {
+    let mut answer = None;
+    stream(context, method, params, |replied| {
+        answer = Some(replied);
+        false
+    })?;
+    Ok(answer.expect("a stream that succeeds hands over a reply"))
+}
+
+/// Calls `method` with `params`, a method that may reply more than once on its stream, and hands
+/// each reply to `each` as it arrives, for as long as `each` says more are coming. The daemon's
+/// error, at any point, is the command's.
+pub(super) fn stream(
+    context: &Context,
+    method: &str,
+    params: Value,
+    mut each: impl FnMut(Replied) -> bool,
+) -> Result<(), CliError> {
     // A request too big to send is bad input whether or not a daemon would take it, so it is
     // refused (2) before one is looked for.
     let mut request = json!({"method": method, "params": params});
@@ -86,22 +103,28 @@ pub(super) fn reply(context: &Context, method: &str, params: Value) -> Result<Re
     stream
         .write_all(&Envelope::new(Service::TerminalApi, STREAM, request).encode())
         .map_err(|error| unreachable(format!("the daemon on {socket} hung up: {error}")))?;
-    let reply = read_reply(&mut stream)
-        .ok_or_else(|| unreachable(format!("the daemon on {socket} did not answer")))?;
-    let reply: Value = serde_json::from_slice(&reply)
-        .map_err(|_| CliError::internal("the daemon's reply is not JSON"))?;
-    if let Some(error) = reply.get("error") {
-        let mut failure = CliError::new(
-            Kind::from_code(error["kind"].as_str().unwrap_or_default()),
-            error["message"].as_str().unwrap_or("the daemon refused"),
-        );
-        failure.matches = error["matches"].as_array().cloned().unwrap_or_default();
-        return Err(failure);
+    let mut decoder = EnvelopeDecoder::new();
+    loop {
+        let reply = read_reply(&mut stream, &mut decoder)
+            .ok_or_else(|| unreachable(format!("the daemon on {socket} did not answer")))?;
+        let reply: Value = serde_json::from_slice(&reply)
+            .map_err(|_| CliError::internal("the daemon's reply is not JSON"))?;
+        if let Some(error) = reply.get("error") {
+            let mut failure = CliError::new(
+                Kind::from_code(error["kind"].as_str().unwrap_or_default()),
+                error["message"].as_str().unwrap_or("the daemon refused"),
+            );
+            failure.matches = error["matches"].as_array().cloned().unwrap_or_default();
+            return Err(failure);
+        }
+        let replied = Replied {
+            revision: reply.get("revision").cloned().unwrap_or(Value::Null),
+            result: reply.get("result").cloned().unwrap_or(Value::Null),
+        };
+        if !each(replied) {
+            return Ok(());
+        }
     }
-    Ok(Replied {
-        revision: reply.get("revision").cloned().unwrap_or(Value::Null),
-        result: reply.get("result").cloned().unwrap_or(Value::Null),
-    })
 }
 
 /// The socket of the nearest daemon this process runs under, for a caller whose environment names
@@ -135,10 +158,10 @@ pub(super) fn served_socket(argv: &[String]) -> Option<String> {
     argv.get(at + 1).filter(|path| !path.is_empty()).cloned()
 }
 
-/// The reply on `STREAM`, its chunks joined (`rpc::send`: each payload's first byte says whether
-/// it is the last), or `None` when the daemon hangs up or goes quiet first.
-fn read_reply(stream: &mut UnixStream) -> Option<Vec<u8>> {
-    let mut decoder = EnvelopeDecoder::new();
+/// The next reply on `STREAM`, its chunks joined (`rpc::send`: each payload's first byte says
+/// whether it is the last), or `None` when the daemon hangs up or goes quiet first. `decoder`
+/// carries what was read past one reply to the next.
+fn read_reply(stream: &mut UnixStream, decoder: &mut EnvelopeDecoder) -> Option<Vec<u8>> {
     let mut reply = Vec::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
