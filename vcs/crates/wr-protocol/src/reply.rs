@@ -1,7 +1,8 @@
 //! The reply every request/reply service sends on its stream: `{"version": N, "result": …}` when
 //! the request succeeded, `{"version": N, "error": …}` when it did not. `N` is the service's own
 //! version, not the envelope's. The body is each service's business; only this outer shape is
-//! shared, so it is written once here rather than as a `json!` literal at every reply site.
+//! shared, so it is written once here rather than as a `json!` literal at every reply site. The
+//! terminal API, a public contract whose number is `revision` (ADR 0079), writes its own.
 use serde::Serialize;
 
 /// One reply. Serialize it (with `serde_json::to_value` or `json!`) to put it on the wire.
