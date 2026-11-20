@@ -1289,9 +1289,9 @@ impl ShadowTerminal {
             .unwrap_or(false)
     }
 
-    /// Plain-text screen contents, scrollback included and untrimmed. Used by tests; never sent to
-    /// a client, which gets `replay()`, nor to the terminal API, which gets `capture_text`.
-    #[cfg(any(test, feature = "test-support"))]
+    /// Plain-text screen contents, scrollback included and untrimmed, for `wait --include-screen`
+    /// (#690) and tests; never sent to a client, which gets `replay()`, nor to
+    /// `terminal.capture`, which gets `capture_text`.
     pub fn visible_text(&self) -> String {
         let text = self.terminal.format(
             GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_PLAIN,

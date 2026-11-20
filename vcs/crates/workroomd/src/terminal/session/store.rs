@@ -487,6 +487,7 @@ impl SessionStore {
             return false;
         };
         self.hooks.change_program_status(id, &shadow, change);
+        self.program_status_changed(id);
         true
     }
 }

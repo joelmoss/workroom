@@ -58,6 +58,10 @@ tar = { version = "0.4", default-features = false }
 # Kitty images: the decoder libghostty-vt needs to store a PNG, and what a reattach re-sends them
 # as (#551). Pure Rust, and only with terminal-state.
 png = { version = "0.18", optional = true }
+# `workroom wait --regex`'s matcher over a session's output (`terminal::wait`): linear time in the
+# text, whatever the pattern, so a caller's regex cannot stall a session's reader. Already in the
+# lockfile, as bindgen's (ghostty-vt's build).
+regex = "1"
 # libghostty-vt's bindings, safe wrapper and build, only with terminal-state.
 ghostty-vt = { path = "../ghostty-vt", optional = true }
 

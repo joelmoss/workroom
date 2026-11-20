@@ -403,8 +403,9 @@ struct ConnectionServices {
     layout_partial: crate::daemon::rpc::PartialRequests,
     subscriptions: crate::vcs::watch::Subscriptions,
     forwards: crate::host::forward::Forwards,
-    /// The terminal API's own, as the Layout service has (ADR 0079).
-    api_partial: crate::daemon::rpc::PartialRequests,
+    /// The terminal API's own requests, as the Layout service has (ADR 0079), and its waits, ended
+    /// with it.
+    api: crate::terminal::api::Connection,
     /// Its program status subscription, ended with it like `subscriptions`.
     program_status: crate::terminal::program_status::Connection,
     /// The service-stream deadline, once the client says it pings.
@@ -599,7 +600,7 @@ pub fn handle_connection_with<T: Transport>(
         peer_pid,
         partial: crate::daemon::rpc::PartialRequests::default(),
         layout_partial: crate::daemon::rpc::PartialRequests::default(),
-        api_partial: crate::daemon::rpc::PartialRequests::default(),
+        api: crate::terminal::api::Connection::default(),
         subscriptions: crate::vcs::watch::Subscriptions::new(
             Arc::clone(&writer),
             Arc::clone(&closer),
@@ -697,7 +698,7 @@ fn dispatch(
     }
     if envelope.service == Service::TerminalApi {
         crate::terminal::api::dispatch(
-            &mut services.api_partial,
+            &mut services.api,
             envelope,
             sessions,
             services.peer_pid,

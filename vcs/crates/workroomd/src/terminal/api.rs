@@ -14,7 +14,9 @@
 //! `revision` everywhere, not the other services' `version`), where `kind` is a code from the same
 //! registry every `workroom` command shares (ADR 0013), and an ambiguous target's error lists the
 //! sessions it matched under `matches`. Nothing is ever sent unasked, which is what leaves a client
-//! that never calls the service unaffected by it.
+//! that never calls the service unaffected by it. Every method answers at once except
+//! `terminal.wait` (`wait`), which answers when its wait ends, while the connection goes on taking
+//! requests.
 //!
 //! **The caller** (#684) is the session a request comes from: the one whose shell the connecting
 //! process descends from (its peer pid, then its parents), else the one its optional `"caller"`
@@ -73,8 +75,13 @@ pub mod kind {
     pub const INVALID_REQUEST: &str = "InvalidRequest";
     /// The request or its reply is over the service's limit.
     pub const TOO_LARGE: &str = "TooLarge";
-    /// The session the target named ended before it could be read.
+    /// The session the target named ended before it could be read, or before or while it was
+    /// waited on.
     pub const SESSION_ENDED: &str = "SessionEnded";
+    /// A wait that ran out of time.
+    pub const WAIT_TIMEOUT: &str = "WaitTimeout";
+    /// The request needs the shell's integration marks, and the session has sent none.
+    pub const NO_SHELL_INTEGRATION: &str = "NoShellIntegration";
     /// The daemon is at a limit on concurrent work (`MAX_CAPTURES` captures of history), so it
     /// refuses rather than queue, and a retry once some has finished can succeed.
     pub const BUSY: &str = "Busy";
@@ -136,7 +143,16 @@ pub struct Method {
     pub params_example: fn() -> Value,
     /// A `result` it replies with, which `api.describe` lists under the output schema's `examples`.
     pub result_example: fn() -> Value,
-    run: fn(&Call) -> Result<Answer, ApiError>,
+    run: Run,
+}
+
+/// How a method answers.
+enum Run {
+    /// At once, on the connection's reader: one reply, or a stream made as it is sent.
+    Now(fn(&Call) -> Result<Answer, ApiError>),
+    /// When something happens, from a thread of its own, while the connection goes on taking
+    /// requests: `terminal.wait` (`wait::start`).
+    Wait,
 }
 
 /// One request as a method sees it.
@@ -163,7 +179,7 @@ pub const METHODS: &[Method] = &[
         result_example: || {
             description(Some("session.list")).expect("session.list is a method to describe")
         },
-        run: |call| describe(call).map(Answer::One),
+        run: Run::Now(|call| describe(call).map(Answer::One)),
     },
     Method {
         name: "session.list",
@@ -199,7 +215,7 @@ pub const METHODS: &[Method] = &[
                 "caller": agent_session_example()["id"],
             })
         },
-        run: |call| {
+        run: Run::Now(|call| {
             let listing = listed(call.sessions);
             let sessions = match call.params.get("all") {
                 Some(Value::Bool(true)) => listing,
@@ -209,7 +225,7 @@ pub const METHODS: &[Method] = &[
             Ok(Answer::One(
                 json!({"sessions": sessions, "caller": call.caller}),
             ))
-        },
+        }),
     },
     Method {
         name: "session.resolve",
@@ -236,7 +252,7 @@ pub const METHODS: &[Method] = &[
         errors: &[kind::TARGET_NOT_FOUND, kind::TARGET_AMBIGUOUS],
         params_example: || json!({"target": "dev server"}),
         result_example: || json!({"session": run_session_example(), "caller": agent_session_example()["id"]}),
-        run: |call| {
+        run: Run::Now(|call| {
             let target = call
                 .params
                 .get("target")
@@ -244,7 +260,7 @@ pub const METHODS: &[Method] = &[
                 .ok_or_else(|| ApiError::invalid("session.resolve needs a string `target`"))?;
             resolve(&listed(call.sessions), target)
                 .map(|session| Answer::One(json!({"session": session, "caller": call.caller})))
-        },
+        }),
     },
     Method {
         name: "terminal.capture",
@@ -282,7 +298,19 @@ pub const METHODS: &[Method] = &[
                 "chunk": 0,
             })
         },
-        run: capture,
+        run: Run::Now(capture),
+    },
+    Method {
+        name: wait::NAME,
+        summary: "Waits for one thing to happen in a session: a program status, a run state, \
+                  output matching a regex, the session ending, or its shell's command finishing. \
+                  Answered when it happens, or with `WaitTimeout` once `timeout_ms` passes.",
+        input: wait::input,
+        output: wait::output,
+        errors: wait::ERRORS,
+        params_example: wait::params_example,
+        result_example: wait::result_example,
+        run: Run::Wait,
     },
 ];
 
@@ -883,9 +911,39 @@ pub fn resolve(sessions: &[Value], target: &str) -> Result<Value, ApiError> {
     ))
 }
 
-/// One request, separated from the transport so tests drive it directly. `peer` is the process
-/// that connected, when the transport knows it.
+/// One request that answers at once, separated from the transport so tests drive it directly.
+/// `peer` is the process that connected, when the transport knows it.
+#[cfg(test)]
 fn handle(sessions: &SessionStore, bytes: &[u8], peer: Option<i32>) -> Result<Answer, ApiError> {
+    let request = read(sessions, bytes, peer)?;
+    match request.method.run {
+        Run::Now(run) => run(&request.call(sessions)),
+        Run::Wait => Err(ApiError::invalid(
+            "terminal.wait answers on its own stream, from `dispatch`",
+        )),
+    }
+}
+
+/// A request as it was read: the method it names, its `params`, and the session it comes from.
+struct Request {
+    method: &'static Method,
+    params: Value,
+    caller: Option<String>,
+}
+
+impl Request {
+    fn call<'a>(&'a self, sessions: &'a SessionStore) -> Call<'a> {
+        Call {
+            sessions,
+            params: &self.params,
+            caller: self.caller.clone(),
+        }
+    }
+}
+
+/// Reads one request: the method it names, its `params`, and its caller, from `peer` (the process
+/// that connected, when the transport knows it) or the request's `caller`.
+fn read(sessions: &SessionStore, bytes: &[u8], peer: Option<i32>) -> Result<Request, ApiError> {
     let request: Value = serde_json::from_slice(bytes)
         .map_err(|_| ApiError::invalid("a terminal API request is a JSON object"))?;
     let name = request
@@ -906,9 +964,9 @@ fn handle(sessions: &SessionStore, bytes: &[u8], peer: Option<i32>) -> Result<An
         Some(Value::String(caller)) => Some(caller.as_str()),
         Some(_) => return Err(ApiError::invalid("`caller` is a session's id")),
     };
-    (method.run)(&Call {
-        sessions,
-        params: &params,
+    Ok(Request {
+        method,
+        params,
         caller: caller_of(sessions, caller, peer).map(|id| id.to_hyphenated()),
     })
 }
@@ -940,9 +998,29 @@ fn reply(result: Result<Value, ApiError>, more: bool) -> Value {
     }
 }
 
-/// Answers one envelope on its own stream.
+/// Sends `value`, one whole reply, on `stream`. One over the 16 MiB a reply holds goes out as a
+/// `TooLarge` error instead, a reply like any other: `revision`, `error` and `more`. Whether it
+/// went out: a client that hung up (`| head`) ends a stream.
+fn send(writer: &SharedWriter, stream: u32, value: Value) -> bool {
+    crate::daemon::rpc::send_with(writer, Service::TerminalApi, stream, value, || {
+        reply(
+            Err(ApiError::new(kind::TOO_LARGE, "the reply is over 16 MiB")),
+            false,
+        )
+    })
+}
+
+/// One connection's side of the service, dropped with it.
+#[derive(Default)]
+pub struct Connection {
+    partial: PartialRequests,
+    /// Its waits, which end when it does.
+    waits: wait::Waits,
+}
+
+/// Answers one envelope on its own stream: at once, or for a wait, when it ends.
 pub fn dispatch(
-    partial: &mut PartialRequests,
+    connection: &mut Connection,
     envelope: &Envelope,
     sessions: &SessionStore,
     peer: Option<i32>,
@@ -952,21 +1030,26 @@ pub fn dispatch(
     if envelope.stream == 0 {
         return;
     }
-    // Whether the reply went out: a client that hung up (`| head`) ends a stream.
-    let send = |value: Value| {
-        crate::daemon::rpc::send_with(writer, Service::TerminalApi, envelope.stream, value, || {
-            reply(
-                Err(ApiError::new(kind::TOO_LARGE, "the reply is over 16 MiB")),
-                false,
-            )
-        })
-    };
-    match crate::daemon::rpc::reassemble(partial, envelope) {
-        Ok(Some(bytes)) => match handle(sessions, &bytes, peer) {
-            Ok(Answer::One(result)) => {
-                send(reply(Ok(result), false));
-            }
-            Ok(Answer::Stream(results)) => stream(results, send),
+    let send = |value: Value| send(writer, envelope.stream, value);
+    match crate::daemon::rpc::reassemble(&mut connection.partial, envelope) {
+        Ok(Some(bytes)) => match read(sessions, &bytes, peer) {
+            Ok(request) => match request.method.run {
+                Run::Now(run) => match run(&request.call(sessions)) {
+                    Ok(Answer::One(result)) => {
+                        send(reply(Ok(result), false));
+                    }
+                    Ok(Answer::Stream(results)) => stream(results, send),
+                    Err(error) => {
+                        send(reply(Err(error), false));
+                    }
+                },
+                Run::Wait => wait::start(
+                    &mut connection.waits,
+                    &request.call(sessions),
+                    writer,
+                    envelope.stream,
+                ),
+            },
             Err(error) => {
                 send(reply(Err(error), false));
             }
@@ -1006,6 +1089,8 @@ fn stream(
         result = results.next().expect("peeked");
     }
 }
+
+mod wait;
 
 #[cfg(test)]
 mod tests;

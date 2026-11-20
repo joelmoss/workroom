@@ -1,0 +1,402 @@
+//! `terminal.wait` (#690): its parameters and result, and the request's side of a wait. The
+//! request is answered on its own stream once the wait ends, by a thread of its own, so the
+//! connection goes on reading meanwhile; the session's side is `crate::terminal::wait`.
+//!
+//! Exactly one condition: `status`, `run`, `regex`, `ended` or `command_finished`. A status, a run
+//! state and the session's end are states, so one already true meets the wait at once. A regex
+//! and a command end are events: only output that arrives after the wait starts counts (and the
+//! screen as it is then, with `include_screen`), and only a command that ends after it.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+
+use super::{ApiError, Call, kind, listed, resolve};
+use crate::daemon::rpc::SharedWriter;
+use crate::terminal::program_status::State;
+use crate::terminal::session::{SessionId, SessionStore};
+use crate::terminal::wait::{Condition, Matcher, Met, Outcome, RunState, Waiter};
+
+pub const NAME: &str = "terminal.wait";
+
+const STATES: [&str; 5] = ["idle", "working", "done", "blocked", "error"];
+
+/// The names of the conditions, as `params` and the result's `condition` spell them.
+const CONDITIONS: [&str; 5] = ["status", "run", "regex", "ended", "command_finished"];
+
+pub fn input() -> Value {
+    let run_states: Vec<&str> = RunState::ALL.iter().map(|state| state.name()).collect();
+    json!({
+        "type": "object",
+        "required": ["target"],
+        "description": "Exactly one of `status`, `run`, `regex`, `ended` or `command_finished`.",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": "The session, as `session.resolve` takes it.",
+            },
+            "status": {
+                "type": "string",
+                "enum": STATES,
+                "description": "Wait for the session's coding agent to have this program status, as \
+                                `session.list` reports it; now counts.",
+            },
+            "run": {
+                "type": "string",
+                "enum": run_states,
+                "description": "Wait for a run session's run to be in this state; now counts.",
+            },
+            "exit_code": {
+                "type": "integer",
+                "description": "With `run: exited`, only an exit with this code.",
+            },
+            "regex": {
+                "type": "string",
+                "description": "Wait for output matching this regex (Rust `regex` syntax), with \
+                                escape sequences stripped. Only output after the wait starts \
+                                counts; `^` and `$` match at line ends, `\\r\\n` included. A match \
+                                is at most 16 KiB.",
+            },
+            "include_screen": {
+                "type": "boolean",
+                "description": "With `regex`, also match the screen as it is when the wait starts.",
+            },
+            "ended": {
+                "type": "boolean",
+                "description": "`true`: wait for the session to end; already ended counts.",
+            },
+            "command_finished": {
+                "type": "boolean",
+                "description": "`true`: wait for the shell's next command to finish (its OSC 133 \
+                                command-end mark). A session whose shell has sent no marks fails \
+                                with `NoShellIntegration`.",
+            },
+            "timeout_ms": {
+                "type": "integer",
+                "description": "Fail with `WaitTimeout` after this many milliseconds; no limit \
+                                when left out.",
+            },
+        },
+    })
+}
+
+pub fn output() -> Value {
+    let run_states: Vec<Value> = RunState::ALL
+        .iter()
+        .map(|state| json!(state.name()))
+        .chain([Value::Null])
+        .collect();
+    let mut states: Vec<Value> = STATES.iter().map(|state| json!(state)).collect();
+    states.push(Value::Null);
+    json!({
+        "type": "object",
+        "required": ["session", "condition", "status", "run", "match", "exit_code"],
+        "properties": {
+            "session": {"type": "string", "description": "The session's id."},
+            "condition": {"type": "string", "enum": CONDITIONS},
+            "status": {
+                "type": ["string", "null"],
+                "enum": states,
+                "description": "The program status reached, for `status`.",
+            },
+            "run": {
+                "type": ["string", "null"],
+                "enum": run_states,
+                "description": "The run state reached, for `run`.",
+            },
+            "match": {
+                "type": ["object", "null"],
+                "description": "What the regex matched, for `regex`.",
+                "required": ["text"],
+                "properties": {"text": {
+                    "type": "string",
+                    "description": "The matched text, escape sequences stripped.",
+                }},
+            },
+            "exit_code": {
+                "type": ["integer", "null"],
+                "description": "The run's exit code (`run: exited`), the command's \
+                                (`command_finished`), or the session's shell's (`ended`), when \
+                                there is one.",
+            },
+        },
+    })
+}
+
+pub const ERRORS: &[&str] = &[
+    kind::TARGET_NOT_FOUND,
+    kind::TARGET_AMBIGUOUS,
+    kind::WAIT_TIMEOUT,
+    kind::SESSION_ENDED,
+    kind::NO_SHELL_INTEGRATION,
+];
+
+pub fn params_example() -> Value {
+    json!({"target": "dev server", "regex": "ready in \\d+ ms", "timeout_ms": 30000})
+}
+
+pub fn result_example() -> Value {
+    json!({
+        "session": "c0ffee00-1111-4222-8333-44445555beef",
+        "condition": "regex",
+        "status": null,
+        "run": null,
+        "match": {"text": "ready in 312 ms"},
+        "exit_code": null,
+    })
+}
+
+/// One connection's waits, cancelled when it closes: a caller that has gone away is waited for by
+/// nobody, and must not leave a matcher on a session's output.
+#[derive(Default)]
+pub struct Waits(Vec<Arc<Waiter>>);
+
+impl Drop for Waits {
+    fn drop(&mut self) {
+        for waiter in &self.0 {
+            waiter.cancel();
+        }
+    }
+}
+
+/// A wait, parsed: what for, on which session, until when.
+struct Request {
+    id: SessionId,
+    name: &'static str,
+    include_screen: bool,
+    /// None: no limit.
+    deadline: Option<Instant>,
+}
+
+/// Starts the wait `params` asks for, answering on `stream` now when it fails or is already met,
+/// else from its own thread when it ends.
+pub fn start(waits: &mut Waits, call: &Call, writer: &SharedWriter, stream: u32) {
+    let sessions = call.sessions;
+    let send = {
+        let writer = Arc::clone(writer);
+        // One reply, the stream's last: a wait answers once.
+        move |result: Result<Value, ApiError>| {
+            super::send(&writer, stream, super::reply(result, false));
+        }
+    };
+    let (request, waiter) = match register(sessions, call.params) {
+        Ok(started) => started,
+        Err(error) => return send(Err(error)),
+    };
+    if let Some(outcome) = waiter.outcome() {
+        sessions.remove_waiter(request.id, &waiter);
+        return send(result(&request, outcome));
+    }
+    waits.0.retain(|held| held.outcome().is_none());
+    waits.0.push(Arc::clone(&waiter));
+    let sessions = sessions.clone();
+    let spawned = std::thread::Builder::new()
+        .name("terminal wait".into())
+        .spawn(move || {
+            let outcome = waiter.wait(request.deadline);
+            sessions.remove_waiter(request.id, &waiter);
+            if outcome != Outcome::Cancelled {
+                send(result(&request, outcome));
+            }
+        });
+    if let Err(error) = spawned {
+        crate::note!("terminal API: no thread for a wait: {error}");
+    }
+}
+
+/// Parses `params`, resolves the target and adds the waiter to its session.
+fn register(sessions: &SessionStore, params: &Value) -> Result<(Request, Arc<Waiter>), ApiError> {
+    let given: Vec<&str> = CONDITIONS
+        .into_iter()
+        .filter(|name| params.get(name).is_some_and(|value| !value.is_null()))
+        .collect();
+    let [name] = given.as_slice() else {
+        return Err(ApiError::invalid(format!(
+            "terminal.wait takes exactly one of `{}`",
+            CONDITIONS.join("`, `")
+        )));
+    };
+    let target = params
+        .get("target")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::invalid("terminal.wait needs a string `target`"))?;
+    let flag = |key: &str| match params.get(key) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(on)) => Ok(*on),
+        Some(_) => Err(ApiError::invalid(format!("`{key}` is a boolean"))),
+    };
+    let include_screen = flag("include_screen")?;
+    if include_screen && *name != "regex" {
+        return Err(ApiError::invalid("`include_screen` goes with `regex`"));
+    }
+    let deadline = match params.get("timeout_ms") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            let millis = value
+                .as_u64()
+                .ok_or_else(|| ApiError::invalid("`timeout_ms` is a whole number, 0 or more"))?;
+            // Past what an `Instant` holds is no limit.
+            Instant::now().checked_add(Duration::from_millis(millis))
+        }
+    };
+    let exit_code = match params.get("exit_code") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_i64()
+                .and_then(|code| i32::try_from(code).ok())
+                .ok_or_else(|| ApiError::invalid("`exit_code` is an integer"))?,
+        ),
+    };
+    let text = |key: &str| {
+        params[key]
+            .as_str()
+            .ok_or_else(|| ApiError::invalid(format!("`{key}` is a string")))
+    };
+    let shadowed = cfg!(feature = "terminal-state");
+    let without_shadow = |what: &str| {
+        ApiError::invalid(format!(
+            "{what} needs the shadow terminal, which this daemon was built without (terminal-state)"
+        ))
+    };
+    let condition = match *name {
+        "status" => {
+            let state = text("status")?;
+            let state: State = serde_json::from_value(json!(state)).map_err(|_| {
+                ApiError::invalid(format!("`status` is one of {}", STATES.join(", ")))
+            })?;
+            if !shadowed {
+                return Err(without_shadow("waiting for a program status"));
+            }
+            Condition::Status(state)
+        }
+        "run" => {
+            let state = RunState::named(text("run")?).ok_or_else(|| {
+                let names: Vec<&str> = RunState::ALL.iter().map(|state| state.name()).collect();
+                ApiError::invalid(format!("`run` is one of {}", names.join(", ")))
+            })?;
+            if exit_code.is_some() && state != RunState::Exited {
+                return Err(ApiError::invalid("`exit_code` goes with `run: exited`"));
+            }
+            Condition::Run { state, exit_code }
+        }
+        "regex" => {
+            let matcher = Matcher::new(text("regex")?)
+                .map_err(|error| ApiError::invalid(format!("`regex` is not a regex: {error}")))?;
+            if include_screen && !shadowed {
+                return Err(without_shadow("`include_screen`"));
+            }
+            Condition::Output(matcher)
+        }
+        "ended" if flag("ended")? => Condition::Ended,
+        "command_finished" if flag("command_finished")? => {
+            if !shadowed {
+                return Err(without_shadow("waiting for a command to finish"));
+            }
+            Condition::CommandFinished
+        }
+        other => return Err(ApiError::invalid(format!("`{other}` is `true` when given"))),
+    };
+    if exit_code.is_some() && *name != "run" {
+        return Err(ApiError::invalid("`exit_code` goes with `run: exited`"));
+    }
+
+    let session = resolve(&listed(sessions), target)?;
+    let id = session["id"]
+        .as_str()
+        .and_then(|id| wr_protocol::terminal::parse_session_id(std::ffi::OsStr::new(id)))
+        .expect("a listed session's id parses");
+    let run = matches!(condition, Condition::Run { .. });
+    if run && session["run"] != true {
+        return Err(ApiError::invalid(format!(
+            "{target:?} is not a run session, so it has no run state"
+        )));
+    }
+    let request = Request {
+        id,
+        name,
+        include_screen,
+        deadline,
+    };
+    let added = sessions.add_waiter(id, |shadow| {
+        if matches!(condition, Condition::CommandFinished) && !shadow.has_shell_marks() {
+            return Err(ApiError::new(
+                kind::NO_SHELL_INTEGRATION,
+                format!(
+                    "{target:?} has sent no shell integration marks (OSC 133), so the end of its \
+                     command can't be seen"
+                ),
+            ));
+        }
+        let waiter = Arc::new(Waiter::new(condition, shadow.seen()));
+        if request.include_screen {
+            waiter.screen(shadow.visible_text().as_bytes());
+        }
+        Ok(waiter)
+    });
+    let waiter = match added {
+        Some(added) => added?,
+        // Gone since it was resolved: it has ended, which is all `ended` waits for.
+        None if *name != "ended" => return Err(ended_error(&request)),
+        None => {
+            let waiter = Arc::new(Waiter::new(Condition::Ended, Default::default()));
+            waiter.ended(None);
+            waiter
+        }
+    };
+    // The run's state now, read after the waiter is added: a change from here on reaches it from
+    // the runs watcher, so none is missed between the two.
+    if run
+        && let Some(path) = sessions.hooks().runs.status_path(id)
+        && let Ok(line) = std::fs::read_to_string(path)
+    {
+        waiter.run(line.trim());
+    }
+    Ok((request, waiter))
+}
+
+fn ended_error(request: &Request) -> ApiError {
+    ApiError::new(
+        kind::SESSION_ENDED,
+        format!(
+            "session {} ended before what it was waited for happened",
+            request.id.to_hyphenated()
+        ),
+    )
+}
+
+/// The reply to a wait that ended with `outcome`.
+fn result(request: &Request, outcome: Outcome) -> Result<Value, ApiError> {
+    let mut reply = json!({
+        "session": request.id.to_hyphenated(),
+        "condition": request.name,
+        "status": null,
+        "run": null,
+        "match": null,
+        "exit_code": null,
+    });
+    match outcome {
+        Outcome::Met(Met::Status(state)) => reply["status"] = json!(state),
+        Outcome::Met(Met::Run { state, exit_code }) => {
+            reply["run"] = json!(state.name());
+            reply["exit_code"] = json!(exit_code);
+        }
+        Outcome::Met(Met::Output(text)) => {
+            reply["match"] = json!({"text": String::from_utf8_lossy(&text)});
+        }
+        Outcome::Met(Met::Ended(exit_code) | Met::CommandFinished(exit_code)) => {
+            reply["exit_code"] = json!(exit_code);
+        }
+        Outcome::SessionEnded => return Err(ended_error(request)),
+        Outcome::TimedOut => {
+            return Err(ApiError::new(
+                kind::WAIT_TIMEOUT,
+                format!("the wait for `{}` timed out", request.name),
+            ));
+        }
+        // Never answered: nobody is there to read it.
+        Outcome::Cancelled => {}
+    }
+    Ok(reply)
+}

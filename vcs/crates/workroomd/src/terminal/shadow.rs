@@ -150,6 +150,37 @@ pub struct Shadow {
     watching: bool,
     /// What the last write did to it.
     disturbed: Option<Disturbed>,
+    /// The shell's OSC 133 marks so far, for the terminal API's waits (#690).
+    marks: Marks,
+}
+
+/// What a session's shell has said through its OSC 133 marks since the daemon started it: whether
+/// it sends them at all, and how many commands it has ended.
+#[cfg(feature = "terminal-state")]
+#[derive(Default)]
+struct Marks {
+    any: bool,
+    commands: u64,
+    last_exit: Option<i32>,
+}
+
+#[cfg(feature = "terminal-state")]
+impl Marks {
+    /// Counts one write's marks. Most writes have no events, and this looks at nothing else.
+    fn count(&mut self, events: &[crate::terminal::program_status::Event]) {
+        use crate::terminal::program_status::Event;
+        for event in events {
+            match event {
+                Event::Prompt => self.any = true,
+                Event::Command { exit_code, .. } => {
+                    self.any = true;
+                    self.commands += 1;
+                    self.last_exit = Some(*exit_code);
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 #[cfg(not(feature = "terminal-state"))]
@@ -164,6 +195,7 @@ impl Shadow {
             status: Store::default(),
             watching: false,
             disturbed: None,
+            marks: Marks::default(),
         }
     }
 
@@ -199,6 +231,7 @@ impl Shadow {
             terminal.write(bytes);
         }
         let (events, replies) = terminal.take_program_status();
+        self.marks.count(&events);
         let fresh = terminal.take_fresh_report();
         let sender = (fresh || !events.is_empty()).then(foreground).flatten();
         if fresh {
@@ -385,7 +418,22 @@ impl Shadow {
         self.terminal.as_ref().and_then(|t| t.memory())
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    /// What a wait looks at after a read (#690): the coding agent's state, as `sessions` reports
+    /// it, and the commands the shell has ended.
+    pub fn seen(&self) -> crate::terminal::wait::Seen {
+        crate::terminal::wait::Seen {
+            agent: self.status.coding_agent().map(|agent| agent.state),
+            commands: self.marks.commands,
+            last_exit: self.marks.last_exit,
+        }
+    }
+
+    /// Whether the shell has sent an OSC 133 mark since the daemon started it.
+    pub fn has_shell_marks(&self) -> bool {
+        self.marks.any
+    }
+
+    /// The screen as plain text: for `wait --include-screen` (#690), and tests.
     pub fn visible_text(&self) -> String {
         self.terminal
             .as_ref()
@@ -471,7 +519,13 @@ impl Shadow {
     pub fn compression_supported(&self) -> bool {
         true
     }
-    #[cfg(any(test, feature = "test-support"))]
+    /// No terminal, so no program status and no marks.
+    pub fn seen(&self) -> crate::terminal::wait::Seen {
+        crate::terminal::wait::Seen::default()
+    }
+    pub fn has_shell_marks(&self) -> bool {
+        false
+    }
     pub fn visible_text(&self) -> String {
         String::new()
     }
