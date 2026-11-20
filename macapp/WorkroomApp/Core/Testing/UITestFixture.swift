@@ -1149,27 +1149,39 @@ import WorkroomVCS
       "Broken Mine": "not a theme\n",
     ]
 
-    /// Point the theme catalog at a per-process scratch folder for the whole launch: empty, or holding
-    /// `sampleUserThemes` with `-WorkroomUITestUserThemes 1`. A fixture launch never reads the owner's
-    /// real `~/.config/ghostty/themes`. The chrome and the picker read this; libghostty still resolves
-    /// `theme =` through its own search path, so a sample theme doesn't colour the terminal.
+    /// Point the theme catalog at a scratch folder of this launch's own for the whole process: empty,
+    /// or holding `sampleUserThemes` in a fixture launch with `-WorkroomUITestUserThemes 1`. No test
+    /// process — a fixture launch, a launch that isolates preferences, or a hosted unit run — reads the
+    /// owner's real `~/.config/ghostty/themes`, so every unit test that reaches the catalog through
+    /// `ThemeService` or the picker sees an empty folder unless it scopes one of its own
+    /// (`ThemeCatalog.withUserThemeDirectory`). The chrome and the picker read this; libghostty still
+    /// resolves `theme =` through its own search path, so a sample theme doesn't colour the terminal.
+    ///
+    /// The folder is made fresh by `mkdtemp`, so it is this process's own and there is nothing to
+    /// clear first. Should it fail, the catalog points at a path that `mkdtemp` was refused, which
+    /// reads as an empty folder: never the real one.
     ///
     /// Before anything resolves a theme (`ThemeService.shared`), from `WorkroomApp.init`. Inert outside
-    /// fixture mode. Kept out of `applyFixtureDefaults`, whose unit tests run it in-process with
+    /// a test process. Kept out of `applyFixtureDefaults`, whose unit tests run it in-process with
     /// `active: true`, where a process-wide override would leak into every later test.
     static func applyUserThemeDirectory() {
-      guard fixtureFlag else { return }
-      let dir = URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent("workroom-fixture-user-themes-\(getpid())")
-      try? FileManager.default.removeItem(at: dir)
-      if flag("WorkroomUITestUserThemes") {
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+      guard AppEnvironment.current.isTestProcess else { return }
+      var template = Array(
+        (NSTemporaryDirectory() + "workroom-test-user-themes-XXXXXX").utf8CString)
+      let made = template.withUnsafeMutableBufferPointer { mkdtemp($0.baseAddress!) } != nil
+      let dir = template.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+      guard made else {
+        ThemeCatalog.setUserThemeDirectoryForUITesting(dir)
+        return
+      }
+      if fixtureFlag, flag("WorkroomUITestUserThemes") {
         for (name, contents) in sampleUserThemes {
           try? contents.write(
-            to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
+            to: URL(fileURLWithPath: dir).appendingPathComponent(name), atomically: true,
+            encoding: .utf8)
         }
       }
-      ThemeCatalog.setUserThemeDirectoryForUITesting(dir.path)
+      ThemeCatalog.setUserThemeDirectoryForUITesting(dir)
     }
 
     private static func theme(argument: String, side: ThemeSide) -> String {
