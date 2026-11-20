@@ -2,17 +2,44 @@ import AppKit
 import Foundation
 import Synchronization
 
-/// A named theme **family** that bundles a dark and a light variant (issue #36: every theme must
-/// support both modes). The user picks one family; the active variant follows the appearance, so
-/// "supports dark and light" holds by construction.
+/// Which appearance a theme belongs to, judged by its background: a light theme has a light
+/// background, a dark theme a dark one (#733).
+public enum ThemeSide: String, CaseIterable, Hashable, Sendable {
+  case light
+  case dark
+
+  public init(isDark: Bool) { self = isDark ? .dark : .light }
+
+  /// The side a background puts a theme on: the same `perceivedBrightness > 0.5` test that decides
+  /// the interface's colour scheme (`ThemeTokens.colorScheme`), so a theme's side and the chrome it
+  /// paints can never disagree.
+  public init(background: NSColor) {
+    self = ThemeTokens.perceivedBrightness(of: background) > 0.5 ? .light : .dark
+  }
+}
+
+/// One theme the app bundles, with its side fixed by the catalog rather than worked out at runtime.
+/// `ThemeServiceTests` checks every fixed side against the file's background.
+public struct BundledTheme: Hashable, Sendable {
+  public let name: String
+  public let side: ThemeSide
+
+  public init(name: String, side: ThemeSide) {
+    self.name = name
+    self.side = side
+  }
+}
+
+/// A **theme family**: a curated preset pairing one light theme with one dark theme. Choosing it sets
+/// both the light theme and the dark theme, and either can then be changed on its own (#733).
 public struct ThemeFamily: Identifiable, Hashable, Sendable {
   public let name: String
-  public let dark: String  // dark-variant theme-file name (resolved by ghostty + parsed for chrome)
-  public let light: String  // light-variant theme-file name
+  public let dark: String  // the dark theme's file name (resolved by ghostty + parsed for chrome)
+  public let light: String  // the light theme's file name
 
   public var id: String { name }
 
-  public func variant(isDark: Bool) -> String { isDark ? dark : light }
+  public func theme(for side: ThemeSide) -> String { side == .dark ? dark : light }
 
   public init(name: String, dark: String, light: String) {
     self.name = name
@@ -61,8 +88,8 @@ public enum ThemeCatalog {
   /// palette rather than a shade of one already here; serves a real user (a tool people use, a
   /// well-known scheme, or an accessibility need); and never another product's brand identity.
   ///
-  /// Every file in the themes dir belongs to exactly one family — `ThemeServiceTests` pins that as
-  /// exact set equality, so adding a file without registering it here fails the suite.
+  /// Each family's light theme must be a bundled light theme and its dark theme a bundled dark theme
+  /// (`bundledThemes` below); `ThemeCatalogTests` pins that.
   public static let families: [ThemeFamily] = [
     ThemeFamily(name: "Workroom", dark: "Workroom", light: "Workroom Light"),
     ThemeFamily(name: "3024", dark: "3024 Night", light: "3024 Day"),
@@ -140,6 +167,167 @@ public enum ThemeCatalog {
 
   public static func family(named name: String) -> ThemeFamily? {
     families.first { $0.name == name }
+  }
+
+  /// The default family, Workroom: every side falls back to its theme, and a fresh install starts on
+  /// it.
+  public static var defaultFamily: ThemeFamily { family(named: defaultFamilyName)! }
+
+  /// What a light and dark pair is called when no family pairs them.
+  public static let customFamilyLabel = "Custom"
+
+  /// The family that pairs exactly this light theme with this dark theme, matched by name, or nil when
+  /// none does. By name on purpose: a user file that replaces a family member keeps the family's name.
+  public static func family(light: String, dark: String) -> ThemeFamily? {
+    families.first { $0.light == light && $0.dark == dark }
+  }
+
+  /// The family's name for this pair, or "Custom" when no family pairs them.
+  public static func familyLabel(light: String, dark: String) -> String {
+    family(light: light, dark: dark)?.name ?? customFamilyLabel
+  }
+
+  /// Every theme the app bundles, each listed once with its side fixed. Each name is a file in
+  /// `Resources/ghostty/themes`; `ThemeServiceTests` pins the list to the files as exact set equality
+  /// and checks every side against the file's background.
+  ///
+  /// Authored, not derived from `families`: a derived list would make "every family's themes are
+  /// bundled on their sides" true by construction, and themes that belong to no family must be able
+  /// to appear here.
+  public static let bundledThemes: [BundledTheme] = [
+    BundledTheme(name: "3024 Day", side: .light),
+    BundledTheme(name: "3024 Night", side: .dark),
+    BundledTheme(name: "Aizen Dark", side: .dark),
+    BundledTheme(name: "Aizen Light", side: .light),
+    BundledTheme(name: "Apple System Colors", side: .dark),
+    BundledTheme(name: "Apple System Colors Light", side: .light),
+    BundledTheme(name: "Atom One Dark", side: .dark),
+    BundledTheme(name: "Atom One Light", side: .light),
+    BundledTheme(name: "Ayu Light", side: .light),
+    BundledTheme(name: "Ayu Mirage", side: .dark),
+    BundledTheme(name: "Belafonte Day", side: .light),
+    BundledTheme(name: "Belafonte Night", side: .dark),
+    BundledTheme(name: "Bluloco Dark", side: .dark),
+    BundledTheme(name: "Bluloco Light", side: .light),
+    BundledTheme(name: "Catppuccin Latte", side: .light),
+    BundledTheme(name: "Catppuccin Mocha", side: .dark),
+    BundledTheme(name: "Claude Dark", side: .dark),
+    BundledTheme(name: "Claude Light", side: .light),
+    BundledTheme(name: "Clear Dark", side: .dark),
+    BundledTheme(name: "Clear Light", side: .light),
+    BundledTheme(name: "Cursor Dark", side: .dark),
+    BundledTheme(name: "Cursor Light", side: .light),
+    BundledTheme(name: "Dawnfox", side: .light),
+    BundledTheme(name: "Dayfox", side: .light),
+    BundledTheme(name: "Duskfox", side: .dark),
+    BundledTheme(name: "Electron Highlighter", side: .dark),
+    BundledTheme(name: "Electron Highlighter Day", side: .light),
+    BundledTheme(name: "Everforest Dark Hard", side: .dark),
+    BundledTheme(name: "Everforest Light Med", side: .light),
+    BundledTheme(name: "Farmhouse Dark", side: .dark),
+    BundledTheme(name: "Farmhouse Light", side: .light),
+    BundledTheme(name: "Flexoki Dark", side: .dark),
+    BundledTheme(name: "Flexoki Light", side: .light),
+    BundledTheme(name: "GitHub Dark", side: .dark),
+    BundledTheme(name: "GitHub Dark High Contrast", side: .dark),
+    BundledTheme(name: "GitHub Light Default", side: .light),
+    BundledTheme(name: "GitHub Light High Contrast", side: .light),
+    BundledTheme(name: "GitLab Dark", side: .dark),
+    BundledTheme(name: "GitLab Light", side: .light),
+    BundledTheme(name: "Gruvbox Dark", side: .dark),
+    BundledTheme(name: "Gruvbox Light", side: .light),
+    BundledTheme(name: "Gruvbox Material Dark", side: .dark),
+    BundledTheme(name: "Gruvbox Material Light", side: .light),
+    BundledTheme(name: "Iceberg Dark", side: .dark),
+    BundledTheme(name: "Iceberg Light", side: .light),
+    BundledTheme(name: "iTerm2 Solarized Dark", side: .dark),
+    BundledTheme(name: "iTerm2 Solarized Light", side: .light),
+    BundledTheme(name: "Kanagawa Lotus", side: .light),
+    BundledTheme(name: "Kanagawa Wave", side: .dark),
+    BundledTheme(name: "Kanso Pearl", side: .light),
+    BundledTheme(name: "Kanso Zen", side: .dark),
+    BundledTheme(name: "Karma Dark", side: .dark),
+    BundledTheme(name: "Karma Light", side: .light),
+    BundledTheme(name: "Light Owl", side: .light),
+    BundledTheme(name: "Material", side: .light),
+    BundledTheme(name: "Material Dark", side: .dark),
+    BundledTheme(name: "Melange Dark", side: .dark),
+    BundledTheme(name: "Melange Light", side: .light),
+    BundledTheme(name: "Modus Operandi", side: .light),
+    BundledTheme(name: "Modus Vivendi", side: .dark),
+    BundledTheme(name: "Monokai Pro", side: .dark),
+    BundledTheme(name: "Monokai Pro Light", side: .light),
+    BundledTheme(name: "Monospace Dark", side: .dark),
+    BundledTheme(name: "Monospace Light", side: .light),
+    BundledTheme(name: "Neobones Dark", side: .dark),
+    BundledTheme(name: "Neobones Light", side: .light),
+    BundledTheme(name: "Night Owl", side: .dark),
+    BundledTheme(name: "Nightfox", side: .dark),
+    BundledTheme(name: "No Clown Fiesta", side: .dark),
+    BundledTheme(name: "No Clown Fiesta Light", side: .light),
+    BundledTheme(name: "Nord", side: .dark),
+    BundledTheme(name: "Nord Light", side: .light),
+    BundledTheme(name: "Nvim Dark", side: .dark),
+    BundledTheme(name: "Nvim Light", side: .light),
+    BundledTheme(name: "One Half Dark", side: .dark),
+    BundledTheme(name: "One Half Light", side: .light),
+    BundledTheme(name: "Onenord", side: .dark),
+    BundledTheme(name: "Onenord Light", side: .light),
+    BundledTheme(name: "Patina Dark", side: .dark),
+    BundledTheme(name: "Patina Light", side: .light),
+    BundledTheme(name: "Pencil Dark", side: .dark),
+    BundledTheme(name: "Pencil Light", side: .light),
+    BundledTheme(name: "Pyrokai", side: .dark),
+    BundledTheme(name: "Pyrokai Light", side: .light),
+    BundledTheme(name: "Raycast Dark", side: .dark),
+    BundledTheme(name: "Raycast Light", side: .light),
+    BundledTheme(name: "Rose Pine", side: .dark),
+    BundledTheme(name: "Rose Pine Dawn", side: .light),
+    BundledTheme(name: "Selenized Dark", side: .dark),
+    BundledTheme(name: "Selenized Light", side: .light),
+    BundledTheme(name: "Seoulbones Dark", side: .dark),
+    BundledTheme(name: "Seoulbones Light", side: .light),
+    BundledTheme(name: "Sequoia Monochrome Dark", side: .dark),
+    BundledTheme(name: "Sequoia Monochrome Light", side: .light),
+    BundledTheme(name: "Sequoia Moonlight Dark", side: .dark),
+    BundledTheme(name: "Sequoia Moonlight Light", side: .light),
+    BundledTheme(name: "Sequoia Retro Dark", side: .dark),
+    BundledTheme(name: "Sequoia Retro Light", side: .light),
+    BundledTheme(name: "Tinacious Design Dark", side: .dark),
+    BundledTheme(name: "Tinacious Design Light", side: .light),
+    BundledTheme(name: "Token Dark", side: .dark),
+    BundledTheme(name: "Token Light", side: .light),
+    BundledTheme(name: "Tomorrow", side: .light),
+    BundledTheme(name: "Tomorrow Night", side: .dark),
+    BundledTheme(name: "TokyoNight Day", side: .light),
+    BundledTheme(name: "TokyoNight Night", side: .dark),
+    BundledTheme(name: "Workroom", side: .dark),
+    BundledTheme(name: "Workroom Light", side: .light),
+    BundledTheme(name: "Xcode Dark", side: .dark),
+    BundledTheme(name: "Xcode Dark hc", side: .dark),
+    BundledTheme(name: "Xcode Light", side: .light),
+    BundledTheme(name: "Xcode Light hc", side: .light),
+    BundledTheme(name: "Zenbones Dark", side: .dark),
+    BundledTheme(name: "Zenbones Light", side: .light),
+    BundledTheme(name: "Zenwritten Dark", side: .dark),
+    BundledTheme(name: "Zenwritten Light", side: .light),
+  ]
+
+  private static let bundledSides: [String: ThemeSide] = Dictionary(
+    bundledThemes.map { ($0.name, $0.side) }, uniquingKeysWith: { first, _ in first })
+
+  /// The side the theme called `name` is on, resolved the way `themePreview` resolves its colours: the
+  /// user's own file in `~/.config/ghostty/themes` first, classified by its background, then the
+  /// bundled theme's fixed side. Nil when neither exists, or the user's file doesn't parse and no
+  /// bundled theme has that name.
+  public static func side(ofThemeNamed name: String) -> ThemeSide? {
+    let userPath = userThemeDirectory() + "/" + name
+    if FileManager.default.fileExists(atPath: userPath),
+      let theme = parseThemeFile(atPath: userPath, name: name)
+    {
+      return ThemeSide(background: theme.background)
+    }
+    return bundledSides[name]
   }
 
   /// Strip anything that would break or inject into the generated `ghostty.conf` (the name is
