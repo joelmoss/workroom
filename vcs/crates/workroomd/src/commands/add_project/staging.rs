@@ -276,11 +276,11 @@ pub(super) fn probe_lock(path: &Path) -> (Option<File>, LockState) {
     }
     match flock_exclusive(&file) {
         Ok(()) if same_file_at(&file, path) => (Some(file), LockState::Free),
+        // ENOTSUP and EOPNOTSUPP are one value on Linux, two on the Mac.
         Err(error)
-            if matches!(
-                error.raw_os_error(),
-                Some(libc::ENOTSUP | libc::EOPNOTSUPP | libc::ENOLCK)
-            ) =>
+            if error.raw_os_error().is_some_and(|code| {
+                [libc::ENOTSUP, libc::EOPNOTSUPP, libc::ENOLCK].contains(&code)
+            }) =>
         {
             (None, LockState::Unsupported)
         }

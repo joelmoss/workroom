@@ -3150,6 +3150,33 @@ fn add_project_clone_sweeps_a_dead_clones_staging() {
     let mut beside = vec![beside_dir, orphan];
     beside.sort();
 
+    // --pretend looks past them, as the clone will, and leaves every one in place.
+    let run = home.run(
+        &home.dir,
+        &[
+            "add-project",
+            &dest.to_string_lossy(),
+            "--clone",
+            &origin,
+            "--json",
+            "--pretend",
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(run.envelope()["would_clone"], true);
+    let mut left = inside.clone();
+    let locked = inside
+        .iter()
+        .find(|name| name.ends_with("-b2"))
+        .expect("b2");
+    left.push(format!("{locked}.lock"));
+    left.sort();
+    assert_eq!(entries(&dest), left);
+    let mut around = beside.clone();
+    around.push("app".to_string());
+    around.sort();
+    assert_eq!(entries(&src), around);
+
     let run = home.run(
         &home.dir,
         &[
