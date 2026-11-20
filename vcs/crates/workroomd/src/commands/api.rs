@@ -19,8 +19,7 @@ is a JSON object given inline, @FILE to read it from a file, or - to read it fro
 it is {}. With --json, `api call` prints the method's reply in the envelope: its `result`, and \
 the API's revision as `version`.";
 
-/// What `workroom api` alone, or with a subcommand it doesn't know, prints, as cobra shows a
-/// command that has only subcommands.
+/// What `workroom api` alone prints, as cobra shows a command that has only subcommands.
 const HELP: &str = "Raw access to every terminal API method: list them, describe one's parameter \
 and result schemas, with examples, and call one with JSON parameters.
 
@@ -69,7 +68,11 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
         Some((sub, rest)) if sub == "list" => list(context, rest),
         Some((sub, rest)) if sub == "describe" => describe(context, rest),
         Some((sub, rest)) if sub == "call" => call(context, rest),
-        _ => Outcome::Printed(HELP.to_string()),
+        // A mistyped subcommand fails, so a script never reads the help as its envelope.
+        Some((sub, _)) => Outcome::Usage(CliError::internal(format!(
+            "unknown command {sub:?} for \"workroom api\""
+        ))),
+        None => Outcome::Printed(HELP.to_string()),
     }
 }
 
@@ -235,8 +238,7 @@ mod tests {
         )
     }
 
-    /// Like every terminal API command, `api` runs anywhere, and with no daemon named it exits 7
-    /// before it reads PARAMS: `-` here would otherwise wait on the test's stdin.
+    /// Like every terminal API command, `api` runs anywhere, and with no daemon named it exits 7.
     #[test]
     fn api_runs_anywhere_and_with_no_daemon_named_exits_7() {
         for platform in [Platform::Mac, Platform::Other] {
@@ -289,6 +291,14 @@ mod tests {
                 .contains("\n  call        Call METHOD with JSON parameters"),
             "{}",
             output.stdout
+        );
+        // A mistyped one is a bad command line, so a script never reads the help as an envelope.
+        let typo = run_on(Platform::Other, &["api", "lst", "--json"]);
+        assert_eq!(typo.code, 1);
+        let envelope: serde_json::Value = serde_json::from_str(&typo.stdout).unwrap();
+        assert_eq!(
+            envelope["error"]["message"],
+            "unknown command \"lst\" for \"workroom api\""
         );
         let help = run_on(Platform::Other, &["api", "--help"]);
         assert!(help.stdout.starts_with(super::LONG), "{}", help.stdout);

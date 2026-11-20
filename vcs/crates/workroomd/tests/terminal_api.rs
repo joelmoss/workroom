@@ -606,7 +606,18 @@ fn api_list_names_every_method_the_daemon_has() {
         .iter()
         .map(|method| method["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["api.describe", "session.list", "session.resolve"]);
+    for name in ["api.describe", "session.list", "session.resolve"] {
+        assert!(names.contains(&name), "{name} not in {names:?}");
+    }
+    // Every method the service describes, in its order: none left out, none made up.
+    let described = Api::connect(&socket).call("api.describe", json!({}));
+    let all: Vec<&str> = described["result"]["methods"]
+        .as_array()
+        .expect("methods")
+        .iter()
+        .map(|method| method["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, all);
     assert_eq!(
         methods[1]["summary"],
         "Every session the daemon holds, oldest first."
