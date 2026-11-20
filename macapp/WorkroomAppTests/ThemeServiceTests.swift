@@ -512,8 +512,8 @@ final class ThemeServiceTests: XCTestCase {
   /// `themePreview` resolves the two directories by name instead of by index.
   func testThemeDirectoriesReportTheUserDirFirst() {
     let dirs = ThemeService.themeDirectories()
-    XCTAssertTrue(
-      dirs.first?.hasSuffix("/.config/ghostty/themes") == true, "user dir must come first")
+    // The test host points the user dir at a scratch folder, so compare against it, not `~/.config`.
+    XCTAssertEqual(dirs.first, ThemeCatalog.userThemeDirectory(), "user dir must come first")
     XCTAssertEqual(dirs.count, 2, "user dir + bundled dir")
     XCTAssertEqual(dirs.last, ThemeService.bundledThemeDirectory())
   }
