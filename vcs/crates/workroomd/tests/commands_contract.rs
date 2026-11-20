@@ -3,8 +3,10 @@
 //! (ADR 0078, #667). A run checks what a caller sees: the one JSON envelope on stdout, stderr, the
 //! exit code and `kind`, and the config.json the command leaves behind.
 //!
-//! Every test is `#[ignore]`d, because the daemon this crate builds has no CLI commands yet.
-//! `make contract-test` builds the Go CLI and runs them against it.
+//! Without `WORKROOM_BIN` the binary under test is this crate's own `workroom`. A group's tests
+//! are `#[ignore]`d until its commands are ported to Rust, so a plain `cargo test` runs only the
+//! ported groups (`version_` today). `make contract-test` builds the Go CLI and runs every test
+//! against it with `--include-ignored`.
 //!
 //! Tests are named for their command group (`version_`, `list_`, `config_`), so a port can run
 //! only its own group's names against Rust.
@@ -17,20 +19,21 @@
 //! Each run gets a cleared environment: only `PATH`, its own HOME and `WORKROOM_CONFIG`, and git
 //! with no global or system config. Nothing a run does can reach the real home or config.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The temporary HOME's stand-in in every golden.
 const GOLDEN_HOME: &str = "/Users/dev";
 
-/// The binary under test, by an absolute path, since each run starts in its own directory. Running
-/// these tests without one is a mistake, not a skip.
+/// The binary under test, by an absolute path, since each run starts in its own directory:
+/// `WORKROOM_BIN`, else this crate's own `workroom`.
 fn binary() -> PathBuf {
     match std::env::var_os("WORKROOM_BIN") {
         Some(path) if !path.is_empty() => PathBuf::from(&path)
             .canonicalize()
             .unwrap_or_else(|error| panic!("WORKROOM_BIN {path:?}: {error}")),
-        _ => panic!("WORKROOM_BIN must name the workroom binary under test"),
+        _ => PathBuf::from(env!("CARGO_BIN_EXE_workroom")),
     }
 }
 
@@ -94,15 +97,20 @@ impl Home {
         command
     }
 
-    /// Runs the binary under test with `args`, from `cwd`.
-    fn run(&self, cwd: &Path, args: &[&str]) -> Run {
+    /// Runs the binary under test with `args`, from `cwd`. An argument may be any bytes, as a
+    /// shell can pass, not only UTF-8.
+    fn run<S: AsRef<OsStr>>(&self, cwd: &Path, args: &[S]) -> Run {
         let output = self
             .command(binary(), cwd)
             .args(args)
             .output()
             .unwrap_or_else(|error| panic!("run {}: {error}", binary().display()));
         Run {
-            args: args.join(" "),
+            args: args
+                .iter()
+                .map(|arg| arg.as_ref().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" "),
             code: output
                 .status
                 .code()
@@ -286,7 +294,6 @@ fn check_golden(owner: Owner, file: &str, got: &str) {
 // --- version ---
 
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
 fn version_prints_the_bare_version_the_json_reports() {
     let home = Home::new("version-bare");
     let bare = home.run(&home.dir, &["version"]);
@@ -304,7 +311,6 @@ fn version_prints_the_bare_version_the_json_reports() {
 }
 
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
 fn version_json_matches_the_golden() {
     let home = Home::new("version-json");
     let run = home.run(&home.dir, &["version", "--json"]);
@@ -315,6 +321,111 @@ fn version_json_matches_the_golden() {
         Owner::ThisSuite,
         "version.json",
         &normalize_version(&run.stdout),
+    );
+}
+
+/// `--json` is a flag of every command, so it may come before the command too.
+#[test]
+fn version_json_flag_may_come_before_the_command() {
+    let home = Home::new("version-json-first");
+    let run = home.run(&home.dir, &["--json", "version"]);
+    run.assert_code(0).assert_quiet_stderr();
+    check_golden(
+        Owner::ThisSuite,
+        "version.json",
+        &normalize_version(&run.stdout),
+    );
+}
+
+/// The channel is config's `channel` when that is a non-empty string, whatever it says, and
+/// `stable` otherwise, including when config.json can't be read: `version` never fails on config.
+#[test]
+fn version_json_reports_the_configured_channel() {
+    for (config, channel) in [
+        (Some(r#"{"channel": "pre"}"#), "pre"),
+        (Some(r#"{"channel": "nightly"}"#), "nightly"),
+        (Some(r#"{"channel": "bogus"}"#), "bogus"),
+        (Some(r#"{"channel": ""}"#), "stable"),
+        (Some(r#"{"channel": 5}"#), "stable"),
+        (Some("{not json"), "stable"),
+        (None, "stable"),
+    ] {
+        let home = Home::new("version-channel");
+        if let Some(config) = config {
+            home.write_config(config);
+        }
+        let run = home.run(&home.dir, &["version", "--json"]);
+        run.assert_code(0).assert_quiet_stderr();
+        assert_eq!(run.envelope()["channel"], channel, "config {config:?}");
+        let bare = home.run(&home.dir, &["version"]);
+        bare.assert_code(0).assert_quiet_stderr();
+    }
+}
+
+/// `version` takes no arguments; an extra one is a usage error, in the envelope under `--json`
+/// and as an `Error:` line on stderr without it.
+#[test]
+fn version_refuses_an_argument() {
+    let home = Home::new("version-extra");
+    let json = home.run(&home.dir, &["version", "--json", "extra"]);
+    json.assert_code(1).assert_quiet_stderr();
+    assert_eq!(json.error_kind(), "InternalError");
+    let plain = home.run(&home.dir, &["version", "extra"]);
+    plain.assert_code(1);
+    assert_eq!(plain.stdout, "");
+    assert!(
+        plain.stderr.starts_with("Error: "),
+        "stderr {:?}",
+        plain.stderr
+    );
+}
+
+/// The envelope is encoded as Go's encoder writes it, which serde_json's default does not: `<`,
+/// `>`, `&`, `/`, DEL and non-ASCII as they are; `"` and `\` escaped; U+2028 and U+2029 as
+/// six-character `\u` escapes; control characters as `\b`, `\f`, `\n`, `\r`, `\t` or a `\u`
+/// escape; and a
+/// byte that isn't UTF-8 as U+FFFD. An unknown flag's name is echoed in the message, so it carries
+/// each case to the encoder.
+#[test]
+fn version_json_encodes_an_echoed_argument_as_go_does() {
+    use std::os::unix::ffi::OsStrExt;
+    let home = Home::new("version-escaping");
+    let flag =
+        OsStr::from_bytes(b"--x<&>\xe2\x80\xa8\xe2\x80\xa9\x01\x08\x0c\x1f\x7f\"\\/\xc3\xa9\xff");
+    let run = home.run(
+        &home.dir,
+        &[OsStr::new("version"), OsStr::new("--json"), flag],
+    );
+    run.assert_code(1).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "InternalError");
+    let message = run.envelope()["error"]["message"]
+        .as_str()
+        .expect("message")
+        .to_string();
+    let echoed = "x<&>\u{2028}\u{2029}\u{1}\u{8}\u{c}\u{1f}\u{7f}\"\\/\u{e9}\u{fffd}";
+    assert!(
+        message.contains(echoed),
+        "message {message:?} doesn't echo the flag"
+    );
+    // Each escape spelled out: a backslash, then the escape's letters.
+    let encoded = [
+        "x<&>",
+        "\\u2028",
+        "\\u2029",
+        "\\u0001",
+        "\\b",
+        "\\f",
+        "\\u001f",
+        "\u{7f}",
+        "\\\"",
+        "\\\\",
+        "/\u{e9}\u{fffd}",
+    ]
+    .concat();
+    assert!(
+        run.stdout.contains(&encoded),
+        "stdout {:?} doesn't encode the message as Go does ({encoded:?})",
+        run.stdout
     );
 }
 
@@ -352,7 +463,7 @@ const LIST_CONFIG: &str = r#"{
 }"#;
 
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
+#[ignore = "not ported to Rust yet"]
 fn list_json_matches_the_golden() {
     let home = Home::new("list-json");
     let app = home.repo("src/app");
@@ -388,7 +499,7 @@ fn list_json_matches_the_golden() {
 /// its wording, so these are pinned apart from the machine contract: a port that rewords them
 /// updates the strings here, keeping the information.
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
+#[ignore = "not ported to Rust yet"]
 fn list_human_text_from_each_kind_of_directory() {
     let home = Home::new("list-human");
     let elsewhere = home.path("elsewhere");
@@ -460,7 +571,7 @@ fn list_human_text_from_each_kind_of_directory() {
 }
 
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
+#[ignore = "not ported to Rust yet"]
 fn list_json_reports_a_bad_flag_value_as_an_error_envelope() {
     let home = Home::new("list-bad-warnings");
     let run = home.run(&home.dir, &["list", "--json", "--warnings=bad"]);
@@ -470,7 +581,7 @@ fn list_json_reports_a_bad_flag_value_as_an_error_envelope() {
 }
 
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
+#[ignore = "not ported to Rust yet"]
 fn list_json_reports_an_unknown_flag_as_an_error_envelope() {
     let home = Home::new("list-unknown-flag");
     let run = home.run(&home.dir, &["list", "--json", "--bogus"]);
@@ -485,7 +596,7 @@ fn list_json_reports_an_unknown_flag_as_an_error_envelope() {
 /// two-space indent, numbers exactly as written, `<`, `>`, `&`, U+2028 and U+2029 escaped, no
 /// trailing newline. The input is laid out unlike that on purpose.
 #[test]
-#[ignore = "needs WORKROOM_BIN"]
+#[ignore = "not ported to Rust yet"]
 fn config_write_keeps_unknown_keys_and_host_descriptors_byte_for_byte() {
     let home = Home::new("config-roundtrip");
     let before = std::fs::read_to_string(golden_path("config-roundtrip-before.json"))

@@ -10,13 +10,13 @@ cli-test: ## Run the Go tests
 	go test ./...
 
 # The CLI's black-box contract suite (vcs/crates/workroomd/tests/commands_contract.rs, #669), run
-# against the Go CLI this builds, or against the binary WORKROOM_BIN names. Its tests are ignored
-# by a plain `cargo test`, so `--ignored` runs them.
+# against the Go CLI this builds, or against the binary WORKROOM_BIN names: every test, with
+# `--include-ignored`. A plain `cargo test` runs only the groups ported to Rust, against Rust.
 contract-test: cli-build ## Run the CLI contract suite against bin/workroom (WORKROOM_BIN= for another binary)
 	@cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" || { echo "contract-test needs Rust $(VCS_RUST): rustup toolchain install $(VCS_RUST)" >&2; exit 1; }; \
 	export PATH="$$(dirname "$$cargo_bin"):$$PATH"; \
 	WORKROOM_BIN="$(or $(WORKROOM_BIN),$(CURDIR)/bin/workroom)" \
-	  cargo test --manifest-path vcs/Cargo.toml -p workroomd --test commands_contract -- --ignored
+	  cargo test --manifest-path vcs/Cargo.toml -p workroom --test commands_contract -- --include-ignored
 
 cli-install: ## Install the binary to $GOBIN
 	go install -ldflags "-X main.version=$(VERSION)" .

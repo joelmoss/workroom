@@ -1,7 +1,8 @@
-# Shared tag -> channel classification cases for internal/channel.Classify (Go) and
-# macapp/Scripts/channel-helper.sh's wr_classify_channel (shell). Both MUST agree on every row
-# here - see channel_test.go's TestClassify and channel-helper_test.sh for how each side reads
-# this file. The app's ReleaseChannel classifies no tags, but ReleaseChannelTests reads this file
+# Shared tag -> channel classification cases for internal/channel.Classify (Go),
+# macapp/Scripts/channel-helper.sh's wr_classify_channel (shell) and classify in
+# vcs/crates/workroomd/src/commands/channel.rs (Rust). All three MUST agree on every row
+# here - see channel_test.go's TestClassify, channel-helper_test.sh and the Rust
+# classify_matches_the_shared_fixture test for how each side reads this file. The app's ReleaseChannel classifies no tags, but ReleaseChannelTests reads this file
 # too: its raw values must be exactly the channels named here. Format:
 # <tag><TAB><channel-or-EXCLUDED>. A row with an empty tag (a line starting with a tab) tests the
 # empty-string input.

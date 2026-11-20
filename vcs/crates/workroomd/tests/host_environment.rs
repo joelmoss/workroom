@@ -148,7 +148,7 @@ fn host_profile_git_reaches_exec_diffs_and_file_listing_and_is_read_only_once() 
     let socket = workspace.0.join("d.sock");
     let binary = std::env::var_os("WORKROOMD_BIN")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_workroomd")));
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_workroom")));
     let _daemon = Daemon(
         Command::new(binary)
             .args(["serve", "--socket"])
@@ -256,7 +256,7 @@ fn local_daemon_reads_and_file_listing_keep_the_apps_environment_without_probing
     let socket = workspace.0.join("d.sock");
     let binary = std::env::var_os("WORKROOMD_BIN")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_workroomd")));
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_workroom")));
     let _daemon = Daemon(
         Command::new(binary)
             // Exactly the local app's lifetime: it supplies no --idle-timeout flag.

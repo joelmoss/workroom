@@ -30,7 +30,7 @@ Run commands from the repository root; `make` lists available targets.
 - `make cli-build`, `make cli-test`: build the CLI and run `go test ./...`.
 - `make contract-test`: run the CLI's black-box contract suite (`vcs/crates/workroomd/tests/commands_contract.rs`) against the Go CLI it builds, or against `WORKROOM_BIN=<binary>`. It checks `--json` envelopes, `kind` and exit codes, and config.json writes against `testdata/contracts`; `WORKROOM_CONTRACT_UPDATE=1` rewrites the goldens it owns.
 - `make cli-lint`: run golangci-lint v2 and check gofmt/goimports formatting.
-- `make vcs-test`: run CI's Rust tests on its pinned toolchain: the whole `vcs/` workspace, then `workroomd` with `terminal-state` (in its own target dir, `vcs/target/terminal-state`). Narrow both with `VCS_TEST_FLAGS="-p workroomd --test <name>"`. No `PATH` changes needed.
+- `make vcs-test`: run CI's Rust tests on its pinned toolchain: the whole `vcs/` workspace, then `workroomd` with `terminal-state` (in its own target dir, `vcs/target/terminal-state`). Narrow both with `VCS_TEST_FLAGS="-p workroom --test <name>"`. No `PATH` changes needed.
 - `make vcs-lint`: run rustfmt, clippy and `cargo doc -D warnings` over the `vcs/` Rust workspace, with and without `terminal-state`, on CI's Rust 1.99.1. For Linux-only code from a Mac, use `make vcs-lint-linux` (container prerequisites in `CONTRIBUTING.md`).
 - `make actions-lint`: lint `.github/workflows`, the composite actions and `dependabot.yml` with jactionlint, shellcheck included.
 - `make pre-push`: before every push, run CI's cheap gates (scripts, docs, Go, Rust on macOS and Linux, Swift lint and packages) and get one summary. It says when the branch is behind `origin/master`; merge that first, since CI tests the merge.

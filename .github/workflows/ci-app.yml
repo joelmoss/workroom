@@ -295,13 +295,13 @@ jobs:
           CARGO_INCREMENTAL: "0"
           WORKROOMD_BUILD: "1"
         run: |
-          cargo test --manifest-path vcs/Cargo.toml -p workroomd --lib -- pty::tests process::tests shell::tests
-          cargo test --manifest-path vcs/Cargo.toml -p workroomd --test attach_falls_back_to_a_shell -- --exact \
+          cargo test --manifest-path vcs/Cargo.toml -p workroom --lib -- pty::tests process::tests shell::tests
+          cargo test --manifest-path vcs/Cargo.toml -p workroom --test attach_falls_back_to_a_shell -- --exact \
             apple_bash_is_not_left_in_posix_mode
-          cargo test --manifest-path vcs/Cargo.toml -p workroomd --test remote_transport -- --exact \
+          cargo test --manifest-path vcs/Cargo.toml -p workroom --test remote_transport -- --exact \
             a_stale_socket_stays_stale_while_children_are_spawned \
             a_relay_with_no_daemon_fails_fast_and_says_so
-          cargo test --manifest-path vcs/Cargo.toml -p workroomd --test exception_ports
+          cargo test --manifest-path vcs/Cargo.toml -p workroom --test exception_ports
 
       # Last, so only a green job saves; master pushes only (see the restore steps). Under the key
       # the restore computed, as Package.resolved and Cargo.lock may be rewritten by the build. An

@@ -10,7 +10,7 @@
 # VCS reads are a service over wr-vcs-git. The backend library stays behind that crate; the daemon
 # owns request framing and capability negotiation.
 [package]
-name = "workroomd"
+name = "workroom"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -26,7 +26,8 @@ thiserror = { workspace = true }
 # deps as the VCS crates are.
 libc = "0.2"
 serde = { workspace = true }
-serde_json = "1"
+# `raw_value`, so the CLI's envelope keeps each payload field's own encoding (`commands::envelope`).
+serde_json = { version = "1", features = ["raw_value"] }
 # Filesystem change notification for the File service (FSEvents on macOS, inotify on Linux).
 notify = "8"
 # SHA-256 for the layout store's file names (`layout.rs`). ring compiles its own C and assembly,
@@ -48,11 +49,11 @@ ghostty-vt = { path = "../ghostty-vt", optional = true }
 # dependency, so this adds nothing to the graph — it only makes it visible to `tests/`.
 libc = "0.2"
 # Itself, with `test-support`, so `cargo test` builds the library with the test-only API that
-# `tests/` reaches through `workroomd::testing`, and no build needs a flag for it.
-workroomd = { path = ".", features = ["test-support"] }
+# `tests/` reaches through `workroom::testing`, and no build needs a flag for it.
+workroom = { path = ".", features = ["test-support"] }
 
 [features]
-# The test-only API (`workroomd::testing` and the methods only tests call). Not for production
+# The test-only API (`workroom::testing` and the methods only tests call). Not for production
 # builds: it exists so the rest of the crate can be private and rustc reports what nothing uses.
 test-support = []
 
@@ -62,10 +63,10 @@ test-support = []
 # OFF by default, deliberately: it pulls a pinned Zig toolchain, a Ghostty checkout and libclang
 # (for bindgen) into the build. Everything else in this crate builds with cargo alone, and that
 # stays true for anyone who is not working on terminal state. Turn it on with
-# `cargo build -p workroomd --features terminal-state`; scripts/build-ghostty-vt.sh supplies the
+# `cargo build -p workroom --features terminal-state`; scripts/build-ghostty-vt.sh supplies the
 # library and is invoked by the ghostty-vt crate's build.rs (its `link` feature).
 terminal-state = ["dep:ghostty-vt", "ghostty-vt/link", "dep:png"]
 
 [[bin]]
-name = "workroomd"
+name = "workroom"
 path = "src/main.rs"

@@ -106,7 +106,7 @@ jobs:
 
       - name: Clippy
         run: |
-          cargo clippy --manifest-path vcs/Cargo.toml -p workroomd \
+          cargo clippy --manifest-path vcs/Cargo.toml -p workroom \
             --features terminal-state --all-targets -- -D warnings
 
       # WORKROOMD_HAS_TERMINAL_STATE tells the integration tests the daemon under test was built
@@ -115,7 +115,7 @@ jobs:
       - name: Test
         env:
           WORKROOMD_HAS_TERMINAL_STATE: "1"
-        run: cargo test --manifest-path vcs/Cargo.toml -p workroomd --features terminal-state
+        run: cargo test --manifest-path vcs/Cargo.toml -p workroom --features terminal-state
 
   # The Linux daemons Workroom.app ships for remote hosts (issue #227), built the way the app bundle
   # builds them (cargo-zigbuild, static musl, terminal-state) and then RUN. The Mac-side check in
@@ -176,12 +176,12 @@ jobs:
 
       - name: Build
         run: |
-          cargo zigbuild --manifest-path vcs/Cargo.toml --release -p workroomd \
+          cargo zigbuild --manifest-path vcs/Cargo.toml --release -p workroom \
             --features terminal-state --target "$TARGET"
 
       - name: Check
         run: |
-          bin="vcs/target/$TARGET/release/workroomd"
+          bin="vcs/target/$TARGET/release/workroom"
           file "$bin"
           file -b "$bin" | grep -q 'statically linked'
           run=""
@@ -218,7 +218,7 @@ jobs:
           WR_FIXTURE_BUILD_FLAGS: >-
             --load --cache-from type=gha,scope=ssh-fixture
             --cache-to type=gha,mode=max,scope=ssh-fixture
-        run: vcs/scripts/ssh-fixture/run.sh "vcs/target/$TARGET/release/workroomd"
+        run: vcs/scripts/ssh-fixture/run.sh "vcs/target/$TARGET/release/workroom"
 
       # The SSH-host start against a box whose logind ends a user's processes at logout (#665):
       # systemd as PID 1, so the container gets the runner's cgroups, writable (run.sh says why).
@@ -232,4 +232,4 @@ jobs:
           WR_FIXTURE_BUILD_FLAGS: >-
             --load --cache-from type=gha,scope=ssh-fixture-systemd
             --cache-to type=gha,mode=max,scope=ssh-fixture-systemd
-        run: vcs/scripts/ssh-fixture/run.sh "vcs/target/$TARGET/release/workroomd"
+        run: vcs/scripts/ssh-fixture/run.sh "vcs/target/$TARGET/release/workroom"

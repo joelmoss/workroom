@@ -7,17 +7,17 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use workroomd::testing::{SessionStore, handle_connection};
+use workroom::testing::{SessionStore, handle_connection};
 use wr_protocol::envelope::Hello;
 
 pub fn daemon_binary() -> PathBuf {
-    // `CARGO_BIN_EXE_workroomd` is resolved at COMPILE time and bakes in an absolute path from the
+    // `CARGO_BIN_EXE_workroom` is resolved at COMPILE time and bakes in an absolute path from the
     // build host. That is right for `cargo test`, and wrong the moment the cross-compiled test
     // binary is carried to the machine it targets — which is exactly how the Linux side of this
     // crate is verified. `WORKROOMD_BIN` lets the runner say where the binary actually is.
     match std::env::var_os("WORKROOMD_BIN") {
         Some(path) => PathBuf::from(path),
-        None => PathBuf::from(env!("CARGO_BIN_EXE_workroomd")),
+        None => PathBuf::from(env!("CARGO_BIN_EXE_workroom")),
     }
 }
 

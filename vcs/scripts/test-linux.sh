@@ -20,6 +20,9 @@ cd "$(dirname "$0")/.."
 # THIS machine. The container mounts the vcs tree read-only at that same path so they resolve.
 VCS_DIR="$(pwd)"
 TESTDATA_DIR="$(cd ../testdata && pwd)"
+# The CLI's tests read Go's sources of truth too: internal/errs/errs.go (the kind registry) and
+# internal/channel/testdata/channel_cases.tsv (the shared channel fixture).
+INTERNAL_DIR="$(cd ../internal && pwd)"
 
 # macOS still ships bash 3.2, where an EMPTY array is "unbound" under `set -u` and neither
 # `mapfile` nor `declare -A` exists. build-helper.sh documents the same trap. So: expand arrays
@@ -35,7 +38,7 @@ done
 # On Linux the whole question is moot: run them.
 if [ "$(uname -s)" = "Linux" ]; then
   echo "test-linux: running natively"
-  exec cargo test -p workroomd ${FEATURES[@]+"${FEATURES[@]}"}
+  exec cargo test -p workroom ${FEATURES[@]+"${FEATURES[@]}"}
 fi
 
 # The Linux artifact is a fully STATIC musl binary — no glibc, no distro userland — so anything
@@ -141,7 +144,7 @@ trap 'rm -rf "$STAGE"' EXIT
 
 # Ask cargo WHICH binaries are tests rather than guessing from filenames.
 #
-# Guessing does not work: `deps/` holds two `workroomd-<hash>` files — the lib's test binary and
+# Guessing does not work: `deps/` holds two `workroom-<hash>` files — the lib's test binary and
 # another artifact of the same crate name — plus every previous build's leftovers. An earlier
 # version of this script picked the newest by mtime and ran the ordinary binary, which printed its
 # usage text and exited 0, reporting success while running no tests at all.
@@ -151,7 +154,7 @@ trap 'rm -rf "$STAGE"' EXIT
 # Stderr to a log rather than /dev/null: cargo's JSON goes to stdout, but so does every reason the
 # build FAILED go to stderr — discarding it turned "cargo-zigbuild cannot find zig" into a silent
 # exit 1 with nothing printed at all.
-cargo zigbuild -p workroomd ${FEATURES[@]+"${FEATURES[@]}"} --target "$TARGET" --tests \
+cargo zigbuild -p workroom ${FEATURES[@]+"${FEATURES[@]}"} --target "$TARGET" --tests \
   --message-format=json 2>"$STAGE/build.log" \
   | python3 -c '
 import json, os, shutil, sys
@@ -170,7 +173,7 @@ for line in sys.stdin:
     if not exe:
         continue
     # Name by target AND kind. Naming by target alone is not enough and silently loses tests:
-    # the lib and the bin are BOTH called "workroomd", so one overwrote the other in staging and
+    # the lib and the bin are BOTH called "workroom", so one overwrote the other in staging and
     # the lib suite — 63 tests — vanished while the run still reported success.
     kind = "_".join(msg["target"].get("kind", [])) or "bin"
     name = "{}__{}".format(msg["target"]["name"].replace("-", "_"), kind)
@@ -199,11 +202,11 @@ echo "test-linux: staged $(tr '\n' ' ' < "$STAGE/.manifest")"
 
 # The daemon binary itself, for the integration tests: WORKROOMD_BIN overrides the absolute host path
 # cargo bakes in at compile time, which does not exist inside the container.
-if ! cargo zigbuild -p workroomd ${FEATURES[@]+"${FEATURES[@]}"} --target "$TARGET" >/dev/null; then
+if ! cargo zigbuild -p workroom ${FEATURES[@]+"${FEATURES[@]}"} --target "$TARGET" >/dev/null; then
   echo "error: building the daemon binary for $TARGET failed." >&2
   exit 1
 fi
-cp "target/${TARGET}/debug/workroomd" "$STAGE/workroomd"
+cp "target/${TARGET}/debug/workroom" "$STAGE/workroomd"
 
 # `-scm` rather than `-slim`: the file-service tests `git init` their fixtures, and slim has no git.
 IMAGE="${WR_LINUX_IMAGE:-docker.io/library/buildpack-deps:stable-scm}"
@@ -216,6 +219,7 @@ echo "test-linux: running on $RUNTIME ($IMAGE)"
   --volume "$STAGE:/tests" \
   --volume "$VCS_DIR:$VCS_DIR:ro" \
   --volume "$TESTDATA_DIR:$TESTDATA_DIR:ro" \
+  --volume "$INTERNAL_DIR:$INTERNAL_DIR:ro" \
   --env WORKROOMD_BIN=/tests/workroomd \
   --env "WORKROOMD_HAS_TERMINAL_STATE=${WORKROOMD_HAS_TERMINAL_STATE:-}" \
   --env "WR_TEST_SHELL=/bin/sh" \
