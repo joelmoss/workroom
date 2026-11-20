@@ -38,11 +38,14 @@ fn a_daemon_serving_a_socket_names_it() {
     }
 }
 
-/// Anything else names none: another command, a daemon on stdio, a socket flag with no path.
+/// Anything else names none: another command, a daemon on stdio, a socket flag with no path, and
+/// another program taking a daemon's arguments.
 #[test]
 fn anything_but_a_daemon_serving_a_socket_names_none() {
     for other in [
         &["/bin/zsh", "-l"][..],
+        &["/usr/bin/devserver", "serve", "--socket", "/tmp/dev.sock"],
+        &["/x/workroomd-helper", "serve", "--socket", "/tmp/dev.sock"],
         &[
             "/x/workroomd",
             "attach",
