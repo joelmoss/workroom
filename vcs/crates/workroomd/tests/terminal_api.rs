@@ -2261,14 +2261,22 @@ fn a_wait_across_a_hand_off_goes_on_in_the_new_program() {
             .contains("MARKS-ON\r\n"),
         "fixture: the marks never printed"
     );
-    // Blocked, and a command ended, once `go` exists: after the hand-off.
+    // Blocked, and a command ended, once `go` exists: after the hand-off. Running before the
+    // client goes: one dropped as soon as it is typed into may not have sent the line on yet, and
+    // the shell then never runs it (as on Linux, #738's CI).
     let go = workspace.dir.join("go");
     type_line(
         &mut shell,
         &format!(
-            r#"sh -c 'while [ ! -e "{go}" ]; do sleep 0.05; done; printf "\033]7501;state=blocked:app=claude\033\\"; printf "\033]133;C\007\033]133;D;6\007"; sleep 30'"#,
+            r#"sh -c 'echo "LOOP""-ON"; while [ ! -e "{go}" ]; do sleep 0.05; done; printf "\033]7501;state=blocked:app=claude\033\\"; printf "\033]133;C\007\033]133;D;6\007"; sleep 30'"#,
             go = go.display()
         ),
+    );
+    assert!(
+        output
+            .read_until("LOOP-ON\r\n", Duration::from_secs(20))
+            .contains("LOOP-ON\r\n"),
+        "fixture: the waiting command never started"
     );
     drop(output);
     drop(shell);
