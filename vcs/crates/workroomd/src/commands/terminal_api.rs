@@ -97,6 +97,18 @@ pub(super) fn stream(
         )));
     };
     let started = Instant::now();
+    // A wait that may be sent again is pinned to the session its target names now, so the next
+    // program is asked about that one session, and can say it has gone ([`gone`]).
+    let pinned = pin(context, method, &params)?;
+    let params = match &pinned {
+        Some(id) => {
+            let mut params = params;
+            params["target"] = json!(id);
+            request = encode(&params);
+            params
+        }
+        None => params,
+    };
     let mut answer = answer_timeout(method, &params);
     let mut stream = connect(&socket)?;
     let mut resumes = 0;
@@ -135,6 +147,18 @@ pub(super) fn stream(
             let reply: Value = serde_json::from_slice(&reply)
                 .map_err(|_| CliError::internal("the daemon's reply is not JSON"))?;
             if let Some(error) = reply.get("error") {
+                if resumes > 0
+                    && let Some(id) = &pinned
+                    && error["kind"] == TARGET_NOT_FOUND
+                {
+                    let ended = gone(id, &params)?;
+                    each(Replied {
+                        revision: reply.get("revision").cloned().unwrap_or(Value::Null),
+                        result: ended,
+                        more: false,
+                    });
+                    return Ok(());
+                }
                 let mut failure = CliError::new(
                     Kind::from_code(error["kind"].as_str().unwrap_or_default()),
                     error["message"].as_str().unwrap_or("the daemon refused"),
@@ -161,6 +185,55 @@ pub(super) fn stream(
 }
 
 const WAIT: &str = "terminal.wait";
+
+const TARGET_NOT_FOUND: &str = crate::terminal::api::kind::TARGET_NOT_FOUND;
+
+/// The conditions a wait is sent again for after a hand-off: states (`resumed`).
+const STATES: [&str; 3] = ["status", "run", "ended"];
+
+/// For a wait for a state, the id of the session its target names, by `session.resolve`, which
+/// resolves as `terminal.wait` does: what is sent, and sent again after a hand-off, in place of
+/// the target. A target that names no one session fails here as the wait would. `None` for any
+/// other request, which is sent as it is.
+fn pin(context: &Context, method: &str, params: &Value) -> Result<Option<String>, CliError> {
+    let state = STATES
+        .iter()
+        .any(|key| params.get(key).is_some_and(|value| !value.is_null()));
+    let Some(target) = params.get("target").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if method != WAIT || !state {
+        return Ok(None);
+    }
+    let resolved = reply(context, "session.resolve", json!({"target": target}))?;
+    Ok(resolved.result["session"]["id"]
+        .as_str()
+        .map(str::to_string))
+}
+
+/// What a wait for a state, sent again after a hand-off, answers when the new program has no
+/// session `id`: it ended between the two programs, with nobody left to say so. Ended, for an
+/// `ended` wait (its exit code unknown), as the old program would have answered had it seen the
+/// end; `SessionEnded` for any other, as a wait whose session ends is.
+fn gone(id: &str, params: &Value) -> Result<Value, CliError> {
+    if params.get("ended").is_some_and(|value| !value.is_null()) {
+        return Ok(json!({
+            "session": id,
+            "condition": "ended",
+            "status": null,
+            "run_state": null,
+            "match": null,
+            "exit_code": null,
+        }));
+    }
+    Err(CliError::new(
+        Kind::SessionEnded,
+        format!(
+            "session {id} ended during the daemon's hand-off, before what it was waited for \
+             happened"
+        ),
+    ))
+}
 
 /// The most times one wait is sent again after a hand-off, so a daemon that hangs up on it each
 /// time it is sent is unreachable (7), never asked forever.

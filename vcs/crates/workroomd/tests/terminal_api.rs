@@ -2375,3 +2375,111 @@ fn a_wait_across_a_hand_off_goes_on_in_the_new_program() {
         gone.stderr
     );
 }
+
+/// Sends `signal` to `child`.
+fn signal(child: &std::process::Child, signal: i32) {
+    let pid = i32::try_from(child.id()).expect("a pid");
+    // SAFETY: `kill` takes plain integers; `pid` is a child this test started and hasn't reaped.
+    assert_eq!(unsafe { libc::kill(pid, signal) }, 0, "kill {pid} {signal}");
+}
+
+/// A session that ends during a hand-off, after the old program last read it and before a wait
+/// sent again reaches the new one, is gone from the new program's sessions. A wait for its end is
+/// met, as the old program would have answered, and a wait for another state is `SessionEnded`
+/// (3), never `TargetNotFound`: the wait named it by its id, pinned when it started. A target that
+/// names no session is still `TargetNotFound`. The waits are stopped across the hand-off and
+/// the end, so both happen before either is sent again.
+#[test]
+fn a_wait_whose_session_ends_during_a_hand_off_answers_as_ended() {
+    if !has_terminal_state() {
+        eprintln!("skipped: a hand-off needs a daemon built with terminal-state");
+        return;
+    }
+    // Short: the socket's path has to fit a socket address.
+    let workspace = Workspace::new("api-wait-gone");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    let mut output = common::ClientReader::new(&mut shell);
+    let go = workspace.dir.join("go");
+    // The shell exits once `go` exists: after the hand-off.
+    type_line(
+        &mut shell,
+        &format!(
+            r#"sh -c 'echo "LOOP""-ON"; while [ ! -e "{go}" ]; do sleep 0.05; done'; exit"#,
+            go = go.display()
+        ),
+    );
+    assert!(
+        output
+            .read_until("LOOP-ON\r\n", Duration::from_secs(20))
+            .contains("LOOP-ON\r\n"),
+        "fixture: the waiting command never started"
+    );
+    drop(output);
+    drop(shell);
+
+    let ended = started(
+        &socket,
+        &["wait", "server", "--ended", "--timeout", "60s", "--json"],
+    );
+    let status = started(
+        &socket,
+        &[
+            "wait",
+            "server",
+            "--status",
+            "blocked",
+            "--timeout",
+            "60s",
+            "--json",
+        ],
+    );
+    // Time for both to reach the daemon before they are stopped: each says so if it didn't.
+    std::thread::sleep(Duration::from_secs(3));
+    signal(&ended, libc::SIGSTOP);
+    signal(&status, libc::SIGSTOP);
+    let next = workspace.dir.join("next-workroom");
+    common::copy_daemon_binary(&next);
+    let handed = Command::new(common::daemon_binary())
+        .args(["hand-off", "--socket"])
+        .arg(&socket)
+        .arg("--binary")
+        .arg(&next)
+        .arg("--force")
+        .output()
+        .expect("hand-off");
+    assert_eq!(
+        String::from_utf8_lossy(&handed.stdout).trim(),
+        "handed off",
+        "{}",
+        String::from_utf8_lossy(&handed.stderr)
+    );
+    std::fs::write(&go, b"").expect("go");
+    listing_until(&socket, <[Value]>::is_empty);
+    signal(&ended, libc::SIGCONT);
+    signal(&status, libc::SIGCONT);
+
+    let ended = finished(ended);
+    assert!(
+        ended.stderr.contains("handed off during the wait"),
+        "the wait never spanned the hand-off (it had 3 s to start): {}",
+        ended.stderr
+    );
+    assert_eq!(ended.code, 0, "{} {}", ended.stdout, ended.stderr);
+    assert_eq!(ended.envelope()["condition"], "ended", "{}", ended.stdout);
+    assert!(ended.envelope()["session"].is_string(), "{}", ended.stdout);
+    let status = finished(status);
+    assert_eq!(
+        (status.code, status.envelope()["error"]["kind"].clone()),
+        (3, json!("SessionEnded")),
+        "{} {}",
+        status.stdout,
+        status.stderr
+    );
+    // Not sent again: nothing names it.
+    assert_eq!(
+        failed(wait(&socket, &["server", "--ended", "--timeout", "1s"])),
+        (3, "TargetNotFound".into())
+    );
+}
