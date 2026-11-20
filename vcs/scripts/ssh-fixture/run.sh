@@ -35,6 +35,10 @@
 # (`--privileged` too, should a host's Docker refuse the mount). Apple's `container` runs each
 # container in its own VM, so it needs only the tmpfs mounts and a tty.
 #
+# CI runs this under Docker only (ci-rust.yml's "ssh fixture" steps); WR_FIXTURE_RUNTIME=container
+# is checked by hand. Each phase prints an `ssh-fixture:` line to stderr, so a stalled run shows
+# where it stopped, and the image build ends after WR_FIXTURE_BUILD_TIMEOUT seconds (600).
+#
 # xcodebuild hands a test only the variables prefixed TEST_RUNNER_, so each is exported twice.
 set -euo pipefail
 
@@ -47,6 +51,7 @@ RUNTIME="${WR_FIXTURE_RUNTIME:-docker}"
 # address, so ssh reaches port 22 there and nothing is published.
 APPLE=0
 [ "$(basename "$RUNTIME")" = container ] && APPLE=1
+BUILD_TIMEOUT="${WR_FIXTURE_BUILD_TIMEOUT:-600}"
 SUPERVISOR="${WR_FIXTURE_SUPERVISOR:-1}"
 SYSTEMD="${WR_FIXTURE_SYSTEMD:-0}"
 # The systemd variant has no supervisor: the tests start the daemon.
@@ -86,6 +91,26 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# capped <seconds> <command...>: runs the command in a process group of its own, kills the whole
+# group once <seconds> pass and exits 124. The whole group, because `container build` ignores
+# SIGALRM and its build process outlives the CLI. INT and TERM are passed on to the group, which
+# no longer gets the terminal's Ctrl-C or CI's cancel itself.
+capped() {
+  perl -e '
+    my $limit = shift;
+    my $pid = fork() // die "capped: fork: $!\n";
+    if ($pid == 0) { setpgrp(0, 0); exec { $ARGV[0] } @ARGV or exit 127 }
+    setpgrp($pid, $pid);
+    my $end = sub { kill "KILL", -$pid; waitpid $pid, 0; exit $_[0] };
+    $SIG{ALRM} = sub { $end->(124) };
+    $SIG{INT} = sub { $end->(130) };
+    $SIG{TERM} = sub { $end->(143) };
+    alarm $limit;
+    waitpid $pid, 0;
+    exit($? & 127 ? 128 + ($? & 127) : $? >> 8);
+  ' "$@"
+}
+
 cp "$DAEMON" "$STAGE/workroomd"
 if [ "$SYSTEMD" = 1 ]; then
   cp "$HERE/Dockerfile.systemd" "$STAGE/Dockerfile"
@@ -98,17 +123,26 @@ fi
 # would swap in a different daemon. WR_FIXTURE_BUILD_FLAGS is word-split into extra build flags; CI
 # passes a GitHub Actions layer cache there so the apt layer is not rebuilt on every run.
 read -r -a BUILD_FLAGS <<< "${WR_FIXTURE_BUILD_FLAGS:-}"
+echo "ssh-fixture: building the image with $RUNTIME (up to ${BUILD_TIMEOUT}s)" >&2
+# The build's log stays out of the way unless the build fails or runs out of time.
+status=0
 if [ "$APPLE" = 1 ]; then
-  # No image IDs to build by, so a tag this run alone uses; the build's log stays out of the way
-  # unless it fails.
+  # No image IDs to build by, so a tag this run alone uses.
   IMAGE="$NAME-image"
-  if ! "$RUNTIME" build --progress plain --tag "$IMAGE" --build-arg FIXTURE=1 \
-    ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} "$STAGE" > "$STAGE/build.log" 2>&1; then
-    cat "$STAGE/build.log" >&2
-    exit 1
-  fi
+  capped "$BUILD_TIMEOUT" "$RUNTIME" build --progress plain --tag "$IMAGE" --build-arg FIXTURE=1 \
+    ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} "$STAGE" > "$STAGE/build.log" 2>&1 || status=$?
 else
-  IMAGE="$("$RUNTIME" build --quiet --build-arg FIXTURE=1 ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} "$STAGE")"
+  IMAGE="$(capped "$BUILD_TIMEOUT" "$RUNTIME" build --quiet --build-arg FIXTURE=1 \
+    ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} "$STAGE" 2> "$STAGE/build.log")" || status=$?
+fi
+if [ "$status" = 124 ]; then
+  echo "error: the image build ran past ${BUILD_TIMEOUT}s (WR_FIXTURE_BUILD_TIMEOUT); its log:" >&2
+elif [ "$status" != 0 ]; then
+  echo "error: the image build failed; its log:" >&2
+fi
+if [ "$status" != 0 ]; then
+  cat "$STAGE/build.log" >&2
+  exit 1
 fi
 
 # The daemon must run in there at all: an ELF for the wrong architecture would otherwise surface as
@@ -145,6 +179,7 @@ else
   ADDRESS=127.0.0.1
   PORT="$("$RUNTIME" port "$NAME" 22/tcp | head -1 | sed 's/.*://')"
 fi
+echo "ssh-fixture: started $NAME at $ADDRESS:$PORT; waiting for its host key" >&2
 
 # BatchMode cannot prompt to accept a host key, so the expected key is delivered out of band (here,
 # read straight out of the container) and pinned. That is the same policy a real driver needs.
@@ -182,6 +217,11 @@ EOF
 
 # Unsupervised SSH-driver tests must prove that the app starts the daemon. They wait for sshd
 # alone; every existing suite still waits for the fixture's supervisor to serve.
+if [ "$SUPERVISOR" = 0 ]; then
+  echo "ssh-fixture: host key pinned; waiting for sshd" >&2
+else
+  echo "ssh-fixture: host key pinned; waiting for sshd and the supervisor's daemon" >&2
+fi
 for attempt in $(seq 1 100); do
   if [ "$SUPERVISOR" = 0 ]; then
     READY_COMMAND=true
@@ -229,6 +269,7 @@ if [ "$#" -eq 0 ]; then
       --skip over_ssh_systemd_ --test-threads=1
   fi
 fi
+echo "ssh-fixture: ready; running $*" >&2
 if ! "$@"; then
   echo "error: the ssh fixture tests failed; the container's log:" >&2
   "$RUNTIME" logs "$NAME" >&2
