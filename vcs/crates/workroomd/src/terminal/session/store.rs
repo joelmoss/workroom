@@ -48,7 +48,8 @@ impl SessionStore {
     }
 
     /// The session whose pty child (its shell, or a run's supervisor) is `pid` or one of its
-    /// ancestors, nearest first (#684): what a process in a pane is known by when it doesn't say.
+    /// ancestors, nearest first (#684): what a process in a pane is known by, whatever pane its
+    /// variables name.
     pub fn session_of_process(&self, pid: i32) -> Option<SessionId> {
         let shells: std::collections::HashMap<i32, SessionId> = lock_or_recover(&self.sessions)
             .values()

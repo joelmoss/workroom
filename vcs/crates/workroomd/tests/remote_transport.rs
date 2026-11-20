@@ -2562,9 +2562,9 @@ fn over_ssh_api_lists_describes_and_calls_the_hosts_methods() {
 
 /// The terminal API knows which pane calls it on a host as on the Mac (#684): a remote pane's
 /// shell sees `WORKROOM_PANE` and `WORKROOM_DAEMON` and no `WORKROOM_SESSION_*`; `sessions` there
-/// keeps to the pane's workroom unless `--all`; and with the variables gone (`env -u`, `env -i`)
-/// the daemon still knows the pane from the caller's process (`SO_PEERCRED`, then its parents),
-/// and the CLI finds the daemon it runs under.
+/// keeps to the pane's workroom unless `--all`; and the daemon knows the pane from the caller's
+/// process (`SO_PEERCRED`, then its parents), with the variables gone (`env -u`, `env -i`) or
+/// naming another pane, and the CLI finds the daemon it runs under.
 #[test]
 #[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
 fn over_ssh_the_terminal_api_knows_which_pane_calls_it() {
@@ -2627,6 +2627,7 @@ fn over_ssh_the_terminal_api_knows_which_pane_calls_it() {
          sh -c '{sessions} --all; exit $?' > {dir}/all; \
          env -u WORKROOM_PANE sh -c '{sessions}; exit $?' > {dir}/no-pane; \
          env -i PATH=/usr/bin:/bin sh -c '{sessions}; exit $?' > {dir}/nothing; \
+         env WORKROOM_PANE={elsewhere} sh -c '{sessions}; exit $?' > {dir}/another; \
          echo \"API-\"\"DONE\""
     ));
     assert!(
@@ -2666,7 +2667,7 @@ fn over_ssh_the_terminal_api_knows_which_pane_calls_it() {
         (envelope["caller"].clone(), ids)
     };
     let ours = vec![session.to_string(), neighbour.to_string()];
-    for name in ["scoped", "no-pane", "nothing"] {
+    for name in ["scoped", "no-pane", "nothing", "another"] {
         assert_eq!(listed(name), (json!(session), ours.clone()), "{name}");
     }
     let (caller, all) = listed("all");

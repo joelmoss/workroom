@@ -382,10 +382,10 @@ fn sessions_in_a_pane_lists_its_workroom_and_all_widens_it() {
     assert_eq!(outside["caller"], Value::Null, "{outside}");
 }
 
-/// Without `WORKROOM_PANE`, the daemon finds the pane from the connecting process, up through its
-/// parents to a session's shell; without `WORKROOM_DAEMON` too (`env -i`), the CLI finds the
-/// daemon the same way, as the nearest parent serving a socket. Either way the listing keeps to
-/// the pane's workroom.
+/// The daemon finds the pane from the connecting process, up through its parents to a session's
+/// shell: without `WORKROOM_PANE`, and with one naming another pane, it is the pane the process
+/// runs in. Without `WORKROOM_DAEMON` too (`env -i`), the CLI finds the daemon the same way, as
+/// the nearest parent serving a socket. Either way the listing keeps to the pane's workroom.
 #[test]
 fn a_command_in_a_pane_without_its_variables_is_known_by_its_process() {
     let workspace = Workspace::new("api-peer");
@@ -407,7 +407,18 @@ fn a_command_in_a_pane_without_its_variables_is_known_by_its_process() {
         assert_eq!(envelope["caller"], SHELL, "{prefix}: {envelope}");
         assert_eq!(listed_ids(&envelope), ours, "{prefix}: {envelope}");
     }
-    // A pane variable naming no session of this daemon (a stale one, say) is passed over too.
+    // A pane variable naming another live pane, one in the other workroom, is passed over: the
+    // process runs in this pane, whatever it was handed.
+    let another = sessions_from(
+        &mut shell,
+        &workspace.dir,
+        "another",
+        &format!("env WORKROOM_PANE={RUN}"),
+        "",
+    );
+    assert_eq!(another["caller"], SHELL, "{another}");
+    assert_eq!(listed_ids(&another), ours, "{another}");
+    // As is one naming no session of this daemon (a stale one, say).
     let stale = sessions_from(
         &mut shell,
         &workspace.dir,
@@ -416,6 +427,46 @@ fn a_command_in_a_pane_without_its_variables_is_known_by_its_process() {
         "",
     );
     assert_eq!(stale["caller"], SHELL, "{stale}");
+}
+
+/// A command whose process runs in no pane (under a daemonized tmux server, say, whose clients'
+/// variables it was given) is the pane its `WORKROOM_PANE` names, when that is one of the daemon's
+/// sessions; naming none of them, it has no caller.
+#[test]
+fn a_command_outside_every_pane_is_the_pane_it_names() {
+    let workspace = Workspace::new("api-named");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let _shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    let _neighbour = open(&socket, OTHER, "tests", "wr-1", &workspace.dir);
+    let _elsewhere = open(&socket, RUN, "server", "wr-2", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 3);
+
+    // This test's process is in none of this daemon's panes.
+    let named = |pane: &str| {
+        let output = Command::new(common::daemon_binary())
+            .args(["sessions", "--json"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", std::env::temp_dir())
+            .env("WORKROOM_DAEMON", &socket)
+            .env("WORKROOM_PANE", pane)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run workroom");
+        Run {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            code: output.status.code().unwrap_or(-1),
+        }
+        .envelope()
+    };
+    let elsewhere = named(RUN);
+    assert_eq!(elsewhere["caller"], RUN, "{elsewhere}");
+    assert_eq!(listed_ids(&elsewhere), [RUN], "{elsewhere}");
+    let gone = named("0b9d33c1-0000-4000-8000-000000000000");
+    assert_eq!(gone["caller"], Value::Null, "{gone}");
+    assert_eq!(listed_ids(&gone).len(), 3, "{gone}");
 }
 
 /// A pane opened before its daemon gave shells their variables has neither, so it is known by

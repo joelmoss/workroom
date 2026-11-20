@@ -53,8 +53,8 @@ pub trait Transport {
     }
 
     /// The process on the other end, when the transport can say: what the terminal API finds a
-    /// caller's session from when the caller doesn't name it (#684). `None` for a stream with no
-    /// local process behind it.
+    /// caller's session from first, before any session the caller names (#684). `None` for a
+    /// stream with no local process behind it.
     fn peer_pid(&self) -> Option<i32> {
         None
     }

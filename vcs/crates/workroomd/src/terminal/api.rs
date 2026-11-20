@@ -14,9 +14,9 @@
 //! ambiguous target's error lists the sessions it matched under `matches`. Nothing is ever sent
 //! unasked, which is what leaves a client that never calls the service unaffected by it.
 //!
-//! **The caller** (#684) is the session a request comes from: the one its optional `"caller"`
-//! names (the pane's `WORKROOM_PANE`, which the CLI sends), when that is one of this daemon's,
-//! else the one whose shell the connecting process descends from (its peer pid, then its parents).
+//! **The caller** (#684) is the session a request comes from: the one whose shell the connecting
+//! process descends from (its peer pid, then its parents), else the one its optional `"caller"`
+//! names (the pane's `WORKROOM_PANE`, which the CLI sends), when that is one of this daemon's.
 //! Results that depend on it say which they found.
 //!
 //! The namespaces are `session.*`, `terminal.*`, `client.*` and `events.*` (#360), and `api.*`
@@ -221,9 +221,9 @@ pub const METHODS: &[Method] = &[
 fn caller_schema() -> Value {
     json!({
         "type": ["string", "null"],
-        "description": "The id of the session the request comes from: the request's `caller` \
-                        when it names one of this daemon's sessions, else the session whose shell \
-                        the connecting process descends from. Null for neither.",
+        "description": "The id of the session the request comes from: the session whose shell \
+                        the connecting process descends from, else the request's `caller` when it \
+                        names one of this daemon's sessions. Null for neither.",
     })
 }
 
@@ -238,8 +238,9 @@ fn request_schema() -> Value {
             "caller": {
                 "type": "string",
                 "description": "The id of the session the request comes from: the caller's \
-                                `WORKROOM_PANE`. Left out, or naming no session of this daemon, \
-                                the daemon finds it from the connecting process instead.",
+                                `WORKROOM_PANE`. The daemon finds the caller from the connecting \
+                                process first, and uses this only when that process descends from \
+                                none of its sessions' shells (a daemonized tmux server's, say).",
             },
         },
     })
@@ -575,15 +576,21 @@ fn handle(sessions: &SessionStore, bytes: &[u8], peer: Option<i32>) -> Result<Va
     })
 }
 
-/// The session a request comes from: the one its `caller` names, when that is one of `sessions`,
-/// else the one whose shell `peer` (the connecting process) is or descends from. A caller can be
-/// named wrongly (a variable left from another pane, or another daemon's), and a process can have
-/// left its pane's tree (re-parented to init when its parent exited), so each covers the other.
+/// The session a request comes from: the one whose shell `peer` (the connecting process) is or
+/// descends from, else the one its `caller` names, when that is one of `sessions`.
+///
+/// The process goes first because it can't be wrong about where it runs, and a variable can: a
+/// process in pane B can carry pane A's `WORKROOM_PANE`, from a shell B's was started from, or a
+/// tmux session first attached in A. The name is for a process outside every pane's tree, which
+/// the walk can't place: one under a daemonized tmux server, or re-parented to init when its
+/// parent exited. A name that is stale there, of a session this daemon no longer holds, is none.
 fn caller_of(sessions: &SessionStore, named: Option<&str>, peer: Option<i32>) -> Option<SessionId> {
-    named
-        .and_then(|named| parse_session_id(std::ffi::OsStr::new(named)))
-        .filter(|id| sessions.contains(*id))
-        .or_else(|| peer.and_then(|pid| sessions.session_of_process(pid)))
+    peer.and_then(|pid| sessions.session_of_process(pid))
+        .or_else(|| {
+            named
+                .and_then(|named| parse_session_id(std::ffi::OsStr::new(named)))
+                .filter(|id| sessions.contains(*id))
+        })
 }
 
 /// The reply on the wire: the API's `revision`, then its `result` or its `error`. Not
