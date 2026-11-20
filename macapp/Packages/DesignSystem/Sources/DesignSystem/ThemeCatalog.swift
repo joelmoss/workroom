@@ -30,6 +30,21 @@ public struct BundledTheme: Hashable, Sendable {
   }
 }
 
+/// One row of the Light or Dark list (#737): a bundled theme, or one of the user's own files in
+/// `~/.config/ghostty/themes`, which the picker labels as theirs. A user file that replaces a bundled
+/// theme is the user's.
+public struct ListedTheme: Hashable, Sendable {
+  public let name: String
+  public let side: ThemeSide
+  public let isUserTheme: Bool
+
+  public init(name: String, side: ThemeSide, isUserTheme: Bool) {
+    self.name = name
+    self.side = side
+    self.isUserTheme = isUserTheme
+  }
+}
+
 /// A **theme family**: a curated preset pairing one light theme with one dark theme. Choosing it sets
 /// both the light theme and the dark theme, and either can then be changed on its own (#733).
 public struct ThemeFamily: Identifiable, Hashable, Sendable {
@@ -410,6 +425,68 @@ public enum ThemeCatalog {
   }
 
   private static let userThemeDirectoryOverride = Mutex<String?>(nil)
+
+  /// Point `userThemeDirectory()` at `path` for the rest of the process, or back at `~/.config` with
+  /// nil. **UI-test fixture only**: a fixture launch can't scope the override to a closure the way a
+  /// unit test does (`withUserThemeDirectory`), and must never read the owner's real theme files.
+  public static func setUserThemeDirectoryForUITesting(_ path: String?) {
+    userThemeDirectoryOverride.withLock { $0 = path }
+  }
+
+  // MARK: The Light and Dark lists (#737)
+
+  /// The themes on `side`, as the Light and Dark lists show them: the bundled themes on that side
+  /// plus the user's own, Workroom's theme for the side first and the rest A→Z (case-insensitive,
+  /// numeric, locale-independent for the same reason as `families`).
+  ///
+  /// The user's themes are read from `userThemeDirectory()` on every call, so a list reflects the
+  /// folder as it is when it loads. Each is classified by its background (`ThemeSide(background:)`),
+  /// and one that doesn't parse is left out. One named like a bundled theme replaces it: listed once,
+  /// as the user's, on the side its own background gives it, so a dark file called `Ayu Light` moves
+  /// to the Dark list. An unparseable one replaces nothing, so the bundled theme stays.
+  public static func themes(on side: ThemeSide) -> [ListedTheme] {
+    let users = userThemes()
+    let userNames = Set(users.map(\.name))
+    let bundled = bundledThemes.filter { $0.side == side && !userNames.contains($0.name) }
+      .map { ListedTheme(name: $0.name, side: $0.side, isUserTheme: false) }
+    let all = (bundled + users.filter { $0.side == side }).sorted {
+      $0.name.compare($1.name, options: [.caseInsensitive, .numeric]) == .orderedAscending
+    }
+    let first = defaultFamily.theme(for: side)
+    guard let index = all.firstIndex(where: { $0.name == first }) else { return all }
+    var ordered = all
+    let workroom = ordered.remove(at: index)
+    return [workroom] + ordered
+  }
+
+  /// The families the Family tab offers: every family whose light theme resolves to the light side
+  /// and whose dark theme resolves to the dark side (`side(ofThemeNamed:)`, so a user's replacement
+  /// is judged by its own background). A family is unavailable while a replacement puts either of
+  /// its themes on the wrong side, so choosing a family never puts a dark theme in the light setting.
+  /// `families` order is kept.
+  public static func availableFamilies() -> [ThemeFamily] {
+    families.filter {
+      side(ofThemeNamed: $0.light) == .light && side(ofThemeNamed: $0.dark) == .dark
+    }
+  }
+
+  /// Every parseable theme file in the user's theme directory, classified by its background. Hidden
+  /// files and directories are skipped; user themes never form families.
+  private static func userThemes() -> [ListedTheme] {
+    let dir = userThemeDirectory()
+    guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return [] }
+    return entries.compactMap { name in
+      guard !name.hasPrefix(".") else { return nil }
+      let path = dir + "/" + name
+      var isDirectory: ObjCBool = false
+      guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+        !isDirectory.boolValue,
+        let theme = parseThemeFile(atPath: path, name: name)
+      else { return nil }
+      return ListedTheme(
+        name: name, side: ThemeSide(background: theme.background), isUserTheme: true)
+    }
+  }
 
   /// Redirect `userThemeDirectory()` at `path` for the duration of `body`. **Tests only.**
   ///
