@@ -5,15 +5,15 @@
 //!
 //! Without `WORKROOM_BIN` the binary under test is this crate's own `workroom`. A group's tests
 //! are `#[ignore]`d until its commands are ported to Rust, so a plain `cargo test` runs only the
-//! ported groups (`version_`, `list_` and `config_` today). `make contract-test` builds the Go CLI
-//! and runs every test against it with `--include-ignored`.
+//! ported groups (`version_`, `list_`, `config_` and `include_archive_` today). `make
+//! contract-test` builds the Go CLI and runs every test against it with `--include-ignored`.
 //!
-//! The Mac-only commands' groups (`list_`, `config_`) are ignored off the Mac too, where the Rust
-//! binary answers them with `MacOnly` (ADR 0078): a plain `cargo test` on Linux runs `version_`
-//! alone, and `--include-ignored` against the Go CLI still runs everything.
+//! The Mac-only commands' groups (`list_`, `config_`, `include_archive_`) are ignored off the Mac
+//! too, where the Rust binary answers them with `MacOnly` (ADR 0078): a plain `cargo test` on
+//! Linux runs `version_` alone, and `--include-ignored` against the Go CLI still runs everything.
 //!
-//! Tests are named for their command group (`version_`, `list_`, `config_`), so a port can run
-//! only its own group's names against Rust.
+//! Tests are named for their command group (`version_`, `list_`, `config_`, `include_archive_`),
+//! so a port can run only its own group's names against Rust.
 //!
 //! The JSON goldens are `testdata/contracts`, the files Go's contract tests
 //! (`cmd/contract_test.go`) and the app's `CLIContractTests.swift` check too, with the temporary
@@ -1208,7 +1208,10 @@ fn include_fixture(home: &Home) -> (PathBuf, bool) {
 /// The envelope the app decodes into `IncludeArchive` (`TestContractIncludeArchive` in
 /// `cmd/contract_test.go`, and `CLIContractTests.swift`).
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn include_archive_json_matches_the_golden() {
     let home = Home::new("include-archive-json");
     let root = home.repo("src/app");
@@ -1241,7 +1244,10 @@ fn include_archive_json_matches_the_golden() {
 /// it skipped and the file it couldn't read, and an unreadable file costs only itself. The FIFO is
 /// in neither list: git lists only files and symlinks.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn include_archive_writes_each_included_file_with_its_mode() {
     let home = Home::new("include-archive-modes");
     let (root, unreadable) = include_fixture(&home);
@@ -1300,7 +1306,10 @@ fn include_archive_writes_each_included_file_with_its_mode() {
 /// Without `--json`: the count and the tar's path on stdout, each file it couldn't read on stderr.
 /// ADR 0078 lets this text change its wording, keeping the information.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn include_archive_human_text_reports_the_count_and_each_failure() {
     let home = Home::new("include-archive-human");
     let (root, unreadable) = include_fixture(&home);
@@ -1337,7 +1346,10 @@ fn include_archive_human_text_reports_the_count_and_each_failure() {
 /// A root with no include file archives nothing, without failing, and still writes a valid tar.
 /// So does a project directory that doesn't exist: it has no include file either.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn include_archive_without_an_include_file_writes_an_empty_tar() {
     let home = Home::new("include-archive-none");
     let root = home.repo("src/app");
@@ -1375,7 +1387,10 @@ fn include_archive_without_an_include_file_writes_an_empty_tar() {
 /// usage error, before it runs, so the envelope names no command. A flag with no value and an
 /// argument fail the same way.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn include_archive_refuses_a_missing_output_or_flag_value() {
     let home = Home::new("include-archive-usage");
     let root = home.repo("src/app");
@@ -1408,7 +1423,10 @@ fn include_archive_refuses_a_missing_output_or_flag_value() {
 /// envelope, and leaves no tar behind: the files are listed before the tar is opened. A tar that
 /// can't be created fails the command too.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn include_archive_reports_a_failed_listing_or_output() {
     let home = Home::new("include-archive-failure");
     let plain = home.path("plain");
