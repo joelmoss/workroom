@@ -31,11 +31,11 @@ pub(super) fn call(context: &Context, method: &str, params: Value) -> Result<Val
 
 /// A successful reply: the API's revision the daemon speaks, and the method's `result`.
 pub(super) struct Replied {
-    pub(super) version: Value,
+    pub(super) revision: Value,
     pub(super) result: Value,
 }
 
-/// [`call`], keeping the reply's `version` beside its `result`.
+/// [`call`], keeping the reply's `revision` beside its `result`.
 pub(super) fn reply(context: &Context, method: &str, params: Value) -> Result<Replied, CliError> {
     let unreachable = |message: String| CliError::new(Kind::DaemonUnreachable, message);
     let Some(socket) = context.env(DAEMON_VARIABLE).filter(|path| !path.is_empty()) else {
@@ -85,7 +85,7 @@ pub(super) fn reply(context: &Context, method: &str, params: Value) -> Result<Re
         return Err(failure);
     }
     Ok(Replied {
-        version: reply.get("version").cloned().unwrap_or(Value::Null),
+        revision: reply.get("revision").cloned().unwrap_or(Value::Null),
         result: reply.get("result").cloned().unwrap_or(Value::Null),
     })
 }

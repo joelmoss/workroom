@@ -187,11 +187,15 @@ pub fn is_busy() -> bool {
 /// clients decode. `Service::File` replies through `send_with`, with an error of its own.
 pub(crate) fn send(writer: &SharedWriter, service: Service, stream: u32, value: Value) {
     send_with(writer, service, stream, value, || {
-        json!(VcsError::PartialData("VCS reply exceeds 16 MiB".into()))
+        json!(Reply::error(
+            1,
+            VcsError::PartialData("VCS reply exceeds 16 MiB".into())
+        ))
     });
 }
 
-/// `send`, with `too_large` the error that replaces a reply over the ceiling.
+/// `send`, with `too_large` the whole reply that replaces one over the ceiling, so a service whose
+/// reply isn't [`Reply`]'s shape (the terminal API's) can say it in its own.
 pub(crate) fn send_with(
     writer: &SharedWriter,
     service: Service,
@@ -201,7 +205,7 @@ pub(crate) fn send_with(
 ) {
     let mut bytes = serde_json::to_vec(&value).expect("JSON value serializes");
     if bytes.len() > MAX_RESPONSE {
-        bytes = serde_json::to_vec(&Reply::error(1, too_large())).unwrap();
+        bytes = serde_json::to_vec(&too_large()).unwrap();
     }
     let chunks = bytes.chunks(MAX_ENVELOPE_PAYLOAD - 1);
     let count = chunks.len();

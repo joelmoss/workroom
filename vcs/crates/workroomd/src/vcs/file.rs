@@ -200,7 +200,12 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter, subscriptions: &Subs
     // A File reply over the 16 MiB ceiling becomes `FileError::TooLarge`. The service bounds its own
     // replies below it by construction (an 8 MiB read is 10.7 MiB of base64), so it is never sent;
     // it exists so that if one ever were, the client gets an error it can decode.
-    let too_large = || json!(FileError::TooLarge("File reply exceeds 16 MiB".into()));
+    let too_large = || {
+        json!(Reply::error(
+            1,
+            FileError::TooLarge("File reply exceeds 16 MiB".into())
+        ))
+    };
     let send = |value: Value| rpc::send_with(writer, Service::File, stream, value, too_large);
     // A request is always one envelope. The chunk marker the VCS service uses for oversized requests
     // starts with 0x02, which is not `{`; refusing it here answers instead of parsing garbage.

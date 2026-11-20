@@ -17,7 +17,7 @@ WORKROOM_DAEMON names. `api list` lists the methods, `api describe METHOD` shows
 of its parameters and its result, with examples, and `api call METHOD [PARAMS]` calls it. PARAMS \
 is a JSON object given inline, @FILE to read it from a file, or - to read it from stdin; left out, \
 it is {}. With --json, `api call` prints the method's reply in the envelope: its `result`, and \
-the API's revision as `version`.";
+the API's `revision`.";
 
 /// What `workroom api` alone prints, as cobra shows a command that has only subcommands.
 const HELP: &str = "Raw access to every terminal API method: list them, describe one's parameter \
@@ -61,12 +61,12 @@ struct Description {
     error_schema: Value,
 }
 
-/// `api call`'s payload: the method called, and its reply's `version` and `result`, nested so that
-/// no result field can stand in for one of the envelope's own.
+/// `api call`'s payload: the method called, and its reply's `revision` and `result`, nested so
+/// that no result field can stand in for one of the envelope's own.
 #[derive(Serialize)]
 struct Called<'a> {
     method: &'a str,
-    version: Value,
+    revision: Value,
     result: Value,
 }
 
@@ -110,7 +110,7 @@ fn call(context: &Context, rest: &[String]) -> Outcome {
         CALL,
         &Called {
             method,
-            version: replied.version,
+            revision: replied.revision,
             result: replied.result,
         },
     ))
