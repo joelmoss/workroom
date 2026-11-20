@@ -41,13 +41,24 @@ struct Home {
 }
 
 impl Home {
+    /// A directory this run made itself: `create_dir` fails on any path that already exists, so a
+    /// leftover from a killed run, or another run's live HOME, is skipped rather than reused, and
+    /// only what this call created is ever removed.
     fn new(name: &str) -> Home {
-        let dir =
-            std::env::temp_dir().join(format!("workroom-contract-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create HOME");
-        let dir = dir.canonicalize().expect("resolve HOME");
-        Home { dir }
+        let parent = std::env::temp_dir();
+        let pid = std::process::id();
+        for attempt in 0u32.. {
+            let dir = parent.join(format!("workroom-contract-{name}-{pid}-{attempt}"));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => {
+                    let dir = dir.canonicalize().expect("resolve HOME");
+                    return Home { dir };
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create HOME {}: {error}", dir.display()),
+            }
+        }
+        unreachable!("u32 attempts ran out")
     }
 
     fn path(&self, relative: &str) -> PathBuf {
