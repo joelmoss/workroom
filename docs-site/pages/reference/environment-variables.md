@@ -40,6 +40,17 @@ takes longer than 10 seconds falls back to the daemon's own environment, and the
 
 See [Work on a remote host](../guides/work-on-a-remote-host.md).
 
+## Variables your terminals receive {nightly}
+
+Every terminal pane's shell, on your Mac and on a remote host, gets these, so Workroom's commands run from that pane know where they're running. Workroom sets them when the pane starts, so don't set them yourself.
+
+| Variable | Value |
+| -------- | ----- |
+| `WORKROOM_PANE` | The ID of the pane's terminal session. |
+| `WORKROOM_DAEMON` | The path of the socket of the Workroom daemon that runs the pane. |
+
+Workroom finds the pane a command runs in from the command's process first, and uses `WORKROOM_PANE` only when that finds none. A tmux server keeps the variables of the pane it started in, so list them in tmux's `update-environment` option if you run tmux across panes.
+
 ## Variables you can set
 
 ### `WORKROOM_SHELL_PROBE`
