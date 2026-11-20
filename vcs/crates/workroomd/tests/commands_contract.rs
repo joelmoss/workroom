@@ -15,7 +15,8 @@
 //! `--include-ignored` against the Go CLI still runs everything.
 //!
 //! Tests are named for their command group (`version_`, `update_`, `list_`, `config_`,
-//! `include_archive_`, `completion_`), so a port can run only its own group's names against Rust.
+//! `include_archive_`, `base_`, `host_`, `completion_`), so a port can run only its own group's
+//! names against Rust.
 //!
 //! The JSON goldens are `testdata/contracts`, the files Go's contract tests
 //! (`cmd/contract_test.go`) and the app's `CLIContractTests.swift` check too, with the temporary
@@ -1718,6 +1719,514 @@ fn include_archive_reports_a_failed_listing_or_output() {
         run.envelope()["error"]["message"],
         format!("open {}: no such file or directory", unwritable.display())
     );
+}
+
+// --- base ---
+
+/// `run`'s one line of stdout as the goldens write it: this HOME as `/Users/dev`, the version as a
+/// plain `go build`'s. Compared whole, so key order, a key left out and spacing all count.
+fn normalized_stdout(home: &Home, run: &Run) -> String {
+    home.normalize(&normalize_version(&run.stdout))
+}
+
+/// The config file as the goldens write it.
+fn normalized_config(home: &Home) -> String {
+    home.normalize(&std::fs::read_to_string(home.config_path()).expect("read config"))
+}
+
+/// `base set` checks only that git would take BRANCH as a branch name: one that exists nowhere is
+/// stored, since it may be pushed later (a create looks for it, and fails with
+/// `BaseBranchNotFound` there). It registers the repository as add-project does, refreshing an
+/// existing entry's type and keeping the rest of it, and `clear` removes the base again. The app
+/// passes `--project`; without it the project is the current directory.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn base_set_registers_the_project_and_clear_removes_the_base() {
+    let home = Home::new("base-set");
+    let repo = home.repo("repo");
+    let project = repo.to_string_lossy();
+    let run = home.run(
+        &home.dir,
+        &[
+            "base",
+            "set",
+            "no-such-branch",
+            "--json",
+            "--project",
+            &project,
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        normalized_stdout(&home, &run),
+        "{\"base_branch\":\"no-such-branch\",\"cli_version\":\"dev\",\"command\":\"base\",\"ok\":true,\"project\":\"/Users/dev/repo\",\"schema_version\":1}\n"
+    );
+    assert_eq!(
+        normalized_config(&home),
+        "{\n  \"/Users/dev/repo\": {\n    \"base_branch\": \"no-such-branch\",\n    \"vcs\": \"git\",\n    \"workrooms\": {}\n  }\n}"
+    );
+
+    let run = home.run(
+        &home.dir,
+        &["base", "clear", "--json", "--project", &project],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        normalized_stdout(&home, &run),
+        "{\"base_branch\":\"\",\"cli_version\":\"dev\",\"command\":\"base\",\"ok\":true,\"project\":\"/Users/dev/repo\",\"schema_version\":1}\n"
+    );
+    assert_eq!(
+        normalized_config(&home),
+        "{\n  \"/Users/dev/repo\": {\n    \"vcs\": \"git\",\n    \"workrooms\": {}\n  }\n}"
+    );
+
+    // An existing entry: its stale type refreshed, its workrooms and unknown keys kept. From the
+    // repository itself, with no `--project`, and without `--json`, which prints nothing.
+    let other = home.repo("other");
+    home.write_config(&format!(
+        "{{\"{}\": {{\"vcs\": \"jj\", \"x\": [1.50], \"workrooms\": {{\"w\": {{\"path\": \"/p\"}}}}}}}}",
+        other.display()
+    ));
+    let run = home.run(&other, &["base", "set", "upstream/main"]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(run.stdout, "");
+    assert_eq!(
+        normalized_config(&home),
+        "{\n  \"/Users/dev/other\": {\n    \"base_branch\": \"upstream/main\",\n    \"vcs\": \"git\",\n    \"workrooms\": {\n      \"w\": {\n        \"path\": \"/p\"\n      }\n    },\n    \"x\": [\n      1.50\n    ]\n  }\n}"
+    );
+}
+
+/// What git wouldn't take as a branch name, "" included, is refused with git's own words before
+/// config is read, so even an unreadable config doesn't hide it. A wrong number of arguments is a
+/// usage error, before the command runs, so its envelope names no command.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn base_refuses_a_bad_branch_name_or_arguments() {
+    let home = Home::new("base-bad-name");
+    let repo = home.repo("repo");
+    let project = repo.to_string_lossy();
+    home.write_config("not json");
+    for name in ["a..b", ""] {
+        let run = home.run(
+            &home.dir,
+            &["base", "set", name, "--json", "--project", &project],
+        );
+        run.assert_code(1).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "InternalError");
+        let envelope = run.envelope();
+        assert_eq!(envelope["command"], "base");
+        assert_eq!(
+            envelope["error"]["message"],
+            format!("invalid branch name {name:?}: fatal: '{name}' is not a valid branch name\n")
+        );
+    }
+    for (args, message) in [
+        (
+            &["base", "set", "--json"][..],
+            "accepts 1 arg(s), received 0",
+        ),
+        (
+            &["base", "set", "a", "b", "--json"],
+            "accepts 1 arg(s), received 2",
+        ),
+        (
+            &["base", "clear", "x", "--json"],
+            "unknown command \"x\" for \"workroom base clear\"",
+        ),
+    ] {
+        let run = home.run(&repo, args);
+        run.assert_code(1).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "InternalError", "{args:?}");
+        let envelope = run.envelope();
+        assert_eq!(envelope["error"]["message"], message, "{args:?}");
+        assert_eq!(envelope.get("command"), None, "{args:?}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(home.config_path()).expect("read"),
+        "not json"
+    );
+}
+
+/// A base belongs to a project's root checkout, so `set` and `clear` both refuse a workroom: a
+/// linked worktree, or a directory registered as any project's workroom. A root whose `.git` is a
+/// file but isn't a linked worktree (`git init --separate-git-dir`) is a project. `set` refuses a
+/// directory that isn't a repository, and an unreadable config fails both.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn base_refuses_a_workroom_or_a_directory_that_isnt_a_repository() {
+    let home = Home::new("base-refuses");
+    let repo = home.repo("repo");
+    home.git(&repo, &["worktree", "add", "-q", "../linked"]);
+    let registered = home.path("registered");
+    std::fs::create_dir(&registered).expect("create registered");
+    let plain = home.path("plain");
+    std::fs::create_dir(&plain).expect("create plain");
+    let config = format!(
+        "{{\"/elsewhere\": {{\"vcs\": \"git\", \"workrooms\": {{\"r\": {{\"path\": \"{}\"}}}}}}}}",
+        registered.display()
+    );
+    home.write_config(&config);
+    for (dir, kind, code) in [
+        (home.path("linked"), "InWorkroom", 3),
+        (registered, "InWorkroom", 3),
+    ] {
+        for args in [&["set", "main"][..], &["clear"]] {
+            let project = dir.to_string_lossy();
+            let run = home.run(
+                &home.dir,
+                &[&["base"], args, &["--json", "--project", &project]].concat(),
+            );
+            run.assert_code(code).assert_quiet_stderr();
+            assert_eq!(run.error_kind(), kind, "{args:?} in {project}");
+            assert_eq!(
+                run.envelope()["error"]["message"],
+                "looks like you are already in a workroom. Run this command from the root of your \
+                 main development directory, not from within an existing workroom"
+            );
+        }
+    }
+    let run = home.run(
+        &home.dir,
+        &[
+            "base",
+            "set",
+            "main",
+            "--json",
+            "--project",
+            &plain.to_string_lossy(),
+        ],
+    );
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "UnsupportedVCS");
+    assert_eq!(
+        run.envelope()["error"]["message"],
+        "no supported VCS detected in this directory. Workroom requires Git to manage workrooms"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.config_path()).expect("read"),
+        config,
+        "a refused base changed config"
+    );
+
+    let separate = home.path("separate");
+    home.git(
+        &home.dir,
+        &[
+            "init",
+            "-q",
+            "--separate-git-dir",
+            "separate.git",
+            "separate",
+        ],
+    );
+    let run = home.run(&separate, &["base", "set", "main", "--json"]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        run.envelope()["project"],
+        separate.to_string_lossy().as_ref()
+    );
+
+    home.write_config("{");
+    for args in [&["set", "main"][..], &["clear"]] {
+        let run = home.run(&repo, &[&["base"], args, &["--json"]].concat());
+        run.assert_code(6).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "ConfigReadFailed", "{args:?}");
+    }
+}
+
+/// `clear` only edits: it needs the project registered, though not its folder, which may have
+/// moved, and it registers nothing. `--pretend` writes nothing, and `clear` under it skips the
+/// edit and so the registration check too.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn base_clear_needs_a_registered_project_and_pretend_writes_nothing() {
+    let home = Home::new("base-clear");
+    let gone = home.path("gone");
+    let run = home.run(
+        &home.dir,
+        &[
+            "base",
+            "clear",
+            "--json",
+            "--project",
+            &gone.to_string_lossy(),
+        ],
+    );
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "ProjectNotFound");
+    assert_eq!(
+        home.normalize(
+            run.envelope()["error"]["message"]
+                .as_str()
+                .expect("message")
+        ),
+        "project is not registered: /Users/dev/gone"
+    );
+    assert!(!home.config_path().exists(), "a failed clear wrote config");
+
+    let run = home.run(
+        &home.dir,
+        &[
+            "base",
+            "clear",
+            "-p",
+            "--json",
+            "--project",
+            &gone.to_string_lossy(),
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(run.envelope()["base_branch"], "");
+    let repo = home.repo("repo");
+    let run = home.run(&repo, &["base", "set", "main", "--pretend", "--json"]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        normalized_stdout(&home, &run),
+        "{\"base_branch\":\"main\",\"cli_version\":\"dev\",\"command\":\"base\",\"ok\":true,\"project\":\"/Users/dev/repo\",\"schema_version\":1}\n"
+    );
+    assert!(!home.config_path().exists(), "--pretend wrote config");
+
+    home.write_config(&format!(
+        "{{\"{}\": {{\"base_branch\": \"dev\", \"vcs\": \"git\"}}}}",
+        gone.display()
+    ));
+    let run = home.run(
+        &home.dir,
+        &[
+            "base",
+            "clear",
+            "--json",
+            "--project",
+            &gone.to_string_lossy(),
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        normalized_config(&home),
+        "{\n  \"/Users/dev/gone\": {\n    \"vcs\": \"git\"\n  }\n}"
+    );
+}
+
+// --- host ---
+
+/// A project with one workroom, `w`, as config for the host tests.
+fn host_fixture(home: &Home) -> PathBuf {
+    let repo = home.repo("repo");
+    home.write_config(&format!(
+        "{{\"{}\": {{\"vcs\": \"git\", \"workrooms\": {{\"w\": {{\"path\": \"/remote/w\"}}}}}}}}",
+        repo.display()
+    ));
+    repo
+}
+
+/// A descriptor is the app's, stored verbatim on the project or one of its workrooms: every key
+/// kept, numbers exactly as written, strings re-escaped as Go writes config. `clear` removes it
+/// and nothing else. The arguments are in the app's order (`WorkroomCLI.setHost`).
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn host_set_stores_the_descriptor_verbatim_and_clear_removes_it() {
+    let home = Home::new("host-set");
+    let repo = host_fixture(&home);
+    let project = repo.to_string_lossy();
+    let descriptor = "{\"driver\":\"boxd\",\"port\":12345678901234567890123,\"cost\":2.50,\
+                      \"far\":1e999,\"note\":\"<&>\\u2028\",\"z\":{\"u\":[1,null,true]},\"z\":{\"k\":-0}}";
+    let run = home.run(
+        &home.dir,
+        &[
+            "host",
+            "set",
+            descriptor,
+            "--json",
+            "--project",
+            &project,
+            "--workroom",
+            "w",
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        normalized_stdout(&home, &run),
+        "{\"cli_version\":\"dev\",\"command\":\"host\",\"ok\":true,\"project\":\"/Users/dev/repo\",\"schema_version\":1,\"workroom\":\"w\"}\n"
+    );
+    let run = home.run(
+        &home.dir,
+        &[
+            "host",
+            "set",
+            "{\"base\": {\"id\": 7}}  \n",
+            "--json",
+            "--project",
+            &project,
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        normalized_stdout(&home, &run),
+        "{\"cli_version\":\"dev\",\"command\":\"host\",\"ok\":true,\"project\":\"/Users/dev/repo\",\"schema_version\":1,\"workroom\":\"\"}\n"
+    );
+    assert_eq!(
+        normalized_config(&home),
+        "{\n  \"/Users/dev/repo\": {\n    \"host\": {\n      \"base\": {\n        \"id\": 7\n      }\n    },\n    \"vcs\": \"git\",\n    \"workrooms\": {\n      \"w\": {\n        \"host\": {\n          \"cost\": 2.50,\n          \"driver\": \"boxd\",\n          \"far\": 1e999,\n          \"note\": \"\\u003c\\u0026\\u003e\\u2028\",\n          \"port\": 12345678901234567890123,\n          \"z\": {\n            \"k\": -0\n          }\n        },\n        \"path\": \"/remote/w\"\n      }\n    }\n  }\n}"
+    );
+
+    let run = home.run(&repo, &["host", "clear", "--workroom", "w"]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(run.stdout, "");
+    let run = home.run(
+        &home.dir,
+        &["host", "clear", "--json", "--project", &project],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(run.envelope()["workroom"], "");
+    assert_eq!(
+        normalized_config(&home),
+        "{\n  \"/Users/dev/repo\": {\n    \"vcs\": \"git\",\n    \"workrooms\": {\n      \"w\": {\n        \"path\": \"/remote/w\"\n      }\n    }\n  }\n}"
+    );
+}
+
+/// A descriptor must be one JSON object: `null` (which would clear it), any other value, more
+/// than one value, and what isn't JSON are refused with `InvalidHostDescriptor`, exit 2, before
+/// config or the project is looked at. A missing or extra argument is a usage error.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn host_set_refuses_what_isnt_one_json_object() {
+    let home = Home::new("host-invalid");
+    home.write_config("not json");
+    let project = home.path("unregistered");
+    for descriptor in [
+        "null",
+        "[]",
+        "\"x\"",
+        "1",
+        "true",
+        "",
+        " ",
+        "{} {}",
+        "{}}",
+        "{} x",
+        "{\"a\":}",
+        "{\"a\":1",
+        "{\"a\":01}",
+    ] {
+        let run = home.run(
+            &home.dir,
+            &[
+                "host",
+                "set",
+                descriptor,
+                "--json",
+                "--project",
+                &project.to_string_lossy(),
+            ],
+        );
+        run.assert_code(2).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "InvalidHostDescriptor", "{descriptor:?}");
+        let envelope = run.envelope();
+        assert_eq!(envelope["command"], "host", "{descriptor:?}");
+        assert_eq!(
+            envelope["error"]["message"],
+            format!("a host descriptor must be a JSON object: {descriptor}")
+        );
+    }
+    for (args, message) in [
+        (
+            &["host", "set", "--json"][..],
+            "accepts 1 arg(s), received 0",
+        ),
+        (
+            &["host", "set", "{}", "{}", "--json"],
+            "accepts 1 arg(s), received 2",
+        ),
+        (
+            &["host", "clear", "x", "--json"],
+            "unknown command \"x\" for \"workroom host clear\"",
+        ),
+    ] {
+        let run = home.run(&home.dir, args);
+        run.assert_code(1).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "InternalError", "{args:?}");
+        let envelope = run.envelope();
+        assert_eq!(envelope["error"]["message"], message, "{args:?}");
+        assert_eq!(envelope.get("command"), None, "{args:?}");
+    }
+}
+
+/// A descriptor is never a new entry: the project, and the workroom `--workroom` names, must be
+/// registered, for `set` and `clear` alike, and `--pretend` checks that too, writing nothing. An
+/// unreadable config fails.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn host_needs_a_registered_project_and_workroom() {
+    let home = Home::new("host-missing");
+    let repo = host_fixture(&home);
+    let before = std::fs::read_to_string(home.config_path()).expect("read");
+    let project = repo.to_string_lossy();
+    let other = home.repo("other");
+    let other = other.to_string_lossy();
+    for pretend in [&[][..], &["--pretend"]] {
+        for sub in [&["set", "{\"a\":1}"][..], &["clear"]] {
+            let run = home.run(
+                &home.dir,
+                &[&["host"], sub, &["--json", "--project", &other], pretend].concat(),
+            );
+            run.assert_code(3).assert_quiet_stderr();
+            assert_eq!(run.error_kind(), "ProjectNotFound", "{sub:?} {pretend:?}");
+            assert_eq!(
+                home.normalize(
+                    run.envelope()["error"]["message"]
+                        .as_str()
+                        .expect("message")
+                ),
+                "project is not registered: /Users/dev/other"
+            );
+            let run = home.run(
+                &home.dir,
+                &[
+                    &["host"],
+                    sub,
+                    &["--json", "--project", &project, "--workroom", "nope"],
+                    pretend,
+                ]
+                .concat(),
+            );
+            run.assert_code(3).assert_quiet_stderr();
+            assert_eq!(run.error_kind(), "WorkroomNotFound", "{sub:?} {pretend:?}");
+            assert_eq!(
+                home.normalize(
+                    run.envelope()["error"]["message"]
+                        .as_str()
+                        .expect("message")
+                ),
+                "workroom is not registered: 'nope' in /Users/dev/repo"
+            );
+        }
+    }
+    let run = home.run(
+        &home.dir,
+        &[
+            "host",
+            "set",
+            "{\"a\":1}",
+            "-p",
+            "--json",
+            "--project",
+            &project,
+            "--workroom",
+            "w",
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(run.envelope()["workroom"], "w");
+    assert_eq!(
+        std::fs::read_to_string(home.config_path()).expect("read"),
+        before,
+        "a refused or pretended host changed config"
+    );
+
+    home.write_config("[]");
+    let run = home.run(&repo, &["host", "set", "{}", "--json"]);
+    run.assert_code(6).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "ConfigReadFailed");
 }
 
 // --- completion ---
