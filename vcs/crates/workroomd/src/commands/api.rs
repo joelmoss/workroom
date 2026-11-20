@@ -20,19 +20,6 @@ is a JSON object given inline, @FILE to read it from a file, or - to read it fro
 it is {}. With --json, `api call` prints the method's reply in the envelope: its `result`, and \
 the API's `revision`.";
 
-/// What `workroom api` alone prints, as cobra shows a command that has only subcommands.
-const HELP: &str = "Raw access to every terminal API method: list them, describe one's parameter \
-and result schemas, with examples, and call one with JSON parameters.
-
-Usage:
-  workroom api [command]
-
-Available Commands:
-  call        Call METHOD with JSON parameters: inline, @FILE, or - for stdin
-  describe    Show METHOD's parameter and result schemas, with examples
-  list        List every method the daemon has
-";
-
 /// Each subcommand's envelope names it, success and failure alike: one name per payload shape, as
 /// Go's `trust status` is.
 const LIST: &str = "api list";
@@ -80,7 +67,9 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
         Some((sub, _)) => Outcome::Usage(CliError::internal(format!(
             "unknown command {sub:?} for \"workroom api\""
         ))),
-        None => Outcome::Printed(HELP.to_string()),
+        // Alone, its help, as cobra shows a command that has only subcommands: from the table, so
+        // it lists the subcommands completion offers.
+        None => Outcome::Printed(super::help(super::find("api"))),
     }
 }
 
@@ -363,6 +352,17 @@ mod tests {
         let help = run_on(Platform::Other, &["api", "--help"]);
         assert!(help.stdout.starts_with(super::LONG), "{}", help.stdout);
         assert!(help.stdout.contains("\nUsage:\n  workroom api [command]\n"));
+        // `api` alone is the same help, its subcommands from the table completion reads.
+        assert_eq!(output.stdout, help.stdout);
+        let describe = run_on(Platform::Other, &["api", "describe", "--help"]);
+        assert!(
+            describe.stdout.starts_with(
+                "Show METHOD's parameter and result schemas, with examples\n\nUsage:\n  \
+                 workroom api describe METHOD\n"
+            ),
+            "{}",
+            describe.stdout
+        );
         let all = run_on(Platform::Mac, &["--help"]);
         assert!(
             all.stdout.contains(
