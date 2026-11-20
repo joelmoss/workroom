@@ -298,7 +298,7 @@ pub fn merge(mut probed: BTreeMap<String, String>, floor: &str) -> BTreeMap<Stri
 }
 
 /// This process's own environment, for a probe that failed, with the floor's PATH and the overrides.
-pub(crate) fn fallback() ->BTreeMap<String, String> {
+pub(crate) fn fallback() -> BTreeMap<String, String> {
     let own = std::env::vars_os()
         .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
         .collect();
@@ -306,7 +306,7 @@ pub(crate) fn fallback() ->BTreeMap<String, String> {
 }
 
 /// This process's PATH, then the standard directories.
-pub(crate) fn floor_path() ->String {
+pub(crate) fn floor_path() -> String {
     union_path(&std::env::var("PATH").unwrap_or_default(), FLOOR_PATH)
 }
 
