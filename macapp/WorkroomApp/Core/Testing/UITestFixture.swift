@@ -1131,6 +1131,14 @@ import WorkroomVCS
     /// See `lightTheme`.
     static var darkTheme: String { theme(argument: "WorkroomUITestDarkTheme", side: .dark) }
 
+    /// The appearance a fixture launch is pinned to (`-WorkroomUITestAppearance system|light|dark`,
+    /// #735), or nil to leave it alone. `ThemePickerUITests` pins it so which side is showing, and so
+    /// which tab ⌘⇧K opens, depends on neither the machine's appearance nor the Dev app's last choice.
+    /// Mirrored into `Defaults` for the same reason as `lightTheme`.
+    static var appearance: AppearanceMode? {
+      text("WorkroomUITestAppearance").flatMap(AppearanceMode.init(rawValue:))
+    }
+
     private static func theme(argument: String, side: ThemeSide) -> String {
       let raw = text(argument) ?? ""
       let bundled = ThemeCatalog.bundledThemes.contains { $0.name == raw && $0.side == side }
@@ -1207,6 +1215,7 @@ import WorkroomVCS
       // test that applies a theme leaves it applied for the next run.
       Defaults[.lightTheme] = lightTheme
       Defaults[.darkTheme] = darkTheme
+      if let appearance { Defaults[.appearance] = appearance }
       // Unfocused-pane dimming, for the same reason as the themes: it PERSISTS in the real Dev
       // domain, and it decides whether the pane scrim, the terminal tab strip and the pane header render
       // at full contrast or 0.45 — so a developer who turns it off once silently rebaselines every later
