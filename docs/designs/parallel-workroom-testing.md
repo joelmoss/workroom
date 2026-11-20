@@ -59,6 +59,8 @@ LaunchServices and XCUITest consider "that app is already running". The conseque
   into the focused app.
 - A hosted unit run boots the whole app, and its real `WindowGroup` window renders under XCTest
   (the `.task` bootstrap guard in `WorkroomApp.swift` says so), one per parallel-testing worker.
+  Since 2026-11-20 each test host launches unable to activate (`AppEnvironment.prohibitsActivation`),
+  so its windows stay behind the developer's work; it still shares the GUI session with a UI run.
 
 So two UI-test runs cannot overlap, and neither can a UI-test run and a hosted unit run. Unit runs
 can overlap each other freely.

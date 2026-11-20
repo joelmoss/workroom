@@ -127,6 +127,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
   }
 
+  func applicationWillFinishLaunching(_ notification: Notification) {
+    // Before launch finishes, so the test host's launch activation and Dock icon never happen
+    // (`AppEnvironment.prohibitsActivation`). Every `NSApp.activate` after this is a no-op.
+    if AppEnvironment.prohibitsActivation() {
+      NSApp.setActivationPolicy(.prohibited)
+    }
+  }
+
   func applicationDidFinishLaunching(_ notification: Notification) {
     let interval = LaunchSignposts.begin("Application did finish launching")
     defer { LaunchSignposts.end("Application did finish launching", interval) }
