@@ -103,6 +103,102 @@ fn a_pattern_the_regex_engine_refuses_is_an_error() {
     );
 }
 
+fn output_waiter(pattern: &str) -> std::sync::Arc<Waiter> {
+    std::sync::Arc::new(Waiter::new(
+        Condition::Output(Matcher::new(pattern).expect("a valid pattern")),
+        Seen::default(),
+    ))
+}
+
+fn in_20s() -> Option<Instant> {
+    Some(Instant::now() + std::time::Duration::from_secs(20))
+}
+
+/// The session's reader never waits on a regex: it only queues what it read, bounded, while the
+/// wait's own thread matches. Here that thread is stuck mid-match (its matcher held) while the
+/// reader hands over 1 MiB, a read at a time, and the reader still finishes; the queue stays
+/// within `QUEUE`, dropping the oldest. Once the thread runs, it matches what it kept.
+#[test]
+fn the_reader_never_waits_on_a_match() {
+    let waiter = output_waiter("MARK-[0-9]+");
+    let stuck = lock_or_recover(&waiter.matcher);
+    let (done, finished) = std::sync::mpsc::channel();
+    let reader = {
+        let waiter = std::sync::Arc::clone(&waiter);
+        std::thread::spawn(move || {
+            for _ in 0..1024 {
+                waiter.output(&[b'x'; 1024]);
+            }
+            waiter.output(b"\nMARK-1\r\n");
+            done.send(()).unwrap();
+        })
+    };
+    // A guard against a hang, not a budget: the reader is done in microseconds.
+    finished
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("the reader waited on the match");
+    reader.join().unwrap();
+    {
+        let progress = lock_or_recover(&waiter.state);
+        assert!(
+            progress.queue.bytes.len() <= QUEUE,
+            "{}",
+            progress.queue.bytes.len()
+        );
+        assert!(progress.queue.lagged, "1 MiB fits no queue");
+    }
+    drop(stuck);
+    assert_eq!(
+        waiter.wait(in_20s()),
+        Outcome::Met(Met::Output(b"MARK-1".to_vec()))
+    );
+}
+
+/// Output queued before the session ended, or before the deadline, is matched before either is
+/// believed: it came first.
+#[test]
+fn queued_output_meets_the_wait_before_its_end_or_deadline() {
+    let waiter = output_waiter("ready");
+    waiter.output(b"server ready\r\n");
+    waiter.ended(Some(0));
+    assert_eq!(
+        waiter.wait(in_20s()),
+        Outcome::Met(Met::Output(b"ready".to_vec()))
+    );
+
+    let waiter = output_waiter("ready");
+    waiter.output(b"server ready\r\n");
+    assert_eq!(
+        waiter.wait(Some(Instant::now())),
+        Outcome::Met(Met::Output(b"ready".to_vec()))
+    );
+
+    let waiter = output_waiter("ready");
+    waiter.output(b"not yet\r\n");
+    waiter.ended(Some(0));
+    assert_eq!(waiter.wait(in_20s()), Outcome::SessionEnded);
+}
+
+/// A lagged queue keeps the newest output, and starts matching it from a fresh window: no match
+/// joins text from either side of what was dropped, and the kept bytes, which may start inside a
+/// sequence, start where it is known to end.
+#[test]
+fn a_lagged_queue_matches_only_what_it_kept() {
+    let mut queue = Queue::default();
+    queue.push(b"needle ");
+    queue.push(&vec![b'x'; QUEUE]);
+    assert!(queue.lagged);
+    assert_eq!(queue.bytes.len(), QUEUE);
+    let mut matcher = Matcher::new("needle").unwrap();
+    assert_eq!(matcher.take(queue), None, "the needle was dropped");
+
+    let mut queue = Queue::default();
+    queue.push(&vec![b'x'; QUEUE]);
+    queue.push(b"\x1b]2;title NOPE\x07\r\nDONE\r\n");
+    let mut matcher = Matcher::new("NOPE|DONE").unwrap();
+    assert_eq!(matcher.take(queue), Some(b"DONE".to_vec()));
+}
+
 /// What `pattern` first matches in `chunks`, for a wait that joined the stream mid-sequence.
 fn first_match_resynced(pattern: &str, chunks: &[&[u8]]) -> Option<String> {
     let mut matcher = Matcher::new(pattern).expect("a valid pattern");

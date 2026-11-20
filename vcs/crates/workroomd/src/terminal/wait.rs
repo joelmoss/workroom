@@ -9,8 +9,10 @@
 //! state ([`Seen`]) once the session's locks are released. A run's state comes from the runs
 //! watcher as it reads each new status line, and the session's end from its reader as it ends.
 //!
-//! A regex is matched here, against the output stream the session's reader already reads, after
-//! escape sequences are stripped ([`Matcher`]).
+//! A regex is matched against the output stream the session's reader already reads, after escape
+//! sequences are stripped ([`Matcher`]), on the wait's own thread ([`Waiter::wait`]): the reader
+//! only copies each read into the waiter's queue, bounded at [`QUEUE`], so however many waits a
+//! session has and however slow their regexes, its output reaches its clients as soon as without.
 
 use std::sync::{Condvar, Mutex};
 use std::time::Instant;
@@ -127,27 +129,90 @@ pub enum Met {
 pub struct Waiter {
     state: Mutex<Progress>,
     wake: Condvar,
+    /// A regex wait's matcher, used only by the thread in [`Waiter::wait`], never by the session:
+    /// matching happens there, off the session's reader.
+    matcher: Mutex<Option<Matcher>>,
+}
+
+/// What a waiter waits for, its regex's matcher apart (`Waiter::matcher`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wanted {
+    Status(State),
+    Run(RunState),
+    Output,
+    Ended,
+    CommandFinished,
 }
 
 struct Progress {
-    condition: Condition,
+    wanted: Wanted,
     /// The commands the shell had ended when the wait started, for `CommandFinished`.
     commands_before: u64,
+    /// A regex wait's output, handed over by the reader and not yet matched.
+    queue: Queue,
+    /// A regex wait's session ended: the wait matches what is queued before it says so.
+    ended: bool,
     /// Set once, by whatever ends the wait first.
     outcome: Option<Outcome>,
+}
+
+/// The most output a regex waiter holds that its thread has not matched yet. Past it the oldest is
+/// dropped, never the reader made to wait: the waiter has lagged, and matches from what it kept
+/// (`Queue::lagged`). Its thread takes all of it at once, and a search costs about the same
+/// however much it takes, so it catches up on a session that prints faster than it matches.
+pub const QUEUE: usize = 16 * WINDOW;
+
+/// What the reader has handed a regex waiter and its thread has not taken yet.
+#[derive(Default)]
+struct Queue {
+    /// The screen as plain text, matched first (`--include-screen`).
+    screen: Option<Vec<u8>>,
+    /// The session's output, as read, at most `QUEUE` bytes.
+    bytes: Vec<u8>,
+    /// Output was dropped: what is kept is matched from a fresh start (`Matcher::lagged`).
+    lagged: bool,
+}
+
+impl Queue {
+    fn is_empty(&self) -> bool {
+        self.screen.is_none() && self.bytes.is_empty()
+    }
+
+    /// Adds `bytes`, keeping the newest `QUEUE` of what is queued.
+    fn push(&mut self, bytes: &[u8]) {
+        if self.bytes.len() + bytes.len() <= QUEUE {
+            self.bytes.extend_from_slice(bytes);
+            return;
+        }
+        let kept = &bytes[bytes.len().saturating_sub(QUEUE)..];
+        let dropped = (self.bytes.len() + kept.len()).saturating_sub(QUEUE);
+        self.bytes.drain(..dropped);
+        self.bytes.extend_from_slice(kept);
+        self.lagged = true;
+    }
 }
 
 impl Waiter {
     /// A waiter for `condition`, starting from what the shadow says now: a status already reached
     /// meets it at once.
     pub fn new(condition: Condition, now: Seen) -> Waiter {
+        let (wanted, matcher) = match condition {
+            Condition::Status(state) => (Wanted::Status(state), None),
+            Condition::Run(state) => (Wanted::Run(state), None),
+            Condition::Output(matcher) => (Wanted::Output, Some(matcher)),
+            Condition::Ended => (Wanted::Ended, None),
+            Condition::CommandFinished => (Wanted::CommandFinished, None),
+        };
         let waiter = Waiter {
             state: Mutex::new(Progress {
-                condition,
+                wanted,
                 commands_before: now.commands,
+                queue: Queue::default(),
+                ended: false,
                 outcome: None,
             }),
             wake: Condvar::new(),
+            matcher: Mutex::new(matcher),
         };
         waiter.shadow(&now);
         waiter
@@ -158,31 +223,26 @@ impl Waiter {
         lock_or_recover(&self.state).outcome.clone()
     }
 
-    /// The next bytes of the session's output.
+    /// The next bytes of the session's output, from its reader: queued for the wait's own thread,
+    /// so the reader pays a copy, never a match.
     pub fn output(&self, bytes: &[u8]) {
-        self.update(|progress| match &mut progress.condition {
-            Condition::Output(matcher) => matcher.feed(bytes).map(Met::Output),
-            _ => None,
-        });
+        self.queue(|queue| queue.push(bytes));
     }
 
-    /// Plain text, ahead of any output: the screen, for `--include-screen`.
-    pub fn screen(&self, text: &[u8]) {
-        self.update(|progress| match &mut progress.condition {
-            Condition::Output(matcher) => matcher.feed_plain(text).map(Met::Output),
-            _ => None,
-        });
+    /// Plain text, ahead of any output: the screen, for `--include-screen`, queued as `output` is.
+    pub fn screen(&self, text: Vec<u8>) {
+        self.queue(|queue| queue.screen = Some(text));
     }
 
     /// The shadow's state after a read, or after the program status changed.
     pub fn shadow(&self, seen: &Seen) {
-        self.update(|progress| match progress.condition {
-            Condition::Status(wanted)
+        self.update(|progress| match progress.wanted {
+            Wanted::Status(wanted)
                 if seen.agent == Some(wanted) || seen.passed.contains(&wanted) =>
             {
                 Some(Met::Status(wanted))
             }
-            Condition::CommandFinished if seen.commands > progress.commands_before => {
+            Wanted::CommandFinished if seen.commands > progress.commands_before => {
                 Some(Met::CommandFinished(seen.last_exit))
             }
             _ => None,
@@ -194,8 +254,8 @@ impl Waiter {
         let Some((state, code)) = RunState::of_line(line) else {
             return;
         };
-        self.update(|progress| match progress.condition {
-            Condition::Run(wanted) if wanted == state => Some(Met::Run {
+        self.update(|progress| match progress.wanted {
+            Wanted::Run(wanted) if wanted == state => Some(Met::Run {
                 state,
                 exit_code: code,
             }),
@@ -203,38 +263,83 @@ impl Waiter {
         });
     }
 
-    /// The session ended, with its shell's exit code when the daemon saw it.
+    /// The session ended, with its shell's exit code when the daemon saw it. A regex wait first
+    /// matches the output it has queued, which came before the end.
     pub fn ended(&self, exit_code: Option<i32>) {
-        self.finish(|condition| match condition {
-            Condition::Ended => Outcome::Met(Met::Ended(exit_code)),
-            _ => Outcome::SessionEnded,
-        });
+        let mut progress = lock_or_recover(&self.state);
+        if progress.outcome.is_some() {
+            return;
+        }
+        match progress.wanted {
+            Wanted::Ended => progress.outcome = Some(Outcome::Met(Met::Ended(exit_code))),
+            Wanted::Output => progress.ended = true,
+            _ => progress.outcome = Some(Outcome::SessionEnded),
+        }
+        drop(progress);
+        self.wake.notify_all();
     }
 
     /// Its caller has gone: whatever is waiting stops.
     pub fn cancel(&self) {
-        self.finish(|_| Outcome::Cancelled);
+        let mut progress = lock_or_recover(&self.state);
+        if progress.outcome.is_none() {
+            progress.outcome = Some(Outcome::Cancelled);
+            drop(progress);
+            self.wake.notify_all();
+        }
     }
 
-    /// Blocks until the wait ends, or `deadline` passes (none: never).
+    /// Blocks until the wait ends, or `deadline` passes (none: never). A regex wait's output is
+    /// matched here, on the caller's thread, with no lock the session's reader takes held: the
+    /// queue is taken under the waiter's lock and matched after it is released. What is queued is
+    /// matched before the session's end or the deadline is believed, so output that came first
+    /// still meets the wait.
     pub fn wait(&self, deadline: Option<Instant>) -> Outcome {
-        let mut progress = lock_or_recover(&self.state);
+        let mut matcher = lock_or_recover(&self.matcher);
         loop {
-            if let Some(outcome) = &progress.outcome {
-                return outcome.clone();
-            }
-            match deadline {
-                None => progress = recover(self.wake.wait(progress)),
-                Some(deadline) => {
-                    let now = Instant::now();
-                    if now >= deadline {
-                        progress.outcome = Some(Outcome::TimedOut);
+            let queue = {
+                let mut progress = lock_or_recover(&self.state);
+                loop {
+                    if let Some(outcome) = &progress.outcome {
+                        return outcome.clone();
+                    }
+                    if !progress.queue.is_empty() {
+                        break std::mem::take(&mut progress.queue);
+                    }
+                    // Nothing left to match from before the end.
+                    if progress.ended {
+                        progress.outcome = Some(Outcome::SessionEnded);
                         continue;
                     }
-                    progress = recover(self.wake.wait_timeout(progress, deadline - now)).0;
+                    match deadline {
+                        None => progress = recover(self.wake.wait(progress)),
+                        Some(deadline) => {
+                            let now = Instant::now();
+                            if now >= deadline {
+                                progress.outcome = Some(Outcome::TimedOut);
+                                continue;
+                            }
+                            progress = recover(self.wake.wait_timeout(progress, deadline - now)).0;
+                        }
+                    }
                 }
+            };
+            let found = matcher.as_mut().and_then(|matcher| matcher.take(queue));
+            if let Some(found) = found {
+                self.update(|_| Some(Met::Output(found)));
             }
         }
+    }
+
+    /// Queues output for a regex wait's thread, and wakes it: nothing for any other wait.
+    fn queue(&self, add: impl FnOnce(&mut Queue)) {
+        let mut progress = lock_or_recover(&self.state);
+        if progress.wanted != Wanted::Output || progress.outcome.is_some() {
+            return;
+        }
+        add(&mut progress.queue);
+        drop(progress);
+        self.wake.notify_all();
     }
 
     /// Meets the wait with what `met` sees, unless it has already ended.
@@ -249,20 +354,11 @@ impl Waiter {
             self.wake.notify_all();
         }
     }
-
-    fn finish(&self, outcome: impl FnOnce(&Condition) -> Outcome) {
-        let mut progress = lock_or_recover(&self.state);
-        if progress.outcome.is_none() {
-            progress.outcome = Some(outcome(&progress.condition));
-            drop(progress);
-            self.wake.notify_all();
-        }
-    }
 }
 
 /// The most stripped output a regex waiter keeps: the longest a match can be, and what each read
 /// rescans. A match spanning reads is found because the window still holds its start; one longer
-/// than this is not. Each waiter holds at most this much plus one read.
+/// than this is not. Each waiter holds at most this much, plus what its queue holds (`QUEUE`).
 pub const WINDOW: usize = 16 * 1024;
 
 /// The most memory a waiter's compiled regex may take, so one request cannot hold the daemon's.
@@ -318,6 +414,25 @@ impl Matcher {
     /// ESC, BEL, CAN, SUB or `\n`, which is kept, as a line's end.
     pub fn resync(&mut self) {
         self.strip = Stripper::Resync;
+    }
+
+    /// Takes what the reader queued: the screen first, then the output. Output dropped before
+    /// it (`Queue::lagged`) leaves a gap no match may span, so the window starts again, and the
+    /// bytes kept start somewhere unknown, as a wait joining mid-sequence does.
+    fn take(&mut self, queue: Queue) -> Option<Vec<u8>> {
+        if let Some(screen) = queue.screen
+            && let Some(found) = self.feed_plain(&screen)
+        {
+            return Some(found);
+        }
+        if queue.lagged {
+            self.window.clear();
+            self.resync();
+        }
+        if queue.bytes.is_empty() {
+            return None;
+        }
+        self.feed(&queue.bytes)
     }
 
     fn search(&mut self) -> Option<Vec<u8>> {
