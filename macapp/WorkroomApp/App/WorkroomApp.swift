@@ -75,6 +75,12 @@ struct WorkroomApp: App {
       Task.detached(priority: .utility) { await ShellEnvironment.refresh() }
     }
 
+    // The single theme family becomes a light theme and a dark theme (#733). Before anything reads
+    // them (`ThemeService.shared`, every `@Default(.appearance)`), and before the fixture below
+    // injects its own: the UI-test suite is never wiped, so an old key a much earlier build left
+    // there must not upgrade over the injected themes.
+    ThemeService.upgradeThemeSettings()
+
     // UI-test fixture mode only: park the pref-driven UI state (inspector open on the requested
     // section, diff viewer in the requested layout) in a known state before the first `AppStore`
     // seeds `activeInspectorSection` from `Defaults`. Inert in production — a real user never passes

@@ -78,7 +78,7 @@ recognising rather than chasing.
 
 - The XCUITest preferences suite is one stable name, `com.developwithstyle.workroom.tests`
   (`UserDefaults.app`), never wiped. `runCommands`, `hasCompletedOnboarding`, `vcsLastFetch`,
-  `showInspector`, `diffViewMode` and `themeFamily` are last-writer-wins between concurrent runs.
+  `showInspector`, `diffViewMode`, `lightTheme` and `darkTheme` are last-writer-wins between concurrent runs.
 - The fixture tree is `$TMPDIR/workroom-uitest` (`UITestFixture.projects`), per user, not per app.
 - `~/Library/Application Support/Workroom/ghostty.conf` (`GhosttyApp.themeConfigURL`) was shared by
   every identity, release included, and several unit tests and `ThemePickerUITests` write it and

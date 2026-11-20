@@ -53,7 +53,7 @@ final class ThemeService {
       // A forced light/dark preference ignores the OS appearance (see `isCurrentAppearanceDark`),
       // so the whole apply — conf write, config parse, every surface reconfigured — would recompute
       // the values it already has. Only System follows the OS.
-      guard Defaults[.theme] == .system else { return }
+      guard Defaults[.appearance] == .system else { return }
       // Route through the chokepoint so chrome tokens recompute (the active variant flips) alongside
       // the terminal re-theme (issue #36).
       Task { @MainActor in self.applyActiveTheme() }
@@ -62,24 +62,75 @@ final class ThemeService {
 
   // MARK: Resolution (static — also called by GhosttyApp.writeThemeConfig without the instance)
 
-  /// The active variant file name for an appearance: the selected family's variant for that mode,
-  /// else the Workroom default. Always sanitised (safe to write into the conf).
+  /// The active theme's file name for an appearance (#733): the dark theme setting when the
+  /// appearance is dark, else the light theme setting. Each side falls back on its own, to Workroom or
+  /// Workroom Light, when its theme is missing or on the wrong side (a user's own file is judged by its
+  /// background, as `ThemeCatalog.side(ofThemeNamed:)` does). The fallback is resolution only — the
+  /// setting is kept, so a user theme file that is missing for a while comes back when it does — and
+  /// the terminal and the chrome both resolve through here, so they never diverge onto different
+  /// fallbacks. Always sanitised (safe to write into the conf).
   nonisolated static func activeThemeName(isDark: Bool) -> String {
+    let side = ThemeSide(isDark: isDark)
+    let chosen = side == .dark ? Defaults[.darkTheme] : Defaults[.lightTheme]
     let resolved =
-      ThemeCatalog.family(named: Defaults[.themeFamily])?.theme(for: ThemeSide(isDark: isDark))
-      ?? ThemeCatalog.family(named: ThemeCatalog.defaultFamilyName)!.theme(for: ThemeSide(isDark: isDark))
+      ThemeCatalog.side(ofThemeNamed: chosen) == side
+      ? chosen : ThemeCatalog.defaultFamily.theme(for: side)
     return ThemeCatalog.sanitizedThemeName(resolved)
+  }
+
+  /// `activeThemeName(isDark:)` for an appearance, with System following `systemIsDark`.
+  nonisolated static func activeThemeName(appearance: AppearanceMode, systemIsDark: Bool)
+    -> String
+  {
+    activeThemeName(isDark: isDark(appearance, systemIsDark: systemIsDark))
+  }
+
+  nonisolated static func isDark(_ appearance: AppearanceMode, systemIsDark: Bool) -> Bool {
+    switch appearance {
+    case .light: return false
+    case .dark: return true
+    case .system: return systemIsDark
+    }
+  }
+
+  // MARK: Upgrade (#733)
+
+  /// Carry the single-family settings across to the light and dark theme settings, once, at launch:
+  /// the stored family's two themes become `lightTheme` and `darkTheme` (an unknown family becomes
+  /// Workroom's), the old `themePreference` becomes `appearance`, and both old keys are deleted, which
+  /// is what makes it run once. Each old key upgrades on its own, so someone who only ever changed the
+  /// appearance keeps it. A fresh install stores nothing and reads the new keys' defaults: Workroom's
+  /// two themes and System.
+  ///
+  /// An old key always wins over a new one. Presence can't be asked of the new keys anyway —
+  /// `Defaults` registers each key's default, so `object(forKey:)` is never nil for them — and an old
+  /// key alongside a new one means an older build ran since and wrote it, so it is the newer choice.
+  ///
+  /// Raw keys, because the old typed keys are gone; both new keys store plain strings
+  /// (`AppearanceMode` is `PreferRawRepresentable` with the same raw values), so the raw writes are
+  /// what `Defaults` reads back.
+  nonisolated static func upgradeThemeSettings(in defaults: UserDefaults = .app) {
+    if let familyName = defaults.string(forKey: "themeFamily") {
+      let family = ThemeCatalog.family(named: familyName) ?? ThemeCatalog.defaultFamily
+      defaults.set(family.light, forKey: "lightTheme")
+      defaults.set(family.dark, forKey: "darkTheme")
+    }
+    defaults.removeObject(forKey: "themeFamily")
+
+    if let raw = defaults.string(forKey: "themePreference"), AppearanceMode(rawValue: raw) != nil {
+      defaults.set(raw, forKey: "appearance")
+    }
+    defaults.removeObject(forKey: "themePreference")
   }
 
   // MARK: The chokepoint
 
   /// THE single apply path. Every trigger (picker selection, appearance change, first run) routes
-  /// here. Steps: (1) validate the active name resolves — reset to Workroom if not, so terminal
-  /// *and* chrome fall back to the *same* theme; (2) recompute chrome tokens; (3) re-theme live
-  /// terminals (regenerates the conf with the new `theme=` and force-reloads); (4) notify AppKit
-  /// sites that read `ThemeService.shared.tokens` outside SwiftUI.
+  /// here. Steps: (1) recompute chrome tokens from the active theme (`activeThemeName`, which also
+  /// resolves the per-side fallback, so terminal *and* chrome fall back to the *same* theme);
+  /// (2) re-theme live terminals (regenerates the conf with the new `theme=` and force-reloads);
+  /// (3) notify AppKit sites that read `ThemeService.shared.tokens` outside SwiftUI.
   func applyActiveTheme(force: Bool = true) {
-    validateSelection()
     let isDark = Self.isCurrentAppearanceDark()
     activePreview = Self.themePreview(named: Self.activeThemeName(isDark: isDark))
     tokens = ThemeTokens(preview: activePreview)
@@ -93,18 +144,16 @@ final class ThemeService {
     NotificationCenter.default.post(name: .themeDidChange, object: nil)
   }
 
-  func applyFamily(_ name: String) {
-    Defaults[.themeFamily] = name
-    applyActiveTheme()
+  /// Choose a theme family: set both the light theme and the dark theme, then apply once.
+  func applyFamily(_ family: ThemeFamily) {
+    apply(light: family.light, dark: family.dark)
   }
 
-  /// If the stored family no longer resolves (e.g. an old key references a renamed family), reset
-  /// to the Workroom default so the terminal (ghostty) and chrome don't diverge onto different
-  /// fallbacks.
-  private func validateSelection() {
-    if ThemeCatalog.family(named: Defaults[.themeFamily]) == nil {
-      Defaults[.themeFamily] = ThemeCatalog.defaultFamilyName
-    }
+  /// Set the light theme and the dark theme, then apply once.
+  func apply(light: String, dark: String) {
+    Defaults[.lightTheme] = light
+    Defaults[.darkTheme] = dark
+    applyActiveTheme()
   }
 
   // MARK: Resolution
@@ -128,13 +177,10 @@ final class ThemeService {
   // MARK: Appearance
 
   static func isCurrentAppearanceDark() -> Bool {
-    // Honour a forced ThemePreference; otherwise follow the OS effective appearance.
-    switch Defaults[.theme] {
-    case .light: return false
-    case .dark: return true
-    case .system:
-      return NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-    }
+    // Honour a forced AppearanceMode; otherwise follow the OS effective appearance.
+    isDark(
+      Defaults[.appearance],
+      systemIsDark: NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
   }
 }
 

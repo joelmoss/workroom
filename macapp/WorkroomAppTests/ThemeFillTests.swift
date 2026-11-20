@@ -12,17 +12,27 @@ import XCTest
 /// across a theme switch) and for AppKit (read from the theme service).
 @MainActor
 final class ThemeFillTests: XCTestCase {
-  private var savedFamily: String!
+  private var savedLight: String!
+  private var savedDark: String!
 
   override func setUp() async throws {
     try await super.setUp()
-    savedFamily = Defaults[.themeFamily]
-    ThemeService.shared.applyFamily(ThemeCatalog.defaultFamilyName)
+    savedLight = Defaults[.lightTheme]
+    savedDark = Defaults[.darkTheme]
+    let workroom = try XCTUnwrap(
+      ThemeCatalog.families.first { $0.name == ThemeCatalog.defaultFamilyName })
+    ThemeService.shared.applyFamily(workroom)
   }
 
   override func tearDown() async throws {
-    ThemeService.shared.applyFamily(savedFamily)
+    ThemeService.shared.apply(light: savedLight, dark: savedDark)
     try await super.tearDown()
+  }
+
+  /// A family other than the one in use.
+  private func otherFamily() throws -> ThemeFamily {
+    let current = ThemeCatalog.family(light: Defaults[.lightTheme], dark: Defaults[.darkTheme])
+    return try XCTUnwrap(ThemeCatalog.families.first { $0 != current })
   }
 
   private func blank() -> some View { Color.clear.frame(width: 40, height: 40) }
@@ -49,12 +59,11 @@ final class ThemeFillTests: XCTestCase {
   /// The fill reads the theme from the environment, not a snapshot: a tree given other tokens draws
   /// those, so a theme switch (which re-injects at the root) reaches it.
   func testAFillFollowsTheTokensInItsEnvironment() throws {
-    let other = try XCTUnwrap(
-      ThemeCatalog.families.first { $0.name != Defaults[.themeFamily] })
+    let other = try otherFamily()
     let otherTokens = ThemeTokens(
       preview: ThemeService.themePreview(
         named: ThemeCatalog.sanitizedThemeName(
-          other.variant(isDark: ThemeService.isCurrentAppearanceDark()))))
+          other.theme(for: ThemeSide(isDark: ThemeService.isCurrentAppearanceDark())))))
     let drawn = try renderedCentre(
       blank().background(ThemeFill.panel).environment(\.themeTokens, otherTokens))
     let expected = try renderedCentre(blank().background(otherTokens.panel))
@@ -120,9 +129,7 @@ final class ThemeFillTests: XCTestCase {
   func testTheAppKitColourFollowsTheActiveTheme() throws {
     XCTAssertEqual(ThemeFill.panel.nsColor(), ThemeService.shared.tokens.nsPanel)
     XCTAssertEqual(ThemeFill.background.nsColor(), ThemeService.shared.tokens.nsBg)
-    let other = try XCTUnwrap(
-      ThemeCatalog.families.first { $0.name != Defaults[.themeFamily] })
-    ThemeService.shared.applyFamily(other.name)
+    ThemeService.shared.applyFamily(try otherFamily())
     XCTAssertEqual(ThemeFill.panel.nsColor(), ThemeService.shared.tokens.nsPanel)
     XCTAssertEqual(ThemeFill.background.nsColor(), ThemeService.shared.tokens.nsBg)
   }
