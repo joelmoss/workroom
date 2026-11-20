@@ -55,16 +55,58 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// A directory of this test's own in the temp dir. The prefix is short because the attempt
+    /// counter lengthens a path a socket is bound under, and a unix socket address is capped at
+    /// 104 bytes.
     pub fn new(name: &str) -> Workspace {
-        let dir =
-            std::env::temp_dir().join(format!("workroomd-it-{}-{}", name, std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("workspace");
-        Workspace { dir }
+        Workspace::under(&std::env::temp_dir(), &format!("wr-it-{name}"))
+    }
+
+    /// A directory this run made itself under `parent`, as the contract suite's `Home::new` makes
+    /// one: `create_dir` fails on any path that already exists, so a leftover from a killed run,
+    /// or another run's live directory, is skipped rather than reused, and only what this call
+    /// created is ever removed.
+    pub fn under(parent: &Path, stem: &str) -> Workspace {
+        let pid = std::process::id();
+        for attempt in 0u32.. {
+            let dir = parent.join(format!("{stem}-{pid}-{attempt}"));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return Workspace { dir },
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create workspace {}: {error}", dir.display()),
+            }
+        }
+        unreachable!("u32 attempts ran out")
     }
 
     pub fn socket(&self) -> PathBuf {
         self.dir.join("workroomd.sock")
+    }
+}
+
+impl std::ops::Deref for Workspace {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.dir
+    }
+}
+
+impl AsRef<Path> for Workspace {
+    fn as_ref(&self) -> &Path {
+        &self.dir
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for Workspace {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.dir.as_os_str()
+    }
+}
+
+/// As its path, so a request can name it.
+impl serde::Serialize for Workspace {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.dir.serialize(serializer)
     }
 }
 

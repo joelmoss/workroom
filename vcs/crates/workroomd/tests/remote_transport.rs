@@ -205,8 +205,9 @@ fn a_restored_pane_is_shown_the_record_of_a_session_that_ended_with_its_host() {
         eprintln!("skipping: built without the terminal-state feature, so no record repaints");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("wr-records-pipe-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    // `Screens::open` makes the records directory itself, inside one of this run's own.
+    let scratch = Workspace::new("records-pipe");
+    let dir = scratch.join("records");
     let sessions = SessionStore::new();
     sessions
         .hooks()
@@ -542,8 +543,9 @@ fn a_restored_pane_with_a_screen_over_one_frame_still_gets_it_whole() {
         eprintln!("skipping: built without the terminal-state feature, so no record repaints");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("wr-records-big-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    // `Screens::open` makes the records directory itself, inside one of this run's own.
+    let scratch = Workspace::new("records-big");
+    let dir = scratch.join("records");
     let sessions = SessionStore::new();
     sessions
         .hooks()

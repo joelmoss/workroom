@@ -767,10 +767,19 @@ mod tests {
     /// fails exactly as the bug would.
     #[test]
     fn a_timeout_kills_a_descendant_that_escaped_the_process_group() {
-        let dir =
-            std::env::temp_dir().join(format!("wr-vcs-git-setsid-escape-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        // A directory this run made itself: `create_dir` fails on any path that already exists,
+        // so a leftover from a killed run, or another run's live one, is skipped rather than
+        // reused, and the removal at the end only ever takes what this test created.
+        let parent = std::env::temp_dir();
+        let pid = std::process::id();
+        let dir = (0u32..)
+            .map(|attempt| parent.join(format!("wr-vcs-git-setsid-escape-{pid}-{attempt}")))
+            .find(|dir| match std::fs::create_dir(dir) {
+                Ok(()) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+                Err(error) => panic!("create {}: {error}", dir.display()),
+            })
+            .expect("a free name");
         let marker = dir.join("still-alive");
         // The grandchild leaves the group, waits out the read's deadline, and only THEN writes.
         // If it is still alive at that point the marker appears, which is the failure this catches.

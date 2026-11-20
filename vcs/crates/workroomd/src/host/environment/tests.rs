@@ -2,14 +2,9 @@ use super::*;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-fn scratch(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!(
-        "wr-host-environment-test-{name}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    std::fs::canonicalize(&root).unwrap()
+/// A directory of this run's own, symlink-resolved, removed when the test ends.
+fn scratch(name: &str) -> crate::commands::Scratch {
+    crate::commands::Scratch::resolved(&format!("wr-host-environment-test-{name}"))
 }
 
 /// Written by `cp`, not by this process: a test on another thread that forks while this one

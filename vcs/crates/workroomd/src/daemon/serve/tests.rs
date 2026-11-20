@@ -19,8 +19,7 @@ fn daemon_run_lock() -> std::sync::MutexGuard<'static, ()> {
 #[test]
 fn the_lock_makes_a_missing_socket_folder_private() {
     use std::os::unix::fs::PermissionsExt;
-    let root = std::env::temp_dir().join(format!("workroomd-mkdir-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = crate::commands::Scratch::in_temp("workroomd-mkdir");
     let socket = root.join("a/b/workroomd.sock");
 
     let _lock = acquire_instance_lock(&socket).expect("the lock makes the folder");
@@ -35,9 +34,7 @@ fn the_lock_makes_a_missing_socket_folder_private() {
 #[test]
 fn the_lock_leaves_an_existing_socket_folder_alone() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = std::env::temp_dir().join(format!("workroomd-keep-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::commands::Scratch::in_temp("workroomd-keep");
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o750)).unwrap();
 
     let _lock = acquire_instance_lock(&dir.join("workroomd.sock")).expect("lock");
@@ -49,8 +46,7 @@ fn the_lock_leaves_an_existing_socket_folder_alone() {
 
 #[test]
 fn instance_lock_is_exclusive() {
-    let dir = std::env::temp_dir().join(format!("workroomd-lock-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::commands::Scratch::in_temp("workroomd-lock");
     let socket = dir.join("workroomd.sock");
 
     let first = acquire_instance_lock(&socket).expect("first lock");
@@ -103,9 +99,7 @@ fn serve_kept_fresh(
     take_lock: impl FnOnce(&Path) -> InstanceLock,
 ) -> (Duration, Duration) {
     let _run = daemon_run_lock();
-    let dir = std::env::temp_dir().join(format!("wr-fresh-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::commands::Scratch::in_temp(&format!("wr-fresh-{name}"));
     let socket = dir.join("workroomd");
     let lock = take_lock(&socket);
     let log_path = crate::daemon::log::log_path(&socket);
@@ -143,9 +137,7 @@ fn serve_kept_fresh(
 #[test]
 fn the_last_client_leaving_wakes_the_idle_check() {
     let _run = daemon_run_lock();
-    let dir = std::env::temp_dir().join(format!("wr-idlewake-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::commands::Scratch::in_temp("wr-idlewake");
     let socket = dir.join("workroomd");
     let listener = bind(&socket).unwrap();
     let client = UnixStream::connect(&socket).unwrap();
@@ -198,9 +190,7 @@ fn a_tmp_daemon_looks_every_second_and_others_sleep_until_due() {
 #[test]
 fn a_session_ending_on_its_own_wakes_the_idle_check() {
     let _run = daemon_run_lock();
-    let dir = std::env::temp_dir().join(format!("wr-idleend-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::commands::Scratch::in_temp("wr-idleend");
     let socket = dir.join("workroomd");
     let listener = bind(&socket).unwrap();
     let daemon = Daemon::new();

@@ -113,8 +113,8 @@ fn a_pinging_connection_that_keeps_pinging_is_kept() {
 /// several deadlines, arrives whole.
 #[test]
 fn a_large_reply_read_slowly_outlasts_the_deadline() {
-    let root = std::env::temp_dir().join(format!("wr-deadline-slow-{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
+    let scratch = Workspace::new("deadline-slow");
+    let root = scratch.dir.clone();
     let bytes: Vec<u8> = (0..600_000u32).map(|n| (n % 251) as u8).collect();
     std::fs::write(root.join("big.bin"), &bytes).unwrap();
 
@@ -155,7 +155,7 @@ fn a_large_reply_read_slowly_outlasts_the_deadline() {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    let _ = std::fs::remove_dir_all(&root);
+    drop(scratch);
     assert!(
         !client.closed && !served.is_finished(),
         "the stream was closed while the reply was still being taken, after {:?}",

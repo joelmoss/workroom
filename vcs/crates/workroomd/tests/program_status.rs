@@ -179,7 +179,7 @@ fn requests_are_answered_in_the_shapes_the_app_decodes() {
 mod live {
     use super::*;
     use std::io::Write;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
@@ -257,15 +257,15 @@ mod live {
         String::from_utf8_lossy(&store.replay_bytes(session)).into_owned()
     }
 
-    /// A scratch directory for gate files, removed with the test.
-    struct Scratch(PathBuf);
+    /// A scratch directory of this run's own for gate files, removed with the test.
+    struct Scratch(common::Workspace);
 
     impl Scratch {
         fn new(name: &str) -> Scratch {
-            let dir = std::env::temp_dir().join(format!("wr-ps-{name}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            Scratch(dir)
+            Scratch(common::Workspace::under(
+                &std::env::temp_dir(),
+                &format!("wr-ps-{name}"),
+            ))
         }
 
         fn path(&self, name: &str) -> String {
@@ -274,12 +274,6 @@ mod live {
 
         fn open(&self, name: &str) {
             std::fs::write(self.0.join(name), b"").unwrap();
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 

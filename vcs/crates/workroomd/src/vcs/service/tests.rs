@@ -3,7 +3,7 @@ use crate::daemon::rpc::is_busy;
 use crate::exec::run_exec;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use wr_protocol::envelope::{EnvelopeDecoder, Hello};
 use wr_protocol::frame::{Frame, FrameKind};
@@ -44,8 +44,8 @@ fn version_and_path_errors_are_explicit() {
 #[test]
 fn a_slow_vcs_request_does_not_block_control_or_disconnect() {
     let root = git_repo("slow-request");
-    let release = std::env::temp_dir().join(format!("wr-vcs-release-{}", std::process::id()));
-    let _ = std::fs::remove_file(&release);
+    let gate = crate::commands::Scratch::in_temp("wr-vcs-release");
+    let release = gate.join("release");
     let hold = format!(
         "!i=0; while [ ! -e {} ] && [ $i -lt 400 ]; do sleep 0.02; i=$((i+1)); done",
         release.display()
@@ -129,10 +129,9 @@ fn latin1_bytes_is_the_exact_inverse_of_latin1_string_for_every_byte_value() {
     assert_eq!(latin1_bytes(&latin1_string(&all_bytes)).unwrap(), all_bytes);
 }
 
-fn git_repo(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("wr-vcs-exec-test-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+/// A repository in a directory of this run's own, removed when the test ends.
+fn git_repo(name: &str) -> crate::commands::Scratch {
+    let root = crate::commands::Scratch::in_temp(&format!("wr-vcs-exec-test-{name}"));
     for args in [
         vec!["init", "-q", "-b", "main"],
         vec!["config", "user.name", "Test"],
