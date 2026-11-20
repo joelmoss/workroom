@@ -998,7 +998,8 @@ fn every_method_publishes_schemas_its_replies_match() {
         assert_eq!(capture["revision"], 1, "{capture}");
     } else {
         let capture = api.call("terminal.capture", json!({"target": RUN}));
-        assert_eq!(capture["error"]["kind"], "ScreenUnavailable", "{capture}");
+        assert_eq!(capture["error"]["kind"], "InternalError", "{capture}");
+        assert_eq!(violation(&error_schema, &capture["error"], "error"), None);
     }
     let refused = api.call("terminal.capture", json!({"target": RUN, "lines": -1}));
     assert_eq!(refused["error"]["kind"], "InvalidRequest", "{refused}");
@@ -1051,10 +1052,16 @@ fn capture_reads_the_screen_its_history_and_wrapped_lines() {
     let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
     listing_until(&socket, |listing| listing.len() == 1);
     if !has_terminal_state() {
-        // No shadow terminal, so no screen to read: a precondition the daemon can't meet.
+        // No shadow terminal, so no screen to read: an internal error, and it says why.
         let run = workroom(Some(&socket), &["capture", "server", "--json"]);
-        assert_eq!(run.code, 3, "{} {}", run.stdout, run.stderr);
-        assert_eq!(run.envelope()["error"]["kind"], "ScreenUnavailable");
+        assert_eq!(run.code, 1, "{} {}", run.stdout, run.stderr);
+        let error = &run.envelope()["error"];
+        assert_eq!(error["kind"], "InternalError", "{error}");
+        let message = error["message"].as_str().unwrap();
+        assert!(
+            message.contains("built without terminal-state"),
+            "{message}"
+        );
         return;
     }
     let long = long_line();
