@@ -98,7 +98,8 @@ impl SessionStore {
                     Some(format_until),
                 );
                 // The live title first, so the screen's own marks come after it (#683).
-                if let Some(title) = lock_or_recover(shadow).title() {
+                let title = lock_or_recover(shadow).title();
+                if let Some(title) = title {
                     screen.splice(0..0, crate::terminal::shadow::title_sequence(&title));
                 }
                 let program_status = lock_or_recover(shadow)
