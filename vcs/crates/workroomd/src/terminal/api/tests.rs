@@ -462,6 +462,76 @@ fn the_reply(written: &Written) -> Value {
     replies[0].clone()
 }
 
+/// A regex wait that starts while the session's output is inside a title's OSC or a kitty image's
+/// APC matches nothing of the rest of it: only the text after it ends (#690).
+#[cfg(feature = "terminal-state")]
+#[test]
+fn a_regex_wait_started_mid_sequence_skips_the_rest_of_it() {
+    let store = SessionStore::new();
+    for (byte, opened, rest) in [
+        (0x43, r"\033]2;title ", r"NOPE\007"),
+        (0x44, r"\033_Ga=T,f=100;QUFB", r"NOPE\033\\"),
+    ] {
+        // The sequence's rest 3 s on, by when the wait below has long started.
+        let id = running(
+            &store,
+            byte,
+            &format!("printf '{opened}'; sleep 3; printf '{rest}DONE\\n'; sleep 30"),
+        );
+        let shadow = store.shadow(id).expect("the session");
+        assert!(
+            eventually(|| crate::util::lock_or_recover(&shadow).mid_sequence()),
+            "fixture: the sequence's start never arrived"
+        );
+        let (written, writer) = written_writer();
+        let mut connection = Connection::default();
+        start_wait(
+            &mut connection.waits,
+            &store,
+            json!({"target": id.to_hyphenated(), "regex": "NOPE|DONE", "timeout_ms": 20000}),
+            &writer,
+        );
+        let reply = the_reply(&written);
+        assert_eq!(
+            reply["result"]["match"]["text"], "DONE",
+            "{opened}: {reply}"
+        );
+        store.kill(id);
+    }
+}
+
+/// A wait that could never be met is refused as such before any bound is looked at: a session with
+/// no shell integration is `NoShellIntegration` to a `command_finished` wait, even on a connection
+/// that holds all it may.
+#[cfg(feature = "terminal-state")]
+#[test]
+fn a_precondition_is_refused_before_a_full_connection_is_busy() {
+    use std::sync::atomic::AtomicUsize;
+    static HELD: AtomicUsize = AtomicUsize::new(0);
+    let full = wait::Limits {
+        session: 0,
+        connection: 0,
+        daemon: 0,
+    };
+    let store = SessionStore::new();
+    let id = sleeping(&store, 0x45);
+    let (written, writer) = written_writer();
+    let mut waits = wait::Waits::with(full, &HELD, None);
+    for params in [
+        json!({"target": id.to_hyphenated(), "command_finished": true}),
+        json!({"target": id.to_hyphenated(), "ended": true}),
+    ] {
+        start_wait(&mut waits, &store, params, &writer);
+    }
+    let kinds: Vec<Value> = written
+        .replies()
+        .iter()
+        .map(|reply| reply["error"]["kind"].clone())
+        .collect();
+    assert_eq!(kinds, ["NoShellIntegration", "Busy"]);
+    store.kill(id);
+}
+
 /// A program that reports `working` and `done` in one write has passed through `working`, though
 /// the shadow says `done` once the read is over: a wait for `working` is met (#690).
 #[cfg(feature = "terminal-state")]

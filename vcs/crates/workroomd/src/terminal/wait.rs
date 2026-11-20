@@ -312,6 +312,14 @@ impl Matcher {
         self.search()
     }
 
+    /// The output from here on starts somewhere unknown, perhaps inside a sequence: a wait that
+    /// starts while the session's parser is mid-sequence (a title, a kitty image's base64), whose
+    /// rest is no text. Bytes are dropped until one that ends or starts a sequence or a line:
+    /// ESC, BEL, CAN, SUB or `\n`, which is kept, as a line's end.
+    pub fn resync(&mut self) {
+        self.strip = Stripper::Resync;
+    }
+
     fn search(&mut self) -> Option<Vec<u8>> {
         if let Some(found) = self.regex.find(&self.window) {
             return Some(found.as_bytes().to_vec());
@@ -354,6 +362,8 @@ enum Stripper {
     String,
     /// An ESC inside a string: ST if `\` follows.
     StringEscape,
+    /// Somewhere unknown ([`Matcher::resync`]), until ESC, BEL, CAN, SUB or `\n`.
+    Resync,
 }
 
 const ESC: u8 = 0x1b;
@@ -430,6 +440,17 @@ impl Stripper {
             StringEscape => match byte {
                 b'\\' => Ground,
                 _ => Escape.next(byte, out),
+            },
+            // An ESC may be a string's ST (`ESC \`), which `Escape` reads as a sequence of its
+            // own and ends, or the next sequence's start: either way, what follows it is known.
+            Resync => match byte {
+                ESC => Escape,
+                BEL | CAN | SUB => Ground,
+                b'\n' => {
+                    out.push(byte);
+                    Ground
+                }
+                _ => Resync,
             },
         }
     }

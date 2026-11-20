@@ -274,6 +274,15 @@ impl Shadow {
             .is_some_and(|terminal| terminal.at_ground())
     }
 
+    /// Whether the output so far ends inside a sequence, so the next bytes are its rest, not text:
+    /// for a regex wait starting now (#690). Not `!at_ground()`: with no terminal, nothing is known
+    /// to be mid-sequence.
+    pub fn mid_sequence(&mut self) -> bool {
+        self.terminal
+            .as_mut()
+            .is_some_and(|terminal| !terminal.at_ground())
+    }
+
     pub fn visible_images(&self) -> Vec<ImageRef> {
         self.terminal
             .as_ref()
@@ -493,6 +502,10 @@ impl Shadow {
         None
     }
     pub fn at_ground(&mut self) -> bool {
+        false
+    }
+    /// No parser, so a regex wait starts at ground, as the stream most often is.
+    pub fn mid_sequence(&mut self) -> bool {
         false
     }
     pub fn visible_images(&self) -> Vec<ImageRef> {

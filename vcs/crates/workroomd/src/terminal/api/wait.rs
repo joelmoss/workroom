@@ -18,6 +18,7 @@ use crate::daemon::rpc::SharedWriter;
 use crate::terminal::program_status::State;
 use crate::terminal::session::{SessionId, SessionStore};
 use crate::terminal::wait::{Condition, Matcher, Met, Outcome, RunState, Waiter};
+use crate::util::lock_or_recover;
 
 pub const NAME: &str = "terminal.wait";
 
@@ -419,6 +420,21 @@ fn register(
         exit_code,
         deadline,
     };
+    // A precondition of the session's, before any bound: a wait that could never be met is
+    // refused as such, never as `Busy`. A shell's marks only ever start, so one seen here is
+    // still there when the waiter is added.
+    if matches!(condition, Condition::CommandFinished)
+        && let Some(shadow) = sessions.shadow(id)
+        && !lock_or_recover(&shadow).has_shell_marks()
+    {
+        return Err(ApiError::new(
+            kind::NO_SHELL_INTEGRATION,
+            format!(
+                "{target:?} has sent no shell integration marks (OSC 133), so the end of its \
+                 command can't be seen"
+            ),
+        ));
+    }
     // Only waits not yet over count: a thread ending its wait leaves it here a moment longer.
     waits.held.retain(|held| held.outcome().is_none());
     if waits.held.len() >= waits.limits.connection {
@@ -427,18 +443,16 @@ fn register(
     let slot = Slot::acquire_from(waits.daemon, waits.limits.daemon)
         .ok_or_else(|| busy(waits.limits.daemon, "this daemon"))?;
     let most = waits.limits.session;
+    let mut condition = condition;
     let added = sessions.add_waiter(id, |shadow, held| {
-        if matches!(condition, Condition::CommandFinished) && !shadow.has_shell_marks() {
-            return Err(ApiError::new(
-                kind::NO_SHELL_INTEGRATION,
-                format!(
-                    "{target:?} has sent no shell integration marks (OSC 133), so the end of its \
-                     command can't be seen"
-                ),
-            ));
-        }
         if held >= most {
             return Err(busy(held, &format!("session {}", id.to_hyphenated())));
+        }
+        // Joined mid-sequence, the next bytes are its rest, never text.
+        if let Condition::Output(matcher) = &mut condition
+            && shadow.mid_sequence()
+        {
+            matcher.resync();
         }
         let waiter = Arc::new(Waiter::new(condition, shadow.seen()));
         if request.include_screen {
