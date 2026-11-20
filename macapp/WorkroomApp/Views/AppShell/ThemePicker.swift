@@ -2,11 +2,80 @@ import Defaults
 import DesignSystem
 import SwiftUI
 
-/// Theme chooser (issue #36). A searchable list of **theme families**, each row a dual (light +
-/// dark) swatch — pick one and it sets both the light theme and the dark theme (#733). ↑/↓ apply
-/// families live; the family the two themes match is scrolled into view on open. Both hosts are
-/// popovers: the toolbar's theme dropdown (`TrailingTitlebarBar`, ⌘⇧K) and the Settings row's
-/// swatch button.
+/// Which list the theme picker shows (#735): theme families, light themes or dark themes.
+enum ThemePickerTab: String, CaseIterable, Identifiable {
+  case family
+  case light
+  case dark
+
+  var id: String { rawValue }
+
+  init(side: ThemeSide) { self = side == .dark ? .dark : .light }
+
+  /// The tab for the side that's showing, which is what ⌘⇧K and the titlebar button open on.
+  @MainActor static func current() -> ThemePickerTab {
+    ThemePickerTab(side: ThemeService.showingSide())
+  }
+
+  var label: String {
+    switch self {
+    case .family: return "Family"
+    case .light: return "Light"
+    case .dark: return "Dark"
+    }
+  }
+
+  /// The side this tab chooses for, or nil for the Family tab, which chooses both.
+  var side: ThemeSide? {
+    switch self {
+    case .family: return nil
+    case .light: return .light
+    case .dark: return .dark
+    }
+  }
+
+  var help: String {
+    switch self {
+    case .family: return "Theme families: choosing one sets both the light theme and the dark theme"
+    case .light: return "Light themes: the theme Workroom uses while the appearance is light"
+    case .dark: return "Dark themes: the theme Workroom uses while the appearance is dark"
+    }
+  }
+}
+
+/// One row of the picker: a theme family on the Family tab, a theme on the Light or Dark tab.
+private enum ThemePickerEntry: Identifiable, Equatable {
+  case family(ThemeFamily)
+  case theme(String, ThemeSide)
+
+  var id: String {
+    switch self {
+    case .family(let family): return "family:\(family.name)"
+    case .theme(let name, let side): return "\(side.rawValue):\(name)"
+    }
+  }
+
+  var name: String {
+    switch self {
+    case .family(let family): return family.name
+    case .theme(let name, _): return name
+    }
+  }
+}
+
+/// Theme chooser (issues #36, #733, #735). A **Family | Light | Dark** tab control over one search
+/// field shared by every tab:
+///
+/// - **Family** rows show a dual (dark + light) swatch; choosing one sets both the light theme and the
+///   dark theme.
+/// - **Light** and **Dark** rows list only the themes on that side, each with one swatch; choosing one
+///   changes only that side.
+///
+/// ↑/↓ apply live on every tab, and the current choice is scrolled into view when the picker opens or
+/// the tab changes. On the tab for the side that isn't showing (Light while in Dark), a choice is saved
+/// without changing the appearance or repainting (`ThemeService.apply(theme:for:)`), and a note says
+/// when it applies. Both hosts are popovers: the titlebar's theme dropdown (`TrailingTitlebarBar`,
+/// ⌘⇧K), which opens on the current appearance's tab, and the Settings rows, each opening its own.
 struct ThemePicker: View {
   /// The size this picker frames itself to; both popovers size themselves from the rendered frame.
   static let contentSize = CGSize(width: 300, height: 420)
@@ -15,63 +84,130 @@ struct ThemePicker: View {
   @Environment(\.dismiss) private var dismiss
   @Default(.lightTheme) private var lightTheme
   @Default(.darkTheme) private var darkTheme
+  /// Observed, not only read through `ThemeService.showingSide()`: ⌘⇧L flips the appearance with the
+  /// picker left open, and the note about the other side has to follow it.
+  @Default(.appearance) private var appearance
 
-  /// The family the light and dark themes match, or nil for a custom pair.
-  private var activeFamily: ThemeFamily? {
-    ThemeCatalog.family(light: lightTheme, dark: darkTheme)
-  }
-
+  @State private var tab: ThemePickerTab
   @State private var query = ""
-  /// Index into `filteredFamilies` of the keyboard-highlighted row (↑/↓ move it, ⏎ applies).
+  /// Index into `entries` of the keyboard-highlighted row (↑/↓ move it, ⏎ dismisses).
   @State private var highlighted = 0
   /// Focus on the search field, claimed explicitly on appear rather than left to the host. Without
   /// focus in this tree nothing works — not typing, and not ↑/↓, which reach `.onKeyPress` only
   /// through the focused SwiftUI view.
   @FocusState private var searchFocused: Bool
 
-  private var filteredFamilies: [ThemeFamily] {
+  init(tab: ThemePickerTab = .family) {
+    _tab = State(initialValue: tab)
+  }
+
+  /// The family the light and dark themes match, or nil for a custom pair.
+  private var activeFamily: ThemeFamily? {
+    ThemeCatalog.family(light: lightTheme, dark: darkTheme)
+  }
+
+  /// The side that's on screen. Reads `appearance` so SwiftUI re-evaluates it when that changes; a
+  /// System appearance flip re-renders through the theme tokens instead.
+  private var showingSide: ThemeSide {
+    _ = appearance
+    return ThemeService.showingSide()
+  }
+
+  /// Every bundled theme on `side`, Workroom's first and the rest in catalog (alphabetical) order, as
+  /// the Family tab puts Workroom first.
+  private static func themes(on side: ThemeSide) -> [String] {
+    let names = ThemeCatalog.bundledThemes.filter { $0.side == side }.map(\.name)
+    let first = ThemeCatalog.defaultFamily.theme(for: side)
+    guard names.contains(first) else { return names }
+    return [first] + names.filter { $0 != first }
+  }
+
+  /// The current tab's rows, filtered by the shared search.
+  private var entries: [ThemePickerEntry] {
+    let all: [ThemePickerEntry]
+    switch tab.side {
+    case nil: all = ThemeCatalog.families.map { .family($0) }
+    case let side?: all = Self.themes(on: side).map { .theme($0, side) }
+    }
     let q = query.trimmingCharacters(in: .whitespaces)
-    guard !q.isEmpty else { return ThemeCatalog.families }
-    return ThemeCatalog.families.filter { $0.name.localizedCaseInsensitiveContains(q) }
+    guard !q.isEmpty else { return all }
+    return all.filter { $0.name.localizedCaseInsensitiveContains(q) }
   }
 
-  private func familyRow(_ family: ThemeFamily, highlighted: Bool = false) -> some View {
-    FamilyRow(
-      family: family,
-      isActive: family == activeFamily,
-      isHighlighted: highlighted,
-      dark: ThemeService.themePreview(named: family.dark),
-      light: ThemeService.themePreview(named: family.light)
-    )
-    .contentShape(Rectangle())
-    .onTapGesture { ThemeService.shared.applyFamily(family) }
+  private func isActive(_ entry: ThemePickerEntry) -> Bool {
+    switch entry {
+    case .family(let family): return family == activeFamily
+    case .theme(let name, let side): return name == (side == .dark ? darkTheme : lightTheme)
+    }
   }
 
-  /// Move the highlight by `delta` (clamped) and apply that family live — ↑/↓ change the theme
+  private func choose(_ entry: ThemePickerEntry) {
+    switch entry {
+    case .family(let family): ThemeService.shared.applyFamily(family)
+    case .theme(let name, let side): ThemeService.shared.apply(theme: name, for: side)
+    }
+  }
+
+  /// The highlight's starting row for the current tab: its current choice, else the first row.
+  private var activeIndex: Int { entries.firstIndex { isActive($0) } ?? 0 }
+
+  @ViewBuilder
+  private func row(_ entry: ThemePickerEntry, highlighted: Bool) -> some View {
+    switch entry {
+    case .family(let family):
+      FamilyRow(
+        family: family,
+        isActive: isActive(entry),
+        isHighlighted: highlighted,
+        dark: ThemeService.themePreview(named: family.dark),
+        light: ThemeService.themePreview(named: family.light)
+      )
+      .contentShape(Rectangle())
+      .onTapGesture { choose(entry) }
+    case .theme(let name, let side):
+      ThemeRow(
+        name: name,
+        side: side,
+        isActive: isActive(entry),
+        isHighlighted: highlighted,
+        preview: ThemeService.themePreview(named: name)
+      )
+      .contentShape(Rectangle())
+      .onTapGesture { choose(entry) }
+    }
+  }
+
+  /// Move the highlight by `delta` (clamped) and apply that row live — ↑/↓ change the theme
   /// immediately, no ⏎ needed.
   private func moveHighlight(_ delta: Int) {
-    guard !filteredFamilies.isEmpty else { return }
-    highlighted = min(max(highlighted + delta, 0), filteredFamilies.count - 1)
-    ThemeService.shared.applyFamily(filteredFamilies[highlighted])
+    let rows = entries
+    guard !rows.isEmpty else { return }
+    highlighted = min(max(highlighted + delta, 0), rows.count - 1)
+    choose(rows[highlighted])
   }
 
   var body: some View {
     VStack(spacing: 0) {
       searchField
+      tabBar
+      if let side = tab.side, side != showingSide {
+        appliesLaterNote(side)
+      }
 
       ScrollViewReader { proxy in
         ScrollView {
           LazyVStack(spacing: 2) {
-            if filteredFamilies.isEmpty {
+            let rows = entries
+            if rows.isEmpty {
               Text("No themes match “\(query)”")
                 .font(.footnote)
                 .foregroundStyle(tokens.fgMuted)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 16)
             } else {
-              ForEach(Array(filteredFamilies.enumerated()), id: \.element.id) { index, family in
-                familyRow(family, highlighted: index == highlighted)
-                  .id(family.id)
+              ForEach(Array(rows.enumerated()), id: \.element.id) { index, entry in
+                row(entry, highlighted: index == highlighted)
+                  .id(entry.id)
               }
             }
           }
@@ -79,24 +215,21 @@ struct ThemePicker: View {
           .padding(.vertical, 8)
         }
         .onChange(of: highlighted) { _, new in
-          if filteredFamilies.indices.contains(new) {
-            withAnimation(.easeInOut(duration: 0.1)) { proxy.scrollTo(filteredFamilies[new].id) }
+          let rows = entries
+          if rows.indices.contains(new) {
+            withAnimation(.easeInOut(duration: 0.1)) { proxy.scrollTo(rows[new].id) }
           }
         }
-        .onAppear {
-          // Start the highlight on the selected family and scroll it into view — it replaces the
-          // pinned row, so the current choice is always visible without a separate header.
-          let idx = filteredFamilies.firstIndex { $0 == activeFamily } ?? 0
-          highlighted = idx
-          if filteredFamilies.indices.contains(idx) {
-            proxy.scrollTo(filteredFamilies[idx].id, anchor: .center)
-          }
-        }
+        // Start the highlight on the current choice and scroll it into view — when the picker opens,
+        // and again on each tab, since each tab has a choice of its own. Neither applies anything:
+        // only an arrow key or a click does.
+        .onAppear { highlightActive(proxy) }
+        .onChange(of: tab) { _, _ in highlightActive(proxy) }
       }
     }
     .frame(width: Self.contentSize.width, height: Self.contentSize.height)
-    // ↑/↓ move through the list and apply the family live; ⏎ dismisses. The search field keeps
-    // text focus; single-line fields don't consume the arrow keys, so they bubble here.
+    // ↑/↓ move through the list and apply the row live; ⏎ dismisses. The search field keeps text
+    // focus; single-line fields don't consume the arrow keys, so they bubble here.
     .onKeyPress(.upArrow) {
       moveHighlight(-1)
       return .handled
@@ -120,6 +253,71 @@ struct ThemePicker: View {
     // which rebuild their content on each presentation, so `searchFocused` starts false every time and
     // this can't no-op on a reused view.
     .task { searchFocused = true }
+  }
+
+  private func highlightActive(_ proxy: ScrollViewProxy) {
+    let rows = entries
+    let idx = activeIndex
+    highlighted = idx
+    if rows.indices.contains(idx) {
+      proxy.scrollTo(rows[idx].id, anchor: .center)
+    }
+  }
+
+  /// Family | Light | Dark. Plain buttons rather than a segmented `Picker`, so each tab carries its own
+  /// tooltip and identifier, and choosing one hands focus straight back to the search field.
+  private var tabBar: some View {
+    HStack(spacing: 2) {
+      ForEach(ThemePickerTab.allCases) { candidate in
+        let selected = candidate == tab
+        Button {
+          tab = candidate
+          searchFocused = true
+        } label: {
+          Text(candidate.label)
+            .font(.system(size: 12, weight: selected ? .semibold : .regular))
+            .foregroundStyle(selected ? tokens.fg : tokens.fgMuted)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .background(
+              RoundedRectangle(cornerRadius: Radius.s)
+                .fill(selected ? tokens.surface : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(candidate.help)
+        .accessibilityLabel(candidate.label)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier("theme-picker.tab.\(candidate.rawValue)")
+      }
+    }
+    .padding(2)
+    .background(
+      RoundedRectangle(cornerRadius: Radius.m)
+        .strokeBorder(tokens.border, lineWidth: 0.5)
+    )
+    .padding(.horizontal, 10)
+    .padding(.bottom, 6)
+  }
+
+  /// Shown on the tab for the side that isn't showing: a choice there is saved, but the screen keeps
+  /// the theme it has until the appearance changes.
+  private func appliesLaterNote(_ side: ThemeSide) -> some View {
+    let mode = side == .dark ? "Dark" : "Light"
+    return HStack(spacing: 4) {
+      Image(systemName: "info.circle").accessibilityHidden(true)
+      Text("Applies in \(mode) mode")
+        .accessibilityIdentifier("theme-picker.note")
+    }
+    .font(.footnote)
+    .foregroundStyle(tokens.fgMuted)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.horizontal, 14)
+    .padding(.bottom, 4)
+    .help(
+      "The appearance is \(side == .dark ? "Light" : "Dark"), so the \(mode.lowercased()) theme you "
+        + "choose here is saved and shows when the appearance is \(mode).")
   }
 
   private var searchField: some View {
@@ -213,6 +411,46 @@ struct FamilyRow: View {
     // identifier set on a wrapper isn't reachable from XCUITest at all.
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("theme-family-\(family.name)")
+  }
+}
+
+/// One theme row on the Light or Dark tab (#735): the theme's name and its single swatch.
+private struct ThemeRow: View {
+  @Environment(\.themeTokens) private var tokens
+  let name: String
+  let side: ThemeSide
+  let isActive: Bool
+  var isHighlighted = false
+  let preview: ThemePreview?
+  @State private var hovered = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 6) {
+        Text(name)
+          .font(.system(size: 12, weight: isActive ? .semibold : .medium))
+          .foregroundStyle(isActive ? tokens.accent : tokens.fg)
+          .lineLimit(1)
+          .truncationMode(.tail)
+          .help(name)
+        Spacer(minLength: 0)
+        if isActive {
+          Image(systemName: "checkmark.circle.fill")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(tokens.accent)
+        }
+      }
+      Swatch(preview: preview, variantName: name)
+        .frame(height: 16)
+    }
+    .padding(.horizontal, 8)
+    .padding(.vertical, 6)
+    .pickerRowChrome(highlighted: isHighlighted, hovered: hovered, active: isActive)
+    .onHover { hovered = $0 }
+    // As `FamilyRow`: `children: .contain` keeps the swatch queryable under the row's identifier, and
+    // the side in the identifier is what lets `ThemePickerUITests` tell which tab opened.
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("theme-\(side.rawValue)-\(name)")
   }
 }
 
