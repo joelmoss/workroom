@@ -73,6 +73,9 @@ pub(crate) enum Kind {
     NoShellIntegration,
     /// A wait for a run to exit with one code (`wait --exit-code`), which it exited with another.
     ExitCodeMismatch,
+    /// A wait for output or a command's end that the daemon's hand-off cut across: what came
+    /// between its two programs may have gone unmatched, so the CLI says so rather than wait on.
+    WaitInterrupted,
     /// A request, or what it sends, over the terminal API's limit.
     TooLarge,
     /// A daemon at its limit on concurrent work, such as captures of history: it refuses the
@@ -128,6 +131,7 @@ pub(crate) const ALL: &[Kind] = &[
     Kind::AlternateScreen,
     Kind::NoShellIntegration,
     Kind::ExitCodeMismatch,
+    Kind::WaitInterrupted,
     Kind::TooLarge,
     Kind::Busy,
     Kind::RefusedSelf,
@@ -199,6 +203,8 @@ impl Kind {
             Kind::NoShellIntegration => ("NoShellIntegration", 3),
             // What was waited for happened, but not as asked: a precondition of the script's.
             Kind::ExitCodeMismatch => ("ExitCodeMismatch", 3),
+            // The daemon is there, but the wait couldn't go on as asked: wait again.
+            Kind::WaitInterrupted => ("WaitInterrupted", 3),
             Kind::TooLarge => ("TooLarge", 2),
             // A valid request the daemon can't take now: a precondition, as `AgentBusy` is.
             Kind::Busy => ("Busy", 3),
@@ -325,6 +331,7 @@ mod tests {
                 "AlternateScreen",
                 "NoShellIntegration",
                 "ExitCodeMismatch",
+                "WaitInterrupted",
                 "TooLarge",
                 "Busy",
                 "RefusedSelf",
@@ -357,6 +364,7 @@ mod tests {
             (Kind::AlternateScreen, "AlternateScreen", 3),
             (Kind::NoShellIntegration, "NoShellIntegration", 3),
             (Kind::ExitCodeMismatch, "ExitCodeMismatch", 3),
+            (Kind::WaitInterrupted, "WaitInterrupted", 3),
             (Kind::RefusedSelf, "RefusedSelf", 3),
             (Kind::Busy, "Busy", 3),
             (Kind::TooLarge, "TooLarge", 2),
