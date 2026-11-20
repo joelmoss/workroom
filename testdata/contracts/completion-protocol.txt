@@ -1,0 +1,861 @@
+$ workroom __complete ''
+base	Set or clear the branch new workrooms start from
+completion	Generate the autocompletion script for the specified shell
+create	Create a new workroom
+delete	Delete an existing workroom
+help	Help about any command
+list	List all workrooms for the current project
+trust	Approve a project's setup and teardown scripts so Workroom runs them
+untrust	Forget the approval of a project's setup and teardown scripts
+update	Update workroom to the latest version
+version	Print the version
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __completeNoDesc ''
+base
+completion
+create
+delete
+help
+list
+trust
+untrust
+update
+version
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete b
+base	Set or clear the branch new workrooms start from
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete co
+completion	Generate the autocompletion script for the specified shell
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete h
+help	Help about any command
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete base ''
+clear	Start new workrooms from the global base, else origin's default branch
+set	Start new workrooms from BRANCH
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __completeNoDesc base ''
+clear
+set
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete base x
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete base --
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+--help	help for base
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete base set --
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+--global	The default for every project that names no base branch
+--help	help for set
+--project	Project directory (defaults to the current directory)
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete base set ''
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete base set main --
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+--global	The default for every project that names no base branch
+--help	help for set
+--project	Project directory (defaults to the current directory)
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete base set --global --
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+--help	help for set
+--project	Project directory (defaults to the current directory)
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete base --global ''
+:0
+--- stderr
+[Debug] [Error] Error while parsing flags from args [--global]: unknown flag: --global
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete base --global set ''
+:0
+--- stderr
+[Debug] [Error] Error while parsing flags from args [--global set]: unknown flag: --global
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete base --global=true set ''
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete base -h set ''
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete host ''
+clear	Remove the host descriptor
+set	Store DESCRIPTOR, a JSON object, as the host descriptor
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete host set --
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+--help	help for set
+--project	Project directory (defaults to the current directory)
+--workroom	The project's workroom; omitted, the project's own descriptor
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete host set ''
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete trust ''
+status	Say whether a project's setup and teardown scripts are approved
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete trust -
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+-p	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+-v	Print detailed and verbose output
+--help	help for trust
+-h	help for trust
+--project	Project directory (defaults to the current directory)
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete trust status ''
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete trust status -
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+-p	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+-v	Print detailed and verbose output
+--help	help for status
+-h	help for status
+--project	Project directory (defaults to the current directory)
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete untrust --
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+--help	help for untrust
+--project	Project directory (defaults to the current directory)
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete -
+--help	help for workroom
+-h	help for workroom
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+-p	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+-v	Print detailed and verbose output
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete -p ''
+base	Set or clear the branch new workrooms start from
+completion	Generate the autocompletion script for the specified shell
+create	Create a new workroom
+delete	Delete an existing workroom
+help	Help about any command
+list	List all workrooms for the current project
+trust	Approve a project's setup and teardown scripts so Workroom runs them
+untrust	Forget the approval of a project's setup and teardown scripts
+update	Update workroom to the latest version
+version	Print the version
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete --json ''
+base	Set or clear the branch new workrooms start from
+completion	Generate the autocompletion script for the specified shell
+create	Create a new workroom
+delete	Delete an existing workroom
+help	Help about any command
+list	List all workrooms for the current project
+trust	Approve a project's setup and teardown scripts so Workroom runs them
+untrust	Forget the approval of a project's setup and teardown scripts
+update	Update workroom to the latest version
+version	Print the version
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete -- ''
+base	Set or clear the branch new workrooms start from
+completion	Generate the autocompletion script for the specified shell
+create	Create a new workroom
+delete	Delete an existing workroom
+help	Help about any command
+list	List all workrooms for the current project
+trust	Approve a project's setup and teardown scripts so Workroom runs them
+untrust	Forget the approval of a project's setup and teardown scripts
+update	Update workroom to the latest version
+version	Print the version
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete -h ''
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete -h bogus ''
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete list -
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+-p	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+-v	Print detailed and verbose output
+--help	help for list
+-h	help for list
+--project	Limit JSON output to a single project directory
+--warnings	Warning detail for --json: none, fast, or full
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete list --json -
+--pretend	Run through the command without making changes (dry run)
+-p	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+-v	Print detailed and verbose output
+--help	help for list
+-h	help for list
+--project	Limit JSON output to a single project directory
+--warnings	Warning detail for --json: none, fast, or full
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete list -p -
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--verbose	Print detailed and verbose output
+-v	Print detailed and verbose output
+--help	help for list
+-h	help for list
+--project	Limit JSON output to a single project directory
+--warnings	Warning detail for --json: none, fast, or full
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete list -vp -
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--help	help for list
+-h	help for list
+--project	Limit JSON output to a single project directory
+--warnings	Warning detail for --json: none, fast, or full
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete list --warnings=none --
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+--help	help for list
+--project	Limit JSON output to a single project directory
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete list --warnings
+--warnings	Warning detail for --json: none, fast, or full
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete list --warnings ''
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete list --project=
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete list --project x ''
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete list --project x --project
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete list --help ''
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete list x ''
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete list -- ''
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete list -- -
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete list -- --bogus ''
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete list -x
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete list -p=1 ''
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete ls --
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+--help	help for list
+--project	Limit JSON output to a single project directory
+--warnings	Warning detail for --json: none, fast, or full
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete c --
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+--help	help for create
+--no-editor	Do not offer to open the new workroom in $EDITOR
+--project	Project directory to create the workroom in (defaults to the current directory)
+--skip-setup	Create without running the setup script, and without asking to approve it
+--start	What to include when you have commits you haven't pushed, or changes you haven't committed: local-with-changes (both), local (your commits), origin (neither), or ask (stop with exit 3 and say what there is). A terminal asks when unset
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete d -
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+-p	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+-v	Print detailed and verbose output
+--confirm	Skip confirmation if value matches the workroom name (required in --json mode)
+--help	help for delete
+-h	help for delete
+--project	Project directory the workroom belongs to (defaults to the current directory)
+--skip-teardown	Delete without running the teardown script (after it failed)
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete create --start ''
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete create --start=
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete delete ''
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete delete --confirm
+--confirm	Skip confirmation if value matches the workroom name (required in --json mode)
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete delete-project -
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+-p	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+-v	Print detailed and verbose output
+--confirm	Required in --json mode; must match the project path
+--from-disk	App-only: runs teardowns, drops config, returns trash_paths; the caller (macOS app) moves those dirs to the Trash
+--help	help for delete-project
+-h	help for delete-project
+--skip-teardown	With --with-workrooms or --from-disk: run no workroom's teardown script (after one failed)
+--with-workrooms	Also tear down every workroom (worktree dirs + files; branches kept)
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete add-project --
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+--clone	Clone this repository URL into PATH, then register it
+--create	Create and git-initialize the directory if it does not already exist
+--help	help for add-project
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete claim-provisioned ''
+--from	The config to move entries out of
+--provisioner	The bundle ID of the build that made them
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete claim-provisioned -
+--from	The config to move entries out of
+--provisioner	The bundle ID of the build that made them
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete claim-provisioned --from x ''
+--provisioner	The bundle ID of the build that made them
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete include-archive ''
+--output	The file to write the tar to
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete include-archive --output x --
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+--help	help for include-archive
+--project	Project directory (defaults to the current directory)
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete update -
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+-p	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+-v	Print detailed and verbose output
+--channel	Release channel: stable or pre (remembered for next time)
+--check	Only check if an update is available
+-c	Only check if an update is available
+--help	help for update
+-h	help for update
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete update -c
+-c	Only check if an update is available
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete update -c -
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+-p	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+-v	Print detailed and verbose output
+--channel	Release channel: stable or pre (remembered for next time)
+--help	help for update
+-h	help for update
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete update --check=false -
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+-p	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+-v	Print detailed and verbose output
+--channel	Release channel: stable or pre (remembered for next time)
+--help	help for update
+-h	help for update
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete update -c=
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete version ''
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete version -
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+-p	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+-v	Print detailed and verbose output
+--help	help for version
+-h	help for version
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete help ''
+base	Set or clear the branch new workrooms start from
+completion	Generate the autocompletion script for the specified shell
+create	Create a new workroom
+delete	Delete an existing workroom
+help	Help about any command
+list	List all workrooms for the current project
+trust	Approve a project's setup and teardown scripts so Workroom runs them
+untrust	Forget the approval of a project's setup and teardown scripts
+update	Update workroom to the latest version
+version	Print the version
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete help b
+base	Set or clear the branch new workrooms start from
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete help base ''
+clear	Start new workrooms from the global base, else origin's default branch
+set	Start new workrooms from BRANCH
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete help base set ''
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete help bogus ''
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete help -
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+-p	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+-v	Print detailed and verbose output
+--help	help for help
+-h	help for help
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete completion ''
+bash	Generate the autocompletion script for bash
+fish	Generate the autocompletion script for fish
+powershell	Generate the autocompletion script for powershell
+zsh	Generate the autocompletion script for zsh
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete completion -
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+-p	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+-v	Print detailed and verbose output
+--help	help for completion
+-h	help for completion
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete completion zsh ''
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete completion zsh -
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+-p	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+-v	Print detailed and verbose output
+--help	help for zsh
+-h	help for zsh
+--no-descriptions	disable completion descriptions
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete completion zsh --no-descriptions -
+--json	Emit machine-readable JSON (exactly one object on stdout)
+--pretend	Run through the command without making changes (dry run)
+-p	Run through the command without making changes (dry run)
+--verbose	Print detailed and verbose output
+-v	Print detailed and verbose output
+--help	help for zsh
+-h	help for zsh
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete completion bash x ''
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete bogus ''
+:0
+--- stderr
+[Debug] [Error] unable to find a command for arguments: [bogus]
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete bogus x ''
+:0
+--- stderr
+[Debug] [Error] unable to find a command for arguments: [bogus x]
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete '' ''
+:0
+--- stderr
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete list --bogus ''
+:0
+--- stderr
+[Debug] [Error] Error while parsing flags from args [--bogus]: unknown flag: --bogus
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete list --bogus=x
+:0
+--- stderr
+[Debug] [Error] Subcommand 'list' does not support flag 'bogus'
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom __complete --pretend=x ''
+:0
+--- stderr
+[Debug] [Error] Error while parsing flags from args [--pretend=x]: invalid argument "x" for "-p, --pretend" flag: must be true or false
+Completion ended with directive: ShellCompDirectiveDefault
+--- exit 0
+
+$ workroom --json __complete ''
+base	Set or clear the branch new workrooms start from
+completion	Generate the autocompletion script for the specified shell
+create	Create a new workroom
+delete	Delete an existing workroom
+help	Help about any command
+list	List all workrooms for the current project
+trust	Approve a project's setup and teardown scripts so Workroom runs them
+untrust	Forget the approval of a project's setup and teardown scripts
+update	Update workroom to the latest version
+version	Print the version
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ workroom __complete
+--- stderr
+Error: requires at least 1 arg(s), only received 0
+--- exit 1
+
+$ WORKROOM_COMPLETION_DESCRIPTIONS=false workroom __complete b
+base
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ WORKROOM_COMPLETION_DESCRIPTIONS=bogus workroom __complete b
+base	Set or clear the branch new workrooms start from
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ COBRA_COMPLETION_DESCRIPTIONS=0 workroom __complete b
+base
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
+$ WORKROOM_COMPLETION_DESCRIPTIONS=true COBRA_COMPLETION_DESCRIPTIONS=false workroom __complete b
+base	Set or clear the branch new workrooms start from
+:4
+--- stderr
+Completion ended with directive: ShellCompDirectiveNoFileComp
+--- exit 0
+
