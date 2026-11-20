@@ -1826,9 +1826,11 @@ fn base_refuses_a_bad_branch_name_or_arguments() {
         assert_eq!(run.error_kind(), "InternalError", "{name:?} {scope:?}");
         let envelope = run.envelope();
         assert_eq!(envelope["command"], "base");
-        assert_eq!(
-            envelope["error"]["message"],
-            format!("invalid branch name {name:?}: fatal: '{name}' is not a valid branch name\n")
+        // Then git's own words, which differ between git versions.
+        let message = envelope["error"]["message"].as_str().expect("message");
+        assert!(
+            message.starts_with(&format!("invalid branch name {name:?}: ")) && message.len() > 25,
+            "{message:?}"
         );
     }
     for (args, message) in [
