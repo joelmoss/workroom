@@ -667,7 +667,12 @@ fn api_describe_shows_one_methods_schemas_with_examples() {
         method["errors"],
         json!(["TargetNotFound", "TargetAmbiguous"])
     );
-    assert_eq!(envelope["error"]["required"], json!(["kind", "message"]));
+    // The error's schema is `error_schema`: a success envelope never has an `error`.
+    assert_eq!(
+        envelope["error_schema"]["required"],
+        json!(["kind", "message"])
+    );
+    assert!(envelope.get("error").is_none(), "{envelope}");
 
     // For a person, the same description as indented JSON.
     let human = workroom(Some(&socket), &["api", "describe", "session.resolve"]);
@@ -806,7 +811,7 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
         );
     }
 
-    let error_schema = api_json(&socket, &["describe", "session.list"])["error"].clone();
+    let error_schema = api_json(&socket, &["describe", "session.list"])["error_schema"].clone();
     let ambiguous = workroom(
         Some(&socket),
         &[
