@@ -477,7 +477,7 @@ enum WorkroomPlace: Hashable {
 
 /// One picker row: a title, with a dimmed detail beneath — a project's full path, to disambiguate
 /// same-named directories, or what a place is. Highlight + hover styling mirrors `ThemePicker`'s
-/// `FamilyRow`.
+/// `ThemePickerRow`.
 private struct PickerRow: View {
   @Environment(\.themeTokens) private var tokens
   let icon: String
