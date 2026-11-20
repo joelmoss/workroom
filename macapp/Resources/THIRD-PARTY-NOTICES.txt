@@ -7612,14 +7612,14 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ==============================================================================
-iTerm2-Color-Schemes (the terminal themes) 0173c3cc
+iTerm2-Color-Schemes (the terminal themes) 452b0ba3
 Licence: MIT
-Source: https://github.com/mbadolato/iTerm2-Color-Schemes/tree/0173c3cc154aab5d43b03241286d32372a87dec6
+Source: https://github.com/mbadolato/iTerm2-Color-Schemes/tree/452b0ba35405b07833008c2d01441f6cb41136d1
 ------------------------------------------------------------------------------
 
 MIT License
 
-Copyright (c) 2015 Mark Badolato and contributors
+Copyright (c) 2011 to Present Mark Badolato
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -7638,6 +7638,10 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+This license covers the iTerm-Color-Schemes repository collection of themes.
+
+The copyright/license for each individual theme belongs to the author of that theme.
 
 ==============================================================================
 libgit2 1.9.2

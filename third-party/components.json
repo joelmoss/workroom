@@ -359,12 +359,12 @@
     {
       "id": "iterm2-color-schemes",
       "name": "iTerm2-Color-Schemes (the terminal themes)",
-      "version": "0173c3cc",
+      "version": "452b0ba3",
       "license": "MIT",
-      "source": "https://github.com/mbadolato/iTerm2-Color-Schemes/tree/0173c3cc154aab5d43b03241286d32372a87dec6",
+      "source": "https://github.com/mbadolato/iTerm2-Color-Schemes/tree/452b0ba35405b07833008c2d01441f6cb41136d1",
       "ships": "app",
       "files": ["macapp/Resources/ghostty/themes/LICENSE"],
-      "pin": {"file": "macapp/Resources/ghostty/themes/SOURCE.md", "pattern": "iTerm2-Color-Schemes@([0-9a-f]+)", "value": "0173c3cc154aab5d43b03241286d32372a87dec6"}
+      "pin": {"file": "macapp/Resources/ghostty/themes/SOURCE.md", "pattern": "iTerm2-Color-Schemes@([0-9a-f]+)", "value": "452b0ba35405b07833008c2d01441f6cb41136d1"}
     },
     {
       "id": "libgit2",
