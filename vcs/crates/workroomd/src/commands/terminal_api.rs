@@ -1,7 +1,7 @@
 //! The terminal API's client (ADR 0079): one request to the daemon's `Service::TerminalApi` and its
 //! reply, for the commands that wrap it. The daemon is the one `WORKROOM_DAEMON` names, the socket
-//! path every pane's shell is given (#684); there is no default, so a command never reaches a
-//! daemon nobody named.
+//! path #684 gives every pane's shell. Finding one without it (the caller's peer pid, `new`
+//! starting one) is #684's and #693's; until then no other daemon is ever reached.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
