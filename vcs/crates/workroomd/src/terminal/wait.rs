@@ -19,12 +19,15 @@
 //! part-filled), and the window of stripped text it matches in, [`WINDOW`] and a chunk (at most
 //! twice that as allocated). About 320 KiB, so 160 MiB for the daemon's 512 waits, all of it only
 //! while a wait is behind a session printing flat out; besides, the screen's text once for
-//! `include_screen`, and the regex, compiled and its search cache, each at most
-//! [`REGEX_SIZE_LIMIT`] (a few KiB for a pattern such as `ready in \d+ ms`).
+//! `include_screen`, and the regex, compiled twice (to search, and as the lazy DFA that says
+//! when a match is settled) with a cache for each, each at most [`REGEX_SIZE_LIMIT`] (a few KiB
+//! for a pattern such as `ready in \d+ ms`).
 
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 use std::time::Instant;
+
+use regex_automata::{Input, hybrid, meta, nfa::thompson, util::syntax};
 
 use crate::terminal::program_status::State;
 use crate::util::{lock_or_recover, recover};
@@ -38,8 +41,8 @@ pub enum Condition {
     /// (`api::wait`), rather than wait for an exit that may never come.
     Run(RunState),
     /// Output matching a regex, from what arrives after the wait starts (and the screen, when the
-    /// matcher was given it first).
-    Output(Matcher),
+    /// matcher was given it first). Boxed: a matcher is a regex twice over.
+    Output(Box<Matcher>),
     /// The session ending.
     Ended,
     /// The shell's next command end (OSC 133 D closing a C).
@@ -255,7 +258,7 @@ impl Waiter {
         let (wanted, matcher) = match condition {
             Condition::Status(state) => (Wanted::Status(state), None),
             Condition::Run(state) => (Wanted::Run(state), None),
-            Condition::Output(matcher) => (Wanted::Output, Some(matcher)),
+            Condition::Output(matcher) => (Wanted::Output, Some(*matcher)),
             Condition::Ended => (Wanted::Ended, None),
             Condition::CommandFinished => (Wanted::CommandFinished, None),
         };
@@ -393,9 +396,14 @@ impl Waiter {
                         progress.in_hand = queue.len;
                         break (queue, last);
                     }
-                    // Nothing left to match from before the end.
+                    // Nothing left to match from before the end, which settles what is held: a
+                    // match a byte more might have changed, and `$` at the output's end.
                     if progress.ended {
-                        progress.outcome = Some(Outcome::SessionEnded);
+                        let found = matcher.as_mut().and_then(Matcher::finish);
+                        progress.outcome = Some(match found {
+                            Some(found) => Outcome::Met(Met::Output(found)),
+                            None => Outcome::SessionEnded,
+                        });
                         continue;
                     }
                     // The deadline, or the end of a shell's grace for its first mark if sooner.
@@ -470,46 +478,129 @@ impl Waiter {
 
 /// The most stripped output a regex waiter keeps: the longest a match can be, and what each read
 /// rescans. A match spanning reads is found because the window still holds its start; one longer
-/// than this is not. It holds this much and the chunk being matched (`CHUNK`) at most, before a
-/// failed search trims it back (what a waiter holds: the module's notes).
+/// than this may not be. It holds this much and the chunk being matched (`CHUNK`) at most, before
+/// a search that answers nothing trims it back to its last `WINDOW` bytes (what a waiter holds:
+/// the module's notes).
 pub const WINDOW: usize = 16 * 1024;
 
 /// The most memory a waiter's compiled regex may take, and its search cache, each, so one request
 /// cannot hold the daemon's.
 pub const REGEX_SIZE_LIMIT: usize = 1 << 20;
 
+/// The bytes a trimmed window keeps before its text, for what `^`, `$` and `\b` look at there: a
+/// character's worth, so a Unicode word boundary sees the whole of the one before.
+const CONTEXT: usize = 4;
+
 /// A regex over a session's output as a person reads it: escape sequences and control characters
 /// other than `\t`, `\n` and `\r` stripped as they arrive, so neither a sequence nor a character
-/// split across two reads hides a match. `^` and `$` are line anchors, and `$` also matches before
-/// a `\r\n` (pty output's line end); at the end of what has arrived so far, `$` matches too, since
-/// the rest of the line may never come.
+/// split across two reads hides a match.
+///
+/// **What it answers** is the regex's first match in the stripped output, leftmost-first, as one
+/// search of the whole stream would find it, however the stream arrived: in one read or a byte at
+/// a time. So a match is answered only once more output can't change it: `TICK-\d+` once a byte
+/// that is no digit follows `TICK-12`, not at `TICK-1` because a read ended there (the lazy DFA's
+/// states say when, [`Matcher::settled`]). A match that can end in an anchor or a word boundary
+/// (`ready$`, `\bok\b`) is answered once a byte follows it, since that byte decides it. The
+/// session's end decides what is left. A match longer than [`WINDOW`] may be missed.
+///
+/// **Anchors.** `^` and `$` are line anchors (multi-line), `\r\n`, `\n` and `\r` line ends. `$`
+/// needs the line's end, or the session's: a prompt that ends what has arrived is waited for
+/// without `$`. The wait's text starts a line: its first output, or the screen's top row with
+/// `include_screen`, where `^` and `\A` match. A wait that joins the stream inside an escape
+/// sequence starts mid-line, as far as is known, where neither does ([`Matcher::resync`]). `\A`
+/// matches only there, at the start of the wait's text, while the window still holds it, and `\z`
+/// only at the session's end.
+#[cfg_attr(test, derive(Clone))]
 pub struct Matcher {
-    regex: regex::bytes::Regex,
+    /// Finds a match, and its text once it is settled.
+    regex: meta::Regex,
+    /// The same pattern, stepped a byte at a time to see whether more output could change it.
+    settle: hybrid::dfa::DFA,
+    cache: hybrid::dfa::Cache,
+    /// The longest a match can be, when the pattern bounds it: what settles a match when the DFA
+    /// gives up (a Unicode `\b` beside text that isn't ASCII).
+    longest: Option<usize>,
+    /// Whether a match can end in an assertion (`$`, `\b`, `^`, `\z`), which looks at the byte
+    /// after it.
+    looks: bool,
     strip: Stripper,
-    /// One byte that says what comes before the text, then the stripped output since the wait
-    /// started, at most `WINDOW` bytes of it once a search fails. The byte is `\n` when the text
-    /// starts a line, so `^` matches there, and `NOT_A_LINE_START` when it starts mid-line (after
-    /// a resync, or a trim with no line start to cut at), where `^` must not. Searches start after
-    /// it, so it is never in a match.
+    /// `context` bytes of what came before the text, then the stripped output since the wait
+    /// started, its last `WINDOW` bytes once a search answers nothing. With no context the text
+    /// starts the wait's, and a line. Searches start after it, so it is never in a match.
     window: Vec<u8>,
+    context: usize,
 }
 
-/// What `Matcher::window` starts with when its text starts mid-line: neither `\n` nor `\r`, the
-/// only bytes after which `^` matches, and never in stripped output, which keeps no other control.
+/// What `Matcher::window` holds before its text when a wait joins mid-line: neither `\n` nor `\r`,
+/// after which `^` would match, nor a word character, and never in stripped output, which keeps
+/// no other control.
 const NOT_A_LINE_START: u8 = 0;
 
+/// Whether a match can still change, [`Matcher::settled`].
+enum Settled {
+    /// No: the match ends here, or none ever will in what the window holds.
+    At(Option<usize>),
+    /// Yes, more output may change it.
+    Open,
+    /// The DFA can't say: it gave up on a byte, or its cache.
+    Unknown,
+}
+
 impl Matcher {
-    pub fn new(pattern: &str) -> Result<Matcher, regex::Error> {
-        let regex = regex::bytes::RegexBuilder::new(pattern)
+    /// A matcher for `pattern` (Rust `regex` syntax, over bytes), or why it is none: the regex
+    /// engine's own message.
+    pub fn new(pattern: &str) -> Result<Matcher, String> {
+        let syntax = syntax::Config::new()
             .multi_line(true)
             .crlf(true)
-            .size_limit(REGEX_SIZE_LIMIT)
-            .dfa_size_limit(REGEX_SIZE_LIMIT)
-            .build()?;
+            .utf8(false);
+        let hir = syntax::parse_with(pattern, &syntax).map_err(|error| error.to_string())?;
+        let too_big = |limit: Option<usize>, error: String| match limit {
+            Some(limit) => format!("compiled regex exceeds size limit of {limit} bytes"),
+            None => error,
+        };
+        let regex = meta::Builder::new()
+            .configure(
+                meta::Config::new()
+                    .utf8_empty(false)
+                    .which_captures(thompson::WhichCaptures::Implicit)
+                    .nfa_size_limit(Some(REGEX_SIZE_LIMIT))
+                    .onepass_size_limit(Some(REGEX_SIZE_LIMIT))
+                    .hybrid_cache_capacity(REGEX_SIZE_LIMIT)
+                    .dfa_size_limit(Some(REGEX_SIZE_LIMIT)),
+            )
+            .build_from_hir(&hir)
+            .map_err(|error| too_big(error.size_limit(), error.to_string()))?;
+        let nfa = thompson::Compiler::new()
+            .configure(
+                thompson::Config::new()
+                    .utf8(false)
+                    .which_captures(thompson::WhichCaptures::None)
+                    .nfa_size_limit(Some(REGEX_SIZE_LIMIT)),
+            )
+            .build_from_hir(&hir)
+            .map_err(|error| too_big(error.size_limit(), error.to_string()))?;
+        // A cache too small to search with makes the DFA give up as it searches, never refuses
+        // the pattern: a match is then settled without it.
+        let settle = hybrid::dfa::DFA::builder()
+            .configure(
+                hybrid::dfa::DFA::config()
+                    .cache_capacity(REGEX_SIZE_LIMIT)
+                    .unicode_word_boundary(true)
+                    .skip_cache_capacity_check(true),
+            )
+            .build_from_nfa(nfa)
+            .map_err(|error| error.to_string())?;
+        let cache = settle.create_cache();
         Ok(Matcher {
             regex,
+            settle,
+            cache,
+            longest: hir.properties().maximum_len(),
+            looks: !hir.properties().look_set_suffix_any().is_empty(),
             strip: Stripper::default(),
-            window: vec![b'\n'],
+            window: Vec::new(),
+            context: 0,
         })
     }
 
@@ -527,8 +618,9 @@ impl Matcher {
     /// escape sequence, and the stream's own parse state is left as it was. The screen's text
     /// starts at its top row's start, a line's.
     pub fn feed_plain(&mut self, text: &[u8]) -> Option<Vec<u8>> {
-        if self.window.len() == 1 {
-            self.window[0] = b'\n';
+        if self.window.len() == self.context {
+            self.window.clear();
+            self.context = 0;
         }
         self.window.extend_from_slice(text);
         self.search()
@@ -542,7 +634,7 @@ impl Matcher {
     /// or starts a sequence or a line: ESC, BEL, CAN, SUB or `\n`, which is kept, as a line's end.
     /// One that is no sequence (a character's first bytes) leaves the stripper at ground, where
     /// the character's rest is text. Either way the text after starts mid-line, as far as is
-    /// known, so `^` doesn't match there.
+    /// known, so neither `^` nor `\A` matches there.
     pub fn resync(&mut self, open: &[u8]) {
         self.strip = Stripper::Ground;
         if open.is_empty() {
@@ -550,9 +642,18 @@ impl Matcher {
         } else if open.first() == Some(&ESC) {
             self.strip.strip(open, &mut Vec::new());
         }
-        if self.window.len() == 1 {
-            self.window[0] = NOT_A_LINE_START;
+        if self.window.len() == self.context {
+            self.window = vec![NOT_A_LINE_START];
+            self.context = 1;
         }
+    }
+
+    /// The session has ended: what the window holds is all there will be, so its first match is
+    /// settled, `$` and `\z` at its end included.
+    pub fn finish(&mut self) -> Option<Vec<u8>> {
+        let input = Input::new(&self.window).range(self.context..);
+        let found = self.regex.search(&input)?;
+        Some(self.window[found.range()].to_vec())
     }
 
     /// Takes what the reader queued: the screen first, then the output, a chunk at a time, each
@@ -575,37 +676,126 @@ impl Matcher {
         None
     }
 
+    /// The window's first match, once more output can't change it; else the window is trimmed.
     fn search(&mut self) -> Option<Vec<u8>> {
-        // From after the byte that says what came before, which `^` looks at but no match takes.
-        if let Some(found) = self.regex.find_at(&self.window, 1) {
-            return Some(found.as_bytes().to_vec());
+        // From after the context, which `^` and `\b` look at but no match takes.
+        let input = Input::new(&self.window).range(self.context..);
+        if let Some(found) = self.regex.search(&input) {
+            let end = match self.settled() {
+                Settled::At(end) => end,
+                Settled::Open => None,
+                Settled::Unknown => self.settled_without_dfa(found.range()),
+            };
+            // The first match ending by `end`, the bytes past it still looked at: the one found.
+            if let Some(end) = end {
+                let input = Input::new(&self.window).range(self.context..end);
+                if let Some(found) = self.regex.search(&input) {
+                    return Some(self.window[found.range()].to_vec());
+                }
+            }
         }
         self.trim();
         None
     }
 
-    /// Drops the oldest text past `WINDOW`, from the start of a line when one begins in the last
-    /// `WINDOW` bytes, so `^` still means a line's start; cut anywhere else, the text left starts
-    /// mid-line, and its first byte says so.
+    /// Whether the window's first match is the stream's, whatever comes next: the leftmost-first
+    /// search the DFA makes, a byte at a time, has ended (its state is dead), or would end with
+    /// any next byte. Or, for a pattern that looks at nothing around a position, any next byte
+    /// would end a match at the window's end, and none could go past it.
+    fn settled(&mut self) -> Settled {
+        let Matcher {
+            settle: dfa,
+            cache,
+            window,
+            context,
+            looks,
+            ..
+        } = self;
+        let input = Input::new(&window[..]).range(*context..);
+        let Ok(mut state) = dfa.start_state_forward(cache, &input) else {
+            return Settled::Unknown;
+        };
+        // A match state is entered a byte after its match ends.
+        let mut end = None;
+        for (at, byte) in window.iter().enumerate().skip(*context) {
+            let Ok(next) = dfa.next_state(cache, state, *byte) else {
+                return Settled::Unknown;
+            };
+            state = next;
+            if state.is_match() {
+                end = Some(at);
+            } else if state.is_dead() {
+                return Settled::At(end);
+            } else if state.is_quit() {
+                return Settled::Unknown;
+            }
+        }
+        let classes = *dfa.byte_classes();
+        let nexts = |cache: &mut hybrid::dfa::Cache, state| {
+            classes
+                .representatives(..)
+                .filter_map(|unit| unit.as_u8())
+                .map(|byte| dfa.next_state(cache, state, byte).ok())
+                .collect::<Option<Vec<_>>>()
+        };
+        let Some(after) = nexts(cache, state) else {
+            return Settled::Unknown;
+        };
+        if after.iter().any(|next| next.is_quit()) {
+            return Settled::Unknown;
+        }
+        if after.iter().all(|next| next.is_dead()) {
+            return Settled::At(end);
+        }
+        // A match ending at the window's end, whatever byte comes: settled when nothing it
+        // looks at is that byte, and no byte after could lengthen it.
+        if !*looks && after.iter().all(|next| next.is_match()) {
+            for next in after {
+                let Some(then) = nexts(cache, next) else {
+                    return Settled::Unknown;
+                };
+                if !then.iter().all(|then| then.is_dead()) {
+                    return Settled::Open;
+                }
+            }
+            return Settled::At(Some(window.len()));
+        }
+        Settled::Open
+    }
+
+    /// Where the match `found` ends once it is settled, when the DFA can't say. The window holds
+    /// all that could change it once it holds the longest a match can be from its start, and the
+    /// character after, whole, for what a `\b` looks at. A pattern with no longest is settled once a line
+    /// ends after it: the one approximation, for a Unicode `\b` over text that isn't ASCII in a
+    /// pattern with no bound (`\w+\b`), which may then miss a longer match a later line completes.
+    fn settled_without_dfa(&self, found: std::ops::Range<usize>) -> Option<usize> {
+        // The character at `to` is whole: an ASCII byte is one, else a character's worth.
+        let held = |to: usize| {
+            self.window.get(to).is_some_and(u8::is_ascii) || self.window.len() >= to + CONTEXT
+        };
+        let settled = match self.longest {
+            Some(longest) => held(found.start + longest),
+            None => held(found.end) && self.window[found.end..].contains(&b'\n'),
+        };
+        settled.then_some(found.end)
+    }
+
+    /// Drops the oldest text past `WINDOW`, wherever it falls, keeping the `CONTEXT` bytes before
+    /// what is left so `^`, `$` and `\b` at its start see what the stream had there.
     fn trim(&mut self) {
-        let Some(excess) = (self.window.len() - 1).checked_sub(WINDOW) else {
+        let text = self.window.len() - self.context;
+        let Some(excess) = text.checked_sub(WINDOW).filter(|excess| *excess > 0) else {
             return;
         };
-        let from = 1 + excess;
-        let cut = self.window[from..]
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map_or(from, |at| from + at + 1);
-        self.window[0] = match self.window[cut - 1] {
-            line_end @ (b'\n' | b'\r') => line_end,
-            _ => NOT_A_LINE_START,
-        };
-        self.window.drain(1..cut);
+        let start = self.context + excess;
+        let from = start - start.min(CONTEXT);
+        self.window.drain(..from);
+        self.context = start - from;
     }
 
     #[cfg(test)]
     fn window_len(&self) -> usize {
-        self.window.len() - 1
+        self.window.len() - self.context
     }
 }
 

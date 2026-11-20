@@ -60,8 +60,11 @@ pub fn input() -> Value {
                 "type": "string",
                 "description": "Wait for output matching this regex (Rust `regex` syntax), with \
                                 escape sequences stripped. Only output after the wait starts \
-                                counts; `^` and `$` match at line ends, `\\r\\n` included. A match \
-                                is at most 16 KiB. A wait that falls behind output printed faster \
+                                counts; `^` and `$` match at line ends, `\\r\\n` included, and `$` \
+                                needs the line's end or the session's. The match is the first one \
+                                a search of the whole output finds, however it was read, answered \
+                                once more output can't change it. A match is at most 16 KiB. A \
+                                wait that falls behind output printed faster \
                                 than it matches is `WaitInterrupted`, since what it dropped \
                                 unmatched may have held one.",
             },
@@ -395,7 +398,7 @@ fn register(
             if include_screen && !shadowed {
                 return Err(without_shadow("`include_screen`"));
             }
-            Condition::Output(matcher)
+            Condition::Output(Box::new(matcher))
         }
         "ended" if flag("ended")? => Condition::Ended,
         "command_finished" if flag("command_finished")? => {

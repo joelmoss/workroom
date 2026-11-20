@@ -105,7 +105,7 @@ fn a_pattern_the_regex_engine_refuses_is_an_error() {
 
 fn output_waiter(pattern: &str) -> std::sync::Arc<Waiter> {
     std::sync::Arc::new(Waiter::new(
-        Condition::Output(Matcher::new(pattern).expect("a valid pattern")),
+        Condition::Output(Box::new(Matcher::new(pattern).expect("a valid pattern"))),
         Seen::default(),
     ))
 }
@@ -382,8 +382,9 @@ fn a_command_wait_answers_with_the_first_command_to_end_after_it() {
     );
 }
 
-/// A window trimmed where no line starts keeps text that starts mid-line, where `^` doesn't
-/// match; one trimmed at a line's start keeps `^` there.
+/// A window is trimmed to its last `WINDOW` bytes wherever they start, and what the stream had
+/// just before them still decides `^` there: mid-line, it doesn't match; after a line's end, it
+/// does.
 #[test]
 fn a_window_trimmed_mid_line_does_not_start_a_line() {
     let mut matcher = Matcher::new("^y").unwrap();
@@ -397,6 +398,97 @@ fn a_window_trimmed_mid_line_does_not_start_a_line() {
     let mut lines = vec![b'x'; WINDOW];
     lines.extend_from_slice(b"\ny");
     assert_eq!(matcher.feed(&lines), None);
-    assert_eq!(matcher.window_len(), 1, "trimmed to the line's start");
+    assert_eq!(
+        matcher.window_len(),
+        WINDOW,
+        "trimmed to its last WINDOW bytes"
+    );
     assert_eq!(matcher.feed(b"z").as_deref(), Some(&b"yz"[..]));
+}
+
+/// Trimming never loses a match the window must still hold: a line longer than the window, then
+/// `DONE\r\nREADY`, matches a pattern spanning the two lines however the batches split it, even
+/// where the line's end falls inside the window and a trim to it would have dropped `DONE`.
+#[test]
+fn a_match_after_a_line_longer_than_the_window_survives_the_trim() {
+    // `DONE` ends the long line, whose only line end in the window is the one in the match.
+    for (pattern, line_end) in [
+        (r"DONE\r\nREADY", &b""[..]),
+        (r"(?m)^DONE$\r\n^READY$", b"\r\n"),
+    ] {
+        let mut stream = vec![b'x'; WINDOW + 1024];
+        stream.extend_from_slice(line_end);
+        stream.extend_from_slice(b"DONE\r\nREADY\r\n");
+        let at = stream.len() - b"READY\r\n".len();
+        for split in [at - 6, at - 2, at - 1, at, at + 2] {
+            let (head, tail) = stream.split_at(split);
+            assert_eq!(
+                first_match(pattern, &[head, tail]).as_deref(),
+                Some("DONE\r\nREADY"),
+                "{pattern} split at {split}"
+            );
+        }
+    }
+}
+
+/// A match the DFA can't settle (a Unicode `\b` beside text that isn't ASCII) is still answered
+/// as soon as the character after it is whole, not left for the session's end: a dev server that
+/// prints a check mark and goes quiet still meets the wait.
+#[test]
+fn a_unicode_word_boundary_beside_non_ascii_text_still_answers_at_once() {
+    assert_eq!(
+        first_match(r"\bready\b", &["✓ ready\r\n".as_bytes()]).as_deref(),
+        Some("ready")
+    );
+    assert_eq!(
+        first_match(r"\bécrit\b", &["✓ écrit ✓".as_bytes()]).as_deref(),
+        Some("écrit")
+    );
+}
+
+/// A match is the whole stream's, not the one a read happened to end in: a greedy match goes on
+/// while more could lengthen it, and `$` needs the line's end, not the end of what has arrived.
+/// The session's end settles what is left.
+#[test]
+fn a_match_is_answered_once_more_output_cannot_change_it() {
+    let mut matcher = Matcher::new(r"TICK-\d+").unwrap();
+    assert_eq!(matcher.feed(b"TICK-1"), None, "a digit more may come");
+    assert_eq!(matcher.feed(b"2\r\n").as_deref(), Some(&b"TICK-12"[..]));
+
+    let mut matcher = Matcher::new("ready$").unwrap();
+    assert_eq!(matcher.feed(b"ready"), None, "the line may go on");
+    assert_eq!(matcher.feed(b"\r\n").as_deref(), Some(&b"ready"[..]));
+    let mut matcher = Matcher::new("ready$").unwrap();
+    assert_eq!(matcher.feed(b"ready"), None);
+    assert_eq!(matcher.feed(b"made"), None, "it did");
+
+    // A literal is settled the moment it is all there: a prompt that ends the output matches.
+    let mut matcher = Matcher::new(r"\$ ").unwrap();
+    assert_eq!(matcher.feed(b"build ok\r\n$ ").as_deref(), Some(&b"$ "[..]));
+
+    let mut matcher = Matcher::new(r"\d+$").unwrap();
+    assert_eq!(matcher.feed(b"exit 42"), None);
+    assert_eq!(
+        matcher.finish().as_deref(),
+        Some(&b"42"[..]),
+        "the end settles it"
+    );
+}
+
+/// `\A` matches at the start of the wait's text, and nowhere else: not after a join mid-sequence,
+/// where the text starts mid-line, nor once the window is trimmed past it.
+#[test]
+fn backslash_a_is_the_start_of_the_waits_text() {
+    assert_eq!(
+        first_match(r"\Aready", &[b"ready\r\n"]).as_deref(),
+        Some("ready")
+    );
+    assert_eq!(first_match(r"\Aready", &[b"x\r\nready\r\n"]), None);
+    assert_eq!(
+        first_match_resynced(r"\Aready", b"\x1b[3", &[b"2mready\r\n"]),
+        None
+    );
+    let mut matcher = Matcher::new(r"\Aready|(?-m)^ready").unwrap();
+    assert_eq!(matcher.feed(&vec![b'x'; WINDOW * 2]), None);
+    assert_eq!(matcher.feed(b"\nready\r\n"), None, "trimmed past the start");
 }
