@@ -77,24 +77,30 @@ impl Config {
                 format!("failed to read config {}: {detail}", self.path.display()),
             )
         };
-        let bytes = match std::fs::read(&self.path) {
-            Ok(bytes) => bytes,
+        // Go's `os.ReadFile`, whose error names the step that failed: `open`, or `read` (a
+        // directory opens but can't be read).
+        let at = |step: &str, error: io::Error| {
+            failed(format!(
+                "{step} {}: {}",
+                self.path.display(),
+                os_error(&error)
+            ))
+        };
+        let mut file = match File::open(&self.path) {
+            Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok(Json::Object(Object::new()));
             }
-            Err(error) => {
-                return Err(failed(format!(
-                    "open {}: {}",
-                    self.path.display(),
-                    os_error(&error)
-                )));
-            }
+            Err(error) => return Err(at("open", error)),
         };
+        let mut bytes = Vec::new();
+        io::Read::read_to_end(&mut file, &mut bytes).map_err(|error| at("read", error))?;
         json::parse_config(&bytes).map_err(failed)
     }
 
     /// Writes `data` as Go would, atomically: to a temporary file beside the config, flushed to
-    /// disk, then renamed over it.
+    /// disk, then renamed over it. Each failure is worded as Go's `Write` wraps it: the step's own
+    /// error (`write <tmp>: …`) after the file it was writing.
     fn write(&self, data: &Json) -> Result<(), CliError> {
         let failed = |detail: String| {
             CliError::new(
@@ -102,34 +108,42 @@ impl Config {
                 format!("failed to write config{detail}"),
             )
         };
-        let dir = self.path.parent().unwrap_or(Path::new("."));
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o755)
-            .create(dir)
-            .map_err(|error| {
-                failed(format!(
-                    ": create config directory {}: {}",
-                    dir.display(),
-                    os_error(&error)
-                ))
-            })?;
+        // Go's `filepath.Dir`: the parent, cleaned, or "." for a bare file name.
+        let dir = clean(
+            &self
+                .path
+                .parent()
+                .map(|dir| dir.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        );
+        mkdir_all(&dir)
+            .map_err(|error| failed(format!(": create config directory {dir}: {error}")))?;
         let text = json::write_indented(data);
-        let (tmp, mut file) = create_temp(dir)
-            .map_err(|error| failed(format!(": create temp file: {}", os_error(&error))))?;
-        let at = |error: io::Error| failed(format!(" {}: {}", tmp.display(), os_error(&error)));
-        let written = file
+        let (tmp, mut file) =
+            create_temp(&dir).map_err(|error| failed(format!(": create temp file: {error}")))?;
+        let tmp_name = tmp.display().to_string();
+        let at = |step: &str, error: io::Error| {
+            failed(format!(
+                " {tmp_name}: {step} {tmp_name}: {}",
+                os_error(&error)
+            ))
+        };
+        let result = file
             .write_all(text.as_bytes())
-            .and_then(|()| file.sync_all())
-            .map_err(at);
-        drop(file);
-        let result = written
+            .map_err(|error| at("write", error))
+            .and_then(|()| file.sync_all().map_err(|error| at("sync", error)))
+            .and_then(|()| close(file).map_err(|error| at("close", error)))
             .and_then(|()| {
-                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).map_err(at)
+                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644))
+                    .map_err(|error| at("chmod", error))
             })
             .and_then(|()| {
                 std::fs::rename(&tmp, &self.path).map_err(|error| {
-                    failed(format!(" {}: {}", self.path.display(), os_error(&error)))
+                    let path = self.path.display();
+                    failed(format!(
+                        " {path}: rename {tmp_name} {path}: {}",
+                        os_error(&error)
+                    ))
                 })
             });
         if result.is_err() {
@@ -192,26 +206,69 @@ fn top_level(data: &mut Json) -> &mut Object {
 }
 
 /// A new, empty `.config-*.json.tmp` in `dir`, readable only by its owner, as Go's
-/// `os.CreateTemp` makes one.
-fn create_temp(dir: &Path) -> io::Result<(PathBuf, File)> {
+/// `os.CreateTemp` makes one, failing with Go's words: the failed open's, or `createtemp` when
+/// every name tried was taken.
+fn create_temp(dir: &str) -> Result<(PathBuf, File), String> {
     use std::hash::{BuildHasher, RandomState};
+    let prefix = if dir.ends_with('/') {
+        format!("{dir}.config-")
+    } else {
+        format!("{dir}/.config-")
+    };
     let state = RandomState::new();
-    let mut last = io::Error::other("no temporary file name was free");
     for attempt in 0u32..10_000 {
         let random = state.hash_one((std::process::id(), Instant::now(), attempt)) as u32;
-        let path = dir.join(format!(".config-{random}.json.tmp"));
+        let path = PathBuf::from(format!("{prefix}{random}.json.tmp"));
         match std::fs::OpenOptions::new()
+            .read(true)
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(&path)
         {
             Ok(file) => return Ok((path, file)),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => last = error,
-            Err(error) => return Err(error),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(format!("open {}: {}", path.display(), os_error(&error))),
         }
     }
-    Err(last)
+    Err(format!(
+        "createtemp {prefix}*.json.tmp: file already exists"
+    ))
+}
+
+/// Closes `file`, reporting the error close(2) gives, which dropping a `File` ignores.
+fn close(file: File) -> io::Result<()> {
+    use std::os::fd::IntoRawFd;
+    let fd = file.into_raw_fd();
+    // SAFETY: `fd` came from `file`, which gave up ownership of it, so it is closed exactly once.
+    if unsafe { libc::close(fd) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Go's `os.MkdirAll` with mode 0755: `path` and any parents it lacks, failing with Go's words for
+/// the directory that couldn't be made (`mkdir <dir>: …`).
+fn mkdir_all(path: &str) -> Result<(), String> {
+    let refused = |at: &str, error: &io::Error| format!("mkdir {at}: {}", os_error(error));
+    if let Ok(info) = std::fs::metadata(path) {
+        if info.is_dir() {
+            return Ok(());
+        }
+        return Err(refused(path, &io::Error::from_raw_os_error(libc::ENOTDIR)));
+    }
+    let trimmed = path.trim_end_matches('/');
+    let parent = trimmed.rfind('/').map_or("", |slash| &path[..slash]);
+    if !parent.is_empty() {
+        mkdir_all(parent)?;
+    }
+    match std::fs::DirBuilder::new().mode(0o755).create(path) {
+        Ok(()) => Ok(()),
+        // An argument like "foo/." already exists once its parent does.
+        Err(_) if std::fs::symlink_metadata(path).is_ok_and(|info| info.is_dir()) => Ok(()),
+        Err(error) => Err(refused(path, &error)),
+    }
 }
 
 /// `<config>.lock`, held exclusively with `flock(2)` until dropped. Never deleted, as Go never
@@ -387,7 +444,8 @@ pub(crate) fn workrooms_dir(data: &Json, context: &Context) -> Result<String, St
         .and_then(|top| top.get("workrooms_dir"))
         .and_then(Json::as_str)
         .filter(|dir| !dir.is_empty());
-    expand_path(configured.unwrap_or(DEFAULT_WORKROOMS_DIR), context)
+    expand_tilde(configured.unwrap_or(DEFAULT_WORKROOMS_DIR), context)
+        .map_err(|error| format!("determine home directory: {error}"))
 }
 
 /// The global base branch, for projects that name none; "" for origin's default branch.
@@ -408,12 +466,13 @@ pub(crate) fn home_dir(context: &Context) -> Result<String, String> {
         .ok_or_else(|| "$HOME is not defined".to_string())
 }
 
-/// `path` with a leading `~` replaced by the home directory, as Go's `expandPath` does it.
-fn expand_path(path: &str, context: &Context) -> Result<String, String> {
+/// `path` with a leading `~` or `~/` replaced by the home directory, then cleaned; any other path,
+/// `~user` too, as given. Go has two of these (`expandPath`, `expandTilde`) that differ only in
+/// cleaning a bare `~`, which every caller here cleans anyway, and in their error's wording, which
+/// each caller adds.
+fn expand_tilde(path: &str, context: &Context) -> Result<String, String> {
     if path == "~" || path.starts_with("~/") {
-        let home =
-            home_dir(context).map_err(|error| format!("determine home directory: {error}"))?;
-        return Ok(join(&home, &path[1..]));
+        return Ok(join(&home_dir(context)?, &path[1..]));
     }
     Ok(path.to_string())
 }
@@ -421,27 +480,97 @@ fn expand_path(path: &str, context: &Context) -> Result<String, String> {
 /// `path` absolute and symlink-resolved, so a project named through a symlink or with a trailing
 /// slash is one key, as Go's `CanonicalPath` makes it. A leading `~` or `~/` is the home directory
 /// (the app passes a path typed into its New Project dialog raw); a path that doesn't exist is
-/// only made absolute.
+/// only made absolute. Each name keeps the case it was given, as Go keeps it: only symlinks are
+/// resolved (`eval_symlinks`), where realpath would rewrite each name to its case on disk.
 pub(crate) fn canonical_path(path: &str, context: &Context) -> Result<String, String> {
-    let expanded = if path == "~" || path.starts_with("~/") {
-        let home = home_dir(context)?;
-        if path == "~" {
-            home
-        } else {
-            join(&home, &path[2..])
-        }
-    } else {
-        path.to_string()
-    };
+    let expanded = expand_tilde(path, context)?;
     let absolute = if expanded.starts_with('/') {
         clean(&expanded)
     } else {
         join(&getwd(context)?, &expanded)
     };
-    Ok(match std::fs::canonicalize(&absolute) {
-        Ok(resolved) => resolved.to_string_lossy().into_owned(),
-        Err(_) => absolute,
-    })
+    Ok(eval_symlinks(&absolute).unwrap_or(absolute))
+}
+
+/// Go's `filepath.EvalSymlinks` on Unix, step for step: `path` with every symlink in it resolved,
+/// one component at a time (a relative link against the directory holding it), then cleaned.
+/// Unlike realpath it keeps each component's case as written, and backs up over `..` through what
+/// it has walked so far. It fails as Go's does: on a missing component, a file with more path after
+/// it, or more than 255 links.
+fn eval_symlinks(path: &str) -> io::Result<String> {
+    /// The index of the last `/` in `dest` at or after `from`.
+    fn last_slash(dest: &str, from: usize) -> Option<usize> {
+        dest.get(from..)?.rfind('/').map(|index| index + from)
+    }
+    let mut path = path.to_string();
+    let mut vol_len = usize::from(path.starts_with('/'));
+    let mut vol = path[..vol_len].to_string();
+    let mut dest = vol.clone();
+    let mut links_walked = 0;
+    let mut start = vol_len;
+    while start < path.len() {
+        while path.as_bytes().get(start) == Some(&b'/') {
+            start += 1;
+        }
+        let mut end = start;
+        while end < path.len() && path.as_bytes()[end] != b'/' {
+            end += 1;
+        }
+        let component = &path[start..end];
+        if component.is_empty() {
+            break;
+        }
+        if component == "." {
+            start = end;
+            continue;
+        }
+        if component == ".." {
+            match last_slash(&dest, vol_len) {
+                Some(slash) if &dest[slash + 1..] != ".." => dest.truncate(slash),
+                // No slash to back up to, or a ".." that had to be kept: keep this one too.
+                _ => {
+                    if dest.len() > vol_len {
+                        dest.push('/');
+                    }
+                    dest.push_str("..");
+                }
+            }
+            start = end;
+            continue;
+        }
+        if !dest.is_empty() && !dest.ends_with('/') {
+            dest.push('/');
+        }
+        dest.push_str(component);
+        let info = std::fs::symlink_metadata(&dest)?;
+        if !info.file_type().is_symlink() {
+            if !info.is_dir() && end < path.len() {
+                return Err(io::Error::from_raw_os_error(libc::ENOTDIR));
+            }
+            start = end;
+            continue;
+        }
+        links_walked += 1;
+        if links_walked > 255 {
+            return Err(io::Error::other("EvalSymlinks: too many links"));
+        }
+        let link = std::fs::read_link(&dest)?.to_string_lossy().into_owned();
+        path = format!("{link}{}", &path[end..]);
+        if link.starts_with('/') {
+            dest = "/".to_string();
+            vol = "/".to_string();
+            vol_len = 1;
+            start = 1;
+        } else {
+            // Relative: it replaces the last component of `dest`, the link itself.
+            match last_slash(&dest, vol_len) {
+                Some(slash) => dest.truncate(slash),
+                None => dest.clone_from(&vol),
+            }
+            start = 0;
+        }
+    }
+    Ok(clean(&dest))
 }
 
 /// The current directory as Go's `os.Getwd` names it: `$PWD` when that is absolute and is this
