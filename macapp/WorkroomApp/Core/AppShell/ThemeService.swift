@@ -149,6 +149,19 @@ final class ThemeService {
     applyActiveTheme()
   }
 
+  /// Choose one side's theme (#735): save it as the light theme or the dark theme, leaving the other
+  /// side alone. Only the side that's showing repaints. Choosing the other side's theme saves it
+  /// without touching the appearance, the generated config or the screen, so browsing it in the
+  /// picker never flips what you're looking at; it shows the next time that side does.
+  func apply(theme: String, for side: ThemeSide) {
+    switch side {
+    case .light: Defaults[.lightTheme] = theme
+    case .dark: Defaults[.darkTheme] = theme
+    }
+    guard side == Self.showingSide() else { return }
+    applyActiveTheme()
+  }
+
   // MARK: Resolution
 
   /// The bundled theme dir. Immutable for the process lifetime, which is what makes caching its parsed
@@ -175,6 +188,9 @@ final class ThemeService {
       Defaults[.appearance],
       systemIsDark: NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
   }
+
+  /// The side whose theme is on screen: dark while the appearance is dark, else light.
+  static func showingSide() -> ThemeSide { ThemeSide(isDark: isCurrentAppearanceDark()) }
 }
 
 // MARK: The SwiftUI environment
