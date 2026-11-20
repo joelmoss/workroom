@@ -2792,6 +2792,526 @@ fn add_project_clone_names_staging_it_cannot_prove_dead() {
     assert_eq!(entries(&dest), [".clone-unowned"]);
 }
 
+/// Whether this process runs as root, whom a 0555 folder doesn't stop writing: a test that needs
+/// a write to fail says so on stderr and skips that part (CI's Go job may run as root on Linux).
+fn skip_as_root(test: &str) -> bool {
+    // SAFETY: geteuid has no preconditions and can't fail.
+    let root = unsafe { libc::geteuid() } == 0;
+    if root {
+        eprintln!("{test}: skipped as root, whom a read-only folder doesn't stop writing");
+    }
+    root
+}
+
+/// Runs the binary under test as [`Home::run`] does, with `env` added to its environment.
+fn run_with_env(home: &Home, args: &[&str], env: &[(&str, &OsStr)]) -> Run {
+    finish(args, spawn_with_env(home, args, env))
+}
+
+/// Starts the binary under test in `home` with `env` added, its stdout and stderr piped.
+fn spawn_with_env(home: &Home, args: &[&str], env: &[(&str, &OsStr)]) -> std::process::Child {
+    let mut command = home.command(binary(), &home.dir);
+    command
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command.spawn().expect("start the binary")
+}
+
+/// A run started by [`spawn_with_env`], once it has exited.
+fn finish(args: &[&str], child: std::process::Child) -> Run {
+    let output = child.wait_with_output().expect("wait for the binary");
+    Run {
+        args: args.join(" "),
+        code: output
+            .status
+            .code()
+            .expect("exited, not killed by a signal"),
+        stdout: String::from_utf8(output.stdout).expect("stdout is UTF-8"),
+        stderr: String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+    }
+}
+
+/// The `text` of each NDJSON log event on `stderr`, checking each is a `clone` event.
+fn clone_log(stderr: &str) -> Vec<String> {
+    stderr
+        .lines()
+        .map(|line| {
+            let event: serde_json::Value = serde_json::from_str(line).expect("NDJSON");
+            assert_eq!(event["type"], "log", "{event}");
+            assert_eq!(event["phase"], "clone", "{event}");
+            event["text"].as_str().expect("text").to_string()
+        })
+        .collect()
+}
+
+/// This machine's part of a clone's staging name, worked out here as Go's `machineHost` does it:
+/// FNV-32a of the Mac's IOPlatformUUID, or of /etc/machine-id elsewhere, as 8 hex digits. None
+/// when the machine has no id, where nothing is swept. A staging name the binary makes is checked
+/// against it, so Go and Rust are held to the same id.
+fn machine_host() -> Option<String> {
+    let id = if cfg!(target_os = "macos") {
+        let output = Command::new("/usr/sbin/ioreg")
+            .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.trim().split_once('='))
+            .find(|(key, _)| key.trim() == "\"IOPlatformUUID\"")
+            .map(|(_, value)| value.trim().trim_matches('"').to_string())?
+    } else {
+        ["/etc/machine-id", "/var/lib/dbus/machine-id"]
+            .iter()
+            .filter_map(|path| std::fs::read_to_string(path).ok())
+            .map(|text| text.trim().to_string())
+            .find(|id| !id.is_empty() && id != "uninitialized")?
+    };
+    if id.is_empty() {
+        return None;
+    }
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in id.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    Some(format!("{hash:08x}"))
+}
+
+/// [`machine_host`], or a note on stderr that the test is skipped without one.
+fn machine_host_or_skip(test: &str) -> Option<String> {
+    let host = machine_host();
+    if host.is_none() {
+        eprintln!("{test}: skipped: this machine has no machine id, so no staging is swept");
+    }
+    host
+}
+
+/// A pid no process has: a child's, once it has been reaped.
+fn dead_pid() -> u32 {
+    let mut child = Command::new("true").spawn().expect("run true");
+    let pid = child.id();
+    child.wait().expect("wait for true");
+    pid
+}
+
+/// A staging folder as a clone leaves one, with a file in it.
+fn make_staging(path: &Path) {
+    std::fs::create_dir_all(path.join(".git")).expect("staging");
+    std::fs::write(path.join(".git/HEAD"), "ref: refs/heads/main\n").expect("HEAD");
+}
+
+/// Takes `path`'s flock, as a clone's git holds its staging lock, until the file is dropped.
+fn hold_lock(path: &Path) -> std::fs::File {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .expect("open lock");
+    // SAFETY: a valid descriptor this owns.
+    let locked = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    assert_eq!(locked, 0, "take {}", path.display());
+    file
+}
+
+/// Whether something holds `path`'s flock.
+fn lock_is_held(path: &Path) -> bool {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("open lock");
+    // SAFETY: a valid descriptor this owns; closing it lets go of a lock taken here.
+    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) != 0 }
+}
+
+/// An `ext::` transport that never answers: it writes its pid to the returned file, then hangs.
+/// Local, with no network: git runs it in place of a remote.
+fn hanging_transport(home: &Home) -> (String, PathBuf) {
+    let pid_file = home.path("tools/helper.pid");
+    write_file(
+        &home.dir,
+        "tools/hang.sh",
+        &format!(
+            "#!/bin/sh\necho $$ > {}\nexec sleep 30\n",
+            pid_file.display()
+        ),
+        0o755,
+    );
+    (
+        format!("ext::{}", home.path("tools/hang.sh").display()),
+        pid_file,
+    )
+}
+
+/// The pid the hanging transport wrote, once it has.
+fn wait_for_pid(pid_file: &Path) -> i32 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        if let Some(pid) = std::fs::read_to_string(pid_file)
+            .ok()
+            .and_then(|text| text.trim().parse().ok())
+        {
+            return pid;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the transport helper never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Whether `pid` is a live process; a zombie counts as gone.
+fn process_alive(pid: i32) -> bool {
+    Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .is_ok_and(|output| {
+            output.status.success()
+                && !String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .starts_with('Z')
+        })
+}
+
+/// Waits up to ten seconds for `done`.
+fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !done() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// SIGTERM, which is how the app's Cancel reaches the CLI, during a clone: git's process group
+/// is ended (its transport helper too), the folders the run made are removed, nothing is
+/// registered, and the run reports `Cancelled`.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn add_project_clone_cancelled_by_a_signal_puts_everything_back() {
+    let home = Home::new("add-project-clone-cancel");
+    let (url, pid_file) = hanging_transport(&home);
+    let dest = home.path("src/new/api");
+    let dest_arg = dest.to_string_lossy().into_owned();
+    let args = ["add-project", &dest_arg, "--clone", &url, "--json"];
+    let child = spawn_with_env(&home, &args, &[("GIT_ALLOW_PROTOCOL", OsStr::new("ext"))]);
+    let helper = wait_for_pid(&pid_file);
+    // SAFETY: signals the binary under test, which this test started.
+    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGTERM) }, 0);
+    let run = finish(&args, child);
+    run.assert_code(4);
+    assert_eq!(run.error_kind(), "Cancelled");
+    assert_eq!(run.envelope()["error"]["message"], "operation cancelled");
+    clone_log(&run.stderr);
+    eventually("the transport helper outlived the cancel", || {
+        !process_alive(helper)
+    });
+    assert!(
+        !home.path("src").exists(),
+        "the cancelled clone left its folders"
+    );
+    assert_eq!(config_text(&home), "");
+}
+
+/// A clone whose registration fails, here on a config it can't read, keeps the clone and reports
+/// `ConfigWriteFailed`, saying where the clone is.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn add_project_clone_keeps_a_clone_it_cannot_register() {
+    let home = Home::new("add-project-clone-unregistered");
+    let origin = format!("file://{}", home.repo("origin/app").display());
+    let dest = home.path("src/api");
+    home.write_config("{bad");
+    let run = home.run(
+        &home.dir,
+        &[
+            "add-project",
+            &dest.to_string_lossy(),
+            "--clone",
+            &origin,
+            "--json",
+        ],
+    );
+    run.assert_code(6);
+    assert_eq!(run.error_kind(), "ConfigWriteFailed");
+    assert_eq!(
+        home.normalize(
+            run.envelope()["error"]["message"]
+                .as_str()
+                .expect("message")
+        ),
+        "failed to write config: the clone is at /Users/dev/src/api but could not be registered: \
+         failed to read config /Users/dev/.config/workroom/config.json: invalid character 'b' \
+         looking for beginning of object key string"
+    );
+    assert_eq!(entries(&dest), [".git"]);
+    assert_eq!(entries(&home.path("src")), ["api"], "its staging is left");
+    assert_eq!(config_text(&home), "{bad");
+}
+
+/// `--create` whose `git init` fails is `VCSCommandFailed`, naming the folder, and removes the
+/// folder it made; a write to a config folder it can't write to is `ConfigWriteFailed`.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn add_project_reports_a_failed_git_init_and_an_unwritable_config() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new("add-project-failures");
+    write_file(&home.dir, "tools/git", "#!/bin/sh\nexit 1\n", 0o755);
+    let path = format!(
+        "{}:{}",
+        home.path("tools").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let fresh = home.path("src/new");
+    let fresh_arg = fresh.to_string_lossy().into_owned();
+    let run = run_with_env(
+        &home,
+        &["add-project", &fresh_arg, "--create", "--json"],
+        &[("PATH", OsStr::new(&path))],
+    );
+    run.assert_code(1).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "VCSCommandFailed");
+    assert_eq!(
+        run.envelope()["error"]["message"],
+        format!("version control command failed: git init {fresh_arg}: exit status 1")
+    );
+    assert!(!fresh.exists(), "the folder it made is left");
+    assert_eq!(config_text(&home), "");
+
+    if skip_as_root("add_project_reports_a_failed_git_init_and_an_unwritable_config") {
+        return;
+    }
+    let project = home.repo("src/app");
+    home.write_config("{}");
+    let config_dir = home.path(".config/workroom");
+    std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+    let run = home.run(
+        &home.dir,
+        &["add-project", &project.to_string_lossy(), "--json"],
+    );
+    std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    run.assert_code(6).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "ConfigWriteFailed");
+    let message = run.envelope()["error"]["message"].to_string();
+    assert!(
+        message.starts_with("\"failed to write config") && message.contains("permission denied"),
+        "{message}"
+    );
+    assert_eq!(config_text(&home), "{}");
+}
+
+/// A dead clone's staging, inside the destination and beside it, is swept before the clone, each
+/// named on the log first: one with no lock whose pid is gone, one whose lock is free whatever its
+/// pid, and an orphan lock file that is free. The clone then goes ahead.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn add_project_clone_sweeps_a_dead_clones_staging() {
+    let Some(host) = machine_host_or_skip("add_project_clone_sweeps_a_dead_clones_staging") else {
+        return;
+    };
+    let home = Home::new("add-project-clone-sweep");
+    let origin = format!("file://{}", home.repo("origin/app").display());
+    let src = home.path("src");
+    let dest = src.join("app");
+    let me = std::process::id();
+    let mut inside = vec![
+        format!(".clone-{host}-{}-a1", dead_pid()),
+        format!(".clone-{host}-{me}-b2"),
+    ];
+    for name in &inside {
+        make_staging(&dest.join(name));
+    }
+    std::fs::write(dest.join(format!("{}.lock", inside[1])), "").expect("free lock");
+    let beside_dir = format!(".app.clone-{host}-{}-c3", dead_pid());
+    make_staging(&src.join(&beside_dir));
+    let orphan = format!(".app.clone-{host}-{}-d4.lock", dead_pid());
+    std::fs::write(src.join(&orphan), "").expect("orphan lock");
+    inside.sort();
+    let mut beside = vec![beside_dir, orphan];
+    beside.sort();
+
+    let run = home.run(
+        &home.dir,
+        &[
+            "add-project",
+            &dest.to_string_lossy(),
+            "--clone",
+            &origin,
+            "--json",
+        ],
+    );
+    run.assert_code(0);
+    let log = clone_log(&run.stderr);
+    let removed: Vec<String> = inside
+        .iter()
+        .chain(&beside)
+        .map(|name| format!("Removing staging a crashed clone left: {name}"))
+        .collect();
+    assert_eq!(log[..removed.len()], removed[..], "{log:?}");
+    assert!(
+        log[removed.len()].starts_with(&format!("Cloning into '{}/.clone-{host}-", dest.display())),
+        "{log:?}"
+    );
+    assert_eq!(entries(&dest), [".git"]);
+    assert_eq!(entries(&src), ["app"]);
+    assert_eq!(run.envelope()["path"], dest.to_string_lossy().as_ref());
+}
+
+/// What the sweep can't prove dead survives it and is named in the refusal: staging whose lock
+/// a live process holds (git, after the CLI that started it died), another machine's, and one
+/// with no lock whose process is running.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn add_project_clone_keeps_staging_a_live_owner_or_another_machine_has() {
+    let Some(host) =
+        machine_host_or_skip("add_project_clone_keeps_staging_a_live_owner_or_another_machine_has")
+    else {
+        return;
+    };
+    let home = Home::new("add-project-clone-live");
+    let origin = format!("file://{}", home.repo("origin/app").display());
+    let dest = home.path("src/app");
+    let other_host = if host == "0badf00d" {
+        "0badf00e"
+    } else {
+        "0badf00d"
+    };
+    let held = format!(".clone-{host}-{}-held", dead_pid());
+    let names = [
+        held.clone(),
+        format!(".clone-{other_host}-{}-x", dead_pid()),
+        format!(".clone-{host}-{}-nolock", std::process::id()),
+    ];
+    for name in &names {
+        make_staging(&dest.join(name));
+    }
+    let _lock = hold_lock(&dest.join(format!("{held}.lock")));
+    let mut expected: Vec<String> = names.to_vec();
+    expected.push(format!("{held}.lock"));
+    expected.sort();
+
+    let run = home.run(
+        &home.dir,
+        &[
+            "add-project",
+            &dest.to_string_lossy(),
+            "--clone",
+            &origin,
+            "--json",
+        ],
+    );
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "DestinationNotEmpty");
+    assert_eq!(
+        run.envelope()["error"]["message"],
+        format!(
+            "the destination folder is not empty: {} (a clone's staging is in the way: {}; remove \
+             it if no clone is running)",
+            dest.display(),
+            expected.join(", ")
+        )
+    );
+    assert_eq!(entries(&dest), expected);
+    for name in &names {
+        assert!(
+            dest.join(name).join(".git/HEAD").exists(),
+            "{name} was emptied"
+        );
+    }
+    assert_eq!(config_text(&home), "");
+}
+
+/// A clone whose CLI is SIGKILLed while git runs: git still holds the staging's lock it
+/// inherited, so a second clone refuses and names the staging, which is this machine's and this
+/// CLI's by its name. Once git is gone the lock is free, and a third clone sweeps it and clones.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn add_project_clone_keeps_a_killed_clis_staging_until_its_git_is_gone() {
+    let Some(host) =
+        machine_host_or_skip("add_project_clone_keeps_a_killed_clis_staging_until_its_git_is_gone")
+    else {
+        return;
+    };
+    let home = Home::new("add-project-clone-killed");
+    let (url, pid_file) = hanging_transport(&home);
+    let origin = format!("file://{}", home.repo("origin/app").display());
+    let dest = home.path("src/app");
+    std::fs::create_dir_all(&dest).expect("dest");
+    let dest_arg = dest.to_string_lossy().into_owned();
+    let args = ["add-project", &dest_arg, "--clone", &url, "--json"];
+    let mut child = spawn_with_env(&home, &args, &[("GIT_ALLOW_PROTOCOL", OsStr::new("ext"))]);
+    let helper = wait_for_pid(&pid_file);
+    let cli = child.id();
+    child.kill().expect("SIGKILL the CLI");
+    child.wait().expect("reap the CLI");
+
+    let staging = entries(&dest);
+    assert_eq!(staging.len(), 2, "{staging:?}");
+    assert!(
+        staging[0].starts_with(&format!(".clone-{host}-{cli}-")),
+        "{staging:?} isn't named for host {host} and pid {cli}"
+    );
+    assert_eq!(staging[1], format!("{}.lock", staging[0]));
+    assert!(
+        lock_is_held(&dest.join(&staging[1])),
+        "git let go of the lock"
+    );
+
+    let clone = ["add-project", &dest_arg, "--clone", &origin, "--json"];
+    let run = home.run(&home.dir, &clone);
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "DestinationNotEmpty");
+    assert_eq!(
+        run.envelope()["error"]["message"],
+        format!(
+            "the destination folder is not empty: {dest_arg} (a clone's staging is in the way: \
+             {}; remove it if no clone is running)",
+            staging.join(", ")
+        )
+    );
+    assert_eq!(entries(&dest), staging);
+
+    // SAFETY: the transport helper this test's script started.
+    unsafe { libc::kill(helper, libc::SIGKILL) };
+    eventually("git kept the lock after its transport died", || {
+        !lock_is_held(&dest.join(&staging[1]))
+    });
+    let run = home.run(&home.dir, &clone);
+    run.assert_code(0);
+    let log = clone_log(&run.stderr);
+    assert_eq!(
+        log[0],
+        format!("Removing staging a crashed clone left: {}", staging[0])
+    );
+    assert_eq!(entries(&dest), [".git"]);
+}
+
 // --- delete-project ---
 
 /// The digest of the teardown script `project_with_workroom` writes, as `workroom trust` records
@@ -3438,6 +3958,92 @@ fn delete_project_reports_an_unreadable_config() {
     assert_eq!(config_text(&home), "{bad");
 }
 
+/// `--with-workrooms` stops at a workroom git has no worktree for (`WorkspaceNotFound`) and at one
+/// git won't remove (`VCSCommandFailed`, here a locked worktree), keeping the project registered
+/// for a retry; a config folder it can't write to is `ConfigWriteFailed`.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn delete_project_reports_a_missing_worktree_a_failed_git_and_an_unwritable_config() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new("delete-project-failures");
+    let project = home.repo("src/app");
+    let project_arg = project.to_string_lossy().into_owned();
+    let delete = [
+        "delete-project",
+        &project_arg,
+        "--json",
+        "--confirm",
+        &project_arg,
+        "--with-workrooms",
+    ];
+    let ghost =
+        format!("{{\"{project_arg}\": {{\"vcs\": \"git\", \"workrooms\": {{\"ghost\": {{}}}}}}}}");
+    home.write_config(&ghost);
+    let run = home.run(&home.dir, &delete);
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "WorkspaceNotFound");
+    assert_eq!(
+        run.envelope()["error"]["message"],
+        "git worktree does not exist: Git worktree 'ghost' does not exist"
+    );
+    assert_eq!(config_text(&home), ghost);
+
+    let home = Home::new("delete-project-failures");
+    let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+    let project_arg = project.to_string_lossy().into_owned();
+    let worktree = home.path("workrooms/calm-river");
+    home.git(&project, &["worktree", "lock", &worktree.to_string_lossy()]);
+    let before = config_text(&home);
+    let delete = [
+        "delete-project",
+        &project_arg,
+        "--json",
+        "--confirm",
+        &project_arg,
+        "--with-workrooms",
+        "--skip-teardown",
+    ];
+    let run = home.run(&home.dir, &delete);
+    run.assert_code(1).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "VCSCommandFailed");
+    assert_eq!(
+        run.envelope()["error"]["message"],
+        "version control command failed: exit status 128"
+    );
+    assert!(worktree.join(".git").exists(), "the locked worktree went");
+    assert_eq!(config_text(&home), before);
+
+    if skip_as_root(
+        "delete_project_reports_a_missing_worktree_a_failed_git_and_an_unwritable_config",
+    ) {
+        return;
+    }
+    let config_dir = home.path(".config/workroom");
+    std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+    let run = home.run(
+        &home.dir,
+        &[
+            "delete-project",
+            &project_arg,
+            "--json",
+            "--confirm",
+            &project_arg,
+        ],
+    );
+    std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    run.assert_code(6).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "ConfigWriteFailed");
+    let message = run.envelope()["error"]["message"].to_string();
+    assert!(
+        message.starts_with("\"failed to write config") && message.contains("permission denied"),
+        "{message}"
+    );
+    assert_eq!(config_text(&home), before);
+}
+
 // --- claim-provisioned ---
 
 /// What another build's config holds: the `dev` build made the project host of `/p/a` (in the
@@ -3774,6 +4380,9 @@ fn claim_provisioned_reports_a_config_it_cant_read_or_write() {
         CLAIM_SHARED
     );
 
+    if skip_as_root("claim_provisioned_reports_a_config_it_cant_read_or_write") {
+        return;
+    }
     home.write_config(CLAIM_MINE);
     let config_dir = home.path(".config/workroom");
     std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o555)).expect("chmod");
