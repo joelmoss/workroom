@@ -11,9 +11,11 @@ fn main() {
 }
 
 /// The daemon build identity, `WORKROOMD_DAEMON_BUILD` (#680): a hash of every source but the CLI's
-/// `commands` module, so a daemon is handed off only for a change that is the daemon's. See
-/// `build/daemon_build.rs` for what it reads. Fails the build when it cannot read them: a binary
-/// with no identity, or a wrong one, would hand off every host's daemon on every update, or none.
+/// `commands` module, and of the compiler, so a daemon is handed off only for a change that is the
+/// daemon's. See `build/daemon_build.rs` for what it reads. Fails the build when it cannot read
+/// them, or run the compiler: a binary with no identity, or a wrong one, would hand off every
+/// host's daemon on every update, or none. `WORKROOMD_COMPILER` is the compiler as it was hashed,
+/// for `tests/daemon_build.rs` to hash the tree as this did.
 fn daemon_build() {
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     // Only what changes the daemon's behaviour: `test-support` adds an API the tests call and
@@ -23,12 +25,23 @@ fn daemon_build() {
     } else {
         &[]
     };
-    let build = daemon_build::daemon_build(&workspace, features)
+    // Cargo names the compiler it builds with in `RUSTC`.
+    println!("cargo:rerun-if-env-changed=RUSTC");
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let report = std::process::Command::new(&rustc)
+        .arg("-vV")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .unwrap_or_else(|| panic!("cannot run {} -vV", rustc.to_string_lossy()));
+    let compiler = daemon_build::compiler(&String::from_utf8_lossy(&report.stdout));
+    let build = daemon_build::daemon_build(&workspace, features, &compiler)
         .unwrap_or_else(|e| panic!("cannot hash the daemon's sources: {e}"));
     for root in &build.roots {
         println!("cargo:rerun-if-changed={}", root.display());
     }
     println!("cargo:rustc-env=WORKROOMD_DAEMON_BUILD={}", build.hash);
+    println!("cargo:rustc-env=WORKROOMD_COMPILER={compiler}");
 }
 
 /// The daemon's build number, `WORKROOMD_BUILD`: the commit time of the checkout it is built from, in
