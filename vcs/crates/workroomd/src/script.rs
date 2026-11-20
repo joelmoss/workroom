@@ -147,7 +147,11 @@ impl Outcome {
 ///
 /// Only for a script that has passed the trust check: the rc can read the directory's local tool
 /// config, and no login shell is read for a script that isn't there.
-pub fn run(script: &Script, mut output: Output, fallback_note: impl FnOnce(&str) -> String) -> Outcome {
+pub fn run(
+    script: &Script,
+    mut output: Output,
+    fallback_note: impl FnOnce(&str) -> String,
+) -> Outcome {
     if std::fs::metadata(script.path)
         .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
     {
@@ -204,7 +208,11 @@ pub fn run_in(script: &Script, env: BTreeMap<String, String>, output: Output) ->
                 Ok(second) => command.stdout(writer).stderr(second),
                 Err(error) => return Outcome::NotStarted(error),
             };
-            Some(Drain { reader, sink, open: true })
+            Some(Drain {
+                reader,
+                sink,
+                open: true,
+            })
         }
     };
     let spawned = command.spawn();
@@ -223,7 +231,9 @@ pub fn run_in(script: &Script, env: BTreeMap<String, String>, output: Output) ->
             return Outcome::Exited(status);
         }
         let signalled = signals.received();
-        let timed_out = script.timeout.is_some_and(|timeout| start.elapsed() >= timeout);
+        let timed_out = script
+            .timeout
+            .is_some_and(|timeout| start.elapsed() >= timeout);
         if signalled.is_some() || timed_out {
             end(&mut child, script.kill_grace, sink.as_mut());
             return match signalled {
@@ -303,8 +313,7 @@ const CANCELLING: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGHUP, libc::SIGINT]
 static SIGNALLED: AtomicI32 = AtomicI32::new(0);
 
 /// How many runs are watching, and the dispositions the first replaced, which the last restores.
-static WATCHING: Mutex<(usize, Vec<(libc::c_int, libc::sigaction)>)> =
-    Mutex::new((0, Vec::new()));
+static WATCHING: Mutex<(usize, Vec<(libc::c_int, libc::sigaction)>)> = Mutex::new((0, Vec::new()));
 
 extern "C" fn record_signal(signal: libc::c_int) {
     SIGNALLED.store(signal, Ordering::SeqCst);
@@ -321,12 +330,13 @@ impl Signals {
         if watching.0 == 0 {
             SIGNALLED.store(0, Ordering::SeqCst);
             for signal in CANCELLING {
-                // SAFETY: zeroed is a valid sigaction; `sigaction` only reads and writes these two.
+                // SAFETY: an all-zero sigaction is valid: no handler, no flags, an empty mask.
                 let mut handler: libc::sigaction = unsafe { std::mem::zeroed() };
                 handler.sa_sigaction = record_signal as *const () as libc::sighandler_t;
                 handler.sa_flags = libc::SA_RESTART;
+                // SAFETY: as above.
                 let mut previous: libc::sigaction = unsafe { std::mem::zeroed() };
-                // SAFETY: as above; a null new action only reads the current one.
+                // SAFETY: `previous` is a valid sigaction to write; a null new action changes nothing.
                 unsafe { libc::sigaction(signal, std::ptr::null(), &mut previous) };
                 if previous.sa_sigaction == libc::SIG_IGN {
                     continue;

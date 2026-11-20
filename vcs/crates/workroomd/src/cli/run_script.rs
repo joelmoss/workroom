@@ -65,7 +65,11 @@ pub fn run(
     timeout: Duration,
 ) -> u8 {
     let request = Script::new(script, dir, extra, Some(timeout));
-    report(script, timeout, crate::script::run_in(&request, env, Output::Inherit))
+    report(
+        script,
+        timeout,
+        crate::script::run_in(&request, env, Output::Inherit),
+    )
 }
 
 /// Says on stderr why a script didn't run to its end, and returns the status to exit with.
