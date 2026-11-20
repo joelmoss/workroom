@@ -26,7 +26,8 @@ thiserror = { workspace = true }
 # deps as the VCS crates are.
 libc = "0.2"
 serde = { workspace = true }
-serde_json = "1"
+# `raw_value`, so the CLI's envelope keeps each payload field's own encoding (`commands::envelope`).
+serde_json = { version = "1", features = ["raw_value"] }
 # Filesystem change notification for the File service (FSEvents on macOS, inotify on Linux).
 notify = "8"
 # SHA-256 for the layout store's file names (`layout.rs`). ring compiles its own C and assembly,

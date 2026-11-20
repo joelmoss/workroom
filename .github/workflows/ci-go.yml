@@ -96,8 +96,9 @@ jobs:
         run: go test ./...
 
   # The CLI's black-box contract suite (#669), run against the Go CLI: the gate the Rust port must
-  # pass before the swap (ADR 0078). Its own job so `cli` doesn't wait on the Rust build. A plain
-  # `go build`, as `make contract-test` does, reports version `dev`, which the goldens hold anyway.
+  # pass before the swap (ADR 0078). Every test, the ported groups' too (`rust` runs those against
+  # the Rust binary). Its own job so `cli` doesn't wait on the Rust build. A plain `go build`
+  # reports version `dev`, which the goldens hold anyway.
   contract:
     if: inputs.run
     runs-on: ubuntu-latest
@@ -129,4 +130,4 @@ jobs:
       - name: Contract suite
         run: |
           WORKROOM_BIN="$RUNNER_TEMP/workroom" cargo test --manifest-path vcs/Cargo.toml \
-            -p workroom --test commands_contract -- --ignored
+            -p workroom --test commands_contract -- --include-ignored

@@ -25,7 +25,7 @@
 //! environment, for scripts and remote git) and `util`.
 
 pub mod cli;
-pub(crate) mod commands;
+pub mod commands;
 pub(crate) mod daemon;
 pub(crate) mod exec;
 pub(crate) mod host;
