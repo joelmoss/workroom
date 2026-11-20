@@ -23,10 +23,13 @@ use std::process::Command;
 /// The temporary HOME's stand-in in every golden.
 const GOLDEN_HOME: &str = "/Users/dev";
 
-/// The binary under test. Running these tests without one is a mistake, not a skip.
+/// The binary under test, by an absolute path, since each run starts in its own directory. Running
+/// these tests without one is a mistake, not a skip.
 fn binary() -> PathBuf {
     match std::env::var_os("WORKROOM_BIN") {
-        Some(path) if !path.is_empty() => PathBuf::from(path),
+        Some(path) if !path.is_empty() => PathBuf::from(&path)
+            .canonicalize()
+            .unwrap_or_else(|error| panic!("WORKROOM_BIN {path:?}: {error}")),
         _ => panic!("WORKROOM_BIN must name the workroom binary under test"),
     }
 }
@@ -168,8 +171,22 @@ impl Run {
         self
     }
 
-    /// stdout as the one JSON envelope the contract allows.
+    /// stdout as the one JSON envelope the contract allows. In `--json` mode stderr may carry only
+    /// NDJSON logs, one JSON object per line, so that is checked on the way.
     fn envelope(&self) -> serde_json::Value {
+        for line in self.stderr.lines() {
+            let log: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|error| {
+                panic!(
+                    "`{}` stderr line is not JSON ({error}): {line:?}",
+                    self.args
+                )
+            });
+            assert!(
+                log.is_object(),
+                "`{}` stderr line is not an object: {line}",
+                self.args
+            );
+        }
         assert!(
             self.stdout.ends_with('\n') && self.stdout.matches('\n').count() == 1,
             "`{}` must print one line of JSON, got {:?}",
@@ -227,29 +244,31 @@ fn golden_path(file: &str) -> PathBuf {
         .join(file)
 }
 
-/// Compares `got` with a golden this suite owns, or rewrites it under `WORKROOM_CONTRACT_UPDATE`.
-fn check_golden(file: &str, got: &str) {
+/// Who writes a golden: this suite, or Go's contract tests, whose goldens this suite only reads.
+#[derive(Clone, Copy, PartialEq)]
+enum Owner {
+    ThisSuite,
+    GoContractTests,
+}
+
+/// Compares `got` with `testdata/contracts/<file>`. A golden this suite owns is rewritten instead
+/// under `WORKROOM_CONTRACT_UPDATE=1`; one Go's tests own is rewritten only by `go test -update`.
+fn check_golden(owner: Owner, file: &str, got: &str) {
     let path = golden_path(file);
-    if std::env::var_os("WORKROOM_CONTRACT_UPDATE").is_some_and(|v| v == "1") {
+    let update = std::env::var_os("WORKROOM_CONTRACT_UPDATE").is_some_and(|v| v == "1");
+    if update && owner == Owner::ThisSuite {
         std::fs::write(&path, got).expect("write golden");
         return;
     }
     let want = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let how = match owner {
+        Owner::ThisSuite => "rerun with WORKROOM_CONTRACT_UPDATE=1",
+        Owner::GoContractTests => "rerun `go test ./cmd -run TestContract -update`",
+    };
     assert!(
         got == want,
-        "{file} no longer matches; a deliberate change reruns with WORKROOM_CONTRACT_UPDATE=1\n got: {got}\nwant: {want}"
-    );
-}
-
-/// Compares `got` with a golden Go's contract tests own; this suite never rewrites those.
-fn check_shared_golden(file: &str, got: &str) {
-    let path = golden_path(file);
-    let want = std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-    assert!(
-        got == want,
-        "{file} no longer matches (owned by cmd/contract_test.go)\n got: {got}\nwant: {want}"
+        "{file} no longer matches; a deliberate change should {how}\n got: {got}\nwant: {want}"
     );
 }
 
@@ -281,7 +300,11 @@ fn version_json_matches_the_golden() {
     run.assert_code(0).assert_quiet_stderr();
     let envelope = run.envelope();
     assert_eq!(envelope["cli_version"], envelope["version"]);
-    check_golden("version.json", &normalize_version(&run.stdout));
+    check_golden(
+        Owner::ThisSuite,
+        "version.json",
+        &normalize_version(&run.stdout),
+    );
 }
 
 // --- list ---
@@ -342,7 +365,8 @@ fn list_json_matches_the_golden() {
 
     let run = home.run(&home.dir, &["list", "--json", "--warnings=full"]);
     run.assert_code(0).assert_quiet_stderr();
-    check_shared_golden(
+    check_golden(
+        Owner::GoContractTests,
         "list.json",
         &home.normalize(&normalize_version(&run.stdout)),
     );
@@ -434,6 +458,15 @@ fn list_json_reports_a_bad_flag_value_as_an_error_envelope() {
     assert_eq!(run.envelope()["command"], "list");
 }
 
+#[test]
+#[ignore = "needs WORKROOM_BIN"]
+fn list_json_reports_an_unknown_flag_as_an_error_envelope() {
+    let home = Home::new("list-unknown-flag");
+    let run = home.run(&home.dir, &["list", "--json", "--bogus"]);
+    run.assert_code(1).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "InternalError");
+}
+
 // --- config ---
 
 /// A write keeps every key the binary doesn't know and every value it doesn't interpret, the
@@ -451,16 +484,17 @@ fn config_write_keeps_unknown_keys_and_host_descriptors_byte_for_byte() {
     let run = home.run(&home.dir, &["base", "set", "--global", "main", "--json"]);
     run.assert_code(0).assert_quiet_stderr();
     assert_eq!(run.envelope()["ok"], true);
-
     let after = std::fs::read_to_string(home.config_path()).expect("read the written config");
-    check_golden("config-roundtrip-after.json", &after);
-}
 
-#[test]
-#[ignore = "needs WORKROOM_BIN"]
-fn list_json_reports_an_unknown_flag_as_an_error_envelope() {
-    let home = Home::new("list-unknown-flag");
-    let run = home.run(&home.dir, &["list", "--json", "--bogus"]);
-    run.assert_code(1).assert_quiet_stderr();
-    assert_eq!(run.error_kind(), "InternalError");
+    // First what the file says, so a port that loses a key hears that rather than a layout diff:
+    // the input with only the global base added.
+    let mut expected: serde_json::Value = serde_json::from_str(&before).expect("parse input");
+    expected["base_branch"] = "main".into();
+    let written: serde_json::Value = serde_json::from_str(&after).expect("parse written config");
+    assert_eq!(
+        written, expected,
+        "the write changed more than the global base"
+    );
+
+    check_golden(Owner::ThisSuite, "config-roundtrip-after.json", &after);
 }
