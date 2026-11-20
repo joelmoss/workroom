@@ -675,8 +675,9 @@ private struct AboutSettingsPane: View {
 }
 
 private struct AppearanceSettingsPane: View {
-  @Default(.theme) private var theme
-  @Default(.themeFamily) private var themeFamily
+  @Default(.appearance) private var appearance
+  @Default(.lightTheme) private var lightTheme
+  @Default(.darkTheme) private var darkTheme
   @Default(.diffViewMode) private var diffViewMode
   @Default(.loadRemoteAvatars) private var loadRemoteAvatars
   @Default(.dimUnfocusedPanes) private var dimUnfocusedPanes
@@ -684,22 +685,24 @@ private struct AppearanceSettingsPane: View {
   @State private var showThemePopover = false
 
   var body: some View {
+    let familySummary = ThemeCatalog.familySummary(light: lightTheme, dark: darkTheme)
     Form {
-      Picker("Appearance", selection: $theme) {
-        ForEach(ThemePreference.allCases, id: \.self) { pref in
-          Text(pref.label).tag(pref)
+      Picker("Appearance", selection: $appearance) {
+        ForEach(AppearanceMode.allCases, id: \.self) { mode in
+          Text(mode.label).tag(mode)
         }
       }
       .help("Match the system appearance, or force Light or Dark.")
 
-      // Theme family (issue #36): a family bundles a light + dark variant; the active one follows
-      // Appearance above. The button opens the swatch picker (also reachable via ⌘⇧K).
-      LabeledContent("Theme") {
+      // Theme family (issues #36, #733): choosing a family sets both the light theme and the dark
+      // theme; Appearance above decides which one shows. The row names the family the two themes
+      // match, or "Custom" with both names. The button opens the swatch picker (also ⌘⇧K).
+      LabeledContent("Theme family") {
         Button {
           showThemePopover = true
         } label: {
           HStack(spacing: 6) {
-            Text(themeFamily).lineLimit(1).truncationMode(.tail)
+            Text(familySummary).lineLimit(1).truncationMode(.tail)
             Image(systemName: "chevron.up.chevron.down").font(.caption2)
           }
           // Fixed width so the button (and the popover anchored to it) doesn't shift left/right as
@@ -710,7 +713,9 @@ private struct AppearanceSettingsPane: View {
           ThemePicker()
         }
       }
-      .help("Choose the color theme family (its light or dark variant follows Appearance).")
+      .help(
+        "\(familySummary). Choose a theme family to set both the light theme and the dark theme; "
+          + "Appearance decides which one shows.")
 
       // Diff viewer layout (issue #66): unified (default) or side-by-side. Applies to newly opened
       // diff tabs; a narrow diff pane falls back to unified regardless.

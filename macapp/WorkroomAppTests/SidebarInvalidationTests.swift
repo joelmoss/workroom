@@ -239,14 +239,14 @@ final class SidebarInvalidationTests: XCTestCase {
   /// A theme switch repaints an expanded terminal row's background: its subtree reads the theme
   /// from the environment, so the switch re-runs it although its `==` leaves the theme out.
   func testAThemeSwitchRepaintsAnExpandedTerminalRow() async throws {
-    let savedFamily = Defaults[.themeFamily]
-    defer { ThemeService.shared.applyFamily(savedFamily) }
-    ThemeService.shared.applyFamily(ThemeCatalog.defaultFamilyName)
+    let saved = (light: Defaults[.lightTheme], dark: Defaults[.darkTheme])
+    defer { ThemeService.shared.apply(light: saved.light, dark: saved.dark) }
+    ThemeService.shared.applyFamily(ThemeCatalog.defaultFamily)
     let original = ThemeService.shared.tokens.hover
     let other = try XCTUnwrap(
       ThemeCatalog.families.first { family in
-        ThemeService.shared.applyFamily(family.name)
-        defer { ThemeService.shared.applyFamily(ThemeCatalog.defaultFamilyName) }
+        ThemeService.shared.applyFamily(family)
+        defer { ThemeService.shared.applyFamily(ThemeCatalog.defaultFamily) }
         return ThemeService.shared.tokens.hover != original
       },
       "the catalog needs a family with another hover colour")
@@ -262,13 +262,13 @@ final class SidebarInvalidationTests: XCTestCase {
     let focused = try XCTUnwrap(f.store.terminals.focusedTab(for: f.a.rootTarget)?.id)
     XCTAssertEqual(SidebarRowPasses.terminalFills[focused], original)
 
-    ThemeService.shared.applyFamily(other.name)
+    ThemeService.shared.applyFamily(other)
     let switched = ThemeService.shared.tokens.hover
     try await render(f)
     settle(f.view, seconds: 2) { SidebarRowPasses.terminalFills[focused] == switched }
     XCTAssertEqual(SidebarRowPasses.terminalFills[focused], switched, "the row repaints")
 
-    ThemeService.shared.applyFamily(ThemeCatalog.defaultFamilyName)
+    ThemeService.shared.applyFamily(ThemeCatalog.defaultFamily)
     try await render(f)
     settle(f.view, seconds: 2) { SidebarRowPasses.terminalFills[focused] == original }
     XCTAssertEqual(

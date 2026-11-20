@@ -62,14 +62,20 @@ extension Defaults.Keys {
   /// Parent folder last used for each ssh destination, also supplies the recent hosts list.
   static let sshHostParents = Key<[String: String]>("sshHostParents", default: [:], suite: .app)
   /// Appearance: System (follows the OS) / Light / Dark. Stored as the bare raw string via
-  /// `ThemePreference: PreferRawRepresentable` (matching the old `@AppStorage` encoding).
-  static let theme = Key<ThemePreference>("themePreference", default: .system, suite: .app)
+  /// `AppearanceMode: PreferRawRepresentable`. Until #733 this was `themePreference`;
+  /// `ThemeService.upgradeThemeSettings` carries an old value across at launch.
+  static let appearance = Key<AppearanceMode>("appearance", default: .system, suite: .app)
 
-  /// The selected theme **family** name (issue #36). The family bundles a dark + light variant;
-  /// the active variant follows `theme`/the OS appearance. Defaults to the shipped `Workroom`
-  /// family so existing users get the Workroom look on upgrade. Resolved by `ThemeService`.
-  static let themeFamily = Key<String>(
-    "themeFamily", default: ThemeCatalog.defaultFamilyName, suite: .app)
+  /// The light theme's name: the theme used while the appearance is light (#733). Chosen apart from
+  /// the dark theme; choosing a theme family sets both. Resolved, with its own fallback to Workroom
+  /// Light, by `ThemeService.activeThemeName`. Replaces the single `themeFamily` setting, which
+  /// `ThemeService.upgradeThemeSettings` carries across at launch.
+  static let lightTheme = Key<String>(
+    "lightTheme", default: ThemeCatalog.defaultFamily.light, suite: .app)
+
+  /// The dark theme's name: the theme used while the appearance is dark (#733). See `lightTheme`.
+  static let darkTheme = Key<String>(
+    "darkTheme", default: ThemeCatalog.defaultFamily.dark, suite: .app)
 
   /// Copy a finished terminal selection to the pasteboard automatically (xterm/iTerm2 convention).
   static let copyOnSelect = Key<Bool>("copyOnSelect", default: true, suite: .app)

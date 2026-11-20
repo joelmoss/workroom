@@ -2,17 +2,24 @@ import Defaults
 import DesignSystem
 import SwiftUI
 
-/// Theme chooser (issue #36). A searchable list of **families**, each row a dual (light + dark)
-/// swatch — pick one and its variant follows the appearance. ↑/↓ apply families live; the selected
-/// one is scrolled into view on open. Both hosts are popovers: the toolbar's theme dropdown
-/// (`TrailingTitlebarBar`, ⌘⇧K) and the Settings row's swatch button.
+/// Theme chooser (issue #36). A searchable list of **theme families**, each row a dual (light +
+/// dark) swatch — pick one and it sets both the light theme and the dark theme (#733). ↑/↓ apply
+/// families live; the family the two themes match is scrolled into view on open. Both hosts are
+/// popovers: the toolbar's theme dropdown (`TrailingTitlebarBar`, ⌘⇧K) and the Settings row's
+/// swatch button.
 struct ThemePicker: View {
   /// The size this picker frames itself to; both popovers size themselves from the rendered frame.
   static let contentSize = CGSize(width: 300, height: 420)
 
   @Environment(\.themeTokens) private var tokens
   @Environment(\.dismiss) private var dismiss
-  @Default(.themeFamily) private var familyName
+  @Default(.lightTheme) private var lightTheme
+  @Default(.darkTheme) private var darkTheme
+
+  /// The family the light and dark themes match, or nil for a custom pair.
+  private var activeFamily: ThemeFamily? {
+    ThemeCatalog.family(light: lightTheme, dark: darkTheme)
+  }
 
   @State private var query = ""
   /// Index into `filteredFamilies` of the keyboard-highlighted row (↑/↓ move it, ⏎ applies).
@@ -31,13 +38,13 @@ struct ThemePicker: View {
   private func familyRow(_ family: ThemeFamily, highlighted: Bool = false) -> some View {
     FamilyRow(
       family: family,
-      isActive: family.name == familyName,
+      isActive: family == activeFamily,
       isHighlighted: highlighted,
       dark: ThemeService.themePreview(named: family.dark),
       light: ThemeService.themePreview(named: family.light)
     )
     .contentShape(Rectangle())
-    .onTapGesture { ThemeService.shared.applyFamily(family.name) }
+    .onTapGesture { ThemeService.shared.applyFamily(family) }
   }
 
   /// Move the highlight by `delta` (clamped) and apply that family live — ↑/↓ change the theme
@@ -45,7 +52,7 @@ struct ThemePicker: View {
   private func moveHighlight(_ delta: Int) {
     guard !filteredFamilies.isEmpty else { return }
     highlighted = min(max(highlighted + delta, 0), filteredFamilies.count - 1)
-    ThemeService.shared.applyFamily(filteredFamilies[highlighted].name)
+    ThemeService.shared.applyFamily(filteredFamilies[highlighted])
   }
 
   var body: some View {
@@ -79,7 +86,7 @@ struct ThemePicker: View {
         .onAppear {
           // Start the highlight on the selected family and scroll it into view — it replaces the
           // pinned row, so the current choice is always visible without a separate header.
-          let idx = filteredFamilies.firstIndex { $0.name == familyName } ?? 0
+          let idx = filteredFamilies.firstIndex { $0 == activeFamily } ?? 0
           highlighted = idx
           if filteredFamilies.indices.contains(idx) {
             proxy.scrollTo(filteredFamilies[idx].id, anchor: .center)

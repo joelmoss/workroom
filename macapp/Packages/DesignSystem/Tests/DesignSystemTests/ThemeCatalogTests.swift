@@ -109,6 +109,15 @@ final class ThemeCatalogTests: XCTestCase {
     XCTAssertEqual(ThemeCatalog.familyLabel(light: "Catppuccin Latte", dark: "Nord"), "Custom")
   }
 
+  /// What Settings shows for a pair: the family's name, or "Custom" with both theme names, light first.
+  func testAPairsSummaryNamesTheFamilyOrBothThemes() {
+    XCTAssertEqual(
+      ThemeCatalog.familySummary(light: "Catppuccin Latte", dark: "Catppuccin Mocha"), "Catppuccin")
+    XCTAssertEqual(
+      ThemeCatalog.familySummary(light: "Catppuccin Latte", dark: "Nord"),
+      "Custom: Catppuccin Latte / Nord")
+  }
+
   /// A family's pair swapped between the sides is not that family.
   func testASwappedPairIsCustom() {
     XCTAssertNil(ThemeCatalog.family(light: "Catppuccin Mocha", dark: "Catppuccin Latte"))

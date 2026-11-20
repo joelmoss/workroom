@@ -144,7 +144,7 @@ struct TrailingTitlebarBar: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var modals: ModalState
 
-  @Default(.theme) private var theme
+  @Default(.appearance) private var appearance
 
   /// The theme dropdown (issue #36), anchored to its own toolbar button.
   ///
@@ -178,12 +178,12 @@ struct TrailingTitlebarBar: View {
       }
 
       Button {
-        theme = theme.next
+        appearance = appearance.next
       } label: {
-        Image(systemName: theme.symbol)
+        Image(systemName: appearance.symbol)
       }
-      .help("Theme: \(theme.label) — click to switch to \(theme.next.label)")
-      .accessibilityLabel("Theme: \(theme.label)")
+      .help("Theme: \(appearance.label) — click to switch to \(appearance.next.label)")
+      .accessibilityLabel("Theme: \(appearance.label)")
       .accessibilityIdentifier("toolbar.appearance")
 
       // Theme (⌘⇧K) — a dropdown anchored here rather than a sheet or a window of its own, because

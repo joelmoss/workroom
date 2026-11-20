@@ -5,7 +5,7 @@ import Defaults
 /// sticks across projects and app restarts — not per-project, per the issue.
 ///
 /// Stored as the bare raw string ("merge"/"squash"/"rebase") via `PreferRawRepresentable`, matching
-/// the `DiffViewMode`/`ThemePreference` convention. The raw values are a stored-data contract —
+/// the `DiffViewMode`/`AppearanceMode` convention. The raw values are a stored-data contract —
 /// keep them byte-for-byte stable once shipped.
 enum PRMergeMethod: String, CaseIterable, Sendable, Defaults.Serializable,
   Defaults.PreferRawRepresentable

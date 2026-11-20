@@ -5,7 +5,7 @@ import Defaults
 /// - `.sideBySide` — old on the left, new on the right, lines aligned across the two columns.
 ///
 /// Persisted via `Defaults[.diffViewMode]`. Stored as the bare raw string ("unified"/"sideBySide")
-/// via `PreferRawRepresentable` — matching the `ThemePreference` convention. `DiffViewer` reads it at
+/// via `PreferRawRepresentable` — matching the `AppearanceMode` convention. `DiffViewer` reads it at
 /// view-construct time (a narrow pane additionally falls back to unified). UI tests pin it through
 /// `UITestFixture.applyFixtureDefaults` (`-WorkroomUITestDiffViewMode …`) rather than the raw key, so
 /// a launch never inherits the developer's Settings choice.

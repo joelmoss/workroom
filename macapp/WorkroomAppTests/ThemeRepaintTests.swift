@@ -17,20 +17,22 @@ import XCTest
 /// honest.
 @MainActor
 final class ThemeRepaintTests: XCTestCase {
-  private var savedFamily: String!
+  private var savedLight: String!
+  private var savedDark: String!
   private var savedSettingsPane: SettingsPane!
 
   override func setUp() async throws {
     try await super.setUp()
-    savedFamily = Defaults[.themeFamily]
+    savedLight = Defaults[.lightTheme]
+    savedDark = Defaults[.darkTheme]
     savedSettingsPane = Defaults[.settingsSelectedPane]
-    ThemeService.shared.applyFamily(ThemeCatalog.defaultFamilyName)
+    ThemeService.shared.applyFamily(ThemeCatalog.defaultFamily)
     Probe.passes = [:]
     Probe.background = [:]
   }
 
   override func tearDown() async throws {
-    ThemeService.shared.applyFamily(savedFamily)
+    ThemeService.shared.apply(light: savedLight, dark: savedDark)
     Defaults[.settingsSelectedPane] = savedSettingsPane
     try await super.tearDown()
   }
@@ -55,13 +57,15 @@ final class ThemeRepaintTests: XCTestCase {
     let isDark = ThemeService.isCurrentAppearanceDark()
     let other = try XCTUnwrap(
       ThemeCatalog.families
-        .filter { $0.name != Defaults[.themeFamily] }
+        .filter {
+          $0 != ThemeCatalog.family(light: Defaults[.lightTheme], dark: Defaults[.darkTheme])
+        }
         .max { lhs, rhs in
           Self.distance(before, Self.tokens(of: lhs, isDark: isDark))
             < Self.distance(before, Self.tokens(of: rhs, isDark: isDark))
         },
       "the catalog needs a second family to switch to")
-    ThemeService.shared.applyFamily(other.name)
+    ThemeService.shared.applyFamily(other)
     let after = ThemeService.shared.tokens
     XCTAssertFalse(
       Self.near(before.nsPanel, after.nsPanel), "the two families must differ in panel colour")

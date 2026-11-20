@@ -21,7 +21,8 @@ import XCTest
 /// and not a window — so it is queried through the app's descendants, and `app.sheets` staying empty is
 /// part of what the dropdown test asserts.
 ///
-/// The starting family comes from `-WorkroomUITestThemeFamily`, mirrored into `Defaults` by
+/// The starting light and dark themes come from `-WorkroomUITestLightTheme` and
+/// `-WorkroomUITestDarkTheme`, mirrored into `Defaults` by
 /// `UITestFixture.applyFixtureDefaults`. That is app-side on purpose: `Defaults` is not isolated by a
 /// throwaway `$HOME`, so a runner-side save/restore would be writing the developer's real preference.
 ///
@@ -64,7 +65,8 @@ final class ThemePickerUITests: XCTestCase {
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     // Start somewhere that is NOT the family under test, so a passing assertion can't be the
     // fixture's starting state.
-    app.launchArguments += ["-WorkroomUITestThemeFamily", "Workroom"]
+    app.launchArguments += ["-WorkroomUITestLightTheme", "Workroom Light"]
+    app.launchArguments += ["-WorkroomUITestDarkTheme", "Workroom"]
     app.launchArguments += ["-WorkroomUITestGhosttyConfigFile", generatedConfURL.path]
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()

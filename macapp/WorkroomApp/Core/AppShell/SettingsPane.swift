@@ -95,7 +95,7 @@ final class SettingsRoute {
 ///
 /// Persisted via `Defaults[.settingsSelectedPane]` so the last-viewed pane reopens (macOS System
 /// Settings behaviour). Stored as the bare raw string ("general"/…) via `PreferRawRepresentable` —
-/// matching the `DiffViewMode`/`ThemePreference` convention. A stored raw string that no longer
+/// matching the `DiffViewMode`/`AppearanceMode` convention. A stored raw string that no longer
 /// matches a case decodes to `nil`, and `Defaults` falls back to the key's default (`.general`), so
 /// a rename or corrupt value degrades gracefully rather than crashing.
 ///

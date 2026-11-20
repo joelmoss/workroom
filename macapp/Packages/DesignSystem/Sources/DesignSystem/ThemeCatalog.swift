@@ -187,6 +187,11 @@ public enum ThemeCatalog {
     family(light: light, dark: dark)?.name ?? customFamilyLabel
   }
 
+  /// The pair as Settings shows it: the family's name, or "Custom" with both theme names, light first.
+  public static func familySummary(light: String, dark: String) -> String {
+    family(light: light, dark: dark)?.name ?? "\(customFamilyLabel): \(light) / \(dark)"
+  }
+
   /// Every theme the app bundles, each listed once with its side fixed. Each name is a file in
   /// `Resources/ghostty/themes`; `ThemeServiceTests` pins the list to the files as exact set equality
   /// and checks every side against the file's background.

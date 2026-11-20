@@ -17,18 +17,21 @@ import XCTest
 /// not an arbitrarily tall test window.
 @MainActor
 final class ThemePickerInvalidationTests: XCTestCase {
-  private var savedFamily: String!
-  private var savedAppearance: ThemePreference!
+  private var savedLight: String!
+  private var savedDark: String!
+  private var savedAppearance: AppearanceMode!
 
   override func setUp() async throws {
     try await super.setUp()
-    savedFamily = Defaults[.themeFamily]
-    savedAppearance = Defaults[.theme]
+    savedLight = Defaults[.lightTheme]
+    savedDark = Defaults[.darkTheme]
+    savedAppearance = Defaults[.appearance]
   }
 
   override func tearDown() async throws {
-    Defaults[.themeFamily] = savedFamily
-    Defaults[.theme] = savedAppearance
+    Defaults[.lightTheme] = savedLight
+    Defaults[.darkTheme] = savedDark
+    Defaults[.appearance] = savedAppearance
     try await super.tearDown()
   }
 
@@ -53,7 +56,9 @@ final class ThemePickerInvalidationTests: XCTestCase {
   /// moved into `applyActiveTheme` itself (WORKROOM-3R) and now runs once per apply regardless, which
   /// is the same single reload a real picker keystroke pays.
   func testArrowKeyReapplyRendersUnderTimeCeiling() throws {
-    Defaults[.themeFamily] = "Workroom"
+    let workroom = ThemeCatalog.defaultFamily
+    Defaults[.lightTheme] = workroom.light
+    Defaults[.darkTheme] = workroom.dark
     let (window, view) = host()
     defer { window.close() }
     view.layoutSubtreeIfNeeded()
@@ -61,14 +66,14 @@ final class ThemePickerInvalidationTests: XCTestCase {
       FamilyRow.bodyPasses, 0, "the fixture must actually render family rows")
 
     let otherFamily = try XCTUnwrap(
-      ThemeCatalog.families.first { $0.name != "Workroom" }?.name,
+      ThemeCatalog.families.first { $0.name != "Workroom" },
       "fixture needs a second family to switch to")
 
     // The fastest of several switches, back and forth, not one: the time is wall-clock, so a
     // machine busy with other work stretches any single switch past the ceiling (#311). A real
     // regression is in every switch, so the fastest still shows it.
     var samples: [(elapsed: TimeInterval, passes: Int)] = []
-    for family in [otherFamily, "Workroom", otherFamily, "Workroom", otherFamily] {
+    for family in [otherFamily, workroom, otherFamily, workroom, otherFamily] {
       FamilyRow.bodyPasses = 0
       let started = Date()
       ThemeService.shared.applyFamily(family)
@@ -78,7 +83,7 @@ final class ThemePickerInvalidationTests: XCTestCase {
       samples.append((Date().timeIntervalSince(started), FamilyRow.bodyPasses))
       XCTAssertGreaterThan(
         FamilyRow.bodyPasses, 0,
-        "switching to \(family) did not re-render the rows that read tokens within 5s")
+        "switching to \(family.name) did not re-render the rows that read tokens within 5s")
     }
     let fastest = try XCTUnwrap(samples.min { $0.elapsed < $1.elapsed })
     let all = samples.map { String(format: "%.3f", $0.elapsed) }.joined(separator: ", ")
