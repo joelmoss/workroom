@@ -39,12 +39,12 @@ mod include_archive;
 mod kind;
 mod list;
 mod log;
-mod script;
 mod sessions;
 mod start;
 mod teardown;
 mod terminal_api;
 mod trust;
+mod trusted_script;
 mod update;
 mod version;
 

@@ -2,6 +2,8 @@
 //! against this Mac's approvals as Go's `internal/workroom` judges them (#363): Workroom runs one
 //! only once its exact bytes are approved, by their SHA-256, in config's `trusted_scripts`. A
 //! root copy git ignores needs no approval, since no pull ever brought it.
+//!
+//! This is only the judging: running a script is [`crate::script`]'s (#676).
 
 use std::io::Read;
 use std::path::Path;
