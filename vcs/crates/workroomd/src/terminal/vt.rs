@@ -741,6 +741,13 @@ impl ShadowTerminal {
         self.terminal.continuation().len()
     }
 
+    /// The parser continuation: the bytes that put a fresh parser where this one is, such as the
+    /// `ESC [ 3` of a colour still arriving. Empty at ground, and for a sequence too long to keep
+    /// (the cap `at_ground` notes).
+    pub fn continuation(&self) -> Vec<u8> {
+        self.terminal.continuation()
+    }
+
     /// A selection from the `rows_back`th history row from the bottom to the active area's last
     /// cell: the screen and the newest `rows_back` history rows. `rows_back` 0 is the screen alone.
     /// None when a point cannot be resolved.

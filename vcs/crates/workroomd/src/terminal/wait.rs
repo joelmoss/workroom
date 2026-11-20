@@ -474,9 +474,17 @@ pub const REGEX_SIZE_LIMIT: usize = 1 << 20;
 pub struct Matcher {
     regex: regex::bytes::Regex,
     strip: Stripper,
-    /// The stripped output since the wait started, at most `WINDOW` bytes once a search fails.
+    /// One byte that says what comes before the text, then the stripped output since the wait
+    /// started, at most `WINDOW` bytes of it once a search fails. The byte is `\n` when the text
+    /// starts a line, so `^` matches there, and `NOT_A_LINE_START` when it starts mid-line (after
+    /// a resync, or a trim with no line start to cut at), where `^` must not. Searches start after
+    /// it, so it is never in a match.
     window: Vec<u8>,
 }
+
+/// What `Matcher::window` starts with when its text starts mid-line: neither `\n` nor `\r`, the
+/// only bytes after which `^` matches, and never in stripped output, which keeps no other control.
+const NOT_A_LINE_START: u8 = 0;
 
 impl Matcher {
     pub fn new(pattern: &str) -> Result<Matcher, regex::Error> {
@@ -489,7 +497,7 @@ impl Matcher {
         Ok(Matcher {
             regex,
             strip: Stripper::default(),
-            window: Vec::new(),
+            window: vec![b'\n'],
         })
     }
 
@@ -504,18 +512,35 @@ impl Matcher {
     }
 
     /// Takes text that is already plain (the screen, for `--include-screen`): nothing in it is an
-    /// escape sequence, and the stream's own parse state is left as it was.
+    /// escape sequence, and the stream's own parse state is left as it was. The screen's text
+    /// starts at its top row's start, a line's.
     pub fn feed_plain(&mut self, text: &[u8]) -> Option<Vec<u8>> {
+        if self.window.len() == 1 {
+            self.window[0] = b'\n';
+        }
         self.window.extend_from_slice(text);
         self.search()
     }
 
-    /// The output from here on starts somewhere unknown, perhaps inside a sequence: a wait that
-    /// starts while the session's parser is mid-sequence (a title, a kitty image's base64), whose
-    /// rest is no text. Bytes are dropped until one that ends or starts a sequence or a line:
-    /// ESC, BEL, CAN, SUB or `\n`, which is kept, as a line's end.
-    pub fn resync(&mut self) {
-        self.strip = Stripper::Resync;
+    /// The output from here on starts inside a sequence: a wait that starts while the session's
+    /// parser is mid-sequence (a colour, a title, a kitty image's base64), whose rest is no text.
+    /// `open` is the sequence so far, as the parser continuation has it, so the stripper picks up
+    /// where the parser is: the rest of a CSI ends at its final byte, of a string at its BEL or ST.
+    /// With none (a string too long for the parser to keep), bytes are dropped until one that ends
+    /// or starts a sequence or a line: ESC, BEL, CAN, SUB or `\n`, which is kept, as a line's end.
+    /// One that is no sequence (a character's first bytes) leaves the stripper at ground, where
+    /// the character's rest is text. Either way the text after starts mid-line, as far as is
+    /// known, so `^` doesn't match there.
+    pub fn resync(&mut self, open: &[u8]) {
+        self.strip = Stripper::Ground;
+        if open.is_empty() {
+            self.strip = Stripper::Resync;
+        } else if open.first() == Some(&ESC) {
+            self.strip.strip(open, &mut Vec::new());
+        }
+        if self.window.len() == 1 {
+            self.window[0] = NOT_A_LINE_START;
+        }
     }
 
     /// Takes what the reader queued: the screen first, then the output, a chunk at a time, each
@@ -539,7 +564,8 @@ impl Matcher {
     }
 
     fn search(&mut self) -> Option<Vec<u8>> {
-        if let Some(found) = self.regex.find(&self.window) {
+        // From after the byte that says what came before, which `^` looks at but no match takes.
+        if let Some(found) = self.regex.find_at(&self.window, 1) {
             return Some(found.as_bytes().to_vec());
         }
         self.trim();
@@ -547,21 +573,27 @@ impl Matcher {
     }
 
     /// Drops the oldest text past `WINDOW`, from the start of a line when one begins in the last
-    /// `WINDOW` bytes, so `^` still means a line's start.
+    /// `WINDOW` bytes, so `^` still means a line's start; cut anywhere else, the text left starts
+    /// mid-line, and its first byte says so.
     fn trim(&mut self) {
-        let Some(excess) = self.window.len().checked_sub(WINDOW) else {
+        let Some(excess) = (self.window.len() - 1).checked_sub(WINDOW) else {
             return;
         };
-        let cut = self.window[excess..]
+        let from = 1 + excess;
+        let cut = self.window[from..]
             .iter()
             .position(|byte| *byte == b'\n')
-            .map_or(excess, |at| excess + at + 1);
-        self.window.drain(..cut);
+            .map_or(from, |at| from + at + 1);
+        self.window[0] = match self.window[cut - 1] {
+            line_end @ (b'\n' | b'\r') => line_end,
+            _ => NOT_A_LINE_START,
+        };
+        self.window.drain(1..cut);
     }
 
     #[cfg(test)]
     fn window_len(&self) -> usize {
-        self.window.len()
+        self.window.len() - 1
     }
 }
 

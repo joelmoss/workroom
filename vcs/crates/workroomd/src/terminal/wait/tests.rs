@@ -278,10 +278,11 @@ fn a_lagged_queue_keeps_only_what_came_before_the_gap() {
     assert_eq!(matched, QUEUE, "every chunk is counted as it is matched");
 }
 
-/// What `pattern` first matches in `chunks`, for a wait that joined the stream mid-sequence.
-fn first_match_resynced(pattern: &str, chunks: &[&[u8]]) -> Option<String> {
+/// What `pattern` first matches in `chunks`, for a wait that joined the stream inside `open`, the
+/// sequence so far as the parser continuation has it (empty: one too long for it to keep).
+fn first_match_resynced(pattern: &str, open: &[u8], chunks: &[&[u8]]) -> Option<String> {
     let mut matcher = Matcher::new(pattern).expect("a valid pattern");
-    matcher.resync();
+    matcher.resync(open);
     chunks
         .iter()
         .find_map(|chunk| matcher.feed(chunk))
@@ -294,21 +295,80 @@ fn first_match_resynced(pattern: &str, chunks: &[&[u8]]) -> Option<String> {
 fn a_wait_joining_mid_sequence_drops_the_rest_of_it() {
     // The rest of `ESC ] 2 ; build `, then the screen's own text.
     let title: &[&[u8]] = &[b"NOPE watch", b"\x07DONE\r\n"];
-    assert_eq!(
-        first_match_resynced("NOPE|DONE", title).as_deref(),
-        Some("DONE")
-    );
+    for open in [&b"\x1b]2;build "[..], b""] {
+        assert_eq!(
+            first_match_resynced("NOPE|DONE", open, title).as_deref(),
+            Some("DONE"),
+            "{open:?}"
+        );
+    }
     // Without knowing, the title's rest reads as text.
     assert_eq!(first_match("NOPE|DONE", title).as_deref(), Some("NOPE"));
     // The rest of `ESC _ G a=T,f=100;` and its base64, ended by ST.
     let kitty: &[&[u8]] = &[b"Tk9QRQ==NOPE", b"\x1b\\DONE\r\n"];
-    assert_eq!(
-        first_match_resynced("NOPE|DONE", kitty).as_deref(),
-        Some("DONE")
-    );
+    for open in [&b"\x1b_Ga=T,f=100;"[..], b""] {
+        assert_eq!(
+            first_match_resynced("NOPE|DONE", open, kitty).as_deref(),
+            Some("DONE"),
+            "{open:?}"
+        );
+    }
     // A line's end is known ground, and kept: `^` still anchors the next line.
     assert_eq!(
-        first_match_resynced("^DONE$", &[b"le NOPE\r\nDONE\r\n"]).as_deref(),
+        first_match_resynced("^DONE$", b"", &[b"le NOPE\r\nDONE\r\n"]).as_deref(),
         Some("DONE")
     );
+}
+
+/// Inside a CSI, the stripper picks up where the parser is, and the text after the CSI's final
+/// byte is text: a colour cut at `ESC [ 3` still lets `ready` after it match. Where the line
+/// started is unknown, so `^` doesn't match at the text's start, and does from the next line.
+#[test]
+fn a_wait_joining_inside_a_csi_keeps_the_text_after_it() {
+    assert_eq!(
+        first_match_resynced("ready", b"\x1b[3", &[b"2mready\x1b[0m\r\n"]).as_deref(),
+        Some("ready")
+    );
+    for open in [&b"\x1b[3"[..], b""] {
+        let rest: &[u8] = if open.is_empty() { b"\x07" } else { b"2m" };
+        assert_eq!(
+            first_match_resynced("^foo", open, &[rest, b"foo\r\n"]),
+            None,
+            "{open:?}: mid-line"
+        );
+        assert_eq!(
+            first_match_resynced("^bar", open, &[rest, b"foo\r\nbar\r\n"]).as_deref(),
+            Some("bar"),
+            "{open:?}: the next line"
+        );
+    }
+    // A character's first bytes are no sequence: its rest is text.
+    assert_eq!(
+        first_match_resynced(
+            "✓ done",
+            "✓".as_bytes().get(..1).unwrap(),
+            &["✓ done".as_bytes()]
+        )
+        .as_deref(),
+        Some("✓ done")
+    );
+}
+
+/// A window trimmed where no line starts keeps text that starts mid-line, where `^` doesn't
+/// match; one trimmed at a line's start keeps `^` there.
+#[test]
+fn a_window_trimmed_mid_line_does_not_start_a_line() {
+    let mut matcher = Matcher::new("^y").unwrap();
+    let mut line = vec![b'x'; WINDOW];
+    line.extend(std::iter::repeat_n(b'y', WINDOW));
+    assert_eq!(matcher.feed(&line), None);
+    assert_eq!(matcher.window_len(), WINDOW, "trimmed to the y's");
+    assert_eq!(matcher.feed(b"y"), None, "the y's start mid-line");
+
+    let mut matcher = Matcher::new("^yz").unwrap();
+    let mut lines = vec![b'x'; WINDOW];
+    lines.extend_from_slice(b"\ny");
+    assert_eq!(matcher.feed(&lines), None);
+    assert_eq!(matcher.window_len(), 1, "trimmed to the line's start");
+    assert_eq!(matcher.feed(b"z").as_deref(), Some(&b"yz"[..]));
 }

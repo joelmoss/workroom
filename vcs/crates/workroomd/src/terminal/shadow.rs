@@ -269,13 +269,13 @@ impl Shadow {
             .is_some_and(|terminal| terminal.at_ground())
     }
 
-    /// Whether the output so far ends inside a sequence, so the next bytes are its rest, not text:
-    /// for a regex wait starting now (#690). Not `!at_ground()`: with no terminal, nothing is known
-    /// to be mid-sequence.
-    pub fn mid_sequence(&mut self) -> bool {
-        self.terminal
-            .as_mut()
-            .is_some_and(|terminal| !terminal.at_ground())
+    /// When the output so far ends inside a sequence, so the next bytes are its rest, not text:
+    /// the sequence's start, as the parser continuation has it, for a regex wait starting now to
+    /// pick up where it is (#690); empty when the parser keeps none (a string too long to keep).
+    /// `None` at ground, and with no terminal, where nothing is known to be mid-sequence.
+    pub fn open_sequence(&mut self) -> Option<Vec<u8>> {
+        let terminal = self.terminal.as_mut()?;
+        (!terminal.at_ground()).then(|| terminal.continuation())
     }
 
     pub fn visible_images(&self) -> Vec<ImageRef> {
@@ -518,8 +518,8 @@ impl Shadow {
         false
     }
     /// No parser, so a regex wait starts at ground, as the stream most often is.
-    pub fn mid_sequence(&mut self) -> bool {
-        false
+    pub fn open_sequence(&mut self) -> Option<Vec<u8>> {
+        None
     }
     pub fn visible_images(&self) -> Vec<ImageRef> {
         Vec::new()

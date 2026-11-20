@@ -458,9 +458,9 @@ fn register(
         }
         // Joined mid-sequence, the next bytes are its rest, never text.
         if let Condition::Output(matcher) = &mut condition
-            && shadow.mid_sequence()
+            && let Some(open) = shadow.open_sequence()
         {
-            matcher.resync();
+            matcher.resync(&open);
         }
         let waiter = Arc::new(Waiter::new(condition, shadow.seen()));
         if let Some(at) = marks_by
