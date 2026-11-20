@@ -3,7 +3,8 @@
 //! envelope with the API's result fields; without, a line saying what happened. A wait that runs
 //! out of time exits 8, `WaitTimeout`, and a run that exits with another code than
 //! `--exit-code`'s exits 3, `ExitCodeMismatch`, as soon as it exits, the code it exited with in
-//! the error's `details.exit_code`.
+//! the error's `details.exit_code`. A wait the daemon's hand-off cuts across goes on in the new
+//! program, or is `WaitInterrupted` for an event (`terminal_api::stream`).
 
 use std::time::Duration;
 

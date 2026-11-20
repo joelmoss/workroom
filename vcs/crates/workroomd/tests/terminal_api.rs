@@ -2211,3 +2211,158 @@ fn wait_takes_one_target_and_one_condition() {
     assert_eq!(run.code, 7, "{}", run.stdout);
     assert_eq!(run.envelope()["error"]["kind"], "DaemonUnreachable");
 }
+
+/// `workroom <args>` against `socket`, started now and left running: [`finished`] collects it.
+fn started(socket: &Path, args: &[&str]) -> std::process::Child {
+    Command::new(common::daemon_binary())
+        .args(args)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", std::env::temp_dir())
+        .env("WORKROOM_DAEMON", socket)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run workroom")
+}
+
+fn finished(child: std::process::Child) -> Run {
+    let output = child.wait_with_output().expect("run workroom");
+    Run {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        code: output.status.code().unwrap_or(-1),
+    }
+}
+
+/// A hand-off replaces the daemon's program in place and closes every client connection with the
+/// old one, a waiting `workroom wait`'s included. The wait goes on: one for a state is sent again
+/// to the new program, with what is left of its timeout, and is met there; one for an event is
+/// `WaitInterrupted` (3), since what came between the two programs may have gone unseen. A daemon
+/// that goes away for good is 7, as ever. Commands' ends are seen across it too: the shell's marks
+/// came with it.
+#[test]
+fn a_wait_across_a_hand_off_goes_on_in_the_new_program() {
+    if !has_terminal_state() {
+        eprintln!("skipped: a hand-off needs a daemon built with terminal-state");
+        return;
+    }
+    let workspace = Workspace::new("api-wait-handoff");
+    let socket = workspace.socket();
+    let daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    let mut output = common::ClientReader::new(&mut shell);
+    type_line(&mut shell, r#"printf '\033]133;A\007'; echo "MARKS""-ON""#);
+    assert!(
+        output
+            .read_until("MARKS-ON\r\n", Duration::from_secs(20))
+            .contains("MARKS-ON\r\n"),
+        "fixture: the marks never printed"
+    );
+    // Blocked, and a command ended, once `go` exists: after the hand-off.
+    let go = workspace.dir.join("go");
+    type_line(
+        &mut shell,
+        &format!(
+            r#"sh -c 'while [ ! -e "{go}" ]; do sleep 0.05; done; printf "\033]7501;state=blocked:app=claude\033\\"; printf "\033]133;C\007\033]133;D;6\007"; sleep 30'"#,
+            go = go.display()
+        ),
+    );
+    drop(output);
+    drop(shell);
+
+    let status = started(
+        &socket,
+        &[
+            "wait",
+            "server",
+            "--status",
+            "blocked",
+            "--timeout",
+            "60s",
+            "--json",
+        ],
+    );
+    let regex = started(
+        &socket,
+        &[
+            "wait",
+            "server",
+            "--regex",
+            "NEVER",
+            "--timeout",
+            "60s",
+            "--json",
+        ],
+    );
+    // Time for both to reach the daemon before it is handed off: each says so if it didn't.
+    std::thread::sleep(Duration::from_secs(3));
+    let next = workspace.dir.join("next-workroom");
+    common::copy_daemon_binary(&next);
+    let handed = Command::new(common::daemon_binary())
+        .args(["hand-off", "--socket"])
+        .arg(&socket)
+        .arg("--binary")
+        .arg(&next)
+        .arg("--force")
+        .output()
+        .expect("hand-off");
+    assert_eq!(
+        String::from_utf8_lossy(&handed.stdout).trim(),
+        "handed off",
+        "{}",
+        String::from_utf8_lossy(&handed.stderr)
+    );
+    // In the new program, before anything happens: a session older than the marks' grace whose
+    // marks came across with it.
+    let command = started(
+        &socket,
+        &[
+            "wait",
+            "server",
+            "--command-finished",
+            "--timeout",
+            "60s",
+            "--json",
+        ],
+    );
+    std::thread::sleep(Duration::from_secs(3));
+    std::fs::write(&go, b"").expect("go");
+
+    let status = finished(status);
+    assert!(
+        status.stderr.contains("handed off during the wait"),
+        "the wait never spanned the hand-off (it had 3 s to start): {}",
+        status.stderr
+    );
+    assert_eq!(status.code, 0, "{} {}", status.stdout, status.stderr);
+    assert_eq!(status.envelope()["status"], "blocked", "{}", status.stdout);
+    let regex = finished(regex);
+    assert_eq!(
+        (regex.code, regex.envelope()["error"]["kind"].clone()),
+        (3, json!("WaitInterrupted")),
+        "{} {}",
+        regex.stdout,
+        regex.stderr
+    );
+    let command = finished(command);
+    assert_eq!(command.code, 0, "{} {}", command.stdout, command.stderr);
+    assert_eq!(command.envelope()["exit_code"], 6, "{}", command.stdout);
+
+    // A daemon gone for good: nobody is listening to send the wait to again.
+    let gone = started(
+        &socket,
+        &["wait", "server", "--ended", "--timeout", "60s", "--json"],
+    );
+    std::thread::sleep(Duration::from_secs(3));
+    drop(daemon);
+    let gone = finished(gone);
+    assert_eq!(
+        (gone.code, gone.envelope()["error"]["kind"].clone()),
+        (7, json!("DaemonUnreachable")),
+        "{} {}",
+        gone.stdout,
+        gone.stderr
+    );
+}

@@ -10,7 +10,7 @@
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -58,27 +58,34 @@ pub(super) fn reply(context: &Context, method: &str, params: Value) -> Result<Re
 /// The read timeout is for each read, not the whole stream: a long one stays alive while its
 /// replies keep coming, and only a daemon silent for `TIMEOUT` is unreachable. A wait's is its
 /// own ([`answer_timeout`]).
+///
+/// A wait the daemon hangs up on before answering is a hand-off's doing, when a daemon answers
+/// on the same socket at once: the program was replaced in place, and every client connection
+/// closed with the old one ([`resumed`]). Then a wait for a state (`status`, `run`, `ended`) is
+/// sent again to the new program, with what is left of its timeout, and a wait for an event
+/// (`regex`, `command_finished`) is `WaitInterrupted` (3). With no daemon there it is 7, as ever.
 pub(super) fn stream(
     context: &Context,
     method: &str,
     params: Value,
     mut each: impl FnMut(Replied) -> bool,
 ) -> Result<(), CliError> {
-    let answer = answer_timeout(method, &params);
+    let encode = |params: &Value| {
+        let mut request = json!({"method": method, "params": params});
+        if let Some(pane) = context.env(PANE_VARIABLE).filter(|pane| !pane.is_empty()) {
+            request["caller"] = Value::String(pane);
+        }
+        serde_json::to_vec(&request).expect("a request serializes")
+    };
     // A request too big to send is bad input whether or not a daemon would take it, so it is
     // refused (2) before one is looked for.
-    let mut request = json!({"method": method, "params": params});
-    if let Some(pane) = context.env(PANE_VARIABLE).filter(|pane| !pane.is_empty()) {
-        request["caller"] = Value::String(pane);
-    }
-    let request = serde_json::to_vec(&request).expect("a request serializes");
+    let mut request = encode(&params);
     if request.len() > MAX_ENVELOPE_PAYLOAD {
         return Err(CliError::new(
             Kind::TooLarge,
             format!("the request is over {MAX_ENVELOPE_PAYLOAD} bytes"),
         ));
     }
-    let unreachable = |message: String| CliError::new(Kind::DaemonUnreachable, message);
     let Some(socket) = context
         .env(DAEMON_VARIABLE)
         .filter(|path| !path.is_empty())
@@ -89,7 +96,84 @@ pub(super) fn stream(
              under a Workroom daemon (every Workroom pane does, and sets {DAEMON_VARIABLE})"
         )));
     };
-    let mut stream = UnixStream::connect(&socket)
+    let started = Instant::now();
+    let mut answer = answer_timeout(method, &params);
+    let mut stream = connect(&socket)?;
+    let mut resumes = 0;
+    'connection: loop {
+        stream
+            .write_all(&Envelope::new(Service::TerminalApi, STREAM, request.clone()).encode())
+            .map_err(|error| unreachable(format!("the daemon on {socket} hung up: {error}")))?;
+        // A timeout the socket can't hold (macOS refuses one past its bounds) is none, rather
+        // than leaving `TIMEOUT` to cut a long wait short.
+        if stream.set_read_timeout(answer).is_err() {
+            let _ = stream.set_read_timeout(None);
+        }
+        let mut decoder = EnvelopeDecoder::new();
+        let mut answered = false;
+        loop {
+            let reply = match read_reply(&mut stream, &mut decoder) {
+                Ok(reply) => reply,
+                Err(Ended::HungUp) if method == WAIT && !answered && resumes < MAX_RESUMES => {
+                    resumes += 1;
+                    let (next, again) = resumed(&socket, &params, started)?;
+                    eprintln!(
+                        "workroom: the daemon on {socket} was handed off during the wait; \
+                         waiting on in the new one"
+                    );
+                    (stream, request) = (next, encode(&again));
+                    answer = answer_timeout(method, &again);
+                    continue 'connection;
+                }
+                Err(_) => {
+                    return Err(unreachable(format!(
+                        "the daemon on {socket} did not answer"
+                    )));
+                }
+            };
+            answered = true;
+            let reply: Value = serde_json::from_slice(&reply)
+                .map_err(|_| CliError::internal("the daemon's reply is not JSON"))?;
+            if let Some(error) = reply.get("error") {
+                let mut failure = CliError::new(
+                    Kind::from_code(error["kind"].as_str().unwrap_or_default()),
+                    error["message"].as_str().unwrap_or("the daemon refused"),
+                );
+                failure.matches = error["matches"].as_array().cloned().unwrap_or_default();
+                failure.details = error
+                    .get("details")
+                    .filter(|details| details.is_object())
+                    .map(|details| Box::new(details.clone()));
+                return Err(failure);
+            }
+            let replied = Replied {
+                revision: reply.get("revision").cloned().unwrap_or(Value::Null),
+                result: reply.get("result").cloned().unwrap_or(Value::Null),
+                // A reply that doesn't say is the last.
+                more: reply.get("more") == Some(&Value::Bool(true)),
+            };
+            let more = replied.more;
+            if !each(replied) || !more {
+                return Ok(());
+            }
+        }
+    }
+}
+
+const WAIT: &str = "terminal.wait";
+
+/// The most times one wait is sent again after a hand-off, so a daemon that hangs up on it each
+/// time it is sent is unreachable (7), never asked forever.
+const MAX_RESUMES: u32 = 16;
+
+/// No daemon to be had: the command's 7.
+fn unreachable(message: String) -> CliError {
+    CliError::new(Kind::DaemonUnreachable, message)
+}
+
+/// A connection to the daemon on `socket`, greeted, that speaks the terminal API.
+fn connect(socket: &str) -> Result<UnixStream, CliError> {
+    let mut stream = UnixStream::connect(socket)
         .map_err(|error| unreachable(format!("no daemon is listening on {socket}: {error}")))?;
     let _ = stream.set_read_timeout(Some(TIMEOUT));
     let _ = stream.set_write_timeout(Some(TIMEOUT));
@@ -107,43 +191,56 @@ pub(super) fn stream(
             ),
         ));
     }
-    stream
-        .write_all(&Envelope::new(Service::TerminalApi, STREAM, request).encode())
-        .map_err(|error| unreachable(format!("the daemon on {socket} hung up: {error}")))?;
-    // A timeout the socket can't hold (macOS refuses one past its bounds) is none, rather than
-    // leaving `TIMEOUT` to cut a long wait short.
-    if stream.set_read_timeout(answer).is_err() {
-        let _ = stream.set_read_timeout(None);
-    }
-    let mut decoder = EnvelopeDecoder::new();
-    loop {
-        let reply = read_reply(&mut stream, &mut decoder)
-            .ok_or_else(|| unreachable(format!("the daemon on {socket} did not answer")))?;
-        let reply: Value = serde_json::from_slice(&reply)
-            .map_err(|_| CliError::internal("the daemon's reply is not JSON"))?;
-        if let Some(error) = reply.get("error") {
-            let mut failure = CliError::new(
-                Kind::from_code(error["kind"].as_str().unwrap_or_default()),
-                error["message"].as_str().unwrap_or("the daemon refused"),
+    Ok(stream)
+}
+
+/// After the daemon on `socket` hung up on a wait for `params` sent at `started`: a connection to
+/// the program a hand-off put there, and the wait to send it, with what is left of its timeout.
+///
+/// A hand-off replaces the daemon's program in place and keeps its listening socket, so the
+/// connection is taken at once, from the backlog, by the new program. A daemon that has gone
+/// leaves nobody listening: unreachable (7).
+///
+/// A state (`status`, `run`, `ended`) is one already reached or still to come, so the new
+/// program answers as the old would have. An event is not: output read, or a command ended,
+/// between the old program's last read and the new one's wait starting would never be seen, so
+/// a `regex` or `command_finished` wait is `WaitInterrupted` (3) rather than waited on for what
+/// may already have gone by. The sessions' unread output stays in their ptys across the hand-off
+/// itself, so the gap is from the new program's readers starting to the wait reaching it.
+fn resumed(
+    socket: &str,
+    params: &Value,
+    started: Instant,
+) -> Result<(UnixStream, Value), CliError> {
+    let stream = connect(socket).map_err(|error| {
+        let mut error = error;
+        if error.kind == Kind::DaemonUnreachable {
+            error.message = format!(
+                "the daemon on {socket} went away during the wait, and none is listening there \
+                 now"
             );
-            failure.matches = error["matches"].as_array().cloned().unwrap_or_default();
-            failure.details = error
-                .get("details")
-                .filter(|details| details.is_object())
-                .map(|details| Box::new(details.clone()));
-            return Err(failure);
         }
-        let replied = Replied {
-            revision: reply.get("revision").cloned().unwrap_or(Value::Null),
-            result: reply.get("result").cloned().unwrap_or(Value::Null),
-            // A reply that doesn't say is the last.
-            more: reply.get("more") == Some(&Value::Bool(true)),
-        };
-        let more = replied.more;
-        if !each(replied) || !more {
-            return Ok(());
-        }
+        error
+    })?;
+    let given = |key: &str| params.get(key).is_some_and(|value| !value.is_null());
+    if let Some(event) = ["regex", "command_finished"]
+        .into_iter()
+        .find(|key| given(key))
+    {
+        return Err(CliError::new(
+            Kind::WaitInterrupted,
+            format!(
+                "the daemon on {socket} was handed off (replaced by its update) during the \
+                 `{event}` wait, so what happened in between may have gone unseen; wait again"
+            ),
+        ));
     }
+    let mut again = params.clone();
+    if let Some(millis) = params.get("timeout_ms").and_then(Value::as_u64) {
+        let spent = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        again["timeout_ms"] = json!(millis.saturating_sub(spent));
+    }
+    Ok((stream, again))
 }
 
 /// How long the daemon gets to answer `method` with `params` once the request is sent: `TIMEOUT`,
@@ -197,26 +294,43 @@ pub(super) fn served_socket(argv: &[String]) -> Option<String> {
     argv.get(at + 1).filter(|path| !path.is_empty()).cloned()
 }
 
+/// Why no reply came.
+enum Ended {
+    /// The daemon closed the connection, or reset it: a hand-off does, as the old program goes.
+    HungUp,
+    /// It said nothing for the read timeout, or something unreadable.
+    Quiet,
+}
+
 /// The next reply on `STREAM`, its chunks joined (`rpc::send`: each payload's first byte says
-/// whether it is the last), or `None` when the daemon hangs up or goes quiet first. `decoder`
-/// carries what was read past one reply to the next.
-fn read_reply(stream: &mut UnixStream, decoder: &mut EnvelopeDecoder) -> Option<Vec<u8>> {
+/// whether it is the last), or why none came. `decoder` carries what was read past one reply to
+/// the next.
+fn read_reply(stream: &mut UnixStream, decoder: &mut EnvelopeDecoder) -> Result<Vec<u8>, Ended> {
     let mut reply = Vec::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
-        while let Some(envelope) = decoder.next_envelope().ok()? {
+        while let Some(envelope) = decoder.next_envelope().map_err(|_| Ended::Quiet)? {
             if envelope.service != Service::TerminalApi || envelope.stream != STREAM {
                 continue;
             }
-            let (last, body) = envelope.payload.split_first()?;
+            let (last, body) = envelope.payload.split_first().ok_or(Ended::Quiet)?;
             reply.extend_from_slice(body);
             if *last == 1 {
-                return Some(reply);
+                return Ok(reply);
             }
         }
         match stream.read(&mut buffer) {
-            Ok(0) | Err(_) => return None,
+            Ok(0) => return Err(Ended::HungUp),
             Ok(n) => decoder.push(&buffer[..n]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                return Err(match error.kind() {
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe => {
+                        Ended::HungUp
+                    }
+                    _ => Ended::Quiet,
+                });
+            }
         }
     }
 }
