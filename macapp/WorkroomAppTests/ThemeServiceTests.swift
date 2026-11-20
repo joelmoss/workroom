@@ -117,6 +117,29 @@ final class ThemeServiceTests: XCTestCase {
     }
   }
 
+  /// A chosen user theme whose file is deleted, or stops parsing, falls back to Workroom's theme for
+  /// that side, and the other side's chosen user theme is untouched (#737).
+  func testAChosenUserThemeThatGoesAwayFallsBackOnItsOwnSide() throws {
+    try writeUserTheme("My Paper", background: "#f4f1e8")
+    try writeUserTheme("My Night", background: "#101418")
+    Defaults[.lightTheme] = "My Paper"
+    Defaults[.darkTheme] = "My Night"
+    try withUserThemes {
+      XCTAssertEqual(ThemeService.activeThemeName(isDark: false), "My Paper")
+      XCTAssertEqual(ThemeService.activeThemeName(isDark: true), "My Night")
+
+      try FileManager.default.removeItem(at: userThemeDir.appendingPathComponent("My Paper"))
+      XCTAssertEqual(ThemeService.activeThemeName(isDark: false), "Workroom Light")
+      XCTAssertEqual(ThemeService.activeThemeName(isDark: true), "My Night")
+
+      try "garbage\n".write(
+        to: userThemeDir.appendingPathComponent("My Night"), atomically: true, encoding: .utf8)
+      XCTAssertEqual(ThemeService.activeThemeName(isDark: true), "Workroom")
+      XCTAssertEqual(Defaults[.lightTheme], "My Paper", "a fallback rewrote the setting")
+      XCTAssertEqual(Defaults[.darkTheme], "My Night", "a fallback rewrote the setting")
+    }
+  }
+
   /// The fallback is resolution only: the stored setting is kept, so a user theme file that is missing
   /// for a while comes back when it does.
   func testFallingBackLeavesTheSettingAlone() {
