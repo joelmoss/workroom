@@ -223,6 +223,112 @@ impl Config {
             Ok(true)
         })
     }
+
+    /// Registers `project` with no workrooms, as Go's `AddProject` does: an entry that exists keeps
+    /// everything but its `vcs`, which is refreshed, and gains an empty `workrooms` if it has none
+    /// that is an object.
+    pub(crate) fn add_project(&self, project: &str, vcs: &str) -> Result<(), CliError> {
+        self.update(|data| {
+            let top = top_level(data);
+            let vcs = Json::String(vcs.to_string());
+            match top.get_mut(project).and_then(Json::as_object_mut) {
+                Some(entry) => {
+                    entry.insert("vcs".to_string(), vcs);
+                    if !entry
+                        .get("workrooms")
+                        .is_some_and(|w| w.as_object().is_some())
+                    {
+                        entry.insert("workrooms".to_string(), Json::Object(Object::new()));
+                    }
+                }
+                None => {
+                    let mut entry = Object::new();
+                    entry.insert("vcs".to_string(), vcs);
+                    entry.insert("workrooms".to_string(), Json::Object(Object::new()));
+                    top.insert(project.to_string(), Json::Object(entry));
+                }
+            }
+            Ok(true)
+        })
+    }
+
+    /// Stores the branch a registered project's new workrooms start from; "" removes it, so they
+    /// start from the global base, else origin's default branch.
+    pub(crate) fn set_base_branch(&self, project: &str, branch: &str) -> Result<(), CliError> {
+        self.update(|data| {
+            let entry = project_entry(data, project)?;
+            if branch.is_empty() {
+                entry.remove("base_branch");
+            } else {
+                entry.insert("base_branch".to_string(), Json::String(branch.to_string()));
+            }
+            Ok(true)
+        })
+    }
+
+    /// Stores `host` verbatim as the `host` descriptor of a registered project (`workroom` "") or
+    /// of one of its workrooms; none removes it, which turns a workroom local again. A descriptor
+    /// alone is never a new entry, so the project, and the workroom, must be registered.
+    pub(crate) fn set_host(
+        &self,
+        project: &str,
+        workroom: &str,
+        host: Option<Json>,
+    ) -> Result<(), CliError> {
+        self.update(|data| {
+            let mut entry = project_entry(data, project)?;
+            if !workroom.is_empty() {
+                entry = entry
+                    .get_mut("workrooms")
+                    .and_then(Json::as_object_mut)
+                    .and_then(|workrooms| workrooms.get_mut(workroom))
+                    .and_then(Json::as_object_mut)
+                    .ok_or_else(|| workroom_not_found(project, workroom))?;
+            }
+            match host {
+                Some(host) => entry.insert("host".to_string(), host),
+                None => entry.remove("host"),
+            };
+            Ok(true)
+        })
+    }
+}
+
+/// The top-level settings that aren't projects, which no project edit may treat as one.
+const RESERVED_KEYS: [&str; 3] = ["workrooms_dir", "channel", "base_branch"];
+
+/// A registered project's entry to edit, else `ProjectNotFound`.
+fn project_entry<'a>(data: &'a mut Json, project: &str) -> Result<&'a mut Object, CliError> {
+    data.as_object_mut()
+        .filter(|_| !RESERVED_KEYS.contains(&project))
+        .and_then(|top| top.get_mut(project))
+        .and_then(Json::as_object_mut)
+        .ok_or_else(|| project_not_found(project))
+}
+
+/// Go's `ErrProjectNotFound`, naming `project`.
+pub(crate) fn project_not_found(project: &str) -> CliError {
+    CliError::new(
+        Kind::ProjectNotFound,
+        format!("project is not registered: {project}"),
+    )
+}
+
+/// Go's `ErrWorkroomNotFound`, naming `workroom` in `project`.
+pub(crate) fn workroom_not_found(project: &str, workroom: &str) -> CliError {
+    CliError::new(
+        Kind::WorkroomNotFound,
+        format!("workroom is not registered: '{workroom}' in {project}"),
+    )
+}
+
+/// `text` as a host descriptor, read as Go's `decodeHost` reads one: exactly one JSON object,
+/// numbers kept as written. `null` (which would clear the descriptor), any other value, trailing
+/// data and what isn't JSON are none.
+pub(crate) fn host_descriptor(text: &str) -> Option<Json> {
+    json::parse_config(text.as_bytes())
+        .ok()
+        .filter(|host| *host != Json::Null)
 }
 
 /// The top level as an object to change. A `null` config becomes an empty object first, where Go
@@ -600,6 +706,16 @@ fn eval_symlinks(path: &str) -> io::Result<String> {
         }
     }
     Ok(clean(&dest))
+}
+
+/// The project a command's `--project` names, canonical, else the current directory as it is
+/// named (not canonicalized): Go's `resolveProject`. An empty `--project` is none.
+pub(crate) fn resolve_project(flag: Option<&str>, context: &Context) -> Result<String, CliError> {
+    match flag.filter(|project| !project.is_empty()) {
+        Some(project) => canonical_path(project, context),
+        None => getwd(context),
+    }
+    .map_err(CliError::internal)
 }
 
 /// The current directory as Go's `os.Getwd` names it: `$PWD` when that is absolute and is this

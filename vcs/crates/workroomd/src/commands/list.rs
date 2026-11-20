@@ -15,6 +15,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::config::{self, Config, Json, Project};
+use super::git::is_git_repo;
 use super::kind::CliError;
 use super::{Args, Context, Outcome};
 
@@ -219,36 +220,6 @@ fn effective_vcs(config: &Config, path: &str, stored: &str) -> String {
     "git".to_string()
 }
 
-/// Whether `dir` is itself a git repository's root, by the rule git applies before walking up to
-/// an ancestor: a `.git` directory holding `HEAD`, `objects/` and `refs/`, or a `.git` file that
-/// starts with "gitdir:" (a linked worktree). An empty or partial `.git` is not one.
-fn is_git_repo(dir: &Path) -> bool {
-    let git = dir.join(".git");
-    let Ok(info) = std::fs::metadata(&git) else {
-        return false;
-    };
-    if info.is_file() {
-        let mut head = [0u8; 7];
-        let read = std::fs::File::open(&git).and_then(|mut file| {
-            use std::io::Read;
-            let mut filled = 0;
-            while filled < head.len() {
-                match file.read(&mut head[filled..])? {
-                    0 => break,
-                    count => filled += count,
-                }
-            }
-            Ok(filled)
-        });
-        return read.is_ok_and(|filled| &head[..filled] == b"gitdir:");
-    }
-    info.is_dir()
-        && std::fs::metadata(git.join("HEAD")).is_ok_and(|head| head.is_file())
-        && ["objects", "refs"]
-            .iter()
-            .all(|sub| std::fs::metadata(git.join(sub)).is_ok_and(|meta| meta.is_dir()))
-}
-
 /// The names of the project's VCS workspaces: the base names of git's linked worktrees. None when
 /// they can't be listed (no type, an unknown one, or a failed git), which the caller must read as
 /// "don't warn", unlike an empty list.
@@ -427,22 +398,6 @@ mod tests {
         assert_eq!(
             print_table(&rows, 2),
             "  \x1b[1ma\x1b[0m     ~/x\n  calm  ~/workrooms/calm  [gone]\n"
-        );
-    }
-
-    #[test]
-    fn a_git_file_counts_only_when_it_points_at_a_git_dir() {
-        let scratch = crate::commands::Scratch::new("list-gitfile");
-        let dir = &scratch.0;
-        std::fs::write(dir.join(".git"), "gitdir: /elsewhere\n").unwrap();
-        assert!(is_git_repo(dir));
-        std::fs::write(dir.join(".git"), "gitdi").unwrap();
-        assert!(!is_git_repo(dir));
-        std::fs::remove_file(dir.join(".git")).unwrap();
-        std::fs::create_dir(dir.join(".git")).unwrap();
-        assert!(
-            !is_git_repo(dir),
-            "an empty .git directory is not a repository"
         );
     }
 

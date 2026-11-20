@@ -5,13 +5,13 @@
 //!
 //! Without `WORKROOM_BIN` the binary under test is this crate's own `workroom`. A group's tests
 //! are `#[ignore]`d until its commands are ported to Rust, so a plain `cargo test` runs only the
-//! ported groups (`version_`, `update_`, `list_`, `config_`, `include_archive_` and `completion_`
-//! today). `make contract-test` builds the Go CLI and runs every test against it with
-//! `--include-ignored`.
+//! ported groups (`version_`, `update_`, `list_`, `config_`, `include_archive_`, `base_`, `host_`
+//! and `completion_` today). `make contract-test` builds the Go CLI and runs every test against it
+//! with `--include-ignored`.
 //!
-//! The Mac-only commands' groups (`list_`, `config_`, `include_archive_`) are ignored off the Mac
-//! too, where the Rust binary answers them with `MacOnly` (ADR 0078): a plain `cargo test` on
-//! Linux runs `version_`, `update_` and `completion_`, which work anywhere, and
+//! The Mac-only commands' groups (`list_`, `config_`, `include_archive_`, `base_`, `host_`) are
+//! ignored off the Mac too, where the Rust binary answers them with `MacOnly` (ADR 0078): a plain
+//! `cargo test` on Linux runs `version_`, `update_` and `completion_`, which work anywhere, and
 //! `--include-ignored` against the Go CLI still runs everything.
 //!
 //! Tests are named for their command group (`version_`, `update_`, `list_`, `config_`,
@@ -1740,7 +1740,10 @@ fn normalized_config(home: &Home) -> String {
 /// existing entry's type and keeping the rest of it, and `clear` removes the base again. The app
 /// passes `--project`; without it the project is the current directory.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn base_set_registers_the_project_and_clear_removes_the_base() {
     let home = Home::new("base-set");
     let repo = home.repo("repo");
@@ -1800,19 +1803,27 @@ fn base_set_registers_the_project_and_clear_removes_the_base() {
 /// config is read, so even an unreadable config doesn't hide it. A wrong number of arguments is a
 /// usage error, before the command runs, so its envelope names no command.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn base_refuses_a_bad_branch_name_or_arguments() {
     let home = Home::new("base-bad-name");
     let repo = home.repo("repo");
     let project = repo.to_string_lossy();
     home.write_config("not json");
-    for name in ["a..b", ""] {
+    // "" is a name git refuses too, never a way to clear the base, for one project or all.
+    for (name, scope) in [
+        ("a..b", &["--project", &*project][..]),
+        ("", &["--project", &*project]),
+        ("", &["--global"]),
+    ] {
         let run = home.run(
             &home.dir,
-            &["base", "set", name, "--json", "--project", &project],
+            &[&["base", "set", name, "--json"], scope].concat(),
         );
         run.assert_code(1).assert_quiet_stderr();
-        assert_eq!(run.error_kind(), "InternalError");
+        assert_eq!(run.error_kind(), "InternalError", "{name:?} {scope:?}");
         let envelope = run.envelope();
         assert_eq!(envelope["command"], "base");
         assert_eq!(
@@ -1852,7 +1863,10 @@ fn base_refuses_a_bad_branch_name_or_arguments() {
 /// file but isn't a linked worktree (`git init --separate-git-dir`) is a project. `set` refuses a
 /// directory that isn't a repository, and an unreadable config fails both.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn base_refuses_a_workroom_or_a_directory_that_isnt_a_repository() {
     let home = Home::new("base-refuses");
     let repo = home.repo("repo");
@@ -1938,7 +1952,10 @@ fn base_refuses_a_workroom_or_a_directory_that_isnt_a_repository() {
 /// moved, and it registers nothing. `--pretend` writes nothing, and `clear` under it skips the
 /// edit and so the registration check too.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn base_clear_needs_a_registered_project_and_pretend_writes_nothing() {
     let home = Home::new("base-clear");
     let gone = home.path("gone");
@@ -2023,7 +2040,10 @@ fn host_fixture(home: &Home) -> PathBuf {
 /// kept, numbers exactly as written, strings re-escaped as Go writes config. `clear` removes it
 /// and nothing else. The arguments are in the app's order (`WorkroomCLI.setHost`).
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn host_set_stores_the_descriptor_verbatim_and_clear_removes_it() {
     let home = Home::new("host-set");
     let repo = host_fixture(&home);
@@ -2088,7 +2108,10 @@ fn host_set_stores_the_descriptor_verbatim_and_clear_removes_it() {
 /// than one value, and what isn't JSON are refused with `InvalidHostDescriptor`, exit 2, before
 /// config or the project is looked at. A missing or extra argument is a usage error.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn host_set_refuses_what_isnt_one_json_object() {
     let home = Home::new("host-invalid");
     home.write_config("not json");
@@ -2155,7 +2178,10 @@ fn host_set_refuses_what_isnt_one_json_object() {
 /// registered, for `set` and `clear` alike, and `--pretend` checks that too, writing nothing. An
 /// unreadable config fails.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn host_needs_a_registered_project_and_workroom() {
     let home = Home::new("host-missing");
     let repo = host_fixture(&home);
