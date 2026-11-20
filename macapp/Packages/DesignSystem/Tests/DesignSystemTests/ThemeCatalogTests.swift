@@ -201,14 +201,15 @@ final class ThemeCatalogTests: XCTestCase {
     }
   }
 
-  /// A user file that doesn't parse is ignored: a bundled theme keeps its side, anything else has none.
-  func testAnUnparseableUserThemeIsIgnored() throws {
+  /// A user file that doesn't parse has no side, even one sharing a bundled theme's name: ghostty
+  /// would load the user's file for that name, not the bundled one.
+  func testAnUnparseableUserThemeHasNoSide() throws {
     try withUserThemes([
       "Broken": "not a theme\n",
-      "Workroom Light": "foreground = #000000\n",
+      "Nord Light": "foreground = #000000\n",
     ]) {
       XCTAssertNil(ThemeCatalog.side(ofThemeNamed: "Broken"))
-      XCTAssertEqual(ThemeCatalog.side(ofThemeNamed: "Workroom Light"), .light)
+      XCTAssertNil(ThemeCatalog.side(ofThemeNamed: "Nord Light"))
     }
   }
 

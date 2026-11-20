@@ -1131,18 +1131,35 @@ public enum ThemeCatalog {
   private static let bundledSides: [String: ThemeSide] = Dictionary(
     bundledThemes.map { ($0.name, $0.side) }, uniquingKeysWith: { first, _ in first })
 
-  /// The side the theme called `name` is on, resolved the way `themePreview` resolves its colours: the
-  /// user's own file in `~/.config/ghostty/themes` first, classified by its background, then the
-  /// bundled theme's fixed side. Nil when neither exists, or the user's file doesn't parse and no
-  /// bundled theme has that name.
-  public static func side(ofThemeNamed name: String) -> ThemeSide? {
-    let userPath = userThemeDirectory() + "/" + name
-    if FileManager.default.fileExists(atPath: userPath),
-      let theme = parseThemeFile(atPath: userPath, name: name)
-    {
-      return ThemeSide(background: theme.background)
+  /// The side the theme called `name` is on, resolved the way ghostty resolves `theme =`: a file of
+  /// that name in the user's theme directory first, classified by its background, then the bundled
+  /// theme's fixed side. Nil when neither exists, when the user's file doesn't parse, and when ghostty
+  /// would read the name as a light/dark pair (`isSingleThemeName`).
+  ///
+  /// A user file that doesn't parse gives no side even when a bundled theme shares its name: ghostty
+  /// still loads the user's file for that name, so taking the bundled side would paint the chrome in
+  /// the bundled colours over a terminal loading the broken file. With no side the setting falls back
+  /// to Workroom or Workroom Light, which the terminal and the chrome both load (#737).
+  public static func side(ofThemeNamed name: String, in userThemes: UserThemes) -> ThemeSide? {
+    guard isSingleThemeName(name) else { return nil }
+    switch userThemes.entry(named: name) {
+    case .theme(let preview): return ThemeSide(background: preview.background)
+    case .unusable: return nil
+    case .absent: return bundledSides[name]
     }
-    return bundledSides[name]
+  }
+
+  /// `side(ofThemeNamed:in:)`, reading only the one file `name` names.
+  public static func side(ofThemeNamed name: String) -> ThemeSide? {
+    side(ofThemeNamed: name, in: .reading(named: name))
+  }
+
+  /// Whether ghostty reads `name`, written as `theme = "<name>"`, as one theme: its `Theme.parseCLI`
+  /// reads any value holding a comma, `=` or colon as a light/dark pair. The bundled themes are
+  /// vendored by the same rule (`Scripts/vendor-ghostty-themes.py`); a user file named otherwise is
+  /// never listed and never resolves, so it never reaches the generated config.
+  public static func isSingleThemeName(_ name: String) -> Bool {
+    !name.contains { $0 == ":" || $0 == "," || $0 == "=" }
   }
 
   /// Strip anything that would break or inject into the generated `ghostty.conf` (the name is
@@ -1184,11 +1201,19 @@ public enum ThemeCatalog {
     // entry is user-writable (and therefore uncacheable) is the whole correctness argument for the
     // cache below, and an index into an array pins nothing — a third directory added at the front
     // would silently start being cached forever.
-    let userPath = userThemeDirectory() + "/" + name
-    if FileManager.default.fileExists(atPath: userPath),
-      let theme = parseThemeFile(atPath: userPath, name: name)
-    {
-      return theme
+    themePreview(named: name, bundledDirectory: bundledDirectory, in: .reading(named: name))
+  }
+
+  /// `themePreview(named:bundledDirectory:)` against user theme files already read, so an apply reads
+  /// them once. A user file that doesn't parse resolves to nothing rather than to a bundled theme of
+  /// the same name, since ghostty would load the user's file (see `side(ofThemeNamed:in:)`).
+  public static func themePreview(
+    named name: String, bundledDirectory: String?, in userThemes: UserThemes
+  ) -> ThemePreview? {
+    switch userThemes.entry(named: name) {
+    case .theme(let preview): return preview
+    case .unusable: return nil
+    case .absent: break
     }
 
     return bundledPreviewCache.withLock { cache in
@@ -1222,8 +1247,9 @@ public enum ThemeCatalog {
   private static let userThemeDirectoryOverride = Mutex<String?>(nil)
 
   /// Point `userThemeDirectory()` at `path` for the rest of the process, or back at `~/.config` with
-  /// nil. **UI-test fixture only**: a fixture launch can't scope the override to a closure the way a
-  /// unit test does (`withUserThemeDirectory`), and must never read the owner's real theme files.
+  /// nil. **Test processes only** (a fixture launch, or the host of a hosted unit run): a launch can't
+  /// scope the override to a closure the way a unit test does (`withUserThemeDirectory`), and must
+  /// never read the owner's real theme files.
   public static func setUserThemeDirectoryForUITesting(_ path: String?) {
     userThemeDirectoryOverride.withLock { $0 = path }
   }
@@ -1234,15 +1260,16 @@ public enum ThemeCatalog {
   /// plus the user's own, Workroom's theme for the side first and the rest A→Z (case-insensitive,
   /// numeric, locale-independent for the same reason as `families`).
   ///
-  /// The user's themes are read from `userThemeDirectory()` on every call, so a list reflects the
-  /// folder as it is when it loads. Each is classified by its background (`ThemeSide(background:)`),
-  /// and one that doesn't parse is left out. One named like a bundled theme replaces it: listed once,
-  /// as the user's, on the side its own background gives it, so a dark file called `Ayu Light` moves
-  /// to the Dark list. An unparseable one replaces nothing, so the bundled theme stays.
-  public static func themes(on side: ThemeSide) -> [ListedTheme] {
-    let users = userThemes()
-    let userNames = Set(users.map(\.name))
-    let bundled = bundledThemes.filter { $0.side == side && !userNames.contains($0.name) }
+  /// The user's themes come from `userThemes`, a read of the folder, so a list reflects the folder as
+  /// it was when it loaded. Each is classified by its background (`ThemeSide(background:)`), and one
+  /// that doesn't parse, or whose name ghostty reads as a pair (`isSingleThemeName`), is left out. One
+  /// named like a bundled theme replaces it: listed once, as the user's, on the side its own
+  /// background gives it, so a dark file called `Ayu Light` moves to the Dark list. An unusable one
+  /// hides the bundled theme too, since ghostty would still load the user's file for that name
+  /// (`side(ofThemeNamed:in:)`).
+  public static func themes(on side: ThemeSide, in userThemes: UserThemes) -> [ListedTheme] {
+    let users = userThemes.listed
+    let bundled = bundledThemes.filter { $0.side == side && !userThemes.shadows($0.name) }
       .map { ListedTheme(name: $0.name, side: $0.side, isUserTheme: false) }
     let all = (bundled + users.filter { $0.side == side }).sorted {
       $0.name.compare($1.name, options: [.caseInsensitive, .numeric]) == .orderedAscending
@@ -1255,32 +1282,25 @@ public enum ThemeCatalog {
   }
 
   /// The families the Family tab offers: every family whose light theme resolves to the light side
-  /// and whose dark theme resolves to the dark side (`side(ofThemeNamed:)`, so a user's replacement
-  /// is judged by its own background). A family is unavailable while a replacement puts either of
-  /// its themes on the wrong side, so choosing a family never puts a dark theme in the light setting.
-  /// `families` order is kept.
-  public static func availableFamilies() -> [ThemeFamily] {
+  /// and whose dark theme resolves to the dark side (`side(ofThemeNamed:in:)`, so a user's
+  /// replacement is judged by its own background). A family is unavailable while a replacement puts
+  /// either of its themes on the wrong side, or doesn't parse, so choosing a family never puts a dark
+  /// theme in the light setting. `families` order is kept.
+  public static func availableFamilies(in userThemes: UserThemes) -> [ThemeFamily] {
     families.filter {
-      side(ofThemeNamed: $0.light) == .light && side(ofThemeNamed: $0.dark) == .dark
+      side(ofThemeNamed: $0.light, in: userThemes) == .light
+        && side(ofThemeNamed: $0.dark, in: userThemes) == .dark
     }
   }
 
-  /// Every parseable theme file in the user's theme directory, classified by its background. Hidden
-  /// files and directories are skipped; user themes never form families.
-  private static func userThemes() -> [ListedTheme] {
-    let dir = userThemeDirectory()
-    guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return [] }
-    return entries.compactMap { name in
-      guard !name.hasPrefix(".") else { return nil }
-      let path = dir + "/" + name
-      var isDirectory: ObjCBool = false
-      guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
-        !isDirectory.boolValue,
-        let theme = parseThemeFile(atPath: path, name: name)
-      else { return nil }
-      return ListedTheme(
-        name: name, side: ThemeSide(background: theme.background), isUserTheme: true)
-    }
+  /// `themes(on:in:)` against the user's theme folder as it is now.
+  public static func themes(on side: ThemeSide) -> [ListedTheme] {
+    themes(on: side, in: .read())
+  }
+
+  /// `availableFamilies(in:)` against the user's theme folder as it is now, read once.
+  public static func availableFamilies() -> [ThemeFamily] {
+    availableFamilies(in: .read())
   }
 
   /// Redirect `userThemeDirectory()` at `path` for the duration of `body`. **Tests only.**
@@ -1293,12 +1313,18 @@ public enum ThemeCatalog {
   ///
   /// Scoped rather than a settable property so a test can't leak the override into later cases. It is
   /// process-wide while set, so a concurrent reader in another test class sees it — harmless in
-  /// practice, since a lookup only diverges for a name that exists in `path`.
+  /// practice, since a lookup only diverges for a name that exists in `path`. The override in place
+  /// before is put back after, not cleared: a hosted unit run points the whole process at an empty
+  /// scratch directory at launch, and clearing it would send every later test to the real
+  /// `~/.config`.
   public static func withUserThemeDirectory<T>(_ path: String, _ body: () throws -> T) rethrows
     -> T
   {
-    userThemeDirectoryOverride.withLock { $0 = path }
-    defer { userThemeDirectoryOverride.withLock { $0 = nil } }
+    let previous = userThemeDirectoryOverride.withLock { override in
+      defer { override = path }
+      return override
+    }
+    defer { userThemeDirectoryOverride.withLock { $0 = previous } }
     return try body()
   }
 
@@ -1360,5 +1386,81 @@ public enum ThemeCatalog {
     return String(
       format: "#%02x%02x%02x", byte(srgb.redComponent), byte(srgb.greenComponent),
       byte(srgb.blueComponent))
+  }
+}
+
+/// The user's own theme files (`ThemeCatalog.userThemeDirectory()`), read once (#737). The Light and
+/// Dark lists, the families on offer and one apply each resolve against one read, so a list or an
+/// apply touches the folder once rather than once per theme name; a later read sees the folder as it
+/// is then, so a fixed file comes back the next time a list loads.
+public struct UserThemes: Sendable {
+  /// What the folder holds under one name.
+  enum Entry: Sendable {
+    /// No file: the bundled theme of that name, if any, is the one ghostty loads.
+    case absent
+    /// A file that doesn't parse, or whose name ghostty reads as a pair. Ghostty would still find it
+    /// first, so the name resolves to nothing rather than to a bundled theme.
+    case unusable
+    case theme(ThemePreview)
+  }
+
+  private let entries: [String: Entry]
+
+  /// Nothing in the folder.
+  public static let empty = UserThemes(entries: [:])
+
+  private init(entries: [String: Entry]) { self.entries = entries }
+
+  func entry(named name: String) -> Entry { entries[name] ?? .absent }
+
+  /// Whether a file in the folder takes `name`, usable or not.
+  func shadows(_ name: String) -> Bool {
+    if case .absent = entry(named: name) { return false }
+    return true
+  }
+
+  /// The usable files, each classified by its background. User themes never form families.
+  var listed: [ListedTheme] {
+    entries.compactMap { name, entry in
+      guard case .theme(let preview) = entry else { return nil }
+      return ListedTheme(
+        name: name, side: ThemeSide(background: preview.background), isUserTheme: true)
+    }
+  }
+
+  /// Every file in the folder now. Hidden files (`.DS_Store`) and directories are not themes.
+  public static func read() -> UserThemes {
+    let dir = ThemeCatalog.userThemeDirectory()
+    guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir) else {
+      return .empty
+    }
+    var entries: [String: Entry] = [:]
+    for name in names {
+      if let entry = readEntry(named: name, in: dir) { entries[name] = entry }
+    }
+    return UserThemes(entries: entries)
+  }
+
+  /// Only the files `names` name, for a lookup of a theme or two.
+  public static func reading(named names: String...) -> UserThemes {
+    let dir = ThemeCatalog.userThemeDirectory()
+    var entries: [String: Entry] = [:]
+    for name in names {
+      if let entry = readEntry(named: name, in: dir) { entries[name] = entry }
+    }
+    return UserThemes(entries: entries)
+  }
+
+  private static func readEntry(named name: String, in dir: String) -> Entry? {
+    guard !name.hasPrefix("."), !name.contains("/") else { return nil }
+    let path = dir + "/" + name
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+      !isDirectory.boolValue
+    else { return nil }
+    guard ThemeCatalog.isSingleThemeName(name),
+      let preview = ThemeCatalog.parseThemeFile(atPath: path, name: name)
+    else { return .unusable }
+    return .theme(preview)
   }
 }

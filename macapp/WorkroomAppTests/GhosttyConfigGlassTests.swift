@@ -32,7 +32,7 @@ final class GhosttyConfigGlassTests: XCTestCase {
   private func write(_ glass: GlassAppearance) throws -> String {
     XCTAssertTrue(
       GhosttyApp.writeThemeConfig(
-        theme: ThemeService.activeThemeName(isDark: false), glass: glass, to: url))
+        theme: ThemeService.activeThemeName(for: .light), glass: glass, to: url))
     return try String(contentsOf: url, encoding: .utf8)
   }
 
@@ -66,7 +66,7 @@ final class GhosttyConfigGlassTests: XCTestCase {
   /// Under glass `minimum-contrast` would measure against black (the clear default background), so
   /// it is left out, and the floor is written into the colours instead, with no diagnostics.
   func testGlassOmitsMinimumContrastAndOverridesTheColoursUnderIt() throws {
-    let theme = ThemeService.activeThemeName(isDark: false)
+    let theme = ThemeService.activeThemeName(for: .light)
     let contents = try write(.glass(opacity: 0.9))
     XCTAssertFalse(contents.contains("minimum-contrast"), contents)
     let preview = try XCTUnwrap(ThemeService.themePreview(named: theme))
@@ -107,7 +107,7 @@ final class GhosttyConfigGlassTests: XCTestCase {
   /// the theme's (`ThemeService.activePreview`), so it parses no theme file, and ignores one for
   /// another theme.
   func testAGlassWriteReusesTheThemesPreview() throws {
-    let theme = ThemeService.activeThemeName(isDark: false)
+    let theme = ThemeService.activeThemeName(for: .light)
     let white = NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
     let ink = NSColor(srgbRed: 0.1, green: 0.1, blue: 0.1, alpha: 1)
     var palette = Array(repeating: ink, count: 16)

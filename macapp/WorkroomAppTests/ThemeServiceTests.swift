@@ -49,29 +49,31 @@ final class ThemeServiceTests: XCTestCase {
 
   // MARK: resolution (#733)
 
+  /// The active theme on screen for an appearance, with the app's effective appearance pinned to
+  /// `systemIsDark`, through the entry point an apply uses.
+  private func showingTheme(_ appearance: AppearanceMode, systemIsDark: Bool) -> String {
+    let saved = NSApp.appearance
+    defer { NSApp.appearance = saved }
+    NSApp.appearance = NSAppearance(named: systemIsDark ? .darkAqua : .aqua)
+    Defaults[.appearance] = appearance
+    return withUserThemes { ThemeService.activeTheme(for: ThemeService.showingSide()).name }
+  }
+
   func testEachForcedAppearanceResolvesToItsOwnSetting() {
     Defaults[.lightTheme] = "Catppuccin Latte"
     Defaults[.darkTheme] = "Nord"
-    withUserThemes {
-      // A forced appearance ignores the system's.
-      for systemIsDark in [false, true] {
-        XCTAssertEqual(
-          ThemeService.activeThemeName(appearance: .light, systemIsDark: systemIsDark),
-          "Catppuccin Latte")
-        XCTAssertEqual(
-          ThemeService.activeThemeName(appearance: .dark, systemIsDark: systemIsDark), "Nord")
-      }
+    // A forced appearance ignores the system's.
+    for systemIsDark in [false, true] {
+      XCTAssertEqual(showingTheme(.light, systemIsDark: systemIsDark), "Catppuccin Latte")
+      XCTAssertEqual(showingTheme(.dark, systemIsDark: systemIsDark), "Nord")
     }
   }
 
   func testSystemAppearanceFollowsTheEffectiveAppearance() {
     Defaults[.lightTheme] = "Catppuccin Latte"
     Defaults[.darkTheme] = "Nord"
-    withUserThemes {
-      XCTAssertEqual(
-        ThemeService.activeThemeName(appearance: .system, systemIsDark: false), "Catppuccin Latte")
-      XCTAssertEqual(ThemeService.activeThemeName(appearance: .system, systemIsDark: true), "Nord")
-    }
+    XCTAssertEqual(showingTheme(.system, systemIsDark: false), "Catppuccin Latte")
+    XCTAssertEqual(showingTheme(.system, systemIsDark: true), "Nord")
   }
 
   /// A missing light theme falls back to Workroom Light, and the dark theme is left alone.
@@ -79,8 +81,8 @@ final class ThemeServiceTests: XCTestCase {
     Defaults[.lightTheme] = "Does Not Exist"
     Defaults[.darkTheme] = "Nord"
     withUserThemes {
-      XCTAssertEqual(ThemeService.activeThemeName(isDark: false), "Workroom Light")
-      XCTAssertEqual(ThemeService.activeThemeName(isDark: true), "Nord")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .light), "Workroom Light")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "Nord")
     }
   }
 
@@ -89,8 +91,8 @@ final class ThemeServiceTests: XCTestCase {
     Defaults[.lightTheme] = "Catppuccin Latte"
     Defaults[.darkTheme] = "Does Not Exist"
     withUserThemes {
-      XCTAssertEqual(ThemeService.activeThemeName(isDark: true), "Workroom")
-      XCTAssertEqual(ThemeService.activeThemeName(isDark: false), "Catppuccin Latte")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "Workroom")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .light), "Catppuccin Latte")
     }
   }
 
@@ -99,8 +101,8 @@ final class ThemeServiceTests: XCTestCase {
     Defaults[.lightTheme] = "Nord"
     Defaults[.darkTheme] = "Catppuccin Latte"
     withUserThemes {
-      XCTAssertEqual(ThemeService.activeThemeName(isDark: false), "Workroom Light")
-      XCTAssertEqual(ThemeService.activeThemeName(isDark: true), "Workroom")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .light), "Workroom Light")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "Workroom")
     }
   }
 
@@ -112,8 +114,8 @@ final class ThemeServiceTests: XCTestCase {
     Defaults[.lightTheme] = "My Paper"
     Defaults[.darkTheme] = "Nord"
     withUserThemes {
-      XCTAssertEqual(ThemeService.activeThemeName(isDark: false), "My Paper")
-      XCTAssertEqual(ThemeService.activeThemeName(isDark: true), "Workroom")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .light), "My Paper")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "Workroom")
     }
   }
 
@@ -125,16 +127,16 @@ final class ThemeServiceTests: XCTestCase {
     Defaults[.lightTheme] = "My Paper"
     Defaults[.darkTheme] = "My Night"
     try withUserThemes {
-      XCTAssertEqual(ThemeService.activeThemeName(isDark: false), "My Paper")
-      XCTAssertEqual(ThemeService.activeThemeName(isDark: true), "My Night")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .light), "My Paper")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "My Night")
 
       try FileManager.default.removeItem(at: userThemeDir.appendingPathComponent("My Paper"))
-      XCTAssertEqual(ThemeService.activeThemeName(isDark: false), "Workroom Light")
-      XCTAssertEqual(ThemeService.activeThemeName(isDark: true), "My Night")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .light), "Workroom Light")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "My Night")
 
       try "garbage\n".write(
         to: userThemeDir.appendingPathComponent("My Night"), atomically: true, encoding: .utf8)
-      XCTAssertEqual(ThemeService.activeThemeName(isDark: true), "Workroom")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "Workroom")
       XCTAssertEqual(Defaults[.lightTheme], "My Paper", "a fallback rewrote the setting")
       XCTAssertEqual(Defaults[.darkTheme], "My Night", "a fallback rewrote the setting")
     }
@@ -145,7 +147,7 @@ final class ThemeServiceTests: XCTestCase {
   func testFallingBackLeavesTheSettingAlone() {
     Defaults[.lightTheme] = "Does Not Exist"
     withUserThemes {
-      _ = ThemeService.activeThemeName(isDark: false)
+      _ = ThemeService.activeThemeName(for: .light)
       ThemeService.shared.applyActiveTheme()
     }
     XCTAssertEqual(Defaults[.lightTheme], "Does Not Exist")
@@ -165,6 +167,48 @@ final class ThemeServiceTests: XCTestCase {
         XCTAssertEqual(themeLines, ["theme = \"\(expected)\""])
       }
     }
+  }
+
+  /// A chosen user theme whose name ghostty reads as a light/dark pair is never written as `theme =`:
+  /// the side falls back to Workroom's theme (#737).
+  func testAUserThemeNamedLikeAPairNeverReachesTheGeneratedConfig() throws {
+    for name in ["dark:Nord", "Nord,Nord Light", "light=Nord Light"] {
+      try writeUserTheme(name, background: "#101418")
+      Defaults[.darkTheme] = name
+      try withUserThemes {
+        XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "Workroom", name)
+        XCTAssertTrue(GhosttyApp.shared.writeThemeConfig(dark: true))
+        XCTAssertEqual(try generatedConfigTheme(), "theme = \"Workroom\"", name)
+      }
+    }
+  }
+
+  /// A user file sharing a bundled theme's name that stops parsing makes that side fall back, in the
+  /// chrome and the generated config alike: ghostty would load the broken user file for that name, so
+  /// keeping the bundled colours would paint the chrome over a terminal that doesn't match (#737).
+  func testABrokenReplacementFallsBackInTheChromeAndTheTerminal() throws {
+    Defaults[.appearance] = .dark
+    Defaults[.darkTheme] = "Nord"
+    try "garbage\n".write(
+      to: userThemeDir.appendingPathComponent("Nord"), atomically: true, encoding: .utf8)
+    try withUserThemes {
+      ThemeService.shared.applyActiveTheme()
+      XCTAssertEqual(try generatedConfigTheme(), "theme = \"Workroom\"")
+      let workroom = try XCTUnwrap(ThemeService.themePreview(named: "Workroom"))
+      XCTAssertEqual(
+        ThemeService.shared.tokens.nsBg, ThemeTokens(preview: workroom).nsBg,
+        "the chrome didn't fall back with the terminal")
+    }
+    XCTAssertEqual(Defaults[.darkTheme], "Nord", "a fallback rewrote the setting")
+  }
+
+  /// A hosted unit run never reads the developer's real theme folder: the host points the catalog at
+  /// an empty scratch directory at launch, before any test runs.
+  func testTheTestHostNeverReadsTheRealThemeFolder() throws {
+    let dir = ThemeCatalog.userThemeDirectory()
+    XCTAssertNotEqual(dir, NSHomeDirectory() + "/.config/ghostty/themes")
+    XCTAssertFalse(dir.hasPrefix(NSHomeDirectory() + "/.config"), dir)
+    XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir), [])
   }
 
   // MARK: choosing a family
