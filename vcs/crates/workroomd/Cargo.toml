@@ -33,13 +33,27 @@ notify = "8"
 # SHA-256 for the layout store's file names (`layout.rs`). ring compiles its own C and assembly,
 # which cargo-zigbuild handles for the musl targets.
 ring = "0.17"
+# `workroom update`'s HTTPS client for GitHub Releases (`commands/update.rs`): blocking, no async
+# runtime, rustls (no OpenSSL, no aws-lc) checking certificates as the system does, as Go's
+# crypto/tls did: the keychain on macOS, the CA bundle on Linux (rustls-platform-verifier).
+ureq = { version = "3", default-features = false, features = [
+  "rustls-no-provider",
+  "platform-verifier",
+] }
+# Only to hand ureq the ring above as rustls's provider: ureq's `rustls` feature, which would pick
+# ring for it, also compiles in Mozilla's roots, which the system's replace.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# The release archive `update` installs from: a gzipped tar (`tar`, below). flate2 is already in
+# the tree (gix).
+flate2 = "1"
 wr-protocol = { path = "../wr-protocol" }
 # Ending child processes and their trees, draining their output, descriptor flags.
 wr-exec = { path = "../wr-exec" }
 wr-vcs-git = { path = "../wr-vcs-git" }
 wr-vcs-model = { path = "../wr-vcs-model" }
-# `include-archive`'s tar (headers, pax records, padding). Pure Rust; without its default `xattr`
-# feature it adds only `filetime`, which no archive written here uses.
+# `include-archive`'s tar (headers, pax records, padding), and the one `update` reads its release
+# archive with. Pure Rust; without its default `xattr` feature it adds only `filetime`, which no
+# archive written or read here uses.
 tar = { version = "0.4", default-features = false }
 # Kitty images: the decoder libghostty-vt needs to store a PNG, and what a reattach re-sends them
 # as (#551). Pure Rust, and only with terminal-state.

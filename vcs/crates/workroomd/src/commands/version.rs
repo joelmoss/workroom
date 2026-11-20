@@ -3,14 +3,12 @@
 
 use serde::Serialize;
 
-use super::config::{self, Config};
+use super::channel::Channel;
+use super::config::Config;
 use super::{Args, Context, Outcome};
 
 /// config.json's schema, which the Go CLI reports as 2 and the Rust one keeps (ADR 0078).
 const CONFIG_SCHEMA_VERSION: u32 = 2;
-
-/// The channel when config names none.
-const DEFAULT_CHANNEL: &str = super::channel::Channel::Stable.as_str();
 
 #[derive(Serialize)]
 struct Payload<'a> {
@@ -38,16 +36,11 @@ pub(super) fn run(context: &Context, _args: &Args) -> Outcome {
     ))
 }
 
-/// config.json's `channel` when it is a non-empty string, else `stable`. A config that can't be
-/// found, read or parsed counts as naming none: `version` never fails on config, as Go's doesn't.
+/// [`Config::channel`]. A config that can't even be found counts as naming none too: `version`
+/// never fails on config, as Go's doesn't.
 fn configured_channel(context: &Context) -> String {
-    let data = Config::new(context).and_then(|config| config.read());
-    match data
-        .as_ref()
-        .ok()
-        .and_then(|data| config::setting(data, "channel"))
-    {
-        Some(channel) if !channel.is_empty() => channel.to_string(),
-        _ => DEFAULT_CHANNEL.to_string(),
-    }
+    Config::new(context).map_or_else(
+        |_| Channel::Stable.as_str().to_string(),
+        |config| config.channel(),
+    )
 }

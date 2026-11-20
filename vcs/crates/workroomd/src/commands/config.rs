@@ -28,6 +28,7 @@ pub(crate) use json::Json;
 use json::Object;
 
 use super::Context;
+use super::channel::Channel;
 use super::kind::{CliError, Kind};
 
 /// The variable naming a config file to use in place of the default: a Dev build of the app keeps
@@ -65,8 +66,28 @@ impl Config {
         })
     }
 
+    /// The config file at `path`, for a test that keeps its own.
+    #[cfg(test)]
+    pub(crate) fn at(path: PathBuf) -> Config {
+        Config { path }
+    }
+
     pub(crate) fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The release channel config names: `channel` when it is a non-empty string, else `stable`.
+    /// A config that can't be read or parsed names none, as Go's `Config.Channel` reads it.
+    pub(crate) fn channel(&self) -> String {
+        match self
+            .read()
+            .as_ref()
+            .ok()
+            .and_then(|data| setting(data, "channel"))
+        {
+            Some(channel) if !channel.is_empty() => channel.to_string(),
+            _ => Channel::Stable.as_str().to_string(),
+        }
     }
 
     /// The config: an object, or `null` as Go reads that, or an empty object when there is no file.
@@ -191,6 +212,14 @@ impl Config {
             } else {
                 top_level(data).insert("base_branch".to_string(), Json::String(branch.to_string()));
             }
+            Ok(true)
+        })
+    }
+
+    /// Stores the release channel `update` switched to.
+    pub(crate) fn set_channel(&self, channel: &str) -> Result<(), CliError> {
+        self.update(|data| {
+            top_level(data).insert("channel".to_string(), Json::String(channel.to_string()));
             Ok(true)
         })
     }
