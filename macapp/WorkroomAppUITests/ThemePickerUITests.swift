@@ -60,12 +60,10 @@ final class ThemePickerUITests: XCTestCase {
   private let darkVariantFile = "Night Owl"
   private let lightVariantFile = "Light Owl"
 
-  private func launchedApp(userThemeDirectory: String? = nil) -> XCUIApplication {
+  private func launchedApp(withUserThemes: Bool = false) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
-    if let userThemeDirectory {
-      app.launchArguments += ["-WorkroomUITestUserThemeDirectory", userThemeDirectory]
-    }
+    if withUserThemes { app.launchArguments += ["-WorkroomUITestUserThemes", "1"] }
     // Start somewhere that is NOT the family under test, so a passing assertion can't be the
     // fixture's starting state.
     app.launchArguments += ["-WorkroomUITestLightTheme", "Workroom Light"]
@@ -435,9 +433,10 @@ final class ThemePickerUITests: XCTestCase {
       "browsing the hidden Light side changed the generated config, so the screen repainted")
   }
 
-  /// Your own theme files in the Light and Dark lists (#737), from a scratch folder under `/tmp`
-  /// handed over with `-WorkroomUITestUserThemeDirectory`, never the real `~/.config`. The appearance
-  /// is Dark, so ⌘⇧K opens the Dark tab:
+  /// Your own theme files in the Light and Dark lists (#737). `-WorkroomUITestUserThemes 1` has the
+  /// app write `UITestFixture.sampleUserThemes` into a scratch folder of its own (this sandboxed runner
+  /// can't create files under `/tmp`), never the real `~/.config`: a dark `My Night`, a dark
+  /// `Ayu Light` and an unparseable `Broken Mine`. The appearance is Dark, so ⌘⇧K opens the Dark tab:
   ///
   /// - a dark file of yours is on the Dark tab, labelled as yours, and choosing it reaches the
   ///   generated config;
@@ -445,18 +444,7 @@ final class ThemePickerUITests: XCTestCase {
   ///   and the Ayu family is hidden from the Family tab while its neighbours stay;
   /// - a file that doesn't parse is listed nowhere.
   func testYourOwnThemeFilesAreListedOnTheirSideAndLabelled() throws {
-    let dir = URL(fileURLWithPath: "/tmp/workroom-uitest-user-themes-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
-    let darkFile = "background = #101418\nforeground = #e0e0e0\n"
-    try darkFile.write(
-      to: dir.appendingPathComponent("My Night"), atomically: true, encoding: .utf8)
-    try darkFile.write(
-      to: dir.appendingPathComponent("Ayu Light"), atomically: true, encoding: .utf8)
-    try "not a theme\n".write(
-      to: dir.appendingPathComponent("Broken Mine"), atomically: true, encoding: .utf8)
-
-    let app = launchedApp(userThemeDirectory: dir.path)
+    let app = launchedApp(withUserThemes: true)
     XCTAssertEqual(
       waitForConfTheme(oneOf: ["Workroom"]), "Workroom", "the fixture's dark theme isn't showing")
 
@@ -466,16 +454,21 @@ final class ThemePickerUITests: XCTestCase {
       "⌘⇧K did not open the picker on the Dark tab")
 
     // The Family tab: Ayu is hidden while its light theme is a dark file; its neighbours stay.
+    // Searched, so the rows asserted on are materialised however long the list is.
     element(app, "theme-picker.tab.family").click()
+    app.typeText("Atom One")
     XCTAssertTrue(
       row(app, "Atom One").waitForExistence(timeout: 3), "the Family tab did not list Atom One")
-    XCTAssertTrue(row(app, "Belafonte").exists, "the Family tab did not list Belafonte")
+    app.typeKey("a", modifierFlags: [.command])
+    app.typeText("Ayu")
+    XCTAssertTrue(
+      row(app, "Atom One").waitForNonExistence(timeout: 3), "the search didn't apply")
     XCTAssertFalse(
       row(app, "Ayu").exists, "Ayu is offered although its light theme is a dark file of yours")
 
-    // The Dark tab: the replacement moved here, labelled; the bundled Ayu Mirage isn't labelled.
+    // The Dark tab, on the same search: the replacement moved here, labelled; the bundled Ayu
+    // Mirage isn't labelled.
     element(app, "theme-picker.tab.dark").click()
-    app.typeText("Ayu")
     XCTAssertTrue(
       element(app, "theme-dark-Ayu Light").waitForExistence(timeout: 3),
       "a dark file called 'Ayu Light' is not on the Dark tab")

@@ -243,6 +243,11 @@ struct ThemePicker: View {
         // and again on each tab, since each tab has a choice of its own. Neither applies anything:
         // only an arrow key or a click does.
         .onAppear { highlightActive(proxy) }
+        // A search shrinks the list under a scroll offset that may sit far past its new end, which
+        // left the list blank, so a search goes back to the top, where its highlight now is.
+        .onChange(of: query) { _, _ in
+          if let first = entries.first { proxy.scrollTo(first.id, anchor: .top) }
+        }
         .onChange(of: tab) { _, _ in highlightActive(proxy) }
       }
     }

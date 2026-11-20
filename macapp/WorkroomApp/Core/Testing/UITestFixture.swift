@@ -1139,26 +1139,37 @@ import WorkroomVCS
       text("WorkroomUITestAppearance").flatMap(AppearanceMode.init(rawValue:))
     }
 
-    /// The user theme directory a fixture launch reads its "own" theme files from
-    /// (`-WorkroomUITestUserThemeDirectory <path>`, #737), so `ThemePickerUITests` can drop theme files
-    /// in a scratch folder under `/tmp` and see them listed. Without it, a fixture launch reads an
-    /// empty, nonexistent per-process folder: never the owner's real `~/.config/ghostty/themes`.
-    ///
-    /// The chrome and the picker read this; libghostty still resolves `theme =` through its own search
-    /// path, so a scratch-folder theme doesn't colour the terminal.
-    static var userThemeDirectory: String? {
-      guard fixtureFlag else { return nil }
-      return text("WorkroomUITestUserThemeDirectory")
-        ?? NSTemporaryDirectory() + "workroom-fixture-no-user-themes-\(getpid())"
-    }
+    /// The user's own theme files a fixture launch lists (`-WorkroomUITestUserThemes 1`, #737): the
+    /// app writes them into a per-process scratch folder, since the sandboxed runner can't create
+    /// files under `/tmp`. `ThemePickerUITests` asserts on exactly these: a dark `My Night`, a dark
+    /// `Ayu Light` (a replacement on the wrong side) and an unparseable `Broken Mine`.
+    static let sampleUserThemes: [String: String] = [
+      "My Night": "background = #101418\nforeground = #e0e0e0\n",
+      "Ayu Light": "background = #101418\nforeground = #e0e0e0\n",
+      "Broken Mine": "not a theme\n",
+    ]
 
-    /// Point the theme catalog at `userThemeDirectory` for the whole launch. Before anything resolves
-    /// a theme (`ThemeService.shared`), from `WorkroomApp.init`. Inert outside fixture mode. Kept out
-    /// of `applyFixtureDefaults`, whose unit tests run it in-process with `active: true`, where a
-    /// process-wide override would leak into every later test.
+    /// Point the theme catalog at a per-process scratch folder for the whole launch: empty, or holding
+    /// `sampleUserThemes` with `-WorkroomUITestUserThemes 1`. A fixture launch never reads the owner's
+    /// real `~/.config/ghostty/themes`. The chrome and the picker read this; libghostty still resolves
+    /// `theme =` through its own search path, so a sample theme doesn't colour the terminal.
+    ///
+    /// Before anything resolves a theme (`ThemeService.shared`), from `WorkroomApp.init`. Inert outside
+    /// fixture mode. Kept out of `applyFixtureDefaults`, whose unit tests run it in-process with
+    /// `active: true`, where a process-wide override would leak into every later test.
     static func applyUserThemeDirectory() {
-      guard let userThemeDirectory else { return }
-      ThemeCatalog.setUserThemeDirectoryForUITesting(userThemeDirectory)
+      guard fixtureFlag else { return }
+      let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("workroom-fixture-user-themes-\(getpid())")
+      try? FileManager.default.removeItem(at: dir)
+      if flag("WorkroomUITestUserThemes") {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        for (name, contents) in sampleUserThemes {
+          try? contents.write(
+            to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+      }
+      ThemeCatalog.setUserThemeDirectoryForUITesting(dir.path)
     }
 
     private static func theme(argument: String, side: ThemeSide) -> String {
