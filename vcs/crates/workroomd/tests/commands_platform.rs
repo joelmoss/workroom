@@ -18,6 +18,12 @@ fn a_mac_only_command_on_a_host_fails_with_mac_only() {
         &["list", "--json"],
         &["ls", "--json"],
         &["base", "set", "main", "--json"],
+        // Ported: the gate comes before the branch name is checked or the project resolved.
+        &["base", "clear", "--json", "--project", "/nonexistent/x"],
+        &["base", "set", "a..b", "--json"],
+        &["host", "set", "{}", "--json", "--project", "/nonexistent/x"],
+        &["host", "set", "null", "--json"],
+        &["host", "clear", "--json", "--workroom", "w"],
         &["add-project", "/tmp/x", "--json"],
         // Ported: the gate comes before its own flags are read, and it writes no tar.
         &["include-archive", "--json"],

@@ -11,7 +11,8 @@
 //! marked "(Mac only)", and failing with `MacOnly` anywhere else. Until its own ticket ports it
 //! (#672–#678), each of those is a stub here; the Go CLI still runs them. `list` and
 //! `base --global` are ported (#671), on `config`, the Rust reader and writer of config.json, and
-//! so is `include-archive` (#675). `update` is ported too (#679), which runs anywhere.
+//! so are `include-archive` (#675) and the rest of `base` and `host` (#673). `update` is ported
+//! too (#679), which runs anywhere.
 //!
 //! The terminal API's commands (#360, ADR 0079) are born here and run anywhere: each is a thin
 //! client of the daemon's terminal API (`terminal_api`).
@@ -27,6 +28,7 @@ mod completion;
 mod config;
 mod envelope;
 mod git;
+mod host;
 mod include_archive;
 mod kind;
 mod list;
@@ -299,7 +301,13 @@ const COMMANDS: &[Command] = &[
         aliases: &[],
         usage: "base",
         short: "Set or clear the branch new workrooms start from",
-        long: None,
+        long: Some(
+            "Set or clear the branch new workrooms start from. BRANCH is a branch on origin, such \
+             as develop, or <remote>/<branch> for another remote, such as upstream/main. Workroom \
+             fetches that remote and uses its copy of the branch, else the local branch. A \
+             project's own base wins over the --global one. Unset, new workrooms start from \
+             origin's default branch.",
+        ),
         hidden: false,
         mac_only: true,
         // Go gives the flags to `set` and `clear`, not to `base` itself.
@@ -550,6 +558,7 @@ const COMMANDS: &[Command] = &[
             ),
         ],
         arity: Arity::Own,
+        implementation: HOST,
         ..stub(
             "host",
             "host",
@@ -688,7 +697,7 @@ const COMMANDS: &[Command] = &[
 ];
 
 const BASE: Implementation = Implementation::Ported(base::run);
-const HOST: Implementation = Implementation::Stub { ticket: "#673" };
+const HOST: Implementation = Implementation::Ported(host::run);
 const TRUST: Implementation = Implementation::Stub { ticket: "#674" };
 
 /// A Mac-only command, shown in `--help`, with no aliases, still the Go CLI's until `ticket`. It
@@ -1338,6 +1347,14 @@ mod tests {
             &["list", "--json", "extra"],
             &["base", "set", "main", "--json"],
             &["base", "set", "--global", "main", "--json"],
+            &["base", "set", "a..b", "--json"],
+            &["base", "set", "--json"],
+            &["base", "clear", "--json", "--project", "/x"],
+            &["base", "clear", "--json", "--bogus"],
+            &["host", "set", "{}", "--json", "--project", "/x"],
+            &["host", "set", "null", "--json"],
+            &["host", "set", "--json"],
+            &["host", "clear", "--json", "--workroom", "w"],
             &["create", "--json", "--no-editor"],
             &["add-project", "/tmp/x", "--json"],
             // Before its required `--output` is checked, and it writes no tar.
