@@ -1438,6 +1438,10 @@ mod tests {
             &["host", "clear", "--json", "--workroom", "w"],
             &["create", "--json", "--no-editor"],
             &["add-project", "/tmp/x", "--json"],
+            // Before its arguments are counted, and it clones and makes nothing.
+            &["add-project", "/x", "/y", "--json"],
+            &["add-project", "/tmp/x", "--json", "--clone", "file:///y"],
+            &["add-project", "/tmp/x", "--json", "--create"],
             // Before its arguments are counted, and it deletes nothing.
             &["delete-project", "/x", "/y", "--json"],
             &[
