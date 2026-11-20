@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use workroomd::cli;
+use workroom::cli;
 
 fn usage() -> &'static str {
     "usage:

@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use workroomd::testing::{
+use workroom::testing::{
     FdStream, PipeTransport, Screens, SessionId, SessionStore, close, handle_connection,
     set_nonblocking,
 };
@@ -579,7 +579,7 @@ fn a_restored_pane_with_a_screen_over_one_frame_still_gets_it_whole() {
     );
     let seen = client.read_until("Close it to start again", Duration::from_secs(10));
     assert!(
-        seen.len() > workroomd::testing::READ_CHUNK,
+        seen.len() > workroom::testing::READ_CHUNK,
         "the record fit in one frame; this test proves nothing about chunking. got {} bytes",
         seen.len()
     );
@@ -1117,7 +1117,7 @@ fn stale_socket(path: &Path) {
     let length = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
     // Or the child can die of SIGKILL before it binds, when another test thread logs its first
     // line as this forks: see `ready_to_fork`.
-    workroomd::testing::ready_to_fork();
+    workroom::testing::ready_to_fork();
     // SAFETY: Between `fork` and `_exit` the child calls only async-signal-safe functions, and
     // allocates nothing: the address was built above.
     let pid = unsafe { libc::fork() };

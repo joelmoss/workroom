@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use workroomd::testing::{
+use workroom::testing::{
     HostOrigin, KEEPALIVE_PROBE, KEEPALIVE_VARIABLE, Screens, SessionId, SessionStore,
     handle_connection,
 };

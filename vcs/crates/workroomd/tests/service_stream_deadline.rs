@@ -16,7 +16,7 @@ use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use workroomd::testing::{
+use workroom::testing::{
     Daemon, FdStream, SessionStore, bind, handle_connection_with, set_nonblocking,
 };
 use wr_protocol::envelope::{Hello, Service};

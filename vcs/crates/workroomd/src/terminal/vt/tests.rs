@@ -1141,7 +1141,7 @@ fn widths_are_what_libghostty_writes() {
 
 /// Not a test: prints the numbers ADR 0051 quotes, so they can be measured again after an
 /// engine bump. Run it in release:
-/// `WORKROOMD_HAS_TERMINAL_STATE=1 cargo test --manifest-path vcs/Cargo.toml -p workroomd
+/// `WORKROOMD_HAS_TERMINAL_STATE=1 cargo test --manifest-path vcs/Cargo.toml -p workroom
 /// --features terminal-state --release --lib measure_shadow_history -- --ignored --nocapture`
 #[test]
 #[ignore = "a measurement, run by hand in release"]

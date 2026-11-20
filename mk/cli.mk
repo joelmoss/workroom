@@ -16,7 +16,7 @@ contract-test: cli-build ## Run the CLI contract suite against bin/workroom (WOR
 	@cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" || { echo "contract-test needs Rust $(VCS_RUST): rustup toolchain install $(VCS_RUST)" >&2; exit 1; }; \
 	export PATH="$$(dirname "$$cargo_bin"):$$PATH"; \
 	WORKROOM_BIN="$(or $(WORKROOM_BIN),$(CURDIR)/bin/workroom)" \
-	  cargo test --manifest-path vcs/Cargo.toml -p workroomd --test commands_contract -- --ignored
+	  cargo test --manifest-path vcs/Cargo.toml -p workroom --test commands_contract -- --ignored
 
 cli-install: ## Install the binary to $GOBIN
 	go install -ldflags "-X main.version=$(VERSION)" .

@@ -8,7 +8,7 @@
 # it: static musl, with terminal-state. CI passes the one its `daemon-linux` job just built. On an
 # Apple Silicon Mac with Docker, build one with:
 #
-#   cargo zigbuild --manifest-path vcs/Cargo.toml --release -p workroomd \
+#   cargo zigbuild --manifest-path vcs/Cargo.toml --release -p workroom \
 #     --features terminal-state --target aarch64-unknown-linux-musl
 #
 # (with rustup's toolchain and the pinned Zig first on PATH; see test-linux.sh for why).
@@ -222,10 +222,10 @@ if [ "$#" -eq 0 ]; then
   # variant's tests switch the box's logind and linger, so they share it one at a time too.
   cd "$VCS_DIR"
   if [ "$SYSTEMD" = 1 ]; then
-    set -- cargo test -p workroomd --test remote_transport over_ssh_systemd_ -- --ignored \
+    set -- cargo test -p workroom --test remote_transport over_ssh_systemd_ -- --ignored \
       --test-threads=1
   else
-    set -- cargo test -p workroomd --test remote_transport -- --ignored \
+    set -- cargo test -p workroom --test remote_transport -- --ignored \
       --skip over_ssh_systemd_ --test-threads=1
   fi
 fi

@@ -145,8 +145,8 @@ for target in "${TARGETS[@]}"; do
   #
   # The library is cached per (engine sha, target) outside the repo, so only the first build of a
   # given pin pays for it; see vcs/scripts/build-ghostty-vt.sh.
-  ( cd "$CARGO_DIR" && $CARGO build --release -p workroomd --features "$DAEMON_FEATURES" --target "$target" )
-  cp -f "$OUT_ROOT/$target/release/$HELPER_NAME" "$SLICE_DIR/${HELPER_NAME}-slice-$target"
+  ( cd "$CARGO_DIR" && $CARGO build --release -p workroom --features "$DAEMON_FEATURES" --target "$target" )
+  cp -f "$OUT_ROOT/$target/release/workroom" "$SLICE_DIR/${HELPER_NAME}-slice-$target"
   SLICES+=("$SLICE_DIR/${HELPER_NAME}-slice-$target")
 done
 
@@ -233,7 +233,7 @@ mkdir -p "$RES_DIR"
 for arch in $LINUX_ARCHES; do
   target="$arch-unknown-linux-musl"
   echo "Building $HELPER_NAME ($target) -> $RES_DIR/${HELPER_NAME}-linux-$arch"
-  ( cd "$CARGO_DIR" && PATH="$LINUX_PATH" cargo zigbuild --release -p workroomd \
+  ( cd "$CARGO_DIR" && PATH="$LINUX_PATH" cargo zigbuild --release -p workroom \
     --features "$DAEMON_FEATURES" --target "$target" )
-  cp -f "$OUT_ROOT/$target/release/$HELPER_NAME" "$RES_DIR/${HELPER_NAME}-linux-$arch"
+  cp -f "$OUT_ROOT/$target/release/workroom" "$RES_DIR/${HELPER_NAME}-linux-$arch"
 done

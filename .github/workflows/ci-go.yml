@@ -129,4 +129,4 @@ jobs:
       - name: Contract suite
         run: |
           WORKROOM_BIN="$RUNNER_TEMP/workroom" cargo test --manifest-path vcs/Cargo.toml \
-            -p workroomd --test commands_contract -- --ignored
+            -p workroom --test commands_contract -- --ignored
