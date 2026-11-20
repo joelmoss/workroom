@@ -3505,7 +3505,10 @@ const CLAIM_MINE_AFTER: &str = r#"{
 /// rewrites neither file; nor does a run with no provisioner or one naming this config itself.
 /// `--pretend` is no dry run here, as in Go. Without `--json` a success prints nothing.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn claim_provisioned_moves_a_builds_entries_between_configs() {
     let home = Home::new("claim-moves");
     let shared = home.path("shared.json");
@@ -3618,7 +3621,10 @@ fn claim_provisioned_moves_a_builds_entries_between_configs() {
 
 /// A shared config that doesn't exist holds nothing to claim, and no file is made for it.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn claim_provisioned_from_a_missing_config_moves_nothing() {
     let home = Home::new("claim-missing");
     let missing = home.path("missing.json");
@@ -3642,7 +3648,10 @@ fn claim_provisioned_from_a_missing_config_moves_nothing() {
 /// Both flags are required and it takes no argument: usage errors, so the envelope names no
 /// command.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn claim_provisioned_refuses_missing_flags_and_arguments() {
     let home = Home::new("claim-usage");
     for (args, message) in [
@@ -3679,7 +3688,10 @@ fn claim_provisioned_refuses_missing_flags_and_arguments() {
 /// A config it can't read, either one, or this one it can't write, fails the claim with the shared
 /// config left as it was.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn claim_provisioned_reports_a_config_it_cant_read_or_write() {
     use std::os::unix::fs::PermissionsExt;
     let home = Home::new("claim-config-errors");

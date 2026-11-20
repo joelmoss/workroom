@@ -24,6 +24,7 @@
 mod api;
 mod base;
 pub(crate) mod channel;
+mod claim;
 mod complete;
 mod completion;
 mod config;
@@ -395,6 +396,7 @@ const COMMANDS: &[Command] = &[
     },
     Command {
         hidden: true,
+        implementation: Implementation::Ported(claim::run),
         ..stub(
             "claim-provisioned",
             "claim-provisioned",
