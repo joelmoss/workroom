@@ -59,7 +59,7 @@ fn help_marks_the_mac_only_commands_and_lists_them_everywhere() {
             .unwrap_or_else(|| panic!("{name} isn't in --help:\n{help}"));
         assert!(line.ends_with(" (Mac only)"), "{line:?}");
     }
-    for name in ["version", "update"] {
+    for name in ["version", "update", "completion"] {
         assert!(
             help.lines()
                 .any(|line| line.trim_start().starts_with(&format!("{name} "))
