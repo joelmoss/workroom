@@ -21,7 +21,7 @@ struct RootView: View {
   @Environment(\.openSettings) private var openSettings
   /// Drives the title-bar accessory's dim while a dialog is up, matched to `DialogOverlay`'s backdrop.
   @Environment(\.colorScheme) private var colorScheme
-  @Default(.theme) private var theme
+  @Default(.appearance) private var appearance
   /// Whether the right-hand inspector (Changes / Files / Pull Request) is open. `@Default` (not
   /// `@State`) so the View-menu command (WorkroomCommands) toggles the same value.
   @Default(.showInspector) private var showInspector
@@ -423,7 +423,7 @@ struct RootView: View {
         applyAppearance()
       }
       .onDisappear { ThemeService.shared.unregisterTerminals(store.terminals) }
-      .onChange(of: theme) { _ in applyAppearance() }
+      .onChange(of: appearance) { _ in applyAppearance() }
       // The theme picker is deliberately NOT here: it's a dropdown anchored to a toolbar button
       // (`TrailingTitlebarBar`), because a sheet is the wrong shape for a live preview.
       .modifier(WhatsNewLaunchCheck(store: store, presented: $whatsNewShown))
@@ -488,7 +488,7 @@ struct RootView: View {
   /// only those currently in a window get AppKit's change hook — so sweep them all explicitly
   /// (see `TerminalPanes.applyThemeToAll`).
   private func applyAppearance() {
-    NSApp.appearance = theme.nsAppearance
+    NSApp.appearance = appearance.nsAppearance
     // Route through the single chokepoint: recomputes chrome tokens for the (possibly flipped)
     // active variant, re-themes live terminals, and notifies AppKit sites. `force` because an
     // appearance/preference change must always re-theme even if `dark` is unchanged.

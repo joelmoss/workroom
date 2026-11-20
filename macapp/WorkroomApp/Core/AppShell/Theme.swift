@@ -8,11 +8,11 @@ import SwiftUI
 // `tokens.focused` / `tokens.terminalDim` from `@Environment(\.themeTokens)`; AppKit sites read
 // `ThemeService.shared`.
 
-/// The user's appearance choice. Persisted via `Defaults[.theme]`; `.system` (the default)
+/// The user's appearance choice. Persisted via `Defaults[.appearance]`; `.system` (the default)
 /// follows the OS appearance, while `.light`/`.dark` force a scheme. `PreferRawRepresentable`
 /// stores the bare raw string (e.g. "system") — matching the old `@AppStorage` encoding, so
 /// existing choices survive the upgrade — rather than Defaults' default Codable/JSON bridge.
-enum ThemePreference: String, CaseIterable, Defaults.Serializable, Defaults.PreferRawRepresentable {
+enum AppearanceMode: String, CaseIterable, Defaults.Serializable, Defaults.PreferRawRepresentable {
   case system
   case light
   case dark
@@ -49,7 +49,7 @@ enum ThemePreference: String, CaseIterable, Defaults.Serializable, Defaults.Pref
   }
 
   /// The next mode when the toggle is clicked: System → Light → Dark → System.
-  var next: ThemePreference {
+  var next: AppearanceMode {
     let all = Self.allCases
     return all[(all.firstIndex(of: self)! + 1) % all.count]
   }
@@ -58,7 +58,7 @@ enum ThemePreference: String, CaseIterable, Defaults.Serializable, Defaults.Pref
   /// dark/light toggle (⌘⇧L, issue #57). `.light`/`.dark` flip to their opposite; `.system` resolves
   /// the live OS appearance first, so the toggle always inverts what's on screen. Always a forced
   /// mode (never `.system`), so repeated presses flip cleanly between light and dark.
-  @MainActor var toggledLightDark: ThemePreference {
+  @MainActor var toggledLightDark: AppearanceMode {
     switch self {
     case .light: return .dark
     case .dark: return .light

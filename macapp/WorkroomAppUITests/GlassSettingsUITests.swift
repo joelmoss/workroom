@@ -6,13 +6,13 @@ import XCTest
 final class GlassSettingsUITests: XCTestCase {
   override func setUpWithError() throws { continueAfterFailure = false }
 
-  /// - Parameter appearance: a forced `ThemePreference` raw value ("light", "dark"), or nil for
+  /// - Parameter appearance: a forced `AppearanceMode` raw value ("light", "dark"), or nil for
   ///   whatever the preference holds. A launch argument only shadows the preference, so it never
   ///   changes what a later launch sees.
   private func launchedApp(appearance: String? = nil) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
-    if let appearance { app.launchArguments += ["-themePreference", appearance] }
+    if let appearance { app.launchArguments += ["-appearance", appearance] }
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
     app.activate()

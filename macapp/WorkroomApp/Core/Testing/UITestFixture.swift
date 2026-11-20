@@ -693,7 +693,7 @@ import WorkroomVCS
 
     /// Explicit starting value for `hasCompletedOnboarding`, written FROM INSIDE the app itself
     /// (`-WorkroomUITestOnboardingSeed true|false`) — the same pattern every other fixture pin already
-    /// uses (`themeFamily`, `sidebarWidth`, etc: the app writes what it's about to read, no external
+    /// uses (`lightTheme`, `sidebarWidth`, etc: the app writes what it's about to read, no external
     /// process in between). An external `defaults write` from the TEST process, confirmed via its own
     /// readback, was tried first for seeding the persistence tests' starting state and empirically
     /// does NOT reliably reach a freshly xcodebuild-test-launched app's own `UserDefaults` read moments
@@ -1115,19 +1115,26 @@ import WorkroomVCS
       return true
     }
 
-    /// The theme family every fixture launch starts on
-    /// (`-WorkroomUITestThemeFamily "<family name>"`). Unset (or unknown) = the `Workroom` default.
+    /// The light theme and the dark theme every fixture launch starts on
+    /// (`-WorkroomUITestLightTheme "<theme name>"`, `-WorkroomUITestDarkTheme "<theme name>"`, #733).
+    /// Each side on its own: unset, or not a bundled theme on that side, is Workroom's theme for it.
     ///
     /// This exists so `ThemePickerUITests` never has to touch the theme preference from the *runner*
     /// process. `Defaults` is not isolated by a throwaway `$HOME` — cfprefsd resolves the real one — so
     /// a runner-side save/restore would be writing the developer's actual pref and racing the app for
-    /// it. And a bare `-themeFamily` launch argument is worse than useless: argument-domain values
+    /// it. And a bare `-lightTheme` launch argument is worse than useless: argument-domain values
     /// outrank the app domain, so it would pin the theme and shadow every later write, exactly as
     /// documented for `showInspector` above. A fixture-namespaced argument mirrored into `Defaults` by
     /// `applyFixtureDefaults` avoids both traps.
-    static var themeFamily: String {
-      let raw = text("WorkroomUITestThemeFamily") ?? ""
-      return ThemeCatalog.family(named: raw) != nil ? raw : ThemeCatalog.defaultFamilyName
+    static var lightTheme: String { theme(argument: "WorkroomUITestLightTheme", side: .light) }
+
+    /// See `lightTheme`.
+    static var darkTheme: String { theme(argument: "WorkroomUITestDarkTheme", side: .dark) }
+
+    private static func theme(argument: String, side: ThemeSide) -> String {
+      let raw = text(argument) ?? ""
+      let bundled = ThemeCatalog.bundledThemes.contains { $0.name == raw && $0.side == side }
+      return bundled ? raw : ThemeCatalog.defaultFamily.theme(for: side)
     }
 
     /// Force a deterministic **UI** state in fixture mode: the inspector open, parked on
@@ -1195,11 +1202,12 @@ import WorkroomVCS
       // Called from the App's init, on the main thread.
       UserDefaults.app.removeObject(forKey: Shortcuts.overridesKey)
       MainActor.assumeIsolated { Shortcuts.shared.refreshSystemSettings() }
-      // The theme family, for the same reason as the collapse state and the fetch stamps: it PERSISTS.
-      // Without this a theme test inherits whatever the developer last picked, and a test that applies
-      // a theme leaves it applied for the next run.
-      Defaults[.themeFamily] = themeFamily
-      // Unfocused-pane dimming, for the same reason as `themeFamily`: it PERSISTS in the real Dev
+      // The light and dark themes, for the same reason as the collapse state and the fetch stamps:
+      // they PERSIST. Without this a theme test inherits whatever the developer last picked, and a
+      // test that applies a theme leaves it applied for the next run.
+      Defaults[.lightTheme] = lightTheme
+      Defaults[.darkTheme] = darkTheme
+      // Unfocused-pane dimming, for the same reason as the themes: it PERSISTS in the real Dev
       // domain, and it decides whether the pane scrim, the terminal tab strip and the pane header render
       // at full contrast or 0.45 — so a developer who turns it off once silently rebaselines every later
       // fixture launch and every screenshot taken from one (issue #162 review).
@@ -1207,7 +1215,7 @@ import WorkroomVCS
       // Auto-even splits: same persistence trap, and it decides where every divider in a split lands
       // (issue #126) — an unpinned value rebaselines any test or screenshot that measures panes.
       Defaults[.autoResizeSplitsEvenly] = autoResizeSplitsEvenly
-      // Pinned "already onboarded" for the same reason as `themeFamily`/`diffViewMode` above: the flag
+      // Pinned "already onboarded" for the same reason as `lightTheme`/`diffViewMode` above: the flag
       // PERSISTS in the real Dev `Defaults` domain, so a fresh machine with zero registered projects
       // would otherwise pop the onboarding wizard (issue #151) over e.g. `NewWorkroomDialogUITests`'
       // `-WorkroomUITestNoProjects 1` scenario. A test that wants onboarding itself passes

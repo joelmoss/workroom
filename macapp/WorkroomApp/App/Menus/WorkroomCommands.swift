@@ -65,9 +65,9 @@ struct WorkroomCommands: Commands {
   // dialog's "Don't ask me again", so the File-menu checkmark reflects — and drives — all three;
   // AppStore reads it in requestCloseTerminalTab.
   @Default(.confirmOnCloseTerminal) private var confirmOnCloseTerminal
-  // Drives the quick dark/light toggle (⌘⇧L, issue #57). RootView's `.onChange(of: theme)` applies
+  // Drives the quick dark/light toggle (⌘⇧L, issue #57). RootView's `.onChange(of: appearance)` applies
   // it through the single theme chokepoint; same key as the sidebar's 3-state cycle button.
-  @Default(.theme) private var theme
+  @Default(.appearance) private var appearance
   /// The saved shortcut changes (#148). Never read for its value: holding it re-runs this body when
   /// Settings saves one, which Observation of `Shortcuts.shared` alone doesn't do for `Commands`.
   @Default(.shortcutOverridesRaw) private var shortcutOverrides
@@ -445,8 +445,8 @@ struct WorkroomCommands: Commands {
       // it resolves the live OS appearance first, so it always inverts what's on screen and lands on
       // a forced mode — repeat presses then flip cleanly (the sidebar button still cycles back to
       // System). Title names the destination so the menu reads as the action it performs.
-      Button(theme.toggledLightDark.label + " Mode") {
-        theme = theme.toggledLightDark
+      Button(appearance.toggledLightDark.label + " Mode") {
+        appearance = appearance.toggledLightDark
       }
       .shortcut(.toggleLightDark)
       .disabled(modalBlocked)
