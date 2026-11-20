@@ -115,9 +115,20 @@ pub(super) fn daemon_above() -> Option<String> {
     })
 }
 
-/// The socket `argv` serves, when it is a daemon's (`serve --socket <path>`).
+/// The binary names a daemon runs as: `workroom` (ADR 0078), and `workroomd`, which the app's
+/// bundle and every host install still call it.
+const DAEMON_NAMES: &[&str] = &["workroom", "workroomd"];
+
+/// The socket `argv` serves, when it is a daemon's: `<binary> serve --socket <path>`, its binary
+/// named as [`DAEMON_NAMES`], so another program that happens to take the same arguments is not
+/// mistaken for one.
 pub(super) fn served_socket(argv: &[String]) -> Option<String> {
-    if argv.get(1).map(String::as_str) != Some("serve") {
+    let named = argv
+        .first()
+        .and_then(|program| std::path::Path::new(program).file_name())
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|name| DAEMON_NAMES.contains(&name));
+    if !named || argv.get(1).map(String::as_str) != Some("serve") {
         return None;
     }
     let at = argv.iter().position(|argument| argument == "--socket")?;

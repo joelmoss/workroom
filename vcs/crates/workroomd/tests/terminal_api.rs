@@ -515,7 +515,10 @@ fn a_pane_without_its_variables_is_known_across_a_hand_off() {
     assert!(started.exists());
     drop(shell);
 
-    let next = workspace.dir.join("next-workroom");
+    // Named `workroom`, as an installed one is: the CLI takes a parent for a daemon only when its
+    // binary is named as one.
+    let next = workspace.dir.join("next").join("workroom");
+    std::fs::create_dir(workspace.dir.join("next")).expect("a folder for the next program");
     common::copy_daemon_binary(&next);
     let output = Command::new(common::daemon_binary())
         .args(["hand-off", "--socket"])
