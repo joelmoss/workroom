@@ -2097,7 +2097,14 @@ fn wait_for_a_run_state_with_its_exit_code() {
         mismatch.1["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("exited with 1, not 0"),
+            .contains("exited with code 1, not 0"),
+        "{}",
+        mismatch.1
+    );
+    // The code it did exit with, for a script to read.
+    assert_eq!(
+        mismatch.1["error"]["details"],
+        json!({"exit_code": 1}),
         "{}",
         mismatch.1
     );

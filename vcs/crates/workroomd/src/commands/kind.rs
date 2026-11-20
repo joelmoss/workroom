@@ -216,6 +216,9 @@ pub(crate) struct CliError {
     pub(crate) message: String,
     /// The sessions an ambiguous terminal API target matched, as the daemon listed them.
     pub(crate) matches: Vec<serde_json::Value>,
+    /// What a terminal API error says beside its message (its `details`), such as the code an
+    /// `ExitCodeMismatch` run exited with. Boxed, as most errors have none.
+    pub(crate) details: Option<Box<serde_json::Value>>,
     /// The script a `ScriptNotTrusted` refused, as the envelope's `script` carries it for the app
     /// to show and approve.
     pub(crate) script: Option<Box<ScriptPayload>>,
@@ -227,6 +230,7 @@ impl CliError {
             kind,
             message: message.into(),
             matches: Vec::new(),
+            details: None,
             script: None,
         }
     }

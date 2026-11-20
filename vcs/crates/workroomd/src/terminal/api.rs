@@ -108,6 +108,9 @@ pub struct ApiError {
     pub message: String,
     /// The sessions an ambiguous target matched, in the listing's shape.
     pub matches: Vec<Value>,
+    /// What the kind says beside its message, for a script to read: `ExitCodeMismatch`'s
+    /// `exit_code`.
+    pub details: Option<Value>,
 }
 
 impl ApiError {
@@ -116,6 +119,7 @@ impl ApiError {
             kind,
             message: message.into(),
             matches: Vec::new(),
+            details: None,
         }
     }
 
@@ -127,6 +131,9 @@ impl ApiError {
         let mut error = json!({"kind": self.kind, "message": self.message});
         if !self.matches.is_empty() {
             error["matches"] = Value::Array(self.matches.clone());
+        }
+        if let Some(details) = &self.details {
+            error["details"] = details.clone();
         }
         error
     }
@@ -793,6 +800,12 @@ pub fn error_schema() -> Value {
                 "message": "\"tests\" matches 2 sessions; name one by its id",
                 "matches": matches,
             }),
+            json!({
+                "kind": kind::EXIT_CODE_MISMATCH,
+                "message": "session c0ffee00-1111-4222-8333-44445555beef's run exited with code 1, \
+                            not 0",
+                "details": {"exit_code": 1},
+            }),
         ],
     )
 }
@@ -808,6 +821,15 @@ fn error_fields() -> Value {
                 "type": "array",
                 "items": session_schema(),
                 "description": "The sessions an ambiguous target matched.",
+            },
+            "details": {
+                "type": "object",
+                "description": "What some kinds say beside the message, for a script to read: \
+                                `ExitCodeMismatch`'s `exit_code`, the code the run exited with \
+                                (null when it is unknown).",
+                "properties": {
+                    "exit_code": {"type": ["integer", "null"]},
+                },
             },
         },
     })
@@ -908,6 +930,7 @@ pub fn resolve(sessions: &[Value], target: &str) -> Result<Value, ApiError> {
                         several.len()
                     ),
                     matches: several.iter().map(|session| (*session).clone()).collect(),
+                    details: None,
                 });
             }
         }

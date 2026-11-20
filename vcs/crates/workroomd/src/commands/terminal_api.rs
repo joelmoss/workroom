@@ -127,6 +127,10 @@ pub(super) fn stream(
                 error["message"].as_str().unwrap_or("the daemon refused"),
             );
             failure.matches = error["matches"].as_array().cloned().unwrap_or_default();
+            failure.details = error
+                .get("details")
+                .filter(|details| details.is_object())
+                .map(|details| Box::new(details.clone()));
             return Err(failure);
         }
         let replied = Replied {
