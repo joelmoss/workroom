@@ -241,3 +241,37 @@ fn reports_reach_the_store_and_a_prompt_ends_them() {
     assert_eq!(status["records"], serde_json::json!([]));
     assert_eq!(status["reporting"], false);
 }
+
+/// Two quick commands whose ends arrive in one read: a wait for the next command to finish,
+/// started before that read, answers with the first's exit code, the one that failed, not the
+/// last's (#690).
+#[test]
+fn a_wait_for_the_next_command_hears_the_first_of_two_in_one_read() {
+    use crate::terminal::wait::{Condition, Met, Outcome, Seen, Waiter};
+    let mut shadow = Shadow::new(80, 24);
+    shadow.write_from_pty(b"\x1b]133;A\x07$ ", || Some(0));
+    let waiter = Waiter::new(Condition::CommandFinished, shadow.seen());
+    assert_eq!(waiter.outcome(), None);
+    shadow.write_from_pty(
+        b"\x1b]133;C\x07false\r\n\x1b]133;D;1\x07\x1b]133;A\x07$ \x1b]133;C\x07true\r\n\
+          \x1b]133;D;0\x07\x1b]133;A\x07$ ",
+        || Some(0),
+    );
+    waiter.shadow(&shadow.seen_after_read());
+    assert_eq!(
+        waiter.outcome(),
+        Some(Outcome::Met(Met::CommandFinished(Some(1))))
+    );
+    // One started between the two hears the second.
+    let later = Seen {
+        commands: 1,
+        exits: vec![1],
+        ..Seen::default()
+    };
+    let waiter = Waiter::new(Condition::CommandFinished, later);
+    waiter.shadow(&shadow.seen());
+    assert_eq!(
+        waiter.outcome(),
+        Some(Outcome::Met(Met::CommandFinished(Some(0))))
+    );
+}

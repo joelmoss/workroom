@@ -164,8 +164,15 @@ pub struct Shadow {
 #[derive(Default)]
 struct Marks {
     commands: u64,
-    last_exit: Option<i32>,
+    /// The last commands' exit codes, oldest first, at most `RECENT_EXITS`: every one that ended
+    /// in a read, in order, so a wait hears of the first, not only the last.
+    exits: std::collections::VecDeque<i32>,
 }
+
+/// The most recent commands' exit codes the shadow keeps for the waits (`wait::Seen::exits`):
+/// more than end within one read, unless a shell prints that many prompts in one.
+#[cfg(feature = "terminal-state")]
+const RECENT_EXITS: usize = 64;
 
 #[cfg(feature = "terminal-state")]
 impl Marks {
@@ -175,7 +182,10 @@ impl Marks {
         for event in events {
             if let Event::Command { exit_code, .. } = event {
                 self.commands += 1;
-                self.last_exit = Some(*exit_code);
+                if self.exits.len() == RECENT_EXITS {
+                    self.exits.pop_front();
+                }
+                self.exits.push_back(*exit_code);
             }
         }
     }
@@ -435,7 +445,7 @@ impl Shadow {
             passed: Vec::new(),
             shell_marks: self.status.shell_marks(),
             commands: self.marks.commands,
-            last_exit: self.marks.last_exit,
+            exits: self.marks.exits.iter().copied().collect(),
         }
     }
 

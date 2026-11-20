@@ -103,8 +103,19 @@ pub struct Seen {
     pub shell_marks: bool,
     /// How many commands the shell has ended (OSC 133 D after a C) since the daemon started it.
     pub commands: u64,
-    /// The last of them's exit code.
-    pub last_exit: Option<i32>,
+    /// The exit codes of the last of them, oldest first, as many as the shadow keeps
+    /// (`shadow::RECENT_EXITS`): the last is that of the `commands`th. Several end within one
+    /// read when commands are quick, and a wait for the next to finish answers with the first's.
+    pub exits: Vec<i32>,
+}
+
+impl Seen {
+    /// The exit code of the `nth` command the shell ended (from 1), while it is among the recent.
+    fn exit_of(&self, nth: u64) -> Option<i32> {
+        let back = usize::try_from(self.commands.checked_sub(nth)?).ok()?;
+        let at = self.exits.len().checked_sub(back + 1)?;
+        self.exits.get(at).copied()
+    }
 }
 
 /// How a wait ended.
@@ -312,9 +323,10 @@ impl Waiter {
             {
                 Some(Met::Status(wanted))
             }
-            Wanted::CommandFinished if seen.commands > progress.commands_before => {
-                Some(Met::CommandFinished(seen.last_exit))
-            }
+            // The first command to end after the wait started, however many ended since.
+            Wanted::CommandFinished if seen.commands > progress.commands_before => Some(
+                Met::CommandFinished(seen.exit_of(progress.commands_before + 1)),
+            ),
             _ => None,
         }
     }
