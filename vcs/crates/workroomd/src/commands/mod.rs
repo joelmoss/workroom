@@ -488,7 +488,7 @@ impl Output {
     }
 }
 
-/// Runs `args` in `context`, whose global flags the run sets. Separate from [`dispatch`] so a test
+/// Runs `args` in `context`, whose global flags the run sets. Separate from [`run_cli`] so a test
 /// can choose the platform and the environment.
 fn run(args: &[String], mut context: Context) -> Output {
     // The command is the first argument that isn't a flag, as Go finds it before parsing.
