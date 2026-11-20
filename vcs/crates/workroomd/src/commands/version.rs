@@ -11,7 +11,7 @@ use super::{Context, Outcome};
 const CONFIG_SCHEMA_VERSION: u32 = 2;
 
 /// The channel when config names none.
-const DEFAULT_CHANNEL: &str = "stable";
+const DEFAULT_CHANNEL: &str = super::channel::Channel::Stable.as_str();
 
 #[derive(Serialize)]
 struct Payload<'a> {

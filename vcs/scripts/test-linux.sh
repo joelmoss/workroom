@@ -20,6 +20,9 @@ cd "$(dirname "$0")/.."
 # THIS machine. The container mounts the vcs tree read-only at that same path so they resolve.
 VCS_DIR="$(pwd)"
 TESTDATA_DIR="$(cd ../testdata && pwd)"
+# The CLI's tests read Go's sources of truth too: internal/errs/errs.go (the kind registry) and
+# internal/channel/testdata/channel_cases.tsv (the shared channel fixture).
+INTERNAL_DIR="$(cd ../internal && pwd)"
 
 # macOS still ships bash 3.2, where an EMPTY array is "unbound" under `set -u` and neither
 # `mapfile` nor `declare -A` exists. build-helper.sh documents the same trap. So: expand arrays
@@ -216,6 +219,7 @@ echo "test-linux: running on $RUNTIME ($IMAGE)"
   --volume "$STAGE:/tests" \
   --volume "$VCS_DIR:$VCS_DIR:ro" \
   --volume "$TESTDATA_DIR:$TESTDATA_DIR:ro" \
+  --volume "$INTERNAL_DIR:$INTERNAL_DIR:ro" \
   --env WORKROOMD_BIN=/tests/workroomd \
   --env "WORKROOMD_HAS_TERMINAL_STATE=${WORKROOMD_HAS_TERMINAL_STATE:-}" \
   --env "WR_TEST_SHELL=/bin/sh" \
