@@ -7,6 +7,7 @@ pub mod hand_off;
 pub mod list;
 pub mod program_status;
 pub mod relay;
+pub mod route;
 pub mod run_script;
 pub mod run_supervisor;
 pub mod serve;

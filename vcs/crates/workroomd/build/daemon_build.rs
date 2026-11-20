@@ -1,7 +1,8 @@
 //! The daemon build identity (#680, ADR 0078): a hash of everything the daemon is built from
 //! except the CLI's `commands` module, so a change to CLI commands alone is the same daemon and a
 //! running one is not handed off for it. `build.rs` stamps it into the binary; `protocol` states it
-//! as `daemon-build <hash>`, and a daemon offered a binary compares it with its own.
+//! as `daemon-build <hash>`, and a daemon offered a binary compares it with its own. So nothing a
+//! daemon runs may be in that module: which arguments are the daemon's is `src/cli/route.rs`'s.
 //!
 //! Loaded by `build.rs` and by `tests/daemon_build.rs`, so it uses std alone: a build dependency
 //! would itself be a change to `Cargo.lock`, and SHA-256 is short.

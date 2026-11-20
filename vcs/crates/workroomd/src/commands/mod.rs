@@ -1,7 +1,7 @@
 //! The CLI's commands (ADR 0078): `workroom <command>` runs one and exits, as the Go CLI did,
 //! in its own process and never inside the daemon. The daemon's own subcommands (`serve`, `attach`,
-//! `list --socket` and the rest that ADR 0057 pins) are still `main.rs`'s; [`dispatch`] leaves
-//! them alone.
+//! `list --socket` and the rest that ADR 0057 pins) are still `main.rs`'s, which sends only the
+//! rest to [`run_cli`].
 //!
 //! Every command keeps ADR 0013's contract, byte for byte as Go wrote it: one envelope on stdout
 //! under `--json` (`envelope`), NDJSON logs on stderr (`log`), and a stable `kind` and exit
@@ -36,21 +36,6 @@ pub(crate) const BAKED_CHANNEL: Option<&str> = match option_env!("WORKROOM_RELEA
     Some(channel) if !channel.is_empty() => Some(channel),
     _ => None,
 };
-
-/// The daemon's own subcommands, which `main.rs` runs (ADR 0057 pins their names). `list` is
-/// the daemon's only with `--socket`; without it, it is the CLI's workroom list.
-const DAEMON_SUBCOMMANDS: &[&str] = &[
-    "serve",
-    "attach",
-    "relay",
-    "program-status",
-    "hand-off",
-    "handoff-check",
-    "credential",
-    "run-script",
-    "run-supervisor",
-    "protocol",
-];
 
 /// Where a command can run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -263,19 +248,9 @@ fn find(name: &str) -> Option<&'static Command> {
         .find(|command| command.name == name || command.aliases.contains(&name))
 }
 
-/// Runs the CLI command `args` names and returns its exit code, or `None` when `args` are one of
-/// the daemon's subcommands, for `main.rs` to run as before.
-pub fn dispatch(args: &[OsString]) -> Option<ExitCode> {
-    let first = args.first().and_then(|arg| arg.to_str());
-    let socket = args.iter().any(|arg| {
-        let arg = arg.to_string_lossy();
-        arg == "--socket" || arg.starts_with("--socket=")
-    });
-    match first {
-        Some(name) if DAEMON_SUBCOMMANDS.contains(&name) => return None,
-        Some("list") if socket => return None,
-        _ => {}
-    }
+/// Runs the CLI command `args` names and returns its exit code. `main.rs` calls it only for what
+/// is not one of the daemon's subcommands (`crate::cli::route`).
+pub fn run_cli(args: &[OsString]) -> ExitCode {
     // As Go reads os.Args: bytes, with each one that isn't UTF-8 read as U+FFFD.
     let args: Vec<String> = args
         .iter()
@@ -289,7 +264,7 @@ pub fn dispatch(args: &[OsString]) -> Option<ExitCode> {
     let output = run(&args, &context);
     let _ = std::io::stdout().write_all(output.stdout.as_bytes());
     let _ = std::io::stderr().write_all(output.stderr.as_bytes());
-    Some(ExitCode::from(output.code))
+    ExitCode::from(output.code)
 }
 
 /// The global flags, and what is left once they are taken out.
@@ -625,15 +600,6 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("list, ls, l"), "{text}");
-    }
-
-    #[test]
-    fn the_daemons_subcommands_are_left_to_main() {
-        let args = |list: &[&str]| list.iter().map(OsString::from).collect::<Vec<_>>();
-        assert!(dispatch(&args(&["serve", "--socket", "/x"])).is_none());
-        assert!(dispatch(&args(&["list", "--socket", "/x"])).is_none());
-        assert!(dispatch(&args(&["list", "--socket=/x"])).is_none());
-        assert!(dispatch(&args(&["protocol"])).is_none());
     }
 
     #[test]

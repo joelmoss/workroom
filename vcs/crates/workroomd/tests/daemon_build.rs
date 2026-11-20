@@ -29,6 +29,8 @@ fn tree(root: &Path) {
         ("crates/workroomd/build.rs", "fn main() {}\n"),
         ("crates/workroomd/build/daemon_build.rs", "// the hash\n"),
         ("crates/workroomd/src/lib.rs", "pub mod commands;\n"),
+        ("crates/workroomd/src/main.rs", "fn main() {}\n"),
+        ("crates/workroomd/src/cli/route.rs", "// route\n"),
         ("crates/workroomd/src/daemon/serve.rs", "// serve\n"),
         ("crates/workroomd/src/run_supervisor.sh", "#!/bin/sh\n"),
         ("crates/workroomd/src/commands/mod.rs", "// commands\n"),
@@ -103,6 +105,33 @@ fn tests_and_hidden_files_keep_the_daemon_build() {
     ] {
         assert_eq!(
             hash_after(&format!("daemon-build-keeps-{name}"), path, "// changed\n"),
+            base,
+            "{path}"
+        );
+    }
+}
+
+/// Which arguments are the daemon's and which the CLI's is decided before either runs, on every
+/// daemon start and in every child a daemon starts from its own file: a slip there that sends a
+/// daemon subcommand to the CLI would break the daemon, so it is the daemon's code, outside the
+/// commands module, and changes the daemon build.
+#[test]
+fn the_routing_between_the_cli_and_the_daemon_changes_the_daemon_build() {
+    // The made-up tree holds the real routing's path, so this follows it if it moves.
+    let real = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/route.rs");
+    let source = std::fs::read_to_string(&real).expect("the routing is at src/cli/route.rs");
+    assert!(source.contains("DAEMON_SUBCOMMANDS"), "{}", real.display());
+    let base = base_hash();
+    for (name, path) in [
+        ("route", "crates/workroomd/src/cli/route.rs"),
+        ("main", "crates/workroomd/src/main.rs"),
+    ] {
+        assert_ne!(
+            hash_after(
+                &format!("daemon-build-routing-{name}"),
+                path,
+                "// changed\n"
+            ),
             base,
             "{path}"
         );
