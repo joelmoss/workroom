@@ -83,9 +83,8 @@ pub struct Method {
     pub output: fn() -> Value,
     /// The error kinds it can reply with, beyond `InvalidRequest`, which any method can.
     pub errors: &'static [&'static str],
-    /// A `params` it accepts, for `api.describe`, which also lists it under the input schema's
-    /// `examples`.
-    pub example: fn() -> Value,
+    /// A `params` it accepts, which `api.describe` lists under the input schema's `examples`.
+    pub params_example: fn() -> Value,
     /// A `result` it replies with, which `api.describe` lists under the output schema's `examples`.
     pub result_example: fn() -> Value,
     run: fn(&SessionStore, &Value) -> Result<Value, ApiError>,
@@ -100,7 +99,7 @@ pub const METHODS: &[Method] = &[
         input: describe_input,
         output: describe_output,
         errors: &[],
-        example: || json!({"method": "session.list"}),
+        params_example: || json!({"method": "session.list"}),
         result_example: || {
             json!({
                 "revision": REVISION,
@@ -115,7 +114,6 @@ pub const METHODS: &[Method] = &[
                         "examples": [{"sessions": []}],
                     },
                     "errors": [],
-                    "example": {},
                 }],
                 "error": {"type": "object", "required": ["kind", "message"]},
             })
@@ -134,7 +132,7 @@ pub const METHODS: &[Method] = &[
             })
         },
         errors: &[],
-        example: || json!({}),
+        params_example: || json!({}),
         result_example: || json!({"sessions": [agent_session_example(), run_session_example()]}),
         run: |sessions, _| Ok(json!({"sessions": listed(sessions)})),
     },
@@ -161,7 +159,7 @@ pub const METHODS: &[Method] = &[
             })
         },
         errors: &[kind::TARGET_NOT_FOUND, kind::TARGET_AMBIGUOUS],
-        example: || json!({"target": "dev server"}),
+        params_example: || json!({"target": "dev server"}),
         result_example: || json!({"session": run_session_example()}),
         run: |sessions, params| {
             let target = params
@@ -198,7 +196,7 @@ fn describe_output() -> Value {
             },
             "methods": {"type": "array", "items": {
                 "type": "object",
-                "required": ["name", "summary", "input", "output", "errors", "example"],
+                "required": ["name", "summary", "input", "output", "errors"],
                 "properties": {
                     "name": {"type": "string"},
                     "summary": {"type": "string"},
@@ -217,7 +215,6 @@ fn describe_output() -> Value {
                         "items": {"type": "string"},
                         "description": "Error kinds beyond InvalidRequest, which any method has.",
                     },
-                    "example": {"type": "object", "description": "A `params` it accepts."},
                 },
             }},
             "error": {
@@ -365,10 +362,9 @@ fn describe(_sessions: &SessionStore, params: &Value) -> Result<Value, ApiError>
             json!({
                 "name": method.name,
                 "summary": method.summary,
-                "input": with_examples((method.input)(), vec![(method.example)()]),
+                "input": with_examples((method.input)(), vec![(method.params_example)()]),
                 "output": with_examples((method.output)(), vec![(method.result_example)()]),
                 "errors": method.errors,
-                "example": (method.example)(),
             })
         })
         .collect();
