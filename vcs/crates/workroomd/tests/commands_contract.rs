@@ -16,8 +16,9 @@
 //! `--include-ignored` against the Go CLI still runs everything.
 //!
 //! Tests are named for their command group (`version_`, `update_`, `list_`, `config_`,
-//! `include_archive_`, `base_`, `host_`, `completion_`, `add_project_`, `delete_project_`,
-//! `claim_provisioned_`), so a port can run only its own group's names against Rust.
+//! `include_archive_`, `base_`, `host_`, `trust_`, `completion_`, `add_project_`,
+//! `delete_project_`, `claim_provisioned_`), so a port can run only its own group's names against
+//! Rust.
 //!
 //! The JSON goldens are `testdata/contracts`, the files Go's contract tests
 //! (`cmd/contract_test.go`) and the app's `CLIContractTests.swift` check too, with the temporary
@@ -118,19 +119,24 @@ impl Home {
             .args(args)
             .output()
             .unwrap_or_else(|error| panic!("run {}: {error}", program.display()));
-        Run {
-            args: args
-                .iter()
-                .map(|arg| arg.as_ref().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join(" "),
-            code: output
-                .status
-                .code()
-                .expect("exited, not killed by a signal"),
-            stdout: String::from_utf8(output.stdout).expect("stdout is UTF-8"),
-            stderr: String::from_utf8(output.stderr).expect("stderr is UTF-8"),
-        }
+        Run::from(args, output)
+    }
+
+    /// Runs the binary under test as [`Home::run`] does, with `stdin` (a pipe, not a terminal) as
+    /// its standard input.
+    fn run_with_stdin<S: AsRef<OsStr>>(&self, cwd: &Path, args: &[S], stdin: &[u8]) -> Run {
+        use std::io::Write;
+        let mut child = self
+            .command(binary(), cwd)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("run the binary under test");
+        // A binary that never reads its stdin may close it first, which is no failure here.
+        let _ = child.stdin.take().expect("stdin").write_all(stdin);
+        Run::from(args, child.wait_with_output().expect("wait"))
     }
 
     /// Runs git in `dir`, which must succeed.
@@ -189,6 +195,22 @@ struct Run {
 }
 
 impl Run {
+    fn from<S: AsRef<OsStr>>(args: &[S], output: std::process::Output) -> Run {
+        Run {
+            args: args
+                .iter()
+                .map(|arg| arg.as_ref().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" "),
+            code: output
+                .status
+                .code()
+                .expect("exited, not killed by a signal"),
+            stdout: String::from_utf8(output.stdout).expect("stdout is UTF-8"),
+            stderr: String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        }
+    }
+
     fn assert_code(&self, code: i32) -> &Run {
         assert_eq!(
             self.code, code,
@@ -200,6 +222,11 @@ impl Run {
 
     fn assert_quiet_stderr(&self) -> &Run {
         assert_eq!(self.stderr, "", "`{}` wrote to stderr", self.args);
+        self
+    }
+
+    fn assert_quiet_stdout(&self) -> &Run {
+        assert_eq!(self.stdout, "", "`{}` wrote to stdout", self.args);
         self
     }
 
@@ -4457,6 +4484,656 @@ fn claim_provisioned_reports_a_config_it_cant_read_or_write() {
         CLAIM_SHARED
     );
     assert_eq!(config_text(&home), CLAIM_MINE);
+}
+
+// --- trust ---
+
+/// SHA-256 of `#!/bin/sh\necho hi\n`, worked out apart from either binary (`shasum -a 256`).
+const SHA_HI: &str = "299001868fb8c02fd431c336c6d058f5558c5dff5b5af5e6fe04b870a6a9cbba";
+/// SHA-256 of `#!/bin/sh\necho hi!\n`: one byte more.
+const SHA_HI_CHANGED: &str = "63e0ae522a90c0ab0e0422488d34aa93b349ca9264b27c6946db11b5bcc04802";
+/// SHA-256 of `#!/bin/sh\necho host\n`.
+const SHA_HOST: &str = "2a7fd7977f37f35ee10b2a63dce8e2eff7818d902791e589a196c2c090028d3f";
+
+/// Writes `scripts/<name>` in `repo` with `text`, approving nothing.
+fn write_script(repo: &Path, name: &str, text: &str) {
+    write_file(repo, &format!("scripts/{name}"), text, 0o755);
+}
+
+/// Writes `scripts/<name>` in `repo` with `text` and commits it, so the base commit ships it.
+fn commit_script(home: &Home, repo: &Path, name: &str, text: &str) {
+    write_script(repo, name, text);
+    home.git(repo, &["add", &format!("scripts/{name}")]);
+    commit(home, repo, &format!("add {name}"));
+}
+
+/// Commits what is staged in `repo`.
+fn commit(home: &Home, repo: &Path, message: &str) {
+    home.git(
+        repo,
+        &["-c", "commit.gpgsign=false", "commit", "-q", "-m", message],
+    );
+}
+
+/// `text` with the commit `trust status --base` reports written as Go's goldens write it.
+fn normalize_start(text: &str) -> String {
+    let key = "\"start\":\"";
+    let Some(at) = text.find(key) else {
+        return text.to_string();
+    };
+    let from = at + key.len();
+    let hex = text[from..].find('"').filter(|&len| {
+        len >= 40
+            && text[from..from + len]
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
+    });
+    match hex {
+        Some(len) => format!("{}<commit>{}", &text[..from], &text[from + len..]),
+        None => text.to_string(),
+    }
+}
+
+/// A project as `trust status` runs: the Go contract tests' own setups, so their goldens hold
+/// here. An unapproved setup script in the root (`trust-status.json`), and a project whose local
+/// `main` is one commit ahead of origin's, judged at origin's default branch as a remote create
+/// does (`trust-status-local-work.json`).
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn trust_status_json_matches_the_goldens() {
+    let home = Home::new("trust-golden");
+    let project = home.repo("src/app");
+    write_script(&project, "workroom_setup", "#!/bin/sh\necho installing\n");
+    let run = home.run(
+        &home.dir,
+        &[
+            "trust",
+            "status",
+            "--json",
+            "--project",
+            &project.to_string_lossy(),
+        ],
+    );
+    run.assert_code(1).assert_quiet_stderr();
+    check_golden(
+        Owner::GoContractTests,
+        "trust-status.json",
+        &normalized_stdout(&home, &run),
+    );
+
+    home.git(
+        &home.dir,
+        &["init", "-q", "--bare", "-b", "main", "ahead.git"],
+    );
+    let ahead = home.repo("src/ahead");
+    write_file(&ahead, "base.txt", "base\n", 0o644);
+    home.git(&ahead, &["add", "base.txt"]);
+    commit(&home, &ahead, "base");
+    let origin = home.path("ahead.git");
+    home.git(
+        &ahead,
+        &["remote", "add", "origin", &origin.to_string_lossy()],
+    );
+    home.git(&ahead, &["push", "-q", "-u", "origin", "main"]);
+    home.git(&ahead, &["remote", "set-head", "origin", "main"]);
+    write_file(&ahead, "local.txt", "unpushed\n", 0o644);
+    home.git(&ahead, &["add", "local.txt"]);
+    commit(&home, &ahead, "local");
+    let run = home.run(
+        &home.dir,
+        &[
+            "trust",
+            "status",
+            "--json",
+            "--project",
+            &ahead.to_string_lossy(),
+            "--base",
+            "",
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    check_golden(
+        Owner::GoContractTests,
+        "trust-status-local-work.json",
+        &normalize_start(&normalized_stdout(&home, &run)),
+    );
+}
+
+/// `trust` approves the scripts a create would run next by their exact bytes, registering the
+/// project, and `trust status` then exits 0. One changed byte needs approving again. `untrust`
+/// forgets every approval and leaves the project registered. With no terminal on stdin, `trust`
+/// approves without asking, as Go's does: no one is there to ask, and the caller ran it to approve.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn trust_approves_until_the_script_changes_and_untrust_forgets() {
+    let home = Home::new("trust-approve");
+    let repo = home.repo("repo");
+    commit_script(&home, &repo, "workroom_setup", "#!/bin/sh\necho hi\n");
+    let project = repo.to_string_lossy();
+    let at = |args: &[&str]| -> Vec<String> {
+        args.iter()
+            .map(ToString::to_string)
+            .chain(["--project".to_string(), project.to_string()])
+            .collect()
+    };
+
+    let run = home.run(&home.dir, &at(&["trust", "status"]));
+    run.assert_code(1).assert_quiet_stderr();
+    assert_eq!(
+        run.stdout,
+        "scripts/workroom_setup from the base commit: not approved\nNo scripts/workroom_teardown.\n"
+    );
+    assert!(!home.config_path().exists(), "trust status wrote config");
+
+    let run = home.run(&home.dir, &at(&["trust"]));
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        run.stdout,
+        "Approved scripts/workroom_setup from the base commit.\nNo scripts/workroom_teardown.\n"
+    );
+    assert_eq!(
+        normalized_config(&home),
+        format!(
+            "{{\n  \"/Users/dev/repo\": {{\n    \"trusted_scripts\": {{\n      \"workroom_setup\": \"{SHA_HI}\"\n    }},\n    \"vcs\": \"git\",\n    \"workrooms\": {{}}\n  }}\n}}"
+        )
+    );
+    let run = home.run(&home.dir, &at(&["trust", "status"]));
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        run.stdout,
+        "scripts/workroom_setup from the base commit: approved\nNo scripts/workroom_teardown.\n"
+    );
+    let run = home.run(&home.dir, &at(&["trust", "status", "--json"]));
+    run.assert_code(0).assert_quiet_stderr();
+    let envelope = run.envelope();
+    assert_eq!(envelope["trusted"], true);
+    assert_eq!(envelope["scripts"][0]["sha256"], SHA_HI);
+    assert_eq!(envelope["scripts"][0]["trusted"], true);
+    let run = home.run(&home.dir, &at(&["trust"]));
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        run.stdout,
+        "scripts/workroom_setup is already approved.\nNo scripts/workroom_teardown.\n"
+    );
+
+    commit_script(&home, &repo, "workroom_setup", "#!/bin/sh\necho hi!\n");
+    let run = home.run(&home.dir, &at(&["trust", "status", "--json"]));
+    run.assert_code(1).assert_quiet_stderr();
+    let envelope = run.envelope();
+    assert_eq!(envelope["trusted"], false);
+    assert_eq!(envelope["scripts"][0]["sha256"], SHA_HI_CHANGED);
+    assert_eq!(envelope["scripts"][0]["trusted"], false);
+    let run = home.run(&home.dir, &at(&["trust", "--json"]));
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        normalized_stdout(&home, &run),
+        format!(
+            "{{\"cli_version\":\"dev\",\"command\":\"trust\",\"ok\":true,\"schema_version\":1,\"scripts\":[{{\"bytes\":\"IyEvYmluL3NoCmVjaG8gaGkhCg==\",\"exempt\":false,\"file\":\"scripts/workroom_setup\",\"name\":\"workroom_setup\",\"origin\":\"base\",\"sha256\":\"{SHA_HI_CHANGED}\",\"text\":\"#!/bin/sh\\necho hi!\\n\",\"trusted\":true}}]}}\n"
+        )
+    );
+    assert!(
+        normalized_config(&home).contains(&format!("\"workroom_setup\": \"{SHA_HI_CHANGED}\"")),
+        "{}",
+        normalized_config(&home)
+    );
+
+    let run = home.run(&home.dir, &at(&["untrust"]));
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        run.stdout,
+        "Forgot the approval of this project's scripts.\n"
+    );
+    assert_eq!(
+        normalized_config(&home),
+        "{\n  \"/Users/dev/repo\": {\n    \"vcs\": \"git\",\n    \"workrooms\": {}\n  }\n}"
+    );
+    let run = home.run(&home.dir, &at(&["untrust", "--json"]));
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        normalized_stdout(&home, &run),
+        "{\"cli_version\":\"dev\",\"command\":\"untrust\",\"ok\":true,\"project\":\"/Users/dev/repo\",\"schema_version\":1}\n"
+    );
+    home.run(&home.dir, &at(&["trust", "status"]))
+        .assert_code(1);
+}
+
+/// `trust status` exits 0 when every script there is approved or ignored by git (or there is
+/// none), 1 when one is not, and 2 when it can't tell, with the error in an envelope that names
+/// `trust status`. `trust` itself fails with the error's own exit code. Extra arguments are usage
+/// errors, before either runs.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn trust_status_exits_0_1_or_2() {
+    let home = Home::new("trust-exits");
+    let repo = home.repo("repo");
+    let project = repo.to_string_lossy();
+    let status = |extra: &[&str]| {
+        home.run(
+            &home.dir,
+            &[
+                &["trust", "status", "--json", "--project", &project][..],
+                extra,
+            ]
+            .concat(),
+        )
+    };
+    let run = status(&[]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        normalized_stdout(&home, &run),
+        "{\"cli_version\":\"dev\",\"command\":\"trust status\",\"ok\":true,\"schema_version\":1,\"scripts\":[],\"trusted\":true}\n"
+    );
+    let run = home.run(&repo, &["trust", "status"]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        run.stdout,
+        "No scripts/workroom_setup.\nNo scripts/workroom_teardown.\n"
+    );
+
+    // A root copy git ignores needs no approval; one it doesn't ignore does.
+    write_script(&repo, "workroom_setup", "#!/bin/sh\necho local\n");
+    write_script(&repo, "workroom_teardown", "#!/bin/sh\necho stop\n");
+    status(&[]).assert_code(1);
+    write_file(&repo, ".gitignore", "scripts/\n", 0o644);
+    let run = status(&[]);
+    run.assert_code(0).assert_quiet_stderr();
+    let envelope = run.envelope();
+    assert_eq!(envelope["trusted"], true);
+    for (index, name) in ["workroom_setup", "workroom_teardown"].iter().enumerate() {
+        let script = &envelope["scripts"][index];
+        assert_eq!(script["name"], *name);
+        assert_eq!(script["origin"], "root");
+        assert_eq!(script["exempt"], true);
+        assert_eq!(script["trusted"], true);
+    }
+    let run = home.run(&repo, &["trust", "status"]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        run.stdout,
+        "scripts/workroom_setup in the project's root: ignored by git, needs no approval\n\
+         scripts/workroom_teardown in the project's root: ignored by git, needs no approval\n"
+    );
+    let run = home.run(&repo, &["trust"]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        run.stdout,
+        "scripts/workroom_setup is ignored by git, so it needs no approval.\n\
+         scripts/workroom_teardown is ignored by git, so it needs no approval.\n"
+    );
+    assert!(
+        !home.config_path().exists(),
+        "trust recorded an exempt script"
+    );
+
+    // Exit 2: it can't tell.
+    let plain = home.path("plain");
+    std::fs::create_dir(&plain).expect("create plain");
+    home.write_config(&format!(
+        "{{\"{project}\": {{\"base_branch\": \"nowhere\", \"vcs\": \"git\"}}}}"
+    ));
+    for (extra, kind, message) in [
+        (
+            &[][..],
+            "BaseBranchNotFound",
+            "the base branch exists neither on its remote nor locally: 'nowhere'".to_string(),
+        ),
+        (
+            &["--base", "nowhere"],
+            "BaseBranchNotFound",
+            "the base branch exists neither on its remote nor locally: 'nowhere'".to_string(),
+        ),
+        (
+            &["--project", &plain.to_string_lossy()],
+            "UnsupportedVCS",
+            "no supported VCS detected in this directory. Workroom requires Git to manage workrooms"
+                .to_string(),
+        ),
+        (
+            &["--stdin", "bogus"],
+            "InternalError",
+            "--stdin takes workroom_setup, workroom_teardown or devcontainer, not \"bogus\""
+                .to_string(),
+        ),
+        (
+            &["--devcontainer"],
+            "InternalError",
+            "--devcontainer judges a container create's file, so it needs --base".to_string(),
+        ),
+    ] {
+        let run = status(extra);
+        run.assert_code(2).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), kind, "{extra:?}");
+        let envelope = run.envelope();
+        assert_eq!(envelope["command"], "trust status", "{extra:?}");
+        assert_eq!(envelope["error"]["message"], message.as_str(), "{extra:?}");
+    }
+    let run = home.run(&repo, &["trust", "status"]);
+    run.assert_code(2).assert_quiet_stdout();
+    assert_eq!(
+        run.stderr,
+        "Error: the base branch exists neither on its remote nor locally: 'nowhere'\n"
+    );
+    // `trust` fails as any command does: with the kind's own code.
+    let run = home.run(&repo, &["trust", "--json"]);
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "BaseBranchNotFound");
+    assert_eq!(run.envelope()["command"], "trust");
+    home.write_config("{");
+    let run = status(&[]);
+    run.assert_code(2).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "ConfigReadFailed");
+    home.run(&repo, &["trust", "--json"]).assert_code(6);
+    home.run(&repo, &["untrust", "--json"]).assert_code(6);
+
+    for (args, message) in [
+        (
+            &["trust", "status", "x", "--json"][..],
+            "unknown command \"x\" for \"workroom trust status\"",
+        ),
+        (
+            &["trust", "x", "--json"],
+            "unknown command \"x\" for \"workroom trust\"",
+        ),
+        (
+            &["untrust", "x", "--json"],
+            "unknown command \"x\" for \"workroom untrust\"",
+        ),
+    ] {
+        let run = home.run(&repo, args);
+        run.assert_code(1).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "InternalError", "{args:?}");
+        let envelope = run.envelope();
+        assert_eq!(envelope["error"]["message"], message, "{args:?}");
+        assert_eq!(envelope.get("command"), None, "{args:?}");
+    }
+}
+
+/// With `--stdin NAME`, the app's copy of a script (a remote host's) is judged and approved by the
+/// bytes given, reading no file and needing no repository. `trust --stdin` records the approval
+/// only for a project already registered: one gone meanwhile is refused, not registered again.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn trust_stdin_judges_and_records_the_bytes_given() {
+    let home = Home::new("trust-stdin");
+    let dir = home.path("app");
+    std::fs::create_dir(&dir).expect("create app");
+    let project = dir.to_string_lossy();
+    let body = b"#!/bin/sh\necho host\n";
+    let run = home.run_with_stdin(
+        &home.dir,
+        &[
+            "trust",
+            "status",
+            "--json",
+            "--project",
+            &project,
+            "--stdin",
+            "workroom_teardown",
+        ],
+        body,
+    );
+    run.assert_code(1).assert_quiet_stderr();
+    assert_eq!(
+        normalized_stdout(&home, &run),
+        format!(
+            "{{\"cli_version\":\"dev\",\"command\":\"trust status\",\"ok\":true,\"schema_version\":1,\"scripts\":[{{\"bytes\":\"IyEvYmluL3NoCmVjaG8gaG9zdAo=\",\"exempt\":false,\"file\":\"scripts/workroom_teardown\",\"name\":\"workroom_teardown\",\"origin\":\"stdin\",\"sha256\":\"{SHA_HOST}\",\"text\":\"#!/bin/sh\\necho host\\n\",\"trusted\":false}}],\"trusted\":false}}\n"
+        )
+    );
+    // Bytes that aren't UTF-8 are shown with U+FFFD for each bad byte and kept exact in `bytes`.
+    let run = home.run_with_stdin(
+        &home.dir,
+        &[
+            "trust",
+            "status",
+            "--json",
+            "--project",
+            &project,
+            "--stdin",
+            "devcontainer",
+        ],
+        b"{\xff}\n",
+    );
+    run.assert_code(1).assert_quiet_stderr();
+    let envelope = run.envelope();
+    assert_eq!(
+        envelope["scripts"][0]["file"],
+        ".devcontainer/devcontainer.json"
+    );
+    assert_eq!(envelope["scripts"][0]["text"], "{\u{fffd}}\n");
+    assert_eq!(envelope["scripts"][0]["bytes"], "e/99Cg==");
+
+    let run = home.run_with_stdin(
+        &home.dir,
+        &[
+            "trust",
+            "--json",
+            "--project",
+            &project,
+            "--stdin",
+            "workroom_teardown",
+        ],
+        body,
+    );
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "ProjectNotFound");
+    assert!(
+        !home.config_path().exists(),
+        "an unregistered project was registered"
+    );
+
+    home.write_config(&format!("{{\"{project}\": {{\"vcs\": \"git\"}}}}"));
+    let run = home.run_with_stdin(
+        &home.dir,
+        &[
+            "trust",
+            "--project",
+            &project,
+            "--stdin",
+            "workroom_teardown",
+        ],
+        body,
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    // No line for the script it wasn't given.
+    assert_eq!(run.stdout, "Approved scripts/workroom_teardown as given.\n");
+    assert_eq!(
+        normalized_config(&home),
+        format!(
+            "{{\n  \"/Users/dev/app\": {{\n    \"trusted_scripts\": {{\n      \"workroom_teardown\": \"{SHA_HOST}\"\n    }},\n    \"vcs\": \"git\"\n  }}\n}}"
+        )
+    );
+    let run = home.run_with_stdin(
+        &home.dir,
+        &[
+            "trust",
+            "status",
+            "--project",
+            &project,
+            "--stdin",
+            "workroom_teardown",
+        ],
+        body,
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(run.stdout, "scripts/workroom_teardown as given: approved\n");
+}
+
+/// Approvals are the project's: run in one of its workrooms (where every app terminal opens),
+/// `trust` approves for the project and never registers the workroom. `--pretend` changes no
+/// approval, either way. `untrust` needs the project registered. `--verbose` says which VCS it
+/// found.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn trust_in_a_workroom_is_the_projects_and_pretend_changes_nothing() {
+    let home = Home::new("trust-workroom");
+    let repo = home.repo("repo");
+    commit_script(&home, &repo, "workroom_setup", "#!/bin/sh\necho hi\n");
+    let workroom = home.path("workrooms/w");
+    home.git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "workroom/w",
+            &workroom.to_string_lossy(),
+        ],
+    );
+    home.write_config(&format!(
+        "{{\"{}\": {{\"vcs\": \"git\", \"workrooms\": {{\"w\": {{\"path\": \"{}\"}}}}}}}}",
+        repo.display(),
+        workroom.display()
+    ));
+    let before = std::fs::read_to_string(home.config_path()).expect("read");
+    let run = home.run(&workroom, &["trust", "--pretend", "--json"]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(run.envelope()["scripts"][0]["trusted"], true);
+    assert_eq!(
+        std::fs::read_to_string(home.config_path()).expect("read"),
+        before,
+        "--pretend recorded an approval"
+    );
+    home.run(&workroom, &["trust", "status"]).assert_code(1);
+
+    let run = home.run(&workroom, &["trust"]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        normalized_config(&home),
+        format!(
+            "{{\n  \"/Users/dev/repo\": {{\n    \"trusted_scripts\": {{\n      \"workroom_setup\": \"{SHA_HI}\"\n    }},\n    \"vcs\": \"git\",\n    \"workrooms\": {{\n      \"w\": {{\n        \"path\": \"/Users/dev/workrooms/w\"\n      }}\n    }}\n  }}\n}}"
+        )
+    );
+    home.run(&repo, &["trust", "status"]).assert_code(0);
+    let approved = normalized_config(&home);
+    let run = home.run(&workroom, &["untrust", "-p", "--json"]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        normalized_stdout(&home, &run),
+        "{\"cli_version\":\"dev\",\"command\":\"untrust\",\"ok\":true,\"project\":\"/Users/dev/repo\",\"schema_version\":1}\n"
+    );
+    assert_eq!(
+        normalized_config(&home),
+        approved,
+        "untrust --pretend forgot"
+    );
+
+    let run = home.run(&repo, &["-v", "trust", "status"]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        run.stdout,
+        "        repo  Detected Git worktree\nscripts/workroom_setup from the base commit: approved\nNo scripts/workroom_teardown.\n"
+    );
+
+    let other = home.repo("other");
+    let run = home.run(&other, &["untrust", "--json"]);
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "ProjectNotFound");
+    assert_eq!(
+        home.normalize(
+            run.envelope()["error"]["message"]
+                .as_str()
+                .expect("message")
+        ),
+        "project is not registered: /Users/dev/other"
+    );
+    assert_eq!(normalized_config(&home), approved);
+}
+
+/// `--base BRANCH` judges the setup script at the branch a remote create checks out, not the
+/// project's own base, and `--devcontainer` the devcontainer.json there too. A committed setup
+/// script that is a link is judged by what it points to in the commit; one pointing outside the
+/// repository can't be judged from the commit, so it is left to the check before it runs.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn trust_status_base_judges_that_branch_and_its_devcontainer() {
+    let home = Home::new("trust-base");
+    let repo = home.repo("repo");
+    let project = repo.to_string_lossy();
+    home.git(&repo, &["checkout", "-q", "-b", "remote-start"]);
+    write_file(&repo, "real", "#!/bin/sh\necho hi\n", 0o755);
+    std::fs::create_dir(repo.join("scripts")).expect("create scripts");
+    std::os::unix::fs::symlink("../real", repo.join("scripts/workroom_setup")).expect("link");
+    write_file(&repo, ".devcontainer/devcontainer.json", "{}\n", 0o644);
+    home.git(&repo, &["add", "."]);
+    commit(&home, &repo, "remote start");
+    home.git(&repo, &["checkout", "-q", "main"]);
+
+    let status = |extra: &[&str]| {
+        home.run(
+            &home.dir,
+            &[
+                &["trust", "status", "--json", "--project", &project][..],
+                extra,
+            ]
+            .concat(),
+        )
+    };
+    let run = status(&[]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(run.envelope()["scripts"], serde_json::json!([]));
+
+    let run = status(&["--base", "remote-start", "--devcontainer"]);
+    run.assert_code(1).assert_quiet_stderr();
+    let envelope = run.envelope();
+    // A local branch names no commit a remote clone is sure to have, so no `start`.
+    assert_eq!(envelope.get("start"), None);
+    assert_eq!(envelope.get("local_work"), None);
+    let setup = &envelope["scripts"][0];
+    assert_eq!(setup["name"], "workroom_setup");
+    assert_eq!(setup["origin"], "base");
+    assert_eq!(setup["sha256"], SHA_HI);
+    let config = &envelope["scripts"][1];
+    assert_eq!(config["name"], "devcontainer");
+    assert_eq!(config["file"], ".devcontainer/devcontainer.json");
+    assert_eq!(config["origin"], "base");
+    assert_eq!(config["text"], "{}\n");
+    assert_eq!(envelope["scripts"].as_array().map(Vec::len), Some(2));
+    let run = home.run(
+        &home.dir,
+        &[
+            "trust",
+            "status",
+            "--project",
+            &project,
+            "--base",
+            "remote-start",
+            "--devcontainer",
+        ],
+    );
+    run.assert_code(1).assert_quiet_stderr();
+    assert_eq!(
+        run.stdout,
+        "scripts/workroom_setup from the base commit: not approved\n\
+         .devcontainer/devcontainer.json from the base commit: not approved\n\
+         No scripts/workroom_teardown.\n"
+    );
+
+    // Approving at that base approves both, by the bytes the commit holds.
+    let run = home.run(
+        &home.dir,
+        &[
+            "trust",
+            "--json",
+            "--project",
+            &project,
+            "--base",
+            "remote-start",
+            "--devcontainer",
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(run.envelope()["scripts"][1]["trusted"], true);
+    status(&["--base", "remote-start", "--devcontainer"]).assert_code(0);
+
+    home.git(&repo, &["checkout", "-q", "-b", "outside", "remote-start"]);
+    std::fs::remove_file(repo.join("scripts/workroom_setup")).expect("remove link");
+    std::os::unix::fs::symlink("/etc/hosts", repo.join("scripts/workroom_setup")).expect("link");
+    home.git(&repo, &["add", "."]);
+    commit(&home, &repo, "outside");
+    let run = status(&["--base", "outside"]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(run.envelope()["scripts"], serde_json::json!([]));
 }
 
 // --- completion ---
