@@ -195,14 +195,23 @@ echo "ssh-fixture: started $NAME at $ADDRESS:$PORT; waiting for its host key" >&
 # #232), and the key must still match. Read once the entrypoint has minted it (#252): until the
 # marker names this container, the keys on disk are the image's or about to be replaced
 # (identity.sh, which `ContainerHostDriver` reads the key through too).
+# The last read's stderr and exit status are kept for the error below (#702): a failed exec, the
+# marker's hostname check (status 1, nothing on stderr) and an unreadable key each look different.
 HOST_KEY=""
 for attempt in $(seq 1 100); do
-  HOST_KEY="$("$RUNTIME" exec "$NAME" identity.sh 2>/dev/null || true)"
+  identity_status=0
+  HOST_KEY="$("$RUNTIME" exec "$NAME" identity.sh 2> "$STAGE/identity.err")" || identity_status=$?
   [ -n "$HOST_KEY" ] && break
   sleep 0.2
 done
 if [ -z "$HOST_KEY" ]; then
-  echo "error: the fixture never minted its identity; its log:" >&2
+  echo "error: the fixture never minted its identity; the last read of identity.sh exited $identity_status, its stderr:" >&2
+  if [ -s "$STAGE/identity.err" ]; then
+    cat "$STAGE/identity.err" >&2
+  else
+    echo "(empty)" >&2
+  fi
+  echo "the container's log:" >&2
   "$RUNTIME" logs "$NAME" >&2
   exit 1
 fi
