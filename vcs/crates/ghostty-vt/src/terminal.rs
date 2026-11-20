@@ -457,6 +457,16 @@ impl Extras {
     }
 }
 
+/// How the formatter lays out lines: `GHOSTTY_FORMATTER_OPT_UNWRAP` and `_TRIM`. Both off by
+/// default, which is not libghostty's default (it trims).
+#[derive(Default, Clone, Copy)]
+pub struct Lines {
+    /// Join the rows of a line the terminal soft-wrapped into one line.
+    pub unwrap: bool,
+    /// Drop spaces at the end of each line, and blank lines at the end of the output.
+    pub trim: bool,
+}
+
 /// One libghostty-vt terminal, reporting to its `C`.
 pub struct Terminal<C: Callbacks> {
     inner: GhosttyTerminal,
@@ -789,6 +799,23 @@ impl<C: Callbacks> Terminal<C> {
         }
     }
 
+    /// Whether the alternate screen is the active one, however the program switched to it (mode
+    /// 47, 1047 or 1049): `GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN`.
+    pub fn on_alternate_screen(&self) -> Option<bool> {
+        let mut screen: GhosttyTerminalScreen =
+            GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+        // SAFETY: DATA_ACTIVE_SCREEN's output type is `GhosttyTerminalScreen`, and `screen` is a
+        // live one, so the library writes exactly its width.
+        let rc = unsafe {
+            ghostty_terminal_get(
+                self.inner,
+                GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
+                (&raw mut screen).cast(),
+            )
+        };
+        (rc == OK).then_some(screen == GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_ALTERNATE)
+    }
+
     pub fn mode(&self, mode: GhosttyMode) -> Option<bool> {
         let mut config = GhosttyTerminalModeConfig { mode, value: false };
         // SAFETY: DATA_MODE's input/output type is `GhosttyTerminalModeConfig`, and `config` is a
@@ -849,23 +876,37 @@ impl<C: Callbacks> Terminal<C> {
 
     /// The terminal's active screen as `emit` (VT or plain text) with `extras`, of `selection` when
     /// given and of everything (scrollback included) when not. Empty when the format failed.
+    ///
+    /// Rows stay rows and nothing is trimmed: untrimmed VT output keeps the blank rows at the end
+    /// of the screen, so a client scrolls as far as the producer did and the next write lands
+    /// below the last line.
     pub fn format(
         &self,
         emit: GhosttyFormatterFormat,
         extras: Extras,
         selection: Option<&Selection<'_>>,
     ) -> Vec<u8> {
+        self.format_lines(emit, extras, selection, Lines::default())
+            .unwrap_or_default()
+    }
+
+    /// `format` with `lines` chosen: soft-wrapped rows joined, and trailing blanks trimmed. `None`
+    /// when the format failed, which an empty screen's empty output is not.
+    pub fn format_lines(
+        &self,
+        emit: GhosttyFormatterFormat,
+        extras: Extras,
+        selection: Option<&Selection<'_>>,
+        lines: Lines,
+    ) -> Option<Vec<u8>> {
         let mut formatter: GhosttyFormatter = ptr::null_mut();
         // SAFETY: `inner` is a live terminal that outlives the formatter, which is freed before
         // this method returns, and `formatter` is a live out-pointer.
         let rc = unsafe { ghostty_formatter_terminal_new(ptr::null(), &mut formatter, self.inner) };
         if rc != OK || formatter.is_null() {
-            return Vec::new();
+            return None;
         }
-        let unwrap = false;
-        // Untrimmed VT output keeps the blank rows at the end of the screen, so a client scrolls
-        // as far as the producer did and the next write lands below the last line.
-        let trim = false;
+        let Lines { unwrap, trim } = lines;
         let mask = extras.mask();
         // Every option is set, not left to libghostty's defaults, which are not ours: they trim,
         // and turn extras on.
@@ -903,22 +944,25 @@ impl<C: Callbacks> Terminal<C> {
         if !set {
             // SAFETY: `formatter` is live and freed exactly once, here.
             unsafe { ghostty_formatter_free(formatter) };
-            return Vec::new();
+            return None;
         }
         let mut out: *mut u8 = ptr::null_mut();
         let mut len: usize = 0;
         // SAFETY: `formatter` is live, and both out-pointers are live locals.
         let rc =
             unsafe { ghostty_formatter_format_alloc(formatter, ptr::null(), &mut out, &mut len) };
-        let bytes = if rc == OK && !out.is_null() {
-            // SAFETY: on success the call returned `len` initialised bytes at `out`, freed only
-            // after they are copied.
-            let copied = unsafe { std::slice::from_raw_parts(out, len) }.to_vec();
-            // SAFETY: the pointer, length and (default) allocator the allocation came from.
-            unsafe { ghostty_free(ptr::null(), out, len) };
-            copied
-        } else {
-            Vec::new()
+        let bytes = match (rc == OK, out.is_null()) {
+            (true, false) => {
+                // SAFETY: on success the call returned `len` initialised bytes at `out`, freed
+                // only after they are copied.
+                let copied = unsafe { std::slice::from_raw_parts(out, len) }.to_vec();
+                // SAFETY: the pointer, length and (default) allocator the allocation came from.
+                unsafe { ghostty_free(ptr::null(), out, len) };
+                Some(copied)
+            }
+            // Nothing to write: an empty screen.
+            (true, true) => Some(Vec::new()),
+            (false, _) => None,
         };
         // SAFETY: `formatter` is live and freed exactly once, here.
         unsafe { ghostty_formatter_free(formatter) };
