@@ -101,7 +101,13 @@ pub(crate) fn failure(command: Option<&str>, error: &CliError) -> String {
         error: Body<'a>,
         ok: bool,
         schema_version: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        script: Option<&'a RawValue>,
     }
+    let script = error
+        .script
+        .as_deref()
+        .map(|script| serde_json::from_str::<&RawValue>(script).expect("a script is JSON"));
     let mut line = encode(
         &Envelope {
             cli_version: super::VERSION,
@@ -113,6 +119,7 @@ pub(crate) fn failure(command: Option<&str>, error: &CliError) -> String {
             },
             ok: false,
             schema_version: SCHEMA_VERSION,
+            script,
         },
         false,
     );

@@ -5,13 +5,14 @@
 //!
 //! Without `WORKROOM_BIN` the binary under test is this crate's own `workroom`. A group's tests
 //! are `#[ignore]`d until its commands are ported to Rust, so a plain `cargo test` runs only the
-//! ported groups (`version_`, `update_`, `list_`, `config_`, `include_archive_`, `base_`, `host_`
-//! and `completion_` today). `make contract-test` builds the Go CLI and runs every test against it
-//! with `--include-ignored`.
+//! ported groups (`version_`, `update_`, `list_`, `config_`, `include_archive_`, `base_`, `host_`,
+//! `completion_`, `delete_project_` and `claim_provisioned_` today; `add_project_` is still Go's).
+//! `make contract-test` builds the Go CLI and runs every test against it with `--include-ignored`.
 //!
-//! The Mac-only commands' groups (`list_`, `config_`, `include_archive_`, `base_`, `host_`) are
-//! ignored off the Mac too, where the Rust binary answers them with `MacOnly` (ADR 0078): a plain
-//! `cargo test` on Linux runs `version_`, `update_` and `completion_`, which work anywhere, and
+//! The Mac-only commands' groups (`list_`, `config_`, `include_archive_`, `base_`, `host_`,
+//! `delete_project_`, `claim_provisioned_`) are ignored off the Mac too, where the Rust binary
+//! answers them with `MacOnly` (ADR 0078): a plain `cargo test` on Linux runs `version_`, `update_`
+//! and `completion_`, which work anywhere, and
 //! `--include-ignored` against the Go CLI still runs everything.
 //!
 //! Tests are named for their command group (`version_`, `update_`, `list_`, `config_`,
@@ -2813,7 +2814,10 @@ fn project_with_workroom(home: &Home, teardown: &str, digest: &str) -> PathBuf {
 /// disk: the config-only mode and `--from-disk` remove no folder (the app trashes the paths it is
 /// given), and `--with-workrooms` removes the worktree but keeps its branch.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn delete_project_json_matches_the_goldens() {
     for (file, flags) in [
         ("delete-project.json", &[][..]),
@@ -2862,7 +2866,10 @@ fn delete_project_json_matches_the_goldens() {
 /// `--pretend` skips only the teardown and the worktree's removal: each mode still drops the
 /// project from config, as Go's `delete-project` does.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn delete_project_pretend_still_drops_the_project_as_go_does() {
     for flags in [&[][..], &["--with-workrooms"], &["--from-disk"]] {
         let home = Home::new("delete-project-pretend");
@@ -2888,7 +2895,10 @@ fn delete_project_pretend_still_drops_the_project_as_go_does() {
 /// A relative path and its `--confirm` resolve to the canonical project, and a project whose
 /// folder is gone is still removable: only its entry goes, the rest of the config stays.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn delete_project_removes_only_the_entry_by_either_form_of_its_path() {
     let home = Home::new("delete-project-forms");
     let project = home.repo("src/app");
@@ -2934,7 +2944,10 @@ fn delete_project_removes_only_the_entry_by_either_form_of_its_path() {
 /// host, and an unsafe path for `--from-disk` (the root, HOME, the workrooms folder, an ancestor
 /// of it or of another project).
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn delete_project_refuses_before_tearing_anything_down() {
     let home = Home::new("delete-project-refusals");
     let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
@@ -3110,7 +3123,10 @@ fn delete_project_refuses_before_tearing_anything_down() {
 /// A teardown that fails stops the cascade with `TeardownScriptFailed`, its output streamed first,
 /// and leaves the project and its workroom registered and in place, in either mode.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn delete_project_keeps_the_project_when_a_teardown_fails() {
     for flag in ["--with-workrooms", "--from-disk"] {
         let home = Home::new("delete-project-teardown-fails");
@@ -3153,7 +3169,10 @@ fn delete_project_keeps_the_project_when_a_teardown_fails() {
 /// A teardown script this Mac hasn't approved is refused with the script in the envelope, as the
 /// app reads it to ask, and nothing is torn down; `--skip-teardown` runs none and goes ahead.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn delete_project_refuses_an_unapproved_teardown_unless_skipped() {
     for flag in ["--with-workrooms", "--from-disk"] {
         let home = Home::new("delete-project-untrusted");
@@ -3205,7 +3224,10 @@ fn delete_project_refuses_an_unapproved_teardown_unless_skipped() {
 /// A workroom's own copy of the teardown script is the one that runs, judged as the workroom's;
 /// a gitignored root copy needs no approval.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn delete_project_judges_the_workrooms_copy_and_exempts_an_ignored_root_copy() {
     let home = Home::new("delete-project-script-origin");
     let project = project_with_workroom(&home, "echo stopping\n", "deadbeef");
@@ -3263,7 +3285,10 @@ fn delete_project_judges_the_workrooms_copy_and_exempts_an_ignored_root_copy() {
 /// checkout is only forgotten, its folder left; a name `delete` refuses stops it with the project
 /// kept.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn delete_project_with_workrooms_deletes_each_as_delete_does() {
     let home = Home::new("delete-project-cascade");
     let project = home.repo("src/app");
@@ -3371,7 +3396,10 @@ fn delete_project_with_workrooms_deletes_each_as_delete_does() {
 
 /// A config that can't be read fails the command and is left as it was.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn delete_project_reports_an_unreadable_config() {
     let home = Home::new("delete-project-bad-config");
     let project = home.repo("src/app");

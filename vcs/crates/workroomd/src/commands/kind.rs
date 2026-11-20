@@ -203,6 +203,9 @@ pub(crate) struct CliError {
     pub(crate) message: String,
     /// The sessions an ambiguous terminal API target matched, as the daemon listed them.
     pub(crate) matches: Vec<serde_json::Value>,
+    /// The script a `ScriptNotTrusted` refused, as the envelope's `script` carries it for the app
+    /// to show and approve, already encoded as Go encodes it.
+    pub(crate) script: Option<String>,
 }
 
 impl CliError {
@@ -211,6 +214,7 @@ impl CliError {
             kind,
             message: message.into(),
             matches: Vec::new(),
+            script: None,
         }
     }
 

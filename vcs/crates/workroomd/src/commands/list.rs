@@ -223,7 +223,7 @@ fn effective_vcs(config: &Config, path: &str, stored: &str) -> String {
 /// The names of the project's VCS workspaces: the base names of git's linked worktrees. None when
 /// they can't be listed (no type, an unknown one, or a failed git), which the caller must read as
 /// "don't warn", unlike an empty list.
-fn workspace_names(path: &str, vcs: &str) -> Option<Vec<String>> {
+pub(super) fn workspace_names(path: &str, vcs: &str) -> Option<Vec<String>> {
     if vcs != "git" {
         return None;
     }

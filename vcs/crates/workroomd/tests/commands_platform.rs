@@ -25,6 +25,17 @@ fn a_mac_only_command_on_a_host_fails_with_mac_only() {
         &["host", "set", "null", "--json"],
         &["host", "clear", "--json", "--workroom", "w"],
         &["add-project", "/tmp/x", "--json"],
+        // Ported: the gate comes before the arguments and flags are read, so nothing is deleted,
+        // and no config is read or written.
+        &[
+            "delete-project",
+            "/nonexistent/x",
+            "--json",
+            "--confirm",
+            "/nonexistent/x",
+            "--from-disk",
+        ],
+        &["claim-provisioned", "--json"],
         // Ported: the gate comes before its own flags are read, and it writes no tar.
         &["include-archive", "--json"],
         &[

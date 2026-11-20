@@ -11,8 +11,9 @@
 //! marked "(Mac only)", and failing with `MacOnly` anywhere else. Until its own ticket ports it
 //! (#672–#678), each of those is a stub here; the Go CLI still runs them. `list` and
 //! `base --global` are ported (#671), on `config`, the Rust reader and writer of config.json, and
-//! so are `include-archive` (#675) and the rest of `base` and `host` (#673). `update` is ported
-//! too (#679), which runs anywhere.
+//! so are `include-archive` (#675), the rest of `base` and `host` (#673), and `claim-provisioned`
+//! and `delete-project` (#672; `add-project` is still Go's). `update` is ported too (#679), which
+//! runs anywhere.
 //!
 //! The terminal API's commands (#360, ADR 0079) are born here and run anywhere: each is a thin
 //! client of the daemon's terminal API (`terminal_api`).
@@ -28,6 +29,7 @@ mod claim;
 mod complete;
 mod completion;
 mod config;
+mod delete_project;
 mod envelope;
 mod git;
 mod host;
@@ -36,6 +38,7 @@ mod kind;
 mod list;
 mod log;
 mod sessions;
+mod teardown;
 mod terminal_api;
 mod update;
 mod version;
@@ -553,6 +556,9 @@ const COMMANDS: &[Command] = &[
     },
     Command {
         hidden: true,
+        // cobra's `MaximumNArgs(1)`, which `run` checks.
+        arity: Arity::Own,
+        implementation: Implementation::Ported(delete_project::run),
         ..stub(
             "delete-project",
             "delete-project [PATH]",
@@ -1428,6 +1434,26 @@ mod tests {
             &["host", "clear", "--json", "--workroom", "w"],
             &["create", "--json", "--no-editor"],
             &["add-project", "/tmp/x", "--json"],
+            // Before its arguments are counted, and it deletes nothing.
+            &["delete-project", "/x", "/y", "--json"],
+            &[
+                "delete-project",
+                "/x",
+                "--json",
+                "--confirm",
+                "/x",
+                "--from-disk",
+            ],
+            // Before its required flags are checked.
+            &["claim-provisioned", "--json"],
+            &[
+                "claim-provisioned",
+                "--json",
+                "--from",
+                "/x",
+                "--provisioner",
+                "p",
+            ],
             // Before its required `--output` is checked, and it writes no tar.
             &["include-archive", "--json"],
             &["include-archive", "--json", "--project=/x"],
