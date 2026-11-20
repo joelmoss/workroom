@@ -100,23 +100,11 @@ pub const METHODS: &[Method] = &[
         output: describe_output,
         errors: &[],
         params_example: || json!({"method": "session.list"}),
+        // The real description of the method `params_example` names, so it can't drift from what
+        // `api.describe` replies. Never this method's or every method's: each would hold this
+        // example again, without end.
         result_example: || {
-            json!({
-                "revision": REVISION,
-                "methods": [{
-                    "name": "session.list",
-                    "summary": "Every session the daemon holds, oldest first.",
-                    "input": {"type": "object", "properties": {}, "examples": [{}]},
-                    "output": {
-                        "type": "object",
-                        "required": ["sessions"],
-                        "properties": {"sessions": {"type": "array"}},
-                        "examples": [{"sessions": []}],
-                    },
-                    "errors": [],
-                }],
-                "error": {"type": "object", "required": ["kind", "message"]},
-            })
+            description(Some("session.list")).expect("session.list is a method to describe")
         },
         run: describe,
     },
@@ -350,11 +338,15 @@ fn error_fields() -> Value {
 }
 
 fn describe(_sessions: &SessionStore, params: &Value) -> Result<Value, ApiError> {
-    let wanted = match params.get("method") {
-        None => None,
-        Some(Value::String(name)) => Some(name.as_str()),
-        Some(_) => return Err(ApiError::invalid("api.describe's `method` is a string")),
-    };
+    match params.get("method") {
+        None => description(None),
+        Some(Value::String(name)) => description(Some(name)),
+        Some(_) => Err(ApiError::invalid("api.describe's `method` is a string")),
+    }
+}
+
+/// `api.describe`'s result: the method `wanted` names, or every method when it names none.
+fn description(wanted: Option<&str>) -> Result<Value, ApiError> {
     let methods: Vec<Value> = METHODS
         .iter()
         .filter(|method| wanted.is_none_or(|name| method.name == name))

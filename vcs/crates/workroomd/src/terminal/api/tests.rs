@@ -134,6 +134,27 @@ fn describe_publishes_every_method_with_both_schemas() {
     );
 }
 
+/// `api.describe`'s result example is what it really replies to its params example, so neither a
+/// method's summary nor its schemas can drift from it.
+#[test]
+fn describes_result_example_is_its_real_reply_to_its_params_example() {
+    let store = SessionStore::new();
+    let describe = &METHODS[0];
+    assert_eq!(describe.name, "api.describe");
+    let params = (describe.params_example)();
+    let replied = request(
+        &store,
+        json!({"method": describe.name, "params": params.clone()}),
+    )
+    .unwrap();
+    assert_eq!((describe.result_example)(), replied);
+    assert_eq!(params, json!({"method": "session.list"}));
+    assert_eq!(
+        replied["methods"][0]["summary"], METHODS[1].summary,
+        "{replied}"
+    );
+}
+
 #[test]
 fn an_empty_daemon_lists_no_sessions_and_resolves_nothing() {
     let store = SessionStore::new();
