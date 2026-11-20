@@ -82,6 +82,8 @@ pub mod kind {
     pub const WAIT_TIMEOUT: &str = "WaitTimeout";
     /// The request needs the shell's integration marks, and the session has sent none.
     pub const NO_SHELL_INTEGRATION: &str = "NoShellIntegration";
+    /// A wait for a run to exit with one code, which it exited with another.
+    pub const EXIT_CODE_MISMATCH: &str = "ExitCodeMismatch";
     /// The daemon is at a limit on concurrent work (`MAX_CAPTURES` captures of history, or the
     /// waits `wait::LIMITS` bounds), so it refuses rather than queue, and a retry once some has
     /// finished can succeed.
