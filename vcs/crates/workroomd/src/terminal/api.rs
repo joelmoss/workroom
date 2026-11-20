@@ -75,6 +75,9 @@ pub mod kind {
     pub const TOO_LARGE: &str = "TooLarge";
     /// The session the target named ended before it could be read.
     pub const SESSION_ENDED: &str = "SessionEnded";
+    /// The daemon is at a limit on concurrent work (`MAX_CAPTURES` captures of history), so it
+    /// refuses rather than queue, and a retry once some has finished can succeed.
+    pub const BUSY: &str = "Busy";
     /// Anything else, such as a screen the daemon has no copy of (a build without terminal-state,
     /// or a shadow terminal that failed) or one the formatter could not read.
     pub const INTERNAL_ERROR: &str = "InternalError";
@@ -256,7 +259,7 @@ pub const METHODS: &[Method] = &[
                   the primary screen's, the only history there is: under a full-screen program, \
                   the shell's lines down to its last. `lines` past what one reply holds at the \
                   pane's width is `TooLarge`; a few captures of history run at once, and one \
-                  past them is refused.",
+                  past them is `Busy`, which a retry once one has finished can get past.",
         input: capture_input,
         output: capture_output,
         errors: &[
@@ -264,6 +267,7 @@ pub const METHODS: &[Method] = &[
             kind::TARGET_AMBIGUOUS,
             kind::SESSION_ENDED,
             kind::TOO_LARGE,
+            kind::BUSY,
             kind::INTERNAL_ERROR,
         ],
         params_example: || json!({"target": "dev server", "lines": 100, "unwrap": true}),
@@ -461,7 +465,7 @@ fn capture(call: &Call) -> Result<Answer, ApiError> {
             ),
         ),
         Refused::Busy => ApiError::new(
-            kind::INTERNAL_ERROR,
+            kind::BUSY,
             format!(
                 "{MAX_CAPTURES} captures of history are already running on this daemon, the \
                  most it runs at once; try again when one has finished"

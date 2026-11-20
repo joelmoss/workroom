@@ -1299,8 +1299,8 @@ fn capture_all_streams_a_large_scrollback_in_chunks() {
 
     // The daemon runs 4 captures from a copy at once (`api::MAX_CAPTURES`). Four streams whose
     // callers read one reply and stop hold all four; meanwhile a session keeps writing, which no
-    // capture's format holds up; a fifth is refused, saying why; and once the four hang up, a
-    // capture runs again.
+    // capture's format holds up; a fifth is refused as `Busy` (3), saying why; and once the four
+    // hang up, a capture runs again.
     let mut ticker = open(&socket, OTHER, "ticker", "wr-1", &workspace.dir);
     listing_until(&socket, |listing| listing.len() == 2);
     type_line(
@@ -1333,9 +1333,9 @@ fn capture_all_streams_a_large_scrollback_in_chunks() {
         &["logs", "--lines", "5000", "--json"],
     ] {
         let refused = workroom(Some(&socket), &[&["capture"][..], args].concat());
-        assert_eq!(refused.code, 1, "{args:?}: {}", refused.stdout);
+        assert_eq!(refused.code, 3, "{args:?}: {}", refused.stdout);
         let error = &refused.envelope()["error"];
-        assert_eq!(error["kind"], "InternalError", "{error}");
+        assert_eq!(error["kind"], "Busy", "{error}");
         assert!(
             error["message"]
                 .as_str()

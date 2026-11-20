@@ -71,6 +71,9 @@ pub(crate) enum Kind {
     NoShellIntegration,
     /// A request, or what it sends, over the terminal API's limit.
     TooLarge,
+    /// A daemon at its limit on concurrent work, such as captures of history: it refuses the
+    /// request rather than queue it, so a script can retry once some has finished.
+    Busy,
     /// Typing into, or closing, the caller's own session without the flag that allows it.
     RefusedSelf,
     /// A terminal API request the daemon can't read: no such method, or parameters it refuses.
@@ -121,6 +124,7 @@ pub(crate) const ALL: &[Kind] = &[
     Kind::AlternateScreen,
     Kind::NoShellIntegration,
     Kind::TooLarge,
+    Kind::Busy,
     Kind::RefusedSelf,
     Kind::InvalidRequest,
     Kind::InternalError,
@@ -189,6 +193,8 @@ impl Kind {
             Kind::AlternateScreen => ("AlternateScreen", 3),
             Kind::NoShellIntegration => ("NoShellIntegration", 3),
             Kind::TooLarge => ("TooLarge", 2),
+            // A valid request the daemon can't take now: a precondition, as `AgentBusy` is.
+            Kind::Busy => ("Busy", 3),
             Kind::RefusedSelf => ("RefusedSelf", 3),
             Kind::InvalidRequest => ("InvalidRequest", 2),
             Kind::InternalError => ("InternalError", 1),
@@ -291,6 +297,7 @@ mod tests {
                 "AlternateScreen",
                 "NoShellIntegration",
                 "TooLarge",
+                "Busy",
                 "RefusedSelf",
                 "InvalidRequest",
                 "InternalError"
@@ -321,6 +328,7 @@ mod tests {
             (Kind::AlternateScreen, "AlternateScreen", 3),
             (Kind::NoShellIntegration, "NoShellIntegration", 3),
             (Kind::RefusedSelf, "RefusedSelf", 3),
+            (Kind::Busy, "Busy", 3),
             (Kind::TooLarge, "TooLarge", 2),
             (Kind::InvalidRequest, "InvalidRequest", 2),
             (Kind::DaemonUnreachable, "DaemonUnreachable", 7),
@@ -343,6 +351,7 @@ mod tests {
             kind::INVALID_REQUEST,
             kind::TOO_LARGE,
             kind::SESSION_ENDED,
+            kind::BUSY,
             kind::INTERNAL_ERROR,
         ] {
             assert_eq!(Kind::from_code(code).code(), code);
