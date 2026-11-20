@@ -21,6 +21,25 @@ pub fn daemon_binary() -> PathBuf {
     }
 }
 
+/// The binary under test copied to `to`, for a test that execs the copy (a hand-off's `--binary`).
+///
+/// Copied by a `cp` child, not `std::fs::copy`, as the contract suite's `copy_binary` is (#715):
+/// while this process holds the copy open for writing, another test thread's fork inherits that
+/// descriptor until its child execs, and on Linux exec'ing the copy then fails with ETXTBSY ("Text
+/// file busy"). In `cp`'s own process the descriptor is closed for good once it exits.
+pub fn copy_daemon_binary(to: &Path) {
+    let status = Command::new("cp")
+        .arg(daemon_binary())
+        .arg(to)
+        .status()
+        .expect("run cp");
+    assert!(
+        status.success(),
+        "cp the binary under test to {}",
+        to.display()
+    );
+}
+
 /// A spawned daemon or attach client that is killed when the test ends, panic or not.
 ///
 /// Every test here already finishes with `let _ = daemon.kill()`, and that line does not run when an

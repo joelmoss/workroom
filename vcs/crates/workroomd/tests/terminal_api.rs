@@ -516,7 +516,7 @@ fn a_pane_without_its_variables_is_known_across_a_hand_off() {
     drop(shell);
 
     let next = workspace.dir.join("next-workroom");
-    std::fs::copy(common::daemon_binary(), &next).expect("copy");
+    common::copy_daemon_binary(&next);
     let output = Command::new(common::daemon_binary())
         .args(["hand-off", "--socket"])
         .arg(&socket)
@@ -597,7 +597,7 @@ fn a_hand_off_keeps_the_live_title() {
     drop(shell);
 
     let next = workspace.dir.join("next-workroom");
-    std::fs::copy(common::daemon_binary(), &next).expect("copy");
+    common::copy_daemon_binary(&next);
     let output = Command::new(common::daemon_binary())
         .args(["hand-off", "--socket"])
         .arg(&socket)
