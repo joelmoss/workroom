@@ -94,10 +94,6 @@ pub fn run_serve(
             return ExitCode::FAILURE;
         }
     };
-    // First, before an update can replace the file at this path: see `handoff::Context::digest`.
-    let digest = handoff::own_binary()
-        .and_then(|path| handoff::digest(&path))
-        .ok();
     let mut daemon = Daemon::new();
     let (lock, listener) = match handoff {
         Some(table) => match adopt(&daemon, &table) {
@@ -195,7 +191,6 @@ pub fn run_serve(
         socket: socket.clone(),
         listener: listener.as_raw_fd(),
         lock: lock.fd(),
-        digest,
         arguments: std::env::args_os().skip(1).collect(),
     });
     // The lock this program holds, taken or carried over by a hand-off, and the log stderr is.

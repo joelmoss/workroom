@@ -168,6 +168,9 @@ pub fn protocol() -> ExitCode {
     println!("build {BUILD}");
     // The order between builds (#255): the app's probe reads it to decide whether to push.
     println!("build-number {}", handoff::build_number());
+    // Which daemon this is (#680): builds that differ only in their CLI commands state the same
+    // one, and a running daemon is handed off only to a binary that states another.
+    println!("daemon-build {}", handoff::daemon_build());
     // Whether this build can repaint a reattaching client. A build without it serves
     // sessions perfectly well and then hands a reconnecting pane a blank screen, which is
     // invisible until someone quits the app and comes back — so it is stated here and

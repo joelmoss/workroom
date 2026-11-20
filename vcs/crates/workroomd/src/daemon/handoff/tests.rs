@@ -88,6 +88,40 @@ fn screens_are_refused_by_a_build_that_cannot_paint_them() {
     );
 }
 
+/// A binary's daemon build is found wherever its marker falls, across the reads the scan makes in
+/// particular; a near miss is not a marker, and a file with none has none.
+#[test]
+fn a_daemon_build_is_read_out_of_a_binarys_bytes() {
+    let dir = std::env::temp_dir().join(format!("workroomd-marker-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = |build: &str| format!("WORKROOMD-DAEMON-BUILD:{build};").into_bytes();
+    let build = "0123456789abcdef".repeat(4);
+    let file = |name: &str, bytes: &[u8]| {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        daemon_build_in(&path).unwrap()
+    };
+    // Straddling the first read's end at each offset, at the start, and at the very end.
+    for offset in [1, 10, 23, 40, 80, 88] {
+        let mut bytes = vec![b'x'; (1 << 16) - offset];
+        bytes.extend(marker(&build));
+        bytes.extend(vec![b'y'; 1000]);
+        assert_eq!(file("straddling", &bytes), Some(build.clone()), "{offset}");
+    }
+    assert_eq!(file("first", &marker(&build)), Some(build.clone()));
+    let mut late = vec![b'x'; 3 << 16];
+    late.extend(marker(&build));
+    assert_eq!(file("last", &late), Some(build.clone()));
+    // An unterminated prefix, then a real one; a value that is no hash; none at all.
+    let mut near = b"WORKROOMD-DAEMON-BUILD:abc WORKROOMD-DAEMON-BUILD:;".to_vec();
+    near.extend(marker(&build));
+    assert_eq!(file("near", &near), Some(build.clone()));
+    assert_eq!(file("not-hex", &marker("not a hash")), None);
+    assert_eq!(file("none", b"#!/bin/sh\nexit 0\n"), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_protocol_report_states_its_build_number() {
     assert_eq!(

@@ -270,6 +270,66 @@ pub fn has_terminal_state() -> bool {
         .unwrap_or(false)
 }
 
+/// The daemon build (#680) the binary under test states in `protocol`.
+pub fn stated_daemon_build() -> String {
+    let output = Command::new(daemon_binary())
+        .arg("protocol")
+        .output()
+        .expect("protocol");
+    let report = String::from_utf8_lossy(&output.stdout).into_owned();
+    report
+        .lines()
+        .find_map(|line| line.strip_prefix("daemon-build "))
+        .unwrap_or_else(|| panic!("no `daemon-build` line in {report:?}"))
+        .to_string()
+}
+
+/// A daemon build that is not the one under test.
+pub fn another_daemon_build() -> String {
+    let ours = stated_daemon_build();
+    ["0", "1"]
+        .iter()
+        .map(|digit| digit.repeat(64))
+        .find(|other| *other != ours)
+        .expect("one of two differs")
+}
+
+/// A build of the daemon as a daemon offered it sees one, at `path`: a script, so its bytes are
+/// its own, that runs the binary under test for every command. `daemon_build` is the build its
+/// marker states (`handoff::DAEMON_BUILD_MARKER`), and `None` is a build from before the marker.
+/// Each run is appended to `<path>.runs`, so a test can tell one that was never run.
+///
+/// The build it marks is what a daemon decides by, so the build under test with other bytes is a
+/// change to the CLI's commands alone.
+pub fn daemon_script(path: &Path, daemon_build: Option<&str>) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let marker = daemon_build
+        .map(|build| format!("# WORKROOMD-DAEMON-BUILD:{build};\n"))
+        .unwrap_or_default();
+    std::fs::write(
+        path,
+        format!(
+            "#!/bin/sh\n{marker}echo \"$1\" >> '{runs}'\nexec '{binary}' \"$@\"\n",
+            runs = runs_path(path).display(),
+            binary = daemon_binary().display()
+        ),
+    )
+    .expect("write the daemon script");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    path.to_path_buf()
+}
+
+/// The commands a `daemon_script` was run with, one per line.
+pub fn daemon_script_runs(path: &Path) -> String {
+    std::fs::read_to_string(runs_path(path)).unwrap_or_default()
+}
+
+fn runs_path(path: &Path) -> PathBuf {
+    let mut runs = path.as_os_str().to_owned();
+    runs.push(".runs");
+    PathBuf::from(runs)
+}
+
 /// A client of a daemon's envelope protocol over any byte stream, shared by the service tests:
 /// the request/reply services' JSON requests and their chunked replies, the envelopes in between,
 /// and a Terminal stream's output. Each test file wraps one with what is particular to its service.

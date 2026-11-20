@@ -244,6 +244,79 @@ fn the_binary_already_running_is_not_handed_to() {
     );
 }
 
+/// An update to the CLI's commands alone (#680): another file, the same daemon build. The daemon
+/// says `current` without running it, and nothing about it or its sessions changes.
+#[test]
+fn a_binary_whose_cli_commands_alone_changed_is_not_handed_to() {
+    let workspace = Workspace::new("cli-only");
+    let socket = workspace.socket();
+    let mut daemon = start_daemon(&socket);
+    let session = "4a4a4a4a-0000-4000-8000-000000000020";
+    let shell = detached_session(&socket, session, "CLI-ONLY");
+    let socket_inode = std::fs::metadata(&socket).expect("socket").ino();
+    let cli_only = daemon_script(
+        &workspace.dir.join("cli-only-daemon"),
+        Some(&stated_daemon_build()),
+    );
+
+    let output = hand_off(&socket, &cli_only, false);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "current");
+    assert_eq!(daemon_script_runs(&cli_only), "", "the daemon ran it");
+    assert!(daemon.try_wait().expect("wait").is_none());
+    assert_eq!(
+        std::fs::metadata(&socket).expect("socket").ino(),
+        socket_inode
+    );
+    assert!(alive(shell));
+    assert!(list_sessions(&socket).contains(session));
+
+    // Forced, the same daemon build is handed to all the same.
+    let output = hand_off(&socket, &cli_only, true);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "handed off",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// A change to the daemon (#680), and a binary from before daemon builds were marked: both are
+/// another daemon, so each is handed to, and every session is kept.
+#[test]
+fn a_binary_with_another_daemon_build_or_none_is_handed_to_and_keeps_every_session() {
+    let workspace = Workspace::new("daemon-change");
+    let socket = workspace.socket();
+    let mut daemon = start_daemon(&socket);
+    let session = "4a4a4a4a-0000-4000-8000-000000000021";
+    let shell = detached_session(&socket, session, "DAEMON-CHANGE");
+
+    for (name, build) in [
+        ("another-daemon", Some(another_daemon_build())),
+        ("unmarked-daemon", None),
+    ] {
+        let binary = daemon_script(&workspace.dir.join(name), build.as_deref());
+        let output = hand_off(&socket, &binary, false);
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "handed off",
+            "{name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            daemon_script_runs(&binary).contains("handoff-check"),
+            "{name} was not checked"
+        );
+        assert!(daemon.try_wait().expect("wait").is_none(), "{name}");
+        assert!(alive(shell), "{name}: the shell did not survive");
+        assert!(list_sessions(&socket).contains(session), "{name}");
+    }
+}
+
 /// A binary that cannot start, or starts and cannot restore these sessions, is refused, and the
 /// daemon that refused it carries on with its sessions untouched. `/usr/bin/false` stands in for a
 /// build that predates hand-off: it exits non-zero on `handoff-check` as such a build does.
@@ -417,7 +490,7 @@ fn a_second_hand_off_while_one_is_checking_waits_for_it() {
 }
 
 /// More than one session, and a hand-off right after a hand-off: both shells survive together,
-/// the adopted program recomputes its own digest (so an unforced ask says `current`), and it
+/// the adopted program is the same daemon build (so an unforced ask says `current`), and it
 /// survives being handed off to itself again — exercising the `--handoff` argument-stripping
 /// branch of `exec()` and `Pty::adopt` on a pty this process already adopted once.
 #[test]
@@ -439,8 +512,8 @@ fn a_hand_off_carries_every_session_and_survives_a_second_one() {
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "handed off");
     assert!(daemon.try_wait().expect("wait").is_none());
 
-    // The adopted program recomputed its own digest at startup, so asking it to become the
-    // binary it already is (unforced) says `current` rather than handing off again.
+    // The adopted program is this daemon build, so asking it to become the binary it already is
+    // (unforced) says `current` rather than handing off again.
     let output = hand_off(&socket, &daemon_binary(), false);
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "current");
 

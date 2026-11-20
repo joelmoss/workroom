@@ -376,7 +376,8 @@ pub(crate) fn dispatch(
             sessions.kill_all();
             reply(Frame::control(FrameKind::Acknowledged))
         }
-        // `Acknowledged` with "current" when the binary is this program already, "handing off"
+        // `Acknowledged` with "current" when the binary is this daemon build already (its CLI
+        // commands may differ; `handoff::daemon_build`), "handing off"
         // just before the exec (which then ends this connection), and `Failure` with the reason
         // when it refused or the exec failed. See `crate::daemon::handoff`.
         FrameKind::HandOff => {
@@ -394,7 +395,7 @@ pub(crate) fn dispatch(
             );
             match crate::daemon::handoff::hand_off(sessions, &binary, force != 0, handing_off) {
                 Ok(()) => {
-                    crate::note!("hand-off not needed: {} is this program", binary.display());
+                    crate::note!("hand-off not needed: {} is this daemon", binary.display());
                     reply(Frame::new(FrameKind::Acknowledged, b"current".to_vec()))
                 }
                 Err(reason) => {

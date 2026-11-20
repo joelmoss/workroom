@@ -33,9 +33,7 @@
 //! answering, so the next client starts a fresh daemon. `tests/hand_off.rs` does this on purpose and
 //! records exactly that.
 
-use std::collections::hash_map::DefaultHasher;
 use std::ffi::{CString, OsString};
-use std::hash::Hasher;
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
@@ -348,9 +346,6 @@ pub struct Context {
     pub socket: PathBuf,
     pub listener: RawFd,
     pub lock: RawFd,
-    /// This program's own bytes, hashed when it started. Read then because a later read may find
-    /// another file: an app update replaces the binary at the same path.
-    pub digest: Option<u64>,
     /// The arguments this program was started with, reused for the next one so it serves the
     /// same socket with the same settings.
     pub arguments: Vec<OsString>,
@@ -362,19 +357,86 @@ pub fn install(context: Context) {
     let _ = CONTEXT.set(context);
 }
 
-/// Hashes a file's bytes. Only ever compared with another hash this same process made, so the
-/// hasher's output needs to be stable within a process and nothing more.
-pub fn digest(path: &Path) -> std::io::Result<u64> {
+/// This build's daemon build identity (`build.rs`, #680): a hash of every source but the CLI's
+/// `commands` module, so two builds that differ only in their CLI commands are the same daemon.
+/// `protocol` states it as `daemon-build`, and a hand-off to a binary with the same one is no
+/// hand-off at all (`hand_off`).
+///
+/// Read out of `DAEMON_BUILD_MARKER` through `black_box`, as `build_number` is, so the marker
+/// survives the linker; and split at its colon, so its prefix is in the binary once.
+pub fn daemon_build() -> &'static str {
+    marker_value(std::hint::black_box(DAEMON_BUILD_MARKER)).unwrap_or("")
+}
+
+/// The daemon build where a daemon finds it in a binary it is offered, without running it: a run
+/// would come out of the requester's wait (`APP_TIMEOUT`), and a byte scan costs what the file
+/// digest it replaced did. Its prefix must not contain `BUILD_MARKER`'s, which the app scans for.
+#[used]
+pub static DAEMON_BUILD_MARKER: &str = concat!(
+    "WORKROOMD-DAEMON-BUILD:",
+    env!("WORKROOMD_DAEMON_BUILD"),
+    ";"
+);
+
+/// The value of a `<prefix>:<value>;` marker.
+fn marker_value(marker: &str) -> Option<&str> {
+    marker
+        .split_once(':')
+        .and_then(|(_, rest)| rest.strip_suffix(';'))
+}
+
+/// The longest daemon build a marker may carry (a SHA-256 is 64 hex digits); a longer run of
+/// bytes after the prefix is not a marker.
+const MAX_DAEMON_BUILD: usize = 128;
+
+/// The daemon build marked in the file at `path`, or `None` when it has none: a binary from before
+/// #680, or not a daemon at all, which is a different daemon from this one. The first complete
+/// marker counts; a universal Mac binary carries one per architecture, all the same.
+pub fn daemon_build_in(path: &Path) -> std::io::Result<Option<String>> {
+    let marker = std::hint::black_box(DAEMON_BUILD_MARKER);
+    let prefix = &marker.as_bytes()[..=marker.find(':').unwrap_or(0)];
+    // A marker split across two reads is found whole in the next: each read is searched after the
+    // tail of the one before, as long as a marker can be.
+    let overlap = prefix.len() + MAX_DAEMON_BUILD + 1;
+    let chunk = 1 << 16;
     let mut file = std::fs::File::open(path)?;
-    let mut hasher = DefaultHasher::new();
-    let mut buffer = vec![0u8; 1 << 16];
+    let mut buffer: Vec<u8> = Vec::with_capacity(chunk + overlap);
     loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            return Ok(hasher.finish());
+        let kept = buffer.len();
+        buffer.resize(kept + chunk, 0);
+        let read = file.read(&mut buffer[kept..])?;
+        buffer.truncate(kept + read);
+        if let Some(found) = complete_marker(&buffer, prefix) {
+            return Ok(Some(found));
         }
-        hasher.write(&buffer[..read]);
+        if read == 0 {
+            return Ok(None);
+        }
+        buffer.drain(..buffer.len().saturating_sub(overlap));
     }
+}
+
+/// The value of the first complete marker in `bytes`: `prefix`, then hex digits, then `;`.
+fn complete_marker(bytes: &[u8], prefix: &[u8]) -> Option<String> {
+    let mut from = 0;
+    while let Some(at) = bytes[from..]
+        .windows(prefix.len())
+        .position(|window| window == prefix)
+    {
+        let value = &bytes[from + at + prefix.len()..];
+        let end = value
+            .iter()
+            .take(MAX_DAEMON_BUILD + 1)
+            .position(|&byte| byte == b';');
+        if let Some(end) = end
+            && end > 0
+            && value[..end].iter().all(u8::is_ascii_hexdigit)
+        {
+            return Some(String::from_utf8_lossy(&value[..end]).into_owned());
+        }
+        from += at + 1;
+    }
+    None
 }
 
 /// This program's own binary. On Linux `/proc/self/exe` still reads the right bytes after the path
@@ -393,7 +455,7 @@ pub fn table_path(socket: &Path) -> PathBuf {
 }
 
 /// Replaces this program with `binary`, keeping every session. Returns only when it did not:
-/// `Ok` when `binary` is this program already (unless `force`), or `Err` with the reason it
+/// `Ok` when `binary` is this daemon build already (unless `force`), or `Err` with the reason it
 /// refused or failed. Either way nothing has changed.
 ///
 /// `before_exec` runs once everything has been checked, just before the exec: the requester is
@@ -415,11 +477,14 @@ pub fn hand_off(
     if !std::fs::metadata(binary).is_ok_and(|meta| meta.is_file()) {
         return Err(HandOffError::NotAFile(binary.to_path_buf()));
     }
-    let offered = digest(binary).map_err(|source| HandOffError::Read {
+    // The same daemon, not the same file (#680): a binary whose CLI commands alone changed is
+    // this daemon still, and a hand-off would only pause every session for nothing. One with no
+    // marker predates the identity, so it is a different daemon.
+    let offered = daemon_build_in(binary).map_err(|source| HandOffError::Read {
         path: binary.to_path_buf(),
         source,
     })?;
-    if !force && context.digest == Some(offered) {
+    if !force && offered.as_deref() == Some(daemon_build()) {
         return Ok(());
     }
     // A panic in an earlier hand-off poisons this and proves nothing about the next one, so a

@@ -1,9 +1,34 @@
-//! Stamps the daemon's build number. libghostty-vt, for `terminal-state`, is built and linked by
-//! the ghostty-vt crate's own build.rs.
+//! Stamps the daemon's build number and its daemon build identity. libghostty-vt, for
+//! `terminal-state`, is built and linked by the ghostty-vt crate's own build.rs.
+
+#[path = "build/daemon_build.rs"]
+mod daemon_build;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     build_number();
+    daemon_build();
+}
+
+/// The daemon build identity, `WORKROOMD_DAEMON_BUILD` (#680): a hash of every source but the CLI's
+/// `commands` module, so a daemon is handed off only for a change that is the daemon's. See
+/// `build/daemon_build.rs` for what it reads. Fails the build when it cannot read them: a binary
+/// with no identity, or a wrong one, would hand off every host's daemon on every update, or none.
+fn daemon_build() {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // Only what changes the daemon's behaviour: `test-support` adds an API the tests call and
+    // nothing the daemon runs.
+    let features: &[&str] = if std::env::var_os("CARGO_FEATURE_TERMINAL_STATE").is_some() {
+        &["terminal-state"]
+    } else {
+        &[]
+    };
+    let build = daemon_build::daemon_build(&workspace, features)
+        .unwrap_or_else(|e| panic!("cannot hash the daemon's sources: {e}"));
+    for root in &build.roots {
+        println!("cargo:rerun-if-changed={}", root.display());
+    }
+    println!("cargo:rustc-env=WORKROOMD_DAEMON_BUILD={}", build.hash);
 }
 
 /// The daemon's build number, `WORKROOMD_BUILD`: the commit time of the checkout it is built from, in
