@@ -60,13 +60,15 @@ final class ThemePickerUITests: XCTestCase {
   private let darkVariantFile = "Night Owl"
   private let lightVariantFile = "Light Owl"
 
-  private func launchedApp(withUserThemes: Bool = false) -> XCUIApplication {
+  private func launchedApp(withUserThemes: Bool = false, lightTheme: String = "Workroom Light")
+    -> XCUIApplication
+  {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     if withUserThemes { app.launchArguments += ["-WorkroomUITestUserThemes", "1"] }
     // Start somewhere that is NOT the family under test, so a passing assertion can't be the
     // fixture's starting state.
-    app.launchArguments += ["-WorkroomUITestLightTheme", "Workroom Light"]
+    app.launchArguments += ["-WorkroomUITestLightTheme", lightTheme]
     app.launchArguments += ["-WorkroomUITestDarkTheme", "Workroom"]
     // Pinned Dark, so which side is showing, and so which tab ⌘⇧K opens, doesn't hang on the
     // machine's appearance or on whatever the Dev app was last left on (#735).
@@ -380,7 +382,7 @@ final class ThemePickerUITests: XCTestCase {
       element(app, "theme-light-\(lightVariantFile)").exists, "the Dark tab listed a light theme")
     XCTAssertFalse(
       element(app, "theme-picker.note").exists,
-      "the Dark tab noted another mode while Dark is showing")
+      "the Dark tab noted the other appearance while Dark is showing")
 
     app.typeText("Nord")
     let nord = element(app, "theme-dark-Nord")
@@ -414,7 +416,7 @@ final class ThemePickerUITests: XCTestCase {
 
     let note = element(app, "theme-picker.note")
     XCTAssertTrue(note.waitForExistence(timeout: 3), "the Light tab doesn't say it applies later")
-    XCTAssertEqual(text(of: note), "Applies in Light mode")
+    XCTAssertEqual(text(of: note), "Applies when the appearance is Light")
 
     app.typeText(lightVariantFile)
     XCTAssertTrue(
@@ -431,6 +433,35 @@ final class ThemePickerUITests: XCTestCase {
     XCTAssertEqual(
       confTheme(), "Workroom",
       "browsing the hidden Light side changed the generated config, so the screen repainted")
+  }
+
+  /// A Settings row whose theme fell back says so. Your own dark file called `Ayu Light` puts the
+  /// stored light theme on the wrong side, so Workroom Light shows in its place: the Light theme row
+  /// keeps the stored name and notes the fallback, the Dark theme row notes nothing, and choosing a
+  /// real light theme clears the note.
+  func testASettingsRowSaysWhenItsThemeFellBack() throws {
+    let app = launchedApp(withUserThemes: true, lightTheme: "Ayu Light")
+    openAppearanceSettings(app)
+    waitForSettingsRow(app, "lightTheme", toShow: "Ayu Light")
+
+    let note = element(app, "settings.themeFallback.lightTheme")
+    XCTAssertTrue(note.waitForExistence(timeout: 5), "the Light theme row doesn't say it fell back")
+    XCTAssertEqual(text(of: note), "Not a light theme: showing Workroom Light")
+    XCTAssertFalse(
+      element(app, "settings.themeFallback.darkTheme").exists,
+      "the Dark theme row says it fell back, although Workroom is a dark theme")
+
+    settingsRow(app, "lightTheme").click()
+    XCTAssertTrue(
+      app.popovers.firstMatch.waitForExistence(timeout: 5), "the Light theme row opened no picker")
+    app.typeText(lightVariantFile)
+    XCTAssertTrue(
+      element(app, "theme-light-\(lightVariantFile)").waitForExistence(timeout: 5),
+      "'\(lightVariantFile)' is not on the Light tab")
+    app.typeKey(.downArrow, modifierFlags: [])
+    waitForSettingsRow(app, "lightTheme", toShow: lightVariantFile)
+    XCTAssertTrue(
+      note.waitForNonExistence(timeout: 5), "the fallback note stayed after choosing a light theme")
   }
 
   /// Your own theme files in the Light and Dark lists (#737). `-WorkroomUITestUserThemes 1` has the
