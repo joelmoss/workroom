@@ -2351,6 +2351,106 @@ fn over_ssh_every_service_answers_through_the_relay() {
     );
 }
 
+/// The terminal API on a host (#683), as a coding agent in a remote pane runs it: `sessions` lists
+/// a session the Mac opened, with its label, scope and the live title its program set (the host's
+/// daemon is the static musl build, with terminal-state), resolves a target, and says plainly when
+/// no daemon is named.
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_the_terminal_api_lists_and_resolves_the_hosts_sessions() {
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
+    let session = "7e0e7e0e-0000-4000-8000-000000000683";
+    let workroom = "4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0683";
+    let mut pane = Pane::attach_with(
+        &fixture,
+        session,
+        false,
+        &format!("WORKROOM_SESSION_WORKROOM={workroom} 'WORKROOM_SESSION_TITLE=api pane'"),
+    );
+    // From a program that keeps running: the host's bash titles the pane at every prompt, which
+    // would replace this one. The marker is split in the line, so its echo is not mistaken for it.
+    pane.type_line(r#"sh -c 'printf "\033]2;host title\007"; echo "TITLE-""SET"; sleep 60'"#);
+    assert!(
+        pane.read_until("TITLE-SET\r\n", Duration::from_secs(20))
+            .contains("TITLE-SET\r\n")
+    );
+
+    let sessions = |args: &str| {
+        let output = fixture
+            .ssh()
+            .arg(format!(
+                "WORKROOM_DAEMON={} {INSTALLED_DAEMON} sessions {args}; echo \"exit=$?\"",
+                fixture.socket
+            ))
+            .output()
+            .expect("run sessions");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let mut listed = String::new();
+    let titled = (0..40).any(|_| {
+        listed = sessions("--json");
+        if listed.contains("\"title\":\"host title\"") {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        false
+    });
+    assert!(titled, "the live title never showed: {listed}");
+    let (envelope, status) = listed.rsplit_once("exit=").expect("an exit status");
+    assert_eq!(status.trim(), "0", "{listed}");
+    let envelope: Value = serde_json::from_str(envelope.trim()).expect("one envelope");
+    let ours = envelope["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .find(|listed| listed["id"] == session)
+        .unwrap_or_else(|| panic!("{session} is not listed: {envelope}"))
+        .clone();
+    assert_eq!(ours["label"], "api pane", "{ours}");
+    assert_eq!(ours["title"], "host title", "{ours}");
+    assert_eq!(
+        ours["scope"],
+        json!({"kind": "workroom", "id": workroom}),
+        "{ours}"
+    );
+    assert_eq!(ours["run"], false, "{ours}");
+    assert_eq!(ours["cwd"], "/home/workroom", "{ours}");
+
+    let resolved = sessions("'host title' --json");
+    assert!(
+        resolved.contains(&format!("\"id\":\"{session}\"")),
+        "{resolved}"
+    );
+    assert!(resolved.trim_end().ends_with("exit=0"), "{resolved}");
+    let missing = sessions("no-such-pane --json");
+    assert!(missing.contains("\"kind\":\"TargetNotFound\""), "{missing}");
+    assert!(missing.trim_end().ends_with("exit=3"), "{missing}");
+
+    let unnamed = fixture
+        .ssh()
+        .arg(format!(
+            "{INSTALLED_DAEMON} sessions --json; echo \"exit=$?\""
+        ))
+        .output()
+        .expect("run sessions");
+    let unnamed = String::from_utf8_lossy(&unnamed.stdout);
+    assert!(
+        unnamed.contains("\"kind\":\"DaemonUnreachable\""),
+        "{unnamed}"
+    );
+    assert!(unnamed.trim_end().ends_with("exit=7"), "{unnamed}");
+
+    // ^C the program, then end the shell, so the session leaves the host's listing.
+    pane.type_line("\u{3}");
+    pane.type_line("exit");
+    assert!(
+        pane.exit_code(Duration::from_secs(20)).is_some(),
+        "the session did not end"
+    );
+}
+
 /// Two Macs on one remote workroom (#255): Mac A's session carries its workroom and title to the
 /// host, Mac B finds it in the host's list and A's layout in the Layout service, and reattaches to
 /// the same shell; A dropping its link leaves B attached; a close on A ends the session for B too;
