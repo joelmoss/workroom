@@ -18,8 +18,7 @@ use wr_protocol::envelope::{
 /// How long the daemon gets to greet and to answer.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The variable naming the daemon's socket.
-pub(super) const DAEMON_VARIABLE: &str = "WORKROOM_DAEMON";
+use crate::terminal::api::{DAEMON_VARIABLE, PANE_VARIABLE};
 
 /// The request's stream: one request per connection.
 const STREAM: u32 = 1;
@@ -39,8 +38,11 @@ pub(super) struct Replied {
 pub(super) fn reply(context: &Context, method: &str, params: Value) -> Result<Replied, CliError> {
     // A request too big to send is bad input whether or not a daemon would take it, so it is
     // refused (2) before one is looked for.
-    let request = serde_json::to_vec(&json!({"method": method, "params": params}))
-        .expect("a request serializes");
+    let mut request = json!({"method": method, "params": params});
+    if let Some(pane) = context.env(PANE_VARIABLE).filter(|pane| !pane.is_empty()) {
+        request["caller"] = Value::String(pane);
+    }
+    let request = serde_json::to_vec(&request).expect("a request serializes");
     if request.len() > MAX_ENVELOPE_PAYLOAD {
         return Err(CliError::new(
             Kind::TooLarge,

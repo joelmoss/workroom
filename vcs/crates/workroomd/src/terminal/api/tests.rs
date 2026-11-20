@@ -91,6 +91,9 @@ fn a_request_that_is_not_a_method_call_is_invalid() {
         json!({"method": "session.nope"}),
         json!({"method": "session.list", "params": [1]}),
         json!({"method": "session.resolve"}),
+        json!({"method": "session.list", "params": {"scope": "workroom"}}),
+        json!({"method": "session.list", "params": {"scope": true}}),
+        json!({"method": "session.list", "caller": 7}),
         json!({"method": "api.describe", "params": {"method": "x.y"}}),
     ] {
         let error = request(&store, bad.clone()).expect_err(&bad.to_string());
@@ -157,12 +160,54 @@ fn describes_result_example_is_its_real_reply_to_its_params_example() {
     );
 }
 
+/// A caller's scope is the sessions with the same scope, kind and id both. A caller with no
+/// scope, or no caller, keeps to nothing, so every session is listed.
+#[test]
+fn a_callers_scope_is_the_sessions_sharing_its_scope() {
+    let scoped = |id: &str, scope: Value| json!({"id": id, "scope": scope});
+    let workroom = |id: &str| json!({"kind": "workroom", "id": id});
+    const D: &str = "d0d0d0d0-1111-4222-8333-444455556666";
+    let listing = vec![
+        scoped(A, workroom("wr-1")),
+        scoped(B, workroom("wr-1")),
+        scoped(C, workroom("wr-2")),
+        scoped(D, Value::Null),
+    ];
+    let ids = |caller: Option<&str>| -> Vec<String> {
+        in_scope_of(listing.clone(), caller)
+            .iter()
+            .map(|session| session["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(ids(Some(B)), [A, B]);
+    assert_eq!(ids(Some(C)), [C]);
+    assert_eq!(ids(Some(D)), [A, B, C, D]);
+    assert_eq!(ids(None), [A, B, C, D]);
+    assert_eq!(ids(Some("not-listed")), [A, B, C, D]);
+    // Another kind with the same id is another scope.
+    let mut other = listing.clone();
+    other.push(scoped(
+        "e0e0e0e0-1111-4222-8333-444455556666",
+        json!({"kind": "terminal", "id": "wr-1"}),
+    ));
+    assert_eq!(in_scope_of(other, Some(A)).len(), 2);
+}
+
 #[test]
 fn an_empty_daemon_lists_no_sessions_and_resolves_nothing() {
     let store = SessionStore::new();
     assert_eq!(
         request(&store, json!({"method": "session.list"})).unwrap(),
-        json!({"sessions": []})
+        json!({"sessions": [], "caller": null})
+    );
+    // A caller naming no session of this daemon is no caller.
+    assert_eq!(
+        request(
+            &store,
+            json!({"method": "session.list", "params": {"scope": "caller"}, "caller": A}),
+        )
+        .unwrap(),
+        json!({"sessions": [], "caller": null})
     );
     let error = request(
         &store,

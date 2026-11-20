@@ -684,7 +684,11 @@ const COMMANDS: &[Command] = &[
         long: None,
         hidden: false,
         mac_only: false,
-        flags: &[],
+        flags: &[Flag {
+            name: "all",
+            usage: "List every session, not just those in this pane's workroom",
+            ..Flag::BOOL
+        }],
         subcommands: &[],
         // One optional TARGET, which `sessions::run` checks.
         arity: Arity::Own,
@@ -1516,8 +1520,9 @@ mod tests {
         let ((stdout, _), _) = run_on(Platform::Other, &["__completeNoDesc", ""]);
         assert!(stdout.lines().any(|line| line == "sessions"), "{stdout}");
         let ((stdout, _), _) = run_on(Platform::Other, &["__completeNoDesc", "sessions", "--"]);
-        // In cobra's order, as `version`'s are in the contract suite's transcript.
-        assert_eq!(stdout, "--json\n--pretend\n--verbose\n--help\n:4\n");
+        // In cobra's order, as `version`'s are in the contract suite's transcript: the inherited
+        // flags, then its own (`--all`), then `--help`.
+        assert_eq!(stdout, "--json\n--pretend\n--verbose\n--all\n--help\n:4\n");
         // A TARGET is never a file: no candidates, and no file names from the shell either.
         for args in [
             &["__complete", "sessions", ""][..],
