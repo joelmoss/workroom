@@ -73,17 +73,19 @@ private final class ThemePickerLists {
   private var families: [ThemeFamily]?
 
   func themes(on side: ThemeSide) -> [ListedTheme] {
-    if let cached = themes[side] { return cached }
-    let loaded = ThemeCatalog.themes(on: side)
-    themes[side] = loaded
-    return loaded
+    Self.memoized(&themes[side]) { ThemeCatalog.themes(on: side) }
   }
 
   /// The families whose themes are both on their sides (`ThemeCatalog.availableFamilies`).
   func availableFamilies() -> [ThemeFamily] {
-    if let families { return families }
-    let loaded = ThemeCatalog.availableFamilies()
-    families = loaded
+    Self.memoized(&families, ThemeCatalog.availableFamilies)
+  }
+
+  /// `slot`'s value, loading it into `slot` the first time.
+  private static func memoized<T>(_ slot: inout T?, _ load: () -> T) -> T {
+    if let cached = slot { return cached }
+    let loaded = load()
+    slot = loaded
     return loaded
   }
 }
@@ -171,29 +173,38 @@ struct ThemePicker: View {
 
   @ViewBuilder
   private func row(_ entry: ThemePickerEntry, highlighted: Bool) -> some View {
-    switch entry {
-    case .family(let family):
-      FamilyRow(
-        family: family,
-        isActive: isActive(entry),
-        isHighlighted: highlighted,
-        dark: ThemeService.themePreview(named: family.dark),
-        light: ThemeService.themePreview(named: family.light)
-      )
-      .contentShape(Rectangle())
-      .onTapGesture { choose(entry) }
-    case .theme(let theme):
-      ThemeRow(
-        name: theme.name,
-        side: theme.side,
-        isUserTheme: theme.isUserTheme,
-        isActive: isActive(entry),
-        isHighlighted: highlighted,
-        preview: ThemeService.themePreview(named: theme.name)
-      )
-      .contentShape(Rectangle())
-      .onTapGesture { choose(entry) }
+    let active = isActive(entry)
+    Group {
+      switch entry {
+      case .family(let family):
+        ThemePickerRow(
+          name: family.name,
+          // Dark left, light right.
+          swatches: [family.dark, family.light].map { ($0, ThemeService.themePreview(named: $0)) },
+          isActive: active,
+          isHighlighted: highlighted,
+          activeHelp: "\(family.name) is your theme family: your light theme and your dark theme "
+            + "are both from it",
+          activeLabel: "Your theme family",
+          identifier: "theme-family-\(family.name)"
+        )
+      case .theme(let theme):
+        let sideName = theme.side == .dark ? "dark" : "light"
+        ThemePickerRow(
+          name: theme.name,
+          swatches: [(theme.name, ThemeService.themePreview(named: theme.name))],
+          isActive: active,
+          isHighlighted: highlighted,
+          activeHelp: "\(theme.name) is your \(sideName) theme",
+          activeLabel: "Your \(sideName) theme",
+          // The side in the identifier is what lets `ThemePickerUITests` tell which tab opened.
+          identifier: "theme-\(theme.side.rawValue)-\(theme.name)",
+          isUserTheme: theme.isUserTheme
+        )
+      }
     }
+    .contentShape(Rectangle())
+    .onTapGesture { choose(entry) }
   }
 
   /// Move the highlight by `delta` (clamped) and apply that row live — ↑/↓ change the theme
@@ -328,10 +339,11 @@ struct ThemePicker: View {
   /// Shown on the tab for the side that isn't showing: a choice there is saved, but the screen keeps
   /// the theme it has until the appearance changes.
   private func appliesLaterNote(_ side: ThemeSide) -> some View {
-    let mode = side == .dark ? "Dark" : "Light"
+    let appearance = side == .dark ? "Dark" : "Light"
+    let showing = side == .dark ? "Light" : "Dark"
     return HStack(spacing: 4) {
       Image(systemName: "info.circle").accessibilityHidden(true)
-      Text("Applies in \(mode) mode")
+      Text("Applies when the appearance is \(appearance)")
         .accessibilityIdentifier("theme-picker.note")
     }
     .font(.footnote)
@@ -340,8 +352,8 @@ struct ThemePicker: View {
     .padding(.horizontal, 14)
     .padding(.bottom, 4)
     .help(
-      "The appearance is \(side == .dark ? "Light" : "Dark"), so the \(mode.lowercased()) theme you "
-        + "choose here is saved and shows when the appearance is \(mode).")
+      "The appearance is \(showing), so the \(appearance.lowercased()) theme you choose here is "
+        + "saved and shows when the appearance is \(appearance).")
   }
 
   private var searchField: some View {
@@ -374,17 +386,26 @@ struct ThemePicker: View {
   }
 }
 
-/// One family row: the family name + a dual swatch (dark variant left, light variant right).
+/// One row of the picker: a theme family on the Family tab (a dual swatch, dark left and light
+/// right) or a theme on the Light or Dark tab (its single swatch, with a "Yours" label on the user's
+/// own theme files, #737). The name, the checkmark on the current choice, and the row's chrome and
+/// hover are the same on every tab.
 ///
 /// Deliberately `internal`, not `private` (same reason as `HistoryRow`/`FileTreeRowView`):
 /// `ThemePickerInvalidationTests` measures its rebuild cost directly.
-struct FamilyRow: View {
+struct ThemePickerRow: View {
   @Environment(\.themeTokens) private var tokens
-  let family: ThemeFamily
+  let name: String
+  /// The themes the row previews, one swatch each, left to right: each theme-file name with its
+  /// preview, or nil when the file doesn't resolve.
+  let swatches: [(file: String, preview: ThemePreview?)]
   let isActive: Bool
   var isHighlighted = false
-  let dark: ThemePreview?
-  let light: ThemePreview?
+  /// The checkmark's tooltip and accessibility label.
+  let activeHelp: String
+  let activeLabel: String
+  let identifier: String
+  var isUserTheme = false
   @State private var hovered = false
 
   #if DEBUG
@@ -399,60 +420,6 @@ struct FamilyRow: View {
     #endif
     return VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 6) {
-        Text(family.name)
-          .font(.system(size: 12, weight: isActive ? .semibold : .medium))
-          .foregroundStyle(isActive ? tokens.accent : tokens.fg)
-          .lineLimit(1)
-          .truncationMode(.tail)
-          .help(family.name)
-        Spacer(minLength: 0)
-        if isActive {
-          Image(systemName: "checkmark.circle.fill")
-            .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(tokens.accent)
-        }
-      }
-      HStack(spacing: 4) {
-        Swatch(preview: dark, variantName: family.dark)
-        Swatch(preview: light, variantName: family.light)
-      }
-      .frame(height: 16)
-    }
-    .padding(.horizontal, 8)
-    .padding(.vertical, 6)
-    // Accent ring on the selected family; a fainter ring on the keyboard-highlighted row so ↑/↓
-    // focus is visible even when it isn't the selected one.
-    .pickerRowChrome(highlighted: isHighlighted, hovered: hovered, active: isActive)
-    .onHover { hovered = $0 }
-    // Queryable by `ThemePickerUITests`. Two things here are load-bearing and were both found by
-    // running the test rather than by reasoning:
-    //
-    // `children: .contain` — WITHOUT it, an identifier on this container makes the row an a11y LEAF:
-    // the identifier propagates to every descendant (four elements answered to the same one) and
-    // `row.descendants(...)` came back empty, so the per-swatch assertions could never see anything.
-    //
-    // The identifier goes on the SwiftUI row, never on an `NSViewRepresentable` wrapper — an
-    // identifier set on a wrapper isn't reachable from XCUITest at all.
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("theme-family-\(family.name)")
-  }
-}
-
-/// One theme row on the Light or Dark tab (#735): the theme's name and its single swatch, with a
-/// "Yours" label on the user's own theme files (#737).
-private struct ThemeRow: View {
-  @Environment(\.themeTokens) private var tokens
-  let name: String
-  let side: ThemeSide
-  let isUserTheme: Bool
-  let isActive: Bool
-  var isHighlighted = false
-  let preview: ThemePreview?
-  @State private var hovered = false
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 6) {
         Text(name)
           .font(.system(size: 12, weight: isActive ? .semibold : .medium))
           .foregroundStyle(isActive ? tokens.accent : tokens.fg)
@@ -465,22 +432,37 @@ private struct ThemeRow: View {
           Image(systemName: "checkmark.circle.fill")
             .font(.system(size: 12, weight: .bold))
             .foregroundStyle(tokens.accent)
+            .help(activeHelp)
+            .accessibilityLabel(activeLabel)
         }
       }
-      Swatch(preview: preview, variantName: name)
-        .frame(height: 16)
+      HStack(spacing: 4) {
+        ForEach(swatches.indices, id: \.self) { index in
+          Swatch(preview: swatches[index].preview, variantName: swatches[index].file)
+        }
+      }
+      .frame(height: 16)
     }
     .padding(.horizontal, 8)
     .padding(.vertical, 6)
+    // Accent ring on the current choice; a fainter ring on the keyboard-highlighted row so ↑/↓
+    // focus is visible even when it isn't the current one.
     .pickerRowChrome(highlighted: isHighlighted, hovered: hovered, active: isActive)
     .onHover { hovered = $0 }
-    // As `FamilyRow`: `children: .contain` keeps the swatch queryable under the row's identifier, and
-    // the side in the identifier is what lets `ThemePickerUITests` tell which tab opened.
+    // Queryable by `ThemePickerUITests`. Two things here are load-bearing and were both found by
+    // running the test rather than by reasoning:
+    //
+    // `children: .contain` — WITHOUT it, an identifier on this container makes the row an a11y LEAF:
+    // the identifier propagates to every descendant (four elements answered to the same one) and
+    // `row.descendants(...)` came back empty, so the per-swatch assertions could never see anything.
+    //
+    // The identifier goes on the SwiftUI row, never on an `NSViewRepresentable` wrapper — an
+    // identifier set on a wrapper isn't reachable from XCUITest at all.
     .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("theme-\(side.rawValue)-\(name)")
+    .accessibilityIdentifier(identifier)
   }
 
-  /// Marks a theme as one of the user's own files. Its identifier names the row's theme, so
+  /// Marks a theme as one of the user's own files. Its identifier extends the row's, so
   /// `ThemePickerUITests` can ask whether a given row carries it.
   private var yoursLabel: some View {
     Text("Yours")
@@ -492,7 +474,7 @@ private struct ThemeRow: View {
       .fixedSize()
       .help("Your own theme, from ~/.config/ghostty/themes")
       .accessibilityLabel("Your own theme")
-      .accessibilityIdentifier("theme-\(side.rawValue)-\(name)-yours")
+      .accessibilityIdentifier("\(identifier)-yours")
   }
 }
 
