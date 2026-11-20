@@ -179,6 +179,35 @@ fn queued_output_meets_the_wait_before_its_end_or_deadline() {
     assert_eq!(waiter.wait(in_20s()), Outcome::SessionEnded);
 }
 
+/// A session printing flat out (`yes`) keeps a regex wait's queue full, and the wait still times
+/// out at its deadline: the batch taken past it is the last.
+#[test]
+fn a_wait_on_endless_output_still_times_out() {
+    let waiter = output_waiter("NEVER");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let printer = {
+        let (waiter, stop) = (std::sync::Arc::clone(&waiter), std::sync::Arc::clone(&stop));
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                waiter.output(b"y\r\n");
+            }
+        })
+    };
+    let (done, outcome) = std::sync::mpsc::channel();
+    {
+        let waiter = std::sync::Arc::clone(&waiter);
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + std::time::Duration::from_millis(200);
+            let _ = done.send(waiter.wait(Some(deadline)));
+        });
+    }
+    // A guard against a hang, not a budget.
+    let outcome = outcome.recv_timeout(std::time::Duration::from_secs(20));
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    printer.join().unwrap();
+    assert_eq!(outcome, Ok(Outcome::TimedOut));
+}
+
 /// A lagged queue keeps the newest output, and starts matching it from a fresh window: no match
 /// joins text from either side of what was dropped, and the kept bytes, which may start inside a
 /// sequence, start where it is known to end.

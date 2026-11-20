@@ -177,7 +177,7 @@ struct Queue {
     screen: Option<Vec<u8>>,
     /// The session's output, as read, at most `QUEUE` bytes.
     bytes: Vec<u8>,
-    /// Output was dropped: what is kept is matched from a fresh start (`Matcher::lagged`).
+    /// Output was dropped: what is kept is matched from a fresh start (`Matcher::take`).
     lagged: bool,
 }
 
@@ -326,14 +326,17 @@ impl Waiter {
     pub fn wait(&self, deadline: Option<Instant>) -> Outcome {
         let mut matcher = lock_or_recover(&self.matcher);
         loop {
-            let queue = {
+            // Taken once the deadline has passed, a batch is the last: a session that prints
+            // faster than it is matched would otherwise keep the queue full past any deadline.
+            let (queue, last) = {
                 let mut progress = lock_or_recover(&self.state);
                 loop {
                     if let Some(outcome) = &progress.outcome {
                         return outcome.clone();
                     }
                     if !progress.queue.is_empty() {
-                        break std::mem::take(&mut progress.queue);
+                        let last = deadline.is_some_and(|deadline| Instant::now() >= deadline);
+                        break (std::mem::take(&mut progress.queue), last);
                     }
                     // Nothing left to match from before the end.
                     if progress.ended {
@@ -366,6 +369,10 @@ impl Waiter {
             let found = matcher.as_mut().and_then(|matcher| matcher.take(queue));
             if let Some(found) = found {
                 self.update(|_| Some(Met::Output(found)));
+            } else if last {
+                lock_or_recover(&self.state)
+                    .outcome
+                    .get_or_insert(Outcome::TimedOut);
             }
         }
     }
