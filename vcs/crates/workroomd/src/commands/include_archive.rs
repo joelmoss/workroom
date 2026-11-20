@@ -7,8 +7,9 @@
 //! and that git ignores in the root, found with the same two git calls as the Go CLI. A symlink is
 //! never one, so nothing outside the root is ever archived. The tar is laid out as Go's
 //! `archive/tar` writes it in its PAX format: each member a regular file with its permission bits,
-//! size and mtime, owned by uid and gid 0 with no owner names, and a pax record for an mtime with
-//! nanoseconds, a path that isn't ASCII or is over 100 bytes, or a size over the header's.
+//! size and mtime, owned by uid and gid 0 with no owner names, and a pax header only when an mtime
+//! with nanoseconds, a path that isn't ASCII or fits no ustar name and prefix, or a size over the
+//! header's needs one (`member_headers`).
 
 use std::ffi::OsStr;
 use std::fs::File;
@@ -313,48 +314,25 @@ fn append_file(
         .metadata()
         .map_err(|error| format!("stat {}: {}", shown(), os_error(&error)))?;
     let size = metadata.len();
-    let (secs, nanos) = (metadata.mtime(), metadata.mtime_nsec());
     let write_error = |error: io::Error| format!("write: {}", os_error(&error));
-
-    // The pax records Go writes, in its order (sorted by key), each only when it's needed.
-    let mut records = Vec::new();
-    if nanos != 0 || secs < 0 {
-        records.extend(pax_record("mtime", pax_time(secs, nanos).as_bytes()));
-    }
-    if name.len() > 100 || !name.is_ascii() {
-        records.extend(pax_record("path", name));
-    }
-    if size > MAX_OCTAL_SIZE {
-        records.extend(pax_record("size", size.to_string().as_bytes()));
-    }
-    if !records.is_empty() {
-        let mut header = ustar_header(&pax_header_name(name), 0, 0);
-        header.set_entry_type(tar::EntryType::XHeader);
-        header.set_size(records.len() as u64);
-        set_checksum(&mut header);
-        builder
-            .append(&header, records.as_slice())
-            .map_err(write_error)?;
-    }
-
-    let mut header = ustar_header(
+    let headers = member_headers(
         name,
         metadata.mode() & 0o777,
-        u64::try_from(secs).unwrap_or(0),
+        size,
+        metadata.mtime(),
+        metadata.mtime_nsec(),
     );
-    header.set_entry_type(tar::EntryType::Regular);
-    header.set_size(size);
-    // Go writes a regular member's device numbers as octal zeros, and its pax header's as NULs.
-    let ustar = header.as_ustar_mut().expect("a ustar header");
-    ustar.set_device_major(0);
-    ustar.set_device_minor(0);
-    set_checksum(&mut header);
+    if let Some((header, records)) = &headers.pax {
+        builder
+            .append(header, records.as_slice())
+            .map_err(write_error)?;
+    }
     let mut contents = Exactly {
         inner: source.take(size),
         left: size,
     };
     builder
-        .append(&header, &mut contents)
+        .append(&headers.member, &mut contents)
         .map_err(|error| match error.kind() {
             io::ErrorKind::UnexpectedEof => format!("{}: it shrank while it was archived", shown()),
             _ => write_error(error),
@@ -362,27 +340,145 @@ fn append_file(
     Ok(size)
 }
 
-/// The largest size a ustar header's 11 octal digits hold.
-const MAX_OCTAL_SIZE: u64 = 0o77777777777;
+/// The headers Go's writer puts before a member's contents: a pax header and its records when the
+/// member needs any, then the member's own.
+struct Headers {
+    pax: Option<(tar::Header, Vec<u8>)>,
+    member: tar::Header,
+}
 
-/// A ustar header as Go's writer starts one: `name` as ASCII, cut to the 100 bytes the field
-/// holds (a pax `path` record carries the whole name), the mode and mtime given, uid and gid 0,
-/// and no owner names.
-fn ustar_header(name: &[u8], mode: u32, mtime: u64) -> tar::Header {
-    let mut header = tar::Header::new_ustar();
-    let ascii: Vec<u8> = name
-        .iter()
+/// A member's headers as Go's `tar.Writer.WriteHeader` writes them for a `tar.FormatPAX` header
+/// of a regular file named `name` with `mode`, `size` and an mtime of `secs` and `nanos`
+/// (`archive/tar`, `allowedFormats`, `writeUSTARHeader` and `writePAXHeader`).
+///
+/// Go writes plain USTAR, with no pax header, when nothing needs pax: a whole-second mtime and a
+/// size that fit the header's octal fields, and an ASCII name that fits its 100 bytes or splits at
+/// a `/` into the 155-byte prefix and the name. Else a pax header carries the records the member
+/// needs, sorted by key, and the member's own header the rest, with its name as ASCII in the name
+/// field alone and a size or mtime the field can't hold as zero.
+fn member_headers(name: &[u8], mode: u32, size: u64, secs: i64, nanos: i64) -> Headers {
+    let mtime_fits = fits_in_octal(12, secs);
+    let size_fits = i64::try_from(size).is_ok_and(|size| fits_in_octal(12, size));
+    let split = split_ustar_path(name);
+    let mut member = tar::Header::new_ustar();
+    member.set_entry_type(tar::EntryType::Regular);
+    let ustar = member.as_ustar_mut().expect("a ustar header");
+    format_octal(&mut ustar.mode, i64::from(mode));
+    format_octal(&mut ustar.uid, 0);
+    format_octal(&mut ustar.gid, 0);
+    format_octal(&mut ustar.size, i64::try_from(size).unwrap_or(-1));
+    format_octal(&mut ustar.mtime, secs);
+    format_octal(&mut ustar.dev_major, 0);
+    format_octal(&mut ustar.dev_minor, 0);
+
+    let ascii_fits = name.is_ascii() && name.len() <= ustar.name.len();
+    if nanos == 0 && mtime_fits && size_fits && (ascii_fits || split.is_some()) {
+        let (prefix, suffix) = split.unwrap_or((b"", name));
+        format_string(&mut ustar.name, suffix);
+        format_string(&mut ustar.prefix, prefix);
+        set_checksum(&mut member);
+        return Headers { pax: None, member };
+    }
+
+    format_string(&mut ustar.name, &to_ascii(name));
+    set_checksum(&mut member);
+    let mut records = Vec::new();
+    if nanos != 0 || !mtime_fits {
+        records.extend(pax_record("mtime", pax_time(secs, nanos).as_bytes()));
+    }
+    if !ascii_fits {
+        records.extend(pax_record("path", name));
+    }
+    if !size_fits {
+        records.extend(pax_record("size", size.to_string().as_bytes()));
+    }
+    // Go's `writeRawFile`: the name as ASCII, cut to the field and its trailing slashes dropped,
+    // and every number zero but the size.
+    let mut pax = tar::Header::new_ustar();
+    pax.set_entry_type(tar::EntryType::XHeader);
+    let ustar = pax.as_ustar_mut().expect("a ustar header");
+    let mut pax_name = to_ascii(&pax_header_name(name));
+    pax_name.truncate(ustar.name.len());
+    format_string(&mut ustar.name, trim_end_slashes(&pax_name));
+    format_octal(&mut ustar.mode, 0);
+    format_octal(&mut ustar.uid, 0);
+    format_octal(&mut ustar.gid, 0);
+    format_octal(&mut ustar.size, records.len() as i64);
+    format_octal(&mut ustar.mtime, 0);
+    set_checksum(&mut pax);
+    Headers {
+        pax: Some((pax, records)),
+        member,
+    }
+}
+
+/// Go's `splitUSTARPath`: an ASCII name over the 100 bytes the name field holds, split at a `/`
+/// into a prefix of at most 155 bytes and a name of at most 100, when it can be.
+fn split_ustar_path(name: &[u8]) -> Option<(&[u8], &[u8])> {
+    const NAME_SIZE: usize = 100;
+    const PREFIX_SIZE: usize = 155;
+    let mut length = name.len();
+    if length <= NAME_SIZE || !name.is_ascii() {
+        return None;
+    } else if length > PREFIX_SIZE + 1 {
+        length = PREFIX_SIZE + 1;
+    } else if name[length - 1] == b'/' {
+        length -= 1;
+    }
+    let slash = name[..length].iter().rposition(|byte| *byte == b'/')?;
+    let suffix = name.len() - slash - 1;
+    if slash == 0 || suffix > NAME_SIZE || suffix == 0 || slash > PREFIX_SIZE {
+        return None;
+    }
+    Some((&name[..slash], &name[slash + 1..]))
+}
+
+/// Go's `toASCII`: `name` without its non-ASCII bytes and NULs.
+fn to_ascii(name: &[u8]) -> Vec<u8> {
+    name.iter()
         .copied()
-        .filter(u8::is_ascii)
-        .take(100)
-        .collect();
-    let ustar = header.as_ustar_mut().expect("a ustar header");
-    ustar.name[..ascii.len()].copy_from_slice(&ascii);
-    header.set_mode(mode);
-    header.set_uid(0);
-    header.set_gid(0);
-    header.set_mtime(mtime);
-    header
+        .filter(|byte| byte.is_ascii() && *byte != 0)
+        .collect()
+}
+
+fn trim_end_slashes(name: &[u8]) -> &[u8] {
+    let kept = name
+        .iter()
+        .rposition(|byte| *byte != b'/')
+        .map_or(0, |last| last + 1);
+    &name[..kept]
+}
+
+/// Go's `formatter.formatString`: `value` copied into `field`, NUL-terminated when it is shorter
+/// and cut when it is longer. A cut that ends in `/` ends, with the slashes before it, in a NUL
+/// instead, since some readers take a regular file whose name field ends in `/` for a directory.
+fn format_string(field: &mut [u8], value: &[u8]) {
+    let copied = value.len().min(field.len());
+    field[..copied].copy_from_slice(&value[..copied]);
+    if value.len() < field.len() {
+        field[value.len()] = 0;
+    }
+    if value.len() > field.len() && field[field.len() - 1] == b'/' {
+        let kept = trim_end_slashes(&value[..field.len() - 1]).len();
+        field[kept] = 0;
+    }
+}
+
+/// Go's `formatter.formatOctal`: `value` as octal digits padded with zeros to all but the field's
+/// last byte, which is NUL; zero when it doesn't fit.
+fn format_octal(field: &mut [u8], value: i64) {
+    let value = if fits_in_octal(field.len(), value) {
+        value
+    } else {
+        0
+    };
+    let digits = field.len() - 1;
+    format_string(field, format!("{value:0digits$o}").as_bytes());
+}
+
+/// Go's `fitsInOctal`: whether `value` fits a field of `length` bytes as octal and a NUL.
+fn fits_in_octal(length: usize, value: i64) -> bool {
+    value >= 0 && (length >= 22 || value < 1 << ((length - 1) * 3))
 }
 
 /// Seals `header` with its checksum, laid out as Go lays it out: six octal digits, NUL, space.
@@ -488,6 +584,123 @@ mod tests {
         assert_eq!(pax_time(1795171844, 256021770), "1795171844.25602177");
         assert_eq!(pax_time(5, 0), "5");
         assert_eq!(pax_time(-2, 500_000_000), "-1.5");
+    }
+
+    /// A 512-byte block holding `runs`, each at its offset, and NULs elsewhere.
+    fn block(runs: &[(usize, &[u8])]) -> Vec<u8> {
+        let mut block = vec![0; 512];
+        for (offset, bytes) in runs {
+            block[*offset..offset + bytes.len()].copy_from_slice(bytes);
+        }
+        block
+    }
+
+    /// A name whose first 100 bytes end in its directory's `/`: 99 bytes of directory, then
+    /// `/x.key`.
+    fn cut_at_a_slash() -> Vec<u8> {
+        [&b"d".repeat(99)[..], b"/x.key"].concat()
+    }
+
+    // The expected blocks are Go 1.27.4's: `archive/tar`'s `Writer.WriteHeader` given
+    // `tar.Header{Typeflag: tar.TypeReg, Name: <cut_at_a_slash>, Mode: 0o644, Size: 1, ModTime:
+    // <the mtime>, Format: tar.FormatPAX}`, each block of the tar it wrote printed as its runs of
+    // non-NUL bytes with their offsets.
+
+    /// With nanoseconds the member needs pax, and the 100 bytes of the name its header's field
+    /// holds end in `/`, which Go writes as a NUL. The pax header's name drops the slash too.
+    #[test]
+    fn a_name_field_cut_at_a_slash_ends_in_a_nul_as_go_writes_it() {
+        let dir = b"d".repeat(99);
+        let headers = member_headers(&cut_at_a_slash(), 0o644, 1, 1_700_000_000, 500_000_000);
+        let (pax, records) = headers.pax.expect("a pax header");
+        assert_eq!(
+            pax.as_bytes().to_vec(),
+            block(&[
+                (0, &dir),
+                (100, b"0000000"),
+                (108, b"0000000"),
+                (116, b"0000000"),
+                (124, b"00000000211"),
+                (136, b"00000000000"),
+                (148, b"031307"),
+                (155, b" x"),
+                (257, b"ustar"),
+                (263, b"00"),
+            ])
+        );
+        assert_eq!(
+            records,
+            [
+                &b"22 mtime=1700000000.5\n115 path="[..],
+                &cut_at_a_slash(),
+                b"\n"
+            ]
+            .concat()
+        );
+        assert_eq!(
+            headers.member.as_bytes().to_vec(),
+            block(&[
+                (0, &dir),
+                (100, b"0000644"),
+                (108, b"0000000"),
+                (116, b"0000000"),
+                (124, b"00000000001"),
+                (136, b"14524770400"),
+                (148, b"032514"),
+                (155, b" 0"),
+                (257, b"ustar"),
+                (263, b"00"),
+                (329, b"0000000"),
+                (337, b"0000000"),
+            ])
+        );
+    }
+
+    /// With a whole-second mtime nothing needs pax, so Go writes plain USTAR, the name split at its
+    /// last `/` that fits into the prefix and the name fields.
+    #[test]
+    fn a_long_name_that_splits_needs_no_pax_header_as_go_writes_it() {
+        let headers = member_headers(&cut_at_a_slash(), 0o644, 1, 1_700_000_000, 0);
+        assert!(headers.pax.is_none());
+        assert_eq!(
+            headers.member.as_bytes().to_vec(),
+            block(&[
+                (0, b"x.key"),
+                (100, b"0000644"),
+                (108, b"0000000"),
+                (116, b"0000000"),
+                (124, b"00000000001"),
+                (136, b"14524770400"),
+                (148, b"033473"),
+                (155, b" 0"),
+                (257, b"ustar"),
+                (263, b"00"),
+                (329, b"0000000"),
+                (337, b"0000000"),
+                (345, &b"d".repeat(99)),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_ustar_path_splits_as_go_splits_it() {
+        let long =
+            |dir: usize, file: usize| [b"d".repeat(dir), b"/".to_vec(), b"f".repeat(file)].concat();
+        assert_eq!(split_ustar_path(b"short/name"), None);
+        assert_eq!(
+            split_ustar_path(&long(99, 5)),
+            Some((&b"d".repeat(99)[..], &b"fffff"[..]))
+        );
+        // The prefix holds 155 bytes and the name 100.
+        assert!(split_ustar_path(&long(155, 1)).is_some());
+        assert_eq!(split_ustar_path(&long(156, 1)), None);
+        assert_eq!(split_ustar_path(&long(1, 101)), None);
+        // Not ASCII, or no `/` to split at.
+        assert_eq!(
+            split_ustar_path(&[&long(99, 5)[..], "\u{e9}".as_bytes()].concat()),
+            None
+        );
+        assert_eq!(split_ustar_path(&b"d".repeat(101)), None);
     }
 
     #[test]
