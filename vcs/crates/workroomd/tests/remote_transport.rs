@@ -2473,12 +2473,14 @@ fn over_ssh_api_lists_describes_and_calls_the_hosts_methods() {
             .contains("READY-685\r\n")
     );
 
-    // `workroom api <args>` on the host, after `before` in the same shell: (stdout, exit status).
-    let api = |before: &str, args: &str| {
+    // `workroom api <args>` on the host, after `before` and before `after` in the same shell:
+    // (stdout, its exit status).
+    let api_around = |before: &str, args: &str, after: &str| {
         let output = fixture
             .ssh()
             .arg(format!(
-                "{before} WORKROOM_DAEMON={} {INSTALLED_DAEMON} api {args}; echo \"exit=$?\"",
+                "{before} WORKROOM_DAEMON={} {INSTALLED_DAEMON} api {args}; s=$?; {after} \
+                 echo \"exit=$s\"",
                 fixture.socket
             ))
             .output()
@@ -2491,6 +2493,7 @@ fn over_ssh_api_lists_describes_and_calls_the_hosts_methods() {
             .unwrap_or_else(|e| panic!("not one envelope ({e}): {stdout}"));
         (envelope, status.trim().to_string())
     };
+    let api = |before: &str, args: &str| api_around(before, args, "");
 
     let (listed, status) = api("", "list --json");
     assert_eq!(status, "0", "{listed}");
@@ -2514,17 +2517,12 @@ fn over_ssh_api_lists_describes_and_calls_the_hosts_methods() {
 
     let params = r#"'{"target":"api call"}'"#;
     let inline = api("", &format!("call session.resolve {params} --json"));
-    let file = format!("/tmp/workroom-685-params-{}.json", std::process::id());
-    let from_file = api(
-        &format!("printf '%s' {params} > {file} &&"),
-        &format!("call session.resolve @{file} --json"),
+    // A file of the host's own making, removed by the same shell.
+    let from_file = api_around(
+        &format!("f=$(mktemp) && printf '%s' {params} > \"$f\" &&"),
+        "call session.resolve \"@$f\" --json",
+        "rm -f \"$f\";",
     );
-    let removed = fixture
-        .ssh()
-        .arg(format!("rm {file}"))
-        .status()
-        .expect("remove the params file");
-    assert!(removed.success(), "{file} was not written");
     let from_stdin = api(
         &format!("printf '%s' {params} |"),
         "call session.resolve - --json",
