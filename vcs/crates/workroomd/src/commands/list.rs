@@ -6,7 +6,7 @@
 //! project they are at the root of, or every project that has workrooms.
 //!
 //! `list --socket <path>` is not this: it is the daemon's session listing (ADR 0057), which
-//! `commands::dispatch` leaves to `main.rs`.
+//! `cli::route` sends to the daemon before the CLI runs.
 
 use std::collections::BTreeMap;
 use std::io::Write;
