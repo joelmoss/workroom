@@ -11,7 +11,7 @@ mod common;
 use serde_json::{Value, json};
 use std::ffi::{OsStr, OsString};
 use std::time::Duration;
-use workroomd::testing::{SessionId, SessionSpec, SessionStore};
+use workroom::testing::{SessionId, SessionSpec, SessionStore};
 use wr_protocol::envelope::Service;
 
 struct Client(common::RpcClient);
@@ -300,7 +300,7 @@ mod live {
     fn attach(store: &SessionStore, session: SessionId, writer: impl Write + Send + 'static) {
         let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(Box::new(writer)));
         store
-            .attach(session, writer, 1, workroomd::testing::Size::cells(80, 24))
+            .attach(session, writer, 1, workroom::testing::Size::cells(80, 24))
             .expect("attach");
     }
 
@@ -518,7 +518,7 @@ sleep 5"#,
             .set_boot(before.hooks().program_status.boot());
         let args = [OsString::from("-c"), OsString::from("sleep 5")];
         let pty =
-            workroomd::testing::Pty::spawn(OsStr::new("/bin/sh"), None, &args, &[], None, 80, 24)
+            workroom::testing::Pty::spawn(OsStr::new("/bin/sh"), None, &args, &[], None, 80, 24)
                 .expect("pty");
         after.adopt(pty, frozen).expect("adopt");
 
@@ -604,7 +604,7 @@ i=0; while [ $i -lt 30 ]; do printf '\033]7501;id=s%d:state=working\033\\' $i; i
             stalled: Arc::clone(&stalled),
             released: Arc::clone(&released),
         })));
-        let mut connection = workroomd::testing::Connection::new(
+        let mut connection = workroom::testing::Connection::new(
             Arc::clone(&store.hooks().program_status),
             writer,
             Arc::new(|| {}),
@@ -614,7 +614,7 @@ i=0; while [ $i -lt 30 ]; do printf '\033]7501;id=s%d:state=working\033\\' $i; i
             1,
             serde_json::to_vec(&json!({"version": 1, "method": "subscribe"})).unwrap(),
         );
-        workroomd::testing::dispatch(&subscribe, &store, &mut connection);
+        workroom::testing::dispatch(&subscribe, &store, &mut connection);
         stalled.store(true, Ordering::SeqCst);
 
         let seen = wait_until(

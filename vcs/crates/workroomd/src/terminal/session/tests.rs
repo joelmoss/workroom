@@ -1261,7 +1261,7 @@ fn a_hand_off_shares_its_budget_and_still_happens_out_of_time() {
 /// Not a test: prints how long a hand-off of ten full-history sessions under full-screen
 /// programs takes to capture its screens, and to encode and write its table: the case
 /// `HANDOFF_FORMAT_DEADLINE` and `TABLE_WRITE_ALLOWANCE` bound. Run it in release:
-/// `WORKROOMD_HAS_TERMINAL_STATE=1 cargo test --manifest-path vcs/Cargo.toml -p workroomd
+/// `WORKROOMD_HAS_TERMINAL_STATE=1 cargo test --manifest-path vcs/Cargo.toml -p workroom
 /// --features terminal-state --release --lib measure_hand_off -- --ignored --nocapture`
 #[cfg(feature = "terminal-state")]
 #[test]

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 fn daemon_binary() -> PathBuf {
     match std::env::var_os("WORKROOMD_BIN") {
         Some(path) => PathBuf::from(path),
-        None => PathBuf::from(env!("CARGO_BIN_EXE_workroomd")),
+        None => PathBuf::from(env!("CARGO_BIN_EXE_workroom")),
     }
 }
 

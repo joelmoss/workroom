@@ -39,7 +39,7 @@ pub enum FrameKind {
     Kill = 0x23,
     KillAll = 0x24,
     /// Replace this daemon's program with another binary, keeping every session (#230). Payload:
-    /// `force:u8`, then the binary's absolute path. See `workroomd::handoff`.
+    /// `force:u8`, then the binary's absolute path. See `workroom::handoff`.
     HandOff = 0x25,
     /// Ask a run session's supervisor to restart, stop or quit its command (#522). Payload: the
     /// 16-byte session id, then one `RunSignal` byte. `Acknowledged` once the signal is sent;

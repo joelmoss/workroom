@@ -13,7 +13,7 @@ use common::{RpcClient, has_terminal_state, wait_for};
 
 use std::time::{Duration, Instant};
 
-use workroomd::testing::{KEEPALIVE_PROBE, KEEPALIVE_VARIABLE, SessionId, SessionStore};
+use workroom::testing::{KEEPALIVE_PROBE, KEEPALIVE_VARIABLE, SessionId, SessionStore};
 use wr_protocol::envelope::Service;
 use wr_protocol::frame::{Frame, FrameKind};
 use wr_protocol::terminal::AttachRequest;

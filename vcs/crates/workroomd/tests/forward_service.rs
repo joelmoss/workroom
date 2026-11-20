@@ -625,7 +625,7 @@ fn an_unclaimed_connection_is_closed_after_the_pending_timeout() {
 
     assert!(ended(&mut waiting), "never closed");
     let waited = started.elapsed();
-    let timeout = workroomd::testing::PENDING_TIMEOUT;
+    let timeout = workroom::testing::PENDING_TIMEOUT;
     assert!(waited >= timeout, "closed early, after {waited:?}");
     assert!(
         waited < timeout + Duration::from_secs(2),
@@ -643,7 +643,7 @@ fn connections_past_the_pending_limit_are_closed_at_once() {
     let mut client = Client::connect();
     let port = client.listening(1);
     let mut held = Vec::new();
-    for _ in 0..workroomd::testing::MAX_PENDING {
+    for _ in 0..workroom::testing::MAX_PENDING {
         held.push(connected_to(port));
         assert_eq!(client.next(1), Some((ACCEPTED, vec![])));
     }
@@ -673,7 +673,7 @@ fn the_connection_ending_ends_its_listeners() {
 #[test]
 fn the_fifth_listener_on_a_connection_is_refused() {
     let mut client = Client::connect();
-    for stream in 1..=workroomd::testing::MAX_LISTENERS as u32 {
+    for stream in 1..=workroom::testing::MAX_LISTENERS as u32 {
         client.listening(stream);
     }
     let reply = client.ask(99, json!({"method": "listen", "port": 0}));

@@ -10,7 +10,7 @@ use std::net::TcpListener;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use workroomd::testing::{
+use workroom::testing::{
     CredentialError, configure_git, credential, helper_command, install_relay,
 };
 
