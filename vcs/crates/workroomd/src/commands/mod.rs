@@ -108,6 +108,9 @@ struct Flag {
     usage: &'static str,
     /// The value `--help` shows as the default; "" for none.
     default: &'static str,
+    /// Must be given, as cobra's `MarkFlagRequired` makes a flag: a usage error before the command
+    /// runs when it isn't (`missing_required`). Given empty, it is.
+    required: bool,
 }
 
 /// What a command was given besides the global flags.
@@ -206,12 +209,14 @@ const COMMANDS: &[Command] = &[
                 takes_value: false,
                 usage: "The default for every project that names no base branch",
                 default: "",
+                required: false,
             },
             Flag {
                 name: "project",
                 takes_value: true,
                 usage: "Project directory (defaults to the current directory)",
                 default: "",
+                required: false,
             },
         ],
         arity: Arity::Own,
@@ -275,12 +280,14 @@ const COMMANDS: &[Command] = &[
                 takes_value: true,
                 usage: "The file to write the tar to",
                 default: "",
+                required: true,
             },
             Flag {
                 name: "project",
                 takes_value: true,
                 usage: "Project directory (defaults to the current directory)",
                 default: "",
+                required: false,
             },
         ],
         arity: Arity::None,
@@ -299,12 +306,14 @@ const COMMANDS: &[Command] = &[
                 takes_value: true,
                 usage: "Limit JSON output to a single project directory",
                 default: "",
+                required: false,
             },
             Flag {
                 name: "warnings",
                 takes_value: true,
                 usage: "Warning detail for --json: none, fast, or full",
                 default: "fast",
+                required: false,
             },
         ],
         arity: Arity::None,
@@ -585,6 +594,12 @@ fn run(args: &[String], mut context: Context) -> Output {
         );
         return report(&context, None, Outcome::Usage(CliError::internal(message)));
     }
+    // Then its required flags, as cobra checks them after the arguments.
+    if let Some(message) =
+        missing_required(command.flags, &args.values).filter(|_| !refuses_nothing)
+    {
+        return report(&context, None, Outcome::Usage(CliError::internal(message)));
+    }
     let outcome = if command.mac_only && context.platform != Platform::Mac {
         Outcome::Failed(CliError::new(
             Kind::MacOnly,
@@ -604,6 +619,24 @@ fn run(args: &[String], mut context: Context) -> Output {
         }
     };
     report(&context, Some(command.name), outcome)
+}
+
+/// cobra's `ValidateRequiredFlags`: the error naming each required flag in `flags` that `values`
+/// doesn't set, in pflag's order (sorted by name). None when they are all set.
+fn missing_required(flags: &[Flag], values: &[(&'static str, String)]) -> Option<String> {
+    let mut missing: Vec<&str> = flags
+        .iter()
+        .filter(|flag| flag.required && !values.iter().any(|(name, _)| *name == flag.name))
+        .map(|flag| flag.name)
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    missing.sort_unstable();
+    Some(format!(
+        "required flag(s) \"{}\" not set",
+        missing.join("\", \"")
+    ))
 }
 
 /// `outcome` as what the run writes, and its exit code.
@@ -924,6 +957,50 @@ mod tests {
             "required flag(s) \"output\" not set"
         );
         assert!(envelope.get("command").is_none(), "{envelope}");
+    }
+
+    /// cobra names every required flag that is missing, sorted, in one error (`claim-provisioned`'s
+    /// `--from` and `--provisioner` in the Go CLI). One given, even empty, isn't missing.
+    #[test]
+    fn every_missing_required_flag_is_named_in_cobras_words() {
+        const FLAGS: &[Flag] = &[
+            Flag {
+                name: "provisioner",
+                takes_value: true,
+                usage: "",
+                default: "",
+                required: true,
+            },
+            Flag {
+                name: "from",
+                takes_value: true,
+                usage: "",
+                default: "",
+                required: true,
+            },
+            Flag {
+                name: "other",
+                takes_value: true,
+                usage: "",
+                default: "",
+                required: false,
+            },
+        ];
+        assert_eq!(
+            missing_required(FLAGS, &[]).as_deref(),
+            Some("required flag(s) \"from\", \"provisioner\" not set")
+        );
+        assert_eq!(
+            missing_required(FLAGS, &[("from", String::new())]).as_deref(),
+            Some("required flag(s) \"provisioner\" not set")
+        );
+        assert_eq!(
+            missing_required(
+                FLAGS,
+                &[("from", "a".into()), ("provisioner", String::new())]
+            ),
+            None
+        );
     }
 
     #[test]
