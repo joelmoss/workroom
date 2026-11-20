@@ -13,7 +13,16 @@
 //! sequences are stripped ([`Matcher`]), on the wait's own thread ([`Waiter::wait`]): the reader
 //! only copies each read into the waiter's queue, bounded at [`QUEUE`], so however many waits a
 //! session has and however slow their regexes, its output reaches its clients as soon as without.
+//!
+//! **What a regex wait holds**, at most: [`QUEUE`] of output not yet matched, the queued and the
+//! batch its thread is matching counted together, in chunks of [`CHUNK`] (one more on each side,
+//! part-filled), and the window of stripped text it matches in, [`WINDOW`] and a chunk (at most
+//! twice that as allocated). About 320 KiB, so 160 MiB for the daemon's 512 waits, all of it only
+//! while a wait is behind a session printing flat out; besides, the screen's text once for
+//! `include_screen`, and the regex, compiled and its search cache, each at most
+//! [`REGEX_SIZE_LIMIT`] (a few KiB for a pattern such as `ready in \d+ ms`).
 
+use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 use std::time::Instant;
 
@@ -110,6 +119,9 @@ pub enum Outcome {
     /// A `CommandFinished` wait on a young session whose shell sent no OSC 133 mark within the
     /// grace it was given (`Waiter::marks_by`).
     NoShellIntegration,
+    /// A regex wait fell a [`QUEUE`] behind its session's output, so what came after was dropped
+    /// unmatched, and matched nothing in what it kept: a match may have gone by unseen.
+    FellBehind,
     /// Its caller went away.
     Cancelled,
 }
@@ -153,8 +165,10 @@ struct Progress {
     wanted: Wanted,
     /// The commands the shell had ended when the wait started, for `CommandFinished`.
     commands_before: u64,
-    /// A regex wait's output, handed over by the reader and not yet matched.
+    /// A regex wait's output, handed over by the reader and not yet taken by its thread.
     queue: Queue,
+    /// What the thread has taken and not matched yet: counted with `queue` against `QUEUE`.
+    in_hand: usize,
     /// A regex wait's session ended: the wait matches what is queued before it says so.
     ended: bool,
     /// A `CommandFinished` wait's shell has sent no mark yet: the wait is `NoShellIntegration`
@@ -164,39 +178,62 @@ struct Progress {
     outcome: Option<Outcome>,
 }
 
-/// The most output a regex waiter holds that its thread has not matched yet. Past it the oldest is
-/// dropped, never the reader made to wait: the waiter has lagged, and matches from what it kept
-/// (`Queue::lagged`). Its thread takes all of it at once, and a search costs about the same
-/// however much it takes, so it catches up on a session that prints faster than it matches.
+/// The most output a regex waiter holds that its thread has not matched yet, queued and taken
+/// together. A read past it is dropped, and every read after it, never the reader made to wait:
+/// the waiter has fallen behind, and once it has matched what it kept, ends `FellBehind` rather
+/// than match on past a gap (`Queue::lagged`). Its thread takes all of it at once, and matches it
+/// a chunk at a time, so it catches up on a session that prints in bursts faster than it matches.
 pub const QUEUE: usize = 16 * WINDOW;
+
+/// The size of the queue's chunks: a pty read's most (`session::READ_CHUNK`), so a read usually
+/// fills at most two, and many small reads share one rather than take an allocation each.
+pub const CHUNK: usize = 8 * 1024;
 
 /// What the reader has handed a regex waiter and its thread has not taken yet.
 #[derive(Default)]
 struct Queue {
     /// The screen as plain text, matched first (`--include-screen`).
     screen: Option<Vec<u8>>,
-    /// The session's output, as read, at most `QUEUE` bytes.
-    bytes: Vec<u8>,
-    /// Output was dropped: what is kept is matched from a fresh start (`Matcher::take`).
+    /// The session's output, as read, in chunks allocated at `CHUNK`: adding a read copies it
+    /// alone, whatever is queued, and the thread frees each as it matches it.
+    chunks: VecDeque<Vec<u8>>,
+    /// The bytes in `chunks`.
+    len: usize,
+    /// A read was dropped: nothing after it is queued, since no match may span the gap, and the
+    /// wait ends `FellBehind` unless what came before it matches.
     lagged: bool,
 }
 
 impl Queue {
+    /// Whether the thread has anything to take: output, the screen, or the news that it lagged.
     fn is_empty(&self) -> bool {
-        self.screen.is_none() && self.bytes.is_empty()
+        self.screen.is_none() && self.chunks.is_empty() && !self.lagged
     }
 
-    /// Adds `bytes`, keeping the newest `QUEUE` of what is queued.
-    fn push(&mut self, bytes: &[u8]) {
-        if self.bytes.len() + bytes.len() <= QUEUE {
-            self.bytes.extend_from_slice(bytes);
+    /// Adds `bytes` while they fit beside the `in_hand` bytes the thread is matching; a read that
+    /// doesn't, and every one after it, is dropped.
+    fn push(&mut self, bytes: &[u8], in_hand: usize) {
+        if self.lagged || bytes.is_empty() {
             return;
         }
-        let kept = &bytes[bytes.len().saturating_sub(QUEUE)..];
-        let dropped = (self.bytes.len() + kept.len()).saturating_sub(QUEUE);
-        self.bytes.drain(..dropped);
-        self.bytes.extend_from_slice(kept);
-        self.lagged = true;
+        if self.len + in_hand + bytes.len() > QUEUE {
+            self.lagged = true;
+            return;
+        }
+        self.len += bytes.len();
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            if self.chunks.back().is_none_or(|chunk| chunk.len() == CHUNK) {
+                self.chunks.push_back(Vec::with_capacity(CHUNK));
+            }
+            let chunk = self
+                .chunks
+                .back_mut()
+                .expect("a chunk with room was just made");
+            let (now, later) = rest.split_at(rest.len().min(CHUNK - chunk.len()));
+            chunk.extend_from_slice(now);
+            rest = later;
+        }
     }
 }
 
@@ -216,6 +253,7 @@ impl Waiter {
                 wanted,
                 commands_before: now.commands,
                 queue: Queue::default(),
+                in_hand: 0,
                 ended: false,
                 marks_by: None,
                 outcome: None,
@@ -235,12 +273,15 @@ impl Waiter {
     /// The next bytes of the session's output, from its reader: queued for the wait's own thread,
     /// so the reader pays a copy, never a match.
     pub fn output(&self, bytes: &[u8]) {
-        self.queue(|queue| queue.push(bytes));
+        self.queue(|progress| {
+            let in_hand = progress.in_hand;
+            progress.queue.push(bytes, in_hand);
+        });
     }
 
     /// Plain text, ahead of any output: the screen, for `--include-screen`, queued as `output` is.
     pub fn screen(&self, text: Vec<u8>) {
-        self.queue(|queue| queue.screen = Some(text));
+        self.queue(|progress| progress.queue.screen = Some(text));
     }
 
     /// A `CommandFinished` wait on a session too young to have shown its prompt: until `at`, a
@@ -336,7 +377,9 @@ impl Waiter {
                     }
                     if !progress.queue.is_empty() {
                         let last = deadline.is_some_and(|deadline| Instant::now() >= deadline);
-                        break (std::mem::take(&mut progress.queue), last);
+                        let queue = std::mem::take(&mut progress.queue);
+                        progress.in_hand = queue.len;
+                        break (queue, last);
                     }
                     // Nothing left to match from before the end.
                     if progress.ended {
@@ -366,24 +409,35 @@ impl Waiter {
                     }
                 }
             };
-            let found = matcher.as_mut().and_then(|matcher| matcher.take(queue));
+            let lagged = queue.lagged;
+            let found = matcher.as_mut().and_then(|matcher| {
+                // Each chunk matched leaves room for the reader's next.
+                matcher.take(queue, |matched| {
+                    let mut progress = lock_or_recover(&self.state);
+                    progress.in_hand = progress.in_hand.saturating_sub(matched);
+                })
+            });
             if let Some(found) = found {
                 self.update(|_| Some(Met::Output(found)));
-            } else if last {
-                lock_or_recover(&self.state)
-                    .outcome
-                    .get_or_insert(Outcome::TimedOut);
+            } else if lagged || last {
+                // Behind rather than out of time when both: output was dropped unmatched.
+                let ended = if lagged {
+                    Outcome::FellBehind
+                } else {
+                    Outcome::TimedOut
+                };
+                lock_or_recover(&self.state).outcome.get_or_insert(ended);
             }
         }
     }
 
     /// Queues output for a regex wait's thread, and wakes it: nothing for any other wait.
-    fn queue(&self, add: impl FnOnce(&mut Queue)) {
+    fn queue(&self, add: impl FnOnce(&mut Progress)) {
         let mut progress = lock_or_recover(&self.state);
         if progress.wanted != Wanted::Output || progress.outcome.is_some() {
             return;
         }
-        add(&mut progress.queue);
+        add(&mut progress);
         drop(progress);
         self.wake.notify_all();
     }
@@ -404,11 +458,13 @@ impl Waiter {
 
 /// The most stripped output a regex waiter keeps: the longest a match can be, and what each read
 /// rescans. A match spanning reads is found because the window still holds its start; one longer
-/// than this is not. Each waiter holds at most this much, plus what its queue holds (`QUEUE`).
+/// than this is not. It holds this much and the chunk being matched (`CHUNK`) at most, before a
+/// failed search trims it back (what a waiter holds: the module's notes).
 pub const WINDOW: usize = 16 * 1024;
 
-/// The most memory a waiter's compiled regex may take, so one request cannot hold the daemon's.
-const REGEX_SIZE_LIMIT: usize = 1 << 20;
+/// The most memory a waiter's compiled regex may take, and its search cache, each, so one request
+/// cannot hold the daemon's.
+pub const REGEX_SIZE_LIMIT: usize = 1 << 20;
 
 /// A regex over a session's output as a person reads it: escape sequences and control characters
 /// other than `\t`, `\n` and `\r` stripped as they arrive, so neither a sequence nor a character
@@ -462,23 +518,24 @@ impl Matcher {
         self.strip = Stripper::Resync;
     }
 
-    /// Takes what the reader queued: the screen first, then the output. Output dropped before
-    /// it (`Queue::lagged`) leaves a gap no match may span, so the window starts again, and the
-    /// bytes kept start somewhere unknown, as a wait joining mid-sequence does.
-    fn take(&mut self, queue: Queue) -> Option<Vec<u8>> {
+    /// Takes what the reader queued: the screen first, then the output, a chunk at a time, each
+    /// freed and its size handed to `matched` once it is in the window, so the window grows by a
+    /// chunk at most before it is trimmed. What follows a dropped read (`Queue::lagged`) is never
+    /// queued, so all of this is contiguous with what came before.
+    fn take(&mut self, queue: Queue, mut matched: impl FnMut(usize)) -> Option<Vec<u8>> {
         if let Some(screen) = queue.screen
             && let Some(found) = self.feed_plain(&screen)
         {
             return Some(found);
         }
-        if queue.lagged {
-            self.window.clear();
-            self.resync();
+        for chunk in queue.chunks {
+            let found = self.feed(&chunk);
+            matched(chunk.len());
+            if found.is_some() {
+                return found;
+            }
         }
-        if queue.bytes.is_empty() {
-            return None;
-        }
-        self.feed(&queue.bytes)
+        None
     }
 
     fn search(&mut self) -> Option<Vec<u8>> {

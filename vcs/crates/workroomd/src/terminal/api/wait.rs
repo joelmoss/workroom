@@ -61,7 +61,9 @@ pub fn input() -> Value {
                 "description": "Wait for output matching this regex (Rust `regex` syntax), with \
                                 escape sequences stripped. Only output after the wait starts \
                                 counts; `^` and `$` match at line ends, `\\r\\n` included. A match \
-                                is at most 16 KiB.",
+                                is at most 16 KiB. A wait that falls behind output printed faster \
+                                than it matches is `WaitInterrupted`, since what it dropped \
+                                unmatched may have held one.",
             },
             "include_screen": {
                 "type": "boolean",
@@ -135,6 +137,7 @@ pub const ERRORS: &[&str] = &[
     kind::TARGET_NOT_FOUND,
     kind::TARGET_AMBIGUOUS,
     kind::WAIT_TIMEOUT,
+    kind::WAIT_INTERRUPTED,
     kind::SESSION_ENDED,
     kind::NO_SHELL_INTEGRATION,
     kind::EXIT_CODE_MISMATCH,
@@ -572,6 +575,16 @@ fn result(request: &Request, outcome: Outcome) -> Result<Value, ApiError> {
             return Err(ApiError::new(
                 kind::WAIT_TIMEOUT,
                 format!("the wait for `{}` timed out", request.name),
+            ));
+        }
+        Outcome::FellBehind => {
+            return Err(ApiError::new(
+                kind::WAIT_INTERRUPTED,
+                format!(
+                    "the wait fell behind session {}'s output and output was dropped unmatched, \
+                     so a match may have gone by unseen; wait again",
+                    request.id.to_hyphenated()
+                ),
             ));
         }
         // Never answered: nobody is there to read it.

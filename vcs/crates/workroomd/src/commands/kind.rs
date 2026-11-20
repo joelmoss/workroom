@@ -73,8 +73,10 @@ pub(crate) enum Kind {
     NoShellIntegration,
     /// A wait for a run to exit with one code (`wait --exit-code`), which it exited with another.
     ExitCodeMismatch,
-    /// A wait for output or a command's end that the daemon's hand-off cut across: what came
-    /// between its two programs may have gone unmatched, so the CLI says so rather than wait on.
+    /// A wait for output or a command's end that may have missed it: the daemon's hand-off cut
+    /// across it, so what came between its two programs may have gone unmatched (the CLI says so
+    /// rather than wait on), or a regex wait fell behind its session's output and the daemon
+    /// dropped output it never matched.
     WaitInterrupted,
     /// A request, or what it sends, over the terminal API's limit.
     TooLarge,
@@ -390,6 +392,7 @@ mod tests {
             kind::TOO_LARGE,
             kind::SESSION_ENDED,
             kind::WAIT_TIMEOUT,
+            kind::WAIT_INTERRUPTED,
             kind::NO_SHELL_INTEGRATION,
             kind::EXIT_CODE_MISMATCH,
             kind::BUSY,
