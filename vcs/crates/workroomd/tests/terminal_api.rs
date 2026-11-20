@@ -588,7 +588,12 @@ fn api_json(socket: &Path, args: &[&str]) -> Value {
     let envelope = run.envelope();
     assert_eq!(envelope["ok"], true, "{envelope}");
     assert_eq!(envelope["schema_version"], 1, "{envelope}");
-    assert_eq!(envelope["command"], "api", "{envelope}");
+    // One name per payload shape: `api list`, `api describe` or `api call`.
+    assert_eq!(
+        envelope["command"],
+        format!("api {}", args[1]),
+        "{envelope}"
+    );
     envelope
 }
 
@@ -677,6 +682,7 @@ fn api_describe_shows_one_methods_schemas_with_examples() {
     );
     assert_eq!(unknown.code, 2, "{}", unknown.stdout);
     assert_eq!(unknown.envelope()["error"]["kind"], "InvalidRequest");
+    assert_eq!(unknown.envelope()["command"], "api describe");
     let missing = workroom(Some(&socket), &["api", "describe", "--json"]);
     assert_eq!(missing.code, 1, "{}", missing.stdout);
     assert_eq!(
@@ -701,7 +707,7 @@ fn api_call_takes_params_inline_from_a_file_and_from_stdin() {
     let resolved = |run: Run| {
         assert_eq!(run.code, 0, "{} {}", run.stdout, run.stderr);
         let envelope = run.envelope();
-        assert_eq!(envelope["command"], "api", "{envelope}");
+        assert_eq!(envelope["command"], "api call", "{envelope}");
         assert_eq!(envelope["method"], "session.resolve", "{envelope}");
         assert_eq!(envelope["version"], 1, "{envelope}");
         envelope["result"]["session"]["id"].clone()
@@ -744,7 +750,7 @@ fn api_call_takes_params_inline_from_a_file_and_from_stdin() {
         assert_eq!(run.code, 2, "{params}: {}", run.stdout);
         let envelope = run.envelope();
         assert_eq!(envelope["error"]["kind"], "InvalidRequest", "{envelope}");
-        assert_eq!(envelope["command"], "api", "{envelope}");
+        assert_eq!(envelope["command"], "api call", "{envelope}");
     }
     let nothing = call(r#"{"target":"nothing"}"#, None);
     assert_eq!(nothing.code, 3, "{}", nothing.stdout);

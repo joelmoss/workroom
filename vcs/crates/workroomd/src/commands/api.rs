@@ -32,6 +32,12 @@ Available Commands:
   list        List every method the daemon has
 ";
 
+/// Each subcommand's envelope names it, success and failure alike: one name per payload shape, as
+/// Go's `trust status` is.
+const LIST: &str = "api list";
+const DESCRIBE: &str = "api describe";
+const CALL: &str = "api call";
+
 /// `api list`'s payload: the API's revision, and each method's name and summary.
 #[derive(Serialize)]
 struct Listing {
@@ -83,7 +89,7 @@ fn call(context: &Context, rest: &[String]) -> Outcome {
         [method] => (method, json!({})),
         [method, given] => match params(given) {
             Ok(params) => (method, params),
-            Err(error) => return Outcome::Failed(error),
+            Err(error) => return Outcome::FailedIn(CALL, error),
         },
         _ => {
             return Outcome::Usage(CliError::internal(format!(
@@ -94,13 +100,13 @@ fn call(context: &Context, rest: &[String]) -> Outcome {
     };
     let replied = match terminal_api::reply(context, method, params) {
         Ok(replied) => replied,
-        Err(error) => return Outcome::Failed(error),
+        Err(error) => return Outcome::FailedIn(CALL, error),
     };
     if !context.json {
         return Outcome::Printed(pretty(&replied.result));
     }
     Outcome::Success(super::envelope::success(
-        "api",
+        CALL,
         &Called {
             method,
             version: replied.version,
@@ -155,14 +161,14 @@ fn describe(context: &Context, rest: &[String]) -> Outcome {
     };
     let mut described = match terminal_api::call(context, "api.describe", json!({"method": name})) {
         Ok(described) => described,
-        Err(error) => return Outcome::Failed(error),
+        Err(error) => return Outcome::FailedIn(DESCRIBE, error),
     };
     let method = described["methods"][0].take();
     if !context.json {
         return Outcome::Printed(pretty(&method));
     }
     Outcome::Success(super::envelope::success(
-        "api",
+        DESCRIBE,
         &Description {
             revision: described["revision"].take(),
             method,
@@ -186,7 +192,7 @@ fn list(context: &Context, rest: &[String]) -> Outcome {
     }
     let described = match terminal_api::call(context, "api.describe", json!({})) {
         Ok(described) => described,
-        Err(error) => return Outcome::Failed(error),
+        Err(error) => return Outcome::FailedIn(LIST, error),
     };
     let text = |value: &Value| value.as_str().unwrap_or_default().to_string();
     let methods: Vec<Named> = described["methods"]
@@ -200,7 +206,7 @@ fn list(context: &Context, rest: &[String]) -> Outcome {
         .collect();
     if context.json {
         return Outcome::Success(super::envelope::success(
-            "api",
+            LIST,
             &Listing {
                 revision: described["revision"].clone(),
                 methods,
@@ -242,15 +248,20 @@ mod tests {
     #[test]
     fn api_runs_anywhere_and_with_no_daemon_named_exits_7() {
         for platform in [Platform::Mac, Platform::Other] {
-            for args in [
-                &["api", "list", "--json"][..],
-                &["api", "call", "session.list", "--json"],
+            for (args, command) in [
+                (&["api", "list", "--json"][..], "api list"),
+                (
+                    &["api", "describe", "session.list", "--json"],
+                    "api describe",
+                ),
+                (&["api", "call", "session.list", "--json"], "api call"),
             ] {
                 let output = run_on(platform, args);
                 assert_eq!((output.code, output.stderr.as_str()), (7, ""), "{args:?}");
                 let envelope: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
                 assert_eq!(envelope["error"]["kind"], "DaemonUnreachable");
-                assert_eq!(envelope["command"], "api");
+                // Each subcommand's failure names it, as its success does.
+                assert_eq!(envelope["command"], command);
             }
         }
     }
