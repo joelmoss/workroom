@@ -2,7 +2,7 @@
 //! the same runner the CLI runs a local one with (`crate::script`), so the two behave the same
 //! (`docs/designs/scripts-on-every-workroom.md`, `docs/designs/one-script-runner.md`).
 //!
-//! This is the command line, the wording and the exit codes the app relies on (ADR 0057 pins the
+//! This is the command line, the wording and the exit codes the app relies on (ADR 0078 pins the
 //! `workroomd run-script: ` prefix, which it parses): the script's output goes straight to this
 //! process's stdout and stderr, so the app reads it as it is printed, and the status is the
 //! script's own, 128 plus a signal, `TIMED_OUT` or `NOT_STARTED`.
