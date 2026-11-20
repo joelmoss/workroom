@@ -106,6 +106,9 @@ pub(crate) enum Outcome {
     Success(String),
     /// A failure, reported in the error envelope under `--json`, else as an `Error:` line.
     Failed(CliError),
+    /// A failure reported as [`Outcome::Failed`] is, but in the envelope of the subcommand it
+    /// names, such as `api call`: one name per payload shape, as Go's `trust status` is.
+    FailedIn(&'static str, CliError),
     /// A usage error the command found in its arguments: reported as a failure is, but with no
     /// command in the envelope, since Go checks arguments before the command runs.
     Usage(CliError),
@@ -1152,6 +1155,7 @@ fn report(context: &Context, command: Option<&str>, outcome: Outcome) -> Output 
             };
         }
         Outcome::Failed(error) => (String::new(), command, error),
+        Outcome::FailedIn(subcommand, error) => (String::new(), Some(subcommand), error),
         Outcome::Usage(error) => (String::new(), None, error),
         Outcome::PrintedThenFailed(text, error) => (text, command, error),
     };

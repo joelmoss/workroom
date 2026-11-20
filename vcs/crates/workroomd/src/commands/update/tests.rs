@@ -267,6 +267,7 @@ fn printed(outcome: Outcome) -> Result<String, (String, CliError)> {
     match outcome {
         Outcome::Printed(text) => Ok(text),
         Outcome::Failed(error) => Err((String::new(), error)),
+        Outcome::FailedIn(..) => panic!("update has no subcommands to name"),
         Outcome::PrintedThenFailed(text, error) => Err((text, error)),
         Outcome::Success(_) => panic!("update prints text, never an envelope"),
         Outcome::PrintedWithWarnings { .. } => panic!("update prints no warnings beside its text"),
