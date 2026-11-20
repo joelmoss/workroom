@@ -2202,6 +2202,8 @@ fn wait_takes_one_target_and_one_condition() {
         &["wait", "a", "b", "--ended", "--json"],
         &["wait", "a", "--json"],
         &["wait", "a", "--ended", "--regex", "x", "--json"],
+        // `false` is a regex: two conditions.
+        &["wait", "a", "--regex", "false", "--ended", "--json"],
         &["wait", "a", "--ended", "--timeout", "soon", "--json"],
     ] {
         let run = workroom(Some(&socket), args);
