@@ -444,8 +444,9 @@ fn visible_text(text: &[u8]) -> String {
     out
 }
 
-/// Whether `ch` is in Unicode's Cf (format) category, as Go's `unicode.Cf` table (Unicode 15)
-/// has it: invisible characters that change how text around them is shown.
+/// Whether `ch` is in Unicode's Cf (format) category, as Go's `unicode.Cf` table has it in the Go
+/// `go.mod` names (1.27.4: Unicode 17.0.0): invisible characters that change how text around them
+/// is shown. A Go whose table differs needs this one changed with it.
 fn is_format(ch: char) -> bool {
     const CF: &[(u32, u32)] = &[
         (0x00ad, 0x00ad),
@@ -493,6 +494,46 @@ mod tests {
             visible_text("a\u{85}b\u{e0041}".as_bytes()),
             "a\\u{0085}b\\u{e0041}"
         );
+    }
+
+    /// Each range of Go 1.27.4's `unicode.Cf` (Unicode 17.0.0), its ends and the code points just
+    /// outside them, so a range that drifts from Go's shows here.
+    #[test]
+    fn is_format_is_gos_unicode_17_cf_table() {
+        for (low, high) in [
+            (0x00ad, 0x00ad),
+            (0x0600, 0x0605),
+            (0x061c, 0x061c),
+            (0x06dd, 0x06dd),
+            (0x070f, 0x070f),
+            (0x0890, 0x0891),
+            (0x08e2, 0x08e2),
+            (0x180e, 0x180e),
+            (0x200b, 0x200f),
+            (0x202a, 0x202e),
+            (0x2060, 0x2064),
+            (0x2066, 0x206f),
+            (0xfeff, 0xfeff),
+            (0xfff9, 0xfffb),
+            (0x110bd, 0x110bd),
+            (0x110cd, 0x110cd),
+            (0x13430, 0x1343f),
+            (0x1bca0, 0x1bca3),
+            (0x1d173, 0x1d17a),
+            (0xe0001, 0xe0001),
+            (0xe0020, 0xe007f),
+        ] {
+            let at = |code: u32| char::from_u32(code).is_some_and(is_format);
+            assert!(at(low) && at(high), "U+{low:04X}..U+{high:04X} is Cf");
+            assert!(!at(low - 1), "U+{:04X} is not Cf", low - 1);
+            assert!(!at(high + 1), "U+{:04X} is not Cf", high + 1);
+        }
+        // Gaps inside Go's strided ranges: U+2065 is unassigned, U+E0000 too.
+        assert!(!is_format('\u{2065}'));
+        assert!(!is_format('\u{e0000}'));
+        // Other categories a terminal also hides are not Cf: a combining mark, a line separator.
+        assert!(!is_format('\u{0301}'));
+        assert!(!is_format('\u{2028}'));
     }
 
     fn script(text: &[u8]) -> Script {
