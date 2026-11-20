@@ -358,7 +358,8 @@ pub fn install(context: Context) {
 }
 
 /// This build's daemon build identity (`build.rs`, #680): a hash of every source but the CLI's
-/// `commands` module, so two builds that differ only in their CLI commands are the same daemon.
+/// `commands` module, and of the compiler, so two builds that differ only in their CLI commands
+/// are the same daemon.
 /// `protocol` states it as `daemon-build`, and a hand-off to a binary with the same one is no
 /// hand-off at all (`hand_off`).
 ///
