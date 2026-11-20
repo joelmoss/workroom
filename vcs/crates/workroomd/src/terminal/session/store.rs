@@ -36,6 +36,17 @@ impl SessionStore {
         self.hooks.host.keep_resources(dir);
     }
 
+    /// Serves `socket` from now on: the path each new session's shell is given as
+    /// `WORKROOM_DAEMON`. Once per store.
+    pub fn serve_socket(&self, socket: std::path::PathBuf) {
+        let _ = self.socket.set(socket);
+    }
+
+    /// The socket this store's daemon serves, if it serves one.
+    pub fn socket(&self) -> Option<&std::path::Path> {
+        self.socket.get().map(std::path::PathBuf::as_path)
+    }
+
     /// The live run sessions.
     pub fn run_session_ids(&self) -> Vec<SessionId> {
         lock_or_recover(&self.sessions)

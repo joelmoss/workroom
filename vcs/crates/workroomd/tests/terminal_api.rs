@@ -121,6 +121,38 @@ fn listing_until(socket: &Path, done: impl Fn(&[Value]) -> bool) -> Vec<Value> {
     last
 }
 
+/// Has `shell` run `command` with its stdout in `name` under `dir`, and returns what it wrote. The
+/// file appears whole (written beside it, then renamed), so a half-written one is never read.
+fn shell_output(shell: &mut Spawned, dir: &Path, name: &str, command: &str) -> String {
+    let path = dir.join(name);
+    let partial = dir.join(format!("{name}.partial"));
+    type_line(
+        shell,
+        &format!(
+            "{command} > '{}' 2>&1; mv '{}' '{}'",
+            partial.display(),
+            partial.display(),
+            path.display()
+        ),
+    );
+    assert!(
+        wait_for(Duration::from_secs(20), || path.exists()),
+        "the shell never wrote {name}"
+    );
+    std::fs::read_to_string(&path).expect("read the shell's output")
+}
+
+/// `KEY=value` lines starting `WORKROOM_`, sorted.
+fn workroom_variables(env: &str) -> Vec<String> {
+    let mut variables: Vec<String> = env
+        .lines()
+        .filter(|line| line.starts_with("WORKROOM_"))
+        .map(str::to_string)
+        .collect();
+    variables.sort();
+    variables
+}
+
 const SHELL: &str = "5a1e0f7e-0d6c-4c9f-9c3e-2b7f1d0a8e11";
 const OTHER: &str = "0b9d33c1-7a44-4e1b-8f00-6c2a1d0abeef";
 const RUN: &str = "c0ffee00-1111-4222-8333-44445555beef";
@@ -178,6 +210,67 @@ fn sessions_json_lists_every_field_of_every_session() {
         table.stdout.contains("1d0a8e11  server"),
         "{}",
         table.stdout
+    );
+}
+
+/// Every session's shell is told which pane it is and which daemon holds it (#684), and still sees
+/// none of the session's own `WORKROOM_SESSION_*` variables. The values are the daemon's own: an
+/// attach client typed in another pane forwards that pane's, which never reach this one.
+#[test]
+fn a_sessions_shell_sees_its_pane_and_daemon_and_no_session_variables() {
+    let workspace = Workspace::new("api-identity");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = attach_with_env(
+        &socket,
+        SHELL,
+        &[],
+        &[
+            ("WORKROOM_SESSION_TITLE", "server"),
+            ("WORKROOM_SESSION_WORKROOM", "wr-1"),
+            ("WORKROOM_PANE", "an-outer-pane"),
+            ("WORKROOM_DAEMON", "/an/outer/daemon.sock"),
+        ],
+    );
+    let env = shell_output(&mut shell, &workspace.dir, "shell-env", "env");
+    assert_eq!(
+        workroom_variables(&env),
+        [
+            format!("WORKROOM_DAEMON={}", socket.display()),
+            format!("WORKROOM_PANE={SHELL}"),
+        ],
+        "{env}"
+    );
+
+    // A run session's command too: it runs under the run supervisor, not a shell of its own.
+    let ran = workspace.dir.join("run-env");
+    let _run = attach_with_env(
+        &socket,
+        RUN,
+        &[],
+        &[
+            ("WORKROOM_SESSION_RUN", "1"),
+            (
+                "WORKROOM_SESSION_COMMAND",
+                &format!(
+                    "env > '{0}.partial'; mv '{0}.partial' '{0}'; sleep 30",
+                    ran.display()
+                ),
+            ),
+        ],
+    );
+    assert!(
+        wait_for(Duration::from_secs(20), || ran.exists()),
+        "the run command never ran"
+    );
+    let env = std::fs::read_to_string(&ran).unwrap();
+    assert_eq!(
+        workroom_variables(&env),
+        [
+            format!("WORKROOM_DAEMON={}", socket.display()),
+            format!("WORKROOM_PANE={RUN}"),
+        ],
+        "{env}"
     );
 }
 

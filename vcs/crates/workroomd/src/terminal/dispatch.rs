@@ -4,7 +4,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::daemon::rpc::{self, SharedWriter};
@@ -259,6 +259,7 @@ pub(crate) fn dispatch(
                         }
                     }
                 }
+                identify(&mut invocation.environment, id, sessions.socket());
                 sessions.create_then(
                     SessionSpec {
                         id,
@@ -450,6 +451,19 @@ fn run_invocation(
         environment,
         interactive: false,
     })
+}
+
+/// Tells a new session's shell which pane it is and which daemon holds it (#684, the terminal
+/// API's identity): `WORKROOM_PANE` is the session's id and `WORKROOM_DAEMON` this daemon's socket.
+/// Whatever the attach client forwarded under those names goes first: it is the pane the client
+/// was typed in, never this one. A daemon serving no socket names none.
+fn identify(environment: &mut Vec<(OsString, OsString)>, id: SessionId, socket: Option<&Path>) {
+    use crate::terminal::api::{DAEMON_VARIABLE, PANE_VARIABLE};
+    environment.retain(|(key, _)| key != PANE_VARIABLE && key != DAEMON_VARIABLE);
+    environment.push((PANE_VARIABLE.into(), id.to_hyphenated().into()));
+    if let Some(socket) = socket {
+        environment.push((DAEMON_VARIABLE.into(), socket.as_os_str().to_owned()));
+    }
 }
 
 /// Wraps an encoded session list in the frame to send, refusing one that is too big.
