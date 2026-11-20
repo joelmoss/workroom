@@ -38,6 +38,9 @@ wr-protocol = { path = "../wr-protocol" }
 wr-exec = { path = "../wr-exec" }
 wr-vcs-git = { path = "../wr-vcs-git" }
 wr-vcs-model = { path = "../wr-vcs-model" }
+# `include-archive`'s tar (headers, pax records, padding). Pure Rust; without its default `xattr`
+# feature it adds only `filetime`, which no archive written here uses.
+tar = { version = "0.4", default-features = false }
 # Kitty images: the decoder libghostty-vt needs to store a PNG, and what a reattach re-sends them
 # as (#551). Pure Rust, and only with terminal-state.
 png = { version = "0.18", optional = true }
@@ -48,6 +51,8 @@ ghostty-vt = { path = "../ghostty-vt", optional = true }
 # The raw-mode test reads the pty's line discipline directly. `libc` is already a runtime
 # dependency, so this adds nothing to the graph — it only makes it visible to `tests/`.
 libc = "0.2"
+# The contract suite reads `include-archive`'s tar with it, whichever binary wrote the tar.
+tar = { version = "0.4", default-features = false }
 # Itself, with `test-support`, so `cargo test` builds the library with the test-only API that
 # `tests/` reaches through `workroom::testing`, and no build needs a flag for it.
 workroom = { path = ".", features = ["test-support"] }

@@ -1053,3 +1053,407 @@ fn list_json_project_keeps_the_case_it_was_given() {
     assert_eq!(listed("LINK"), ["/Users/dev/ct/CaseProj"]);
     assert_eq!(listed("link/../caseproj"), ["/Users/dev/ct/caseproj"]);
 }
+
+// --- include-archive ---
+
+/// One member of a tar, as an extractor reads it: the pax `path` and `mtime` records where the
+/// archive has them, else the ustar header's fields.
+#[derive(Debug, PartialEq)]
+struct Member {
+    name: String,
+    regular: bool,
+    mode: u32,
+    owner: (u64, u64),
+    owner_names: (Vec<u8>, Vec<u8>),
+    /// Seconds and nanoseconds.
+    mtime: (i64, u32),
+    contents: Vec<u8>,
+}
+
+/// The members of the tar at `path`, in order. Each pax extended header is read into the member
+/// it describes, not listed; its own name, the headers' device numbers and the padding aren't
+/// compared, since no extractor reads them.
+fn tar_members(path: &Path) -> Vec<Member> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)
+        .unwrap_or_else(|error| panic!("open {}: {error}", path.display()));
+    let mut archive = tar::Archive::new(file);
+    let mut members = Vec::new();
+    for entry in archive.entries().expect("read the tar") {
+        let mut entry = entry.expect("a tar entry");
+        let mut mtime = (
+            i64::try_from(entry.header().mtime().expect("mtime")).expect("mtime fits"),
+            0,
+        );
+        if let Some(records) = entry.pax_extensions().expect("pax records") {
+            for record in records {
+                let record = record.expect("pax record");
+                if record.key() == Ok("mtime") {
+                    let value = record.value().expect("mtime is UTF-8");
+                    let (secs, fraction) = value.split_once('.').unwrap_or((value, "0"));
+                    let nanos = format!("{fraction:0<9}");
+                    mtime = (secs.parse().expect("secs"), nanos.parse().expect("nanos"));
+                }
+            }
+        }
+        let header = entry.header();
+        let mut member = Member {
+            name: String::from_utf8(entry.path_bytes().into_owned()).expect("UTF-8 name"),
+            regular: header.entry_type() == tar::EntryType::Regular,
+            mode: header.mode().expect("mode"),
+            owner: (header.uid().expect("uid"), header.gid().expect("gid")),
+            owner_names: (
+                header.username_bytes().unwrap_or_default().to_vec(),
+                header.groupname_bytes().unwrap_or_default().to_vec(),
+            ),
+            mtime,
+            contents: Vec::new(),
+        };
+        entry
+            .read_to_end(&mut member.contents)
+            .expect("member contents");
+        members.push(member);
+    }
+    members
+}
+
+/// The member an extractor should make `root/relative` from, as the file is now: its name, mode,
+/// mtime to the nanosecond and contents, owned by uid and gid 0 with no owner names, so a host's
+/// extraction as root doesn't chown it to the Mac's uid.
+fn member_for(root: &Path, relative: &str) -> Member {
+    use std::os::unix::fs::MetadataExt;
+    let path = root.join(relative);
+    let metadata = std::fs::metadata(&path).expect("stat the source");
+    Member {
+        name: relative.to_string(),
+        regular: true,
+        mode: metadata.mode() & 0o777,
+        owner: (0, 0),
+        owner_names: (Vec::new(), Vec::new()),
+        mtime: (
+            metadata.mtime(),
+            u32::try_from(metadata.mtime_nsec()).expect("nanos"),
+        ),
+        contents: std::fs::read(&path).expect("read the source"),
+    }
+}
+
+/// Writes `contents` at `root/relative` with `mode`, making its directories.
+fn write_file(root: &Path, relative: &str, contents: &str, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = root.join(relative);
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("create dirs");
+    std::fs::write(&path, contents).expect("write file");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+}
+
+/// A path over the 100 bytes a ustar name holds, so the tar needs a pax `path` record for it.
+fn long_include_path() -> String {
+    format!("{}/{}.key", "d".repeat(60), "f".repeat(60))
+}
+
+/// A repo whose include file names each kind of file there is: included ones with several modes,
+/// a non-ASCII name and a long path; ones it names that git doesn't ignore (`loose.txt`) or that
+/// are tracked (`tracked.txt`); an ignored one it doesn't name; a symlink out of the root, a FIFO,
+/// and `bad.key`, which can't be read unless the tests run as root. Returns the repo and whether
+/// `bad.key` is unreadable.
+fn include_fixture(home: &Home) -> (PathBuf, bool) {
+    let root = home.repo("src/app");
+    write_file(
+        &root,
+        ".gitignore",
+        ".env\nsecrets/\n*.key\nbin.sh\nignored-only.txt\ntracked.txt\n",
+        0o644,
+    );
+    write_file(
+        &root,
+        ".worktreeinclude",
+        ".env\nsecrets/\n*.key\nbin.sh\nloose.txt\ntracked.txt\n",
+        0o644,
+    );
+    write_file(&root, ".env", "SECRET=1", 0o600);
+    write_file(&root, "secrets/a.json", "{}", 0o644);
+    write_file(&root, "secrets/nested/b.txt", "bee", 0o640);
+    write_file(&root, "bin.sh", "#!/bin/sh\n", 0o755);
+    write_file(&root, "caf\u{e9}.key", "c", 0o644);
+    write_file(&root, &long_include_path(), "long", 0o644);
+    write_file(&root, "loose.txt", "not ignored", 0o644);
+    write_file(&root, "ignored-only.txt", "not included", 0o644);
+    write_file(&root, "tracked.txt", "tracked", 0o644);
+    home.git(&root, &["add", "-f", "tracked.txt"]);
+    home.git(
+        &root,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "tracked",
+        ],
+    );
+    write_file(&home.dir, "outside/secret", "outside", 0o644);
+    std::os::unix::fs::symlink(home.path("outside/secret"), root.join("link.key"))
+        .expect("symlink");
+    let fifo = std::ffi::CString::new(root.join("pipe.key").into_os_string().into_encoded_bytes())
+        .expect("path");
+    // SAFETY: `fifo` is a NUL-terminated path that outlives the call.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0, "mkfifo");
+    // SAFETY: geteuid has no preconditions.
+    let unreadable = unsafe { libc::geteuid() } != 0;
+    write_file(&root, "bad.key", "k", if unreadable { 0 } else { 0o644 });
+    (root, unreadable)
+}
+
+/// The envelope the app decodes into `IncludeArchive` (`TestContractIncludeArchive` in
+/// `cmd/contract_test.go`, and `CLIContractTests.swift`).
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn include_archive_json_matches_the_golden() {
+    let home = Home::new("include-archive-json");
+    let root = home.repo("src/app");
+    write_file(&root, ".gitignore", ".env\n", 0o644);
+    write_file(&root, ".worktreeinclude", ".env\n", 0o644);
+    write_file(&root, ".env", "SECRET=1", 0o644);
+    let archive = home.path("a.tar");
+    let run = home.run(
+        &home.dir,
+        &[
+            "include-archive",
+            "--json",
+            "--project",
+            &root.to_string_lossy(),
+            "--output",
+            &archive.to_string_lossy(),
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    check_golden(
+        Owner::GoContractTests,
+        "include-archive.json",
+        &home.normalize(&normalize_version(&run.stdout)),
+    );
+    assert_eq!(tar_members(&archive), [member_for(&root, ".env")]);
+}
+
+/// The tar holds exactly the regular files the include file names that git ignores and doesn't
+/// track, each with its mode, mtime and contents. The envelope lists them, their size, the symlink
+/// it skipped and the file it couldn't read, and an unreadable file costs only itself. The FIFO is
+/// in neither list: git lists only files and symlinks.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn include_archive_writes_each_included_file_with_its_mode() {
+    let home = Home::new("include-archive-modes");
+    let (root, unreadable) = include_fixture(&home);
+    let archive = home.path("included.tar");
+    let run = home.run(
+        &root,
+        &[
+            "include-archive",
+            "--json",
+            "--output",
+            &archive.to_string_lossy(),
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    let envelope = run.envelope();
+
+    let long = long_include_path();
+    let mut paths = vec![".env"];
+    if !unreadable {
+        paths.push("bad.key");
+    }
+    paths.extend([
+        "bin.sh",
+        "caf\u{e9}.key",
+        &long,
+        "secrets/a.json",
+        "secrets/nested/b.txt",
+    ]);
+    assert_eq!(envelope["paths"], serde_json::json!(paths), "{envelope}");
+    assert_eq!(envelope["count"], paths.len(), "{envelope}");
+    assert_eq!(
+        envelope["skipped"],
+        serde_json::json!(["link.key"]),
+        "{envelope}"
+    );
+    let members: Vec<Member> = paths.iter().map(|path| member_for(&root, path)).collect();
+    let bytes: usize = members.iter().map(|member| member.contents.len()).sum();
+    assert_eq!(envelope["bytes"], bytes, "{envelope}");
+    let warnings = envelope["warnings"].as_array().expect("warnings");
+    if unreadable {
+        assert_eq!(warnings.len(), 1, "{envelope}");
+        let warning = warnings[0].as_str().expect("a string");
+        assert_eq!(
+            warning,
+            format!(
+                "bad.key: open {}: permission denied",
+                root.join("bad.key").display()
+            )
+        );
+    } else {
+        assert!(warnings.is_empty(), "{envelope}");
+    }
+    assert_eq!(tar_members(&archive), members);
+}
+
+/// Without `--json`: the count and the tar's path on stdout, each file it couldn't read on stderr.
+/// ADR 0078 lets this text change its wording, keeping the information.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn include_archive_human_text_reports_the_count_and_each_failure() {
+    let home = Home::new("include-archive-human");
+    let (root, unreadable) = include_fixture(&home);
+    let archive = home.path("included.tar");
+    let run = home.run(
+        &home.dir,
+        &[
+            "include-archive",
+            "--project",
+            &root.to_string_lossy(),
+            "--output",
+            &archive.to_string_lossy(),
+        ],
+    );
+    run.assert_code(0);
+    let count = if unreadable { 6 } else { 7 };
+    assert_eq!(
+        run.stdout,
+        format!("Archived {count} files to {}\n", archive.display())
+    );
+    if unreadable {
+        assert_eq!(
+            run.stderr,
+            format!(
+                "bad.key: open {}: permission denied\n",
+                root.join("bad.key").display()
+            )
+        );
+    } else {
+        run.assert_quiet_stderr();
+    }
+}
+
+/// A root with no include file archives nothing, without failing, and still writes a valid tar.
+/// So does a project directory that doesn't exist: it has no include file either.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn include_archive_without_an_include_file_writes_an_empty_tar() {
+    let home = Home::new("include-archive-none");
+    let root = home.repo("src/app");
+    write_file(&root, ".gitignore", ".env\n", 0o644);
+    write_file(&root, ".env", "SECRET=1", 0o644);
+    for (project, archive) in [
+        (root, home.path("root.tar")),
+        (home.path("src/missing"), home.path("missing.tar")),
+    ] {
+        let run = home.run(
+            &home.dir,
+            &[
+                "include-archive",
+                "--json",
+                "--project",
+                &project.to_string_lossy(),
+                "--output",
+                &archive.to_string_lossy(),
+            ],
+        );
+        run.assert_code(0).assert_quiet_stderr();
+        let envelope = run.envelope();
+        assert_eq!(envelope["ok"], true, "{envelope}");
+        assert_eq!(envelope["count"], 0, "{envelope}");
+        assert_eq!(envelope["bytes"], 0, "{envelope}");
+        for list in ["paths", "skipped", "warnings"] {
+            assert_eq!(envelope[list], serde_json::json!([]), "{list}: {envelope}");
+        }
+        // The tar's end and nothing else: two zero blocks.
+        assert_eq!(std::fs::read(&archive).expect("read tar"), vec![0; 1024]);
+    }
+}
+
+/// The tar goes only where `--output` says, so it is required: without it the command fails as a
+/// usage error, before it runs, so the envelope names no command. A flag with no value and an
+/// argument fail the same way.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn include_archive_refuses_a_missing_output_or_flag_value() {
+    let home = Home::new("include-archive-usage");
+    let root = home.repo("src/app");
+    let root = root.to_string_lossy();
+    for (args, message) in [
+        (
+            &["include-archive", "--json", "--project", &root][..],
+            "required flag(s) \"output\" not set",
+        ),
+        (
+            &["include-archive", "--json", "--project"],
+            "flag needs an argument: --project",
+        ),
+        (
+            &["include-archive", "--json", "--output", "x.tar", "extra"],
+            "unknown command \"extra\" for \"workroom include-archive\"",
+        ),
+    ] {
+        let run = home.run(&home.dir, args);
+        run.assert_code(1).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "InternalError");
+        let envelope = run.envelope();
+        assert_eq!(envelope["error"]["message"], message, "{args:?}");
+        assert!(envelope.get("command").is_none(), "{args:?}: {envelope}");
+    }
+    assert!(!home.path("x.tar").exists());
+}
+
+/// A project with an include file that isn't a repository fails git's listing, reported in the
+/// envelope, and leaves no tar behind: the files are listed before the tar is opened. A tar that
+/// can't be created fails the command too.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn include_archive_reports_a_failed_listing_or_output() {
+    let home = Home::new("include-archive-failure");
+    let plain = home.path("plain");
+    write_file(&plain, ".worktreeinclude", ".env\n", 0o644);
+    let archive = home.path("included.tar");
+    let run = home.run(
+        &home.dir,
+        &[
+            "include-archive",
+            "--json",
+            "--project",
+            &plain.to_string_lossy(),
+            "--output",
+            &archive.to_string_lossy(),
+        ],
+    );
+    run.assert_code(1).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "InternalError");
+    let envelope = run.envelope();
+    assert_eq!(envelope["command"], "include-archive");
+    let message = envelope["error"]["message"].as_str().expect("message");
+    assert!(
+        message.starts_with("git ls-files: exit status 128: ")
+            && message.contains("not a git repository"),
+        "{message}"
+    );
+    assert!(!archive.exists(), "the tar was opened before the listing");
+
+    let root = home.repo("src/app");
+    let unwritable = home.path("no-such-dir/included.tar");
+    let run = home.run(
+        &home.dir,
+        &[
+            "include-archive",
+            "--json",
+            "--project",
+            &root.to_string_lossy(),
+            "--output",
+            &unwritable.to_string_lossy(),
+        ],
+    );
+    run.assert_code(1).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "InternalError");
+    assert_eq!(
+        run.envelope()["error"]["message"],
+        format!("open {}: no such file or directory", unwritable.display())
+    );
+}
