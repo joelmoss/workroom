@@ -59,9 +59,20 @@ tar = { version = "0.4", default-features = false }
 # as (#551). Pure Rust, and only with terminal-state.
 png = { version = "0.18", optional = true }
 # `workroom wait --regex`'s matcher over a session's output (`terminal::wait`): linear time in the
-# text, whatever the pattern, so a caller's regex cannot stall a session's reader. Already in the
-# lockfile, as bindgen's (ghostty-vt's build).
-regex = "1"
+# text, whatever the pattern, so a caller's regex cannot stall a session's reader. The engine
+# under the `regex` crate, for what that crate's API keeps out of reach: a search bounded at an
+# end that still sees the bytes past it, and the lazy DFA's states, which say whether more output
+# could change a match. Already in the lockfile, as `regex`'s (bindgen's, for ghostty-vt's build).
+regex-automata = { version = "0.4", default-features = false, features = [
+    "std",
+    "syntax",
+    "perf",
+    "unicode",
+    "meta",
+    "hybrid",
+    "nfa-backtrack",
+    "dfa-onepass",
+] }
 # libghostty-vt's bindings, safe wrapper and build, only with terminal-state.
 ghostty-vt = { path = "../ghostty-vt", optional = true }
 
