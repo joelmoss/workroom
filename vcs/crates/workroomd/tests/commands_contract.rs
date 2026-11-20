@@ -3908,6 +3908,71 @@ fn delete_project_judges_the_workrooms_copy_and_exempts_an_ignored_root_copy() {
     assert!(!worktree.exists());
 }
 
+/// The teardown a delete would run is judged as `trust` judges it: a gitignored root copy that is
+/// a symlink is not exempt, a link to a device (/dev/zero) is refused unread, and a workroom's
+/// copy over the 1 MiB a script may be is refused. Nothing is torn down.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn delete_project_refuses_a_linked_device_or_oversize_teardown() {
+    let home = Home::new("delete-project-unjudged");
+    let project = project_with_workroom(&home, "echo hi\n", "deadbeef");
+    let worktree = home.path("workrooms/calm-river");
+    let before = config_text(&home);
+    let project_arg = project.to_string_lossy().into_owned();
+    let delete = || {
+        let run = home.run(
+            &home.dir,
+            &[
+                "delete-project",
+                &project_arg,
+                "--json",
+                "--confirm",
+                &project_arg,
+                "--with-workrooms",
+            ],
+        );
+        run.assert_code(3).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "ScriptNotTrusted");
+        assert_eq!(config_text(&home), before);
+        assert!(worktree.exists());
+        run.envelope()
+    };
+    let teardown = project.join("scripts/workroom_teardown");
+    std::fs::rename(&teardown, project.join("scripts/real.sh")).expect("move teardown");
+    std::os::unix::fs::symlink("real.sh", &teardown).expect("link");
+    std::fs::write(project.join(".gitignore"), "scripts/workroom_teardown\n").expect("gitignore");
+    let envelope = delete();
+    assert_eq!(envelope["script"]["origin"], "root", "{envelope}");
+    assert_eq!(envelope["script"]["exempt"], false);
+    assert_eq!(envelope["script"]["text"], "#!/bin/sh\necho hi\n");
+
+    std::fs::remove_file(&teardown).expect("remove link");
+    std::os::unix::fs::symlink("/dev/zero", &teardown).expect("link");
+    let envelope = delete();
+    assert_eq!(
+        home.normalize(envelope["error"]["message"].as_str().expect("message")),
+        "script is not trusted on this Mac: /Users/dev/src/app/scripts/workroom_teardown is not a \
+         regular file"
+    );
+    assert_eq!(envelope.get("script"), None, "{envelope}");
+
+    write_file(
+        &worktree,
+        "scripts/workroom_teardown",
+        &"#".repeat((1 << 20) + 1),
+        0o755,
+    );
+    let envelope = delete();
+    assert_eq!(
+        home.normalize(envelope["error"]["message"].as_str().expect("message")),
+        "script is not trusted on this Mac: /Users/dev/workrooms/calm-river/scripts/\
+         workroom_teardown is larger than 1048576 bytes"
+    );
+}
+
 /// `--with-workrooms` deletes each workroom as `delete` does: one whose folder holds no git
 /// checkout is only forgotten, its folder left; a name `delete` refuses stops it with the project
 /// kept.
@@ -5222,6 +5287,160 @@ fn trust_status_base_judges_that_branch_and_its_devcontainer() {
     let run = status(&["--base", "outside"]);
     run.assert_code(0).assert_quiet_stderr();
     assert_eq!(run.envelope()["scripts"], serde_json::json!([]));
+}
+
+/// SHA-256 of `#!/bin/sh\r\necho hi\r\n`: [`SHA_HI`]'s script with CRLF line endings.
+const SHA_HI_CRLF: &str = "249dab6783d56f501eb877dc1754f48d0cfbe83a328cbbc35b7927190ddb0cab";
+
+/// A gitignored root script that is a symlink is not exempt, since what it points to may be
+/// tracked and a pull can change it; the same bytes as a plain ignored file are. Go's
+/// `TestAnIgnoredSymlinkedRootScriptIsNotExempt`, through `trust status`, as `create` isn't
+/// ported yet.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn trust_status_does_not_exempt_an_ignored_symlinked_root_script() {
+    let home = Home::new("trust-ignored-link");
+    let repo = home.repo("src/app");
+    commit_script(&home, &repo, "shared.sh", "#!/bin/sh\necho hi\n");
+    std::os::unix::fs::symlink("shared.sh", repo.join("scripts/workroom_setup")).expect("link");
+    write_file(&repo, ".gitignore", "scripts/workroom_setup\n", 0o644);
+    let run = home.run(&repo, &["trust", "status", "--json"]);
+    run.assert_code(1).assert_quiet_stderr();
+    let envelope = run.envelope();
+    let script = &envelope["scripts"][0];
+    assert_eq!(script["name"], "workroom_setup", "{envelope}");
+    assert_eq!(script["origin"], "root");
+    assert_eq!(
+        script["text"], "#!/bin/sh\necho hi\n",
+        "read through the link"
+    );
+    assert_eq!(script["sha256"], SHA_HI);
+    assert_eq!(script["exempt"], false);
+    assert_eq!(script["trusted"], false);
+
+    std::fs::remove_file(repo.join("scripts/workroom_setup")).expect("remove link");
+    write_script(&repo, "workroom_setup", "#!/bin/sh\necho hi\n");
+    let run = home.run(&repo, &["trust", "status", "--json"]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(run.envelope()["scripts"][0]["exempt"], true);
+}
+
+/// A script Workroom can't judge is refused, never judged: a link to a device (/dev/zero) unread
+/// (Go's `TestADeviceScriptIsRefusedUnread`), a root copy over the 1 MiB a script may be, and a
+/// base commit's before anything exists
+/// (`TestAnOversizeBaseSetupScriptIsRefusedBeforeAnythingExists`), which `trust` refuses too,
+/// approving nothing. A script of exactly 1 MiB is judged.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn trust_status_refuses_a_device_or_oversize_script() {
+    let home = Home::new("trust-unjudged");
+    let repo = home.repo("src/app");
+    let refused = |message: &str| {
+        let run = home.run(&repo, &["trust", "status", "--json"]);
+        run.assert_code(2).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "ScriptNotTrusted");
+        let envelope = run.envelope();
+        assert_eq!(
+            home.normalize(envelope["error"]["message"].as_str().expect("message")),
+            message
+        );
+        assert_eq!(envelope.get("script"), None, "{envelope}");
+    };
+    // A file it can't even stat is a failure in the system's words, as Go's `*fs.PathError`.
+    write_file(&repo, "scripts", "", 0o644);
+    let run = home.run(&repo, &["trust", "status", "--json"]);
+    run.assert_code(2).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "InternalError");
+    assert_eq!(
+        home.normalize(
+            run.envelope()["error"]["message"]
+                .as_str()
+                .expect("message")
+        ),
+        "stat /Users/dev/src/app/scripts/workroom_setup: not a directory"
+    );
+    std::fs::remove_file(repo.join("scripts")).expect("remove scripts");
+
+    std::fs::create_dir(repo.join("scripts")).expect("scripts");
+    std::os::unix::fs::symlink("/dev/zero", repo.join("scripts/workroom_setup")).expect("link");
+    refused(
+        "script is not trusted on this Mac: /Users/dev/src/app/scripts/workroom_setup is not a \
+         regular file",
+    );
+    std::fs::remove_file(repo.join("scripts/workroom_setup")).expect("remove link");
+
+    let limit = 1 << 20;
+    write_script(&repo, "workroom_teardown", &"#".repeat(limit));
+    let run = home.run(&repo, &["trust", "status", "--json"]);
+    run.assert_code(1).assert_quiet_stderr();
+    assert_eq!(run.envelope()["scripts"][0]["name"], "workroom_teardown");
+    write_script(&repo, "workroom_teardown", &"#".repeat(limit + 1));
+    refused(
+        "script is not trusted on this Mac: /Users/dev/src/app/scripts/workroom_teardown is \
+         larger than 1048576 bytes",
+    );
+    std::fs::remove_file(repo.join("scripts/workroom_teardown")).expect("remove teardown");
+
+    commit_script(&home, &repo, "workroom_setup", &("#".repeat(limit) + "\n"));
+    let message = "script is not trusted on this Mac: scripts/workroom_setup in the base commit \
+                   is larger than 1048576 bytes";
+    refused(message);
+    let run = home.run(&repo, &["trust", "--json"]);
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "ScriptNotTrusted");
+    assert_eq!(run.envelope()["error"]["message"], message);
+    assert!(!home.config_path().exists(), "trust recorded an approval");
+}
+
+/// The base commit's setup script is judged as a checkout of it writes it, through the line-ending
+/// filters of the commit's own `.gitattributes` (`--attr-source`) and not the root checkout's, so
+/// its approval matches the file that runs. Go's `TestFileAtAndIgnored` and
+/// `TestFileAtUsesTheCommitsOwnAttributes`, through `trust status`.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn trust_status_judges_a_base_script_by_the_commits_own_line_endings() {
+    let home = Home::new("trust-eol");
+    let repo = home.repo("src/app");
+    let setup = || {
+        let run = home.run(&repo, &["trust", "status", "--json"]);
+        run.assert_code(1).assert_quiet_stderr();
+        let envelope = run.envelope();
+        assert_eq!(envelope["scripts"][0]["origin"], "base", "{envelope}");
+        envelope["scripts"][0].clone()
+    };
+    let attributes = |eol: &str| {
+        write_file(
+            &repo,
+            ".gitattributes",
+            &format!("scripts/workroom_setup text eol={eol}\n"),
+            0o644,
+        );
+    };
+    attributes("crlf");
+    write_script(&repo, "workroom_setup", "#!/bin/sh\necho hi\n");
+    home.git(&repo, &["add", ".gitattributes", "scripts/workroom_setup"]);
+    commit(&home, &repo, "crlf");
+    let script = setup();
+    assert_eq!(script["text"], "#!/bin/sh\r\necho hi\r\n");
+    assert_eq!(script["sha256"], SHA_HI_CRLF);
+
+    attributes("lf");
+    home.git(&repo, &["add", ".gitattributes"]);
+    commit(&home, &repo, "lf");
+    // The root's checkout has moved on to other rules than the commit judged.
+    attributes("crlf");
+    let script = setup();
+    assert_eq!(script["text"], "#!/bin/sh\necho hi\n");
+    assert_eq!(script["sha256"], SHA_HI);
 }
 
 // --- completion ---
