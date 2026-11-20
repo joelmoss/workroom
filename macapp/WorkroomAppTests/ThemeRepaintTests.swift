@@ -72,7 +72,7 @@ final class ThemeRepaintTests: XCTestCase {
   private static func tokens(of family: ThemeFamily, isDark: Bool) -> ThemeTokens {
     ThemeTokens(
       preview: ThemeService.themePreview(
-        named: ThemeCatalog.sanitizedThemeName(family.variant(isDark: isDark))))
+        named: ThemeCatalog.sanitizedThemeName(family.theme(for: ThemeSide(isDark: isDark)))))
   }
 
   private static func distance(_ lhs: ThemeTokens, _ rhs: ThemeTokens) -> CGFloat {

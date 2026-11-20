@@ -79,15 +79,113 @@ final class ThemeCatalogTests: XCTestCase {
     XCTAssertEqual(ThemeCatalog.sanitizedThemeName("Catppuccin Mocha"), "Catppuccin Mocha")
   }
 
-  func testEveryBundledFamilyIsPairComplete() {
-    // Issue #36: every theme supports dark AND light — both variant names must be non-empty and
-    // distinct (a family is never a single-variant orphan).
+  // MARK: bundled themes (#733)
+
+  /// Every bundled theme is listed once. Whether each listed name is a real bundled file, and whether
+  /// its fixed side matches its background, needs the app bundle: see `ThemeServiceTests`.
+  func testEveryBundledThemeIsListedOnce() {
+    let names = ThemeCatalog.bundledThemes.map(\.name)
+    XCTAssertFalse(names.isEmpty)
+    XCTAssertEqual(
+      names.count, Set(names).count,
+      "bundled themes listed twice: \(Dictionary(grouping: names, by: { $0 }).filter { $0.value.count > 1 }.keys)"
+    )
+  }
+
+  /// A family's light theme is a bundled light theme and its dark theme a bundled dark theme, so
+  /// choosing a family can never put a dark theme in the light setting.
+  func testEveryFamilysThemesAreBundledOnTheirSides() {
+    let sides = Dictionary(
+      uniqueKeysWithValues: ThemeCatalog.bundledThemes.map { ($0.name, $0.side) })
     for family in ThemeCatalog.families {
-      XCTAssertFalse(family.dark.isEmpty, "\(family.name) missing dark variant")
-      XCTAssertFalse(family.light.isEmpty, "\(family.name) missing light variant")
-      XCTAssertNotEqual(family.dark, family.light, "\(family.name) dark == light")
+      XCTAssertEqual(
+        sides[family.light], .light,
+        "\(family.name): '\(family.light)' is not a bundled light theme")
+      XCTAssertEqual(
+        sides[family.dark], .dark, "\(family.name): '\(family.dark)' is not a bundled dark theme")
     }
   }
+
+  // MARK: pair → family
+
+  func testAFamilysPairMatchesTheFamily() {
+    XCTAssertEqual(
+      ThemeCatalog.family(light: "Catppuccin Latte", dark: "Catppuccin Mocha")?.name, "Catppuccin")
+    XCTAssertEqual(ThemeCatalog.familyLabel(light: "Light Owl", dark: "Night Owl"), "Night Owl")
+  }
+
+  func testAMixedPairIsCustom() {
+    XCTAssertNil(ThemeCatalog.family(light: "Catppuccin Latte", dark: "Nord"))
+    XCTAssertEqual(ThemeCatalog.familyLabel(light: "Catppuccin Latte", dark: "Nord"), "Custom")
+  }
+
+  /// A family's pair swapped between the sides is not that family.
+  func testASwappedPairIsCustom() {
+    XCTAssertNil(ThemeCatalog.family(light: "Catppuccin Mocha", dark: "Catppuccin Latte"))
+  }
+
+  /// Matched by name, so a user file that replaces a family member keeps the family's name.
+  func testAUserReplacementKeepsTheFamilysName() throws {
+    try withUserThemes(["Nord Light": "background = #fafafa\nforeground = #101010\n"]) {
+      XCTAssertEqual(ThemeCatalog.family(light: "Nord Light", dark: "Nord")?.name, "Nord")
+    }
+  }
+
+  // MARK: sides
+
+  func testABundledThemeHasItsFixedSide() throws {
+    try withUserThemes([:]) {
+      XCTAssertEqual(ThemeCatalog.side(ofThemeNamed: "Workroom Light"), .light)
+      XCTAssertEqual(ThemeCatalog.side(ofThemeNamed: "Workroom"), .dark)
+    }
+  }
+
+  func testAnUnknownThemeHasNoSide() throws {
+    try withUserThemes([:]) {
+      XCTAssertNil(ThemeCatalog.side(ofThemeNamed: "Does Not Exist"))
+    }
+  }
+
+  /// A user's own theme is classified by its background, and one replacing a bundled theme takes the
+  /// replacement's side.
+  func testAUserThemeIsClassifiedByItsBackground() throws {
+    try withUserThemes([
+      "My Paper": "background = #f4f1e8\nforeground = #202020\n",
+      "My Night": "background = #101418\nforeground = #e0e0e0\n",
+      "Workroom Light": "background = #000000\nforeground = #ffffff\n",
+    ]) {
+      XCTAssertEqual(ThemeCatalog.side(ofThemeNamed: "My Paper"), .light)
+      XCTAssertEqual(ThemeCatalog.side(ofThemeNamed: "My Night"), .dark)
+      XCTAssertEqual(ThemeCatalog.side(ofThemeNamed: "Workroom Light"), .dark)
+    }
+  }
+
+  /// A user file that doesn't parse is ignored: a bundled theme keeps its side, anything else has none.
+  func testAnUnparseableUserThemeIsIgnored() throws {
+    try withUserThemes([
+      "Broken": "not a theme\n",
+      "Workroom Light": "foreground = #000000\n",
+    ]) {
+      XCTAssertNil(ThemeCatalog.side(ofThemeNamed: "Broken"))
+      XCTAssertEqual(ThemeCatalog.side(ofThemeNamed: "Workroom Light"), .light)
+    }
+  }
+
+  /// Run `body` with the user theme directory pointed at a fresh temp dir holding `files`, never the
+  /// developer's real `~/.config/ghostty/themes`.
+  private func withUserThemes(_ files: [String: String], _ body: () throws -> Void) throws {
+    let dir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("workroom-user-themes-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    for (name, contents) in files {
+      try contents.write(
+        to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
+    }
+    try ThemeCatalog.withUserThemeDirectory(dir.path, body)
+  }
+
+  // MARK: families
 
   func testWorkroomFamilyIsFirst() {
     XCTAssertEqual(ThemeCatalog.families.first?.name, ThemeCatalog.defaultFamilyName)
