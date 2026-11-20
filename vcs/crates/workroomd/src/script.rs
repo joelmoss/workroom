@@ -364,10 +364,13 @@ fn catch(signal: libc::c_int) -> libc::sigaction {
 /// One this process was started ignoring (nohup's SIGHUP, a background job's SIGINT) is no
 /// cancel while the login shell is read, as Go's probe had it, and is caught once the script is
 /// about to start ([`Signals::catch_ignored`]), as both runners did.
-struct Signals;
+///
+/// `add-project --clone` watches them too, for the whole clone, as Go's `signal.NotifyContext`
+/// did (`commands::add_project`).
+pub(crate) struct Signals;
 
 impl Signals {
-    fn watch() -> Signals {
+    pub(crate) fn watch() -> Signals {
         let mut watching = lock_or_recover(&WATCHING);
         if watching.runs == 0 {
             SIGNALLED.store(0, Ordering::SeqCst);
@@ -389,7 +392,7 @@ impl Signals {
     }
 
     /// Catches the signals this process was started ignoring too, for the script's own run.
-    fn catch_ignored(&self) {
+    pub(crate) fn catch_ignored(&self) {
         let mut watching = lock_or_recover(&WATCHING);
         while let Some(signal) = watching.ignored.pop() {
             let previous = catch(signal);
@@ -397,7 +400,7 @@ impl Signals {
         }
     }
 
-    fn received(&self) -> Option<libc::c_int> {
+    pub(crate) fn received(&self) -> Option<libc::c_int> {
         Some(SIGNALLED.load(Ordering::SeqCst)).filter(|&signal| signal != 0)
     }
 }

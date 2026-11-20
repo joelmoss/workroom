@@ -458,23 +458,44 @@ fn close(file: File) -> io::Result<()> {
 /// Go's `os.MkdirAll` with mode 0755: `path` and any parents it lacks, failing with Go's words for
 /// the directory that couldn't be made (`mkdir <dir>: …`).
 fn mkdir_all(path: &str) -> Result<(), String> {
-    let refused = |at: &str, error: &io::Error| format!("mkdir {at}: {}", os_error(error));
+    make_dir_all(path).map_err(|error| error.to_string())
+}
+
+/// The directory Go's `os.MkdirAll` couldn't make, and why: `mkdir <dir>: …` as Go's `PathError`
+/// words it, with the OS error kept for a caller that asks which one it was (`ENOTDIR`).
+pub(crate) struct MkdirError {
+    pub(crate) path: String,
+    pub(crate) error: io::Error,
+}
+
+impl std::fmt::Display for MkdirError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "mkdir {}: {}", self.path, os_error(&self.error))
+    }
+}
+
+/// [`mkdir_all`] with the failure as a [`MkdirError`].
+pub(crate) fn make_dir_all(path: &str) -> Result<(), MkdirError> {
+    let refused = |at: &str, error: io::Error| MkdirError {
+        path: at.to_string(),
+        error,
+    };
     if let Ok(info) = std::fs::metadata(path) {
         if info.is_dir() {
             return Ok(());
         }
-        return Err(refused(path, &io::Error::from_raw_os_error(libc::ENOTDIR)));
+        return Err(refused(path, io::Error::from_raw_os_error(libc::ENOTDIR)));
     }
     let trimmed = path.trim_end_matches('/');
     let parent = trimmed.rfind('/').map_or("", |slash| &path[..slash]);
     if !parent.is_empty() {
-        mkdir_all(parent)?;
+        make_dir_all(parent)?;
     }
     match std::fs::DirBuilder::new().mode(0o755).create(path) {
         Ok(()) => Ok(()),
         // An argument like "foo/." already exists once its parent does.
         Err(_) if std::fs::symlink_metadata(path).is_ok_and(|info| info.is_dir()) => Ok(()),
-        Err(error) => Err(refused(path, &error)),
+        Err(error) => Err(refused(path, error)),
     }
 }
 
