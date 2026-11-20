@@ -251,12 +251,23 @@ pub fn run_in(script: &Script, env: BTreeMap<String, String>, output: Output) ->
 
 /// SIGTERM to the group, with its tree recorded first so a `setsid` escaper is still reached; then,
 /// after the whole grace (even once the leader has gone: its group may still be cleaning up),
-/// SIGKILL to what was recorded and to the group. What it printed meanwhile is read afterwards.
+/// SIGKILL to what was recorded and to the group. A combined output is read all the while, as Go
+/// read it, so a cleanup that prints more than a pipe holds isn't stalled until the SIGKILL; once
+/// the tree is gone it is read for [`DRAIN_GRACE`] more, as after an exit.
 fn end(child: &mut Child, grace: Duration, sink: Option<&mut Drain>) {
-    wr_exec::end_tree(child, libc::SIGTERM, grace);
-    if let Some(drain) = sink {
-        drain.until(Instant::now() + DRAIN_GRACE);
-    }
+    let Some(drain) = sink else {
+        wr_exec::end_tree(child, libc::SIGTERM, grace);
+        return;
+    };
+    // `end_tree` blocks for the grace, so it waits on a thread of its own while this one reads:
+    // the sink stays on this thread, as it needn't be `Send`.
+    std::thread::scope(|scope| {
+        let ending = scope.spawn(|| wr_exec::end_tree(child, libc::SIGTERM, grace));
+        while !ending.is_finished() {
+            drain.once(POLL);
+        }
+    });
+    drain.until(Instant::now() + DRAIN_GRACE);
 }
 
 /// The read end of a combined output's pipe, copied to its sink as it fills.
