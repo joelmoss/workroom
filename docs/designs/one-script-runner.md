@@ -53,6 +53,8 @@ where local workrooms rely on it, and the table says why.
 | 18 | Marker | 26 base32 characters | 32 hex digits | Rust's. No visible effect. |
 | 19 | `WORKROOM_*` variables | Set by the runner: name, path, root path, its deprecated alias, `WORKROOM_HOST=local` | Whatever `--env` gives, which is the app's to choose | **Rust's,** with `script::local_variables` giving a local caller Go's five, checked against `testdata/script-env/local.txt`. |
 | 20 | A probe entry with an empty name (`=value`) | Dropped | Kept | **Rust's.** `env -0` doesn't print one. |
+| 21 | What a caller gets of the output | `Run` returns what was printed, and with no stream it puts that in its error too (`TestRunSetupFailure`) | Nothing: the output is inherited, so the app reads it | **Rust's: the sink only.** `Combined` writes to the sink and keeps no copy. A caller that wants Go's behaviour passes a buffer (a `Vec<u8>`, or a writer that keeps a copy of what it streams) and words its error from it, as the `create` and `delete` ports (#677, #678) will. |
+| 22 | Output while the tree is ended | Read all the while: Go's copy runs until the pipe closes | Inherited, so the reader at the other end reads it | **Go's.** `Combined` is read while the tree has its grace, so a cleanup that prints more than a pipe holds (64 KiB) finishes on its own rather than stalling until the SIGKILL. Once the tree is gone it is read for 1 s more, as after an exit. |
 
 Already the same in both: the `<shell> -lic` (or `/bin/sh -lc`) rule from `testdata/twins/login_shell.tsv`,
 the 10 s probe limit, the 1 MiB cap on what's kept of the shell's output, the 1 s wait for a background
@@ -83,7 +85,8 @@ Rows 1 to 5 reach `run-script`, and row 1 reaches remote git's read at home as w
 
 Go's script tests are ported in `vcs/crates/workroomd/tests/script_runner.rs`. They run in-process
 through `workroom::script` for the local contract (`testdata/script-env/local.txt`), streaming,
-failures, a missing script, the fallback note, a background job and the wall clock, and a caller
+failures, a missing script, the fallback note, a background job, the wall clock, a cleanup that
+prints more than a pipe holds while its tree has its grace, and a caller
 cancelled by SIGTERM that carries on with its handling restored (the test binary re-run as that
 caller). They run through `run-script` for what needs a process of its own: a misbehaving rc, a
 login `sh` for an unknown shell, the git pins, PATH order, a signal during the probe, an ignored
