@@ -152,13 +152,17 @@ Owns the workroomd wire protocol, its transport and its hand-off. The Mac's end 
 
 **Daemon**, **workroomd**:
 The Rust daemon that holds sessions and serves version control, files, exec and port forwarding over one multiplexed stream, on this Mac or a host.
-_Avoid_: Agent
+_Avoid_: Agent, Server (an SSH host and a run command's dev server are both called servers)
 
 **Service**:
 One capability a workroomd serves over its stream, such as terminal sessions, version control or file reads.
 
 **Hand-off**:
 Replacing a running workroomd's program with a newer binary in place, keeping its process and every session.
+
+**Terminal API**:
+The daemon's public, versioned service for reading, typing into, waiting on and watching sessions, used by coding agents and the user's scripts from inside a pane. Its commands are `workroom` subcommands (#360, ADR 0078).
+_Avoid_: Agent API
 
 **Bootstrap**:
 Putting the bundled Linux workroomd, with Ghostty's terminfo and shell integration, on a host that has none or an older one, and handing a running older daemon off to it. It runs on every connect. A provider or container's supervisor starts the daemon; on an SSH host, the app starts it when nothing is listening.
