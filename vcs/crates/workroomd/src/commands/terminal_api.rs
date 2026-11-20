@@ -1,7 +1,11 @@
 //! The terminal API's client (ADR 0079): one request to the daemon's `Service::TerminalApi` and its
-//! reply, for the commands that wrap it. The daemon is the one `WORKROOM_DAEMON` names, the socket
-//! path #684 gives every pane's shell. Finding one without it (the caller's peer pid, `new`
-//! starting one) is #684's and #693's; until then no other daemon is ever reached.
+//! reply, for the commands that wrap it.
+//!
+//! The daemon is the one `WORKROOM_DAEMON` names, the socket every pane's shell is given (#684).
+//! Without it (`env -i`, `sudo`), it is the nearest daemon this process runs under
+//! ([`daemon_above`]): a pane's shell is its daemon's child. No other daemon is ever reached;
+//! `new` starting one is #693's. The request names its caller, the pane's `WORKROOM_PANE`, when
+//! that is set; the daemon finds the caller from the connecting process when it isn't.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -50,9 +54,14 @@ pub(super) fn reply(context: &Context, method: &str, params: Value) -> Result<Re
         ));
     }
     let unreachable = |message: String| CliError::new(Kind::DaemonUnreachable, message);
-    let Some(socket) = context.env(DAEMON_VARIABLE).filter(|path| !path.is_empty()) else {
+    let Some(socket) = context
+        .env(DAEMON_VARIABLE)
+        .filter(|path| !path.is_empty())
+        .or_else(context.daemon_above)
+    else {
         return Err(unreachable(format!(
-            "no daemon to ask: {DAEMON_VARIABLE} names none (it is set in every Workroom pane)"
+            "no daemon to ask: {DAEMON_VARIABLE} names none, and this process does not run \
+             under a Workroom daemon (every Workroom pane does, and sets {DAEMON_VARIABLE})"
         )));
     };
     let mut stream = UnixStream::connect(&socket)
@@ -94,6 +103,26 @@ pub(super) fn reply(context: &Context, method: &str, params: Value) -> Result<Re
     })
 }
 
+/// The socket of the nearest daemon this process runs under, for a caller whose environment names
+/// none (`env -i`, `sudo`): a pane's shell is its daemon's child, so a command in a pane has that
+/// daemon among its parents, as `<binary> serve --socket <path>`, which a hand-off keeps.
+pub(super) fn daemon_above() -> Option<String> {
+    // SAFETY: `getppid` takes no pointers and cannot fail.
+    let parent = unsafe { libc::getppid() };
+    wr_exec::ancestry(parent).into_iter().find_map(|pid| {
+        crate::terminal::process::arguments(pid).and_then(|argv| served_socket(&argv))
+    })
+}
+
+/// The socket `argv` serves, when it is a daemon's (`serve --socket <path>`).
+pub(super) fn served_socket(argv: &[String]) -> Option<String> {
+    if argv.get(1).map(String::as_str) != Some("serve") {
+        return None;
+    }
+    let at = argv.iter().position(|argument| argument == "--socket")?;
+    argv.get(at + 1).filter(|path| !path.is_empty()).cloned()
+}
+
 /// The reply on `STREAM`, its chunks joined (`rpc::send`: each payload's first byte says whether
 /// it is the last), or `None` when the daemon hangs up or goes quiet first.
 fn read_reply(stream: &mut UnixStream) -> Option<Vec<u8>> {
@@ -117,3 +146,6 @@ fn read_reply(stream: &mut UnixStream) -> Option<Vec<u8>> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

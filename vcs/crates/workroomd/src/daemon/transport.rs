@@ -51,6 +51,13 @@ pub trait Transport {
     fn peer(&self) -> String {
         "the stream's peer".into()
     }
+
+    /// The process on the other end, when the transport can say: what the terminal API finds a
+    /// caller's session from when the caller doesn't name it (#684). `None` for a stream with no
+    /// local process behind it.
+    fn peer_pid(&self) -> Option<i32> {
+        None
+    }
 }
 
 impl Transport for UnixStream {
@@ -62,6 +69,10 @@ impl Transport for UnixStream {
             Some(pid) => format!("pid {pid}"),
             None => "an unknown local process".into(),
         }
+    }
+
+    fn peer_pid(&self) -> Option<i32> {
+        peer_pid(self).filter(|pid| *pid > 0)
     }
 
     fn split(self) -> io::Result<(UnixStream, UnixStream)> {

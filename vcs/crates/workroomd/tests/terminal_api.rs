@@ -34,7 +34,57 @@ impl Run {
     }
 }
 
-/// `workroom <args>` with only `PATH`, `HOME` and, when given, `WORKROOM_DAEMON`.
+/// `workroom <args>`, naming no daemon, from a process whose parents hold none.
+///
+/// A CLI that names no daemon looks for one among its parents (#684), and a test run in a
+/// Workroom pane has the developer's own daemon there. So the CLI runs in a subshell orphaned to
+/// init: the shell that started it has exited before it starts, which a file (`go`) it waits for
+/// says. Its output and exit code come back in files under `dir`.
+fn workroom_outside_any_daemon(dir: &Path, args: &[&str]) -> Run {
+    let mut attempt = 0;
+    let at = loop {
+        let at = dir.join(format!("orphan-{attempt}"));
+        if std::fs::create_dir(&at).is_ok() {
+            break at;
+        }
+        attempt += 1;
+    };
+    let status = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(
+            "cd \"$1\" || exit 1; shift; \
+             (while [ ! -e go ]; do sleep 0.02; done; \
+              \"$0\" \"$@\" > stdout 2> stderr; echo $? > code.partial; mv code.partial code) &",
+        )
+        .arg(common::daemon_binary())
+        .arg(&at)
+        .args(args)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", std::env::temp_dir())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("start the orphan");
+    assert!(status.success());
+    std::fs::write(at.join("go"), b"").expect("go");
+    let code = at.join("code");
+    assert!(
+        wait_for(Duration::from_secs(20), || code.exists()),
+        "the orphaned workroom never finished"
+    );
+    let read = |name: &str| std::fs::read_to_string(at.join(name)).unwrap_or_default();
+    Run {
+        stdout: read("stdout"),
+        stderr: read("stderr"),
+        code: read("code").trim().parse().unwrap_or(-1),
+    }
+}
+
+/// `workroom <args>` with only `PATH`, `HOME` and, when given, `WORKROOM_DAEMON`. Given none, the
+/// CLI looks for a daemon among this test's parents, so a run that must find none is
+/// `workroom_outside_any_daemon`'s; one refused before any daemon is looked for can be this one's.
 fn workroom(daemon: Option<&Path>, args: &[&str]) -> Run {
     workroom_with_stdin(daemon, args, None)
 }
@@ -275,13 +325,18 @@ fn a_sessions_shell_sees_its_pane_and_daemon_and_no_session_variables() {
 }
 
 /// `workroom sessions --json` run by `shell` with `prefix` before it (`env -i`, say): its envelope.
+/// Through a `sh` of its own that waits for it, so the command is a grandchild of the session's
+/// shell at least, as one a coding agent runs is.
 fn sessions_from(shell: &mut Spawned, dir: &Path, name: &str, prefix: &str, args: &str) -> Value {
     let binary = common::daemon_binary();
     let output = shell_output(
         shell,
         dir,
         name,
-        &format!("{prefix} '{}' sessions --json {args}", binary.display()),
+        &format!(
+            "{prefix} /bin/sh -c \"'{}' sessions --json {args}; exit \\$?\"",
+            binary.display()
+        ),
     );
     serde_json::from_str(&output).unwrap_or_else(|e| panic!("not one envelope ({e}): {output}"))
 }
@@ -325,6 +380,42 @@ fn sessions_in_a_pane_lists_its_workroom_and_all_widens_it() {
     let outside = workroom(Some(&socket), &["sessions", "--json"]).envelope();
     assert_eq!(listed_ids(&outside).len(), 3, "{outside}");
     assert_eq!(outside["caller"], Value::Null, "{outside}");
+}
+
+/// Without `WORKROOM_PANE`, the daemon finds the pane from the connecting process, up through its
+/// parents to a session's shell; without `WORKROOM_DAEMON` too (`env -i`), the CLI finds the
+/// daemon the same way, as the nearest parent serving a socket. Either way the listing keeps to
+/// the pane's workroom.
+#[test]
+fn a_command_in_a_pane_without_its_variables_is_known_by_its_process() {
+    let workspace = Workspace::new("api-peer");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    let _neighbour = open(&socket, OTHER, "tests", "wr-1", &workspace.dir);
+    let _elsewhere = open(&socket, RUN, "server", "wr-2", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 3);
+    let mut ours = vec![SHELL.to_string(), OTHER.to_string()];
+    ours.sort();
+
+    for (name, prefix) in [
+        ("no-pane", "env -u WORKROOM_PANE"),
+        ("nothing", "env -i PATH=/usr/bin:/bin"),
+    ] {
+        let envelope = sessions_from(&mut shell, &workspace.dir, name, prefix, "");
+        assert_eq!(envelope["ok"], true, "{prefix}: {envelope}");
+        assert_eq!(envelope["caller"], SHELL, "{prefix}: {envelope}");
+        assert_eq!(listed_ids(&envelope), ours, "{prefix}: {envelope}");
+    }
+    // A pane variable naming no session of this daemon (a stale one, say) is passed over too.
+    let stale = sessions_from(
+        &mut shell,
+        &workspace.dir,
+        "stale",
+        "env WORKROOM_PANE=0b9d33c1-0000-4000-8000-000000000000",
+        "",
+    );
+    assert_eq!(stale["caller"], SHELL, "{stale}");
 }
 
 /// The live title follows the program's OSC 0 and OSC 2, beside the label the app gave, which it
@@ -489,14 +580,18 @@ fn a_target_resolves_by_id_suffix_label_and_title_and_refuses_ambiguity() {
 fn with_no_daemon_every_run_exits_7_daemon_unreachable() {
     let workspace = Workspace::new("api-no-daemon");
     let nowhere = workspace.dir.join("nobody.sock");
+    let run = |daemon: Option<&Path>, args: &[&str]| match daemon {
+        Some(_) => workroom(daemon, args),
+        None => workroom_outside_any_daemon(&workspace.dir, args),
+    };
     for daemon in [None, Some(nowhere.as_path())] {
         for args in [&["sessions", "--json"][..], &["sessions", "x", "--json"]] {
-            let run = workroom(daemon, args);
+            let run = run(daemon, args);
             assert_eq!(run.code, 7, "{args:?} {}", run.stdout);
             assert_eq!(run.envelope()["error"]["kind"], "DaemonUnreachable");
             assert_eq!(run.stderr, "");
         }
-        let human = workroom(daemon, &["sessions"]);
+        let human = run(daemon, &["sessions"]);
         assert_eq!(human.code, 7);
         assert!(human.stderr.starts_with("Error: "), "{}", human.stderr);
     }
@@ -1013,12 +1108,13 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
 /// With no daemon, every `api` subcommand exits 7, as every terminal API command does.
 #[test]
 fn api_with_no_daemon_exits_7() {
+    let workspace = Workspace::new("api-call-no-daemon");
     for args in [
         &["api", "list", "--json"][..],
         &["api", "describe", "session.list", "--json"],
         &["api", "call", "session.list", "{}", "--json"],
     ] {
-        let run = workroom(None, args);
+        let run = workroom_outside_any_daemon(&workspace.dir, args);
         assert_eq!(run.code, 7, "{args:?} {}", run.stdout);
         assert_eq!(run.envelope()["error"]["kind"], "DaemonUnreachable");
     }

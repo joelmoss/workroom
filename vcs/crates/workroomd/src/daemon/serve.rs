@@ -396,6 +396,8 @@ pub fn make_socket_folder(socket: &Path) -> std::io::Result<()> {
 struct ConnectionServices {
     /// `Transport::peer`, for the log lines a kill or a hand-off writes.
     peer: String,
+    /// `Transport::peer_pid`, which the terminal API finds a caller's session from.
+    peer_pid: Option<i32>,
     partial: crate::daemon::rpc::PartialRequests,
     /// The Layout service's own, so its chunked requests never share a buffer with the VCS one's.
     layout_partial: crate::daemon::rpc::PartialRequests,
@@ -547,6 +549,7 @@ pub fn handle_connection_with<T: Transport>(
     // connection from a thread that only writes.
     let closer = transport.closer();
     let peer = transport.peer();
+    let peer_pid = transport.peer_pid();
     let (mut reader, writer) = transport.split().map_err(|_| ProtocolError::NotADaemon)?;
     // One writer, shared, and type-erased. A socket could be cloned instead, but a pipe or an exec
     // channel cannot, and the daemon must not require a transport that can. Boxed because the
@@ -593,6 +596,7 @@ pub fn handle_connection_with<T: Transport>(
             heard,
         },
         peer,
+        peer_pid,
         partial: crate::daemon::rpc::PartialRequests::default(),
         layout_partial: crate::daemon::rpc::PartialRequests::default(),
         api_partial: crate::daemon::rpc::PartialRequests::default(),
@@ -692,7 +696,13 @@ fn dispatch(
         return None;
     }
     if envelope.service == Service::TerminalApi {
-        crate::terminal::api::dispatch(&mut services.api_partial, envelope, sessions, writer);
+        crate::terminal::api::dispatch(
+            &mut services.api_partial,
+            envelope,
+            sessions,
+            services.peer_pid,
+            writer,
+        );
         return None;
     }
     if envelope.service == Service::Control && is_pings(&envelope.payload) {

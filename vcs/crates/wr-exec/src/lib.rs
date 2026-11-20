@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 mod tree;
 
-pub use tree::{Descendant, descendants, session_members};
+pub use tree::{Descendant, ancestry, descendants, session_members};
 
 /// Every descendant of `pid`, snapshotted with its start time via [`descendants`] — the same walk
 /// a session's termination uses to reach a `setsid` grandchild, and split from the killing for a

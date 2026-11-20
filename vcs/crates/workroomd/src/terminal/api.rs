@@ -14,6 +14,11 @@
 //! ambiguous target's error lists the sessions it matched under `matches`. Nothing is ever sent
 //! unasked, which is what leaves a client that never calls the service unaffected by it.
 //!
+//! **The caller** (#684) is the session a request comes from: the one its optional `"caller"`
+//! names (the pane's `WORKROOM_PANE`, which the CLI sends), when that is one of this daemon's,
+//! else the one whose shell the connecting process descends from (its peer pid, then its parents).
+//! Results that depend on it say which they found.
+//!
 //! The namespaces are `session.*`, `terminal.*`, `client.*` and `events.*` (#360), and `api.*`
 //! for the API describing itself.
 
@@ -540,8 +545,9 @@ pub fn resolve(sessions: &[Value], target: &str) -> Result<Value, ApiError> {
     ))
 }
 
-/// One request, separated from the transport so tests drive it directly.
-fn handle(sessions: &SessionStore, bytes: &[u8]) -> Result<Value, ApiError> {
+/// One request, separated from the transport so tests drive it directly. `peer` is the process
+/// that connected, when the transport knows it.
+fn handle(sessions: &SessionStore, bytes: &[u8], peer: Option<i32>) -> Result<Value, ApiError> {
     let request: Value = serde_json::from_slice(bytes)
         .map_err(|_| ApiError::invalid("a terminal API request is a JSON object"))?;
     let name = request
@@ -565,15 +571,19 @@ fn handle(sessions: &SessionStore, bytes: &[u8]) -> Result<Value, ApiError> {
     (method.run)(&Call {
         sessions,
         params: &params,
-        caller: caller_of(sessions, caller).map(|id| id.to_hyphenated()),
+        caller: caller_of(sessions, caller, peer).map(|id| id.to_hyphenated()),
     })
 }
 
-/// The session a request comes from: the one its `caller` names, when that is one of `sessions`.
-fn caller_of(sessions: &SessionStore, named: Option<&str>) -> Option<SessionId> {
+/// The session a request comes from: the one its `caller` names, when that is one of `sessions`,
+/// else the one whose shell `peer` (the connecting process) is or descends from. A caller can be
+/// named wrongly (a variable left from another pane, or another daemon's), and a process can have
+/// left its pane's tree (re-parented to init when its parent exited), so each covers the other.
+fn caller_of(sessions: &SessionStore, named: Option<&str>, peer: Option<i32>) -> Option<SessionId> {
     named
         .and_then(|named| parse_session_id(std::ffi::OsStr::new(named)))
         .filter(|id| sessions.contains(*id))
+        .or_else(|| peer.and_then(|pid| sessions.session_of_process(pid)))
 }
 
 /// The reply on the wire: the API's `revision`, then its `result` or its `error`. Not
@@ -590,6 +600,7 @@ pub fn dispatch(
     partial: &mut PartialRequests,
     envelope: &Envelope,
     sessions: &SessionStore,
+    peer: Option<i32>,
     writer: &SharedWriter,
 ) {
     // Stream 0 belongs to the daemon, never to a request.
@@ -605,7 +616,7 @@ pub fn dispatch(
         })
     };
     match crate::daemon::rpc::reassemble(partial, envelope) {
-        Ok(Some(bytes)) => send(reply(handle(sessions, &bytes))),
+        Ok(Some(bytes)) => send(reply(handle(sessions, &bytes, peer))),
         Ok(None) => {}
         Err(error) => send(reply(Err(ApiError::new(
             kind::TOO_LARGE,

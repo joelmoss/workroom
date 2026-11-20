@@ -109,6 +109,26 @@ pub fn session_members(sid: i32) -> Vec<Descendant> {
         .collect()
 }
 
+/// The most links `ancestry` follows: far past any real process tree's depth, and a bound on a torn
+/// read of a live table that loops.
+const MAX_ANCESTRY: usize = 256;
+
+/// `pid`, then its parent, its parent's parent and so on, up to but not including init (pid 1)
+/// or the first process whose parent cannot be read (it exited, or this user may not look).
+/// Empty for a pid of 1 or less. One process looked up at a time, never the whole table.
+pub fn ancestry(pid: i32) -> Vec<i32> {
+    let mut lineage = Vec::new();
+    let mut next = pid;
+    while next > 1 && lineage.len() < MAX_ANCESTRY && !lineage.contains(&next) {
+        lineage.push(next);
+        match platform::parent(next) {
+            Some(parent) => next = parent,
+            None => break,
+        }
+    }
+    lineage
+}
+
 /// One row of the process table: who it is, who started it, and when it started.
 struct ProcessLink {
     pid: i32,
@@ -147,6 +167,11 @@ mod platform {
     /// When this pid's current occupant started, for recognising pid reuse.
     pub(super) fn start_time(pid: i32) -> Option<u64> {
         bsdinfo(pid).map(|info| info.pbi_start_tvsec)
+    }
+
+    /// This pid's parent.
+    pub(super) fn parent(pid: i32) -> Option<i32> {
+        bsdinfo(pid).map(|info| info.pbi_ppid as i32)
     }
 
     fn bsdinfo(pid: i32) -> Option<libc::proc_bsdinfo> {
@@ -236,6 +261,11 @@ mod platform {
     /// When this pid's current occupant started, for recognising pid reuse.
     pub(super) fn start_time(pid: i32) -> Option<u64> {
         stat_fields(pid).map(|(_, started)| started)
+    }
+
+    /// This pid's parent.
+    pub(super) fn parent(pid: i32) -> Option<i32> {
+        stat_fields(pid).map(|(parent, _)| parent)
     }
 
     /// `(ppid, starttime)` from `/proc/<pid>/stat`.

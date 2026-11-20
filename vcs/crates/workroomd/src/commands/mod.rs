@@ -86,6 +86,10 @@ pub(crate) struct Context {
     verbose: bool,
     platform: Platform,
     env: fn(&str) -> Option<String>,
+    /// The socket of the daemon this process runs under, found from its parents, for a caller
+    /// whose environment names none (`terminal_api::daemon_above`). Never looked for in tests: a
+    /// test run in a Workroom pane would find the developer's own daemon.
+    daemon_above: fn() -> Option<String>,
     /// Whether human output is coloured: stdout is a terminal and neither `NO_COLOR` nor a dumb
     /// `TERM` says otherwise, as Go's colour package decides.
     color: bool,
@@ -916,6 +920,7 @@ pub fn run_cli(args: &[OsString]) -> ExitCode {
         verbose: false,
         platform: Platform::current(),
         env,
+        daemon_above: terminal_api::daemon_above,
         color: std::io::stdout().is_terminal()
             && env("NO_COLOR").is_none_or(|value| value.is_empty())
             && env("TERM").as_deref() != Some("dumb"),
@@ -1364,6 +1369,7 @@ mod tests {
                 verbose: false,
                 platform,
                 env: |_| None,
+                daemon_above: || None,
                 color: false,
             },
         );
