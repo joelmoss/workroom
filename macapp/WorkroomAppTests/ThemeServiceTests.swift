@@ -158,6 +158,51 @@ final class ThemeServiceTests: XCTestCase {
     XCTAssertEqual(ThemeService.shared.generation, before &+ 1, "choosing a family applied twice")
   }
 
+  // MARK: choosing one side (#735)
+
+  /// The `theme =` line of the generated config, as the app last wrote it.
+  private func generatedConfigTheme() throws -> String? {
+    let conf = try String(contentsOf: GhosttyApp.shared.themeConfigURL, encoding: .utf8)
+    return conf.split(separator: "\n").first { $0.hasPrefix("theme") }.map(String.init)
+  }
+
+  /// Choosing the theme for the side that's showing saves it and repaints, once.
+  func testChoosingTheShowingSidesThemeSavesItAndRepaints() throws {
+    Defaults[.appearance] = .dark
+    Defaults[.lightTheme] = "Catppuccin Latte"
+    Defaults[.darkTheme] = "Catppuccin Mocha"
+    try withUserThemes {
+      let before = ThemeService.shared.generation
+      ThemeService.shared.apply(theme: "Nord", for: .dark)
+      XCTAssertEqual(Defaults[.darkTheme], "Nord")
+      XCTAssertEqual(Defaults[.lightTheme], "Catppuccin Latte", "the other side changed")
+      XCTAssertEqual(ThemeService.shared.generation, before &+ 1, "expected exactly one apply")
+      XCTAssertEqual(try generatedConfigTheme(), "theme = \"Nord\"")
+    }
+  }
+
+  /// Choosing the theme for the side that isn't showing saves it, and changes neither the screen nor
+  /// the generated config: the appearance stays put while you browse the other side.
+  func testChoosingTheHiddenSidesThemeSavesItWithoutRepainting() throws {
+    Defaults[.lightTheme] = "Catppuccin Latte"
+    Defaults[.darkTheme] = "Catppuccin Mocha"
+    for (appearance, hidden, theme) in [
+      (AppearanceMode.dark, ThemeSide.light, "Nord Light"), (.light, .dark, "Nord"),
+    ] {
+      Defaults[.appearance] = appearance
+      try withUserThemes {
+        ThemeService.shared.applyActiveTheme()
+        let confBefore = try generatedConfigTheme()
+        let before = ThemeService.shared.generation
+        ThemeService.shared.apply(theme: theme, for: hidden)
+        XCTAssertEqual(hidden == .light ? Defaults[.lightTheme] : Defaults[.darkTheme], theme)
+        XCTAssertEqual(ThemeService.shared.generation, before, "the hidden side repainted")
+        XCTAssertEqual(try generatedConfigTheme(), confBefore, "the generated config changed")
+        XCTAssertEqual(Defaults[.appearance], appearance, "the appearance changed")
+      }
+    }
+  }
+
   // MARK: upgrade (#733)
 
   /// The keys the single-family settings used. Raw, because their typed keys are gone.
