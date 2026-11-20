@@ -97,7 +97,9 @@ impl SessionStore {
                     share,
                     Some(format_until),
                 );
-                // The live title first, so the screen's own marks come after it (#683).
+                // The live title first, so the screen's own marks come after it (#683). It is the
+                // reported title, cut to `shadow::MAX_TITLE_BYTES` (256), so a longer one the
+                // program set arrives cut on the other side; no listing showed more than that.
                 let title = lock_or_recover(shadow).title();
                 if let Some(title) = title {
                     screen.splice(0..0, crate::terminal::shadow::title_sequence(&title));

@@ -28,12 +28,13 @@ use std::collections::VecDeque;
 /// hang until its own timeout; `Service::File` at 3, `Service::Status` at 4 and `Service::Forward`
 /// at 5, all for the same reason, as is the Control frame `HandOff` at 6, `Service::Layout` at 7,
 /// `Service::ProgramStatus` at 8, run sessions with their Control frame `Signal` at 9, the Control
-/// frame `Retag` at 10, the Control frames `Pings` and `Peer` with host-environment attaches at 11,
-/// and `Service::TerminalApi` at 12 — `serve.rs`'s dispatch returns silently for a service byte it
-/// does not handle). `MIN_SUPPORTED` stays untouched by such bumps: negotiation still
-/// takes the lower of the two sides' versions for the services both already understand (Terminal,
-/// Control), so a newer app still drives an older daemon left running rather than replacing it —
-/// only a version-gated service (checked against the peer's raw `Hello.protocol_version`, not the
+/// frame `Retag` at 10, and the Control frames `Pings` and `Peer` with host-environment attaches at
+/// 11), OR that an older daemon cannot even decode: `Service::TerminalApi` at 12, a service byte a
+/// protocol-11 daemon doesn't know, so its `EnvelopeDecoder` fails with
+/// `ProtocolError::UnknownService` and `serve.rs` closes the whole connection. `MIN_SUPPORTED`
+/// stays untouched by such bumps: negotiation still takes the lower of the two sides' versions for
+/// the services both already understand (Terminal, Control), so a newer app still drives an older
+/// daemon left running rather than replacing it — only a version-gated service (checked against the peer's raw `Hello.protocol_version`, not the
 /// negotiated minimum) refuses to talk to a peer that predates it.
 pub const PROTOCOL_VERSION: u16 = 12;
 pub const MIN_SUPPORTED_VERSION: u16 = 1;
