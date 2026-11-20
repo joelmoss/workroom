@@ -26,12 +26,10 @@ fn execute(bytes: &[u8]) -> Value {
     reply(parse(bytes).and_then(|request| handle(&request)))
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("wr-file-test-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    // The tests compare real paths, and /tmp is a symlink on macOS.
-    std::fs::canonicalize(&root).unwrap()
+/// A directory of this run's own, removed when the test ends. The tests compare real paths, and
+/// /tmp is a symlink on macOS.
+fn scratch(name: &str) -> crate::commands::Scratch {
+    crate::commands::Scratch::resolved(&format!("wr-file-test-{name}"))
 }
 
 fn git(root: &Path, args: &[&str]) {
@@ -525,11 +523,8 @@ fn resolve_works_when_the_root_is_itself_a_link() {
     std::fs::create_dir_all(real.join("nested/dir")).unwrap();
     std::fs::write(real.join("nested/file.rb"), b"x").unwrap();
     symlink("nested/dir", real.join("link")).unwrap();
-    let alias = real.with_file_name(format!(
-        "{}-alias",
-        real.file_name().unwrap().to_string_lossy()
-    ));
-    let _ = std::fs::remove_file(&alias);
+    let links = scratch("resolve-alias");
+    let alias = links.join("root");
     symlink(&real, &alias).unwrap();
     let reply = resolve_request(&alias, "link/../file.rb");
     std::fs::remove_file(&alias).unwrap();

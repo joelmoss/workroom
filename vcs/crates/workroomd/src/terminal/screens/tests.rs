@@ -2,10 +2,9 @@ use super::*;
 #[cfg(feature = "terminal-state")]
 use std::ffi::{OsStr, OsString};
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("wr-screens-{name}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    dir
+/// A directory for `Screens::open` to make, inside one of this run's own.
+fn scratch(name: &str) -> crate::commands::Unmade {
+    crate::commands::Unmade::in_temp(&format!("wr-screens-{name}"))
 }
 
 const ID: SessionId = SessionId([7u8; 16]);

@@ -24,6 +24,46 @@ impl Drop for Spawned {
     }
 }
 
+/// A directory of this run's own, removed when the test ends.
+struct Scratch(PathBuf);
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for Scratch {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.0.as_os_str()
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A directory this run made itself: `create_dir` fails on any path that already exists, so a
+/// leftover from a killed run, or another run's live one, is skipped rather than reused, and only
+/// what this call created is ever removed.
+fn scratch(name: &str) -> Scratch {
+    let parent = std::env::temp_dir();
+    let pid = std::process::id();
+    for attempt in 0u32.. {
+        let dir = parent.join(format!("wr-run-script-{name}-{pid}-{attempt}"));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return Scratch(dir),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("create {}: {error}", dir.display()),
+        }
+    }
+    unreachable!("u32 attempts ran out")
+}
+
 fn alive(pid: i32) -> bool {
     // SAFETY: signal 0 takes no pointers and only checks that the pid exists.
     unsafe { libc::kill(pid, 0) == 0 }
@@ -39,10 +79,8 @@ fn a_script_sees_the_remote_contract() {
 
 fn remote_contract(host: &str, fixture: &str) {
     let contract = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../testdata/script-env");
-    let dir = std::env::temp_dir().join(format!("wr-run-script-contract-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let dir = std::fs::canonicalize(&dir).unwrap();
+    let scratch = scratch("contract");
+    let dir = std::fs::canonicalize(&*scratch).unwrap();
     let want = std::fs::read_to_string(contract.join(fixture))
         .unwrap()
         .replace("{DIR}", dir.to_str().unwrap());
@@ -110,8 +148,7 @@ fn a_script_finds_workroom_on_its_path_after_the_logins_own_entries() {
 /// there (#560), and what it would select at home isn't.
 #[test]
 fn a_script_gets_what_the_login_shell_selects_in_the_workroom() {
-    let root = std::env::temp_dir().join(format!("wr-run-script-pwd-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = scratch("pwd");
     let (home, room) = (root.join("home"), root.join("room"));
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&room).unwrap();
@@ -144,9 +181,7 @@ fn a_script_gets_what_the_login_shell_selects_in_the_workroom() {
 
 #[test]
 fn output_streams_while_the_script_runs_and_a_sigterm_ends_its_tree() {
-    let dir = std::env::temp_dir().join(format!("wr-run-script-it-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch("it");
     let pidfile = dir.join("child.pid");
     let script = dir.join("workroom_setup");
     std::fs::write(
