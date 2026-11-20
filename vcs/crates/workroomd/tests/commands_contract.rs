@@ -14,7 +14,7 @@
 //! runs everything.
 //!
 //! Tests are named for their command group (`version_`, `update_`, `list_`, `config_`,
-//! `include_archive_`), so a port can run only its own group's names against Rust.
+//! `include_archive_`, `completion_`), so a port can run only its own group's names against Rust.
 //!
 //! The JSON goldens are `testdata/contracts`, the files Go's contract tests
 //! (`cmd/contract_test.go`) and the app's `CLIContractTests.swift` check too, with the temporary
@@ -273,11 +273,13 @@ fn golden_path(file: &str) -> PathBuf {
         .join(file)
 }
 
-/// Who writes a golden: this suite, or Go's contract tests, whose goldens this suite only reads.
+/// Who writes a golden: this suite, or Go's contract tests, whose goldens this suite only reads,
+/// or the Go CLI itself, whose output a golden keeps as it was (a completion script it generated).
 #[derive(Clone, Copy, PartialEq)]
 enum Owner {
     ThisSuite,
     GoContractTests,
+    GoCli,
 }
 
 /// Compares `got` with `testdata/contracts/<file>`. A golden this suite owns is rewritten instead
@@ -294,6 +296,7 @@ fn check_golden(owner: Owner, file: &str, got: &str) {
     let how = match owner {
         Owner::ThisSuite => "rerun with WORKROOM_CONTRACT_UPDATE=1",
         Owner::GoContractTests => "rerun `go test ./cmd -run TestContract -update`",
+        Owner::GoCli => "it is the Go CLI's output, kept as it was: the binary must match it",
     };
     assert!(
         got == want,
@@ -1714,4 +1717,372 @@ fn include_archive_reports_a_failed_listing_or_output() {
         run.envelope()["error"]["message"],
         format!("open {}: no such file or directory", unwritable.display())
     );
+}
+
+// --- completion ---
+
+/// The command lines `completion-protocol.txt` records, each with the environment it adds: what a
+/// cobra completion script asks on a Tab (`__complete <args…> <word>`, or `__completeNoDesc`). They
+/// cover the top level, a partial word, each command with subcommands (`base`, `host` and `trust`,
+/// hidden `host` included), the flags (inherited, local, shorthand, hidden, required, already set,
+/// after `--`, taking a value), `help` and `completion` themselves, and the errors.
+const COMPLETION_CASES: &[(&[(&str, &str)], &[&str])] = &[
+    (&[], &["__complete", ""]),
+    (&[], &["__completeNoDesc", ""]),
+    (&[], &["__complete", "b"]),
+    (&[], &["__complete", "co"]),
+    (&[], &["__complete", "h"]),
+    (&[], &["__complete", "base", ""]),
+    (&[], &["__completeNoDesc", "base", ""]),
+    (&[], &["__complete", "base", "x"]),
+    (&[], &["__complete", "base", "--"]),
+    (&[], &["__complete", "base", "set", "--"]),
+    (&[], &["__complete", "base", "set", ""]),
+    (&[], &["__complete", "base", "set", "main", "--"]),
+    (&[], &["__complete", "base", "set", "--global", "--"]),
+    (&[], &["__complete", "base", "--global", ""]),
+    (&[], &["__complete", "base", "--global", "set", ""]),
+    (&[], &["__complete", "base", "--global=true", "set", ""]),
+    (&[], &["__complete", "base", "-h", "set", ""]),
+    (&[], &["__complete", "host", ""]),
+    (&[], &["__complete", "host", "set", "--"]),
+    (&[], &["__complete", "host", "set", ""]),
+    (&[], &["__complete", "trust", ""]),
+    (&[], &["__complete", "trust", "-"]),
+    (&[], &["__complete", "trust", "status", ""]),
+    (&[], &["__complete", "trust", "status", "-"]),
+    (&[], &["__complete", "untrust", "--"]),
+    (&[], &["__complete", "-"]),
+    (&[], &["__complete", "-p", ""]),
+    (&[], &["__complete", "--json", ""]),
+    (&[], &["__complete", "--", ""]),
+    (&[], &["__complete", "-h", ""]),
+    (&[], &["__complete", "-h", "bogus", ""]),
+    (&[], &["__complete", "list", "-"]),
+    (&[], &["__complete", "list", "--json", "-"]),
+    (&[], &["__complete", "list", "-p", "-"]),
+    (&[], &["__complete", "list", "-vp", "-"]),
+    (&[], &["__complete", "list", "--warnings=none", "--"]),
+    (&[], &["__complete", "list", "--warnings"]),
+    (&[], &["__complete", "list", "--warnings", ""]),
+    (&[], &["__complete", "list", "--project="]),
+    (&[], &["__complete", "list", "--project", "x", ""]),
+    (&[], &["__complete", "list", "--project", "x", "--project"]),
+    (&[], &["__complete", "list", "--help", ""]),
+    (&[], &["__complete", "list", "x", ""]),
+    (&[], &["__complete", "list", "--", ""]),
+    (&[], &["__complete", "list", "--", "-"]),
+    (&[], &["__complete", "list", "--", "--bogus", ""]),
+    (&[], &["__complete", "list", "-x"]),
+    (&[], &["__complete", "list", "-p=1", ""]),
+    (&[], &["__complete", "ls", "--"]),
+    (&[], &["__complete", "c", "--"]),
+    (&[], &["__complete", "d", "-"]),
+    (&[], &["__complete", "create", "--start", ""]),
+    (&[], &["__complete", "create", "--start="]),
+    (&[], &["__complete", "delete", ""]),
+    (&[], &["__complete", "delete", "--confirm"]),
+    (&[], &["__complete", "delete-project", "-"]),
+    (&[], &["__complete", "add-project", "--"]),
+    (&[], &["__complete", "claim-provisioned", ""]),
+    (&[], &["__complete", "claim-provisioned", "-"]),
+    (&[], &["__complete", "claim-provisioned", "--from", "x", ""]),
+    (&[], &["__complete", "include-archive", ""]),
+    (
+        &[],
+        &["__complete", "include-archive", "--output", "x", "--"],
+    ),
+    (&[], &["__complete", "update", "-"]),
+    (&[], &["__complete", "update", "-c"]),
+    (&[], &["__complete", "update", "-c", "-"]),
+    (&[], &["__complete", "update", "--check=false", "-"]),
+    (&[], &["__complete", "update", "-c="]),
+    (&[], &["__complete", "version", ""]),
+    (&[], &["__complete", "version", "-"]),
+    (&[], &["__complete", "help", ""]),
+    (&[], &["__complete", "help", "b"]),
+    (&[], &["__complete", "help", "base", ""]),
+    (&[], &["__complete", "help", "base", "set", ""]),
+    (&[], &["__complete", "help", "bogus", ""]),
+    (&[], &["__complete", "help", "-"]),
+    (&[], &["__complete", "completion", ""]),
+    (&[], &["__complete", "completion", "-"]),
+    (&[], &["__complete", "completion", "zsh", ""]),
+    (&[], &["__complete", "completion", "zsh", "-"]),
+    (
+        &[],
+        &["__complete", "completion", "zsh", "--no-descriptions", "-"],
+    ),
+    (&[], &["__complete", "completion", "bash", "x", ""]),
+    (&[], &["__complete", "bogus", ""]),
+    (&[], &["__complete", "bogus", "x", ""]),
+    (&[], &["__complete", "", ""]),
+    (&[], &["__complete", "list", "--bogus", ""]),
+    (&[], &["__complete", "list", "--bogus=x"]),
+    (&[], &["__complete", "--pretend=x", ""]),
+    (&[], &["--json", "__complete", ""]),
+    (&[], &["__complete"]),
+    (
+        &[("WORKROOM_COMPLETION_DESCRIPTIONS", "false")],
+        &["__complete", "b"],
+    ),
+    (
+        &[("WORKROOM_COMPLETION_DESCRIPTIONS", "bogus")],
+        &["__complete", "b"],
+    ),
+    (
+        &[("COBRA_COMPLETION_DESCRIPTIONS", "0")],
+        &["__complete", "b"],
+    ),
+    (
+        &[
+            ("WORKROOM_COMPLETION_DESCRIPTIONS", "true"),
+            ("COBRA_COMPLETION_DESCRIPTIONS", "false"),
+        ],
+        &["__complete", "b"],
+    ),
+];
+
+/// `arg` as a shell would need it written, for the transcript.
+fn shell_word(arg: &str) -> String {
+    let plain = !arg.is_empty()
+        && arg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-=./".contains(c));
+    if plain {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', r"'\''"))
+    }
+}
+
+/// Every case of `COMPLETION_CASES`, as Go's cobra answers them: each command line, then its
+/// stdout, its stderr and its exit code. The golden was written from the Go CLI, so this holds the
+/// binary under test to cobra's protocol byte for byte, which every script a user saved from the
+/// Go CLI speaks.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn completion_protocol_matches_the_golden() {
+    let home = Home::new("completion-protocol");
+    let mut transcript = String::new();
+    for (env, args) in COMPLETION_CASES {
+        let output = home
+            .command(binary(), &home.dir)
+            .envs(env.iter().copied())
+            .args(*args)
+            .output()
+            .expect("run");
+        let line: Vec<String> = env
+            .iter()
+            .map(|(name, value)| format!("{name}={}", shell_word(value)))
+            .chain(std::iter::once("workroom".to_string()))
+            .chain(args.iter().map(|arg| shell_word(arg)))
+            .collect();
+        transcript += &format!(
+            "$ {}\n{}--- stderr\n{}--- exit {}\n\n",
+            line.join(" "),
+            String::from_utf8(output.stdout).expect("stdout is UTF-8"),
+            String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+            output.status.code().expect("exited")
+        );
+    }
+    check_golden(Owner::ThisSuite, "completion-protocol.txt", &transcript);
+}
+
+/// `completion` is one of `--help`'s commands, and runs anywhere, so it is not marked Mac-only.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn completion_is_in_help_and_not_mac_only() {
+    let home = Home::new("completion-help");
+    let run = home.run(&home.dir, &["--help"]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert!(
+        run.stdout.contains(
+            "\n  completion        Generate the autocompletion script for the specified shell\n"
+        ),
+        "{}",
+        run.stdout
+    );
+}
+
+/// The shells `completion` writes a script for, each with the Go-generated script kept as a
+/// fixture in `testdata/contracts/completion/`.
+const COMPLETION_SHELLS: &[(&str, &str)] = &[
+    ("bash", "workroom.bash"),
+    ("zsh", "_workroom"),
+    ("fish", "workroom.fish"),
+    ("powershell", "workroom.ps1"),
+];
+
+/// `completion <shell>` writes the script the Go CLI wrote, and `--no-descriptions` the same one
+/// asking `__completeNoDesc`, so a script saved from either binary is the other's. `completion`
+/// alone is its help; an extra argument is a usage error.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn completion_writes_each_shells_script_as_go_does() {
+    let home = Home::new("completion-scripts");
+    for (shell, fixture) in COMPLETION_SHELLS {
+        let run = home.run(&home.dir, &["completion", shell]);
+        run.assert_code(0).assert_quiet_stderr();
+        let file = format!("completion/{fixture}");
+        check_golden(Owner::GoCli, &file, &run.stdout);
+        let want = std::fs::read_to_string(golden_path(&file)).expect("read fixture");
+        assert_eq!(want.matches(" __complete ").count(), 1, "{file}");
+        let bare = home.run(&home.dir, &["completion", shell, "--no-descriptions"]);
+        bare.assert_code(0).assert_quiet_stderr();
+        assert_eq!(
+            bare.stdout,
+            want.replacen(" __complete ", " __completeNoDesc ", 1),
+            "{shell} --no-descriptions"
+        );
+    }
+    let help = home.run(&home.dir, &["completion"]);
+    help.assert_code(0).assert_quiet_stderr();
+    assert!(
+        help.stdout
+            .contains("  zsh         Generate the autocompletion script for zsh\n"),
+        "{}",
+        help.stdout
+    );
+    let extra = home.run(&home.dir, &["completion", "zsh", "extra"]);
+    extra.assert_code(1);
+    assert_eq!(extra.stdout, "");
+    assert_eq!(
+        extra.stderr,
+        "Error: unknown command \"extra\" for \"workroom completion zsh\"\n"
+    );
+}
+
+/// The shell `name` on PATH, or None (with a note that the test skips it) when it isn't installed.
+fn installed_shell(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let found = std::env::split_paths(&path)
+        .map(|dir| dir.join(name))
+        .find(|shell| shell.is_file());
+    if found.is_none() {
+        eprintln!("skipped {name}: not installed");
+    }
+    found
+}
+
+/// What `shell` offers for the command line `workroom b` once it has sourced `script`, one
+/// candidate per line as the shell holds them (a description may follow the word), with the
+/// binary under test as the `workroom` on PATH. None when the shell isn't installed.
+///
+/// bash's script wants the bash-completion package's `_init_completion`, which macOS's bash 3.2
+/// lacks, so the harness defines one from `COMP_WORDS`; and `compopt`, a builtin from bash 4 that
+/// works only inside a real completion, is a no-op function, so bash 3.2 and 5 take the same path
+/// through the script. zsh's script runs inside zsh's completion
+/// system, so `compdef` and `_describe` (which would hand the candidates to the line editor) are
+/// stubbed to print them. fish completes a command line itself, with `complete -C`.
+fn complete_b(home: &Home, shell: &str, script: &Path) -> Option<String> {
+    let program = installed_shell(shell)?;
+    let bin = home.path("bin");
+    if !bin.exists() {
+        std::fs::create_dir(&bin).expect("create bin");
+        std::os::unix::fs::symlink(binary(), bin.join("workroom")).expect("link workroom");
+    }
+    let harness = match shell {
+        "bash" => {
+            r#"compopt() { :; }
+_init_completion() {
+    COMPREPLY=()
+    cur=${COMP_WORDS[COMP_CWORD]}
+    prev=${COMP_WORDS[COMP_CWORD-1]}
+    words=("${COMP_WORDS[@]}")
+    cword=$COMP_CWORD
+}
+source "$1"
+COMP_WORDS=(workroom b)
+COMP_CWORD=1
+COMP_LINE="workroom b"
+COMP_POINT=${#COMP_LINE}
+__start_workroom
+printf '%s\n' "${COMPREPLY[@]}"
+"#
+        }
+        "zsh" => {
+            r#"compdef() { : }
+_describe() {
+    [[ $1 == -V ]] && shift
+    print -rl -- "${(@P)2}"
+}
+source "$1"
+words=(workroom b)
+CURRENT=2
+_workroom
+"#
+        }
+        "fish" => "source $argv[1]\ncomplete -C 'workroom b'\n",
+        _ => unreachable!("no harness for {shell}"),
+    };
+    let harness_path = home.path(&format!("harness.{shell}"));
+    std::fs::write(&harness_path, harness).expect("write harness");
+    let mut search = vec![bin];
+    search.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let mut command = home.command(&program, &home.dir);
+    command.env("PATH", std::env::join_paths(search).expect("PATH"));
+    match shell {
+        "bash" => command.args(["--norc", "--noprofile"]),
+        "zsh" => command.arg("-f"),
+        _ => command.arg("--no-config"),
+    };
+    let output = command
+        .arg(&harness_path)
+        .arg(script)
+        .output()
+        .expect("run the shell");
+    assert!(
+        output.status.success(),
+        "{shell} harness failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Some(String::from_utf8(output.stdout).expect("UTF-8"))
+}
+
+/// Whether `offered` (what `complete_b` printed) offers `base`: a line that is the word, or the
+/// word then the shell's description separator.
+fn offers_base(offered: &str) -> bool {
+    offered
+        .lines()
+        .any(|line| line == "base" || line.starts_with("base:") || line.starts_with("base\t"))
+}
+
+/// The script `completion <shell>` writes, sourced in that shell, completes `workroom b` to `base`
+/// by asking the binary, with descriptions and without. Each shell that isn't installed is skipped.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn completion_scripts_complete_in_their_shells() {
+    let home = Home::new("completion-shells");
+    for shell in ["bash", "zsh", "fish"] {
+        for flags in [&[][..], &["--no-descriptions"]] {
+            let run = home.run(&home.dir, &[&["completion", shell][..], flags].concat());
+            run.assert_code(0).assert_quiet_stderr();
+            let script = home.path(&format!("script.{shell}"));
+            std::fs::write(&script, &run.stdout).expect("write script");
+            let Some(offered) = complete_b(&home, shell, &script) else {
+                break;
+            };
+            assert!(
+                offers_base(&offered),
+                "{shell} {flags:?} offered {offered:?}"
+            );
+        }
+    }
+}
+
+/// A script saved from the Go CLI keeps working once this binary is `workroom`: each sourceable
+/// shell's fixture completes `workroom b` to `base` against the binary under test.
+#[test]
+#[ignore = "not ported to Rust yet"]
+fn completion_a_go_generated_script_completes_against_the_binary() {
+    let home = Home::new("completion-go-script");
+    for (shell, fixture) in &COMPLETION_SHELLS[..3] {
+        let script = golden_path(&format!("completion/{fixture}"));
+        if let Some(offered) = complete_b(&home, shell, &script) {
+            assert!(offers_base(&offered), "{shell} offered {offered:?}");
+        }
+    }
 }
