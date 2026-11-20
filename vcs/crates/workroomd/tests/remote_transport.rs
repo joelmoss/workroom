@@ -2515,6 +2515,11 @@ fn over_ssh_api_lists_describes_and_calls_the_hosts_methods() {
         described["method"]["output"]["examples"].is_array(),
         "{described}"
     );
+    // The host daemon names the error's schema `error_schema`, as the Mac's does.
+    assert!(
+        described["error_schema"]["examples"].is_array(),
+        "{described}"
+    );
 
     let params = r#"'{"target":"api call"}'"#;
     let inline = api("", &format!("call session.resolve {params} --json"));
