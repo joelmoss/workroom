@@ -674,6 +674,35 @@ private struct AboutSettingsPane: View {
   }
 }
 
+/// What a Settings Light theme or Dark theme row says while its side has fallen back (#733): the
+/// stored theme is missing or on the wrong side, so the screen shows Workroom's theme for that side
+/// instead (`ThemeService.activeThemeName`), and the row's name isn't what's on screen. The setting
+/// itself is kept, so the theme comes back when its file does.
+struct ThemeFallbackNote: Equatable {
+  /// The muted line under the row's button.
+  let text: String
+  /// Its tooltip, which the button's tooltip also carries.
+  let help: String
+
+  /// Nil when `showing`, the theme resolved for `side`, is the stored one. `storedSide` is the side
+  /// the stored theme is on (`ThemeCatalog.side(ofThemeNamed:)`), nil when it can't be found.
+  init?(side: ThemeSide, stored: String, showing: String, storedSide: ThemeSide?) {
+    guard showing != ThemeCatalog.sanitizedThemeName(stored) else { return nil }
+    let sideName = side == .dark ? "dark" : "light"
+    let reason: String
+    if let storedSide, storedSide != side {
+      text = "Not a \(sideName) theme: showing \(showing)"
+      reason = "“\(stored)” is a \(storedSide == .dark ? "dark" : "light") theme"
+    } else {
+      text = "Not found: showing \(showing)"
+      reason = "Workroom can't find a theme called “\(stored)”"
+    }
+    help =
+      "\(reason), so Workroom shows \(showing) while the appearance is \(sideName). Your choice is "
+      + "kept, and comes back when the theme does."
+  }
+}
+
 private struct AppearanceSettingsPane: View {
   @Default(.appearance) private var appearance
   @Default(.lightTheme) private var lightTheme
@@ -687,33 +716,56 @@ private struct AppearanceSettingsPane: View {
   @State private var openThemeTab: ThemePickerTab?
 
   /// One theme row: its value on a button that opens the theme picker on `tab`, anchored to the row.
+  /// A Light theme or Dark theme row whose side has fallen back adds a muted note under the button
+  /// and says so in its tooltip (`ThemeFallbackNote`).
   private func themeRow(
     _ title: String, value: String, tab: ThemePickerTab, id: String, help: String
   ) -> some View {
-    LabeledContent(title) {
-      Button {
-        openThemeTab = tab
-      } label: {
-        HStack(spacing: 6) {
-          Text(value).lineLimit(1).truncationMode(.tail)
-          Image(systemName: "chevron.up.chevron.down").font(.caption2).accessibilityHidden(true)
+    let note = tab.side.flatMap { side in
+      ThemeFallbackNote(
+        side: side, stored: value, showing: ThemeService.activeThemeName(isDark: side == .dark),
+        storedSide: ThemeCatalog.side(ofThemeNamed: value))
+    }
+    return LabeledContent(title) {
+      VStack(alignment: .trailing, spacing: 2) {
+        themeButton(value: value, tab: tab, id: id, help: note.map { "\(help) \($0.help)" } ?? help)
+        if let note {
+          Text(note.text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .help(note.help)
+            .accessibilityIdentifier("settings.themeFallback.\(id)")
         }
-        // Fixed width so the button (and the popover anchored to it) doesn't shift left/right as
-        // the name changes length.
-        .frame(width: 160, alignment: .trailing)
-      }
-      .help(help)
-      .accessibilityIdentifier("settings.control.\(id)")
-      .popover(
-        isPresented: Binding(
-          get: { openThemeTab == tab },
-          set: { if !$0, openThemeTab == tab { openThemeTab = nil } }),
-        arrowEdge: .bottom
-      ) {
-        ThemePicker(tab: tab)
       }
     }
+  }
+
+  private func themeButton(value: String, tab: ThemePickerTab, id: String, help: String)
+    -> some View
+  {
+    Button {
+      openThemeTab = tab
+    } label: {
+      HStack(spacing: 6) {
+        Text(value).lineLimit(1).truncationMode(.tail)
+        Image(systemName: "chevron.up.chevron.down").font(.caption2).accessibilityHidden(true)
+      }
+      // Fixed width so the button (and the popover anchored to it) doesn't shift left/right as
+      // the name changes length.
+      .frame(width: 160, alignment: .trailing)
+    }
     .help(help)
+    .accessibilityIdentifier("settings.control.\(id)")
+    .popover(
+      isPresented: Binding(
+        get: { openThemeTab == tab },
+        set: { if !$0, openThemeTab == tab { openThemeTab = nil } }),
+      arrowEdge: .bottom
+    ) {
+      ThemePicker(tab: tab)
+    }
   }
 
   /// The Glass slider's stops: 70, 75 … 100%, so 100% (off) is one clean stop at the end.
