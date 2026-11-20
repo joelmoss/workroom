@@ -455,10 +455,24 @@ fn under_test_is_go() -> bool {
 }
 
 /// The binary under test copied to `relative` in `home`, for a run from there.
+///
+/// Copied by a `cp` child, not `std::fs::copy`: while this process holds the copy open for
+/// writing, another test thread's fork inherits that descriptor until its child execs, and on
+/// Linux exec'ing the copy then fails with ETXTBSY ("Text file busy"). In `cp`'s own process the
+/// descriptor is closed for good once it exits.
 fn copy_binary(home: &Home, relative: &str) -> PathBuf {
     let copy = home.path(relative);
     std::fs::create_dir_all(copy.parent().expect("parent")).expect("create folders");
-    std::fs::copy(binary(), &copy).expect("copy the binary under test");
+    let status = Command::new("cp")
+        .arg(binary())
+        .arg(&copy)
+        .status()
+        .expect("run cp");
+    assert!(
+        status.success(),
+        "cp the binary under test to {}",
+        copy.display()
+    );
     copy
 }
 
