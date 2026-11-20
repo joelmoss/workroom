@@ -530,6 +530,20 @@ final class DaemonBootstrapScriptTests: XCTestCase {
     XCTAssertEqual(try installed(on: host), try DaemonBootstrap.digest(of: newer))
   }
 
+  /// A newer build whose CLI commands alone changed (#680): another file, which is installed, and
+  /// a daemon that answers `current` because its daemon build is the same, so nothing is handed
+  /// off. The decision is the daemon's (`vcs/crates/workroomd/tests/daemon_bootstrap.rs`); here
+  /// the app reads the real script's report of it.
+  func testTheRealScriptsInstallACLIOnlyBuildWithoutHandingOff() async throws {
+    let host = try localHost()
+    try preinstall(try standIn(), on: host)
+    try listen(on: host)
+    let cliOnly = try standIn(handOff: "echo current; :")
+    let outcome = try await ensure(host, bundling: cliOnly)
+    XCTAssertEqual(outcome, .init(architecture: "aarch64", pushed: true, daemon: .current))
+    XCTAssertEqual(try installed(on: host), try DaemonBootstrap.digest(of: cliOnly))
+  }
+
   /// An installed daemon that hangs when asked its build reads as `unknown` within the probe's 5
   /// seconds, and is replaced, rather than holding the connect until the bootstrap gives up.
   func testTheRealProbeGivesUpOnAnInstalledDaemonThatHangs() async throws {

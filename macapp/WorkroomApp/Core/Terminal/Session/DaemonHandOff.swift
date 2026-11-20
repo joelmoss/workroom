@@ -10,8 +10,11 @@ import os
 ///
 /// **Once a launch, in the background, as early as the launch allows** (`start`, from
 /// `applicationDidFinishLaunching`). The daemon does the deciding: it answers `current` at once when
-/// it is already this binary, so a launch with nothing to hand off costs one connection and one
-/// read of the binary. A daemon that predates hand-off is never asked and keeps running.
+/// it is already this binary's daemon build (`daemon-build` in `protocol`, #680), so a launch with
+/// nothing to hand off costs one connection and one read of the binary, and so does the first
+/// launch after a Sparkle update that changed only CLI commands. A daemon from before #680 compares
+/// the binary's bytes instead, so it is handed off to any other build. A daemon that predates
+/// hand-off is never asked and keeps running.
 ///
 /// Panes do not wait for it, so launch never freezes on it. The daemon stops accepting while it
 /// hands off, so a pane that connects meanwhile is attached by the new program, and `workroomd
