@@ -94,9 +94,14 @@ fn params(args: &Args) -> Result<Map<String, Value>, String> {
         [] => return Err("`workroom wait` needs a TARGET: the session to wait on".into()),
         [_, extra, ..] => return Err(format!("unknown command {extra:?} for \"workroom wait\"")),
     };
+    // A boolean condition given as `--ended=false` is not given; a value is given whatever it
+    // is, so `--regex false` waits for the word.
     let given: Vec<(&str, &str)> = CONDITIONS
         .into_iter()
-        .filter(|(flag, _)| args.value(flag).is_some_and(|value| value != "false"))
+        .filter(|(flag, _)| match *flag {
+            "ended" | "command-finished" => args.is_set(flag),
+            _ => args.value(flag).is_some(),
+        })
         .collect();
     let [(flag, key)] = given.as_slice() else {
         return Err(
@@ -109,9 +114,9 @@ fn params(args: &Args) -> Result<Map<String, Value>, String> {
     params.insert("target".into(), json!(target));
     params.insert(
         (*key).into(),
-        match args.value(flag) {
-            Some("true") if matches!(*flag, "ended" | "command-finished") => json!(true),
-            value => json!(value.unwrap_or_default()),
+        match *flag {
+            "ended" | "command-finished" => json!(true),
+            _ => json!(args.value(flag).unwrap_or_default()),
         },
     );
     if let Some(code) = args.value("exit-code") {
@@ -201,6 +206,33 @@ fn said(result: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The request `workroom wait <argv>` makes, or its usage error.
+    fn request(argv: &[&str]) -> Result<Map<String, Value>, String> {
+        let argv: Vec<String> = argv.iter().map(|arg| (*arg).to_string()).collect();
+        let (parsed, error) = super::super::parse(&argv, FLAGS);
+        assert_eq!(error, None, "{argv:?}");
+        params(&Args {
+            positional: parsed.positional,
+            values: parsed.values,
+            flags: FLAGS,
+        })
+    }
+
+    /// `false` turns a boolean condition off, but is a regex like any other: `--regex false`
+    /// waits for the word, and beside `--ended` is two conditions.
+    #[test]
+    fn false_is_off_for_a_boolean_condition_and_a_regex_for_regex() {
+        let regex = request(&["a", "--regex", "false"]).expect("one condition");
+        assert_eq!(regex.get("regex"), Some(&json!("false")));
+        assert!(request(&["a", "--regex", "false", "--ended"]).is_err());
+        assert!(request(&["a", "--regex=false", "--command-finished"]).is_err());
+        let ended = request(&["a", "--regex", "x", "--ended=false"]).expect("only the regex");
+        assert_eq!(ended.get("ended"), None);
+        let ended = request(&["a", "--command-finished=false", "--ended"]).expect("only ended");
+        assert_eq!(ended.get("ended"), Some(&json!(true)));
+        assert!(request(&["a", "--ended=false"]).is_err(), "no condition");
+    }
 
     #[test]
     fn durations_read_as_go_reads_them() {
