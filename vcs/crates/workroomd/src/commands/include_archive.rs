@@ -40,11 +40,8 @@ struct Payload {
 }
 
 pub(super) fn run(context: &Context, args: &Args) -> Outcome {
-    // `--output` is required, as cobra's `MarkFlagRequired` makes it: checked before the command
-    // runs, so the envelope names no command. Given empty, it is set.
-    let Some(output) = args.value("output") else {
-        return Outcome::Usage(CliError::internal("required flag(s) \"output\" not set"));
-    };
+    // `--output` is a required flag, so the parser has refused a run without it.
+    let output = args.value_or_default("output");
     match archive(context, args, output) {
         Ok(outcome) => outcome,
         Err(message) => Outcome::Failed(CliError::internal(message)),
