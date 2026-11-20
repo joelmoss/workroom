@@ -306,7 +306,7 @@ pub const METHODS: &[Method] = &[
     Method {
         name: wait::NAME,
         summary: "Waits for one thing to happen in a session: a program status, a run state, \
-                  output matching a regex, the session ending, or its shell's command finishing. \
+                  output matching a regex, the session ending, or the next command to finish. \
                   Answered when it happens, or with `WaitTimeout` once `timeout_ms` passes. A \
                   session, a connection and the daemon each hold a few dozen or hundred waits at \
                   once, and one past them is `Busy`, which a retry once one has ended can get \

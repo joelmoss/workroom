@@ -72,9 +72,10 @@ pub fn input() -> Value {
             },
             "command_finished": {
                 "type": "boolean",
-                "description": "`true`: wait for the shell's next command to finish (its OSC 133 \
-                                command-end mark). A session whose shell has sent no marks fails \
-                                with `NoShellIntegration`.",
+                "description": "`true`: wait for the next command to finish (the shell's OSC 133 \
+                                command-end mark): the first to end after the wait starts, \
+                                whether it was running then or starts later. A session whose \
+                                shell has sent no marks fails with `NoShellIntegration`.",
             },
             "timeout_ms": {
                 "type": "integer",
@@ -95,7 +96,7 @@ pub fn output() -> Value {
     states.push(Value::Null);
     json!({
         "type": "object",
-        "required": ["session", "condition", "status", "run", "match", "exit_code"],
+        "required": ["session", "condition", "status", "run_state", "match", "exit_code"],
         "properties": {
             "session": {"type": "string", "description": "The session's id."},
             "condition": {"type": "string", "enum": CONDITIONS},
@@ -104,10 +105,11 @@ pub fn output() -> Value {
                 "enum": states,
                 "description": "The program status reached, for `status`.",
             },
-            "run": {
+            "run_state": {
                 "type": ["string", "null"],
                 "enum": run_states,
-                "description": "The run state reached, for `run`.",
+                "description": "The run state reached, for `run`: a state, not the session \
+                                listing's `run`, which says whether it is a run session.",
             },
             "match": {
                 "type": ["object", "null"],
@@ -148,7 +150,7 @@ pub fn result_example() -> Value {
         "session": "c0ffee00-1111-4222-8333-44445555beef",
         "condition": "regex",
         "status": null,
-        "run": null,
+        "run_state": null,
         "match": {"text": "ready in 312 ms"},
         "exit_code": null,
     })
@@ -481,7 +483,7 @@ fn result(request: &Request, outcome: Outcome) -> Result<Value, ApiError> {
         "session": request.id.to_hyphenated(),
         "condition": request.name,
         "status": null,
-        "run": null,
+        "run_state": null,
         "match": null,
         "exit_code": null,
     });
@@ -502,7 +504,7 @@ fn result(request: &Request, outcome: Outcome) -> Result<Value, ApiError> {
                     ),
                 ));
             }
-            reply["run"] = json!(state.name());
+            reply["run_state"] = json!(state.name());
             reply["exit_code"] = json!(exit_code);
         }
         Outcome::Met(Met::Output(text)) => {
