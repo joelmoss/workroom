@@ -549,7 +549,8 @@ fn include_screen_matches_the_visible_screen_only() {
 
 /// A wait that could never be met is refused as such before any bound is looked at: a session with
 /// no shell integration is `NoShellIntegration` to a `command_finished` wait, even on a connection
-/// that holds all it may.
+/// that holds all it may. (With no grace: the session is past the age its first prompt could
+/// still be coming at.)
 #[cfg(feature = "terminal-state")]
 #[test]
 fn a_precondition_is_refused_before_a_full_connection_is_busy() {
@@ -559,6 +560,7 @@ fn a_precondition_is_refused_before_a_full_connection_is_busy() {
         session: 0,
         connection: 0,
         daemon: 0,
+        marks_grace: std::time::Duration::ZERO,
     };
     let store = SessionStore::new();
     let id = sleeping(&store, 0x45);
@@ -577,6 +579,50 @@ fn a_precondition_is_refused_before_a_full_connection_is_busy() {
         .collect();
     assert_eq!(kinds, ["NoShellIntegration", "Busy"]);
     store.kill(id);
+}
+
+/// A `command_finished` wait on a session young enough that its shell's first prompt may still be
+/// coming isn't refused for want of marks: it waits out the grace for one. A shell that sends one
+/// and then ends a command meets it; one that sends none is `NoShellIntegration` once the grace is
+/// over, not at once and not at the wait's timeout.
+#[cfg(feature = "terminal-state")]
+#[test]
+fn a_young_session_gets_a_grace_for_its_first_mark() {
+    use std::sync::atomic::AtomicUsize;
+    static HELD: AtomicUsize = AtomicUsize::new(0);
+    let store = SessionStore::new();
+    // Its prompt 3 s on, well inside a 20 s grace, by when the wait has long started.
+    let marked = running(
+        &store,
+        0x47,
+        r"sleep 3; printf '\033]133;A\007\033]133;C\007'; printf '\033]133;D;4\007'; sleep 30",
+    );
+    let silent = sleeping(&store, 0x48);
+    let wait = |id: SessionId, grace: u64| {
+        let limits = wait::Limits {
+            marks_grace: std::time::Duration::from_secs(grace),
+            ..wait::LIMITS
+        };
+        let (written, writer) = written_writer();
+        let mut waits = wait::Waits::with(limits, &HELD, None);
+        start_wait(
+            &mut waits,
+            &store,
+            json!({"target": id.to_hyphenated(), "command_finished": true, "timeout_ms": 60000}),
+            &writer,
+        );
+        (written, waits)
+    };
+    let (finished, _held) = wait(marked, 20);
+    let reply = the_reply(&finished);
+    assert_eq!(reply["result"]["exit_code"], 4, "{reply}");
+
+    // 3 s from its creation, so refused about then, long before its 60 s timeout.
+    let (refused, _held) = wait(silent, 3);
+    let reply = the_reply(&refused);
+    assert_eq!(reply["error"]["kind"], "NoShellIntegration", "{reply}");
+    store.kill(marked);
+    store.kill(silent);
 }
 
 /// A program that reports `working` and `done` in one write has passed through `working`, though
@@ -657,6 +703,7 @@ fn waits_past_a_bound_are_busy_until_one_ends() {
         session: 2,
         connection: 3,
         daemon: 4,
+        ..wait::LIMITS
     };
     let store = SessionStore::new();
     let (a, b) = (sleeping(&store, 0x31), sleeping(&store, 0x32));

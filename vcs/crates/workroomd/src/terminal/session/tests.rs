@@ -1059,6 +1059,32 @@ fn a_programs_image_split_after_its_escape_still_survives_a_transfer() {
     store.kill_all();
 }
 
+/// A shell's OSC 133 marks come with its program status across a hand-off, so the next program
+/// takes a `command_finished` wait on it (#690) before the shell's next prompt: here the frozen
+/// screen has no mark in it, as a cleared one hasn't.
+#[cfg(feature = "terminal-state")]
+#[test]
+fn an_adopted_session_keeps_its_shells_marks() {
+    let mut status = Store::default();
+    status.apply(crate::terminal::program_status::Event::Prompt, 0);
+    let args = [OsString::from("-c"), OsString::from("sleep 30")];
+    let e = env();
+    let store = SessionStore::new();
+    for (n, marks) in [(84, Store::default()), (85, status)] {
+        let pty = Pty::spawn(OsStr::new("/bin/sh"), None, &args, &e, None, 80, 24).expect("pty");
+        let frozen = FrozenSession {
+            program_status: marks,
+            ..frozen_with(id(n), b"")
+        };
+        store.adopt(pty, frozen).expect("adopt");
+    }
+    let marked = |n| lock_or_recover(&store.shadow(id(n)).expect("adopted")).has_shell_marks();
+    let (none, some) = (marked(84), marked(85));
+    store.kill_all();
+    assert!(!none, "a shell that sent no marks has none");
+    assert!(some, "the marks were lost across the hand-off");
+}
+
 /// Adopting a hand-off's session under an id already in use is refused, as creating one is.
 #[test]
 fn adopt_refuses_a_duplicate_id() {

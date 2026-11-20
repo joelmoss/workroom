@@ -157,12 +157,12 @@ pub struct Shadow {
     passed: Vec<crate::terminal::program_status::State>,
 }
 
-/// What a session's shell has said through its OSC 133 marks since the daemon started it: whether
-/// it sends them at all, and how many commands it has ended.
+/// How many commands a session's shell has ended through its OSC 133 marks since this program
+/// started it. Whether it sends marks at all is the program status store's, which a hand-off
+/// carries (`Store::shell_marks`).
 #[cfg(feature = "terminal-state")]
 #[derive(Default)]
 struct Marks {
-    any: bool,
     commands: u64,
     last_exit: Option<i32>,
 }
@@ -173,14 +173,9 @@ impl Marks {
     fn count(&mut self, events: &[crate::terminal::program_status::Event]) {
         use crate::terminal::program_status::Event;
         for event in events {
-            match event {
-                Event::Prompt => self.any = true,
-                Event::Command { exit_code, .. } => {
-                    self.any = true;
-                    self.commands += 1;
-                    self.last_exit = Some(*exit_code);
-                }
-                _ => {}
+            if let Event::Command { exit_code, .. } = event {
+                self.commands += 1;
+                self.last_exit = Some(*exit_code);
             }
         }
     }
@@ -438,6 +433,7 @@ impl Shadow {
         crate::terminal::wait::Seen {
             agent: self.status.coding_agent().map(|agent| agent.state),
             passed: Vec::new(),
+            shell_marks: self.status.shell_marks(),
             commands: self.marks.commands,
             last_exit: self.marks.last_exit,
         }
@@ -452,9 +448,9 @@ impl Shadow {
         }
     }
 
-    /// Whether the shell has sent an OSC 133 mark since the daemon started it.
+    /// Whether the shell has sent an OSC 133 mark, to this program or to one before a hand-off.
     pub fn has_shell_marks(&self) -> bool {
-        self.marks.any
+        self.status.shell_marks()
     }
 
     /// The visible screen as plain text, no history, its soft-wrapped lines joined: what

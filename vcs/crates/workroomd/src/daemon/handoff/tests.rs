@@ -59,6 +59,34 @@ fn a_table_survives_encoding() {
     );
 }
 
+/// A shell's OSC 133 marks cross the table in its program status, so the next program takes a
+/// `command_finished` wait (#690) before the shell's next prompt. A version 3 table has none,
+/// and reads as no marks.
+#[test]
+fn a_shells_marks_cross_the_table() {
+    let mut status = crate::terminal::program_status::Store::default();
+    status.apply(crate::terminal::program_status::Event::Prompt, 4242);
+    assert!(status.shell_marks(), "fixture: a prompt is a mark");
+    let table = Table {
+        listener: 3,
+        lock: 4,
+        boot: None,
+        sessions: vec![FrozenSession {
+            id: SessionId([7; 16]),
+            pid: 4242,
+            master: 9,
+            columns: 80,
+            rows: 24,
+            screen: Vec::new(),
+            metadata: Vec::new(),
+            program_status: status,
+        }],
+    };
+    let back = Table::decode(&table.encode()).expect("the table reads back");
+    assert!(back.sessions[0].program_status.shell_marks());
+    assert!(!blocked_status().shell_marks());
+}
+
 /// A build without the shadow terminal refuses a table with screens, which it could only drop.
 #[test]
 fn screens_are_refused_by_a_build_that_cannot_paint_them() {

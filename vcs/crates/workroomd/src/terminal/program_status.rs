@@ -233,6 +233,12 @@ pub struct Store {
     /// `running <pid>`, `stopped`, `exited <code>` and so on. None for a shell.
     #[serde(default)]
     run: Option<String>,
+    /// Whether the shell has sent an OSC 133 mark (a prompt or a command's end), which is what a
+    /// `command_finished` wait needs (#690). Carried by a hand-off, so the next program doesn't
+    /// refuse that wait until the shell's next prompt; the default reads one from a daemon that
+    /// kept none. Never published: no status event says it.
+    #[serde(default)]
+    shell_marks: bool,
     /// Changed since the last `commit`. Never carried: a hand-off freezes between commits.
     #[serde(skip)]
     dirty: bool,
@@ -247,6 +253,9 @@ impl Store {
     /// One event from the terminal, sent while `owner` was in the foreground.
     #[cfg(any(test, feature = "terminal-state"))]
     pub fn apply(&mut self, event: Event, owner: Group) {
+        if matches!(event, Event::Prompt | Event::Command { .. }) {
+            self.shell_marks = true;
+        }
         match event {
             Event::Report(report) => self.report(report, owner),
             Event::Clear(id) => self.clear(&id),
@@ -339,6 +348,11 @@ impl Store {
             }
         }
         self.dirty |= promoted;
+    }
+
+    /// Whether the shell has sent an OSC 133 mark, here or before a hand-off.
+    pub fn shell_marks(&self) -> bool {
+        self.shell_marks
     }
 
     /// Whether `promote_unprobed` has anything to look at, before the tick reads the pty.
