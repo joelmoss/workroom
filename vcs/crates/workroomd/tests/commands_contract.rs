@@ -8,6 +8,10 @@
 //! ported groups (`version_`, `list_` and `config_` today). `make contract-test` builds the Go CLI
 //! and runs every test against it with `--include-ignored`.
 //!
+//! The Mac-only commands' groups (`list_`, `config_`) are ignored off the Mac too, where the Rust
+//! binary answers them with `MacOnly` (ADR 0078): a plain `cargo test` on Linux runs `version_`
+//! alone, and `--include-ignored` against the Go CLI still runs everything.
+//!
 //! Tests are named for their command group (`version_`, `list_`, `config_`), so a port can run
 //! only its own group's names against Rust.
 //!
@@ -463,6 +467,10 @@ const LIST_CONFIG: &str = r#"{
 }"#;
 
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn list_json_matches_the_golden() {
     let home = Home::new("list-json");
     let app = home.repo("src/app");
@@ -498,6 +506,10 @@ fn list_json_matches_the_golden() {
 /// its wording, so these are pinned apart from the machine contract: a port that rewords them
 /// updates the strings here, keeping the information.
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn list_human_text_from_each_kind_of_directory() {
     let home = Home::new("list-human");
     let elsewhere = home.path("elsewhere");
@@ -569,6 +581,10 @@ fn list_human_text_from_each_kind_of_directory() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn list_json_reports_a_bad_flag_value_as_an_error_envelope() {
     let home = Home::new("list-bad-warnings");
     let run = home.run(&home.dir, &["list", "--json", "--warnings=bad"]);
@@ -578,6 +594,10 @@ fn list_json_reports_a_bad_flag_value_as_an_error_envelope() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn list_json_reports_an_unknown_flag_as_an_error_envelope() {
     let home = Home::new("list-unknown-flag");
     let run = home.run(&home.dir, &["list", "--json", "--bogus"]);
@@ -592,6 +612,10 @@ fn list_json_reports_an_unknown_flag_as_an_error_envelope() {
 /// two-space indent, numbers exactly as written, `<`, `>`, `&`, U+2028 and U+2029 escaped, no
 /// trailing newline. The input is laid out unlike that on purpose.
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn config_write_keeps_unknown_keys_and_host_descriptors_byte_for_byte() {
     let home = Home::new("config-roundtrip");
     let before = std::fs::read_to_string(golden_path("config-roundtrip-before.json"))
@@ -620,11 +644,22 @@ fn config_write_keeps_unknown_keys_and_host_descriptors_byte_for_byte() {
 /// config and writes it back with nothing changed: each expected file is what the Go CLI wrote.
 /// Input it can't read fails with `ConfigReadFailed`, exit 6, and is left as it was.
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn config_rewrites_odd_input_as_go_does() {
     for (input, written) in [
         // A null config is Go's nil map, written back as null.
         (&b"null"[..], Some("null")),
         (b"{}  \n", Some("{}")),
+        // Numbers no float or 64-bit integer holds, kept as written.
+        (
+            b"{\"n\":[1e999,-1E+400,123456789012345678901234567890123456789012345678901234567890]}",
+            Some(
+                "{\n  \"n\": [\n    1e999,\n    -1E+400,\n    123456789012345678901234567890123456789012345678901234567890\n  ]\n}",
+            ),
+        ),
         (b"{\"a\":1,\"a\":2}", Some("{\n  \"a\": 2\n}")),
         (
             b"{\"a\":{\"x\":1},\"a\":{\"y\":2}}",
@@ -682,6 +717,10 @@ fn config_rewrites_odd_input_as_go_does() {
 /// A write takes `<config>.lock` with flock(2), as every Workroom binary does, and waits while
 /// another process holds it rather than writing past it.
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn config_write_waits_for_another_process_holding_the_lock() {
     use std::os::fd::AsRawFd;
     let home = Home::new("config-lock");
@@ -721,6 +760,10 @@ fn config_write_waits_for_another_process_holding_the_lock() {
 /// `base set --global` refuses what git wouldn't take as a branch name, before touching config,
 /// and `--pretend` reports the change without making it.
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn config_global_base_refuses_a_bad_name_and_pretends() {
     let home = Home::new("config-base");
     home.write_config("{\"x\": 1}");
@@ -747,6 +790,10 @@ fn config_global_base_refuses_a_bad_name_and_pretends() {
 /// stale one in config (a `jj` from before Jujutsu support was removed): a write, which keeps the
 /// rest of the file as Go keeps it. `--warnings none` reads config alone and writes nothing.
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn list_json_heals_a_stale_vcs_keeping_the_rest_of_the_file() {
     let home = Home::new("list-heal");
     home.repo("src/app");
@@ -803,6 +850,10 @@ fn list_json_heals_a_stale_vcs_keeping_the_rest_of_the_file() {
 /// a null one is no host at all. A remote workroom's path is on its host, so it never warns of a
 /// missing directory.
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn list_json_reports_any_non_null_host_verbatim() {
     let home = Home::new("list-hosts");
     home.repo("src/app");
@@ -843,9 +894,51 @@ fn list_json_reports_any_non_null_host_verbatim() {
     assert_eq!(by_name("local")["warnings"][0]["kind"], "DirectoryMissing");
 }
 
+/// The human list finds where it is run as Go's `os.Getwd` names the directory: by `$PWD`, which
+/// every shell sets, when that names the directory, so a workroom registered under a symlinked
+/// path is recognised from it.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn list_human_text_names_the_directory_by_pwd() {
+    let home = Home::new("list-pwd");
+    home.repo("src/app");
+    let real = home.path("real/w");
+    std::fs::create_dir_all(&real).expect("workroom dir");
+    std::os::unix::fs::symlink(home.path("real"), home.path("link")).expect("symlink");
+    let link = home.path("link/w");
+    home.write_config(
+        &r#"{"{home}/src/app": {"vcs": "git", "workrooms": {"w": {"path": "{home}/link/w"}}}}"#
+            .replace("{home}", &home.dir.to_string_lossy()),
+    );
+    let list = |pwd: Option<&Path>| {
+        let mut command = home.command(binary(), &real);
+        if let Some(pwd) = pwd {
+            command.env("PWD", pwd);
+        }
+        let output = command.arg("list").output().expect("run list");
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).expect("UTF-8")
+    };
+    assert_eq!(
+        list(Some(&link)),
+        "You are already in a workroom.\nParent project is at ~/src/app\n"
+    );
+    // Without it the directory is its resolved path, which no workroom is registered under.
+    assert!(list(None).starts_with("~/src/app:\n"));
+    // A $PWD naming another directory is ignored.
+    assert!(list(Some(&home.dir)).starts_with("~/src/app:\n"));
+}
+
 /// `--project` keeps the one project it names, by its canonical path or as written; one that isn't
 /// registered leaves none.
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn list_json_project_limits_the_listing() {
     let home = Home::new("list-project");
     home.repo("src/app");

@@ -130,7 +130,7 @@ pub(crate) fn write_indented(value: &Json) -> String {
 }
 
 /// How deeply objects and arrays may nest: deeper input is an error, not a stack overflow. Go allows
-/// 10,000, which this recursive parser (and serde's recursive writer) can't reach in a debug build's
+/// 10,000 (an object holding 9,999 nested arrays reads; 10,000 fails), which this recursive parser (and serde's recursive writer) can't reach in a debug build's
 /// 8 MiB main stack; a config nested a thousand deep is no config the app or a person writes, so
 /// this one difference from Go is kept rather than parsing on a stack of its own.
 const MAX_DEPTH: usize = 1_000;
