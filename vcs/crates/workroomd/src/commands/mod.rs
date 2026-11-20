@@ -89,8 +89,9 @@ impl Context {
 pub(crate) enum Outcome {
     /// Human output for stdout, exit 0.
     Printed(String),
-    /// Human output for stdout, and lines for stderr about what failed on the way, exit 0.
-    PrintedWithErrors { stdout: String, stderr: String },
+    /// Human output for stdout, and warnings for stderr: lines about what the command skipped on
+    /// the way, which don't fail it, so exit 0.
+    PrintedWithWarnings { stdout: String, warnings: String },
     /// A success envelope, exit 0.
     Success(String),
     /// A failure, reported in the error envelope under `--json`, else as an `Error:` line.
@@ -643,10 +644,10 @@ fn missing_required(flags: &[Flag], values: &[(&'static str, String)]) -> Option
 fn report(context: &Context, command: Option<&str>, outcome: Outcome) -> Output {
     let (command, error) = match outcome {
         Outcome::Printed(text) | Outcome::Success(text) => return Output::stdout(text),
-        Outcome::PrintedWithErrors { stdout, stderr } => {
+        Outcome::PrintedWithWarnings { stdout, warnings } => {
             return Output {
                 stdout,
-                stderr,
+                stderr: warnings,
                 code: 0,
             };
         }

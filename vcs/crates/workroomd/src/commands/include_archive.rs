@@ -86,12 +86,12 @@ fn archive(context: &Context, args: &Args, output: &str) -> Result<Outcome, Stri
         )));
     }
     let stdout = format!("Archived {} files to {output}\n", written.archived.len());
-    let stderr: String = written
+    let warnings: String = written
         .failures
         .iter()
         .map(|failure| format!("{failure}\n"))
         .collect();
-    Ok(Outcome::PrintedWithErrors { stdout, stderr })
+    Ok(Outcome::PrintedWithWarnings { stdout, warnings })
 }
 
 /// What the root's include file matches: the regular files to archive, and the symlinks that
