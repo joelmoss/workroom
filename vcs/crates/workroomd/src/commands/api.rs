@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 use super::kind::{CliError, Kind};
 use super::{Args, Context, Outcome, terminal_api};
+use wr_protocol::envelope::MAX_ENVELOPE_PAYLOAD;
 
 /// What `workroom api --help` says first.
 pub(super) const LONG: &str = "Raw access to every terminal API method, on the daemon \
@@ -116,24 +117,43 @@ fn call(context: &Context, rest: &[String]) -> Outcome {
     ))
 }
 
-/// PARAMS as given: JSON inline, `@FILE` for a file's, or `-` for stdin's. Anything that isn't
-/// JSON is a malformed request, `InvalidRequest`.
+/// The most PARAMS `call` reads: one request envelope's payload, past which the daemon would reply
+/// `TooLarge` anyway.
+const MAX_PARAMS: usize = MAX_ENVELOPE_PAYLOAD;
+
+/// PARAMS as given: JSON inline, `@FILE` for a file's, or `-` for stdin's. Each is read no further
+/// than one byte past [`MAX_PARAMS`], so `yes | workroom api call m -` ends, and more than that is
+/// `TooLarge`. Anything that isn't UTF-8 JSON is a malformed request, `InvalidRequest`. All before
+/// any daemon is asked, so bad input exits 2 even with none.
 fn params(given: &str) -> Result<Value, CliError> {
     let invalid = |message: String| CliError::new(Kind::InvalidRequest, message);
-    let (text, from) = if given == "-" {
-        let mut text = String::new();
-        std::io::stdin()
-            .read_to_string(&mut text)
-            .map_err(|error| invalid(format!("can't read PARAMS from stdin: {error}")))?;
-        (text, "stdin")
-    } else if let Some(path) = given.strip_prefix('@') {
-        let text = std::fs::read_to_string(path)
-            .map_err(|error| invalid(format!("can't read PARAMS from {path}: {error}")))?;
-        (text, path)
-    } else {
-        (given.to_string(), "the command line")
+    let bounded = |reader: &mut dyn Read| {
+        let mut bytes = Vec::new();
+        Read::take(reader, MAX_PARAMS as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
     };
-    serde_json::from_str(&text)
+    let (bytes, from) = if given == "-" {
+        let bytes = bounded(&mut std::io::stdin().lock())
+            .map_err(|error| invalid(format!("can't read PARAMS from stdin: {error}")))?;
+        (bytes, "stdin")
+    } else if let Some(path) = given.strip_prefix('@') {
+        let bytes = std::fs::File::open(path)
+            .and_then(|mut file| bounded(&mut file))
+            .map_err(|error| invalid(format!("can't read PARAMS from {path}: {error}")))?;
+        (bytes, path)
+    } else {
+        (given.as_bytes().to_vec(), "the command line")
+    };
+    if bytes.len() > MAX_PARAMS {
+        return Err(CliError::new(
+            Kind::TooLarge,
+            format!("PARAMS from {from} is over {MAX_PARAMS} bytes"),
+        ));
+    }
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|error| invalid(format!("PARAMS from {from} isn't UTF-8: {error}")))?;
+    serde_json::from_str(text)
         .map_err(|error| invalid(format!("PARAMS from {from} is not JSON: {error}")))
 }
 
@@ -283,6 +303,34 @@ mod tests {
             "{}",
             output.stderr
         );
+    }
+
+    /// Inline PARAMS over the limit, or under it in a request that isn't, are `TooLarge` (2) with
+    /// no daemon to ask: bad input is refused before one is looked for. (`@FILE` and `-` are the
+    /// end-to-end tests'.) An argument this long can't reach a real process, so it is run here.
+    #[test]
+    fn inline_params_too_large_to_send_are_too_large_with_no_daemon() {
+        let over = "x".repeat(super::MAX_PARAMS + 1);
+        // JSON exactly at the limit, which the request's method and keys take over it.
+        let at = format!("{{\"a\":\"{}\"}}", "x".repeat(super::MAX_PARAMS - 8));
+        assert_eq!(at.len(), super::MAX_PARAMS);
+        for (params, message) in [
+            (
+                over.as_str(),
+                "PARAMS from the command line is over 1048576 bytes",
+            ),
+            (at.as_str(), "the request is over 1048576 bytes"),
+        ] {
+            let output = run_on(
+                Platform::Other,
+                &["api", "call", "session.list", params, "--json"],
+            );
+            assert_eq!((output.code, output.stderr.as_str()), (2, ""));
+            let envelope: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+            assert_eq!(envelope["error"]["kind"], "TooLarge", "{envelope}");
+            assert_eq!(envelope["error"]["message"], message, "{envelope}");
+            assert_eq!(envelope["command"], "api call");
+        }
     }
 
     #[test]

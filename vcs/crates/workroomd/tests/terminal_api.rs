@@ -867,3 +867,98 @@ fn api_with_no_daemon_exits_7() {
         assert_eq!(run.envelope()["error"]["kind"], "DaemonUnreachable");
     }
 }
+
+/// `api call`'s failure for `run`: its exit code, kind and message, in `api call`'s envelope.
+fn call_failure(run: &Run) -> (i32, String, String) {
+    let envelope = run.envelope();
+    assert_eq!(envelope["command"], "api call", "{envelope}");
+    let text = |key: &str| {
+        envelope["error"][key]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+    (run.code, text("kind"), text("message"))
+}
+
+/// PARAMS from a file or stdin is read no further than one byte past the 1 MiB a request can
+/// carry, and more is `TooLarge` (2), before any daemon is looked for: so with none it exits 2,
+/// not 7, and `yes | workroom api call METHOD -` ends instead of filling memory.
+#[test]
+fn api_call_refuses_params_over_the_limit_before_looking_for_a_daemon() {
+    use wr_protocol::envelope::MAX_ENVELOPE_PAYLOAD;
+
+    let workspace = Workspace::new("api-call-too-large");
+    let over = "x".repeat(MAX_ENVELOPE_PAYLOAD + 1);
+    let file = workspace.dir.join("big.json");
+    std::fs::write(&file, &over).expect("write big params");
+    let at_file = format!("@{}", file.display());
+    let too_large = |from: &str| {
+        (
+            2,
+            "TooLarge".to_string(),
+            format!("PARAMS from {from} is over {MAX_ENVELOPE_PAYLOAD} bytes"),
+        )
+    };
+    // With no daemon named, and with one named that isn't there.
+    let nowhere = workspace.dir.join("nobody.sock");
+    for daemon in [None, Some(nowhere.as_path())] {
+        let from_file = workroom(daemon, &["api", "call", "session.list", &at_file, "--json"]);
+        assert_eq!(
+            call_failure(&from_file),
+            too_large(&file.display().to_string())
+        );
+        let from_stdin = workroom_with_stdin(
+            daemon,
+            &["api", "call", "session.list", "-", "--json"],
+            Some(&over),
+        );
+        assert_eq!(call_failure(&from_stdin), too_large("stdin"));
+    }
+
+    // Stdin that never ends.
+    let mut yes = Command::new("/usr/bin/yes")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("run yes");
+    let output = Command::new(common::daemon_binary())
+        .args(["api", "call", "session.list", "-", "--json"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", std::env::temp_dir())
+        .stdin(yes.stdout.take().expect("yes's stdout"))
+        .output()
+        .expect("run workroom");
+    let _ = yes.kill();
+    let _ = yes.wait();
+    let endless = Run {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        code: output.status.code().unwrap_or(-1),
+    };
+    assert_eq!(call_failure(&endless), too_large("stdin"));
+}
+
+/// PARAMS that aren't UTF-8 are a malformed request (2) that says so, not a file it "can't read".
+#[test]
+fn api_call_params_that_are_not_utf8_are_invalid() {
+    let workspace = Workspace::new("api-call-not-utf8");
+    let file = workspace.dir.join("latin1.json");
+    std::fs::write(&file, b"{\"target\": \"caf\xe9\"}").expect("write params");
+    let run = workroom(
+        None,
+        &[
+            "api",
+            "call",
+            "session.resolve",
+            &format!("@{}", file.display()),
+            "--json",
+        ],
+    );
+    let (code, kind, message) = call_failure(&run);
+    assert_eq!((code, kind.as_str()), (2, "InvalidRequest"), "{message}");
+    assert!(
+        message.starts_with(&format!("PARAMS from {} isn't UTF-8", file.display())),
+        "{message}"
+    );
+}
