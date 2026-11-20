@@ -5,7 +5,8 @@
 // This is the single source of truth for channel semantics on the Go side. The
 // macOS app (macapp Core/AppShell/ReleaseChannel.swift) and the shell installers
 // (install.sh / install.ps1 via Scripts/channel-helper.sh) mirror these exact
-// rules — if you change the classification here, change all three.
+// rules, as does the Rust copy in vcs/crates/workroomd/src/commands/channel.rs —
+// if you change the classification here, change all four.
 //
 // # Channel model (floor / nested)
 //
