@@ -546,8 +546,9 @@ final class SSHHostIntegrationTests: XCTestCase {
     pane.type("MARK=kept; echo RE\"\"ADY\n")
     XCTAssertTrue(pane.read(until: "READY").contains("READY"))
     // A build marker read at runtime is changed in place, preserving the ELF's layout. Both
-    // the Mac's scanner and the daemon's protocol report now identify a real newer build.
-    var bytes = try Data(contentsOf: fixture.daemon)
+    // the Mac's scanner and the daemon's protocol report now identify a real newer build, and
+    // another daemon build (#680), so the running daemon hands off to it.
+    var bytes = try DaemonHarness.anotherDaemonBuild(of: try Data(contentsOf: fixture.daemon))
     let build = DaemonBootstrap.buildNumber(in: bytes)
     let oldMarker = Data("WORKROOMD-BUILD:\(build);".utf8)
     let newMarker = Data("WORKROOMD-BUILD:\(build + 1);".utf8)
@@ -842,7 +843,8 @@ final class SSHHostIntegrationTests: XCTestCase {
     let sessions = try await connect(driver).sessions()
     XCTAssertTrue(sessions.contains { $0.identifier.uuid == session })
 
-    var bytes = try Data(contentsOf: fixture.daemon)
+    // A newer build that is another daemon build (#680), so the running daemon hands off to it.
+    var bytes = try DaemonHarness.anotherDaemonBuild(of: try Data(contentsOf: fixture.daemon))
     let build = DaemonBootstrap.buildNumber(in: bytes)
     let range = try XCTUnwrap(bytes.range(of: Data("WORKROOMD-BUILD:\(build);".utf8)))
     bytes.replaceSubrange(range, with: Data("WORKROOMD-BUILD:\(build + 1);".utf8))

@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomWire
+import XCTest
 
 /// Launches a throwaway `workroomd serve` against a temp socket, and can put real sessions on it.
 ///
@@ -167,6 +168,20 @@ final class DaemonHarness {
       }
       Thread.sleep(forTimeInterval: 0.02)
     }
+  }
+
+  /// A daemon's bytes as another daemon build's (#680): its `WORKROOMD-DAEMON-BUILD:` marker, which
+  /// both its `protocol` and a daemon offered it read, changed in place, so the ELF's layout is kept.
+  /// A running daemon hands off only to another daemon build: an ELF with a byte appended is the
+  /// same daemon to it, a change to CLI commands alone. For a static ELF, which carries no
+  /// signature to break.
+  static func anotherDaemonBuild(of daemon: Data) throws -> Data {
+    var bytes = daemon
+    let prefix = try XCTUnwrap(
+      bytes.range(of: Data("WORKROOMD-DAEMON-BUILD:".utf8)), "no daemon build marker")
+    let first = prefix.upperBound
+    bytes[first] = bytes[first] == UInt8(ascii: "0") ? UInt8(ascii: "1") : UInt8(ascii: "0")
+    return bytes
   }
 
   static func binaryURL() throws -> URL {
