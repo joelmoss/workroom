@@ -13,11 +13,21 @@ use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
 struct Workspace(PathBuf);
 
 impl Workspace {
+    /// A directory this run made itself: `create_dir` fails on any path that already exists, so a
+    /// leftover from a killed run, or another run's live one, is skipped rather than reused, and
+    /// only what this call created is ever removed.
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("wrhe-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Self(dir)
+        let parent = std::env::temp_dir();
+        let pid = std::process::id();
+        for attempt in 0u32.. {
+            let dir = parent.join(format!("wrhe-{name}-{pid}-{attempt}"));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return Self(dir),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create {}: {error}", dir.display()),
+            }
+        }
+        unreachable!("u32 attempts ran out")
     }
 }
 

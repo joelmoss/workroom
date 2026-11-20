@@ -6,13 +6,13 @@
 
 #[allow(dead_code)] // not every helper is used here
 mod common;
-use common::{ClientReader, Spawned, daemon_binary};
+use common::{ClientReader, Spawned, Workspace, daemon_binary};
 
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -106,25 +106,19 @@ fn a_daemon_with_an_older_protocol_exits_with_the_retry_status() {
     assert!(out.is_empty(), "nothing reaches the pane: {out:?}");
 }
 
-/// A short directory: a unix socket address is capped at 104 bytes and cargo's target dir is long.
-struct Scratch(PathBuf);
+/// A short directory of this run's own, removed when the test ends: a unix socket address is capped
+/// at 104 bytes and cargo's target dir is long.
+struct Scratch(Workspace);
 
 impl Scratch {
     fn new(name: &str) -> Scratch {
-        let dir = PathBuf::from(format!("/tmp/wr-dial-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("home")).expect("scratch dir");
+        let dir = Workspace::under(Path::new("/tmp"), &format!("wr-dial-{name}"));
+        std::fs::create_dir(dir.join("home")).expect("scratch dir");
         Scratch(dir)
     }
 
     fn home(&self) -> PathBuf {
         self.0.join("home")
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 

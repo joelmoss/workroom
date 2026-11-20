@@ -22,11 +22,22 @@ struct Workspace {
 }
 
 impl Workspace {
+    /// As `common::Workspace::new`: a directory this run made itself, since `create_dir` fails on
+    /// any path that already exists, so a leftover from a killed run, or another run's live one, is
+    /// skipped rather than reused, and only what this call created is ever removed. The prefix is
+    /// short because a socket is bound under it, and a unix socket address is capped at 104 bytes.
     fn new(name: &str) -> Workspace {
-        let dir = std::env::temp_dir().join(format!("workroomd-it-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("workspace");
-        Workspace { dir }
+        let parent = std::env::temp_dir();
+        let pid = std::process::id();
+        for attempt in 0u32.. {
+            let dir = parent.join(format!("wr-it-{name}-{pid}-{attempt}"));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return Workspace { dir },
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create workspace {}: {error}", dir.display()),
+            }
+        }
+        unreachable!("u32 attempts ran out")
     }
 
     fn socket(&self) -> PathBuf {

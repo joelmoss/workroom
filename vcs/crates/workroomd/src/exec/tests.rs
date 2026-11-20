@@ -1,9 +1,8 @@
 use super::*;
 
-fn git_repo(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("wr-vcs-exec-test-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+/// A repository in a directory of this run's own, removed when the test ends.
+fn git_repo(name: &str) -> crate::commands::Scratch {
+    let root = crate::commands::Scratch::in_temp(&format!("wr-vcs-exec-test-{name}"));
     for args in [
         vec!["init", "-q", "-b", "main"],
         vec!["config", "user.name", "Test"],

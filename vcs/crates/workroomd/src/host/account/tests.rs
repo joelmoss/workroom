@@ -25,8 +25,8 @@ fn a_leading_tilde_is_the_users_home() {
 fn an_account_that_is_already_this_process_only_makes_its_folders() {
     // SAFETY: getuid takes nothing and cannot fail.
     let account = lookup(&unsafe { libc::getuid() }.to_string()).unwrap();
-    let root = std::env::temp_dir().join(format!("workroomd-become-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let scratch = crate::commands::Scratch::in_temp("workroomd-become");
+    let root = scratch.join("root");
     let home = std::env::var_os("HOME");
 
     become_user(

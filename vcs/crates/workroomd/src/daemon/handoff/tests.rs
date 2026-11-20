@@ -62,7 +62,8 @@ fn a_table_survives_encoding() {
 /// A build without the shadow terminal refuses a table with screens, which it could only drop.
 #[test]
 fn screens_are_refused_by_a_build_that_cannot_paint_them() {
-    let path = std::env::temp_dir().join(format!("workroomd-table-{}", std::process::id()));
+    let scratch = crate::commands::Scratch::in_temp("workroomd-table");
+    let path = scratch.join("table");
     let table = Table {
         listener: 3,
         lock: 4,
@@ -80,7 +81,6 @@ fn screens_are_refused_by_a_build_that_cannot_paint_them() {
     };
     std::fs::write(&path, table.encode()).expect("table");
     let checked = check_table(&path);
-    let _ = std::fs::remove_file(&path);
     assert_eq!(
         checked.is_ok(),
         cfg!(feature = "terminal-state"),
@@ -92,9 +92,7 @@ fn screens_are_refused_by_a_build_that_cannot_paint_them() {
 /// particular; a near miss is not a marker, and a file with none has none.
 #[test]
 fn a_daemon_build_is_read_out_of_a_binarys_bytes() {
-    let dir = std::env::temp_dir().join(format!("workroomd-marker-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::commands::Scratch::in_temp("workroomd-marker");
     let marker = |build: &str| format!("WORKROOMD-DAEMON-BUILD:{build};").into_bytes();
     let build = "0123456789abcdef".repeat(4);
     let file = |name: &str, bytes: &[u8]| {
@@ -155,9 +153,7 @@ fn start_probe(binary: &Path) -> Result<BuildProbe, HandOffError> {
 #[test]
 fn a_script_still_open_for_writing_is_waited_for_not_refused() {
     use std::io::Write;
-    let dir = std::env::temp_dir().join(format!("workroomd-busy-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::commands::Scratch::in_temp("workroomd-busy");
     let path = dir.join("busy");
     let mut writer = std::fs::File::create(&path).unwrap();
     writer
@@ -204,9 +200,7 @@ fn assert_refused(result: Result<(), HandOffError>, wanted: &str) {
 /// does not say in time is refused too: every session's output is stopped meanwhile.
 #[test]
 fn a_hand_off_to_an_older_build_is_refused() {
-    let dir = std::env::temp_dir().join(format!("workroomd-downgrade-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::commands::Scratch::in_temp("workroomd-downgrade");
     let program = |name: &str, number: Option<u64>| {
         let path = dir.join(name);
         let line = number.map_or(String::new(), |n| format!("echo build-number {n}; "));
