@@ -39,12 +39,16 @@ pub(super) fn call(context: &Context, method: &str, params: Value) -> Result<Val
     let version = crate::cli::handshake(&mut stream)
         .map_err(|_| unreachable(format!("the process on {socket} is not a Workroom daemon")))?;
     // An older daemon's decoder fails the whole connection on a service byte it doesn't know, so
-    // nothing is sent to one.
+    // nothing is sent to one. It is running, so the caller is told to update it, not start one.
     if version < MIN_TERMINAL_API_VERSION {
-        return Err(unreachable(format!(
-            "the daemon on {socket} speaks protocol {version}, which predates the terminal API \
-             (protocol {MIN_TERMINAL_API_VERSION}); it is updated with the app"
-        )));
+        return Err(CliError::new(
+            Kind::DaemonTooOld,
+            format!(
+                "the daemon on {socket} speaks protocol {version}, which predates the terminal \
+                 API (protocol {MIN_TERMINAL_API_VERSION}); it needs updating, which updating \
+                 the app does"
+            ),
+        ));
     }
     let request = serde_json::to_vec(&json!({"method": method, "params": params}))
         .expect("a request serializes");
