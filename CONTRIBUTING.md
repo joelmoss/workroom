@@ -235,7 +235,7 @@ executor and a temp config — no real repo required.
 | `cli-lint` | `golangci-lint run` |
 | `cli-clean` | Remove the built binary |
 | `vcs-lint` | rustfmt, clippy and `cargo doc -D warnings` over `vcs/`, with and without `terminal-state`, on CI's Rust 1.99.1 |
-| `vcs-lint-linux` | The same pinned lint gate on Linux, including Linux-only code; uses a working container, Docker or Podman runtime on macOS |
+| `vcs-lint-linux` | The same pinned lint gate on Linux, including Linux-only code; uses the first working Docker, Podman or Apple `container` runtime on macOS (`WR_LINT_RUNTIME` names one) |
 
 ---
 
