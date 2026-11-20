@@ -26,6 +26,17 @@ const STREAM: u32 = 1;
 
 /// Calls `method` with `params` and returns its `result`, or the daemon's error as the command's.
 pub(super) fn call(context: &Context, method: &str, params: Value) -> Result<Value, CliError> {
+    reply(context, method, params).map(|reply| reply.result)
+}
+
+/// A successful reply: the API's revision the daemon speaks, and the method's `result`.
+pub(super) struct Replied {
+    pub(super) version: Value,
+    pub(super) result: Value,
+}
+
+/// [`call`], keeping the reply's `version` beside its `result`.
+pub(super) fn reply(context: &Context, method: &str, params: Value) -> Result<Replied, CliError> {
     let unreachable = |message: String| CliError::new(Kind::DaemonUnreachable, message);
     let Some(socket) = context.env(DAEMON_VARIABLE).filter(|path| !path.is_empty()) else {
         return Err(unreachable(format!(
@@ -73,7 +84,10 @@ pub(super) fn call(context: &Context, method: &str, params: Value) -> Result<Val
         failure.matches = error["matches"].as_array().cloned().unwrap_or_default();
         return Err(failure);
     }
-    Ok(reply.get("result").cloned().unwrap_or(Value::Null))
+    Ok(Replied {
+        version: reply.get("version").cloned().unwrap_or(Value::Null),
+        result: reply.get("result").cloned().unwrap_or(Value::Null),
+    })
 }
 
 /// The reply on `STREAM`, its chunks joined (`rpc::send`: each payload's first byte says whether
