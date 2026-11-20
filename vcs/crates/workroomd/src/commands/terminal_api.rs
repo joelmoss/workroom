@@ -37,6 +37,16 @@ pub(super) struct Replied {
 
 /// [`call`], keeping the reply's `revision` beside its `result`.
 pub(super) fn reply(context: &Context, method: &str, params: Value) -> Result<Replied, CliError> {
+    // A request too big to send is bad input whether or not a daemon would take it, so it is
+    // refused (2) before one is looked for.
+    let request = serde_json::to_vec(&json!({"method": method, "params": params}))
+        .expect("a request serializes");
+    if request.len() > MAX_ENVELOPE_PAYLOAD {
+        return Err(CliError::new(
+            Kind::TooLarge,
+            format!("the request is over {MAX_ENVELOPE_PAYLOAD} bytes"),
+        ));
+    }
     let unreachable = |message: String| CliError::new(Kind::DaemonUnreachable, message);
     let Some(socket) = context.env(DAEMON_VARIABLE).filter(|path| !path.is_empty()) else {
         return Err(unreachable(format!(
@@ -59,14 +69,6 @@ pub(super) fn reply(context: &Context, method: &str, params: Value) -> Result<Re
                  API (protocol {MIN_TERMINAL_API_VERSION}); it needs updating, which updating \
                  the app does"
             ),
-        ));
-    }
-    let request = serde_json::to_vec(&json!({"method": method, "params": params}))
-        .expect("a request serializes");
-    if request.len() > MAX_ENVELOPE_PAYLOAD {
-        return Err(CliError::new(
-            Kind::TooLarge,
-            format!("the request is over {MAX_ENVELOPE_PAYLOAD} bytes"),
         ));
     }
     stream
