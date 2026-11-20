@@ -5,7 +5,8 @@
 //! Without it (`env -i`, `sudo`), it is the nearest daemon this process runs under
 //! ([`daemon_above`]): a pane's shell is its daemon's child. No other daemon is ever reached;
 //! `new` starting one is #693's. The request names its caller, the pane's `WORKROOM_PANE`, when
-//! that is set; the daemon finds the caller from the connecting process when it isn't.
+//! that is set. The daemon finds the caller from the connecting process first, and takes the name
+//! only when that process runs in none of its panes (under a daemonized tmux server, say).
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
