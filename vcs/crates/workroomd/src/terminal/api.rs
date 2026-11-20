@@ -32,12 +32,15 @@
 
 use std::ffi::OsStr;
 use std::ops::Range;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::{Value, json};
 
 use crate::daemon::rpc::{PartialRequests, SharedWriter};
 use crate::terminal::session::{CREATED_KEY, Described, SessionId, SessionStore};
-use crate::terminal::shadow::{Capture, Captured, Rows};
+use crate::terminal::shadow::{
+    Admitted, CAPTURE_REPLY_TEXT_MAX, Capture, CaptureJob, Refused, Rows,
+};
 use crate::util::lock_or_recover;
 use wr_protocol::envelope::{Envelope, Service};
 use wr_protocol::terminal::parse_session_id;
@@ -248,14 +251,19 @@ pub const METHODS: &[Method] = &[
                   counts from 0, and each reply's `more` says whether another follows). `unwrap` \
                   joins lines the pane \
                   soft-wrapped and `vt` keeps escape codes. Every reply also has the cursor, the \
-                  size, whether the alternate screen is up and the live title. The alternate \
-                  screen has no history of its own.",
+                  size, whether the alternate screen is up and the live title. The visible \
+                  screen is the alternate screen while a program has it up, and the history is \
+                  the primary screen's, the only history there is: under a full-screen program, \
+                  the shell's lines down to its last. `lines` past what one reply holds at the \
+                  pane's width is `TooLarge`; a few captures of history run at once, and one \
+                  past them is refused.",
         input: capture_input,
         output: capture_output,
         errors: &[
             kind::TARGET_NOT_FOUND,
             kind::TARGET_AMBIGUOUS,
             kind::SESSION_ENDED,
+            kind::TOO_LARGE,
             kind::INTERNAL_ERROR,
         ],
         params_example: || json!({"target": "dev server", "lines": 100, "unwrap": true}),
@@ -434,36 +442,115 @@ fn capture(call: &Call) -> Result<Answer, ApiError> {
     let shadow = wr_protocol::terminal::parse_session_id(OsStr::new(&id))
         .and_then(|parsed| sessions.shadow(parsed))
         .ok_or_else(ended)?;
-    let job = lock_or_recover(&shadow)
-        .capture(Capture { rows, unwrap, vt })
-        .ok_or_else(|| ApiError::new(kind::INTERNAL_ERROR, no_screen(&id)))?;
-    let captured = job().ok_or_else(|| {
-        ApiError::new(
+    // Taken alone, and released before any copy is formatted.
+    let job = lock_or_recover(&shadow).capture(Capture { rows, unwrap, vt }, &mut || {
+        CaptureSlot::acquire().map(|slot| Box::new(slot) as Admitted)
+    });
+    let unreadable = {
+        let message = format!("session {id}'s screen could not be read");
+        move || ApiError::new(kind::INTERNAL_ERROR, message.clone())
+    };
+    let CaptureJob { facts, mut pieces } = job.map_err(|refused| match refused {
+        Refused::NoScreen => ApiError::new(kind::INTERNAL_ERROR, no_screen(&id)),
+        Refused::Unreadable => unreadable(),
+        Refused::TooManyRows { rows, columns } => ApiError::new(
+            kind::TOO_LARGE,
+            format!(
+                "`lines` covers {rows} rows, more than one reply holds at {columns} columns; \
+                 `all` streams the whole history in parts"
+            ),
+        ),
+        Refused::Busy => ApiError::new(
             kind::INTERNAL_ERROR,
-            format!("session {id}'s screen could not be read"),
-        )
+            format!(
+                "{MAX_CAPTURES} captures of history are already running on this daemon, the \
+                 most it runs at once; try again when one has finished"
+            ),
+        ),
     })?;
-    let reply = move |captured: &Captured, text: &str, chunk: usize| {
+    let reply = move |text: &str, chunk: usize| {
         json!({
             "session": id,
             "text": text,
-            "cursor": {"row": captured.cursor.0, "column": captured.cursor.1},
-            "alternate_screen": captured.alternate,
-            "size": {"columns": captured.size.0, "rows": captured.size.1},
-            "title": captured.title,
+            "cursor": {"row": facts.cursor.0, "column": facts.cursor.1},
+            "alternate_screen": facts.alternate,
+            "size": {"columns": facts.size.0, "rows": facts.size.1},
+            "title": facts.title,
             "chunk": chunk,
         })
     };
     if !all {
-        return Ok(Answer::One(reply(&captured, &captured.text, 0)));
+        // One reply, so its text is gathered whole, but no further than one reply holds: the
+        // format stops at the first piece past it.
+        let mut text = String::new();
+        let mut escaped = 0;
+        for piece in pieces.by_ref() {
+            let piece = piece.ok_or_else(&unreadable)?;
+            escaped += crate::daemon::rpc::escaped_len(&piece);
+            if escaped > CAPTURE_REPLY_TEXT_MAX {
+                return Err(ApiError::new(
+                    kind::TOO_LARGE,
+                    format!(
+                        "those rows are over the {CAPTURE_REPLY_TEXT_MAX} bytes one reply holds; \
+                         `all` streams the whole history in parts"
+                    ),
+                ));
+            }
+            text.push_str(&piece);
+        }
+        return Ok(Answer::One(reply(&text, 0)));
     }
-    let pieces = chunks(&captured.text, CAPTURE_CHUNK_BYTES);
-    Ok(Answer::Stream(Box::new(
-        pieces
-            .into_iter()
-            .enumerate()
-            .map(move |(chunk, range)| Ok(reply(&captured, &captured.text[range], chunk))),
-    )))
+    // Each piece, a window of rows, cut into chunks a reply carries, as it is formatted.
+    let mut chunk = 0;
+    Ok(Answer::Stream(Box::new(pieces.flat_map(
+        move |piece| -> Vec<Result<Value, ApiError>> {
+            let Some(text) = piece else {
+                return vec![Err(unreadable())];
+            };
+            chunks(&text, CAPTURE_CHUNK_BYTES)
+                .into_iter()
+                .map(|range| {
+                    chunk += 1;
+                    Ok(reply(&text[range], chunk - 1))
+                })
+                .collect()
+        },
+    ))))
+}
+
+/// The most captures from a copy of a terminal (`lines` past `LIVE_HISTORY_ROWS`, or `all`) that
+/// one daemon runs at once: each holds a copy of its session's terminal and a window of its text,
+/// and a CPU while it formats. One past it is refused, not queued, so it never waits on a stalled
+/// reader's stream and its caller never mistakes the wait for a daemon gone quiet.
+pub const MAX_CAPTURES: usize = 4;
+
+static CAPTURES: AtomicUsize = AtomicUsize::new(0);
+
+/// One of the `MAX_CAPTURES` places, held by a capture's pieces until they are dropped: when the
+/// stream ends, fails or its caller hangs up.
+struct CaptureSlot(&'static AtomicUsize);
+
+impl CaptureSlot {
+    fn acquire() -> Option<CaptureSlot> {
+        CaptureSlot::acquire_from(&CAPTURES, MAX_CAPTURES)
+    }
+
+    /// A place from `counter` if fewer than `max` are held. Split out so a test can exercise the
+    /// cap against its own counter instead of racing every other capture for the shared one.
+    fn acquire_from(counter: &'static AtomicUsize, max: usize) -> Option<CaptureSlot> {
+        counter
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < max).then_some(count + 1)
+            })
+            .ok()
+            .map(|_| CaptureSlot(counter))
+    }
+}
+
+impl Drop for CaptureSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// Why there is no screen of session `id` to read: the daemon keeps none, or its copy failed.

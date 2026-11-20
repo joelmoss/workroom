@@ -1019,6 +1019,11 @@ fn known_content(dir: &Path, name: &str, lines: &str) -> String {
 
 /// `workroom capture <args>` against `socket`, once its stdout satisfies `ready`.
 fn capture_until(socket: &Path, args: &[&str], ready: impl Fn(&Run) -> bool) -> Run {
+    capture_awaiting(socket, args, "ready", ready)
+}
+
+/// [`capture_until`], whose failure names `what` it waited for.
+fn capture_awaiting(socket: &Path, args: &[&str], what: &str, ready: impl Fn(&Run) -> bool) -> Run {
     let mut args = args.to_vec();
     args.insert(0, "capture");
     let mut last = None;
@@ -1029,7 +1034,7 @@ fn capture_until(socket: &Path, args: &[&str], ready: impl Fn(&Run) -> bool) -> 
         done
     });
     let last = last.expect("a run");
-    assert!(reached, "never ready: {:?} {:?}", last.stdout, last.stderr);
+    assert!(reached, "never {what}: {:?} {:?}", last.stdout, last.stderr);
     last
 }
 
@@ -1154,7 +1159,8 @@ fn capture_says_when_a_program_has_the_alternate_screen() {
         &known_content(
             &workspace.dir,
             "fullscreen",
-            "printf '\\033[?1049h\\033[H\\033[2J\\033]2;notes.md\\007FULL SCREEN\\r\\n  editing'",
+            "echo first on the primary\necho second on the primary\n\
+             printf '\\033[?1049h\\033[H\\033[2J\\033]2;notes.md\\007FULL SCREEN\\r\\n  editing'",
         ),
     );
     let run = capture_until(&socket, &["editor", "--json"], |run| {
@@ -1164,11 +1170,24 @@ fn capture_says_when_a_program_has_the_alternate_screen() {
     assert_eq!(envelope["text"], "FULL SCREEN\n  editing", "{envelope}");
     assert_eq!(envelope["title"], "notes.md");
     assert_eq!(envelope["cursor"], json!({"row": 1, "column": 9}));
-    // No history on the alternate screen: the shell's is under it.
+    // The history is the shell's, under the program: the primary screen's lines, down to its last,
+    // above the program's screen.
+    let shell = "first on the primary\nsecond on the primary";
     for flag in ["--lines=50", "--all"] {
         let run = capture(&socket, &["editor", flag]);
-        assert_eq!(run.stdout, "FULL SCREEN\n  editing\n", "{flag}");
+        assert_eq!(run.code, 0, "{flag}: {}", run.stderr);
+        assert_eq!(
+            run.stdout,
+            format!("{shell}\nFULL SCREEN\n  editing\n"),
+            "{flag}"
+        );
     }
+    let one = capture(&socket, &["editor", "--lines=1", "--json"]).envelope();
+    assert_eq!(one["alternate_screen"], true, "{one}");
+    assert_eq!(
+        one["text"], "second on the primary\nFULL SCREEN\n  editing",
+        "{one}"
+    );
 }
 
 /// `--all` on a long history: one envelope per chunk under `--json`, numbered from 0 with only the
@@ -1185,24 +1204,34 @@ fn capture_all_streams_a_large_scrollback_in_chunks() {
     let mut shell = open(&socket, SHELL, "logs", "wr-1", &workspace.dir);
     listing_until(&socket, |listing| listing.len() == 1);
     const LINES: usize = 30_000;
+    // The script prints once the test says go, by making a file, so the flood never races the
+    // client's detach.
+    let go = workspace.dir.join("go");
     type_line(
         &mut shell,
         &known_content(
             &workspace.dir,
             "logs",
             &format!(
-                "echo STARTED\nsleep 3\nprintf '\\033[H\\033[2J\\033[3J'\n\
+                "echo STARTED\nwhile [ ! -e '{}' ]; do sleep 0.05; done\n\
+                 printf '\\033[H\\033[2J\\033[3J'\n\
                  awk 'BEGIN {{ for (i = 0; i < {LINES}; i++) \
                  printf \"line %05d the quick brown fox jumps over the lazy dog\\n\", i }}'\n\
-                 echo DONE"
+                 echo DONE",
+                go.display()
             ),
         ),
     );
     // Detached once the script has started and before it prints, so nothing waits on this test
     // reading the pane's output, and the typed line is not lost with the client.
-    capture_until(&socket, &["logs"], |run| run.stdout.contains("STARTED\n"));
+    capture_awaiting(&socket, &["logs"], "STARTED, the script waiting", |run| {
+        run.stdout.contains("STARTED\n")
+    });
     drop(shell);
-    capture_until(&socket, &["logs"], |run| run.stdout.ends_with("DONE\n"));
+    std::fs::write(&go, "").expect("say go");
+    capture_awaiting(&socket, &["logs"], "DONE, the flood printed", |run| {
+        run.stdout.ends_with("DONE\n")
+    });
 
     let json = capture(&socket, &["logs", "--all", "--json"]);
     assert_eq!(json.code, 0, "{}", json.stderr);
@@ -1267,6 +1296,74 @@ fn capture_all_streams_a_large_scrollback_in_chunks() {
         streamed += reply["result"]["text"].as_str().unwrap();
     }
     assert_eq!(streamed, text);
+
+    // The daemon runs 4 captures from a copy at once (`api::MAX_CAPTURES`). Four streams whose
+    // callers read one reply and stop hold all four; meanwhile a session keeps writing, which no
+    // capture's format holds up; a fifth is refused, saying why; and once the four hang up, a
+    // capture runs again.
+    let mut ticker = open(&socket, OTHER, "ticker", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 2);
+    type_line(
+        &mut ticker,
+        "i=0; while :; do echo \"tick $i\"; i=$((i+1)); sleep 0.02; done",
+    );
+    let held: Vec<Api> = (0..4)
+        .map(|_| {
+            let mut api = Api::connect(&socket);
+            let first = api.call("terminal.capture", json!({"target": "logs", "all": true}));
+            assert_eq!(first["more"], true, "{first}");
+            api
+        })
+        .collect();
+    let tick = |run: &Run| -> Option<u64> {
+        run.stdout
+            .lines()
+            .rev()
+            .find_map(|line| line.strip_prefix("tick ")?.parse().ok())
+    };
+    let before = tick(&capture_awaiting(&socket, &["ticker"], "a tick", |run| {
+        tick(run).is_some()
+    }))
+    .unwrap();
+    capture_awaiting(&socket, &["ticker"], "the ticks to go on", |run| {
+        tick(run).is_some_and(|now| now > before + 5)
+    });
+    for args in [
+        &["logs", "--all", "--json"][..],
+        &["logs", "--lines", "5000", "--json"],
+    ] {
+        let refused = workroom(Some(&socket), &[&["capture"][..], args].concat());
+        assert_eq!(refused.code, 1, "{args:?}: {}", refused.stdout);
+        let error = &refused.envelope()["error"];
+        assert_eq!(error["kind"], "InternalError", "{error}");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("4 captures of history are already running"),
+            "{error}"
+        );
+    }
+    // The screen alone takes no place.
+    assert_eq!(capture(&socket, &["logs"]).code, 0);
+    drop(held);
+    let again = capture_awaiting(
+        &socket,
+        &["logs", "--lines", "5000"],
+        "a place again",
+        |run| run.code == 0,
+    );
+    assert_eq!(
+        again.stdout.lines().count(),
+        5000 + rows_of(&again, &socket)
+    );
+}
+
+/// The screen's rows of the session `logs`, which a `--lines` capture adds its history above.
+fn rows_of(_run: &Run, socket: &Path) -> usize {
+    let json = capture(socket, &["logs", "--json"]).envelope();
+    // Every row but the blank one under DONE.
+    json["size"]["rows"].as_u64().unwrap() as usize - 1
 }
 
 #[test]

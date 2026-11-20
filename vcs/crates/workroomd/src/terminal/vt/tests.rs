@@ -1,5 +1,4 @@
 use super::*;
-use crate::terminal::shadow::{Capture, Rows};
 
 /// The whole point: a client repainted from `replay()` must end up in the same state as one
 /// that watched from byte zero. Anything less is a terminal that looks right and does not work.
@@ -1808,11 +1807,18 @@ fn a_virtual_placement_comes_back_without_moving_the_cursor() {
     assert!(text.contains("c=4,r=2,z=0"), "{text:?}");
 }
 
-/// A capture (#686) of `terminal`, as the terminal API asks for one.
+/// A capture (#686) of `terminal`, as the terminal API asks for one: its pieces, joined.
 fn captured(terminal: &ShadowTerminal, rows: Rows, unwrap: bool, vt: bool) -> String {
     terminal
-        .capture_text(Capture { rows, unwrap, vt })
+        .capture(Capture { rows, unwrap, vt }, &mut admit)
         .expect("a capture")
+        .map(|piece| piece.expect("a piece"))
+        .collect()
+}
+
+/// A place for every capture that asks.
+fn admit() -> Option<Admitted> {
+    Some(Box::new(()))
 }
 
 /// Ten numbered lines into a 20 by 4 terminal, the last without a newline: four on the screen,
@@ -1891,11 +1897,12 @@ fn a_vt_capture_keeps_the_escape_codes() {
     assert_ne!(vt, plain);
 }
 
-/// A full-screen program's screen is what is captured, and it has no history of its own: the
-/// shell's lines under it are not in it, however many rows are asked for. Mode 47 counts as much
-/// as 1049.
+/// A full-screen program's screen is what is captured by default. Its history is the primary
+/// screen's, the shell's lines under it down to the shell's cursor, which `lines` and `all` add
+/// above it. Mode 47 counts as much as 1049.
 #[test]
-fn a_capture_on_the_alternate_screen_is_that_screen() {
+fn a_capture_on_the_alternate_screen_is_that_screen_under_the_shells_history() {
+    let shell: Vec<String> = (0..10).map(|n| format!("line {n}")).collect();
     for enter in [&b"\x1b[?1049h"[..], b"\x1b[?47h"] {
         let mut terminal = numbered();
         assert!(!terminal.screen_facts().expect("facts").alternate);
@@ -1903,14 +1910,163 @@ fn a_capture_on_the_alternate_screen_is_that_screen() {
         terminal.write(b"\x1b[H\x1b[2JFULL SCREEN");
         let facts = terminal.screen_facts().expect("facts");
         assert!(facts.alternate, "{enter:?}");
-        for rows in [Rows::Screen, Rows::WithHistory(100), Rows::All] {
-            assert_eq!(
-                captured(&terminal, rows, false, false),
-                "FULL SCREEN",
-                "{rows:?}"
-            );
+        assert_eq!(
+            captured(&terminal, Rows::Screen, false, false),
+            "FULL SCREEN"
+        );
+        assert_eq!(
+            captured(&terminal, Rows::WithHistory(2), false, false),
+            "line 8\nline 9\nFULL SCREEN",
+            "{enter:?}"
+        );
+        let all = format!("{}\nFULL SCREEN", shell.join("\n"));
+        assert_eq!(captured(&terminal, Rows::All, false, false), all);
+        assert_eq!(
+            captured(&terminal, Rows::WithHistory(100), false, false),
+            all
+        );
+        // The live terminal is still on its alternate screen: only a copy left it.
+        assert!(terminal.screen_facts().expect("facts").alternate);
+    }
+}
+
+/// `lines` that one reply can't hold even at a byte a cell is refused before anything is copied;
+/// on the primary screen only the history there is counts. And a capture past the screen and a
+/// few rows needs a place, which a busy daemon has none of; the screen alone never asks for one.
+#[test]
+fn a_capture_too_big_for_a_reply_or_past_the_cap_is_refused() {
+    let mut terminal = numbered();
+    let huge = Rows::WithHistory(u32::MAX);
+    let ask = |rows| Capture {
+        rows,
+        unwrap: false,
+        vt: false,
+    };
+    assert!(terminal.capture(ask(huge), &mut admit).is_ok());
+    terminal.write(b"\x1b[?1049h");
+    assert!(matches!(
+        terminal.capture(ask(huge), &mut admit).err(),
+        Some(Refused::TooManyRows { columns: 20, .. })
+    ));
+    let mut asked = 0;
+    let mut none = || {
+        asked += 1;
+        None
+    };
+    assert_eq!(
+        terminal.capture(ask(Rows::All), &mut none).err(),
+        Some(Refused::Busy)
+    );
+    assert!(terminal.capture(ask(Rows::Screen), &mut none).is_ok());
+    assert_eq!(asked, 1, "only the copy asked for a place");
+}
+
+/// Only the screen and `LIVE_HISTORY_ROWS` of history are ever formatted on the live terminal,
+/// under the shadow's lock: more history, and all of it, are a copy's to format.
+#[test]
+fn only_a_few_rows_are_formatted_on_the_live_terminal() {
+    let mut terminal = ShadowTerminal::new(40, 10).expect("terminal");
+    for n in 0..5_000 {
+        terminal.write(format!("row {n}\r\n").as_bytes());
+    }
+    for rows in [
+        Rows::Screen,
+        Rows::WithHistory(LIVE_HISTORY_ROWS),
+        Rows::WithHistory(LIVE_HISTORY_ROWS + 1),
+        Rows::WithHistory(4_000),
+        Rows::All,
+    ] {
+        LIVE_ROWS.with(|live| live.borrow_mut().clear());
+        let text = captured(&terminal, rows, false, false);
+        assert!(text.ends_with("row 4999"), "{rows:?}");
+        let live = LIVE_ROWS.with(|live| live.borrow().clone());
+        assert!(
+            live.iter().all(|rows| *rows <= LIVE_HISTORY_ROWS),
+            "{rows:?} formatted {live:?} rows of history live"
+        );
+    }
+}
+
+/// The pieces own their copy, so the live terminal goes on taking output while they are made, on
+/// another thread, and what they read is the screen as it was when the capture began.
+#[test]
+fn a_captures_pieces_are_made_while_the_terminal_takes_output() {
+    let mut terminal = ShadowTerminal::new(40, 10).expect("terminal");
+    for n in 0..3_000 {
+        terminal.write(format!("row {n}\r\n").as_bytes());
+    }
+    let ask = Capture {
+        rows: Rows::All,
+        unwrap: false,
+        vt: false,
+    };
+    let mut pieces = terminal.capture(ask, &mut admit).expect("a capture");
+    let first = pieces.next().expect("a piece").expect("formatted");
+    assert!(first.starts_with("row 0\n"), "{first:?}");
+    let reader = std::thread::spawn(move || pieces.map(Option::unwrap).collect::<String>());
+    for n in 3_000..6_000 {
+        terminal.write(format!("row {n}\r\n").as_bytes());
+    }
+    let rest = reader.join().expect("the pieces");
+    let text = first + &rest;
+    assert!(text.ends_with("row 2999"), "{}", &text[text.len() - 40..]);
+    assert_eq!(text.lines().count(), 3_000);
+}
+
+/// A terminal whose rows have blank lines inside and at the end, lines the pane wraps (one ending
+/// in a space where it wraps), and wide characters and graphemes, some where a row wraps.
+fn awkward() -> ShadowTerminal {
+    let mut terminal = ShadowTerminal::new(10, 5).expect("terminal");
+    terminal.write(
+        "first\r\n\r\n\r\n012345678 abc\r\nwrapped-across-three-rows\r\n\r\n日本語の文字です\r\n\
+         e\u{301}t\u{e9} 👩\u{200d}💻\r\n\r\n\r\nlast\r\n\r\n"
+            .as_bytes(),
+    );
+    terminal
+}
+
+/// Window by window, however small the windows, a capture reads what one format of all its rows
+/// does: no blank line lost between windows or kept at the end, and no wrapped line split.
+#[test]
+fn windows_read_what_one_format_does() {
+    let terminal = awkward();
+    for unwrap in [false, true] {
+        let ask = Capture {
+            rows: Rows::All,
+            unwrap,
+            vt: false,
+        };
+        let whole = terminal.capture_text(ask).expect("one format");
+        let rows = terminal
+            .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
+            .unwrap()
+            + 5;
+        for window in [1, 2, 3, 7, 500] {
+            let copy = terminal.clone_via_snapshot().expect("a copy");
+            let windowed: String = Windows::new(copy, ask, 0..rows, window, None, Box::new(()))
+                .map(|piece| piece.expect("a piece"))
+                .collect();
+            assert_eq!(windowed, whole, "unwrap {unwrap}, window {window}");
         }
     }
+}
+
+/// Wide characters and graphemes come back as they were written, a line the pane wrapped where
+/// a wide character didn't fit included, and a space where a row wraps is kept when unwrapped.
+#[test]
+fn a_capture_keeps_wide_characters_graphemes_and_a_space_at_a_wrap() {
+    let terminal = awkward();
+    let plain = captured(&terminal, Rows::All, false, false);
+    let lines: Vec<&str> = plain.lines().collect();
+    assert!(lines.contains(&"e\u{301}t\u{e9} 👩\u{200d}💻"), "{plain}");
+    // Five wide characters fill a row of ten; the rest wraps.
+    assert!(lines.contains(&"日本語の文"), "{plain}");
+    assert!(lines.contains(&"字です"), "{plain}");
+    let unwrapped = captured(&terminal, Rows::All, true, false);
+    let lines: Vec<&str> = unwrapped.lines().collect();
+    assert!(lines.contains(&"日本語の文字です"), "{unwrapped}");
+    assert!(lines.contains(&"012345678 abc"), "{unwrapped}");
+    assert!(lines.contains(&"wrapped-across-three-rows"), "{unwrapped}");
 }
 
 #[test]
@@ -1928,12 +2084,14 @@ fn a_captures_facts_are_the_cursor_and_size() {
 /// taken from.
 #[test]
 fn a_copy_captures_what_the_terminal_does() {
-    let terminal = numbered();
-    let copy = terminal.snapshot().expect("a copy");
+    let terminal = awkward();
+    let copy = terminal.clone_via_snapshot().expect("a copy");
     for unwrap in [false, true] {
-        assert_eq!(
-            captured(&copy, Rows::All, unwrap, false),
-            captured(&terminal, Rows::All, unwrap, false)
-        );
+        let ask = Capture {
+            rows: Rows::All,
+            unwrap,
+            vt: false,
+        };
+        assert_eq!(copy.capture_text(ask), terminal.capture_text(ask));
     }
 }

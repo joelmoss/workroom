@@ -114,6 +114,19 @@ fn a_capture_with_parameters_it_cannot_take_is_invalid() {
     assert_eq!(missing.kind, kind::TARGET_NOT_FOUND);
 }
 
+/// A capture from a copy takes one of a few places, and gives it back when its pieces are dropped.
+#[test]
+fn captures_past_the_cap_get_no_place_until_one_ends() {
+    static HELD: AtomicUsize = AtomicUsize::new(0);
+    let first = CaptureSlot::acquire_from(&HELD, 2).expect("a place");
+    let second = CaptureSlot::acquire_from(&HELD, 2).expect("a place");
+    assert!(CaptureSlot::acquire_from(&HELD, 2).is_none());
+    drop(first);
+    let third = CaptureSlot::acquire_from(&HELD, 2).expect("a place once one ended");
+    drop((second, third));
+    assert_eq!(HELD.load(Ordering::Acquire), 0);
+}
+
 /// `--all`'s chunks are whole lines of at most `max` bytes, which together are the text; a line
 /// longer than that is cut between characters.
 #[test]

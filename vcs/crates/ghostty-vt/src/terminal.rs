@@ -851,6 +851,37 @@ impl<C: Callbacks> Terminal<C> {
         bytes
     }
 
+    /// Whether the row at `at` soft-wraps into the next one (`GHOSTTY_ROW_DATA_WRAP`): its line
+    /// goes on below it. `None` when the point or the row cannot be read.
+    pub fn row_wraps(&self, at: Point) -> Option<bool> {
+        // SAFETY: plain C structs of integers and pointers, for which all zeroes is valid.
+        let mut point: GhosttyPoint = unsafe { std::mem::zeroed() };
+        point.tag = at.tag;
+        point.value.coordinate = GhosttyPointCoordinate { x: at.x, y: at.y };
+        // SAFETY: as above.
+        let mut grid: GhosttyGridRef = unsafe { std::mem::zeroed() };
+        // SAFETY: `inner` is a live terminal and `grid` a live out-pointer.
+        if unsafe { ghostty_terminal_grid_ref(self.inner, point, &mut grid) } != OK {
+            return None;
+        }
+        let mut row: GhosttyRow = 0;
+        // SAFETY: `grid` was just resolved against this live terminal, which nothing has written
+        // to since, and `row` is a live out-pointer.
+        if unsafe { ghostty_grid_ref_row(&grid, &mut row) } != OK {
+            return None;
+        }
+        let mut wraps = false;
+        // SAFETY: ROW_DATA_WRAP's output type is `bool`, and `wraps` is a live one.
+        let rc = unsafe {
+            ghostty_row_get(
+                row,
+                GhosttyRowData_GHOSTTY_ROW_DATA_WRAP,
+                (&raw mut wraps).cast(),
+            )
+        };
+        (rc == OK).then_some(wraps)
+    }
+
     /// The cells from `start` to `end`, or `None` when either cannot be resolved.
     pub fn selection(&self, start: Point, end: Point) -> Option<Selection<'_>> {
         let grid = |at: Point| -> Option<GhosttyGridRef> {

@@ -87,10 +87,38 @@ pub struct Captured {
     pub title: Option<String>,
 }
 
-/// The rest of a capture, to run once the shadow's lock is released: a whole scrollback is
-/// formatted from a copy of the terminal, so the session's output never waits on it. `None` when
-/// the format failed.
-pub type CaptureJob = Box<dyn FnOnce() -> Option<Captured> + Send>;
+/// The most text one capture reply holds, JSON-escaped: a reply's 16 MiB less room for the rest
+/// of it.
+pub const CAPTURE_REPLY_TEXT_MAX: usize = 16 * 1024 * 1024 - 64 * 1024;
+
+/// A capture's text in pieces, made one at a time as they are asked for: joined, they are the
+/// text. A `None` piece is one the formatter could not read.
+pub type Pieces = Box<dyn Iterator<Item = Option<String>> + Send>;
+
+/// A capture under way: the facts read under the shadow's lock, and the text, which a copy
+/// formats once the lock is released, so the session's output never waits on it.
+pub struct CaptureJob {
+    /// The screen's facts, `text` empty.
+    pub facts: Captured,
+    pub pieces: Pieces,
+}
+
+/// Why a screen can't be captured.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// No shadow terminal: a build without terminal-state, or one that failed.
+    NoScreen,
+    /// The screen, or a copy of it, could not be read.
+    Unreadable,
+    /// `lines` covers more rows than one reply holds at the pane's width, even at a byte a cell.
+    TooManyRows { rows: u64, columns: u16 },
+    /// As many captures from a copy as the daemon runs at once are running.
+    Busy,
+}
+
+/// What a capture from a copy holds for as long as it runs: its place among the daemon's
+/// captures, given back when it is dropped.
+pub type Admitted = Box<dyn Send>;
 
 /// What a write from the pty asks of the session: bytes to answer the program with (a program
 /// status probe's reply), and `Some(blocked)` when its program status changed (#358).
@@ -331,34 +359,25 @@ impl Shadow {
         Some(title)
     }
 
-    /// A capture of this screen (#686), or `None` when there is no screen to read. Called under
-    /// the shadow's lock, which only the capture of the screen and a few rows of history keeps:
-    /// the whole scrollback is a copy of the terminal (`ShadowTerminal::snapshot`), formatted
-    /// by the job once the lock is released. The facts are this terminal's, read here. A screen
-    /// that is there but can't be read is a job that fails.
-    pub fn capture(&self, capture: Capture) -> Option<CaptureJob> {
-        let terminal = self.terminal.as_ref()?;
-        let failed: CaptureJob = Box::new(|| None);
-        let Some(facts) = terminal.screen_facts() else {
-            return Some(failed);
-        };
-        let facts = Captured {
-            title: self.title(),
-            ..facts
-        };
-        if capture.rows == Rows::All {
-            let Some(copy) = terminal.snapshot() else {
-                return Some(failed);
-            };
-            return Some(Box::new(move || {
-                let text = copy.capture_text(capture)?;
-                Some(Captured { text, ..facts })
-            }));
-        }
-        let captured = terminal
-            .capture_text(capture)
-            .map(|text| Captured { text, ..facts });
-        Some(Box::new(move || captured))
+    /// A capture of this screen (#686). Called under the shadow's lock, which only the screen and
+    /// up to `LIVE_HISTORY_ROWS` of history are formatted under; anything more is a copy of the
+    /// terminal, taken here once `admit` gives it a place, and formatted window by window as the
+    /// job's pieces are asked for, after the lock is released (`ShadowTerminal::capture`).
+    pub fn capture(
+        &self,
+        capture: Capture,
+        admit: &mut dyn FnMut() -> Option<Admitted>,
+    ) -> Result<CaptureJob, Refused> {
+        let terminal = self.terminal.as_ref().ok_or(Refused::NoScreen)?;
+        let facts = terminal.screen_facts().ok_or(Refused::Unreadable)?;
+        let pieces = terminal.capture(capture, admit)?;
+        Ok(CaptureJob {
+            facts: Captured {
+                title: self.title(),
+                ..facts
+            },
+            pieces,
+        })
     }
 
     #[cfg(test)]
@@ -398,9 +417,12 @@ impl Shadow {
         None
     }
     /// No terminal, so no screen to capture, whatever was asked.
-    pub fn capture(&self, Capture { rows, unwrap, vt }: Capture) -> Option<CaptureJob> {
-        let _asked = (rows, unwrap, vt);
-        None
+    pub fn capture(
+        &self,
+        _capture: Capture,
+        _admit: &mut dyn FnMut() -> Option<Admitted>,
+    ) -> Result<CaptureJob, Refused> {
+        Err(Refused::NoScreen)
     }
     pub fn resize(&mut self, _size: Size) {}
     pub fn watch_for_transfers(&mut self, _on: bool) {}

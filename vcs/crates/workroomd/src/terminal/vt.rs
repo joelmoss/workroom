@@ -61,6 +61,7 @@
 
 #![allow(non_upper_case_globals, non_camel_case_types, non_snake_case)]
 
+use std::ops::Range;
 use std::time::Instant;
 
 use ghostty_vt::sys::*;
@@ -70,7 +71,19 @@ use ghostty_vt::{
 
 use crate::terminal::images::{ImageRef, Placement};
 use crate::terminal::program_status::{Event, Kind, Report, State};
-use crate::terminal::shadow::{Capture, Captured, Rows};
+use crate::terminal::shadow::{
+    Admitted, CAPTURE_REPLY_TEXT_MAX, Capture, Captured, Pieces, Refused, Rows,
+};
+
+/// The most history rows a capture (#686) formats on the live terminal, under the shadow's lock,
+/// above the screen: the screen and a little, a bounded format (ADR 0051). A capture of more
+/// history is formatted from a copy once the lock is released (`ShadowTerminal::capture`).
+pub const LIVE_HISTORY_ROWS: u32 = 100;
+
+/// The most rows a capture formats from its copy at once (`Windows`): what it holds in memory
+/// beyond the copy, and what each reply of a stream waits on. At 200 columns, about 100 KiB of
+/// plain text, and a few MiB in truecolour VT.
+pub const CAPTURE_WINDOW_ROWS: u32 = 500;
 
 /// Continuation tracking is a byte LIMIT, not a flag, and it must be set before the input that
 /// leaves the parser unfinished — enabling it afterwards makes that continuation permanently
@@ -197,6 +210,9 @@ thread_local! {
     /// The size of every format `format_tail` has run on this thread, for the tests that bound
     /// its search.
     static ATTEMPTS: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The history rows of every capture `capture_text` has formatted in one go on this thread
+    /// (`u32::MAX` for all of them), for the test that bounds what a capture formats live.
+    static LIVE_ROWS: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Where the progress callback and a command end write: the held report, and whether it changed
@@ -1079,18 +1095,21 @@ impl ShadowTerminal {
     /// alternate screen, which has no history. `None` when the rows or the format could not be
     /// read; an empty screen is an empty string.
     pub fn capture_text(&self, capture: Capture) -> Option<String> {
+        #[cfg(test)]
+        LIVE_ROWS.with(|live| {
+            live.borrow_mut().push(match capture.rows {
+                Rows::Screen => 0,
+                Rows::WithHistory(rows) => rows,
+                Rows::All => u32::MAX,
+            })
+        });
         let selection = match capture.rows {
             Rows::Screen => Some(self.tail_selection(0)?),
             Rows::WithHistory(rows) => Some(self.tail_selection(rows)?),
             Rows::All => None,
         };
-        let emit = if capture.vt {
-            GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_VT
-        } else {
-            GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_PLAIN
-        };
         let bytes = self.terminal.format_lines(
-            emit,
+            capture_format(capture),
             Extras::default(),
             selection.as_ref(),
             Lines {
@@ -1123,10 +1142,151 @@ impl ShadowTerminal {
         })
     }
 
-    /// A copy of this terminal to capture from once its lock is released (`clone_via_snapshot`):
-    /// about 27 ms on 50 MB of history, against formatting all of it under the lock.
-    pub fn snapshot(&self) -> Option<ShadowTerminal> {
-        self.clone_via_snapshot()
+    /// A capture's text as pieces (#686), called under the shadow's lock.
+    ///
+    /// The visible screen is the active one, a full-screen program's alternate screen included.
+    /// The screen alone, and the primary screen with up to `LIVE_HISTORY_ROWS` of history above
+    /// it, are formatted here, on the live terminal: a bounded format (ADR 0051). Anything more is
+    /// a copy of the terminal (`clone_via_snapshot`, about 27 ms on 50 MB of history, the price
+    /// `primary_screen` pays too), taken only once `admit` gives it a place, and formatted window
+    /// by window (`Windows`) as the pieces are asked for, after the lock is released.
+    ///
+    /// The history is the primary screen's, the only history there is. On the alternate screen it
+    /// is the primary's scrollback and its screen down to its cursor, the shell's lines under the
+    /// program, which only a copy can reach (`primary_screen`), with the alternate screen's own
+    /// text after it.
+    ///
+    /// `lines` (one reply) that covers more rows than a reply holds at a byte a cell is refused
+    /// before anything is copied.
+    pub fn capture(
+        &self,
+        capture: Capture,
+        admit: &mut dyn FnMut() -> Option<Admitted>,
+    ) -> Result<Pieces, Refused> {
+        let alternate = self
+            .terminal
+            .on_alternate_screen()
+            .ok_or(Refused::Unreadable)?;
+        let read = |data| self.get_u32(data).ok_or(Refused::Unreadable);
+        let history = read(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)?;
+        let rows = read(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS)?;
+        let columns = read(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS)?;
+        let live = |capture| -> Pieces { Box::new(std::iter::once(self.capture_text(capture))) };
+        match capture.rows {
+            Rows::Screen => return Ok(live(capture)),
+            Rows::WithHistory(lines) if !alternate && lines <= LIVE_HISTORY_ROWS => {
+                return Ok(live(capture));
+            }
+            Rows::WithHistory(lines) => {
+                // On the alternate screen the primary's history is not this terminal's to count, so
+                // all that was asked for is counted.
+                let covered =
+                    u64::from(if alternate { lines } else { lines.min(history) }) + u64::from(rows);
+                if covered.saturating_mul(u64::from(columns) + 1) > CAPTURE_REPLY_TEXT_MAX as u64 {
+                    return Err(Refused::TooManyRows {
+                        rows: covered,
+                        columns: u16::try_from(columns).unwrap_or(u16::MAX),
+                    });
+                }
+            }
+            Rows::All => {}
+        }
+        let admitted = admit().ok_or(Refused::Busy)?;
+        let tail = if alternate {
+            let screen = Capture {
+                rows: Rows::Screen,
+                ..capture
+            };
+            Some(self.capture_text(screen).ok_or(Refused::Unreadable)?)
+        } else {
+            None
+        };
+        let mut copy = self.clone_via_snapshot().ok_or(Refused::Unreadable)?;
+        let end = if alternate {
+            copy.leave_alternate_screen().ok_or(Refused::Unreadable)?
+        } else {
+            history + rows
+        };
+        let first = match capture.rows {
+            Rows::WithHistory(lines) if alternate => end.saturating_sub(lines),
+            Rows::WithHistory(lines) => history.saturating_sub(lines),
+            Rows::Screen | Rows::All => 0,
+        };
+        Ok(Box::new(Windows::new(
+            copy,
+            capture,
+            first..end,
+            CAPTURE_WINDOW_ROWS,
+            tail,
+            admitted,
+        )))
+    }
+
+    /// Takes this copy off the alternate screen, however it got there (mode 1049, 1047 or 47), to
+    /// the primary screen, and returns where the primary's rows end: one past its screen's last
+    /// row of text, in screen rows from the top of the history, so the blank rows under the
+    /// shell's last line are not lines above the program's. Not its cursor, which mode 47 shares
+    /// with the alternate screen. `None` when it stays on the alternate screen or can't be read.
+    /// Only for a copy: the alternate screen is gone after it.
+    fn leave_alternate_screen(&mut self) -> Option<u32> {
+        for leave in [&b"\x1b[?1049l"[..], b"\x1b[?1047l", b"\x1b[?47l"] {
+            if self.terminal.on_alternate_screen()? {
+                self.write(leave);
+            }
+        }
+        if self.terminal.on_alternate_screen()? {
+            return None;
+        }
+        let history = self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)?;
+        let rows = self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS)?;
+        // Each row a line, trimmed: as many lines as rows down to the last with text.
+        let rows_only = Capture {
+            rows: Rows::Screen,
+            unwrap: false,
+            vt: false,
+        };
+        let screen = self.format_span(history..history + rows, rows_only)?;
+        let lines = if screen.is_empty() {
+            0
+        } else {
+            screen.matches('\n').count() as u32 + 1
+        };
+        Some(history + lines)
+    }
+
+    /// Rows `rows` (screen rows from the top of the history) as a capture formats them, trimmed.
+    fn format_span(&self, rows: Range<u32>, capture: Capture) -> Option<String> {
+        let columns = self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS)?;
+        let point = |x: u32, y: u32| Point {
+            tag: GhosttyPointTag_GHOSTTY_POINT_TAG_SCREEN,
+            x: u16::try_from(x).unwrap_or(u16::MAX),
+            y,
+        };
+        let selection = self.terminal.selection(
+            point(0, rows.start),
+            point(columns.saturating_sub(1), rows.end.checked_sub(1)?),
+        )?;
+        let bytes = self.terminal.format_lines(
+            capture_format(capture),
+            Extras::default(),
+            Some(&selection),
+            Lines {
+                unwrap: capture.unwrap,
+                trim: true,
+            },
+        )?;
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Whether screen row `row` soft-wraps into the next.
+    fn row_wraps(&self, row: u32) -> bool {
+        self.terminal
+            .row_wraps(Point {
+                tag: GhosttyPointTag_GHOSTTY_POINT_TAG_SCREEN,
+                x: 0,
+                y: row,
+            })
+            .unwrap_or(false)
     }
 
     /// Plain-text screen contents, scrollback included and untrimmed. Used by tests; never sent to
@@ -1139,6 +1299,115 @@ impl ShadowTerminal {
             None,
         );
         String::from_utf8_lossy(&text).into_owned()
+    }
+}
+
+/// The formatter's output a capture asks for: escape codes kept, or plain text.
+fn capture_format(capture: Capture) -> GhosttyFormatterFormat {
+    if capture.vt {
+        GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_VT
+    } else {
+        GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_PLAIN
+    }
+}
+
+/// A capture's rows formatted from a copy, `window` rows at a time, each window a piece made only
+/// when it is asked for (#686). So a capture holds the copy and one window's text, never all of
+/// it, and its first piece is ready after one window, however long the history.
+///
+/// The pieces join into what one format of all the rows would give. Each window is trimmed, so the
+/// blank lines it ends with are held back and written before the next text, or dropped at the
+/// end, as the one format's trim drops them. With `unwrap`, a window ends only where a line does,
+/// so no line is split between two. `tail`, the alternate screen's text, follows the rows.
+pub struct Windows {
+    copy: ShadowTerminal,
+    capture: Capture,
+    rows: Range<u32>,
+    window: u32,
+    /// Blank lines read and not yet written.
+    held: usize,
+    /// Whether any text has been written, which the next is a line after.
+    started: bool,
+    tail: Option<String>,
+    finished: bool,
+    _admitted: Admitted,
+}
+
+impl Windows {
+    fn new(
+        copy: ShadowTerminal,
+        capture: Capture,
+        rows: Range<u32>,
+        window: u32,
+        tail: Option<String>,
+        admitted: Admitted,
+    ) -> Windows {
+        Windows {
+            copy,
+            capture,
+            rows,
+            window: window.max(1),
+            held: 0,
+            started: false,
+            tail,
+            finished: false,
+            _admitted: admitted,
+        }
+    }
+
+    /// `text`, a run of `lines` lines, as the next piece: after the line before it and the blank
+    /// lines held back, holding back the blank lines it ends with.
+    fn piece(&mut self, text: &str, lines: usize) -> String {
+        let breaks = text.matches('\n').count();
+        let mut out = "\n".repeat(self.held + usize::from(self.started));
+        out.push_str(text);
+        self.held = lines.saturating_sub(1 + breaks);
+        self.started = true;
+        out
+    }
+}
+
+impl Iterator for Windows {
+    type Item = Option<String>;
+
+    fn next(&mut self) -> Option<Option<String>> {
+        while !self.rows.is_empty() {
+            let first = self.rows.start;
+            let mut end = first.saturating_add(self.window).min(self.rows.end);
+            if self.capture.unwrap {
+                while end < self.rows.end && self.copy.row_wraps(end - 1) {
+                    end += 1;
+                }
+            }
+            self.rows.start = end;
+            let Some(text) = self.copy.format_span(first..end, self.capture) else {
+                self.rows = end..end;
+                self.finished = true;
+                return Some(None);
+            };
+            let lines = if self.capture.unwrap {
+                (first..end)
+                    .filter(|row| *row + 1 == end || !self.copy.row_wraps(*row))
+                    .count()
+            } else {
+                (end - first) as usize
+            };
+            if text.is_empty() {
+                self.held += lines;
+                continue;
+            }
+            return Some(Some(self.piece(&text, lines)));
+        }
+        if self.finished {
+            return None;
+        }
+        self.finished = true;
+        match self.tail.take() {
+            Some(tail) if !tail.is_empty() => Some(Some(self.piece(&tail, 1))),
+            // Nothing at all is still a piece: an empty capture's text.
+            _ if !self.started => Some(Some(String::new())),
+            _ => None,
+        }
     }
 }
 
