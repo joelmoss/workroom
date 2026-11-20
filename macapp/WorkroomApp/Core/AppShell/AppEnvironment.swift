@@ -85,6 +85,21 @@ struct AppEnvironment: Equatable {
     #endif
   }
 
+  /// Whether launch sets the `.prohibited` activation policy, so the unit-test host (one per
+  /// parallel `make app-test` worker) never activates, takes no Dock icon, and keeps its windows
+  /// behind the developer's work. Only a hosted unit run — fixture and XCUITest launches must
+  /// activate — and never in Release, which reads no test signal. A test that needs focus sets
+  /// `.regular` itself.
+  static func prohibitsActivation(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> Bool {
+    #if DEBUG
+      isHostedUnitRun(environment: environment)
+    #else
+      false
+    #endif
+  }
+
   /// Whether `WorkroomApp.init` starts the background `$SHELL -ilc` probe. Not in a hosted unit run
   /// (`ShellEnvironmentTests` needs the cache to hold only what it put there) and not in a UI-test
   /// launch (which has no use for the enrichment, and would otherwise execute the shell's startup

@@ -72,7 +72,8 @@ APP_SIGN_FLAGS ?=
 # class. With 10 workers (and APP_TEST_DIAGNOSTICS below) the test phase went 83s -> 42s, measured
 # 2026-10-18 on 3365 tests. `hw.ncpu` so a smaller CI runner is not oversubscribed.
 APP_TEST_FLAGS ?= -parallel-testing-enabled YES -parallel-testing-worker-count $(shell sysctl -n hw.ncpu)
-# Native menu tracking needs foreground focus; normal unit tests continue to share the GUI.
+# Native menu tracking needs foreground focus; normal unit tests continue to share the GUI (their
+# host can't activate: `AppEnvironment.prohibitsActivation`).
 APP_TEST_GUI_MODE ?= shared
 # A unit test that hangs fails after 5 minutes, naming itself, rather than holding the run (and CI's
 # `app` job) until something kills it, with no clue which test it was. Apart from APP_TEST_FLAGS so a
