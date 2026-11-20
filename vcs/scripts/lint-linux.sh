@@ -8,10 +8,12 @@ if [ "$(uname -s)" = Linux ]; then
   exec make -C "$ROOT" vcs-lint "VCS_RUST=$RUST_VERSION"
 fi
 
-# Docker and Podman come before Apple's `container`. Under container 1.7.1, Zig 0.17.1's fetch of
-# Ghostty's dependencies hung, then failed with TlsInitializationFailed, while curl in the same
-# image reached the same host and the same fetch under Docker succeeded (measured 2026-11-20). So a
-# cold Ghostty build fails there. WR_LINT_RUNTIME names one runtime instead, with no fallback.
+# Docker and Podman come before Apple's `container`. Measured 2026-11-20 in this image, with
+# container 1.7.1 and Zig 0.17.1: deps.files.ghostty.org resolved to IPv6 and IPv4 addresses,
+# `curl -4` reached it and `curl -6` didn't, and `zig fetch` of one of Ghostty's dependencies hung
+# (inside the lint, the same fetch failed with TlsInitializationFailed). Under Docker `curl -6`
+# failed too, yet that `zig fetch` succeeded and the whole lint passed. WR_LINT_RUNTIME names one
+# runtime instead, with no fallback.
 if [ -n "${WR_LINT_RUNTIME:-}" ]; then
   candidates=("$WR_LINT_RUNTIME")
 else

@@ -52,6 +52,14 @@ RUNTIME="${WR_FIXTURE_RUNTIME:-docker}"
 APPLE=0
 [ "$(basename "$RUNTIME")" = container ] && APPLE=1
 BUILD_TIMEOUT="${WR_FIXTURE_BUILD_TIMEOUT:-600}"
+# Checked, because perl's `alarm` reads anything else as 0, which is no limit at all.
+case "$BUILD_TIMEOUT" in
+  '' | *[!0-9]*) BUILD_TIMEOUT=0 ;;
+esac
+if [ "$BUILD_TIMEOUT" -eq 0 ]; then
+  echo "error: WR_FIXTURE_BUILD_TIMEOUT must be a whole number of seconds above 0, not '${WR_FIXTURE_BUILD_TIMEOUT:-}'" >&2
+  exit 1
+fi
 SUPERVISOR="${WR_FIXTURE_SUPERVISOR:-1}"
 SYSTEMD="${WR_FIXTURE_SYSTEMD:-0}"
 # The systemd variant has no supervisor: the tests start the daemon.
@@ -91,14 +99,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# capped <seconds> <command...>: runs the command in a process group of its own, kills the whole
+# with_timeout <seconds> <command...>: runs the command in a process group of its own, kills the whole
 # group once <seconds> pass and exits 124. The whole group, because `container build` ignores
 # SIGALRM and its build process outlives the CLI. INT and TERM are passed on to the group, which
 # no longer gets the terminal's Ctrl-C or CI's cancel itself.
-capped() {
+with_timeout() {
   perl -e '
     my $limit = shift;
-    my $pid = fork() // die "capped: fork: $!\n";
+    my $pid = fork() // die "with_timeout: fork: $!\n";
     if ($pid == 0) { setpgrp(0, 0); exec { $ARGV[0] } @ARGV or exit 127 }
     setpgrp($pid, $pid);
     my $end = sub { kill "KILL", -$pid; waitpid $pid, 0; exit $_[0] };
@@ -129,10 +137,10 @@ status=0
 if [ "$APPLE" = 1 ]; then
   # No image IDs to build by, so a tag this run alone uses.
   IMAGE="$NAME-image"
-  capped "$BUILD_TIMEOUT" "$RUNTIME" build --progress plain --tag "$IMAGE" --build-arg FIXTURE=1 \
+  with_timeout "$BUILD_TIMEOUT" "$RUNTIME" build --progress plain --tag "$IMAGE" --build-arg FIXTURE=1 \
     ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} "$STAGE" > "$STAGE/build.log" 2>&1 || status=$?
 else
-  IMAGE="$(capped "$BUILD_TIMEOUT" "$RUNTIME" build --quiet --build-arg FIXTURE=1 \
+  IMAGE="$(with_timeout "$BUILD_TIMEOUT" "$RUNTIME" build --quiet --build-arg FIXTURE=1 \
     ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} "$STAGE" 2> "$STAGE/build.log")" || status=$?
 fi
 if [ "$status" = 124 ]; then
