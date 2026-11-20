@@ -1763,8 +1763,9 @@ impl Drop for Pane {
 }
 
 /// The bootstrap's far side (#231), through the app's own scripts over ssh: a host with no daemon
-/// gets this build installed and started; a host already holding it is pushed nothing; a host
-/// running another build is handed off to this one with an attached pane's shell, its pid and
+/// gets this build installed and started; a host already holding it is pushed nothing; an update
+/// to the CLI's commands alone is installed and hands nothing off (#680); a host running another
+/// daemon build is handed off to this one with an attached pane's shell, its pid and
 /// its exit code intact, and the pane comes back; and a binary that passes every check and then
 /// dies restoring is refused after the fact, leaving the old file for the supervisor to restart.
 #[test]
@@ -1859,13 +1860,7 @@ fn over_ssh_the_bootstrap_installs_hands_off_and_survives_a_crashed_restore() {
     ));
     let daemon = fixture.supervised_daemon();
 
-    // A newer app: the same ELF with a byte appended, which the loader ignores and both hashes
-    // notice. A pane is attached throughout.
-    let newer = elf.with_file_name("workroomd-newer");
-    let mut bytes = std::fs::read(&elf).expect("read the daemon");
-    bytes.push(b'\n');
-    std::fs::write(&newer, &bytes).expect("write the newer daemon");
-    let newer_sha = sha256_hex(&newer);
+    // A pane is attached throughout the two updates that follow.
     let session = "7b7b7b7b-0000-4000-8000-000000000001";
     let mut pane = Pane::attach(&fixture, session, false);
     std::thread::sleep(Duration::from_millis(500));
@@ -1873,10 +1868,49 @@ fn over_ssh_the_bootstrap_installs_hands_off_and_survives_a_crashed_restore() {
     let seen = pane.read_until("MARK-42", Duration::from_secs(10));
     let shell = number_after(&seen, "SHELL=").unwrap_or_else(|| panic!("no shell pid in {seen:?}"));
 
+    // A newer app whose CLI commands alone changed (#680): another file, the same daemon build.
+    // It is installed, so the host's next `workroom <command>` runs it, and nothing is handed
+    // off: the pane stays attached to the daemon it had.
+    let cli_only = cli_only_update(&elf, "workroomd-cli-only");
+    let cli_only_sha = sha256_hex(&cli_only);
+    let output = probe(&cli_only_sha);
+    assert_eq!(
+        reported(&output, "hand-off").as_deref(),
+        Some("none"),
+        "{output}"
+    );
+    let (status, output) = install(&cli_only);
+    assert_eq!(status, Some(0), "install: {output}");
+    assert_eq!(
+        reported(&output, "outcome").as_deref(),
+        Some("current"),
+        "{output}"
+    );
+    assert_eq!(fixture.supervised_daemon(), daemon);
+    fixture.run(&format!(
+        "test \"$(sha256sum {INSTALLED_DAEMON} | cut -c1-64)\" = {cli_only_sha}"
+    ));
+    pane.type_line("echo STILL-$((40+4))");
+    let seen = pane.read_until("STILL-44", Duration::from_secs(10));
+    assert!(
+        seen.contains("STILL-44"),
+        "the pane lost its daemon: {seen:?}"
+    );
+    // Every later connect asks again, and the daemon is still current.
+    let output = probe(&cli_only_sha);
+    assert_eq!(
+        reported(&output, "hand-off").as_deref(),
+        Some("0 current"),
+        "{output}"
+    );
+
+    // A newer app whose daemon changed: another daemon build, handed off to.
+    let newer = daemon_update(&elf, "workroomd-newer");
+    let newer_sha = sha256_hex(&newer);
     let output = probe(&newer_sha);
     assert_eq!(
         reported(&output, "installed").as_deref(),
-        Some(sha.as_str())
+        Some(cli_only_sha.as_str())
     );
     assert_eq!(
         reported(&output, "hand-off").as_deref(),
@@ -1990,8 +2024,37 @@ fn over_ssh_the_bootstrap_installs_hands_off_and_survives_a_crashed_restore() {
         "crashed restore: the supervisor served a clean daemon {recovered:?} after the install \
          was refused"
     );
+    let _ = std::fs::remove_file(&cli_only);
     let _ = std::fs::remove_file(&newer);
     let _ = std::fs::remove_file(&dying);
+}
+
+/// An update whose CLI commands alone changed (#680), written beside `elf` as `name`: the same
+/// ELF with a byte appended, which the loader ignores and every file hash notices, and which
+/// leaves its daemon build as it was.
+fn cli_only_update(elf: &Path, name: &str) -> PathBuf {
+    let path = elf.with_file_name(name);
+    let mut bytes = std::fs::read(elf).expect("read the daemon");
+    bytes.push(b'\n');
+    std::fs::write(&path, &bytes).expect("write the update");
+    path
+}
+
+/// An update whose daemon changed (#680), written beside `elf` as `name`: the same ELF with
+/// another daemon build in its marker, which is what both `protocol` and a daemon offered it read
+/// (`handoff::daemon_build`). A static ELF carries no signature for the edit to break.
+fn daemon_update(elf: &Path, name: &str) -> PathBuf {
+    let path = elf.with_file_name(name);
+    let mut bytes = std::fs::read(elf).expect("read the daemon");
+    let prefix = b"WORKROOMD-DAEMON-BUILD:";
+    let at = bytes
+        .windows(prefix.len())
+        .position(|window| window == prefix)
+        .expect("the daemon carries its daemon build marker")
+        + prefix.len();
+    bytes[at] = if bytes[at] == b'0' { b'1' } else { b'0' };
+    std::fs::write(&path, &bytes).expect("write the update");
+    path
 }
 
 /// The number that follows `label` in terminal output, skipping the tty's echo of the command
@@ -2755,14 +2818,11 @@ fn over_ssh_systemd_a_lingering_users_daemon_outlives_every_login_and_a_hand_off
     assert!(seen.contains("MARK-665"), "the session was lost: {seen:?}");
     drop(pane);
 
-    // A newer app: the same ELF with a byte appended, handed off to as the bootstrap does.
+    // A newer app whose daemon changed, handed off to as the bootstrap does.
     let elf = PathBuf::from(
         std::env::var("WR_SSH_FIXTURE_DAEMON").expect("run.sh exports WR_SSH_FIXTURE_DAEMON"),
     );
-    let newer = elf.with_file_name("workroomd-newer-systemd");
-    let mut bytes = std::fs::read(&elf).expect("read the daemon");
-    bytes.push(b'\n');
-    std::fs::write(&newer, &bytes).expect("write the newer daemon");
+    let newer = daemon_update(&elf, "workroomd-newer-systemd");
     let newer_sha = sha256_hex(&newer);
     let (status, output) = fixture.bootstrap(
         "probe",
