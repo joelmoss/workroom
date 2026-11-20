@@ -290,6 +290,41 @@ fn the_wall_clock_ends_an_in_process_run() {
     wait_for("the script's child to end", || !alive(child));
 }
 
+/// A cleanup that prints more than a pipe holds isn't stalled until the SIGKILL: the combined
+/// output is read while the tree is given its grace, as Go read it, so the cleanup finishes on its
+/// own and all it printed arrives.
+#[test]
+fn a_cleanup_that_prints_more_than_a_pipe_holds_finishes_within_the_grace() {
+    let root = scratch("cleanup");
+    let finished = root.join("finished");
+    let path = executable(
+        &root.join("workroom_teardown"),
+        &format!(
+            "#!/bin/sh\ntrap 'head -c 262144 /dev/zero | tr \"\\\\000\" x; echo; echo cleaned; \
+             touch {}; exit 0' TERM\nwhile :; do sleep 0.05; done\n",
+            finished.display()
+        ),
+    );
+    let mut request = in_process(&path, &root, &[], plain_shell(&root, ""));
+    request.timeout = Some(Duration::from_secs(3));
+    request.kill_grace = Duration::from_secs(3);
+
+    let (outcome, output) = combined(&request);
+    assert!(matches!(outcome, Outcome::TimedOut), "{outcome:?}");
+    assert!(
+        finished.exists(),
+        "the cleanup to finish within the 3 s grace, not be SIGKILLed: {} bytes arrived",
+        output.len()
+    );
+    // The shell may also say on stderr that its `sleep` was terminated.
+    assert_eq!(output.bytes().filter(|&byte| byte == b'x').count(), 262144);
+    assert!(
+        output.ends_with("x\ncleaned\n"),
+        "{:?}",
+        &output[output.len().saturating_sub(40)..]
+    );
+}
+
 // Through `run-script`, whose environment and signals are its own.
 
 /// Killed when the test ends, panic or not.
