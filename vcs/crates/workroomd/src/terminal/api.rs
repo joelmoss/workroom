@@ -20,8 +20,9 @@
 use serde_json::{Value, json};
 
 use crate::daemon::rpc::{PartialRequests, SharedWriter};
-use crate::terminal::session::{CREATED_KEY, Described, SessionStore};
+use crate::terminal::session::{CREATED_KEY, Described, SessionId, SessionStore};
 use wr_protocol::envelope::{Envelope, Service};
+use wr_protocol::terminal::parse_session_id;
 
 /// The terminal API's revision, in every reply and in `api.describe`: raised by each release that
 /// adds a method or a field, and never lowered. A caller that needs a later addition checks it.
@@ -94,7 +95,15 @@ pub struct Method {
     pub params_example: fn() -> Value,
     /// A `result` it replies with, which `api.describe` lists under the output schema's `examples`.
     pub result_example: fn() -> Value,
-    run: fn(&SessionStore, &Value) -> Result<Value, ApiError>,
+    run: fn(&Call) -> Result<Value, ApiError>,
+}
+
+/// One request as a method sees it.
+pub struct Call<'a> {
+    sessions: &'a SessionStore,
+    params: &'a Value,
+    /// The session the request comes from, hyphenated (`caller`), if it comes from one.
+    caller: Option<String>,
 }
 
 /// Every method, in `api.describe`'s order.
@@ -117,19 +126,54 @@ pub const METHODS: &[Method] = &[
     },
     Method {
         name: "session.list",
-        summary: "Every session the daemon holds, oldest first.",
-        input: empty_input,
+        summary: "Every session the daemon holds, oldest first, or with `scope: \"caller\"` those \
+                  in the caller's scope.",
+        input: || {
+            json!({
+                "type": "object",
+                "properties": {"scope": {
+                    "type": "string",
+                    "enum": ["all", "caller"],
+                    "description": "`all`, the default, lists every session. `caller` lists the \
+                                    sessions that share the caller's scope; every session when \
+                                    the request comes from no session, or from one with no scope.",
+                }},
+            })
+        },
         output: || {
             json!({
                 "type": "object",
-                "required": ["sessions"],
-                "properties": {"sessions": {"type": "array", "items": session_schema()}},
+                "required": ["sessions", "caller"],
+                "properties": {
+                    "sessions": {"type": "array", "items": session_schema()},
+                    "caller": caller_schema(),
+                },
             })
         },
         errors: &[],
-        params_example: || json!({}),
-        result_example: || json!({"sessions": [agent_session_example(), run_session_example()]}),
-        run: |sessions, _| Ok(json!({"sessions": listed(sessions)})),
+        params_example: || json!({"scope": "caller"}),
+        result_example: || {
+            json!({
+                "sessions": [agent_session_example(), run_session_example()],
+                "caller": agent_session_example()["id"],
+            })
+        },
+        run: |call| {
+            let listing = listed(call.sessions);
+            let sessions = match call.params.get("scope") {
+                None => listing,
+                Some(Value::String(scope)) if scope == "all" => listing,
+                Some(Value::String(scope)) if scope == "caller" => {
+                    in_scope_of(listing, call.caller.as_deref())
+                }
+                Some(_) => {
+                    return Err(ApiError::invalid(
+                        "session.list's `scope` is \"all\" or \"caller\"",
+                    ));
+                }
+            };
+            Ok(json!({"sessions": sessions, "caller": call.caller}))
+        },
     },
     Method {
         name: "session.resolve",
@@ -149,25 +193,67 @@ pub const METHODS: &[Method] = &[
         output: || {
             json!({
                 "type": "object",
-                "required": ["session"],
-                "properties": {"session": session_schema()},
+                "required": ["session", "caller"],
+                "properties": {"session": session_schema(), "caller": caller_schema()},
             })
         },
         errors: &[kind::TARGET_NOT_FOUND, kind::TARGET_AMBIGUOUS],
         params_example: || json!({"target": "dev server"}),
-        result_example: || json!({"session": run_session_example()}),
-        run: |sessions, params| {
-            let target = params
+        result_example: || json!({"session": run_session_example(), "caller": agent_session_example()["id"]}),
+        run: |call| {
+            let target = call
+                .params
                 .get("target")
                 .and_then(Value::as_str)
                 .ok_or_else(|| ApiError::invalid("session.resolve needs a string `target`"))?;
-            resolve(&listed(sessions), target).map(|session| json!({"session": session}))
+            resolve(&listed(call.sessions), target)
+                .map(|session| json!({"session": session, "caller": call.caller}))
         },
     },
 ];
 
-fn empty_input() -> Value {
-    json!({"type": "object", "properties": {}})
+/// The `caller` of a result: the session the request came from.
+fn caller_schema() -> Value {
+    json!({
+        "type": ["string", "null"],
+        "description": "The id of the session the request comes from: the request's `caller` \
+                        when it names one of this daemon's sessions, else the session whose shell \
+                        the connecting process descends from. Null for neither.",
+    })
+}
+
+/// The JSON Schema of a request.
+fn request_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["method"],
+        "properties": {
+            "method": {"type": "string", "description": "A method's name, such as `session.list`."},
+            "params": {"type": "object", "description": "The method's parameters; `{}` when left out."},
+            "caller": {
+                "type": "string",
+                "description": "The id of the session the request comes from: the caller's \
+                                `WORKROOM_PANE`. Left out, or naming no session of this daemon, \
+                                the daemon finds it from the connecting process instead.",
+            },
+        },
+    })
+}
+
+/// The sessions of `listing` (the listing's shape) that share `caller`'s scope: every one when
+/// there is no caller, or the caller has no scope (a session tagged with none).
+pub fn in_scope_of(listing: Vec<Value>, caller: Option<&str>) -> Vec<Value> {
+    let scope = caller
+        .and_then(|caller| listing.iter().find(|session| session["id"] == caller))
+        .map(|session| session["scope"].clone())
+        .filter(|scope| !scope.is_null());
+    match scope {
+        None => listing,
+        Some(scope) => listing
+            .into_iter()
+            .filter(|session| session["scope"] == scope)
+            .collect(),
+    }
 }
 
 fn describe_input() -> Value {
@@ -183,7 +269,7 @@ fn describe_input() -> Value {
 fn describe_output() -> Value {
     json!({
         "type": "object",
-        "required": ["revision", "methods", "error_schema"],
+        "required": ["revision", "methods", "error_schema", "request"],
         "properties": {
             "revision": {
                 "type": "integer",
@@ -217,6 +303,10 @@ fn describe_output() -> Value {
                 "description": "The JSON Schema of a failed reply's `error`, for every method, \
                                 with errors under `examples`. Named `error_schema`, since an \
                                 `error` is only ever a failure.",
+            },
+            "request": {
+                "type": "object",
+                "description": "The JSON Schema of a request, for every method.",
             },
         },
     })
@@ -345,8 +435,8 @@ fn error_fields() -> Value {
     })
 }
 
-fn describe(_sessions: &SessionStore, params: &Value) -> Result<Value, ApiError> {
-    match params.get("method") {
+fn describe(call: &Call) -> Result<Value, ApiError> {
+    match call.params.get("method") {
         None => description(None),
         Some(Value::String(name)) => description(Some(name)),
         Some(_) => Err(ApiError::invalid("api.describe's `method` is a string")),
@@ -371,7 +461,12 @@ fn description(wanted: Option<&str>) -> Result<Value, ApiError> {
     if let (Some(name), true) = (wanted, methods.is_empty()) {
         return Err(ApiError::invalid(format!("no method {name:?}")));
     }
-    Ok(json!({"revision": REVISION, "methods": methods, "error_schema": error_schema()}))
+    Ok(json!({
+        "revision": REVISION,
+        "methods": methods,
+        "error_schema": error_schema(),
+        "request": request_schema(),
+    }))
 }
 
 /// Every session in the listing's shape, oldest first.
@@ -462,7 +557,23 @@ fn handle(sessions: &SessionStore, bytes: &[u8]) -> Result<Value, ApiError> {
         Some(params @ Value::Object(_)) => params.clone(),
         Some(_) => return Err(ApiError::invalid("`params` is a JSON object")),
     };
-    (method.run)(sessions, &params)
+    let caller = match request.get("caller") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(caller)) => Some(caller.as_str()),
+        Some(_) => return Err(ApiError::invalid("`caller` is a session's id")),
+    };
+    (method.run)(&Call {
+        sessions,
+        params: &params,
+        caller: caller_of(sessions, caller).map(|id| id.to_hyphenated()),
+    })
+}
+
+/// The session a request comes from: the one its `caller` names, when that is one of `sessions`.
+fn caller_of(sessions: &SessionStore, named: Option<&str>) -> Option<SessionId> {
+    named
+        .and_then(|named| parse_session_id(std::ffi::OsStr::new(named)))
+        .filter(|id| sessions.contains(*id))
 }
 
 /// The reply on the wire: the API's `revision`, then its `result` or its `error`. Not

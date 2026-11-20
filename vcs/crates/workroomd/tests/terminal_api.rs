@@ -274,6 +274,59 @@ fn a_sessions_shell_sees_its_pane_and_daemon_and_no_session_variables() {
     );
 }
 
+/// `workroom sessions --json` run by `shell` with `prefix` before it (`env -i`, say): its envelope.
+fn sessions_from(shell: &mut Spawned, dir: &Path, name: &str, prefix: &str, args: &str) -> Value {
+    let binary = common::daemon_binary();
+    let output = shell_output(
+        shell,
+        dir,
+        name,
+        &format!("{prefix} '{}' sessions --json {args}", binary.display()),
+    );
+    serde_json::from_str(&output).unwrap_or_else(|e| panic!("not one envelope ({e}): {output}"))
+}
+
+/// The ids an envelope lists, sorted.
+fn listed_ids(envelope: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = envelope["sessions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no sessions in {envelope}"))
+        .iter()
+        .map(|session| session["id"].as_str().unwrap().to_string())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// `sessions` in a pane lists its own workroom's sessions and names the pane as the caller;
+/// `--all` lists every session. Outside any pane there is no scope, so every session is listed.
+#[test]
+fn sessions_in_a_pane_lists_its_workroom_and_all_widens_it() {
+    let workspace = Workspace::new("api-scope");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    let _neighbour = open(&socket, OTHER, "tests", "wr-1", &workspace.dir);
+    let _elsewhere = open(&socket, RUN, "server", "wr-2", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 3);
+    let mut ours = vec![SHELL.to_string(), OTHER.to_string()];
+    ours.sort();
+
+    let scoped = sessions_from(&mut shell, &workspace.dir, "scoped", "", "");
+    assert_eq!(scoped["ok"], true, "{scoped}");
+    assert_eq!(listed_ids(&scoped), ours, "{scoped}");
+    assert_eq!(scoped["caller"], SHELL, "{scoped}");
+
+    let all = sessions_from(&mut shell, &workspace.dir, "all", "", "--all");
+    assert_eq!(listed_ids(&all).len(), 3, "{all}");
+    assert_eq!(all["caller"], SHELL, "{all}");
+
+    // From no pane: no caller, so no scope to keep to.
+    let outside = workroom(Some(&socket), &["sessions", "--json"]).envelope();
+    assert_eq!(listed_ids(&outside).len(), 3, "{outside}");
+    assert_eq!(outside["caller"], Value::Null, "{outside}");
+}
+
 /// The live title follows the program's OSC 0 and OSC 2, beside the label the app gave, which it
 /// never changes. Needs the shadow terminal, which is what parses them.
 #[test]
@@ -657,6 +710,11 @@ fn every_method_publishes_schemas_its_replies_match() {
     let error_schema = described["result"]["error_schema"].clone();
     assert_examples_match(&error_schema, "error_schema");
     assert!(described["result"].get("error").is_none(), "{described}");
+    let request = json!({"method": "session.list", "params": {}, "caller": OTHER});
+    assert_eq!(
+        violation(&described["result"]["request"], &request, "request"),
+        None
+    );
 
     let cases = [
         ("api.describe", json!({}), &described),
@@ -664,6 +722,11 @@ fn every_method_publishes_schemas_its_replies_match() {
             "session.list",
             json!({}),
             &api.call("session.list", json!({})),
+        ),
+        (
+            "session.list",
+            json!({"scope": "caller"}),
+            &api.call("session.list", json!({"scope": "caller"})),
         ),
         (
             "session.resolve",
@@ -738,10 +801,9 @@ fn api_list_names_every_method_the_daemon_has() {
         .map(|method| method["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, all);
-    assert_eq!(
-        methods[1]["summary"],
-        "Every session the daemon holds, oldest first."
-    );
+    let summary = "Every session the daemon holds, oldest first, or with `scope: \"caller\"` those \
+                   in the caller's scope.";
+    assert_eq!(methods[1]["summary"], summary);
     // The listing names them; the schemas are `describe`'s.
     assert!(methods[1].get("input").is_none(), "{envelope}");
 
@@ -750,7 +812,7 @@ fn api_list_names_every_method_the_daemon_has() {
     assert!(
         human
             .stdout
-            .contains("session.list     Every session the daemon holds, oldest first.\n"),
+            .contains(&format!("session.list     {summary}\n")),
         "{}",
         human.stdout
     );

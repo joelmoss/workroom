@@ -1,6 +1,9 @@
-//! `workroom sessions [TARGET]`: the daemon's sessions, from the terminal API's `session.list`, or
-//! the one `TARGET` names (`session.resolve`). With `--json`, one envelope with `sessions`, each
-//! in the API's own shape; without, a table.
+//! `workroom sessions [TARGET] [--all]`: the daemon's sessions, from the terminal API's
+//! `session.list`, or the one `TARGET` names (`session.resolve`). The listing keeps to the
+//! caller's scope (its workroom) unless `--all` widens it to every session; from no pane, or from
+//! one with no scope, it is every session. A target resolves across every session either way.
+//! With `--json`, one envelope with `sessions`, each in the API's own shape, and `caller`, the id
+//! of the pane it ran in (null for none); without, a table.
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -11,14 +14,18 @@ use super::{Args, Context, Outcome, terminal_api};
 #[derive(Serialize)]
 struct Payload {
     sessions: Vec<Value>,
+    caller: Value,
 }
 
 pub(super) fn run(context: &Context, args: &Args) -> Outcome {
-    let sessions = match args.positional.as_slice() {
-        [] => terminal_api::call(context, "session.list", json!({}))
-            .map(|result| result["sessions"].as_array().cloned().unwrap_or_default()),
+    let scope = if args.is_set("all") { "all" } else { "caller" };
+    let reply = match args.positional.as_slice() {
+        [] => terminal_api::call(context, "session.list", json!({"scope": scope})).map(|result| {
+            let sessions = result["sessions"].as_array().cloned().unwrap_or_default();
+            (sessions, result["caller"].clone())
+        }),
         [target] => terminal_api::call(context, "session.resolve", json!({"target": target}))
-            .map(|result| vec![result["session"].clone()]),
+            .map(|result| (vec![result["session"].clone()], result["caller"].clone())),
         // One TARGET at most. Go checks that before the command runs, so the envelope names no
         // command.
         [_, extra, ..] => {
@@ -27,12 +34,13 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
             )));
         }
     };
-    match sessions {
+    match reply {
         Err(error) => Outcome::Failed(error),
-        Ok(sessions) if context.json => {
-            Outcome::Success(super::envelope::success("sessions", &Payload { sessions }))
-        }
-        Ok(sessions) => Outcome::Printed(table(&sessions)),
+        Ok((sessions, caller)) if context.json => Outcome::Success(super::envelope::success(
+            "sessions",
+            &Payload { sessions, caller },
+        )),
+        Ok((sessions, _)) => Outcome::Printed(table(&sessions)),
     }
 }
 
