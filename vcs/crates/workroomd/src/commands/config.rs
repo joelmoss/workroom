@@ -629,7 +629,7 @@ fn clean(path: &str) -> String {
 }
 
 /// An OS error as Go words one: "permission denied", without Rust's "(os error 13)".
-fn os_error(error: &io::Error) -> String {
+pub(crate) fn os_error(error: &io::Error) -> String {
     let text = error.to_string();
     let text = match text.rfind(" (os error ") {
         Some(end) if error.raw_os_error().is_some() => text[..end].to_string(),
