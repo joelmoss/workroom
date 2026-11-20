@@ -60,9 +60,12 @@ final class ThemePickerUITests: XCTestCase {
   private let darkVariantFile = "Night Owl"
   private let lightVariantFile = "Light Owl"
 
-  private func launchedApp() -> XCUIApplication {
+  private func launchedApp(userThemeDirectory: String? = nil) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    if let userThemeDirectory {
+      app.launchArguments += ["-WorkroomUITestUserThemeDirectory", userThemeDirectory]
+    }
     // Start somewhere that is NOT the family under test, so a passing assertion can't be the
     // fixture's starting state.
     app.launchArguments += ["-WorkroomUITestLightTheme", "Workroom Light"]
@@ -430,5 +433,82 @@ final class ThemePickerUITests: XCTestCase {
     XCTAssertEqual(
       confTheme(), "Workroom",
       "browsing the hidden Light side changed the generated config, so the screen repainted")
+  }
+
+  /// Your own theme files in the Light and Dark lists (#737), from a scratch folder under `/tmp`
+  /// handed over with `-WorkroomUITestUserThemeDirectory`, never the real `~/.config`. The appearance
+  /// is Dark, so ⌘⇧K opens the Dark tab:
+  ///
+  /// - a dark file of yours is on the Dark tab, labelled as yours, and choosing it reaches the
+  ///   generated config;
+  /// - a dark file called `Ayu Light` replaces that light theme, so it's on the Dark tab, labelled,
+  ///   and the Ayu family is hidden from the Family tab while its neighbours stay;
+  /// - a file that doesn't parse is listed nowhere.
+  func testYourOwnThemeFilesAreListedOnTheirSideAndLabelled() throws {
+    let dir = URL(fileURLWithPath: "/tmp/workroom-uitest-user-themes-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+    let darkFile = "background = #101418\nforeground = #e0e0e0\n"
+    try darkFile.write(
+      to: dir.appendingPathComponent("My Night"), atomically: true, encoding: .utf8)
+    try darkFile.write(
+      to: dir.appendingPathComponent("Ayu Light"), atomically: true, encoding: .utf8)
+    try "not a theme\n".write(
+      to: dir.appendingPathComponent("Broken Mine"), atomically: true, encoding: .utf8)
+
+    let app = launchedApp(userThemeDirectory: dir.path)
+    XCTAssertEqual(
+      waitForConfTheme(oneOf: ["Workroom"]), "Workroom", "the fixture's dark theme isn't showing")
+
+    openPicker(app)
+    XCTAssertTrue(
+      element(app, "theme-dark-Workroom").waitForExistence(timeout: 5),
+      "⌘⇧K did not open the picker on the Dark tab")
+
+    // The Family tab: Ayu is hidden while its light theme is a dark file; its neighbours stay.
+    element(app, "theme-picker.tab.family").click()
+    XCTAssertTrue(
+      row(app, "Atom One").waitForExistence(timeout: 3), "the Family tab did not list Atom One")
+    XCTAssertTrue(row(app, "Belafonte").exists, "the Family tab did not list Belafonte")
+    XCTAssertFalse(
+      row(app, "Ayu").exists, "Ayu is offered although its light theme is a dark file of yours")
+
+    // The Dark tab: the replacement moved here, labelled; the bundled Ayu Mirage isn't labelled.
+    element(app, "theme-picker.tab.dark").click()
+    app.typeText("Ayu")
+    XCTAssertTrue(
+      element(app, "theme-dark-Ayu Light").waitForExistence(timeout: 3),
+      "a dark file called 'Ayu Light' is not on the Dark tab")
+    XCTAssertTrue(
+      element(app, "theme-dark-Ayu Light-yours").exists, "the replacement isn't labelled as yours")
+    XCTAssertTrue(element(app, "theme-dark-Ayu Mirage").exists, "Ayu Mirage is missing")
+    XCTAssertFalse(
+      element(app, "theme-dark-Ayu Mirage-yours").exists, "a bundled theme is labelled as yours")
+
+    // Your own dark theme, labelled, and choosing it reaches the engine.
+    app.typeKey("a", modifierFlags: [.command])
+    app.typeText("My Night")
+    XCTAssertTrue(
+      element(app, "theme-dark-My Night").waitForExistence(timeout: 3),
+      "your 'My Night' is not on the Dark tab")
+    XCTAssertTrue(
+      element(app, "theme-dark-My Night-yours").exists, "'My Night' isn't labelled as yours")
+    XCTAssertFalse(element(app, "theme-dark-Ayu Light").exists, "the search didn't apply")
+    app.typeKey(.downArrow, modifierFlags: [])
+    XCTAssertEqual(
+      waitForConfTheme(oneOf: ["My Night"]), "My Night",
+      "choosing your own dark theme didn't reach the generated config")
+
+    // The unparseable file is listed on neither side.
+    app.typeKey("a", modifierFlags: [.command])
+    app.typeText("Mine")
+    XCTAssertTrue(
+      element(app, "theme-dark-My Night").waitForNonExistence(timeout: 3),
+      "the search didn't apply")
+    XCTAssertFalse(element(app, "theme-dark-Broken Mine").exists, "an unparseable file is listed")
+    element(app, "theme-picker.tab.light").click()
+    XCTAssertTrue(
+      element(app, "theme-picker.note").waitForExistence(timeout: 3), "the Light tab did not open")
+    XCTAssertFalse(element(app, "theme-light-Broken Mine").exists, "an unparseable file is listed")
   }
 }
