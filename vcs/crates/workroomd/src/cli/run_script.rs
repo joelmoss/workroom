@@ -1,35 +1,24 @@
-//! `workroomd run-script`: a remote workroom's setup or teardown script, run on its host the way the
-//! Mac's CLI runs one locally (`internal/script`), so the two behave the same
-//! (`docs/designs/scripts-on-every-workroom.md`).
+//! `workroomd run-script`: a remote workroom's setup or teardown script, run on its host through
+//! the same runner the CLI runs a local one with (`crate::script`), so the two behave the same
+//! (`docs/designs/scripts-on-every-workroom.md`, `docs/designs/one-script-runner.md`).
 //!
-//! The environment is what the host user's login shell sets up in the script's directory, as a
-//! terminal opened there would (#560), read by `host::environment::login_environment`. The script
-//! runs in a process group of its own, its output going straight to this process's stdout and
-//! stderr, so the app reads it as it is printed. A wall clock, or a SIGTERM, SIGHUP or SIGINT to
-//! this process, ends the whole tree the way the exec service ends a command (`wr_exec::end_tree`:
-//! the group and the descendants recorded before it, SIGKILL two seconds later).
+//! This is the command line, the wording and the exit codes the app relies on (ADR 0057 pins the
+//! `workroomd run-script: ` prefix, which it parses): the script's output goes straight to this
+//! process's stdout and stderr, so the app reads it as it is printed, and the status is the
+//! script's own, 128 plus a signal, `TIMED_OUT` or `NOT_STARTED`.
 use std::collections::BTreeMap;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
-use std::process::{Command, ExitCode, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicI32, Ordering};
-use std::time::{Duration, Instant};
+use std::process::ExitCode;
+use std::time::Duration;
+// The unit tests' `use super::*` has always found these here.
+#[cfg(test)]
+use std::process::Command;
+#[cfg(test)]
+use std::time::Instant;
 
 use super::flag;
-use crate::host::environment::{PROBE_TIMEOUT, login_environment};
-
-/// The exit status of a script stopped by the wall clock, as coreutils' `timeout` uses.
-pub const TIMED_OUT: u8 = 124;
-/// What a script that could not be started exits with, as a shell reports one.
-pub const NOT_STARTED: u8 = 126;
-const KILL_GRACE: Duration = Duration::from_secs(2);
-
-/// The signal that asked this process to stop, 0 until one does.
-static SIGNALLED: AtomicI32 = AtomicI32::new(0);
-
-extern "C" fn record_signal(signal: libc::c_int) {
-    SIGNALLED.store(signal, Ordering::SeqCst);
-}
+pub use crate::script::{NOT_STARTED, TIMED_OUT};
+use crate::script::{Outcome, Output, Script};
 
 /// `workroomd run-script --dir <dir> --timeout <secs> [--env NAME=VALUE]... -- <script>`.
 pub fn run_run_script(args: &[String]) -> ExitCode {
@@ -44,22 +33,16 @@ pub fn run_run_script(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let extra = env_flags(options);
-    install_signal_handlers();
-    let shell = crate::terminal::shell::user_shell(std::env::var_os("SHELL"));
+    let timeout = Duration::from_secs(timeout);
+    let script = Script::new(Path::new(script), Path::new(&dir), &extra, Some(timeout));
     // The app has passed the script's trust check before it runs this, so the rc may read the
     // directory's local tool config: the script is about to run there anyway.
-    let env = login_environment(&shell, Path::new(&dir), PROBE_TIMEOUT, |reason| {
-        eprintln!(
-            "workroomd run-script: couldn't read the login shell's environment ({reason}); using the daemon's own"
-        );
+    let outcome = crate::script::run(&script, Output::Inherit, |reason| {
+        format!(
+            "workroomd run-script: couldn't read the login shell's environment ({reason}); using the daemon's own\n"
+        )
     });
-    ExitCode::from(run(
-        Path::new(script),
-        Path::new(&dir),
-        env,
-        &extra,
-        Duration::from_secs(timeout),
-    ))
+    ExitCode::from(report(script.path, timeout, outcome))
 }
 
 /// Every `--env NAME=VALUE` in `options`, in order.
@@ -72,15 +55,8 @@ fn env_flags(options: &[String]) -> Vec<(String, String)> {
         .collect()
 }
 
-fn install_signal_handlers() {
-    for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
-        // SAFETY: the handler only stores into an atomic, which is async-signal-safe.
-        unsafe { libc::signal(signal, record_signal as *const () as libc::sighandler_t) };
-    }
-}
-
-/// Runs `script` in `dir` with `env` and `extra` on top, and returns its exit status: the script's
-/// own, 128 plus the signal that ended it, `TIMED_OUT`, or `NOT_STARTED`.
+/// Runs `script` in `dir` with `env` and `extra` on top, reading no login shell, and returns its
+/// exit status: the script's own, 128 plus the signal that ended it, `TIMED_OUT`, or `NOT_STARTED`.
 pub fn run(
     script: &Path,
     dir: &Path,
@@ -88,55 +64,37 @@ pub fn run(
     extra: &[(String, String)],
     timeout: Duration,
 ) -> u8 {
-    let mut command = Command::new(script);
-    command
-        .current_dir(dir)
-        .env_clear()
-        .envs(&env)
-        .envs(extra.iter().map(|(name, value)| (name, value)))
-        .stdin(Stdio::null())
-        .process_group(0);
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
+    let request = Script::new(script, dir, extra, Some(timeout));
+    report(script, timeout, crate::script::run_in(&request, env, Output::Inherit))
+}
+
+/// Says on stderr why a script didn't run to its end, and returns the status to exit with.
+fn report(script: &Path, timeout: Duration, outcome: Outcome) -> u8 {
+    match &outcome {
+        Outcome::NotStarted(error) => {
             eprintln!(
                 "workroomd run-script: {} could not be started: {error}",
                 script.display()
             );
-            return NOT_STARTED;
         }
-    };
-    let start = Instant::now();
-    loop {
-        if let Ok(Some(status)) = child.try_wait() {
-            return exit_status(status);
+        // Said as spawning it would have: the app checks for the script first, so this is a race.
+        Outcome::Absent => {
+            eprintln!(
+                "workroomd run-script: {} could not be started: {}",
+                script.display(),
+                std::io::Error::from_raw_os_error(libc::ENOENT)
+            );
         }
-        let signalled = SIGNALLED.load(Ordering::SeqCst);
-        if signalled != 0 || start.elapsed() >= timeout {
-            // SIGTERM to the group, with its tree recorded first so a `setsid` escaper is still
-            // reached; then, after the whole grace (even once the leader has gone: its group may
-            // still be cleaning up), SIGKILL to what was recorded and to the group.
-            wr_exec::end_tree(&mut child, libc::SIGTERM, KILL_GRACE);
-            if signalled != 0 {
-                return 128u8.saturating_add(signalled as u8);
-            }
+        Outcome::TimedOut => {
             eprintln!(
                 "workroomd run-script: {} timed out after {} s",
                 script.display(),
                 timeout.as_secs()
             );
-            return TIMED_OUT;
         }
-        std::thread::sleep(Duration::from_millis(20));
+        Outcome::Exited(_) | Outcome::Cancelled(_) => {}
     }
-}
-
-fn exit_status(status: ExitStatus) -> u8 {
-    match (status.code(), status.signal()) {
-        (Some(code), _) => code as u8,
-        (None, Some(signal)) => 128u8.saturating_add(signal as u8),
-        (None, None) => 1,
-    }
+    outcome.exit_code()
 }
 
 #[cfg(test)]
