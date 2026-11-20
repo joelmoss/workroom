@@ -441,6 +441,20 @@ fn violation(schema: &Value, value: &Value, at: &str) -> Option<String> {
     None
 }
 
+/// `schema` has at least one example under `examples`, and it accepts every one.
+fn assert_examples_match(schema: &Value, at: &str) {
+    let examples = schema["examples"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{at} has no examples: {schema}"));
+    assert!(!examples.is_empty(), "{at} has no examples");
+    for (index, example) in examples.iter().enumerate() {
+        assert_eq!(
+            violation(schema, example, &format!("{at}.examples[{index}]")),
+            None
+        );
+    }
+}
+
 /// A request to the terminal API over the daemon's own socket, as the CLI makes it.
 struct Api(common::RpcClient);
 
@@ -500,8 +514,18 @@ fn every_method_publishes_schemas_its_replies_match() {
             None,
             "{method}"
         );
+        // Both schemas carry JSON Schema's `examples`, each one a value the schema accepts, so a
+        // caller sees what a reply looks like before it makes a request.
+        for which in ["input", "output"] {
+            assert_examples_match(&method[which], &format!("{}.{which}", method["name"]));
+        }
+        assert_eq!(
+            method["input"]["examples"][0], method["example"],
+            "{method}"
+        );
     }
     let error_schema = described["result"]["error"].clone();
+    assert_examples_match(&error_schema, "error");
 
     let cases = [
         ("api.describe", json!({}), &described),

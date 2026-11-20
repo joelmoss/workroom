@@ -84,8 +84,11 @@ pub struct Method {
     pub output: fn() -> Value,
     /// The error kinds it can reply with, beyond `InvalidRequest`, which any method can.
     pub errors: &'static [&'static str],
-    /// A `params` it accepts, for `api.describe`.
+    /// A `params` it accepts, for `api.describe`, which also lists it under the input schema's
+    /// `examples`.
     pub example: fn() -> Value,
+    /// A `result` it replies with, which `api.describe` lists under the output schema's `examples`.
+    pub result_example: fn() -> Value,
     run: fn(&SessionStore, &Value) -> Result<Value, ApiError>,
 }
 
@@ -99,6 +102,25 @@ pub const METHODS: &[Method] = &[
         output: describe_output,
         errors: &[],
         example: || json!({"method": "session.list"}),
+        result_example: || {
+            json!({
+                "revision": REVISION,
+                "methods": [{
+                    "name": "session.list",
+                    "summary": "Every session the daemon holds, oldest first.",
+                    "input": {"type": "object", "properties": {}, "examples": [{}]},
+                    "output": {
+                        "type": "object",
+                        "required": ["sessions"],
+                        "properties": {"sessions": {"type": "array"}},
+                        "examples": [{"sessions": []}],
+                    },
+                    "errors": [],
+                    "example": {},
+                }],
+                "error": {"type": "object", "required": ["kind", "message"]},
+            })
+        },
         run: describe,
     },
     Method {
@@ -114,6 +136,7 @@ pub const METHODS: &[Method] = &[
         },
         errors: &[],
         example: || json!({}),
+        result_example: || json!({"sessions": [agent_session_example(), run_session_example()]}),
         run: |sessions, _| Ok(json!({"sessions": listed(sessions)})),
     },
     Method {
@@ -140,6 +163,7 @@ pub const METHODS: &[Method] = &[
         },
         errors: &[kind::TARGET_NOT_FOUND, kind::TARGET_AMBIGUOUS],
         example: || json!({"target": "dev server"}),
+        result_example: || json!({"session": run_session_example()}),
         run: |sessions, params| {
             let target = params
                 .get("target")
@@ -179,8 +203,16 @@ fn describe_output() -> Value {
                 "properties": {
                     "name": {"type": "string"},
                     "summary": {"type": "string"},
-                    "input": {"type": "object", "description": "The JSON Schema of `params`."},
-                    "output": {"type": "object", "description": "The JSON Schema of `result`."},
+                    "input": {
+                        "type": "object",
+                        "description": "The JSON Schema of `params`, with a `params` it accepts \
+                                        under `examples`.",
+                    },
+                    "output": {
+                        "type": "object",
+                        "description": "The JSON Schema of `result`, with a `result` it replies \
+                                        with under `examples`.",
+                    },
                     "errors": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -191,7 +223,8 @@ fn describe_output() -> Value {
             }},
             "error": {
                 "type": "object",
-                "description": "The JSON Schema of a failed reply's `error`, for every method.",
+                "description": "The JSON Schema of a failed reply's `error`, for every method, \
+                                with errors under `examples`.",
             },
         },
     })
@@ -243,8 +276,68 @@ pub fn session_schema() -> Value {
     })
 }
 
+/// A session running a coding agent that is waiting on the user, as the examples show one.
+fn agent_session_example() -> Value {
+    json!({
+        "id": "5a1e0f7e-0d6c-4c9f-9c3e-2b7f1d0a8e11",
+        "label": "claude",
+        "title": "Fix the login test",
+        "scope": {"kind": "workroom", "id": "4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0d4e"},
+        "run": false,
+        "cwd": "/Users/you/workrooms/swift-meadow",
+        "coding_agent": {
+            "state": "blocked",
+            "app": "claude",
+            "message": "Allow `npm test`?",
+            "waiting_on_user": true,
+        },
+    })
+}
+
+/// A run session with no coding agent, as the examples show one.
+fn run_session_example() -> Value {
+    json!({
+        "id": "c0ffee00-1111-4222-8333-44445555beef",
+        "label": "dev server",
+        "title": null,
+        "scope": {"kind": "workroom", "id": "4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0d4e"},
+        "run": true,
+        "cwd": "/Users/you/workrooms/swift-meadow",
+        "coding_agent": null,
+    })
+}
+
+/// `schema` with `examples`, JSON Schema's keyword for values it accepts, as `api.describe`
+/// publishes it.
+fn with_examples(mut schema: Value, examples: Vec<Value>) -> Value {
+    schema["examples"] = Value::Array(examples);
+    schema
+}
+
 /// The `error` of a failed reply.
 pub fn error_schema() -> Value {
+    // Two sessions the one label names.
+    let matches: Vec<Value> = [agent_session_example(), run_session_example()]
+        .into_iter()
+        .map(|mut session| {
+            session["label"] = json!("tests");
+            session
+        })
+        .collect();
+    with_examples(
+        error_fields(),
+        vec![
+            json!({"kind": kind::TARGET_NOT_FOUND, "message": "no session matches \"dev\""}),
+            json!({
+                "kind": kind::TARGET_AMBIGUOUS,
+                "message": "\"tests\" matches 2 sessions; name one by its id",
+                "matches": matches,
+            }),
+        ],
+    )
+}
+
+fn error_fields() -> Value {
     json!({
         "type": "object",
         "required": ["kind", "message"],
@@ -273,8 +366,8 @@ fn describe(_sessions: &SessionStore, params: &Value) -> Result<Value, ApiError>
             json!({
                 "name": method.name,
                 "summary": method.summary,
-                "input": (method.input)(),
-                "output": (method.output)(),
+                "input": with_examples((method.input)(), vec![(method.example)()]),
+                "output": with_examples((method.output)(), vec![(method.result_example)()]),
                 "errors": method.errors,
                 "example": (method.example)(),
             })
