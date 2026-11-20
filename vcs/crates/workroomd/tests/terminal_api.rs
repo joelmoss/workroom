@@ -361,12 +361,37 @@ fn with_no_daemon_every_run_exits_7_daemon_unreachable() {
 /// updating.
 #[test]
 fn a_daemon_older_than_the_terminal_api_is_sent_nothing() {
+    let workspace = Workspace::new("api-old-daemon");
+    let socket = workspace.socket();
+    assert_too_old(&socket, &["sessions", "--json"], "sessions");
+}
+
+/// Every `api` subcommand checks the greeting as `sessions` does, and names itself in the failure.
+#[test]
+fn every_api_subcommand_is_refused_by_a_daemon_older_than_the_terminal_api() {
+    let workspace = Workspace::new("api-old-daemon-api");
+    let socket = workspace.socket();
+    for (args, command) in [
+        (&["api", "list", "--json"][..], "api list"),
+        (
+            &["api", "describe", "session.list", "--json"],
+            "api describe",
+        ),
+        (&["api", "call", "session.list", "{}", "--json"], "api call"),
+    ] {
+        assert_too_old(&socket, args, command);
+    }
+}
+
+/// `workroom <args>` against a fake daemon on `socket` that greets with the protocol before the
+/// terminal API's: it exits 7 `DaemonTooOld` in `command`'s envelope, saying the daemon needs
+/// updating, and sends nothing past the greeting.
+fn assert_too_old(socket: &Path, args: &[&str], command: &str) {
     use std::io::Read;
     use wr_protocol::envelope::{Hello, MIN_TERMINAL_API_VERSION};
 
-    let workspace = Workspace::new("api-old-daemon");
-    let socket = workspace.socket();
-    let listener = UnixListener::bind(&socket).expect("bind fake daemon");
+    let _ = std::fs::remove_file(socket);
+    let listener = UnixListener::bind(socket).expect("bind fake daemon");
     let fake = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept");
         let hello = Hello {
@@ -388,10 +413,11 @@ fn a_daemon_older_than_the_terminal_api_is_sent_nothing() {
             .expect("whole");
         received.len() - consumed
     });
-    let run = workroom(Some(&socket), &["sessions", "--json"]);
-    assert_eq!(run.code, 7, "{}", run.stdout);
+    let run = workroom(Some(socket), args);
+    assert_eq!(run.code, 7, "{args:?}: {}", run.stdout);
     let envelope = run.envelope();
-    assert_eq!(envelope["error"]["kind"], "DaemonTooOld");
+    assert_eq!(envelope["error"]["kind"], "DaemonTooOld", "{envelope}");
+    assert_eq!(envelope["command"], command, "{envelope}");
     let message = envelope["error"]["message"].as_str().unwrap();
     assert!(
         message.contains("predates the terminal API") && message.contains("needs updating"),
@@ -400,7 +426,7 @@ fn a_daemon_older_than_the_terminal_api_is_sent_nothing() {
     assert_eq!(
         fake.join().unwrap(),
         0,
-        "bytes past the greeting reached the old daemon"
+        "{args:?}: bytes past the greeting reached the old daemon"
     );
 }
 
