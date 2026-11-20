@@ -90,6 +90,8 @@ pub struct Seen {
     /// (`Store::apply_read`): one reported and replaced within the read still meets a wait for it.
     /// Empty but straight after a read.
     pub passed: Vec<State>,
+    /// Whether the shell has sent an OSC 133 mark, so a command's end can be seen.
+    pub shell_marks: bool,
     /// How many commands the shell has ended (OSC 133 D after a C) since the daemon started it.
     pub commands: u64,
     /// The last of them's exit code.
@@ -105,6 +107,9 @@ pub enum Outcome {
     SessionEnded,
     /// Its deadline passed first.
     TimedOut,
+    /// A `CommandFinished` wait on a young session whose shell sent no OSC 133 mark within the
+    /// grace it was given (`Waiter::marks_by`).
+    NoShellIntegration,
     /// Its caller went away.
     Cancelled,
 }
@@ -152,6 +157,9 @@ struct Progress {
     queue: Queue,
     /// A regex wait's session ended: the wait matches what is queued before it says so.
     ended: bool,
+    /// A `CommandFinished` wait's shell has sent no mark yet: the wait is `NoShellIntegration`
+    /// if none comes by then (`Waiter::marks_by`).
+    marks_by: Option<Instant>,
     /// Set once, by whatever ends the wait first.
     outcome: Option<Outcome>,
 }
@@ -209,6 +217,7 @@ impl Waiter {
                 commands_before: now.commands,
                 queue: Queue::default(),
                 ended: false,
+                marks_by: None,
                 outcome: None,
             }),
             wake: Condvar::new(),
@@ -234,9 +243,29 @@ impl Waiter {
         self.queue(|queue| queue.screen = Some(text));
     }
 
+    /// A `CommandFinished` wait on a session too young to have shown its prompt: until `at`, a
+    /// shell that has sent no OSC 133 mark yet may still send one, and only then is the wait
+    /// `NoShellIntegration`. A `new` followed at once by a wait would otherwise be refused before
+    /// its shell's first prompt could come.
+    pub fn marks_by(&self, at: Instant) {
+        let mut progress = lock_or_recover(&self.state);
+        if progress.wanted == Wanted::CommandFinished {
+            progress.marks_by = Some(at);
+        }
+    }
+
     /// The shadow's state after a read, or after the program status changed.
     pub fn shadow(&self, seen: &Seen) {
-        self.update(|progress| match progress.wanted {
+        self.update(|progress| {
+            if seen.shell_marks {
+                progress.marks_by = None;
+            }
+            Self::met(progress, seen)
+        });
+    }
+
+    fn met(progress: &Progress, seen: &Seen) -> Option<Met> {
+        match progress.wanted {
             Wanted::Status(wanted)
                 if seen.agent == Some(wanted) || seen.passed.contains(&wanted) =>
             {
@@ -246,7 +275,7 @@ impl Waiter {
                 Some(Met::CommandFinished(seen.last_exit))
             }
             _ => None,
-        });
+        }
     }
 
     /// A run's status line, as its supervisor last wrote it.
@@ -311,15 +340,25 @@ impl Waiter {
                         progress.outcome = Some(Outcome::SessionEnded);
                         continue;
                     }
-                    match deadline {
+                    // The deadline, or the end of a shell's grace for its first mark if sooner.
+                    let until = match (deadline, progress.marks_by) {
+                        (Some(deadline), Some(marks_by)) => Some(deadline.min(marks_by)),
+                        (deadline, marks_by) => deadline.or(marks_by),
+                    };
+                    match until {
                         None => progress = recover(self.wake.wait(progress)),
-                        Some(deadline) => {
+                        Some(until) => {
                             let now = Instant::now();
-                            if now >= deadline {
-                                progress.outcome = Some(Outcome::TimedOut);
+                            if now >= until {
+                                let timed_out = deadline.is_some_and(|deadline| now >= deadline);
+                                progress.outcome = Some(if timed_out {
+                                    Outcome::TimedOut
+                                } else {
+                                    Outcome::NoShellIntegration
+                                });
                                 continue;
                             }
-                            progress = recover(self.wake.wait_timeout(progress, deadline - now)).0;
+                            progress = recover(self.wake.wait_timeout(progress, until - now)).0;
                         }
                     }
                 }

@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use super::{ApiError, Call, Slot, kind, listed, resolve};
 use crate::daemon::rpc::SharedWriter;
 use crate::terminal::program_status::State;
-use crate::terminal::session::{SessionId, SessionStore};
+use crate::terminal::session::{CREATED_KEY, SessionId, SessionStore};
 use crate::terminal::wait::{Condition, Matcher, Met, Outcome, RunState, Waiter};
 use crate::util::lock_or_recover;
 
@@ -166,12 +166,17 @@ pub struct Limits {
     pub session: usize,
     pub connection: usize,
     pub daemon: usize,
+    /// How young a session may be and still have its shell's first prompt to come: a
+    /// `command_finished` wait on one with no shell integration marks yet waits up to this long
+    /// from the session's creation for one, rather than be refused at once.
+    pub marks_grace: Duration,
 }
 
 pub const LIMITS: Limits = Limits {
     session: 32,
     connection: 64,
     daemon: 512,
+    marks_grace: Duration::from_secs(5),
 };
 
 /// The daemon's waits, each holding a `Slot` of `LIMITS.daemon` until its thread ends.
@@ -422,18 +427,18 @@ fn register(
     };
     // A precondition of the session's, before any bound: a wait that could never be met is
     // refused as such, never as `Busy`. A shell's marks only ever start, so one seen here is
-    // still there when the waiter is added.
+    // still there when the waiter is added. A session young enough that its first prompt may
+    // be still to come gets until `marks_grace` from its creation for one, on the wait's thread.
+    let mut marks_by = None;
     if matches!(condition, Condition::CommandFinished)
         && let Some(shadow) = sessions.shadow(id)
         && !lock_or_recover(&shadow).has_shell_marks()
     {
-        return Err(ApiError::new(
-            kind::NO_SHELL_INTEGRATION,
-            format!(
-                "{target:?} has sent no shell integration marks (OSC 133), so the end of its \
-                 command can't be seen"
-            ),
-        ));
+        let left = age(sessions, id).and_then(|age| waits.limits.marks_grace.checked_sub(age));
+        match left {
+            Some(left) if !left.is_zero() => marks_by = Instant::now().checked_add(left),
+            _ => return Err(no_shell_integration(target)),
+        }
     }
     // Only waits not yet over count: a thread ending its wait leaves it here a moment longer.
     waits.held.retain(|held| held.outcome().is_none());
@@ -455,6 +460,11 @@ fn register(
             matcher.resync();
         }
         let waiter = Arc::new(Waiter::new(condition, shadow.seen()));
+        if let Some(at) = marks_by
+            && !shadow.has_shell_marks()
+        {
+            waiter.marks_by(at);
+        }
         if request.include_screen {
             // A copy, matched on the wait's thread, never under these locks.
             waiter.screen(shadow.screen_text().into_bytes());
@@ -480,6 +490,28 @@ fn register(
         waiter.run(line.trim());
     }
     Ok((request, waiter, slot))
+}
+
+fn no_shell_integration(target: &str) -> ApiError {
+    ApiError::new(
+        kind::NO_SHELL_INTEGRATION,
+        format!(
+            "{target:?} has sent no shell integration marks (OSC 133), so the end of its command \
+             can't be seen"
+        ),
+    )
+}
+
+/// How long ago session `id` was created, by the `created` its metadata carries across hand-offs;
+/// `None` when it says no time.
+fn age(sessions: &SessionStore, id: SessionId) -> Option<Duration> {
+    let described = sessions.described();
+    let session = described.iter().find(|session| session.info.id == id)?;
+    let created: u64 = super::metadata(session, CREATED_KEY)?.parse().ok()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some(now.saturating_sub(Duration::from_millis(created)))
 }
 
 fn ended_error(request: &Request) -> ApiError {
@@ -533,6 +565,9 @@ fn result(request: &Request, outcome: Outcome) -> Result<Value, ApiError> {
             reply["exit_code"] = json!(exit_code);
         }
         Outcome::SessionEnded => return Err(ended_error(request)),
+        Outcome::NoShellIntegration => {
+            return Err(no_shell_integration(&request.id.to_hyphenated()));
+        }
         Outcome::TimedOut => {
             return Err(ApiError::new(
                 kind::WAIT_TIMEOUT,

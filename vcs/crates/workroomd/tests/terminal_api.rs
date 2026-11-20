@@ -2045,6 +2045,35 @@ fn wait_for_a_program_status_or_the_shells_command_to_finish() {
     );
 }
 
+/// A new session waited on at once has had no time for its shell's first prompt, so a
+/// `--command-finished` wait isn't refused for want of its marks: it waits a short grace for them.
+#[test]
+fn a_command_finished_wait_on_a_new_session_waits_for_its_first_prompt() {
+    if !has_terminal_state() {
+        eprintln!("skipped: a command's end needs a daemon built with terminal-state");
+        return;
+    }
+    let workspace = Workspace::new("api-wait-new");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    // Its first mark a second on, once the wait has started, well inside the grace; the command
+    // ends 3 s after that.
+    type_line(
+        &mut shell,
+        r"sleep 1; printf '\033]133;A\007'; sleep 3; printf '\033]133;C\007'; printf '\033]133;D;5\007'",
+    );
+    listing_until(&socket, |listing| listing.len() == 1);
+    let finished = met(
+        &socket,
+        wait(
+            &socket,
+            &["server", "--command-finished", "--timeout", "60s"],
+        ),
+    );
+    assert_eq!(finished["exit_code"], 5, "{finished}");
+}
+
 #[test]
 fn wait_for_a_run_state_with_its_exit_code() {
     let workspace = Workspace::new("api-wait-run");
