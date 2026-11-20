@@ -4,8 +4,8 @@
 //! them alone.
 //!
 //! Every command keeps ADR 0013's contract, byte for byte as Go wrote it: one envelope on stdout
-//! under `--json` ([`envelope`]), NDJSON logs on stderr ([`log`]), and a stable `kind` and exit
-//! code for each failure ([`kind`]). Human output keeps Go's information but may change wording.
+//! under `--json` (`envelope`), NDJSON logs on stderr (`log`), and a stable `kind` and exit
+//! code for each failure (`kind`). Human output keeps Go's information but may change wording.
 //!
 //! The commands that read or write the Mac's config are Mac-only: listed in `--help` everywhere,
 //! marked "(Mac only)", and failing with `MacOnly` anywhere else. Until its own ticket ports it
