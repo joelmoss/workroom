@@ -396,7 +396,8 @@ pub struct TakenScreen {
 /// program status change tells it what happened, and as its request waits on it, each with every
 /// session lock released; a `Transfer` as an encoder looks at it and finishes; a shadow as an encoder copies its pixels, as `compress_shadows` and
 /// `promote_unprobed` visit each one after releasing the map, and as the terminal API's
-/// `terminal.capture` reads one (`SessionStore::shadow`, then the shadow's lock alone). The store map is released before a
+/// `terminal.capture` reads one and `terminal.wait` checks a shell's marks (`SessionStore::shadow`,
+/// then the shadow's lock alone). The store map is released before a
 /// reader starts (`create_then`), and before `changed_screens` or the keepalive ticker
 /// (`keepalive::tick`) takes any session's attachment lock.
 /// The forward, layout, watch and rpc locks never nest with these.

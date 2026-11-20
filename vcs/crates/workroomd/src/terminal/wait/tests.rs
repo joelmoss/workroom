@@ -102,3 +102,38 @@ fn a_pattern_the_regex_engine_refuses_is_an_error() {
         "over the size limit"
     );
 }
+
+/// What `pattern` first matches in `chunks`, for a wait that joined the stream mid-sequence.
+fn first_match_resynced(pattern: &str, chunks: &[&[u8]]) -> Option<String> {
+    let mut matcher = Matcher::new(pattern).expect("a valid pattern");
+    matcher.resync();
+    chunks
+        .iter()
+        .find_map(|chunk| matcher.feed(chunk))
+        .map(|found| String::from_utf8_lossy(&found).into_owned())
+}
+
+/// A wait that starts inside a title's OSC, or a kitty image's APC, drops the rest of it: its
+/// payload is never text, and the text after its BEL or ST is (#690).
+#[test]
+fn a_wait_joining_mid_sequence_drops_the_rest_of_it() {
+    // The rest of `ESC ] 2 ; build `, then the screen's own text.
+    let title: &[&[u8]] = &[b"NOPE watch", b"\x07DONE\r\n"];
+    assert_eq!(
+        first_match_resynced("NOPE|DONE", title).as_deref(),
+        Some("DONE")
+    );
+    // Without knowing, the title's rest reads as text.
+    assert_eq!(first_match("NOPE|DONE", title).as_deref(), Some("NOPE"));
+    // The rest of `ESC _ G a=T,f=100;` and its base64, ended by ST.
+    let kitty: &[&[u8]] = &[b"Tk9QRQ==NOPE", b"\x1b\\DONE\r\n"];
+    assert_eq!(
+        first_match_resynced("NOPE|DONE", kitty).as_deref(),
+        Some("DONE")
+    );
+    // A line's end is known ground, and kept: `^` still anchors the next line.
+    assert_eq!(
+        first_match_resynced("^DONE$", &[b"le NOPE\r\nDONE\r\n"]).as_deref(),
+        Some("DONE")
+    );
+}
