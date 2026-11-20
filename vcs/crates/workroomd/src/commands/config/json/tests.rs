@@ -95,6 +95,19 @@ fn numbers_keep_their_text() {
         rewrite(br#"{"n":[-0,2.50,1e3,1E-7,18446744073709551616,-12]}"#).unwrap(),
         "{\n  \"n\": [\n    -0,\n    2.50,\n    1e3,\n    1E-7,\n    18446744073709551616,\n    -12\n  ]\n}"
     );
+    // Out of any float's range, and hundreds of digits long: still only text.
+    let long = "9".repeat(400);
+    let input = format!("{{\"n\":[1e999,-1E+400,{long}]}}");
+    assert_eq!(
+        rewrite(input.as_bytes()).unwrap(),
+        format!("{{\n  \"n\": [\n    1e999,\n    -1E+400,\n    {long}\n  ]\n}}")
+    );
+    // Compact too, as list reports a host descriptor.
+    let value = parse_config(input.as_bytes()).unwrap();
+    assert_eq!(
+        crate::commands::envelope::encode(&value, false),
+        format!("{{\"n\":[1e999,-1E+400,{long}]}}")
+    );
 }
 
 #[test]
