@@ -107,6 +107,8 @@ pub(crate) struct Args {
     /// Each of the command's own flags that was set, by name, with its value as given (a boolean
     /// as `true` or `false`).
     values: Vec<(&'static str, String)>,
+    /// The command's own flags, for their defaults.
+    flags: &'static [Flag],
 }
 
 impl Args {
@@ -117,6 +119,17 @@ impl Args {
             .rev()
             .find(|(flag, _)| *flag == name)
             .map(|(_, value)| value.as_str())
+    }
+
+    /// The value the flag `name` was last given, else the default its `Flag` names (the one
+    /// `--help` shows), else "".
+    fn value_or_default(&self, name: &str) -> &str {
+        self.value(name).unwrap_or_else(|| {
+            self.flags
+                .iter()
+                .find(|flag| flag.name == name)
+                .map_or("", |flag| flag.default)
+        })
     }
 
     /// Whether the boolean flag `name` is on.
@@ -524,6 +537,7 @@ fn run(args: &[String], mut context: Context) -> Output {
     let args = Args {
         positional: parsed.positional.iter().skip(1).cloned().collect(),
         values: parsed.values,
+        flags: command.flags,
     };
     if let (false, Arity::None, Some(extra)) =
         (refuses_nothing, command.arity, args.positional.first())
@@ -662,6 +676,38 @@ fn help(command: Option<&Command>) -> String {
                 + &flag_table(&[])
                 + "\nUse \"workroom [command] --help\" for more information about a command.\n"
         }
+    }
+}
+
+/// A directory for one unit test, removed when it ends.
+#[cfg(test)]
+pub(crate) struct Scratch(pub(crate) std::path::PathBuf);
+
+#[cfg(test)]
+impl Scratch {
+    /// A directory this run made itself, as the contract suite's `Home::new` makes one:
+    /// `create_dir` fails on any path that already exists, so a leftover from a killed run, or
+    /// another run's live directory, is skipped rather than reused, and only what this call
+    /// created is ever removed.
+    pub(crate) fn new(name: &str) -> Scratch {
+        let parent = std::env::temp_dir();
+        let pid = std::process::id();
+        for attempt in 0u32.. {
+            let dir = parent.join(format!("workroom-commands-{name}-{pid}-{attempt}"));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return Scratch(dir.canonicalize().expect("resolve scratch dir")),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create {}: {error}", dir.display()),
+            }
+        }
+        unreachable!("u32 attempts ran out")
+    }
+}
+
+#[cfg(test)]
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 

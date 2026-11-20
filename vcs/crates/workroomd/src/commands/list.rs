@@ -9,6 +9,7 @@
 //! `commands::dispatch` leaves to `main.rs`.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::Path;
 
 use serde::Serialize;
@@ -99,12 +100,14 @@ fn list(context: &Context, args: &Args) -> Result<Outcome, CliError> {
     if context.json {
         json(context, args, &config)
     } else {
-        human(context, &config)
+        human(context, &config, &mut std::io::stdout().lock())?;
+        // Already written, a project at a time.
+        Ok(Outcome::Printed(String::new()))
     }
 }
 
 fn json(context: &Context, args: &Args, config: &Config) -> Result<Outcome, CliError> {
-    let value = args.value("warnings").unwrap_or("fast");
+    let value = args.value_or_default("warnings");
     let level = Warnings::parse(value).ok_or_else(|| {
         CliError::internal(format!(
             "invalid --warnings value {value:?} (want none, fast, or full)"
@@ -307,9 +310,12 @@ fn git_command(dir: &str) -> std::process::Command {
     command
 }
 
-/// The human list from the working directory: the workroom it is in, the project it is the root
-/// of, or every project with workrooms, each with its warnings.
-fn human(context: &Context, config: &Config) -> Result<Outcome, CliError> {
+/// The human list from the working directory, written to `out` as it goes: the workroom it is in,
+/// the project it is the root of, or every project with workrooms, each with its warnings. Each
+/// project's path is written before its checks run, and its table before the next one's, as Go
+/// writes them, so a project that stalls (a hung network volume) is named and holds back nothing
+/// before it. A failed write is ignored, as Go's `fmt.Fprintln` is.
+fn human(context: &Context, config: &Config, out: &mut impl Write) -> Result<(), CliError> {
     let cwd = config::getwd(context).map_err(CliError::internal)?;
     let data = config.read()?;
     let home = config::home_dir(context).ok();
@@ -347,17 +353,27 @@ fn human(context: &Context, config: &Config) -> Result<Outcome, CliError> {
         print_table(&rows, 2)
     };
 
-    let mut out = String::new();
+    let mut write = |text: &str| {
+        let _ = out.write_all(text.as_bytes()).and_then(|()| out.flush());
+    };
     match config::find_current_project(&data, &cwd) {
         Some((parent, _)) if parent != cwd => {
-            out += &paint("33", "You are already in a workroom.");
-            out += &format!("\nParent project is at {}\n", display(&parent));
+            write(&format!(
+                "{}\nParent project is at {}\n",
+                paint("33", "You are already in a workroom."),
+                display(&parent)
+            ));
         }
         Some((path, project)) => {
             if project.workrooms.is_empty() {
-                out += "No workrooms found for this project.\n";
+                write("No workrooms found for this project.\n");
             } else {
-                out += &table(&project_info(config, &path, &project, Warnings::Full));
+                write(&table(&project_info(
+                    config,
+                    &path,
+                    &project,
+                    Warnings::Full,
+                )));
             }
         }
         None => {
@@ -366,16 +382,16 @@ fn human(context: &Context, config: &Config) -> Result<Outcome, CliError> {
                 .filter(|(_, project)| project.entries > 0)
                 .collect();
             if projects.is_empty() {
-                out += "No workrooms found.\n";
+                write("No workrooms found.\n");
             }
             for (path, project) in &projects {
-                out += &format!("{}:\n", display(path));
-                out += &table(&project_info(config, path, project, Warnings::Full));
-                out += "\n";
+                write(&format!("{}:\n", display(path)));
+                write(&table(&project_info(config, path, project, Warnings::Full)));
+                write("\n");
             }
         }
     }
-    Ok(Outcome::Printed(out))
+    Ok(())
 }
 
 /// `rows` as columns two spaces apart, each as wide as its widest cell without its colour codes,
@@ -443,20 +459,18 @@ mod tests {
 
     #[test]
     fn a_git_file_counts_only_when_it_points_at_a_git_dir() {
-        let dir =
-            std::env::temp_dir().join(format!("workroom-list-gitfile-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::commands::Scratch::new("list-gitfile");
+        let dir = &scratch.0;
         std::fs::write(dir.join(".git"), "gitdir: /elsewhere\n").unwrap();
-        assert!(is_git_repo(&dir));
+        assert!(is_git_repo(dir));
         std::fs::write(dir.join(".git"), "gitdi").unwrap();
-        assert!(!is_git_repo(&dir));
+        assert!(!is_git_repo(dir));
         std::fs::remove_file(dir.join(".git")).unwrap();
         std::fs::create_dir(dir.join(".git")).unwrap();
         assert!(
-            !is_git_repo(&dir),
+            !is_git_repo(dir),
             "an empty .git directory is not a repository"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

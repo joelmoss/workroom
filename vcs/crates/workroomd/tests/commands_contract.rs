@@ -714,8 +714,14 @@ fn config_rewrites_odd_input_as_go_does() {
     }
 }
 
-/// A write takes `<config>.lock` with flock(2), as every Workroom binary does, and waits while
-/// another process holds it rather than writing past it.
+/// A write takes `<config>.lock` with flock(2), as every Workroom binary does, waits while another
+/// process holds it rather than writing past it, and reads config.json only once it has the lock.
+///
+/// No sleep decides it: the test holds the lock throughout, and the one thing it waits for is the
+/// binary's `git check-ref-format`, which both binaries run just before they take the lock, to
+/// have finished (a `git` on PATH that leaves a marker). It then changes config.json, still holding
+/// the lock: a binary that waits can't have exited or read the file yet, so its write must keep the
+/// change.
 #[test]
 #[cfg_attr(
     not(target_os = "macos"),
@@ -723,6 +729,7 @@ fn config_rewrites_odd_input_as_go_does() {
 )]
 fn config_write_waits_for_another_process_holding_the_lock() {
     use std::os::fd::AsRawFd;
+    use std::os::unix::fs::PermissionsExt;
     let home = Home::new("config-lock");
     home.write_config("{}");
     let lock_path = home.path(".config/workroom/config.json.lock");
@@ -731,20 +738,53 @@ fn config_write_waits_for_another_process_holding_the_lock() {
     let rc = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     assert_eq!(rc, 0, "take the lock");
 
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let git = std::env::split_paths(&path)
+        .map(|dir| dir.join("git"))
+        .find(|git| git.is_file())
+        .expect("git on PATH");
+    let marker = home.path("git-ran");
+    let bin = home.path("bin");
+    std::fs::create_dir(&bin).expect("create bin");
+    let wrapper = bin.join("git");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\n'{}' \"$@\"\nstatus=$?\n: > '{}'\nexit $status\n",
+            git.display(),
+            marker.display()
+        ),
+    )
+    .expect("write git wrapper");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
+        .expect("make git wrapper executable");
+    let mut search = vec![bin];
+    search.extend(std::env::split_paths(&path));
+
     let mut child = home
         .command(binary(), &home.dir)
+        .env("PATH", std::env::join_paths(search).expect("PATH"))
         .args(["base", "set", "--global", "main", "--json"])
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // A backstop, not a budget: the marker comes as soon as git has run.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !marker.exists() {
+        if let Some(status) = child.try_wait().expect("poll") {
+            panic!("the binary exited ({status}) before its git check finished");
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the binary's git check-ref-format didn't finish within 30 s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::fs::write(home.config_path(), "{\"x\": 1}").expect("change config");
     assert!(
         child.try_wait().expect("poll").is_none(),
         "the write didn't wait for the lock"
-    );
-    assert_eq!(
-        std::fs::read_to_string(home.config_path()).expect("read"),
-        "{}"
     );
 
     drop(lock);
@@ -752,7 +792,8 @@ fn config_write_waits_for_another_process_holding_the_lock() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         std::fs::read_to_string(home.config_path()).expect("read"),
-        "{\n  \"base_branch\": \"main\"\n}"
+        "{\n  \"base_branch\": \"main\",\n  \"x\": 1\n}",
+        "the binary read config.json before it had the lock"
     );
     assert!(lock_path.exists(), "the lock file is never removed");
 }
@@ -965,4 +1006,44 @@ fn list_json_project_limits_the_listing() {
     assert_eq!(listed("app-link"), ["/Users/dev/src/app"]);
     assert_eq!(listed("src/other/../app"), ["/Users/dev/src/app"]);
     assert!(listed("src/nope").is_empty());
+}
+
+/// `--project` names a directory as Go's `filepath.EvalSymlinks` does: symlinks resolved, every
+/// other name in the case it was given, never rewritten to the case on disk as realpath would. The
+/// Mac's disk is case-insensitive, so `caseproj` is the `CaseProj` directory, and its config key
+/// matches only in the case it was registered under.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn list_json_project_keeps_the_case_it_was_given() {
+    let home = Home::new("list-case");
+    let ct = home.path("ct");
+    std::fs::create_dir_all(ct.join("CaseProj")).expect("project dir");
+    std::os::unix::fs::symlink("CaseProj", ct.join("Link")).expect("symlink");
+    home.write_config(
+        &r#"{"{home}/ct/caseproj": {"vcs": "git", "workrooms": {}},
+             "{home}/ct/CaseProj": {"vcs": "git", "workrooms": {}}}"#
+            .replace("{home}", &home.dir.to_string_lossy()),
+    );
+    let listed = |project: &str| {
+        let run = home.run(
+            &ct,
+            &["list", "--json", "--warnings=none", "--project", project],
+        );
+        run.assert_code(0).assert_quiet_stderr();
+        run.envelope()["projects"]
+            .as_array()
+            .expect("projects")
+            .iter()
+            .map(|project| home.normalize(project["path"].as_str().expect("path")))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(listed("caseproj"), ["/Users/dev/ct/caseproj"]);
+    assert_eq!(listed("CaseProj/"), ["/Users/dev/ct/CaseProj"]);
+    assert!(listed("CASEPROJ").is_empty(), "no key in that case");
+    // A link is resolved to its target as the link names it, whatever case the link is given in.
+    assert_eq!(listed("LINK"), ["/Users/dev/ct/CaseProj"]);
+    assert_eq!(listed("link/../caseproj"), ["/Users/dev/ct/caseproj"]);
 }

@@ -1,30 +1,12 @@
 use std::os::unix::fs::PermissionsExt;
 
 use super::*;
-use crate::commands::Platform;
+use crate::commands::{Platform, Scratch};
 
-/// A directory for one test, removed when it ends.
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(name: &str) -> Scratch {
-        let dir =
-            std::env::temp_dir().join(format!("workroom-config-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Scratch(dir.canonicalize().unwrap())
-    }
-
-    fn config(&self) -> Config {
-        Config {
-            path: self.0.join("nested/config.json"),
-        }
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+/// A config file, not yet made, in a directory not yet made, inside `scratch`.
+fn config_in(scratch: &Scratch) -> Config {
+    Config {
+        path: scratch.0.join("nested/config.json"),
     }
 }
 
@@ -62,7 +44,7 @@ fn the_path_is_workroom_config_else_under_home() {
 #[test]
 fn a_missing_file_reads_as_an_empty_object_and_a_bad_one_fails() {
     let scratch = Scratch::new("read");
-    let config = scratch.config();
+    let config = config_in(&scratch);
     assert_eq!(config.read().unwrap(), Json::Object(Object::new()));
     std::fs::create_dir_all(config.path().parent().unwrap()).unwrap();
     std::fs::write(config.path(), "{} x").unwrap();
@@ -80,7 +62,7 @@ fn a_missing_file_reads_as_an_empty_object_and_a_bad_one_fails() {
 #[test]
 fn a_write_makes_the_directory_and_leaves_a_0644_file_and_no_temporary_one() {
     let scratch = Scratch::new("write");
-    let config = scratch.config();
+    let config = config_in(&scratch);
     config.set_global_base_branch("main").unwrap();
     let dir = config.path().parent().unwrap();
     assert_eq!(
@@ -104,7 +86,7 @@ fn a_write_makes_the_directory_and_leaves_a_0644_file_and_no_temporary_one() {
 #[test]
 fn clearing_the_global_base_of_a_null_config_writes_null_as_go_does() {
     let scratch = Scratch::new("null");
-    let config = scratch.config();
+    let config = config_in(&scratch);
     std::fs::create_dir_all(config.path().parent().unwrap()).unwrap();
     std::fs::write(config.path(), "null").unwrap();
     config.set_global_base_branch("").unwrap();
@@ -120,7 +102,7 @@ fn clearing_the_global_base_of_a_null_config_writes_null_as_go_does() {
 #[test]
 fn a_projects_vcs_is_set_only_when_it_is_registered() {
     let scratch = Scratch::new("vcs");
-    let config = scratch.config();
+    let config = config_in(&scratch);
     std::fs::create_dir_all(config.path().parent().unwrap()).unwrap();
     std::fs::write(config.path(), r#"{"/p": {"vcs": "jj", "x": 1}}"#).unwrap();
     config.set_project_vcs("/p", "git").unwrap();
@@ -222,6 +204,106 @@ fn a_canonical_path_resolves_what_exists_and_cleans_what_doesnt() {
         canonical_path("~/src", &home).unwrap(),
         "/nonexistent-home/src"
     );
+}
+
+#[test]
+fn symlinks_resolve_as_gos_eval_symlinks_resolves_them() {
+    let scratch = Scratch::new("eval-symlinks");
+    let root = scratch.0.to_string_lossy().into_owned();
+    std::fs::create_dir_all(scratch.0.join("real/sub")).unwrap();
+    std::fs::write(scratch.0.join("file"), "").unwrap();
+    // A relative link resolves against its own directory; an absolute one from the root.
+    std::os::unix::fs::symlink("real/sub", scratch.0.join("rel")).unwrap();
+    std::os::unix::fs::symlink(scratch.0.join("real"), scratch.0.join("abs")).unwrap();
+    std::os::unix::fs::symlink("loop", scratch.0.join("loop")).unwrap();
+    for (path, resolved) in [
+        (format!("{root}/rel"), format!("{root}/real/sub")),
+        (format!("{root}/rel/.."), format!("{root}/real")),
+        (format!("{root}/abs/./sub/"), format!("{root}/real/sub")),
+        (format!("{root}/real/../abs"), format!("{root}/real")),
+    ] {
+        assert_eq!(eval_symlinks(&path).unwrap(), resolved, "{path}");
+    }
+    for path in [
+        format!("{root}/gone"),
+        format!("{root}/file/x"),
+        format!("{root}/loop"),
+    ] {
+        assert!(eval_symlinks(&path).is_err(), "{path}");
+    }
+    assert_eq!(
+        eval_symlinks(&format!("{root}/file/x"))
+            .unwrap_err()
+            .raw_os_error(),
+        Some(libc::ENOTDIR)
+    );
+}
+
+/// macOS's disk is case-insensitive: Go names a directory as it was given, where realpath would
+/// name it as it is on disk, and config keys are compared byte for byte.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_canonical_path_keeps_the_case_it_was_given() {
+    let scratch = Scratch::new("canonical-case");
+    std::fs::create_dir(scratch.0.join("CaseProj")).unwrap();
+    std::os::unix::fs::symlink("CaseProj", scratch.0.join("Link")).unwrap();
+    let none = context(|_| None);
+    let root = scratch.0.display();
+    assert_eq!(
+        canonical_path(&format!("{root}/caseproj"), &none).unwrap(),
+        format!("{root}/caseproj")
+    );
+    assert_eq!(
+        canonical_path(&format!("{root}/LINK/"), &none).unwrap(),
+        format!("{root}/CaseProj"),
+        "a link's target is named as the link names it"
+    );
+}
+
+#[test]
+fn config_errors_are_worded_as_go_wraps_them() {
+    let scratch = Scratch::new("errors");
+    let dir = Config {
+        path: scratch.0.clone(),
+    };
+    let error = dir.read().unwrap_err();
+    let path = scratch.0.display();
+    assert_eq!(error.kind, Kind::ConfigReadFailed);
+    assert_eq!(
+        error.message,
+        format!("failed to read config {path}: read {path}: is a directory")
+    );
+    // A file where the config's directory should be.
+    std::fs::write(scratch.0.join("file"), "").unwrap();
+    let blocked = Config {
+        path: scratch.0.join("file/sub/config.json"),
+    };
+    let error = blocked.write(&Json::Null).unwrap_err();
+    assert_eq!(error.kind, Kind::ConfigWriteFailed);
+    assert_eq!(
+        error.message,
+        format!(
+            "failed to write config: create config directory {path}/file/sub: mkdir {path}/file: \
+             not a directory"
+        )
+    );
+    // A directory in the config's place, so the rename over it fails after the temp file's write.
+    std::fs::create_dir_all(scratch.0.join("taken/config.json/x")).unwrap();
+    let taken = Config {
+        path: scratch.0.join("taken/config.json"),
+    };
+    let error = taken.write(&Json::Null).unwrap_err();
+    let message = error.message;
+    let config = format!("{path}/taken/config.json");
+    let tmp = message
+        .strip_prefix(&format!("failed to write config {config}: rename "))
+        .and_then(|rest| rest.strip_suffix(&format!(" {config}: is a directory")))
+        .unwrap_or_else(|| panic!("{message}"));
+    assert!(
+        tmp.starts_with(&format!("{path}/taken/.config-")) && tmp.ends_with(".json.tmp"),
+        "{tmp}"
+    );
+    assert!(!Path::new(tmp).exists(), "the temp file is removed");
 }
 
 #[test]
