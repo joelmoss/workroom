@@ -34,6 +34,11 @@ if ! (
 fi
 
 user=${USER:-$(id -un)}
+# The daemon's command, the same on both paths: a fixed environment (the systemd unit's), never
+# the ssh login's, and its fixed argv.
+set -- "$(command -v env)" -i HOME="$HOME" USER="$user" SHELL="${SHELL:-/bin/sh}" \
+  PATH=/usr/local/bin:/usr/bin:/bin \
+  "$binary" serve --socket "$socket" --idle-timeout "$idle" --screens "$screens"
 started=
 unit_started=
 if command -v systemd-run > /dev/null 2>&1 && command -v loginctl > /dev/null 2>&1 &&
@@ -52,10 +57,7 @@ if command -v systemd-run > /dev/null 2>&1 && command -v loginctl > /dev/null 2>
     if failure=$(systemd-run --user --quiet --collect --unit="$unit" \
       -p KillMode=process -p UMask="$(umask)" \
       -p StandardInput=null -p StandardOutput=null -p StandardError=null \
-      -- "$(command -v env)" -i HOME="$HOME" USER="$user" SHELL="${SHELL:-/bin/sh}" \
-      PATH=/usr/local/bin:/usr/bin:/bin \
-      "$binary" serve --socket "$socket" --idle-timeout "$idle" --screens "$screens" \
-      < /dev/null 2>&1); then
+      -- "$@" < /dev/null 2>&1); then
       started=$(systemctl --user show -p MainPID --value "$unit.service" 2> /dev/null)
       [ "$started" != 0 ] || started=
       unit_started=yes
@@ -71,10 +73,7 @@ if [ -z "$unit_started" ]; then
     echo "WRB serving no"
     exit 1
   fi
-  nohup setsid env -i HOME="$HOME" USER="$user" SHELL="${SHELL:-/bin/sh}" \
-    PATH=/usr/local/bin:/usr/bin:/bin \
-    "$binary" serve --socket "$socket" --idle-timeout "$idle" --screens "$screens" \
-    < /dev/null > /dev/null 2>&1 &
+  nohup setsid "$@" < /dev/null > /dev/null 2>&1 &
   started=$!
 fi
 i=0

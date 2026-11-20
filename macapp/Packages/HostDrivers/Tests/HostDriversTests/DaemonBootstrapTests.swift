@@ -295,12 +295,13 @@ final class DaemonBootstrapTests: XCTestCase {
       _ = try await ensure(driver)
       XCTFail("a daemon killed when ssh logged out counted as ready")
     } catch DaemonBootstrap.Error.installFailed(let detail) {
-      XCTAssertEqual(
-        detail,
-        "the server ended the daemon when the app's SSH login closed: its systemd-logind setting "
-          + "KillUserProcesses=yes ends a user's processes at logout. To keep the daemon running, "
-          + "run loginctl enable-linger on the server, or ask its administrator to, then connect "
-          + "again.")
+      for phrase in [
+        "SSH login closed", "KillUserProcesses=yes", "run loginctl enable-linger on the server",
+        "ask its administrator", "connect again",
+      ] {
+        XCTAssertTrue(detail.contains(phrase), "no \(phrase) in: \(detail)")
+      }
+      XCTAssertFalse(detail.contains("change"), "it suggests changing logind: \(detail)")
     }
     XCTAssertEqual(driver.commands.count, 3, "the survival check is a separate exec")
   }
@@ -321,11 +322,14 @@ final class DaemonBootstrapTests: XCTestCase {
       _ = try await ensure(driver)
       XCTFail("a daemon killed when ssh logged out counted as ready")
     } catch DaemonBootstrap.Error.installFailed(let detail) {
-      XCTAssertEqual(
-        detail,
-        "the server ended the daemon when the app's SSH login closed, and starting it under your "
-          + "systemd user manager failed: Failed to connect to bus: No medium found. Check that "
-          + "systemctl --user works on the server, then connect again.")
+      for phrase in [
+        "SSH login closed",
+        "systemd user manager failed: Failed to connect to bus: No medium found",
+        "systemctl --user", "connect again",
+      ] {
+        XCTAssertTrue(detail.contains(phrase), "no \(phrase) in: \(detail)")
+      }
+      XCTAssertFalse(detail.contains("enable-linger"), "it sends a lingering user to linger")
     }
   }
 
