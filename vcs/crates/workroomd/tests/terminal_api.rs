@@ -1980,11 +1980,12 @@ fn wait_for_a_program_status_or_the_shells_command_to_finish() {
         return;
     }
 
-    // `/bin/sh` sends no OSC 133 marks, so a command's end can't be seen.
+    // `/bin/sh` sends no OSC 133 marks, so a command's end can't be seen: said once the new
+    // session's grace for its first mark is over, long before the timeout.
     assert_eq!(
         failed(wait(
             &socket,
-            &["server", "--command-finished", "--timeout", "5s"]
+            &["server", "--command-finished", "--timeout", "30s"]
         )),
         (3, "NoShellIntegration".into())
     );

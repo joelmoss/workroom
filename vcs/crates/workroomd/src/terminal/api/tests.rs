@@ -597,7 +597,6 @@ fn a_young_session_gets_a_grace_for_its_first_mark() {
         0x47,
         r"sleep 3; printf '\033]133;A\007\033]133;C\007'; printf '\033]133;D;4\007'; sleep 30",
     );
-    let silent = sleeping(&store, 0x48);
     let wait = |id: SessionId, grace: u64| {
         let limits = wait::Limits {
             marks_grace: std::time::Duration::from_secs(grace),
@@ -617,8 +616,14 @@ fn a_young_session_gets_a_grace_for_its_first_mark() {
     let reply = the_reply(&finished);
     assert_eq!(reply["result"]["exit_code"], 4, "{reply}");
 
-    // 3 s from its creation, so refused about then, long before its 60 s timeout.
-    let (refused, _held) = wait(silent, 3);
+    // Made just now, so not refused at once, but 10 s from its creation, long before the wait's
+    // 60 s timeout.
+    let silent = sleeping(&store, 0x48);
+    let (refused, _held) = wait(silent, 10);
+    assert!(
+        refused.replies().is_empty(),
+        "a session inside its grace was refused at once"
+    );
     let reply = the_reply(&refused);
     assert_eq!(reply["error"]["kind"], "NoShellIntegration", "{reply}");
     store.kill(marked);
