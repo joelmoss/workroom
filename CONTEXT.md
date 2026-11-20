@@ -239,5 +239,20 @@ A shortcut that works from any app, not only while Workroom is in front. There a
 **Shortcut conflict**:
 Two shortcuts bound to the same keys. Keeping the new one unsets the other.
 
+**Appearance**:
+Whether Workroom is light or dark: System (follow macOS), Light or Dark.
+_Avoid_: Theme preference, colour scheme, mode (alone)
+
 **Theme**:
-A bundled colour scheme applied to the terminals and the interface.
+A colour scheme for the terminals and the interface, either bundled or one of the user's own. Every theme is either light or dark, judged by its background.
+_Avoid_: Colour scheme, palette, variant
+
+**Light theme**:
+The theme Workroom uses while its appearance is light. It is chosen apart from the dark theme.
+
+**Dark theme**:
+The theme Workroom uses while its appearance is dark. It is chosen apart from the light theme.
+
+**Theme family**:
+A bundled preset pairing one light theme with one dark theme, such as Catppuccin (Latte and Mocha). Choosing it sets both, and either can then be changed on its own. The user's own themes never form a family.
+_Avoid_: Theme (alone, for a family), pair, theme set
