@@ -10,7 +10,8 @@
 //! The commands that read or write the Mac's config are Mac-only: listed in `--help` everywhere,
 //! marked "(Mac only)", and failing with `MacOnly` anywhere else. Until its own ticket ports it
 //! (#672–#679), each of those, and `update`, is a stub here; the Go CLI still runs them. `list`
-//! and `base --global` are ported (#671), on `config`, the Rust reader and writer of config.json.
+//! and `base --global` are ported (#671), on `config`, the Rust reader and writer of config.json,
+//! and so is `include-archive` (#675).
 //!
 //! The terminal API's commands (#360, ADR 0079) are born here and run anywhere: each is a thin
 //! client of the daemon's terminal API (`terminal_api`).
@@ -19,6 +20,7 @@ mod base;
 pub(crate) mod channel;
 mod config;
 mod envelope;
+mod include_archive;
 mod kind;
 mod list;
 mod log;
@@ -86,6 +88,8 @@ impl Context {
 pub(crate) enum Outcome {
     /// Human output for stdout, exit 0.
     Printed(String),
+    /// Human output for stdout, and lines for stderr about what failed on the way, exit 0.
+    PrintedWithErrors { stdout: String, stderr: String },
     /// A success envelope, exit 0.
     Success(String),
     /// A failure, reported in the error envelope under `--json`, else as an `Error:` line.
@@ -257,15 +261,30 @@ const COMMANDS: &[Command] = &[
         true,
         "#673",
     ),
-    stub(
-        "include-archive",
-        &[],
-        "include-archive",
-        "Write the project's included files to a tar (used by the desktop app)",
-        true,
-        true,
-        "#675",
-    ),
+    Command {
+        name: "include-archive",
+        aliases: &[],
+        usage: "include-archive",
+        short: "Write the project's included files to a tar (used by the desktop app)",
+        hidden: true,
+        mac_only: true,
+        flags: &[
+            Flag {
+                name: "output",
+                takes_value: true,
+                usage: "The file to write the tar to",
+                default: "",
+            },
+            Flag {
+                name: "project",
+                takes_value: true,
+                usage: "Project directory (defaults to the current directory)",
+                default: "",
+            },
+        ],
+        arity: Arity::None,
+        implementation: Implementation::Ported(include_archive::run),
+    },
     Command {
         name: "list",
         aliases: &["ls", "l"],
@@ -590,6 +609,13 @@ fn run(args: &[String], mut context: Context) -> Output {
 fn report(context: &Context, command: Option<&str>, outcome: Outcome) -> Output {
     let (command, error) = match outcome {
         Outcome::Printed(text) | Outcome::Success(text) => return Output::stdout(text),
+        Outcome::PrintedWithErrors { stdout, stderr } => {
+            return Output {
+                stdout,
+                stderr,
+                code: 0,
+            };
+        }
         Outcome::Failed(error) => (command, error),
         Outcome::Usage(error) => (None, error),
     };
@@ -807,6 +833,17 @@ mod tests {
             &["base", "set", "--global", "main", "--json"],
             &["create", "--json", "--no-editor"],
             &["add-project", "/tmp/x", "--json"],
+            // Before its required `--output` is checked, and it writes no tar.
+            &["include-archive", "--json"],
+            &["include-archive", "--json", "--project=/x"],
+            &[
+                "include-archive",
+                "--json",
+                "--project",
+                "/x",
+                "--output",
+                "/y.tar",
+            ],
         ] {
             let ((stdout, _), code) = run_on(Platform::Other, args);
             assert_eq!(code, 3, "{args:?}");
@@ -862,6 +899,30 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("  -h, --help              help\n"), "{text}");
+        let ((text, _), _) = run_on(Platform::Other, &["include-archive", "--help"]);
+        assert!(
+            text.contains(
+                "      --output string    The file to write the tar to\n      \
+                 --project string   Project directory (defaults to the current directory)\n"
+            ),
+            "{text}"
+        );
+    }
+
+    /// cobra checks a required flag before the command runs, so the envelope names no command.
+    #[test]
+    fn a_missing_required_flag_is_a_usage_error_naming_no_command() {
+        let ((stdout, stderr), code) = run_on(
+            Platform::Mac,
+            &["include-archive", "--json", "--project", "/x"],
+        );
+        assert_eq!((stderr.as_str(), code), ("", 1));
+        let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            envelope["error"]["message"],
+            "required flag(s) \"output\" not set"
+        );
+        assert!(envelope.get("command").is_none(), "{envelope}");
     }
 
     #[test]

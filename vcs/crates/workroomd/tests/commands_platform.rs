@@ -19,6 +19,16 @@ fn a_mac_only_command_on_a_host_fails_with_mac_only() {
         &["ls", "--json"],
         &["base", "set", "main", "--json"],
         &["add-project", "/tmp/x", "--json"],
+        // Ported: the gate comes before its own flags are read, and it writes no tar.
+        &["include-archive", "--json"],
+        &[
+            "include-archive",
+            "--json",
+            "--project",
+            "/nonexistent/x",
+            "--output",
+            "/nonexistent/x.tar",
+        ],
     ] {
         let output = Command::new(binary())
             .args(args)
