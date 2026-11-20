@@ -3292,11 +3292,15 @@ fn add_project_clone_keeps_a_killed_clis_staging_until_its_git_is_gone() {
     std::fs::create_dir_all(&dest).expect("dest");
     let dest_arg = dest.to_string_lossy().into_owned();
     let args = ["add-project", &dest_arg, "--clone", &url, "--json"];
-    let mut child = spawn_with_env(&home, &args, &[("GIT_ALLOW_PROTOCOL", OsStr::new("ext"))]);
-    let helper = wait_for_pid(&pid_file);
-    let cli = child.id();
-    child.kill().expect("SIGKILL the CLI");
-    child.wait().expect("reap the CLI");
+    let mut child = Reaped(spawn_with_env(
+        &home,
+        &args,
+        &[("GIT_ALLOW_PROTOCOL", OsStr::new("ext"))],
+    ));
+    let mut helper = Helper(Some(wait_for_pid(&pid_file)));
+    let cli = child.0.id();
+    child.0.kill().expect("SIGKILL the CLI");
+    child.0.wait().expect("reap the CLI");
 
     let staging = entries(&dest);
     assert_eq!(staging.len(), 2, "{staging:?}");
@@ -3324,8 +3328,7 @@ fn add_project_clone_keeps_a_killed_clis_staging_until_its_git_is_gone() {
     );
     assert_eq!(entries(&dest), staging);
 
-    // SAFETY: the transport helper this test's script started.
-    unsafe { libc::kill(helper, libc::SIGKILL) };
+    helper.kill();
     eventually("git kept the lock after its transport died", || {
         !lock_is_held(&dest.join(&staging[1]))
     });
@@ -3337,6 +3340,38 @@ fn add_project_clone_keeps_a_killed_clis_staging_until_its_git_is_gone() {
         format!("Removing staging a crashed clone left: {}", staging[0])
     );
     assert_eq!(entries(&dest), [".git"]);
+}
+
+/// A spawned CLI, killed and reaped when it goes out of scope, so a failed assertion leaves no
+/// process behind. Once reaped, `kill` signals nothing, so no reused pid is hit.
+struct Reaped(std::process::Child);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// The hanging transport helper's pid, SIGKILLed by [`Helper::kill`] or, when an assertion fails
+/// first, on drop, so no `sleep 30` (and the git waiting on it) outlives the test. Killed once:
+/// a second signal could hit a reused pid.
+struct Helper(Option<i32>);
+
+impl Helper {
+    fn kill(&mut self) {
+        if let Some(pid) = self.0.take() {
+            // SAFETY: `kill(2)` takes no pointers; the pid is the transport helper this test's
+            // script started, not yet signalled.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+    }
+}
+
+impl Drop for Helper {
+    fn drop(&mut self) {
+        self.kill();
+    }
 }
 
 // --- delete-project ---
