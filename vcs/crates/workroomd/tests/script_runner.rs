@@ -18,12 +18,38 @@ fn binary() -> PathBuf {
     }
 }
 
-/// A fresh directory, canonical so `pwd -P` in it matches.
-fn scratch(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("wr-script-runner-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    std::fs::canonicalize(&root).unwrap()
+/// A fresh directory, canonical so `pwd -P` in it matches, removed when the test is done.
+struct Scratch(PathBuf);
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A directory this run made itself: `create_dir` fails on any path that already exists, so a
+/// leftover from a killed run, or another run's live one, is skipped rather than reused, and only
+/// what this call created is ever removed.
+fn scratch(name: &str) -> Scratch {
+    let parent = std::env::temp_dir();
+    let pid = std::process::id();
+    for attempt in 0u32.. {
+        let root = parent.join(format!("wr-script-runner-{name}-{pid}-{attempt}"));
+        match std::fs::create_dir(&root) {
+            Ok(()) => return Scratch(std::fs::canonicalize(&root).unwrap()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("create {}: {error}", root.display()),
+        }
+    }
+    unreachable!("u32 attempts ran out")
 }
 
 /// Written by `cp`, not by this process: a test on another thread that forks while this one holds
@@ -237,7 +263,8 @@ fn a_background_job_holding_the_output_does_not_hold_the_run() {
     );
 }
 
-/// The wall clock, when given one, ends the tree, as `run-script`'s does.
+/// The wall clock, when given one, ends the tree, as `run-script`'s does. The script blocks until
+/// the clock releases it, and has the whole 3 s clock to record its child.
 #[test]
 fn the_wall_clock_ends_an_in_process_run() {
     let root = scratch("clock");
@@ -250,17 +277,16 @@ fn the_wall_clock_ends_an_in_process_run() {
         ),
     );
     let mut request = in_process(&path, &root, &[], plain_shell(&root, ""));
-    request.timeout = Some(Duration::from_secs(1));
+    request.timeout = Some(Duration::from_secs(3));
     request.kill_grace = Duration::from_millis(200);
 
     let (outcome, _) = combined(&request);
     assert!(matches!(outcome, Outcome::TimedOut), "{outcome:?}");
     assert_eq!(outcome.exit_code(), 124);
     let child: i32 = std::fs::read_to_string(&pidfile)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+        .ok()
+        .and_then(|pid| pid.trim().parse().ok())
+        .expect("the script to record its child within the 3 s clock");
     wait_for("the script's child to end", || !alive(child));
 }
 
@@ -345,10 +371,10 @@ fn the_script_still_runs_when_the_login_shell_misbehaves() {
                 .stderr(Stdio::piped())
                 .spawn()
                 .unwrap();
-            (profile, reason, child)
+            (profile, reason, child, root)
         })
         .collect();
-    for (profile, reason, child) in runs {
+    for (profile, reason, child, _root) in runs {
         let output = child.wait_with_output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -479,22 +505,26 @@ fn a_signal_while_the_login_shell_is_read_ends_it_and_runs_no_script() {
 }
 
 /// A background shell job inherits an ignored SIGINT, and nohup an ignored SIGHUP. Ignored, they
-/// aren't a cancel: the read and the script carry on as if nothing had been sent.
+/// aren't a cancel: the read and the script carry on as if nothing had been sent. The profile
+/// waits for the test to send the signal, so it lands while the login shell is read.
 #[test]
 fn a_signal_ignored_at_start_is_no_cancel() {
     for (name, signal) in [("INT", libc::SIGINT), ("HUP", libc::SIGHUP)] {
         let root = scratch(&format!("ignored-{name}"));
         let pidfile = root.join("shell.pid");
+        let sent = root.join("sent");
         let script = printing(&root, "read=$READ_FINISHED");
         let profile = format!(
-            "echo $$ > {}\nsleep 1\nexport READ_FINISHED=yes\n",
-            pidfile.display()
+            "echo $$ > {}\nwhile [ ! -e {} ]; do sleep 0.05; done\nexport READ_FINISHED=yes\n",
+            pidfile.display(),
+            sent.display()
         );
         let mut command = ignoring(name, &run_script(&root, &profile, &script, &root));
         let mut run = Spawned(command.stdout(Stdio::piped()).spawn().unwrap());
         wait_for("the shell to start", || pidfile.exists());
         // SAFETY: `kill` takes no pointers.
         unsafe { libc::kill(run.0.id() as i32, signal) };
+        std::fs::write(&sent, "").unwrap();
         let stdout = run.0.stdout.take().unwrap();
         let status = run.0.wait().unwrap();
         let printed = std::io::read_to_string(stdout).unwrap();
@@ -551,7 +581,7 @@ fn an_in_process_run_is_cancelled_and_its_caller_carries_on() {
                 "--nocapture",
                 "--test-threads=1",
             ])
-            .env("WR_SCRIPT_RUNNER_CHILD", &root)
+            .env("WR_SCRIPT_RUNNER_CHILD", &*root)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
