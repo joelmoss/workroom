@@ -1860,10 +1860,10 @@ fn shell_word(arg: &str) -> String {
     }
 }
 
-/// The commands the Rust CLI has and Go's doesn't: `sessions`, born in Rust for the terminal API
-/// (#683). Completion offers each beside Go's commands, wherever it lists them (`''`, `help ''`,
-/// after a global flag), which Go's cobra, who wrote the golden, never did.
-const RUST_ONLY_COMMANDS: &[&str] = &["sessions"];
+/// The commands the Rust CLI has and Go's doesn't: `api` (#685) and `sessions` (#683), born in
+/// Rust for the terminal API. Completion offers each beside Go's commands, wherever it lists them
+/// (`''`, `help ''`, after a global flag), which Go's cobra, who wrote the golden, never did.
+const RUST_ONLY_COMMANDS: &[&str] = &["api", "sessions"];
 
 /// `stdout` without the candidates `RUST_ONLY_COMMANDS` name, with or without a description, so
 /// the Rust binary matches the transcript Go wrote in all else. Against Go it changes nothing.

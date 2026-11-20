@@ -36,17 +36,33 @@ impl Run {
 
 /// `workroom <args>` with only `PATH`, `HOME` and, when given, `WORKROOM_DAEMON`.
 fn workroom(daemon: Option<&Path>, args: &[&str]) -> Run {
+    workroom_with_stdin(daemon, args, None)
+}
+
+/// [`workroom`], reading `stdin` when given, else nothing.
+fn workroom_with_stdin(daemon: Option<&Path>, args: &[&str], stdin: Option<&str>) -> Run {
     let mut command = Command::new(common::daemon_binary());
     command
         .args(args)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", std::env::temp_dir())
-        .stdin(Stdio::null());
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(socket) = daemon {
         command.env("WORKROOM_DAEMON", socket);
     }
-    let output = command.output().expect("run workroom");
+    let mut child = command.spawn().expect("run workroom");
+    if let Some(text) = stdin {
+        let mut pipe = child.stdin.take().expect("stdin");
+        pipe.write_all(text.as_bytes()).expect("write stdin");
+    }
+    let output = child.wait_with_output().expect("run workroom");
     Run {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -557,4 +573,254 @@ fn every_method_publishes_schemas_its_replies_match() {
     assert_eq!(violation(&error_schema, &ambiguous["error"], "error"), None);
     let unknown = api.call("session.nope", json!({}));
     assert_eq!(unknown["error"]["kind"], "InvalidRequest", "{unknown}");
+}
+
+/// `workroom api <args>` with `--json`, from a run that must succeed: its envelope.
+fn api_json(socket: &Path, args: &[&str]) -> Value {
+    let args: Vec<&str> = ["api"]
+        .iter()
+        .chain(args)
+        .chain(&["--json"])
+        .copied()
+        .collect();
+    let run = workroom(Some(socket), &args);
+    assert_eq!(run.code, 0, "{args:?}: {} {}", run.stdout, run.stderr);
+    let envelope = run.envelope();
+    assert_eq!(envelope["ok"], true, "{envelope}");
+    assert_eq!(envelope["schema_version"], 1, "{envelope}");
+    assert_eq!(envelope["command"], "api", "{envelope}");
+    envelope
+}
+
+/// `api list` names every method the daemon has, each with what it does, and the API's revision.
+#[test]
+fn api_list_names_every_method_the_daemon_has() {
+    let workspace = Workspace::new("api-list");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+
+    let envelope = api_json(&socket, &["list"]);
+    assert_eq!(envelope["revision"], 1, "{envelope}");
+    let methods = envelope["methods"].as_array().expect("methods");
+    let names: Vec<&str> = methods
+        .iter()
+        .map(|method| method["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["api.describe", "session.list", "session.resolve"]);
+    assert_eq!(
+        methods[1]["summary"],
+        "Every session the daemon holds, oldest first."
+    );
+    // The listing names them; the schemas are `describe`'s.
+    assert!(methods[1].get("input").is_none(), "{envelope}");
+
+    let human = workroom(Some(&socket), &["api", "list"]);
+    assert_eq!((human.code, human.stderr.as_str()), (0, ""));
+    assert!(
+        human
+            .stdout
+            .contains("session.list     Every session the daemon holds, oldest first.\n"),
+        "{}",
+        human.stdout
+    );
+}
+
+/// `api describe METHOD` shows that one method's schemas, with examples, and the error's; a
+/// method the daemon doesn't have is bad input (2), and a missing one a bad command line (1).
+#[test]
+fn api_describe_shows_one_methods_schemas_with_examples() {
+    let workspace = Workspace::new("api-describe");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+
+    let envelope = api_json(&socket, &["describe", "session.resolve"]);
+    assert_eq!(envelope["revision"], 1, "{envelope}");
+    let method = &envelope["method"];
+    assert_eq!(method["name"], "session.resolve", "{envelope}");
+    assert_eq!(method["input"]["required"], json!(["target"]), "{method}");
+    assert_eq!(
+        method["example"],
+        json!({"target": "dev server"}),
+        "{method}"
+    );
+    assert_eq!(
+        method["output"]["examples"][0]["session"]["label"], "dev server",
+        "{method}"
+    );
+    assert_eq!(
+        method["errors"],
+        json!(["TargetNotFound", "TargetAmbiguous"])
+    );
+    assert_eq!(envelope["error"]["required"], json!(["kind", "message"]));
+
+    // For a person, the same description as indented JSON.
+    let human = workroom(Some(&socket), &["api", "describe", "session.resolve"]);
+    assert_eq!(human.code, 0, "{}", human.stderr);
+    let shown: Value = serde_json::from_str(&human.stdout).expect("JSON");
+    assert_eq!(shown, *method);
+    assert!(human.stdout.starts_with("{\n  \""), "{}", human.stdout);
+
+    let unknown = workroom(
+        Some(&socket),
+        &["api", "describe", "session.nope", "--json"],
+    );
+    assert_eq!(unknown.code, 2, "{}", unknown.stdout);
+    assert_eq!(unknown.envelope()["error"]["kind"], "InvalidRequest");
+    let missing = workroom(Some(&socket), &["api", "describe", "--json"]);
+    assert_eq!(missing.code, 1, "{}", missing.stdout);
+    assert_eq!(
+        missing.envelope()["error"]["message"],
+        "accepts 1 arg(s), received 0"
+    );
+}
+
+/// `api call METHOD PARAMS` takes PARAMS inline, from `@FILE` or from stdin (`-`), and with none
+/// sends `{}`. Its envelope carries the method's reply: `method`, `version` and `result`.
+#[test]
+fn api_call_takes_params_inline_from_a_file_and_from_stdin() {
+    let workspace = Workspace::new("api-call");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let _shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+    let params = workspace.dir.join("params.json");
+    std::fs::write(&params, "{\"target\": \"server\"}\n").expect("write params");
+    let at_file = format!("@{}", params.display());
+
+    let resolved = |run: Run| {
+        assert_eq!(run.code, 0, "{} {}", run.stdout, run.stderr);
+        let envelope = run.envelope();
+        assert_eq!(envelope["command"], "api", "{envelope}");
+        assert_eq!(envelope["method"], "session.resolve", "{envelope}");
+        assert_eq!(envelope["version"], 1, "{envelope}");
+        envelope["result"]["session"]["id"].clone()
+    };
+    let call = |params: &str, stdin: Option<&str>| {
+        workroom_with_stdin(
+            Some(&socket),
+            &["api", "call", "session.resolve", params, "--json"],
+            stdin,
+        )
+    };
+    assert_eq!(resolved(call(r#"{"target":"server"}"#, None)), SHELL);
+    assert_eq!(resolved(call(&at_file, None)), SHELL);
+    assert_eq!(resolved(call("-", Some("{\"target\": \"8e11\"}"))), SHELL);
+
+    // No PARAMS is `{}`.
+    let listed = api_json(&socket, &["call", "session.list"]);
+    assert_eq!(listed["result"]["sessions"][0]["id"], SHELL, "{listed}");
+
+    // For a person, the result as indented JSON.
+    let human = workroom(
+        Some(&socket),
+        &["api", "call", "session.resolve", r#"{"target":"server"}"#],
+    );
+    assert_eq!(human.code, 0, "{}", human.stderr);
+    let shown: Value = serde_json::from_str(&human.stdout).expect("JSON");
+    assert_eq!(shown["session"]["id"], SHELL);
+
+    // PARAMS that aren't JSON, or a file that can't be read, are bad input; so are parameters
+    // the daemon refuses. A method's own errors keep their codes.
+    let missing_file = format!("@{}", workspace.dir.join("nowhere.json").display());
+    for (params, stdin) in [
+        ("{not json", None),
+        (missing_file.as_str(), None),
+        ("-", Some("")),
+        ("[1]", None),
+        ("{}", None),
+    ] {
+        let run = call(params, stdin);
+        assert_eq!(run.code, 2, "{params}: {}", run.stdout);
+        let envelope = run.envelope();
+        assert_eq!(envelope["error"]["kind"], "InvalidRequest", "{envelope}");
+        assert_eq!(envelope["command"], "api", "{envelope}");
+    }
+    let nothing = call(r#"{"target":"nothing"}"#, None);
+    assert_eq!(nothing.code, 3, "{}", nothing.stdout);
+    assert_eq!(nothing.envelope()["error"]["kind"], "TargetNotFound");
+    let unknown = workroom(Some(&socket), &["api", "call", "session.nope", "--json"]);
+    assert_eq!(unknown.code, 2, "{}", unknown.stdout);
+    assert_eq!(unknown.envelope()["error"]["kind"], "InvalidRequest");
+    let extra = workroom(Some(&socket), &["api", "call", "session.list", "{}", "x"]);
+    assert_eq!(extra.code, 1, "{}", extra.stderr);
+    assert_eq!(
+        extra.stderr,
+        "Error: accepts between 1 and 2 arg(s), received 3\n"
+    );
+}
+
+/// What `describe` publishes is what `call` gets: for every method `api list` names, a real reply
+/// through `api call` matches the output schema `api describe` gives, and a real error matches the
+/// error schema. A method added later fails here until it has a case, so none goes unchecked.
+#[test]
+fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
+    let workspace = Workspace::new("api-call-schemas");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let _first = open(&socket, OTHER, "tests", "wr-1", &workspace.dir);
+    let _second = open(&socket, RUN, "tests", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| {
+        listing.len() == 2 && listing.iter().all(|session| !session["cwd"].is_null())
+    });
+
+    // Each method's params for one real call that succeeds.
+    let cases = [
+        ("api.describe", json!({})),
+        ("session.list", json!({})),
+        ("session.resolve", json!({"target": OTHER})),
+    ];
+    let listed = api_json(&socket, &["list"]);
+    for method in listed["methods"].as_array().expect("methods") {
+        let name = method["name"].as_str().unwrap();
+        let (_, params) = cases
+            .iter()
+            .find(|(case, _)| *case == name)
+            .unwrap_or_else(|| panic!("{name} has no case here: add one"));
+        let described = api_json(&socket, &["describe", name]);
+        let schema = &described["method"];
+        assert_eq!(violation(&schema["input"], params, name), None);
+        let params = params.to_string();
+        let called = api_json(&socket, &["call", name, &params]);
+        assert_eq!(called["version"], described["revision"], "{called}");
+        assert_eq!(
+            violation(&schema["output"], &called["result"], name),
+            None,
+            "{called}"
+        );
+    }
+
+    let error_schema = api_json(&socket, &["describe", "session.list"])["error"].clone();
+    let ambiguous = workroom(
+        Some(&socket),
+        &[
+            "api",
+            "call",
+            "session.resolve",
+            r#"{"target":"tests"}"#,
+            "--json",
+        ],
+    );
+    assert_eq!(ambiguous.code, 3, "{}", ambiguous.stdout);
+    let error = &ambiguous.envelope()["error"];
+    assert_eq!(error["kind"], "TargetAmbiguous", "{error}");
+    assert_eq!(
+        error["matches"].as_array().map(Vec::len),
+        Some(2),
+        "{error}"
+    );
+    assert_eq!(violation(&error_schema, error, "error"), None);
+}
+
+/// With no daemon, every `api` subcommand exits 7, as every terminal API command does.
+#[test]
+fn api_with_no_daemon_exits_7() {
+    for args in [
+        &["api", "list", "--json"][..],
+        &["api", "describe", "session.list", "--json"],
+        &["api", "call", "session.list", "{}", "--json"],
+    ] {
+        let run = workroom(None, args);
+        assert_eq!(run.code, 7, "{args:?} {}", run.stdout);
+        assert_eq!(run.envelope()["error"]["kind"], "DaemonUnreachable");
+    }
 }

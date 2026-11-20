@@ -20,6 +20,7 @@
 //! `__complete` answers them from `COMMANDS`, so every command's subcommands and flags, a stub's
 //! included, are offered as Go offers them.
 
+mod api;
 mod base;
 pub(crate) mod channel;
 mod complete;
@@ -293,6 +294,57 @@ const COMMANDS: &[Command] = &[
             ],
             "#672",
         )
+    },
+    Command {
+        name: "api",
+        aliases: &[],
+        usage: "api [command]",
+        short: "List, describe and call the terminal API's methods",
+        long: Some(api::LONG),
+        hidden: false,
+        mac_only: false,
+        flags: &[],
+        // A METHOD is the daemon's to name and PARAMS is JSON, so no subcommand's arguments are
+        // file names.
+        subcommands: &[
+            Command {
+                operands: Operands::Nothing,
+                ..subcommand(
+                    API,
+                    false,
+                    "call",
+                    "api call METHOD [PARAMS]",
+                    "Call METHOD with JSON parameters: inline, @FILE, or - for stdin",
+                    &[],
+                )
+            },
+            Command {
+                operands: Operands::Nothing,
+                ..subcommand(
+                    API,
+                    false,
+                    "describe",
+                    "api describe METHOD",
+                    "Show METHOD's parameter and result schemas, with examples",
+                    &[],
+                )
+            },
+            Command {
+                operands: Operands::Nothing,
+                ..subcommand(
+                    API,
+                    false,
+                    "list",
+                    "api list",
+                    "List every method the daemon has",
+                    &[],
+                )
+            },
+        ],
+        // Its subcommands and their arguments, which `api::run` checks.
+        arity: Arity::Own,
+        operands: Operands::Nothing,
+        implementation: API,
     },
     Command {
         name: "base",
@@ -687,6 +739,7 @@ const COMMANDS: &[Command] = &[
     },
 ];
 
+const API: Implementation = Implementation::Ported(api::run);
 const BASE: Implementation = Implementation::Ported(base::run);
 const HOST: Implementation = Implementation::Stub { ticket: "#673" };
 const TRUST: Implementation = Implementation::Stub { ticket: "#674" };
@@ -1446,6 +1499,28 @@ mod tests {
         for args in [
             &["__complete", "sessions", ""][..],
             &["__complete", "sessions", "x", ""],
+        ] {
+            let ((stdout, _), code) = run_on(Platform::Other, args);
+            assert_eq!((stdout.as_str(), code), (":4\n", 0), "{args:?}");
+        }
+    }
+
+    /// `api` is Rust's alone too (#685): completion offers it, then its subcommands, and nothing
+    /// for a METHOD or PARAMS, which are never file names.
+    #[test]
+    fn completion_offers_api_and_its_subcommands() {
+        let ((stdout, _), _) = run_on(Platform::Other, &["__completeNoDesc", ""]);
+        assert!(stdout.lines().any(|line| line == "api"), "{stdout}");
+        let ((stdout, _), code) = run_on(Platform::Other, &["__completeNoDesc", "api", ""]);
+        assert_eq!((stdout.as_str(), code), ("call\ndescribe\nlist\n:4\n", 0));
+        let ((stdout, _), _) = run_on(Platform::Other, &["__complete", "api", "d"]);
+        assert_eq!(
+            stdout,
+            "describe\tShow METHOD's parameter and result schemas, with examples\n:4\n"
+        );
+        for args in [
+            &["__complete", "api", "describe", ""][..],
+            &["__complete", "api", "call", "session.resolve", ""],
         ] {
             let ((stdout, _), code) = run_on(Platform::Other, args);
             assert_eq!((stdout.as_str(), code), (":4\n", 0), "{args:?}");
