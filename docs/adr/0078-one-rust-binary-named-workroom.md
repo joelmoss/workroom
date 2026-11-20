@@ -22,7 +22,7 @@ So the Go CLI is rewritten in Rust inside the daemon's crate, and the one binary
 
   The Go CLI's output is reproduced exactly; contract tests run against both implementations before the switch.
 - **Separate push from hand-off.** A host gets each newer binary as before (ADR 0037), but the running daemon is handed off only when the daemon's own code or protocol changed. A change to CLI commands alone doesn't restart anything, on hosts or on the Mac.
-  - The binary reports `daemon-build <hash>` beside `build-number`. The hash is computed at build time over every source file except the CLI `commands` module, plus `Cargo.lock`, so a change to shared code counts as a daemon change.
+  - The binary reports `daemon-build <hash>` beside `build-number`. The hash is computed at build time over every source file except the CLI `commands` module, plus `Cargo.lock` and the compiler (`rustc -vV`), so a change to shared code or a new rustc counts as a daemon change. Which arguments are the daemon's is decided outside `commands`, so the module never runs for a daemon subcommand.
   - Bootstrap installs when `build-number` is higher, as before, and hands off only when `daemon-build` differs too. A daemon offered a binary compares `daemon-build`, not file hashes. A daemon without the line is always handed off.
 - **Old names stay where ADR 0057 put them.** The daemon's socket, lock and log names, the `WRA1` magic, and the pinned command line don't change, so older apps and daemons still find and drive it.
   - The pinned commands are `serve`, `protocol`, `build-number`, `hand-off`, `handoff-check`, `relay`, `attach`, `list`, `run-supervisor` and `run-script`, plus `run-script`'s stderr prefix `workroomd run-script: `.
