@@ -2,6 +2,7 @@
 /.vscode/
 CLAUDE.local.md
 /.claude/settings.local.json
+/.claude/worktrees/
 
 # Go: `make cli-build` writes bin/workroom; /workroom is where it used to write, still in older
 # checkouts.
