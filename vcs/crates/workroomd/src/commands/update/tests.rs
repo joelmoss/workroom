@@ -177,10 +177,20 @@ struct Install {
 }
 
 impl Install {
+    /// A directory this run made itself: `create_dir` fails on any existing path, so a killed
+    /// run's leftovers or another run's live install are skipped, never reused or removed, and
+    /// `Drop` removes only what this call created (AGENTS.md's deletion rule).
     fn new(name: &str) -> Install {
-        let dir =
-            std::env::temp_dir().join(format!("workroom-update-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let parent = std::env::temp_dir();
+        let pid = std::process::id();
+        let dir = (0u32..)
+            .map(|attempt| parent.join(format!("workroom-update-{name}-{pid}-{attempt}")))
+            .find(|dir| match fs::create_dir(dir) {
+                Ok(()) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+                Err(error) => panic!("create {}: {error}", dir.display()),
+            })
+            .expect("a free name");
         fs::create_dir_all(dir.join("bin")).unwrap();
         fs::create_dir_all(dir.join("libexec")).unwrap();
         let dir = dir.canonicalize().unwrap();
