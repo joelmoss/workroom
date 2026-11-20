@@ -2768,11 +2768,9 @@ fn over_ssh_capture_reads_a_host_panes_screen_and_history() {
         .lines()
         .map(|line| serde_json::from_str(line).expect("one envelope per line"))
         .collect();
-    assert_eq!(
-        envelopes.last().expect("a chunk")["last"],
-        true,
-        "{streamed}"
-    );
+    for (index, envelope) in envelopes.iter().enumerate() {
+        assert_eq!(envelope["chunk"], index, "{streamed}");
+    }
     let joined: String = envelopes
         .iter()
         .map(|envelope| envelope["text"].as_str().unwrap())

@@ -195,14 +195,15 @@ pub(crate) fn send(writer: &SharedWriter, service: Service, stream: u32, value: 
 }
 
 /// `send`, with `too_large` the whole reply that replaces one over the ceiling, so a service whose
-/// reply isn't [`Reply`]'s shape (the terminal API's) can say it in its own.
+/// reply isn't [`Reply`]'s shape (the terminal API's) can say it in its own. Whether it was all
+/// written: false once the connection is gone, which a reply in parts stops at.
 pub(crate) fn send_with(
     writer: &SharedWriter,
     service: Service,
     stream: u32,
     value: Value,
     too_large: impl FnOnce() -> Value,
-) {
+) -> bool {
     let mut bytes = serde_json::to_vec(&value).expect("JSON value serializes");
     if bytes.len() > MAX_RESPONSE {
         bytes = serde_json::to_vec(&too_large()).unwrap();
@@ -213,9 +214,10 @@ pub(crate) fn send_with(
         let mut payload = vec![u8::from(index + 1 == count)];
         payload.extend_from_slice(chunk);
         if !write(writer, &Envelope::new(service, stream, payload).encode()) {
-            return;
+            return false;
         }
     }
+    true
 }
 
 /// Take the complete request bytes for this envelope, or `None` when more chunks are still coming.

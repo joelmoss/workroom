@@ -46,27 +46,17 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
         // Go checks arguments and flags before the command runs, so the envelope names no command.
         Err(error) => return Outcome::Usage(error),
     };
-    if !args.is_set("all") {
-        return match terminal_api::call(context, "terminal.capture", params) {
-            Err(error) => Outcome::Failed(error),
-            Ok(result) if context.json => {
-                Outcome::Success(super::envelope::success("capture", &result))
-            }
-            Ok(result) => Outcome::Printed(text(&result, true)),
-        };
-    }
-    // Each chunk goes to stdout as it arrives. What is left to report, a failure, follows it.
+    // Each reply goes to stdout as it arrives, until the one with no `more` behind it. What is left
+    // to report, a failure, follows them.
     let mut stdout = std::io::stdout().lock();
     let streamed = terminal_api::stream(context, "terminal.capture", params, |replied| {
-        let result = replied.result;
-        let last = result["last"] != false;
         let out = if context.json {
-            super::envelope::success("capture", &result)
+            super::envelope::success("capture", &replied.result)
         } else {
-            text(&result, last)
+            text(&replied.result, !replied.more)
         };
         // A reader that went away (`| head`) ends the stream.
-        stdout.write_all(out.as_bytes()).is_ok() && stdout.flush().is_ok() && !last
+        stdout.write_all(out.as_bytes()).is_ok() && stdout.flush().is_ok()
     });
     drop(stdout);
     match streamed {

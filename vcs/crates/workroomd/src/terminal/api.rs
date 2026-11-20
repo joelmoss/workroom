@@ -9,10 +9,12 @@
 //!
 //! Requests are JSON on the chunked request/reply envelope (`rpc::reassemble`, `rpc::send`), one
 //! stream each: `{"method": "<namespace>.<name>", "params": {…}}`, `params` optional. The reply is
-//! `{"revision": REVISION, "result": …}` or `{"revision": REVISION, "error": {"kind", "message"}}`
-//! (the API's number is `revision` everywhere, not the other services' `version`), where `kind` is a code from the same registry every `workroom` command shares (ADR 0013), and an
-//! ambiguous target's error lists the sessions it matched under `matches`. Nothing is ever sent
-//! unasked, which is what leaves a client that never calls the service unaffected by it.
+//! `{"revision": REVISION, "result": …, "more": false}` or
+//! `{"revision": REVISION, "error": {"kind", "message"}, "more": false}` (the API's number is
+//! `revision` everywhere, not the other services' `version`), where `kind` is a code from the same
+//! registry every `workroom` command shares (ADR 0013), and an ambiguous target's error lists the
+//! sessions it matched under `matches`. Nothing is ever sent unasked, which is what leaves a client
+//! that never calls the service unaffected by it.
 //!
 //! **The caller** (#684) is the session a request comes from: the one whose shell the connecting
 //! process descends from (its peer pid, then its parents), else the one its optional `"caller"`
@@ -22,9 +24,11 @@
 //! The namespaces are `session.*`, `terminal.*`, `client.*` and `events.*` (#360), and `api.*`
 //! for the API describing itself.
 //!
-//! A method may answer with several replies on the request's stream, in order, each a whole reply
-//! of the shape above: `terminal.capture` with `all` sends a long history as chunks, the last of
-//! which says so (`last`), so no reply has to hold all of it.
+//! **A stream.** A method may answer with several replies on the request's stream, in order, each
+//! a whole reply of the shape above. Every reply says whether another follows it (`more`), outside
+//! the method's `result`, so a caller reads until `more` is false whatever the method. An error
+//! ends a stream. `terminal.capture` with `all` sends a long history this way, so no reply has to
+//! hold all of it.
 
 use std::ffi::OsStr;
 use std::ops::Range;
@@ -74,10 +78,12 @@ pub mod kind {
     pub const INTERNAL_ERROR: &str = "InternalError";
 }
 
-/// What a method answers with: one reply, or several on the request's stream, in order.
+/// What a method answers with: one reply, or several on the request's stream, in order. A stream
+/// yields at least one result, each made only once the one before it is ready to send, and ends at
+/// its first error.
 pub enum Answer {
     One(Value),
-    Stream(Box<dyn Iterator<Item = Value>>),
+    Stream(Box<dyn Iterator<Item = Result<Value, ApiError>>>),
 }
 
 /// Why a request failed, as its reply's `error` carries it.
@@ -240,7 +246,8 @@ pub const METHODS: &[Method] = &[
         summary: "A session's screen as text: the visible screen, trimmed, by default; with `lines`, \
                   that many rows of history above it too; with `all`, the whole scrollback, as \
                   several replies on the request's stream, each a chunk of whole lines (`chunk` \
-                  counts from 0, and the final one is `last`). `unwrap` joins lines the pane \
+                  counts from 0, and each reply's `more` says whether another follows). `unwrap` \
+                  joins lines the pane \
                   soft-wrapped and `vt` keeps escape codes. Every reply also has the cursor, the \
                   size, whether the alternate screen is up and the live title. The alternate \
                   screen has no history of its own.",
@@ -262,7 +269,6 @@ pub const METHODS: &[Method] = &[
                 "size": {"columns": 80, "rows": 24},
                 "title": null,
                 "chunk": 0,
-                "last": true,
             })
         },
         run: capture,
@@ -325,7 +331,7 @@ fn capture_output() -> Value {
     json!({
         "type": "object",
         "required": [
-            "session", "text", "cursor", "alternate_screen", "size", "title", "chunk", "last",
+            "session", "text", "cursor", "alternate_screen", "size", "title", "chunk",
         ],
         "properties": {
             "session": {"type": "string", "description": "The id of the session read."},
@@ -354,11 +360,10 @@ fn capture_output() -> Value {
                 "type": ["string", "null"],
                 "description": "The live title its program last set (OSC 0 or 2).",
             },
-            "chunk": count("This reply's place among a capture's chunks, from 0; 0 without `all`."),
-            "last": {
-                "type": "boolean",
-                "description": "Whether this is the capture's last reply; always without `all`.",
-            },
+            "chunk": count(
+                "This reply's place among a capture's chunks, from 0; 0 without `all`. The \
+                 reply's `more` says whether another follows.",
+            ),
         },
     })
 }
@@ -445,7 +450,7 @@ fn capture(call: &Call) -> Result<Answer, ApiError> {
             format!("session {id}'s screen could not be read"),
         )
     })?;
-    let reply = move |captured: &Captured, text: &str, chunk: usize, last: bool| {
+    let reply = move |captured: &Captured, text: &str, chunk: usize| {
         json!({
             "session": id,
             "text": text,
@@ -454,18 +459,17 @@ fn capture(call: &Call) -> Result<Answer, ApiError> {
             "size": {"columns": captured.size.0, "rows": captured.size.1},
             "title": captured.title,
             "chunk": chunk,
-            "last": last,
         })
     };
     if !all {
-        return Ok(Answer::One(reply(&captured, &captured.text, 0, true)));
+        return Ok(Answer::One(reply(&captured, &captured.text, 0)));
     }
     let pieces = chunks(&captured.text, CAPTURE_CHUNK_BYTES);
-    let count = pieces.len();
     Ok(Answer::Stream(Box::new(
-        pieces.into_iter().enumerate().map(move |(chunk, range)| {
-            reply(&captured, &captured.text[range], chunk, chunk + 1 == count)
-        }),
+        pieces
+            .into_iter()
+            .enumerate()
+            .map(move |(chunk, range)| Ok(reply(&captured, &captured.text[range], chunk))),
     )))
 }
 
@@ -827,12 +831,13 @@ fn caller_of(sessions: &SessionStore, named: Option<&str>, peer: Option<i32>) ->
         })
 }
 
-/// The reply on the wire: the API's `revision`, then its `result` or its `error`. Not
-/// `wr_protocol::reply::Reply`, whose number is `version`: this API's is `revision` everywhere.
-fn reply(result: Result<Value, ApiError>) -> Value {
+/// The reply on the wire: the API's `revision`, then its `result` or its `error`, and whether
+/// `more` replies follow it on the stream. Not `wr_protocol::reply::Reply`, whose number is
+/// `version`: this API's is `revision` everywhere. An error is always a stream's last reply.
+fn reply(result: Result<Value, ApiError>, more: bool) -> Value {
     match result {
-        Ok(result) => json!({"revision": REVISION, "result": result}),
-        Err(error) => json!({"revision": REVISION, "error": error.json()}),
+        Ok(result) => json!({"revision": REVISION, "result": result, "more": more}),
+        Err(error) => json!({"revision": REVISION, "error": error.json(), "more": false}),
     }
 }
 
@@ -848,25 +853,58 @@ pub fn dispatch(
     if envelope.stream == 0 {
         return;
     }
+    // Whether the reply went out: a client that hung up (`| head`) ends a stream.
     let send = |value: Value| {
         crate::daemon::rpc::send_with(writer, Service::TerminalApi, envelope.stream, value, || {
-            reply(Err(ApiError::new(
-                kind::TOO_LARGE,
-                "the reply is over 16 MiB",
-            )))
+            reply(
+                Err(ApiError::new(kind::TOO_LARGE, "the reply is over 16 MiB")),
+                false,
+            )
         })
     };
     match crate::daemon::rpc::reassemble(partial, envelope) {
         Ok(Some(bytes)) => match handle(sessions, &bytes, peer) {
-            Ok(Answer::One(result)) => send(reply(Ok(result))),
-            Ok(Answer::Stream(results)) => results.for_each(|result| send(reply(Ok(result)))),
-            Err(error) => send(reply(Err(error))),
+            Ok(Answer::One(result)) => {
+                send(reply(Ok(result), false));
+            }
+            Ok(Answer::Stream(results)) => stream(results, send),
+            Err(error) => {
+                send(reply(Err(error), false));
+            }
         },
         Ok(None) => {}
-        Err(error) => send(reply(Err(ApiError::new(
-            kind::TOO_LARGE,
-            error.to_string(),
-        )))),
+        Err(error) => {
+            send(reply(
+                Err(ApiError::new(kind::TOO_LARGE, error.to_string())),
+                false,
+            ));
+        }
+    }
+}
+
+/// Sends each of `results` as it is made, each saying whether `more` follow, until the last, the
+/// first error, or a send that fails, which drops the rest unmade.
+fn stream(
+    results: Box<dyn Iterator<Item = Result<Value, ApiError>>>,
+    send: impl Fn(Value) -> bool,
+) {
+    let mut results = results.peekable();
+    let Some(mut result) = results.next() else {
+        send(reply(
+            Err(ApiError::new(
+                kind::INTERNAL_ERROR,
+                "the method replied with nothing",
+            )),
+            false,
+        ));
+        return;
+    };
+    loop {
+        let more = result.is_ok() && results.peek().is_some();
+        if !send(reply(result, more)) || !more {
+            return;
+        }
+        result = results.next().expect("peeked");
     }
 }
 
