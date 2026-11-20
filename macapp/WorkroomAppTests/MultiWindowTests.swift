@@ -225,26 +225,27 @@ final class MultiWindowTests: XCTestCase {
 
   // MARK: Window cycling (issue #87)
 
-  func testCyclePlanForwardSurfacesSecondAndSendsFrontBack() {
-    // Front-to-back [A, B, C]; ⌘` brings B (just behind the front) forward and pushes A to the
-    // back, so repeated presses rotate A→B→C→A rather than bouncing between the front two.
-    let plan = WindowRegistry.cyclePlan(ordered: ["A", "B", "C"], forward: true)
-    XCTAssertEqual(plan?.front, "B")
-    XCTAssertEqual(plan?.sendBack, "A")
+  /// `cycleTarget` with the key window at `current` in the ring [A, B, C].
+  private func cycleTarget(from current: Int, forward: Bool) -> String? {
+    WindowRegistry.cycleTarget(ring: ["A", "B", "C"], current: current, forward: forward)
   }
 
-  func testCyclePlanBackwardSurfacesBackmostWithNoSendBack() {
-    // ⇧⌘` brings the backmost window forward; doing so rotates the rest back one on its own, so
-    // there's no separate window to push to the back.
-    let plan = WindowRegistry.cyclePlan(ordered: ["A", "B", "C"], forward: false)
-    XCTAssertEqual(plan?.front, "C")
-    XCTAssertNil(plan?.sendBack)
+  func testCycleTargetForwardFocusesNextAndWraps() {
+    // ⌘` walks A→B→C→A, so repeated presses visit every window without any window being pushed to
+    // the back.
+    XCTAssertEqual(cycleTarget(from: 0, forward: true), "B")
+    XCTAssertEqual(cycleTarget(from: 1, forward: true), "C")
+    XCTAssertEqual(cycleTarget(from: 2, forward: true), "A")
   }
 
-  func testCyclePlanNeedsAtLeastTwoWindows() {
-    XCTAssertNil(WindowRegistry.cyclePlan(ordered: ["only"], forward: true), "nothing to cycle to")
-    XCTAssertNil(WindowRegistry.cyclePlan(ordered: ["only"], forward: false))
-    XCTAssertNil(WindowRegistry.cyclePlan(ordered: [String](), forward: true))
+  func testCycleTargetBackwardFocusesPreviousAndWraps() {
+    XCTAssertEqual(cycleTarget(from: 0, forward: false), "C")
+    XCTAssertEqual(cycleTarget(from: 2, forward: false), "B")
+  }
+
+  func testCycleTargetNeedsAnotherWindow() {
+    XCTAssertNil(WindowRegistry.cycleTarget(ring: ["only"], current: 0, forward: true))
+    XCTAssertNil(WindowRegistry.cycleTarget(ring: ["only"], current: 0, forward: false))
   }
 
   // MARK: Create and delete across windows

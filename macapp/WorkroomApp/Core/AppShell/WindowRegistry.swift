@@ -383,38 +383,43 @@ final class WindowRegistry: ObservableObject {
   /// Cycle key focus to the next/previous app window — the "Move focus to next window" shortcut
   /// (⌘` forward, ⇧⌘` backward), driven by the `AppDelegate` key monitor because the focused
   /// terminal surface otherwise swallows the backtick as input. Cycles every workroom window plus
-  /// the quick terminal (issue #39), the windows the user actually works in — deliberately not the
-  /// Settings / About panels. Works in front-to-back z-order: forward surfaces the window just
-  /// behind the front and sends the old front to the back; backward surfaces the backmost — so
-  /// repeated presses rotate through *all* windows instead of bouncing between the front two.
+  /// the quick terminal (issue #39) — deliberately not the Settings / About panels.
+  ///
+  /// Only the target comes forward; every other window keeps its place. The ring is sorted by
+  /// `windowNumber` so its order stays put between presses (z-order would bounce between the front
+  /// two). With Settings or About key, the press goes to the frontmost workroom window.
   func cycleWindows(forward: Bool) {
-    let cycleable = NSApp.orderedWindows.filter(isCycleableWindow)
-    guard let plan = Self.cyclePlan(ordered: cycleable, forward: forward) else { return }
-    plan.front.makeKeyAndOrderFront(nil)
-    plan.sendBack?.orderBack(nil)
+    let ring = NSApp.windows.filter(isCycleableWindow).sorted {
+      $0.windowNumber < $1.windowNumber
+    }
+    let key = keyWindow()
+    guard let current = ring.firstIndex(where: { $0 === key }) else {
+      NSApp.orderedWindows.first(where: isCycleableWindow)?.makeKeyAndOrderFront(nil)
+      return
+    }
+    Self.cycleTarget(ring: ring, current: current, forward: forward)?.makeKeyAndOrderFront(nil)
   }
 
   /// A window ⌘`/⇧⌘` should cycle through: a visible, focusable workroom window (one we registered)
-  /// or the quick terminal. Excludes panels, the menu-bar status item's window, and anything that
-  /// can't become key.
+  /// or the quick terminal, on the current Space (so ⌘` never switches Spaces). Excludes panels,
+  /// the menu-bar status item's window, and anything that can't become key.
   ///
   /// Internal rather than private so a test can assert the switcher rail's panel is rejected — the
   /// `canBecomeKey` guard is what excludes it, and `SwitcherPanel` relies on that staying true.
   func isCycleableWindow(_ window: NSWindow) -> Bool {
-    guard window.isVisible, window.canBecomeKey else { return false }
+    guard window.isVisible, window.canBecomeKey, window.isOnActiveSpace else { return false }
     // `DetachedPaneWindow` (issue #172) owns no store, so it fails the registry test — but it holds a
     // real pane the user works in, so ⌘` must reach it, exactly as it reaches the quick terminal.
     return store(for: window) != nil || window is QuickTerminalWindow
       || window is DetachedPaneWindow
   }
 
-  /// Pure rotation math for `cycleWindows`, extracted so it's unit-testable without live z-ordering.
-  /// `ordered` is the cycleable windows front-to-back. Returns the window to bring forward and, for
-  /// the forward direction, the old front window to push to the back (so the rotation visits every
-  /// window rather than ping-ponging between the front two). nil when there's nothing to cycle to.
-  nonisolated static func cyclePlan<W>(ordered: [W], forward: Bool) -> (front: W, sendBack: W?)? {
-    guard ordered.count > 1 else { return nil }
-    return forward ? (ordered[1], ordered[0]) : (ordered[ordered.count - 1], nil)
+  /// Pure cycle math for `cycleWindows`, unit-testable without live windows: the neighbour of
+  /// `ring[current]`, wrapping at either end; nil when there's no other window to move to.
+  nonisolated static func cycleTarget<W>(ring: [W], current: Int, forward: Bool) -> W? {
+    guard ring.count > 1 else { return nil }
+    let step = forward ? 1 : ring.count - 1
+    return ring[(current + step) % ring.count]
   }
 
   // MARK: Aggregation
