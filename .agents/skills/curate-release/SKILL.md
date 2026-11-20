@@ -33,7 +33,8 @@ covers `release/**`. Full runbook: `docs/contributing/releasing.md` "Patch relea
 updater).
 
 Canonical tag→channel classification is `internal/channel` (Go), mirrored by
-`macapp/Scripts/channel-helper.sh`; the two share `internal/channel/testdata/channel_cases.tsv` —
+`macapp/Scripts/channel-helper.sh` and the Rust copy in
+`vcs/crates/workroomd/src/commands/channel.rs`; all three share `internal/channel/testdata/channel_cases.tsv` —
 **keep them in lockstep**. `macapp/WorkroomApp/Core/AppShell/ReleaseChannel.swift` classifies no
 tags: its channel raw names must match what `appcast.sh` writes. **Two Sparkle feeds**, both assets on the fixed `appcast` release: `appcast.xml` (stable + pre)
 and `appcast-nightly.xml` (one rolling item). Nightly needs its own because Sparkle offers every

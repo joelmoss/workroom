@@ -2,8 +2,8 @@
 #
 # Shared release-channel classification for Workroom's shell tooling (appcast.sh and the
 # curl installers). Mirrors the Go `internal/channel` package and the Swift `ReleaseChannel`
-# enum — the three MUST agree on what a tag's channel is. If you change a rule here, change
-# all three.
+# enum, and the Rust copy in vcs/crates/workroomd/src/commands/channel.rs — all four MUST agree
+# on what a tag's channel is. If you change a rule here, change all four.
 #
 # wr_classify_channel <tag>
 #   Prints the channel name (stable | pre | nightly) and returns 0, or prints nothing and
