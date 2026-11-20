@@ -140,10 +140,49 @@ fn staging_that_cant_be_proved_dead_and_this_machines_is_kept() {
     assert!(target.0.join(".git").exists(), "a symlink was followed");
 }
 
+/// Set in the one process [`a_lock_a_child_inherited_keeps_its_staging_after_the_maker_lets_go`]
+/// runs its lock in.
+const INHERIT_PROBE: &str = "WORKROOM_TEST_STAGING_INHERIT_PROBE";
+
 /// Go's `TestRunClone_GitInheritsTheLock` without git: a lock held by a live process, here a
 /// child that inherited it, keeps the staging though the run that made it let go.
+///
+/// The lock is made in a process of its own, this test binary run for this test alone. A flock
+/// belongs to the open file description, and a spawn on any other test's thread copies every
+/// descriptor this process has into its child, close-on-exec ones too, until that child execs:
+/// one still on its way to exec held the lock after the sleep was gone, so "free once the child
+/// is gone" failed in parallel runs and passed alone (measured: 302 in 500 beside a thread
+/// forking in a loop, none alone).
 #[test]
 fn a_lock_a_child_inherited_keeps_its_staging_after_the_maker_lets_go() {
+    if std::env::var_os(INHERIT_PROBE).is_some() {
+        a_lock_a_child_inherited_in_this_process();
+        return;
+    }
+    // The libtest name from this module's own path, so a move can't leave `--exact` naming a test
+    // that no longer exists, which would run nothing and pass.
+    let name = format!(
+        "{}::a_lock_a_child_inherited_keeps_its_staging_after_the_maker_lets_go",
+        module_path!()
+            .split_once("::")
+            .expect("a crate-qualified path")
+            .1
+    );
+    let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", name.as_str(), "--test-threads=1"])
+        .env(INHERIT_PROBE, "1")
+        .output()
+        .expect("run the test in a process of its own");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("test result: ok. 1 passed"),
+        "`--exact {name}` on its own: {}\n{stdout}{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn a_lock_a_child_inherited_in_this_process() {
     let dir = Scratch::new("inherit");
     let stage = dir.0.join(staging_name(".clone-", HOST, dead_pid()));
     let lock = create_lock(&lock_path(&stage)).unwrap_or_else(|_| panic!("lock"));
