@@ -15,11 +15,12 @@ use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde::Serialize;
 
+use super::config::{self, os_error};
 use super::kind::CliError;
 use super::log::go_lossy;
 use super::{Args, Context, Outcome};
@@ -52,10 +53,14 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
 /// As Go orders it: the project, then its included files, and only then the tar, so a failed
 /// listing leaves no tar behind.
 fn archive(context: &Context, args: &Args, output: &str) -> Result<Outcome, String> {
-    let root = match args.value("project").filter(|project| !project.is_empty()) {
-        Some(project) => canonical_path(project, context)?,
-        None => std::env::current_dir().map_err(|error| format!("getwd: {}", go_error(&error)))?,
-    };
+    // A `--project` that doesn't exist stays only made absolute; it has no include file, so it
+    // archives nothing.
+    let root = PathBuf::from(
+        match args.value("project").filter(|project| !project.is_empty()) {
+            Some(project) => config::canonical_path(project, context)?,
+            None => config::getwd(context)?,
+        },
+    );
     let included = included_files(&root)?;
     let file = File::options()
         .write(true)
@@ -63,7 +68,7 @@ fn archive(context: &Context, args: &Args, output: &str) -> Result<Outcome, Stri
         .truncate(true)
         .mode(0o600)
         .open(output)
-        .map_err(|error| format!("open {output}: {}", go_error(&error)))?;
+        .map_err(|error| format!("open {output}: {}", os_error(&error)))?;
     let written = write_archive(&root, &included.files, file)?;
     if context.json {
         let payload = Payload {
@@ -91,36 +96,6 @@ fn archive(context: &Context, args: &Args, output: &str) -> Result<Outcome, Stri
     Ok(Outcome::PrintedWithErrors { stdout, stderr })
 }
 
-/// Go's `config.CanonicalPath`, which `--project` goes through: `~` expanded, made absolute and
-/// cleaned, then symlink-resolved when it exists. A path that doesn't exist stays as cleaned; it
-/// has no include file, so it archives nothing.
-fn canonical_path(path: &str, context: &Context) -> Result<PathBuf, String> {
-    let expanded = match path.strip_prefix('~') {
-        Some(rest) if rest.is_empty() || rest.starts_with('/') => {
-            let home = context
-                .env("HOME")
-                .filter(|home| !home.is_empty())
-                .ok_or("$HOME is not defined")?;
-            format!("{home}{rest}")
-        }
-        _ => path.to_string(),
-    };
-    let mut absolute = PathBuf::from("/");
-    if !expanded.starts_with('/') {
-        absolute = std::env::current_dir().map_err(|error| go_error(&error))?;
-    }
-    for component in Path::new(&expanded).components() {
-        match component {
-            Component::Normal(part) => absolute.push(part),
-            Component::ParentDir => {
-                absolute.pop();
-            }
-            Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
-        }
-    }
-    Ok(std::fs::canonicalize(&absolute).unwrap_or(absolute))
-}
-
 /// What the root's include file matches: the regular files to archive, and the symlinks that
 /// matched but are never archived. Both are paths relative to the root, as git's bytes, sorted.
 #[derive(Default)]
@@ -138,7 +113,7 @@ fn included_files(root: &Path) -> Result<Included, String> {
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Included::default()),
         Err(error) => {
-            return Err(format!("stat {}: {}", patterns.display(), go_error(&error)));
+            return Err(format!("stat {}: {}", patterns.display(), os_error(&error)));
         }
     }
     let exclude_from = [b"--exclude-from=", patterns.as_os_str().as_bytes()].concat();
@@ -247,7 +222,7 @@ fn git(root: &Path, args: &[&OsStr], stdin: Option<Vec<u8>>) -> Result<GitOutput
     };
     let mut child = command
         .spawn()
-        .map_err(|error| failure(None, go_error(&error), b""))?;
+        .map_err(|error| failure(None, os_error(&error), b""))?;
     // From its own thread: a listing bigger than the pipe holds blocks until git reads it, and git
     // writes its answers, which `wait_with_output` drains, as it goes.
     let feeder = stdin.map(|bytes| {
@@ -258,7 +233,7 @@ fn git(root: &Path, args: &[&OsStr], stdin: Option<Vec<u8>>) -> Result<GitOutput
     });
     let output = child
         .wait_with_output()
-        .map_err(|error| failure(None, go_error(&error), b""))?;
+        .map_err(|error| failure(None, os_error(&error), b""))?;
     if let Some(feeder) = feeder {
         let _ = feeder.join();
     }
@@ -308,7 +283,7 @@ fn write_archive(root: &Path, files: &[Vec<u8>], out: File) -> Result<Written, S
                     "{}: open {}: {}",
                     go_lossy(name),
                     go_lossy(path.as_os_str().as_bytes()),
-                    go_error(&error)
+                    os_error(&error)
                 ));
                 continue;
             }
@@ -318,9 +293,9 @@ fn write_archive(root: &Path, files: &[Vec<u8>], out: File) -> Result<Written, S
     }
     let mut out = builder
         .into_inner()
-        .map_err(|error| format!("write: {}", go_error(&error)))?;
+        .map_err(|error| format!("write: {}", os_error(&error)))?;
     out.flush()
-        .map_err(|error| format!("write: {}", go_error(&error)))?;
+        .map_err(|error| format!("write: {}", os_error(&error)))?;
     Ok(written)
 }
 
@@ -336,10 +311,10 @@ fn append_file(
     let shown = || go_lossy(path.as_os_str().as_bytes());
     let metadata = source
         .metadata()
-        .map_err(|error| format!("stat {}: {}", shown(), go_error(&error)))?;
+        .map_err(|error| format!("stat {}: {}", shown(), os_error(&error)))?;
     let size = metadata.len();
     let (secs, nanos) = (metadata.mtime(), metadata.mtime_nsec());
-    let write_error = |error: io::Error| format!("write: {}", go_error(&error));
+    let write_error = |error: io::Error| format!("write: {}", os_error(&error));
 
     // The pax records Go writes, in its order (sorted by key), each only when it's needed.
     let mut records = Vec::new();
@@ -489,23 +464,6 @@ fn is_local(path: &[u8]) -> bool {
     true
 }
 
-/// An I/O error as Go words it: the system's message for its errno, first letter lowercased
-/// (`permission denied`), else Rust's own.
-fn go_error(error: &io::Error) -> String {
-    let Some(code) = error.raw_os_error() else {
-        return error.to_string();
-    };
-    let text = io::Error::from_raw_os_error(code).to_string();
-    let text = text
-        .strip_suffix(&format!(" (os error {code})"))
-        .unwrap_or(&text);
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_lowercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,13 +498,5 @@ mod tests {
         for outside in ["", "/a", "..", "../a", "a/../../b"] {
             assert!(!is_local(outside.as_bytes()), "{outside}");
         }
-    }
-
-    #[test]
-    fn an_io_error_reads_as_gos() {
-        let denied = io::Error::from_raw_os_error(libc::EACCES);
-        assert_eq!(go_error(&denied), "permission denied");
-        let missing = io::Error::from_raw_os_error(libc::ENOENT);
-        assert_eq!(go_error(&missing), "no such file or directory");
     }
 }

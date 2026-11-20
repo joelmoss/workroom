@@ -310,4 +310,6 @@ fn config_errors_are_worded_as_go_wraps_them() {
 fn os_errors_are_worded_as_go_words_them() {
     let error = io::Error::from_raw_os_error(libc::EACCES);
     assert_eq!(os_error(&error), "permission denied");
+    let missing = io::Error::from_raw_os_error(libc::ENOENT);
+    assert_eq!(os_error(&missing), "no such file or directory");
 }
