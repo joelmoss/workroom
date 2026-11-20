@@ -286,9 +286,16 @@ impl Store {
     /// a recorded Claude session: a macOS pty read is at most 1 KiB, and a screen paint separates
     /// them); the probe rule keeps no clock, and telling those apart needs one or the pty's input
     /// queue, if replays ever matter.
+    ///
+    /// Returns the coding agent's states (`coding_agent`) as the read's events left it, in order,
+    /// when it had more than one event: a state reported and replaced within the read is in it,
+    /// for the terminal API's waits (#690), which the store's state after the read no longer
+    /// shows. Empty for a read of one event or none, whose state after is all there was.
     #[cfg(any(test, feature = "terminal-state"))]
-    pub fn apply_read(&mut self, events: Vec<Event>, owner: Group, now: Instant) {
+    pub fn apply_read(&mut self, events: Vec<Event>, owner: Group, now: Instant) -> Vec<State> {
         let mut probed = false;
+        let mut passed: Vec<State> = Vec::new();
+        let several = events.len() > 1;
         for event in events {
             match event {
                 Event::Probed => probed = true,
@@ -298,6 +305,12 @@ impl Store {
                 }
                 event => self.apply(event, owner),
             }
+            if several
+                && let Some(agent) = self.coding_agent()
+                && passed.last() != Some(&agent.state)
+            {
+                passed.push(agent.state);
+            }
         }
         if probed {
             self.probed = Some(owner);
@@ -305,6 +318,7 @@ impl Store {
         for record in self.unprobed_requests() {
             record.blocked_at.get_or_insert(now);
         }
+        passed
     }
 
     /// Lets each unprobed request alert once `GRACE` has passed since it blocked and its sender

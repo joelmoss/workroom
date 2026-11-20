@@ -416,9 +416,14 @@ fn start_wait(waits: &mut wait::Waits, store: &SessionStore, params: Value, writ
 
 /// A session of `store`'s that runs `sleep 30`, with an id all of `byte`.
 fn sleeping(store: &SessionStore, byte: u8) -> crate::terminal::session::SessionId {
+    running(store, byte, "sleep 30")
+}
+
+/// A session of `store`'s that runs `script` with `/bin/sh -c`, with an id all of `byte`.
+fn running(store: &SessionStore, byte: u8, script: &str) -> crate::terminal::session::SessionId {
     use std::ffi::{OsStr, OsString};
     let id = crate::terminal::session::SessionId([byte; 16]);
-    let args = [OsString::from("-c"), OsString::from("sleep 30")];
+    let args = [OsString::from("-c"), OsString::from(script)];
     store
         .create(crate::terminal::session::SessionSpec {
             id,
@@ -443,6 +448,85 @@ fn eventually(done: impl Fn() -> bool) -> bool {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     done()
+}
+
+/// The one reply `written` gets, within 20 s.
+#[cfg(feature = "terminal-state")]
+fn the_reply(written: &Written) -> Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while written.replies().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let replies = written.replies();
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    replies[0].clone()
+}
+
+/// A program that reports `working` and `done` in one write has passed through `working`, though
+/// the shadow says `done` once the read is over: a wait for `working` is met (#690).
+#[cfg(feature = "terminal-state")]
+#[test]
+fn a_status_reported_and_replaced_in_one_read_meets_a_wait_for_it() {
+    let store = SessionStore::new();
+    // 3 s on, by when the wait below has long started; one printf, so one write.
+    let id = running(
+        &store,
+        0x41,
+        r#"sleep 3; printf '\033]7501;state=working:app=t\033\\\033]7501;state=done:app=t\033\\'; sleep 30"#,
+    );
+    let (written, writer) = written_writer();
+    let mut connection = Connection::default();
+    start_wait(
+        &mut connection.waits,
+        &store,
+        json!({"target": id.to_hyphenated(), "status": "working", "timeout_ms": 20000}),
+        &writer,
+    );
+    let reply = the_reply(&written);
+    assert_eq!(reply["result"]["status"], "working", "{reply}");
+    let listed = listed(&store);
+    assert_eq!(
+        listed[0]["coding_agent"]["state"], "done",
+        "fixture: {listed:?}"
+    );
+    store.kill(id);
+}
+
+/// A request that never probed becomes the session's status once the tick promotes it, with no
+/// read to tell a wait: the tick tells it (`promote_unprobed`, #690).
+#[cfg(feature = "terminal-state")]
+#[test]
+fn a_promoted_request_meets_a_wait_for_blocked() {
+    let store = SessionStore::new();
+    // A request under `a`, then `b` working: the newest record, so the one `sessions` reports
+    // until the request may alert.
+    let id = running(
+        &store,
+        0x42,
+        r#"printf '\033]7501;state=blocked:id=a:app=t\033\\\033]7501;state=working:id=b:app=t\033\\'; sleep 60"#,
+    );
+    assert!(
+        eventually(|| listed(&store)[0]["coding_agent"]["state"] == "working"),
+        "fixture: the reports never arrived"
+    );
+    let (written, writer) = written_writer();
+    let mut connection = Connection::default();
+    start_wait(
+        &mut connection.waits,
+        &store,
+        json!({"target": id.to_hyphenated(), "status": "blocked", "timeout_ms": 20000}),
+        &writer,
+    );
+    assert!(
+        written.replies().is_empty(),
+        "met before the request was promoted"
+    );
+    store.promote_unprobed(
+        std::time::Instant::now() + crate::terminal::program_status::limits::GRACE,
+    );
+    let reply = the_reply(&written);
+    assert_eq!(reply["result"]["status"], "blocked", "{reply}");
+    store.kill(id);
 }
 
 /// Waits are bounded on a session, a connection and the daemon (`wait::Limits`, lowered here); one

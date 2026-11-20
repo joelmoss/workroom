@@ -152,6 +152,9 @@ pub struct Shadow {
     disturbed: Option<Disturbed>,
     /// The shell's OSC 133 marks so far, for the terminal API's waits (#690).
     marks: Marks,
+    /// The coding agent's states the last pty write's events left it in, in order, when it had
+    /// several (`Store::apply_read`), for the waits that hear about that write.
+    passed: Vec<crate::terminal::program_status::State>,
 }
 
 /// What a session's shell has said through its OSC 133 marks since the daemon started it: whether
@@ -196,6 +199,7 @@ impl Shadow {
             watching: false,
             disturbed: None,
             marks: Marks::default(),
+            passed: Vec::new(),
         }
     }
 
@@ -237,8 +241,9 @@ impl Shadow {
         if fresh {
             self.progress_owner = terminal.progress().and(sender);
         }
-        self.status
-            .apply_read(events, sender.unwrap_or(0), std::time::Instant::now());
+        self.passed =
+            self.status
+                .apply_read(events, sender.unwrap_or(0), std::time::Instant::now());
         // At most once per read, and only while a running program's record could outlive it.
         if self.status.has_live() {
             self.status
@@ -418,13 +423,23 @@ impl Shadow {
         self.terminal.as_ref().and_then(|t| t.memory())
     }
 
-    /// What a wait looks at after a read (#690): the coding agent's state, as `sessions` reports
-    /// it, and the commands the shell has ended.
+    /// What a wait looks at now (#690): the coding agent's state, as `sessions` reports it, and
+    /// the commands the shell has ended.
     pub fn seen(&self) -> crate::terminal::wait::Seen {
         crate::terminal::wait::Seen {
             agent: self.status.coding_agent().map(|agent| agent.state),
+            passed: Vec::new(),
             commands: self.marks.commands,
             last_exit: self.marks.last_exit,
+        }
+    }
+
+    /// `seen`, with the states the last pty write passed through: for the reader, right after
+    /// that write, to tell the waits that hear about it.
+    pub fn seen_after_read(&self) -> crate::terminal::wait::Seen {
+        crate::terminal::wait::Seen {
+            passed: self.passed.clone(),
+            ..self.seen()
         }
     }
 
@@ -521,6 +536,9 @@ impl Shadow {
     }
     /// No terminal, so no program status and no marks.
     pub fn seen(&self) -> crate::terminal::wait::Seen {
+        crate::terminal::wait::Seen::default()
+    }
+    pub fn seen_after_read(&self) -> crate::terminal::wait::Seen {
         crate::terminal::wait::Seen::default()
     }
     pub fn has_shell_marks(&self) -> bool {
