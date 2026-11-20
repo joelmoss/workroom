@@ -1021,6 +1021,12 @@ fn list_json_project_keeps_the_case_it_was_given() {
     let home = Home::new("list-case");
     let ct = home.path("ct");
     std::fs::create_dir_all(ct.join("CaseProj")).expect("project dir");
+    // The case only folds on a case-insensitive disk (macOS's default). On a case-sensitive one,
+    // such as the Go job's Linux runner with --include-ignored, `caseproj` simply doesn't exist.
+    if !ct.join("caseproj").exists() {
+        eprintln!("skipped: {} is on a case-sensitive disk", ct.display());
+        return;
+    }
     std::os::unix::fs::symlink("CaseProj", ct.join("Link")).expect("symlink");
     home.write_config(
         &r#"{"{home}/ct/caseproj": {"vcs": "git", "workrooms": {}},
