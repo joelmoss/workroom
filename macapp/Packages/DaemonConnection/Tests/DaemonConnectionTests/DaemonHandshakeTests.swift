@@ -10,7 +10,7 @@ final class DaemonHandshakeTests: XCTestCase {
     let bytes = DaemonHandshake.encodeHello(build: "Workroom")
     XCTAssertEqual(Array(bytes.prefix(4)), Array("WRA1".utf8))
     XCTAssertEqual(bytes[4], 0, "protocol version is a big-endian u16")
-    XCTAssertEqual(bytes[5], 11, "PROTOCOL_VERSION in the daemon, bumped for Pings")
+    XCTAssertEqual(bytes[5], 12, "PROTOCOL_VERSION in the daemon, bumped for the terminal API")
     XCTAssertEqual(Int(bytes[6]), "Workroom".utf8.count)
   }
 
