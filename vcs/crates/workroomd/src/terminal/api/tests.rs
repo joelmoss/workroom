@@ -463,7 +463,8 @@ fn the_reply(written: &Written) -> Value {
 }
 
 /// A regex wait that starts while the session's output is inside a title's OSC or a kitty image's
-/// APC matches nothing of the rest of it: only the text after it ends (#690).
+/// APC matches nothing of the rest of it: only the text after it ends (#690). Inside a colour's
+/// CSI, the text straight after its final byte is text, on the same line.
 #[cfg(feature = "terminal-state")]
 #[test]
 fn a_regex_wait_started_mid_sequence_skips_the_rest_of_it() {
@@ -471,6 +472,7 @@ fn a_regex_wait_started_mid_sequence_skips_the_rest_of_it() {
     for (byte, opened, rest) in [
         (0x43, r"\033]2;title ", r"NOPE\007"),
         (0x44, r"\033_Ga=T,f=100;QUFB", r"NOPE\033\\"),
+        (0x49, r"\033[3", "2m"),
     ] {
         // The sequence's rest 3 s on, by when the wait below has long started.
         let id = running(
@@ -480,7 +482,9 @@ fn a_regex_wait_started_mid_sequence_skips_the_rest_of_it() {
         );
         let shadow = store.shadow(id).expect("the session");
         assert!(
-            eventually(|| crate::util::lock_or_recover(&shadow).mid_sequence()),
+            eventually(|| crate::util::lock_or_recover(&shadow)
+                .open_sequence()
+                .is_some()),
             "fixture: the sequence's start never arrived"
         );
         let (written, writer) = written_writer();
