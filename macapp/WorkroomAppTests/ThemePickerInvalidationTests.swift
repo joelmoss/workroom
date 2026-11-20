@@ -6,7 +6,7 @@ import XCTest
 
 @testable import Workroom
 
-/// The measurement taken before touching anything: `FamilyRow` reads the theme environment
+/// The measurement taken before touching anything: `ThemePickerRow` reads the theme environment
 /// (`\.themeTokens`) for its own chrome (border/hover/accent colours), and the root injecting it
 /// reads the `@Observable` `ThemeService`, so an arrow-key press (`applyFamily` → `tokens`
 /// replaced) re-injects the tokens and invalidates every row currently materialized by the
@@ -63,7 +63,7 @@ final class ThemePickerInvalidationTests: XCTestCase {
     defer { window.close() }
     view.layoutSubtreeIfNeeded()
     XCTAssertGreaterThan(
-      FamilyRow.bodyPasses, 0, "the fixture must actually render family rows")
+      ThemePickerRow.bodyPasses, 0, "the fixture must actually render family rows")
 
     let otherFamily = try XCTUnwrap(
       ThemeCatalog.families.first { $0.name != "Workroom" },
@@ -74,15 +74,15 @@ final class ThemePickerInvalidationTests: XCTestCase {
     // regression is in every switch, so the fastest still shows it.
     var samples: [(elapsed: TimeInterval, passes: Int)] = []
     for family in [otherFamily, workroom, otherFamily, workroom, otherFamily] {
-      FamilyRow.bodyPasses = 0
+      ThemePickerRow.bodyPasses = 0
       let started = Date()
       ThemeService.shared.applyFamily(family)
       // Waited for far past the ceiling, so a switch a busy machine slows still gets its rows
       // re-rendered and is merely slow, while one that never re-renders them fails.
-      settle(view, seconds: 5, until: { FamilyRow.bodyPasses > 0 })
-      samples.append((Date().timeIntervalSince(started), FamilyRow.bodyPasses))
+      settle(view, seconds: 5, until: { ThemePickerRow.bodyPasses > 0 })
+      samples.append((Date().timeIntervalSince(started), ThemePickerRow.bodyPasses))
       XCTAssertGreaterThan(
-        FamilyRow.bodyPasses, 0,
+        ThemePickerRow.bodyPasses, 0,
         "switching to \(family.name) did not re-render the rows that read tokens within 5s")
     }
     let fastest = try XCTUnwrap(samples.min { $0.elapsed < $1.elapsed })
