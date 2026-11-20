@@ -230,6 +230,7 @@ executor and a temp config — no real repo required.
 | `app-clean` | Remove `DerivedData` + the `.xcodeproj` |
 | `cli-build` | Build `bin/workroom` with version injected |
 | `cli-test` | `go test ./...` |
+| `contract-test` | Run the CLI's black-box contract suite against the Go CLI it builds, or `WORKROOM_BIN=<binary>` |
 | `cli-install` | `go install` into `$GOBIN` |
 | `cli-lint` | `golangci-lint run` |
 | `cli-clean` | Remove the built binary |
