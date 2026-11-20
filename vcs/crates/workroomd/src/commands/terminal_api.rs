@@ -33,13 +33,15 @@ pub(super) fn call(context: &Context, method: &str, params: Value) -> Result<Val
     reply(context, method, params).map(|reply| reply.result)
 }
 
-/// A successful reply: the API's revision the daemon speaks, and the method's `result`.
+/// A successful reply: the API's revision the daemon speaks, the method's `result`, and whether
+/// `more` replies follow it on the stream.
 pub(super) struct Replied {
     pub(super) revision: Value,
     pub(super) result: Value,
+    pub(super) more: bool,
 }
 
-/// [`call`], keeping the reply's `revision` beside its `result`.
+/// [`call`], keeping the reply's `revision` beside its `result`: the first reply of a stream.
 pub(super) fn reply(context: &Context, method: &str, params: Value) -> Result<Replied, CliError> {
     let mut answer = None;
     stream(context, method, params, |replied| {
@@ -49,9 +51,12 @@ pub(super) fn reply(context: &Context, method: &str, params: Value) -> Result<Re
     Ok(answer.expect("a stream that succeeds hands over a reply"))
 }
 
-/// Calls `method` with `params`, a method that may reply more than once on its stream, and hands
-/// each reply to `each` as it arrives, for as long as `each` says more are coming. The daemon's
-/// error, at any point, is the command's.
+/// Calls `method` with `params` and hands each reply to `each` as it arrives, until one says no
+/// `more` follow (ADR 0079's stream rule, for any method), or `each` says it wants no more (its
+/// reader went away). The daemon's error, at any point, is the command's.
+///
+/// The read timeout is for each read, not the whole stream: a long one stays alive while its
+/// replies keep coming, and only a daemon silent for `TIMEOUT` is unreachable.
 pub(super) fn stream(
     context: &Context,
     method: &str,
@@ -120,8 +125,11 @@ pub(super) fn stream(
         let replied = Replied {
             revision: reply.get("revision").cloned().unwrap_or(Value::Null),
             result: reply.get("result").cloned().unwrap_or(Value::Null),
+            // A reply that doesn't say is the last.
+            more: reply.get("more") == Some(&Value::Bool(true)),
         };
-        if !each(replied) {
+        let more = replied.more;
+        if !each(replied) || !more {
             return Ok(());
         }
     }

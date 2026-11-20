@@ -206,7 +206,9 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter, subscriptions: &Subs
             FileError::TooLarge("File reply exceeds 16 MiB".into())
         ))
     };
-    let send = |value: Value| rpc::send_with(writer, Service::File, stream, value, too_large);
+    let send = |value: Value| {
+        rpc::send_with(writer, Service::File, stream, value, too_large);
+    };
     // A request is always one envelope. The chunk marker the VCS service uses for oversized requests
     // starts with 0x02, which is not `{`; refusing it here answers instead of parsing garbage.
     if envelope.payload.first() != Some(&b'{') {

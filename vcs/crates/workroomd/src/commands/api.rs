@@ -3,7 +3,7 @@
 //! subcommand asks the daemon, never this binary's own table, so it says what the daemon it reaches
 //! supports, on the Mac or on a host.
 
-use std::io::Read;
+use std::io::{Read, Write};
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -17,8 +17,9 @@ pub(super) const LONG: &str = "Raw access to every terminal API method, on the d
 WORKROOM_DAEMON names. `api list` lists the methods, `api describe METHOD` shows the JSON Schema \
 of its parameters and its result, with examples, and `api call METHOD [PARAMS]` calls it. PARAMS \
 is a JSON object given inline, @FILE to read it from a file, or - to read it from stdin; left out, \
-it is {}. With --json, `api call` prints the method's reply in the envelope: its `result`, and \
-the API's `revision`.";
+it is {}. With --json, `api call` prints the method's reply in the envelope: its `result`, the \
+API's `revision`, and `more`. A method that streams several replies gets one envelope per line \
+(one result each without --json) until `more` is false.";
 
 /// Each subcommand's envelope names it, success and failure alike: one name per payload shape, as
 /// Go's `trust status` is.
@@ -49,13 +50,15 @@ struct Description {
     error_schema: Value,
 }
 
-/// `api call`'s payload: the method called, and its reply's `revision` and `result`, nested so
-/// that no result field can stand in for one of the envelope's own.
+/// `api call`'s payload: the method called, and its reply's `revision`, `result` and `more`,
+/// nested so that no result field can stand in for one of the envelope's own.
 #[derive(Serialize)]
 struct Called<'a> {
     method: &'a str,
     revision: Value,
     result: Value,
+    /// Whether another envelope of the same stream follows this one.
+    more: bool,
 }
 
 pub(super) fn run(context: &Context, args: &Args) -> Outcome {
@@ -89,21 +92,31 @@ fn call(context: &Context, rest: &[String]) -> Outcome {
             )));
         }
     };
-    let replied = match terminal_api::reply(context, method, params) {
-        Ok(replied) => replied,
-        Err(error) => return Outcome::FailedIn(CALL, error),
-    };
-    if !context.json {
-        return Outcome::Printed(pretty(&replied.result));
+    // Every reply of a stream, each written as it arrives, until the one with no `more` behind it
+    // (ADR 0079): one envelope per line with --json. A failure follows what came before it.
+    let mut stdout = std::io::stdout().lock();
+    let streamed = terminal_api::stream(context, method, params, |replied| {
+        let out = if context.json {
+            super::envelope::success(
+                CALL,
+                &Called {
+                    method,
+                    revision: replied.revision,
+                    result: replied.result,
+                    more: replied.more,
+                },
+            )
+        } else {
+            pretty(&replied.result)
+        };
+        // A reader that went away (`| head`) ends the stream.
+        stdout.write_all(out.as_bytes()).is_ok() && stdout.flush().is_ok()
+    });
+    drop(stdout);
+    match streamed {
+        Ok(()) => Outcome::Printed(String::new()),
+        Err(error) => Outcome::FailedIn(CALL, error),
     }
-    Outcome::Success(super::envelope::success(
-        CALL,
-        &Called {
-            method,
-            revision: replied.revision,
-            result: replied.result,
-        },
-    ))
 }
 
 /// The most PARAMS `call` reads: one request envelope's payload, past which the daemon would reply

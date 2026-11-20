@@ -1082,10 +1082,9 @@ fn capture_reads_the_screen_its_history_and_wrapped_lines() {
     assert_eq!(envelope["text"].as_str().unwrap(), plain.stdout.trim_end());
     assert_eq!(envelope["alternate_screen"], false);
     assert_eq!(envelope["title"], Value::Null);
-    assert_eq!(
-        (&envelope["chunk"], &envelope["last"]),
-        (&json!(0), &json!(true))
-    );
+    assert_eq!(envelope["chunk"], 0);
+    // A stream's end is the reply's `more`, not the result's.
+    assert!(envelope.get("last").is_none(), "{envelope}");
     let columns = envelope["size"]["columns"].as_u64().unwrap() as usize;
     let rows = envelope["size"]["rows"].as_u64().unwrap() as usize;
     // Below END, at the start of the screen's last row.
@@ -1210,7 +1209,6 @@ fn capture_all_streams_a_large_scrollback_in_chunks() {
     for (index, envelope) in envelopes.iter().enumerate() {
         assert_eq!(envelope["command"], "capture");
         assert_eq!(envelope["chunk"], index, "{envelope}");
-        assert_eq!(envelope["last"], index + 1 == envelopes.len(), "{index}");
         assert_eq!(envelope["session"], SHELL);
         assert!(envelope["size"]["columns"].is_u64(), "{envelope}");
         let chunk = envelope["text"].as_str().unwrap();
@@ -1232,7 +1230,36 @@ fn capture_all_streams_a_large_scrollback_in_chunks() {
     assert_eq!(lines[LINES], "DONE");
 
     let plain = capture(&socket, &["logs", "--all"]);
-    assert_eq!(plain.stdout, text + "\n");
+    assert_eq!(plain.stdout, text.clone() + "\n");
+
+    // `api call` reads a stream to its end too: one envelope per reply, each saying whether `more`
+    // follow, only the last saying none do, and together the same history.
+    let called = workroom(
+        Some(&socket),
+        &[
+            "api",
+            "call",
+            "terminal.capture",
+            r#"{"target":"logs","all":true}"#,
+            "--json",
+        ],
+    );
+    assert_eq!(called.code, 0, "{}", called.stderr);
+    let replies: Vec<Value> = called
+        .stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one envelope per line"))
+        .collect();
+    assert_eq!(replies.len(), envelopes.len());
+    let mut streamed = String::new();
+    for (index, reply) in replies.iter().enumerate() {
+        assert_eq!(reply["command"], "api call");
+        assert_eq!(reply["method"], "terminal.capture");
+        assert_eq!(reply["more"], index + 1 < replies.len(), "{index}");
+        assert_eq!(reply["result"]["chunk"], index);
+        streamed += reply["result"]["text"].as_str().unwrap();
+    }
+    assert_eq!(streamed, text);
 }
 
 #[test]

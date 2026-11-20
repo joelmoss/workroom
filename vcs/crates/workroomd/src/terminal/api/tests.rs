@@ -289,17 +289,73 @@ fn an_empty_daemon_lists_no_sessions_and_resolves_nothing() {
 #[test]
 fn errors_reply_with_kind_message_and_matches() {
     let error = resolve(&listing(), "tests").unwrap_err();
-    let wire = reply(Err(error));
+    let wire = reply(Err(error), false);
     assert_eq!(wire["revision"], REVISION);
     assert_eq!(wire["error"]["kind"], "TargetAmbiguous");
     assert_eq!(wire["error"]["matches"].as_array().unwrap().len(), 2);
-    let plain = reply(Err(ApiError::invalid("bad")));
+    let plain = reply(Err(ApiError::invalid("bad")), false);
     assert_eq!(
         plain,
-        json!({"revision": REVISION, "error": {"kind": "InvalidRequest", "message": "bad"}})
+        json!({
+            "revision": REVISION,
+            "error": {"kind": "InvalidRequest", "message": "bad"},
+            "more": false,
+        })
     );
     assert_eq!(
-        reply(Ok(json!({"sessions": []}))),
-        json!({"revision": REVISION, "result": {"sessions": []}})
+        reply(Ok(json!({"sessions": []})), false),
+        json!({"revision": REVISION, "result": {"sessions": []}, "more": false})
     );
+    // `more` is the reply's, outside the result, and an error always ends a stream.
+    assert_eq!(reply(Ok(json!({})), true)["more"], true);
+    assert_eq!(reply(Err(ApiError::invalid("bad")), true)["more"], false);
+}
+
+/// A stream says `more` on every reply but its last, stops at its first error, and stops making
+/// results once a send fails: the rest are never made.
+#[test]
+fn a_stream_says_more_until_its_last_reply() {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    let sent = RefCell::new(Vec::new());
+    let made = Rc::new(Cell::new(0));
+    let results = |count: usize, made: Rc<Cell<usize>>| {
+        Box::new((0..count).map(move |n| {
+            made.set(made.get() + 1);
+            Ok(json!({"n": n}))
+        })) as Box<dyn Iterator<Item = Result<Value, ApiError>>>
+    };
+    stream(results(3, made.clone()), |value| {
+        sent.borrow_mut().push(value);
+        true
+    });
+    let mores: Vec<Value> = sent
+        .borrow()
+        .iter()
+        .map(|reply| reply["more"].clone())
+        .collect();
+    assert_eq!(mores, [true, true, false]);
+
+    sent.borrow_mut().clear();
+    let failing = Box::new(
+        [
+            Ok(json!({})),
+            Err(ApiError::invalid("broke")),
+            Ok(json!({})),
+        ]
+        .into_iter(),
+    );
+    stream(failing, |value| {
+        sent.borrow_mut().push(value);
+        true
+    });
+    assert_eq!(sent.borrow().len(), 2);
+    assert_eq!(sent.borrow()[0]["more"], true);
+    assert_eq!(sent.borrow()[1]["error"]["kind"], "InvalidRequest");
+    assert_eq!(sent.borrow()[1]["more"], false);
+
+    // The client hung up after the first: only it and the one peeked behind it were made.
+    made.set(0);
+    stream(results(100, made.clone()), |_| false);
+    assert_eq!(made.get(), 2);
 }
