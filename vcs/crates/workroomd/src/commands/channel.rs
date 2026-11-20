@@ -48,7 +48,7 @@ pub(crate) enum Channel {
 
 impl Channel {
     /// The canonical name, as users and the appcast write it.
-    pub(crate) fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Channel::Stable => "stable",
             Channel::Pre => "pre",

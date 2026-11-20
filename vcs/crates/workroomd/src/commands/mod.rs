@@ -103,9 +103,17 @@ struct Command {
     /// Left out of `--help`: commands the app runs, not people.
     hidden: bool,
     mac_only: bool,
-    /// The command, or `None` while its port is still to come (the ticket that ports it).
-    run: Option<fn(&Context) -> Outcome>,
-    port: &'static str,
+    implementation: Implementation,
+}
+
+/// Whether a command runs in this binary yet.
+#[derive(Clone, Copy)]
+enum Implementation {
+    Ported(fn(&Context) -> Outcome),
+    /// Still the Go CLI's, until `ticket` ports it.
+    Stub {
+        ticket: &'static str,
+    },
 }
 
 /// Every command, in `--help`'s order. Names, aliases and help lines are the Go CLI's.
@@ -225,8 +233,7 @@ const COMMANDS: &[Command] = &[
         short: "Print the version",
         hidden: false,
         mac_only: false,
-        run: Some(version::run),
-        port: "",
+        implementation: Implementation::Ported(version::run),
     },
 ];
 
@@ -237,7 +244,7 @@ const fn stub(
     short: &'static str,
     hidden: bool,
     mac_only: bool,
-    port: &'static str,
+    ticket: &'static str,
 ) -> Command {
     Command {
         name,
@@ -246,8 +253,7 @@ const fn stub(
         short,
         hidden,
         mac_only,
-        run: None,
-        port,
+        implementation: Implementation::Stub { ticket },
     }
 }
 
@@ -280,11 +286,10 @@ pub fn dispatch(args: &[OsString]) -> Option<ExitCode> {
         platform: Platform::current(),
         env: |name| std::env::var(name).ok(),
     };
-    let (text, code) = run(&args, &context);
-    let (stdout, stderr) = text;
-    let _ = std::io::stdout().write_all(stdout.as_bytes());
-    let _ = std::io::stderr().write_all(stderr.as_bytes());
-    Some(ExitCode::from(code))
+    let output = run(&args, &context);
+    let _ = std::io::stdout().write_all(output.stdout.as_bytes());
+    let _ = std::io::stderr().write_all(output.stderr.as_bytes());
+    Some(ExitCode::from(output.code))
 }
 
 /// The global flags, and what is left once they are taken out.
@@ -359,9 +364,26 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
-/// Runs `args`, returning (stdout, stderr) and the exit code. Separate from [`dispatch`] so a test
-/// can choose the platform and the environment.
-fn run(args: &[String], context: &dyn Fn(bool) -> Context) -> ((String, String), u8) {
+/// What one run of the CLI writes, and how it exits.
+#[derive(Debug, PartialEq, Eq)]
+struct Output {
+    stdout: String,
+    stderr: String,
+    code: u8,
+}
+
+impl Output {
+    fn stdout(text: String) -> Output {
+        Output {
+            stdout: text,
+            stderr: String::new(),
+            code: 0,
+        }
+    }
+}
+
+/// Runs `args`. Separate from [`dispatch`] so a test can choose the platform and the environment.
+fn run(args: &[String], context: &dyn Fn(bool) -> Context) -> Output {
     // The command is the first argument that isn't a flag, as Go finds it before parsing.
     let name = args.iter().find(|arg| !arg.starts_with('-')).cloned();
     let command = match name.as_deref() {
@@ -372,93 +394,78 @@ fn run(args: &[String], context: &dyn Fn(bool) -> Context) -> ((String, String),
                 .filter(|arg| !arg.starts_with('-'))
                 .nth(1)
                 .and_then(|topic| find(topic));
-            return ((help(topic), String::new()), 0);
+            return Output::stdout(help(topic));
         }
         Some(name) => match find(name) {
             Some(command) => Some(command),
             // Go reports this before its flags are parsed, so never in an envelope.
             None => {
-                let message = format!("unknown command {name:?} for \"workroom\"");
-                return ((String::new(), format!("Error: {message}\n")), 1);
+                return Output {
+                    stdout: String::new(),
+                    stderr: format!("Error: unknown command {name:?} for \"workroom\"\n"),
+                    code: 1,
+                };
             }
         },
     };
-    // A stub's own flags aren't known yet; it fails before it would read them.
-    if let Some(command) = command.filter(|command| command.run.is_none()) {
-        let (parsed, _) = parse(args);
-        if parsed.help {
-            return ((help(Some(command)), String::new()), 0);
-        }
-        let context = context(parsed.json);
-        return report(
-            &context,
-            Some(command.name),
-            Outcome::Failed(not_here(command, context.platform)),
-        );
-    }
     let (parsed, error) = parse(args);
     let context = context(parsed.json);
-    if let Some(message) = error {
+    // A stub's own flags aren't known yet, so it doesn't refuse them; it fails below anyway.
+    let stub = command
+        .is_some_and(|command| matches!(command.implementation, Implementation::Stub { .. }));
+    if let Some(message) = error.filter(|_| !stub) {
         return report(&context, None, Outcome::Failed(CliError::internal(message)));
     }
     let Some(command) = command else {
-        return ((help(None), String::new()), 0);
+        return Output::stdout(help(None));
     };
     if parsed.help {
-        return ((help(Some(command)), String::new()), 0);
+        return Output::stdout(help(Some(command)));
     }
-    // The only argument is the command's name; none of today's commands takes more.
-    if let Some(extra) = parsed.positional.get(1) {
+    // The only argument is the command's name; none of today's commands takes more. Go checks
+    // that before the command runs, so the envelope names no command.
+    if let (false, Some(extra)) = (stub, parsed.positional.get(1)) {
         let message = format!(
             "unknown command {extra:?} for \"workroom {}\"",
             command.name
         );
         return report(&context, None, Outcome::Failed(CliError::internal(message)));
     }
-    if command.mac_only && context.platform != Platform::Mac {
-        return report(
-            &context,
-            Some(command.name),
-            Outcome::Failed(mac_only(command)),
-        );
-    }
-    let run = command.run.expect("a ported command runs");
-    report(&context, Some(command.name), run(&context))
-}
-
-/// Why a command can't run in this binary yet: Mac-only away from the Mac, else not ported.
-fn not_here(command: &Command, platform: Platform) -> CliError {
-    if command.mac_only && platform != Platform::Mac {
-        return mac_only(command);
-    }
-    CliError::internal(format!(
-        "`workroom {}` isn't in this build yet ({}); the Go CLI runs it until the switch (ADR 0078)",
-        command.name, command.port
-    ))
-}
-
-fn mac_only(command: &Command) -> CliError {
-    CliError::new(
-        Kind::MacOnly,
-        format!(
-            "`workroom {}` works only on the Mac: it reads and writes the Mac's Workroom config",
-            command.name
-        ),
-    )
-}
-
-/// `outcome` as stdout, stderr and the exit code.
-fn report(context: &Context, command: Option<&str>, outcome: Outcome) -> ((String, String), u8) {
-    match outcome {
-        Outcome::Printed(text) | Outcome::Success(text) => ((text, String::new()), 0),
-        Outcome::Failed(error) => {
-            let code = error.kind.exit_code();
-            if context.json {
-                ((envelope::failure(command, &error), String::new()), code)
-            } else {
-                ((String::new(), format!("Error: {}\n", error.message)), code)
-            }
+    let outcome = if command.mac_only && context.platform != Platform::Mac {
+        Outcome::Failed(CliError::new(
+            Kind::MacOnly,
+            format!(
+                "`workroom {}` works only on the Mac: it reads and writes the Mac's Workroom config",
+                command.name
+            ),
+        ))
+    } else {
+        match command.implementation {
+            Implementation::Ported(run) => run(&context),
+            Implementation::Stub { ticket } => Outcome::Failed(CliError::internal(format!(
+                "`workroom {}` isn't in this build yet ({ticket}); the Go CLI runs it until the \
+                 switch (ADR 0078)",
+                command.name
+            ))),
         }
+    };
+    report(&context, Some(command.name), outcome)
+}
+
+/// `outcome` as what the run writes, and its exit code.
+fn report(context: &Context, command: Option<&str>, outcome: Outcome) -> Output {
+    match outcome {
+        Outcome::Printed(text) | Outcome::Success(text) => Output::stdout(text),
+        Outcome::Failed(error) if context.json => Output {
+            stdout: envelope::failure(command, &error),
+            stderr: String::new(),
+            code: error.kind.exit_code(),
+        },
+        Outcome::Failed(error) => Output {
+            stdout: String::new(),
+            stderr: format!("Error: {}\n", error.message),
+            code: error.kind.exit_code(),
+        },
     }
 }
 
@@ -522,13 +529,19 @@ fn help(command: Option<&Command>) -> String {
 mod tests {
     use super::*;
 
+    /// ((stdout, stderr), exit code) of running `args` on `platform`, with an empty environment.
     fn run_on(platform: Platform, args: &[&str]) -> ((String, String), u8) {
         let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
-        run(&args, &|json| Context {
+        let Output {
+            stdout,
+            stderr,
+            code,
+        } = run(&args, &|json| Context {
             json,
             platform,
             env: |_| None,
-        })
+        });
+        ((stdout, stderr), code)
     }
 
     #[test]
