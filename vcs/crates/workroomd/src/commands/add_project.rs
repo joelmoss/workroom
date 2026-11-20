@@ -155,7 +155,7 @@ fn add_existing(context: &Context, config: &Config, path: &str) -> Result<Added,
 /// ```text
 /// stat(canon)
 ///  ├── a file, or a file in a parent ─► NotADirectory
-///  ├── missing ──► make it and its parents (0755), resolve it again
+///  ├── missing ──► make its parents and it (0755), resolve it again
 ///  └── a folder ─┐
 ///                ▼
 ///          a repository? ── yes ─► register it as it is
@@ -166,7 +166,7 @@ fn add_existing(context: &Context, config: &Config, path: &str) -> Result<Added,
 /// A folder this run made is removed again on any failure after it, so a retry starts clean; one
 /// that was already there never is. Under `--pretend` nothing changes.
 fn add_created(context: &Context, config: &Config, path: &str) -> Result<Added, CliError> {
-    let mut canon = local_canonical(path, context)?;
+    let canon = local_canonical(path, context)?;
     let exists = match std::fs::metadata(&canon) {
         Ok(info) if !info.is_dir() => return Err(not_a_directory()),
         Ok(_) => true,
@@ -187,34 +187,66 @@ fn add_created(context: &Context, config: &Config, path: &str) -> Result<Added, 
             would_create: !exists,
         });
     }
-    let mut made = None;
-    if !exists {
-        if let Err(error) = config::make_dir_all(&canon) {
-            if error.error.raw_os_error() == Some(libc::ENOTDIR) {
-                return Err(not_a_directory());
-            }
-            return Err(config_write(format!("create directory {canon}: {error}")));
-        }
-        // The folder exists now, so resolve it again: under a symlinked parent it is stored in
-        // its symlink-evaluated form, as an existing project's path is.
-        if let Ok(resolved) = config::canonical_path(&canon, context) {
-            canon = resolved;
-        }
-        made = Some(canon.clone());
-    }
-    let registered = initialize_and_register(config, &canon);
-    if registered.is_err()
-        && let Some(made) = made
-    {
-        // This run made it, so nothing in it is anyone else's: an aborted init must not leave a
-        // repository without a commit for the next try to take as a project.
-        let _ = std::fs::remove_dir_all(made);
-    }
-    registered?;
+    let canon = if exists {
+        initialize_and_register(config, &canon)?;
+        canon
+    } else {
+        create_missing(context, config, canon)?
+    };
     Ok(Added {
         path: canon,
         would_create: false,
     })
+}
+
+/// Makes the folder `canon` the stat found missing, then initializes and registers it as
+/// [`initialize_and_register`] does, returning its path resolved again. Only a folder this run's
+/// own exclusive `mkdir` made is removed again on failure, so a retry starts clean: one another
+/// process made since the stat is taken as already there, as Go's `MkdirAll` takes it, and is
+/// never removed.
+fn create_missing(context: &Context, config: &Config, canon: String) -> Result<String, CliError> {
+    let claimed = claim_dir(&canon)?;
+    // The folder exists now, so resolve it again: under a symlinked parent it is stored in its
+    // symlink-evaluated form, as an existing project's path is.
+    let canon = config::canonical_path(&canon, context).unwrap_or(canon);
+    let registered = initialize_and_register(config, &canon);
+    if registered.is_err() && claimed {
+        // This run made it, so nothing in it is anyone else's: an aborted init must not leave a
+        // repository without a commit for the next try to take as a project.
+        let _ = std::fs::remove_dir_all(&canon);
+    }
+    registered.map(|()| canon)
+}
+
+/// Makes `canon`'s parents (0755) as `mkdir -p` would, then `canon` itself with an exclusive
+/// `mkdir`: `true` when this run made it, `false` when a folder was already there by then.
+fn claim_dir(canon: &str) -> Result<bool, CliError> {
+    use std::os::unix::fs::DirBuilderExt;
+    let refused = |error: config::MkdirError| {
+        if error.error.raw_os_error() == Some(libc::ENOTDIR) {
+            not_a_directory()
+        } else {
+            config_write(format!("create directory {canon}: {error}"))
+        }
+    };
+    let parent = &canon[..canon.rfind('/').unwrap_or(0)];
+    if !parent.is_empty() {
+        config::make_dir_all(parent).map_err(refused)?;
+    }
+    match std::fs::DirBuilder::new().mode(0o755).create(canon) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if std::fs::metadata(canon).is_ok_and(|info| info.is_dir()) {
+                Ok(false)
+            } else {
+                Err(not_a_directory())
+            }
+        }
+        Err(error) => Err(refused(config::MkdirError {
+            path: canon.to_string(),
+            error,
+        })),
+    }
 }
 
 /// git-initializes `canon` when it is no repository and is empty, then registers it.
@@ -336,5 +368,62 @@ mod tests {
         for local in ["/a:b", "./a:b", "~/x", "repo", ":x", "a/b:c"] {
             assert!(!is_remote_path(local), "{local}");
         }
+    }
+
+    #[test]
+    fn a_folder_made_after_the_stat_survives_a_failed_create() {
+        // Another process made the folder between `--create`'s stat and its mkdir: this run
+        // didn't make it, so its failure must leave it, and what is in it, alone.
+        let dir = scratch("raced");
+        let dest = dir.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(dest.join("keep"), "theirs").unwrap();
+        let config = Config::at(dir.join("config.json"));
+        let error =
+            create_missing(&context(), &config, dest.to_str().unwrap().to_string()).unwrap_err();
+        assert_eq!(error.kind, Kind::UnsupportedVcs, "{}", error.message);
+        assert_eq!(
+            std::fs::read_to_string(dest.join("keep")).unwrap(),
+            "theirs"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_this_create_made_is_removed_when_it_fails() {
+        // A config under a file can't be written, so registering fails after the folder is
+        // made and initialized.
+        let dir = scratch("made");
+        let dest = dir.join("parent").join("dest");
+        std::fs::write(dir.join("blocker"), "").unwrap();
+        let config = Config::at(dir.join("blocker").join("config.json"));
+        create_missing(&context(), &config, dest.to_str().unwrap().to_string()).unwrap_err();
+        assert!(!dest.exists(), "the folder this run made is left behind");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn context() -> Context {
+        Context {
+            json: true,
+            pretend: false,
+            verbose: false,
+            platform: super::super::Platform::current(),
+            env: |_| None,
+            color: false,
+        }
+    }
+
+    /// A new directory of this test's own under the system temp dir, removed by the test.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        for attempt in 0u32.. {
+            let dir = std::env::temp_dir().join(format!(
+                "workroom-add-project-{name}-{}-{attempt}",
+                std::process::id()
+            ));
+            if std::fs::create_dir(&dir).is_ok() {
+                return dir.canonicalize().unwrap();
+            }
+        }
+        unreachable!()
     }
 }
