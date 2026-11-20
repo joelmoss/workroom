@@ -47,6 +47,7 @@ mod trust;
 mod trusted_script;
 mod update;
 mod version;
+mod wait;
 
 use std::ffi::OsString;
 use std::io::{IsTerminal, Write};
@@ -808,6 +809,22 @@ const COMMANDS: &[Command] = &[
         arity: Arity::None,
         operands: Operands::Files,
         implementation: Implementation::Ported(version::run),
+    },
+    Command {
+        name: "wait",
+        aliases: &[],
+        usage: "wait TARGET [flags]",
+        short: "Wait for something to happen in a terminal session",
+        long: None,
+        hidden: false,
+        mac_only: false,
+        flags: wait::FLAGS,
+        subcommands: &[],
+        // One TARGET, which `wait::run` checks.
+        arity: Arity::Own,
+        // A TARGET is a session the daemon knows, never a file, as for `sessions`.
+        operands: Operands::Nothing,
+        implementation: Implementation::Ported(wait::run),
     },
 ];
 

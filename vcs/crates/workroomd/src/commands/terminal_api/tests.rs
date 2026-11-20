@@ -1,5 +1,33 @@
 use super::*;
 
+/// A wait is given its own timeout and `TIMEOUT` more, or none when it has none, by `wait` and
+/// `api call terminal.wait` alike; every other method, and a `timeout_ms` the daemon refuses at
+/// once, gets `TIMEOUT`. Tested here rather than by a wait that outlasts `TIMEOUT`.
+#[test]
+fn a_wait_is_read_for_as_long_as_it_may_take() {
+    let wait = |params: Value| answer_timeout("terminal.wait", &params);
+    assert_eq!(
+        wait(json!({"target": "x", "ended": true, "timeout_ms": 60_000})),
+        Some(Duration::from_secs(70))
+    );
+    assert_eq!(wait(json!({"target": "x", "timeout_ms": 0})), Some(TIMEOUT));
+    assert_eq!(wait(json!({"target": "x", "ended": true})), None);
+    assert_eq!(wait(json!({"target": "x", "timeout_ms": null})), None);
+    assert_eq!(
+        wait(json!({"timeout_ms": u64::MAX})),
+        Duration::from_millis(u64::MAX).checked_add(TIMEOUT)
+    );
+    for refused in [json!(-1), json!(1.5), json!("30s")] {
+        assert_eq!(wait(json!({"timeout_ms": refused})), Some(TIMEOUT));
+    }
+    for method in ["session.list", "terminal.capture", "api.describe"] {
+        assert_eq!(
+            answer_timeout(method, &json!({"timeout_ms": 60_000})),
+            Some(TIMEOUT)
+        );
+    }
+}
+
 fn argv(arguments: &[&str]) -> Vec<String> {
     arguments
         .iter()

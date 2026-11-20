@@ -1003,6 +1003,23 @@ fn every_method_publishes_schemas_its_replies_match() {
     }
     let refused = api.call("terminal.capture", json!({"target": RUN, "lines": -1}));
     assert_eq!(refused["error"]["kind"], "InvalidRequest", "{refused}");
+
+    // A wait answers on its stream when it ends: here at once, out of time.
+    let params = json!({"target": "beef", "ended": true, "timeout_ms": 0});
+    assert_eq!(
+        violation(&schema("terminal.wait", "input"), &params, "params"),
+        None
+    );
+    let timed_out = api.call("terminal.wait", params);
+    assert_eq!(timed_out["error"]["kind"], "TargetAmbiguous", "{timed_out}");
+    let timed_out = api.call(
+        "terminal.wait",
+        json!({"target": OTHER, "ended": true, "timeout_ms": 0}),
+    );
+    assert_eq!(timed_out["revision"], 1, "{timed_out}");
+    assert_eq!(timed_out["more"], false, "{timed_out}");
+    assert_eq!(timed_out["error"]["kind"], "WaitTimeout", "{timed_out}");
+    assert_eq!(violation(&error_schema, &timed_out["error"], "error"), None);
 }
 
 /// Writes `lines` into a script in `dir` that clears the screen and its history, prints them, and
@@ -1788,4 +1805,331 @@ fn api_call_params_that_are_not_utf8_are_invalid() {
         message.starts_with(&format!("PARAMS from {} isn't UTF-8", file.display())),
         "{message}"
     );
+}
+
+/// `workroom wait <args> --json`, from a run that must answer with one envelope.
+fn wait(socket: &Path, args: &[&str]) -> (i32, Value) {
+    let args: Vec<&str> = [&["wait"][..], args, &["--json"]].concat();
+    let run = workroom(Some(socket), &args);
+    (run.code, run.envelope())
+}
+
+/// A failed wait's exit code and error kind.
+fn failed(outcome: (i32, Value)) -> (i32, String) {
+    let (code, envelope) = outcome;
+    assert_eq!(envelope["ok"], false, "{envelope}");
+    (
+        code,
+        envelope["error"]["kind"].as_str().unwrap().to_string(),
+    )
+}
+
+/// `terminal.wait`'s result schema, as the daemon describes it.
+fn wait_schema(socket: &Path) -> Value {
+    let described = Api::connect(socket).call("api.describe", json!({"method": "terminal.wait"}));
+    described["result"]["methods"][0]["output"].clone()
+}
+
+/// A met wait's envelope: `wait`'s, with the API's result fields, which match its schema.
+fn met(socket: &Path, outcome: (i32, Value)) -> Value {
+    let (code, envelope) = outcome;
+    assert_eq!(code, 0, "{envelope}");
+    assert_eq!(envelope["ok"], true, "{envelope}");
+    assert_eq!(envelope["command"], "wait", "{envelope}");
+    assert_eq!(
+        violation(&wait_schema(socket), &envelope, "result"),
+        None,
+        "{envelope}"
+    );
+    envelope
+}
+
+#[test]
+fn wait_for_the_end_of_a_session_gives_its_exit_code_and_times_out_before_it() {
+    let workspace = Workspace::new("api-wait-ended");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+
+    // The short timeout is the one this test wants to pass.
+    assert_eq!(
+        failed(wait(&socket, &["server", "--ended", "--timeout", "1s"])),
+        (8, "WaitTimeout".into())
+    );
+
+    // Ends 5 s from now, by when the wait has long started.
+    type_line(&mut shell, "sleep 5; exit 3");
+    let ended = met(
+        &socket,
+        wait(&socket, &["server", "--ended", "--timeout", "60s"]),
+    );
+    assert_eq!(ended["condition"], "ended");
+    assert_eq!(ended["session"], SHELL);
+    assert_eq!(ended["exit_code"], 3, "{ended}");
+
+    // Gone, it is no longer a target.
+    assert_eq!(
+        failed(wait(&socket, &["server", "--ended"])),
+        (3, "TargetNotFound".into())
+    );
+}
+
+#[test]
+fn wait_for_a_regex_counts_only_output_after_it_starts_unless_it_includes_the_screen() {
+    let workspace = Workspace::new("api-wait-regex");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    let mut output = common::ClientReader::new(&mut shell);
+    // Split in the typed line, so the echo of the line is not the mark.
+    type_line(&mut shell, r#"printf '\033[1mOLD\033[0m''MARK\n'"#);
+    assert!(
+        output
+            .read_until("OLD\x1b[0mMARK\r\n", Duration::from_secs(20))
+            .contains("OLD\x1b[0mMARK\r\n"),
+        "the mark never printed"
+    );
+
+    // On the screen already, so it is not output that arrives after the wait starts.
+    assert_eq!(
+        failed(wait(
+            &socket,
+            &["server", "--regex", "OLDMARK", "--timeout", "1s"]
+        )),
+        (8, "WaitTimeout".into())
+    );
+    let screen = wait(
+        &socket,
+        &[
+            "server",
+            "--regex",
+            "OLD(MARK)$",
+            "--include-screen",
+            "--timeout",
+            "20s",
+        ],
+    );
+    if has_terminal_state() {
+        let screen = met(&socket, screen);
+        assert_eq!(screen["condition"], "regex");
+        assert_eq!(screen["match"], json!({"text": "OLDMARK"}), "{screen}");
+    } else {
+        // No shadow terminal, so no screen to look at: refused, rather than left to time out.
+        assert_eq!(failed(screen), (2, "InvalidRequest".into()));
+    }
+
+    // Numbered lines, so a match says when it was printed: one wait after another sees a later
+    // line, never one printed before it started.
+    type_line(
+        &mut shell,
+        r#"i=0; while [ $i -lt 300 ]; do i=$((i+1)); echo "TICK-$i"; sleep 0.1; done"#,
+    );
+    let tick = |socket: &Path| {
+        let found = met(
+            socket,
+            wait(
+                socket,
+                &["server", "--regex", r"TICK-\d+\r\n", "--timeout", "20s"],
+            ),
+        );
+        let text = found["match"]["text"].as_str().unwrap().to_string();
+        text.trim_start_matches("TICK-")
+            .trim_end()
+            .parse::<u32>()
+            .unwrap_or_else(|_| panic!("not a tick: {text:?}"))
+    };
+    let first = tick(&socket);
+    let second = tick(&socket);
+    assert!(second > first, "{second} came before {first}");
+
+    assert_eq!(
+        failed(wait(
+            &socket,
+            &["server", "--regex", "(", "--timeout", "1s"]
+        )),
+        (2, "InvalidRequest".into())
+    );
+    let human = workroom(
+        Some(&socket),
+        &["wait", "server", "--regex", r"TICK-\d+", "--timeout", "20s"],
+    );
+    assert_eq!(human.code, 0, "{}", human.stderr);
+    assert!(human.stdout.starts_with("TICK-"), "{}", human.stdout);
+}
+
+/// A program status and the shell's command end both come from the shadow terminal, which parses
+/// OSC 7501 and OSC 133.
+#[test]
+fn wait_for_a_program_status_or_the_shells_command_to_finish() {
+    let workspace = Workspace::new("api-wait-status");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    let mut output = common::ClientReader::new(&mut shell);
+    listing_until(&socket, |listing| listing.len() == 1);
+    if !has_terminal_state() {
+        for condition in [&["--status", "working"][..], &["--command-finished"]] {
+            let args: Vec<&str> = [&["server"][..], condition, &["--timeout", "1s"]].concat();
+            assert_eq!(
+                failed(wait(&socket, &args)),
+                (2, "InvalidRequest".into()),
+                "{condition:?} needs the shadow terminal"
+            );
+        }
+        return;
+    }
+
+    // `/bin/sh` sends no OSC 133 marks, so a command's end can't be seen.
+    assert_eq!(
+        failed(wait(
+            &socket,
+            &["server", "--command-finished", "--timeout", "5s"]
+        )),
+        (3, "NoShellIntegration".into())
+    );
+    type_line(&mut shell, r#"printf '\033]133;A\007'; echo "MARKS""-ON""#);
+    assert!(
+        output
+            .read_until("MARKS-ON\r\n", Duration::from_secs(20))
+            .contains("MARKS-ON\r\n")
+    );
+    // A command that starts and ends 4 s from now, once the wait has started.
+    type_line(
+        &mut shell,
+        r"sleep 4; printf '\033]133;C\007'; printf '\033]133;D;7\007'",
+    );
+    let finished = met(
+        &socket,
+        wait(
+            &socket,
+            &["server", "--command-finished", "--timeout", "60s"],
+        ),
+    );
+    assert_eq!(finished["condition"], "command_finished");
+    assert_eq!(finished["exit_code"], 7, "{finished}");
+
+    // Working now, which counts, then blocked 4 s from now.
+    type_line(
+        &mut shell,
+        r#"sh -c 'printf "\033]7501;state=working:app=claude\033\\"; sleep 4; printf "\033]7501;state=blocked:app=claude\033\\"; sleep 30'"#,
+    );
+    let working = met(
+        &socket,
+        wait(
+            &socket,
+            &["server", "--status", "working", "--timeout", "20s"],
+        ),
+    );
+    assert_eq!(working["status"], "working", "{working}");
+    let blocked = met(
+        &socket,
+        wait(
+            &socket,
+            &["server", "--status", "blocked", "--timeout", "60s"],
+        ),
+    );
+    assert_eq!(blocked["condition"], "status");
+    assert_eq!(blocked["status"], "blocked", "{blocked}");
+    assert_eq!(
+        failed(wait(
+            &socket,
+            &["server", "--status", "done", "--timeout", "1s"]
+        )),
+        (8, "WaitTimeout".into())
+    );
+    let human = workroom(Some(&socket), &["wait", "server", "--status", "blocked"]);
+    assert_eq!(
+        (human.code, human.stdout.as_str()),
+        (0, "status: blocked\n")
+    );
+}
+
+#[test]
+fn wait_for_a_run_state_with_its_exit_code() {
+    let workspace = Workspace::new("api-wait-run");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let _run = attach_with_env(
+        &socket,
+        RUN,
+        &[],
+        &[
+            ("WORKROOM_SESSION_RUN", "1"),
+            ("WORKROOM_SESSION_COMMAND", "sleep 4; exit 3"),
+            ("WORKROOM_SESSION_TITLE", "dev"),
+        ],
+    );
+    let _shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 2);
+
+    let exited = met(
+        &socket,
+        wait(
+            &socket,
+            &[
+                "dev",
+                "--run",
+                "exited",
+                "--exit-code",
+                "3",
+                "--timeout",
+                "60s",
+            ],
+        ),
+    );
+    assert_eq!(exited["condition"], "run");
+    assert_eq!(exited["run"], "exited", "{exited}");
+    assert_eq!(exited["exit_code"], 3, "{exited}");
+    // Exited is a state it stays in, so a later wait sees it at once.
+    let human = workroom(
+        Some(&socket),
+        &["wait", "dev", "--run", "exited", "--timeout", "20s"],
+    );
+    assert_eq!(
+        (human.code, human.stdout.as_str()),
+        (0, "run: exited (exit code 3)\n")
+    );
+    assert_eq!(
+        failed(wait(
+            &socket,
+            &[
+                "dev",
+                "--run",
+                "exited",
+                "--exit-code",
+                "4",
+                "--timeout",
+                "1s"
+            ]
+        )),
+        (8, "WaitTimeout".into())
+    );
+    assert_eq!(
+        failed(wait(&socket, &["server", "--run", "running"])),
+        (2, "InvalidRequest".into()),
+        "a shell has no run state"
+    );
+}
+
+/// A bad command line is 1, as for every command (they share one parser), and no daemon is 7.
+#[test]
+fn wait_takes_one_target_and_one_condition() {
+    let workspace = Workspace::new("api-wait-usage");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    for args in [
+        &["wait", "--ended", "--json"][..],
+        &["wait", "a", "b", "--ended", "--json"],
+        &["wait", "a", "--json"],
+        &["wait", "a", "--ended", "--regex", "x", "--json"],
+        &["wait", "a", "--ended", "--timeout", "soon", "--json"],
+    ] {
+        let run = workroom(Some(&socket), args);
+        assert_eq!(run.code, 1, "{args:?} {}", run.stdout);
+        assert_eq!(run.envelope()["error"]["kind"], "InternalError", "{args:?}");
+    }
+    let run = workroom_outside_any_daemon(&workspace.dir, &["wait", "a", "--ended", "--json"]);
+    assert_eq!(run.code, 7, "{}", run.stdout);
+    assert_eq!(run.envelope()["error"]["kind"], "DaemonUnreachable");
 }

@@ -56,13 +56,15 @@ pub(super) fn reply(context: &Context, method: &str, params: Value) -> Result<Re
 /// reader went away). The daemon's error, at any point, is the command's.
 ///
 /// The read timeout is for each read, not the whole stream: a long one stays alive while its
-/// replies keep coming, and only a daemon silent for `TIMEOUT` is unreachable.
+/// replies keep coming, and only a daemon silent for `TIMEOUT` is unreachable. A wait's is its
+/// own ([`answer_timeout`]).
 pub(super) fn stream(
     context: &Context,
     method: &str,
     params: Value,
     mut each: impl FnMut(Replied) -> bool,
 ) -> Result<(), CliError> {
+    let answer = answer_timeout(method, &params);
     // A request too big to send is bad input whether or not a daemon would take it, so it is
     // refused (2) before one is looked for.
     let mut request = json!({"method": method, "params": params});
@@ -108,6 +110,11 @@ pub(super) fn stream(
     stream
         .write_all(&Envelope::new(Service::TerminalApi, STREAM, request).encode())
         .map_err(|error| unreachable(format!("the daemon on {socket} hung up: {error}")))?;
+    // A timeout the socket can't hold (macOS refuses one past its bounds) is none, rather than
+    // leaving `TIMEOUT` to cut a long wait short.
+    if stream.set_read_timeout(answer).is_err() {
+        let _ = stream.set_read_timeout(None);
+    }
     let mut decoder = EnvelopeDecoder::new();
     loop {
         let reply = read_reply(&mut stream, &mut decoder)
@@ -132,6 +139,26 @@ pub(super) fn stream(
         if !each(replied) || !more {
             return Ok(());
         }
+    }
+}
+
+/// How long the daemon gets to answer `method` with `params` once the request is sent: `TIMEOUT`,
+/// but for `terminal.wait`, which answers when what it waits for happens. That is its own
+/// `timeout_ms` and `TIMEOUT` more, so its `WaitTimeout` arrives before the client gives up, and
+/// no limit when it has none (`None`). A `timeout_ms` the daemon will refuse gets `TIMEOUT`: the
+/// refusal comes at once. The same for `wait` and `api call terminal.wait`, so neither reads a
+/// long wait as a daemon gone quiet (7).
+pub(super) fn answer_timeout(method: &str, params: &Value) -> Option<Duration> {
+    if method != "terminal.wait" {
+        return Some(TIMEOUT);
+    }
+    match params.get("timeout_ms") {
+        None | Some(Value::Null) => None,
+        Some(millis) => match millis.as_u64() {
+            // Past what a `Duration` holds is no limit, as it is on the daemon.
+            Some(millis) => Duration::from_millis(millis).checked_add(TIMEOUT),
+            None => Some(TIMEOUT),
+        },
     }
 }
 
