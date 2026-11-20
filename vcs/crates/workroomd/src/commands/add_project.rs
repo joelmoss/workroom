@@ -139,7 +139,7 @@ fn is_remote_path(path: &str) -> bool {
 fn add_existing(context: &Context, config: &Config, path: &str) -> Result<Added, CliError> {
     let canon = local_canonical(path, context)?;
     if !is_git_repo(Path::new(&canon)) {
-        return Err(super::teardown::unsupported_vcs());
+        return Err(CliError::unsupported_vcs());
     }
     if !context.pretend {
         config.add_project(&canon, "git")?;
@@ -254,16 +254,12 @@ fn initialize_and_register(config: &Config, canon: &str) -> Result<(), CliError>
     let dir = Path::new(canon);
     if !is_git_repo(dir) {
         if !dir_is_empty(dir, &[])? {
-            return Err(super::teardown::unsupported_vcs());
+            return Err(CliError::unsupported_vcs());
         }
-        init_git(dir).map_err(|error| {
-            CliError::new(
-                Kind::VcsCommandFailed,
-                format!("version control command failed: git init {canon}: {error}"),
-            )
-        })?;
+        init_git(dir)
+            .map_err(|error| CliError::vcs_failed(&format!("git init {canon}: {error}")))?;
         if !is_git_repo(dir) {
-            return Err(super::teardown::unsupported_vcs());
+            return Err(CliError::unsupported_vcs());
         }
     }
     config.add_project(canon, "git")

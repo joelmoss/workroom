@@ -33,8 +33,8 @@ pub(super) const STATUS_LONG: &str = "Say whether the setup and teardown scripts
 
 /// `trust`'s payload: the scripts judged, with what was approved.
 #[derive(Serialize)]
-struct TrustPayload<'a> {
-    scripts: Vec<ScriptPayload<'a>>,
+struct TrustPayload {
+    scripts: Vec<ScriptPayload>,
 }
 
 /// `trust status`'s. `local_work` is what a create from that start leaves out, for a remote create
@@ -43,7 +43,7 @@ struct TrustPayload<'a> {
 struct StatusPayload<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     local_work: Option<LocalWorkPayload>,
-    scripts: Vec<ScriptPayload<'a>>,
+    scripts: Vec<ScriptPayload>,
     #[serde(skip_serializing_if = "str::is_empty")]
     start: &'a str,
     trusted: bool,

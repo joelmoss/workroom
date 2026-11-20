@@ -6,26 +6,19 @@
 //! `delete-project --with-workrooms` and `--from-disk` are its callers (#672); `delete` (#678) is
 //! its next. The trust gate here is Go's `gateFound` without a person to ask: the `--json` caller
 //! has none, so a script this Mac hasn't approved is refused with its bytes in the envelope, for
-//! the app to show and approve (`trust`, #674, owns approving).
+//! the app to show and approve. The judging is `trusted_script`'s, the one `trust` uses (#674).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Serialize;
-
 use super::config::{self, Config, Json};
 use super::git::is_git_repo;
 use super::kind::{CliError, Kind};
 use super::list::workspace_names;
-use super::log::{LogWriter, go_lossy};
+use super::log::LogWriter;
+use super::trusted_script::{Judge, TEARDOWN_SCRIPT};
 use super::{Context, git};
-
-/// The project script a workroom's teardown runs, and its name in `trusted_scripts`.
-const TEARDOWN: &str = "workroom_teardown";
-
-/// The largest script read to judge, as Go's `MaxScriptBytes`.
-const MAX_SCRIPT_BYTES: u64 = 1 << 20;
 
 /// Between the SIGTERM and the SIGKILL when a teardown is ended: the app SIGKILLs the CLI two
 /// seconds after its SIGTERM, so this leaves time to report (`docs/designs/one-script-runner.md`).
@@ -77,7 +70,7 @@ impl Delete<'_> {
         }
         let destroyed = self.destroyed_remote(dir, name)?;
         if !destroyed && !is_git_repo(Path::new(dir)) {
-            return Err(unsupported_vcs());
+            return Err(CliError::unsupported_vcs());
         }
         if !self.pretend() && !destroyed {
             let listed = workspace_names(dir, "git")
@@ -112,9 +105,9 @@ impl Delete<'_> {
                 .arg(&path)
                 .arg("--force")
                 .output()
-                .map_err(|error| vcs_failed(&error.to_string()))?;
+                .map_err(|error| CliError::vcs_failed(&error.to_string()))?;
             if !output.status.success() {
-                return Err(vcs_failed(&go_exit(&output.status)));
+                return Err(CliError::vcs_failed(&go_exit(&output.status)));
             }
             self.config.remove_workroom(dir, name)?;
         }
@@ -210,42 +203,18 @@ impl Delete<'_> {
     }
 
     /// Go's `gateFound`: lets the script at `path` through when this Mac approved its bytes, or
-    /// when they are the root's gitignored copy, which no pull brings; refuses it otherwise.
+    /// when they are the root's gitignored copy, which no pull brings; refuses it otherwise. No
+    /// one is here to ask (the `--json` caller asks for itself), so Go's prompt has no part here.
     fn gate(&self, dir: &str, workroom: &Path, path: &Path) -> Result<(), CliError> {
-        let Some(text) = read_script(path)? else {
-            return Ok(());
+        let judge = Judge {
+            config: self.config,
+            dir,
+            say: &|_, _| {},
         };
-        let origin = if path.parent().and_then(Path::parent) == Some(workroom) {
-            "workroom"
-        } else {
-            "root"
-        };
-        let sha256 = sha256_hex(&text);
-        let data = self.data()?;
-        let approved = data
-            .as_object()
-            .and_then(|top| top.get(dir))
-            .and_then(Json::as_object)
-            .and_then(|project| project.get("trusted_scripts"))
-            .and_then(Json::as_object)
-            .and_then(|trusted| trusted.get(TEARDOWN))
-            .and_then(Json::as_str)
-            == Some(sha256.as_str());
-        let file = format!("scripts/{TEARDOWN}");
-        let exempt = ignored_root_copy(Path::new(dir), &file, &sha256);
-        if approved || exempt {
-            return Ok(());
+        match judge.found_script(TEARDOWN_SCRIPT, workroom, path)? {
+            Some(script) if !script.trusted => Err(script.untrusted()),
+            _ => Ok(()),
         }
-        Err(untrusted(Untrusted {
-            bytes: crate::util::base64(&text),
-            exempt,
-            file,
-            name: TEARDOWN.to_string(),
-            origin: origin.to_string(),
-            sha256,
-            text: go_lossy(&text),
-            trusted: false,
-        }))
     }
 }
 
@@ -254,102 +223,8 @@ impl Delete<'_> {
 fn find_script(workroom: &Path, root: &Path) -> Option<PathBuf> {
     [workroom, root]
         .iter()
-        .map(|base| base.join("scripts").join(TEARDOWN))
+        .map(|base| base.join("scripts").join(TEARDOWN_SCRIPT))
         .find(|path| std::fs::metadata(path).is_ok())
-}
-
-/// The regular file at `path`, following a symlink, refusing anything else or anything over
-/// [`MAX_SCRIPT_BYTES`]; none when there is no file.
-fn read_script(path: &Path) -> Result<Option<Vec<u8>>, CliError> {
-    let refused = |why: &str| {
-        CliError::new(
-            Kind::ScriptNotTrusted,
-            format!(
-                "script is not trusted on this Mac: {} {why}",
-                path.display()
-            ),
-        )
-    };
-    let info = match std::fs::metadata(path) {
-        Ok(info) => info,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(CliError::internal(error.to_string())),
-    };
-    if !info.is_file() {
-        return Err(refused("is not a regular file"));
-    }
-    let too_big = || refused(&format!("is larger than {MAX_SCRIPT_BYTES} bytes"));
-    if info.len() > MAX_SCRIPT_BYTES {
-        return Err(too_big());
-    }
-    let mut text = Vec::new();
-    let file = std::fs::File::open(path).map_err(|error| CliError::internal(error.to_string()))?;
-    std::io::Read::read_to_end(
-        &mut std::io::Read::take(file, MAX_SCRIPT_BYTES + 1),
-        &mut text,
-    )
-    .map_err(|error| CliError::internal(error.to_string()))?;
-    if text.len() as u64 > MAX_SCRIPT_BYTES {
-        return Err(too_big());
-    }
-    Ok(Some(text))
-}
-
-/// Whether the root's file at `relative` is a gitignored regular file (not a symlink) holding the
-/// bytes whose SHA-256 is `digest`.
-fn ignored_root_copy(root: &Path, relative: &str, digest: &str) -> bool {
-    let path = root.join(relative);
-    if !std::fs::symlink_metadata(&path).is_ok_and(|info| info.is_file()) {
-        return false;
-    }
-    let Ok(Some(text)) = read_script(&path) else {
-        return false;
-    };
-    sha256_hex(&text) == digest
-        && git::command(root)
-            .args(["check-ignore", "-q", "--", relative])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
-}
-
-/// The script a `ScriptNotTrusted` carries, in Go's `scriptPayload` key order.
-#[derive(Serialize)]
-struct Untrusted {
-    bytes: String,
-    exempt: bool,
-    file: String,
-    name: String,
-    origin: String,
-    sha256: String,
-    text: String,
-    trusted: bool,
-}
-
-fn untrusted(script: Untrusted) -> CliError {
-    // `workroom trust` judges the root's copy, never a workroom's own.
-    let (label, how) = if script.origin == "workroom" {
-        (
-            "in the workroom",
-            "Run the same command in a terminal to review and approve it",
-        )
-    } else {
-        (
-            "in the project's root",
-            "Review and approve it with `workroom trust`",
-        )
-    };
-    let mut error = CliError::new(
-        Kind::ScriptNotTrusted,
-        format!(
-            "script is not trusted on this Mac: {} {label} is new, or changed since it was \
-             approved. {how}",
-            script.file
-        ),
-    );
-    error.script = Some(super::envelope::encode(&script, false));
-    error
 }
 
 /// Go's `validNameRe`: letters and digits, with dashes and underscores inside.
@@ -363,32 +238,10 @@ fn valid_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-' || *byte == b'_')
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    ring::digest::digest(&ring::digest::SHA256, bytes)
-        .as_ref()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
-pub(super) fn unsupported_vcs() -> CliError {
-    CliError::new(
-        Kind::UnsupportedVcs,
-        "no supported VCS detected in this directory. Workroom requires Git to manage workrooms",
-    )
-}
-
 fn remote_workroom(name: &str) -> CliError {
     CliError::new(
         Kind::RemoteWorkroomUnsupported,
         format!("not supported for a remote workroom yet: workroom '{name}' is remote"),
-    )
-}
-
-fn vcs_failed(detail: &str) -> CliError {
-    CliError::new(
-        Kind::VcsCommandFailed,
-        format!("version control command failed: {detail}"),
     )
 }
 

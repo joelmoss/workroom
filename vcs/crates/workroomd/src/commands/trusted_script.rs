@@ -36,6 +36,8 @@ pub(super) enum Origin {
     Base,
     /// The file in the project's root checkout.
     Root,
+    /// The file in a workroom.
+    Workroom,
     /// Bytes a caller handed over, such as the app with a remote host's copy.
     Stdin,
 }
@@ -45,6 +47,7 @@ impl Origin {
         match self {
             Origin::Base => "base",
             Origin::Root => "root",
+            Origin::Workroom => "workroom",
             Origin::Stdin => "stdin",
         }
     }
@@ -54,6 +57,7 @@ impl Origin {
         match self {
             Origin::Base => "from the base commit",
             Origin::Root => "in the project's root",
+            Origin::Workroom => "in the workroom",
             Origin::Stdin => "as given",
         }
     }
@@ -78,29 +82,48 @@ pub(super) struct Script {
 impl Script {
     /// The script as an envelope reports it: `text` to show, with U+FFFD for each byte that isn't
     /// UTF-8 as Go writes it, and `bytes`, the exact bytes in base64, to approve.
-    pub(super) fn payload(&self) -> ScriptPayload<'_> {
+    pub(super) fn payload(&self) -> ScriptPayload {
         ScriptPayload {
             bytes: crate::util::base64(&self.text),
             exempt: self.exempt,
-            file: &self.file,
+            file: self.file.clone(),
             name: self.name,
             origin: self.origin.as_str(),
-            sha256: &self.sha256,
+            sha256: self.sha256.clone(),
             text: super::log::go_lossy(&self.text),
             trusted: self.trusted,
         }
     }
+
+    /// The refusal of this script, which this Mac has not approved, carrying it for the app to
+    /// show and approve. Go's `UntrustedScriptError`.
+    pub(super) fn untrusted(&self) -> CliError {
+        // `workroom trust` judges the base commit's and the root's copies, never a workroom's own.
+        let how = if self.origin == Origin::Workroom {
+            "Run the same command in a terminal to review and approve it"
+        } else {
+            "Review and approve it with `workroom trust`"
+        };
+        let mut error = not_trusted(&format!(
+            "{} {} is new, or changed since it was approved. {how}",
+            self.file,
+            self.origin.label()
+        ));
+        error.script = Some(Box::new(self.payload()));
+        error
+    }
 }
 
-/// A judged script in an envelope, in Go's key order.
-#[derive(Serialize)]
-pub(super) struct ScriptPayload<'a> {
+/// A judged script in an envelope (`trust`'s, `trust status`'s, and a `ScriptNotTrusted`
+/// refusal's `script`), in Go's key order: Go's `scriptPayload`.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct ScriptPayload {
     bytes: String,
     exempt: bool,
-    file: &'a str,
-    name: &'a str,
+    file: String,
+    name: &'static str,
     origin: &'static str,
-    sha256: &'a str,
+    sha256: String,
     text: String,
     trusted: bool,
 }
@@ -152,7 +175,7 @@ impl Judge<'_> {
         origin: Origin,
         text: Vec<u8>,
     ) -> Result<Script, CliError> {
-        let sha256 = sha256_hex(&text);
+        let sha256 = crate::util::sha256_hex(&text);
         let projects = config::all_projects(&self.config.read()?);
         let exempt = ignored_root_copy(self.dir, &file, &sha256);
         let approved = projects
@@ -170,13 +193,40 @@ impl Judge<'_> {
         })
     }
 
-    /// Judges the root's copy of script `name`, or none when it has none.
-    fn root_script(&self, name: &'static str) -> Result<Option<Script>, CliError> {
-        let path = format!("{}/scripts/{name}", self.dir);
-        match read_script(&path)? {
-            Some(text) => self.judge(name, Origin::Root, text).map(Some),
+    /// Judges the script file at `path`, or none when there is none. Go's `fileScript`.
+    fn file_script(
+        &self,
+        name: &'static str,
+        origin: Origin,
+        path: &Path,
+    ) -> Result<Option<Script>, CliError> {
+        match read_script(path)? {
+            Some(text) => self.judge(name, origin, text).map(Some),
             None => Ok(None),
         }
+    }
+
+    /// Judges the root's copy of script `name`, or none when it has none.
+    fn root_script(&self, name: &'static str) -> Result<Option<Script>, CliError> {
+        let path = Path::new(self.dir).join("scripts").join(name);
+        self.file_script(name, Origin::Root, &path)
+    }
+
+    /// Judges `path`, the copy of script `name` that is about to run in the workroom at
+    /// `workroom`: the workroom's own (`<workroom>/scripts/<name>`) or else the root's, as a
+    /// teardown finds it. Go's `foundScript`.
+    pub(super) fn found_script(
+        &self,
+        name: &'static str,
+        workroom: &Path,
+        path: &Path,
+    ) -> Result<Option<Script>, CliError> {
+        let origin = if path.parent().and_then(Path::parent) == Some(workroom) {
+            Origin::Workroom
+        } else {
+            Origin::Root
+        };
+        self.file_script(name, origin, path)
     }
 
     /// Judges the setup script a create starting from `start` ("" is HEAD) would run: the base
@@ -187,7 +237,7 @@ impl Judge<'_> {
             // Its bytes can't be known until the checkout exists: the check just before it runs
             // judges them.
             Err(FileAtError::LinkOutside) => Ok(None),
-            Err(FileAtError::Git(error)) => Err(vcs_failed(&error)),
+            Err(FileAtError::Git(error)) => Err(CliError::vcs_failed(&error)),
             Ok(Some(text)) => {
                 // As the read before it runs refuses it, before anything exists rather than after.
                 if text.len() as u64 > MAX_SCRIPT_BYTES {
@@ -208,7 +258,7 @@ impl Judge<'_> {
         for file in DEV_CONTAINER_PATHS {
             let text = match git::file_at(Path::new(self.dir), start, file) {
                 Err(FileAtError::LinkOutside) | Ok(None) => continue,
-                Err(FileAtError::Git(error)) => return Err(vcs_failed(&error)),
+                Err(FileAtError::Git(error)) => return Err(CliError::vcs_failed(&error)),
                 Ok(Some(text)) => text,
             };
             if text.len() as u64 > MAX_SCRIPT_BYTES {
@@ -221,7 +271,7 @@ impl Judge<'_> {
                 .map(Some);
         }
         for file in DEV_CONTAINER_PATHS {
-            if let Some(text) = read_script(&format!("{}/{file}", self.dir))? {
+            if let Some(text) = read_script(&Path::new(self.dir).join(file))? {
                 return self
                     .judge_file(DEV_CONTAINER, file.to_string(), Origin::Root, text)
                     .map(Some);
@@ -240,11 +290,7 @@ impl Judge<'_> {
         global: bool,
     ) -> Result<(Vec<Script>, LocalWork, String), CliError> {
         if !git::is_git_repo(Path::new(self.dir)) {
-            return Err(CliError::new(
-                Kind::UnsupportedVcs,
-                "no supported VCS detected in this directory. Workroom requires Git to manage \
-                 workrooms",
-            ));
+            return Err(CliError::unsupported_vcs());
         }
         (self.say)("repo", "Detected Git worktree");
         let (start, warning) = start::start_point(Path::new(self.dir), base, global)?;
@@ -301,23 +347,6 @@ impl Judge<'_> {
     }
 }
 
-/// The SHA-256 of `bytes`, in lowercase hex.
-fn sha256_hex(bytes: &[u8]) -> String {
-    ring::digest::digest(&ring::digest::SHA256, bytes)
-        .as_ref()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
-/// Go's `ErrVCSCommand`, wrapping git's words.
-fn vcs_failed(error: &str) -> CliError {
-    CliError::new(
-        Kind::VcsCommandFailed,
-        format!("version control command failed: {error}"),
-    )
-}
-
 /// Go's `ErrScriptNotTrusted`, with why.
 fn not_trusted(detail: &str) -> CliError {
     CliError::new(
@@ -331,21 +360,28 @@ fn not_trusted(detail: &str) -> CliError {
 /// new workroom before its setup script runs. An ignored symlink is not exempt: what it points to
 /// may be tracked, and a pull can change it.
 fn ignored_root_copy(dir: &str, file: &str, digest: &str) -> bool {
-    let path = format!("{dir}/{file}");
+    let path = Path::new(dir).join(file);
     if !std::fs::symlink_metadata(&path).is_ok_and(|info| info.is_file()) {
         return false;
     }
     match read_script(&path) {
-        Ok(Some(text)) => sha256_hex(&text) == digest && git::ignored(Path::new(dir), file),
+        Ok(Some(text)) => {
+            crate::util::sha256_hex(&text) == digest && git::ignored(Path::new(dir), file)
+        }
         _ => false,
     }
 }
 
 /// The regular file at `path`, following a symlink, or none when there is nothing there. Anything
-/// but a regular file, or one over [`MAX_SCRIPT_BYTES`], is refused unread. Go's `readScript`.
-fn read_script(path: &str) -> Result<Option<Vec<u8>>, CliError> {
+/// but a regular file, or one over [`MAX_SCRIPT_BYTES`], is refused unread. Any other failure is
+/// worded as Go's `*fs.PathError` (`stat <path>: …`). Go's `readScript`.
+fn read_script(path: &Path) -> Result<Option<Vec<u8>>, CliError> {
     let failed = |step: &str, error: &std::io::Error| {
-        CliError::internal(format!("{step} {path}: {}", config::os_error(error)))
+        CliError::internal(format!(
+            "{step} {}: {}",
+            path.display(),
+            config::os_error(error)
+        ))
     };
     let info = match std::fs::metadata(path) {
         Ok(info) => info,
@@ -353,9 +389,17 @@ fn read_script(path: &str) -> Result<Option<Vec<u8>>, CliError> {
         Err(error) => return Err(failed("stat", &error)),
     };
     if !info.is_file() {
-        return Err(not_trusted(&format!("{path} is not a regular file")));
+        return Err(not_trusted(&format!(
+            "{} is not a regular file",
+            path.display()
+        )));
     }
-    let too_large = || not_trusted(&format!("{path} is larger than {MAX_SCRIPT_BYTES} bytes"));
+    let too_large = || {
+        not_trusted(&format!(
+            "{} is larger than {MAX_SCRIPT_BYTES} bytes",
+            path.display()
+        ))
+    };
     if info.len() > MAX_SCRIPT_BYTES {
         return Err(too_large());
     }
