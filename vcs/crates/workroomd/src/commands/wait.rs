@@ -36,7 +36,8 @@ pub(super) const FLAGS: &[Flag] = &[
     bool_flag("ended", "Wait for the session to end"),
     bool_flag(
         "command-finished",
-        "Wait for the shell's current command to finish (needs shell integration)",
+        "Wait for the next command to finish, running now or started later (needs shell \
+         integration)",
     ),
     value_flag(
         "timeout",
@@ -185,7 +186,7 @@ fn said(result: &Value) -> String {
         ),
         "run" => format!(
             "run: {}{}\n",
-            result["run"].as_str().unwrap_or_default(),
+            result["run_state"].as_str().unwrap_or_default(),
             exit()
         ),
         "regex" => format!("{}\n", result["match"]["text"].as_str().unwrap_or_default()),

@@ -2119,7 +2119,8 @@ fn wait_for_a_run_state_with_its_exit_code() {
         ),
     );
     assert_eq!(exited["condition"], "run");
-    assert_eq!(exited["run"], "exited", "{exited}");
+    assert_eq!(exited["run_state"], "exited", "{exited}");
+    assert!(exited.get("run").is_none(), "{exited}");
     assert_eq!(exited["exit_code"], 3, "{exited}");
     // Exited is a state it stays in, so a later wait sees it at once.
     let human = workroom(
