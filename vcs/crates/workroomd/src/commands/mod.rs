@@ -11,6 +11,9 @@
 //! marked "(Mac only)", and failing with `MacOnly` anywhere else. Until its own ticket ports it
 //! (#672–#679), each of those, and `update`, is a stub here; the Go CLI still runs them. `list`
 //! and `base --global` are ported (#671), on `config`, the Rust reader and writer of config.json.
+//!
+//! The terminal API's commands (#360, ADR 0079) are born here and run anywhere: each is a thin
+//! client of the daemon's terminal API (`terminal_api`).
 
 mod base;
 pub(crate) mod channel;
@@ -19,6 +22,8 @@ mod envelope;
 mod kind;
 mod list;
 mod log;
+mod sessions;
+mod terminal_api;
 mod version;
 
 use std::ffi::OsString;
@@ -284,6 +289,18 @@ const COMMANDS: &[Command] = &[
         ],
         arity: Arity::None,
         implementation: Implementation::Ported(list::run),
+    },
+    Command {
+        name: "sessions",
+        aliases: &[],
+        usage: "sessions [TARGET]",
+        short: "List the daemon's terminal sessions, or the one TARGET names",
+        hidden: false,
+        mac_only: false,
+        flags: &[],
+        // One optional TARGET, which `sessions::run` checks.
+        arity: Arity::Own,
+        implementation: Implementation::Ported(sessions::run),
     },
     stub(
         "trust",
@@ -582,11 +599,24 @@ fn report(context: &Context, command: Option<&str>, outcome: Outcome) -> Output 
             stderr: String::new(),
             code: error.kind.exit_code(),
         },
-        error => Output {
-            stdout: String::new(),
-            stderr: format!("Error: {}\n", error.message),
-            code: error.kind.exit_code(),
-        },
+        error => {
+            // An ambiguous target's matches, one per line, so a person can pick one by its id.
+            let mut stderr = format!("Error: {}\n", error.message);
+            for session in &error.matches {
+                let field = |key: &str| session[key].as_str().unwrap_or_default().to_string();
+                stderr += &format!(
+                    "  {}  {}  {}\n",
+                    field("id"),
+                    field("label"),
+                    field("title")
+                );
+            }
+            Output {
+                stdout: String::new(),
+                stderr,
+                code: error.kind.exit_code(),
+            }
+        }
     }
 }
 
@@ -849,6 +879,29 @@ mod tests {
             let ((stdout, _), code) = run_on(platform, &["version"]);
             assert_eq!((stdout, code), (format!("{VERSION}\n"), 0));
         }
+    }
+
+    /// The terminal API's commands run anywhere, and with no daemon named they exit 7 (#360).
+    #[test]
+    fn sessions_with_no_daemon_named_is_daemon_unreachable_everywhere() {
+        for platform in [Platform::Mac, Platform::Other] {
+            let ((stdout, stderr), code) = run_on(platform, &["sessions", "--json"]);
+            assert_eq!((code, stderr.as_str()), (7, ""));
+            let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(envelope["error"]["kind"], "DaemonUnreachable");
+            assert_eq!(envelope["command"], "sessions");
+            assert!(envelope["error"].get("matches").is_none(), "{envelope}");
+        }
+    }
+
+    #[test]
+    fn sessions_takes_one_target_at_most() {
+        let ((_, stderr), code) = run_on(Platform::Mac, &["sessions", "a", "b"]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr,
+            "Error: unknown command \"b\" for \"workroom sessions\"\n"
+        );
     }
 
     #[test]

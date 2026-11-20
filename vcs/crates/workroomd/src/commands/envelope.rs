@@ -89,6 +89,9 @@ pub(crate) fn failure(command: Option<&str>, error: &CliError) -> String {
     struct Body<'a> {
         kind: &'a str,
         message: &'a str,
+        /// An ambiguous terminal API target's matches; left out otherwise, as Go has no such field.
+        #[serde(skip_serializing_if = "<[_]>::is_empty")]
+        matches: &'a [serde_json::Value],
     }
     #[derive(Serialize)]
     struct Envelope<'a> {
@@ -106,6 +109,7 @@ pub(crate) fn failure(command: Option<&str>, error: &CliError) -> String {
             error: Body {
                 kind: error.kind.code(),
                 message: &error.message,
+                matches: &error.matches,
             },
             ok: false,
             schema_version: SCHEMA_VERSION,
