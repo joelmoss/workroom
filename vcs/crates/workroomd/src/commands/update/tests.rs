@@ -272,6 +272,7 @@ fn printed(outcome: Outcome) -> Result<String, (String, CliError)> {
         Outcome::Success(_) => panic!("update prints text, never an envelope"),
         Outcome::PrintedWithWarnings { .. } => panic!("update prints no warnings beside its text"),
         Outcome::Usage(_) => panic!("update's arguments are checked before it runs"),
+        Outcome::Status(..) => panic!("update exits with its outcome's own code"),
     }
 }
 

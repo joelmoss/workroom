@@ -11,9 +11,9 @@
 //! marked "(Mac only)", and failing with `MacOnly` anywhere else. Until its own ticket ports it
 //! (#672–#678), each of those is a stub here; the Go CLI still runs them. `list` and
 //! `base --global` are ported (#671), on `config`, the Rust reader and writer of config.json, and
-//! so are `include-archive` (#675), the rest of `base` and `host` (#673), and the app's project
-//! commands, `add-project`, `claim-provisioned` and `delete-project` (#672). `update` is ported
-//! too (#679), which runs anywhere.
+//! so are `include-archive` (#675), the rest of `base` and `host` (#673), the app's project
+//! commands, `add-project`, `claim-provisioned` and `delete-project` (#672), and `trust`,
+//! `trust status` and `untrust` (#674). `update` is ported too (#679), which runs anywhere.
 //!
 //! The terminal API's commands (#360, ADR 0079) are born here and run anywhere: each is a thin
 //! client of the daemon's terminal API (`terminal_api`).
@@ -39,9 +39,12 @@ mod include_archive;
 mod kind;
 mod list;
 mod log;
+mod script;
 mod sessions;
+mod start;
 mod teardown;
 mod terminal_api;
+mod trust;
 mod update;
 mod version;
 
@@ -127,6 +130,10 @@ pub(crate) enum Outcome {
     /// Human output for stdout, then a failure reported as [`Outcome::Failed`] is: Go's `update`
     /// prints its progress before it fails, `--json` or not.
     PrintedThenFailed(String, CliError),
+    /// The outcome inside, reported as it is, but ending with this exit code, as Go's
+    /// `exitStatus` ends `trust status`: 1 after its envelope when a script isn't approved, and
+    /// 2 for any failure, whatever its kind's own code.
+    Status(u8, Box<Outcome>),
 }
 
 /// One of a command's own flags, beside the global ones.
@@ -732,34 +739,48 @@ const COMMANDS: &[Command] = &[
         implementation: Implementation::Ported(sessions::run),
     },
     Command {
-        subcommands: &[subcommand(
-            TRUST,
-            true,
-            "status",
-            "trust status",
-            "Say whether a project's setup and teardown scripts are approved",
-            TRUST_FLAGS,
-        )],
+        name: "trust",
+        aliases: &[],
+        usage: "trust",
+        short: "Approve a project's setup and teardown scripts so Workroom runs them",
+        long: Some(trust::LONG),
+        hidden: false,
+        mac_only: true,
+        flags: TRUST_FLAGS,
+        subcommands: &[Command {
+            long: Some(trust::STATUS_LONG),
+            ..subcommand(
+                TRUST,
+                true,
+                "status",
+                "trust status",
+                "Say whether a project's setup and teardown scripts are approved",
+                TRUST_FLAGS,
+            )
+        }],
+        // `status`, and the usage errors for anything else, which `trust::run` checks.
         arity: Arity::Own,
-        ..stub(
-            "trust",
-            "trust",
-            "Approve a project's setup and teardown scripts so Workroom runs them",
-            TRUST_FLAGS,
-            "#674",
-        )
+        operands: Operands::Files,
+        implementation: TRUST,
     },
-    stub(
-        "untrust",
-        "untrust",
-        "Forget the approval of a project's setup and teardown scripts",
-        &[Flag {
+    Command {
+        name: "untrust",
+        aliases: &[],
+        usage: "untrust",
+        short: "Forget the approval of a project's setup and teardown scripts",
+        long: None,
+        hidden: false,
+        mac_only: true,
+        flags: &[Flag {
             name: "project",
             usage: "Project directory (defaults to the current directory)",
             ..Flag::VALUE
         }],
-        "#674",
-    ),
+        subcommands: &[],
+        arity: Arity::None,
+        operands: Operands::Files,
+        implementation: Implementation::Ported(trust::untrust),
+    },
     Command {
         name: "update",
         aliases: &["u"],
@@ -793,7 +814,7 @@ const COMMANDS: &[Command] = &[
 const API: Implementation = Implementation::Ported(api::run);
 const BASE: Implementation = Implementation::Ported(base::run);
 const HOST: Implementation = Implementation::Ported(host::run);
-const TRUST: Implementation = Implementation::Stub { ticket: "#674" };
+const TRUST: Implementation = Implementation::Ported(trust::run);
 
 /// A Mac-only command, shown in `--help`, with no aliases, still the Go CLI's until `ticket`. It
 /// has the flags Go gives it, so `--help` and shell completion already match Go's.
@@ -1207,6 +1228,12 @@ fn report(context: &Context, command: Option<&str>, outcome: Outcome) -> Output 
         Outcome::FailedIn(subcommand, error) => (String::new(), Some(subcommand), error),
         Outcome::Usage(error) => (String::new(), None, error),
         Outcome::PrintedThenFailed(text, error) => (text, command, error),
+        Outcome::Status(code, outcome) => {
+            return Output {
+                code,
+                ..report(context, command, *outcome)
+            };
+        }
     };
     match error {
         error if context.json => Output {
@@ -1453,6 +1480,13 @@ mod tests {
             &["host", "set", "null", "--json"],
             &["host", "set", "--json"],
             &["host", "clear", "--json", "--workroom", "w"],
+            &["trust", "--json", "--project", "/x"],
+            &["trust", "status", "--json", "--base", "", "--devcontainer"],
+            &["trust", "status", "--json", "--stdin", "bogus"],
+            &["trust", "status", "extra", "--json"],
+            &["trust", "extra", "--json"],
+            &["untrust", "--json", "--project", "/x"],
+            &["untrust", "extra", "--json"],
             &["create", "--json", "--no-editor"],
             &["add-project", "/tmp/x", "--json"],
             // Before its arguments are counted, and it clones and makes nothing.

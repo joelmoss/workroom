@@ -358,6 +358,48 @@ impl Config {
             Ok(true)
         })
     }
+
+    /// Records `digest`, the SHA-256 (hex) of a script's exact bytes, as a registered project's
+    /// approval of the script `name` (#363); "" forgets it. `trusted_scripts` holds them, and goes
+    /// once it holds none; a value of the wrong type approves nothing, so it is replaced. Go's
+    /// `SetTrustedScript`.
+    pub(crate) fn set_trusted_script(
+        &self,
+        project: &str,
+        name: &str,
+        digest: &str,
+    ) -> Result<(), CliError> {
+        self.forget_or_trust(project, &[(name, digest)])
+    }
+
+    /// Forgets every approval in `names` of a registered project's scripts, as Go's `Untrust`
+    /// does with one `SetTrustedScript` for each, in one write.
+    pub(crate) fn untrust(&self, project: &str, names: &[&str]) -> Result<(), CliError> {
+        let changes: Vec<(&str, &str)> = names.iter().map(|name| (*name, "")).collect();
+        self.forget_or_trust(project, &changes)
+    }
+
+    /// Each `(name, digest)` of `changes` recorded as [`Config::set_trusted_script`] records one.
+    fn forget_or_trust(&self, project: &str, changes: &[(&str, &str)]) -> Result<(), CliError> {
+        self.update(|data| {
+            let entry = project_entry(data, project)?;
+            let mut trusted = match entry.remove("trusted_scripts") {
+                Some(Json::Object(trusted)) => trusted,
+                _ => Object::new(),
+            };
+            for (name, digest) in changes {
+                if digest.is_empty() {
+                    trusted.remove(*name);
+                } else {
+                    trusted.insert((*name).to_string(), Json::String((*digest).to_string()));
+                }
+            }
+            if !trusted.is_empty() {
+                entry.insert("trusted_scripts".to_string(), Json::Object(trusted));
+            }
+            Ok(true)
+        })
+    }
 }
 
 /// The top-level settings that aren't projects, which no project edit may treat as one.
@@ -589,6 +631,9 @@ pub(crate) struct Project {
     /// The branch new workrooms start from; "" for origin's default branch.
     pub(crate) base_branch: String,
     pub(crate) workrooms: BTreeMap<String, Workroom>,
+    /// The approved SHA-256 (hex) of each script by name, such as `workroom_setup`: the exact
+    /// bytes this Mac has agreed to run (#363). A value that isn't a string is left out.
+    pub(crate) trusted_scripts: BTreeMap<String, String>,
     /// How many entries `workrooms` holds, of any type: what Go's "has workrooms" counts.
     pub(crate) entries: usize,
 }
@@ -628,6 +673,13 @@ impl Project {
             host: host(raw),
             base_branch: text("base_branch"),
             workrooms,
+            trusted_scripts: raw
+                .get("trusted_scripts")
+                .and_then(Json::as_object)
+                .into_iter()
+                .flatten()
+                .filter_map(|(name, digest)| Some((name.clone(), digest.as_str()?.to_string())))
+                .collect(),
             entries: listed.map_or(0, BTreeMap::len),
         }
     }
@@ -839,7 +891,7 @@ fn join(base: &str, rest: &str) -> String {
 }
 
 /// Go's `filepath.Clean`: the shortest path naming the same file by lexical processing alone.
-fn clean(path: &str) -> String {
+pub(crate) fn clean(path: &str) -> String {
     if path.is_empty() {
         return ".".to_string();
     }

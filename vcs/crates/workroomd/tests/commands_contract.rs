@@ -6,12 +6,12 @@
 //! Without `WORKROOM_BIN` the binary under test is this crate's own `workroom`. A group's tests
 //! are `#[ignore]`d until its commands are ported to Rust, so a plain `cargo test` runs only the
 //! ported groups (`version_`, `update_`, `list_`, `config_`, `include_archive_`, `base_`, `host_`,
-//! `completion_`, `add_project_`, `delete_project_` and `claim_provisioned_` today). `make
-//! contract-test` builds the Go CLI and runs every test against it with `--include-ignored`.
+//! `trust_`, `completion_`, `add_project_`, `delete_project_` and `claim_provisioned_` today).
+//! `make contract-test` builds the Go CLI and runs every test against it with `--include-ignored`.
 //!
 //! The Mac-only commands' groups (`list_`, `config_`, `include_archive_`, `base_`, `host_`,
-//! `add_project_`, `delete_project_`, `claim_provisioned_`) are ignored off the Mac too, where the
-//! Rust binary answers them with `MacOnly` (ADR 0078): a plain `cargo test` on Linux runs
+//! `trust_`, `add_project_`, `delete_project_`, `claim_provisioned_`) are ignored off the Mac too,
+//! where the Rust binary answers them with `MacOnly` (ADR 0078): a plain `cargo test` on Linux runs
 //! `version_`, `update_` and `completion_`, which work anywhere, and
 //! `--include-ignored` against the Go CLI still runs everything.
 //!
@@ -4539,7 +4539,10 @@ fn normalize_start(text: &str) -> String {
 /// `main` is one commit ahead of origin's, judged at origin's default branch as a remote create
 /// does (`trust-status-local-work.json`).
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn trust_status_json_matches_the_goldens() {
     let home = Home::new("trust-golden");
     let project = home.repo("src/app");
@@ -4604,7 +4607,10 @@ fn trust_status_json_matches_the_goldens() {
 /// forgets every approval and leaves the project registered. With no terminal on stdin, `trust`
 /// approves without asking, as Go's does: no one is there to ask, and the caller ran it to approve.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn trust_approves_until_the_script_changes_and_untrust_forgets() {
     let home = Home::new("trust-approve");
     let repo = home.repo("repo");
@@ -4702,7 +4708,10 @@ fn trust_approves_until_the_script_changes_and_untrust_forgets() {
 /// `trust status`. `trust` itself fails with the error's own exit code. Extra arguments are usage
 /// errors, before either runs.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn trust_status_exits_0_1_or_2() {
     let home = Home::new("trust-exits");
     let repo = home.repo("repo");
@@ -4852,7 +4861,10 @@ fn trust_status_exits_0_1_or_2() {
 /// bytes given, reading no file and needing no repository. `trust --stdin` records the approval
 /// only for a project already registered: one gone meanwhile is refused, not registered again.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn trust_stdin_judges_and_records_the_bytes_given() {
     let home = Home::new("trust-stdin");
     let dir = home.path("app");
@@ -4963,7 +4975,10 @@ fn trust_stdin_judges_and_records_the_bytes_given() {
 /// approval, either way. `untrust` needs the project registered. `--verbose` says which VCS it
 /// found.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn trust_in_a_workroom_is_the_projects_and_pretend_changes_nothing() {
     let home = Home::new("trust-workroom");
     let repo = home.repo("repo");
@@ -5045,7 +5060,10 @@ fn trust_in_a_workroom_is_the_projects_and_pretend_changes_nothing() {
 /// script that is a link is judged by what it points to in the commit; one pointing outside the
 /// repository can't be judged from the commit, so it is left to the check before it runs.
 #[test]
-#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
 fn trust_status_base_judges_that_branch_and_its_devcontainer() {
     let home = Home::new("trust-base");
     let repo = home.repo("repo");
