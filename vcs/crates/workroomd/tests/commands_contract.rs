@@ -5,8 +5,8 @@
 //!
 //! Without `WORKROOM_BIN` the binary under test is this crate's own `workroom`. A group's tests
 //! are `#[ignore]`d until its commands are ported to Rust, so a plain `cargo test` runs only the
-//! ported groups (`version_` today). `make contract-test` builds the Go CLI and runs every test
-//! against it with `--include-ignored`.
+//! ported groups (`version_`, `list_` and `config_` today). `make contract-test` builds the Go CLI
+//! and runs every test against it with `--include-ignored`.
 //!
 //! Tests are named for their command group (`version_`, `list_`, `config_`), so a port can run
 //! only its own group's names against Rust.
@@ -463,7 +463,6 @@ const LIST_CONFIG: &str = r#"{
 }"#;
 
 #[test]
-#[ignore = "not ported to Rust yet"]
 fn list_json_matches_the_golden() {
     let home = Home::new("list-json");
     let app = home.repo("src/app");
@@ -499,7 +498,6 @@ fn list_json_matches_the_golden() {
 /// its wording, so these are pinned apart from the machine contract: a port that rewords them
 /// updates the strings here, keeping the information.
 #[test]
-#[ignore = "not ported to Rust yet"]
 fn list_human_text_from_each_kind_of_directory() {
     let home = Home::new("list-human");
     let elsewhere = home.path("elsewhere");
@@ -571,7 +569,6 @@ fn list_human_text_from_each_kind_of_directory() {
 }
 
 #[test]
-#[ignore = "not ported to Rust yet"]
 fn list_json_reports_a_bad_flag_value_as_an_error_envelope() {
     let home = Home::new("list-bad-warnings");
     let run = home.run(&home.dir, &["list", "--json", "--warnings=bad"]);
@@ -581,7 +578,6 @@ fn list_json_reports_a_bad_flag_value_as_an_error_envelope() {
 }
 
 #[test]
-#[ignore = "not ported to Rust yet"]
 fn list_json_reports_an_unknown_flag_as_an_error_envelope() {
     let home = Home::new("list-unknown-flag");
     let run = home.run(&home.dir, &["list", "--json", "--bogus"]);
@@ -596,7 +592,6 @@ fn list_json_reports_an_unknown_flag_as_an_error_envelope() {
 /// two-space indent, numbers exactly as written, `<`, `>`, `&`, U+2028 and U+2029 escaped, no
 /// trailing newline. The input is laid out unlike that on purpose.
 #[test]
-#[ignore = "not ported to Rust yet"]
 fn config_write_keeps_unknown_keys_and_host_descriptors_byte_for_byte() {
     let home = Home::new("config-roundtrip");
     let before = std::fs::read_to_string(golden_path("config-roundtrip-before.json"))
@@ -619,4 +614,262 @@ fn config_write_keeps_unknown_keys_and_host_descriptors_byte_for_byte() {
     );
 
     check_golden(Owner::ThisSuite, "config-roundtrip-after.json", &after);
+}
+
+/// What a write makes of input Go reads its own way, through `base clear --global`, which reads the
+/// config and writes it back with nothing changed: each expected file is what the Go CLI wrote.
+/// Input it can't read fails with `ConfigReadFailed`, exit 6, and is left as it was.
+#[test]
+fn config_rewrites_odd_input_as_go_does() {
+    for (input, written) in [
+        // A null config is Go's nil map, written back as null.
+        (&b"null"[..], Some("null")),
+        (b"{}  \n", Some("{}")),
+        (b"{\"a\":1,\"a\":2}", Some("{\n  \"a\": 2\n}")),
+        (
+            b"{\"a\":{\"x\":1},\"a\":{\"y\":2}}",
+            Some("{\n  \"a\": {\n    \"y\": 2\n  }\n}"),
+        ),
+        (
+            b"{\"a\":\"\\ud800\",\"b\":\"\\udc00\\ud800x\",\"c\":\"\\ud83d\\ude00\"}",
+            Some(
+                "{\n  \"a\": \"\u{fffd}\",\n  \"b\": \"\u{fffd}\u{fffd}x\",\n  \"c\": \"\u{1f600}\"\n}",
+            ),
+        ),
+        (
+            b"{\"a\":\"\xe2\x80\",\"\xff\":\"\x7f\"}",
+            Some("{\n  \"a\": \"\u{fffd}\u{fffd}\",\n  \"\u{fffd}\": \"\u{7f}\"\n}"),
+        ),
+        (
+            b"{\"a\":\"\\u00e9\\/\\b\\f\\u0001\\u001f\"}",
+            Some("{\n  \"a\": \"\u{e9}/\\b\\f\\u0001\\u001f\"\n}"),
+        ),
+        (b"", None),
+        (b"[]", None),
+        (b"{} x", None),
+        (b"{}}", None),
+        (b"{\"a\":\"\x01\"}", None),
+        (b"{\"a\":01}", None),
+        (b"{\"a\":1.}", None),
+        (b"{\"a\":-}", None),
+        (b"{\"a\":1e}", None),
+        (b"{\"a\":tru}", None),
+        (b"\xef\xbb\xbf{}", None),
+        (b"{\"a\":", None),
+        (b"{\"a\":\"\\q\"}", None),
+    ] {
+        let home = Home::new("config-odd");
+        std::fs::create_dir_all(home.config_path().parent().expect("config dir"))
+            .expect("create config dir");
+        std::fs::write(home.config_path(), input).expect("write config");
+        let run = home.run(&home.dir, &["base", "clear", "--global", "--json"]);
+        let after = std::fs::read(home.config_path()).expect("read config");
+        let shown = String::from_utf8_lossy(input);
+        match written {
+            Some(written) => {
+                run.assert_code(0).assert_quiet_stderr();
+                assert_eq!(String::from_utf8_lossy(&after), written, "{shown:?}");
+            }
+            None => {
+                run.assert_code(6).assert_quiet_stderr();
+                assert_eq!(run.error_kind(), "ConfigReadFailed", "{shown:?}");
+                assert_eq!(after, input, "{shown:?} was rewritten");
+            }
+        }
+    }
+}
+
+/// A write takes `<config>.lock` with flock(2), as every Workroom binary does, and waits while
+/// another process holds it rather than writing past it.
+#[test]
+fn config_write_waits_for_another_process_holding_the_lock() {
+    use std::os::fd::AsRawFd;
+    let home = Home::new("config-lock");
+    home.write_config("{}");
+    let lock_path = home.path(".config/workroom/config.json.lock");
+    let lock = std::fs::File::create(&lock_path).expect("create lock file");
+    // SAFETY: the descriptor belongs to `lock`, which stays open across the call.
+    let rc = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    assert_eq!(rc, 0, "take the lock");
+
+    let mut child = home
+        .command(binary(), &home.dir)
+        .args(["base", "set", "--global", "main", "--json"])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(
+        child.try_wait().expect("poll").is_none(),
+        "the write didn't wait for the lock"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.config_path()).expect("read"),
+        "{}"
+    );
+
+    drop(lock);
+    let output = child.wait_with_output().expect("wait");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        std::fs::read_to_string(home.config_path()).expect("read"),
+        "{\n  \"base_branch\": \"main\"\n}"
+    );
+    assert!(lock_path.exists(), "the lock file is never removed");
+}
+
+/// `base set --global` refuses what git wouldn't take as a branch name, before touching config,
+/// and `--pretend` reports the change without making it.
+#[test]
+fn config_global_base_refuses_a_bad_name_and_pretends() {
+    let home = Home::new("config-base");
+    home.write_config("{\"x\": 1}");
+    let bad = home.run(&home.dir, &["base", "set", "--global", "a..b", "--json"]);
+    bad.assert_code(1).assert_quiet_stderr();
+    assert_eq!(bad.error_kind(), "InternalError");
+    assert_eq!(bad.envelope()["command"], "base");
+    let pretend = home.run(
+        &home.dir,
+        &["base", "set", "--global", "main", "-p", "--json"],
+    );
+    pretend.assert_code(0).assert_quiet_stderr();
+    assert_eq!(pretend.envelope()["global"], true);
+    assert_eq!(
+        std::fs::read_to_string(home.config_path()).expect("read"),
+        "{\"x\": 1}"
+    );
+    let missing = home.run(&home.dir, &["base", "set", "--global", "--json"]);
+    missing.assert_code(1);
+    assert_eq!(missing.error_kind(), "InternalError");
+}
+
+/// `list` at the default `--warnings fast` detects each project's type from disk and heals a
+/// stale one in config (a `jj` from before Jujutsu support was removed): a write, which keeps the
+/// rest of the file as Go keeps it. `--warnings none` reads config alone and writes nothing.
+#[test]
+fn list_json_heals_a_stale_vcs_keeping_the_rest_of_the_file() {
+    let home = Home::new("list-heal");
+    home.repo("src/app");
+    let before = r#"{"{home}/src/app": {"vcs": "jj", "future": [1.50, {"z": "<&>"}],
+        "workrooms": {"w": {"path": "{home}/workrooms/w", "label": "x"}}}, "zz": 1e3}"#
+        .replace("{home}", &home.dir.to_string_lossy());
+    home.write_config(&before);
+
+    let none = home.run(&home.dir, &["list", "--json", "--warnings=none"]);
+    none.assert_code(0).assert_quiet_stderr();
+    let project = &none.envelope()["projects"][0];
+    assert_eq!(project["vcs"], "jj");
+    assert!(project.get("has_include").is_none(), "{project}");
+    assert_eq!(project["workrooms"][0]["warnings"], serde_json::json!([]));
+    assert_eq!(
+        std::fs::read_to_string(home.config_path()).expect("read"),
+        before
+    );
+
+    let fast = home.run(&home.dir, &["list", "--json"]);
+    fast.assert_code(0).assert_quiet_stderr();
+    let project = &fast.envelope()["projects"][0];
+    assert_eq!(project["vcs"], "git");
+    assert_eq!(project["has_include"], false);
+    assert_eq!(
+        project["workrooms"][0]["warnings"][0]["kind"],
+        "DirectoryMissing"
+    );
+    let after = std::fs::read_to_string(home.config_path()).expect("read");
+    assert_eq!(
+        home.normalize(&after),
+        r#"{
+  "/Users/dev/src/app": {
+    "future": [
+      1.50,
+      {
+        "z": "\u003c\u0026\u003e"
+      }
+    ],
+    "vcs": "git",
+    "workrooms": {
+      "w": {
+        "label": "x",
+        "path": "/Users/dev/workrooms/w"
+      }
+    }
+  },
+  "zz": 1e3
+}"#
+    );
+}
+
+/// Any `host` but null is a remote workroom's, reported verbatim, even one that isn't an object;
+/// a null one is no host at all. A remote workroom's path is on its host, so it never warns of a
+/// missing directory.
+#[test]
+fn list_json_reports_any_non_null_host_verbatim() {
+    let home = Home::new("list-hosts");
+    home.repo("src/app");
+    home.write_config(
+        &r#"{"{home}/src/app": {"vcs": "git", "host": {"b": 1.0, "a": "<x>"}, "workrooms": {
+  "empty": {"path": "/r/empty", "host": {}},
+  "false": {"path": "/r/false", "host": false},
+  "local": {"path": "/r/local", "host": null},
+  "string": {"path": "/r/string", "host": ""}
+}}}"#
+            .replace("{home}", &home.dir.to_string_lossy()),
+    );
+    let run = home.run(&home.dir, &["list", "--json"]);
+    run.assert_code(0).assert_quiet_stderr();
+    assert!(
+        run.stdout
+            .contains(r#""vcs":"git","host":{"a":"<x>","b":1.0},"has_include""#),
+        "the project's host isn't verbatim: {}",
+        run.stdout
+    );
+    let envelope = run.envelope();
+    let workrooms = envelope["projects"][0]["workrooms"]
+        .as_array()
+        .expect("workrooms");
+    let by_name = |name: &str| {
+        workrooms
+            .iter()
+            .find(|workroom| workroom["name"] == name)
+            .unwrap_or_else(|| panic!("{name} not listed"))
+    };
+    assert_eq!(by_name("empty")["host"], serde_json::json!({}));
+    assert_eq!(by_name("false")["host"], false);
+    assert_eq!(by_name("string")["host"], "");
+    for name in ["empty", "false", "string"] {
+        assert_eq!(by_name(name)["warnings"], serde_json::json!([]), "{name}");
+    }
+    assert!(by_name("local").get("host").is_none());
+    assert_eq!(by_name("local")["warnings"][0]["kind"], "DirectoryMissing");
+}
+
+/// `--project` keeps the one project it names, by its canonical path or as written; one that isn't
+/// registered leaves none.
+#[test]
+fn list_json_project_limits_the_listing() {
+    let home = Home::new("list-project");
+    home.repo("src/app");
+    home.repo("src/other");
+    std::os::unix::fs::symlink(home.path("src/app"), home.path("app-link")).expect("symlink");
+    home.write_config(
+        &r#"{"{home}/src/app": {"vcs": "git", "workrooms": {}},
+             "{home}/src/other": {"vcs": "git", "workrooms": {}}}"#
+            .replace("{home}", &home.dir.to_string_lossy()),
+    );
+    let listed = |project: &str| {
+        let run = home.run(&home.dir, &["list", "--json", "--project", project]);
+        run.assert_code(0).assert_quiet_stderr();
+        run.envelope()["projects"]
+            .as_array()
+            .expect("projects")
+            .iter()
+            .map(|project| home.normalize(project["path"].as_str().expect("path")))
+            .collect::<Vec<_>>()
+    };
+    let app = home.path("src/app").to_string_lossy().into_owned();
+    assert_eq!(listed(&app), ["/Users/dev/src/app"]);
+    assert_eq!(listed(&format!("{app}/")), ["/Users/dev/src/app"]);
+    assert_eq!(listed("app-link"), ["/Users/dev/src/app"]);
+    assert_eq!(listed("src/other/../app"), ["/Users/dev/src/app"]);
+    assert!(listed("src/nope").is_empty());
 }
