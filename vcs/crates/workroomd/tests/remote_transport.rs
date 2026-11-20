@@ -2685,6 +2685,108 @@ fn over_ssh_the_terminal_api_knows_which_pane_calls_it() {
     }
 }
 
+/// `workroom capture` on a host (#686), as a coding agent in a remote pane runs it, against a pane
+/// the Mac opened showing known content: the visible screen, rows of history, a wrapped line
+/// joined, and the whole scrollback streamed as envelopes, from the host's static musl daemon.
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_capture_reads_a_host_panes_screen_and_history() {
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
+    let session = "7e0e7e0e-0000-4000-8000-000000000686";
+    let mut pane = Pane::attach_with(
+        &fixture,
+        session,
+        false,
+        "'WORKROOM_SESSION_TITLE=capture pane'",
+    );
+    // No spaces, so nothing is trimmed where the pane wraps it.
+    let long: String = (0..30).map(|n| format!("w{n:02}-abcde")).collect();
+    // Clears the screen and history first, so only what it prints is there; the marker is split
+    // in the line, so its echo is not mistaken for it.
+    pane.type_line(&format!(
+        r#"sh -c 'printf "\033[H\033[2J\033[3J"; i=0; while [ $i -lt 40 ]; do echo "host $i"; i=$((i+1)); done; echo {long}; echo "HOST-""END"; sleep 60'"#
+    ));
+    assert!(
+        pane.read_until("HOST-END\r\n", Duration::from_secs(20))
+            .contains("HOST-END\r\n")
+    );
+
+    let capture = |args: &str| {
+        let output = fixture
+            .ssh()
+            .arg(format!(
+                "WORKROOM_DAEMON={} {INSTALLED_DAEMON} capture 'capture pane' {args}; \
+                 echo \"exit=$?\"",
+                fixture.socket
+            ))
+            .output()
+            .expect("run capture");
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let (printed, status) = stdout.rsplit_once("exit=").expect("an exit status");
+        assert_eq!(status.trim(), "0", "{args}: {stdout}");
+        printed.to_string()
+    };
+    let mut screen = String::new();
+    let shown = (0..40).any(|_| {
+        screen = capture("");
+        if screen.ends_with("HOST-END\n") {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        false
+    });
+    assert!(shown, "the screen never showed the content: {screen:?}");
+
+    let json: Value = serde_json::from_str(capture("--json").trim()).expect("one envelope");
+    assert_eq!(json["session"], session, "{json}");
+    assert_eq!(json["text"].as_str().unwrap(), screen.trim_end(), "{json}");
+    assert_eq!(json["alternate_screen"], false, "{json}");
+    let columns = json["size"]["columns"].as_u64().expect("columns") as usize;
+    let rows = json["size"]["rows"].as_u64().expect("rows") as usize;
+    assert_eq!(
+        json["cursor"],
+        json!({"row": rows - 1, "column": 0}),
+        "{json}"
+    );
+    let screen_lines: Vec<&str> = screen.lines().collect();
+    assert_eq!(screen_lines.len(), rows - 1, "{screen}");
+    assert!(screen.contains(&long[..columns]) && !screen.lines().any(|line| line == long));
+
+    let more = capture("--lines 3");
+    assert_eq!(more.lines().count(), screen_lines.len() + 3, "{more}");
+    assert!(more.ends_with(&screen), "{more}");
+    assert!(capture("--unwrap").lines().any(|line| line == long));
+
+    let all = capture("--all");
+    let all_lines: Vec<&str> = all.lines().collect();
+    assert_eq!(all_lines[0], "host 0", "{all}");
+    assert_eq!(all_lines.last(), Some(&"HOST-END"), "{all}");
+    let streamed = capture("--all --json");
+    let envelopes: Vec<Value> = streamed
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one envelope per line"))
+        .collect();
+    assert_eq!(
+        envelopes.last().expect("a chunk")["last"],
+        true,
+        "{streamed}"
+    );
+    let joined: String = envelopes
+        .iter()
+        .map(|envelope| envelope["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(joined + "\n", all);
+
+    pane.type_line("\x03");
+    pane.type_line("exit");
+    assert!(
+        pane.exit_code(Duration::from_secs(20)).is_some(),
+        "the session did not end"
+    );
+}
+
 /// Two Macs on one remote workroom (#255): Mac A's session carries its workroom and title to the
 /// host, Mac B finds it in the host's list and A's layout in the Layout service, and reattaches to
 /// the same shell; A dropping its link leaves B attached; a close on A ends the session for B too;
