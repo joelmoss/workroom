@@ -9,7 +9,7 @@
 //! a SIGTERM, SIGHUP or SIGINT to this process, ends the whole tree the way the exec service ends a
 //! command (`wr_exec::end_tree`: the group and the descendants recorded before it, SIGKILL after a
 //! grace). A signal this process was started ignoring (nohup's SIGHUP, a background job's SIGINT)
-//! is no cancel. The runner prints nothing of its own except the probe's fallback note: each
+//! is no cancel while the login shell is read. The runner prints nothing of its own except the probe's fallback note: each
 //! caller words an [`Outcome`] its own way.
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -186,6 +186,7 @@ pub fn run(
 /// shell: [`run`] once it has the environment, and a test's seam.
 pub fn run_in(script: &Script, env: BTreeMap<String, String>, output: Output) -> Outcome {
     let signals = Signals::watch();
+    signals.catch_ignored();
     if let Some(signal) = signals.received() {
         return Outcome::Cancelled(signal);
     }
@@ -312,42 +313,77 @@ const CANCELLING: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGHUP, libc::SIGINT]
 /// The signal that asked this process to stop, 0 until one does.
 static SIGNALLED: AtomicI32 = AtomicI32::new(0);
 
-/// How many runs are watching, and the dispositions the first replaced, which the last restores.
-static WATCHING: Mutex<(usize, Vec<(libc::c_int, libc::sigaction)>)> = Mutex::new((0, Vec::new()));
+/// The runs watching, and what the first found.
+struct Watching {
+    runs: usize,
+    /// The dispositions replaced, which the last run restores.
+    replaced: Vec<(libc::c_int, libc::sigaction)>,
+    /// The signals this process was started ignoring, not yet caught.
+    ignored: Vec<libc::c_int>,
+}
+
+static WATCHING: Mutex<Watching> = Mutex::new(Watching {
+    runs: 0,
+    replaced: Vec::new(),
+    ignored: Vec::new(),
+});
 
 extern "C" fn record_signal(signal: libc::c_int) {
     SIGNALLED.store(signal, Ordering::SeqCst);
 }
 
+/// Catches `signal` with `record_signal`, and returns what it replaced.
+fn catch(signal: libc::c_int) -> libc::sigaction {
+    // SAFETY: an all-zero sigaction is valid: no handler, no flags, an empty mask.
+    let mut handler: libc::sigaction = unsafe { std::mem::zeroed() };
+    handler.sa_sigaction = record_signal as *const () as libc::sighandler_t;
+    handler.sa_flags = libc::SA_RESTART;
+    // SAFETY: as above.
+    let mut previous: libc::sigaction = unsafe { std::mem::zeroed() };
+    // SAFETY: both are valid sigactions, and the handler only stores into an atomic, which is
+    // async-signal-safe.
+    unsafe { libc::sigaction(signal, &handler, &mut previous) };
+    previous
+}
+
 /// The cancelling signals, caught for as long as a run lasts and then handled as before: an
 /// in-process caller carries on after the script (a delete removes the worktree), and a SIGTERM
 /// then must end it as usual. Runs may nest or overlap; the first installs and the last restores.
+///
+/// One this process was started ignoring (nohup's SIGHUP, a background job's SIGINT) is no
+/// cancel while the login shell is read, as Go's probe had it, and is caught once the script is
+/// about to start ([`Signals::catch_ignored`]), as both runners did.
 struct Signals;
 
 impl Signals {
     fn watch() -> Signals {
         let mut watching = lock_or_recover(&WATCHING);
-        if watching.0 == 0 {
+        if watching.runs == 0 {
             SIGNALLED.store(0, Ordering::SeqCst);
             for signal in CANCELLING {
-                // SAFETY: an all-zero sigaction is valid: no handler, no flags, an empty mask.
-                let mut handler: libc::sigaction = unsafe { std::mem::zeroed() };
-                handler.sa_sigaction = record_signal as *const () as libc::sighandler_t;
-                handler.sa_flags = libc::SA_RESTART;
-                // SAFETY: as above.
-                let mut previous: libc::sigaction = unsafe { std::mem::zeroed() };
-                // SAFETY: `previous` is a valid sigaction to write; a null new action changes nothing.
-                unsafe { libc::sigaction(signal, std::ptr::null(), &mut previous) };
-                if previous.sa_sigaction == libc::SIG_IGN {
-                    continue;
+                // SAFETY: an all-zero sigaction is valid to write into.
+                let mut current: libc::sigaction = unsafe { std::mem::zeroed() };
+                // SAFETY: `current` is a valid sigaction to write; a null new action changes nothing.
+                unsafe { libc::sigaction(signal, std::ptr::null(), &mut current) };
+                if current.sa_sigaction == libc::SIG_IGN {
+                    watching.ignored.push(signal);
+                } else {
+                    let previous = catch(signal);
+                    watching.replaced.push((signal, previous));
                 }
-                // SAFETY: the handler only stores into an atomic, which is async-signal-safe.
-                unsafe { libc::sigaction(signal, &handler, &mut previous) };
-                watching.1.push((signal, previous));
             }
         }
-        watching.0 += 1;
+        watching.runs += 1;
         Signals
+    }
+
+    /// Catches the signals this process was started ignoring too, for the script's own run.
+    fn catch_ignored(&self) {
+        let mut watching = lock_or_recover(&WATCHING);
+        while let Some(signal) = watching.ignored.pop() {
+            let previous = catch(signal);
+            watching.replaced.push((signal, previous));
+        }
     }
 
     fn received(&self) -> Option<libc::c_int> {
@@ -358,9 +394,10 @@ impl Signals {
 impl Drop for Signals {
     fn drop(&mut self) {
         let mut watching = lock_or_recover(&WATCHING);
-        watching.0 -= 1;
-        if watching.0 == 0 {
-            for (signal, previous) in watching.1.drain(..) {
+        watching.runs -= 1;
+        if watching.runs == 0 {
+            watching.ignored.clear();
+            for (signal, previous) in watching.replaced.drain(..) {
                 // SAFETY: restores the disposition read when the first run began.
                 unsafe { libc::sigaction(signal, &previous, std::ptr::null_mut()) };
             }
