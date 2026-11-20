@@ -118,11 +118,11 @@ fn a_capture_with_parameters_it_cannot_take_is_invalid() {
 #[test]
 fn captures_past_the_cap_get_no_place_until_one_ends() {
     static HELD: AtomicUsize = AtomicUsize::new(0);
-    let first = CaptureSlot::acquire_from(&HELD, 2).expect("a place");
-    let second = CaptureSlot::acquire_from(&HELD, 2).expect("a place");
-    assert!(CaptureSlot::acquire_from(&HELD, 2).is_none());
+    let first = Slot::acquire_from(&HELD, 2).expect("a place");
+    let second = Slot::acquire_from(&HELD, 2).expect("a place");
+    assert!(Slot::acquire_from(&HELD, 2).is_none());
     drop(first);
-    let third = CaptureSlot::acquire_from(&HELD, 2).expect("a place once one ended");
+    let third = Slot::acquire_from(&HELD, 2).expect("a place once one ended");
     drop((second, third));
     assert_eq!(HELD.load(Ordering::Acquire), 0);
 }
@@ -405,18 +405,153 @@ impl Written {
     }
 }
 
-fn start_wait(
-    connection: &mut Connection,
-    store: &SessionStore,
-    params: Value,
-    writer: &SharedWriter,
-) {
+fn start_wait(waits: &mut wait::Waits, store: &SessionStore, params: Value, writer: &SharedWriter) {
     let call = Call {
         sessions: store,
         params: &params,
         caller: None,
     };
-    wait::start(&mut connection.waits, &call, writer, 1);
+    wait::start(waits, &call, writer, 1);
+}
+
+/// A session of `store`'s that runs `sleep 30`, with an id all of `byte`.
+fn sleeping(store: &SessionStore, byte: u8) -> crate::terminal::session::SessionId {
+    use std::ffi::{OsStr, OsString};
+    let id = crate::terminal::session::SessionId([byte; 16]);
+    let args = [OsString::from("-c"), OsString::from("sleep 30")];
+    store
+        .create(crate::terminal::session::SessionSpec {
+            id,
+            program: OsStr::new("/bin/sh"),
+            argv0: None,
+            args: &args,
+            env: &[],
+            cwd: None,
+            columns: 80,
+            rows: 24,
+            metadata: &[],
+            interactive: false,
+        })
+        .expect("a session");
+    id
+}
+
+/// Until `done`, for at most 10 s.
+fn eventually(done: impl Fn() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !done() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    done()
+}
+
+/// Waits are bounded on a session, a connection and the daemon (`wait::Limits`, lowered here); one
+/// past a bound is `Busy`, and a place comes back when a wait ends. Bad input, and a target that
+/// names no session, are refused as such even past a bound, never as `Busy`.
+#[test]
+fn waits_past_a_bound_are_busy_until_one_ends() {
+    use std::sync::atomic::AtomicUsize;
+    static HELD: AtomicUsize = AtomicUsize::new(0);
+    let limits = wait::Limits {
+        session: 2,
+        connection: 3,
+        daemon: 4,
+    };
+    let store = SessionStore::new();
+    let (a, b) = (sleeping(&store, 0x31), sleeping(&store, 0x32));
+    let (written, writer) = written_writer();
+    let regex = |id: SessionId| json!({"target": id.to_hyphenated(), "regex": "never"});
+    let kinds = |written: &Written| -> Vec<Value> {
+        written
+            .replies()
+            .iter()
+            .map(|reply| reply["error"]["kind"].clone())
+            .collect()
+    };
+
+    let mut first = wait::Waits::with(limits, &HELD, None);
+    start_wait(&mut first, &store, regex(a), &writer);
+    start_wait(&mut first, &store, regex(a), &writer);
+    // The session's bound.
+    start_wait(&mut first, &store, regex(a), &writer);
+    assert_eq!(kinds(&written), ["Busy"]);
+    assert_eq!(store.waiter_count(a), 2);
+    // The connection's: two on `a` and one on `b` are its three.
+    start_wait(&mut first, &store, regex(b), &writer);
+    start_wait(&mut first, &store, regex(b), &writer);
+    assert_eq!(kinds(&written), ["Busy", "Busy"]);
+    for refused in [
+        json!({"target": "nobody", "regex": "never"}),
+        json!({"target": b.to_hyphenated(), "regex": "("}),
+    ] {
+        start_wait(&mut first, &store, refused, &writer);
+    }
+    assert_eq!(
+        kinds(&written),
+        ["Busy", "Busy", "TargetNotFound", "InvalidRequest"]
+    );
+
+    // The daemon's: another connection gets its fourth place, and no fifth.
+    let mut second = wait::Waits::with(limits, &HELD, None);
+    start_wait(&mut second, &store, regex(b), &writer);
+    assert_eq!(store.waiter_count(b), 2);
+    start_wait(&mut second, &store, regex(b), &writer);
+    let replies = written.replies();
+    assert_eq!(replies.len(), 5, "{replies:?}");
+    assert_eq!(replies[4]["error"]["kind"], "Busy");
+    assert!(
+        replies[4]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("this daemon"),
+        "{replies:?}"
+    );
+
+    // The first connection closing ends its waits, and their places come back.
+    drop(first);
+    assert!(eventually(|| HELD.load(Ordering::Acquire) == 1));
+    start_wait(&mut second, &store, regex(a), &writer);
+    assert_eq!(
+        written.replies().len(),
+        5,
+        "a wait under every bound was refused"
+    );
+    assert_eq!(store.waiter_count(a), 1);
+
+    drop(second);
+    assert!(eventually(|| HELD.load(Ordering::Acquire) == 0));
+    store.kill(a);
+    store.kill(b);
+}
+
+/// A wait whose thread can't start answers `InternalError` at once, and leaves nothing held: no
+/// waiter on the session, no wait on the connection, no place of the daemon's.
+#[test]
+fn a_wait_with_no_thread_answers_and_holds_nothing() {
+    use std::sync::atomic::AtomicUsize;
+    static HELD: AtomicUsize = AtomicUsize::new(0);
+    let store = SessionStore::new();
+    let id = sleeping(&store, 0x33);
+    let (written, writer) = written_writer();
+    let mut waits = wait::Waits::with(
+        wait::LIMITS,
+        &HELD,
+        Some(|_| Err(std::io::Error::other("no threads left"))),
+    );
+    start_wait(
+        &mut waits,
+        &store,
+        json!({"target": id.to_hyphenated(), "regex": "never"}),
+        &writer,
+    );
+    let replies = written.replies();
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert_eq!(replies[0]["error"]["kind"], "InternalError");
+    assert_eq!(replies[0]["more"], false);
+    assert_eq!(store.waiter_count(id), 0);
+    assert_eq!(HELD.load(Ordering::Acquire), 0);
+    assert_eq!(waits.held_count(), 0);
+    store.kill(id);
 }
 
 fn written_writer() -> (Written, SharedWriter) {
@@ -444,7 +579,7 @@ fn an_over_limit_reply_is_a_whole_too_large_reply() {
     let store = SessionStore::new();
     let (written, writer) = written_writer();
     start_wait(
-        &mut Connection::default(),
+        &mut Connection::default().waits,
         &store,
         json!({"target": "\"".repeat(9 << 20), "ended": true}),
         &writer,
@@ -460,7 +595,7 @@ fn a_wait_replies_with_revision_and_more() {
     let (written, writer) = written_writer();
     let mut connection = Connection::default();
     start_wait(
-        &mut connection,
+        &mut connection.waits,
         &store,
         json!({"target": "nobody", "ended": true}),
         &writer,
@@ -476,29 +611,13 @@ fn a_wait_replies_with_revision_and_more() {
 /// and nothing is answered to nobody.
 #[test]
 fn a_connection_that_closes_ends_its_waits() {
-    use std::ffi::{OsStr, OsString};
     let store = SessionStore::new();
-    let id = crate::terminal::session::SessionId([0x69; 16]);
-    let args = [OsString::from("-c"), OsString::from("sleep 30")];
-    store
-        .create(crate::terminal::session::SessionSpec {
-            id,
-            program: OsStr::new("/bin/sh"),
-            argv0: None,
-            args: &args,
-            env: &[],
-            cwd: None,
-            columns: 80,
-            rows: 24,
-            metadata: &[],
-            interactive: false,
-        })
-        .expect("a session");
+    let id = sleeping(&store, 0x69);
     let (written, writer) = written_writer();
     let mut connection = Connection::default();
     for pattern in ["never", "nor this"] {
         start_wait(
-            &mut connection,
+            &mut connection.waits,
             &store,
             json!({"target": id.to_hyphenated(), "regex": pattern}),
             &writer,
@@ -507,13 +626,8 @@ fn a_connection_that_closes_ends_its_waits() {
     assert_eq!(store.waiter_count(id), 2);
 
     drop(connection);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while store.waiter_count(id) > 0 && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert_eq!(
-        store.waiter_count(id),
-        0,
+    assert!(
+        eventually(|| store.waiter_count(id) == 0),
         "a closed connection's waits are still held"
     );
     assert!(
