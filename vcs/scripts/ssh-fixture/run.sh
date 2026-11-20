@@ -42,6 +42,11 @@ DAEMON="${1:?usage: run.sh <path to a Linux workroomd for the container architec
 HERE="$(cd "$(dirname "$0")" && pwd)"
 VCS_DIR="$(cd "$HERE/../.." && pwd)"
 RUNTIME="${WR_FIXTURE_RUNTIME:-docker}"
+# Apple's `container` has no `port`, `ps`, `images` or `rmi`, and its `build --quiet` never returns
+# (container 1.7.1), so it gets its own branches below. Each container is its own VM with its own
+# address, so ssh reaches port 22 there and nothing is published.
+APPLE=0
+[ "$(basename "$RUNTIME")" = container ] && APPLE=1
 SUPERVISOR="${WR_FIXTURE_SUPERVISOR:-1}"
 SYSTEMD="${WR_FIXTURE_SYSTEMD:-0}"
 # The systemd variant has no supervisor: the tests start the daemon.
@@ -57,6 +62,15 @@ STAGE="$(mktemp -d "${TMPDIR:-/tmp}/wr-ssh-fixture.XXXXXX")"
 # containers first, then the images committed from them, which the fixture's image is a parent of.
 LABEL="workroom.fixture=$NAME"
 cleanup() {
+  if [ "$APPLE" = 1 ]; then
+    # Only the fixture and its image: the provisioning tests that label their own need Docker.
+    "$RUNTIME" delete --force "$NAME" >/dev/null 2>&1 || true
+    if [ -n "${IMAGE:-}" ]; then
+      "$RUNTIME" image delete --force "$IMAGE" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$STAGE"
+    return
+  fi
   "$RUNTIME" rm -f "$NAME" >/dev/null 2>&1 || true
   for container in $("$RUNTIME" ps -aq --filter "label=$LABEL" 2>/dev/null); do
     "$RUNTIME" rm -f "$container" >/dev/null 2>&1 || true
@@ -84,7 +98,18 @@ fi
 # would swap in a different daemon. WR_FIXTURE_BUILD_FLAGS is word-split into extra build flags; CI
 # passes a GitHub Actions layer cache there so the apt layer is not rebuilt on every run.
 read -r -a BUILD_FLAGS <<< "${WR_FIXTURE_BUILD_FLAGS:-}"
-IMAGE="$("$RUNTIME" build --quiet --build-arg FIXTURE=1 ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} "$STAGE")"
+if [ "$APPLE" = 1 ]; then
+  # No image IDs to build by, so a tag this run alone uses; the build's log stays out of the way
+  # unless it fails.
+  IMAGE="$NAME-image"
+  if ! "$RUNTIME" build --progress plain --tag "$IMAGE" --build-arg FIXTURE=1 \
+    ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} "$STAGE" > "$STAGE/build.log" 2>&1; then
+    cat "$STAGE/build.log" >&2
+    exit 1
+  fi
+else
+  IMAGE="$("$RUNTIME" build --quiet --build-arg FIXTURE=1 ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} "$STAGE")"
+fi
 
 # The daemon must run in there at all: an ELF for the wrong architecture would otherwise surface as
 # a supervisor restarting it forever and a relay that never connects.
@@ -95,7 +120,7 @@ ssh-keygen -q -t ed25519 -N '' -C wr-ssh-fixture -f "$STAGE/id_ed25519"
 if [ "$SYSTEMD" = 1 ]; then
   if [ -n "${WR_FIXTURE_RUN_FLAGS+set}" ]; then
     read -r -a RUN_FLAGS <<< "$WR_FIXTURE_RUN_FLAGS"
-  elif [ "$(basename "$RUNTIME")" = container ]; then
+  elif [ "$APPLE" = 1 ]; then
     RUN_FLAGS=(--tmpfs /run --tmpfs /run/lock --tmpfs /tmp --tty)
   else
     # `exec`: the fixture's daemon lives beside its socket in /run/workroom, and Docker's tmpfs
@@ -106,11 +131,20 @@ if [ "$SYSTEMD" = 1 ]; then
 else
   RUN_FLAGS=(--init)
 fi
+PUBLISH=(--publish 127.0.0.1::22)
+[ "$APPLE" = 1 ] && PUBLISH=()
 "$RUNTIME" run --detach ${RUN_FLAGS[@]+"${RUN_FLAGS[@]}"} --name "$NAME" \
-  --publish 127.0.0.1::22 \
+  ${PUBLISH[@]+"${PUBLISH[@]}"} \
   --env "AUTHORIZED_KEY=$(cat "$STAGE/id_ed25519.pub")" \
   --env "WR_FIXTURE_SUPERVISOR=$SUPERVISOR" "$IMAGE" >/dev/null
-PORT="$("$RUNTIME" port "$NAME" 22/tcp | head -1 | sed 's/.*://')"
+if [ "$APPLE" = 1 ]; then
+  ADDRESS="$("$RUNTIME" inspect "$NAME" | python3 -c \
+    'import json, sys; print(json.load(sys.stdin)[0]["status"]["networks"][0]["ipv4Address"].split("/")[0])')"
+  PORT=22
+else
+  ADDRESS=127.0.0.1
+  PORT="$("$RUNTIME" port "$NAME" 22/tcp | head -1 | sed 's/.*://')"
+fi
 
 # BatchMode cannot prompt to accept a host key, so the expected key is delivered out of band (here,
 # read straight out of the container) and pinned. That is the same policy a real driver needs.
@@ -132,7 +166,7 @@ fi
 printf 'wr-ssh-fixture %s\n' "$HOST_KEY" > "$STAGE/known_hosts"
 cat > "$STAGE/ssh_config" <<EOF
 Host fixture
-  HostName 127.0.0.1
+  HostName $ADDRESS
   HostKeyAlias wr-ssh-fixture
   Port $PORT
   User workroom
@@ -174,7 +208,7 @@ CLONE_TOKEN=""
 if [ "$SYSTEMD" != 1 ]; then
   CLONE_TOKEN="$("$RUNTIME" exec "$NAME" cat /etc/workroom-fixture/clone-token)"
 fi
-for pair in "CONFIG=$STAGE/ssh_config" "SOCKET=$SOCKET" "ADDRESS=127.0.0.1" "PORT=$PORT" \
+for pair in "CONFIG=$STAGE/ssh_config" "SOCKET=$SOCKET" "ADDRESS=$ADDRESS" "PORT=$PORT" \
   "USER=workroom" "IDENTITY=$STAGE/id_ed25519" "HOST_KEY=$HOST_KEY" "DAEMON=$STAGE/workroomd" \
   "CONTAINER=$NAME" "RUNTIME=$RUNTIME" "SCREENS=$SCREENS" "IMAGE=$IMAGE" \
   "RUNTIME_PATH=$(command -v "$RUNTIME")" "PUBLIC_KEY=$(cat "$STAGE/id_ed25519.pub")" \
