@@ -238,7 +238,11 @@ final class GhosttyApp {
   /// it twice let the theme written into the conf disagree with the scheme pushed to the surfaces —
   /// they agreed only because `RootView.applyAppearance` happens to set `NSApp.appearance` first,
   /// which is an invariant held in another file.
-  func reloadConfig(force: Bool = false, dark: Bool) {
+  ///
+  /// `theme` is the theme name the caller already resolved for `dark` (`ThemeService.applyActiveTheme`
+  /// resolves it once for the chrome and hands it on, so one apply reads the user's theme files once);
+  /// nil resolves it here.
+  func reloadConfig(force: Bool = false, dark: Bool, theme: String? = nil) {
     guard let app else { return }
     // Unchanged appearance and not forced → nothing to rebuild.
     guard force || dark != lastConfiguredDark else { return }
@@ -250,7 +254,7 @@ final class GhosttyApp {
     //
     // The marker moves only on success, and only after it: setting it first recorded an INTENT, so a
     // silently-failed write was never retried by a later non-forced call for the same appearance.
-    guard writeThemeConfig(dark: dark) else { return }
+    guard writeThemeConfig(dark: dark, theme: theme) else { return }
     lastConfiguredDark = dark
     guard let newConfig = loadConfig() else { return }
     // This pushes `newConfig` to EVERY live surface (libghostty's `App.updateConfig`).
@@ -382,9 +386,9 @@ final class GhosttyApp {
   /// Written at the app-wide terminal appearance, with the theme preview `ThemeService` already
   /// resolved for its tokens, so a glass write parses no theme file of its own.
   @discardableResult
-  func writeThemeConfig(dark: Bool) -> Bool {
+  func writeThemeConfig(dark: Bool, theme: String? = nil) -> Bool {
     let written = Self.writeThemeConfig(
-      theme: ThemeService.activeThemeName(isDark: dark),
+      theme: theme ?? ThemeService.activeThemeName(for: ThemeSide(isDark: dark)),
       term: TerminalType(reportsGhostty: Defaults[.terminalReportsGhostty]),
       command: Self.fixtureShellCommand, glass: GlassService.shared.terminalAppearance,
       preview: ThemeService.shared.activePreview, to: themeConfigURL)

@@ -83,6 +83,14 @@ extension Defaults.Keys {
   static let glassOpacity = Key<Double>(
     "glassOpacity", default: GlassResolver.opacityRange.upperBound, suite: .app)
 
+  /// The theme setting for one side: `lightTheme` or `darkTheme`.
+  static func theme(for side: ThemeSide) -> Key<String> {
+    switch side {
+    case .light: lightTheme
+    case .dark: darkTheme
+    }
+  }
+
   /// Copy a finished terminal selection to the pasteboard automatically (xterm/iTerm2 convention).
   static let copyOnSelect = Key<Bool>("copyOnSelect", default: true, suite: .app)
 

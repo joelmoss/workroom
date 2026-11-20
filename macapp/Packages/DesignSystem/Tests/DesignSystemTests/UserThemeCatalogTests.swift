@@ -116,12 +116,55 @@ final class UserThemeCatalogTests: XCTestCase {
     }
   }
 
-  /// An unparseable replacement is hidden, so the bundled theme it shares a name with stays.
-  func testAnUnparseableReplacementLeavesTheBundledTheme() throws {
+  /// An unparseable replacement hides the bundled theme it shares a name with, and that theme's
+  /// family: ghostty still loads the user's file for the name, so offering the bundled theme would
+  /// paint the chrome in colours the terminal never loads.
+  func testAnUnparseableReplacementHidesTheBundledThemeAndItsFamily() throws {
     try withUserThemes(["Nord Light": "garbage\n"]) {
-      XCTAssertEqual(
-        listed("Nord Light", on: .light),
-        [ListedTheme(name: "Nord Light", side: .light, isUserTheme: false)])
+      for side in ThemeSide.allCases {
+        XCTAssertFalse(names(on: side).contains("Nord Light"))
+      }
+      XCTAssertNil(ThemeCatalog.side(ofThemeNamed: "Nord Light"))
+      XCTAssertFalse(ThemeCatalog.availableFamilies().contains { $0.name == "Nord" })
+    }
+  }
+
+  /// A file whose name ghostty reads as a light/dark pair (a colon, comma or `=`) is hidden like an
+  /// unparseable one and resolves to no side, so it can never be written as `theme =`.
+  func testAUserThemeNamedLikeAPairIsHidden() throws {
+    let pairs = ["light:Nord Light", "My, Night", "dark=Nord"]
+    try withUserThemes(Dictionary(uniqueKeysWithValues: pairs.map { ($0, dark) })) {
+      for name in pairs {
+        for side in ThemeSide.allCases {
+          XCTAssertFalse(names(on: side).contains(name), name)
+        }
+        XCTAssertNil(ThemeCatalog.side(ofThemeNamed: name), name)
+        XCTAssertFalse(ThemeCatalog.isSingleThemeName(name), name)
+      }
+    }
+  }
+
+  /// One read of the folder answers every lookup: a file written after the read isn't seen until
+  /// the next read.
+  func testASnapshotIsTheFolderAsItWasWhenRead() throws {
+    try withUserThemes([:]) { dir in
+      let before = UserThemes.read()
+      try dark.write(
+        to: dir.appendingPathComponent("My Night"), atomically: true, encoding: .utf8)
+      XCTAssertNil(ThemeCatalog.side(ofThemeNamed: "My Night", in: before))
+      XCTAssertFalse(ThemeCatalog.themes(on: .dark, in: before).contains { $0.name == "My Night" })
+      XCTAssertEqual(ThemeCatalog.side(ofThemeNamed: "My Night", in: .read()), .dark)
+    }
+  }
+
+  /// A test's override of the user theme directory puts back whatever was in place before it, so a
+  /// process-wide scratch directory survives a scoped one.
+  func testAScopedOverridePutsTheOuterOneBack() throws {
+    try withUserThemes([:]) { outer in
+      try withUserThemes([:]) { inner in
+        XCTAssertEqual(ThemeCatalog.userThemeDirectory(), inner.path)
+      }
+      XCTAssertEqual(ThemeCatalog.userThemeDirectory(), outer.path)
     }
   }
 

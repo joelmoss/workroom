@@ -42,8 +42,7 @@ final class ThemeService {
   /// permanent observer (nothing removes it — a process-lifetime singleton needs no `deinit`) and
   /// bring the N-observer stall straight back, with nothing to catch it.
   private init() {
-    let isDark = Self.isCurrentAppearanceDark()
-    let preview = Self.themePreview(named: Self.activeThemeName(isDark: isDark))
+    let preview = Self.activeTheme(for: Self.showingSide()).preview
     activePreview = preview
     tokens = ThemeTokens(preview: preview)
     appearanceObserver = DistributedNotificationCenter.default().addObserver(
@@ -69,27 +68,32 @@ final class ThemeService {
   /// setting is kept, so a user theme file that is missing for a while comes back when it does — and
   /// the terminal and the chrome both resolve through here, so they never diverge onto different
   /// fallbacks. Always sanitised (safe to write into the conf).
-  nonisolated static func activeThemeName(isDark: Bool) -> String {
-    let side = ThemeSide(isDark: isDark)
-    let chosen = side == .dark ? Defaults[.darkTheme] : Defaults[.lightTheme]
+  ///
+  /// `userThemes` is the read of the user's theme files to resolve against; nil reads the two files
+  /// this can need, the chosen theme's and the fallback's (`userThemesToResolve(for:)`).
+  nonisolated static func activeThemeName(for side: ThemeSide, in userThemes: UserThemes? = nil)
+    -> String
+  {
+    let chosen = Defaults[.theme(for: side)]
+    let users = userThemes ?? userThemesToResolve(for: side)
     let resolved =
-      ThemeCatalog.side(ofThemeNamed: chosen) == side
+      ThemeCatalog.side(ofThemeNamed: chosen, in: users) == side
       ? chosen : ThemeCatalog.defaultFamily.theme(for: side)
     return ThemeCatalog.sanitizedThemeName(resolved)
   }
 
-  /// `activeThemeName(isDark:)` for an appearance, with System following `systemIsDark`.
-  nonisolated static func activeThemeName(appearance: AppearanceMode, systemIsDark: Bool)
-    -> String
-  {
-    activeThemeName(isDark: isDark(appearance, systemIsDark: systemIsDark))
+  /// The user's theme files `side` can resolve to: the chosen theme's and Workroom's for that side.
+  /// Only those two, so an apply never parses the whole folder.
+  nonisolated static func userThemesToResolve(for side: ThemeSide) -> UserThemes {
+    .reading(named: Defaults[.theme(for: side)], ThemeCatalog.defaultFamily.theme(for: side))
   }
 
-  nonisolated static func isDark(_ appearance: AppearanceMode, systemIsDark: Bool) -> Bool {
+  /// The side an appearance shows, with System following `systemIsDark`.
+  nonisolated static func side(for appearance: AppearanceMode, systemIsDark: Bool) -> ThemeSide {
     switch appearance {
-    case .light: return false
-    case .dark: return true
-    case .system: return systemIsDark
+    case .light: return .light
+    case .dark: return .dark
+    case .system: return ThemeSide(isDark: systemIsDark)
     }
   }
 
@@ -106,22 +110,31 @@ final class ThemeService {
   /// `Defaults` registers each key's default, so `object(forKey:)` is never nil for them — and an old
   /// key alongside a new one means an older build ran since and wrote it, so it is the newer choice.
   ///
-  /// Raw keys, because the old typed keys are gone; both new keys store plain strings
+  /// Raw writes, because the old typed keys are gone and `defaults` need not be the keys' suite; the
+  /// new keys' names come from the `Defaults` keys themselves. Every new key stores a plain string
   /// (`AppearanceMode` is `PreferRawRepresentable` with the same raw values), so the raw writes are
   /// what `Defaults` reads back.
   nonisolated static func upgradeThemeSettings(in defaults: UserDefaults = .app) {
-    if let familyName = defaults.string(forKey: "themeFamily") {
+    if let familyName = defaults.string(forKey: oldThemeFamilyKey) {
       let family = ThemeCatalog.family(named: familyName) ?? ThemeCatalog.defaultFamily
-      defaults.set(family.light, forKey: "lightTheme")
-      defaults.set(family.dark, forKey: "darkTheme")
+      for side in ThemeSide.allCases {
+        defaults.set(family.theme(for: side), forKey: Defaults.Keys.theme(for: side).name)
+      }
     }
-    defaults.removeObject(forKey: "themeFamily")
+    defaults.removeObject(forKey: oldThemeFamilyKey)
 
-    if let raw = defaults.string(forKey: "themePreference"), AppearanceMode(rawValue: raw) != nil {
-      defaults.set(raw, forKey: "appearance")
+    if let raw = defaults.string(forKey: oldThemePreferenceKey),
+      AppearanceMode(rawValue: raw) != nil
+    {
+      defaults.set(raw, forKey: Defaults.Keys.appearance.name)
     }
-    defaults.removeObject(forKey: "themePreference")
+    defaults.removeObject(forKey: oldThemePreferenceKey)
   }
+
+  /// The single theme family setting before #733, a family's name.
+  nonisolated static let oldThemeFamilyKey = "themeFamily"
+  /// The appearance setting before #733, an `AppearanceMode` raw value.
+  nonisolated static let oldThemePreferenceKey = "themePreference"
 
   // MARK: The chokepoint
 
@@ -131,14 +144,17 @@ final class ThemeService {
   /// (2) re-theme live terminals (regenerates the conf with the new `theme=` and force-reloads);
   /// (3) notify AppKit sites that read `ThemeService.shared.tokens` outside SwiftUI.
   func applyActiveTheme(force: Bool = true) {
-    let isDark = Self.isCurrentAppearanceDark()
-    activePreview = Self.themePreview(named: Self.activeThemeName(isDark: isDark))
-    tokens = ThemeTokens(preview: activePreview)
+    let side = Self.showingSide()
+    let isDark = side == .dark
+    // Resolved once, against one read of the user's theme files, for the chrome and the terminal.
+    let active = Self.activeTheme(for: side)
+    activePreview = active.preview
+    tokens = ThemeTokens(preview: active.preview)
     generation &+= 1
     // The app-global half runs ONCE here, not inside the per-window loop below — it used to live in
     // `applyThemeToAll`, so N windows meant N writes + N parses of the same generated ghostty.conf
     // (and the regex compilation each parse implies) on the main thread. WORKROOM-3R is that stall.
-    GhosttyApp.shared.reloadConfig(force: force, dark: isDark)
+    GhosttyApp.shared.reloadConfig(force: force, dark: isDark, theme: active.name)
     GhosttyApp.shared.setColorScheme(dark: isDark)
     for sessions in terminalSinks.allObjects { sessions.applyThemeToAll(isDark: isDark) }
     NotificationCenter.default.post(name: .themeDidChange, object: nil)
@@ -161,10 +177,7 @@ final class ThemeService {
   /// without touching the appearance, the generated config or the screen, so browsing it in the
   /// picker never flips what you're looking at; it shows the next time that side does.
   func apply(theme: String, for side: ThemeSide) {
-    switch side {
-    case .light: Defaults[.lightTheme] = theme
-    case .dark: Defaults[.darkTheme] = theme
-    }
+    Defaults[.theme(for: side)] = theme
     guard side == Self.showingSide() else { return }
     applyActiveTheme()
   }
@@ -182,6 +195,18 @@ final class ThemeService {
     ThemeCatalog.themePreview(named: name, bundledDirectory: bundledThemeDirectory())
   }
 
+  /// The active theme for `side` (`activeThemeName(for:in:)`) and its colours, both resolved against
+  /// one read of the user's theme files, so the chrome paints the file the terminal is told to load.
+  nonisolated static func activeTheme(for side: ThemeSide) -> (name: String, preview: ThemePreview?)
+  {
+    let users = userThemesToResolve(for: side)
+    let name = activeThemeName(for: side, in: users)
+    return (
+      name,
+      ThemeCatalog.themePreview(named: name, bundledDirectory: bundledThemeDirectory(), in: users)
+    )
+  }
+
   /// `ThemeCatalog.themeDirectories` with this app's bundled themes.
   nonisolated static func themeDirectories() -> [String] {
     ThemeCatalog.themeDirectories(bundledDirectory: bundledThemeDirectory())
@@ -191,13 +216,15 @@ final class ThemeService {
 
   static func isCurrentAppearanceDark() -> Bool {
     // Honour a forced AppearanceMode; otherwise follow the OS effective appearance.
-    isDark(
-      Defaults[.appearance],
-      systemIsDark: NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+    showingSide() == .dark
   }
 
   /// The side whose theme is on screen: dark while the appearance is dark, else light.
-  static func showingSide() -> ThemeSide { ThemeSide(isDark: isCurrentAppearanceDark()) }
+  static func showingSide() -> ThemeSide {
+    side(
+      for: Defaults[.appearance],
+      systemIsDark: NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+  }
 }
 
 // MARK: The SwiftUI environment

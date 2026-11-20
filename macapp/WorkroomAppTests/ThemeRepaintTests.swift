@@ -54,15 +54,15 @@ final class ThemeRepaintTests: XCTestCase {
   @discardableResult
   private func switchToTheMostDifferentFamily() throws -> ThemeTokens {
     let before = ThemeService.shared.tokens
-    let isDark = ThemeService.isCurrentAppearanceDark()
+    let side = ThemeService.showingSide()
     let other = try XCTUnwrap(
       ThemeCatalog.families
         .filter {
           $0 != ThemeCatalog.family(light: Defaults[.lightTheme], dark: Defaults[.darkTheme])
         }
         .max { lhs, rhs in
-          Self.distance(before, Self.tokens(of: lhs, isDark: isDark))
-            < Self.distance(before, Self.tokens(of: rhs, isDark: isDark))
+          Self.distance(before, Self.tokens(of: lhs, on: side))
+            < Self.distance(before, Self.tokens(of: rhs, on: side))
         },
       "the catalog needs a second family to switch to")
     ThemeService.shared.applyFamily(other)
@@ -73,10 +73,10 @@ final class ThemeRepaintTests: XCTestCase {
     return after
   }
 
-  private static func tokens(of family: ThemeFamily, isDark: Bool) -> ThemeTokens {
+  private static func tokens(of family: ThemeFamily, on side: ThemeSide) -> ThemeTokens {
     ThemeTokens(
       preview: ThemeService.themePreview(
-        named: ThemeCatalog.sanitizedThemeName(family.theme(for: ThemeSide(isDark: isDark)))))
+        named: ThemeCatalog.sanitizedThemeName(family.theme(for: side))))
   }
 
   private static func distance(_ lhs: ThemeTokens, _ rhs: ThemeTokens) -> CGFloat {
