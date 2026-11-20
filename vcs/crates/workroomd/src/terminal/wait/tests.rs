@@ -354,6 +354,34 @@ fn a_wait_joining_inside_a_csi_keeps_the_text_after_it() {
     );
 }
 
+/// Commands that end together are heard in order: a wait for the next to finish answers with the
+/// first after it started, the last's code only when that is the one.
+#[test]
+fn a_command_wait_answers_with_the_first_command_to_end_after_it() {
+    let seen = |commands: u64, exits: &[i32]| Seen {
+        shell_marks: true,
+        commands,
+        exits: exits.to_vec(),
+        ..Seen::default()
+    };
+    for (before, want) in [(0, Some(1)), (1, Some(2)), (2, Some(0))] {
+        let waiter = Waiter::new(Condition::CommandFinished, seen(before, &[]));
+        waiter.shadow(&seen(3, &[1, 2, 0]));
+        assert_eq!(
+            waiter.outcome(),
+            Some(Outcome::Met(Met::CommandFinished(want))),
+            "{before}"
+        );
+    }
+    // Older than the shadow keeps: unknown, rather than another command's.
+    let waiter = Waiter::new(Condition::CommandFinished, seen(0, &[]));
+    waiter.shadow(&seen(3, &[2, 0]));
+    assert_eq!(
+        waiter.outcome(),
+        Some(Outcome::Met(Met::CommandFinished(None)))
+    );
+}
+
 /// A window trimmed where no line starts keeps text that starts mid-line, where `^` doesn't
 /// match; one trimmed at a line's start keeps `^` there.
 #[test]
