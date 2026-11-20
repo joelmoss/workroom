@@ -527,20 +527,13 @@ fn every_method_publishes_schemas_its_replies_match() {
             method["input"].is_object() && method["output"].is_object(),
             "{method}"
         );
-        assert_eq!(
-            violation(&method["input"], &method["example"], "example"),
-            None,
-            "{method}"
-        );
         // Both schemas carry JSON Schema's `examples`, each one a value the schema accepts, so a
-        // caller sees what a reply looks like before it makes a request.
+        // caller sees what a reply looks like before it makes a request. `examples` is the only
+        // place they are published.
         for which in ["input", "output"] {
             assert_examples_match(&method[which], &format!("{}.{which}", method["name"]));
         }
-        assert_eq!(
-            method["input"]["examples"][0], method["example"],
-            "{method}"
-        );
+        assert!(method.get("example").is_none(), "{method}");
     }
     let error_schema = described["result"]["error"].clone();
     assert_examples_match(&error_schema, "error");
@@ -657,8 +650,8 @@ fn api_describe_shows_one_methods_schemas_with_examples() {
     assert_eq!(method["name"], "session.resolve", "{envelope}");
     assert_eq!(method["input"]["required"], json!(["target"]), "{method}");
     assert_eq!(
-        method["example"],
-        json!({"target": "dev server"}),
+        method["input"]["examples"],
+        json!([{"target": "dev server"}]),
         "{method}"
     );
     assert_eq!(
