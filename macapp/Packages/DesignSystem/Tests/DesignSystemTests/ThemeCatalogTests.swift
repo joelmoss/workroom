@@ -98,6 +98,38 @@ final class ThemeCatalogTests: XCTestCase {
 
   // MARK: pair → family
 
+  /// A theme that comes in only one appearance is bundled on its side, though no family pairs it
+  /// (#736).
+  func testAThemeWithOnlyOneAppearanceIsBundled() {
+    let sides = Dictionary(
+      uniqueKeysWithValues: ThemeCatalog.bundledThemes.map { ($0.name, $0.side) })
+    let paired = Set(ThemeCatalog.families.flatMap { [$0.light, $0.dark] })
+    for (name, side) in [("Dracula", ThemeSide.dark), ("Alabaster", .light)] {
+      XCTAssertEqual(sides[name], side, "\(name) is bundled as a \(side) theme")
+      XCTAssertFalse(paired.contains(name), "\(name) comes in one appearance, so no family has it")
+    }
+  }
+
+  /// Every bundled name reaches ghostty as one theme. The generated config says `theme = "<name>"`,
+  /// and ghostty reads a value holding a comma, `=` or colon as a light/dark pair (#736); the
+  /// sanitizer must leave the name alone too, or the config would name a theme that isn't there.
+  func testEveryBundledThemeNameIsOneThemeToGhostty() {
+    for name in ThemeCatalog.bundledThemes.map(\.name) {
+      XCTAssertFalse(name.contains { ",=:".contains($0) }, "ghostty reads '\(name)' as a pair")
+      XCTAssertEqual(ThemeCatalog.sanitizedThemeName(name), name)
+    }
+  }
+
+  /// An upstream light and dark pair is a family (#736).
+  func testAnUpstreamPairIsAFamily() {
+    XCTAssertEqual(
+      ThemeCatalog.familyLabel(light: "Lumina Aurora Light", dark: "Lumina Aurora Dark"),
+      "Lumina Aurora")
+    XCTAssertEqual(
+      ThemeCatalog.familyLabel(light: "Modus Operandi Tinted", dark: "Modus Vivendi Tinted"),
+      "Modus Tinted")
+  }
+
   func testAFamilysPairMatchesTheFamily() {
     XCTAssertEqual(
       ThemeCatalog.family(light: "Catppuccin Latte", dark: "Catppuccin Mocha")?.name, "Catppuccin")
