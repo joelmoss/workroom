@@ -72,9 +72,8 @@ pub mod kind {
     pub const TOO_LARGE: &str = "TooLarge";
     /// The session the target named ended before it could be read.
     pub const SESSION_ENDED: &str = "SessionEnded";
-    /// A capture from a daemon that keeps no copy of its sessions' screens (no terminal-state).
-    pub const SCREEN_UNAVAILABLE: &str = "ScreenUnavailable";
-    /// Anything else, such as a screen the formatter could not read.
+    /// Anything else, such as a screen the daemon has no copy of (a build without terminal-state,
+    /// or a shadow terminal that failed) or one the formatter could not read.
     pub const INTERNAL_ERROR: &str = "InternalError";
 }
 
@@ -257,7 +256,7 @@ pub const METHODS: &[Method] = &[
             kind::TARGET_NOT_FOUND,
             kind::TARGET_AMBIGUOUS,
             kind::SESSION_ENDED,
-            kind::SCREEN_UNAVAILABLE,
+            kind::INTERNAL_ERROR,
         ],
         params_example: || json!({"target": "dev server", "lines": 100, "unwrap": true}),
         result_example: || {
@@ -437,13 +436,7 @@ fn capture(call: &Call) -> Result<Answer, ApiError> {
         .ok_or_else(ended)?;
     let job = lock_or_recover(&shadow)
         .capture(Capture { rows, unwrap, vt })
-        .ok_or_else(|| {
-            ApiError::new(
-                kind::SCREEN_UNAVAILABLE,
-                "this daemon keeps no copy of its sessions' screens: it was built without \
-                 terminal-state",
-            )
-        })?;
+        .ok_or_else(|| ApiError::new(kind::INTERNAL_ERROR, no_screen(&id)))?;
     let captured = job().ok_or_else(|| {
         ApiError::new(
             kind::INTERNAL_ERROR,
@@ -471,6 +464,21 @@ fn capture(call: &Call) -> Result<Answer, ApiError> {
             .enumerate()
             .map(move |(chunk, range)| Ok(reply(&captured, &captured.text[range], chunk))),
     )))
+}
+
+/// Why there is no screen of session `id` to read: the daemon keeps none, or its copy failed.
+fn no_screen(id: &str) -> String {
+    if cfg!(feature = "terminal-state") {
+        format!(
+            "this daemon has no copy of session {id}'s screen: its shadow terminal could not be \
+             made or has failed"
+        )
+    } else {
+        format!(
+            "this daemon has no copy of session {id}'s screen: it was built without \
+             terminal-state, so it keeps no shadow terminal"
+        )
+    }
 }
 
 /// `text` cut into pieces of at most `max` bytes, each ending at a newline where one is in reach,

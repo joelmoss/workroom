@@ -73,9 +73,6 @@ pub(crate) enum Kind {
     TooLarge,
     /// Typing into, or closing, the caller's own session without the flag that allows it.
     RefusedSelf,
-    /// A capture from a daemon that keeps no copy of its sessions' screens: one built without
-    /// terminal-state (#686).
-    ScreenUnavailable,
     /// A terminal API request the daemon can't read: no such method, or parameters it refuses.
     InvalidRequest,
     /// Anything unclassified, a usage error included.
@@ -125,7 +122,6 @@ pub(crate) const ALL: &[Kind] = &[
     Kind::NoShellIntegration,
     Kind::TooLarge,
     Kind::RefusedSelf,
-    Kind::ScreenUnavailable,
     Kind::InvalidRequest,
     Kind::InternalError,
 ];
@@ -194,7 +190,6 @@ impl Kind {
             Kind::NoShellIntegration => ("NoShellIntegration", 3),
             Kind::TooLarge => ("TooLarge", 2),
             Kind::RefusedSelf => ("RefusedSelf", 3),
-            Kind::ScreenUnavailable => ("ScreenUnavailable", 3),
             Kind::InvalidRequest => ("InvalidRequest", 2),
             Kind::InternalError => ("InternalError", 1),
         }
@@ -297,7 +292,6 @@ mod tests {
                 "NoShellIntegration",
                 "TooLarge",
                 "RefusedSelf",
-                "ScreenUnavailable",
                 "InvalidRequest",
                 "InternalError"
             ]
@@ -327,7 +321,6 @@ mod tests {
             (Kind::AlternateScreen, "AlternateScreen", 3),
             (Kind::NoShellIntegration, "NoShellIntegration", 3),
             (Kind::RefusedSelf, "RefusedSelf", 3),
-            (Kind::ScreenUnavailable, "ScreenUnavailable", 3),
             (Kind::TooLarge, "TooLarge", 2),
             (Kind::InvalidRequest, "InvalidRequest", 2),
             (Kind::DaemonUnreachable, "DaemonUnreachable", 7),
@@ -350,7 +343,7 @@ mod tests {
             kind::INVALID_REQUEST,
             kind::TOO_LARGE,
             kind::SESSION_ENDED,
-            kind::SCREEN_UNAVAILABLE,
+            kind::INTERNAL_ERROR,
         ] {
             assert_eq!(Kind::from_code(code).code(), code);
         }
