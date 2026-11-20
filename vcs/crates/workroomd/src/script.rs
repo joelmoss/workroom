@@ -9,8 +9,8 @@
 //! a SIGTERM, SIGHUP or SIGINT to this process, ends the whole tree the way the exec service ends a
 //! command (`wr_exec::end_tree`: the group and the descendants recorded before it, SIGKILL after a
 //! grace). A signal this process was started ignoring (nohup's SIGHUP, a background job's SIGINT)
-//! is no cancel while the login shell is read. The runner prints nothing of its own except the probe's fallback note: each
-//! caller words an [`Outcome`] its own way.
+//! is no cancel while the login shell is read. The runner prints nothing of its own except the
+//! probe's fallback note: each caller words an [`Outcome`] its own way.
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
