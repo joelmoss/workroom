@@ -43,6 +43,7 @@ pub(super) const FLAGS: &[Flag] = &[
         takes_value: true,
         usage: "Release channel: stable or pre (remembered for next time)",
         default: "",
+        hidden: false,
         required: false,
     },
     Flag {
@@ -51,6 +52,7 @@ pub(super) const FLAGS: &[Flag] = &[
         takes_value: false,
         usage: "Only check if an update is available",
         default: "",
+        hidden: false,
         required: false,
     },
 ];

@@ -5,13 +5,14 @@
 //!
 //! Without `WORKROOM_BIN` the binary under test is this crate's own `workroom`. A group's tests
 //! are `#[ignore]`d until its commands are ported to Rust, so a plain `cargo test` runs only the
-//! ported groups (`version_`, `update_`, `list_`, `config_` and `include_archive_` today). `make
-//! contract-test` builds the Go CLI and runs every test against it with `--include-ignored`.
+//! ported groups (`version_`, `update_`, `list_`, `config_`, `include_archive_` and `completion_`
+//! today). `make contract-test` builds the Go CLI and runs every test against it with
+//! `--include-ignored`.
 //!
 //! The Mac-only commands' groups (`list_`, `config_`, `include_archive_`) are ignored off the Mac
 //! too, where the Rust binary answers them with `MacOnly` (ADR 0078): a plain `cargo test` on
-//! Linux runs `version_` and `update_` alone, and `--include-ignored` against the Go CLI still
-//! runs everything.
+//! Linux runs `version_`, `update_` and `completion_`, which work anywhere, and
+//! `--include-ignored` against the Go CLI still runs everything.
 //!
 //! Tests are named for their command group (`version_`, `update_`, `list_`, `config_`,
 //! `include_archive_`, `completion_`), so a port can run only its own group's names against Rust.
@@ -1721,12 +1722,15 @@ fn include_archive_reports_a_failed_listing_or_output() {
 
 // --- completion ---
 
+/// The variables a run adds to its environment, by name.
+type Env = &'static [(&'static str, &'static str)];
+
 /// The command lines `completion-protocol.txt` records, each with the environment it adds: what a
 /// cobra completion script asks on a Tab (`__complete <args…> <word>`, or `__completeNoDesc`). They
 /// cover the top level, a partial word, each command with subcommands (`base`, `host` and `trust`,
 /// hidden `host` included), the flags (inherited, local, shorthand, hidden, required, already set,
 /// after `--`, taking a value), `help` and `completion` themselves, and the errors.
-const COMPLETION_CASES: &[(&[(&str, &str)], &[&str])] = &[
+const COMPLETION_CASES: &[(Env, &[&str])] = &[
     (&[], &["__complete", ""]),
     (&[], &["__completeNoDesc", ""]),
     (&[], &["__complete", "b"]),
@@ -1856,12 +1860,28 @@ fn shell_word(arg: &str) -> String {
     }
 }
 
+/// The commands the Rust CLI has and Go's doesn't: `sessions`, born in Rust for the terminal API
+/// (#683). Completion offers each beside Go's commands, wherever it lists them (`''`, `help ''`,
+/// after a global flag), which Go's cobra, who wrote the golden, never did.
+const RUST_ONLY_COMMANDS: &[&str] = &["sessions"];
+
+/// `stdout` without the candidates `RUST_ONLY_COMMANDS` name, with or without a description, so
+/// the Rust binary matches the transcript Go wrote in all else. Against Go it changes nothing.
+fn without_rust_only_commands(stdout: &str) -> String {
+    stdout
+        .split_inclusive('\n')
+        .filter(|line| {
+            let candidate = line.trim_end_matches('\n').split('\t').next();
+            !candidate.is_some_and(|word| RUST_ONLY_COMMANDS.contains(&word))
+        })
+        .collect()
+}
+
 /// Every case of `COMPLETION_CASES`, as Go's cobra answers them: each command line, then its
 /// stdout, its stderr and its exit code. The golden was written from the Go CLI, so this holds the
 /// binary under test to cobra's protocol byte for byte, which every script a user saved from the
-/// Go CLI speaks.
+/// Go CLI speaks, but for the candidates of `RUST_ONLY_COMMANDS`.
 #[test]
-#[ignore = "not ported to Rust yet"]
 fn completion_protocol_matches_the_golden() {
     let home = Home::new("completion-protocol");
     let mut transcript = String::new();
@@ -1881,7 +1901,7 @@ fn completion_protocol_matches_the_golden() {
         transcript += &format!(
             "$ {}\n{}--- stderr\n{}--- exit {}\n\n",
             line.join(" "),
-            String::from_utf8(output.stdout).expect("stdout is UTF-8"),
+            without_rust_only_commands(&String::from_utf8(output.stdout).expect("stdout is UTF-8")),
             String::from_utf8(output.stderr).expect("stderr is UTF-8"),
             output.status.code().expect("exited")
         );
@@ -1891,7 +1911,6 @@ fn completion_protocol_matches_the_golden() {
 
 /// `completion` is one of `--help`'s commands, and runs anywhere, so it is not marked Mac-only.
 #[test]
-#[ignore = "not ported to Rust yet"]
 fn completion_is_in_help_and_not_mac_only() {
     let home = Home::new("completion-help");
     let run = home.run(&home.dir, &["--help"]);
@@ -1918,7 +1937,6 @@ const COMPLETION_SHELLS: &[(&str, &str)] = &[
 /// asking `__completeNoDesc`, so a script saved from either binary is the other's. `completion`
 /// alone is its help; an extra argument is a usage error.
 #[test]
-#[ignore = "not ported to Rust yet"]
 fn completion_writes_each_shells_script_as_go_does() {
     let home = Home::new("completion-scripts");
     for (shell, fixture) in COMPLETION_SHELLS {
@@ -2053,7 +2071,6 @@ fn offers_base(offered: &str) -> bool {
 /// The script `completion <shell>` writes, sourced in that shell, completes `workroom b` to `base`
 /// by asking the binary, with descriptions and without. Each shell that isn't installed is skipped.
 #[test]
-#[ignore = "not ported to Rust yet"]
 fn completion_scripts_complete_in_their_shells() {
     let home = Home::new("completion-shells");
     for shell in ["bash", "zsh", "fish"] {
@@ -2076,7 +2093,6 @@ fn completion_scripts_complete_in_their_shells() {
 /// A script saved from the Go CLI keeps working once this binary is `workroom`: each sourceable
 /// shell's fixture completes `workroom b` to `base` against the binary under test.
 #[test]
-#[ignore = "not ported to Rust yet"]
 fn completion_a_go_generated_script_completes_against_the_binary() {
     let home = Home::new("completion-go-script");
     for (shell, fixture) in &COMPLETION_SHELLS[..3] {

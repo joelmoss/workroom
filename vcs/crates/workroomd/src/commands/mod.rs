@@ -15,9 +15,15 @@
 //!
 //! The terminal API's commands (#360, ADR 0079) are born here and run anywhere: each is a thin
 //! client of the daemon's terminal API (`terminal_api`).
+//!
+//! Shell completion works anywhere (#700): `completion` writes cobra's scripts, and the hidden
+//! `__complete` answers them from `COMMANDS`, so every command's subcommands and flags, a stub's
+//! included, are offered as Go offers them.
 
 mod base;
 pub(crate) mod channel;
+mod complete;
+mod completion;
 mod config;
 mod envelope;
 mod git;
@@ -117,12 +123,33 @@ struct Flag {
     usage: &'static str,
     /// The value `--help` shows as the default; "" for none.
     default: &'static str,
+    /// Left out of `--help` and shell completion: flags the app passes, not people.
+    hidden: bool,
     /// Must be given, as cobra's `MarkFlagRequired` makes a flag: a usage error before the command
-    /// runs when it isn't (`missing_required`). Given empty, it is.
+    /// runs when it isn't (`missing_required`). Given empty, it is. Shell completion offers it
+    /// first, as cobra does.
     required: bool,
 }
 
 impl Flag {
+    /// A boolean flag, shown, not required, with no one-letter form or default: what a `Flag` is
+    /// in everything it doesn't say.
+    const BOOL: Flag = Flag {
+        name: "",
+        short: None,
+        takes_value: false,
+        usage: "",
+        default: "",
+        hidden: false,
+        required: false,
+    };
+
+    /// A flag that takes a value, otherwise as [`Flag::BOOL`].
+    const VALUE: Flag = Flag {
+        takes_value: true,
+        ..Flag::BOOL
+    };
+
     /// How pflag names it, in `--help` and in an error: `-c, --check`, or `--channel`.
     fn spelled(&self) -> String {
         match self.short {
@@ -131,6 +158,28 @@ impl Flag {
         }
     }
 }
+
+/// The flags every command takes, which cobra calls the root's persistent flags. `--help` is each
+/// command's own (`help for <command>` in completion).
+const PERSISTENT_FLAGS: &[Flag] = &[
+    Flag {
+        name: "json",
+        usage: "Emit machine-readable JSON (exactly one object on stdout)",
+        ..Flag::BOOL
+    },
+    Flag {
+        name: "pretend",
+        short: Some('p'),
+        usage: "Run through the command without making changes (dry run)",
+        ..Flag::BOOL
+    },
+    Flag {
+        name: "verbose",
+        short: Some('v'),
+        usage: "Print detailed and verbose output",
+        ..Flag::BOOL
+    },
+];
 
 /// What a command was given besides the global flags.
 pub(crate) struct Args {
@@ -179,7 +228,18 @@ enum Arity {
     Own,
 }
 
-/// One command of the CLI.
+/// What shell completion offers for a command's arguments, beside its subcommands.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Operands {
+    /// Nothing of its own, so the shell falls back to file names.
+    Files,
+    /// Nothing at all, not even file names.
+    Nothing,
+    /// The commands `help` takes as its topic.
+    Commands,
+}
+
+/// One command of the CLI, or a subcommand of one.
 struct Command {
     name: &'static str,
     aliases: &'static [&'static str],
@@ -188,11 +248,16 @@ struct Command {
     short: &'static str,
     /// What its own `--help` says first, when it says more than `short`.
     long: Option<&'static str>,
-    /// Left out of `--help`: commands the app runs, not people.
+    /// Left out of `--help` and shell completion: commands the app runs, not people.
     hidden: bool,
     mac_only: bool,
     flags: &'static [Flag],
+    /// `base set|clear`, `host set|clear`, `trust status`: for `--help`, shell completion and the
+    /// flags each takes. A subcommand's `implementation` and `mac_only` are its parent's, whose
+    /// `run` reads the subcommand from its arguments.
+    subcommands: &'static [Command],
     arity: Arity,
+    operands: Operands,
     implementation: Implementation,
 }
 
@@ -208,15 +273,27 @@ enum Implementation {
 
 /// Every command, in `--help`'s order. Names, aliases and help lines are the Go CLI's.
 const COMMANDS: &[Command] = &[
-    stub(
-        "add-project",
-        &[],
-        "add-project [PATH]",
-        "Register a project (internal; used by the macOS app via --json)",
-        true,
-        true,
-        "#672",
-    ),
+    Command {
+        hidden: true,
+        ..stub(
+            "add-project",
+            "add-project [PATH]",
+            "Register a project (internal; used by the macOS app via --json)",
+            &[
+                Flag {
+                    name: "clone",
+                    usage: "Clone this repository URL into PATH, then register it",
+                    ..Flag::VALUE
+                },
+                Flag {
+                    name: "create",
+                    usage: "Create and git-initialize the directory if it does not already exist",
+                    ..Flag::BOOL
+                },
+            ],
+            "#672",
+        )
+    },
     Command {
         name: "base",
         aliases: &[],
@@ -225,72 +302,262 @@ const COMMANDS: &[Command] = &[
         long: None,
         hidden: false,
         mac_only: true,
-        flags: &[
-            Flag {
-                name: "global",
-                short: None,
-                takes_value: false,
-                usage: "The default for every project that names no base branch",
-                default: "",
-                required: false,
-            },
-            Flag {
-                name: "project",
-                short: None,
-                takes_value: true,
-                usage: "Project directory (defaults to the current directory)",
-                default: "",
-                required: false,
-            },
+        // Go gives the flags to `set` and `clear`, not to `base` itself.
+        flags: &[],
+        subcommands: &[
+            subcommand(
+                BASE,
+                true,
+                "clear",
+                "base clear",
+                "Start new workrooms from the global base, else origin's default branch",
+                BASE_FLAGS,
+            ),
+            subcommand(
+                BASE,
+                true,
+                "set",
+                "base set BRANCH",
+                "Start new workrooms from BRANCH",
+                BASE_FLAGS,
+            ),
         ],
         arity: Arity::Own,
-        implementation: Implementation::Ported(base::run),
+        operands: Operands::Files,
+        implementation: BASE,
     },
-    stub(
-        "claim-provisioned",
-        &[],
-        "claim-provisioned",
-        "Move the remote entries a build made from another config into this one (used by the desktop app)",
-        true,
-        true,
-        "#672",
-    ),
-    stub(
-        "create",
-        &["c"],
-        "create",
-        "Create a new workroom",
-        false,
-        true,
-        "#677",
-    ),
-    stub(
-        "delete",
-        &["d"],
-        "delete [NAME]",
-        "Delete an existing workroom",
-        false,
-        true,
-        "#678",
-    ),
-    stub(
-        "delete-project",
-        &[],
-        "delete-project [PATH]",
-        "Remove a project (internal; used by the macOS app via --json)",
-        true,
-        true,
-        "#672",
-    ),
-    stub(
-        "host",
-        &[],
-        "host",
-        "Set or clear a project's or workroom's host descriptor (used by the desktop app)",
-        true,
-        true,
-        "#673",
-    ),
+    Command {
+        hidden: true,
+        ..stub(
+            "claim-provisioned",
+            "claim-provisioned",
+            "Move the remote entries a build made from another config into this one (used by the desktop app)",
+            &[
+                Flag {
+                    name: "from",
+                    usage: "The config to move entries out of",
+                    required: true,
+                    ..Flag::VALUE
+                },
+                Flag {
+                    name: "provisioner",
+                    usage: "The bundle ID of the build that made them",
+                    required: true,
+                    ..Flag::VALUE
+                },
+            ],
+            "#672",
+        )
+    },
+    Command {
+        name: "completion",
+        aliases: &[],
+        usage: "completion [command]",
+        short: "Generate the autocompletion script for the specified shell",
+        long: Some(
+            "Generate the autocompletion script for workroom for the specified shell.\n\
+             See each sub-command's help for details on how to use the generated script.",
+        ),
+        hidden: false,
+        mac_only: false,
+        flags: &[],
+        subcommands: &[
+            shell(
+                "bash",
+                "completion bash",
+                "Generate the autocompletion script for bash",
+                completion::BASH_HELP,
+            ),
+            shell(
+                "fish",
+                "completion fish [flags]",
+                "Generate the autocompletion script for fish",
+                completion::FISH_HELP,
+            ),
+            shell(
+                "powershell",
+                "completion powershell [flags]",
+                "Generate the autocompletion script for powershell",
+                completion::POWERSHELL_HELP,
+            ),
+            shell(
+                "zsh",
+                "completion zsh [flags]",
+                "Generate the autocompletion script for zsh",
+                completion::ZSH_HELP,
+            ),
+        ],
+        arity: Arity::Own,
+        operands: Operands::Nothing,
+        implementation: COMPLETION,
+    },
+    Command {
+        aliases: &["c"],
+        ..stub(
+            "create",
+            "create",
+            "Create a new workroom",
+            &[
+                Flag {
+                    name: "host",
+                    usage: "Record a remote workroom with this host descriptor, a JSON object \
+                            (used by the desktop app)",
+                    hidden: true,
+                    ..Flag::VALUE
+                },
+                Flag {
+                    name: "host-parent",
+                    usage: "The absolute parent folder on the host; the generated name supplies \
+                            the workroom's folder (with --host)",
+                    hidden: true,
+                    ..Flag::VALUE
+                },
+                Flag {
+                    name: "host-path",
+                    usage: "The remote workroom's path on its host (with --host)",
+                    hidden: true,
+                    ..Flag::VALUE
+                },
+                Flag {
+                    name: "no-editor",
+                    usage: "Do not offer to open the new workroom in $EDITOR",
+                    ..Flag::BOOL
+                },
+                Flag {
+                    name: "project",
+                    usage: "Project directory to create the workroom in (defaults to the current \
+                            directory)",
+                    ..Flag::VALUE
+                },
+                Flag {
+                    name: "skip-setup",
+                    usage: "Create without running the setup script, and without asking to \
+                            approve it",
+                    ..Flag::BOOL
+                },
+                Flag {
+                    name: "start",
+                    usage: "What to include when you have commits you haven't pushed, or changes \
+                            you haven't committed: local-with-changes (both), local (your \
+                            commits), origin (neither), or ask (stop with exit 3 and say what \
+                            there is). A terminal asks when unset",
+                    ..Flag::VALUE
+                },
+                Flag {
+                    name: "start-commit",
+                    usage: "Start from this commit, the start_commit a refused create reported, \
+                            without fetching (used by the desktop app)",
+                    hidden: true,
+                    ..Flag::VALUE
+                },
+            ],
+            "#677",
+        )
+    },
+    Command {
+        aliases: &["d"],
+        ..stub(
+            "delete",
+            "delete [NAME]",
+            "Delete an existing workroom",
+            &[
+                Flag {
+                    name: "confirm",
+                    usage: "Skip confirmation if value matches the workroom name (required in \
+                            --json mode)",
+                    ..Flag::VALUE
+                },
+                Flag {
+                    name: "project",
+                    usage: "Project directory the workroom belongs to (defaults to the current \
+                            directory)",
+                    ..Flag::VALUE
+                },
+                Flag {
+                    name: "skip-teardown",
+                    usage: "Delete without running the teardown script (after it failed)",
+                    ..Flag::BOOL
+                },
+            ],
+            "#678",
+        )
+    },
+    Command {
+        hidden: true,
+        ..stub(
+            "delete-project",
+            "delete-project [PATH]",
+            "Remove a project (internal; used by the macOS app via --json)",
+            &[
+                Flag {
+                    name: "confirm",
+                    usage: "Required in --json mode; must match the project path",
+                    ..Flag::VALUE
+                },
+                Flag {
+                    name: "from-disk",
+                    usage: "App-only: runs teardowns, drops config, returns trash_paths; the \
+                            caller (macOS app) moves those dirs to the Trash",
+                    ..Flag::BOOL
+                },
+                Flag {
+                    name: "skip-teardown",
+                    usage: "With --with-workrooms or --from-disk: run no workroom's teardown \
+                            script (after one failed)",
+                    ..Flag::BOOL
+                },
+                Flag {
+                    name: "with-workrooms",
+                    usage: "Also tear down every workroom (worktree dirs + files; branches kept)",
+                    ..Flag::BOOL
+                },
+            ],
+            "#672",
+        )
+    },
+    Command {
+        name: "help",
+        aliases: &[],
+        usage: "help [command]",
+        short: "Help about any command",
+        long: None,
+        hidden: false,
+        mac_only: false,
+        flags: &[],
+        subcommands: &[],
+        arity: Arity::Own,
+        operands: Operands::Commands,
+        implementation: Implementation::Ported(help_command),
+    },
+    Command {
+        hidden: true,
+        subcommands: &[
+            subcommand(
+                HOST,
+                true,
+                "clear",
+                "host clear",
+                "Remove the host descriptor",
+                HOST_FLAGS,
+            ),
+            subcommand(
+                HOST,
+                true,
+                "set",
+                "host set DESCRIPTOR",
+                "Store DESCRIPTOR, a JSON object, as the host descriptor",
+                HOST_FLAGS,
+            ),
+        ],
+        arity: Arity::Own,
+        ..stub(
+            "host",
+            "host",
+            "Set or clear a project's or workroom's host descriptor (used by the desktop app)",
+            &[],
+            "#673",
+        )
+    },
     Command {
         name: "include-archive",
         aliases: &[],
@@ -302,22 +569,19 @@ const COMMANDS: &[Command] = &[
         flags: &[
             Flag {
                 name: "output",
-                short: None,
-                takes_value: true,
                 usage: "The file to write the tar to",
-                default: "",
                 required: true,
+                ..Flag::VALUE
             },
             Flag {
                 name: "project",
-                short: None,
-                takes_value: true,
                 usage: "Project directory (defaults to the current directory)",
-                default: "",
-                required: false,
+                ..Flag::VALUE
             },
         ],
+        subcommands: &[],
         arity: Arity::None,
+        operands: Operands::Files,
         implementation: Implementation::Ported(include_archive::run),
     },
     Command {
@@ -331,22 +595,19 @@ const COMMANDS: &[Command] = &[
         flags: &[
             Flag {
                 name: "project",
-                short: None,
-                takes_value: true,
                 usage: "Limit JSON output to a single project directory",
-                default: "",
-                required: false,
+                ..Flag::VALUE
             },
             Flag {
                 name: "warnings",
-                short: None,
-                takes_value: true,
                 usage: "Warning detail for --json: none, fast, or full",
                 default: "fast",
-                required: false,
+                ..Flag::VALUE
             },
         ],
+        subcommands: &[],
         arity: Arity::None,
+        operands: Operands::Files,
         implementation: Implementation::Ported(list::run),
     },
     Command {
@@ -358,26 +619,41 @@ const COMMANDS: &[Command] = &[
         hidden: false,
         mac_only: false,
         flags: &[],
+        subcommands: &[],
         // One optional TARGET, which `sessions::run` checks.
         arity: Arity::Own,
+        // A TARGET is a session the daemon knows, which completion doesn't ask it for; with
+        // nothing of its own, cobra's default is file names.
+        operands: Operands::Files,
         implementation: Implementation::Ported(sessions::run),
     },
-    stub(
-        "trust",
-        &[],
-        "trust",
-        "Approve a project's setup and teardown scripts so Workroom runs them",
-        false,
-        true,
-        "#674",
-    ),
+    Command {
+        subcommands: &[subcommand(
+            TRUST,
+            true,
+            "status",
+            "trust status",
+            "Say whether a project's setup and teardown scripts are approved",
+            TRUST_FLAGS,
+        )],
+        arity: Arity::Own,
+        ..stub(
+            "trust",
+            "trust",
+            "Approve a project's setup and teardown scripts so Workroom runs them",
+            TRUST_FLAGS,
+            "#674",
+        )
+    },
     stub(
         "untrust",
-        &[],
         "untrust",
         "Forget the approval of a project's setup and teardown scripts",
-        false,
-        true,
+        &[Flag {
+            name: "project",
+            usage: "Project directory (defaults to the current directory)",
+            ..Flag::VALUE
+        }],
         "#674",
     ),
     Command {
@@ -389,7 +665,9 @@ const COMMANDS: &[Command] = &[
         hidden: false,
         mac_only: false,
         flags: update::FLAGS,
+        subcommands: &[],
         arity: Arity::None,
+        operands: Operands::Files,
         implementation: Implementation::Ported(update::run),
     },
     Command {
@@ -401,36 +679,152 @@ const COMMANDS: &[Command] = &[
         hidden: false,
         mac_only: false,
         flags: &[],
+        subcommands: &[],
         arity: Arity::None,
+        operands: Operands::Files,
         implementation: Implementation::Ported(version::run),
     },
 ];
 
+const BASE: Implementation = Implementation::Ported(base::run);
+const HOST: Implementation = Implementation::Stub { ticket: "#673" };
+const TRUST: Implementation = Implementation::Stub { ticket: "#674" };
+
+/// A Mac-only command, shown in `--help`, with no aliases, still the Go CLI's until `ticket`. It
+/// has the flags Go gives it, so `--help` and shell completion already match Go's.
 const fn stub(
     name: &'static str,
-    aliases: &'static [&'static str],
     usage: &'static str,
     short: &'static str,
-    hidden: bool,
-    mac_only: bool,
+    flags: &'static [Flag],
     ticket: &'static str,
 ) -> Command {
     Command {
         name,
-        aliases,
+        aliases: &[],
         usage,
         short,
         long: None,
-        hidden,
-        mac_only,
-        flags: &[],
+        hidden: false,
+        mac_only: true,
+        flags,
+        subcommands: &[],
         arity: Arity::None,
+        operands: Operands::Files,
         implementation: Implementation::Stub { ticket },
     }
 }
 
+/// A subcommand of the command whose `implementation` and `mac_only` these are.
+const fn subcommand(
+    implementation: Implementation,
+    mac_only: bool,
+    name: &'static str,
+    usage: &'static str,
+    short: &'static str,
+    flags: &'static [Flag],
+) -> Command {
+    Command {
+        name,
+        aliases: &[],
+        usage,
+        short,
+        long: None,
+        hidden: false,
+        mac_only,
+        flags,
+        subcommands: &[],
+        arity: Arity::Own,
+        operands: Operands::Files,
+        implementation,
+    }
+}
+
+const BASE_FLAGS: &[Flag] = &[
+    Flag {
+        name: "global",
+        usage: "The default for every project that names no base branch",
+        ..Flag::BOOL
+    },
+    Flag {
+        name: "project",
+        usage: "Project directory (defaults to the current directory)",
+        ..Flag::VALUE
+    },
+];
+
+const HOST_FLAGS: &[Flag] = &[
+    Flag {
+        name: "project",
+        usage: "Project directory (defaults to the current directory)",
+        ..Flag::VALUE
+    },
+    Flag {
+        name: "workroom",
+        usage: "The project's workroom; omitted, the project's own descriptor",
+        ..Flag::VALUE
+    },
+];
+
+const TRUST_FLAGS: &[Flag] = &[
+    Flag {
+        name: "project",
+        usage: "Project directory (defaults to the current directory)",
+        ..Flag::VALUE
+    },
+    Flag {
+        name: "stdin",
+        usage: "Judge this script's contents, read from stdin, in place of the project's file \
+                (used by the desktop app)",
+        hidden: true,
+        ..Flag::VALUE
+    },
+    Flag {
+        name: "base",
+        usage: "Judge the setup script at this branch, on origin unless it names a remote (\"\" is \
+                origin's default), in place of the project's base (used by the desktop app)",
+        hidden: true,
+        ..Flag::VALUE
+    },
+    Flag {
+        name: "devcontainer",
+        usage: "Judge the devcontainer.json a container create from --base would use too (used \
+                by the desktop app)",
+        hidden: true,
+        ..Flag::BOOL
+    },
+];
+
+const NO_DESCRIPTIONS: &[Flag] = &[Flag {
+    name: "no-descriptions",
+    usage: "disable completion descriptions",
+    ..Flag::BOOL
+}];
+
+/// `completion <shell>`, as cobra makes each.
+const fn shell(
+    name: &'static str,
+    usage: &'static str,
+    short: &'static str,
+    long: &'static str,
+) -> Command {
+    Command {
+        long: Some(long),
+        operands: Operands::Nothing,
+        ..subcommand(COMPLETION, false, name, usage, short, NO_DESCRIPTIONS)
+    }
+}
+
+const COMPLETION: Implementation = Implementation::Ported(completion::run);
+
+/// The root's commands, as cobra finds one by name or alias.
 fn find(name: &str) -> Option<&'static Command> {
-    COMMANDS
+    find_in(COMMANDS, name)
+}
+
+/// The command of `commands` that `name` names, or an alias of.
+fn find_in(commands: &'static [Command], name: &str) -> Option<&'static Command> {
+    commands
         .iter()
         .find(|command| command.name == name || command.aliases.contains(&name))
 }
@@ -584,13 +978,12 @@ fn run(args: &[String], mut context: Context) -> Output {
     let name = args.iter().find(|arg| !arg.starts_with('-')).cloned();
     let command = match name.as_deref() {
         None => None,
-        Some("help") => {
-            let topic = args
-                .iter()
-                .filter(|arg| !arg.starts_with('-'))
-                .nth(1)
-                .and_then(|topic| find(topic));
-            return Output::stdout(help(topic));
+        // What a completion script asks on every Tab, which cobra answers before parsing a flag:
+        // the rest of the line is the one to complete.
+        Some(request @ ("__complete" | "__completeNoDesc")) => {
+            let at = args.iter().position(|arg| arg == request).unwrap_or(0);
+            let line = [&args[..at], &args[at + 1..]].concat();
+            return complete::run(&line, request == "__completeNoDesc", &context);
         }
         Some(name) => match find(name) {
             Some(command) => Some(command),
@@ -604,11 +997,22 @@ fn run(args: &[String], mut context: Context) -> Output {
             }
         },
     };
-    let (parsed, error) = parse(args, command.map_or(&[], |command| command.flags));
+    // A subcommand's own flags are its, not its parent's (`base set --global`), so the flags are
+    // the subcommand's the arguments name, found as cobra finds it.
+    let leaf = command.map(|command| {
+        let at = args
+            .iter()
+            .position(|arg| !arg.starts_with('-'))
+            .unwrap_or(0);
+        let rest = [&args[..at], &args[at + 1..]].concat();
+        complete::descend(command, rest).0
+    });
+    let (parsed, error) = parse(args, leaf.map_or(&[], |leaf| leaf.flags));
     context.json = parsed.json;
     context.pretend = parsed.pretend;
     context.verbose = parsed.verbose;
-    // A stub's own flags aren't known yet, so it doesn't refuse them; it fails below anyway. Nor
+    // A stub fails below whatever it was given, so it refuses no flag: saying it isn't in this
+    // build yet is the more useful answer, though its table entry lists Go's flags. Nor
     // does a Mac-only command away from the Mac: `MacOnly` is what it answers, whatever it was given.
     let refuses_nothing = command.is_some_and(|command| {
         matches!(command.implementation, Implementation::Stub { .. })
@@ -617,17 +1021,17 @@ fn run(args: &[String], mut context: Context) -> Output {
     if let Some(message) = error.filter(|_| !refuses_nothing) {
         return report(&context, None, Outcome::Usage(CliError::internal(message)));
     }
-    let Some(command) = command else {
+    let (Some(command), Some(leaf)) = (command, leaf) else {
         return Output::stdout(help(None));
     };
     if parsed.help {
-        return Output::stdout(help(Some(command)));
+        return Output::stdout(help(Some(leaf)));
     }
     // Go checks a command's arguments before it runs, so the envelope names no command.
     let args = Args {
         positional: parsed.positional.iter().skip(1).cloned().collect(),
         values: parsed.values,
-        flags: command.flags,
+        flags: leaf.flags,
     };
     if let (false, Arity::None, Some(extra)) =
         (refuses_nothing, command.arity, args.positional.first())
@@ -638,10 +1042,9 @@ fn run(args: &[String], mut context: Context) -> Output {
         );
         return report(&context, None, Outcome::Usage(CliError::internal(message)));
     }
-    // Then its required flags, as cobra checks them after the arguments.
-    if let Some(message) =
-        missing_required(command.flags, &args.values).filter(|_| !refuses_nothing)
-    {
+    // Then its required flags, as cobra checks them after the arguments: the subcommand's, if the
+    // arguments name one.
+    if let Some(message) = missing_required(args.flags, &args.values).filter(|_| !refuses_nothing) {
         return report(&context, None, Outcome::Usage(CliError::internal(message)));
     }
     let outcome = if command.mac_only && context.platform != Platform::Mac {
@@ -725,27 +1128,30 @@ fn report(context: &Context, command: Option<&str>, outcome: Outcome) -> Output 
     }
 }
 
-/// The flags every command takes, as `--help` lists them.
-const GLOBAL_FLAGS: &[(&str, &str)] = &[
-    ("-h, --help", "help"),
-    (
-        "    --json",
-        "Emit machine-readable JSON (exactly one object on stdout)",
-    ),
-    (
-        "-p, --pretend",
-        "Run through the command without making changes (dry run)",
-    ),
-    ("-v, --verbose", "Print detailed and verbose output"),
-];
+/// `help [command…]`: the help of the command (or subcommand) it names, else the CLI's.
+fn help_command(_: &Context, args: &Args) -> Outcome {
+    let topic = args.positional.split_first().and_then(|(name, rest)| {
+        find(name).map(|command| complete::descend(command, rest.to_vec()).0)
+    });
+    Outcome::Printed(help(topic))
+}
 
-/// `--help`'s flag table: the global flags, then `own`, each usage in one column.
+/// `--help` itself, as its table lists it.
+const HELP_FLAG: Flag = Flag {
+    name: "help",
+    short: Some('h'),
+    usage: "help",
+    ..Flag::BOOL
+};
+
+/// `--help`'s flag table: `--help` and the global flags, then `own` but its hidden ones, each
+/// usage in one column.
 fn flag_table(own: &[Flag]) -> String {
-    let mut rows: Vec<(String, String)> = GLOBAL_FLAGS
-        .iter()
-        .map(|(name, usage)| (name.to_string(), usage.to_string()))
-        .collect();
-    for flag in own {
+    let mut rows: Vec<(String, String)> = Vec::new();
+    let all = std::iter::once(&HELP_FLAG)
+        .chain(PERSISTENT_FLAGS)
+        .chain(own);
+    for flag in all.filter(|flag| !flag.hidden) {
         let spelled = match flag.short {
             Some(_) => flag.spelled(),
             None => format!("    {}", flag.spelled()),
@@ -779,6 +1185,23 @@ fn help(command: Option<&Command>) -> String {
                 mark(command),
                 command.usage
             );
+            let shown: Vec<&Command> = command
+                .subcommands
+                .iter()
+                .filter(|sub| !sub.hidden)
+                .collect();
+            if !shown.is_empty() {
+                let width = shown
+                    .iter()
+                    .map(|sub| sub.name.len())
+                    .max()
+                    .unwrap_or(0)
+                    .max(11);
+                text += "\nAvailable Commands:\n";
+                for sub in shown {
+                    text += &format!("  {:width$} {}\n", sub.name, sub.short);
+                }
+            }
             if !command.aliases.is_empty() {
                 text += &format!(
                     "\nAliases:\n  {}, {}\n",
@@ -796,7 +1219,6 @@ fn help(command: Option<&Command>) -> String {
                 .filter(|command| !command.hidden)
                 .map(|command| (command.name, format!("{}{}", command.short, mark(command))))
                 .collect();
-            shown.push(("help", "Help about any command".to_string()));
             shown.sort_by_key(|(name, _)| *name);
             let width = COMMANDS
                 .iter()
@@ -964,13 +1386,102 @@ mod tests {
         let (parsed, _) = parse(
             &[
                 "base".to_string(),
+                "set".to_string(),
                 "--global=false".to_string(),
                 "-p".to_string(),
             ],
-            find("base").unwrap().flags,
+            find_in(find("base").unwrap().subcommands, "set")
+                .unwrap()
+                .flags,
         );
         assert_eq!(parsed.values, [("global", "false".to_string())]);
         assert!(parsed.pretend);
+    }
+
+    /// Completion works on a remote host as on the Mac: the scripts, and `__complete`'s
+    /// candidates, Mac-only commands' flags included, come from the table, not the commands.
+    #[test]
+    fn completion_runs_anywhere() {
+        for platform in [Platform::Mac, Platform::Other] {
+            let ((stdout, stderr), code) = run_on(platform, &["__complete", "b"]);
+            assert_eq!(
+                (stdout.as_str(), code),
+                (
+                    "base\tSet or clear the branch new workrooms start from\n:4\n",
+                    0
+                )
+            );
+            assert_eq!(
+                stderr,
+                "Completion ended with directive: ShellCompDirectiveNoFileComp\n"
+            );
+            let ((stdout, _), _) = run_on(platform, &["__completeNoDesc", "base", "set", "--g"]);
+            assert_eq!(stdout, "--global\n:4\n");
+            let ((script, stderr), code) = run_on(platform, &["completion", "zsh"]);
+            assert_eq!((stderr.as_str(), code), ("", 0));
+            assert!(script.starts_with("#compdef workroom\n"), "{script}");
+        }
+    }
+
+    /// `sessions` is Rust's alone (#683), so the contract suite's Go-recorded transcript can't
+    /// hold it: completion offers it beside Go's commands, and the global flags after it, as for
+    /// any command with no flags of its own.
+    #[test]
+    fn completion_offers_sessions_and_its_flags() {
+        let ((stdout, _), code) = run_on(Platform::Other, &["__complete", "s"]);
+        assert_eq!(
+            (stdout.as_str(), code),
+            (
+                "sessions\tList the daemon's terminal sessions, or the one TARGET names\n:4\n",
+                0
+            )
+        );
+        let ((stdout, _), _) = run_on(Platform::Other, &["__completeNoDesc", ""]);
+        assert!(stdout.lines().any(|line| line == "sessions"), "{stdout}");
+        let ((stdout, _), _) = run_on(Platform::Other, &["__completeNoDesc", "sessions", "--"]);
+        // In cobra's order, as `version`'s are in the contract suite's transcript.
+        assert_eq!(stdout, "--json\n--pretend\n--verbose\n--help\n:4\n");
+    }
+
+    /// As in Go, `base`'s flags are `set`'s and `clear`'s, and each subcommand's `--help` is its
+    /// own; a stub's `--help` lists the flags Go gives it, but the hidden ones.
+    #[test]
+    fn a_subcommands_flags_and_help_are_its_own() {
+        let ((stdout, stderr), code) = run_on(Platform::Mac, &["base", "--global"]);
+        assert_eq!(
+            (stdout.as_str(), stderr.as_str(), code),
+            ("", "Error: unknown flag: --global\n", 1)
+        );
+        let ((text, _), code) = run_on(Platform::Mac, &["base", "set", "--help"]);
+        assert_eq!(code, 0);
+        assert!(
+            text.starts_with(
+                "Start new workrooms from BRANCH (Mac only)\n\nUsage:\n  workroom base set BRANCH\n"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("      --global "), "{text}");
+        let ((text, _), _) = run_on(Platform::Mac, &["create", "--help"]);
+        assert!(text.contains("      --no-editor "), "{text}");
+        assert!(!text.contains("--host"), "{text}");
+    }
+
+    #[test]
+    fn help_names_a_subcommand_as_its_topic() {
+        let ((text, _), code) = run_on(Platform::Other, &["help", "completion", "zsh"]);
+        assert_eq!(code, 0);
+        assert!(
+            text.starts_with("Generate the autocompletion script for the zsh shell.\n"),
+            "{text}"
+        );
+        let ((text, _), _) = run_on(Platform::Other, &["help", "completion"]);
+        assert!(
+            text.contains("\nAvailable Commands:\n  bash        Generate"),
+            "{text}"
+        );
+        let ((unknown, _), _) = run_on(Platform::Other, &["help", "bogus"]);
+        let ((root, _), _) = run_on(Platform::Other, &["--help"]);
+        assert_eq!(unknown, root);
     }
 
     #[test]
@@ -1016,27 +1527,17 @@ mod tests {
         const FLAGS: &[Flag] = &[
             Flag {
                 name: "provisioner",
-                short: None,
-                takes_value: true,
-                usage: "",
-                default: "",
                 required: true,
+                ..Flag::VALUE
             },
             Flag {
                 name: "from",
-                short: None,
-                takes_value: true,
-                usage: "",
-                default: "",
                 required: true,
+                ..Flag::VALUE
             },
             Flag {
                 name: "other",
-                short: None,
-                takes_value: true,
-                usage: "",
-                default: "",
-                required: false,
+                ..Flag::VALUE
             },
         ];
         assert_eq!(
