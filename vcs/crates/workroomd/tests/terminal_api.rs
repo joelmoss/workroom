@@ -2060,8 +2060,48 @@ fn wait_for_a_run_state_with_its_exit_code() {
             ("WORKROOM_SESSION_TITLE", "dev"),
         ],
     );
+    // Exits 1 five seconds from now, by when its wait below has started.
+    let _failing = attach_with_env(
+        &socket,
+        "d00dfeed-2222-4333-8444-55556666cafe",
+        &[],
+        &[
+            ("WORKROOM_SESSION_RUN", "1"),
+            ("WORKROOM_SESSION_COMMAND", "sleep 5; exit 1"),
+            ("WORKROOM_SESSION_TITLE", "failing"),
+        ],
+    );
     let _shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
-    listing_until(&socket, |listing| listing.len() == 2);
+    listing_until(&socket, |listing| listing.len() == 3);
+
+    // `--exit-code` doesn't filter: the run's exit answers the wait whatever its code, and another
+    // code than the one asked for is `ExitCodeMismatch` (3), not a wait to the timeout.
+    let started = std::time::Instant::now();
+    let mismatch = wait(
+        &socket,
+        &[
+            "failing",
+            "--run",
+            "exited",
+            "--exit-code",
+            "0",
+            "--timeout",
+            "120s",
+        ],
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(60),
+        "it waited to its timeout"
+    );
+    assert!(
+        mismatch.1["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("exited with 1, not 0"),
+        "{}",
+        mismatch.1
+    );
+    assert_eq!(failed(mismatch), (3, "ExitCodeMismatch".into()));
 
     let exited = met(
         &socket,
@@ -2100,10 +2140,11 @@ fn wait_for_a_run_state_with_its_exit_code() {
                 "--exit-code",
                 "4",
                 "--timeout",
-                "1s"
+                "60s"
             ]
         )),
-        (8, "WaitTimeout".into())
+        (3, "ExitCodeMismatch".into()),
+        "exited already with 3, so refused at once"
     );
     assert_eq!(
         failed(wait(&socket, &["server", "--run", "running"])),

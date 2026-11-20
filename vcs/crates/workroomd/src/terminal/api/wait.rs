@@ -50,7 +50,10 @@ pub fn input() -> Value {
             },
             "exit_code": {
                 "type": "integer",
-                "description": "With `run: exited`, only an exit with this code.",
+                "description": "With `run: exited`, the code the run should exit with. The wait \
+                                still answers when the run exits, whatever its code: with this \
+                                one, as any met wait does; with another, `ExitCodeMismatch`, \
+                                whose message says which.",
             },
             "regex": {
                 "type": "string",
@@ -131,6 +134,7 @@ pub const ERRORS: &[&str] = &[
     kind::WAIT_TIMEOUT,
     kind::SESSION_ENDED,
     kind::NO_SHELL_INTEGRATION,
+    kind::EXIT_CODE_MISMATCH,
     kind::BUSY,
     kind::INTERNAL_ERROR,
 ];
@@ -244,6 +248,8 @@ struct Request {
     id: SessionId,
     name: &'static str,
     include_screen: bool,
+    /// For `run: exited`, the code it should exit with.
+    exit_code: Option<i32>,
     /// None: no limit.
     deadline: Option<Instant>,
 }
@@ -370,7 +376,7 @@ fn register(
             if exit_code.is_some() && state != RunState::Exited {
                 return Err(ApiError::invalid("`exit_code` goes with `run: exited`"));
             }
-            Condition::Run { state, exit_code }
+            Condition::Run(state)
         }
         "regex" => {
             let matcher = Matcher::new(text("regex")?)
@@ -398,7 +404,7 @@ fn register(
         .as_str()
         .and_then(|id| wr_protocol::terminal::parse_session_id(std::ffi::OsStr::new(id)))
         .expect("a listed session's id parses");
-    let run = matches!(condition, Condition::Run { .. });
+    let run = matches!(condition, Condition::Run(_));
     if run && session["run"] != true {
         return Err(ApiError::invalid(format!(
             "{target:?} is not a run session, so it has no run state"
@@ -408,6 +414,7 @@ fn register(
         id,
         name,
         include_screen,
+        exit_code,
         deadline,
     };
     // Only waits not yet over count: a thread ending its wait leaves it here a moment longer.
@@ -481,6 +488,20 @@ fn result(request: &Request, outcome: Outcome) -> Result<Value, ApiError> {
     match outcome {
         Outcome::Met(Met::Status(state)) => reply["status"] = json!(state),
         Outcome::Met(Met::Run { state, exit_code }) => {
+            // An exit, but not with the code asked for: answered now, since it will not exit
+            // again until it is restarted, and refused, so a script's `&&` stops there.
+            if let Some(wanted) = request.exit_code
+                && exit_code != Some(wanted)
+            {
+                let exited = exit_code.map_or("an unknown code".into(), |code| code.to_string());
+                return Err(ApiError::new(
+                    kind::EXIT_CODE_MISMATCH,
+                    format!(
+                        "session {}'s run exited with {exited}, not {wanted}",
+                        request.id.to_hyphenated()
+                    ),
+                ));
+            }
             reply["run"] = json!(state.name());
             reply["exit_code"] = json!(exit_code);
         }

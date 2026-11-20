@@ -71,6 +71,8 @@ pub(crate) enum Kind {
     AlternateScreen,
     /// A request that needs the shell's integration marks, in a session without them.
     NoShellIntegration,
+    /// A wait for a run to exit with one code (`wait --exit-code`), which it exited with another.
+    ExitCodeMismatch,
     /// A request, or what it sends, over the terminal API's limit.
     TooLarge,
     /// A daemon at its limit on concurrent work, such as captures of history: it refuses the
@@ -125,6 +127,7 @@ pub(crate) const ALL: &[Kind] = &[
     Kind::SessionEnded,
     Kind::AlternateScreen,
     Kind::NoShellIntegration,
+    Kind::ExitCodeMismatch,
     Kind::TooLarge,
     Kind::Busy,
     Kind::RefusedSelf,
@@ -194,6 +197,8 @@ impl Kind {
             Kind::SessionEnded => ("SessionEnded", 3),
             Kind::AlternateScreen => ("AlternateScreen", 3),
             Kind::NoShellIntegration => ("NoShellIntegration", 3),
+            // What was waited for happened, but not as asked: a precondition of the script's.
+            Kind::ExitCodeMismatch => ("ExitCodeMismatch", 3),
             Kind::TooLarge => ("TooLarge", 2),
             // A valid request the daemon can't take now: a precondition, as `AgentBusy` is.
             Kind::Busy => ("Busy", 3),
@@ -315,6 +320,7 @@ mod tests {
                 "SessionEnded",
                 "AlternateScreen",
                 "NoShellIntegration",
+                "ExitCodeMismatch",
                 "TooLarge",
                 "Busy",
                 "RefusedSelf",
@@ -346,6 +352,7 @@ mod tests {
             (Kind::SessionEnded, "SessionEnded", 3),
             (Kind::AlternateScreen, "AlternateScreen", 3),
             (Kind::NoShellIntegration, "NoShellIntegration", 3),
+            (Kind::ExitCodeMismatch, "ExitCodeMismatch", 3),
             (Kind::RefusedSelf, "RefusedSelf", 3),
             (Kind::Busy, "Busy", 3),
             (Kind::TooLarge, "TooLarge", 2),
@@ -370,6 +377,9 @@ mod tests {
             kind::INVALID_REQUEST,
             kind::TOO_LARGE,
             kind::SESSION_ENDED,
+            kind::WAIT_TIMEOUT,
+            kind::NO_SHELL_INTEGRATION,
+            kind::EXIT_CODE_MISMATCH,
             kind::BUSY,
             kind::INTERNAL_ERROR,
         ] {

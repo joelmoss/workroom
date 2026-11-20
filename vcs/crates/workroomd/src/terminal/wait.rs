@@ -22,12 +22,10 @@ use crate::util::{lock_or_recover, recover};
 pub enum Condition {
     /// The session's coding agent reaching a program status: as `sessions` reports it.
     Status(State),
-    /// A run session's supervisor reaching a state, and for `exited`, with this code if one is
-    /// given.
-    Run {
-        state: RunState,
-        exit_code: Option<i32>,
-    },
+    /// A run session's supervisor reaching a state, `exited` with whatever code: a wait for an
+    /// exit with one code answers when the run exits, and says whether it was that one
+    /// (`api::wait`), rather than wait for an exit that may never come.
+    Run(RunState),
     /// Output matching a regex, from what arrives after the wait starts (and the screen, when the
     /// matcher was given it first).
     Output(Matcher),
@@ -189,15 +187,10 @@ impl Waiter {
             return;
         };
         self.update(|progress| match progress.condition {
-            Condition::Run {
-                state: wanted,
-                exit_code,
-            } if wanted == state && exit_code.is_none_or(|wanted| Some(wanted) == code) => {
-                Some(Met::Run {
-                    state,
-                    exit_code: code,
-                })
-            }
+            Condition::Run(wanted) if wanted == state => Some(Met::Run {
+                state,
+                exit_code: code,
+            }),
             _ => None,
         });
     }

@@ -1,7 +1,8 @@
 //! `workroom wait TARGET <condition> [--timeout DURATION]` (#690): waits, on the daemon, for one
 //! thing to happen in a session, from the terminal API's `terminal.wait`. With `--json`, one
 //! envelope with the API's result fields; without, a line saying what happened. A wait that runs
-//! out of time exits 8, `WaitTimeout`.
+//! out of time exits 8, `WaitTimeout`, and a run that exits with another code than
+//! `--exit-code`'s exits 3, `ExitCodeMismatch`, as soon as it exits.
 
 use std::time::Duration;
 
@@ -21,7 +22,8 @@ pub(super) const FLAGS: &[Flag] = &[
     ),
     value_flag(
         "exit-code",
-        "With --run exited, only an exit with this code",
+        "With --run exited, the code to expect: answers when the run exits, exiting 3 \
+         (ExitCodeMismatch) when it exits with another",
     ),
     value_flag(
         "regex",
