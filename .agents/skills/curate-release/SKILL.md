@@ -4,9 +4,10 @@ description: Workroom's tag-driven release process — channel architecture (sta
 ---
 
 Tag-driven (see `docs/contributing/releasing.md`). After a release publishes, **curate its GitHub release
-notes** — replace GoReleaser's raw commit list with a succinct, themed summary in the style of
-`v2.0.0-beta.1` (a headline, a one-line framing, and grouped bullets). The commit list is what
+notes** — replace GoReleaser's raw commit list with a short summary. The commit list is what
 the git log is for.
+
+**Keep release notes concise and in plain English** (the model is `v3.1.0`). Shape: a `## Workroom X.Y` headline, one line naming the highlights, then `### New`, `### Changed` and `### Fixed` (omit an empty section). One short bullet per item: what the user gets or what was broken, not how it works. No implementation detail, internal names (daemon flags, file paths, ticket numbers) or edge-case lists. Write a fix as the symptom the user saw ("Line numbers drifted after resizing"). Go into detail only for a **breaking change** (say what stopped working and what to do instead) or an important bug fix (data loss, security, crashes). Leave out minor polish entirely.
 
 **After a stable release, clear its Nightly badges in the docs.** `docs-site/` marks features no stable release has yet: `nightly: true` in a page's front matter, ` {nightly}` at the end of a heading, and `cliNightly` in `cmd/docs_test.go` for CLI pages (format: `docs-site/README.md`). For each feature the new stable tag includes, remove its marker, run `make docs-cli` and `make docs-check`, and open a docs PR. Leave the markers on features still only on master. `make docs-check` (`TestDocsSiteNightlyMarkers`) enforces the other direction: what is new since the latest stable tag on master carries a marker or `<!-- stable -->`.
 
