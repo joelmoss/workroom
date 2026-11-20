@@ -1906,7 +1906,8 @@ fn completion_protocol_matches_the_golden() {
             output.status.code().expect("exited")
         );
     }
-    check_golden(Owner::ThisSuite, "completion-protocol.txt", &transcript);
+    // Recorded from the Go CLI, so never rewritten by a run against Rust.
+    check_golden(Owner::GoCli, "completion-protocol.txt", &transcript);
 }
 
 /// `completion` is one of `--help`'s commands, and runs anywhere, so it is not marked Mac-only.
