@@ -622,9 +622,10 @@ const COMMANDS: &[Command] = &[
         subcommands: &[],
         // One optional TARGET, which `sessions::run` checks.
         arity: Arity::Own,
-        // A TARGET is a session the daemon knows, which completion doesn't ask it for; with
-        // nothing of its own, cobra's default is file names.
-        operands: Operands::Files,
+        // A TARGET is a session the daemon knows (an id, label or title), never a file, so
+        // completion offers nothing rather than cobra's default of file names. Asking the daemon
+        // for live labels is for later.
+        operands: Operands::Nothing,
         implementation: Implementation::Ported(sessions::run),
     },
     Command {
@@ -1441,6 +1442,14 @@ mod tests {
         let ((stdout, _), _) = run_on(Platform::Other, &["__completeNoDesc", "sessions", "--"]);
         // In cobra's order, as `version`'s are in the contract suite's transcript.
         assert_eq!(stdout, "--json\n--pretend\n--verbose\n--help\n:4\n");
+        // A TARGET is never a file: no candidates, and no file names from the shell either.
+        for args in [
+            &["__complete", "sessions", ""][..],
+            &["__complete", "sessions", "x", ""],
+        ] {
+            let ((stdout, _), code) = run_on(Platform::Other, args);
+            assert_eq!((stdout.as_str(), code), (":4\n", 0), "{args:?}");
+        }
     }
 
     /// As in Go, `base`'s flags are `set`'s and `clear`'s, and each subcommand's `--help` is its
