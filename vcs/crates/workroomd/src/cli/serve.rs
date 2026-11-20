@@ -172,6 +172,7 @@ pub fn run_serve(
     daemon
         .sessions
         .keep_refusals(crate::terminal::session::refusals_path(&socket));
+    daemon.sessions.serve_socket(socket.clone());
     daemon
         .sessions
         .hooks()

@@ -27,6 +27,13 @@ use wr_protocol::envelope::{Envelope, Service};
 /// adds a method or a field, and never lowered. A caller that needs a later addition checks it.
 pub const REVISION: u32 = 1;
 
+/// The variable every session's shell is given its session's id in (#684), outside
+/// `WORKROOM_SESSION_*`, which a shell never sees.
+pub const PANE_VARIABLE: &str = "WORKROOM_PANE";
+
+/// The variable every session's shell is given its daemon's socket in (#684).
+pub const DAEMON_VARIABLE: &str = "WORKROOM_DAEMON";
+
 /// The shortest id suffix a target resolves by, so that a short word is never read as an id.
 pub const MIN_SUFFIX: usize = 4;
 

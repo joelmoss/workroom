@@ -420,6 +420,9 @@ pub struct SessionStore {
     /// Where `refused` is kept for the next program to serve this socket, when this one serves
     /// one (`keep_refusals`).
     refusals: Arc<OnceLock<PathBuf>>,
+    /// The socket this store's daemon serves, which every session's shell is told as
+    /// `WORKROOM_DAEMON` (#684). Unset for a daemon on stdio, which no pane can reach.
+    socket: Arc<OnceLock<PathBuf>>,
     /// The thread that probes the clients that asked for it (#593), started by the first.
     keepalive: Arc<keepalive::Ticker>,
 }
