@@ -170,6 +170,22 @@ pub fn probe(
     dir: &Path,
     timeout: Duration,
 ) -> Result<BTreeMap<String, String>, &'static str> {
+    probe_until(shell, dir, timeout, &|| false)
+}
+
+/// [`probe`], ending the shell at once (`"cancelled"`) when `cancelled` says so. The script runner
+/// passes its signal check: a run cancelled mid-read must neither wait the read out nor start the
+/// script (`crate::script`).
+///
+/// The shell gets a session of its own, not just a group: an interactive shell in a background
+/// group of a terminal is stopped by SIGTTOU, which would hang a `workroom create` typed in one.
+/// With no controlling terminal it can't be, nor can it prompt on the caller's.
+pub(crate) fn probe_until(
+    shell: &str,
+    dir: &Path,
+    timeout: Duration,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<BTreeMap<String, String>, &'static str> {
     let marker = marker();
     let (program, shell_flag) = probe_invocation(shell);
     let line = format!("printf '%s' '{marker}'; env -0; printf '%s' '{marker}'");
@@ -182,8 +198,18 @@ pub fn probe(
         .env("WORKROOM_SHELL_PROBE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .process_group(0);
+        .stderr(Stdio::null());
+    // SAFETY: the closure runs in the forked child before exec, where only async-signal-safe calls
+    // are allowed. It makes one, `setsid`, and allocates nothing. A fresh child leads no group, so
+    // it can't fail, and a session leader leads its own group, which the kill below reaches.
+    unsafe {
+        command.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    // `pre_exec` makes std fork rather than `posix_spawn`.
+    crate::util::ready_to_fork();
     let Ok(mut child) = command.spawn() else {
         return Err("spawnFailed");
     };
@@ -199,11 +225,12 @@ pub fn probe(
         if let Ok(Some(status)) = child.try_wait() {
             break status;
         }
-        if start.elapsed() >= timeout {
+        let cancel = cancelled();
+        if cancel || start.elapsed() >= timeout {
             // SAFETY: `kill` takes no pointers; `-pid` is the probe's own group.
             unsafe { libc::kill(-pid, libc::SIGKILL) };
             let _ = child.wait();
-            return Err("timedOut");
+            return Err(if cancel { "cancelled" } else { "timedOut" });
         }
         std::thread::sleep(Duration::from_millis(10));
     };
@@ -271,7 +298,7 @@ pub fn merge(mut probed: BTreeMap<String, String>, floor: &str) -> BTreeMap<Stri
 }
 
 /// This process's own environment, for a probe that failed, with the floor's PATH and the overrides.
-fn fallback() -> BTreeMap<String, String> {
+pub(crate) fn fallback() ->BTreeMap<String, String> {
     let own = std::env::vars_os()
         .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
         .collect();
@@ -279,7 +306,7 @@ fn fallback() -> BTreeMap<String, String> {
 }
 
 /// This process's PATH, then the standard directories.
-fn floor_path() -> String {
+pub(crate) fn floor_path() ->String {
     union_path(&std::env::var("PATH").unwrap_or_default(), FLOOR_PATH)
 }
 

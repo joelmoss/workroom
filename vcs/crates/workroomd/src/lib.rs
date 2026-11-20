@@ -29,6 +29,7 @@ pub mod commands;
 pub(crate) mod daemon;
 pub(crate) mod exec;
 pub(crate) mod host;
+pub mod script;
 pub(crate) mod terminal;
 pub(crate) mod util;
 pub(crate) mod vcs;
