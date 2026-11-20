@@ -23,7 +23,8 @@
 #                | off (hand-off is off) | no-socket | none (the installed binary is not this build)
 #
 # The hand-off is asked for only when the installed binary IS the one the app bundles for this
-# architecture. Then the running daemon answers `current` at once when it already runs it, and
+# architecture. Then the running daemon answers `current` at once when it already runs that
+# daemon build (`daemon-build` in `protocol`, #680: the file's CLI commands may differ), and
 # hands off to it when it does not: a file left by an install whose daemon predated hand-off, or
 # whose hand-off was off, or whose daemon did not greet. The app never hands off to a binary it
 # does not recognise: a different one is replaced by install.sh first, which does its own

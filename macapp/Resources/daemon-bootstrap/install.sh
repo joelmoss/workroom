@@ -22,7 +22,9 @@
 # cut short can still run far enough to pass every other check), run once (`protocol`: does it
 # run on this box at all), offered to the running daemon (`hand-off`, issue #230: the daemon checks
 # that the new program can restore every session, then execs it), and renamed into place only when
-# nothing refused it:
+# nothing refused it. The daemon hands off only to another daemon build (#680): a push whose CLI
+# commands alone changed is `current`, so it is installed for the next command and the daemon,
+# with every session, carries on as it was.
 #
 #   hand-off exit 0    current, or handed off: the daemon runs it       -> rename
 #   hand-off exit 3    the daemon predates hand-off and keeps running   -> rename, for its next start
