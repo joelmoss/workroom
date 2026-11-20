@@ -176,7 +176,7 @@ fn describe_input() -> Value {
 fn describe_output() -> Value {
     json!({
         "type": "object",
-        "required": ["revision", "methods", "error"],
+        "required": ["revision", "methods", "error_schema"],
         "properties": {
             "revision": {
                 "type": "integer",
@@ -205,10 +205,11 @@ fn describe_output() -> Value {
                     },
                 },
             }},
-            "error": {
+            "error_schema": {
                 "type": "object",
                 "description": "The JSON Schema of a failed reply's `error`, for every method, \
-                                with errors under `examples`.",
+                                with errors under `examples`. Named `error_schema`, since an \
+                                `error` is only ever a failure.",
             },
         },
     })
@@ -363,7 +364,7 @@ fn description(wanted: Option<&str>) -> Result<Value, ApiError> {
     if let (Some(name), true) = (wanted, methods.is_empty()) {
         return Err(ApiError::invalid(format!("no method {name:?}")));
     }
-    Ok(json!({"revision": REVISION, "methods": methods, "error": error_schema()}))
+    Ok(json!({"revision": REVISION, "methods": methods, "error_schema": error_schema()}))
 }
 
 /// Every session in the listing's shape, oldest first.

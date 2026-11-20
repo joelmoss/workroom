@@ -121,7 +121,9 @@ fn describe_publishes_every_method_with_both_schemas() {
             "{method}"
         );
     }
-    assert_eq!(all["error"]["required"], json!(["kind", "message"]));
+    // The error's schema is `error_schema`: a reply's `error` is only ever a failure.
+    assert_eq!(all["error_schema"]["required"], json!(["kind", "message"]));
+    assert!(all.get("error").is_none(), "{all}");
     let one = request(
         &store,
         json!({"method": "api.describe", "params": {"method": "session.resolve"}}),

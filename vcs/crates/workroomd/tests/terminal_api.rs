@@ -561,8 +561,9 @@ fn every_method_publishes_schemas_its_replies_match() {
         }
         assert!(method.get("example").is_none(), "{method}");
     }
-    let error_schema = described["result"]["error"].clone();
-    assert_examples_match(&error_schema, "error");
+    let error_schema = described["result"]["error_schema"].clone();
+    assert_examples_match(&error_schema, "error_schema");
+    assert!(described["result"].get("error").is_none(), "{described}");
 
     let cases = [
         ("api.describe", json!({}), &described),

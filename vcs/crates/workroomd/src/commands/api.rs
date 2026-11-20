@@ -53,8 +53,8 @@ struct Named {
 }
 
 /// `api describe`'s payload: the API's revision, the method's description as `api.describe` gives
-/// it, and the schema of a failed reply's `error` as `error_schema`, since every failure envelope's
-/// `error` is the failure itself.
+/// it, and the schema of a failed reply's `error` as `error_schema`, the name `api.describe` gives
+/// it too, since every failure envelope's `error` is the failure itself.
 #[derive(Serialize)]
 struct Description {
     revision: Value,
@@ -193,7 +193,7 @@ fn describe(context: &Context, rest: &[String]) -> Outcome {
         &Description {
             revision: described["revision"].take(),
             method,
-            error_schema: described["error"].take(),
+            error_schema: described["error_schema"].take(),
         },
     ))
 }
