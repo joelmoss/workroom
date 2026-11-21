@@ -19,8 +19,8 @@
 //! client of the daemon's terminal API (`terminal_api`).
 //!
 //! Shell completion works anywhere (#700): `completion` writes cobra's scripts, and the hidden
-//! `__complete` answers them from `COMMANDS`, so every command's subcommands and flags, a stub's
-//! included, are offered as Go offers them.
+//! `__complete` answers them from `COMMANDS`, so every command's subcommands and flags, a Mac-only
+//! one's included, are offered as Go offers them.
 
 mod add_project;
 mod api;
@@ -291,15 +291,8 @@ struct Command {
     implementation: Implementation,
 }
 
-/// Whether a command runs in this binary yet.
-#[derive(Clone, Copy)]
-enum Implementation {
-    Ported(fn(&Context, &Args) -> Outcome),
-    /// Still the Go CLI's, until `ticket` ports it.
-    Stub {
-        ticket: &'static str,
-    },
-}
+/// What runs a command: every command runs in this binary (#667).
+type Implementation = fn(&Context, &Args) -> Outcome;
 
 /// Every command, in `--help`'s order. Names, aliases and help lines are the Go CLI's.
 const COMMANDS: &[Command] = &[
@@ -307,8 +300,8 @@ const COMMANDS: &[Command] = &[
         hidden: true,
         // cobra's `MaximumNArgs(1)`, which `run` checks.
         arity: Arity::Own,
-        implementation: Implementation::Ported(add_project::run),
-        ..stub(
+        ..mac_command(
+            add_project::run,
             "add-project",
             "add-project [PATH]",
             "Register a project (internal; used by the macOS app via --json)",
@@ -324,7 +317,6 @@ const COMMANDS: &[Command] = &[
                     ..Flag::BOOL
                 },
             ],
-            "#672",
         )
     },
     Command {
@@ -430,12 +422,12 @@ const COMMANDS: &[Command] = &[
         arity: Arity::Own,
         // A TARGET is a session the daemon knows, never a file, as `sessions`' is.
         operands: Operands::Nothing,
-        implementation: Implementation::Ported(capture::run),
+        implementation: capture::run,
     },
     Command {
         hidden: true,
-        implementation: Implementation::Ported(claim::run),
-        ..stub(
+        ..mac_command(
+            claim::run,
             "claim-provisioned",
             "claim-provisioned",
             "Move the remote entries a build made from another config into this one (used by the desktop app)",
@@ -453,7 +445,6 @@ const COMMANDS: &[Command] = &[
                     ..Flag::VALUE
                 },
             ],
-            "#672",
         )
     },
     Command {
@@ -500,8 +491,8 @@ const COMMANDS: &[Command] = &[
     },
     Command {
         aliases: &["c"],
-        implementation: Implementation::Ported(create::run),
-        ..stub(
+        ..mac_command(
+            create::run,
             "create",
             "create",
             "Create a new workroom",
@@ -559,7 +550,6 @@ const COMMANDS: &[Command] = &[
                     ..Flag::VALUE
                 },
             ],
-            "#677",
         )
     },
     Command {
@@ -570,8 +560,8 @@ const COMMANDS: &[Command] = &[
         ),
         // cobra's `MaximumNArgs(1)`, which `run` checks.
         arity: Arity::Own,
-        implementation: Implementation::Ported(delete::run),
-        ..stub(
+        ..mac_command(
+            delete::run,
             "delete",
             "delete [NAME]",
             "Delete an existing workroom",
@@ -594,15 +584,14 @@ const COMMANDS: &[Command] = &[
                     ..Flag::BOOL
                 },
             ],
-            "#678",
         )
     },
     Command {
         hidden: true,
         // cobra's `MaximumNArgs(1)`, which `run` checks.
         arity: Arity::Own,
-        implementation: Implementation::Ported(delete_project::run),
-        ..stub(
+        ..mac_command(
+            delete_project::run,
             "delete-project",
             "delete-project [PATH]",
             "Remove a project (internal; used by the macOS app via --json)",
@@ -630,7 +619,6 @@ const COMMANDS: &[Command] = &[
                     ..Flag::BOOL
                 },
             ],
-            "#672",
         )
     },
     Command {
@@ -647,7 +635,7 @@ const COMMANDS: &[Command] = &[
         arity: Arity::Own,
         // `--session` takes a session the daemon knows, never a file, as `sessions`' TARGET is.
         operands: Operands::Nothing,
-        implementation: Implementation::Ported(events::run),
+        implementation: events::run,
     },
     Command {
         name: "help",
@@ -661,7 +649,7 @@ const COMMANDS: &[Command] = &[
         subcommands: &[],
         arity: Arity::Own,
         operands: Operands::Commands,
-        implementation: Implementation::Ported(help_command),
+        implementation: help_command,
     },
     Command {
         name: "host",
@@ -719,7 +707,7 @@ const COMMANDS: &[Command] = &[
         subcommands: &[],
         arity: Arity::None,
         operands: Operands::Files,
-        implementation: Implementation::Ported(include_archive::run),
+        implementation: include_archive::run,
     },
     Command {
         name: "list",
@@ -745,7 +733,7 @@ const COMMANDS: &[Command] = &[
         subcommands: &[],
         arity: Arity::None,
         operands: Operands::Files,
-        implementation: Implementation::Ported(list::run),
+        implementation: list::run,
     },
     Command {
         name: "sessions",
@@ -767,7 +755,7 @@ const COMMANDS: &[Command] = &[
         // completion offers nothing rather than cobra's default of file names. Asking the daemon
         // for live labels is for later.
         operands: Operands::Nothing,
-        implementation: Implementation::Ported(sessions::run),
+        implementation: sessions::run,
     },
     Command {
         name: "trust",
@@ -810,7 +798,7 @@ const COMMANDS: &[Command] = &[
         subcommands: &[],
         arity: Arity::None,
         operands: Operands::Files,
-        implementation: Implementation::Ported(trust::untrust),
+        implementation: trust::untrust,
     },
     Command {
         name: "update",
@@ -824,7 +812,7 @@ const COMMANDS: &[Command] = &[
         subcommands: &[],
         arity: Arity::None,
         operands: Operands::Files,
-        implementation: Implementation::Ported(update::run),
+        implementation: update::run,
     },
     Command {
         name: "version",
@@ -838,7 +826,7 @@ const COMMANDS: &[Command] = &[
         subcommands: &[],
         arity: Arity::None,
         operands: Operands::Files,
-        implementation: Implementation::Ported(version::run),
+        implementation: version::run,
     },
     Command {
         name: "wait",
@@ -854,23 +842,23 @@ const COMMANDS: &[Command] = &[
         arity: Arity::Own,
         // A TARGET is a session the daemon knows, never a file, as for `sessions`.
         operands: Operands::Nothing,
-        implementation: Implementation::Ported(wait::run),
+        implementation: wait::run,
     },
 ];
 
-const API: Implementation = Implementation::Ported(api::run);
-const BASE: Implementation = Implementation::Ported(base::run);
-const HOST: Implementation = Implementation::Ported(host::run);
-const TRUST: Implementation = Implementation::Ported(trust::run);
+const API: Implementation = api::run;
+const BASE: Implementation = base::run;
+const HOST: Implementation = host::run;
+const TRUST: Implementation = trust::run;
 
-/// A Mac-only command, shown in `--help`, with no aliases, still the Go CLI's until `ticket`. It
-/// has the flags Go gives it, so `--help` and shell completion already match Go's.
-const fn stub(
+/// A Mac-only command run by `implementation`, shown in `--help`, with no aliases. It has the
+/// flags Go gives it, so `--help` and shell completion match Go's.
+const fn mac_command(
+    implementation: Implementation,
     name: &'static str,
     usage: &'static str,
     short: &'static str,
     flags: &'static [Flag],
-    ticket: &'static str,
 ) -> Command {
     Command {
         name,
@@ -884,7 +872,7 @@ const fn stub(
         subcommands: &[],
         arity: Arity::None,
         operands: Operands::Files,
-        implementation: Implementation::Stub { ticket },
+        implementation,
     }
 }
 
@@ -988,7 +976,7 @@ const fn shell(
     }
 }
 
-const COMPLETION: Implementation = Implementation::Ported(completion::run);
+const COMPLETION: Implementation = completion::run;
 
 /// The root's commands, as cobra finds one by name or alias.
 fn find(name: &str) -> Option<&'static Command> {
@@ -1185,13 +1173,10 @@ fn run(args: &[String], mut context: Context) -> Output {
     context.json = parsed.json;
     context.pretend = parsed.pretend;
     context.verbose = parsed.verbose;
-    // A stub fails below whatever it was given, so it refuses no flag: saying it isn't in this
-    // build yet is the more useful answer, though its table entry lists Go's flags. Nor
-    // does a Mac-only command away from the Mac: `MacOnly` is what it answers, whatever it was given.
-    let refuses_nothing = command.is_some_and(|command| {
-        matches!(command.implementation, Implementation::Stub { .. })
-            || (command.mac_only && context.platform != Platform::Mac)
-    });
+    // A Mac-only command away from the Mac refuses no flag: `MacOnly` is what it answers, whatever
+    // it was given.
+    let refuses_nothing =
+        command.is_some_and(|command| command.mac_only && context.platform != Platform::Mac);
     if let Some(message) = error.filter(|_| !refuses_nothing) {
         return report(&context, None, Outcome::Usage(CliError::internal(message)));
     }
@@ -1230,14 +1215,7 @@ fn run(args: &[String], mut context: Context) -> Output {
             ),
         ))
     } else {
-        match command.implementation {
-            Implementation::Ported(run) => run(&context, &args),
-            Implementation::Stub { ticket } => Outcome::Failed(CliError::internal(format!(
-                "`workroom {}` isn't in this build yet ({ticket}); the Go CLI runs it until the \
-                 switch (ADR 0078)",
-                command.name
-            ))),
-        }
+        (command.implementation)(&context, &args)
     };
     report(&context, Some(command.name), outcome)
 }
@@ -1743,7 +1721,7 @@ mod tests {
     }
 
     /// As in Go, `base`'s flags are `set`'s and `clear`'s, and each subcommand's `--help` is its
-    /// own; a stub's `--help` lists the flags Go gives it, but the hidden ones.
+    /// own; `create`'s `--help` lists the flags Go gives it, but the hidden ones.
     #[test]
     fn a_subcommands_flags_and_help_are_its_own() {
         let ((stdout, stderr), code) = run_on(Platform::Mac, &["base", "--global"]);
