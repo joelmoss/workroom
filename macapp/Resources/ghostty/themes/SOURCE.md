@@ -15,9 +15,10 @@ floor.
 
 ## Which themes are here
 
-`ThemeCatalog.bundledThemes` in `Packages/DesignSystem/Sources/DesignSystem/ThemeCatalog.swift` is
-the **single source of truth**: every theme in this directory, listed once with its side (light or
-dark) fixed. `ThemeCatalog.families` is the curated presets that pair one light theme with one dark
+`ThemeCatalog.bundledThemes` lists every theme in this directory once, with its side (light or
+dark) fixed. It lives in `Packages/DesignSystem/Sources/DesignSystem/BundledThemes.generated.swift`,
+which `macapp/Scripts/vendor-ghostty-themes.py catalog` writes from these files. Don't edit it by
+hand; `ThemeServiceTests` fails if it falls out of step with the files. `ThemeCatalog.families` is the curated presets that pair one light theme with one dark
 theme; most themes belong to no family.
 
 There is deliberately no list mirrored here. `ThemeServiceTests` pins the catalog to the files as
@@ -70,7 +71,7 @@ is the procedure. In short:
    holds every failure), then `... floor-failures sweep.log` names every theme a floor failed. Those
    go in the script's `FLOOR_FAILURES` (or `CAP_OVERFLOW`, when only a cap's list names it), and
    steps 2 and 3 repeat until the sweep is green.
-4. `... catalog` prints the `bundledThemes` entries with each side worked out from the background,
+4. `... catalog` writes `BundledThemes.generated.swift`, working out each side from the background,
    and `... checksums` rewrites `CHECKSUMS`.
 5. New families are added to `ThemeCatalog.families` by hand (below).
 
