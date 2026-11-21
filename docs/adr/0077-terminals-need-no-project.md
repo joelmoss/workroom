@@ -10,7 +10,7 @@ How groups come and go:
 
 - Splitting a standalone terminal (⌘D, ⌘⇧D) turns it and the new terminal into an unnamed terminal group in its place. Dropping one standalone terminal on another does the same. Move to… → New Terminal Group… makes one as well.
 - An unnamed group is labelled by its terminals' names, and goes when one terminal is left in it, counted across every window; that terminal becomes standalone again. So a split followed by closing one half gets back exactly where it started.
-- Naming a group is what keeps it: a named group stays when it is empty. Clearing the name makes it unnamed again.
+- A group goes when its last terminal does, named or not, counted across every window: closed, moved out (Move to… or a drag), or taken by closing the window that holds it. It goes without asking; closing the terminal already asks where it should. A quit never deletes one, since its terminals come back at launch (ADR 0058). The Quick Terminal's group is the exception: it is never deleted, and its panel hides. A name keeps a group with one terminal from dissolving; clearing the name makes it unnamed again.
 - Deleting a group makes its terminals standalone; it asks first when the group has terminals.
 
 Across windows a terminal group behaves as a workroom does: each window keeps its own terminals in it. A standalone terminal is one terminal, so selecting it in a window that doesn't hold it raises the window that does. Closing a window takes its standalone and group terminals with it, as it does a workroom's (ADR 0069), and asks first when it holds a standalone terminal.

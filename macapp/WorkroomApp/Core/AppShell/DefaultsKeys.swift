@@ -266,6 +266,10 @@ extension Defaults.Keys {
   static let collapsedProjects = Key<Set<String>>(
     "sidebar.collapsedProjects", default: [], suite: .app)
 
+  /// Whether the sidebar's Projects section is folded under its heading, as the Terminals section
+  /// folds (#652).
+  static let projectsFolded = Key<Bool>("sidebar.projectsFolded", default: false, suite: .app)
+
   /// Per-project "Run command" config, keyed by the project's absolute path (issue #7). Absence of a
   /// path means no run command configured. A single path-keyed map (mirrors `collapsedProjects`):
   /// `Defaults` keys are static, so per-project keys aren't an option.

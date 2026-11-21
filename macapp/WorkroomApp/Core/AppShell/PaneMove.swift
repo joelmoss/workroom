@@ -25,10 +25,11 @@ protocol PaneMoveDestination: AnyObject {
 @MainActor
 enum PaneMove {
   /// "Move to…" for `source`'s pane `tabID` in `target`, in sections: first the Terminals section's
-  /// places (Standalone, the Quick Terminal, the user's terminal groups, New Terminal Group…),
+  /// places (Standalone Terminal, the Quick Terminal, the user's terminal groups, New Terminal Group…),
   /// which the pane joins in its own window, else (a Quick Terminal pane) in `front`, the window in
   /// front, else in the first of `windows`; then every workroom open in `windows`, in each window's
-  /// tab order, a section per window. The pane's own place is listed disabled, and every place is
+  /// tab order, a section per window. The pane's own place is listed checked and disabled, as a
+  /// native menu marks where something is now, and every place is
   /// when the pane can't move at all (`refusal`, or `sourceRefusal`), each with why.
   static func choices(
     _ tabID: TerminalTab.ID, of target: TerminalTarget, source: TerminalPanes,
@@ -51,15 +52,11 @@ enum PaneMove {
         let isOwn = window.terminals === source && workroom.target.id == target.id
         let why = stuck ?? (isOwn ? nil : window.paneMoveRefusal(sid))
         return PaneWorkroomChoice(
-          title: window.title(for: sid), glyph: glyph, enabled: why == nil && !isOwn, help: why
-        ) { [weak source, weak notifications, weak window] in
-          guard let source, let notifications, let window else { return }
-          Task {
-            await move(
-              tabID, of: target, source: source, notifications: notifications, to: window,
-              into: workroom.target.id)
-          }
-        }
+          title: window.title(for: sid, separator: WorkroomLabel.separator), glyph: glyph,
+          enabled: why == nil && !isOwn, isCurrent: isOwn, help: why,
+          move: mover(
+            tabID, of: target, source: source, notifications: notifications, to: window,
+            into: workroom.target.id))
       }
     }
     let named = groups.filter { !$0.isEmpty }.count > 1
@@ -81,7 +78,7 @@ enum PaneMove {
     return (places.map { [PaneWorkroomGroup(header: nil, choices: $0)] } ?? []) + workrooms
   }
 
-  /// The Terminals section's places for the pane, joined in `home`: Standalone, then the Quick
+  /// The Terminals section's places for the pane, joined in `home`: Standalone Terminal, then the Quick
   /// Terminal (in its own panel), then each terminal group in the section's order, then New
   /// Terminal Group….
   private static func terminalsChoices(
@@ -92,8 +89,8 @@ enum PaneMove {
     let isStandalone = if case .standalone = target.id { true } else { false }
     var choices = [
       PaneWorkroomChoice(
-        title: "Standalone", glyph: TerminalGroup.standaloneGlyph,
-        enabled: stuck == nil && !isStandalone,
+        title: "Standalone Terminal", glyph: TerminalGroup.standaloneGlyph,
+        enabled: stuck == nil && !isStandalone, isCurrent: isStandalone,
         help: stuck ?? (isStandalone ? nil : "A terminal of its own, with its own row and tab")
       ) { [weak source, weak notifications, weak home] in
         guard let source, let notifications, let home else { return }
@@ -114,15 +111,11 @@ enum PaneMove {
       let why = stuck ?? (isOwn ? nil : home.paneMoveRefusal(entry.sidebarID))
       choices.append(
         PaneWorkroomChoice(
-          title: into.title, glyph: TerminalGroup.glyph, enabled: why == nil && !isOwn, help: why
-        ) { [weak source, weak notifications, weak home] in
-          guard let source, let notifications, let home else { return }
-          Task {
-            await move(
-              tabID, of: target, source: source, notifications: notifications, to: home,
-              into: into.id)
-          }
-        })
+          title: into.title, glyph: TerminalGroup.glyph, enabled: why == nil && !isOwn,
+          isCurrent: isOwn, help: why,
+          move: mover(
+            tabID, of: target, source: source, notifications: notifications, to: home,
+            into: into.id)))
     }
     choices.append(
       PaneWorkroomChoice(
@@ -149,14 +142,26 @@ enum PaneMove {
     let isOwn = host.terminals === source
     return PaneWorkroomChoice(
       title: QuickTerminalController.target(in: host.section).title,
-      glyph: QuickTerminalController.glyph, enabled: stuck == nil && !isOwn,
-      help: stuck ?? (isOwn ? nil : "Move this terminal into the Quick Terminal's panel")
-    ) { [weak source, weak notifications, weak host] in
-      guard let source, let notifications, let host else { return }
+      glyph: QuickTerminalController.glyph, enabled: stuck == nil && !isOwn, isCurrent: isOwn,
+      help: stuck ?? (isOwn ? nil : "Move this terminal into the Quick Terminal's panel"),
+      move: mover(
+        tabID, of: target, source: source, notifications: notifications, to: host,
+        into: .quickTerminal))
+  }
+
+  /// A choice's action: `move` the pane into `destination`'s `targetID`, holding the panes, the
+  /// notification list and the destination weakly, so a menu kept open holds none of them alive.
+  private static func mover(
+    _ tabID: TerminalTab.ID, of target: TerminalTarget, source: TerminalPanes,
+    notifications: NotificationCenterStore, to destination: any PaneMoveDestination,
+    into targetID: TargetID
+  ) -> () -> Void {
+    { [weak source, weak notifications, weak destination] in
+      guard let source, let notifications, let destination else { return }
       Task {
         await move(
-          tabID, of: target, source: source, notifications: notifications, to: host,
-          into: .quickTerminal)
+          tabID, of: target, source: source, notifications: notifications, to: destination,
+          into: targetID)
       }
     }
   }

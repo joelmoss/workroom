@@ -185,9 +185,9 @@ struct SidebarNotificationStrip: View {
   var body: some View {
     VStack(spacing: 0) {
       if let oldest = notifications.items.first {
-        // The row + a hairline separating it from the theme/add bar below. The enclosing sidebar
-        // `footer` supplies the solid background and the top hairline (issue #118), so this band adds
-        // none of its own — it just slides in/out above the bar. The `+N` badge rides as the row's
+        // The row, at the foot of the sidebar. The enclosing sidebar footer supplies the solid
+        // background and the top hairline (issue #118), so this band adds none of its own — it just
+        // slides in/out. The `+N` badge rides as the row's
         // trailing accessory so hovering anywhere on the row highlights the whole thing.
         VStack(spacing: 0) {
           NotificationRow(
@@ -198,7 +198,6 @@ struct SidebarNotificationStrip: View {
             trailingAccessory: notifications.items.count > 1
               ? AnyView(plusBadge(extra: notifications.items.count - 1)) : nil
           )
-          Divider()
         }
         .transition(.move(edge: .bottom).combined(with: .opacity))
       }

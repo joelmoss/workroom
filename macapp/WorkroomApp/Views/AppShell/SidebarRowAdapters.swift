@@ -305,6 +305,8 @@ struct SidebarTerminalMenu: View {
   let tabID: TerminalTab.ID
   let target: TerminalTarget
   var holder: (any PaneHost)? = nil
+  /// Rename…, which the row edits in place.
+  var rename: () -> Void = {}
 
   var body: some View {
     let host: any PaneHost = holder ?? store
@@ -316,25 +318,10 @@ struct SidebarTerminalMenu: View {
     }
     // Any terminal can be named, and moved anywhere, from its row as from its tab (stories 28, 41).
     if let tab, case .terminal = tab.content {
-      Button {
-        TabRenamePrompt.present(currentName: tab.title) {
-          panes.setUserTitle($0, forTab: tabID, in: target)
-        }
-      } label: {
-        Label("Rename…", systemImage: "pencil")
-      }
-      .help("Give this terminal a name")
-      Menu {
-        PaneMoveChoicesList(
-          groups: host.paneMoveChoices(tabID, of: target, windows: WindowRegistry.shared.allStores))
-      } label: {
-        Label {
-          Text("Move to…")
-        } icon: {
-          Image(nsImage: .moveTerminal)
-        }
-      }
-      .help("Move this terminal to a standalone terminal, a group or a workroom")
+      sidebarRenameMenuItem(action: rename)
+      terminalMoveMenu(
+        host: host, tabID: tabID, target: target,
+        help: "Move this terminal to a standalone terminal, a group or a workroom")
       Divider()
     }
     // The escape hatch for a program that left a request behind (#358).

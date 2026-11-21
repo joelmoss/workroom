@@ -485,7 +485,6 @@ struct SectionHeader<Accessory: View>: View {
   /// discoverability. Nil for sections with no command equivalent.
   var shortcut: String? = nil
   @ViewBuilder var accessory: () -> Accessory
-  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Group {
@@ -514,31 +513,99 @@ struct SectionHeader<Accessory: View>: View {
     }
     .accessibilityIdentifier("inspector.header.\(title)")
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(ThemeFill.raised)
+    .sectionHeaderBand()
     .overlay(alignment: .trailing) {
-      accessory().padding(.trailing, 12)
+      accessory().padding(.trailing, SectionHeaderMetrics.horizontalPadding)
     }
   }
 
   /// The header's row: an optional rotating disclosure chevron, the title, a status indicator, and a
   /// trailing spacer (the action accessory is overlaid by `body`). The chevron is omitted for a solo
   /// pane (`showsChevron == false`).
-  @ViewBuilder private func headerLabel(collapsed: Bool, showsChevron: Bool) -> some View {
-    HStack(spacing: 7) {
-      if showsChevron {
+  private func headerLabel(collapsed: Bool, showsChevron: Bool) -> some View {
+    SectionHeaderLabel(
+      title: title, collapsed: showsChevron ? collapsed : nil, indicator: indicator)
+  }
+}
+
+/// What every section header shares: the inspector's (`SectionHeader`) and the sidebar's Terminals
+/// and Projects headings (`SidebarSectionHeading`). One set of numbers, so the two read as one kind.
+enum SectionHeaderMetrics {
+  /// The band's height: a collapsed inspector pane's, too.
+  static let height: CGFloat = InspectorPanePolicy.headerHeight
+  /// Between the band's leading edge and the chevron, and the trailing edge and the accessory.
+  static let horizontalPadding: CGFloat = 12
+  /// The sidebar headings' leading padding: the sidebar rows' own base margin
+  /// (`ProjectSidebar.rowInsets.leading`), so the band reads tight against the narrower column.
+  static let sidebarLeadingPadding: CGFloat = 6
+  static let verticalPadding: CGFloat = 8
+  /// Between the chevron, the title and the indicator.
+  static let spacing: CGFloat = 7
+  static let chevronWidth: CGFloat = 12
+  static let titleFont = Font.system(size: 11, weight: .semibold)
+  static let chevronFont = Font.system(size: 11, weight: .semibold)
+}
+
+extension View {
+  /// A section header's full-width tinted band.
+  func sectionHeaderBand() -> some View { modifier(SectionHeaderBand()) }
+}
+
+/// The fill behind a section header: the raised wash (`ThemeFill.raised`), as under Glass.
+struct SectionHeaderBand: ViewModifier {
+  func body(content: Content) -> some View {
+    content.background(ThemeFill.raised)
+  }
+}
+
+/// A section header's row: a leading disclosure chevron that rotates (one glyph, so it never changes
+/// width), the bold title, an optional indicator and a trailing spacer. `collapsed == nil` draws no
+/// chevron (a solo inspector pane).
+struct SectionHeaderLabel<Indicator: View>: View {
+  let title: String
+  let collapsed: Bool?
+  let indicator: Indicator
+  /// Between the band's leading edge and the chevron: the inspector's `horizontalPadding`, or the
+  /// sidebar's tighter `SectionHeaderMetrics.sidebarLeadingPadding`.
+  var leadingPadding: CGFloat = SectionHeaderMetrics.horizontalPadding
+
+  init(
+    title: String, collapsed: Bool?, indicator: Indicator,
+    leadingPadding: CGFloat = SectionHeaderMetrics.horizontalPadding
+  ) {
+    self.title = title
+    self.collapsed = collapsed
+    self.indicator = indicator
+    self.leadingPadding = leadingPadding
+  }
+
+  var body: some View {
+    HStack(spacing: SectionHeaderMetrics.spacing) {
+      if let collapsed {
         Image(systemName: "chevron.right")
-          .font(.system(size: 11, weight: .semibold))
+          .font(SectionHeaderMetrics.chevronFont)
           .foregroundStyle(.secondary)
           .rotationEffect(.degrees(collapsed ? 0 : 90))
-          .frame(width: 12, alignment: .center)
+          .frame(width: SectionHeaderMetrics.chevronWidth, alignment: .center)
       }
-      Text(title).font(.system(size: 11, weight: .semibold))
+      Text(title).font(SectionHeaderMetrics.titleFont)
       indicator
       Spacer(minLength: 0)
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 8)
+    .padding(.leading, leadingPadding)
+    .padding(.trailing, SectionHeaderMetrics.horizontalPadding)
+    .padding(.vertical, SectionHeaderMetrics.verticalPadding)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     .contentShape(Rectangle())
+  }
+}
+
+extension SectionHeaderLabel where Indicator == EmptyView {
+  init(
+    title: String, collapsed: Bool?,
+    leadingPadding: CGFloat = SectionHeaderMetrics.horizontalPadding
+  ) {
+    self.init(
+      title: title, collapsed: collapsed, indicator: EmptyView(), leadingPadding: leadingPadding)
   }
 }

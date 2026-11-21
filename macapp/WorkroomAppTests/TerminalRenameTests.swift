@@ -2,7 +2,7 @@ import XCTest
 
 @testable import Workroom
 
-/// A terminal's name: the one the user gave it, else the title its program sets, else "Terminal N"
+/// A terminal's name: the one the user gave it, else the title its program sets, else its program and folder
 /// (glossary: Terminal name), kept across a quit.
 @MainActor
 final class TerminalRenameTests: XCTestCase {
@@ -25,7 +25,7 @@ final class TerminalRenameTests: XCTestCase {
   func testWithoutAUserNameTheDefaultTitleShows() {
     let sessions = makeSessions()
     let tab = sessions.addTab(for: target)
-    XCTAssertEqual(title(sessions, tab), "Terminal 1")
+    XCTAssertEqual(title(sessions, tab), "\(TerminalState.shellName) /tmp")
   }
 
   /// Value: protects=a name the user typed is not overwritten by the program's title; fails_when=the
@@ -51,7 +51,7 @@ final class TerminalRenameTests: XCTestCase {
     let tab = sessions.addTab(for: target)
     sessions.setUserTitle("Build", forTab: tab.id, in: target)
     sessions.setUserTitle("   ", forTab: tab.id, in: target)
-    XCTAssertEqual(title(sessions, tab), "Terminal 1")
+    XCTAssertEqual(title(sessions, tab), "\(TerminalState.shellName) /tmp")
   }
 
   func testNameIsTrimmed() {
@@ -77,6 +77,7 @@ final class TerminalRenameTests: XCTestCase {
     let restored = makeSessions()
     restored.restore(
       TargetSession(targetID: target.id.encoded, tabs: tabs, terminalCounter: 2), for: target)
-    XCTAssertEqual(restored.tabs(for: target).map(\.title), ["Build box", "Terminal 2"])
+    XCTAssertEqual(
+      restored.tabs(for: target).map(\.title), ["Build box", "\(TerminalState.shellName) /tmp"])
   }
 }

@@ -77,14 +77,14 @@ Owns panes, tabs, splits, sessions, surfaces and run commands. The terminal is l
 One terminal, or one diff, file or changeset view, opened in a target.
 
 **Terminal name**:
-What a terminal is labelled with: the name the user gave it, kept across a quit, or else the title its program sets, or else "Terminal N". Any terminal can be renamed.
+What a terminal is labelled with: the name the user gave it, kept across a quit, or else the title its program sets, or else its program and folder, `<program> <folder>` ("zsh ~/dev/workroom", "claude ~/workrooms/calm-dune"), drawn with the program bright and the folder faded, and joined by a space wherever it is plain text. The program is the terminal's foreground process by its short name; the folder is the shell's live folder, else where it started, in full with the home folder as `~`. This holds for every terminal, in a workroom or the Terminals section, and nothing numbers two alike apart. Any terminal can be renamed.
 
 **Standalone terminal**:
 A terminal that belongs to no project and no terminal group, with a sidebar row and a workroom tab of its own. It runs on this Mac, starts in the folder the user chose for them, and comes back after a quit like a workroom's terminals. The app calls it just a terminal; say standalone where it must be told apart.
 _Avoid_: Loose terminal, free terminal
 
 **Terminal group**:
-A set of terminals belonging to no project, with its own starting folder. A window selects and uses one as it does a workroom, but no branch or worktree backs it, so it has no version control, run commands or host. The user makes one by splitting a standalone terminal, dropping one standalone terminal on another, or asking for a new one. Until it is named it is labelled by its terminals' names and goes when one terminal is left, which becomes standalone again; once named it stays, even empty. Deleting one makes its terminals standalone.
+A set of terminals belonging to no project, with its own starting folder. A window selects and uses one as it does a workroom, but no branch or worktree backs it, so it has no version control, run commands or host. The user makes one by splitting a standalone terminal, dropping one standalone terminal on another, or asking for a new one. Until it is named it is labelled by its first terminal's name and how many more it has ("~ + 1 more") and goes when one terminal is left, which becomes standalone again. Named or not, a group goes with its last terminal across every window, but never at a quit. The Quick Terminal's group is never deleted. Deleting one makes its terminals standalone.
 _Avoid_: Group (alone), workroom (for a terminal group)
 
 **Split**:

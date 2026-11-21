@@ -12,8 +12,7 @@ extension AppStore {
   @discardableResult
   func newTerminalGroup(named name: String) -> SidebarID? {
     guard TerminalPanes.cleanedName(name) != nil else { return nil }
-    let anchor = selectedTargetID.flatMap { $0.isInTerminalsSection ? $0.targetID : nil }
-    let id = terminalsSection.addGroup(named: name, after: anchor)
+    let id = terminalsSection.addGroup(named: name, after: selectedTargetID?.targetID)
     guard let sid = id.sidebarID, let target = target(for: sid) else { return nil }
     selectedTargetID = sid
     selectedProjectID = nil
@@ -109,7 +108,32 @@ extension AppStore {
   func renameTerminalGroup(_ sid: SidebarID, to name: String) {
     guard let id = sid.targetID else { return }
     terminalsSection.renameGroup(id, to: name)
-    if terminalsSection.group(id)?.isKept == false { terminalsSection.settleUnnamedGroup(id) }
+    if terminalsSection.group(id)?.name == nil { terminalsSection.settleGroup(id) }
+  }
+
+  /// Names standalone terminal `sid`, in whichever window holds it. An empty name gives its
+  /// default back.
+  func renameStandaloneTerminal(_ sid: SidebarID, to name: String) {
+    guard let (holder, target, tab) = standaloneTerminal(sid) else { return }
+    holder.terminals.setUserTitle(name, forTab: tab.id, in: target)
+  }
+
+  /// New Terminal in Group from group `sid`'s tab: a terminal in it in this window, with the group
+  /// selected; the Quick Terminal's opens in its panel.
+  func newTerminalInGroup(_ sid: SidebarID) {
+    if sid.targetID == .quickTerminal { return revealQuickTerminal(newTerminal: true) }
+    guard case .terminalGroup = sid, let target = target(for: sid) else { return }
+    selectedTargetID = sid
+    selectedProjectID = nil
+    newTerminal(in: target)
+  }
+
+  /// Rename… for Terminals-section row `sid` from away from its row (its title-bar tab): asks the
+  /// row to edit its name in place, and says whether it could. It can't while the sidebar is hidden,
+  /// the section folded, or the row not drawn in this window; the caller then shows the sheet.
+  func beginSidebarRename(_ sid: SidebarID) -> Bool {
+    guard sid.isInTerminalsSection, sidebarVisible, !terminalsSection.isFolded else { return false }
+    return sidebarRename.begin(sid)
   }
 
   /// Set Starting Folder…: where group `sid`'s new terminals start; nil follows "New terminals open

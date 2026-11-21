@@ -8,23 +8,41 @@ enum TabRenamePrompt {
   static func present(
     currentName: String, onRename: @escaping @MainActor (String) -> Void
   ) {
-    // One tick, so the context menu's own event has unwound before the sheet drops (as the close
-    // confirm does, `TabCloseFlow`).
+    TextFieldPrompt.present(
+      title: "Rename Terminal",
+      message: "Leave the name empty to show the title the program sets.",
+      value: currentName, placeholder: "Terminal name", fieldID: "terminal.rename.field",
+      fieldHelp: "The name shown on this terminal's tab, pane title and sidebar row",
+      confirm: "Rename", onConfirm: onRename)
+  }
+}
+
+/// An alert with one text field, as a sheet on the key (else main) window, else app-modal: the
+/// field's text goes to `onConfirm` when the first button is chosen. Shared by the terminal's
+/// Rename… and New Terminal Group… prompts.
+@MainActor
+enum TextFieldPrompt {
+  static func present(
+    title: String, message: String, value: String = "", placeholder: String, fieldID: String,
+    fieldHelp: String, confirm: String, onConfirm: @escaping @MainActor (String) -> Void
+  ) {
+    // One tick, so the menu's or button's own event has unwound before the sheet drops (as the
+    // close confirm does, `TabCloseFlow`).
     DispatchQueue.main.async {
       let alert = NSAlert()
-      alert.messageText = "Rename Terminal"
-      alert.informativeText = "Leave the name empty to show the title the program sets."
+      alert.messageText = title
+      alert.informativeText = message
       let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-      field.stringValue = currentName
-      field.placeholderString = "Terminal name"
-      field.setAccessibilityIdentifier("terminal.rename.field")
-      field.toolTip = "The name shown on this terminal's tab, pane title and sidebar row"
+      field.stringValue = value
+      field.placeholderString = placeholder
+      field.setAccessibilityIdentifier(fieldID)
+      field.toolTip = fieldHelp
       alert.accessoryView = field
-      alert.addButton(withTitle: "Rename")
+      alert.addButton(withTitle: confirm)
       alert.addButton(withTitle: "Cancel")
       alert.window.initialFirstResponder = field
       let resolve: (NSApplication.ModalResponse) -> Void = { response in
-        if response == .alertFirstButtonReturn { onRename(field.stringValue) }
+        if response == .alertFirstButtonReturn { onConfirm(field.stringValue) }
       }
       if let window = NSApp.keyWindow ?? NSApp.mainWindow {
         alert.beginSheetModal(for: window, completionHandler: resolve)

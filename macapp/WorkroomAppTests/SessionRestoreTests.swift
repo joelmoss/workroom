@@ -171,7 +171,9 @@ final class SessionRestoreTests: XCTestCase {
         focusedKey: "b"),
       for: target)
 
-    XCTAssertEqual(sessions.activeTab(for: target)?.title, "Terminal 2", "saved focus is restored")
+    XCTAssertEqual(
+      sessions.activeTab(for: target)?.content.accessibilityKey, "Terminal 2",
+      "saved focus is restored")
     XCTAssertTrue(sessions.recency.panes.ids.isEmpty, "…but it is not a recency touch")
   }
 
@@ -188,7 +190,8 @@ final class SessionRestoreTests: XCTestCase {
 
     XCTAssertEqual(restored.count, 3)
     XCTAssertEqual(
-      sessions.tabs(for: target).map(\.title), ["Terminal 1", "Terminal 2", "Terminal 3"])
+      sessions.tabs(for: target).map(\.content.accessibilityKey),
+      ["Terminal 1", "Terminal 2", "Terminal 3"])
   }
 
   func testRestoresSplitAndFocusThroughTheKeyRemap() throws {
@@ -208,7 +211,7 @@ final class SessionRestoreTests: XCTestCase {
     }
     XCTAssertEqual(orientation, .vertical)
     XCTAssertEqual(ratio, 0.35, accuracy: 0.0001)
-    XCTAssertEqual(sessions.focusedTab(for: target)?.title, "Terminal 2")
+    XCTAssertEqual(sessions.focusedTab(for: target)?.content.accessibilityKey, "Terminal 2")
   }
 
   /// Persisted keys are a join key inside one snapshot, never an identity: a tab id is unique across
@@ -278,7 +281,8 @@ final class SessionRestoreTests: XCTestCase {
         ]),
       for: target)
     XCTAssertEqual(restored.count, 2)
-    XCTAssertEqual(sessions.tabs(for: target).map(\.title), ["Terminal 1", "Terminal 2"])
+    XCTAssertEqual(
+      sessions.tabs(for: target).map(\.content.accessibilityKey), ["Terminal 1", "Terminal 2"])
   }
 
   // MARK: Counter, cwd, focus
@@ -291,7 +295,7 @@ final class SessionRestoreTests: XCTestCase {
         targetID: target.id.encoded, tabs: [terminal("a", title: "Terminal 7")], terminalCounter: 7),
       for: target)
     let added = sessions.addTab(for: target)
-    XCTAssertEqual(added.title, "Terminal 8")
+    XCTAssertEqual(added.content.accessibilityKey, "Terminal 8")
   }
 
   /// libghostty cannot spawn into a directory that no longer exists, so a dead cwd must fall back.
@@ -318,7 +322,7 @@ final class SessionRestoreTests: XCTestCase {
         focusedKey: "b"),
       for: target)
     XCTAssertEqual(fired, 0)
-    XCTAssertEqual(sessions.focusedTab(for: target)?.title, "Terminal 2")
+    XCTAssertEqual(sessions.focusedTab(for: target)?.content.accessibilityKey, "Terminal 2")
   }
 
   // MARK: Guards
@@ -331,7 +335,7 @@ final class SessionRestoreTests: XCTestCase {
       TargetSession(targetID: target.id.encoded, tabs: [terminal("a", title: "Terminal 99")]),
       for: target)
     XCTAssertEqual(restored.count, 0)
-    XCTAssertEqual(sessions.tabs(for: target).map(\.title), ["Terminal 1"])
+    XCTAssertEqual(sessions.tabs(for: target).map(\.content.accessibilityKey), ["Terminal 1"])
   }
 
   func testEmptySessionRestoresNothing() {

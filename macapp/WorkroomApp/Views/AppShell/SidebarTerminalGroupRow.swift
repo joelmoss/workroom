@@ -3,20 +3,17 @@ import DesignSystem
 import SwiftUI
 import WorkroomDomain
 
-/// A terminal group's row in the Terminals section (ADR 0077): a fold chevron, the group glyph, its
-/// name (edited inline by Rename…) and New Terminal in Group. Selecting it shows the group in this
+/// A terminal group's row in the Terminals section (ADR 0077): the group glyph (the fold chevron
+/// while hovered, as a workroom row's), its name (edited inline by Rename…) and New Terminal in Group. Selecting it shows the group in this
 /// window as a workroom shows; its menu renames it, sets its starting folder and deletes it. The
-/// Quick Terminal's group is listed first: its row slides the panel in, and it has no fold, rename
-/// or delete, since its terminals are its panel's and it is built in.
+/// Quick Terminal's group is listed first: its row slides the panel in, it folds only once its panel
+/// has terminals to list, and it has no rename or delete, since it is built in.
 struct SidebarTerminalGroupRow: View, Equatable {
   let model: SidebarTerminalGroupRowModel
   let actions: SidebarSectionActions
 
   @State private var renaming = false
   @State private var draft = ""
-  /// Whether the field has had the keys yet: only losing them after that commits the name.
-  @State private var fieldHadFocus = false
-  @FocusState private var fieldFocused: Bool
 
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.model == rhs.model }
 
@@ -33,88 +30,56 @@ struct SidebarTerminalGroupRow: View, Equatable {
       }()
     #endif
     HStack(spacing: Spacing.s) {
-      if group.isBuiltIn {
-        Color.clear.frame(width: SidebarRowMetrics.caretWidth, height: 18)
-      } else {
-        Button {
-          guard let id = sid.targetID else { return }
-          actions.setFolded(id, !group.isFolded)
-        } label: {
-          Image(systemName: group.isFolded ? "chevron.right" : "chevron.down")
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .frame(width: SidebarRowMetrics.caretWidth, height: 18)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(group.isFolded ? "Show this group's terminals" : "Hide this group's terminals")
-        .accessibilityLabel(group.isFolded ? "Expand \(title)" : "Collapse \(title)")
+      // One leading column, as a workroom row's: the group's glyph, swapped for the fold chevron
+      // while the row is hovered and has terminals to fold.
+      if model.showsFoldButton {
+        TerminalDisclosureButton(
+          expanded: !group.isFolded, width: SidebarRowMetrics.caretWidth,
+          help: group.isFolded ? "Show this group's terminals" : "Hide this group's terminals",
+          label: group.isFolded ? "Expand \(title)" : "Collapse \(title)",
+          action: toggleFold
+        )
         .accessibilityIdentifier("sidebar.group.fold.\(key)")
+      } else {
+        Image(systemName: group.isBuiltIn ? QuickTerminalController.glyph : TerminalGroup.glyph)
+          .font(.system(size: 10))
+          .foregroundStyle(.secondary)
+          .frame(width: SidebarRowMetrics.caretWidth, height: 18, alignment: .center)
       }
 
-      Image(systemName: group.isBuiltIn ? QuickTerminalController.glyph : TerminalGroup.glyph)
-        .font(.system(size: 10))
-        .foregroundStyle(.secondary)
-        .frame(width: SidebarRowMetrics.caretWidth, height: 18, alignment: .center)
-
       if renaming {
-        TextField("Terminal group name", text: $draft)
-          .textFieldStyle(.plain)
-          .font(.callout)
-          .focused($fieldFocused)
-          .onSubmit(commitRename)
-          .onExitCommand { renaming = false }
-          .onAppear { DispatchQueue.main.async { fieldFocused = true } }
-          .onChange(of: fieldFocused) { _, focused in
-            if focused {
-              fieldHadFocus = true
-            } else if fieldHadFocus, renaming {
-              commitRename()
-            }
-          }
-          .help("The group's name. Leave it empty to label the group by its terminals' names")
-          .accessibilityIdentifier("sidebar.group.rename.\(key)")
+        SidebarInlineNameField(
+          placeholder: "Terminal group name", draft: $draft,
+          help: "The group's name. Leave it empty to label the group by its terminals' names",
+          id: "sidebar.group.rename.\(key)", commit: commitRename, cancel: { renaming = false })
       } else {
-        Text(title).font(.callout).lineLimit(1).truncationMode(.tail)
+        Text(title).font(.callout).lineLimit(1).truncationMode(.middle)
       }
       Spacer(minLength: 0)
 
-      // Its terminals' marks, as a workroom's row shows them (#358): waiting beats a stopped error
-      // beats running.
-      if let id = sid.targetID {
-        SidebarUnreadDot(source: .target(id))
-        if model.activity.waiting > 0 {
-          NeedsYouButton(count: model.activity.waiting, stale: model.activity.waitingStale) {
-            actions.showWaiting(id)
-          }
-        } else if model.activity.failed || model.activity.running {
-          RunningSpinner(failed: model.activity.failed)
-        }
-      }
+      // Its terminals' marks: waiting beats a stopped error beats running.
+      SidebarSectionActivityMarks(sid: sid, activity: model.activity, actions: actions)
 
-      Button(action: newTerminal) {
-        Image(systemName: "plus")
-          .font(.system(size: 10, weight: .semibold))
-          .foregroundStyle(.secondary)
-          .frame(width: SidebarRowMetrics.caretWidth, height: SidebarRowMetrics.rowHeight)
-          .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .help("New Terminal in \(title)")
-      .accessibilityLabel("New Terminal in \(title)")
-      .accessibilityIdentifier("sidebar.group.new.\(key)")
+      SidebarIconButton(
+        systemImage: "plus", help: newTerminalTitle, id: "sidebar.group.new.\(key)",
+        action: newTerminal)
     }
-    .padding(.trailing, Spacing.s)
+    .padding(.trailing, SidebarRowMetrics.iconColumnInset)
     .frame(height: SidebarRowMetrics.rowHeight)
     .contentShape(Rectangle())
     .onTapGesture { actions.select(sid) }
     .help(rowHelp)
     .contextMenu { menu }
+    // Rename… on the group's title-bar tab edits the name here, while the row is drawn.
+    .sidebarInlineRename(sid, in: actions.inlineRename, begin: beginRename)
     .accessibilityElement(children: .contain)
     .accessibilityLabel(title)
     .accessibilityAddTraits(.isButton)
     .accessibilityIdentifier("sidebar.group.\(key)")
+    .sidebarFoldAccessibilityAction(model.foldItem, toggle: toggleFold)
   }
+
+  private var newTerminalTitle: String { SidebarTerminalGroupRowModel.newTerminalTitle(for: group) }
 
   private var rowHelp: String {
     let base = group.isBuiltIn ? "Show the Quick Terminal" : title
@@ -122,13 +87,10 @@ struct SidebarTerminalGroupRow: View, Equatable {
   }
 
   @ViewBuilder private var menu: some View {
-    Button("New Terminal in Terminal Group", action: newTerminal)
+    SidebarFoldMenuItem(item: model.foldItem, toggle: toggleFold)
+    Button(newTerminalTitle, action: newTerminal)
     if !group.isBuiltIn {
-      Button("Rename…") {
-        draft = group.name ?? ""
-        fieldHadFocus = false
-        renaming = true
-      }
+      Button("Rename…", action: beginRename)
     }
     Divider()
     Button("Set Starting Folder…", action: chooseStartingFolder)
@@ -143,6 +105,17 @@ struct SidebarTerminalGroupRow: View, Equatable {
     }
   }
 
+  private func toggleFold() {
+    guard let id = sid.targetID else { return }
+    actions.setFolded(id, !group.isFolded)
+  }
+
+  private func beginRename() {
+    guard !group.isBuiltIn else { return }
+    draft = group.name ?? ""
+    renaming = true
+  }
+
   private func commitRename() {
     renaming = false
     actions.rename(sid, draft)
@@ -152,6 +125,23 @@ struct SidebarTerminalGroupRow: View, Equatable {
   private func newTerminal() { actions.newTerminal(sid) }
 
   private func chooseStartingFolder() {
+    guard let folder = TerminalGroupPrompts.chooseStartingFolder(for: title, current: group)
+    else { return }
+    actions.setStartingFolder(sid, folder)
+  }
+
+  /// Deletes the group, asking first only when it has terminals, which become standalone.
+  private func delete() {
+    guard TerminalGroupPrompts.confirmDelete(title, asks: actions.deleteAsks(sid)) else { return }
+    actions.delete(sid)
+  }
+}
+
+/// A terminal group's prompts, shared by its sidebar row's menu and its title-bar tab's.
+@MainActor
+enum TerminalGroupPrompts {
+  /// Set Starting Folder…'s open panel, at the group's folder: the folder chosen, or nil.
+  static func chooseStartingFolder(for title: String, current group: TerminalGroup) -> String? {
     let panel = NSOpenPanel()
     panel.canChooseDirectories = true
     panel.canChooseFiles = false
@@ -161,32 +151,62 @@ struct SidebarTerminalGroupRow: View, Equatable {
     if let folder = group.startingFolder {
       panel.directoryURL = URL(fileURLWithPath: (folder as NSString).expandingTildeInPath)
     }
-    guard panel.runModal() == .OK, let url = panel.url else { return }
-    actions.setStartingFolder(sid, url.path)
+    guard panel.runModal() == .OK, let url = panel.url else { return nil }
+    return url.path
   }
 
-  /// Deletes the group, asking first only when it has terminals, which become standalone.
-  private func delete() {
-    if actions.deleteAsks(sid) {
-      let alert = NSAlert()
-      alert.messageText = "Delete “\(title)”?"
-      alert.informativeText =
-        "Its terminals stay open, each as a terminal of its own in the terminal group's place."
-      alert.addButton(withTitle: "Delete “\(title)”")
-      alert.addButton(withTitle: "Cancel")
-      guard alert.runModal() == .alertFirstButtonReturn else { return }
-    }
-    actions.delete(sid)
+  /// Whether to delete the group: true at once when it `asks` nothing (it has no terminals), else
+  /// the user's answer.
+  static func confirmDelete(_ title: String, asks: Bool) -> Bool {
+    guard asks else { return true }
+    let alert = NSAlert()
+    alert.messageText = "Delete “\(title)”?"
+    alert.informativeText =
+      "Its terminals stay open, each as a terminal of its own in the terminal group's place."
+    alert.addButton(withTitle: "Delete “\(title)”")
+    alert.addButton(withTitle: "Cancel")
+    return alert.runModal() == .alertFirstButtonReturn
+  }
+
+  /// Rename… for a group whose row isn't in view: a sheet, prefilled with its own name. An empty
+  /// name labels it by its terminals' names, as the row's field does.
+  static func rename(_ group: TerminalGroup, onRename: @escaping @MainActor (String) -> Void) {
+    TextFieldPrompt.present(
+      title: "Rename Terminal Group",
+      message: "Leave the name empty to label the group by its terminals' names.",
+      value: group.name ?? "", placeholder: "Terminal group name",
+      fieldID: "terminalGroup.rename.field",
+      fieldHelp: "The name shown on the group's row and title-bar tab",
+      confirm: "Rename", onConfirm: onRename)
   }
 }
 
 struct SidebarTerminalGroupRowModel: Equatable {
   let sid: SidebarID
   let group: TerminalGroup
-  /// Its name, or its terminals' names joined while it is unnamed.
+  /// Its name, or "<first terminal> + N more" while it is unnamed.
   let title: String
   /// What its terminals report, in every window and the Quick Terminal's panel (story 13).
   let activity: SidebarTargetActivity
+  /// Whether it folds (its chevron, on hover): always for a group
+  /// of the user's; for the Quick Terminal's, once its panel has terminals to list under it.
+  var canFold = true
+  /// Whether the pointer is over the row, which swaps its glyph for the fold chevron.
+  var hovered = false
+
+  /// The fold chevron stands in the glyph's column only while the row is hovered and can fold, as
+  /// a workroom row's does.
+  var showsFoldButton: Bool { canFold && hovered }
+
+  /// Its menu's and VoiceOver's Expand or Collapse, offered whenever its chevron would be.
+  var foldItem: SidebarFoldItem? { canFold ? SidebarFoldItem(expanded: !group.isFolded) : nil }
+
+  /// Its menu's and "+" button's New Terminal: in the group by name ("New Terminal in Quick
+  /// Terminal", "New Terminal in Ops"); an unnamed group, whose label is its terminals' names, is
+  /// just "Group".
+  static func newTerminalTitle(for group: TerminalGroup) -> String {
+    "New Terminal in \(group.name ?? "Group")"
+  }
 }
 
 /// Builds a terminal group's row. Of the group it holds the entry the section lists, so a pass of
@@ -195,10 +215,14 @@ struct SidebarTerminalGroupRowAdapter: View, Equatable {
   @EnvironmentObject private var store: AppStore
   let sid: SidebarID
   let group: TerminalGroup
+  /// See `SidebarTerminalGroupRowModel.canFold`.
+  var canFold = true
+  var hovered = false
   let actions: SidebarSectionActions
 
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-    lhs.sid == rhs.sid && lhs.group == rhs.group
+    lhs.sid == rhs.sid && lhs.group == rhs.group && lhs.canFold == rhs.canFold
+      && lhs.hovered == rhs.hovered
   }
 
   var body: some View {
@@ -208,7 +232,8 @@ struct SidebarTerminalGroupRowAdapter: View, Equatable {
   private var model: SidebarTerminalGroupRowModel {
     SidebarTerminalGroupRowModel(
       sid: sid, group: group, title: store.target(for: sid)?.title ?? TerminalGroup.untitled,
-      activity: sid.targetID.map(store.sectionActivity(of:)) ?? SidebarTargetActivity())
+      activity: sid.targetID.map(store.sectionActivity(of:)) ?? SidebarTargetActivity(),
+      canFold: canFold, hovered: hovered)
   }
 }
 
@@ -217,29 +242,12 @@ struct SidebarTerminalGroupRowAdapter: View, Equatable {
 @MainActor
 enum TerminalGroupNamePrompt {
   static func present(onName: @escaping @MainActor (String) -> Void) {
-    // One tick, so the button's own event has unwound before the sheet drops.
-    DispatchQueue.main.async {
-      let alert = NSAlert()
-      alert.messageText = "New Terminal Group"
-      alert.informativeText =
-        "A terminal group keeps its terminals together, and stays while it has a name."
-      let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-      field.placeholderString = "Terminal group name"
-      field.setAccessibilityIdentifier("terminalGroup.name.field")
-      field.toolTip = "The name shown on the group's row and title-bar tab"
-      alert.accessoryView = field
-      alert.addButton(withTitle: "Create")
-      alert.addButton(withTitle: "Cancel")
-      alert.window.initialFirstResponder = field
-      let resolve: (NSApplication.ModalResponse) -> Void = { response in
-        if response == .alertFirstButtonReturn { onName(field.stringValue) }
-      }
-      if let window = NSApp.keyWindow ?? NSApp.mainWindow {
-        alert.beginSheetModal(for: window, completionHandler: resolve)
-      } else {
-        resolve(alert.runModal())
-      }
-    }
+    TextFieldPrompt.present(
+      title: "New Terminal Group",
+      message: "A terminal group keeps its terminals together, and stays while it has a name.",
+      placeholder: "Terminal group name", fieldID: "terminalGroup.name.field",
+      fieldHelp: "The name shown on the group's row and title-bar tab",
+      confirm: "Create", onConfirm: onName)
   }
 }
 

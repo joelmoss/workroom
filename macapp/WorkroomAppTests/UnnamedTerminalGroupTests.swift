@@ -67,7 +67,7 @@ final class UnnamedTerminalGroupTests: XCTestCase {
   private func isUnnamedGroup(_ sid: SidebarID?) -> Bool {
     guard case .terminalGroup = sid, let id = sid?.targetID, let group = section.group(id)
     else { return false }
-    return !group.isKept
+    return group.name == nil
   }
 
   private func settle() async { await section.regroupsSettled() }
@@ -105,8 +105,8 @@ final class UnnamedTerminalGroupTests: XCTestCase {
     XCTAssertEqual(retags.map(\.0), [session])
     XCTAssertEqual(retags.map(\.1), [try XCTUnwrap(group.targetID).encoded])
     let names = section.terminalNames(of: try XCTUnwrap(group.targetID))
-    XCTAssertEqual(store.target(for: group)?.title, names.joined(separator: " + "))
-    XCTAssertEqual(Set(names).count, 2, "two terminals, numbered apart")
+    XCTAssertEqual(store.target(for: group)?.title, "\(names[0]) + 1 more")
+    XCTAssertEqual(names.count, 2, "two terminals")
 
     store.closeCurrentTerminalTab()
     await settle()
@@ -365,7 +365,11 @@ final class UnnamedTerminalGroupTests: XCTestCase {
 
     XCTAssertEqual(rows, [sid])
     XCTAssertTrue(isUnnamedGroup(sid))
-    XCTAssertEqual(store.target(for: sid)?.title, "Terminal 1 + Terminal 2")
+    let target = try XCTUnwrap(store.target(for: sid))
+    let first = TerminalState.programAndFolder(
+      program: TerminalState.shellName, folder: target.path
+    ).text
+    XCTAssertEqual(target.title, "\(first) + 1 more")
 
     store.renameTerminalGroup(sid, to: "Servers")
     store.closeCurrentTerminalTab()
@@ -375,8 +379,7 @@ final class UnnamedTerminalGroupTests: XCTestCase {
 
   func testClearingANameOfAnEmptyGroupRemovesIt() async throws {
     let store = makeStore()
-    let sid = try XCTUnwrap(store.newTerminalGroup(named: "Ops"))
-    store.closeCurrentTerminalTab()
+    let sid = try XCTUnwrap(section.addGroup(named: "Ops").sidebarID)
 
     store.renameTerminalGroup(sid, to: "")
     await settle()

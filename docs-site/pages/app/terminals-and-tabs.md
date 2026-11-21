@@ -17,6 +17,12 @@ A workroom can hold as many terminals as you like. They sit in a tab strip that 
 
 For long titles, the pane's title bar provides more room than the tab. Hover over the pane title to read it in full.
 
+A workroom or a project's root with two or more terminals can list them under its row in the sidebar. Hover over the row and click the arrow that takes the place of its icon to show them or fold them away. Nightly only: or right-click the row and choose **Expand** or **Collapse**, which VoiceOver also offers as an action on the row.
+
+### Terminal names {nightly}
+
+A terminal with no name of yours, whose program sets no title, is named after the program running in it and the folder it is in, such as **zsh ~/dev/workroom**, **vim ~/dev/workroom/macapp** or **zsh ~**. That goes for every terminal: in a workroom, standalone, in a group or in the Quick Terminal. The folder is shown in full, with your home folder as **~**, and the name follows the terminal as you `cd` and as programs start and end. Terminals in the same folder share a name; nothing numbers them apart. In tabs, title bars and the sidebar the program stands out and the folder is faded. When a tab or row is too narrow, the folder gives way first and is cut in the middle, so the program and the end of the folder stay in view. A name you give a terminal, or a title its program sets, shows instead.
+
 | To do this | Use |
 | --- | --- |
 | Open a new terminal | <kbd>⌘T</kbd>, or the new-terminal button in the tab strip |
@@ -32,26 +38,32 @@ For long titles, the pane's title bar provides more room than the tab. Hover ove
 
 A standalone terminal belongs to no project. It has its own row in the **Terminals** section at the top of the sidebar, and its own tab in the title bar, with a terminal icon and its name. Press <kbd>⌥⌘T</kbd> from anywhere, or <kbd>⌘T</kbd> when a project's row or nothing is selected, or click the **+** beside **Terminals**. <kbd>⌘T</kbd> on a standalone terminal opens another one. A standalone terminal is one terminal: it starts in the **New terminals open in** folder, comes back after a quit or a crash like a workroom's terminals, and has no inspector, version control or run command. Click **Terminals** to fold the section. A window with no projects shows the section too, so you can use Workroom for terminals alone.
 
+A terminal in the **Terminals** section is named like any other, after its program and folder, such as **zsh ~** (see **Terminal names** above).
+
 Select a standalone terminal that another window holds, and that window comes forward. Closing a window closes its standalone terminals, and asks first when it has any.
 
 #### Rename a terminal
 
-Any terminal can have a name of its own, in a workroom, a group or on its own. Right-click its tab, or a standalone terminal's row, and choose **Rename…**. The name shows on the tab, the pane's title bar and the row, and it comes back after a quit. Leave the name empty to show the title the program sets again.
+Any terminal can have a name of its own, in a workroom, a group or on its own. Right-click its tab or its row in the sidebar and choose **Rename…**. On a row, the name is edited in place, as a terminal group's is: press <kbd>Return</kbd> or click away to keep it, or <kbd>Esc</kbd> to leave it as it was. From a tab, a sheet asks for it. The name shows on the tab, the pane's title bar and the row, and it comes back after a quit. Leave the name empty to show the title the program sets again.
 
 #### Terminal groups
 
-A terminal group keeps several terminals with no project together. A window selects it and uses it as it does a workroom, with no branch or worktree behind it. It has one tab in the title bar, with a group icon and its name, and the usual tab strip underneath: <kbd>⌘T</kbd>, <kbd>⌘W</kbd>, splits and <kbd>⌘1</kbd> to <kbd>⌘9</kbd> work inside it as in a workroom. Each window keeps its own terminals in a group. Its row folds open to list them, and Workroom remembers the fold. Drag rows to reorder the section.
+A terminal group keeps several terminals with no project together. A window selects it and uses it as it does a workroom, with no branch or worktree behind it; the header above its terminals shows its name. It has one tab in the title bar, with a group icon and its name, and the usual tab strip underneath: <kbd>⌘T</kbd>, <kbd>⌘W</kbd>, splits and <kbd>⌘1</kbd> to <kbd>⌘9</kbd> work inside it as in a workroom. Each window keeps its own terminals in a group. Its row lists them under it, as a workroom's row lists its terminals. Hover over the row and click the arrow that takes the place of its icon to fold them away or show them again, or right-click the row and choose **Collapse** or **Expand**. VoiceOver offers the same as an action on the row. Workroom remembers the fold. Drag rows to reorder the section.
 
 A group is named or unnamed:
 
-- **Unnamed.** Split a standalone terminal with <kbd>⌘D</kbd> or <kbd>⇧⌘D</kbd>, drag one standalone terminal's row onto another's, or drop a terminal's tab on a standalone terminal's row or title-bar tab, and the terminals become an unnamed group in its place. Its row and tab are labelled with the terminals' names, such as **Terminal 1 + Terminal 2**. When one terminal is left in it, counting every window, the group goes and that terminal is standalone again. A split followed by closing one half gets you back where you started.
-- **Named.** Click the group button beside **Terminals**, or choose **New Terminal Group…** in **Move to…**, and give it a name. A named group stays when its last terminal closes, and comes back after a quit. Right-click its row and choose **Rename…** to change the name. Clearing the name makes it unnamed, and it then goes when one terminal is left.
+- **Unnamed.** Split a standalone terminal with <kbd>⌘D</kbd> or <kbd>⇧⌘D</kbd>, drag one standalone terminal's row onto another's, or drop a terminal's tab on a standalone terminal's row or title-bar tab, and the terminals become an unnamed group in its place. Its row and tab are labelled with its first terminal's name and how many more it has, such as **zsh ~ + 1 more**. When one terminal is left in it, counting every window, the group goes and that terminal is standalone again. A split followed by closing one half gets you back where you started.
+- **Named.** Click the group button beside **Terminals**, or choose **New Terminal Group…** in **Move to…**, and give it a name. A named group stays while it has a terminal in any window, and comes back after a quit. Right-click its row and choose **Rename…** to change the name. Clearing the name makes it unnamed, and it then goes when one terminal is left.
 
-Right-click a terminal group's row for **New Terminal in Terminal Group**, **Rename…**, **Set Starting Folder…** (otherwise its terminals start in **New terminals open in**) and **Delete**. Deleting a group keeps its terminals open, each as a standalone terminal in its place, and asks first when it has any.
+Either kind goes when its last terminal does, counting every window: when you close it, move it elsewhere, or close the window that holds it. Workroom doesn't ask about the group. Quitting keeps every group, and its terminals come back when Workroom opens. The Quick Terminal's group is the exception: it is never deleted, and its panel just hides when its last terminal closes.
+
+Right-click a terminal group's row for **New Terminal in** and the group's name (**New Terminal in Group** for an unnamed one, **New Terminal in Quick Terminal** for the Quick Terminal), **Rename…**, **Set Starting Folder…** (otherwise its terminals start in **New terminals open in**) and **Delete**. Deleting a group keeps its terminals open, each as a standalone terminal in its place, and asks first when it has any.
+
+Right-click a terminal group's or a standalone terminal's tab in the title bar for the same items as its row, beside the tab's own, such as **Close**. **Rename…** there edits the name on the row, or asks in a sheet while the sidebar or the **Terminals** section is hidden. Run, Restart and Stop belong to a project's run command, so these tabs don't offer them.
 
 #### Move a terminal
 
-Right-click a terminal's tab, a standalone terminal's row or the terminal itself and choose **Move to…**, or use the move button in its pane's title bar. It lists **Standalone**, the **Quick Terminal**, your terminal groups, **New Terminal Group…**, and every workroom that is open in a window. The terminal moves still running, with its scrollback.
+Right-click a terminal's tab, a standalone terminal's row or the terminal itself and choose **Move to…**, or use the move button in its pane's title bar. It lists **Standalone Terminal**, the **Quick Terminal**, your terminal groups, **New Terminal Group…**, and every workroom that is open in a window, written *project / workroom*. A checkmark marks where the terminal is now. The terminal moves still running, with its scrollback.
 
 You can also drag a terminal's tab onto a row in the sidebar, onto a workroom or group's tab in the title bar, or onto the **Terminals** heading to make it standalone. While you drag, the place it will go is highlighted. A terminal that runs on a remote host can't become standalone or join a group, and nothing can move into a remote workroom, because the shell runs where it started.
 
@@ -182,7 +194,7 @@ On a remote or container workroom, the run command runs on the workroom's host, 
 
 ## Quick Terminal
 
-The Quick Terminal is a window of shells of its own that slides in from the top of the screen, in your home folder unless you choose another starting folder. It is not part of any workroom. Nightly only: it is also the built-in terminal group, with a row in the **Terminals** section of the sidebar. Click the row to slide the panel in, or right-click it for **Set Starting Folder…**. The terminal group can't be deleted or renamed.
+The Quick Terminal is a window of shells of its own that slides in from the top of the screen, in your home folder unless you choose another starting folder. It is not part of any workroom. Nightly only: it is also the built-in terminal group, with a row in the **Terminals** section of the sidebar. Click the row to slide the panel in, or right-click it for **Set Starting Folder…**. Once the Quick Terminal has terminals, they are listed under its row, which folds as any group's does. The terminal group can't be deleted or renamed.
 
 - Press <kbd>⌥§</kbd> (or the shortcut you set) from any app to slide it in, and press it again to slide it away. It also slides away when you click another window or switch apps. Hiding keeps the shell and its scrollback.
 - It appears on the screen your pointer is on, centred along the edge until you move it. Drag the empty part of its tab bar or a footer to slide it along the edge, or towards another edge to move it there. It stays against an edge the whole way. Drag its sides to resize it. It keeps its size and place the next time it opens, even after you close it.

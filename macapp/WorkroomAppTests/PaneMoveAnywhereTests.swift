@@ -78,21 +78,32 @@ final class PaneMoveAnywhereTests: XCTestCase {
     window.newStandaloneTerminal()
     window.selectedTargetID = sidA
 
-    let groups = window.paneMoveChoices(pane.id, of: from, windows: [window])
+    // The panel is passed in: the no-panel overload reads the app-wide `WindowRegistry`, whose
+    // Quick Terminal another test in the same process may or may not have made.
+    let panel = makeQuickTerminalHost(notifications: registry.notifications, section: section)
+    let groups = window.paneMoveChoices(
+      pane.id, of: from, windows: [window], quickTerminal: panel)
 
     XCTAssertEqual(
       groups.first?.choices.map(\.title),
-      ["Standalone", "Quick Terminal", "Servers", "New Terminal Group…"],
+      ["Standalone Terminal", "Quick Terminal", "Servers", "New Terminal Group…"],
       "the Quick Terminal right after Standalone (#661)")
     XCTAssertNil(groups.first?.header)
-    XCTAssertEqual(groups.dropFirst().flatMap(\.choices).map(\.title), [window.title(for: sidA)])
+    XCTAssertEqual(
+      groups.dropFirst().flatMap(\.choices).map(\.title), ["p / a"],
+      "a workroom reads \"project / workroom\", as the rest of the app writes it")
     XCTAssertEqual(groups.dropFirst().flatMap(\.choices).map(\.enabled), [false], "its own")
+    XCTAssertEqual(
+      groups.dropFirst().flatMap(\.choices).map(\.isCurrent), [true], "its own, checked")
+    XCTAssertFalse(groups[0].choices.contains(where: \.isCurrent), "no other place is checked")
     XCTAssertTrue(groups[0].choices.allSatisfy(\.enabled))
     XCTAssertNotNil(window.terminalGroup(named))
   }
 
-  /// Value: protects=a standalone terminal's own place is Standalone, listed disabled;
-  /// fails_when=moving a standalone terminal to Standalone churns its row; why_new=#660;
+  /// Value: protects=a standalone terminal's own place is Standalone Terminal, listed checked and
+  /// disabled, so it reads as where the terminal is, not a section heading;
+  /// fails_when=moving a standalone terminal to Standalone churns its row, or the item is unchecked;
+  /// why_new=#660;
   /// seam=AppStore; no_claim=none.
   func testAStandaloneTerminalsStandaloneChoiceIsDisabled() throws {
     let window = makeWindow()
@@ -102,8 +113,10 @@ final class PaneMoveAnywhereTests: XCTestCase {
 
     let choices = window.paneMoveChoices(pane.id, of: from, windows: [window])[0].choices
 
-    XCTAssertEqual(choices.first?.title, "Standalone")
+    XCTAssertEqual(choices.first?.title, "Standalone Terminal")
     XCTAssertEqual(choices.first?.enabled, false)
+    XCTAssertEqual(choices.first?.isCurrent, true, "checked: the terminal's place now")
+    XCTAssertEqual(choices.filter(\.isCurrent).count, 1)
   }
 
   // MARK: Each destination
@@ -175,9 +188,10 @@ final class PaneMoveAnywhereTests: XCTestCase {
     XCTAssertEqual(window.terminals.tabs(for: into).map(\.id), [pane.id])
   }
 
-  /// Value: protects=a group's terminal moves into a workroom open in another window;
-  /// fails_when=only workroom panes move to workrooms; why_new=#660; seam=AppStore pair;
-  /// no_claim=none.
+  /// Value: protects=a group's terminal moves into a workroom open in another window, and the
+  /// group, left empty, goes; fails_when=only workroom panes move to workrooms, or an emptied named
+  /// group stays listed; why_new=#660, and the owner's "a group goes with its last terminal";
+  /// seam=AppStore pair; no_claim=none.
   func testAGroupsTerminalMovesToAnotherWindowsWorkroom() async throws {
     let first = makeWindow()
     let second = makeWindow()
@@ -189,12 +203,37 @@ final class PaneMoveAnywhereTests: XCTestCase {
 
     let groups = first.paneMoveChoices(pane.id, of: from, windows: [first, second])
     let choice = try XCTUnwrap(groups.last?.choices.first)
-    XCTAssertEqual(choice.title, second.title(for: sidB))
+    XCTAssertEqual(choice.title, second.title(for: sidB, separator: WorkroomLabel.separator))
     choice.move()
     await settle { second.terminals.tab(pane.id, for: into) != nil }
 
     XCTAssertNotNil(second.terminals.tab(pane.id, for: into))
-    XCTAssertNotNil(first.terminalGroup(group), "a named group stays")
+    await section.regroupsSettled()
+    XCTAssertNil(first.terminalGroup(group), "its last terminal moved out: the group goes")
+  }
+
+  /// Value: protects=a named group whose last terminal is dragged out to a workroom in the same
+  /// window goes, and one left with a terminal stays; fails_when=an emptied named group stays
+  /// listed, or one still holding a terminal goes; why_new=the owner's "a group goes with its last
+  /// terminal"; seam=AppStore's drop; no_claim=hit-testing the pointer.
+  func testDraggingAGroupsLastTerminalOutDeletesTheGroup() async throws {
+    let window = makeWindow()
+    let group = try XCTUnwrap(window.newTerminalGroup(named: "Servers"))
+    let from = try target(window, group)
+    window.newTerminalInSelectedTarget()
+    let panes = window.terminals.tabs(for: from).map(\.id)
+
+    let first = await window.dropPane(panes[0], of: from, on: .target(sidA))
+    await section.regroupsSettled()
+    XCTAssertTrue(first)
+    XCTAssertNotNil(window.terminalGroup(group), "one terminal left: it stays")
+
+    let last = await window.dropPane(panes[1], of: from, on: .target(sidA))
+    await section.regroupsSettled()
+
+    XCTAssertTrue(last)
+    XCTAssertNil(window.terminalGroup(group), "its last terminal moved out: the group goes")
+    XCTAssertEqual(window.terminals.tabCount(forTargetID: try target(window, sidA).id), 2)
   }
 
   /// Value: protects=a failed retag leaves no new standalone or group row behind; fails_when=the
@@ -257,7 +296,7 @@ final class PaneMoveAnywhereTests: XCTestCase {
   private func isUnnamedGroup(_ sid: SidebarID) -> Bool {
     guard case .terminalGroup = sid, let id = sid.targetID, let group = section.group(id)
     else { return false }
-    return !group.isKept
+    return group.name == nil
   }
 
   /// Value: protects=a workroom's terminal tab dropped on a standalone terminal's row or title-bar
@@ -363,7 +402,9 @@ final class PaneMoveAnywhereTests: XCTestCase {
 
     let workrooms = window.paneMoveChoices(pane.id, of: from, windows: [window]).dropFirst()
     let choice = try XCTUnwrap(
-      workrooms.flatMap(\.choices).first { $0.title == window.title(for: remote) })
+      workrooms.flatMap(\.choices).first {
+        $0.title == window.title(for: remote, separator: WorkroomLabel.separator)
+      })
     let dropped = await window.dropPane(pane.id, of: from, on: .target(remote))
 
     XCTAssertFalse(choice.enabled)

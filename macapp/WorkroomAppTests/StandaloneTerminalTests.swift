@@ -76,7 +76,12 @@ final class StandaloneTerminalTests: XCTestCase {
     XCTAssertEqual(
       store.orderedWorkroomTargets().map(\.target.id), [sid.targetID], "and its title-bar tab")
     XCTAssertEqual(store.selectedTarget?.path, TerminalsSection.newTerminalDirectory())
-    XCTAssertEqual(store.selectedTarget?.title, "Terminal 1", "titled by its terminal's name")
+    XCTAssertEqual(
+      store.selectedTarget?.title,
+      TerminalState.programAndFolder(
+        program: TerminalState.shellName, folder: TerminalsSection.newTerminalDirectory()
+      ).text,
+      "titled by its terminal's program and folder")
   }
 
   /// A project's row is selected by `selectedProjectID` alone: it opens no terminals.
@@ -164,7 +169,11 @@ final class StandaloneTerminalTests: XCTestCase {
     let sid = try standalone(holder)
 
     XCTAssertEqual(other.sidebarID(for: try XCTUnwrap(sid.targetID)), sid)
-    XCTAssertEqual(other.target(for: sid)?.title, "Terminal 1")
+    XCTAssertEqual(
+      other.target(for: sid)?.title,
+      holder.terminals.tabs(for: try XCTUnwrap(holder.target(for: sid))).first?.title)
+    XCTAssertNotEqual(
+      other.target(for: sid)?.title, "Terminal 1", "named by its program and folder")
     XCTAssertEqual(other.terminals.tabCount(forTargetID: try XCTUnwrap(sid.targetID)), 0)
   }
 

@@ -1161,7 +1161,11 @@ final class WorkroomHandOverTests: XCTestCase {
       groups.map(\.header), [first.defaultWindowTitle, second.defaultWindowTitle],
       "two windows: each named")
     XCTAssertEqual(
-      groups.first?.choices.map(\.title), [first.title(for: sid), first.title(for: otherSid)])
+      groups.first?.choices.map(\.title),
+      [
+        first.title(for: sid, separator: WorkroomLabel.separator),
+        first.title(for: otherSid, separator: WorkroomLabel.separator),
+      ])
     XCTAssertNil(
       quick.paneMoveChoices(pane.id, of: quickTarget, windows: [first]).last?
         .header, "one window: no header")

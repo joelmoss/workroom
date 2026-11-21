@@ -117,6 +117,20 @@ struct TerminalTab: Identifiable {
   }
 }
 
+/// A terminal's title in its parts (glossary: Terminal name). A default title is a program and the
+/// folder it is in ("zsh" and "~/dev/workroom"): drawn as text, the program carries the emphasis and
+/// the folder is faded; in plain text the two are one string, "zsh ~/dev/workroom". Any other title
+/// (the user's name for it, the title its program sets) is a whole `name` with no folder.
+struct TerminalTitle: Equatable, Hashable, Sendable {
+  /// The program's short name ("zsh"), or the whole title when it is not a default one.
+  let name: String
+  /// The folder, home as `~`, when this is a program-and-folder default; else nil.
+  var folder: String?
+
+  /// The title as one string: "zsh ~/dev/workroom", or `name` alone.
+  var text: String { folder.map { "\(name) \($0)" } ?? name }
+}
+
 /// A tab's content: a terminal surface, or non-terminal content (issue #66). A closed set — the
 /// renderer, occlusion, teardown, and theme reload switch on it exhaustively, so adding a kind is a
 /// compiler-guided change (you can't forget a site).
@@ -129,17 +143,36 @@ enum TabContent {
   /// A terminal's live/idle title, or a content tab's own (a diff's filename): `TerminalTab.title`.
   var title: String {
     switch self {
-    case .terminal(let s): return s.userTitle ?? s.liveTitle ?? s.defaultTitle
+    case .terminal(let s): return s.userTitle ?? s.liveTitle ?? s.defaultName.text
     case .diff(let d): return (d.path as NSString).lastPathComponent
     case .file(let f): return (f.path as NSString).lastPathComponent
     case .changeset(let c): return c.title
     }
   }
 
+  /// `title` in its parts: a terminal's default title as its program and folder, which a view
+  /// draws with the folder faded; anything else (the user's name, a program's own title, a content
+  /// tab's) as one `name`. Read in a leaf, as `title` is.
+  var titleParts: TerminalTitle {
+    if case .terminal(let s) = self {
+      if let named = s.userTitle ?? s.liveTitle { return TerminalTitle(name: named) }
+      return s.defaultName
+    }
+    return TerminalTitle(name: title)
+  }
+
+  /// What a terminal's tab chip is identified by for UI tests: its app-given name ("Terminal 2"),
+  /// which is never shown and never changes, so the chip keeps its identifier while its title
+  /// follows the program and the folder. Nil for a content tab, which is identified by its title.
+  var accessibilityKey: String? {
+    if case .terminal(let s) = self { return s.defaultTitle }
+    return nil
+  }
+
   /// `title`, without observing a terminal's live title (see `LiveTitle.untrackedText`).
   var untrackedTitle: String {
     if case .terminal(let s) = self {
-      return s.userTitle ?? s.titleCell.untrackedText ?? s.defaultTitle
+      return s.userTitle ?? s.titleCell.untrackedText ?? s.defaultName.text
     }
     return title
   }
@@ -384,8 +417,66 @@ struct TerminalState {
   /// The directory the surface was made to start in, before any shell report: what the pane's
   /// branch is read from until `cwd` arrives.
   let launchDirectory: String
-  /// Shown until the surface reports a title — and again whenever it reports an empty one.
+  /// The app's own name for the tab: "Terminal 2", or "Run" for a run tab. A numbered one is never
+  /// shown (`defaultName` is); it names the tab's session and is saved with the tab.
   let defaultTitle: String
+  /// The terminal's foreground program by its short name ("zsh", "vim", "claude"), as last read
+  /// (`PaneLiveState.refreshForegroundProgram`): from workroomd for a daemon-backed pane, the
+  /// surface's pty for one the app runs itself. Nil until first read; never saved.
+  var foregroundProgram: String?
+  /// What the terminal is titled when the user named it nothing and its program set no title
+  /// (glossary: Terminal name): its program and its folder, such as "zsh ~/dev/workroom", with the
+  /// folder in full and the home folder as `~`. The folder is the shell's live `cwd` (a remote
+  /// pane's `hostCwd`), else where it started; the program is the shell's name until it is read.
+  /// A tab the app named itself ("Run") keeps that name, with no folder.
+  var defaultName: TerminalTitle {
+    guard Self.isNumberedName(defaultTitle) else { return TerminalTitle(name: defaultTitle) }
+    return Self.programAndFolder(
+      program: foregroundProgram ?? Self.shellName, folder: hostCwd ?? cwd ?? launchDirectory)
+  }
+
+  /// A program and its folder as a title, the folder in full with the home folder as `~`.
+  nonisolated static func programAndFolder(
+    program: String, folder: String, home: String = homeDirectory
+  ) -> TerminalTitle {
+    TerminalTitle(name: program, folder: abbreviatingHome(folder, home: home))
+  }
+
+  /// `path` with `home` at its start written `~`, only on a whole path component.
+  nonisolated static func abbreviatingHome(_ path: String, home: String) -> String {
+    let home = home.hasSuffix("/") && home.count > 1 ? String(home.dropLast()) : home
+    if path == home || path == home + "/" { return "~" }
+    if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
+    return path
+  }
+
+  /// Whether `title` is one the app numbers its tabs with ("Terminal 2"), or the plain "Terminal" a
+  /// tab adopted from another Mac's session is given: neither is ever shown.
+  nonisolated static func isNumberedName(_ title: String) -> Bool {
+    if title == "Terminal" { return true }
+    guard title.hasPrefix("Terminal ") else { return false }
+    let number = title.dropFirst("Terminal ".count)
+    return !number.isEmpty && number.allSatisfy { $0.isASCII && $0.isNumber }
+  }
+
+  /// The home folder, read once: what `programAndFolder` writes as `~`.
+  nonisolated static let homeDirectory = NSHomeDirectory()
+
+  /// The user's login shell by name ("zsh"): a terminal's program until its own is read.
+  nonisolated static let shellName: String = {
+    let shell =
+      ProcessInfo.processInfo.environment["SHELL"].flatMap { $0.isEmpty ? nil : $0 }
+      ?? getpwuid(getuid()).flatMap { $0.pointee.pw_shell.map { String(cString: $0) } } ?? "zsh"
+    return programName(shell) ?? "zsh"
+  }()
+
+  /// A program's short name from a command or path: its last path component, without the leading
+  /// "-" a login shell's `argv[0]` carries ("-zsh" is "zsh"). Nil for an empty one.
+  nonisolated static func programName(_ command: String) -> String? {
+    var name = (command.trimmingCharacters(in: .whitespaces) as NSString).lastPathComponent
+    while name.hasPrefix("-") { name.removeFirst() }
+    return name.isEmpty ? nil : name
+  }
   /// The name the user gave this terminal (Rename…): it outranks the live title and the default
   /// until cleared. Nil when never named, or cleared with an empty name. Saved with the tab.
   var userTitle: String?
@@ -988,7 +1079,12 @@ final class TerminalPanes {
 
   /// The names of a target's terminals here, in tab order: what a standalone terminal is titled by.
   func terminalNames(forTargetID id: TerminalTarget.ID) -> [String] {
-    heldTabs(id).filter { $0.terminal != nil }.map(\.title)
+    terminalTitles(forTargetID: id).map(\.text)
+  }
+
+  /// `terminalNames(forTargetID:)` in their parts, for a view that fades a default title's folder.
+  func terminalTitles(forTargetID id: TerminalTarget.ID) -> [TerminalTitle] {
+    heldTabs(id).filter { $0.terminal != nil }.map(\.content.titleParts)
   }
 
   /// Whether any target owns the tab `id`. Tab ids are unique across windows, so `WindowRegistry`
@@ -2676,10 +2772,11 @@ final class TerminalPanes {
     programStatusBinding.refreshProgramStatus(tab: tabID, target: targetID)
   }
 
-  /// `tabID`'s own name ("Terminal 2"), never the title its program set: a program renames its
-  /// tab freely (Claude Code to its task), so this is the name that always reads as a terminal.
+  /// `tabID`'s own name ("zsh ~/dev/workroom"), never the title its program set: a program
+  /// renames its tab freely (Claude Code to its task), so this is the name that always reads as a
+  /// terminal.
   func defaultTitle(ofTab tabID: TerminalTab.ID, inTarget targetID: TerminalTarget.ID) -> String? {
-    terminalState(tabID, in: targetID)?.defaultTitle
+    terminalState(tabID, in: targetID)?.defaultName.text
   }
 
   /// The program-status session `tabID` attaches to, if it is a daemon-backed terminal.
