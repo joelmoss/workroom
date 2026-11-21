@@ -3394,6 +3394,118 @@ fn over_ssh_send_types_into_another_host_pane_for_its_modes() {
     }
 }
 
+/// `workroom command` (#691) on a host, as on the Mac: from one pane, a command run in another
+/// whose shell sends OSC 133 marks (a loop that sends them, typed into the host's shell, which
+/// sends none), its exit code its own, passing and failing, and its output what it printed between
+/// its marks, the host's shadow terminal rendering it; the reply naming the pane it came from
+/// (`SO_PEERCRED`). In the sender's own pane, which sends no marks, `--allow-self` gets past
+/// `RefusedSelf` to `NoShellIntegration` (3), nothing typed.
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_command_runs_in_another_host_pane_with_its_code_and_output() {
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
+    let sender_id = "7e0e7e0e-0000-4000-8000-000000000691";
+    let target_id = "7e0e7e0e-0000-4000-8000-00000000691b";
+    let mut sender = Pane::attach_with(
+        &fixture,
+        sender_id,
+        false,
+        "'WORKROOM_SESSION_TITLE=command sender'",
+    );
+    let mut target = Pane::attach_with(
+        &fixture,
+        target_id,
+        false,
+        "'WORKROOM_SESSION_TITLE=command pane'",
+    );
+    for pane in [&mut sender, &mut target] {
+        pane.type_line("echo \"PANE-\"\"UP\"");
+        assert!(
+            pane.read_until("PANE-UP\r\n", Duration::from_secs(30))
+                .contains("PANE-UP\r\n"),
+            "a pane's shell never started"
+        );
+    }
+    // A shell with integration: A before its prompt (split in the typed line, so its echo is not
+    // the prompt), B after, C before it runs a line and D with its exit code after.
+    target.type_line(
+        r#"e=$(printf '\033'); while printf '%s]133;A\007I''S> %s]133;B\007' "$e" "$e"; IFS= read -r l; do printf '%s]133;C\007' "$e"; eval "$l"; printf '%s]133;D;%d\007' "$e" "$?"; done"#,
+    );
+    assert!(
+        target
+            .read_until("IS> ", Duration::from_secs(30))
+            .contains("IS> "),
+        "the integrated shell never prompted"
+    );
+    // A folder of this run's own on the host, made here and so removed at the end.
+    let dir = (0..)
+        .map(|attempt| format!("/tmp/wr-691-{}-{attempt}", std::process::id()))
+        .find(|dir| {
+            fixture
+                .ssh()
+                .arg(format!("mkdir {dir}"))
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+        .expect("a folder on the host");
+    let read = |name: &str| {
+        let output = fixture
+            .ssh()
+            .arg(format!("cat {dir}/{name} 2>/dev/null"))
+            .output()
+            .expect("read the host's file");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let binary = INSTALLED_DAEMON;
+    sender.type_line(&format!(
+        r#"{binary} command 'command pane' --json -- "printf 'one\ntwo\n'" > {dir}/passed; echo $? > {dir}/passed.code; {binary} command 'command pane' --json -- "sh -c 'echo bad; exit 3'" > {dir}/failed; echo $? > {dir}/failed.code; {binary} command "$WORKROOM_PANE" --allow-self --json -- echo NEVER-TYPED > {dir}/none; echo "NONE-$?-"DONE"#
+    ));
+    assert!(
+        sender
+            .read_until("-DONE", Duration::from_secs(60))
+            .contains("NONE-3-DONE"),
+        "the command in its own pane was not refused with 3"
+    );
+    let envelope = |name: &str| -> Value {
+        serde_json::from_str(&read(name))
+            .unwrap_or_else(|error| panic!("{name}: not an envelope ({error}): {}", read(name)))
+    };
+    let passed = envelope("passed");
+    assert_eq!(read("passed.code").trim(), "0", "{passed}");
+    assert_eq!(passed["ok"], true, "{passed}");
+    assert_eq!(passed["session"], target_id, "{passed}");
+    assert_eq!(passed["caller"], sender_id, "{passed}");
+    assert_eq!(passed["exit_code"], 0, "{passed}");
+    assert_eq!(passed["output"], "one\ntwo", "{passed}");
+    assert_eq!(passed["truncated"], false, "{passed}");
+    let failed = envelope("failed");
+    assert_eq!(read("failed.code").trim(), "3", "{failed}");
+    assert_eq!(failed["ok"], true, "{failed}");
+    assert_eq!(failed["exit_code"], 3, "{failed}");
+    assert_eq!(failed["output"], "bad", "{failed}");
+    let none = envelope("none");
+    assert_eq!(none["error"]["kind"], "NoShellIntegration", "{none}");
+    let seen = sender.read_until("NONE-", Duration::from_secs(1));
+    assert!(
+        !seen
+            .lines()
+            .any(|line| line.trim_start().starts_with("NEVER-TYPED")),
+        "nothing was typed into the pane without marks: {seen}"
+    );
+
+    let _ = fixture.ssh().arg(format!("rm -r {dir}")).status();
+    target.type_line("exit");
+    sender.type_line("exit");
+    for pane in [&mut sender, &mut target] {
+        assert!(
+            pane.exit_code(Duration::from_secs(20)).is_some(),
+            "a pane's session did not end"
+        );
+    }
+}
+
 /// Two Macs on one remote workroom (#255): Mac A's session carries its workroom and title to the
 /// host, Mac B finds it in the host's list and A's layout in the Layout service, and reattaches to
 /// the same shell; A dropping its link leaves B attached; a close on A ends the session for B too;
