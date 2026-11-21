@@ -143,7 +143,7 @@ build stable v9.9.9 ""
 build nightly 9.9.9-nightly.7 nightly
 [ "$RC" -eq 0 ] && expect_archives nightly nightly
 # The script's own check ran the host's binary: stamped, on its channel, stating its daemon build.
-grep -q "$HOST: runs; daemon-build " "$WORK/stable.log" 2>/dev/null \
+grep -q "$HOST: runs; version 9.9.9, stable; daemon-build " "$WORK/stable.log" 2>/dev/null \
   || fail "stable: the build did not run its $HOST binary"
 if [ "$fails" -ne 0 ]; then
   echo "cli-archives_test: $fails failure(s)"
@@ -182,7 +182,14 @@ for p in $PLATFORMS; do
   cp "$WORK/stable/workroom_9.9.9_$p.tar.gz" "$WORK/unstamped/workroom_9.9.8_$p.tar.gz"
 done
 resum unstamped
-expect_check_fails unstamped "not stamped with version 9.9.8" 9.9.8
+expect_check_fails unstamped "want version 9.9.8 on the stable channel" 9.9.8
+# The nightly's binary is baked to the nightly channel: under the main binary's names, it is refused.
+mkdir "$WORK/baked"
+for p in $PLATFORMS; do
+  cp "$WORK/nightly/workroom_nightly_$p.tar.gz" "$WORK/baked/workroom_9.9.9-nightly.7_$p.tar.gz"
+done
+resum baked
+expect_check_fails baked "want version 9.9.9-nightly.7 on the stable channel" 9.9.9-nightly.7
 
 if command -v go >/dev/null 2>&1; then
   mutant go-binary
@@ -205,6 +212,11 @@ fi
 
 # --- 5. an old Go CLI updates itself into the Rust binary --------------------------------------
 if ! command -v go >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+  # CI's app-scripts job installs both: there, a missing one would hide the swap's one end-to-end
+  # test behind a skip that prints OK.
+  if [ -n "${CI:-}" ]; then
+    fail "go or python3 is not on PATH in CI, so the Go CLI update cannot run"
+  fi
   if [ "$fails" -ne 0 ]; then echo "cli-archives_test: $fails failure(s)"; exit 1; fi
   echo "cli-archives_test: OK (SKIP the Go CLI update: go or python3 not on PATH)"
   exit 0

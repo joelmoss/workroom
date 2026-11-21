@@ -151,8 +151,41 @@ host_platform() {
   echo "${os}_${arch}"
 }
 
-# check_binary <platform> <binary>: it is the Rust `workroom` for that platform, stamped with this
-# VERSION, and no Go CLI. The one for this machine is run as well.
+# set_runner <platform>: sets RUNNER to what runs that platform's binary on this machine (nothing
+# for its own, `arch -x86_64` under Rosetta, qemu-user for the other Linux arch), and returns 1 for
+# a platform of the other OS, which the other OS's check runs: `build` on macOS runs the darwin
+# binaries, `publish` on Linux the linux ones, so every binary has run before anything publishes.
+# A binary of this OS that cannot be run here is an error, not a skip.
+set_runner() {
+  local host candidate
+  host="$(host_platform)"
+  RUNNER=()
+  case "$host:$1" in
+    "$1:$1") return 0 ;;
+    darwin_arm64:darwin_amd64)
+      # Rosetta's absence shows as "Bad CPU type"; `arch` itself exists without it.
+      RUNNER=(arch -x86_64)
+      "${RUNNER[@]}" /bin/sh -c : 2>/dev/null \
+        || die "darwin_amd64 cannot run here: install Rosetta (softwareupdate --install-rosetta --agree-to-license)."
+      return 0
+      ;;
+    linux_amd64:linux_arm64 | linux_arm64:linux_amd64)
+      for candidate in "qemu-${1#linux_}-static" "qemu-${1#linux_}"; do
+        candidate="${candidate/arm64/aarch64}"
+        candidate="${candidate/amd64/x86_64}"
+        if command -v "$candidate" >/dev/null 2>&1; then
+          RUNNER=("$candidate")
+          return 0
+        fi
+      done
+      die "$1 cannot run here: install qemu-user (apt-get install qemu-user-static)."
+      ;;
+  esac
+  return 1
+}
+
+# check_binary <platform> <binary>: it is the Rust `workroom` for that platform and no Go CLI. One
+# of this machine's OS is also run (check_runs).
 check_binary() {
   local platform="$1" bin="$2"
   [ -f "$bin" ] && [ -x "$bin" ] || die "$platform: workroom is missing or not executable."
@@ -168,32 +201,40 @@ check_binary() {
     || ! LC_ALL=C grep -q -a -F 'Third-party software notices' "$bin"; then
     die "$platform: workroom is not the Rust workroom (no daemon build identity or notices in it)."
   fi
-  if ! LC_ALL=C grep -q -a -F "$VERSION" "$bin"; then
-    die "$platform: workroom is not stamped with version $VERSION."
-  fi
-  if [ "$platform" = "$(host_platform)" ]; then
+  if set_runner "$platform"; then
     check_runs "$platform" "$bin"
+  else
+    echo "    $platform: checked; it runs in the $(echo "$platform" | cut -d_ -f1) check"
   fi
 }
 
-# check_runs <platform> <binary>: it runs, states its daemon build, and reports this version and
-# channel. A home of its own, so it reads no one's config.
+# json_field <json> <key>: the string value of a top-level key in `version --json`'s one-line
+# envelope. `"version":` is not `"cli_version":`, whose key starts with `cli_`.
+json_field() {
+  printf '%s\n' "$1" | sed -n "s/.*\"$2\":\"\\([^\"]*\\)\".*/\\1/p"
+}
+
+# check_runs <platform> <binary>: it runs (through RUNNER), states its daemon build, and its
+# `version --json` envelope is ok with exactly this VERSION and channel. A home of its own, so it
+# reads no one's config.
 check_runs() {
-  local platform="$1" bin="$2" home protocol json want_channel
+  local platform="$1" bin="$2" home protocol json want_channel version channel
   home="$SCRATCH/home-$platform"
   mkdir "$home"
-  protocol="$("$bin" protocol 2>/dev/null || true)"
-  json="$(HOME="$home" WORKROOM_CONFIG="$home/config.json" "$bin" version --json 2>/dev/null || true)"
+  protocol="$(${RUNNER[@]+"${RUNNER[@]}"} "$bin" protocol 2>&1 || true)"
+  json="$(HOME="$home" WORKROOM_CONFIG="$home/config.json" ${RUNNER[@]+"${RUNNER[@]}"} "$bin" version --json 2>&1 || true)"
   case "$protocol" in
     *"daemon-build "*) ;;
     *) die "$platform: workroom does not state a daemon build: 'protocol' printed '$protocol'." ;;
   esac
   want_channel="${CHANNEL:-stable}"
-  case "$json" in
-    *"\"version\":\"$VERSION\""*"\"channel\":\"$want_channel\""* | *"\"channel\":\"$want_channel\""*"\"version\":\"$VERSION\""*) ;;
-    *) die "$platform: 'workroom version --json' printed '$json', want version $VERSION on the $want_channel channel." ;;
-  esac
-  echo "    $platform: runs; $(printf '%s\n' "$protocol" | grep '^daemon-build ')"
+  version="$(json_field "$json" version)"
+  channel="$(json_field "$json" channel)"
+  case "$json" in *'"ok":true'*) ;; *) version="" ;; esac
+  if [ "$version" != "$VERSION" ] || [ "$channel" != "$want_channel" ]; then
+    die "$platform: 'workroom version --json' printed '$json', want version $VERSION on the $want_channel channel."
+  fi
+  echo "    $platform: runs${RUNNER[*]+ (${RUNNER[*]})}; version $version, $channel; $(printf '%s\n' "$protocol" | grep '^daemon-build ')"
 }
 
 # check <dir>: the directory holds exactly the four archives and checksums.txt, each archive holds
