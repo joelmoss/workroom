@@ -118,6 +118,11 @@ jobs:
           cargo clippy --manifest-path vcs/Cargo.toml -p workroom \
             --features terminal-state --all-targets -- -D warnings
 
+      # `workroom command` is tested in real bash, zsh and fish with the bundled integration
+      # (#691), each skipped where it isn't installed; the runner image has bash alone.
+      - name: Install zsh and fish
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh fish
+
       # WORKROOMD_HAS_TERMINAL_STATE tells the integration tests the daemon under test was built
       # with the feature, so the repaint and scrollback assertions run instead of skipping. Without
       # it they would pass by skipping and this job would prove nothing.
