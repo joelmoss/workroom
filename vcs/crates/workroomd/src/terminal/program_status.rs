@@ -516,18 +516,31 @@ impl Store {
     /// the shell's, not a program's, so it never counts.
     pub fn coding_agent(&self) -> Option<CodingAgent> {
         let waiting = |r: &&Record| r.state == State::Blocked && r.notify;
-        let record = self
-            .records
-            .iter()
-            .rev()
-            .find(waiting)
-            .or_else(|| self.records.last())?;
+        let record = self.agent_record()?;
         Some(CodingAgent {
             state: record.state,
             app: self.app_of(record).to_string(),
             message: record.message.clone(),
             waiting_on_user: self.records.iter().any(|r| waiting(&r)),
         })
+    }
+
+    /// The record `coding_agent` reports: the newest waiting on the user, else the newest.
+    fn agent_record(&self) -> Option<&Record> {
+        self.records
+            .iter()
+            .rev()
+            .find(|r| r.state == State::Blocked && r.notify)
+            .or_else(|| self.records.last())
+    }
+
+    /// The process group that sent the report `coding_agent` gives, when the foreground could be
+    /// read as it arrived: so a prompt (#692) can tell the program that reported, still running in
+    /// the foreground, from a `done` its crashed program left over the shell.
+    pub fn coding_agent_owner(&self) -> Option<Group> {
+        self.agent_record()
+            .map(|record| record.owner)
+            .filter(|owner| *owner > 0)
     }
 
     /// The app's "Clear status": every record, the command result, and `reporting`. Not

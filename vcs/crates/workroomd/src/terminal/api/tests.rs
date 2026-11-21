@@ -195,6 +195,7 @@ fn describe_publishes_every_method_with_both_schemas() {
             "terminal.send",
             "terminal.command",
             "terminal.wait",
+            "terminal.prompt",
             "events.subscribe"
         ]
     );

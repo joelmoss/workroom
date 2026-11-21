@@ -340,6 +340,17 @@ pub struct Described {
     pub clients: Vec<ClientInfo>,
 }
 
+/// What runs in a session's foreground (`SessionStore::foreground`), for a prompt (#692).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Foreground {
+    /// Its process group, `None` when it can't be read.
+    pub group: Option<libc::pid_t>,
+    /// The name a user would know its program by, as the app's pane titles name it.
+    pub name: Option<String>,
+    /// Whether it is the session's interactive shell itself.
+    pub shell: bool,
+}
+
 pub struct Session {
     pub id: SessionId,
     /// Shared with the session's reader thread, which outlives any one connection. The `Arc` is

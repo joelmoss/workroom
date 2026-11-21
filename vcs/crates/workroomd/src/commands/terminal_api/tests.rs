@@ -48,6 +48,27 @@ fn a_command_is_read_for_its_typing_and_its_wait() {
     assert_eq!(max_request(COMMAND), crate::daemon::rpc::MAX_REQUEST);
 }
 
+/// A prompt types as a send does, so it is read for a send's time; with `wait`, for that and its
+/// own timeout more, or with none, without a limit (#692).
+#[test]
+fn a_prompt_is_read_for_its_typing_and_its_wait() {
+    let typing = crate::terminal::api::SEND_DEADLINE + crate::terminal::api::SEND_DEADLINE_GRACE;
+    let prompt = |params: Value| answer_timeout("terminal.prompt", &params);
+    assert_eq!(
+        prompt(json!({"target": "x", "text": "hi"})),
+        Some(typing + TIMEOUT)
+    );
+    assert_eq!(
+        prompt(json!({"target": "x", "text": "hi", "wait": true, "timeout_ms": 60_000})),
+        Some(Duration::from_secs(60) + typing + TIMEOUT)
+    );
+    assert_eq!(
+        prompt(json!({"target": "x", "text": "hi", "wait": true})),
+        None
+    );
+    assert_eq!(max_request(PROMPT), crate::daemon::rpc::MAX_REQUEST);
+}
+
 fn argv(arguments: &[&str]) -> Vec<String> {
     arguments
         .iter()

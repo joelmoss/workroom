@@ -95,6 +95,11 @@ pub mod kind {
     pub const EXIT_CODE_MISMATCH: &str = "ExitCodeMismatch";
     /// A send into the caller's own session, which it didn't allow.
     pub const REFUSED_SELF: &str = "RefusedSelf";
+    /// A prompt to a session that runs no coding agent.
+    pub const NOT_AN_AGENT: &str = "NotAnAgent";
+    /// A prompt to a coding agent that can't take one now: working, waiting on the user, or with
+    /// no prompt up.
+    pub const AGENT_BUSY: &str = "AgentBusy";
     /// The daemon is at a limit on concurrent work (`MAX_CAPTURES` captures of history, or the
     /// waits `wait::LIMITS` bounds), so it refuses rather than queue, and a retry once some has
     /// finished can succeed. A send during a hand-off is refused so too, and a command into a
@@ -181,6 +186,9 @@ enum Run {
     /// For as long as the caller listens, from a thread of its own, while the connection goes on
     /// taking requests: `events.subscribe` (`events::start`).
     Events,
+    /// At once, or with `wait` from a thread of its own once the turn it starts has ended:
+    /// `terminal.prompt` (`prompt::start`).
+    Prompt,
 }
 
 /// One request as a method sees it.
@@ -372,7 +380,8 @@ pub const METHODS: &[Method] = &[
     Method {
         name: wait::NAME,
         summary: "Waits for one thing to happen in a session: a program status, a run state, \
-                  output matching a regex, the session ending, or the next command to finish. \
+                  output matching a regex, the session ending, the next command to finish, or a \
+                  coding agent's turn to end. \
                   Answered when it happens, or with `WaitTimeout` once `timeout_ms` passes. A \
                   session, a connection and the daemon each hold a few dozen or hundred waits at \
                   once, and one past them is `Busy`, which a retry once one has ended can get \
@@ -383,6 +392,23 @@ pub const METHODS: &[Method] = &[
         params_example: wait::params_example,
         result_example: wait::result_example,
         run: Run::Wait,
+    },
+    Method {
+        name: prompt::NAME,
+        summary: "Gives the coding agent in a session a prompt in one step: `text` as a \
+                  bracketed paste, then Enter, typed as `terminal.send` types (and told as \
+                  `session.input`). A session whose foreground program is no coding agent \
+                  (`claude`, `codex`, or one that reported program status) is `NotAnAgent`; an \
+                  agent working, waiting on the user or with no prompt up is `AgentBusy`. With \
+                  `wait`, replies as the prompt is typed and as its turn starts (`more`), and \
+                  last when that turn has ended, with the status it ended in; a `done` left \
+                  from the turn before never counts.",
+        input: prompt::input,
+        output: prompt::output,
+        errors: prompt::ERRORS,
+        params_example: prompt::params_example,
+        result_example: prompt::result_example,
+        run: Run::Prompt,
     },
     Method {
         name: events::NAME,
@@ -1185,7 +1211,7 @@ fn handle(sessions: &SessionStore, bytes: &[u8], peer: Option<i32>) -> Result<An
     let request = read(sessions, bytes, peer)?;
     match request.method.run {
         Run::Now(run) => run(&request.call(sessions)),
-        Run::Wait | Run::Command | Run::Events => Err(ApiError::invalid(
+        Run::Wait | Run::Command | Run::Events | Run::Prompt => Err(ApiError::invalid(
             "this method answers on its own stream, from `dispatch`",
         )),
     }
@@ -1343,6 +1369,12 @@ pub fn dispatch(
                     writer,
                     envelope.stream,
                 ),
+                Run::Prompt => prompt::start(
+                    &mut connection.waits,
+                    &request.call(sessions),
+                    writer,
+                    envelope.stream,
+                ),
             },
             Err(error) => {
                 send(reply(Err(error), false));
@@ -1386,6 +1418,7 @@ fn stream(
 
 mod command;
 mod events;
+mod prompt;
 mod send;
 mod wait;
 

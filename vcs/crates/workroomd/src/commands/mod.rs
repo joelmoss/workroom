@@ -46,6 +46,7 @@ mod log;
 mod namegen;
 mod panel;
 mod prompt;
+mod prompt_agent;
 mod send;
 mod sessions;
 mod start;
@@ -752,6 +753,22 @@ const COMMANDS: &[Command] = &[
         arity: Arity::None,
         operands: Operands::Files,
         implementation: list::run,
+    },
+    Command {
+        name: "prompt",
+        aliases: &[],
+        usage: "prompt TARGET [TEXT] [flags]",
+        short: "Give the coding agent in a terminal session a prompt",
+        long: None,
+        hidden: false,
+        mac_only: false,
+        flags: prompt_agent::FLAGS,
+        subcommands: &[],
+        // A TARGET and its TEXT, which `prompt_agent::run` checks.
+        arity: Arity::Own,
+        // A TARGET is a session the daemon knows, never a file, as for `sessions`.
+        operands: Operands::Nothing,
+        implementation: prompt_agent::run,
     },
     Command {
         name: "send",

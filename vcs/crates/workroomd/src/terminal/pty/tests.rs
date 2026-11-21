@@ -533,6 +533,42 @@ fn writers_of_input_take_turns_and_never_interleave() {
     );
 }
 
+/// A prompt's Enter (#692) comes its pause after the paste, in a read of its own, and nothing typed
+/// meanwhile lands between the two: the send keeps its turn through the pause. The pause is 3 s
+/// here, so a busy runner's program still reads the paste first.
+#[test]
+fn a_send_then_writes_its_second_part_apart_and_in_the_same_turn() {
+    let scratch = Scratch::new("then");
+    let (first, rest) = (scratch.0.join("first"), scratch.0.join("rest"));
+    let pty = std::sync::Arc::new(raw(&format!(
+        "dd bs=1024 count=1 of='{first}' 2>/dev/null; head -c 4 > '{rest}.partial'; \
+         mv '{rest}.partial' '{rest}'",
+        first = first.display(),
+        rest = rest.display(),
+    )));
+    let until = Instant::now() + Duration::from_secs(30);
+    let send = {
+        let pty = std::sync::Arc::clone(&pty);
+        std::thread::spawn(move || {
+            pty.send_then(b"PASTE", None, Duration::from_secs(3), b"\r", until)
+                .is_ok()
+        })
+    };
+    std::thread::sleep(Duration::from_secs(1));
+    let typing = {
+        let pty = std::sync::Arc::clone(&pty);
+        std::thread::spawn(move || pty.write_all(b"KEY").is_ok())
+    };
+    assert!(send.join().unwrap(), "the send stopped");
+    assert!(typing.join().unwrap(), "the typing stopped");
+    let rest = file_until(&rest, "the rest", |held| held.len() == 4);
+    assert_eq!(std::fs::read(&first).unwrap(), b"PASTE", "the first read");
+    assert_eq!(
+        rest, b"\rKEY",
+        "the typing landed before the send's second part"
+    );
+}
+
 /// A paste whose program stops reading inside it owes the paste's end (#689): what is typed next
 /// waits for it, and comes after it, never inside the paste.
 #[test]

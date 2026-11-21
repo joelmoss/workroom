@@ -30,6 +30,7 @@ use super::{Answer, ApiError, Call, caller_schema, kind, listed, resolve};
 use crate::terminal::keys::{self, Key, Modes};
 use crate::terminal::pty::{Stop, Stopped};
 use crate::terminal::session::SessionStore;
+use crate::terminal::shadow::Shadow;
 
 pub const NAME: &str = "terminal.send";
 
@@ -340,6 +341,21 @@ pub(super) fn type_into(
     text: &str,
     keys: &[Key],
 ) -> Result<Typed, ApiError> {
+    type_checked(sessions, session, caller, text, keys, None, |_| Ok(()))
+}
+
+/// [`type_into`], refused when `check` refuses the session's shadow, under its lock as the modes
+/// are read, and with `keys_after`, its keys written that long after the text, apart from it in
+/// the same turn of the pty's input (`Pty::send_then`): `terminal.prompt`'s typing (#692).
+pub(super) fn type_checked(
+    sessions: &SessionStore,
+    session: &Value,
+    caller: Option<&str>,
+    text: &str,
+    keys: &[Key],
+    keys_after: Option<Duration>,
+    check: impl FnOnce(&mut Shadow) -> Result<(), ApiError>,
+) -> Result<Typed, ApiError> {
     let hyphenated = session["id"].as_str().unwrap_or_default();
     let ended = || {
         ApiError::new(
@@ -349,7 +365,11 @@ pub(super) fn type_into(
     };
     let id = wr_protocol::terminal::parse_session_id(OsStr::new(hyphenated)).ok_or_else(ended)?;
     let shadow = sessions.shadow(id).ok_or_else(ended)?;
-    let modes: Option<Modes> = crate::util::lock_or_recover(&shadow).input_modes();
+    let modes: Option<Modes> = {
+        let mut shadow = crate::util::lock_or_recover(&shadow);
+        check(&mut shadow)?;
+        shadow.input_modes()
+    };
     if modes.is_none() && !keys.is_empty() {
         return Err(ApiError::new(
             kind::INTERNAL_ERROR,
@@ -364,11 +384,17 @@ pub(super) fn type_into(
     let mut typed = keys::pasted(text, bracketed);
     let paste = (bracketed && !text.is_empty()).then_some(0..typed.len());
     let mut length = text.len();
+    let mut after = Vec::new();
     for key in keys {
         let bytes = key.encode(modes.unwrap_or_default());
         length += bytes.len();
-        typed.extend(bytes);
+        if keys_after.is_some() {
+            after.extend(bytes);
+        } else {
+            typed.extend(bytes);
+        }
     }
+    let total = typed.len() + after.len();
     if length > MAX_BYTES {
         return Err(too_large(length));
     }
@@ -383,20 +409,24 @@ pub(super) fn type_into(
     };
     let until = std::time::Instant::now() + DEADLINE;
     let hub = &sessions.hooks().events;
-    if !hub.input(id, session["scope"].clone(), caller, typed.len()) {
+    if !hub.input(id, session["scope"].clone(), caller, total) {
         return Err(ApiError::new(
             kind::BUSY,
             "the daemon is being handed off to its next program; try again when it has been",
         ));
     }
-    match sessions.send_input(id, &typed, paste, until) {
+    let sent = match keys_after {
+        Some(pause) => sessions.send_input_then(id, &typed, paste, pause, &after, until),
+        None => sessions.send_input(id, &typed, paste, until),
+    };
+    match sent {
         None => return Err(ended()),
         Some(Err(_)) if !sessions.contains(id) => return Err(ended()),
-        Some(Err(stopped)) => return Err(cut_short(hyphenated, &stopped, typed.len())),
+        Some(Err(stopped)) => return Err(cut_short(hyphenated, &stopped, total)),
         Some(Ok(())) => {}
     }
     Ok(Typed {
-        bytes: typed.len(),
+        bytes: total,
         modes,
     })
 }
