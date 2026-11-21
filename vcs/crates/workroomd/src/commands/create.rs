@@ -40,7 +40,7 @@ const KILL_GRACE: Duration = Duration::from_secs(1);
 
 /// Where a create starts when the main checkout has work its remote's copy of the base branch
 /// lacks: `--start`.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Start {
     /// The remote's copy, leaving the work out.
     Origin,
@@ -840,7 +840,10 @@ impl Plan<'_> {
             }
             Some(Start::Ask) => Ok(Some(Start::Origin)),
             Some(start) => Ok(Some(start)),
-            None if askable && self.ask => ask_start(work).map(Some),
+            None if askable && self.ask => {
+                let mut stdout = std::io::stdout();
+                ask_start(&mut stdout, &mut std::io::stdin().lock(), work).map(Some)
+            }
             None => Ok(None),
         }
     }
@@ -895,7 +898,11 @@ impl Plan<'_> {
 /// Asks a person at a terminal what a create that would leave work out includes: the commits and
 /// changes, the commits only, or neither, offering only the choices that apply. Go asks with a
 /// select menu; this asks for the choice's number, as `trust` asks its question on a line.
-fn ask_start(work: &LocalWork) -> Result<Start, CliError> {
+fn ask_start(
+    out: &mut impl Write,
+    input: &mut impl BufRead,
+    work: &LocalWork,
+) -> Result<Start, CliError> {
     let mut choices = Vec::new();
     if work.uncommitted && work.ahead > 0 {
         choices.push((Start::LocalWithChanges, "Include my commits and changes"));
@@ -912,12 +919,10 @@ fn ask_start(work: &LocalWork) -> Result<Start, CliError> {
     if !work.behind_note().is_empty() {
         question = format!("{} {question}", work.behind_note());
     }
-    let mut out = std::io::stdout();
     let _ = writeln!(out, "{}.\n{question}", work.summary());
     for (number, (_, label)) in choices.iter().enumerate() {
         let _ = writeln!(out, "  {}) {label}", number + 1);
     }
-    let mut input = std::io::stdin().lock();
     loop {
         let _ = write!(out, "Choose 1-{}: ", choices.len());
         let _ = out.flush();
@@ -1139,6 +1144,8 @@ fn human(creator: &mut Creator, offer_editor: bool) -> Result<Outcome, CliError>
     let _ = out.flush();
     let editor = context.env("EDITOR").unwrap_or_default();
     if !editor.is_empty() && !context.pretend && offer_editor {
+        // On the terminal, as Go's prompt (charmbracelet/huh) asks: a create with no terminal fails
+        // here, after the workroom is made, as Go's does.
         if prompt::ask(&format!("Open workroom in {editor}?"))? {
             open_editor(&editor, &made.path)
                 .map_err(|error| CliError::internal(format!("failed to open editor: {error}")))?;
@@ -1250,6 +1257,63 @@ mod tests {
         assert_eq!(byte_size(1000), "1.0 KB");
         assert_eq!(byte_size(1_234_567), "1.2 MB");
         assert_eq!(byte_size(999_999_999_999_999), "1000.0 TB");
+    }
+
+    /// Go's `TestChooseStartOffersAndMapsEachChoice`: only the choices that apply are offered,
+    /// each maps to the start it says, and the summary and the behind note are said first.
+    #[test]
+    fn the_start_question_offers_and_maps_each_choice() {
+        let work = |ahead, uncommitted, behind| LocalWork {
+            branch: "main".to_string(),
+            remote: "origin".to_string(),
+            ahead,
+            uncommitted,
+            behind,
+            stale: false,
+        };
+        let question = "New workrooms start from what you've pushed. Include this work in the new \
+                        one?";
+        for (work, said, starts) in [
+            (
+                work(2, true, 0),
+                format!(
+                    "You have 2 commits on main that you haven't pushed yet, and some changes you \
+                     haven't committed.\n{question}\n  1) Include my commits and changes\n  2) \
+                     Include my commits only\n  3) Leave it out\n"
+                ),
+                &[Start::LocalWithChanges, Start::Local, Start::Origin][..],
+            ),
+            (
+                work(0, true, 3),
+                format!(
+                    "You have changes on main that you haven't committed yet.\nYour main is also \
+                     3 commits behind origin, so including your work starts from your older \
+                     copy. {question}\n  1) Include my changes\n  2) Leave it out\n"
+                ),
+                &[Start::LocalWithChanges, Start::Origin],
+            ),
+            (
+                work(1, false, 0),
+                format!(
+                    "You have 1 commit on main that you haven't pushed yet.\n{question}\n  1) \
+                     Include my commits\n  2) Leave it out\n"
+                ),
+                &[Start::Local, Start::Origin],
+            ),
+        ] {
+            for (number, want) in starts.iter().enumerate() {
+                let mut out = Vec::new();
+                // An answer that is no choice is asked again.
+                let answer = format!("x\n9\n{}\n", number + 1);
+                let start = ask_start(&mut out, &mut answer.as_bytes(), &work).expect("answered");
+                assert!(start == *want, "{said}: choice {number}");
+                let out = String::from_utf8(out).expect("UTF-8");
+                let prompt = format!("Choose 1-{}: ", starts.len());
+                assert_eq!(out, format!("{said}{}", prompt.repeat(3)));
+            }
+            let error = ask_start(&mut Vec::new(), &mut &b""[..], &work).expect_err("no answer");
+            assert_eq!(error.message, "user aborted");
+        }
     }
 
     #[test]

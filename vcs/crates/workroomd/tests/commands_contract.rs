@@ -7567,6 +7567,240 @@ fn create_copies_the_included_files_before_the_setup_script() {
     );
 }
 
+/// The human `create`, run as a person types it (stdin no terminal, so nothing is asked), with
+/// its stdout and stderr as the goldens write them.
+fn human_create(home: &Home, project: &Path, extra: &[&str], env: &[(&str, &OsStr)]) -> Run {
+    let project_arg = project.to_string_lossy().into_owned();
+    let mut args = vec!["create", "--project", &project_arg];
+    args.extend_from_slice(extra);
+    // No one to answer: stdin empty, and a session of its own, so it has no terminal either (Go's
+    // prompt opens /dev/tty, which would wait on the developer's).
+    let mut command = home.command(binary(), &home.dir);
+    command.args(&args).stdin(std::process::Stdio::null());
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    use std::os::unix::process::CommandExt;
+    // SAFETY: setsid is async-signal-safe and touches no memory of this process.
+    unsafe {
+        command.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let run = Run::from(&args, command.output().expect("run the binary"));
+    // The one workroom made, else the one the success line names (`--pretend` makes none).
+    let named = run
+        .stdout
+        .split_once("Workroom '")
+        .and_then(|(_, rest)| rest.split_once('\''))
+        .map(|(name, _)| name.to_string());
+    let name = std::fs::read_dir(home.path("workrooms"))
+        .ok()
+        .and_then(|mut entries| entries.next())
+        .and_then(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .or(named)
+        .unwrap_or_else(|| "calm-river".to_string());
+    let _ = std::fs::remove_dir_all(home.path("workrooms"));
+    Run {
+        stdout: normalize_create(home, &name, &run.stdout),
+        stderr: normalize_create(home, &name, &run.stderr),
+        ..run
+    }
+}
+
+/// Go's `TestCreateOutput`: the human create's whole output, byte for byte, as Go pinned it: the
+/// success line, the setup log panel when it passes and fails, the fetch warning, `--verbose`'s
+/// status lines, and what the include step skipped or couldn't copy.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_human_output_is_gos() {
+    let home = Home::new("create-human");
+    let project = |name: &str, setup: &str| {
+        let project = home.repo(&format!("src/{name}"));
+        if !setup.is_empty() {
+            let text = format!("#!/bin/sh\n{setup}");
+            write_script(&project, "workroom_setup", &text);
+            // The digest the refusal of the unapproved script reports.
+            let digest = create(&home, &project, &[]).envelope()["script"]["sha256"]
+                .as_str()
+                .expect("sha256")
+                .to_string();
+            let _ = std::fs::remove_dir_all(home.path("workrooms"));
+            register(&home, &project, &[("workroom_setup", &digest)]);
+        } else {
+            register(&home, &project, &[]);
+        }
+        project
+    };
+    let check = |run: Run, code: i32, stdout: &str, stderr: &str| {
+        assert_eq!(
+            (run.code, run.stdout.as_str(), run.stderr.as_str()),
+            (code, stdout, stderr),
+            "`{}`",
+            run.args
+        );
+    };
+    let success = "Workroom 'calm-river' created successfully at ~/workrooms/calm-river.\n";
+
+    check(
+        human_create(&home, &project("plain", ""), &[], &[]),
+        0,
+        success,
+        "",
+    );
+    let passes = "╭─ Setup ───────────────────────────────────────────────────\n│ installing\n│ \
+                  done\n╰───────────────────────────────────────────────────────────\n\n";
+    check(
+        human_create(
+            &home,
+            &project("setup", "echo installing\necho done\n"),
+            &[],
+            &[],
+        ),
+        0,
+        &format!("{passes}{success}"),
+        "",
+    );
+    check(
+        human_create(&home, &project("failing", "echo boom\nexit 3\n"), &[], &[]),
+        5,
+        "╭─ Setup ───────────────────────────────────────────────────\n│ boom\n╰─ Setup failed \
+         ────────────────────────────────────────────\n",
+        "Error: setup script failed: /Users/dev/src/failing/scripts/workroom_setup returned a \
+         non-zero exit code\n",
+    );
+    let fetch =
+        "Could not fetch origin. The workroom starts from HEAD, which may be out of date.\n";
+    let warned = project("warned", "");
+    let gone = home.path("gone.git");
+    home.git(
+        &warned,
+        &["remote", "add", "origin", &gone.to_string_lossy()],
+    );
+    check(
+        human_create(&home, &warned, &[], &[]),
+        0,
+        &format!("{fetch}{success}"),
+        "",
+    );
+    let warned_failing = project("warned-failing", "exit 1\n");
+    home.git(
+        &warned_failing,
+        &["remote", "add", "origin", &gone.to_string_lossy()],
+    );
+    check(
+        human_create(&home, &warned_failing, &[], &[]),
+        5,
+        fetch,
+        "Error: setup script failed: /Users/dev/src/warned-failing/scripts/workroom_setup \
+         returned a non-zero exit code\n",
+    );
+    check(
+        human_create(
+            &home,
+            &project("verbose", "echo installing\n"),
+            &["--verbose"],
+            &[],
+        ),
+        0,
+        &format!(
+            "        repo  Detected Git worktree\n       setup  Running \
+             /Users/dev/src/verbose/scripts/workroom_setup from \
+             \"/Users/dev/workrooms/calm-river\"\n╭─ Setup \
+             ───────────────────────────────────────────────────\n│ \
+             installing\n╰───────────────────────────────────────────────────────────\n\n\
+             {success}"
+        ),
+        "",
+    );
+    let included = project("included", "");
+    write_file(&included, ".gitignore", "*.key\n", 0o644);
+    write_file(&included, ".worktreeinclude", "*.key\n", 0o644);
+    write_file(&included, "good.key", "k", 0o644);
+    check(
+        human_create(&home, &included, &["--verbose"], &[]),
+        0,
+        &format!(
+            "        repo  Detected Git worktree\n     include  Copied 1 file from \
+             .worktreeinclude\n{success}"
+        ),
+        "",
+    );
+    let symlinked = project("symlinked", "");
+    write_file(&symlinked, ".gitignore", ".env\nshared.env\n", 0o644);
+    write_file(&symlinked, ".worktreeinclude", ".env\n", 0o644);
+    write_file(&symlinked, "shared.env", "SECRET=1", 0o644);
+    std::os::unix::fs::symlink(symlinked.join("shared.env"), symlinked.join(".env")).expect("link");
+    check(
+        human_create(&home, &symlinked, &[], &[]),
+        0,
+        &format!("Skipped .env: it's a symlink\n{success}"),
+        "",
+    );
+    if !skip_as_root("create_human_output_is_gos") {
+        let unreadable = project("unreadable", "");
+        write_file(&unreadable, ".gitignore", "*.key\n", 0o644);
+        write_file(&unreadable, ".worktreeinclude", "*.key\n", 0o644);
+        write_file(&unreadable, "bad.key", "k", 0o000);
+        check(
+            human_create(&home, &unreadable, &[], &[]),
+            0,
+            &format!(
+                "Could not copy 1 file: bad.key: open /Users/dev/src/unreadable/bad.key: \
+                 permission denied\n{success}"
+            ),
+            "",
+        );
+    }
+    // `--pretend` says what it would make.
+    check(
+        human_create(&home, &project("pretend", ""), &["--pretend"], &[]),
+        0,
+        success,
+        "",
+    );
+}
+
+/// With `$EDITOR` set, the human create offers to open the new workroom in it, unless
+/// `--no-editor` or `--pretend`; with no one at the terminal to answer, Go's prompt fails the
+/// command after the success line.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_human_offers_the_editor() {
+    let home = Home::new("create-editor");
+    let project = create_project(&home);
+    let editor = [("EDITOR", OsStr::new("true"))];
+    let run = human_create(&home, &project, &[], &editor);
+    run.assert_code(1);
+    assert_eq!(
+        run.stdout,
+        "Workroom 'calm-river' created successfully at ~/workrooms/calm-river.\n"
+    );
+    // The OS's own words follow ("device not configured" on macOS), which differ by OS.
+    assert!(
+        run.stderr
+            .starts_with("Error: huh: could not open a new TTY: open /dev/tty: "),
+        "{}",
+        run.stderr
+    );
+    for extra in [&["--no-editor"][..], &["--pretend"]] {
+        let run = human_create(&home, &project, extra, &editor);
+        run.assert_code(0);
+        assert_eq!(
+            run.stdout, "Workroom 'calm-river' created successfully at ~/workrooms/calm-river.\n",
+            "{extra:?}"
+        );
+    }
+}
+
 /// The events are encoded as Go's are: a `step` or `created` event without HTML escaping, as its
 /// `encodeJSON` writes one, and a `log` event with it, as `json.Marshal` writes one.
 #[test]
@@ -7606,6 +7840,88 @@ fn create_events_escape_as_gos_do() {
         run.stdout.contains(&format!("\"path\":\"{path}\"")),
         "{}",
         run.stdout
+    );
+}
+
+/// What a create can't start from: a workroom (`InWorkroom`), a folder that is no repository
+/// (`UnsupportedVCS`), or a config it can't read (`ConfigReadFailed`, exit 6). One whose config
+/// can't be written fails once the worktree exists (`ConfigWriteFailed`), before it would be
+/// reported as made, since nothing records it.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_refuses_what_it_cant_start_from() {
+    let home = Home::new("create-refusals");
+    let project = create_project(&home);
+    let plain = home.path("src/plain");
+    std::fs::create_dir_all(&plain).expect("plain");
+    let run = create(&home, &plain, &[]);
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "UnsupportedVCS");
+    std::fs::write(project.join(".Workroom"), "").expect(".Workroom");
+    let run = create(&home, &project, &[]);
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "InWorkroom");
+    std::fs::remove_file(project.join(".Workroom")).expect("remove");
+    let before = config_text(&home);
+    home.write_config("{not json");
+    let run = create(&home, &project, &[]);
+    run.assert_code(6).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "ConfigReadFailed");
+    home.write_config(&before);
+    assert!(!home.path("workrooms").exists());
+
+    if skip_as_root("create_refuses_what_it_cant_start_from") {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let config_dir = home
+        .config_path()
+        .parent()
+        .expect("config dir")
+        .to_path_buf();
+    std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+    let run = create(&home, &project, &[]);
+    std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    run.assert_code(6);
+    assert_eq!(run.error_kind(), "ConfigWriteFailed");
+    assert_eq!(run.envelope().get("created"), None);
+    assert_eq!(
+        create_steps(&run.stderr),
+        [
+            "fetch:skipped:No remote to fetch from",
+            "worktree:running",
+            "worktree:done"
+        ]
+    );
+    assert_eq!(config_text(&home), before);
+}
+
+/// A setup script that can't be started (no execute bit) is the script's failure, exit 5, in
+/// Go's `exec` words.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_reports_a_setup_script_that_cant_start() {
+    let home = Home::new("create-not-started");
+    let project = setup_project(&home, "echo hi\n", SHA_HI);
+    let script = project.join("scripts/workroom_setup");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    let run = create(&home, &project, &[]);
+    run.assert_code(5);
+    let message = format!(
+        "setup script failed: {path} could not be started: fork/exec {path}: permission denied",
+        path = script.display()
+    );
+    assert_eq!(run.envelope()["error"]["message"], message.as_str());
+    assert_eq!(
+        create_steps(&run.stderr).last(),
+        Some(&format!("script:failed:{message}"))
     );
 }
 
