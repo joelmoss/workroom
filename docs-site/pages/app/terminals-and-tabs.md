@@ -31,7 +31,7 @@ A terminal with no name of yours, whose program sets no title, is named after th
 | Focus tab 1 to 9, left to right | <kbd>⌘1</kbd> to <kbd>⌘9</kbd> |
 | Next or previous terminal tab | <kbd>⌥⌘→</kbd> and <kbd>⌥⌘←</kbd> |
 | Flip to the pane you used last | <kbd>⌃Tab</kbd> (**Go ▸ Last-Used Pane**) |
-| Close the tab | <kbd>⌘W</kbd> (**File ▸ Close Tab**) |
+| Close the tab | <kbd>⌘W</kbd> (**File ▸ Close Tab**), or hover over the tab and click its **✕** <!-- stable --> |
 | Scroll to the top or bottom | <kbd>⌘↑</kbd> and <kbd>⌘↓</kbd> |
 
 ### Terminals with no project {nightly}

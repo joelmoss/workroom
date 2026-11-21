@@ -55,14 +55,12 @@ final class TerminalGroupUITests: XCTestCase {
     XCTAssertTrue(
       element(app, "sidebar.group.new.\(group)").exists, "New Terminal in Group on its row")
 
-    // Unfolded, the row lists the group's two terminals; folded, none. At rest the row shows its
-    // glyph; the pointer over it swaps that for the fold chevron, as on a workroom's row.
+    // Unfolded, the row lists the group's two terminals; folded, none. Its fold chevron is in its
+    // leading column at rest, as a project row's always shows.
     let terminals = elements(app, prefix: "sidebar.terminal.")
     XCTAssertTrue(waitForRows(terminals, 2), "its terminals under it")
     let fold = element(app, "sidebar.group.fold.\(group)")
-    XCTAssertFalse(fold.exists, "at rest the row shows its glyph")
-    row.hover()
-    XCTAssertTrue(fold.waitForExistence(timeout: 5), "hovered, its chevron")
+    XCTAssertTrue(fold.waitForExistence(timeout: 5), "at rest, its chevron")
     XCTAssertLessThan(fold.frame.maxX, row.frame.minX + 30, "in the rows' leading glyph column")
     fold.click()
     XCTAssertTrue(waitForRows(terminals, 0), "folding hides them")
@@ -71,6 +69,11 @@ final class TerminalGroupUITests: XCTestCase {
     XCTAssertTrue(fold.waitForExistence(timeout: 5))
     fold.click()
     XCTAssertTrue(waitForRows(terminals, 2), "unfolding shows them again")
+    // A click anywhere on the row folds and unfolds it too, as on a project's row.
+    row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+    XCTAssertTrue(waitForRows(terminals, 0), "a click on the row folds it")
+    row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+    XCTAssertTrue(waitForRows(terminals, 2), "and another unfolds it")
 
     // Clicking its title-bar tab shows the group: ⌘T then opens a third terminal in it.
     tab.click()

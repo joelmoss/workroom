@@ -94,6 +94,28 @@ final class StandaloneTerminalUITests: XCTestCase {
       }, "the typed command ran in a terminal")
   }
 
+  /// A standalone terminal's row has a close button, shown on hover in the trailing column every
+  /// sidebar "+" is in, which closes that terminal, as its menu's Close does: its row and title-bar
+  /// tab go, and the other terminal's stay.
+  func testAStandaloneRowsCloseButtonClosesItsTerminal() {
+    let app = launchedApp()
+    let row = element(app, "sidebar.standalone.\(seeded[0])")
+    XCTAssertTrue(row.waitForExistence(timeout: 15))
+    row.hover()
+    let close = element(app, "sidebar.close.\(seeded[0])")
+    XCTAssertTrue(close.waitForExistence(timeout: 5), "the row's close button")
+    XCTAssertEqual(
+      close.frame.midX, element(app, "sidebar.terminals.new").frame.midX, accuracy: 0.5,
+      "in the heading's \"+\" column")
+
+    close.click()
+
+    XCTAssertTrue(waitForCount(elements(app, prefix: "sidebar.standalone."), 1), "its row goes")
+    XCTAssertFalse(row.exists)
+    XCTAssertTrue(waitForCount(elements(app, prefix: "workroom.tab.standalone:"), 1), "its tab")
+    XCTAssertTrue(element(app, "sidebar.standalone.\(seeded[1])").exists, "the other's stays")
+  }
+
   private func poll(timeout: TimeInterval = 5, _ condition: () -> Bool) -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {

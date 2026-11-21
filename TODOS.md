@@ -561,21 +561,6 @@ fixture's `over_ssh_the_bootstrap_*` test; 2 is mechanical.
 
 **Priority:** P3, effort S each.
 
-### The tab chip's ✕ close button is unreachable to accessibility (macapp)
-
-**Why:** the tab chip carries its own `.accessibilityLabel`, which collapses the whole chip into ONE
-accessibility element and makes every nested control unreachable (`TerminalTabStrip`'s own comment
-says so). The ✦ diagnosis badge was fixed by announcing it in the chip's label and adding
-`.accessibilityActions { Button("Show diagnosis") … }`. The nested ✕ carries its own
-`.accessibilityLabel("Close <title>")` and is swallowed identically, so it is presumably also
-unreachable to assistive technology. No UI test exercises it via accessibility, so this is inferred
-from the documented behaviour rather than measured.
-
-**What:** add a `Button("Close") { onClose() }` to the same `.accessibilityActions` block. The chip
-already has a close affordance in its context menu, so this is politeness rather than a blocker.
-
-**Priority:** P3, effort S.
-
 ### `Defaults` keys with dots in their names cannot be observed (macapp) — measured, NOT fixed (2026-09-03)
 
 **What:** twelve `Defaults.Key`s use dotted `UserDefaults` names (`"sidebar.visible"`,

@@ -140,7 +140,7 @@ struct SidebarTerminalRowAdapter: View, Equatable {
       }
     return SidebarTerminalRowModel(
       tabID: tab.id, target: target, parent: parent, title: title,
-      glyph: tab.content.glyph ?? "terminal", indicator: tab.indicator,
+      glyph: tab.content.glyph ?? "terminal", tool: tab.recognizedTool, indicator: tab.indicator,
       programStatus: tab.programStatus, hasSession: tab.terminal?.sessionID != nil, style: style)
   }
 }
@@ -208,15 +208,19 @@ struct SidebarRowBackground: View {
   let store: AppStore
   let id: SidebarID
   let hovered: Bool
+  /// A terminal group whose terminals show under it: the focused one's row wears the selection,
+  /// so the group's doesn't.
+  var passesSelectionToChild = false
 
   var body: some View {
     #if DEBUG
       let _ = { SidebarRowPasses.background += 1 }()
     #endif
-    if store.selectedTargetID == id {
+    if store.selectedTargetID == id, !passesSelectionToChild {
       SidebarSelectedRowFill()
     } else {
-      RowHighlight(selected: false, hovered: hovered)
+      RowHighlight(
+        selected: false, hovered: hovered, horizontalPadding: SidebarRowMetrics.listContentInset)
     }
   }
 }
@@ -226,7 +230,7 @@ struct SidebarSelectedRowFill: View {
   var body: some View {
     WorkroomPaneCardBackground(highlighted: true)
       .clipShape(RoundedRectangle(cornerRadius: Radius.s))
-      .padding(.horizontal, Spacing.m)
+      .padding(.horizontal, SidebarRowMetrics.listContentInset)
       .padding(.vertical, 1)
   }
 }
@@ -252,7 +256,8 @@ struct SidebarTerminalRowBackground: View {
       if selected {
         SidebarSelectedRowFill()
       } else {
-        RowHighlight(selected: false, hovered: hovered)
+        RowHighlight(
+          selected: false, hovered: hovered, horizontalPadding: SidebarRowMetrics.listContentInset)
       }
     } else {
       treeFill(selected: selected)
@@ -270,7 +275,7 @@ struct SidebarTerminalRowBackground: View {
     #endif
     RoundedRectangle(cornerRadius: Radius.s)
       .fill(fill)
-      .padding(.horizontal, Spacing.m)
+      .padding(.horizontal, SidebarRowMetrics.listContentInset)
       .padding(.vertical, 1)
   }
 }

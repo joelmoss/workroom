@@ -141,7 +141,8 @@ final class SidebarInvalidationTests: XCTestCase {
   private func render(_ f: Fixture) async throws { try await render(f.view) }
 
   /// The rows of the sidebar's two Lists together, the Terminals pane's and the Projects pane's
-  /// (#652). The headings are each pane's sticky header, not a List row, so they aren't counted.
+  /// (#652). The headings are each pane's sticky header, not a List row, so they aren't counted;
+  /// nor is the gap each List opens under its heading (`SidebarHeadingGap`), its first row.
   private func listRows(_ f: Fixture) throws -> Int {
     func tables(_ view: NSView) -> [NSTableView] {
       if let table = view as? NSTableView { return [table] }
@@ -149,7 +150,7 @@ final class SidebarInvalidationTests: XCTestCase {
     }
     let lists = tables(f.view)
     XCTAssertEqual(lists.count, 2, "one native List per pane, Terminals and Projects")
-    return lists.map(\.numberOfRows).reduce(0, +)
+    return lists.map { $0.numberOfRows - 1 }.reduce(0, +)
   }
 
   // MARK: Terminals
@@ -708,15 +709,15 @@ final class SidebarInvalidationTests: XCTestCase {
     XCTAssertEqual(Set(SidebarRowPasses.byRow.keys), [group], "only the hovered row re-runs")
   }
 
-  /// The fold chevron stands in the glyph's column only while the row is hovered and can fold.
-  func testAGroupsRowShowsItsFoldChevronOnlyWhileHoveredAndFoldable() throws {
+  /// The fold chevron is always in a group's leading column while it can fold, hovered or not.
+  func testAGroupsRowShowsItsFoldChevronWheneverItCanFold() throws {
     let group = TerminalGroup(id: UUID(), name: "Ops")
     func model(canFold: Bool, hovered: Bool) -> SidebarTerminalGroupRowModel {
       SidebarTerminalGroupRowModel(
         sid: .terminalGroup(group.id), group: group, title: "Ops",
         activity: SidebarTargetActivity(), canFold: canFold, hovered: hovered)
     }
-    XCTAssertFalse(model(canFold: true, hovered: false).showsFoldButton, "its glyph at rest")
+    XCTAssertTrue(model(canFold: true, hovered: false).showsFoldButton, "its chevron at rest")
     XCTAssertTrue(model(canFold: true, hovered: true).showsFoldButton)
     XCTAssertFalse(
       model(canFold: false, hovered: true).showsFoldButton, "an empty Quick Terminal never folds")
