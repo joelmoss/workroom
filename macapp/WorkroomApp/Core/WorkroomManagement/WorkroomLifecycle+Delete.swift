@@ -140,10 +140,12 @@ extension WorkroomLifecycle {
     case .host(let host):
       PortForwardingModel.forgetHost(host)
       ProgramStatusMonitor.shared.forget(host)
+      PaneTypingMonitor.shared.forget(host)
     case .workroom(let workroom, let host):
       PortForwardingModel.forgetWorkroom(workroom, on: host)
     case .lastWorkroom(let host):
       ProgramStatusMonitor.shared.forget(host)
+      PaneTypingMonitor.shared.forget(host)
     }
   }
 

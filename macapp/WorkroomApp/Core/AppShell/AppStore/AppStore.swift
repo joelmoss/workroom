@@ -1766,6 +1766,10 @@ final class AppStore: ObservableObject {
           if UITestFixture.programStatus {
             UITestFixture.seedProgramStatus(in: terminals, target: target)
           }
+          // Typing marker scenario (#696): Claude in one terminal typing into another, no daemon.
+          if UITestFixture.typingMarker {
+            UITestFixture.seedTypingMarker(in: terminals, target: target)
+          }
           // Workroom-bar overflow scenario (issue #129): make every seeded workroom an *active target*
           // so the title-bar tab bar shows a chip for each. `ensureTab` only registers a tab; the shell
           // is created by the pane's view when it mounts, and only the selected workroom's does — so
@@ -2655,6 +2659,15 @@ final class AppStore: ObservableObject {
   func placeSource(targetID: TerminalTarget.ID) -> String {
     let origin = sidebarID(for: targetID).map { label(for: $0) }
     return origin?.workroom == nil ? "" : origin?.project ?? ""
+  }
+
+  /// The workroom `targetID` is, or its project for a root, as the typing marker names a sender's
+  /// place in another target (#696).
+  func targetName(_ targetID: TerminalTarget.ID) -> String? {
+    guard let sid = sidebarID(for: targetID) else { return nil }
+    let label = label(for: sid)
+    let name = label.workroom ?? label.project
+    return name.isEmpty ? nil : name
   }
 
   /// "Terminal 2 in fix-auth": a terminal's own name and where it is, as alerts and the menu bar's

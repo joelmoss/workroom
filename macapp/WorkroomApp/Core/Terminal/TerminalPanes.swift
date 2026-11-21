@@ -2030,7 +2030,10 @@ final class TerminalPanes {
         continue
       }
       wire(view, tab: id, target: target)
-      if state.sessionID != nil { programStatusBinding.follow(target.hostID) }
+      if state.sessionID != nil {
+        programStatusBinding.follow(target.hostID)
+        PaneTypingMonitor.shared.watch(target.hostID)
+      }
     }
     if ownPreview {
       for id in ids where tabRegistry.record(id)?.isPreview == true { persist(id, for: target) }
@@ -2497,6 +2500,8 @@ final class TerminalPanes {
       launchDirectory: view.workingDirectory, sessionID: assignedSessionID)
     if let assignedSessionID {
       programStatusBinding.follow(target.hostID)
+      // Who else types into it (#696), from the same host's events.
+      PaneTypingMonitor.shared.watch(target.hostID)
       state.programStatus = programStatus.rollup(for: assignedSessionID)
     }
     let tab = TerminalTab(content: .terminal(state))
@@ -2650,6 +2655,35 @@ final class TerminalPanes {
   /// that left a stale request behind.
   func clearProgramStatus(tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID) {
     programStatusBinding.clearProgramStatus(tab: tabID, target: targetID)
+  }
+
+  // MARK: Typing marker (#696)
+
+  /// Where the terminal attached to `session` sits in this window, as a typing marker names it:
+  /// its target, its tab as the user sees it (its place in the target's strip, from 1, as ⌘1–9
+  /// count; nil for a pane popped out into a window of its own) and the coding agent running in
+  /// it. Nil when no tab here is attached to it.
+  func typingPlace(
+    ofSession session: UUID
+  ) -> (target: TerminalTarget.ID, tab: Int?, agent: CodingAgentBackend?)? {
+    for targetID in targets.keys {
+      for id in normalizedTabIDs(forTargetID: targetID) {
+        guard let state = tabRegistry.record(id)?.terminal, state.sessionID == session else {
+          continue
+        }
+        let tab = displayedTabIDs(forTargetID: targetID).firstIndex(of: id).map { $0 + 1 }
+        return (targetID, tab, state.activeCodingAgentBackend)
+      }
+    }
+    return nil
+  }
+
+  /// The UI-test fixture's seam (`UITestFixture.seedTypingMarker`): a fixture pane has no
+  /// session, so give `tabID` one, for the marker's typing to name.
+  func assignFixtureSession(tab tabID: TerminalTab.ID, target targetID: TerminalTarget.ID) -> UUID {
+    let session = UUID()
+    mutateTerminalState(tabID, target: targetID) { $0.sessionID = session }
+    return session
   }
 
   /// The UI-test fixture's seam (`UITestFixture.seedProgramStatus`): a fixture pane has no session

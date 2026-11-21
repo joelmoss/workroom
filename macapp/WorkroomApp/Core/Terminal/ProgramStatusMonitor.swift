@@ -149,7 +149,11 @@ final class ProgramStatusMonitor: ObservableObject {
   /// already up does not count, or a host whose daemon has no program status would be retried
   /// without pause. A background host that was unreachable is not reconnected early:
   /// `HostReachability` holds its retry window, which this monitor's own failed connects keep open.
-  var reconnected: @Sendable (HostID) async -> Void = { host in
+  var reconnected: @Sendable (HostID) async -> Void = ProgramStatusMonitor.hostReconnected
+
+  /// `reconnected`'s answer for the app's own hosts, which the typing marker's subscription
+  /// (`PaneTypingMonitor`) waits on too.
+  static let hostReconnected: @Sendable (HostID) async -> Void = { host in
     guard host != .local else {
       while !Task.isCancelled { try? await Task.sleep(for: .seconds(3600)) }
       return
