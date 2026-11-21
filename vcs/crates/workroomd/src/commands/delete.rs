@@ -13,12 +13,12 @@ use std::io::{BufRead, IsTerminal, Write};
 
 use serde::Serialize;
 
-use super::config::{self, Config, Json};
+use super::config::{self, Config};
 use super::envelope;
 use super::kind::{CliError, Kind};
 use super::panel::Paint;
 use super::prompt::{self, ask};
-use super::teardown::{Approve, Confirm, Delete, Deleted, INVALID_NAME, Watcher, check_name};
+use super::teardown::{Approve, Confirm, Delete, Deleted, INVALID_NAME, Picked, Watcher};
 use super::trusted_script::Script;
 use super::{Args, Context, Outcome};
 
@@ -93,7 +93,25 @@ fn delete(context: &Context, args: &Args) -> Result<Outcome, CliError> {
     let home = config::home_dir(context).ok();
     let said = |name: &str, deleted: &Deleted| said(paint, home.as_deref(), name, deleted);
     let Some(name) = name else {
-        return pick_and_delete(&delete, &config, &dir, paint, &said);
+        // Go's `InteractiveDelete` with `runDelete`'s words for how it ended: each pick is said
+        // as soon as it is deleted.
+        let mut stdout = std::io::stdout();
+        let mut report = |name: &str, deleted: &Deleted| {
+            let _ = stdout.write_all(said(name, deleted).as_bytes());
+            let _ = stdout.flush();
+        };
+        let ended = delete.delete_picks(&dir, &pick, &ask, &mut report)?;
+        return Ok(Outcome::Printed(match ended {
+            Picked::Deleted => String::new(),
+            Picked::NoWorkrooms => "No workrooms found for this project.\n".to_string(),
+            Picked::Nothing => format!(
+                "{}\n",
+                paint.yellow("Aborting. No workrooms were selected.")
+            ),
+            Picked::Declined => {
+                format!("{}\n", paint.yellow("Aborting. No workrooms were deleted."))
+            }
+        }));
     };
     let deleted = if confirm.is_empty() {
         delete.delete(&dir, name, Confirm::Ask(&ask))?
@@ -101,68 +119,6 @@ fn delete(context: &Context, args: &Args) -> Result<Outcome, CliError> {
         delete.delete(&dir, name, Confirm::Value(confirm))?
     };
     Ok(Outcome::Printed(said(name, &deleted)))
-}
-
-/// Go's `InteractiveDelete`: offers the project's workrooms, asks to confirm the picks, and
-/// deletes each, saying so as each is done. A pick is deleted as Go's `deleteByName` deletes it,
-/// after the same checks: a live remote workroom stops it, and one git doesn't list whose folder
-/// holds no checkout is only forgotten.
-fn pick_and_delete(
-    delete: &Delete,
-    config: &Config,
-    dir: &str,
-    paint: Paint,
-    said: &dyn Fn(&str, &Deleted) -> String,
-) -> Result<Outcome, CliError> {
-    delete.check_not_in_workroom(dir)?;
-    // Go reads a config it can't parse as naming no project here.
-    let data = config.read().unwrap_or(Json::Null);
-    let names: Vec<String> = config::find_current_project(&data, dir)
-        .map(|(_, project)| project.workrooms.into_keys().collect())
-        .unwrap_or_default();
-    if names.is_empty() {
-        return Ok(Outcome::Printed(
-            "No workrooms found for this project.\n".to_string(),
-        ));
-    }
-    let picked = pick("Select workrooms to delete:", &names)?;
-    if picked.is_empty() {
-        return Ok(Outcome::Printed(format!(
-            "{}\n",
-            paint.yellow("Aborting. No workrooms were selected.")
-        )));
-    }
-    let quoted: Vec<String> = picked.iter().map(|name| format!("'{name}'")).collect();
-    if !ask(&format!(
-        "Are you sure you want to delete {} workroom(s): {}?",
-        picked.len(),
-        quoted.join(", ")
-    ))? {
-        return Ok(Outcome::Printed(format!(
-            "{}\n",
-            paint.yellow("Aborting. No workrooms were deleted.")
-        )));
-    }
-    delete.detect_vcs(dir)?;
-    let mut stdout = std::io::stdout();
-    for name in &picked {
-        // A pick is a config key, which may be any string: one that is no name is refused, as
-        // `delete NAME` refuses it, before it is joined onto a path.
-        check_name(name)?;
-        delete.destroyed_remote(dir, name)?;
-        let orphan = if delete.context.pretend {
-            None
-        } else {
-            delete.legacy_workroom_path(dir, name)?
-        };
-        let deleted = match orphan {
-            Some(path) => delete.forget_non_git(dir, name, path)?,
-            None => delete.delete_by_name(dir, name)?,
-        };
-        let _ = stdout.write_all(said(name, &deleted).as_bytes());
-        let _ = stdout.flush();
-    }
-    Ok(Outcome::Printed(String::new()))
 }
 
 /// What a person is told a delete did with workroom `name`: Go's `printDeleteResult`.
