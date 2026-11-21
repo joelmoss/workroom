@@ -152,7 +152,10 @@ struct ThemesSettingsPane: View {
 
   private func stageCard(_ side: ThemeSide) -> some View {
     let name = stored(side)
-    let showing = ThemeService.activeThemeName(for: side)
+    // What's on screen for that side, resolved as the app resolves it: a fallback is the bundled
+    // file even when a file of yours shares its name, so the window previews what the app shows.
+    let active = ThemeService.activeTheme(for: side)
+    let showing = active.name
     let note = ThemeFallbackNote(
       side: side, stored: name, showing: showing,
       storedSide: ThemeCatalog.side(ofThemeNamed: name))
@@ -168,8 +171,7 @@ struct ThemesSettingsPane: View {
       Button {
         browse = ThemePickerTab(side: side)
       } label: {
-        // The window shows what's on screen for that side, so a fallback previews the fallback.
-        MiniWorkroomWindow(preview: ThemeService.themePreview(named: showing))
+        MiniWorkroomWindow(preview: active.preview)
           .frame(maxWidth: .infinity)
           .frame(height: 124)
           // On the window rather than beside the name, so a long name keeps the room.

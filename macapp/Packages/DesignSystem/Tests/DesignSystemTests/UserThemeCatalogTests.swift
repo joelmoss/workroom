@@ -53,6 +53,34 @@ final class UserThemeCatalogTests: XCTestCase {
     }
   }
 
+  /// On a volume that doesn't tell names apart by case (macOS's default), ghostty asked for `Nord`
+  /// opens a file named `nord`, so that file replaces the bundled Nord: Nord leaves the Dark list,
+  /// and the Nord family, whose dark theme it is, is no longer offered.
+  func testAFileNamedInAnotherCaseReplacesTheBundledThemeOnACaseInsensitiveVolume() throws {
+    try withUserThemes(["nord": light]) { dir in
+      let values = try dir.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])
+      try XCTSkipIf(
+        values.volumeSupportsCaseSensitiveNames == true, "the temp volume is case-sensitive")
+      XCTAssertFalse(names(on: .dark).contains("Nord"), "bundled Nord is still offered")
+      XCTAssertEqual(
+        listed("nord", on: .light), [ListedTheme(name: "nord", side: .light, isUserTheme: true)])
+      XCTAssertFalse(
+        ThemeCatalog.availableFamilies().contains { $0.dark == "Nord" || $0.light == "Nord" },
+        "a family with Nord in it is offered although nord, a light file, replaces it")
+    }
+  }
+
+  /// A file whose name the generated config would have to change (a quote or a backslash) could
+  /// never load under that name, so it isn't listed: choosing it would show the fallback instead.
+  func testAUserThemeWhoseNameTheConfigWouldChangeIsHidden() throws {
+    try withUserThemes(["My \"Night\"": dark, "Back\\slash": dark]) {
+      for side in ThemeSide.allCases {
+        XCTAssertFalse(names(on: side).contains("My \"Night\""))
+        XCTAssertFalse(names(on: side).contains("Back\\slash"))
+      }
+    }
+  }
+
   /// Hidden files (`.DS_Store`) and directories in the themes folder are not themes.
   func testHiddenFilesAndDirectoriesAreNotListed() throws {
     try withUserThemes([".Hidden": dark]) { dir in
