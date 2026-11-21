@@ -140,7 +140,9 @@ fn create(context: &Context, args: &Args) -> Result<Outcome, CliError> {
             (Ok(()), None) => unreachable!("a create that succeeds has made its workroom"),
             (Err(mut error), made) => {
                 // Not transactional: the workroom exists, so the app can offer to delete it.
-                error.created = made.map(|made| Box::new(made.payload(&creator.plan.dir)));
+                if let Some(made) = made {
+                    error.create_details().created = Some(made.payload(&creator.plan.dir));
+                }
                 Err(error)
             }
         };
@@ -504,9 +506,10 @@ impl Creator<'_> {
             Ok(chosen) => chosen,
             Err(mut error) => {
                 fs.finish(&warning, None);
-                error.start_commit = Some(start::question_commit(&dir, &at))
-                    .filter(|commit| !commit.is_empty())
-                    .map(String::into_boxed_str);
+                let commit = start::question_commit(&dir, &at);
+                if !commit.is_empty() {
+                    error.create_details().start_commit = Some(commit);
+                }
                 return Err(error);
             }
         };
@@ -835,7 +838,7 @@ impl Plan<'_> {
                         work.summary()
                     ),
                 );
-                error.local_work = Some(Box::new(work.payload()));
+                error.create_details().local_work = Some(work.payload());
                 Err(error)
             }
             Some(Start::Ask) => Ok(Some(Start::Origin)),

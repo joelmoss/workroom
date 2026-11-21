@@ -117,22 +117,23 @@ pub(crate) fn failure(command: Option<&str>, error: &CliError) -> String {
         #[serde(skip_serializing_if = "Option::is_none")]
         start_commit: Option<&'a str>,
     }
+    let create = error.create.as_deref();
     let mut line = encode(
         &Envelope {
             cli_version: super::VERSION,
             command,
-            created: error.created.as_deref(),
+            created: create.and_then(|create| create.created.as_ref()),
             error: Body {
                 kind: error.kind.code(),
                 message: &error.message,
                 matches: &error.matches,
                 details: error.details.as_deref(),
             },
-            local_work: error.local_work.as_deref(),
+            local_work: create.and_then(|create| create.local_work.as_ref()),
             ok: false,
             schema_version: SCHEMA_VERSION,
             script: error.script.as_deref(),
-            start_commit: error.start_commit.as_deref(),
+            start_commit: create.and_then(|create| create.start_commit.as_deref()),
         },
         false,
     );
