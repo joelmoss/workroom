@@ -27,7 +27,7 @@ configs:
 
 settings:
   base:
-    # Apple silicon only (ADR 0061). build-helper.sh and build-daemon.sh follow ARCHS.
+    # Apple silicon only (ADR 0061). build-daemon.sh follows ARCHS.
     ARCHS: arm64
 
 packages:
@@ -272,7 +272,7 @@ targets:
           CODE_SIGN_IDENTITY: "Apple Development"
         Release:
           # Distribution: Developer ID Application + hardened runtime + secure timestamp.
-          # The embedded helper is signed the same way by Scripts/build-helper.sh.
+          # The embedded `workroom` is signed the same way by Scripts/build-daemon.sh.
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: "Developer ID Application"
           OTHER_CODE_SIGN_FLAGS: "--timestamp"

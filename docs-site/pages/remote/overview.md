@@ -41,6 +41,10 @@ Your terminals are sessions on the host, not processes on your Mac. A dev server
 
 The project's run command runs on the host too, in its own tab. See [Run on a remote workroom](../app/terminals-and-tabs.md#run-on-a-remote-workroom).
 
+### `workroom` in a host's terminals {nightly}
+
+The program on the host is the same `workroom` as on your Mac, so `workroom` works in every terminal of a remote workroom, and `workroom --help` lists the same commands. Commands that need your Mac, such as `create`, `delete` and `add-project`, are marked "(Mac only)" and say so when run on a host, with the error kind `MacOnly`. `workroom update` says the app keeps it up to date, with the kind `ManagedInstall`: Workroom installs a newer one the next time it connects.
+
 What stays on your Mac:
 
 - The app itself, your windows and your settings.

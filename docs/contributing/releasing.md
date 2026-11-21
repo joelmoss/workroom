@@ -227,7 +227,9 @@ The `macapp` job runs `make app-release` (`macapp/Scripts/release.sh`) on `xcode
 
 1. `xcodegen generate`, then `xcodebuild archive` with `MARKETING_VERSION` from the tag and
    `CURRENT_PROJECT_VERSION` from the commit count (a monotonic build number for Sparkle).
-2. `exportArchive` with Developer ID signing (re-signs nested helpers, including the embedded Go CLI).
+2. `exportArchive` with Developer ID signing (re-signs nested helpers, including the embedded
+   `workroom` binary, ADR 0078), then checks the bundle holds that one binary and its Linux builds
+   and nothing of the former `workroomd` layout.
 3. _(optional)_ upload dSYMs to Sentry.
 4. Verify signatures, then **notarize** the app (`xcrun notarytool submit --wait`), **staple** the
    ticket, and run a Gatekeeper assessment (`spctl`).
