@@ -165,9 +165,15 @@ extension Defaults.Keys {
   static let quickTerminalHidesWhenUnfocused = Key<Bool>(
     "quickTerminalHidesWhenUnfocused", default: true, suite: .app)
 
-  /// The folder a new Quick Terminal shell starts in; "" = the home folder.
+  /// The folder a new Quick Terminal shell started in before "New terminals open in" replaced it
+  /// (ADR 0077). Read once, by `migrateNewTerminalDirectory`, and left for an older build.
   static let quickTerminalDirectory = Key<String>(
     "quickTerminalDirectory", default: "", suite: .app)
+
+  /// "New terminals open in": the folder a terminal with no project starts in, a standalone
+  /// terminal's or the Quick Terminal's (ADR 0077); "" = the home folder.
+  static let newTerminalDirectory = Key<String>(
+    "newTerminalDirectory", default: "", suite: .app)
 
   /// The folder new projects start in (Settings ▸ General): where "Clone a repository…" clones to
   /// and "Create new directory…" creates in, and where "Choose…" opens (#620); "" = the home folder.

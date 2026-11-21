@@ -143,7 +143,7 @@ extension AppStore {
       // A target that no longer resolves — its workroom was deleted between launches — is dropped
       // whole, the same self-heal `validatedSelection` and `pruneWorkroomSplitToLiveLeaves` apply.
       guard
-        let sid = Self.validatedSelection(
+        let sid = liveSelection(
           TargetID(encoded: saved.targetID)?.sidebarID, in: projectStore.projects),
         let target = target(for: sid)
       else { continue }
@@ -170,7 +170,7 @@ extension AppStore {
     // one-workroom "group" can never reach the live model.
     workroomSplits = session.workroomSplits.compactMap { saved in
       saved.materialize {
-        Self.validatedSelection(TargetID(encoded: $0)?.sidebarID, in: projectStore.projects)
+        liveSelection(TargetID(encoded: $0)?.sidebarID, in: projectStore.projects)
       }
     }
     // Sidebar terminal-subtree expansion (issue #30). Only for targets that actually came back —
@@ -227,20 +227,45 @@ extension AppStore {
   ///
   /// **Never from a test launch.** A fixture lists only its temp-directory projects, and the
   /// helpers it would ask are the developer's own Workroom Dev's on the shared bundle id, so every
-  /// real session would look orphaned. An empty listing is skipped for the same reason: a config
-  /// that read as nothing must not end everything.
+  /// real session would look orphaned.
+  ///
+  /// It runs on an empty listing too, which is a window with no projects now (ADR 0077), so the
+  /// standalone terminals a crash left behind are ended. That listing is only ever an accepted
+  /// one (a failed read never reaches here), but a config that read as nothing must not end a
+  /// project's sessions, so an empty listing ends standalone ones only (`sessionSurvivesSweep`).
   func endOrphanedSessionsOnce(
     in projects: [Project], isTestProcess: Bool = AppEnvironment.current.isTestProcess
   ) {
-    guard !lifecycle.sweptOrphanedSessions, !isTestProcess, !projects.isEmpty else { return }
+    guard !lifecycle.sweptOrphanedSessions, !isTestProcess else { return }
     lifecycle.sweptOrphanedSessions = true
     // Resolved against the project list as it is when the sessions are judged, not the listing
     // that triggered the sweep: a workroom added in between must not lose its first session.
+    let listedNothing = projects.isEmpty
     Task {
       await PersistentSessionService.shared.endOrphanedSessions {
-        TargetID(encoded: $0).flatMap { self.sidebarID(for: $0) } != nil
+        self.sessionSurvivesSweep($0, listedNothing: listedNothing)
       }
     }
+  }
+
+  /// Whether the launch sweep spares the session tagged `tag`: its target is still here, or the
+  /// listing was empty and the tag is not a standalone terminal's.
+  func sessionSurvivesSweep(_ tag: String, in projects: [Project]) -> Bool {
+    sessionSurvivesSweep(tag, listedNothing: projects.isEmpty)
+  }
+
+  private func sessionSurvivesSweep(_ tag: String, listedNothing: Bool) -> Bool {
+    if sessionTagResolves(tag) { return true }
+    guard listedNothing else { return false }
+    if case .standalone = TargetID(encoded: tag) { return false }
+    return true
+  }
+
+  /// Whether a session tagged `tag` belongs to a target that is still here, which the launch sweep
+  /// spares: a listed root or workroom, or a row of the Terminals section, which is loaded before
+  /// any window is (ADR 0077).
+  func sessionTagResolves(_ tag: String) -> Bool {
+    TargetID(encoded: tag).flatMap { sidebarID(for: $0) } != nil
   }
 
   /// Every helper session this window will or might reattach to: its open tabs, the remote targets

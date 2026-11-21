@@ -31,6 +31,9 @@ final class AppStore: ObservableObject {
   /// and what either does to every window (ADR 0068). Views take it from the environment and the
   /// store's code reads it here.
   let lifecycle: WorkroomLifecycle
+  /// The app's Terminals section: the terminals with no project, which the resolvers below ask
+  /// about before the projects (ADR 0077).
+  let terminalsSection: TerminalsSection
   /// Marks the saved session dirty on any pane change (issue #46). Hooking the publisher rather than
   /// the ~12 structural mutators in `TerminalPanes` is deliberate: a thirteenth mutation cannot be
   /// forgotten. It fires far more often than the session changes (every live title, every activity
@@ -49,6 +52,8 @@ final class AppStore: ObservableObject {
   /// The `NSWindow` hosting this store, resolved once the view tree is in a window (issue #70). Weak:
   /// the window outlives the store's need for it, and the registry holds the authoritative mapping.
   weak var hostWindow: NSWindow?
+  /// Brings a window forward. A seam: a test host's windows never become key.
+  @ObservationIgnored var raiseWindow: (NSWindow) -> Void = { $0.makeKeyAndOrderFront(nil) }
   /// This window's display number — the smallest unused positive integer, assigned by `WindowRegistry`
   /// on registration and freed for reuse when the window closes (issue #70, macOS untitled-doc style).
   /// Backs the `windowTitle` fallback for a window with nothing selected ("Window 1", "Window 2", …).
@@ -145,6 +150,14 @@ final class AppStore: ObservableObject {
   /// when the target actually changed, the remote host, History, remote state and any pending
   /// remote confirmation. One named place, so a new reaction is added here, not to the `didSet`.
   private func selectionDidChange(from oldValue: SidebarID?) {
+    // A standalone terminal is one terminal (ADR 0077): selecting one another window holds takes
+    // you to that window, and this one stays where it was. Setting the property inside its own
+    // `didSet` does not run it again.
+    if let sid = selectedTargetID, let holder = otherHolder(of: sid), let id = sid.targetID {
+      selectedTargetID = oldValue
+      holder.revealTerminals(forTargetID: id)
+      return
+    }
     if persistsSidebarPrefs {
       Defaults[.sidebarSelection] = selectedTargetID?.targetID?.encoded
     }
@@ -242,9 +255,15 @@ final class AppStore: ObservableObject {
   }
 
   /// Shows or hides the Projects sidebar (the title-bar button, ⌃⌘S, ⌥⌘S): nothing with no
-  /// projects, where it has nothing to list and stays hidden (`RootView.splitView`).
+  /// projects and no terminals, where it has nothing to list and stays hidden (`RootView.splitView`).
   func toggleSidebar() {
-    if !projectStore.projects.isEmpty { sidebarVisible.toggle() }
+    if sidebarHasContent { sidebarVisible.toggle() }
+  }
+
+  /// Whether the sidebar has anything to list: a project, or a terminal with no project (ADR 0077).
+  /// With neither it stays hidden and its toggle is off.
+  var sidebarHasContent: Bool {
+    !projectStore.projects.isEmpty || !terminalsSection.entries.isEmpty
   }
   /// Whether a collapsed sidebar is *temporarily* on screen via edge-hover reveal (issue #56): the
   /// left Projects overlay (`previewingLeft`) and the right inspector overlay (`previewingRight`).
@@ -429,7 +448,7 @@ final class AppStore: ObservableObject {
     let projectPath: String
     let path: String
     switch sid {
-    case .project, .creation:
+    case .project, .creation, .standalone:
       return nil
     case .root(let p):
       projectPath = p
@@ -757,7 +776,8 @@ final class AppStore: ObservableObject {
   init(
     projectStore: ProjectStore? = nil, vcsStatus: VCSStatusService? = nil,
     runCommands: RunCommands? = nil, lifecycle: WorkroomLifecycle? = nil,
-    cli: WorkroomCLIProtocol? = nil, commitHistory: HistoryModel? = nil,
+    terminalsSection: TerminalsSection? = nil, cli: WorkroomCLIProtocol? = nil,
+    commitHistory: HistoryModel? = nil,
     remoteState: RemoteStateModel? = nil, notifications: NotificationCenterStore? = nil
   ) {
     var services = AppServices.current
@@ -777,6 +797,7 @@ final class AppStore: ObservableObject {
     let lifecycle = lifecycle ?? WorkroomLifecycle(vcsStatus: status)
     precondition(lifecycle.vcsStatus === status, "a window's lifecycle is over its own VCS status")
     self.lifecycle = lifecycle
+    self.terminalsSection = terminalsSection ?? TerminalsSection()
     // `commitHistory` is assigned here (not inline) for the same @MainActor reason: a test injects a
     // stub to observe the live-refresh triggers; otherwise it reads through the services' reader.
     self.commitHistory = commitHistory ?? HistoryModel(resolve: services.vcsReader)
@@ -855,6 +876,20 @@ final class AppStore: ObservableObject {
     // Every create and delete, from any window, reaches this window's selection, splits, runs and
     // terminals through the lifecycle.
     self.lifecycle.register(self)
+    self.terminalsSection.register(self)
+    // At launch, once every saved window is restored, a standalone row nothing holds goes, and its
+    // session with it: one terminal is exactly one live terminal.
+    let section = self.terminalsSection
+    self.projectStore.sessionRestoreObservers[ObjectIdentifier(section)] = { [weak section] in
+      guard let pruned = section?.pruneUnheld(), !pruned.isEmpty,
+        !AppEnvironment.current.isTestProcess
+      else { return }
+      Task {
+        for id in pruned {
+          await PersistentSessionService.shared.endSessions(matchingWorkroom: id.encoded)
+        }
+      }
+    }
     // Hydrate the (global) inspector section layout once at launch — it's shared across all
     // workrooms, so it's loaded here rather than re-loaded on every selection change (issue #24).
     loadInspectorState()
@@ -908,6 +943,7 @@ final class AppStore: ObservableObject {
     // back later — the subtree is meant to be re-opened deliberately.
     case .tabsRemoved(let targetID, let ids):
       self.history.prune(removing: Set(ids))
+      self.standaloneTabsRemoved(targetID)
       if self.terminals.tabCount(forTargetID: targetID) < 2 {
         self.expandedTerminalTargets.remove(targetID)
       }
@@ -1212,7 +1248,11 @@ final class AppStore: ObservableObject {
   /// The target the inspector reflects: the selection, but only while it has open tabs
   /// (`selectionHasTabs`). `nil` ⇒ the inspector shows its empty state. History/Changes/PR key on
   /// this, not `selectedTargetID`, so they empty when all tabs close.
-  var inspectorTargetID: SidebarID? { selectionHasTabs ? selectedTargetID : nil }
+  /// Nil for a Terminals-section row too: a terminal with no project has nothing to inspect.
+  var inspectorTargetID: SidebarID? {
+    guard selectionHasTabs, selectedTargetID?.isInTerminalsSection == false else { return nil }
+    return selectedTargetID
+  }
   var inspectorTarget: TerminalTarget? { inspectorTargetID.flatMap(target(for:)) }
 
   /// Recompute `selectionHasTabs` — call after a selection change or a tab add/remove. Guarded so it
@@ -1266,6 +1306,8 @@ final class AppStore: ObservableObject {
     case .creation(let path, _):
       let project = projectStore.project(at: path)?.displayName ?? defaultWindowTitle
       return "\(project) — New workroom"
+    case .standalone:
+      return sid.flatMap(target(for:))?.title ?? defaultWindowTitle
     case .project, nil:
       return defaultWindowTitle
     }
@@ -1281,7 +1323,7 @@ final class AppStore: ObservableObject {
   /// `.project` or a since-removed target), as the lifecycle resolves it for every window. Backs
   /// `selectedTarget` and the history `isLive` check.
   func target(for sid: SidebarID) -> TerminalTarget? {
-    lifecycle.target(for: sid)
+    sid.isInTerminalsSection ? terminalsSection.target(for: sid) : lifecycle.target(for: sid)
   }
 
   /// Resolve a `TerminalTarget.ID` straight to its live target — the id-addressed sibling of
@@ -1759,6 +1801,13 @@ final class AppStore: ObservableObject {
           if UITestFixture.twoTabs, project.workrooms.count > 1 {
             terminals.ensureTab(for: project.workrooms[1].target(inProject: project.path))
           }
+          // Standalone terminals (#655): rows in the Terminals section, each with its terminal, so
+          // the title bar shows a tab for each beside the workroom's.
+          for id in UITestFixture.standaloneTerminalIDs.prefix(UITestFixture.standaloneTerminals)
+          where !terminalsSection.contains(.standalone(id)) {
+            let sid = terminalsSection.addStandalone(id: id).sidebarID
+            if let standalone = sid.flatMap(target(for:)) { terminals.ensureTab(for: standalone) }
+          }
           // Terminal-strip overflow scenario (pinned "+" XCUITest, issue #129): `ensureTab` opened the
           // first tab, so add the rest.
           for _ in 1..<UITestFixture.terminalTabs { _ = terminals.addTab(for: target) }
@@ -1931,7 +1980,7 @@ final class AppStore: ObservableObject {
     // validated below. Resolved against the live projects, so a since-deleted target — or a
     // restore that loses the race to a user click — resolves to nil and falls through.
     if selectedTargetID == nil, let saved = pendingRestoreSelection {
-      selectedTargetID = Self.validatedSelection(saved.sidebarID, in: fresh)
+      selectedTargetID = liveSelection(saved.sidebarID, in: fresh)
     }
     pendingRestoreSelection = nil
     // Keep a project as the New-Workroom context; prefer the (possibly restored) selection's
@@ -1948,7 +1997,7 @@ final class AppStore: ObservableObject {
     let formerSelection = selectedTargetID
     // A create's pane lives as long as its run, whatever the list says (#483).
     if selectedTargetID.flatMap(target(for:))?.unavailability != .creating {
-      selectedTargetID = Self.validatedSelection(selectedTargetID, in: fresh)
+      selectedTargetID = liveSelection(selectedTargetID, in: fresh)
     }
     // Drop any split leaf whose workroom went away on reload (issue #23 follow-up self-heal); collapses
     // to a survivor / dissolves below two, re-pointing selection. Runs after selection is validated so
@@ -2015,7 +2064,18 @@ final class AppStore: ObservableObject {
   /// `id`'s sidebar row while it is still listed, else nil (always nil for a create's pane and the
   /// Quick Terminal, which have no row).
   func sidebarID(for id: TargetID) -> SidebarID? {
-    projectStore.sidebarID(for: id)
+    if id.sidebarID?.isInTerminalsSection == true { return terminalsSection.sidebarID(for: id) }
+    return projectStore.sidebarID(for: id)
+  }
+
+  /// `validatedSelection` for every kind of row: a Terminals-section row while the section lists
+  /// it, a project's while `projects` does.
+  func liveSelection(_ current: SidebarID?, in projects: [Project]) -> SidebarID? {
+    guard let current else { return nil }
+    if current.isInTerminalsSection {
+      return current.targetID.flatMap(terminalsSection.sidebarID(for:))
+    }
+    return Self.validatedSelection(current, in: projects)
   }
 
   nonisolated private static func targetExists(_ id: SidebarID, in projects: [Project]) -> Bool {
@@ -2024,8 +2084,9 @@ final class AppStore: ObservableObject {
       return projects.contains { $0.id == path }
     case .workroom(let path, let name):
       return projects.first { $0.id == path }?.workrooms.contains { $0.id == name } ?? false
-    case .project, .creation:
-      // A create's pane exists while its run does, which `reconcileWindow` checks itself.
+    case .project, .creation, .standalone:
+      // A create's pane exists while its run does, which `reconcileWindow` checks itself. A
+      // Terminals-section row is the section's to answer (`liveSelection`).
       return false
     }
   }
@@ -2337,9 +2398,20 @@ final class AppStore: ObservableObject {
 
   // MARK: Menu-command convenience
 
-  /// Open a new terminal tab in the selected target — root or workroom (⌘T).
+  /// Open a new terminal tab in the selected target — root or workroom (⌘T). Where the selection
+  /// opens no terminals (a project's row, or nothing) it opens a standalone terminal, and on a
+  /// standalone terminal another one, since each is one terminal with its own row (ADR 0077).
+  /// Whether New Terminal (⌘T) is on: the selection opens terminals (`workroomSelected`), or opens
+  /// none, where it opens a standalone terminal — so with no projects at all it is on.
+  func newTerminalAvailable(workroomSelected: Bool?) -> Bool {
+    workroomSelected == true || selectedTarget == nil
+  }
+
   func newTerminalInSelectedTarget() {
-    guard let target = selectedTarget else { return }
+    guard let target = selectedTarget else {
+      newStandaloneTerminal()
+      return
+    }
     newTerminalIfAllowed(in: target)
   }
 
@@ -2838,6 +2910,8 @@ final class AppStore: ObservableObject {
     case .creation(_, let id):
       return WorkroomLabel(
         project: project, workroom: lifecycle.creationRuns[id]?.name ?? "New workroom")
+    case .standalone:
+      return WorkroomLabel(project: target(for: sid)?.title ?? TerminalsSection.untitled)
     case .project:
       return WorkroomLabel(project: project)
     }
@@ -2861,7 +2935,7 @@ final class AppStore: ObservableObject {
       guard let project, let workroom = project.workrooms.first(where: { $0.name == name })
       else { return "" }
       return WorkroomLabel(project: project.displayName, workroom: workroom.displayName).full
-    case .creation: return ""
+    case .creation, .standalone: return ""
     }
   }
 
@@ -2871,7 +2945,7 @@ final class AppStore: ObservableObject {
     switch id {
     case .root(let path), .workroom(let path, _), .project(let path), .creation(let path, _):
       return path
-    case .none: return nil
+    case .standalone, .none: return nil
     }
   }
 

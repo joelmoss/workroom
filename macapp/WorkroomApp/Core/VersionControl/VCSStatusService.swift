@@ -245,7 +245,8 @@ final class VCSStatusService: ObservableObject {
       // makes `targetExists` false, so commits, PR actions and late status merges skip it.
       if w.isRemote { return remoteStatusWorkItem(w, in: p) }
       return StatusWorkItem(sid: sid, path: w.path, projectRoot: p.path)
-    case .project, .creation:
+    case .project, .creation, .standalone:
+      // A standalone terminal has no version control (ADR 0077).
       return nil
     }
   }

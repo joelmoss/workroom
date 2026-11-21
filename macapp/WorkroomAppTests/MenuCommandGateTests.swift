@@ -92,4 +92,22 @@ final class MenuCommandGateTests: XCTestCase {
       body.contains("flag == true") && body.contains("!detachedWindowKey"),
       "the gate no longer ANDs the item's precondition with the detached-window check: \(body)")
   }
+
+  /// #657: with no projects the Projects toggle follows what the sidebar has to list, not the
+  /// project list, so a window of only terminals can show it; New Terminal asks the store, which
+  /// answers yes with no projects.
+  func testProjectsToggleAndNewTerminalDoNotNeedAProject() throws {
+    let source = try source
+    XCTAssertTrue(
+      source.contains(
+        """
+        Toggle("Projects", isOn: storeFlag(\\.sidebarVisible))
+                .shortcut(.projects)
+                .disabled(modalBlocked || noSidebarContent)
+        """),
+      "the Projects toggle must gate on `noSidebarContent`, not `noProjects`")
+    XCTAssertTrue(
+      source.contains("store.newTerminalAvailable(workroomSelected: workroomSelected)"),
+      "New Terminal's gate is the store's, which holds with no projects")
+  }
 }

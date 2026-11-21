@@ -52,7 +52,7 @@ final class QuickTerminalControllerTests: XCTestCase {
     controller.toggle()
     XCTAssertEqual(
       try XCTUnwrap(controller.currentSurface).workingDirectory,
-      QuickTerminalController.workingDirectory(for: Defaults[.quickTerminalDirectory]))
+      QuickTerminalController.workingDirectory(for: Defaults[.newTerminalDirectory]))
   }
 
   /// Pure, so no shared `Defaults` write races the parallel test workers.

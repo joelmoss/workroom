@@ -156,6 +156,10 @@ final class ShortcutRegistryTests: XCTestCase {
   func testDefaultsMatchTheirKeys() {
     let table = ShortcutTable.defaults
     XCTAssertEqual(table.match(.key("t", .command)), ShortcutMatch(.newTerminal))
+    XCTAssertEqual(
+      table.match(.key("t", [.command, .option])), ShortcutMatch(.newStandaloneTerminal))
+    XCTAssertEqual(table.label(for: .newStandaloneTerminal), "⌥⌘T")
+    XCTAssertEqual(ShortcutAction.newStandaloneTerminal.group, .terminalTabs)
     XCTAssertEqual(table.match(.key("3", .command)), ShortcutMatch(.focusTerminalTab3))
     XCTAssertEqual(
       table.match(.key("9", [.command, .option])), ShortcutMatch(.switchToWorkroomTab9))

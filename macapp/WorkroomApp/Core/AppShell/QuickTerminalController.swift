@@ -152,7 +152,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
 
   /// Where a new tab's shell starts: the Settings folder. A split starts in its neighbour's.
   static func newTabDirectory() -> String {
-    workingDirectory(for: Defaults[.quickTerminalDirectory])
+    workingDirectory(for: Defaults[.newTerminalDirectory])
   }
 
   /// The folder a new quick-terminal shell starts in: the setting with `~` expanded, or the home
@@ -315,7 +315,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     panes.allowsDetach = false
     // Its panes move into a workroom open in any window instead.
     panes.moveToWorkroomChoices = { [weak host] tabID, target in
-      host?.quickTerminalPaneWorkroomChoices(tabID, of: target) ?? []
+      host?.paneMoveChoices(tabID, of: target) ?? []
     }
     panes.dropOutsideWindow = { [weak host] tabID, target in
       guard let host else { return }

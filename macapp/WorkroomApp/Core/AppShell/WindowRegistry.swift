@@ -257,6 +257,8 @@ final class WindowRegistry: ObservableObject {
     if let closing = store(for: window) {
       closing.detachedPanes.closeAll()
       dropNotifications(raisedBy: closing)
+      // The window's standalone terminals end with it (confirmed in `WindowCloseGuard`).
+      Task { await closing.endStandaloneTerminalsOnClose() }
     }
     removeEntries { $0.window === window || $0.window == nil }
     windowsChanged += 1
@@ -477,20 +479,28 @@ final class WindowCloseGuard: NSObject, NSWindowDelegate {
   func windowShouldClose(_ sender: NSWindow) -> Bool {
     MainActor.assumeIsolated {
       // During an app quit, `applicationShouldTerminate` already prompts + stops every window, so
-      // don't prompt again here (de-dup, OV #10). No live run command → nothing to stop, close now.
-      guard let store, !WindowRegistry.shared.isTerminating,
-        store.runCommand.stopsRunsBeforeClosing
-      else {
-        return true
-      }
-      if Defaults[.confirmOnQuit] {
+      // don't prompt again here (de-dup, OV #10). Nothing to stop or end → nothing to ask, close now.
+      guard let store, !WindowRegistry.shared.isTerminating else { return true }
+      let stopsRun = store.runCommand.stopsRunsBeforeClosing
+      // A standalone terminal ends with its window (ADR 0077), so closing asks first.
+      let standalone = store.windowClosePrompt
+      guard stopsRun || standalone != nil else { return true }
+      let asks =
+        (stopsRun && Defaults[.confirmOnQuit])
+        || (standalone != nil && Defaults[.confirmOnCloseTerminal])
+      if asks {
         let alert = NSAlert()
-        alert.messageText = "Close this window?"
-        alert.informativeText = "It has a running process. Closing the window will stop it."
+        alert.messageText = standalone?.title ?? "Close this window?"
+        alert.informativeText =
+          stopsRun
+          ? "It has a running process. Closing the window will stop it."
+            + (standalone.map { " " + $0.detail } ?? "")
+          : standalone?.detail ?? ""
         alert.addButton(withTitle: "Close")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return false }
       }
+      guard stopsRun else { return true }
       // Stop the run command(s), then close — return false now so the surfaces stay alive for the
       // graceful Ctrl-C + wait and are never freed mid-IO (the no-mass-free rule).
       store.runCommand.gracefullyStopAllRunCommands(timeout: 5) { sender.close() }

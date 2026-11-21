@@ -407,6 +407,18 @@ import WorkroomVCS
       flag("WorkroomUITestTwoTabs")
     }
 
+    /// When set (`-WorkroomUITestStandaloneTerminals <n>`), the fixture seeds `n` standalone
+    /// terminals (#655), each with its row and its terminal, under `standaloneTerminalIDs`, so a UI
+    /// test can find their rows and title-bar tabs by id. Clamped to 0...4.
+    static var standaloneTerminals: Int {
+      max(0, min(number("WorkroomUITestStandaloneTerminals"), 4))
+    }
+
+    /// The fixed ids of the seeded standalone terminals, in their rows' order.
+    static let standaloneTerminalIDs = (1...4).map {
+      UUID(uuidString: "00000000-0000-0000-0000-00000000065\($0)")!
+    }
+
     /// When set (`-WorkroomUITestTerminalTabs <n>`), the fixture opens `n` terminal tabs in the
     /// auto-selected workroom instead of one, so the **terminal** tab strip overflows on launch — the
     /// scenario the pinned-"+" XCUITests need (issue #129) without a dozen flaky ⌘T round-trips. Clamped

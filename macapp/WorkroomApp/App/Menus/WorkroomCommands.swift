@@ -38,6 +38,7 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.hasNotifications) private var hasNotifications
   @FocusedValue(\.hasWaitingTerminals) private var hasWaitingTerminals
   @FocusedValue(\.hasProjects) private var hasProjects
+  @FocusedValue(\.hasSidebarContent) private var hasSidebarContent
   @FocusedValue(\.hasWorkroomAnchor) private var hasWorkroomAnchor
   @FocusedValue(\.canNavigateBack) private var canNavigateBack
   @FocusedValue(\.canNavigateForward) private var canNavigateForward
@@ -92,6 +93,9 @@ struct WorkroomCommands: Commands {
   /// their key equivalents, which a disabled item drops) are off.
   private var noProjects: Bool { hasProjects != true }
 
+  /// Nothing to list in the sidebar: no project and no terminal with a row (ADR 0077).
+  private var noSidebarContent: Bool { hasSidebarContent != true }
+
   /// Whether a workroom-scoped command must be disabled because a DETACHED pane's window is key
   /// (issue #172).
   ///
@@ -119,6 +123,13 @@ struct WorkroomCommands: Commands {
   /// so the next menu item cannot inherit the hole this closed.
   private func workroomCommandEnabled(_ flag: Bool?) -> Bool {
     flag == true && !detachedWindowKey
+  }
+
+  /// ⌘T's precondition: a selection that opens terminals, or one that opens none (a project's row,
+  /// or nothing), where ⌘T opens a standalone terminal (ADR 0077). Never behind a dialog.
+  private var newTerminalAvailable: Bool? {
+    guard let store, modalPresented == false else { return false }
+    return store.newTerminalAvailable(workroomSelected: workroomSelected)
   }
 
   /// Room ▸ Reveal in Finder's precondition: something is selected and its directory still exists.
@@ -297,7 +308,14 @@ struct WorkroomCommands: Commands {
         store?.newTerminalInSelectedTarget()
       }
       .shortcut(.newTerminal)
-      .disabled(!workroomCommandEnabled(workroomSelected))
+      .disabled(!workroomCommandEnabled(newTerminalAvailable))
+
+      // A terminal that belongs to no project, from anywhere (ADR 0077).
+      Button("New Standalone Terminal") {
+        store?.newStandaloneTerminal()
+      }
+      .shortcut(.newStandaloneTerminal)
+      .disabled(!workroomCommandEnabled(modalPresented.map { !$0 }))
 
       // Quick terminal at ~/ in its own chrome-less window (issue #39) — same open/focus action as
       // the toolbar button. Always enabled (needs no workroom). Shows the recorded global shortcut
@@ -421,7 +439,7 @@ struct WorkroomCommands: Commands {
     CommandGroup(replacing: .sidebar) {
       Toggle("Projects", isOn: storeFlag(\.sidebarVisible))
         .shortcut(.projects)
-        .disabled(modalBlocked || noProjects)
+        .disabled(modalBlocked || noSidebarContent)
     }
 
     CommandGroup(after: .sidebar) {

@@ -1,0 +1,90 @@
+import Foundation
+import WorkroomDomain
+
+/// Standalone terminals in a window (ADR 0077): opening one, and its row going when its terminal
+/// closes. The rows themselves are the app's `TerminalsSection`; the tabs are this window's.
+extension AppStore: TerminalsSectionHolder {
+  func terminalNames(forTargetID targetID: TargetID) -> [String] {
+    terminals.terminalNames(forTargetID: targetID)
+  }
+
+  func holdsTerminals(forTargetID targetID: TargetID) -> Bool {
+    terminals.tabCount(forTargetID: targetID) > 0
+  }
+
+  /// Raise this window and show `targetID`'s terminal in it, focused: where a notification, or a
+  /// selection made in another window, takes you to a standalone terminal.
+  func revealTerminals(forTargetID targetID: TargetID) {
+    guard let target = terminalTarget(forID: targetID) else { return }
+    let tab = terminals.focusedTab(for: target)?.id ?? terminals.tabs(for: target).first?.id
+    if let window = window(forTab: tab) { raiseWindow(window) }
+    openTerminal(targetID: targetID, tabID: tab)
+  }
+
+  /// The window that holds `sid`'s terminal when it is not this one: a standalone terminal is one
+  /// terminal, so selecting it here goes there instead.
+  func otherHolder(of sid: SidebarID) -> (any TerminalsSectionHolder)? {
+    guard case .standalone = sid, let id = sid.targetID, !holdsTerminals(forTargetID: id)
+    else { return nil }
+    return terminalsSection.holder(of: id, other: self)
+  }
+
+  /// What closing this window asks first (ADR 0077): it holds a standalone terminal, which ends
+  /// with it. nil when it holds none.
+  var windowClosePrompt: WindowClosePrompt? {
+    let held = terminals.activeTargetIDs.filter { $0.isStandaloneTerminal }
+    guard !held.isEmpty else { return nil }
+    return WindowClosePrompt(
+      title: "Close this window?",
+      detail: held.count == 1
+        ? "It holds a terminal that isn't in a project. Closing the window ends it."
+        : "It holds \(held.count) terminals that aren't in a project. Closing the window ends them."
+    )
+  }
+
+  /// A window closing ends the standalone terminals it holds, and their rows go. Not on a quit,
+  /// which keeps them for the next launch.
+  func endStandaloneTerminalsOnClose() async {
+    guard !WindowRegistry.shared.isTerminating else { return }
+    for id in terminals.activeTargetIDs where id.isStandaloneTerminal {
+      await terminals.reap(id)
+      terminalsSection.remove(id)
+    }
+  }
+
+  /// New Standalone Terminal (⌥⌘T), and ⌘T where the selection opens no terminals: a new row just
+  /// below the selected one when that is in the Terminals section, else at the section's end,
+  /// selected, with its one terminal open in "New terminals open in".
+  func newStandaloneTerminal() {
+    let anchor = selectedTargetID.flatMap { $0.isInTerminalsSection ? $0.targetID : nil }
+    let id = terminalsSection.addStandalone(after: anchor)
+    guard let sid = id.sidebarID, let target = target(for: sid) else { return }
+    selectedTargetID = sid
+    terminals.addTab(for: target)
+    refreshSelectionHasTabs()
+  }
+
+  /// A standalone terminal's row goes once its terminal has left it in every holder: closed, or
+  /// moved into another target. Moving to another window keeps it, and so does a quit, which must
+  /// bring it back at the next launch.
+  func standaloneTabsRemoved(_ targetID: TargetID) {
+    guard case .standalone = targetID, terminals.handingOffTo != targetID,
+      !WindowRegistry.shared.isTerminating, terminalsSection.terminalNames(of: targetID).isEmpty
+    else { return }
+    terminalsSection.remove(targetID)
+  }
+}
+
+/// What a window asks before it closes (see `AppStore.windowClosePrompt`).
+struct WindowClosePrompt: Equatable {
+  let title: String
+  let detail: String
+}
+
+extension TargetID {
+  /// A standalone terminal's id.
+  var isStandaloneTerminal: Bool {
+    if case .standalone = self { return true }
+    return false
+  }
+}

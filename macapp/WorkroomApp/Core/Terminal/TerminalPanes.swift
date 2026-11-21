@@ -129,7 +129,7 @@ enum TabContent {
   /// A terminal's live/idle title, or a content tab's own (a diff's filename): `TerminalTab.title`.
   var title: String {
     switch self {
-    case .terminal(let s): return s.liveTitle ?? s.defaultTitle
+    case .terminal(let s): return s.userTitle ?? s.liveTitle ?? s.defaultTitle
     case .diff(let d): return (d.path as NSString).lastPathComponent
     case .file(let f): return (f.path as NSString).lastPathComponent
     case .changeset(let c): return c.title
@@ -138,7 +138,9 @@ enum TabContent {
 
   /// `title`, without observing a terminal's live title (see `LiveTitle.untrackedText`).
   var untrackedTitle: String {
-    if case .terminal(let s) = self { return s.titleCell.untrackedText ?? s.defaultTitle }
+    if case .terminal(let s) = self {
+      return s.userTitle ?? s.titleCell.untrackedText ?? s.defaultTitle
+    }
     return title
   }
 
@@ -278,7 +280,8 @@ extension TabSession {
         terminal: TerminalPayload(
           defaultTitle: state.defaultTitle, cwd: state.cwd,
           sessionID: state.sessionID?.uuidString,
-          run: state.launch.isRunSession ? true : nil))
+          run: state.launch.isRunSession ? true : nil,
+          userTitle: state.userTitle))
     case .diff(let descriptor):
       self.init(
         key: key, kind: Self.diffKind,
@@ -383,6 +386,9 @@ struct TerminalState {
   let launchDirectory: String
   /// Shown until the surface reports a title — and again whenever it reports an empty one.
   let defaultTitle: String
+  /// The name the user gave this terminal (Rename…): it outranks the live title and the default
+  /// until cleared. Nil when never named, or cleared with an empty name. Saved with the tab.
+  var userTitle: String?
   /// The surface's latest non-empty title (OSC 0/2 via shell integration): the running command while
   /// busy, the working directory when idle. Nil until the first report (issue #2). Kept on an
   /// observable of its own (`titleCell`), so a program repainting its title re-renders the views
@@ -979,6 +985,11 @@ final class TerminalPanes {
   /// terminal-subtree expand flag when a close drops a target below the 2-tab disclosure threshold).
   func tabCount(forTargetID id: TerminalTarget.ID) -> Int { heldTabs(id).count }
 
+  /// The names of a target's terminals here, in tab order: what a standalone terminal is titled by.
+  func terminalNames(forTargetID id: TerminalTarget.ID) -> [String] {
+    heldTabs(id).filter { $0.terminal != nil }.map(\.title)
+  }
+
   /// Whether any target owns the tab `id`. Tab ids are unique across windows, so `WindowRegistry`
   /// uses this to route an OS-notification click to the window that owns the tab (issue #70).
   func containsTab(_ id: TerminalTab.ID) -> Bool {
@@ -1232,7 +1243,8 @@ final class TerminalPanes {
           for: target,
           cwd: cwd,
           title: payload.defaultTitle,
-          sessionID: payload.sessionID.flatMap(UUID.init(uuidString:)))
+          sessionID: payload.sessionID.flatMap(UUID.init(uuidString:)),
+          userTitle: Self.cleanedName(payload.userTitle))
       } else if let content = saved.restoredContent {
         tab = TerminalTab(
           content: content, diffViewModeOverride: saved.restoredDiffViewMode,
@@ -1463,6 +1475,23 @@ final class TerminalPanes {
     -> TerminalTab.ID
   {
     openContentPersistent(descriptor, for: target)
+  }
+
+  /// Name a terminal tab (Rename…). The name is trimmed; an empty one clears it, which brings the
+  /// program's live title back. No-op for a missing or non-terminal tab.
+  func setUserTitle(_ name: String, forTab tabID: TerminalTab.ID, in target: TerminalTarget) {
+    let cleaned = Self.cleanedName(name)
+    guard let state = terminalState(tabID, in: target.id), state.userTitle != cleaned else {
+      return
+    }
+    mutateTerminalState(tabID, target: target.id) { $0.userTitle = cleaned }
+  }
+
+  /// `name` trimmed, or nil when nothing is left.
+  nonisolated static func cleanedName(_ name: String?) -> String? {
+    guard let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty
+    else { return nil }
+    return trimmed
   }
 
   /// Set a diff tab's per-tab layout override (issue #66), from the tab toolbar's unified/side-by-side
@@ -1950,6 +1979,10 @@ final class TerminalPanes {
     var tabIDs: [TerminalTab.ID] { layout.normalizedOrder }
   }
 
+  /// The target the tabs go to while `handOff` or `handOffTab` runs: the `.tabsRemoved` it fires
+  /// leaves them alive, for another holder to adopt there, where a close's ends them. Nil otherwise.
+  @ObservationIgnored private(set) var handingOffTo: TerminalTarget.ID?
+
   /// Lift `target`'s tabs out of this window WITHOUT ending a session or freeing a surface: the one
   /// removal that leaves the tabs alive, for another window to `adopt`. Fires `.tabsRemoved`, so this
   /// window tidies up as it does for a close (history, split membership, selection). Detached
@@ -1957,6 +1990,8 @@ final class TerminalPanes {
   /// them, which `.paneDocked` would race.
   func handOff(_ target: TerminalTarget) -> TargetHandOff? {
     guard let held = heldLayout(target.id) else { return nil }
+    handingOffTo = target.id
+    defer { handingOffTo = nil }
     let ids = held.layout.order
     let handOff = TargetHandOff(
       target: target, layout: held.layout,
@@ -1986,6 +2021,8 @@ final class TerminalPanes {
     guard let tab = record(tabID, in: target.id), !detachedTabIDs.contains(tabID) else {
       return nil
     }
+    handingOffTo = destination.id
+    defer { handingOffTo = nil }
     let wasFocused = targets[target.id]?.state.focused == tabID
     let successor = closeSuccessor(of: tabID, for: target)
     if tab.isPreview { persist(tabID, for: target) }
@@ -2461,7 +2498,7 @@ final class TerminalPanes {
   /// (#522); otherwise a `command` runs in this pane's own process (an Investigate tab).
   private func makeTerminalTab(
     for target: TerminalTarget, cwd: String, command: String? = nil, title: String? = nil,
-    sessionID: UUID? = nil, runSession: Bool = false
+    sessionID: UUID? = nil, runSession: Bool = false, userTitle: String? = nil
   ) -> TerminalTab {
     let count = openPanes(target.id).updateState { $0.numberNextTerminal() }
     // A remote workroom's path is a path on its host; this Mac's process starts in the home
@@ -2498,6 +2535,7 @@ final class TerminalPanes {
       launch: TerminalLaunch(
         isRunSession: view.isRunSession, runsCommand: view.isRunCommandSurface),
       launchDirectory: view.workingDirectory, sessionID: assignedSessionID)
+    state.userTitle = userTitle
     if let assignedSessionID {
       programStatusBinding.follow(target.hostID)
       // Who else types into it (#696), from the same host's events.

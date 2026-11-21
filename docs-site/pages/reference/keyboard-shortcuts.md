@@ -65,6 +65,7 @@ The two **Global** shortcuts work from any app; every other shortcut works while
 | Action | Keys |
 | --- | --- |
 | New Terminal | <kbd>⌘T</kbd> |
+| New Standalone Terminal | <kbd>⌥⌘T</kbd> |
 | Close Tab | <kbd>⌘W</kbd> |
 | Focus Terminal Tab 1 | <kbd>⌘1</kbd> |
 | Focus Terminal Tab 2 | <kbd>⌘2</kbd> |

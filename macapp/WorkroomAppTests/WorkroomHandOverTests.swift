@@ -1066,7 +1066,7 @@ final class WorkroomHandOverTests: XCTestCase {
     await quick.moveQuickTerminalPane(
       pane.id, of: QuickTerminalController.target(), to: window, into: gone)
 
-    XCTAssertNil(window.quickTerminalPaneTarget(gone))
+    XCTAssertNil(window.paneMoveTarget(gone))
     XCTAssertEqual(quick.terminals.tabCount(forTargetID: QuickTerminalController.targetID), 1)
   }
 
@@ -1079,7 +1079,7 @@ final class WorkroomHandOverTests: XCTestCase {
     _ = window.terminals.addTab(for: target(window, otherSid))
     window.lifecycle.creationRunForTarget[target(window, otherSid).id] = UUID()
 
-    let choices = quick.quickTerminalPaneWorkroomChoices(
+    let choices = quick.paneMoveChoices(
       pane.id, of: QuickTerminalController.target(), windows: [window]
     ).flatMap(\.choices)
 
@@ -1152,7 +1152,7 @@ final class WorkroomHandOverTests: XCTestCase {
     second.selectedTargetID = third
     let quickTarget = QuickTerminalController.target()
 
-    let groups = quick.quickTerminalPaneWorkroomChoices(
+    let groups = quick.paneMoveChoices(
       pane.id, of: quickTarget, windows: [first, second])
 
     XCTAssertEqual(groups.map(\.choices.count), [2, 1], "the unselected `b` too")
@@ -1162,7 +1162,7 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertEqual(
       groups.first?.choices.map(\.title), [first.title(for: sid), first.title(for: otherSid)])
     XCTAssertNil(
-      quick.quickTerminalPaneWorkroomChoices(pane.id, of: quickTarget, windows: [first]).first?
+      quick.paneMoveChoices(pane.id, of: quickTarget, windows: [first]).first?
         .header, "one window: no header")
 
     groups[1].choices[0].move()
@@ -1292,9 +1292,9 @@ extension QuickTerminalHost {
     _ tabID: TerminalTab.ID, of target: TerminalTarget, to destination: AppStore,
     into workroom: SidebarID
   ) async {
-    await QuickTerminalPaneMove.move(
+    await PaneMove.move(
       tabID, of: target, source: terminals, notifications: notifications, to: destination,
-      into: workroom)
+      into: workroom.targetID!)
   }
 }
 
