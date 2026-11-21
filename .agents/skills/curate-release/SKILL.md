@@ -4,8 +4,8 @@ description: Workroom's tag-driven release process — channel architecture (sta
 ---
 
 Tag-driven (see `docs/contributing/releasing.md`). After a release publishes, **curate its GitHub release
-notes** — replace GoReleaser's raw commit list with a short summary. The commit list is what
-the git log is for.
+notes** — replace GitHub's generated notes (the release is created with `--generate-notes`) with a
+short summary. The list of changes is what the git log is for.
 
 **Keep release notes concise and in plain English** (the model is `v3.1.0`). Shape: a `## Workroom X.Y` headline, one line naming the highlights, then `### New`, `### Changed` and `### Fixed` (omit an empty section). One short bullet per item: what the user gets or what was broken, not how it works. No implementation detail, internal names (daemon flags, file paths, ticket numbers) or edge-case lists. Write a fix as the symptom the user saw ("Line numbers drifted after resizing"). Go into detail only for a **breaking change** (say what stopped working and what to do instead) or an important bug fix (data loss, security, crashes). Leave out minor polish entirely.
 
@@ -20,7 +20,8 @@ sentence broken mid-clause. Markdown block structure (headers, blank lines betwe
 **Release channels** (issue #91) ship as **two products**. The **main** product (`workroom` CLI +
 "Workroom" app) tracks `stable` or `pre`, chosen at runtime (`workroom update --channel stable|pre`;
 the app's Settings picker). **Nightly** is a **separate side-by-side install** — a `workroom-nightly`
-binary (baked `-X main.channel=nightly`) and a distinct "Workroom Nightly" app (`Nightly` build
+binary (the Rust `workroom` built with `WORKROOM_RELEASE_CHANNEL=nightly`, installed under that
+name) and a distinct "Workroom Nightly" app (`Nightly` build
 config in `project.yml`: bundle id `…workroom.nightly`, `AppIcon-Nightly`, `WorkroomReleaseChannel`
 Info.plist marker). Channel is a runtime pref for stable/pre, a build identity for nightly, so
 nothing can drift/collide (the main binary rejects `--channel nightly`).

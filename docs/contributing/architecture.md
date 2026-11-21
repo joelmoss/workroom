@@ -63,7 +63,7 @@ workroom/
 ├── testdata/fixtures/       # Setup/teardown scripts used by Go tests
 ├── testdata/contracts/      # Golden --json envelopes, checked by cmd's Go tests and decoded by the app's tests
 ├── .github/workflows/       # CI + release + appcast automation
-├── .goreleaser.yml          # CLI cross-platform build/release config
+├── .goreleaser.yml          # The Go CLI's former release config; no workflow runs it since #681
 ├── .golangci.yml            # Linter config
 ├── install.sh / install.ps1 # Standalone CLI installers
 ├── Makefile                 # Dev tasks: app-* (macOS app), cli-* (Go engine) and vcs-lint (Rust)

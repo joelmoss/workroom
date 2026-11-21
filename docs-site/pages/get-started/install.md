@@ -40,29 +40,22 @@ This links the app's own copy of the command into your `PATH`, so the app keeps 
 
 ## Install the CLI on its own
 
-The CLI runs without the app, on macOS, Linux and Windows. It needs [Git](https://git-scm.com/) on your
-`PATH`.
-
-On macOS or Linux:
+The CLI runs without the app, on macOS and Linux, on Apple silicon, Intel, ARM64 and x86-64. It needs
+[Git](https://git-scm.com/) on your `PATH`. There are no Windows builds any more.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/joelmoss/workroom/master/install.sh | sh
 ```
 
-On Windows, in PowerShell:
-
-```powershell
-iwr https://raw.githubusercontent.com/joelmoss/workroom/master/install.ps1 -useb | iex
-```
-
 The installer picks the right build for your system and installs it to `~/.local/bin`. If that folder
-isn't on your `PATH`, it prints the line to add to your shell profile.
+isn't on your `PATH`, it prints the line to add to your shell profile. On Linux the build is a single
+static binary, so it runs on any distribution.
 
 You can change what it installs with these variables:
 
 | Variable                | What it does                                                                 |
 | ----------------------- | ---------------------------------------------------------------------------- |
-| `WORKROOM_INSTALL_PATH` | Installs to another folder, such as `/usr/local/bin`. macOS and Linux only.  |
+| `WORKROOM_INSTALL_PATH` | Installs to another folder, such as `/usr/local/bin`.                        |
 | `VERSION`               | Installs a specific version, such as `v3.0.0`.                               |
 | `WORKROOM_CHANNEL`      | `pre` installs the latest prerelease. `nightly` installs `workroom-nightly`. |
 
@@ -74,12 +67,6 @@ curl -fsSL https://raw.githubusercontent.com/joelmoss/workroom/master/install.sh
 
 A CLI installed this way updates itself with `workroom update`. See
 [Updates and channels](../app/updates-and-channels.md).
-
-You can also install it with Go:
-
-```sh
-go install github.com/joelmoss/workroom@latest
-```
 
 ## Optional: GitHub CLI
 
