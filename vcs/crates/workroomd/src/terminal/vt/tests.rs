@@ -1256,7 +1256,7 @@ fn measure_shadow_history() {
 }
 
 /// The command ends one write produced, as (exit code, command line).
-fn commands(bytes: &[u8]) -> Vec<(i32, String)> {
+fn commands(bytes: &[u8]) -> Vec<(Option<i32>, String)> {
     let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
     terminal.write(bytes);
     let (events, _) = terminal.take_program_status();
@@ -1285,10 +1285,10 @@ const BASH: &[u8] = b"\x1b]133;A;redraw=last;cl=line;aid=9\x07\x1b]133;P;k=i\x07
 /// Value: protects=a command end becomes a result only after its own C, named by the title the shell gave it (#473); fails_when=a D with no C counts (bash repeats its status every prompt), or the line is the directory or a program's title; why_new=the pairing and the title timing differ per shell and nothing else pins them; seam=none
 #[test]
 fn a_command_end_closes_only_a_command_the_shell_started() {
-    assert_eq!(commands(ZSH), [(1, "npm test".to_string())]);
+    assert_eq!(commands(ZSH), [(Some(1), "npm test".to_string())]);
     assert_eq!(
         commands(BASH),
-        [(1, "npm test".to_string())],
+        [(Some(1), "npm test".to_string())],
         "one, not two"
     );
     let program_titles = [
@@ -1308,13 +1308,74 @@ fn a_command_end_closes_only_a_command_the_shell_started() {
         );
     }
     let untitled = b"\x1b]133;A\x07$ \x1b]133;B\x07\x1b]133;C\x07ok\r\n\x1b]133;D;0\x07";
-    assert_eq!(commands(untitled), [(0, String::new())], "no title feature");
+    assert_eq!(
+        commands(untitled),
+        [(Some(0), String::new())],
+        "no title feature"
+    );
     assert_eq!(
         commands(b"\x1b]133;C\x07\x1b]133;D\x07"),
-        [],
+        [(None, String::new())],
         "a D with no exit code"
     );
     assert_eq!(commands(b"\x1b]133;D;0\x07"), [], "a D with no C");
+}
+
+/// Value: protects=`terminal.command` never joins its command to text at the prompt (#691); fails_when=typed text, a PS2 line or a cursor moved back is missed, or a multi-line prompt, a right prompt or an earlier command's line counts; why_new=the input's cells are known only by libghostty's semantic marks; seam=none
+#[test]
+fn typed_input_is_the_prompts_input_before_the_cursor_or_a_continued_line() {
+    let typed = |bytes: &str| {
+        let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
+        terminal.write(bytes.as_bytes());
+        terminal.input_typed()
+    };
+    let prompt = "\x1b]133;A;cl=line\x07$ \x1b]133;B\x07";
+    assert!(!typed(prompt), "an empty prompt");
+    assert!(typed(&format!("{prompt}git st")), "text at the prompt");
+    assert!(
+        typed(&format!("{prompt}git st\x1b[D\x1b[D")),
+        "the cursor moved back"
+    );
+    assert!(
+        typed(&format!(
+            "{prompt}echo \"x\r\n\x1b]133;P;k=s\x07> \x1b]133;B\x07"
+        )),
+        "an open quote's PS2"
+    );
+    assert!(
+        !typed("\x1b]133;A;cl=line\x07~/app\r\n\x1b]133;P;k=s\x07$ \x1b]133;B\x07"),
+        "a prompt of two lines"
+    );
+    assert!(
+        !typed(&format!(
+            "{prompt}ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07{prompt}"
+        )),
+        "the last command's line"
+    );
+    assert!(
+        !typed(&format!("{prompt}\x1b7\x1b[70Gright\x1b8")),
+        "a right prompt, after the cursor"
+    );
+    assert!(!typed("$ "), "no marks");
+}
+
+/// Value: protects=a command that never sends its D still ends (#691); fails_when=a prompt after a C with no D leaves the command open, or one after a D ends another; why_new=`exec zsh` is a command no D closes; seam=none
+#[test]
+fn a_prompt_after_a_c_with_no_d_ends_its_command_with_no_exit_code() {
+    for prompt in [
+        "\x1b]133;A;cl=line\x07",
+        "\x1b]133;P;k=i\x07",
+        "\x1b]133;B\x07",
+    ] {
+        let bytes = format!("\x1b]133;C\x07exec zsh\r\n{prompt}% ");
+        assert_eq!(
+            commands(bytes.as_bytes()),
+            [(None, String::new())],
+            "{prompt:?}"
+        );
+    }
+    let closed = b"\x1b]133;C\x07ok\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07";
+    assert_eq!(commands(closed), [(Some(0), String::new())], "once");
 }
 
 /// A terminal whose cells are 10x20 pixels, as a client's are.

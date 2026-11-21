@@ -265,7 +265,7 @@ fn a_wait_for_the_next_command_hears_the_first_of_two_in_one_read() {
     // One started between the two hears the second.
     let later = Seen {
         commands: 1,
-        exits: vec![1],
+        exits: vec![Some(1)],
         ..Seen::default()
     };
     let waiter = Waiter::new(Condition::CommandFinished, later);

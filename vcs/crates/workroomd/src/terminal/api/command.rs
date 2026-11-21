@@ -15,9 +15,12 @@
 //! (`Waiter::begin`): the first command the shell ends after it is the one it typed. That holds
 //! because a session whose shell has a command open (a C with no D since) is refused as `Busy`
 //! under those locks, as is one with another `terminal.command` on it, and one with a full-screen
-//! program up as `AlternateScreen`: whatever ends first is then the command typed. Its exit code is
-//! that command's D's, as `terminal.wait`'s `command_finished` reads it, and its output the bytes
-//! between its C and that D (`wait::transcript`).
+//! program up as `AlternateScreen`: whatever ends first is then the command typed. A prompt whose
+//! input already holds text, or goes on at PS2, is `Busy` too (`Shadow::input_typed`), since the
+//! command would be joined to it. Its exit code is that command's D's, as `terminal.wait`'s
+//! `command_finished` reads it (null when a prompt ended it with no D: `exec zsh`), and its output
+//! the bytes between its C and that end (`wait::transcript`). A full-screen program it opens ends
+//! the wait as `AlternateScreen`, the program left running.
 //!
 //! **Without shell integration** a session's command can't be seen to end: one whose shell has
 //! sent no mark is `NoShellIntegration` at once, and one younger than the marks' grace
@@ -47,6 +50,9 @@ pub const ERRORS: &[&str] = &[
     kind::ALTERNATE_SCREEN,
     kind::BUSY,
     kind::WAIT_TIMEOUT,
+    // The CLI's, `workroom command` and `api call` alike, for a hand-off mid-command: the
+    // daemon never sends it.
+    kind::WAIT_INTERRUPTED,
     kind::SESSION_ENDED,
     kind::INTERNAL_ERROR,
 ];
@@ -77,6 +83,13 @@ pub fn input() -> Value {
                 "description": "Run it in the caller's own session, which is otherwise refused \
                                 with `RefusedSelf`.",
             },
+            "vt": {
+                "type": "boolean",
+                "default": false,
+                "description": "`output` as the command printed it, escape codes and all, \
+                                rather than read back as a screen: the bytes between its marks, \
+                                bounded as the text is.",
+            },
             "timeout_ms": {
                 "type": "integer",
                 "minimum": 0,
@@ -97,7 +110,9 @@ pub fn output() -> Value {
             "exit_code": {
                 "type": ["integer", "null"],
                 "description": "The command's exit code, as its shell's command-end mark (OSC \
-                                133 D) gave it; null when it gave none.",
+                                133 D) gave it; null when it gave none, or when a prompt ended \
+                                it with no D (`exec zsh`: a shell that replaced the one that \
+                                ran it).",
             },
             "output": {
                 "type": "string",
@@ -105,8 +120,10 @@ pub fn output() -> Value {
                                 the command line the shell echoed, nor the prompt after it. As \
                                 `terminal.capture` reads a screen with `unwrap`: plain text, a \
                                 line the pane wrapped one line, a line redrawn as it last \
-                                stood, trailing blanks trimmed and no final newline. Its last \
-                                1 MiB, from a line's start.",
+                                stood, trailing blanks trimmed and no final newline; with `vt`, \
+                                the bytes as printed. zsh's PROMPT_SP mark (`%` after output \
+                                with no final newline) is the shell's, and is left out. Its \
+                                last 1 MiB, from a line's start.",
             },
             "truncated": {
                 "type": "boolean",
@@ -136,6 +153,8 @@ struct Asked {
     target: String,
     command: String,
     allow_self: bool,
+    /// The output as printed, not read back as a screen.
+    vt: bool,
     /// None: no limit.
     deadline: Option<Instant>,
 }
@@ -167,11 +186,12 @@ fn asked(params: &Value) -> Result<Asked, ApiError> {
     if command.len() > send::MAX_BYTES {
         return Err(send::too_large(command.len()));
     }
-    let allow_self = match params.get("allow_self") {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(on)) => *on,
-        Some(_) => return Err(ApiError::invalid("`allow_self` is a boolean")),
+    let flag = |name: &str| match params.get(name) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(on)) => Ok(*on),
+        Some(_) => Err(ApiError::invalid(format!("`{name}` is a boolean"))),
     };
+    let (allow_self, vt) = (flag("allow_self")?, flag("vt")?);
     let deadline = match params.get("timeout_ms") {
         None | Some(Value::Null) => None,
         Some(value) => {
@@ -186,6 +206,7 @@ fn asked(params: &Value) -> Result<Asked, ApiError> {
         target,
         command,
         allow_self,
+        vt,
         deadline,
     })
 }
@@ -353,7 +374,7 @@ impl Ran<'_> {
                     .waiter
                     .take_transcript()
                     .expect("a command's wait keeps a transcript")
-                    .output(size.0, size.1);
+                    .output(size.0, size.1, asked.vt);
                 Ok(json!({
                     "session": hyphenated,
                     "caller": self.caller,
@@ -372,6 +393,15 @@ impl Ran<'_> {
             Outcome::SessionEnded => Err(ApiError::new(
                 kind::SESSION_ENDED,
                 format!("session {hyphenated} ended before its command did"),
+            )),
+            Outcome::AlternateScreen => Err(ApiError::new(
+                kind::ALTERNATE_SCREEN,
+                format!(
+                    "the command put a full-screen program up (a pager, an editor), which is still \
+                     running in session {hyphenated} and may be waiting on a person; its screen \
+                     is no output to read back, so `workroom capture` reads it, and `workroom \
+                     send` can quit it"
+                ),
             )),
             Outcome::Cancelled => return None,
             other => Err(ApiError::new(
@@ -465,6 +495,18 @@ impl Ran<'_> {
                     format!(
                         "session {hyphenated}'s shell is running a command, so what is typed would \
                          go to it; try again when it has ended"
+                    ),
+                ));
+            }
+            // Text already at the prompt, or a line continued at PS2, would be run with the
+            // command joined to it.
+            if shadow.input_typed() {
+                return Err(ApiError::new(
+                    kind::BUSY,
+                    format!(
+                        "session {hyphenated}'s prompt already holds typed text, or goes on from an \
+                         unfinished line (an open quote's PS2), so the command would be joined \
+                         to it; try again once it is empty"
                     ),
                 ));
             }

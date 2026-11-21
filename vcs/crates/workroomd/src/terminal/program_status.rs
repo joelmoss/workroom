@@ -137,9 +137,11 @@ pub enum Event {
     /// The daemon answered a support probe from the foreground group.
     Probed,
     /// The shell's OSC 133 D closed a command whose C the terminal saw, `ran` after it, with
-    /// `line` the title the shell gave the command (empty when it gave none).
+    /// `line` the title the shell gave the command (empty when it gave none). `exit_code` is the
+    /// D's, `None` when it carried none, or when no D came and a prompt closed the command (#691:
+    /// `exec zsh`, a shell that replaced the one that ran it).
     Command {
-        exit_code: i32,
+        exit_code: Option<i32>,
         ran: Duration,
         line: String,
     },
@@ -266,7 +268,12 @@ impl Store {
                 exit_code,
                 ran,
                 line,
-            } => self.command_ended(exit_code, ran, &line, owner),
+            } => {
+                // A command with no exit code has no result to show.
+                if let Some(exit_code) = exit_code {
+                    self.command_ended(exit_code, ran, &line, owner);
+                }
+            }
         }
     }
 

@@ -36,9 +36,15 @@ pub trait Callbacks: Default {
     /// `GHOSTTY_TERMINAL_OPT_TITLE_CHANGED`: the title changed, and can be read from `title`.
     fn title_changed(&mut self, _title: Title<'_>) {}
 
-    /// `GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT`: an OSC 133 mark, with its exit code when it carries
-    /// one.
-    fn semantic_prompt(&mut self, _kind: GhosttySemanticPromptKind, _exit_code: Option<i32>) {}
+    /// `GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT`: an OSC 133 mark, which prompt it starts (primary
+    /// for any mark but a prompt's start), and its exit code when it carries one.
+    fn semantic_prompt(
+        &mut self,
+        _kind: GhosttySemanticPromptKind,
+        _prompt: GhosttySemanticPromptPromptKind,
+        _exit_code: Option<i32>,
+    ) {
+    }
 
     /// `GHOSTTY_TERMINAL_OPT_RESET`: RIS, after the CLEAR libghostty sends for it.
     fn reset(&mut self) {}
@@ -213,7 +219,7 @@ unsafe extern "C" fn on_semantic_prompt<C: Callbacks>(
     };
     // A frozen payload, as in `on_progress_report`.
     let exit_code = event.has_exit_code.then_some(event.exit_code);
-    callbacks.semantic_prompt(event.kind, exit_code);
+    callbacks.semantic_prompt(event.kind, event.prompt_kind, exit_code);
 }
 
 unsafe extern "C" fn on_reset<C: Callbacks>(_terminal: GhosttyTerminal, userdata: *mut c_void) {
@@ -880,6 +886,73 @@ impl<C: Callbacks> Terminal<C> {
             )
         };
         (rc == OK).then_some(wraps)
+    }
+
+    /// What the cell at `at` holds by the shell's OSC 133 marks (`GHOSTTY_CELL_DATA_SEMANTIC_CONTENT`:
+    /// output, input or prompt), and its codepoint (0 for an empty one). `None` when the point
+    /// or the cell cannot be read.
+    pub fn cell_semantic(&self, at: Point) -> Option<(GhosttyCellSemanticContent, u32)> {
+        let grid = self.grid_ref(at)?;
+        let mut cell: GhosttyCell = 0;
+        // SAFETY: `grid` was just resolved against this live terminal, which nothing has written
+        // to since, and `cell` is a live out-pointer.
+        if unsafe { ghostty_grid_ref_cell(&grid, &mut cell) } != OK {
+            return None;
+        }
+        let mut semantic: GhosttyCellSemanticContent =
+            GhosttyCellSemanticContent_GHOSTTY_CELL_SEMANTIC_OUTPUT;
+        let mut codepoint: u32 = 0;
+        // SAFETY: CELL_DATA_SEMANTIC_CONTENT's output type is `GhosttyCellSemanticContent` and
+        // CELL_DATA_CODEPOINT's `uint32_t`, and each is written to a live one of its type.
+        let read = unsafe {
+            ghostty_cell_get(
+                cell,
+                GhosttyCellData_GHOSTTY_CELL_DATA_SEMANTIC_CONTENT,
+                (&raw mut semantic).cast(),
+            ) == OK
+                && ghostty_cell_get(
+                    cell,
+                    GhosttyCellData_GHOSTTY_CELL_DATA_CODEPOINT,
+                    (&raw mut codepoint).cast(),
+                ) == OK
+        };
+        read.then_some((semantic, codepoint))
+    }
+
+    /// The row at `at`'s prompt state (`GHOSTTY_ROW_DATA_SEMANTIC_PROMPT`: none, a primary
+    /// prompt's line, or a continuation's). `None` when the point or the row cannot be read.
+    pub fn row_semantic_prompt(&self, at: Point) -> Option<GhosttyRowSemanticPrompt> {
+        let grid = self.grid_ref(at)?;
+        let mut row: GhosttyRow = 0;
+        // SAFETY: `grid` was just resolved against this live terminal, which nothing has written
+        // to since, and `row` is a live out-pointer.
+        if unsafe { ghostty_grid_ref_row(&grid, &mut row) } != OK {
+            return None;
+        }
+        let mut prompt: GhosttyRowSemanticPrompt =
+            GhosttyRowSemanticPrompt_GHOSTTY_ROW_SEMANTIC_NONE;
+        // SAFETY: ROW_DATA_SEMANTIC_PROMPT's output type is `GhosttyRowSemanticPrompt`, and
+        // `prompt` is a live one.
+        let rc = unsafe {
+            ghostty_row_get(
+                row,
+                GhosttyRowData_GHOSTTY_ROW_DATA_SEMANTIC_PROMPT,
+                (&raw mut prompt).cast(),
+            )
+        };
+        (rc == OK).then_some(prompt)
+    }
+
+    /// `at` resolved to a grid reference, valid until the next write.
+    fn grid_ref(&self, at: Point) -> Option<GhosttyGridRef> {
+        // SAFETY: plain C structs of integers and pointers, for which all zeroes is valid.
+        let mut point: GhosttyPoint = unsafe { std::mem::zeroed() };
+        point.tag = at.tag;
+        point.value.coordinate = GhosttyPointCoordinate { x: at.x, y: at.y };
+        // SAFETY: as above.
+        let mut grid: GhosttyGridRef = unsafe { std::mem::zeroed() };
+        // SAFETY: `inner` is a live terminal and `grid` a live out-pointer.
+        (unsafe { ghostty_terminal_grid_ref(self.inner, point, &mut grid) } == OK).then_some(grid)
     }
 
     /// The cells from `start` to `end`, or `None` when either cannot be resolved.

@@ -117,8 +117,11 @@ impl Transcript {
                 }
                 Phase::Running => {
                     self.raw.push(byte);
-                    if self.mark(byte).is_some() && self.letter == b'D' {
-                        // The D's prefix, letter and delimiter are no output.
+                    // The D, or a prompt with none before it (`exec zsh`: a shell that replaced
+                    // the one that ran the command), which ends it as the shadow does.
+                    if self.mark(byte).is_some() && matches!(self.letter, b'D' | b'A' | b'P' | b'B')
+                    {
+                        // The mark's prefix, letter and delimiter are no output.
                         let mark = PREFIX.len() + 2;
                         self.raw.truncate(self.raw.len().saturating_sub(mark));
                         self.phase = Phase::Ended;
@@ -171,9 +174,18 @@ impl Transcript {
     }
 
     /// What the command printed, rendered at `columns` by `rows`, the session's size, so what moved
-    /// the cursor lands where it did there.
-    pub fn output(&self, columns: u16, rows: u16) -> Output {
+    /// the cursor lands where it did there; or with `vt`, as it printed it, escape codes and all
+    /// (lossy where it isn't UTF-8). zsh's PROMPT_SP mark at its end is not the command's, and
+    /// goes from either.
+    pub fn output(&self, columns: u16, rows: u16, vt: bool) -> Output {
         let (kept, dropped) = self.kept();
+        let kept = without_prompt_sp(kept, columns);
+        if vt {
+            return Output {
+                text: String::from_utf8_lossy(kept).into_owned(),
+                truncated: dropped,
+            };
+        }
         let text = render(kept, columns.max(1), rows.max(1));
         let (text, cut) = last(&text, OUTPUT_MAX);
         Output {
@@ -181,6 +193,58 @@ impl Transcript {
             truncated: dropped || cut,
         }
     }
+}
+
+/// `raw` without zsh's PROMPT_SP at its end, which zsh prints before its prompt when output
+/// didn't end with a line's end, and which comes before the integration's D: its end-of-line
+/// mark (`%`, or `#` for root, in reverse video, bold or plain as the terminal has them), then
+/// spaces to the pane's last column or the one before it, then `\r`, and with some terminals
+/// ` \r` more. The spaces are what tell it from a command's own `50%\r`: nearly a whole line of
+/// them, at the session's `columns`.
+fn without_prompt_sp(raw: &[u8], columns: u16) -> &[u8] {
+    let mut end = raw.len();
+    let mut returns = 0;
+    while end > 0 && raw[end - 1] == b'\r' {
+        returns += 1;
+        end -= 1;
+        // A space between two returns is the ` \r` some terminals are sent.
+        if end > 1 && raw[end - 1] == b' ' && raw[end - 2] == b'\r' {
+            end -= 1;
+        }
+    }
+    let spaces = raw[..end]
+        .iter()
+        .rev()
+        .take_while(|&&byte| byte == b' ')
+        .count();
+    end -= spaces;
+    let columns = usize::from(columns);
+    if returns == 0 || spaces + 3 < columns || spaces > columns {
+        return raw;
+    }
+    end = before_sgr(raw, end);
+    if end == 0 || !matches!(raw[end - 1], b'%' | b'#') {
+        return raw;
+    }
+    &raw[..before_sgr(raw, end - 1)]
+}
+
+/// Where the SGR sequences (`ESC [ … m`) that `raw[..end]` ends with start.
+fn before_sgr(raw: &[u8], mut end: usize) -> usize {
+    while end > 0 && raw[end - 1] == b'm' {
+        let body = raw[..end - 1]
+            .iter()
+            .rev()
+            .take_while(|byte| byte.is_ascii_digit() || **byte == b';')
+            .count();
+        let start = end - 1 - body;
+        if start >= 2 && raw[start - 2..start] == [ESC, b'['] {
+            end = start - 2;
+        } else {
+            break;
+        }
+    }
+    end
 }
 
 /// The last `max` bytes of `text`, from a line's start when it is cut; whether it was.
@@ -305,7 +369,7 @@ mod tests {
         let transcript =
             fed(&[b"\x1b]133;C\x07\x1b[32mok\x1b[0m\r\n10%\r50%\r100%\r\n\x1b]133;D;0\x07"]);
         assert_eq!(
-            transcript.output(80, 24),
+            transcript.output(80, 24, false),
             Output {
                 text: "ok\n100%".into(),
                 truncated: false,
@@ -313,15 +377,61 @@ mod tests {
         );
         assert_eq!(
             fed(&[b"\x1b]133;C\x07\x1b]133;D;0\x07"])
-                .output(80, 24)
+                .output(80, 24, false)
                 .text,
             ""
         );
         let wrapped = format!("\x1b]133;C\x07{}\x1b]133;D;0\x07", "x".repeat(30));
         assert_eq!(
-            fed(&[wrapped.as_bytes()]).output(10, 5).text,
+            fed(&[wrapped.as_bytes()]).output(10, 5, false).text,
             "x".repeat(30),
             "a line the pane wrapped is one line"
         );
+    }
+
+    /// With `vt`, the bytes as the command printed them, escape codes and all.
+    #[test]
+    fn vt_is_the_bytes_as_printed() {
+        let transcript = fed(&[b"\x1b]133;C\x07\x1b[32mok\x1b[0m\r\n\x1b]133;D;0\x07"]);
+        assert_eq!(
+            transcript.output(80, 24, true),
+            Output {
+                text: "\x1b[32mok\x1b[0m\r\n".into(),
+                truncated: false,
+            }
+        );
+    }
+
+    /// A prompt that comes with no D before it (`exec zsh`) ends the command, as a D does.
+    #[test]
+    fn a_prompt_with_no_d_ends_the_command() {
+        for prompt in ["A;cl=line", "P;k=i", "B"] {
+            let bytes = format!("\x1b]133;C\x07replaced\r\n\x1b]133;{prompt}\x07% ");
+            let transcript = fed(&[bytes.as_bytes()]);
+            assert!(transcript.ended(), "{prompt}");
+            assert_eq!(transcript.raw, b"replaced\r\n", "{prompt}");
+        }
+    }
+
+    /// zsh's PROMPT_SP at the output's end, in reverse video or plain, with `\r` or ` \r` after
+    /// it, goes; a command's own `%` with no line of spaces after it stays.
+    #[test]
+    fn zshs_prompt_sp_is_not_the_commands() {
+        let spaces = " ".repeat(79);
+        for mark in [
+            format!("foo\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m{spaces}\r \r"),
+            format!("foo\x1b[7m%\x1b[27m{spaces}\r"),
+            format!("foo%{}\r", " ".repeat(78)),
+            format!("foo#{spaces}\r \r"),
+        ] {
+            assert_eq!(without_prompt_sp(mark.as_bytes(), 80), b"foo", "{mark:?}");
+        }
+        for own in ["50%\r", "50%", "a % b", "100% done\r\n"] {
+            assert_eq!(
+                without_prompt_sp(own.as_bytes(), 80),
+                own.as_bytes(),
+                "{own:?}"
+            );
+        }
     }
 }

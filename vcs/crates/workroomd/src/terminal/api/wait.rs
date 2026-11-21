@@ -618,6 +618,13 @@ fn result(request: &Request, outcome: Outcome) -> Result<Value, ApiError> {
                 ),
             ));
         }
+        // A command's alone (`api::command`), never a wait's.
+        Outcome::AlternateScreen => {
+            return Err(ApiError::new(
+                kind::INTERNAL_ERROR,
+                "a wait ended as a command's does",
+            ));
+        }
         // Never answered: nobody is there to read it.
         Outcome::Cancelled => {}
     }
