@@ -1,31 +1,22 @@
 import SwiftUI
 
-/// Shared themed material for sidebar cards and pane footers.
-struct SidebarBackground: View {
-  var body: some View {
-    VisualEffectView()
-      .overlay(ThemeFill.panel.opacity(0.7))
-  }
-}
-
 extension View {
-  /// The floating-card chrome for the edge-reveal panels: a rounded `ThemeFill.background` card with a hairline
+  /// The floating-card chrome for the edge-reveal panels: a rounded card on `ChromeBackground` with a hairline
   /// border all the way around and a soft shadow, inset from its container by `margin`. macOS already
   /// renders the *docked* sidebar/inspector columns as inset cards, so this is applied only to the
   /// reveal overlays (which get no native card) to match that pinned look.
   // Radius + margins are tuned to match macOS's native docked sidebar card (the reveal is the only
   // caller; the docked columns use the system card). `topMargin` defaults to `margin` but can be
   // reduced so the reveal extends a little higher, to line up with the native card's top.
-  // `vibrant` swaps the opaque `ThemeFill.background` fill for the system `.sidebar` vibrancy material (see
-  // `VisualEffectView`) — the right inspector opts in so it reads as the same translucent surface
-  // as the native left sidebar column. The left reveal stays opaque (it matches the native left
-  // column, which is unchanged).
+  // The fill is `ChromeBackground`: the card vibrancy, or Glass's chrome backing under glass (#730).
   // `elevated` deepens the shadow for the *unpinned* reveal panels so they read as floating above the
   // content (a popover-style drop shadow), vs the subtle inset shadow the docked card uses.
+  // Under Glass an elevated card also lays the window base under itself (`ChromeRole.floatingCard`),
+  // so the terminals it floats over do not show through its wash.
   func sidebarCard(
     cornerRadius: CGFloat = 10, margin: CGFloat = 8, topMargin: CGFloat? = nil,
     bottomMargin: CGFloat? = nil, leadingMargin: CGFloat? = nil, trailingMargin: CGFloat? = nil,
-    vibrant: Bool = false, elevated: Bool = false
+    elevated: Bool = false
   )
     -> some View
   {
@@ -33,7 +24,7 @@ extension View {
       SidebarCard(
         cornerRadius: cornerRadius, margin: margin, topMargin: topMargin,
         bottomMargin: bottomMargin, leadingMargin: leadingMargin, trailingMargin: trailingMargin,
-        vibrant: vibrant, elevated: elevated))
+        elevated: elevated))
   }
 }
 
@@ -44,19 +35,12 @@ private struct SidebarCard: ViewModifier {
   let bottomMargin: CGFloat?
   let leadingMargin: CGFloat?
   let trailingMargin: CGFloat?
-  let vibrant: Bool
   let elevated: Bool
   @Environment(\.themeTokens) private var tokens
 
   func body(content: Content) -> some View {
     content
-      .background {
-        if vibrant {
-          SidebarBackground()
-        } else {
-          Rectangle().fill(ThemeFill.background)
-        }
-      }
+      .background(ChromeBackground(role: elevated ? .floatingCard : .card))
       .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)

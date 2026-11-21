@@ -33,7 +33,9 @@ struct WindowFooter: View {
     .lineLimit(1)
     .frame(height: Self.height)
     .padding(.bottom, 4)
-    .background(ThemeFill.panel)
+    // The flat panel, or Glass's chrome backing under glass (#730).
+    // Into the safe area, as the `.background(ThemeFill.panel)` style fill this replaced did.
+    .background { ChromeBackground(role: .bar).ignoresSafeArea() }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("window.footer")
   }

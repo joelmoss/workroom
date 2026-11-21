@@ -40,7 +40,7 @@ struct MarkdownWebView: NSViewRepresentable {
     let pooled = MarkdownWebViewPool.shared.take()
     let webView = pooled?.webView ?? Self.makeWebView(bootThemeVars: themeVars(tokens))
     webView.navigationDelegate = context.coordinator
-    webView.underPageBackgroundColor = tokens.nsBg  // no white flash before first paint
+    webView.underPageBackgroundColor = underPageColor(context)  // no white flash before first paint
     context.coordinator.webView = webView
     context.coordinator.templateURL = Self.templateURL
     context.coordinator.assetDirectory = Self.assetDirectory
@@ -81,7 +81,7 @@ struct MarkdownWebView: NSViewRepresentable {
   }
 
   func updateNSView(_ webView: WKWebView, context: Context) {
-    webView.underPageBackgroundColor = tokens.nsBg
+    webView.underPageBackgroundColor = underPageColor(context)
     let coordinator = context.coordinator
     coordinator.onFirstRender = onFirstRender  // the closure captures a fresh view each update
     // Re-render only when the source actually changed; recolour when the theme generation moves.
@@ -92,6 +92,14 @@ struct MarkdownWebView: NSViewRepresentable {
       coordinator.appliedGeneration = generation
       coordinator.applyTheme(themeVars(tokens))
     }
+  }
+
+  /// WebKit's under-page colour, `ThemeFill.background` in the window's `\.glassAppearance` (#729).
+  /// The page paints no background of its own (the host's fill shows through it), so only this
+  /// follows Glass: the theme background when opaque, clear under glass, where an opaque one would
+  /// show at the edges of an overscroll.
+  private func underPageColor(_ context: Context) -> NSColor {
+    ThemeFill.background.nsColor(tokens, glass: context.environment.glassAppearance)
   }
 
   /// The theme colours pushed into the page's CSS variables. Each is a `rgba()` string so alpha-based

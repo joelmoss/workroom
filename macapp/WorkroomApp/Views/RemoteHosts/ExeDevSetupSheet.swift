@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 
 /// Walks a user exe.dev has never seen through its three steps before their first exe.dev
@@ -202,8 +203,13 @@ private struct SignUpTerminal: View {
     _surface = State(initialValue: surface)
   }
 
+  @Environment(\.themeTokens) private var tokens
+
   var body: some View {
     TerminalContainerView(view: surface)
+      // A sheet stays opaque under Glass, but the one terminal config draws no default background
+      // then (#731), so the sheet lays the theme background under it itself.
+      .background(tokens.bg)
       .onDisappear { surface.tearDown() }
       .accessibilityIdentifier("exeDevSetup.terminal")
   }

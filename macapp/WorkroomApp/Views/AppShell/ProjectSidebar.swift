@@ -198,7 +198,8 @@ struct ProjectSidebar: View, Equatable {
       SidebarNotificationStrip()
       bottomBar
     }
-    .background { SidebarBackground() }
+    // A band of the sidebar card: under glass the card's own tint shows through it (#730).
+    .background { ChromeBackground(role: .cardBand) }
   }
 
   /// The sidebar's bottom bar: "Add Project" on the right.

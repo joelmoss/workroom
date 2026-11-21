@@ -354,7 +354,8 @@ private struct StatusBarChrome: ViewModifier {
       // change so panes don't reflow — the 11pt text just sits in a little more air.
       .frame(height: TerminalPanelMetrics.chromeRowHeight)
       .frame(maxWidth: .infinity)
-      .background { SidebarBackground() }
+      // The card vibrancy; under glass, the chrome backing (#730), which stays frosted unfocused.
+      .background { ChromeBackground(role: .card) }
       .overlay(alignment: .top) { tokens.border.frame(height: 1) }
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("terminal.statusBar")

@@ -598,6 +598,7 @@ struct PaneLeafView: View {
         // the only one that can hold it here: no tab moves between targets inside one window.
         mayHostSurface: panes.detachedTabIDs.contains(tabID) == isDetached && held
       )
+      .terminalBase()
       // Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state
       // is per-surface, and only the focused pane can be searched. Nothing until active.
       .overlay(alignment: .topTrailing) {
@@ -707,6 +708,15 @@ struct PaneLeafView: View {
       highlighted: (multiPane || workroomIsSplit) && (focused || flashing),
       active: activeState != .inactive, tokens: tokens)
   }
+}
+
+extension View {
+  /// What a terminal surface is laid on (#731): `ThemeFill.background`. The one Ghostty config
+  /// draws no default background under Glass, so in a glass window this draws nothing and the
+  /// window base shows, and in a window that resolves opaque while the app is glass (full screen)
+  /// it is the opaque theme background an opaque terminal would have drawn. With the whole app
+  /// opaque the terminal draws its own background over it, as before Glass.
+  func terminalBase() -> some View { background(ThemeFill.background) }
 }
 
 /// Focus a non-terminal pane on click. `enabled` is gated on content type only (stable for the

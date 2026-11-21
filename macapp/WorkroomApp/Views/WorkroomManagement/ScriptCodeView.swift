@@ -20,6 +20,8 @@ struct ScriptCodeView: View {
     CodeTextView(
       attributed: attributed, version: version, tokens: tokens, find: find, isFocused: false
     )
+    // The approval sheet stays opaque under Glass, so the script never frosts.
+    .environment(\.glassAppearance, .opaque)
     .task(id: "\(ThemeService.shared.generation)\u{1F}\(text)") { await render() }
   }
 

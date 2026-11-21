@@ -30,9 +30,6 @@ struct DetachedPaneView: View {
   /// Push the pane's live title onto the window, so a terminal that renames itself renames its window
   /// (the pane's own title bar used to carry this).
   let onTitleChange: (String) -> Void
-  /// Injected by `DetachedPaneWindows.open`, which hosts this view.
-  @Environment(\.themeTokens) private var tokens
-
   private static let space = "detachedPaneContent"
 
   var body: some View {
@@ -48,10 +45,9 @@ struct DetachedPaneView: View {
     )
     .coordinateSpace(.named(Self.space))
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(tokens.panel)
-    // `takesOverTitlebar: false` — unlike the main window, this one keeps a normal title bar so the
-    // pane has a name and a place to drag from; the themer only paints its background.
-    .background(WindowBackgroundThemer(takesOverTitlebar: false))
+    // `.ground`, as under the main window's panes: under Glass the pane carries the tint (#731). The
+    // window's background and Glass are its root's (`DetachedPaneWindows.open`).
+    .background(ThemeFill.ground)
     // The title is read in a leaf (`TabTitleReader`) so a terminal renaming itself many times a
     // second re-runs this `onChange` alone, not the pane.
     .background(

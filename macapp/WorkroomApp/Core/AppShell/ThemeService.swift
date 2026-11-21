@@ -11,6 +11,10 @@ final class ThemeService {
   /// Current chrome tokens. Recomputed only inside `applyActiveTheme()`, so chrome never re-parses
   /// a theme file per frame. `@Observable` → SwiftUI views reading `tokens` repaint on change.
   private(set) var tokens: ThemeTokens
+  /// The theme preview `tokens` was built from, so the terminal config's Glass contrast overrides
+  /// (`GhosttyApp.writeThemeConfig`) reuse it rather than parse the theme again: a user theme is
+  /// never cached, so each write would read it from disk.
+  @ObservationIgnored private(set) var activePreview: ThemePreview?
 
   /// Monotonic counter bumped on every theme apply. Diff syntax highlighting keys its async
   /// recolour task on this (plus source+path) so a theme switch rebuilds the coloured lines and a
@@ -39,7 +43,9 @@ final class ThemeService {
   /// bring the N-observer stall straight back, with nothing to catch it.
   private init() {
     let isDark = Self.isCurrentAppearanceDark()
-    tokens = ThemeTokens(preview: Self.themePreview(named: Self.activeThemeName(isDark: isDark)))
+    let preview = Self.themePreview(named: Self.activeThemeName(isDark: isDark))
+    activePreview = preview
+    tokens = ThemeTokens(preview: preview)
     appearanceObserver = DistributedNotificationCenter.default().addObserver(
       forName: Notification.Name("AppleInterfaceThemeChangedNotification"), object: nil,
       queue: .main
@@ -75,7 +81,8 @@ final class ThemeService {
   func applyActiveTheme(force: Bool = true) {
     validateSelection()
     let isDark = Self.isCurrentAppearanceDark()
-    tokens = ThemeTokens(preview: Self.themePreview(named: Self.activeThemeName(isDark: isDark)))
+    activePreview = Self.themePreview(named: Self.activeThemeName(isDark: isDark))
+    tokens = ThemeTokens(preview: activePreview)
     generation &+= 1
     // The app-global half runs ONCE here, not inside the per-window loop below — it used to live in
     // `applyThemeToAll`, so N windows meant N writes + N parses of the same generated ghostty.conf

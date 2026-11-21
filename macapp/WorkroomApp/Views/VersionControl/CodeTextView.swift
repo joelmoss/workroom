@@ -33,8 +33,6 @@ struct CodeTextView: NSViewRepresentable {
     textScroll.borderType = .noBorder
     textScroll.hasVerticalScroller = true
     textScroll.autohidesScrollers = true
-    textScroll.drawsBackground = true
-    textScroll.backgroundColor = NSColor(tokens.bg)
 
     let storage = NSTextStorage()
     let layoutManager = NSLayoutManager()
@@ -51,8 +49,6 @@ struct CodeTextView: NSViewRepresentable {
     textView.isRichText = true
     textView.usesFontPanel = false
     textView.allowsUndo = false
-    textView.drawsBackground = true
-    textView.backgroundColor = NSColor(tokens.bg)
     textView.textColor = tokens.nsFg
     textView.textContainerInset = Self.textInset
     textContainer.lineFragmentPadding = Self.linePadding
@@ -70,11 +66,8 @@ struct CodeTextView: NSViewRepresentable {
     gutterScroll.hasVerticalScroller = false
     gutterScroll.hasHorizontalScroller = false
     gutterScroll.verticalScrollElasticity = .none
-    gutterScroll.drawsBackground = true
-    gutterScroll.backgroundColor = NSColor(tokens.bg)
     let gutterView = GutterView()
     gutterView.textView = textView
-    gutterView.tokens = tokens
     gutterScroll.documentView = gutterView
 
     container.addSubview(gutterScroll)
@@ -84,6 +77,7 @@ struct CodeTextView: NSViewRepresentable {
     coordinator.textScroll = textScroll
     coordinator.gutterScroll = gutterScroll
     coordinator.gutterView = gutterView
+    applyFill(coordinator, glass: context.environment.glassAppearance)
 
     // Keep the gutter's vertical offset locked to the text's as it scrolls.
     textScroll.contentView.postsBoundsChangedNotifications = true
@@ -100,10 +94,7 @@ struct CodeTextView: NSViewRepresentable {
   func updateNSView(_ container: NSView, context: Context) {
     let coordinator = context.coordinator
     guard let textView = coordinator.textView else { return }
-    textView.backgroundColor = NSColor(tokens.bg)
-    coordinator.textScroll?.backgroundColor = NSColor(tokens.bg)
-    coordinator.gutterScroll?.backgroundColor = NSColor(tokens.bg)
-    coordinator.gutterView?.tokens = tokens
+    applyFill(coordinator, glass: context.environment.glassAppearance)
 
     if coordinator.appliedVersion != version {
       setText(textView, coordinator: coordinator)
@@ -113,6 +104,19 @@ struct CodeTextView: NSViewRepresentable {
       needle: (isFocused && find.isOpen) ? find.needle : "",
       current: find.current,
       highlight: NSColor(tokens.accent))
+  }
+
+  /// `ThemeFill.background` in the window's `\.glassAppearance` (#729), one decision for every
+  /// layer. Opaque, the scroll views, the text view and the gutter paint `tokens.bg`, as they always
+  /// have. Under glass none does: the window base under them already is `bg` (#725). An opaque host
+  /// (the script approval sheet) sets the appearance to `.opaque`, so it never frosts.
+  private func applyFill(_ coordinator: Coordinator, glass: GlassAppearance) {
+    let fill = ThemeFill.background.nsFill(tokens, glass: glass)
+    coordinator.textScroll?.paintBackground(fill)
+    coordinator.gutterScroll?.paintBackground(fill)
+    coordinator.textView?.paintBackground(fill)
+    coordinator.gutterView?.tokens = tokens
+    coordinator.gutterView?.fill = fill
   }
 
   private func setText(_ textView: NSTextView, coordinator: Coordinator) {
@@ -277,10 +281,16 @@ final class GutterView: NSView {
   weak var textView: NSTextView?
   var tokens: ThemeTokens? {
     didSet {
-      // Only `bg` + `fgMuted` are drawn here; repaint only when one of them actually changed, so the
-      // per-find-keystroke `tokens =` reassignment in `updateNSView` isn't a full gutter redraw.
-      if tokens?.bg != oldValue?.bg || tokens?.fgMuted != oldValue?.fgMuted { needsDisplay = true }
+      // Only `fgMuted` is drawn from here (`fill` is the background); repaint only when it actually
+      // changed, so the per-find-keystroke `tokens =` reassignment in `updateNSView` isn't a full
+      // gutter redraw.
+      if tokens?.fgMuted != oldValue?.fgMuted { needsDisplay = true }
     }
+  }
+  /// What it paints under its numbers: the code view's fill, nil under glass (#729), where the
+  /// window base shows through instead.
+  var fill: NSColor? {
+    didSet { if fill != oldValue { needsDisplay = true } }
   }
 
   /// Character index at which each line begins (element `i` = start of 0-based line `i`), built once
@@ -307,8 +317,10 @@ final class GutterView: NSView {
       let tokens
     else { return }
 
-    NSColor(tokens.bg).setFill()
-    dirtyRect.fill()
+    if let fill {
+      fill.setFill()
+      dirtyRect.fill()
+    }
     NSColor(tokens.fgMuted).withAlphaComponent(0.15).setFill()
     NSRect(x: bounds.width - 1, y: dirtyRect.minY, width: 1, height: dirtyRect.height).fill()
 

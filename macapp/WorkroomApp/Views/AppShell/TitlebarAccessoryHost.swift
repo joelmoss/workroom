@@ -13,7 +13,7 @@ import SwiftUI
 /// Pattern per `github/CopilotForXcode` (`NSHostingView` as the accessory view). We keep a single
 /// `NSHostingController` and refresh its `rootView` each SwiftUI update so environment/bindings stay
 /// live; the accessory is installed once per window. The hosted tree is a SwiftUI root of its own, so
-/// the theme is injected here.
+/// the theme is injected here, and the window's Glass appearance forwarded.
 struct TitlebarAccessoryHost<Content: View>: NSViewRepresentable {
   private let content: Content
 
@@ -21,13 +21,15 @@ struct TitlebarAccessoryHost<Content: View>: NSViewRepresentable {
 
   func makeNSView(context: Context) -> NSView {
     let probe = NSView(frame: .zero)
-    context.coordinator.hosting.rootView = AnyView(content.themeTokensRoot())
+    context.coordinator.hosting.rootView = content.hostedRoot(
+      glass: context.environment.glassAppearance)
     DispatchQueue.main.async { [weak probe] in context.coordinator.install(on: probe?.window) }
     return probe
   }
 
   func updateNSView(_ nsView: NSView, context: Context) {
-    context.coordinator.hosting.rootView = AnyView(content.themeTokensRoot())
+    context.coordinator.hosting.rootView = content.hostedRoot(
+      glass: context.environment.glassAppearance)
     context.coordinator.install(on: nsView.window)
     // Re-assert transparency: NSHostingController resets its view's backing to opaque when the content
     // re-renders (e.g. adding a workroom tab), which brought back the solid block. Reapply each update.
@@ -90,7 +92,7 @@ struct TitlebarAccessoryHost<Content: View>: NSViewRepresentable {
     private func updateFrame() {
       guard let window else { return }
       let width = max(window.frame.width - WorkroomTitlebar.trafficLightInset, 120)
-      let titlebar = window.standardWindowButton(.closeButton)?.superview?.frame.height
+      let titlebar = window.titlebarView?.frame.height
       let frame = NSRect(x: 0, y: 0, width: width, height: titlebar ?? WorkroomTitlebar.height)
       if hosting.view.frame != frame { hosting.view.frame = frame }
     }

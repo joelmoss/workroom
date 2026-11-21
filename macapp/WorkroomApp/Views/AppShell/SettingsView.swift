@@ -677,11 +677,22 @@ private struct AboutSettingsPane: View {
 private struct AppearanceSettingsPane: View {
   @Default(.theme) private var theme
   @Default(.themeFamily) private var themeFamily
+  @Default(.glassOpacity) private var glassOpacity
   @Default(.diffViewMode) private var diffViewMode
   @Default(.loadRemoteAvatars) private var loadRemoteAvatars
   @Default(.dimUnfocusedPanes) private var dimUnfocusedPanes
   @Default(.autoResizeSplitsEvenly) private var autoResizeSplitsEvenly
   @State private var showThemePopover = false
+
+  /// The Glass slider's stops: 70, 75 … 100%, so 100% (off) is one clean stop at the end.
+  private static let glassStep = 0.05
+
+  /// The slider's readout and accessibility value, from the applied (quantized) setting: "Off" at
+  /// 100%, otherwise the percentage.
+  static func glassReadout(_ opacity: Double) -> String {
+    opacity < GlassResolver.opacityRange.upperBound
+      ? opacity.formatted(.percent.precision(.fractionLength(0))) : "Off"
+  }
 
   var body: some View {
     Form {
@@ -711,6 +722,36 @@ private struct AppearanceSettingsPane: View {
         }
       }
       .help("Choose the color theme family (its light or dark variant follows Appearance).")
+
+      // Glass (#725): one slider, 70–100%, that frosts the main window, terminals included, at its
+      // opacity. 100% is opaque, which is Glass off (and the default). Independent of the theme.
+      // Whether it applies is `GlassResolver`'s call: never under Reduce transparency or in full
+      // screen. A drag recolours each window's base each percent; only crossing 100% rewrites the
+      // terminals' config (`GlassService.refresh`).
+      LabeledContent {
+        HStack(spacing: 10) {
+          Slider(value: $glassOpacity, in: GlassResolver.opacityRange, step: Self.glassStep)
+            .labelsHidden()
+            .frame(width: 160)
+            .accessibilityLabel("Glass")
+            .accessibilityValue(Text(Self.glassReadout(GlassService.shared.opacity)))
+            .accessibilityIdentifier("settings.control.glass")
+          // Fixed width, so the slider holds still as the readout changes length.
+          Text(Self.glassReadout(GlassService.shared.opacity))
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .frame(width: 34, alignment: .trailing)
+            .accessibilityIdentifier("settings.control.glassReadout")
+        }
+      } label: {
+        Text("Glass")
+        Text("Off at 100%, in full screen, and when Reduce transparency is on.")
+      }
+      .help(
+        "Frost the window: the desktop shows through, blurred, behind the theme's colours. Lower "
+          + "shows more through; 100% is off. Off while the window is in full screen or Reduce "
+          + "transparency is on."
+      )
 
       // Diff viewer layout (issue #66): unified (default) or side-by-side. Applies to newly opened
       // diff tabs; a narrow diff pane falls back to unified regardless.

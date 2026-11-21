@@ -25,6 +25,12 @@ public struct ThemeTokens: Sendable {
   // overall blend.
   public let panel: Color
   public let nsPanel: NSColor
+  // `panel` as a wash: fg at `panelFraction`, which over `bg` composites to `panel`. Glass (#725)
+  // draws the chrome with it over a window whose own background is already `bg`.
+  public let panelWash: Color
+  public let nsPanelWash: NSColor
+  /// How far `panel` is blended from `bg` toward `fg`, and `panelWash`'s alpha.
+  public static let panelFraction: CGFloat = 0.055
   public let fgMuted: Color  // fg @ 0.65 — secondary text
   public let fgDim: Color  // fg @ 0.40 — tertiary text / placeholders
   public let surface: Color  // fg @ 0.08 — raised row / panel fill
@@ -127,9 +133,12 @@ public struct ThemeTokens: Sendable {
     fg = Color(nsColor: fgColor)
     let panelColor =
       bgColor.usingColorSpace(.sRGB)?
-      .blended(withFraction: 0.055, of: fgColor.usingColorSpace(.sRGB) ?? fgColor) ?? bgColor
+      .blended(withFraction: Self.panelFraction, of: fgColor.usingColorSpace(.sRGB) ?? fgColor)
+      ?? bgColor
     nsPanel = panelColor
     panel = Color(nsColor: panelColor)
+    nsPanelWash = fgColor.withAlphaComponent(Self.panelFraction)
+    panelWash = Color(nsColor: nsPanelWash)
     fgMuted = Color(nsColor: fgColor.withAlphaComponent(0.65))
     fgDim = Color(nsColor: fgColor.withAlphaComponent(0.40))
     surface = Color(nsColor: fgColor.withAlphaComponent(0.08))

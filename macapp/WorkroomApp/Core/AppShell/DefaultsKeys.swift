@@ -71,6 +71,12 @@ extension Defaults.Keys {
   static let themeFamily = Key<String>(
     "themeFamily", default: ThemeCatalog.defaultFamilyName, suite: .app)
 
+  /// Glass (#725): how much of the theme background the frosted main window keeps, terminals
+  /// included, 70–100%. 100% (the default) is opaque, which is Glass off. Independent of the theme.
+  /// Whether a window actually draws frosted is `GlassResolver`'s call, not this key's.
+  static let glassOpacity = Key<Double>(
+    "glassOpacity", default: GlassResolver.opacityRange.upperBound, suite: .app)
+
   /// Copy a finished terminal selection to the pasteboard automatically (xterm/iTerm2 convention).
   static let copyOnSelect = Key<Bool>("copyOnSelect", default: true, suite: .app)
 

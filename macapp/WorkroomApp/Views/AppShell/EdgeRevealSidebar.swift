@@ -188,7 +188,7 @@ struct EdgeRevealSidebar<Content: View>: View {
       // Both docked columns now use the frosted `.sidebar` vibrancy, so both reveals match them
       // (pinned == unpinned). `elevated`: an unpinned panel floats over the content, so it gets a
       // deeper drop shadow than the docked card.
-      .sidebarCard(topMargin: 0, vibrant: true, elevated: true)
+      .sidebarCard(topMargin: 0, elevated: true)
       .offset(x: panelOffsetX)
       .opacity(reducer.revealed ? 1 : 0)
       // Hidden/off-screen panel must never eat terminal clicks.

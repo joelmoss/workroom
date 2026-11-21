@@ -615,9 +615,14 @@ final class GhosttySurfaceView: NSView {
     applyOcclusionState()
   }
 
+  /// Whether the surface renders: its pane is active and its window reports itself visible. What
+  /// `applyOcclusionState` hands libghostty, and what a test reads, since a non-spawning surface
+  /// has none.
+  var rendersVisible: Bool { isPaneVisible && isWindowVisible }
+
   private func applyOcclusionState() {
     guard let surface else { return }
-    ghostty_surface_set_occlusion(surface, isPaneVisible && isWindowVisible)
+    ghostty_surface_set_occlusion(surface, rendersVisible)
   }
 
   // MARK: Focus
@@ -709,12 +714,6 @@ final class GhosttySurfaceView: NSView {
     guard let surface else { return }
     ghostty_surface_set_color_scheme(
       surface, isDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT)
-  }
-
-  /// Apply a rebuilt app config (e.g. after a light/dark system-colors change — IT7).
-  func updateConfig(_ config: ghostty_config_t) {
-    guard let surface else { return }
-    ghostty_surface_update_config(surface, config)
   }
 
   override func viewDidChangeEffectiveAppearance() {

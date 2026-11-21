@@ -286,4 +286,14 @@ public enum ThemeCatalog {
       blue: CGFloat(v & 0xFF) / 255,
       alpha: 1)
   }
+
+  /// `parseHex`'s inverse: `color` as a theme file writes it, `#rrggbb` in sRGB, each component
+  /// clamped and rounded to the nearest byte. Alpha is dropped.
+  public static func hex(_ color: NSColor) -> String {
+    let srgb = color.usingColorSpace(.sRGB) ?? color
+    func byte(_ component: CGFloat) -> Int { Int((min(max(component, 0), 1) * 255).rounded()) }
+    return String(
+      format: "#%02x%02x%02x", byte(srgb.redComponent), byte(srgb.greenComponent),
+      byte(srgb.blueComponent))
+  }
 }

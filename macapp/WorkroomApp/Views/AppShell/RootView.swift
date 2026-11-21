@@ -53,7 +53,7 @@ struct RootView: View {
     // not sheets — render above the toast stack and above an edge-revealed sidebar. Inside, an
     // arriving toast drew on top of the dialog. Only the overlay presenters care about this ordering;
     // `.sheet` / `.alert` are position-independent.
-    return rootWindowChrome(rootLifecycle(rootModals(windowContent)))
+    return rootWindowChrome(rootLifecycle(rootModals(windowContent))).modifier(GlassWindowRoot())
   }
 
   private var windowContent: some View {
@@ -450,7 +450,6 @@ struct RootView: View {
       // never collapses into an overflow `»` (the tab strip is a ScrollView that just scrolls).
       .navigationTitle(store.windowTitle)
       .modifier(AccessoryBarInjector(store: store, bar: AnyView(accessoryBarContent)))
-      .background(WindowBackgroundThemer())
       // Keep the root branch labels reasonably current: refresh when the app regains
       // focus (throttled, so rapid alt-tabbing doesn't fork a git process per project).
       // Regaining focus also dismisses the now-visible terminal's notifications (you're looking at it).
@@ -535,7 +534,9 @@ struct RootView: View {
     // Not under the title bar (`ignoresSafeAreaEdges: []`): SwiftUI counts a fill there as not-the-drag
     // region, and AppKit only zooms the window on a title-bar double-click inside the drag region. The
     // window background behind the bar is already this colour (`WindowBackgroundThemer`).
-    .background(ThemeFill.panel, ignoresSafeAreaEdges: [])
+    //
+    // `.ground`: under Glass the panes on it carry the tint, so it draws nothing (see `ThemeFill`).
+    .background(ThemeFill.ground, ignoresSafeAreaEdges: [])
   }
 
   /// The content-local point for a chip drag at `global`, or nil when the cursor is still over the bar
@@ -665,6 +666,11 @@ struct RootView: View {
             .accessibilityIdentifier("EmptyStateAddProject")
         }
       }
+      // The detail column is `.ground`, which draws nothing under Glass; with no pane on it, this
+      // state tints itself. Opaque, it is the same panel colour the ground draws.
+      // Not under the title bar, for the drag-region reason at the end of `detail`.
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .background(ThemeFill.panel, ignoresSafeAreaEdges: [])
     }
   }
 

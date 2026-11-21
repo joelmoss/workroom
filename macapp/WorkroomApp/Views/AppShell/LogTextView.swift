@@ -73,9 +73,10 @@ import SwiftUI
     }
   }
 
-  func setColors(text: NSColor, background: NSColor) {
-    textView.backgroundColor = background
-    scrollView.backgroundColor = background
+  /// With no `background` neither view draws a fill, so what is behind the log shows through.
+  func setColors(text: NSColor, background: NSColor?) {
+    textView.paintBackground(background)
+    scrollView.paintBackground(background)
     // SwiftUI calls this on every update, and recolouring touches the whole log.
     guard attributes[.foregroundColor] as? NSColor != text else { return }
     attributes[.foregroundColor] = text
@@ -135,7 +136,10 @@ import SwiftUI
   }
 }
 
-/// Hosts a `LogTextController`'s scroll view, in the theme's colours.
+/// Hosts a `LogTextController`'s scroll view, in the theme's colours. Its text and scroll views
+/// paint `ThemeFill.nestedRaised`, read from the window's `\.glassAppearance`: opaque the `surface`
+/// wash, as they always have; under glass (#729) nothing, so the host's one wash lies over the
+/// frosted pane instead of three stacked ones.
 struct LogTextView: NSViewRepresentable {
   let controller: LogTextController
   let tokens: ThemeTokens
@@ -143,6 +147,8 @@ struct LogTextView: NSViewRepresentable {
   func makeNSView(context: Context) -> NSScrollView { controller.scrollView }
 
   func updateNSView(_ view: NSScrollView, context: Context) {
-    controller.setColors(text: tokens.nsFg, background: NSColor(tokens.surface))
+    controller.setColors(
+      text: tokens.nsFg,
+      background: ThemeFill.nestedRaised.nsFill(tokens, glass: context.environment.glassAppearance))
   }
 }

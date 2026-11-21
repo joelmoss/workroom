@@ -94,6 +94,8 @@ struct ScriptLogContent: View {
       }
     }
     .frame(maxHeight: .infinity)
-    .background(Color(nsColor: .textBackgroundColor))
+    // Opaque, the system text background, as it always was; under glass (#725) nothing over the
+    // window base, so it frosts with the window.
+    .background(ThemeFill.textBackground)
   }
 }

@@ -8,9 +8,6 @@ struct QuickTerminalContent: View {
   let panes: TerminalPanes
   /// Read here so a changed "Opens in" applies to the next tab, not only the next window.
   @Default(.quickTerminalDirectory) private var directory
-  /// Injected by `QuickTerminalController`, which hosts this view.
-  @Environment(\.themeTokens) private var tokens
-
   var body: some View {
     let _ = directory
     WorkroomTerminalsView(target: QuickTerminalController.target(), panes: panes)
@@ -21,10 +18,16 @@ struct QuickTerminalContent: View {
       .overlay(alignment: .bottomTrailing) {
         ToastStackAdapter().pointerStyle(.default).padding(Spacing.m)
       }
-      .background(tokens.panel)
+      // `.ground`, as under the main window's panes: under Glass each pane and the strip carry their
+      // own tint, so this draws nothing (#731).
+      .background(ThemeFill.ground)
       // The tab strip takes the titlebar's place; without this the hosting view insets everything
       // below the (hidden) titlebar and leaves an empty strip above the tabs.
       .ignoresSafeArea()
+      // The window follows Glass like the main window (#731). Its title bar is already chrome-less
+      // (`QuickTerminalController.createWindow`), and the tab strip covers that strip, so the
+      // window leaves it untinted.
+      .modifier(GlassWindowRoot(titlebar: .hidden))
   }
 }
 
