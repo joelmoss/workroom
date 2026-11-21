@@ -302,9 +302,10 @@ app-test-preflight: ## Check Makefile/workflow invariants and benchmark failure 
 APP_SCRIPT_TESTS_SKIP ?=
 APP_SCRIPT_TESTS := $(sort $(filter-out macapp/Scripts/test-invariants_test.sh $(APP_SCRIPT_TESTS_SKIP),$(wildcard macapp/Scripts/*_test.sh)))
 
-app-test-scripts: app-test-preflight ## Run every macapp/Scripts/*_test.sh, then gui-lock_test.py (after app-test-preflight)
+app-test-scripts: app-test-preflight ## Run every macapp/Scripts/*_test.sh, then gui-lock_test.py and vendor-ghostty-themes_test.py (after app-test-preflight)
 	@for script in $(APP_SCRIPT_TESTS); do echo "sh $$script"; sh "$$script" || exit $$?; done
 	python3 macapp/Scripts/gui-lock_test.py
+	python3 macapp/Scripts/vendor-ghostty-themes_test.py
 
 app-scripts-lint: ## Lint macapp/Scripts/*.sh with shellcheck (needs shellcheck on PATH)
 	shellcheck -x -P SCRIPTDIR macapp/Scripts/*.sh

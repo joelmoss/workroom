@@ -36,7 +36,8 @@ import shutil
 import sys
 
 THEMES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Resources", "ghostty", "themes")
-THEMES = os.path.normpath(THEMES)
+# The bundled directory, or another for this script's own test (vendor-ghostty-themes_test.py).
+THEMES = os.path.normpath(os.environ.get("VENDOR_GHOSTTY_THEMES_DIR", THEMES))
 
 # Files in the bundled directory that aren't themes.
 NOT_THEMES = {"CHECKSUMS", "LICENSE", "SOURCE.md"}
@@ -192,11 +193,51 @@ def bundled_names():
     return sorted(n for n in os.listdir(THEMES) if n not in NOT_THEMES)
 
 
+def sha256(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def recorded_checksums():
+    """CHECKSUMS as {name: sha256}: the files the last full run (step 4) wrote."""
+    try:
+        with open(os.path.join(THEMES, "CHECKSUMS"), encoding="utf-8") as f:
+            return dict(reversed(line.rstrip("\n").split("  ", 1)) for line in f if "  " in line)
+    except FileNotFoundError:
+        return {}
+
+
+def not_importer_output(names, upstream):
+    """The bundled files among `names` this script can't show it wrote, so `stage` mustn't delete
+    them: a file is its own output when it still matches CHECKSUMS, or matches the upstream file of
+    the same name (a theme an earlier `stage` of this checkout copied). A hand-added theme, a notes
+    file or a local palette edit matches neither."""
+    recorded = recorded_checksums()
+    unowned = []
+    for name in names:
+        digest = sha256(os.path.join(THEMES, name))
+        upstream_copy = os.path.join(upstream, name)
+        if recorded.get(name) == digest:
+            continue
+        if os.path.isfile(upstream_copy) and sha256(upstream_copy) == digest:
+            continue
+        unowned.append(name)
+    return unowned
+
+
 def stage(upstream):
     upstream = os.path.abspath(upstream)
     names = sorted((n for n in os.listdir(upstream) if os.path.isfile(os.path.join(upstream, n))),
                    key=str.casefold)
     before = bundled_names()
+    # Nothing is touched unless every file the sweep below would delete is this script's own output.
+    unowned = not_importer_output([n for n in before if n not in LOCAL], upstream)
+    if unowned:
+        sys.exit(
+            "stage: not touching the bundled themes: these files aren't this script's output (they "
+            "match neither CHECKSUMS nor upstream), so the sweep would delete them:\n  "
+            + "\n  ".join(unowned)
+            + "\nMove them out of the directory, add a theme kept as is to LOCAL, or restore it.")
     # The kept set's palettes, existing themes first so a duplicate keeps the name already shipped.
     seen = {}
     for name in before:
