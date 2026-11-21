@@ -29,6 +29,7 @@ use serde_json::{Value, json};
 use super::{Answer, ApiError, Call, caller_schema, kind, listed, resolve};
 use crate::terminal::keys::{self, Key, Modes};
 use crate::terminal::pty::{Stop, Stopped};
+use crate::terminal::session::SessionStore;
 
 pub const NAME: &str = "terminal.send";
 
@@ -198,7 +199,7 @@ fn asked(call: &Call) -> Result<Asked, ApiError> {
     })
 }
 
-fn too_large(bytes: usize) -> ApiError {
+pub(super) fn too_large(bytes: usize) -> ApiError {
     ApiError::new(
         kind::TOO_LARGE,
         format!(
@@ -261,46 +262,109 @@ fn cut_short(session: &str, stopped: &Stopped, total: usize) -> ApiError {
     )
 }
 
+/// The refusal of a request from session `caller` to type into `session`, its own, which `target`
+/// named, unless it allows that: `terminal.send`'s and `terminal.command`'s (#691).
+pub(super) fn refused_self(
+    caller: Option<&str>,
+    session: &str,
+    target: &str,
+    allow_self: bool,
+) -> Result<(), ApiError> {
+    if allow_self || caller != Some(session) {
+        return Ok(());
+    }
+    Err(ApiError::new(
+        kind::REFUSED_SELF,
+        format!(
+            "{target:?} is the session this request comes from, and typing into it would feed its \
+             own input; `allow_self` types into it anyway"
+        ),
+    ))
+}
+
 /// `terminal.send`: what is asked checked, the target resolved, then what it types encoded for
 /// the session's modes, told, and written.
 pub fn send(call: &Call) -> Result<Answer, ApiError> {
     let asked = asked(call)?;
     let session = resolve(&listed(call.sessions), &asked.target)?;
     let hyphenated = session["id"].as_str().unwrap_or_default().to_string();
-    if !asked.allow_self && call.caller.as_deref() == Some(hyphenated.as_str()) {
-        return Err(ApiError::new(
-            kind::REFUSED_SELF,
-            format!(
-                "{:?} is the session this request comes from, and typing into it would feed its \
-                 own input; `allow_self` types into it anyway",
-                asked.target
-            ),
-        ));
-    }
+    refused_self(
+        call.caller.as_deref(),
+        &hyphenated,
+        &asked.target,
+        asked.allow_self,
+    )?;
+    let typed = type_into(
+        call.sessions,
+        &session,
+        call.caller.as_deref(),
+        &asked.text,
+        &asked.keys,
+    )?;
+    Ok(Answer::One(json!({
+        "session": hyphenated,
+        "caller": call.caller,
+        "bytes": typed.bytes,
+        "modes": modes_json(typed.modes),
+    })))
+}
+
+/// What one send typed.
+pub(super) struct Typed {
+    /// Its bytes, a paste's markers included.
+    pub bytes: usize,
+    /// The session's modes it was encoded for; `None` when they can't be read.
+    pub modes: Option<Modes>,
+}
+
+/// `modes` as a reply gives them (`output`'s `modes`).
+pub(super) fn modes_json(modes: Option<Modes>) -> Value {
+    modes.map_or(Value::Null, |modes| {
+        json!({
+            "kitty_keyboard_flags": modes.kitty_keyboard_flags,
+            "application_cursor_keys": modes.application_cursor_keys,
+            "bracketed_paste": modes.bracketed_paste,
+        })
+    })
+}
+
+/// Types `text`, then `keys`, into `session` (the listing's shape) for the session's modes, as a
+/// request from session `caller`: `text` as a bracketed paste when the program has turned that
+/// on, each key encoded for them, at most [`MAX_BYTES`] in all, told as `session.input` and
+/// written within [`DEADLINE`], holding a request permit meanwhile. `terminal.send`'s typing, and
+/// `terminal.command`'s (#691).
+pub(super) fn type_into(
+    sessions: &SessionStore,
+    session: &Value,
+    caller: Option<&str>,
+    text: &str,
+    keys: &[Key],
+) -> Result<Typed, ApiError> {
+    let hyphenated = session["id"].as_str().unwrap_or_default();
     let ended = || {
         ApiError::new(
             kind::SESSION_ENDED,
             format!("session {hyphenated} ended before it could be typed into"),
         )
     };
-    let id = wr_protocol::terminal::parse_session_id(OsStr::new(&hyphenated)).ok_or_else(ended)?;
-    let shadow = call.sessions.shadow(id).ok_or_else(ended)?;
+    let id = wr_protocol::terminal::parse_session_id(OsStr::new(hyphenated)).ok_or_else(ended)?;
+    let shadow = sessions.shadow(id).ok_or_else(ended)?;
     let modes: Option<Modes> = crate::util::lock_or_recover(&shadow).input_modes();
-    if modes.is_none() && !asked.keys.is_empty() {
+    if modes.is_none() && !keys.is_empty() {
         return Err(ApiError::new(
             kind::INTERNAL_ERROR,
             format!(
                 "{}, so it can't tell how session {hyphenated}'s program wants keys encoded; \
                  text alone goes as it is",
-                super::no_screen(&hyphenated)
+                super::no_screen(hyphenated)
             ),
         ));
     }
     let bracketed = modes.is_some_and(|modes| modes.bracketed_paste);
-    let mut typed = keys::pasted(&asked.text, bracketed);
-    let paste = (bracketed && !asked.text.is_empty()).then_some(0..typed.len());
-    let mut length = asked.text.len();
-    for key in &asked.keys {
+    let mut typed = keys::pasted(text, bracketed);
+    let paste = (bracketed && !text.is_empty()).then_some(0..typed.len());
+    let mut length = text.len();
+    for key in keys {
         let bytes = key.encode(modes.unwrap_or_default());
         length += bytes.len();
         typed.extend(bytes);
@@ -318,32 +382,21 @@ pub fn send(call: &Call) -> Result<Answer, ApiError> {
         ));
     };
     let until = std::time::Instant::now() + DEADLINE;
-    let hub = &call.sessions.hooks().events;
-    if !hub.input(
-        id,
-        session["scope"].clone(),
-        call.caller.as_deref(),
-        typed.len(),
-    ) {
+    let hub = &sessions.hooks().events;
+    if !hub.input(id, session["scope"].clone(), caller, typed.len()) {
         return Err(ApiError::new(
             kind::BUSY,
             "the daemon is being handed off to its next program; try again when it has been",
         ));
     }
-    match call.sessions.send_input(id, &typed, paste, until) {
+    match sessions.send_input(id, &typed, paste, until) {
         None => return Err(ended()),
-        Some(Err(_)) if !call.sessions.contains(id) => return Err(ended()),
-        Some(Err(stopped)) => return Err(cut_short(&hyphenated, &stopped, typed.len())),
+        Some(Err(_)) if !sessions.contains(id) => return Err(ended()),
+        Some(Err(stopped)) => return Err(cut_short(hyphenated, &stopped, typed.len())),
         Some(Ok(())) => {}
     }
-    Ok(Answer::One(json!({
-        "session": hyphenated,
-        "caller": call.caller,
-        "bytes": typed.len(),
-        "modes": modes.map(|modes| json!({
-            "kitty_keyboard_flags": modes.kitty_keyboard_flags,
-            "application_cursor_keys": modes.application_cursor_keys,
-            "bracketed_paste": modes.bracketed_paste,
-        })),
-    })))
+    Ok(Typed {
+        bytes: typed.len(),
+        modes,
+    })
 }

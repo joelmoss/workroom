@@ -30,17 +30,17 @@ impl Waiters {
 
 impl SessionStore {
     /// Starts a wait on `id`. `make` builds the waiter from the session's shadow as it stands, and
-    /// the number of waits the session holds (so it can refuse one past a limit), under the
-    /// session's attachment and shadow locks, which every read holds: the waiter hears every byte
-    /// read after it is made and none before. `None` when there is no session `id`.
+    /// the waits the session holds (so it can refuse one past a limit, or beside another), under
+    /// the session's attachment and shadow locks, which every read holds: the waiter hears every
+    /// byte read after it is made and none before. `None` when there is no session `id`.
     pub fn add_waiter<E>(
         &self,
         id: SessionId,
-        make: impl FnOnce(&mut Shadow, usize) -> Result<Arc<Waiter>, E>,
+        make: impl FnOnce(&mut Shadow, &[Arc<Waiter>]) -> Result<Arc<Waiter>, E>,
     ) -> Option<Result<Arc<Waiter>, E>> {
         let (_, shadow, attached) = self.parts(id)?;
         let mut held = lock_or_recover(&attached);
-        let made = make(&mut lock_or_recover(&shadow), held.waiters.list.len());
+        let made = make(&mut lock_or_recover(&shadow), &held.waiters.list);
         if let Ok(waiter) = &made {
             match held.waiters.ended {
                 Some(exit_code) => waiter.ended(exit_code),
