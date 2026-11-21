@@ -1085,6 +1085,9 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
     let copy = folder.appendingPathComponent(name)
     try FileManager.default.copyItem(at: binary, to: copy)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: copy.path)
+    // Into this fresh staging folder, so the link always goes in the tar. Unpacked at `/`, it
+    // replaces whatever is at `workroom` in the container's daemon folder: that folder is root's
+    // and made by this driver alone (`daemonFolder`), so nothing else is there to keep.
     try Self.linkCommand(in: folder)
     let tar = staging.appendingPathComponent("daemon.tar")
     let archive = Process()
@@ -1132,8 +1135,9 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
 
   /// The `workroom` link beside the daemon's `workroomd` in `folder` (ADR 0078), as install.sh
   /// makes on other hosts: the name a container's panes run it by, which the daemon puts on their
-  /// PATH. Relative, so it names whichever `workroomd` is moved there. Made only where nothing or a
-  /// link is: anything else at that name is not this driver's.
+  /// PATH. Relative, so it names whichever `workroomd` is moved there. In a folder on this Mac
+  /// (Docker's staging folder, Apple's mounted one), made only where nothing or a link is: anything
+  /// else at that name is not this driver's.
   static func linkCommand(in folder: URL) throws {
     let link = folder.appendingPathComponent("workroom")
     let fileManager = FileManager.default
