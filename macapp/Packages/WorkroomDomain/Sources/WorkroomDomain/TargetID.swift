@@ -11,6 +11,9 @@ public enum TargetID: Hashable, Sendable {
   case creation(UUID)
   /// The Quick Terminal's one target, which belongs to no project.
   case quickTerminal
+  /// A standalone terminal: one terminal with a row and a workroom tab of its own, belonging to no
+  /// project and no terminal group (ADR 0077). Its entry lives in the app's Terminals section.
+  case standalone(UUID)
 
   /// The string a target is stored and tagged under: `session.json`, the host layout's local copy,
   /// `Defaults`, a session's workroom tag and a banner's `userInfo`. A stored contract: these bytes
@@ -21,6 +24,7 @@ public enum TargetID: Hashable, Sendable {
     case .workroom(let project, let name): return "wr|\(project)|\(name)"
     case .creation(let id): return "creation:\(id.uuidString)"
     case .quickTerminal: return "workroom.quickTerminal"
+    case .standalone(let id): return "standalone:\(id.uuidString)"
     }
   }
 
@@ -40,26 +44,32 @@ public enum TargetID: Hashable, Sendable {
       let id = UUID(uuidString: String(encoded.dropFirst(9)))
     {
       self = .creation(id)
+    } else if encoded.hasPrefix("standalone:"),
+      let id = UUID(uuidString: String(encoded.dropFirst(11)))
+    {
+      self = .standalone(id)
     } else {
       return nil
     }
   }
 
   /// The project a root or workroom belongs to. Nil for a create's pane, whose id names only its
-  /// run, and the Quick Terminal.
+  /// run, the Quick Terminal and a standalone terminal, which belong to none.
   public var projectPath: String? {
     switch self {
     case .root(let project), .workroom(let project, _): return project
-    case .creation, .quickTerminal: return nil
+    case .creation, .quickTerminal, .standalone: return nil
     }
   }
 
   /// The sidebar row of a root or workroom, whether or not that row is still listed. Nil for a
-  /// create's pane, whose id does not name the project its row needs, and the Quick Terminal.
+  /// create's pane, whose id does not name the project its row needs, and the Quick Terminal. A
+  /// standalone terminal's row is in the Terminals section.
   public var sidebarID: SidebarID? {
     switch self {
     case .root(let project): return .root(project: project)
     case .workroom(let project, let name): return .workroom(project: project, name: name)
+    case .standalone(let id): return .standalone(id)
     case .creation, .quickTerminal: return nil
     }
   }
@@ -79,6 +89,7 @@ extension SidebarID {
     case .root(let project): return .root(project: project)
     case .workroom(let project, let name): return .workroom(project: project, name: name)
     case .creation(_, let id): return .creation(id)
+    case .standalone(let id): return .standalone(id)
     case .project: return nil
     }
   }

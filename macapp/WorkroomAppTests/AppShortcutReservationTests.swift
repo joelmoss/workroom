@@ -62,8 +62,8 @@ final class AppShortcutReservationTests: XCTestCase {
     // ⌥⌘I = Details: a focused TUI would otherwise swallow it. ⌥⌘N/⌥⌘O are the File-menu
     // "…in Split" items (issue #163); ⌥⌘N was un-reserved with issue #118 and deliberately re-taken.
     // ⌥⌘S is macOS's Toggle Sidebar, caught for Projects. (⌥⌘B, a second Projects key, went with
-    // #148: an action has one shortcut.)
-    for key in ["r", "i", "c", "f", "y", "p", "s", "n", "o"] {
+    // #148: an action has one shortcut.) ⌥⌘T is New Standalone Terminal (#655).
+    for key in ["r", "i", "c", "f", "y", "p", "s", "n", "o", "t"] {
       XCTAssertTrue(reserved(key, [.command, .option]), "⌥⌘\(key.uppercased())")
     }
   }

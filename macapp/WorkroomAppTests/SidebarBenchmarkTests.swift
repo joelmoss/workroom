@@ -117,7 +117,8 @@ final class SidebarBenchmarkTests: XCTestCase {
       return view.subviews.lazy.compactMap { findTable($0) }.first
     }
     let list = try XCTUnwrap(findTable(hosting), "must host the native List")
-    XCTAssertEqual(list.numberOfRows, 224, "the hover wrappers must preserve individual List rows")
+    // 32 projects × (project + root + five workrooms), plus the Terminals heading (#655).
+    XCTAssertEqual(list.numberOfRows, 225, "the hover wrappers must preserve individual List rows")
     var samples: [Double] = []
     var rows: [Int] = []
     for _ in 0..<3 {
@@ -136,11 +137,11 @@ final class SidebarBenchmarkTests: XCTestCase {
     store.collapsedProjects.insert(store.projectStore.projects[0].path)
     await draw(hosting)
     settle(hosting)
-    XCTAssertEqual(list.numberOfRows, 218, "collapse removes the root and five workrooms")
+    XCTAssertEqual(list.numberOfRows, 219, "collapse removes the root and five workrooms")
     store.collapsedProjects.remove(store.projectStore.projects[0].path)
     await draw(hosting)
     settle(hosting)
-    XCTAssertEqual(list.numberOfRows, 224, "expand restores every row")
+    XCTAssertEqual(list.numberOfRows, 225, "expand restores every row")
   }
 
   func testSidebarScaling() async throws {

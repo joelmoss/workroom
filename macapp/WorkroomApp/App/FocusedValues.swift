@@ -41,6 +41,13 @@ struct HasProjectsKey: FocusedValueKey {
   typealias Value = Bool
 }
 
+/// Whether the sidebar has anything to list: a project, or a terminal with no project (ADR 0077).
+/// Gates the View menu's Projects toggle, which `hasProjects` would turn off in a window that has
+/// only terminals.
+struct HasSidebarContentKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
 /// Whether a workroom is selected to split BESIDE — published by RootView so the two "…in Split"
 /// items (⌥⌘N / ⌥⌘O, issue #163) disable when there is no anchor.
 ///
@@ -169,6 +176,10 @@ extension FocusedValues {
   var hasProjects: Bool? {
     get { self[HasProjectsKey.self] }
     set { self[HasProjectsKey.self] = newValue }
+  }
+  var hasSidebarContent: Bool? {
+    get { self[HasSidebarContentKey.self] }
+    set { self[HasSidebarContentKey.self] = newValue }
   }
   var hasWorkroomAnchor: Bool? {
     get { self[HasWorkroomAnchorKey.self] }

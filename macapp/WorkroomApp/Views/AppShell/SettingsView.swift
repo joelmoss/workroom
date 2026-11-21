@@ -980,13 +980,13 @@ private struct TerminalSettingsPane: View {
   }
 }
 
-/// Where the Quick Terminal slides in from and the folder its new shells start in. Its shortcut is
-/// in Settings ▸ Keyboard Shortcuts (#148).
+/// Where the Quick Terminal slides in from, and the folder every terminal with no project starts in.
+/// Its shortcut is in Settings ▸ Keyboard Shortcuts (#148).
 private struct QuickTerminalSection: View {
   @Default(.quickTerminalEdge) private var edge
   @Default(.quickTerminalHidesWhenUnfocused) private var hidesWhenUnfocused
   // "" = the home folder.
-  @Default(.quickTerminalDirectory) private var directory
+  @Default(.newTerminalDirectory) private var directory
 
   var body: some View {
     Section {
@@ -1001,8 +1001,12 @@ private struct QuickTerminalSection: View {
       Toggle("Slide away when it loses focus", isOn: $hidesWhenUnfocused)
         .help("Hide the Quick Terminal when you click another window or switch apps.")
         .accessibilityIdentifier("settings.control.quickTerminalHidesWhenUnfocused")
+    } header: {
+      Text("Quick Terminal")
+    }
 
-      LabeledContent("Opens in") {
+    Section {
+      LabeledContent("New terminals open in") {
         HStack {
           Text(directory.isEmpty ? NSHomeDirectory() : directory)
             .monospaced()
@@ -1010,17 +1014,19 @@ private struct QuickTerminalSection: View {
             .truncationMode(.middle)
           if !directory.isEmpty {
             Button("Use Home") { directory = "" }
-              .accessibilityIdentifier("settings.control.quickTerminalDirectoryReset")
+              .help("Open new terminals in your home folder.")
+              .accessibilityIdentifier("settings.control.newTerminalDirectoryReset")
           }
           Button("Choose…", action: choose)
-            .accessibilityIdentifier("settings.control.quickTerminalDirectory")
+            .help("Choose the folder new terminals open in.")
+            .accessibilityIdentifier("settings.control.newTerminalDirectory")
         }
       }
       .help(
-        "The folder a new Quick Terminal shell starts in. A hidden Quick Terminal keeps its own "
-          + "shell, and a folder that is gone opens your home folder.")
+        "The folder a new terminal with no project starts in: a standalone terminal's, or the "
+          + "Quick Terminal's. A folder that is gone opens your home folder.")
     } header: {
-      Text("Quick Terminal")
+      Text("Terminals with no project")
     }
   }
 

@@ -151,7 +151,7 @@ extension AppStore {
   }
 
   /// What `targetID`'s terminals report on its row (#358).
-  fileprivate func sidebarActivity(of targetID: TerminalTarget.ID) -> SidebarTargetActivity {
+  func sidebarActivity(of targetID: TerminalTarget.ID) -> SidebarTargetActivity {
     let waiting = terminals.blockedTerminalCount(forTargetID: targetID)
     return SidebarTargetActivity(
       waiting: waiting,

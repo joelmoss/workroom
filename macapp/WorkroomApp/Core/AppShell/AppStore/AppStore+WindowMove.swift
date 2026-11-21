@@ -121,11 +121,11 @@ enum QuickTerminalPaneDrag {
   ) {
     defer { cancel() }
     // The workroom under the pointer, when the window shows several side by side.
-    guard let (window, workroom) = destination() else { return }
+    guard let (window, workroom) = destination(), let into = workroom.targetID else { return }
     Task {
-      await QuickTerminalPaneMove.move(
+      await PaneMove.move(
         tabID, of: target, source: source, notifications: notifications, to: window,
-        into: workroom)
+        into: into)
     }
   }
 
@@ -149,13 +149,13 @@ extension AppStore {
     if let pane = WindowRegistry.shared.detachedPane(at: screenPoint),
       let paneTarget = terminals.targetID(ofTab: pane)
     {
-      return quickTerminalPaneTarget(sidebarID(for: paneTarget))?.sid
+      return paneMoveTarget(sidebarID(for: paneTarget))?.sid
     }
     let hit =
       workroomTabRowPoint(screenPoint).flatMap { point in
         workroomTabFrames.first { $0.value.contains(point) }?.key
       } ?? workroom(atScreenPoint: screenPoint)
-    return quickTerminalPaneTarget(hit ?? selectedTargetID)?.sid
+    return paneMoveTarget(hit ?? selectedTargetID)?.sid
   }
 
   /// `screenPoint` in the workroom tab row's space (top-left origin), which the tab frames are in.
@@ -165,8 +165,8 @@ extension AppStore {
     return CGPoint(x: screenPoint.x - row.minX, y: row.maxY - screenPoint.y)
   }
 
-  /// `sid`'s workroom, when a Quick Terminal pane can join it.
-  func quickTerminalPaneTarget(
+  /// `sid`'s workroom, when a moved pane can join it.
+  func paneMoveTarget(
     _ sid: SidebarID?
   ) -> (sid: SidebarID, target: TerminalTarget)? {
     guard let sid, let target = target(for: sid), target.remoteHost == nil,
@@ -193,14 +193,6 @@ extension AppStore {
     let local = CGPoint(x: global.x - space.minX, y: global.y - space.minY)
     let plan = PaneTreeLayout.plan(layout, in: CGRect(origin: .zero, size: space.size))
     return plan.panes.first { $0.value.contains(local) }?.key
-  }
-
-  /// None: "Move to Workroom" is offered only on the Quick Terminal's target, whose panes are
-  /// `QuickTerminalHost`'s, so a window's own panes never show the menu that asks.
-  func quickTerminalPaneWorkroomChoices(
-    _ tabID: TerminalTab.ID, of target: TerminalTarget, windows: [AppStore]
-  ) -> [PaneWorkroomGroup] {
-    []
   }
 }
 

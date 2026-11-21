@@ -405,6 +405,13 @@ private struct WorkroomTabChip: View {
     return false
   }
 
+  /// A house marks a project root, a terminal a standalone terminal, else the workroom's glyph.
+  private var glyph: String {
+    if isRoot { return "house" }
+    if sid.isInTerminalsSection { return "terminal" }
+    return target.workroomGlyph
+  }
+
   /// The project name — the chip's primary label for every kind of target. A workroom's own name
   /// rides alongside as `workroomName` (secondary text); a root is marked by its house glyph.
   private var primaryLabel: String {
@@ -412,6 +419,9 @@ private struct WorkroomTabChip: View {
     case .workroom(let project, _), .root(let project), .project(let project),
       .creation(let project, _):
       return (project as NSString).lastPathComponent
+    case .standalone:
+      // A standalone terminal's tab is its terminal's name (ADR 0077).
+      return target.title
     }
   }
 
@@ -480,7 +490,7 @@ private struct WorkroomTabChip: View {
     HStack(spacing: 6) {
       // Leading glyph: a house marks a project root, a cube an isolated workroom — set before the name.
       // Its tint carries the VCS dirty signal (orange) in place of a separate status dot.
-      Image(systemName: isRoot ? "house" : target.workroomGlyph)
+      Image(systemName: glyph)
         .font(.system(size: 10))
         .foregroundStyle(
           VCSStatusPresentation.iconTint(vcsStatus.workroomStatuses[sid] ?? .unresolved, tokens)

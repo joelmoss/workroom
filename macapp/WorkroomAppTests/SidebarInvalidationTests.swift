@@ -119,12 +119,13 @@ final class SidebarInvalidationTests: XCTestCase {
   /// Lets SwiftUI run any update the change scheduled.
   private func render(_ f: Fixture) async throws { try await render(f.view) }
 
+  /// The projects' rows: every sidebar also draws the Terminals heading above them (#655).
   private func listRows(_ f: Fixture) throws -> Int {
     func findTable(_ view: NSView) -> NSTableView? {
       if let table = view as? NSTableView { return table }
       return view.subviews.lazy.compactMap { findTable($0) }.first
     }
-    return try XCTUnwrap(findTable(f.view), "must host the native List").numberOfRows
+    return try XCTUnwrap(findTable(f.view), "must host the native List").numberOfRows - 1
   }
 
   // MARK: Terminals

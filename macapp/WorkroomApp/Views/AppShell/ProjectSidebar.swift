@@ -53,7 +53,7 @@ struct ProjectSidebar: View, Equatable {
 
   var body: some View {
     Group {
-      if projectStore.projects.isEmpty {
+      if !store.sidebarHasContent {
         ContentUnavailableView {
           Label("No projects yet", systemImage: "folder.badge.plus")
         } description: {
@@ -92,6 +92,10 @@ struct ProjectSidebar: View, Equatable {
     #endif
     let actions = SidebarActions.live(store: store)
     return List {
+      // Terminals with no project, above the projects (ADR 0077).
+      SidebarTerminalsSection(
+        store: store, actions: actions, headingInsets: Self.rowInsets,
+        rowInsets: Self.childRowInsets)
       ForEach(projectStore.projects) { project in
         SidebarHoverRegion(id: .project(project.path)) { hovered in
           SidebarProjectRowAdapter(project: project, hovered: hovered, actions: actions)

@@ -1055,6 +1055,18 @@ extension View {
         runCommandMenuItems(host: host, target: target)
         Divider()
       }
+      // Any terminal can be named; an empty name gives the program's own title back.
+      if case .terminal = tab.content {
+        Button {
+          TabRenamePrompt.present(currentName: tab.title) {
+            panes.setUserTitle($0, forTab: tab.id, in: target)
+          }
+        } label: {
+          Label("Rename…", systemImage: "pencil")
+        }
+        .help("Give this terminal a name")
+        Divider()
+      }
       // The escape hatch for a program that left a request behind (#358).
       if tab.programStatus?.hasReport == true {
         Button {

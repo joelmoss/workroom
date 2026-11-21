@@ -7,7 +7,7 @@ import SwiftUI
 struct QuickTerminalContent: View {
   let panes: TerminalPanes
   /// Read here so a changed "Opens in" applies to the next tab, not only the next window.
-  @Default(.quickTerminalDirectory) private var directory
+  @Default(.newTerminalDirectory) private var directory
   var body: some View {
     let _ = directory
     WorkroomTerminalsView(target: QuickTerminalController.target(), panes: panes)

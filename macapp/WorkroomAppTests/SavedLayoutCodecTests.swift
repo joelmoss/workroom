@@ -59,7 +59,7 @@ final class SavedLayoutCodecTests: XCTestCase {
               "tabs": [
                 {
                   "key": "t1", "kind": "terminal",
-                  "terminal": {"defaultTitle": "Terminal 1", "cwd": "/p/calm-otter/src"}
+                  "terminal": {"defaultTitle": "Terminal 1", "cwd": "/p/calm-otter/src", "userTitle": "Build box"}
                 },
                 {
                   "key": "t2", "kind": "diff",
@@ -112,6 +112,7 @@ final class SavedLayoutCodecTests: XCTestCase {
     XCTAssertEqual(target.terminalCounter, 3)
     XCTAssertEqual(target.split?.leaves, ["t1", "t2", "t3"])
     XCTAssertEqual(target.tabs[0].terminal?.cwd, "/p/calm-otter/src")
+    XCTAssertEqual(target.tabs[0].terminal?.userTitle, "Build box")
     XCTAssertEqual(target.tabs[1].diff?.source.source, .commit("abc123"))
     XCTAssertEqual(target.tabs[1].diff?.viewMode, "sideBySide")
     XCTAssertEqual(target.tabs[2].file?.markdownPreview, false)
@@ -125,6 +126,17 @@ final class SavedLayoutCodecTests: XCTestCase {
     XCTAssertEqual(once, twice)
     XCTAssertTrue(once.contains("\"windowKey\":\"W1\""))
     XCTAssertTrue(once.contains("\"terminalCounter\":3"))
+    XCTAssertTrue(once.contains("\"userTitle\":\"Build box\""))
+  }
+
+  /// A terminal never renamed writes no `userTitle` key, and one saved by an older build (none)
+  /// decodes: the field is additive, so the schema stays at 1.
+  func testUserTitleIsAdditive() throws {
+    let plain = TerminalPayload(defaultTitle: "Terminal 1", cwd: nil)
+    let data = try JSONEncoder().encode(plain)
+    XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("userTitle"))
+    let old = Data(#"{"defaultTitle":"Terminal 1"}"#.utf8)
+    XCTAssertNil(try JSONDecoder().decode(TerminalPayload.self, from: old).userTitle)
   }
 
   // MARK: Lossy decoding
