@@ -35,8 +35,14 @@ impl Paint {
         self.code("90", text)
     }
 
+    /// Bold, which fatih/color ends with `\x1b[22m` rather than a full reset, around blue.
     pub(super) fn bold_blue(self, text: &str) -> String {
-        self.code("1", &self.code("34", text))
+        let blue = self.code("34", text);
+        if self.0 {
+            format!("\x1b[1m{blue}\x1b[22m")
+        } else {
+            blue
+        }
     }
 }
 
@@ -176,13 +182,14 @@ mod tests {
         assert_eq!(rendered(&[], false, false), "");
     }
 
-    /// In colour, with `Paint`'s codes, the ones `trust`'s approval panel uses.
+    /// In colour, with the bytes Go's helpers (fatih/color v1.19) write: bold ends with
+    /// `\x1b[22m`, the rest with a full reset.
     #[test]
-    fn a_panel_is_painted_as_the_approval_panel_is() {
+    fn a_panel_is_painted_as_go_paints_it() {
         assert_eq!(
             rendered(&[b"stopping\n"], true, true),
             format!(
-                "\x1b[90m╭─\x1b[0m\x1b[1m\x1b[34m Teardown \x1b[0m\x1b[0m\x1b[90m{}\x1b[0m\n\
+                "\x1b[90m╭─\x1b[0m\x1b[1m\x1b[34m Teardown \x1b[0m\x1b[22m\x1b[90m{}\x1b[0m\n\
                  \x1b[90m│\x1b[0m stopping\n\x1b[90m╰{}\x1b[0m\n",
                 "─".repeat(48),
                 "─".repeat(59)
