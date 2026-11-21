@@ -84,7 +84,7 @@ A terminal that belongs to no project and no terminal group, with a sidebar row 
 _Avoid_: Loose terminal, free terminal
 
 **Terminal group**:
-A set of terminals belonging to no project, with its own starting folder. A window selects and uses one as it does a workroom, but no branch or worktree backs it, so it has no version control, run commands or host. The user makes one by splitting a standalone terminal, dropping one standalone terminal on another, or asking for a new one. Until it is named it is labelled by its first terminal's name and how many more it has ("~ + 1 more") and goes when one terminal is left, which becomes standalone again. Named or not, a group goes with its last terminal across every window, but never at a quit. The Quick Terminal's group is never deleted. Deleting one makes its terminals standalone.
+A set of terminals belonging to no project, with its own starting folder. A window selects and uses one as it does a workroom, but no branch or worktree backs it, so it has no version control, run commands or host. The user makes one by splitting a standalone terminal, dropping one standalone terminal on another, or asking for a new one. Until it is named it is labelled by its terminals' names: both of two ("zsh + htop"), else the first and how many more ("zsh + 2 more") and goes when one terminal is left, which becomes standalone again. Named or not, a group goes with its last terminal across every window, but never at a quit. The Quick Terminal's group is never deleted. Deleting one makes its terminals standalone.
 _Avoid_: Group (alone), workroom (for a terminal group)
 
 **Split**:
