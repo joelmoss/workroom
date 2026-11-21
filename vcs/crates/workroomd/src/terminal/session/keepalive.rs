@@ -411,7 +411,7 @@ pub(super) fn send_probes(
     };
     for target in targets {
         let probe = terminal_envelope(target.stream, Frame::new(FrameKind::Output, PROBE.to_vec()));
-        let size = deliver(attached, &target, &probe);
+        let size = deliver(attached, &target, &probe, hooks);
         apply_size(pty, shadow, attached, size, hooks);
     }
 }

@@ -182,7 +182,10 @@ impl SessionStore {
             .iter()
             .map(|session| (session.info.id, crate::terminal::api::session_json(session)))
             .collect();
-        self.hooks.events.reconcile(live, events_carried);
+        // Numbered past every client the events carried, which they have just told detached, so
+        // no client of this program shares a number with one of the last (#688).
+        let highest = self.hooks.events.reconcile(live, events_carried);
+        super::NEXT_TOKEN.fetch_max(highest.saturating_add(1), Ordering::SeqCst);
         for reader in parked {
             reader.start();
         }

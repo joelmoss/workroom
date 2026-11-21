@@ -182,6 +182,12 @@ impl SessionStore {
                     identity,
                     attached_at: u64::try_from(wall_now().as_millis()).unwrap_or(u64::MAX),
                 });
+                // Under the lock that registered it, so the events' clients change in the order
+                // `Attached::clients` does: a client dropped at once (`deliver`) is told leaving
+                // after it is told arriving, never before (#688).
+                if let Some(client) = attached.clients.last() {
+                    self.hooks.client_attached(id, &client.info(attached.owner));
+                }
                 // Attaching does not TAKE the size from a client that has it — that needs an act.
                 // It only fills a vacancy.
                 match attached.owner {
@@ -231,10 +237,7 @@ impl SessionStore {
         };
         let size = {
             let mut attached = lock_or_recover(&attached);
-            attached.clients.retain(|client| client.token != token);
-            if attached.owner == Some(token) {
-                attached.owner = None;
-            }
+            remove(&mut attached, token, &self.hooks);
             attached.claim_for_sole_survivor()
         };
         apply_size(&pty, &shadow, &attached, size, &self.hooks);
@@ -360,19 +363,30 @@ pub(super) fn deliver(
     attached: &Arc<Mutex<Attached>>,
     target: &Target,
     bytes: &[u8],
+    hooks: &Hooks,
 ) -> Option<Size> {
     let delivered = rpc::write(&target.writer, bytes);
     if delivered {
         return None;
     }
     let mut attached = lock_or_recover(attached);
-    attached
-        .clients
-        .retain(|client| client.token != target.token);
-    if attached.owner == Some(target.token) {
+    remove(&mut attached, target.token, hooks);
+    attached.claim_for_sole_survivor()
+}
+
+/// Takes the client holding `token` off the session, and the size from it if it had it. Told to
+/// the events (#688) only when it was still there, so a client dropped for not reading, whose
+/// connection then ends, leaves once; under the lock that removed it, as `attach` tells one
+/// arriving.
+fn remove(attached: &mut Attached, token: u64, hooks: &Hooks) {
+    let before = attached.clients.len();
+    attached.clients.retain(|client| client.token != token);
+    if attached.owner == Some(token) {
         attached.owner = None;
     }
-    attached.claim_for_sole_survivor()
+    if attached.clients.len() < before {
+        hooks.client_detached(token);
+    }
 }
 
 /// Resizes the pty and the shadow together, if there is a size to apply.
@@ -443,7 +457,12 @@ pub(super) fn send_images(
     };
     for (target, bytes) in sends {
         let frame = Frame::new(FrameKind::Output, bytes);
-        let size = deliver(attached, &target, &terminal_envelope(target.stream, frame));
+        let size = deliver(
+            attached,
+            &target,
+            &terminal_envelope(target.stream, frame),
+            hooks,
+        );
         apply_size(pty, shadow, attached, size, hooks);
     }
     if more {

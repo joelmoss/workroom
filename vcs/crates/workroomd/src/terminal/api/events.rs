@@ -187,6 +187,7 @@ pub fn output() -> Value {
     ];
     names.extend(name::LIVE);
     let session = super::session_schema();
+    let client_identity = super::client_identity_schema();
     json!({
         "type": "object",
         "required": ["event", "boot", "revision"],
@@ -207,6 +208,19 @@ pub fn output() -> Value {
                 "scope": {"kind": "workroom", "id": "7d1e2f3a-4b5c-4d6e-8f70-8192a3b4c5d6"},
                 "previous_scope": {"kind": "workroom", "id": "4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0d4e"},
             },
+            {
+                "event": name::CLIENT_ATTACHED,
+                "boot": "9b2f6c1e-3d4a-4f5b-8c6d-7e8f9a0b1c2d",
+                "revision": 44,
+                "session": "5a1e0f7e-0d6c-4c9f-9c3e-2b7f1d0a8e11",
+                "scope": {"kind": "workroom", "id": "4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0d4e"},
+                "client": {
+                    "id": 7,
+                    "kind": "pane",
+                    "hostname": "joels-macbook.local",
+                    "attached_at_ms": 1_763_700_000_000_u64,
+                },
+            },
         ],
         "properties": {
             "event": {
@@ -222,8 +236,11 @@ pub fn output() -> Value {
                                 `session.program_status` (its coding agent's state, program or \
                                 waiting on the user changed, or its message did while it isn't \
                                 working), `session.run_state` (each transition of a run, \
-                                passing ones included) and `session.moved` (tagged with another \
-                                scope, sent to the subscribers of both): live events.",
+                                passing ones included), `session.moved` (tagged with another \
+                                scope, sent to the subscribers of both), `client.attached` and \
+                                `client.detached` (a client attached to the session, or left \
+                                it; a session's end is its clients' too, with no \
+                                `client.detached` each): live events.",
             },
             "boot": {
                 "type": "string",
@@ -278,6 +295,21 @@ pub fn output() -> Value {
                 "type": ["integer", "null"],
                 "description": "`session` and `session.run_state`: the run's exit code, when it \
                                 exited; `session.ended`: the shell's, when the daemon saw it.",
+            },
+            "clients": {
+                "type": "array",
+                "items": super::client_identity_schema(),
+                "description": "`session` and `session.created`: the clients attached to it, in \
+                                the order they attached, as `client.attached` gave each. Their \
+                                size, size owner and keepalive change with no event, so only \
+                                `session.list` with `clients` has them.",
+            },
+            "client": {
+                "description": "`client.attached` and `client.detached`: the client, as it \
+                                attached.",
+                "type": "object",
+                "required": client_identity["required"],
+                "properties": client_identity["properties"],
             },
             "sessions": {
                 "type": "array",

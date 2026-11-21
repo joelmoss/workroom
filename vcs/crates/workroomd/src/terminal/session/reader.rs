@@ -344,7 +344,7 @@ pub(super) fn read_session(
                     // here, not 1792. See `exit_code`.
                     Frame::new(FrameKind::Exited, exit_code(status).to_be_bytes().to_vec()),
                 );
-                deliver(&attached, &target, &bytes);
+                deliver(&attached, &target, &bytes, &hooks);
             }
             return;
         }
@@ -360,7 +360,7 @@ pub(super) fn read_session(
                     }
                     let bytes =
                         terminal_envelope(target.stream, Frame::new(FrameKind::Output, output));
-                    let size = deliver(&attached, target, &bytes);
+                    let size = deliver(&attached, target, &bytes, &hooks);
                     apply_size(&pty, &shadow, &attached, size, &hooks);
                 }
             }
@@ -395,7 +395,7 @@ pub(super) fn read_session(
                             b"the session's pty could not be read".to_vec(),
                         ),
                     );
-                    deliver(&attached, &target, &framed);
+                    deliver(&attached, &target, &framed, &hooks);
                 }
                 let _terminating = recover(TERMINATING.read());
                 terminate(&[&pty]);

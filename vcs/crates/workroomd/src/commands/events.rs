@@ -1,7 +1,7 @@
 //! `workroom events` (#687): the daemon's events, from the terminal API's `events.subscribe`, one
 //! JSON object per line: the sessions as they are (one `session` each), `snapshot-complete`, then
-//! each session created and ended, each change of a coding agent's program status and each run
-//! state as it happens, every one with the `boot` and `revision` it is numbered by. With `--json`,
+//! each session created and ended, each change of a coding agent's program status, each run
+//! state and each client attaching and detaching as it happens, every one with the `boot` and `revision` it is numbered by. With `--json`,
 //! each is one ADR 0013 envelope per line instead, the event's fields in it. By default the
 //! caller's scope's events (its workroom's, or every session's from no pane); `--workroom`,
 //! `--all`, `--session` and `--type` say whose and which. It runs until it is stopped, or its
@@ -30,7 +30,8 @@ pub(super) const FLAGS: &[Flag] = &[
     Flag {
         name: "type",
         usage: "Only live events of this type, repeated or comma-separated: session.created, \
-                session.ended, session.program_status or session.run_state",
+                session.ended, session.program_status, session.run_state, session.moved, \
+                client.attached or client.detached",
         hidden: false,
         ..Flag::VALUE
     },

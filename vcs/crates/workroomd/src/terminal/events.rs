@@ -50,11 +50,22 @@ pub mod name {
     pub const RUN_STATE: &str = "session.run_state";
     /// A session tagged with another scope: sent to the subscribers of both.
     pub const MOVED: &str = "session.moved";
+    /// A client attached to a session, and one detached from it (#688).
+    pub const CLIENT_ATTACHED: &str = "client.attached";
+    pub const CLIENT_DETACHED: &str = "client.detached";
     /// Where a filtered stream stands, when the events it skipped have moved its place on: never
     /// shown by the CLI, which resumes from it.
     pub const PLACE: &str = "place";
     /// The live events, which `types` filters.
-    pub const LIVE: [&str; 5] = [CREATED, ENDED, PROGRAM_STATUS, RUN_STATE, MOVED];
+    pub const LIVE: [&str; 7] = [
+        CREATED,
+        ENDED,
+        PROGRAM_STATUS,
+        RUN_STATE,
+        MOVED,
+        CLIENT_ATTACHED,
+        CLIENT_DETACHED,
+    ];
 }
 
 /// What one live session's events have told, as of the hub's revision.
@@ -70,6 +81,10 @@ pub struct Known {
     /// The number of the last run transition heard from the run's log, so none is told twice;
     /// `None` until one is, and for a run whose supervisor writes no log.
     pub run_seq: Option<u64>,
+    /// Its clients, in the order they attached, each as `client.attached` gave it (#688). Empty in
+    /// a table from before them, which held none.
+    #[serde(default)]
+    pub clients: Vec<Value>,
 }
 
 /// One event: its revision and the JSON a subscriber is sent.
@@ -303,16 +318,44 @@ impl Hub {
     /// A session was created: `listing` is it as `session.list` lists it.
     pub fn created(&self, id: SessionId, listing: Value) {
         let mut state = self.lock();
-        let known = Known {
-            coding_agent: listing["coding_agent"].clone(),
-            listing,
-            run_state: None,
-            exit_code: None,
-            run_seq: None,
-        };
+        let known = Known::new(listing);
         let json = session_event(name::CREATED, id, &known);
         state.sessions.insert(id, known);
         self.publish(&mut state, json);
+    }
+
+    /// A client attached to `id`: `client` is it as `client.attached` gives it, its `id` among
+    /// them (`api::client_identity_json`).
+    pub fn client_attached(&self, id: SessionId, client: Value) {
+        let mut state = self.lock();
+        let Some(known) = state.sessions.get_mut(&id) else {
+            return;
+        };
+        known.clients.push(client.clone());
+        let json = client_event(name::CLIENT_ATTACHED, id, &known.listing["scope"], client);
+        self.publish(&mut state, json);
+    }
+
+    /// The client numbered `client` detached, from whichever session it was on: a client's number
+    /// is the daemon's, so it names one. Told once, however it went; nothing for a client of a
+    /// session that has ended, whose end says its clients went with it.
+    pub fn client_detached(&self, client: u64) {
+        let mut state = self.lock();
+        let found = state.sessions.iter_mut().find_map(|(id, known)| {
+            let at = known
+                .clients
+                .iter()
+                .position(|known| known["id"] == client)?;
+            Some((
+                *id,
+                known.listing["scope"].clone(),
+                known.clients.remove(at),
+            ))
+        });
+        if let Some((id, scope, client)) = found {
+            let json = client_event(name::CLIENT_DETACHED, id, &scope, client);
+            self.publish(&mut state, json);
+        }
     }
 
     /// A session ended, with its shell's exit code when the daemon saw it.
@@ -571,34 +614,45 @@ impl Hub {
     /// created, and a coding agent that changed then changed. With nothing carried (a table from
     /// before the events, or one that couldn't be read), the live sessions are taken as they are,
     /// with no event: the boot is new, so no client resumes into them.
-    pub fn reconcile(&self, live: Vec<(SessionId, Value)>, carried: bool) {
+    ///
+    /// A hand-off closes every client's connection, and no client comes with an adopted session,
+    /// so every client the events carried detached (#688): each is told so, before any client of
+    /// this program attaches. Returns the highest client number carried, 0 for none, which this
+    /// program's clients are numbered past, so a client's number never names two in one boot.
+    pub fn reconcile(&self, live: Vec<(SessionId, Value)>, carried: bool) -> u64 {
         if !carried {
             let mut state = self.lock();
             for (id, listing) in live {
-                state.sessions.insert(
-                    id,
-                    Known {
-                        coding_agent: listing["coding_agent"].clone(),
-                        listing,
-                        run_state: None,
-                        exit_code: None,
-                        run_seq: None,
-                    },
-                );
+                state.sessions.insert(id, Known::new(listing));
             }
-            return;
+            return 0;
         }
-        let gone: Vec<SessionId> = {
+        let (gone, clients) = {
             let state = self.lock();
-            state
+            let gone: Vec<SessionId> = state
                 .sessions
                 .keys()
                 .filter(|id| !live.iter().any(|(live, _)| live == *id))
                 .copied()
-                .collect()
+                .collect();
+            let clients: Vec<u64> = state
+                .sessions
+                .values()
+                .flat_map(|known| {
+                    known
+                        .clients
+                        .iter()
+                        .filter_map(|client| client["id"].as_u64())
+                })
+                .collect();
+            (gone, clients)
         };
+        let highest = clients.iter().copied().max().unwrap_or(0);
         for id in gone {
             self.ended(id, None);
+        }
+        for client in clients {
+            self.client_detached(client);
         }
         for (id, listing) in live {
             let known = self.lock().sessions.contains_key(&id);
@@ -608,7 +662,33 @@ impl Hub {
                 self.created(id, listing);
             }
         }
+        highest
     }
+}
+
+impl Known {
+    /// A session just created, or adopted with nothing carried: `listing` is it as
+    /// `session.list` lists it, with no run state and no clients yet.
+    fn new(listing: Value) -> Known {
+        Known {
+            coding_agent: listing["coding_agent"].clone(),
+            listing,
+            run_state: None,
+            exit_code: None,
+            run_seq: None,
+            clients: Vec::new(),
+        }
+    }
+}
+
+/// `client.attached` or `client.detached`: the session's id and scope, and the client.
+fn client_event(name: &str, id: SessionId, scope: &Value, client: Value) -> Value {
+    json!({
+        "event": name,
+        "session": id.to_hyphenated(),
+        "scope": scope,
+        "client": client,
+    })
 }
 
 /// A session event that carries the whole session: `session.created`, and each of a snapshot's
@@ -626,6 +706,7 @@ pub fn session_event(name: &str, id: SessionId, known: &Known) -> Value {
         "coding_agent": known.coding_agent,
         "run_state": known.run_state,
         "exit_code": known.exit_code,
+        "clients": known.clients,
     })
 }
 
