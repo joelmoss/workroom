@@ -419,11 +419,12 @@ extension NSImage {
   }
 }
 
-/// "Move to Workroom" for a Quick Terminal pane: every workroom open in every Workroom window, in
-/// each window's tab order and under the window's name when there is more than one
-/// (`AppStore.paneMoveChoices`), moving the pane into the one chosen. One on a host,
-/// or still being created, is listed but disabled. A submenu in the tab chip's menu, a button in the
-/// pane's title bar.
+/// "Move to…" for any terminal (#660): the Terminals section's places (Standalone, the user's
+/// groups, New Terminal Group…), then every workroom open in every Workroom window, in each
+/// window's tab order and under the window's name when there is more than one
+/// (`PaneMove.choices`), moving the pane into the one chosen. A move it can't make (to or from a
+/// remote workroom, into one still being created) is listed disabled, its tooltip saying why. A
+/// submenu in the tab chip's menu, a button in the pane's title bar.
 struct QuickTerminalMoveToWorkroomMenu: View {
   enum Style { case menuItem, toolbar }
 
@@ -450,7 +451,7 @@ struct QuickTerminalMoveToWorkroomMenu: View {
       case .menuItem:
         menu {
           Label {
-            Text("Move to Workroom")
+            Text("Move to…")
           } icon: {
             Image(nsImage: .moveTerminal)
           }
@@ -466,8 +467,8 @@ struct QuickTerminalMoveToWorkroomMenu: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .onHover { hovering = $0 }
-        .help("Move to workroom")
-        .accessibilityLabel("Move pane to workroom")
+        .help("Move this terminal to a standalone terminal, a group or a workroom")
+        .accessibilityLabel("Move terminal to…")
         .accessibilityIdentifier("pane.toolbar.moveToWorkroom")
       }
     }
@@ -477,21 +478,31 @@ struct QuickTerminalMoveToWorkroomMenu: View {
   }
 
   private func menu(@ViewBuilder label: () -> some View) -> some View {
-    let groups = host.paneMoveChoices(tabID, of: target, windows: windows)
-    return Menu {
-      if groups.isEmpty {
-        Button("No Open Workrooms") {}.disabled(true)
-      }
-      ForEach(groups.indices, id: \.self) { index in
-        let group = groups[index]
-        if let header = group.header {
-          Section(header) { items(group) }
-        } else {
-          items(group)
-        }
-      }
+    Menu {
+      PaneMoveChoicesList(groups: host.paneMoveChoices(tabID, of: target, windows: windows))
     } label: {
       label()
+    }
+  }
+}
+
+/// The items of a "Move to…" menu (`PaneMove.choices`): each section after a divider, a window's
+/// under its name, and a move it can't make disabled with its reason as the tooltip.
+struct PaneMoveChoicesList: View {
+  let groups: [PaneWorkroomGroup]
+
+  var body: some View {
+    if groups.isEmpty {
+      Button("Nowhere to Move") {}.disabled(true)
+    }
+    ForEach(groups.indices, id: \.self) { index in
+      let group = groups[index]
+      if index > 0 { Divider() }
+      if let header = group.header {
+        Section(header) { items(group) }
+      } else {
+        items(group)
+      }
     }
   }
 
@@ -500,6 +511,7 @@ struct QuickTerminalMoveToWorkroomMenu: View {
       let choice = group.choices[index]
       Button(action: choice.move) { Label(choice.title, systemImage: choice.glyph) }
         .disabled(!choice.enabled)
+        .help(choice.help ?? "Move this terminal to \(choice.title)")
     }
   }
 }

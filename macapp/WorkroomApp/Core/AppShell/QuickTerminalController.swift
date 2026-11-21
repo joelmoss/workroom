@@ -89,40 +89,57 @@ enum QuickTerminalEdge: String, CaseIterable, Defaults.Serializable,
   }
 }
 
-/// The "quick terminal" (issue #39): a login shell (at `~/` unless Settings ▸ Terminal names
-/// another folder) in its own chrome-less window that slides in from a screen edge, Quake-style,
-/// summoned by the ⌥§ global hotkey or the main-toolbar button. One persistent controller owns at
-/// most one window + surface at a time:
+/// The "quick terminal" (issue #39): the panel of the built-in terminal group (ADR 0077), a
+/// chrome-less window that slides in from a screen edge, Quake-style, summoned by the ⌥§ global
+/// hotkey, the main-toolbar button or the group's sidebar row. One persistent controller owns one
+/// host for the app's life, and at most one window:
 ///
 /// ```
-///   ABSENT  ──⌥§ / button──▶ VISIBLE      create window + a fresh surface, slide in, key + focused
-///   VISIBLE ──⌥§───────────▶ HIDDEN       slide out, orderOut — surface kept alive (scrollback / process persist)
-///   HIDDEN  ──⌥§ / button──▶ VISIBLE      slide in, focus the SAME surface
-///   VISIBLE/HIDDEN ──⌘W / shell exit──▶ ABSENT   tearDown surface, destroy window
+///   ABSENT  ──⌥§ / button──▶ VISIBLE      create the window, a fresh terminal when it has none, slide in
+///   VISIBLE ──⌥§───────────▶ HIDDEN       slide out, orderOut — terminals kept (scrollback / process persist)
+///   HIDDEN  ──⌥§ / button──▶ VISIBLE      slide in, focus the SAME terminal
+///   VISIBLE ──last terminal closes──▶ HIDDEN   the next summon opens a fresh terminal
 /// ```
 ///
 /// A toggle (`toggle()`, the hotkey) can hide; the button (`show()`) only ever brings the window
-/// forward. After a full close the next summon is a brand-new terminal — no session resurrection.
+/// forward. Its terminals are ordinary ones: they survive a quit, and its layout is saved as its own
+/// entry in `session.json` and restored at launch (`restore`), so their sessions reattach and
+/// notify before it is first summoned.
 ///
 /// Its tabs and panes are a workroom's — the same `WorkroomTerminalsView`, tab strip and pane tree,
 /// so they look and behave the same — over its own `QuickTerminalHost`, which is never registered
-/// with `WindowRegistry` as a window (never saved, restored or counted as one), and whose
-/// `TerminalPanes` moves no pane to a window of its own (`allowsDetach`). The target is no project.
+/// with `WindowRegistry` as a window (ADR 0064) but is a holder of the Terminals section. Its panes
+/// can be popped out into windows of their own.
 /// The window is an AppKit `NSWindow`, not a SwiftUI scene, for exact chrome control, and follows
 /// live theme switches, which `ThemeService` only takes to registered stores.
 @MainActor
 final class QuickTerminalController: NSObject, NSWindowDelegate {
   private var window: NSWindow?
-  /// What hosts the Quick Terminal's panes, while a window exists.
+  /// What hosts the Quick Terminal's panes, from its first summon or restore for the app's life.
   private(set) var host: QuickTerminalHost?
+  /// The Terminals section its group is in. Set before the host is made; tests stand in their own.
+  var section: TerminalsSection {
+    get { sectionOverride ?? .shared }
+    set { sectionOverride = newValue }
+  }
+  private var sectionOverride: TerminalsSection?
+  /// Its saved layout until the host has restored it, written back as it was read meanwhile so a
+  /// save before then doesn't lose it (as a window holds back a target it can't restore yet).
+  private var pendingSession: TargetSession?
 
-  /// The Quick Terminal's one target: no workroom, its id unlike any project path. `path` is where
-  /// a new tab's shell starts.
-  static func target() -> TerminalTarget {
-    TerminalTarget(
-      id: targetID, title: "Quick Terminal", path: newTabDirectory(), unavailability: nil)
+  /// The Quick Terminal's one target, the built-in group's: no workroom. `path` is where a new
+  /// tab's shell starts, the group's starting folder or "New terminals open in".
+  /// Built from the group directly, not through the section's lookup, which would read every
+  /// holder's terminal names for a title that is fixed.
+  static func target(in section: TerminalsSection = .shared) -> TerminalTarget {
+    let group = section.quickTerminal
+    return TerminalTarget(
+      id: targetID, title: group.name ?? "Quick Terminal", path: group.workingDirectory,
+      unavailability: nil)
   }
   nonisolated static let targetID: TerminalTarget.ID = .quickTerminal
+  /// Its symbol in a Move to… menu: a panel sliding in from the top.
+  static let glyph = "rectangle.topthird.inset.filled"
   private var themeObserver: NSObjectProtocol?
   /// Guards `tearDownState` against the re-entrancy of `window.close()` → `windowWillClose`.
   private var tearingDown = false
@@ -150,11 +167,6 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     GhosttySurfaceView(workingDirectory: $0, command: $1)
   }
 
-  /// Where a new tab's shell starts: the Settings folder. A split starts in its neighbour's.
-  static func newTabDirectory() -> String {
-    workingDirectory(for: Defaults[.newTerminalDirectory])
-  }
-
   /// The folder a new quick-terminal shell starts in: the setting with `~` expanded, or the home
   /// folder when it is empty or no longer a folder (deleted, or on an unmounted volume).
   nonisolated static func workingDirectory(for setting: String) -> String {
@@ -176,7 +188,9 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   /// True while a window exists (VISIBLE or HIDDEN) — inspection aid for tests.
   var hasWindow: Bool { window != nil }
   /// The focused pane's surface (VISIBLE or HIDDEN), else nil.
-  var currentSurface: GhosttySurfaceView? { host?.terminals.focusedSurface(for: Self.target()) }
+  var currentSurface: GhosttySurfaceView? {
+    host.flatMap { $0.terminals.focusedSurface(for: $0.target) }
+  }
   /// The live window — for tests asserting the chrome-less styling.
   var currentWindow: NSWindow? { window }
 
@@ -208,8 +222,17 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
         }
         return
       }
-      createWindow()
     }
+    let host = ensureHost()
+    // Its last terminal closed, or left for a window of its own, and hid it: a summon opens a fresh
+    // one in the panel.
+    let docked = host.terminals.allTabs(for: host.target).filter {
+      !host.terminals.detachedTabIDs.contains($0.id)
+    }
+    if docked.isEmpty {
+      _ = host.terminals.addTab(for: host.target)
+    }
+    if window == nil { createWindow(host) }
     guard let window, let surface = currentSurface else { return }
     // The hotkey can fire while another app is frontmost (or while Workroom is hidden), so pull the
     // app forward — mirrors `AppDelegate.toggleAppVisibility`.
@@ -239,9 +262,14 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   /// A notification from one of its panes was clicked: slide in on that pane. Its host is no
   /// `WindowRegistry` window, so the app's usual notification routing can't find it.
   func reveal(tab tabID: TerminalTab.ID?) {
-    let target = Self.target()
-    if let tabID, let panes = host?.terminals, panes.tab(tabID, for: target) != nil {
-      panes.focus(tabID, for: target)
+    if let tabID, let host, host.terminals.tab(tabID, for: host.target) != nil {
+      // A popped-out pane is in a window of its own: that comes forward instead.
+      if let detached = host.detachedPanes.window(for: tabID) {
+        NSApp.activate(ignoringOtherApps: true)
+        detached.makeKeyAndOrderFront(nil)
+        return
+      }
+      host.terminals.focus(tabID, for: host.target)
     }
     show()
   }
@@ -305,21 +333,24 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     }
   }
 
-  private func createWindow() {
+  /// The host, made once: its terminals outlive the window, a hide and the last one closing. It
+  /// registers with the Terminals section as the built-in group's holder as it is made.
+  @discardableResult
+  func ensureHost() -> QuickTerminalHost {
+    if let host { return host }
     // Its terminals' notifications join the app's one list (ADR 0064).
     let host = QuickTerminalHost(
-      notifications: WindowRegistry.shared.notifications, target: Self.target())
+      notifications: WindowRegistry.shared.notifications, section: section)
     let panes = host.terminals
     panes.sessionService = sessionService
     panes.readsPaneBranches = true
-    panes.allowsDetach = false
-    // Its panes move into a workroom open in any window instead.
+    // Its panes pop out into windows of their own, or move into a workroom open in any window.
     panes.moveToWorkroomChoices = { [weak host] tabID, target in
       host?.paneMoveChoices(tabID, of: target) ?? []
     }
     panes.dropOutsideWindow = { [weak host] tabID, target in
-      guard let host else { return }
-      QuickTerminalPaneDrag.end(
+      guard let host else { return false }
+      return QuickTerminalPaneDrag.end(
         source: host.terminals, notifications: host.notifications, tabID: tabID, target: target)
     }
     panes.makeView = { [weak self] _, directory, command in
@@ -329,14 +360,58 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
       Self.applyTheme(to: surface)
       return surface
     }
-    // Closing the last tab, by ⌘W, its ✕ or its shell's exit, closes the window.
-    host.onTargetEmptied = { [weak self] _ in self?.close() }
+    // Closing the last tab, by ⌘W, its ✕ or its shell's exit, hides the panel; the group stays.
+    host.onTargetEmptied = { [weak self] _ in self?.hide() }
+    host.onReveal = { [weak self] tabID in self?.reveal(tab: tabID) }
     // Toasts show in the front window, this one while it is key (#573 D2).
     host.forwardToast = { WindowRegistry.shared.showToast($0) }
-    // `ensureInitialTerminal` opens a project's first tab; this target is no project.
-    _ = panes.addTab(for: host.target)
     self.host = host
+    themeObserver = NotificationCenter.default.addObserver(
+      forName: .themeDidChange, object: nil, queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated { self?.applyTheme() }
+    }
+    return host
+  }
 
+  /// Reattaches restored panes to their live sessions. Tests stand in their own, with no helper.
+  var recoverSessions: @MainActor (TerminalPanes, (TerminalTarget.ID) -> Bool) async -> Void = {
+    await PersistentSessionRecovery.recover(in: $0, reattaches: $1)
+  }
+
+  /// `restore` from the app's launch: holds `saved` at once, for any save before it lands.
+  func restoreAtLaunch(_ saved: TargetSession?) {
+    guard let saved else { return }
+    pendingSession = saved
+    Task { await restore(saved) }
+  }
+
+  /// At launch: bring back the panel's saved layout (`session.json`'s Quick Terminal entry), hidden,
+  /// so its sessions reattach and notify before it is first summoned. Nothing to restore makes no
+  /// host. A target it can't open here (its folder gone) keeps its panes, starting fresh shells.
+  func restore(_ saved: TargetSession?) async {
+    guard let saved else { return }
+    pendingSession = saved
+    await sessionService.prepareBackend()
+    defer { pendingSession = nil }
+    let host = ensureHost()
+    let target = host.target
+    guard host.terminals.tabCount(forTargetID: target.id) == 0 else { return }
+    host.terminals.restore(saved, for: target)
+    let section = section
+    await recoverSessions(host.terminals) { id in
+      guard id == .quickTerminal else { return false }
+      return FileManager.default.fileExists(atPath: Self.target(in: section).path)
+    }
+  }
+
+  /// What `session.json` keeps of the panel: its panes now, or its saved layout while that is
+  /// still being restored. Nil when it has none.
+  func captureSession() -> TargetSession? {
+    host?.captureSession() ?? pendingSession
+  }
+
+  private func createWindow(_ host: QuickTerminalHost) {
     let window = QuickTerminalWindow(
       contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),
       styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
@@ -359,18 +434,12 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     // The autosave restores the user's last size; `show()` sets the position.
     window.setFrameAutosaveName("QuickTerminal")
     window.contentView = NSHostingView(
-      rootView: QuickTerminalContent(panes: panes).quickTerminalEnvironment(host: host))
+      rootView: QuickTerminalContent(host: host).quickTerminalEnvironment(host: host))
     // Glass now, as its root (`QuickTerminalContent`) will resolve it, not when that first mounts.
     WindowBackgroundThemer.applyResolved(to: window, titlebar: .hidden)
     host.hostWindow = window
     self.window = window
     applyTheme()
-
-    themeObserver = NotificationCenter.default.addObserver(
-      forName: .themeDidChange, object: nil, queue: .main
-    ) { [weak self] _ in
-      MainActor.assumeIsolated { self?.applyTheme() }
-    }
   }
 
   /// Re-theme every pane for the active theme. On a `.themeDidChange` the global ghostty config is
@@ -393,7 +462,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   @discardableResult
   func perform(_ key: QuickTerminalKey) -> Bool {
     guard let host else { return true }
-    let target = Self.target()
+    let target = host.target
     let panes = host.terminals
     let active = panes.activeTab(for: target)
     switch key {
@@ -417,21 +486,23 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   /// A double-click in the tab bar's empty space must not zoom the window off its edge.
   func windowShouldZoom(_ window: NSWindow, toFrame newFrame: NSRect) -> Bool { false }
 
-  /// Full close: destroy the window (its `windowWillClose` runs the teardown). Idempotent.
+  /// Destroys the window, keeping its terminals: the next summon builds a new window over them.
+  /// Only tests and the app's own exit close it; the user's ways out hide it. Idempotent.
   func close() {
     window?.close()
   }
 
-  /// At quit: end its panes' background sessions, since its shells are not kept across a quit
-  /// (ADR 0064). Its tabs stay open; a quit must not free surfaces.
-  func endSessionsAtQuit() {
-    host?.terminals.endSessionsAtQuit(for: Self.target())
+  /// A close asked of the window hides it instead: the panel is the group's, which never closes.
+  func windowShouldClose(_ sender: NSWindow) -> Bool {
+    hide()
+    return false
   }
 
-  /// For the launch sweep: a session tag that still resolves. The Quick Terminal's never does, so a
-  /// crash or force quit, which skips `endSessionsAtQuit`, can't leave its shells running unseen.
+  /// For the launch sweep: a session tag that still resolves. Only an older build's Quick Terminal
+  /// tag doesn't: that build ended its shells at quit, so one still running was left by a crash or
+  /// force quit and has nothing to come back to. Today's are the built-in group's, which reattach.
   nonisolated static func sweepResolves(_ workroomTag: String) -> Bool {
-    workroomTag != targetID.encoded
+    workroomTag != TargetID.legacyQuickTerminalTag
   }
 
   // MARK: Dragging along the edges
@@ -485,26 +556,15 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     tearDownState()
   }
 
-  /// Free the surface via the documented single-steady-state-surface path (clears callbacks first,
-  /// then `ghostty_surface_free`) and drop the window — leaving the controller ABSENT so the next
-  /// summon is fresh. Re-entrancy-guarded because `close()` → `windowWillClose` re-enters.
+  /// Drops the window and nothing else. Its terminals and their sessions are the built-in group's,
+  /// which outlive the window: closing them here would end shells a quit must keep (ADR 0077), on
+  /// any quit path, AppKit closing windows at exit included. Re-entrancy-guarded because `close()`
+  /// → `windowWillClose` re-enters.
   private func tearDownState() {
     guard !tearingDown else { return }
     tearingDown = true
     hiding = false
-    if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
-    themeObserver = nil
-    if let host {
-      // The window is already going: closing its tabs mustn't ask to close it again.
-      host.onTargetEmptied = nil
-      let target = Self.target()
-      for tab in host.terminals.allTabs(for: target) {
-        host.terminals.closeTab(tab.id, for: target)
-      }
-      // Its notifications go with it, as a closing window's do (#573 D3).
-      WindowRegistry.shared.dropNotifications(raisedBy: host)
-    }
-    host = nil
+    host?.hostWindow = nil
     window?.delegate = nil
     window = nil
     tearingDown = false

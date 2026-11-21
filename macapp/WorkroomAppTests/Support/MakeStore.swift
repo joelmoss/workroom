@@ -52,18 +52,16 @@ func isolate(_ panes: TerminalPanes, service: PersistentSessionService) {
   panes.recency = SwitcherRecency()
 }
 
-/// A Quick Terminal host over the controller's target, wired as `QuickTerminalController` wires
-/// it (no pane leaves for a window of its own), with isolated panes (`isolate`), closes that never
-/// prompt and banners that post nowhere unless the test hands in its own `notifier`.
+/// A Quick Terminal host over the built-in group of `section` (a fresh one unless given), with
+/// isolated panes (`isolate`), closes that never prompt and banners that post nowhere unless the
+/// test hands in its own `notifier`.
 @MainActor
 func makeQuickTerminalHost(
   notifications: NotificationCenterStore, service: PersistentSessionService? = nil,
-  notifier: SystemNotifying = SilentNotifier()
+  notifier: SystemNotifying = SilentNotifier(), section: TerminalsSection = TerminalsSection()
 ) -> QuickTerminalHost {
-  let host = QuickTerminalHost(
-    notifications: notifications, target: QuickTerminalController.target())
+  let host = QuickTerminalHost(notifications: notifications, section: section)
   isolate(host.terminals, service: service ?? isolatedPaneSessionService())
-  host.terminals.allowsDetach = false
   host.closeFlow.confirmOnCloseOverride = false
   host.services.notifier = notifier
   return host

@@ -160,7 +160,7 @@ final class TerminalGroupTests: XCTestCase {
 
   /// Value: protects=renaming a group from the sidebar, in every window; fails_when=the row or the
   /// title-bar tab keeps the old name; why_new=#658; seam=AppStore; no_claim=dissolving an
-  /// unnamed group (#659)
+  /// unnamed group (UnnamedTerminalGroupTests)
   func testRenamingAGroupRetitlesItEverywhere() throws {
     let first = makeStore()
     let second = makeStore()
@@ -171,9 +171,11 @@ final class TerminalGroupTests: XCTestCase {
     XCTAssertEqual(second.target(for: sid)?.title, "Servers")
     XCTAssertEqual(first.orderedWorkroomTargets().map(\.target.title), ["Servers"])
 
+    first.newTerminalInSelectedTarget()
     first.renameTerminalGroup(sid, to: "")
     XCTAssertNil(first.terminalGroup(sid)?.name, "an empty name clears it")
-    XCTAssertEqual(first.target(for: sid)?.title, "Terminal 1", "labelled by its terminals")
+    XCTAssertEqual(
+      first.target(for: sid)?.title, "Terminal 1 + Terminal 2", "labelled by its terminals")
   }
 
   /// Value: protects=a group's terminal row selects the group and focuses that terminal;

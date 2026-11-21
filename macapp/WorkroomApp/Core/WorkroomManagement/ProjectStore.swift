@@ -172,10 +172,13 @@ final class ProjectStore: ObservableObject {
   /// opened or applied yet will still reattach to these.
   var savedSessionIDs: Set<UUID> {
     (unclaimedSessionWindows + claimedSessions.values)
-      .reduce(into: Set<UUID>()) { ids, window in
+      .reduce(into: savedQuickTerminal?.sessionIDs ?? []) { ids, window in
         for target in window.targets { ids.formUnion(target.sessionIDs) }
       }
   }
+  /// The Quick Terminal panel's saved entry, while the session is being restored: its sessions are
+  /// held too, until its own restore has reattached them.
+  private var savedQuickTerminal: TargetSession?
   /// Run once the saved windows have all been restored, by owner. A window's store adds one for
   /// the app's Terminals section, which prunes the standalone rows no restored window holds.
   /// Not observed: `RootWindow` builds its `AppStore`, which registers here, while SwiftUI evaluates
@@ -268,6 +271,7 @@ final class ProjectStore: ObservableObject {
     unclaimedSessionWindows.removeAll()
     dispatchedSessionKeys.removeAll()
     claimedSessions.removeAll()
+    savedQuickTerminal = nil
     keyWindowSessionKey = timedOut && incomplete ? nil : keyWindowSessionKey
     if timedOut && incomplete {
       sessionCoordinator.freezeWithoutWriting()
@@ -289,8 +293,13 @@ final class ProjectStore: ObservableObject {
   private func loadSessionIfNeeded() {
     guard !didLoadSession else { return }
     didLoadSession = true
-    guard case .restored(let file, _) = sessionCoordinator.read() else { return }
+    // A file with the Quick Terminal's panel alone has no window to restore (its controller
+    // restores the panel).
+    guard case .restored(let file, _) = sessionCoordinator.read(), !file.windows.isEmpty else {
+      return
+    }
     unclaimedSessionWindows = file.windows
+    savedQuickTerminal = file.quickTerminal
     isRestoringSession = true
     // Suspended until `finishSessionRestore`. Without this the first window's restore marks the
     // session dirty, and that write would rebuild the document from the windows that exist SO FAR —

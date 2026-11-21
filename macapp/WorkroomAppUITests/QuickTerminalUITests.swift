@@ -2,8 +2,8 @@ import XCTest
 
 /// The Quick Terminal's window (issue #39), hosted by `QuickTerminalHost`: summoned from File ▸
 /// Quick Terminal, its tabs and splits driven by the keys `AppDelegate`'s monitor routes to it
-/// (`QuickTerminalKey`) and by a pane's right-click menu, closed with its last tab, summoned
-/// fresh, and a pane moved out into a workroom.
+/// (`QuickTerminalKey`) and by a pane's right-click menu, hidden with its last tab, summoned
+/// fresh, a pane moved out into a workroom, and its sidebar row sliding it in (#661).
 ///
 /// Summoned from the menu item, never its key equivalent: that is ⌥§ by default, which no test
 /// should rely on. Every count is scoped to the Quick Terminal's window, because the fixture's
@@ -86,15 +86,15 @@ final class QuickTerminalUITests: XCTestCase {
   }
 
   /// One launch, one ordered chain; the move runs last because it takes the Quick Terminal's only
-  /// tab, which closes its window:
+  /// tab, which hides its window:
   ///
   /// 1. Summoned, it opens with one terminal tab.
   /// 2. ⌘T adds a tab, ⌘D splits it, ⌘W closes the split's pane and then a tab: its own keys, not
   ///    the workroom window's (both windows count separately, and the workroom's stays as it was).
-  /// 3. ⌘W on its last tab closes the window (`onTargetEmptied`).
+  /// 3. ⌘W on its last tab hides the window (`onTargetEmptied`); the group stays.
   /// 4. Summoned again, it comes back with one fresh tab.
   /// 5. Its pane's "Move to workroom" button moves the tab into the fixture workroom: the
-  ///    workroom's strip gains it, and the Quick Terminal, left with no tab, closes.
+  ///    workroom's strip gains it, and the Quick Terminal, left with no tab, hides.
   func testSummonTabsSplitsClosesResummonsAndMovesAPaneIntoAWorkroom() {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
@@ -126,11 +126,11 @@ final class QuickTerminalUITests: XCTestCase {
       waitForCount(tabs(in: workroom), workroomTabsBefore),
       "the keys acted on the Quick Terminal, not the workroom window")
 
-    // 3. Its last tab closes the window.
+    // 3. Its last tab hides the window.
     app.typeKey("w", modifierFlags: .command)
     XCTAssertTrue(
       quickTerminal(app).waitForNonExistence(timeout: 10),
-      "closing its last tab closes the Quick Terminal")
+      "closing its last tab hides the Quick Terminal")
     XCTAssertTrue(waitForCount(app.windows, windowsBefore), "and only its window went")
 
     // 4. Summon again: a fresh window with one tab.
@@ -157,7 +157,38 @@ final class QuickTerminalUITests: XCTestCase {
       "the moved tab joins the workroom's strip")
     XCTAssertTrue(
       quickTerminal(app).waitForNonExistence(timeout: 10),
-      "the Quick Terminal's only tab left it, so it closes")
+      "the Quick Terminal's only tab left it, so it hides")
+  }
+
+  /// #661: the Quick Terminal is the built-in group, listed first in the Terminals section, above
+  /// the projects. Clicking its row slides its panel in, with a terminal, and the window stays on
+  /// the workroom it showed, opening no terminal of its own.
+  func testItsSidebarRowSlidesThePanelInAndKeepsTheWindowsSelection() {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    let workroom = workroomWindow(app)
+    XCTAssertTrue(
+      panes(in: workroom).firstMatch.waitForExistence(timeout: 15),
+      "the fixture workroom should render a terminal pane on launch")
+    let workroomTabsBefore = tabs(in: workroom).count
+    let row = workroom.descendants(matching: .any)
+      .matching(identifier: "sidebar.group.group:51C10A7E-0D4F-4E6A-9B2C-000000000001").firstMatch
+    XCTAssertTrue(row.waitForExistence(timeout: 10), "the Quick Terminal has a sidebar row")
+    let project = workroom.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier BEGINSWITH %@", "sidebar.project.")).firstMatch
+    if project.exists {
+      XCTAssertLessThan(row.frame.minY, project.frame.minY, "above the projects")
+    }
+    XCTAssertFalse(quickTerminal(app).exists, "no Quick Terminal yet")
+
+    row.click()
+
+    let qt = quickTerminal(app)
+    XCTAssertTrue(qt.waitForExistence(timeout: 15), "its row slides the panel in")
+    assertCounts(in: qt, tabs: 1, panes: 1, "slid in from its row")
+    XCTAssertTrue(
+      waitForCount(tabs(in: workroom), workroomTabsBefore), "the window opened no terminal")
+    XCTAssertTrue(panes(in: workroom).firstMatch.exists, "and still shows its workroom")
   }
 
   /// A Quick Terminal pane's right-click Split Right, New Terminal and Close Terminal act on the

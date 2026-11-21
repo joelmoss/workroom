@@ -1,16 +1,21 @@
 import AppKit
+import Combine
 import DaemonConnection
 import Defaults
 import Foundation
+import WorkroomDomain
 import WorkroomVCS
 
 /// What hosts the Quick Terminal's panes: its tabs, their close flow, Investigate sessions and
-/// notifications, and the window's find and modals. Its one target is no project, so it holds none
-/// of a workroom window's owners (projects, VCS status, run commands, creates and deletes); the
-/// members that answer only for a workroom say so where they answer nothing.
+/// notifications, the panes popped out of it, and the window's find and modals. Its one target is
+/// the built-in terminal group (ADR 0077), no project, so it holds none of a workroom window's
+/// owners (projects, VCS status, run commands, creates and deletes); the members that answer only
+/// for a workroom say so where they answer nothing.
 ///
-/// Never registered with `WindowRegistry` as a window: never saved, restored or counted as one. Its
-/// notifications join the app's one list (ADR 0064), named live from the app's projects.
+/// Never registered with `WindowRegistry` as a window, or counted as one (ADR 0064). It registers
+/// with the app's Terminals section as a holder instead, so the group's terminals are counted and
+/// raised there. Its layout is saved as its own entry in `session.json`. Its notifications join the
+/// app's one list (ADR 0064), named live from the app's projects.
 @MainActor
 @Observable
 final class QuickTerminalHost: PaneHost, PaneNotifierHost {
@@ -30,26 +35,42 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
 
   /// The Quick Terminal's window, once it has one.
   @ObservationIgnored weak var hostWindow: NSWindow?
-  /// Called when a target's last tab closes: the controller closes the window on it.
+  /// Called when a target's last tab closes: the controller hides the window on it.
   @ObservationIgnored var onTargetEmptied: ((TerminalTarget.ID) -> Void)?
-  /// Its one target, always on screen in its window with no selection to say so: its panes count as
-  /// seen and focused as a selected workroom's do (#573).
-  let target: TerminalTarget
+  /// Slides the panel in, focused on the tab given when it has it: a row click, a move into it or
+  /// a notification. Set by the controller.
+  @ObservationIgnored var onReveal: ((TerminalTab.ID?) -> Void)?
+  /// Its panes popped out into windows of their own (issue #172), as a window's are.
+  @ObservationIgnored let detachedPanes = DetachedPaneWindows()
+  /// The app's Terminals section, whose built-in group this host holds.
+  @ObservationIgnored let section: TerminalsSection
+  /// Marks the saved session dirty on any pane change, as a window's store does (issue #46).
+  @ObservationIgnored private var sessionObservation: AnyCancellable?
+  /// Its one target, the built-in group's, always on screen in its window with no selection to say
+  /// so: its panes count as seen and focused as a selected workroom's do (#573). Resolved live, so
+  /// a new tab starts in the group's starting folder as it is now.
+  var target: TerminalTarget { QuickTerminalController.target(in: section) }
 
   /// Its notifications and toast queue. Lazy only because its records' origin is this host's
   /// identity, which init can't name until every stored property is set.
   @ObservationIgnored private(set) lazy var paneNotifier = PaneNotifier(
     host: self, terminals: terminals, notifications: notifications)
 
-  init(notifications: NotificationCenterStore, target: TerminalTarget) {
+  init(notifications: NotificationCenterStore, section: TerminalsSection = .shared) {
     self.notifications = notifications
-    self.target = target
+    self.section = section
     let terminals = TerminalPanes()
     self.terminals = terminals
     let runCommand = RunCommandController(terminals: terminals)
     self.runCommand = runCommand
     self.closeFlow = TabCloseFlow(terminals: terminals, runCommand: runCommand)
     terminals.onEvent = { [weak self] event in self?.handleTerminalEvent(event) }
+    // `paneWillChange` fires before the change lands, so the coordinator schedules its capture.
+    sessionObservation = terminals.paneWillChange.sink { _ in
+      SavedLayoutCoordinator.shared.markDirty()
+    }
+    section.register(self)
+    section.quickTerminalHolder = self
   }
 
   /// Everything its `TerminalPanes` reports, handled inline as a window's store handles it.
@@ -60,9 +81,12 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
     // Find is tied to the focused content pane: a focus change ends it.
     case .focusChanged:
       if contentFind.isOpen { contentFind.close() }
-    case .tabsRemoved(let targetID, _):
+    case .tabsRemoved(let targetID, let ids):
+      // A popped-out pane's window goes with it (idempotent when its dock already closed it).
+      for id in ids { detachedPanes.close(tabID: id) }
       // A closed pane's waiting requests stop counting.
       WindowRegistry.shared.recomputeBadge()
+      SavedLayoutCoordinator.shared.markDirty()
       if terminals.tabCount(forTargetID: targetID) == 0 { onTargetEmptied?(targetID) }
     // Effective focus is the one authority for reading a terminal's notifications (#358).
     case .terminalSeen(_, let tabID):
@@ -83,14 +107,31 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
       case .split(let edge): terminals.splitTab(tabID, on: edge, for: target)
       case .close: requestCloseTerminalTab(tabID, for: target)
       }
-    // No navigation history, workroom split or selection to follow a content change, a pane count
-    // or a surface focus.
-    case .tabContentChanged, .paneCountChanged, .surfaceFocused:
+    // No navigation history, workroom split or selection to follow these; its saved layout does.
+    case .tabContentChanged, .paneCountChanged:
+      SavedLayoutCoordinator.shared.markDirty()
+    case .surfaceFocused:
       break
-    // No pane leaves for a window of its own (`allowsDetach` is false).
-    case .paneDetached, .paneRestoredDetached, .paneDocked, .paneRaiseRequested,
-      .paneWindowToggleRequested:
-      break
+    // Pop-out panes (issue #172), as a window's store opens and closes them.
+    case .paneDetached(_, let tabID, let screenPoint):
+      openDetachedPane(tabID, origin: screenPoint, frame: nil)
+      SavedLayoutCoordinator.shared.markDirty()
+      // Its last docked pane left: the panel hides, as when its last terminal closes.
+      if terminals.allTabs(for: target).allSatisfy({ terminals.detachedTabIDs.contains($0.id) }) {
+        onTargetEmptied?(target.id)
+      }
+    case .paneRestoredDetached(_, let tabID, let frame):
+      openDetachedPane(tabID, origin: nil, frame: frame)
+    case .paneDocked(let tabID):
+      detachedPanes.close(tabID: tabID)
+      SavedLayoutCoordinator.shared.markDirty()
+    case .paneRaiseRequested(let tabID):
+      if let window = detachedPanes.window(for: tabID) {
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+      }
+    case .paneWindowToggleRequested(let targetID, let tabID):
+      togglePaneWindow(tabID, targetID: targetID)
     // Its panes are this Mac's, so no host can fail to end one.
     case .remoteCloseFailed:
       break
@@ -117,8 +158,45 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
     open(target)
   }
 
-  /// No pane moves to a window of its own (`allowsDetach` is false).
-  func togglePaneWindow(_ tabID: TerminalTab.ID, targetID: TerminalTarget.ID) {}
+  /// A pane's Move to New Window / Move Back to Quick Terminal.
+  func togglePaneWindow(_ tabID: TerminalTab.ID, targetID: TerminalTarget.ID) {
+    guard targetID == target.id else { return }
+    if terminals.detachedTabIDs.contains(tabID) {
+      dockPane(tabID)
+    } else {
+      terminals.detachPane(tabID, for: target, at: NSEvent.mouseLocation)
+    }
+  }
+
+  /// Docks a popped-out pane back into the panel, and slides the panel in on it.
+  func dockPane(_ tabID: TerminalTab.ID) {
+    terminals.dockPane(tabID, for: target)
+    onReveal?(tabID)
+  }
+
+  /// Builds and shows a popped-out pane's window, as a window's store does.
+  private func openDetachedPane(_ tabID: TerminalTab.ID, origin: CGPoint?, frame: NSRect?) {
+    let target = target
+    guard let tab = terminals.tab(tabID, for: target) else { return }
+    let surface = terminals.surface(of: tabID)
+    let terminals = terminals
+    detachedPanes.open(
+      tabID: tabID, title: tab.title, project: target.title, workroom: nil,
+      glyph: TerminalGroup.glyph, origin: origin, frame: frame,
+      onCloseTab: { [weak self] in self?.requestCloseTerminalTab(tabID, for: target) },
+      onDock: { [weak self] in self?.dockPane(tabID) },
+      content: {
+        DetachedPaneView(
+          tabID: tabID, content: tab.content, surface: surface, target: target,
+          panes: terminals,
+          onTitleChange: { [weak self] title in
+            self?.detachedPanes.setTitle(
+              title, project: target.title, workroom: nil, glyph: TerminalGroup.glyph, for: tabID)
+          }
+        )
+        .quickTerminalPaneEnvironment(host: self)
+      })
+  }
 
   // MARK: PaneHost: closing tabs
 
@@ -199,8 +277,19 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
     windows: [AppStore] = WindowRegistry.shared.allStores
   ) -> [PaneWorkroomGroup] {
     PaneMove.choices(
-      tabID, of: target, source: terminals, notifications: notifications, windows: windows)
+      tabID, of: target, source: terminals, notifications: notifications, windows: windows,
+      quickTerminal: self)
   }
+
+  /// Its panel has no sidebar or title-bar tabs: a pane dragged out of it goes through
+  /// `QuickTerminalPaneDrag`.
+  func paneDragMoved(_ tabID: TerminalTab.ID, of target: TerminalTarget, to screenPoint: CGPoint?)
+    -> Bool
+  { false }
+
+  func paneDragEnded(_ tabID: TerminalTab.ID, of target: TerminalTarget, at screenPoint: CGPoint)
+    -> Bool
+  { false }
 
   // MARK: PaneHost: toasts
 
@@ -245,11 +334,63 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
     target.id == targetID ? target : nil
   }
 
-  /// No pane is popped out into a window of its own.
-  func detachedWindowIsKey(forTab tabID: TerminalTab.ID) -> Bool? { nil }
+  /// Whether its pane `tabID`'s own window is key, while it is popped out.
+  func detachedWindowIsKey(forTab tabID: TerminalTab.ID) -> Bool? {
+    detachedPanes.window(for: tabID)?.isKeyWindow
+  }
 
   /// The origin line under an alert's title: its target's name.
   func placeSource(targetID: TerminalTarget.ID) -> String {
     targetID == target.id ? "Quick Terminal" : ""
+  }
+}
+
+// MARK: - A holder of the built-in group's terminals
+
+extension QuickTerminalHost: TerminalsSectionHolder {
+  func terminalNames(forTargetID targetID: TargetID) -> [String] {
+    terminals.terminalNames(forTargetID: targetID)
+  }
+
+  func holdsTerminals(forTargetID targetID: TargetID) -> Bool {
+    terminals.tabCount(forTargetID: targetID) > 0
+  }
+
+  /// The built-in group is never deleted, and this host holds no other, so it releases nothing.
+  func releaseTerminals(of group: TargetID, after anchor: TargetID) async -> TargetID { anchor }
+
+  // `retagTerminals` and `rehomeTerminals` keep the protocol's refusing defaults: the built-in
+  // group never forms or dissolves (#659), and this host holds no other target to regroup.
+
+  /// Slides the panel in, on its focused terminal: its row's click, from any window.
+  func revealTerminals(forTargetID targetID: TargetID) {
+    guard targetID == target.id else { return }
+    onReveal?(nil)
+  }
+
+  /// What `session.json` keeps of it: its panes, their split and focus, and where popped-out ones
+  /// are. Nil when it has none.
+  func captureSession() -> TargetSession? {
+    let target = target
+    guard let captured = terminals.sessionCapture(forTargetID: target.id) else { return nil }
+    var keysByTabID: [TerminalTab.ID: String] = [:]
+    var tabs: [TabSession] = []
+    for tab in captured.tabs {
+      guard tabs.count < SessionLimits.maxTabsPerTarget else { break }
+      let key = tab.id.uuidString
+      guard var session = TabSession(key: key, tab: tab) else { continue }
+      if let frame = detachedPanes.frame(for: tab.id) {
+        session.detachedFrame = NSStringFromRect(frame)
+      }
+      keysByTabID[tab.id] = key
+      tabs.append(session)
+    }
+    guard !tabs.isEmpty else { return nil }
+    let splits = captured.splits.compactMap { layout in
+      LayoutNode<String>.capture(layout) { keysByTabID[$0] }
+    }
+    return TargetSession(
+      targetID: target.id.encoded, tabs: tabs, splits: splits,
+      focusedKey: captured.focused.flatMap { keysByTabID[$0] }, terminalCounter: captured.counter)
   }
 }

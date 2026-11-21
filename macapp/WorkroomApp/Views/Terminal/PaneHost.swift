@@ -63,11 +63,19 @@ protocol PaneHost: AnyObject, Sendable {
   func restartRunCommand(for target: TerminalTarget)
   func stopRunCommand(for target: TerminalTarget)
 
-  // MARK: The Quick Terminal
+  // MARK: Moving a terminal (#660)
 
   func paneMoveChoices(
     _ tabID: TerminalTab.ID, of target: TerminalTarget, windows: [AppStore]
   ) -> [PaneWorkroomGroup]
+  /// A tab dragged inside its window, now at `screenPoint` (nil: ended); whether it is over a
+  /// sidebar row, title-bar tab or the Terminals heading (`AppStore.paneDragMoved`).
+  @discardableResult
+  func paneDragMoved(_ tabID: TerminalTab.ID, of target: TerminalTarget, to screenPoint: CGPoint?)
+    -> Bool
+  /// The tab is let go at `screenPoint`; whether a zone there took (or refused) it.
+  func paneDragEnded(_ tabID: TerminalTab.ID, of target: TerminalTarget, at screenPoint: CGPoint)
+    -> Bool
 
   // MARK: Toasts
 

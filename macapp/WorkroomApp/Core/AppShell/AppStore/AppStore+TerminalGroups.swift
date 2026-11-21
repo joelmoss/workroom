@@ -36,14 +36,23 @@ extension AppStore {
   /// Deletes group `sid`: every window's terminals in it become standalone terminals in its place,
   /// in order, keeping their shells. The group goes once none is left in it; a terminal that
   /// couldn't be moved keeps it, so no shell is ever left in a group that isn't listed.
+  /// Runs in turn with the groups forming and dissolving (`enqueueRegroup`), so an unnamed group
+  /// losing its terminals here isn't dissolved underneath it.
   func deleteTerminalGroup(_ sid: SidebarID) async {
-    guard let id = sid.targetID, terminalsSection.group(id) != nil else { return }
-    var anchor = id
-    for holder in terminalsSection.allHolders {
-      anchor = await holder.releaseTerminals(of: id, after: anchor)
+    // The Quick Terminal's group is built in, and never deleted.
+    guard let id = sid.targetID, id != .quickTerminal, terminalsSection.group(id) != nil else {
+      return
     }
-    guard terminalsSection.terminalNames(of: id).isEmpty else { return }
-    terminalsSection.remove(id)
+    let section = terminalsSection
+    await section.enqueueRegroup {
+      guard section.group(id) != nil else { return }
+      var anchor = id
+      for holder in section.allHolders {
+        anchor = await holder.releaseTerminals(of: id, after: anchor)
+      }
+      guard section.terminalNames(of: id).isEmpty else { return }
+      section.remove(id)
+    }.value
   }
 
   func releaseTerminals(of group: TargetID, after anchor: TargetID) async -> TargetID {
@@ -95,10 +104,12 @@ extension AppStore {
     return true
   }
 
-  /// Names group `sid` (inline rename in the sidebar). An empty name makes it unnamed.
+  /// Names group `sid` (inline rename in the sidebar). An empty name makes it unnamed, and an
+  /// unnamed group with one terminal, or none, dissolves at once (#659).
   func renameTerminalGroup(_ sid: SidebarID, to name: String) {
     guard let id = sid.targetID else { return }
     terminalsSection.renameGroup(id, to: name)
+    if terminalsSection.group(id)?.isKept == false { terminalsSection.settleUnnamedGroup(id) }
   }
 
   /// Set Starting Folder…: where group `sid`'s new terminals start; nil follows "New terminals open

@@ -667,7 +667,8 @@ struct PaneLeafView: View {
       // pointer rather than somewhere arbitrary.
       onPopOut: panes.allowsDetach
         ? { panes.detachPane(tabID, for: target, at: NSEvent.mouseLocation) } : nil,
-      moveToWorkroom: target.id == QuickTerminalController.targetID
+      // Any terminal moves anywhere (#660).
+      moveToWorkroom: isTerminal
         ? QuickTerminalMoveToWorkroomMenu(
           tabID: tabID, target: target, style: .toolbar) : nil,
       onDragChanged: onDragChanged,

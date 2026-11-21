@@ -84,4 +84,30 @@ final class StandaloneTerminalUITests: XCTestCase {
     XCTAssertTrue(element(app, "toolbar.toggleSidebar").exists, "the sidebar toggle shows")
     XCTAssertFalse(newTerminal.exists, "the empty state gives way to the terminal")
   }
+
+  /// #662: a window with only a standalone terminal still opens the picker (⌘O), and it lists that
+  /// terminal under Terminals.
+  func testTheOpenPickerListsAStandaloneTerminalWithNoProjects() {
+    let app = XCUIApplication()
+    app.launchArguments += ["-WorkroomUITestFixture", "1", "-WorkroomUITestNoProjects", "1"]
+    app.launchArguments += ["-WorkroomUITestOnboarding", "hide"]
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launch()
+    app.activate()
+    let newTerminal = element(app, "EmptyStateNewTerminal")
+    XCTAssertTrue(newTerminal.waitForExistence(timeout: 15))
+    newTerminal.click()
+    XCTAssertTrue(waitForCount(elements(app, prefix: "sidebar.standalone."), 1))
+
+    app.typeKey("o", modifierFlags: .command)
+
+    XCTAssertTrue(element(app, "openWorkroom.filter").waitForExistence(timeout: 6), "the picker")
+    let heading = app.staticTexts.matching(
+      NSPredicate(format: "label ==[c] 'Terminals' OR value ==[c] 'Terminals'")
+    ).firstMatch
+    XCTAssertTrue(heading.waitForExistence(timeout: 6), "its heading")
+    XCTAssertTrue(
+      elements(app, prefix: "openWorkroom.target.").firstMatch.waitForExistence(timeout: 6),
+      "lists the terminal")
+  }
 }

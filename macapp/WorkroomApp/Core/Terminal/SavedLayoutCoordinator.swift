@@ -32,6 +32,8 @@ final class SavedLayoutCoordinator {
   private let debounce: TimeInterval
   private let ceiling: TimeInterval
   private let capture: () -> [WindowSession]
+  /// The Quick Terminal panel's entry (ADR 0077): app-wide, not a window's.
+  private let captureQuickTerminal: () -> TargetSession?
   /// Run after each save that wrote something: remote workrooms' layouts to their hosts.
   private let afterSave: () -> Void
   private let logger = Logger(
@@ -42,10 +44,17 @@ final class SavedLayoutCoordinator {
   private var dirtySince: Date?
   /// The last document written, compared with `==` rather than a hash: Swift seeds `hashValue` per
   /// process, and a collision would silently suppress a write the user needs.
-  private var lastWritten: [WindowSession]?
+  private var lastWritten: Snapshot?
   /// What the last **successful** write persisted, or nil when nothing has landed yet. Exposed so a
   /// test can assert that a failed write is not latched as written.
-  var lastWrittenWindows: [WindowSession]? { lastWritten }
+  var lastWrittenWindows: [WindowSession]? { lastWritten?.windows }
+
+  /// Everything one save writes: the windows and the Quick Terminal's panel, compared together so a
+  /// change to either is written.
+  private struct Snapshot: Equatable {
+    var windows: [WindowSession]
+    var quickTerminal: TargetSession?
+  }
   /// Depth rather than a flag so nested suspensions (several windows restoring) cannot resume early.
   private var suspensions = 0
   private var dirtyWhileSuspended = false
@@ -59,12 +68,17 @@ final class SavedLayoutCoordinator {
     debounce: TimeInterval = SavedLayoutCoordinator.defaultDebounce,
     ceiling: TimeInterval = SavedLayoutCoordinator.defaultCeiling,
     capture: (() -> [WindowSession])? = nil,
+    captureQuickTerminal: (() -> TargetSession?)? = nil,
     afterSave: (() -> Void)? = nil
   ) {
     self.store = store
     self.debounce = debounce
     self.ceiling = ceiling
     self.capture = capture ?? { WindowRegistry.shared.captureSessionWindows() }
+    // A coordinator built with its own capture (a test's) keeps no panel unless told to.
+    self.captureQuickTerminal =
+      captureQuickTerminal
+      ?? (capture == nil ? { WindowRegistry.shared.quickTerminal?.captureSession() } : { nil })
     // A coordinator built with its own capture (a test's) writes no hosts unless told to.
     self.afterSave =
       afterSave
@@ -141,15 +155,15 @@ final class SavedLayoutCoordinator {
     dirtySince = nil
     guard !isFrozen, !store.writesDisabled, !isSuspended else { return }
 
-    let windows = capture()
-    guard windows != lastWritten else { return }
-    lastWritten = windows
+    let snapshot = captureSnapshot()
+    guard snapshot != lastWritten else { return }
+    lastWritten = snapshot
     // `lastWritten` is the gate that drops an unchanged save, so a write that FAILED must not be
     // remembered as written: after a disk-full or permissions blip, every later attempt at the same
     // state would be suppressed and the user's layout would silently stop being saved until they
     // changed something else. Clearing it on failure makes the next dirty mark retry.
-    store.write(makeFile(windows)) { [weak self] didWrite in
-      guard let self, !didWrite, self.lastWritten == windows else { return }
+    store.write(makeFile(snapshot)) { [weak self] didWrite in
+      guard let self, !didWrite, self.lastWritten == snapshot else { return }
       self.lastWritten = nil
     }
     // Each remote workroom's layout goes to its host with the same save (#255, D9).
@@ -170,9 +184,9 @@ final class SavedLayoutCoordinator {
     // Suspended means a restore never finished; the live windows are not the user's session, so
     // writing them now would replace a good file with a partial one.
     if !store.writesDisabled && !isSuspended {
-      let windows = capture()
-      lastWritten = windows
-      store.writeSynchronously(makeFile(windows))
+      let snapshot = captureSnapshot()
+      lastWritten = snapshot
+      store.writeSynchronously(makeFile(snapshot))
     }
     isFrozen = true
   }
@@ -199,11 +213,22 @@ final class SavedLayoutCoordinator {
 
   func read() -> SavedLayoutStore.ReadOutcome { store.read() }
 
-  private func makeFile(_ windows: [WindowSession]) -> SessionFile {
+  private func captureSnapshot() -> Snapshot {
+    Snapshot(windows: capture(), quickTerminal: captureQuickTerminal())
+  }
+
+  private func makeFile(_ snapshot: Snapshot) -> SessionFile {
     SessionFile(
       savedAt: Date(),
       appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
-      windows: windows)
+      windows: snapshot.windows, quickTerminal: snapshot.quickTerminal)
+  }
+
+  /// The Quick Terminal panel's saved entry, for its restore at launch. Nil when there is none this
+  /// build can use.
+  func savedQuickTerminal() -> TargetSession? {
+    guard case .restored(let file, _) = read() else { return nil }
+    return file.quickTerminal
   }
 }
 

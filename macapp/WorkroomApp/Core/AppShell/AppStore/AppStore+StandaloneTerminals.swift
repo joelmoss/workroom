@@ -21,6 +21,19 @@ extension AppStore: TerminalsSectionHolder {
     openTerminal(targetID: targetID, tabID: tab)
   }
 
+  /// Slides the Quick Terminal's panel in, with a new terminal in it when `newTerminal`: its row's
+  /// click and its New Terminal in Group. The panel is the group's only holder, so no window opens
+  /// one of its terminals.
+  func revealQuickTerminal(newTerminal: Bool = false) {
+    guard let panel = terminalsSection.quickTerminalHolder as? QuickTerminalHost else {
+      // Not made yet: the summon makes it, with its first terminal.
+      NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
+      return
+    }
+    if newTerminal { panel.newTerminal(in: panel.target) }
+    panel.revealTerminals(forTargetID: .quickTerminal)
+  }
+
   /// The window that holds `sid`'s terminal when it is not this one: a standalone terminal is one
   /// terminal, so selecting it here goes there instead.
   func otherHolder(of sid: SidebarID) -> (any TerminalsSectionHolder)? {
@@ -43,9 +56,16 @@ extension AppStore: TerminalsSectionHolder {
   }
 
   /// A window closing ends the standalone terminals it holds, and their rows go. Not on a quit,
-  /// which keeps them for the next launch.
+  /// which keeps them for the next launch. It stops holding terminals for the section, so an
+  /// unnamed group it had terminals in is counted without them, and settled (#659).
   func endStandaloneTerminalsOnClose() async {
     guard !WindowRegistry.shared.isTerminating else { return }
+    let groups = terminals.activeTargetIDs.filter {
+      if case .terminalGroup = $0 { return true }
+      return false
+    }
+    terminalsSection.unregister(self)
+    for id in groups { unnamedGroupTabsRemoved(id) }
     for id in terminals.activeTargetIDs where id.isStandaloneTerminal {
       await terminals.reap(id)
       terminalsSection.remove(id)

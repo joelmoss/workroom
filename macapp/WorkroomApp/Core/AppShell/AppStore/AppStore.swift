@@ -88,6 +88,17 @@ final class AppStore: ObservableObject {
   /// The workroom a Quick Terminal pane dragged over this window would join, highlighted while it
   /// hovers (`QuickTerminalPaneDrag`).
   var incomingQuickTerminalPane: SidebarID?
+  /// Where this window's terminal tab dragged inside it would move, highlighted while it hovers
+  /// (#660): a sidebar row, a title-bar tab or the Terminals heading.
+  var incomingPaneDrop: PaneDropZone?
+  /// The sidebar's drop zones' views (`PaneDropZoneMarker`), which say where each is on screen at
+  /// the moment of a drag. A registry, not state: nothing renders from it.
+  @ObservationIgnored var paneDropZoneViews: [PaneDropZone: [PaneDropZoneMarker.Box]] = [:]
+  /// Whether a tab drag over a zone that refuses it set the "not allowed" pointer.
+  @ObservationIgnored var paneDragRefusing = false
+  /// The standalone terminal's row being dragged in this window's sidebar, and the timer that
+  /// follows the pointer while the List's own drag holds the mouse (`rowDragMoved`).
+  @ObservationIgnored var rowDrag: (sid: SidebarID, poll: Timer)?
   /// Each workroom tab's frame within its row (`workroomTabRun`), top-left origin, for working out
   /// where a workroom dragged in from another window lands. A measurement, not state: nothing
   /// renders from it.
@@ -150,6 +161,13 @@ final class AppStore: ObservableObject {
   /// when the target actually changed, the remote host, History, remote state and any pending
   /// remote confirmation. One named place, so a new reaction is added here, not to the `didSet`.
   private func selectionDidChange(from oldValue: SidebarID?) {
+    // The Quick Terminal's group is its panel's (ADR 0077): its row slides the panel in, and this
+    // window stays where it was.
+    if selectedTargetID?.targetID == .quickTerminal {
+      selectedTargetID = oldValue
+      revealQuickTerminal()
+      return
+    }
     // A standalone terminal is one terminal (ADR 0077): selecting one another window holds takes
     // you to that window, and this one stays where it was. Setting the property inside its own
     // `didSet` does not run it again.
@@ -743,6 +761,11 @@ final class AppStore: ObservableObject {
   /// This window's claimed saved session (issue #46), consumed at the end of `apply`.
   var pendingSessionRestore: WindowSession?
   @ObservationIgnored var hasDisplayedWindow = false
+  /// True while this window hands its terminals from one target to another in place
+  /// (`rehomeTerminals`): the `.tabsRemoved` that fires is a move, not a close, so the
+  /// tidy-up a close gets (history, an emptied split member, the fallback selection, a row going)
+  /// is skipped.
+  @ObservationIgnored var isMovingTerminalsInPlace = false
   @ObservationIgnored var pendingSessionRecovery = false
   /// Saved targets held back from the restore (#253): remote workrooms this app couldn't reach
   /// then. Each is written back with every save, and restored whole once its workroom is
@@ -856,6 +879,10 @@ final class AppStore: ObservableObject {
     // Everything `TerminalPanes` reports comes through one synchronous sink, handled in
     // `handleTerminalEvent` (eng review D8).
     terminals.onEvent = { [weak self] event in self?.handleTerminalEvent(event) }
+    // Any terminal moves anywhere, from its right-click menu too (#660).
+    terminals.moveToWorkroomChoices = { [weak self] tabID, target in
+      self?.paneMoveChoices(tabID, of: target) ?? []
+    }
     // A run tab rebuilt from a saved session is a run session of the project's command (#522).
     terminals.runCommandForTarget = { [weak self] target in
       guard let self, let project = self.project(forTargetID: target.id) else { return nil }
@@ -877,6 +904,9 @@ final class AppStore: ObservableObject {
     // terminals through the lifecycle.
     self.lifecycle.register(self)
     self.terminalsSection.register(self)
+    terminals.splitStandalone = { [weak self] tabID, edge, targetID in
+      self?.splitStandalone(tabID, on: edge, in: targetID)
+    }
     // At launch, once every saved window is restored, a standalone row nothing holds goes, and its
     // session with it: one terminal is exactly one live terminal.
     let section = self.terminalsSection
@@ -942,8 +972,11 @@ final class AppStore: ObservableObject {
     // disclosure threshold (issue #30), so a stale expand flag can't auto-reveal if the count climbs
     // back later — the subtree is meant to be re-opened deliberately.
     case .tabsRemoved(let targetID, let ids):
+      // Handed to another target of this window in place: the tabs are still here.
+      guard !self.isMovingTerminalsInPlace else { return }
       self.history.prune(removing: Set(ids))
       self.standaloneTabsRemoved(targetID)
+      self.unnamedGroupTabsRemoved(targetID)
       if self.terminals.tabCount(forTargetID: targetID) < 2 {
         self.expandedTerminalTargets.remove(targetID)
       }
@@ -2938,8 +2971,8 @@ final class AppStore: ObservableObject {
     -> String
   {
     let project = projects.first { $0.path == id.projectPath }
+    if id == .quickTerminal { return "Quick Terminal" }
     switch id {
-    case .quickTerminal: return "Quick Terminal"
     case .root: return project?.displayName ?? ""
     case .workroom(_, let name):
       guard let project, let workroom = project.workrooms.first(where: { $0.name == name })

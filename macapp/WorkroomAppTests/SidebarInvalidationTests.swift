@@ -155,14 +155,14 @@ final class SidebarInvalidationTests: XCTestCase {
     let f = try fixture()
     defer { close(f) }
     try await render(f)
-    // Projects A and B, A's root and workroom, B's root.
-    XCTAssertEqual(try listRows(f), 5)
+    // The Quick Terminal's row, projects A and B, A's root and workroom, B's root.
+    XCTAssertEqual(try listRows(f), 6)
 
     _ = f.store.terminals.addTab(for: f.a.rootTarget)
     f.store.toggleTerminals(for: f.a.rootTarget.id)
     try await render(f)
 
-    XCTAssertEqual(try listRows(f), 7, "A's root lists its two terminals")
+    XCTAssertEqual(try listRows(f), 8, "A's root lists its two terminals")
     XCTAssertGreaterThan(SidebarRowPasses.terminal, 0, "the terminal rows drew")
   }
 
@@ -575,13 +575,14 @@ final class SidebarInvalidationTests: XCTestCase {
     f.store.selectedTargetID = f.rootA
     f.store.selectionStatusTask?.cancel()
     try await render(f)
-    XCTAssertEqual(try listRows(f), 7)
+    // With the Quick Terminal's row, first in the Terminals section.
+    XCTAssertEqual(try listRows(f), 8)
 
     SidebarRowPasses.reset()
     f.store.collapsedProjects.insert(f.a.path)
     try await render(f)
 
-    XCTAssertEqual(try listRows(f), 3, "collapse removes A's root, its terminals and workroom")
+    XCTAssertEqual(try listRows(f), 4, "collapse removes A's root, its terminals and workroom")
     XCTAssertGreaterThan(
       SidebarRowPasses.byRow[.project(f.a.path)] ?? 0, 0, "A's row shows its chevron turn")
   }
