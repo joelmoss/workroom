@@ -5258,13 +5258,18 @@ fn a_prompt_wait_takes_an_agent_whose_done_was_seen_and_not_a_new_program() {
 
     // An agent that reported and went, then another program in its pane, which has never
     // reported: no agent to wait on. (Before the hand-off below, which ends the panes' clients.)
+    // It reads exactly what the send types, the paste and its markers: a byte left over would be
+    // read by the shell after it, ahead of the next program's command line.
+    let pasted = prompted("x").len() - 1;
     let gone = FakeAgent::new(&workspace.dir, "claude");
-    gone.launch(&mut other, &mut other_output, "FIRST=done", 1);
+    gone.launch(&mut other, &mut other_output, "FIRST=done", pasted);
     listing_until(&socket, |listing| {
         session(listing, OTHER)["coding_agent"]["state"] == "done"
     });
-    let sent = workroom(Some(&socket), &["send", "next", "x"]);
+    let sent = workroom(Some(&socket), &["send", "next", "x", "--json"]);
     assert_eq!(sent.code, 0, "{}", sent.stdout);
+    assert_eq!(sent.envelope()["bytes"], pasted, "{}", sent.stdout);
+    assert_eq!(gone.typed(), prompted("x")[..pasted], "the paste, whole");
     for gate in ["go", "end", "quit"] {
         gone.open(gate);
     }
