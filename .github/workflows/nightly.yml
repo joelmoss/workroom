@@ -73,75 +73,11 @@ jobs:
             echo "should_build=true" >> "$GITHUB_OUTPUT"
           fi
 
-  # Cross-compile the CLI with the nightly version injected, package version-INDEPENDENT archives
-  # (so the fixed release's asset URLs stay stable), emit checksums.txt (the CLI updater verifies
-  # against it), and clobber-upload them to the nightly release.
-  cli:
-    needs: check
-    if: needs.check.outputs.should_build == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write
-    env:
-      VERSION: ${{ needs.check.outputs.version }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # download-stats.sh pushes its snapshot with these credentials.
-          persist-credentials: true
-          fetch-depth: 0
-
-      # No module cache: this job's output is published, and a restored entry could be poisoned.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
-
-      - name: Build nightly archives
-        run: |
-          set -euo pipefail
-          DIST="$PWD/dist"; mkdir -p "$DIST"
-          build() {
-            os="$1"; arch="$2"; ext="tar.gz"; bin="workroom"
-            if [ "$os" = "windows" ]; then ext="zip"; bin="workroom.exe"; fi
-            out="$(mktemp -d)"
-            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-              go build -trimpath \
-                -ldflags "-s -w -X main.version=${VERSION} -X main.channel=nightly" \
-                -o "$out/$bin" .
-            name="workroom_nightly_${os}_${arch}.${ext}"
-            if [ "$ext" = "zip" ]; then (cd "$out" && zip -q "$DIST/$name" "$bin");
-            else tar czf "$DIST/$name" -C "$out" "$bin"; fi
-          }
-          for t in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
-            build "${t%/*}" "${t#*/}"
-          done
-          # Bare file names, as goreleaser writes them: the updater matches the archive's name exactly,
-          # so `./workroom_nightly_…` lines made every `workroom-nightly update` fail.
-          ( cd "$DIST" && sha256sum -- * > checksums.txt )
-          echo "Built:"; ls -1 "$DIST"
-
-      - name: Ensure the nightly release exists
-        run: |
-          gh release view nightly >/dev/null 2>&1 || \
-            gh release create nightly --prerelease --title "nightly" \
-              --notes "Rolling nightly build from the tip of main. Not a stable release; expect rough edges."
-
-      # Read the counts the clobber below is about to reset (download-stats.yml). Never blocks the
-      # nightly: a missed snapshot costs a day of stats, not a build.
-      - name: Snapshot download counts before the clobber
-        continue-on-error: true
-        env:
-          REPO: ${{ github.repository }}
-        run: scripts/ci/download-stats.sh nightly-cli
-
-      - name: Upload nightly CLI archives
-        run: gh release upload nightly dist/* --clobber
-
-  # Build + sign + notarize + staple the DMG alongside the CLI. The publish job below
-  # uploads it, updates the appcast, then stamps the successful version as the skip marker.
+  # Build + sign + notarize + staple the DMG, and the standalone `workroom-nightly` archives
+  # (macapp/Scripts/cli-archives.sh: the Rust binary baked to the nightly channel, for darwin and
+  # linux on arm64 and amd64, under version-INDEPENDENT names so the fixed release's asset URLs
+  # stay stable, with checksums.txt). The publish job below uploads them, updates the appcast,
+  # then stamps the successful version as the skip marker.
   macapp:
     needs: check
     if: needs.check.outputs.should_build == 'true'
@@ -157,11 +93,12 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      # Xcode, Go and XcodeGen + create-dmg. No module cache: this job's output is published, and a
-      # restored entry could be poisoned.
+      # Xcode and XcodeGen + create-dmg. No Go: no Nightly builds the Go CLI (ADR 0078). go-cache
+      # stays off as well, for the linter, which can't see the step is skipped.
       - name: Set up the app build
         uses: ./.github/actions/setup-app-build
         with:
+          go: "false"
           go-cache: "false"
           formulae: xcodegen create-dmg
 
@@ -174,12 +111,15 @@ jobs:
           brew install getsentry/tools/sentry-cli \
             || echo "::warning::sentry-cli unavailable; nightly will ship without symbol upload"
 
-      # Zig, the darwin and Linux daemon targets, and cargo-zigbuild, downloaded and built rather
-      # than restored: this job's output is published.
+      # Zig, the darwin and Linux targets, and cargo-zigbuild, downloaded and built rather than
+      # restored: this job's output is published. x86_64-apple-darwin is the standalone archive's
+      # alone: the app is arm64 (ADR 0061).
       - name: Set up the daemon build
         uses: ./.github/actions/setup-daemon-build
         with:
-          targets: aarch64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+          targets: >-
+            aarch64-apple-darwin x86_64-apple-darwin
+            aarch64-unknown-linux-musl x86_64-unknown-linux-musl
           cache: "false"
 
       - name: Import Developer ID signing certificate
@@ -237,7 +177,29 @@ jobs:
           echo "$NOTARY_KEY" | openssl base64 -d -A > "$RUNNER_TEMP/notary.p8"
           # CONFIGURATION=Nightly builds the side-by-side "Workroom Nightly" identity (bundle id,
           # name, icon, pinned nightly channel) instead of the main "Workroom" app.
-          CONFIGURATION=Nightly NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-release
+          # Not cli-archives_test.sh: it builds both channels' archives to test the script the next
+          # step runs for real, and CI's app-scripts job runs it.
+          CONFIGURATION=Nightly NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-release \
+            APP_SCRIPT_TESTS_SKIP=macapp/Scripts/cli-archives_test.sh
+
+      # The standalone archives, as release.yml builds them, baked to the nightly channel: the
+      # binary in them is also `workroom`, and install.sh installs it as `workroom-nightly`.
+      - name: Build, sign, notarize the standalone archives
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          WORKROOM_RELEASE_CHANNEL: nightly
+          CODESIGN_IDENTITY: Developer ID Application
+        run: NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" macapp/Scripts/cli-archives.sh build macapp/build/release/cli
+
+      # The CLI contract suite against the binary this Nightly ships, unpacked from its archive.
+      - name: Test (contract suite against the shipped binary)
+        run: |
+          SHIPPED="$RUNNER_TEMP/shipped"
+          mkdir "$SHIPPED"
+          tar -xzf macapp/build/release/cli/workroom_nightly_darwin_arm64.tar.gz -C "$SHIPPED"
+          WORKROOM_BIN="$SHIPPED/workroom" rustup run "$(make -s print-VCS_RUST)" \
+            cargo test --manifest-path vcs/Cargo.toml -p workroom --test commands_contract -- --include-ignored
 
       - name: Preserve signed installer for publication
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -246,6 +208,7 @@ jobs:
           path: |
             macapp/build/release/Workroom Nightly.dmg
             macapp/build/release/appcast-fields.env
+            macapp/build/release/cli/
           if-no-files-found: error
           # v4 artifact names are unique per RUN, not per attempt, and this action fails by
           # default when the name already exists — so "Re-run all jobs" would rebuild and
@@ -257,9 +220,9 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-  # Build both platforms concurrently; publish the app only after both jobs succeed.
+  # Publish the archives and the app together, once both are built and signed.
   publish:
-    needs: [check, cli, macapp]
+    needs: [check, macapp]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -277,20 +240,29 @@ jobs:
           name: nightly-macapp
           path: macapp/build/release
 
-      # The DMG and both appcast feeds are clobbered below; read their counts first. Non-blocking,
-      # as in the cli job.
+      - name: Ensure the nightly release exists
+        run: |
+          gh release view nightly >/dev/null 2>&1 || \
+            gh release create nightly --prerelease --title "nightly" \
+              --notes "Rolling nightly build from the tip of main. Not a stable release; expect rough edges."
+
+      # The archives, the DMG and both appcast feeds are clobbered below; read their counts first
+      # (download-stats.yml). Never blocks the nightly: a missed snapshot costs a day of stats, not
+      # a build.
       - name: Snapshot download counts before the clobber
         continue-on-error: true
         env:
           REPO: ${{ github.repository }}
         run: scripts/ci/download-stats.sh nightly-publish
 
-      - name: Upload nightly DMG
+      # Uploads the archives, checksums.txt and the DMG, removes the Go CLI's Windows archives,
+      # and checks the release's archives are exactly this build's.
+      - name: Upload the nightly archives and DMG
         run: |
           # Fixed, version-independent name so the appcast enclosure URL is stable across nights.
           ASSET="$RUNNER_TEMP/workroom-macos-app_nightly.dmg"
           cp "macapp/build/release/Workroom Nightly.dmg" "$ASSET"
-          gh release upload nightly "$ASSET" --clobber
+          macapp/Scripts/publish-assets.sh nightly macapp/build/release/cli "$ASSET"
 
       - name: Publish Sparkle appcast (nightly channel)
         env:

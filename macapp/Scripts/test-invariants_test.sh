@@ -241,6 +241,34 @@ if ! grep -q '^[[:space:]]*CODE_SIGN_ENTITLEMENTS: WorkroomApp/Workroom.entitlem
   fails=$((fails + 1))
 fi
 
+# --- the release and the Nightly ship the one Rust binary --------------------------------------
+# ADR 0078: no release ships both binaries. The standalone archives are cli-archives.sh's, which
+# refuses a Go binary and a Windows build, and publish-assets.sh puts them up, which refuses a
+# release holding any other archive. Nothing builds the Go CLI or runs goreleaser beside them. The
+# contract suite runs against the binary each one ships.
+for workflow in release.yml nightly.yml; do
+  path="$WORKFLOWS_DIR/$workflow"
+  [ -f "$path" ] || continue
+  for want in 'macapp/Scripts/cli-archives.sh build' 'macapp/Scripts/publish-assets.sh' \
+    '--test commands_contract'; do
+    if ! grep -q "^[^#]*$want" "$path"; then
+      echo "FAIL: $workflow no longer runs '$want'; its standalone archives would not be the checked"
+      echo "      Rust binary (ADR 0078)."
+      fails=$((fails + 1))
+    fi
+  done
+  if grep -q 'CLI_ARCHIVES_PLATFORMS' "$path"; then
+    echo "FAIL: $workflow sets CLI_ARCHIVES_PLATFORMS, which narrows the archives it builds below"
+    echo "      the four every release ships (it is cli-archives_test.sh's)."
+    fails=$((fails + 1))
+  fi
+  if grep -Eq '^[^#]*(goreleaser|setup-go|go build|GOOS=)' "$path"; then
+    echo "FAIL: $workflow builds the Go CLI or runs goreleaser; a release ships only the Rust"
+    echo "      workroom (ADR 0078)."
+    fails=$((fails + 1))
+  fi
+done
+
 if [ "$fails" -ne 0 ]; then
   echo "test-invariants_test: $fails failure(s)" >&2
   exit 1
