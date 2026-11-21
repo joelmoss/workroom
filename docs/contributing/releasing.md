@@ -205,15 +205,25 @@ makes them in the `macapp` job, for `darwin` and `linux` × `arm64` and `amd64`:
 stamped with the version (`WORKROOM_VERSION`) and, for the Nightly, the channel. darwin is one thin
 Mach-O per arch, signed with the Developer ID (hardened runtime, secure timestamp) and notarized;
 a bare Mach-O can't be stapled, so Gatekeeper checks its ticket online. linux is a static musl ELF
-per arch. There is no Windows build. `cli-archives.sh check`, which the build and the `publish`
-job both run, refuses any other set of files, a Go binary, an unstamped binary or a bad checksum;
+per arch. There is no Windows build; `install.ps1` only says so and fails. `cli-archives.sh
+check`, which the build and the `publish` job both run, refuses any other set of files, a Go binary
+or a bad checksum, and runs every binary of its own OS: `version --json` must report exactly the
+version and channel. So each binary runs before anything publishes: the darwin ones in the build
+(the amd64 one under Rosetta), the linux ones in `publish` (the arm64 one under qemu-user).
 `publish-assets.sh` then refuses a release holding any other archive, and removes the Go CLI's
 Windows archives from the reused `nightly` release. `macapp/Scripts/cli-archives_test.sh` builds
-both channels' archives and updates a Go CLI built from this checkout into the Rust binary with
-`workroom update`, from a releases server on 127.0.0.1. The release also runs the CLI contract
-suite against the darwin arm64 binary unpacked from its archive. The Nightly doesn't: the suite's
-goldens are the main binary's, and the nightly's baked channel changes `version --json` and
-refuses `update --channel` by design.
+both channels' archives for this Mac and updates a Go CLI built from this checkout into the Rust
+binary with `workroom update`, from a releases server on 127.0.0.1; in CI, missing Go or python3
+fails it. The release runs the CLI contract suite against the darwin arm64 binary unpacked from its
+archive, and the Nightly does too, skipping the four cases whose goldens are the main binary's: the
+nightly's baked channel changes `version --json` and refuses `update --channel` by design.
+
+**Dry-run the Nightly** before a change to this pipeline ships: run `nightly.yml` with `dry_run`
+(`gh workflow run nightly.yml --ref <branch> -f dry_run=true`). It builds, signs and notarizes as
+a night does, then its `dry-run` job uploads into a draft release of its own,
+`nightly-dryrun-<run id>`, checks it as `publish` checks the nightly, confirms it isn't GitHub's
+Latest, and deletes it. `publish` doesn't run, so the `nightly` release, the appcast, the download
+stats and Sentry are untouched; `test-invariants_test.sh` pins those guards.
 
 These are goreleaser's names, kept so `install.sh` and every Go CLI's `workroom update` reach the
 Rust binary. The archive name (`workroom_<version>_…`) is what `install.sh` builds and what the
