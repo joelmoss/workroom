@@ -130,6 +130,27 @@ jobs:
             ${{ steps.rust.outputs.lock }}-
             ${{ steps.rust.outputs.toolchain }}-
 
+      # The daemon an app from before the swap runs (#681, ADR 0078), for DaemonHandOffTests' first
+      # launch after it, which the Test step names it to as TEST_RUNNER_WR_FORMER_DAEMON; that test
+      # fails in CI without it. Built from the last commit before the swap, which
+      # build-pre-swap-daemon.sh pins (and which must never move), so it is cached by that commit
+      # alone: only the binary, outside the checkout, and never rebuilt once saved. After the
+      # daemon build's setup (its Zig and Rust) and the cargo cache (its registry).
+      - name: Pre-swap daemon commit
+        id: pre-swap
+        run: echo "commit=$(macapp/Scripts/build-pre-swap-daemon.sh --commit)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the pre-swap daemon
+        id: pre-swap-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/workroom/pre-swap-daemon
+          key: pre-swap-daemon-${{ runner.os }}-${{ runner.arch }}-${{ steps.pre-swap.outputs.commit }}
+
+      - name: Build the pre-swap daemon
+        if: steps.pre-swap-cache.outputs.cache-hit != 'true'
+        run: macapp/Scripts/build-pre-swap-daemon.sh "$HOME/.cache/workroom/pre-swap-daemon/workroom"
+
       # SPM resolves ~15 packages (Sparkle, Sentry, libghostty, the tree-sitter grammars, and
       # swift-syntax pulled transitively) by cloning them from GitHub on every run. Cache the
       # resolved checkouts keyed on project.yml AND the tracked Package.resolved (checkout already
@@ -250,8 +271,12 @@ jobs:
       # APP_TEST_DIAGNOSTICS= keeps xcodebuild's diagnostics (~10.5s) that `make app-test` skips
       # locally: a failure's uploaded xcresult needs the system log archive, which holds
       # ReportCrash's EXC_GUARD line for a test host that crashed (#350).
+      #
+      # TEST_RUNNER_WR_FORMER_DAEMON: the pre-swap daemon built above, which the swap's hand-off
+      # test starts at the old bundle path and moves.
       - name: Test
         run: >-
+          TEST_RUNNER_WR_FORMER_DAEMON="$HOME/.cache/workroom/pre-swap-daemon/workroom"
           make app-test APP_TEST_DIAGNOSTICS=
           APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM= WORKROOMD_BUILD=1"
 

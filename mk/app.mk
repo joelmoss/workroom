@@ -139,12 +139,16 @@ test_summary = status=$$?; sh Scripts/test-summary.sh DerivedData/Logs/Test $(1)
 
 # Built, then run in two steps, so only the run holds the GUI session: a build never waits on
 # another workroom's tests, and never makes another workroom's tests wait on it.
+#
+# `CI` reaches the tests as TEST_RUNNER_CI, as xcodebuild hands a test only that prefix: in CI the
+# swap's hand-off test (DaemonHandOffTests) fails without TEST_RUNNER_WR_FORMER_DAEMON rather than
+# testing the easy case.
 app-test: ## Run the app's unit tests (other workrooms' unit runs can overlap)
 	sh macapp/Scripts/sweep-dev-orphans.sh --quiet
 	cd macapp && xcodegen generate && \
 	  $(APP_XCODEBUILD) -destination 'platform=macOS' build-for-testing $(APP_SIGN_FLAGS) $(APP_ID_FLAGS) && \
 	  touch DerivedData/.WorkroomApp.test-stamp && { \
-	  $(call gui_lock,$(APP_TEST_GUI_MODE),app-test) \
+	  TEST_RUNNER_CI="$${CI-}" $(call gui_lock,$(APP_TEST_GUI_MODE),app-test) \
 	  $(APP_XCODEBUILD) -destination 'platform=macOS' $(APP_TEST_FLAGS) $(APP_TEST_TIMEOUTS) \
 	    $(APP_TEST_DIAGNOSTICS) $(APP_TEST_RETRY) test-without-building; \
 	  $(call test_summary,WorkroomApp); }

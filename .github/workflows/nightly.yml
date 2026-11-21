@@ -162,8 +162,11 @@ jobs:
 
       # APP_TEST_DIAGNOSTICS= keeps the diagnostics `make app-test` skips locally, as in ci-app.yml:
       # the uploaded xcresult below needs the system log archive to name a crashed test host (#350).
+      # TEST_RUNNER_WR_FORMER_DAEMON=none: the swap's hand-off test moves this build's own daemon;
+      # ci-app.yml's `app` job runs it against the pre-swap one, which this job does not build.
       - name: Test (artifact gate)
         run: >-
+          TEST_RUNNER_WR_FORMER_DAEMON=none
           make app-test APP_TEST_DIAGNOSTICS=
           APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="
 

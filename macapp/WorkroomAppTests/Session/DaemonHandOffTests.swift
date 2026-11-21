@@ -57,19 +57,20 @@ final class DaemonHandOffTests: XCTestCase {
   /// The first launch after the swap (#681, ADR 0078): the daemon the older app started runs
   /// `Contents/MacOS/workroomd`, which the update took away, and this build's one binary is
   /// `Contents/Resources/workroom`. `WR_FORMER_DAEMON` (`TEST_RUNNER_WR_FORMER_DAEMON`) names a
-  /// real pre-swap build to run at the old path, started by its own attach as the older app's pane
-  /// started it; without it, this build's own binary is there, the case where the daemon would
-  /// answer `current` unasked. Through `start`, the launch's own wiring, the daemon is moved: the
-  /// session, its shell and a run session are kept, the daemon runs the new path, the next launch
-  /// leaves it, and a new run session starts.
+  /// real pre-swap build to run at the old path (`macapp/Scripts/build-pre-swap-daemon.sh`),
+  /// started by its own attach as the older app's pane started it. `none`, or unset outside CI,
+  /// puts this build's own binary there, the case where the daemon would answer `current` unasked.
+  /// In CI (`CI`, which `make app-test` passes on) it must be set: ci-app.yml's `app` job builds
+  /// the pre-swap daemon, and the nightly and the release, which don't, say `none`. Through
+  /// `start`, the launch's own wiring, the daemon is moved: the session, its shell and a run
+  /// session are kept, the daemon runs the new path, the next launch leaves it, and a new run
+  /// session starts.
   @MainActor
   func testTheFirstLaunchAfterTheSwapMovesTheDaemonToTheNewPathKeepingItsSessions() async throws {
     let app = try appBundle()
     let former = app.appendingPathComponent("Contents/MacOS/workroomd")
     let ours = app.appendingPathComponent("Contents/Resources/workroom")
-    let formerBuild =
-      ProcessInfo.processInfo.environment["WR_FORMER_DAEMON"].map(URL.init(fileURLWithPath:))
-    try copy(try formerBuild ?? DaemonHarness.binaryURL(), to: former)
+    try copy(try Self.formerDaemon() ?? DaemonHarness.binaryURL(), to: former)
     let socket = app.deletingLastPathComponent().appendingPathComponent("s").path
     // Started as the older app started it: by a pane's own attach, from the old bundle's file.
     let session = UUID()
@@ -327,6 +328,31 @@ final class DaemonHandOffTests: XCTestCase {
     let line = output.split(separator: "\n").first { $0.hasPrefix("daemon-build ") }
     return String(
       try XCTUnwrap(line, "no daemon-build in \(output)").dropFirst("daemon-build ".count))
+  }
+
+  /// The pre-swap daemon `WR_FORMER_DAEMON` names, or `nil` for this build's own binary: when it
+  /// says `none`, or is unset outside CI. A CI run without it fails rather than quietly testing
+  /// the easy case, as does a path that is no executable file.
+  private static func formerDaemon() throws -> URL? {
+    let environment = ProcessInfo.processInfo.environment
+    guard let path = environment["WR_FORMER_DAEMON"], !path.isEmpty else {
+      if let ci = environment["CI"], !ci.isEmpty {
+        throw FormerDaemonError(
+          "CI=\(ci) but TEST_RUNNER_WR_FORMER_DAEMON is unset: build the pre-swap daemon with "
+            + "macapp/Scripts/build-pre-swap-daemon.sh and name it, or say `none`")
+      }
+      return nil
+    }
+    if path == "none" { return nil }
+    guard FileManager.default.isExecutableFile(atPath: path) else {
+      throw FormerDaemonError("TEST_RUNNER_WR_FORMER_DAEMON=\(path) is no executable file")
+    }
+    return URL(fileURLWithPath: path)
+  }
+
+  private struct FormerDaemonError: Error, CustomStringConvertible {
+    let description: String
+    init(_ description: String) { self.description = description }
   }
 
   /// A bundled binary as the daemon sees one: a script carrying `daemonBuild` in the marker the

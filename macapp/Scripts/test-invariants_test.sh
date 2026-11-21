@@ -322,6 +322,32 @@ if [ -f "$NIGHTLY_YML" ]; then
   fi
 fi
 
+# --- the swap's hand-off test runs against the pre-swap daemon ---------------------------------
+# DaemonHandOffTests moves a daemon an app from before the swap (#681) started from
+# Contents/MacOS/workroomd. ci-app.yml's `app` job builds that daemon from the commit
+# build-pre-swap-daemon.sh pins and names it to the test, which fails in CI without it. The pin
+# must stay the last commit before the swap: one whose build-daemon.sh still builds `workroomd`
+# into Contents/MacOS, on this branch's history. Not checked in a clone without its history.
+CI_APP_YML="$WORKFLOWS_DIR/ci-app.yml"
+if [ -f "$CI_APP_YML" ]; then
+  app_block="$(job_block "$CI_APP_YML" app)"
+  if ! printf '%s\n' "$app_block" | grep -q '^[^#]*macapp/Scripts/build-pre-swap-daemon.sh "' \
+    || ! printf '%s\n' "$app_block" | grep -q '^[^#]*TEST_RUNNER_WR_FORMER_DAEMON=".HOME/.cache/workroom/pre-swap-daemon/workroom"'; then
+    echo "FAIL: ci-app.yml's app job no longer builds the pre-swap daemon and names it to"
+    echo "      app-test as TEST_RUNNER_WR_FORMER_DAEMON."
+    fails=$((fails + 1))
+  fi
+fi
+pre_swap="$(bash "$DIR/build-pre-swap-daemon.sh" --commit)"
+if git -C "$ROOT" rev-parse -q --verify "$pre_swap^{commit}" >/dev/null 2>&1; then
+  if ! git -C "$ROOT" merge-base --is-ancestor "$pre_swap" HEAD \
+    || ! git -C "$ROOT" show "$pre_swap:macapp/Scripts/build-daemon.sh" | grep -q '^HELPER_NAME="workroomd"$'; then
+    echo "FAIL: build-pre-swap-daemon.sh's commit $pre_swap is not a pre-swap commit on this"
+    echo "      branch: its app must run the daemon from Contents/MacOS/workroomd."
+    fails=$((fails + 1))
+  fi
+fi
+
 if [ "$fails" -ne 0 ]; then
   echo "test-invariants_test: $fails failure(s)" >&2
   exit 1

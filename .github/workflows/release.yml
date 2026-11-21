@@ -87,7 +87,10 @@ jobs:
         run: |
           echo "$NOTARY_KEY" | openssl base64 -d -A > "$RUNNER_TEMP/notary.p8"
           make app-package-test
-          NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-test APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="
+          # none: the swap's hand-off test moves this build's own daemon; ci-app.yml's `app` job
+          # runs it against the pre-swap one, which this job does not build.
+          TEST_RUNNER_WR_FORMER_DAEMON=none \
+            NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-test APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="
           # Not cli-archives_test.sh: it builds both channels' archives to test the script the next
           # step runs for real, and CI's app-scripts job runs it.
           NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-release \
