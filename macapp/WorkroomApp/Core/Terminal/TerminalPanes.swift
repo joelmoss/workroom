@@ -129,6 +129,17 @@ struct TerminalTitle: Equatable, Hashable, Sendable {
 
   /// The title as one string: "zsh ~/dev/workroom", or `name` alone.
   var text: String { folder.map { "\(name) \($0)" } ?? name }
+
+  /// This title without its folder when the folder is `path` (home as `~`, as the folder is
+  /// written): a workroom's terminal row names only the program while it is in the workroom's own
+  /// folder.
+  func omittingFolder(_ path: String?, home: String = TerminalState.homeDirectory) -> TerminalTitle
+  {
+    guard let folder, let path else { return self }
+    let own = TerminalState.abbreviatingHome(path, home: home)
+    let trimmed = { (p: String) in p.count > 1 && p.hasSuffix("/") ? String(p.dropLast()) : p }
+    return trimmed(folder) == trimmed(own) ? TerminalTitle(name: name) : self
+  }
 }
 
 /// A tab's content: a terminal surface, or non-terminal content (issue #66). A closed set — the
