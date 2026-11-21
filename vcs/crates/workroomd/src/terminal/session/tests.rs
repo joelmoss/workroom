@@ -2599,7 +2599,14 @@ fn a_probed_client_that_stops_answering_gives_up_the_size_and_is_closed() {
         counted.fetch_add(1, Ordering::SeqCst);
     });
     let (_, quiet) = store
-        .attach_client(session, quiet_writer, 1, Size::cells(80, 24), Some(closer))
+        .attach_client(
+            session,
+            quiet_writer,
+            1,
+            Size::cells(80, 24),
+            Some(closer),
+            ClientIdentity::default(),
+        )
         .expect("attach the probed client");
     let (_answering, answering) = attach_sized(&store, session, 100, 30);
     assert_eq!(
@@ -2648,6 +2655,7 @@ fn a_stale_client_left_on_its_own_is_not_handed_the_size() {
             1,
             Size::cells(80, 24),
             Some(Arc::new(|| {})),
+            ClientIdentity::default(),
         )
         .expect("attach the probed client");
     let (_other, other) = attach_sized(&store, session, 100, 30);
@@ -2673,6 +2681,78 @@ fn a_stale_client_left_on_its_own_is_not_handed_the_size() {
         "the next attach did not fill it"
     );
     assert_eq!(pty_size(&store, session), (120, 40));
+    store.kill_all();
+}
+
+/// Each client of a session is listed as it said it is (#688), with when it attached, the size it
+/// last advertised, whether it owns the size and its keepalive: in the order they attached, and
+/// gone once it detaches. A client that said nothing, an older one, is listed with neither.
+#[test]
+fn a_sessions_clients_are_listed_with_who_they_are_their_size_and_keepalive() {
+    let store = SessionStore::new();
+    let session = id(0xA3);
+    sized_session(&store, session);
+    let before = u64::try_from(wall_now().as_millis()).unwrap();
+    let writer: SharedWriter = Arc::new(Mutex::new(Box::new(Capture::default())));
+    let (_, pane) = store
+        .attach_client(
+            session,
+            writer,
+            1,
+            Size::cells(120, 40),
+            Some(Arc::new(|| {})),
+            ClientIdentity {
+                kind: Some(ClientKind::Pane),
+                hostname: Some("mac-a".into()),
+            },
+        )
+        .expect("attach the pane");
+    let (_older, older) = attach_sized(&store, session, 0, 0);
+    let after = u64::try_from(wall_now().as_millis()).unwrap();
+    let clients = |store: &SessionStore| store.described()[0].clients.clone();
+
+    let listed = clients(&store);
+    assert_eq!(listed.len(), 2, "{listed:?}");
+    let first = &listed[0];
+    assert_eq!(first.id, pane);
+    assert_eq!(
+        first.identity,
+        ClientIdentity {
+            kind: Some(ClientKind::Pane),
+            hostname: Some("mac-a".into()),
+        }
+    );
+    assert!((before..=after).contains(&first.attached_at), "{first:?}");
+    assert_eq!(
+        (first.columns, first.rows, first.owns_size),
+        (120, 40, true)
+    );
+    // The default interval is 15 s, so its first probe has not gone out yet.
+    assert_eq!(first.keepalive, KeepaliveState::Answering);
+    let second = &listed[1];
+    assert_eq!(second.id, older);
+    assert_eq!(second.identity, ClientIdentity::default());
+    assert_eq!(
+        (second.columns, second.rows, second.owns_size),
+        (0, 0, false)
+    );
+    assert_eq!(second.keepalive, KeepaliveState::Off);
+
+    store.resize(session, older, Size::cells(90, 30));
+    store.write_input(session, older, b"x");
+    let listed = clients(&store);
+    assert_eq!(
+        (listed[1].columns, listed[1].rows, listed[1].owns_size),
+        (90, 30, true),
+        "typing took the size"
+    );
+    assert!(!listed[0].owns_size);
+    store.detach(session, pane);
+    let listed = clients(&store);
+    assert_eq!(
+        listed.iter().map(|client| client.id).collect::<Vec<_>>(),
+        [older]
+    );
     store.kill_all();
 }
 

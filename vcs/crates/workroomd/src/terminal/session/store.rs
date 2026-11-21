@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 use super::reader::read_session;
 use super::refusals::wall_now;
 use super::{
-    Attached, CREATED_KEY, Described, Hooks, NEXT_SESSION, RunSignalError, Session, SessionError,
-    SessionId, SessionInfo, SessionParts, SessionSpec, SessionStore, TakenScreen, until,
+    Attached, CREATED_KEY, ClientInfo, Described, Hooks, NEXT_SESSION, RunSignalError, Session,
+    SessionError, SessionId, SessionInfo, SessionParts, SessionSpec, SessionStore, TakenScreen,
+    until,
 };
 use crate::terminal::program_status::Store;
 use crate::terminal::pty::Pty;
@@ -471,21 +472,25 @@ impl SessionStore {
     /// then its live title and coding agent, each read under its own shadow lock once the store's
     /// is released.
     pub fn described(&self) -> Vec<Described> {
-        let sessions: Vec<(SessionInfo, Arc<Mutex<Shadow>>)> = {
+        let sessions: Vec<(SessionInfo, Vec<ClientInfo>, Arc<Mutex<Shadow>>)> = {
             let sessions = lock_or_recover(&self.sessions);
             sessions
                 .values()
-                .map(|session| (session.info(), Arc::clone(&session.shadow)))
+                .map(|session| {
+                    let clients = lock_or_recover(&session.attached).listed();
+                    (session.info(), clients, Arc::clone(&session.shadow))
+                })
                 .collect()
         };
         let mut described: Vec<Described> = sessions
             .into_iter()
-            .map(|(info, shadow)| {
+            .map(|(info, clients, shadow)| {
                 let mut shadow = lock_or_recover(&shadow);
                 Described {
                     title: shadow.title(),
                     coding_agent: shadow.status().and_then(|status| status.coding_agent()),
                     info,
+                    clients,
                 }
             })
             .collect();

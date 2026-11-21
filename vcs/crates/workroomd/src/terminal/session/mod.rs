@@ -88,9 +88,83 @@ struct Client {
     transfer: Option<Arc<Transfer>>,
     /// Whether it still answers, for a client that asked to be probed (#593, `keepalive`).
     keepalive: Option<keepalive::Keepalive>,
+    /// What it said it is, and when it attached, in milliseconds since the epoch (#688).
+    identity: ClientIdentity,
+    attached_at: u64,
+}
+
+/// Who an attaching client said it is (#688), as its attach request put it: what kind of client,
+/// and the machine it is on. Both none for a client that said nothing, an older one's.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClientIdentity {
+    pub kind: Option<ClientKind>,
+    pub hostname: Option<String>,
+}
+
+pub use wr_protocol::terminal::ClientKind;
+
+/// One attached client as the terminal API lists it (`Described::clients`, #688).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientInfo {
+    /// The attachment's token: unique among this daemon's clients, and across a hand-off
+    /// (`SessionStore::adopt_all`).
+    pub id: u64,
+    pub identity: ClientIdentity,
+    /// When it attached, in milliseconds since the epoch.
+    pub attached_at: u64,
+    /// The size it last advertised, 0 by 0 when it has none.
+    pub columns: u16,
+    pub rows: u16,
+    /// Whether the pty follows its size (ADR 0042).
+    pub owns_size: bool,
+    pub keepalive: KeepaliveState,
+}
+
+/// Where a client's keepalive stands (#593, #688): never probed, because it didn't ask; answering
+/// its probes; one or more missed; or stale, missing enough that it no longer counts as attached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeepaliveState {
+    Off,
+    Answering,
+    Late,
+    Stale,
+}
+
+impl KeepaliveState {
+    pub const ALL: [KeepaliveState; 4] = [
+        KeepaliveState::Off,
+        KeepaliveState::Answering,
+        KeepaliveState::Late,
+        KeepaliveState::Stale,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            KeepaliveState::Off => "off",
+            KeepaliveState::Answering => "answering",
+            KeepaliveState::Late => "late",
+            KeepaliveState::Stale => "stale",
+        }
+    }
 }
 
 impl Client {
+    /// This client as the terminal API lists it, `owner` being the session's size owner.
+    fn info(&self, owner: Option<u64>) -> ClientInfo {
+        ClientInfo {
+            id: self.token,
+            identity: self.identity.clone(),
+            attached_at: self.attached_at,
+            columns: self.columns,
+            rows: self.rows,
+            owns_size: owner == Some(self.token),
+            keepalive: self
+                .keepalive
+                .as_ref()
+                .map_or(KeepaliveState::Off, keepalive::Keepalive::state),
+        }
+    }
+
     /// Whether it has stopped answering its probes, and so no longer counts as attached.
     fn is_stale(&self) -> bool {
         self.keepalive
@@ -138,6 +212,14 @@ impl Attached {
 
     fn client(&mut self, token: u64) -> Option<&mut Client> {
         self.clients.iter_mut().find(|client| client.token == token)
+    }
+
+    /// Every client as the terminal API lists it (#688).
+    fn listed(&self) -> Vec<ClientInfo> {
+        self.clients
+            .iter()
+            .map(|client| client.info(self.owner))
+            .collect()
     }
 
     /// The size the pty should be at, or none if nobody owns it.
@@ -254,6 +336,8 @@ pub struct Described {
     /// `terminal-state`.
     pub title: Option<String>,
     pub coding_agent: Option<crate::terminal::program_status::CodingAgent>,
+    /// Every client attached to it, in the order they attached (#688).
+    pub clients: Vec<ClientInfo>,
 }
 
 pub struct Session {

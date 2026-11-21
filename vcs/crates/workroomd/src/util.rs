@@ -4,6 +4,18 @@ use std::panic::Location;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, LockResult, Mutex, MutexGuard, TryLockError, TryLockResult};
 
+/// This machine's hostname (`gethostname`), or none when it can't be read.
+pub(crate) fn hostname() -> Option<String> {
+    let mut buffer = [0u8; 256];
+    // SAFETY: the buffer is valid for its length, and gethostname writes at most that.
+    let result = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
+    if result != 0 {
+        return None;
+    }
+    let end = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
+    Some(String::from_utf8_lossy(&buffer[..end]).into_owned())
+}
+
 /// A counted signal. `wait_past` a count read by `seen` returns once `raise` has moved it, so a
 /// raise between the read and the wait is never missed.
 #[derive(Default)]
