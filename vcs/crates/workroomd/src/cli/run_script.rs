@@ -34,7 +34,9 @@ pub fn run_run_script(args: &[String]) -> ExitCode {
     };
     let extra = env_flags(options);
     let timeout = Duration::from_secs(timeout);
-    let script = Script::new(Path::new(script), Path::new(&dir), &extra, Some(timeout));
+    let mut script = Script::new(Path::new(script), Path::new(&dir), &extra, Some(timeout));
+    // `workroom` on the script's PATH, as in the host's panes (ADR 0078).
+    script.commands = crate::host::environment::commands_folder();
     // The app has passed the script's trust check before it runs this, so the rc may read the
     // directory's local tool config: the script is about to run there anyway.
     let outcome = crate::script::run(&script, Output::Inherit, |reason| {
