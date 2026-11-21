@@ -222,6 +222,7 @@ fn a_resume_from_a_place_the_ring_no_longer_holds_or_another_boot_is_a_gap() {
         (latest - RING as u64, false),
         (latest, false),
         (latest + 1, true),
+        (u64::MAX, true),
     ] {
         let mut cursor = Cursor::new(Start::Since {
             boot: boot.clone(),
@@ -275,6 +276,38 @@ fn a_subscriber_that_falls_behind_the_ring_is_sent_the_state_afresh() {
     hub.ended(id(1), None);
     let live = events(next(&hub, &mut cursor));
     assert_eq!(live[0]["revision"], RING as u64 + 3);
+
+    // Behind while a hand-off has the ring sealed: it waits for the seal, and is sent the state
+    // afresh once it is lifted.
+    hub.created(id(1), listing(1, "wr-1"));
+    let _ = hub.carry();
+    for n in 0..=RING {
+        hub.program_status(id(1), agent(if n % 2 == 0 { "idle" } else { "done" }, ""));
+    }
+    let closed = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let waiting = scope.spawn(|| {
+            hub.next(&mut cursor, &|| {
+                closed.load(std::sync::atomic::Ordering::SeqCst)
+            })
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        hub.wake();
+        assert_eq!(
+            waiting.join().unwrap(),
+            Next::Closed,
+            "nothing while sealed"
+        );
+    });
+    hub.unseal();
+    assert!(matches!(
+        next(&hub, &mut cursor),
+        Next::Snapshot {
+            reason: Reason::Lagged,
+            ..
+        }
+    ));
 }
 
 /// What a hand-off carries numbers on in the next program, which tells what changed while it was
