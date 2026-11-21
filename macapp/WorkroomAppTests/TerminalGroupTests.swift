@@ -447,4 +447,15 @@ final class TerminalGroupTests: XCTestCase {
     XCTAssertEqual(rows, [held], "the held group stays; the empty one and the unheld row go")
     XCTAssertTrue(pruned.contains(try XCTUnwrap(empty.targetID)))
   }
+
+  func testAnUnnamedGroupIsLabelledByBothOfTwoNamesElseTheFirstAndHowManyMore() {
+    let group = TerminalGroup(id: UUID())
+    XCTAssertEqual(group.title(terminalNames: []), TerminalGroup.untitled)
+    XCTAssertEqual(group.title(terminalNames: ["zsh"]), "zsh")
+    XCTAssertEqual(group.title(terminalNames: ["zsh", "htop"]), "zsh + htop")
+    XCTAssertEqual(group.title(terminalNames: ["zsh", "zsh"]), "zsh + 1 more", "two the same")
+    XCTAssertEqual(group.title(terminalNames: ["zsh", "htop", "vim"]), "zsh + 2 more")
+    XCTAssertEqual(
+      TerminalGroup(id: UUID(), name: "Servers").title(terminalNames: ["zsh"]), "Servers")
+  }
 }
