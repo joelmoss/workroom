@@ -6,7 +6,9 @@
 //! **Two encodings.** With no kitty keyboard flags, the legacy one: xterm's PC-style function keys
 //! (`CSI A`, `CSI 1;5A`, `CSI 15~`), cursor keys and Home/End as `SS3` under application cursor
 //! keys (DECCKM) when no modifier is held, C0 controls for Ctrl with a character, and Escape before
-//! a key for Alt. With any kitty flag, the kitty keyboard protocol's (`CSI 99;5u`): Ghostty
+//! a key for Alt; Enter, Tab and Escape with any other modifiers as Ghostty's `function_keys.zig`
+//! has them, `CSI 27;m;13~` (Shift+Enter), `CSI 27;5;9~` (Ctrl+Tab), but for Shift+Tab's `CSI Z`.
+//! With any kitty flag, the kitty keyboard protocol's (`CSI 99;5u`): Ghostty
 //! consults DECCKM only for the legacy encoding, so none of a kitty encoding is `SS3`. Enter, Tab
 //! and Backspace with no modifier stay legacy bytes, and a key that types text with nothing but
 //! Shift stays its text, unless the program asked for every key as an escape code (flag 8). That
@@ -14,8 +16,8 @@
 //!
 //! **What is left out.** A press only, never a release, whatever flag 2 (report event types)
 //! says: a release is no keystroke of its own, and programs that ask for them take a press alone.
-//! xterm's modifyOtherKeys is not tracked, so Ctrl+Enter is Enter in the legacy encoding, as in a
-//! terminal with it off. No keypad keys, and no keyboard layout: Shift with a character other than
+//! xterm's modifyOtherKeys is not tracked: keys are encoded as Ghostty encodes them with it off
+//! (mode 2 changes Alt with Enter, Tab or Escape, and every modified Backspace). No keypad keys, and no keyboard layout: Shift with a character other than
 //! a letter is that character, with Shift reported only where the kitty encoding has a place for
 //! it.
 //!
@@ -248,8 +250,21 @@ impl Key {
                 };
                 alt(typed)
             }
+            // Ghostty's `function_keys.zig`: Alt alone puts ESC before the key, Shift+Tab is
+            // xterm's back tab, and every other modified Enter, Tab or Escape is `CSI 27;m;code~`.
+            // Backspace keeps its byte, BS with Ctrl, ESC before it with Alt, whatever else is held.
+            Code::Enter | Code::Tab | Code::Escape if mods.any() && !alt_only(mods) => match code {
+                Code::Tab if shift_only(mods) => b"\x1b[Z".to_vec(),
+                _ => {
+                    let number = match code {
+                        Code::Enter => 13,
+                        Code::Tab => 9,
+                        _ => 27,
+                    };
+                    format!("\x1b[27;{parameter};{number}~").into_bytes()
+                }
+            },
             Code::Enter => alt(b"\r".to_vec()),
-            Code::Tab if mods.shift => alt(b"\x1b[Z".to_vec()),
             Code::Tab => alt(b"\t".to_vec()),
             Code::Backspace if mods.ctrl => alt(vec![0x08]),
             Code::Backspace => alt(vec![0x7f]),
@@ -346,6 +361,22 @@ impl Key {
             Code::F(4) => letter('S'),
             Code::F(number) => csi(function_number(number), '~', ""),
         }
+    }
+}
+
+/// Whether Alt is the one modifier held.
+fn alt_only(mods: Mods) -> bool {
+    mods == Mods {
+        alt: true,
+        ..Mods::default()
+    }
+}
+
+/// Whether Shift is the one modifier held.
+fn shift_only(mods: Mods) -> bool {
+    mods == Mods {
+        shift: true,
+        ..Mods::default()
     }
 }
 
