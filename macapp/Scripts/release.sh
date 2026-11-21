@@ -42,9 +42,7 @@ APP="${EXPORT_DIR}/${APP_NAME}.app"
 ZIP="${BUILD}/${APP_NAME}.zip"
 DMG="${BUILD}/${APP_NAME}.dmg"
 
-export PATH="/usr/local/go/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
-# The `go` found above uses its own toolchain, not an inherited GOROOT's (see build-helper.sh).
-unset GOROOT
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
 # Run `xcrun notarytool <subcommand> …` with whichever auth is configured: an App Store
 # Connect API key when NOTARY_KEY_PATH is set (CI: --key/--key-id/--issuer), else a local
@@ -107,7 +105,7 @@ BUILD_NUMBER="$(git -C "$MACAPP_DIR/.." rev-list --count HEAD 2>/dev/null || ech
 
 # Archive + export with the Developer ID method (NOT a plain `build`): exportArchive re-signs
 # the app AND all nested code — Sparkle's XPC services + Autoupdate/Updater helpers, the embedded
-# Go helper — with our Developer ID, hardened runtime, and a secure timestamp. A plain `build`
+# `workroom` binary — with our Developer ID, hardened runtime, and a secure timestamp. A plain `build`
 # leaves nested helpers without a timestamp (and injects get-task-allow), which notarization
 # rejects. Archiving also produces a distribution build with get-task-allow omitted.
 echo "==> Archiving $CONFIGURATION ($APP_NAME) $SHORT_VERSION ($BUILD_NUMBER)"
@@ -161,7 +159,7 @@ xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$EXPORT_DIR" \
   -exportOptionsPlist "$EXPORT_PLIST"
 
 # A release must be arm64 all the way down (ADR 0061). This is asserted, not assumed, because it
-# silently regressed once: `ARCHS` is a space-separated list and build-helper.sh used to match it as
+# silently regressed once: `ARCHS` is a space-separated list and build-helper.sh (gone with #681) used to match it as
 # a single token, falling back to the wrong Go build with nothing but a `warn:` in the xcodebuild
 # log. Nothing downstream catches this: codesign, notarization and Gatekeeper are all happy with a
 # nested binary for the wrong architecture.
@@ -181,7 +179,23 @@ check_arm64() {
   echo "    $label: $archs"
 }
 check_arm64 "app binary" "$APP/Contents/MacOS/${APP_NAME}"
-check_arm64 "embedded workroom CLI" "$APP/Contents/Resources/workroom"
+check_arm64 "embedded workroom binary" "$APP/Contents/Resources/workroom"
+
+# No release ships two binaries (ADR 0078): the CLI and the daemon (`workroom serve`) are the one
+# Rust `workroom` in Contents/Resources. Nothing of the former layout may be in the bundle, and the
+# binary there must be the daemon's, which states its daemon build (#680), not a Go CLI, which
+# would answer `protocol` with an unknown-command error.
+echo "==> Verifying the one workroom binary"
+for former in "$APP/Contents/MacOS/workroomd" "$APP/Contents/Resources/workroomd-linux-aarch64" \
+  "$APP/Contents/Resources/workroomd-linux-x86_64"; do
+  [ ! -e "$former" ] \
+    || { echo "error: $former ships beside Contents/Resources/workroom; a release ships one binary (ADR 0078)." >&2; exit 1; }
+done
+WR_PROTOCOL="$("$APP/Contents/Resources/workroom" protocol 2>/dev/null || true)"
+case "$WR_PROTOCOL" in
+  *"daemon-build "*) echo "    Contents/Resources/workroom: $(printf '%s\n' "$WR_PROTOCOL" | grep '^build-number ')" ;;
+  *) echo "error: Contents/Resources/workroom states no daemon-build: it is not the one Rust binary (ADR 0078)." >&2; exit 1 ;;
+esac
 
 # Naming only those two would leave the invariant narrower than the sentence above claims: Sparkle
 # ships XPC services, an Autoupdate tool and an Updater app, and notarization is just as happy with
@@ -235,10 +249,10 @@ echo "==> Verifying Linux daemons"
 for pair in "aarch64:ARM aarch64" "x86_64:x86-64"; do
   arch="${pair%%:*}"
   want="${pair#*:}"
-  elf="$APP/Contents/Resources/workroomd-linux-$arch"
+  elf="$APP/Contents/Resources/workroom-linux-$arch"
   desc="$(file -b "$elf" 2>/dev/null || true)"
   case "$desc" in
-    *"ELF 64-bit"*"$want"*"statically linked"*) echo "    workroomd-linux-$arch: $desc" ;;
+    *"ELF 64-bit"*"$want"*"statically linked"*) echo "    workroom-linux-$arch: $desc" ;;
     *) echo "error: $elf is not a static $want ELF: '${desc:-missing}'." >&2; exit 1 ;;
   esac
 done

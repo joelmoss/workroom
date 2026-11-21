@@ -27,14 +27,16 @@ enum SessionBackend: String, CaseIterable, Sendable {
   /// `workroom-session`, now an attach-only client. Never the destination for a NEW session; only
   /// ever resolved for a session a pre-existing helper says it already holds.
   case legacySessionHelper = "swift"
-  /// `workroomd`, the unified local+remote daemon. Where every new session goes.
+  /// The daemon, `workroom serve`: the unified local+remote daemon. Where every new session goes.
   case daemon = "rust"
 
   /// The helper this backend forks. Distinct binaries, so neither can be mistaken for the other.
+  /// The daemon is the one `workroom` binary, the CLI too (ADR 0078); it was `workroomd` in
+  /// `Contents/MacOS` until #681.
   var binaryName: String {
     switch self {
     case .legacySessionHelper: return "workroom-session"
-    case .daemon: return "workroomd"
+    case .daemon: return "workroom"
     }
   }
 

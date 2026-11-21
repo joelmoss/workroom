@@ -3,11 +3,15 @@
 # Dependency-free test for build-daemon.sh's architecture handling. No bats — just sh, cargo and
 # lipo. Run: sh macapp/Scripts/build-daemon_test.sh   (exits non-zero on any mismatch).
 #
-# Why this exists, and why it is a copy of build-helper_test.sh rather than a shared helper: the
-# bug it guards against already shipped once. `ARCHS` is a SPACE-SEPARATED LIST, build-helper.sh
-# matched it as a single token, and 23 betas went out with an arm64-only CLI inside a fat .app —
-# announced by nothing louder than a `warn:` in the build log. macapp/AGENTS.md records the rule
-# that any new universal Mac binary must reuse that iteration; this is what proves workroomd does.
+# Why this exists: the bug it guards against already shipped once. `ARCHS` is a SPACE-SEPARATED
+# LIST, the Go CLI's build-helper.sh (gone with #681) matched it as a single token, and 23 betas
+# went out with an arm64-only CLI inside a fat .app — announced by nothing louder than a `warn:` in
+# the build log. macapp/AGENTS.md records the rule that any new universal Mac binary must reuse
+# that iteration; this is what proves the one `workroom` binary (ADR 0078) does.
+#
+# It also holds the bundle to one binary (no release ships two, ADR 0078): `Contents/Resources/
+# workroom` and its Linux builds, with the daemon's former files gone from a bundle an earlier
+# build made, and the binary stamped with the app's version and channel as the Go CLI was.
 #
 # CI never catches it: `make app-test` builds Debug with a single native arch, so the multi-arch
 # branch is only exercised by a real Release/Nightly build.
@@ -71,8 +75,8 @@ run_daemon() {
   case_name="$1"
   archs="$2"
   dest="$WORK/out-$case_name"
-  mkdir -p "$dest/MacOS"
-  OUT="$dest/MacOS/workroomd"
+  mkdir -p "$dest/MacOS" "$dest/Resources"
+  OUT="$dest/Resources/workroom"
   SRCROOT="$REPO/macapp" \
   TARGET_BUILD_DIR="$dest" \
   EXECUTABLE_FOLDER_PATH="MacOS" \
@@ -80,8 +84,33 @@ run_daemon() {
   DERIVED_FILE_DIR="$dest/intermediates" \
   CONFIGURATION="${3:-}" \
   ARCHS="$archs" \
+  MARKETING_VERSION="$TEST_VERSION" \
+  WORKROOM_RELEASE_CHANNEL=nightly \
     sh "$HELPER" >"$dest/log" 2>&1
   RC=$?
+}
+
+# Every case builds with the same version and channel, so they share one build of each target.
+TEST_VERSION="0.0.0-build-daemon-test"
+
+# expect_one_binary <case-name>: the bundle holds the one `workroom` and its two Linux builds, and
+# nothing of the daemon's former names (ADR 0078).
+expect_one_binary() {
+  bundle="$WORK/out-$1"
+  for former in MacOS/workroomd Resources/workroomd-linux-aarch64 Resources/workroomd-linux-x86_64; do
+    if [ -e "$bundle/$former" ]; then
+      echo "FAIL: $1: the bundle still holds $former"
+      fails=$((fails + 1))
+    fi
+  done
+  got="$(cd "$bundle" && find MacOS Resources -mindepth 1 | sort | tr '\n' ' ')"
+  case "$got" in
+    "Resources/workroom Resources/workroom-linux-aarch64 Resources/workroom-linux-x86_64 ") ;;
+    *)
+      echo "FAIL: $1: the bundle holds '$got', want only Resources/workroom and its Linux builds"
+      fails=$((fails + 1))
+      ;;
+  esac
 }
 
 # expect_archs <case-name> <ARCHS value> <space-separated wanted archs>
@@ -103,10 +132,10 @@ expect_archs() {
         ;;
     esac
   done
-  # A stranded per-arch slice inside Contents/MacOS would be an unsigned Mach-O sealed into the
+  # A stranded per-arch slice inside Contents/Resources would be an unsigned Mach-O sealed into the
   # shipped app signature by a later single-arch build.
-  if ls "$(dirname "$OUT")"/workroomd-slice-* >/dev/null 2>&1; then
-    echo "FAIL: ARCHS='$2' left workroomd-slice-* inside MacOS"
+  if ls "$(dirname "$OUT")"/workroom-slice-* >/dev/null 2>&1; then
+    echo "FAIL: ARCHS='$2' left workroom-slice-* inside Resources"
     fails=$((fails + 1))
   fi
   # The binary must actually answer, or the app's health probe reports it unhealthy.
@@ -123,6 +152,17 @@ expect_archs() {
       echo "FAIL: ARCHS='$2' built a daemon that cannot repaint a reattaching client"
       fails=$((fails + 1))
     fi
+    # The app's CLI reports the app's version and channel, as build-helper.sh stamped the Go one:
+    # `update` and `version` read them. A throwaway config, so no real one is read.
+    stamped="$(WORKROOM_CONFIG="$WORK/config.json" "$OUT" version --json 2>&1)"
+    case "$stamped" in
+      *"\"version\":\"$TEST_VERSION\""*"\"channel\":\"nightly\""* \
+        | *"\"channel\":\"nightly\""*"\"version\":\"$TEST_VERSION\""*) ;;
+      *)
+        echo "FAIL: ARCHS='$2' built a CLI not stamped with $TEST_VERSION and nightly: $stamped"
+        fails=$((fails + 1))
+        ;;
+    esac
   fi
   expect_notices "ARCHS='$2'" "$OUT"
 }
@@ -170,10 +210,25 @@ if [ "$RC" -ne 0 ] || [ "$before" != "$after" ]; then
   echo "FAIL: a rebuild wrote into the binary a running daemon executes (mtime $before -> $after, exit $RC)"
   fails=$((fails + 1))
 fi
-if [ -e "$(dirname "$OUT")/.workroomd-staged" ]; then
-  echo "FAIL: a rebuild left .workroomd-staged inside MacOS"
+if [ -e "$(dirname "$OUT")/.workroom-staged" ]; then
+  echo "FAIL: a rebuild left .workroom-staged inside Resources"
   fails=$((fails + 1))
 fi
+rm -f "$WORK/running-daemon"
+
+# A bundle an earlier build made, with the daemon in Contents/MacOS and the Linux builds under their
+# former names (#681), comes out with the one binary only.
+for former in MacOS/workroomd MacOS/.workroomd-staged Resources/workroomd-linux-aarch64 \
+  Resources/workroomd-linux-x86_64; do
+  cp "$OUT" "$WORK/out-host/$former"
+done
+run_daemon host "$HOST_ARCH"
+if [ "$RC" -ne 0 ]; then
+  echo "FAIL: a rebuild over the former layout exited $RC. Log:"
+  sed 's/^/    /' "$WORK/out-host/log"
+  fails=$((fails + 1))
+fi
+expect_one_binary host
 
 if [ "$CROSS" -eq 1 ]; then
   # The case that shipped broken: a space-separated list must produce BOTH slices.
@@ -217,16 +272,17 @@ expect_linux_daemons() {
   for pair in "aarch64:ARM aarch64" "x86_64:x86-64"; do
     arch="${pair%%:*}"
     want="${pair#*:}"
-    desc="$(file -b "$WORK/out-$1/Resources/workroomd-linux-$arch" 2>/dev/null)"
+    desc="$(file -b "$WORK/out-$1/Resources/workroom-linux-$arch" 2>/dev/null)"
     case "$desc" in
       *"ELF 64-bit"*"$want"*"statically linked"*) ;;
       *)
-        echo "FAIL: $1: workroomd-linux-$arch is not a static $want ELF: '${desc:-missing}'"
+        echo "FAIL: $1: workroom-linux-$arch is not a static $want ELF: '${desc:-missing}'"
         fails=$((fails + 1))
         ;;
     esac
-    expect_notices "$1" "$WORK/out-$1/Resources/workroomd-linux-$arch"
+    expect_notices "$1" "$WORK/out-$1/Resources/workroom-linux-$arch"
   done
+  expect_one_binary "$1"
 }
 
 # Every build ships a static Linux daemon for EVERY Linux arch, whatever ARCHS says: the remote box's
@@ -234,7 +290,7 @@ expect_linux_daemons() {
 # its stale file must come back as a real daemon. The Linux CI job runs `protocol` on the ELFs, which
 # this Mac cannot.
 mkdir -p "$WORK/out-debug_linux/Resources"
-: >"$WORK/out-debug_linux/Resources/workroomd-linux-aarch64"
+: >"$WORK/out-debug_linux/Resources/workroom-linux-aarch64"
 run_daemon debug_linux "$HOST_ARCH"
 expect_linux_daemons debug_linux
 # Reuses the Linux builds above, so it costs a copy, not a compile.

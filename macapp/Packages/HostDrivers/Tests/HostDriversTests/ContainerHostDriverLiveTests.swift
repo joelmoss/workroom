@@ -6,7 +6,7 @@ import XCTest
 /// and serving as the remote user, a command through `exec`, a pane through the attach command,
 /// then teardown. Opt-in, by hand on a Mac: `container system start` first, then
 ///
-///   WR_APPLE_CONTAINER_TESTS=1 WR_LINUX_DAEMON=<a workroomd-linux-aarch64> \
+///   WR_APPLE_CONTAINER_TESTS=1 WR_LINUX_DAEMON=<a workroom-linux-aarch64> \
 ///     swift test --package-path macapp/Packages/HostDrivers --filter ContainerHostDriverLiveTests
 final class ContainerHostDriverLiveTests: XCTestCase {
   func testAStockImageBecomesAWorkroomOnApplesRuntime() async throws {

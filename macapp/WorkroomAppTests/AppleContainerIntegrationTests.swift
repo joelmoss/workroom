@@ -9,7 +9,7 @@ import XCTest
 /// per container, which CI's macOS runners can't give it, so these run on a Mac by hand before a
 /// release, with `container system start` run first:
 ///
-///   TEST_RUNNER_WR_APPLE_CONTAINER_TESTS=1 TEST_RUNNER_WR_LINUX_DAEMON=<workroomd-linux-aarch64> \
+///   TEST_RUNNER_WR_APPLE_CONTAINER_TESTS=1 TEST_RUNNER_WR_LINUX_DAEMON=<workroom-linux-aarch64> \
 ///     make app-test APP_TEST_FLAGS=-only-testing:WorkroomAppTests/AppleContainerIntegrationTests
 final class AppleContainerIntegrationTests: ContainerIntegrationTestCase {
   override var dialect: ContainerRuntime { .apple }

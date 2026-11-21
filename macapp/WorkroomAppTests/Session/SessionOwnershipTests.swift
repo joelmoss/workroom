@@ -517,7 +517,8 @@ final class PersistentSessionPairTests: XCTestCase {
         sessionID: sessionID, workingDirectory: NSTemporaryDirectory()))
 
     XCTAssertEqual(service.backend(forSession: sessionID), .daemon)
-    XCTAssertEqual(command?.contains("workroomd"), true, "got \(command ?? "nil")")
+    XCTAssertEqual(
+      command?.contains("/Contents/Resources/workroom attach"), true, "got \(command ?? "nil")")
     XCTAssertEqual(
       environment["WORKROOM_SESSION_SOCKET"], service.socketPath(for: .daemon),
       "the daemon was handed a socket that is not the daemon's")
@@ -750,7 +751,8 @@ final class HelperSessionSubstitutionTests: XCTestCase {
     XCTAssertEqual(service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .gone)
 
     let command = service.attachCommand(forSession: sessionID, restored: true)
-    XCTAssertEqual(command?.contains("workroomd"), true, "got \(command ?? "nil")")
+    XCTAssertEqual(
+      command?.contains("/Contents/Resources/workroom attach"), true, "got \(command ?? "nil")")
     XCTAssertEqual(command?.hasSuffix(" attach --no-create"), true, "got \(command ?? "nil")")
   }
 
@@ -822,7 +824,8 @@ final class ShimReattachTelemetryTests: XCTestCase {
       reportShimReattach: { reports.add() })
 
     let command = service.attachCommand(forSession: UUID(), restored: true)
-    XCTAssertEqual(command?.contains("workroomd"), true, "got \(command ?? "nil")")
+    XCTAssertEqual(
+      command?.contains("/Contents/Resources/workroom attach"), true, "got \(command ?? "nil")")
     _ = service.attachCommand(forSession: UUID())
     XCTAssertEqual(reports.count, 0, "a daemon attach is not a shim reattach")
   }
@@ -847,7 +850,8 @@ final class ShimReattachTelemetryTests: XCTestCase {
     XCTAssertEqual(lost.backend(forSession: sessionID), .legacySessionHelper)
     XCTAssertEqual(lost.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .gone)
     let command = lost.attachCommand(forSession: sessionID, restored: true)
-    XCTAssertEqual(command?.contains("workroomd"), true, "got \(command ?? "nil")")
+    XCTAssertEqual(
+      command?.contains("/Contents/Resources/workroom attach"), true, "got \(command ?? "nil")")
 
     XCTAssertEqual(reports.count, 0, "nothing reattached through the shim")
   }
