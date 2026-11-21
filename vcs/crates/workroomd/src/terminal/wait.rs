@@ -47,6 +47,36 @@ pub enum Condition {
     Ended,
     /// The shell's next command end (OSC 133 D closing a C).
     CommandFinished,
+    /// The coding agent's turn ending (#692): the first program status other than `working`
+    /// after a `working`, or none once its report has gone (it exited).
+    Turn(Turn),
+}
+
+/// Which turn a [`Condition::Turn`] waits on the end of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Turn {
+    /// The next: one that a `working` reported now or later starts. A `done` from before it is
+    /// no end of it, so a prompt waits on the turn it starts (`terminal.prompt`), never on the
+    /// status left from the turn before.
+    Next,
+    /// The one under way, whose start has been seen: any status but `working` ends it, now
+    /// included. What a prompt's wait goes on with after a hand-off once its turn has started.
+    Current,
+}
+
+impl Turn {
+    pub const ALL: [Turn; 2] = [Turn::Next, Turn::Current];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Turn::Next => "next",
+            Turn::Current => "current",
+        }
+    }
+
+    pub fn named(name: &str) -> Option<Turn> {
+        Turn::ALL.into_iter().find(|turn| turn.name() == name)
+    }
 }
 
 /// A run supervisor's state, the first word of its status line (`run_supervisor.sh`).
@@ -160,6 +190,8 @@ pub enum Met {
     Ended(Option<i32>),
     /// The command's exit code.
     CommandFinished(Option<i32>),
+    /// The status the coding agent's turn ended in; `None` when its report went (it exited).
+    Turn(Option<State>),
 }
 
 /// One wait, shared by the session that tells it what happens and the request waiting on it.
@@ -182,10 +214,13 @@ enum Wanted {
     Output,
     Ended,
     CommandFinished,
+    Turn,
 }
 
 struct Progress {
     wanted: Wanted,
+    /// A `Turn` wait has seen its turn start: a `working`, or `Turn::Current` from the first.
+    turn_started: bool,
     /// The commands the shell had ended when the wait started, for `CommandFinished`.
     commands_before: u64,
     /// A regex wait's output, handed over by the reader and not yet taken by its thread.
@@ -276,16 +311,22 @@ impl Waiter {
     /// A waiter for `condition`, starting from what the shadow says now: a status already reached
     /// meets it at once.
     pub fn new(condition: Condition, now: Seen) -> Waiter {
+        let condition_turn = match condition {
+            Condition::Turn(turn) => Some(turn),
+            _ => None,
+        };
         let (wanted, matcher) = match condition {
             Condition::Status(state) => (Wanted::Status(state), None),
             Condition::Run(state) => (Wanted::Run(state), None),
             Condition::Output(matcher) => (Wanted::Output, Some(*matcher)),
             Condition::Ended => (Wanted::Ended, None),
             Condition::CommandFinished => (Wanted::CommandFinished, None),
+            Condition::Turn(_) => (Wanted::Turn, None),
         };
         let waiter = Waiter {
             state: Mutex::new(Progress {
                 wanted,
+                turn_started: matches!(condition_turn, Some(Turn::Current)),
                 commands_before: now.commands,
                 queue: Queue::default(),
                 in_hand: 0,
@@ -392,18 +433,64 @@ impl Waiter {
         if seen.shell_marks {
             progress.marks_by = None;
         }
-        let outcome = match Self::met(&progress, seen) {
-            Some(met) => Outcome::Met(met),
-            None if progress.command && seen.alternate => Outcome::AlternateScreen,
-            None => return,
+        let started = progress.turn_started;
+        let outcome = match Self::met(&mut progress, seen) {
+            Some(met) => Some(Outcome::Met(met)),
+            None if progress.command && seen.alternate => Some(Outcome::AlternateScreen),
+            None => None,
         };
-        progress.outcome = Some(outcome);
+        // A turn's start is news to its prompt's thread too (`turn_started_by`).
+        let news = outcome.is_some() || progress.turn_started != started;
+        if let Some(outcome) = outcome {
+            progress.outcome = Some(outcome);
+        }
         drop(progress);
-        self.wake.notify_all();
+        if news {
+            self.wake.notify_all();
+        }
     }
 
-    fn met(progress: &Progress, seen: &Seen) -> Option<Met> {
+    /// For a `Turn` wait's thread: blocks until its turn has started, the wait has ended or
+    /// `deadline` passes (none: never). Whether the turn started: a wait that ended without one
+    /// (its session's end, its caller gone) or ran out of time says no, and `wait` then says how.
+    pub fn turn_started_by(&self, deadline: Option<Instant>) -> bool {
+        let mut progress = lock_or_recover(&self.state);
+        loop {
+            if progress.turn_started {
+                return true;
+            }
+            if progress.outcome.is_some() {
+                return false;
+            }
+            match deadline {
+                None => progress = recover(self.wake.wait(progress)),
+                Some(deadline) => {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return false;
+                    }
+                    progress = recover(self.wake.wait_timeout(progress, deadline - now)).0;
+                }
+            }
+        }
+    }
+
+    fn met(progress: &mut Progress, seen: &Seen) -> Option<Met> {
         match progress.wanted {
+            // Each state the read left the agent in, in order, then where it is now: a turn
+            // that starts and ends within one read is heard, and a status from before its start,
+            // the `done` a prompt finds, is none of its end.
+            Wanted::Turn => {
+                let states = seen.passed.iter().copied().map(Some).chain([seen.agent]);
+                for state in states {
+                    if !progress.turn_started {
+                        progress.turn_started = state == Some(State::Working);
+                    } else if state != Some(State::Working) {
+                        return Some(Met::Turn(state));
+                    }
+                }
+                None
+            }
             Wanted::Status(wanted)
                 if seen.agent == Some(wanted) || seen.passed.contains(&wanted) =>
             {

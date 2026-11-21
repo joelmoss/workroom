@@ -973,3 +973,52 @@ fn a_regex_waits_answer_is_the_same_however_its_output_is_split() {
         }
     }
 }
+
+/// What the shadow says after a read that left the agent in `passed`, in order, ending in `agent`.
+fn read_left(passed: &[State], agent: Option<State>) -> Seen {
+    Seen {
+        agent,
+        passed: passed.to_vec(),
+        ..Seen::default()
+    }
+}
+
+/// Value: protects=`prompt --wait` answering on the `done` left from the turn before (#692); fails_when=a turn's end is taken before a fresh `working`, or a turn started and ended within one read is missed; why_new=no other wait needs one state after another; seam=none
+#[test]
+fn a_turn_ends_only_after_a_working_seen_since_it_started() {
+    let now = |agent| read_left(&[], agent);
+    let ended = |state| Some(Outcome::Met(Met::Turn(state)));
+    // The `done` the turn before left, then `idle` and a report gone: none of them its end.
+    let next = Waiter::new(Condition::Turn(Turn::Next), now(Some(State::Done)));
+    for seen in [now(Some(State::Done)), now(Some(State::Idle)), now(None)] {
+        next.shadow(&seen);
+        assert_eq!(next.outcome(), None, "{seen:?}");
+    }
+    next.shadow(&now(Some(State::Working)));
+    next.shadow(&now(Some(State::Working)));
+    assert_eq!(next.outcome(), None, "still working");
+    next.shadow(&now(Some(State::Blocked)));
+    assert_eq!(next.outcome(), ended(Some(State::Blocked)));
+
+    // Started and ended within one read.
+    let quick = Waiter::new(Condition::Turn(Turn::Next), now(Some(State::Done)));
+    quick.shadow(&read_left(
+        &[State::Done, State::Working, State::Done],
+        Some(State::Done),
+    ));
+    assert_eq!(quick.outcome(), ended(Some(State::Done)));
+
+    // An agent working as the wait starts has started its turn; its report going ends it.
+    let exited = Waiter::new(Condition::Turn(Turn::Next), now(Some(State::Working)));
+    assert_eq!(exited.outcome(), None);
+    exited.shadow(&read_left(&[State::Working], None));
+    assert_eq!(exited.outcome(), ended(None));
+
+    // The turn under way: any status but `working` ends it, now counting.
+    let current = Waiter::new(Condition::Turn(Turn::Current), now(Some(State::Done)));
+    assert_eq!(current.outcome(), ended(Some(State::Done)));
+    let working = Waiter::new(Condition::Turn(Turn::Current), now(Some(State::Working)));
+    assert_eq!(working.outcome(), None);
+    working.shadow(&now(Some(State::Error)));
+    assert_eq!(working.outcome(), ended(Some(State::Error)));
+}
