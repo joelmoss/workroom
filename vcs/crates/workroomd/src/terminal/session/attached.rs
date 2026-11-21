@@ -6,8 +6,10 @@ use std::time::{Duration, Instant};
 
 use super::keepalive::Keepalive;
 use super::reader::READ_CHUNK;
+use super::refusals::wall_now;
 use super::{
-    Attached, Client, Hooks, NEXT_TOKEN, SessionError, SessionId, SessionInfo, SessionStore, Target,
+    Attached, Client, ClientIdentity, Hooks, NEXT_TOKEN, SessionError, SessionId, SessionInfo,
+    SessionStore, Target,
 };
 use crate::daemon::rpc::{self, SharedWriter};
 use crate::daemon::transport::{Closer, WRITE_TIMEOUT};
@@ -39,12 +41,12 @@ impl SessionStore {
         stream: u32,
         size: Size,
     ) -> Result<(SessionInfo, u64), SessionError> {
-        self.attach_client(id, writer, stream, size, None)
+        self.attach_client(id, writer, stream, size, None, ClientIdentity::default())
     }
 
     /// `attach`, for a client that may have asked to be probed (`keepalive`, #593): one that stops
     /// answering then stops counting as attached, and `keepalive`, which ends its connection, is
-    /// called (ADR 0075).
+    /// called (ADR 0075). `identity` is what it said it is (#688), which the terminal API lists.
     pub fn attach_client(
         &self,
         id: SessionId,
@@ -52,6 +54,7 @@ impl SessionStore {
         stream: u32,
         size: Size,
         keepalive: Option<Closer>,
+        identity: ClientIdentity,
     ) -> Result<(SessionInfo, u64), SessionError> {
         let (pty, shadow, attached) = self
             .parts(id)
@@ -176,6 +179,8 @@ impl SessionStore {
                     classifier: InputClassifier::new(),
                     transfer,
                     keepalive: keepalive.map(Keepalive::new),
+                    identity,
+                    attached_at: u64::try_from(wall_now().as_millis()).unwrap_or(u64::MAX),
                 });
                 // Attaching does not TAKE the size from a client that has it — that needs an act.
                 // It only fills a vacancy.

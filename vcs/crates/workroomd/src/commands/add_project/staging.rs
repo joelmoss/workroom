@@ -50,7 +50,10 @@ pub(super) fn machine_host() -> Option<&'static str> {
 /// The owner part of this process's staging names: `<host>-<pid>-`, the host being the hostname's
 /// hash when there is no machine id (nothing is ever swept by that).
 pub(super) fn staging_owner() -> String {
-    let host = machine_host().map_or_else(|| fnv_hex(&hostname()), str::to_string);
+    let host = machine_host().map_or_else(
+        || fnv_hex(&crate::util::hostname().unwrap_or_else(|| "unknown".into())),
+        str::to_string,
+    );
     format!("{host}-{}-", std::process::id())
 }
 
@@ -62,17 +65,6 @@ pub(super) fn fnv_hex(text: &str) -> String {
         hash = hash.wrapping_mul(0x0100_0193);
     }
     format!("{hash:08x}")
-}
-
-fn hostname() -> String {
-    let mut buffer = [0u8; 256];
-    // SAFETY: the buffer is valid for its length, and gethostname writes at most that.
-    let result = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
-    if result != 0 {
-        return "unknown".to_string();
-    }
-    let end = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
-    String::from_utf8_lossy(&buffer[..end]).into_owned()
 }
 
 /// The Mac's IOPlatformUUID, the hardware id ioreg reports, which survives renaming the Mac,

@@ -9,9 +9,10 @@ use std::time::Duration;
 use super::{DAEMON_UNAVAILABLE, HandshakeError, flag, handshake};
 use crate::daemon::serve;
 use crate::terminal::pty::Size;
+use std::os::unix::ffi::OsStrExt;
 use wr_protocol::envelope::{Envelope, EnvelopeDecoder, MIN_HOST_ATTACH_VERSION, Service};
 use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
-use wr_protocol::terminal::{AttachRequest, encode_resize};
+use wr_protocol::terminal::{AttachRequest, ClientKind, client_hostname, encode_resize};
 
 /// What a restored pane (`--no-create`) shows when its session has ended and the daemon kept no
 /// record of it (`crate::terminal::screens`), if it cannot be given a new session instead.
@@ -196,6 +197,34 @@ fn candidate_directories(requested: Option<&std::ffi::OsString>) -> Vec<PathBuf>
 /// The attach request this process's environment makes (`AttachRequest::from_vars`): the
 /// variables `PersistentSessionService.launchEnvironment` sets, and the environment the child is
 /// given.
+/// The variable an app sets on a pane's attach to name the Mac showing it (#688), for an attach
+/// that runs on the host rather than the Mac (`--no-spawn`), whose own hostname is the host's.
+pub(crate) const HOSTNAME_VARIABLE: &str = "WORKROOM_SESSION_HOSTNAME";
+
+/// What this attach tells the daemon it is (#688): a pane of the app (`pane`, which the app's
+/// session variables or `--dial` say), else a `workroom attach` someone ran (`cli`); and the
+/// machine it is on: the one `named` (`HOSTNAME_VARIABLE`) when the app said, else this one
+/// (`own`), unless this is the app's attach on a host (`on_host`), whose machine is the host, not
+/// the Mac the pane is on, so it says none.
+fn declared(
+    pane: bool,
+    on_host: bool,
+    named: Option<std::ffi::OsString>,
+    own: impl FnOnce() -> Option<String>,
+) -> (Option<ClientKind>, Option<String>) {
+    let kind = if pane {
+        ClientKind::Pane
+    } else {
+        ClientKind::Cli
+    };
+    let hostname = match named.filter(|name| !name.is_empty()) {
+        Some(name) => client_hostname(name.as_bytes()),
+        None if on_host => None,
+        None => own().and_then(|name| client_hostname(name.as_bytes())),
+    };
+    (Some(kind), hostname)
+}
+
 fn request_from_env() -> AttachRequest {
     AttachRequest::from_vars(|name| std::env::var_os(name), std::env::vars_os().collect())
 }
@@ -248,6 +277,12 @@ pub fn run_attach(args: &[String]) -> ExitCode {
     // A dialed daemon is a host's, so it is `--no-spawn` too, and more: this process runs on the
     // Mac, so it never falls back to a shell, which would be the Mac's (see `open_dialed`).
     let no_spawn = dialed.is_some() || args.iter().any(|arg| arg == "--no-spawn");
+    (request.client, request.hostname) = declared(
+        invoked_by_the_app || dialed.is_some(),
+        no_spawn && dialed.is_none(),
+        std::env::var_os(HOSTNAME_VARIABLE),
+        crate::util::hostname,
+    );
     if dialed.is_some() {
         // Only what a host session may take from the Mac (ADR 0074): the host gives it the rest,
         // from its own environment and account, so neither the Mac's shell nor its resources go.
@@ -907,5 +942,7 @@ fn dialed_exit_status(child: &mut Child) -> ExitCode {
     }
 }
 
+#[cfg(test)]
+mod identity_tests;
 #[cfg(test)]
 mod size_tests;

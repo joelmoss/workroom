@@ -62,14 +62,17 @@ fn a_client_goes_stale_after_its_misses_and_comes_back_on_input() {
     let mut keepalive = Keepalive::default();
     assert!(!keepalive.tick(), "nothing was outstanding");
     assert!(!keepalive.tick(), "the probe never went out");
+    assert_eq!(keepalive.state(), super::super::KeepaliveState::Answering);
     for miss in 1..MISSES {
         assert!(keepalive.take_due());
         assert!(!keepalive.tick(), "stale after {miss} misses");
         assert!(!keepalive.is_stale());
+        assert_eq!(keepalive.state(), super::super::KeepaliveState::Late);
     }
     assert!(keepalive.take_due());
     assert!(keepalive.tick(), "the last miss makes it stale");
     assert!(keepalive.is_stale());
+    assert_eq!(keepalive.state(), super::super::KeepaliveState::Stale);
     assert!(keepalive.take_due());
     assert!(
         !keepalive.tick(),
@@ -77,6 +80,7 @@ fn a_client_goes_stale_after_its_misses_and_comes_back_on_input() {
     );
     assert!(keepalive.heard(), "input brings it back");
     assert!(!keepalive.is_stale());
+    assert_eq!(keepalive.state(), super::super::KeepaliveState::Answering);
     assert!(!keepalive.heard(), "it was not stale any more");
 }
 

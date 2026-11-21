@@ -40,7 +40,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use serde_json::{Value, json};
 
 use crate::daemon::rpc::{PartialRequests, SharedWriter};
-use crate::terminal::session::{CREATED_KEY, Described, SessionId, SessionStore};
+use crate::terminal::session::{
+    CREATED_KEY, ClientInfo, ClientKind, Described, KeepaliveState, SessionId, SessionStore,
+};
 use crate::terminal::shadow::{
     Admitted, CAPTURE_REPLY_TEXT_MAX, Capture, CaptureJob, Refused, Rows,
 };
@@ -205,13 +207,17 @@ pub const METHODS: &[Method] = &[
         input: || {
             json!({
                 "type": "object",
-                "properties": {"all": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "`true` lists every session. `false`, the default, lists the \
-                                    sessions that share the caller's scope: every session when \
-                                    the request comes from no session, or from one with no scope.",
-                }},
+                "properties": {
+                    "all": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "`true` lists every session. `false`, the default, lists \
+                                        the sessions that share the caller's scope: every \
+                                        session when the request comes from no session, or from \
+                                        one with no scope.",
+                    },
+                    "clients": clients_input(),
+                },
             })
         },
         output: || {
@@ -225,15 +231,16 @@ pub const METHODS: &[Method] = &[
             })
         },
         errors: &[],
-        params_example: || json!({"all": false}),
+        params_example: || json!({"all": false, "clients": true}),
         result_example: || {
-            json!({
-                "sessions": [agent_session_example(), run_session_example()],
-                "caller": agent_session_example()["id"],
-            })
+            let mut agent = agent_session_example();
+            agent["clients"] = json!([pane_client_example()]);
+            let mut run = run_session_example();
+            run["clients"] = json!([]);
+            json!({"sessions": [agent, run], "caller": agent_session_example()["id"]})
         },
         run: Run::Now(|call| {
-            let listing = listed(call.sessions);
+            let listing = listing(call.sessions, clients_param(call, "session.list")?);
             let sessions = match call.params.get("all") {
                 Some(Value::Bool(true)) => listing,
                 None | Some(Value::Bool(false)) => in_scope_of(listing, call.caller.as_deref()),
@@ -253,10 +260,14 @@ pub const METHODS: &[Method] = &[
             json!({
                 "type": "object",
                 "required": ["target"],
-                "properties": {"target": {
-                    "type": "string",
-                    "description": "A session's id or id suffix, its label, or its live title.",
-                }},
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "A session's id or id suffix, its label, or its live \
+                                        title.",
+                    },
+                    "clients": clients_input(),
+                },
             })
         },
         output: || {
@@ -275,7 +286,8 @@ pub const METHODS: &[Method] = &[
                 .get("target")
                 .and_then(Value::as_str)
                 .ok_or_else(|| ApiError::invalid("session.resolve needs a string `target`"))?;
-            resolve(&listed(call.sessions), target)
+            let clients = clients_param(call, "session.resolve")?;
+            resolve(&listing(call.sessions, clients), target)
                 .map(|session| Answer::One(json!({"session": session, "caller": call.caller})))
         }),
     },
@@ -763,7 +775,126 @@ pub fn session_schema() -> Value {
                     },
                 },
             },
+            "clients": {
+                "type": "array",
+                "items": client_schema(),
+                "description": "Every client attached to it, in the order they attached. Only \
+                                when the request asks for `clients`.",
+            },
         },
+    })
+}
+
+/// One client attached to a session (#688): `session.list` and `session.resolve` with `clients`.
+pub fn client_schema() -> Value {
+    let mut schema = client_identity_schema();
+    schema["required"]
+        .as_array_mut()
+        .expect("required")
+        .extend(["size", "owns_size", "keepalive"].map(Value::from));
+    let properties = schema["properties"].as_object_mut().expect("properties");
+    properties.insert(
+        "size".into(),
+        json!({
+            "type": "object",
+            "description": "The size its window last had, 0 by 0 when it has none yet.",
+            "required": ["columns", "rows"],
+            "properties": {
+                "columns": {"type": "integer", "minimum": 0},
+                "rows": {"type": "integer", "minimum": 0},
+            },
+        }),
+    );
+    properties.insert(
+        "owns_size".into(),
+        json!({
+            "type": "boolean",
+            "description": "Whether the session's pty follows this client's size: the client \
+                            that last typed or clicked, or the one left when the others went.",
+        }),
+    );
+    let states: Vec<&str> = KeepaliveState::ALL
+        .iter()
+        .map(|state| state.name())
+        .collect();
+    properties.insert(
+        "keepalive".into(),
+        json!({
+            "type": "string",
+            "enum": states,
+            "description": "Whether its terminal answers the daemon's probes, which a remote \
+                            pane asks for. `off`: it didn't ask. `answering`: it answered the \
+                            last. `late`: it missed one or more. `stale`: it missed enough that \
+                            it no longer counts as attached, and its connection is being closed.",
+        }),
+    );
+    schema
+}
+
+/// What an event says of a client (#688), which stays true while it is attached: its id, kind,
+/// hostname and when it attached. `client_schema` adds what changes without an event.
+pub fn client_identity_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["id", "kind", "hostname", "attached_at_ms"],
+        "properties": {
+            "id": {
+                "type": "integer",
+                "description": "Names this attachment among the daemon's clients; a client that \
+                                attaches again is another.",
+            },
+            "kind": {
+                "type": ["string", "null"],
+                "enum": ["pane", "app", "cli", null],
+                "description": "`pane`: a pane of the app, on this machine or another. `app`: \
+                                the app's own connection. `cli`: a `workroom attach` someone \
+                                ran. Null for a client that didn't say, an older one.",
+            },
+            "hostname": {
+                "type": ["string", "null"],
+                "description": "The machine the client is on, as it said: for a pane, the Mac \
+                                showing it. Null when it didn't say.",
+            },
+            "attached_at_ms": {
+                "type": "integer",
+                "description": "When it attached, in milliseconds since the Unix epoch.",
+            },
+        },
+    })
+}
+
+/// The `clients` parameter of `session.list` and `session.resolve`.
+fn clients_input() -> Value {
+    json!({
+        "type": "boolean",
+        "default": false,
+        "description": "`true` adds each session's `clients`: every client attached to it, with \
+                        its kind, hostname, when it attached, size, whether it owns the size and \
+                        its keepalive.",
+    })
+}
+
+/// Whether `call` asks for each session's clients, as `method` takes `clients`.
+fn clients_param(call: &Call, method: &str) -> Result<bool, ApiError> {
+    match call.params.get("clients") {
+        None | Some(Value::Bool(false)) => Ok(false),
+        Some(Value::Bool(true)) => Ok(true),
+        Some(_) => Err(ApiError::invalid(format!(
+            "{method}'s `clients` is true or false"
+        ))),
+    }
+}
+
+/// A pane attached from a Mac, as the examples show a client.
+fn pane_client_example() -> Value {
+    json!({
+        "id": 7,
+        "kind": "pane",
+        "hostname": "joels-macbook.local",
+        "attached_at_ms": 1_763_700_000_000_u64,
+        "size": {"columns": 120, "rows": 40},
+        "owns_size": true,
+        "keepalive": "answering",
     })
 }
 
@@ -899,6 +1030,11 @@ fn description(wanted: Option<&str>) -> Result<Value, ApiError> {
 
 /// Every session in the listing's shape, oldest first.
 fn listed(sessions: &SessionStore) -> Vec<Value> {
+    listing(sessions, false)
+}
+
+/// [`listed`], each session with its `clients` when `clients` asks for them (#688).
+fn listing(sessions: &SessionStore, clients: bool) -> Vec<Value> {
     let mut described = sessions.described();
     let created = |session: &Described| {
         metadata(session, CREATED_KEY)
@@ -906,7 +1042,35 @@ fn listed(sessions: &SessionStore) -> Vec<Value> {
             .unwrap_or(u64::MAX)
     };
     described.sort_by_key(|session| (created(session), session.info.id));
-    described.iter().map(session_json).collect()
+    described
+        .iter()
+        .map(|session| {
+            let mut listed = session_json(session);
+            if clients {
+                listed["clients"] = session.clients.iter().map(client_json).collect();
+            }
+            listed
+        })
+        .collect()
+}
+
+/// One client in the shape `client_schema` gives it.
+fn client_json(client: &ClientInfo) -> Value {
+    let mut json = client_identity_json(client);
+    json["size"] = json!({"columns": client.columns, "rows": client.rows});
+    json["owns_size"] = json!(client.owns_size);
+    json["keepalive"] = json!(client.keepalive.name());
+    json
+}
+
+/// What the events say of a client (`client_identity_schema`).
+pub(crate) fn client_identity_json(client: &ClientInfo) -> Value {
+    json!({
+        "id": client.id,
+        "kind": client.identity.kind.map(ClientKind::name),
+        "hostname": client.identity.hostname,
+        "attached_at_ms": client.attached_at,
+    })
 }
 
 fn metadata<'a>(session: &'a Described, key: &str) -> Option<&'a str> {

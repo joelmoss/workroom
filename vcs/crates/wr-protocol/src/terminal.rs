@@ -259,6 +259,55 @@ pub struct AttachRequest {
     /// host's environment and account, and only `host_attach_environment`'s variables come from
     /// `env`. Sent only to a daemon at `MIN_HOST_ATTACH_VERSION` or later.
     pub host_environment: bool,
+    /// What kind of client this is (`CLIENT`, #688), which `sessions --clients` reports. A daemon
+    /// that knows none of this ignores the key, and an older client sends none, which the daemon
+    /// reports as unknown, so neither needs a protocol version.
+    pub client: Option<ClientKind>,
+    /// The machine the client is on (`HOSTNAME`, #688): for a pane, the Mac showing it. None when
+    /// the client could not say, or said something `client_hostname` refuses.
+    pub hostname: Option<String>,
+}
+
+/// What kind of client attached to a session (#688): a pane of the app, the app's own service
+/// connection, or a `workroom attach` someone ran. Named as `sessions --clients` and the terminal
+/// API's events give it; a name this daemon doesn't know is reported as unknown, never kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientKind {
+    Pane,
+    App,
+    Cli,
+}
+
+impl ClientKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            ClientKind::Pane => "pane",
+            ClientKind::App => "app",
+            ClientKind::Cli => "cli",
+        }
+    }
+
+    pub fn parse(name: &[u8]) -> Option<ClientKind> {
+        match name {
+            b"pane" => Some(ClientKind::Pane),
+            b"app" => Some(ClientKind::App),
+            b"cli" => Some(ClientKind::Cli),
+            _ => None,
+        }
+    }
+}
+
+/// The longest hostname an attach may name: POSIX's `HOST_NAME_MAX` on Linux, and one short of
+/// macOS's `MAXHOSTNAMELEN`. It goes into every listing and event of the client, so it is bounded.
+pub const MAX_HOSTNAME_BYTES: usize = 255;
+
+/// A client's hostname as the daemon keeps it: UTF-8, not empty, at most `MAX_HOSTNAME_BYTES`, and
+/// no control characters, which a table or a log line would print. Anything else is none, never
+/// cut: a cut name could be another machine's.
+pub fn client_hostname(name: &[u8]) -> Option<String> {
+    let name = std::str::from_utf8(name).ok()?;
+    (!name.is_empty() && name.len() <= MAX_HOSTNAME_BYTES && !name.chars().any(char::is_control))
+        .then(|| name.to_string())
 }
 
 /// Whether a client's variable may reach a host-environment session (ADR 0074): the terminal
@@ -314,6 +363,12 @@ impl AttachRequest {
         if self.host_environment {
             put("HOST", b"1");
         }
+        if let Some(client) = self.client {
+            put("CLIENT", client.name().as_bytes());
+        }
+        if let Some(hostname) = &self.hostname {
+            put("HOSTNAME", hostname.as_bytes());
+        }
         for (key, value) in &self.env {
             let mut entry = b"ENV:".to_vec();
             entry.extend_from_slice(key.as_bytes());
@@ -359,6 +414,8 @@ impl AttachRequest {
                 }
                 b"CREATE" => request.existing_only = value == "0",
                 b"HOST" => request.host_environment = value == "1",
+                b"CLIENT" => request.client = ClientKind::parse(value.as_bytes()),
+                b"HOSTNAME" => request.hostname = client_hostname(value.as_bytes()),
                 _ => {
                     if let Some(name) = key.strip_prefix(b"ENV:") {
                         request.env.push((OsString::from_vec(name.to_vec()), value));
@@ -398,6 +455,8 @@ impl AttachRequest {
             env,
             existing_only: false,
             host_environment: false,
+            client: None,
+            hostname: None,
         }
     }
 }
@@ -466,9 +525,37 @@ mod tests {
             ],
             existing_only: true,
             host_environment: true,
+            client: Some(ClientKind::Pane),
+            hostname: Some("joels-macbook.local".into()),
         };
         let decoded = AttachRequest::decode(&request.encode()).expect("decode");
         assert_eq!(decoded, request);
+    }
+
+    /// A client says what it is and where it runs (#688), and a daemon keeps only a kind it knows
+    /// and a hostname it can show: an unknown kind and an unprintable or oversized name are none.
+    /// An attach with neither, an older client's, is the same request it always was.
+    #[test]
+    fn an_attach_names_its_kind_and_hostname_and_a_bad_one_is_none() {
+        let with = |entries: &[u8]| [&[3u8; 16][..], entries].concat();
+        let decoded = AttachRequest::decode(&with(b"CLIENT=cli\0HOSTNAME=box\0")).unwrap();
+        assert_eq!(decoded.client, Some(ClientKind::Cli));
+        assert_eq!(decoded.hostname.as_deref(), Some("box"));
+        let decoded = AttachRequest::decode(&with(b"CLIENT=robot\0HOSTNAME=a\x1bb\0")).unwrap();
+        assert_eq!((decoded.client, decoded.hostname), (None, None));
+        let long = [
+            b"HOSTNAME=".as_slice(),
+            &[b'a'; MAX_HOSTNAME_BYTES + 1],
+            b"\0",
+        ]
+        .concat();
+        assert_eq!(AttachRequest::decode(&with(&long)).unwrap().hostname, None);
+        let longest = "a".repeat(MAX_HOSTNAME_BYTES);
+        assert_eq!(client_hostname(longest.as_bytes()), Some(longest));
+        assert_eq!(client_hostname(b""), None);
+        assert_eq!(client_hostname(&[0xff]), None);
+        let older = AttachRequest::decode(&with(b"COLS=80\0")).unwrap();
+        assert_eq!((older.client, older.hostname), (None, None));
     }
 
     /// The client's environment a remote pane may hand its host (ADR 0074), and nothing else.

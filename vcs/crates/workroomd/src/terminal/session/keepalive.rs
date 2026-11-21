@@ -108,6 +108,15 @@ impl Keepalive {
         self.missed >= MISSES
     }
 
+    /// Where it stands, as `sessions --clients` says (#688).
+    pub(super) fn state(&self) -> super::KeepaliveState {
+        match self.missed {
+            0 => super::KeepaliveState::Answering,
+            _ if self.is_stale() => super::KeepaliveState::Stale,
+            _ => super::KeepaliveState::Late,
+        }
+    }
+
     /// Input came from the client. Returns whether it had been stale, and so is back.
     pub(super) fn heard(&mut self) -> bool {
         let was = self.is_stale();

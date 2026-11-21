@@ -10,7 +10,9 @@ use std::sync::Arc;
 use crate::daemon::rpc::{self, SharedWriter};
 use crate::daemon::transport::Closer;
 use crate::terminal::pty::Size;
-use crate::terminal::session::{RunSignalError, SessionId, SessionInfo, SessionSpec, SessionStore};
+use crate::terminal::session::{
+    ClientIdentity, RunSignalError, SessionId, SessionInfo, SessionSpec, SessionStore,
+};
 use crate::terminal::shell;
 use wr_protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
 use wr_protocol::frame::{
@@ -120,6 +122,10 @@ pub(crate) fn dispatch(
                         y_pixels: request.y_pixels,
                     },
                     keepalive,
+                    ClientIdentity {
+                        kind: request.client,
+                        hostname: request.hostname.clone(),
+                    },
                 )
             };
             // Refused, not created, for a client that asked to attach only to what exists: see

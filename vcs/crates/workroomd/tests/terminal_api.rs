@@ -263,6 +263,183 @@ fn sessions_json_lists_every_field_of_every_session() {
     );
 }
 
+/// Milliseconds since the epoch, as a client's `attached_at_ms` counts them.
+fn now_ms() -> u64 {
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    u64::try_from(since.as_millis()).unwrap()
+}
+
+/// This machine's hostname, as a client on it says.
+fn this_hostname() -> String {
+    let output = Command::new("/bin/hostname").output().expect("hostname");
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+/// A client of `socket`'s daemon attached to `session` over a connection of its own, as the app's
+/// service connection would attach one: with `size`, asking to be probed, and saying it is the
+/// app's, on `hostname`. No app attaches over its service connection yet (#688), so this stands in
+/// for one.
+fn attach_as_app(
+    socket: &Path,
+    session: &str,
+    hostname: &str,
+    size: (u16, u16),
+) -> common::RpcClient {
+    let stream = UnixStream::connect(socket).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut client = common::RpcClient::over(stream.try_clone().unwrap(), stream);
+    client.handshake();
+    let request = wr_protocol::terminal::AttachRequest {
+        id: wr_protocol::terminal::parse_session_id(std::ffi::OsStr::new(session)),
+        shell: Some("/bin/sh".into()),
+        columns: size.0,
+        rows: size.1,
+        env: vec![("WORKROOM_SESSION_KEEPALIVE".into(), "1".into())],
+        client: Some(wr_protocol::terminal::ClientKind::App),
+        hostname: Some(hostname.into()),
+        ..Default::default()
+    };
+    client.send(
+        Service::Terminal,
+        1,
+        wr_protocol::frame::Frame::new(wr_protocol::frame::FrameKind::Attach, request.encode()),
+    );
+    client
+}
+
+/// The clients `workroom sessions --clients --json` lists on `session`, from a run that must
+/// succeed.
+fn clients_of(socket: &Path, session: &str) -> Vec<Value> {
+    let run = workroom(Some(socket), &["sessions", "--clients", "--json"]);
+    assert_eq!(run.code, 0, "{} {}", run.stdout, run.stderr);
+    let sessions = run.envelope()["sessions"].as_array().cloned().unwrap();
+    self::session(&sessions, session)["clients"]
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| panic!("no clients in {sessions:?}"))
+}
+
+/// `workroom sessions --clients` (#688) reports every field of each kind of client: a pane of
+/// the app, the app's own connection and a `workroom attach` someone ran, each with its kind, its
+/// machine, when it attached, its size, whether it owns the size and its keepalive, in the order
+/// they attached. Asked of one session by its target too; without `--clients`, nothing changes.
+#[test]
+fn sessions_clients_reports_every_field_of_a_pane_an_app_connection_and_a_cli_caller() {
+    let workspace = Workspace::new("api-clients");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let cwd = workspace.dir.canonicalize().unwrap();
+    let before = now_ms();
+
+    let _pane = open(&socket, SHELL, "server", "wr-1", &cwd);
+    listing_until(&socket, |listing| listing.len() == 1);
+    let mut app = attach_as_app(&socket, SHELL, "mac-b.local", (100, 30));
+    let mut clients = Vec::new();
+    let mut attached = |app: &mut common::RpcClient, count: usize| {
+        wait_for(Duration::from_secs(15), || {
+            app.pump(std::time::Instant::now() + Duration::from_millis(10));
+            clients = clients_of(&socket, SHELL);
+            clients.len() == count
+        })
+    };
+    // Each attached before the next, so they are listed in this order.
+    assert!(attached(&mut app, 2), "the app's client never attached");
+    // Typed by hand: none of the app's session variables.
+    let _cli = attach_with_env(&socket, SHELL, &[], &[]);
+    assert!(attached(&mut app, 3), "the typed attach never attached");
+    let after = now_ms();
+
+    let host = this_hostname();
+    let [pane, app_client, cli] = clients.as_slice() else {
+        unreachable!()
+    };
+    assert_eq!(pane["kind"], "pane", "{pane}");
+    assert_eq!(pane["hostname"], host.as_str(), "{pane}");
+    // Its stdio is a pipe, so it has no size, and can't own one.
+    assert_eq!(pane["size"], json!({"columns": 0, "rows": 0}), "{pane}");
+    assert_eq!(pane["owns_size"], false, "{pane}");
+    assert_eq!(pane["keepalive"], "off", "{pane}");
+    assert_eq!(app_client["kind"], "app", "{app_client}");
+    assert_eq!(app_client["hostname"], "mac-b.local", "{app_client}");
+    assert_eq!(
+        app_client["size"],
+        json!({"columns": 100, "rows": 30}),
+        "{app_client}"
+    );
+    assert_eq!(
+        app_client["owns_size"], true,
+        "the first with a size: {app_client}"
+    );
+    // Probed every 15 s, so not a probe missed yet.
+    assert_eq!(app_client["keepalive"], "answering", "{app_client}");
+    assert_eq!(cli["kind"], "cli", "{cli}");
+    assert_eq!(cli["hostname"], host.as_str(), "{cli}");
+    assert_eq!(cli["owns_size"], false, "{cli}");
+    assert_eq!(cli["keepalive"], "off", "{cli}");
+    let times: Vec<u64> = clients
+        .iter()
+        .map(|client| client["attached_at_ms"].as_u64().expect("attached_at_ms"))
+        .collect();
+    assert!(
+        times.windows(2).all(|pair| pair[0] <= pair[1]) && before <= times[0] && times[2] <= after,
+        "{before} {times:?} {after}"
+    );
+    let mut ids: Vec<u64> = clients
+        .iter()
+        .map(|client| client["id"].as_u64().expect("id"))
+        .collect();
+    ids.dedup();
+    assert_eq!(ids.len(), 3, "{clients:?}");
+
+    // One session by its target, the same clients; and none asked for, no `clients`.
+    let resolved = workroom(
+        Some(&socket),
+        &["sessions", "server", "--clients", "--json"],
+    );
+    assert_eq!(resolved.code, 0, "{}", resolved.stderr);
+    assert_eq!(
+        resolved.envelope()["sessions"][0]["clients"]
+            .as_array()
+            .map(Vec::len),
+        Some(3)
+    );
+    assert!(sessions(&socket)[0].get("clients").is_none());
+
+    // For a person: the sessions, then a table of their clients.
+    let table = workroom(Some(&socket), &["sessions", "--clients"]);
+    assert_eq!(table.code, 0, "{}", table.stderr);
+    let lines: Vec<&str> = table.stdout.lines().collect();
+    let header = lines
+        .iter()
+        .position(|line| line.starts_with("SESSION "))
+        .unwrap_or_else(|| panic!("{}", table.stdout));
+    assert!(
+        lines[header].contains("KIND") && lines[header].ends_with("KEEPALIVE"),
+        "{}",
+        table.stdout
+    );
+    let row = lines
+        .iter()
+        .find(|line| line.contains("mac-b.local"))
+        .unwrap_or_else(|| panic!("{}", table.stdout));
+    assert!(row.starts_with("1d0a8e11  "), "{row}");
+    for cell in [" app ", " 100x30 ", " yes ", "answering"] {
+        assert!(row.contains(cell), "{cell:?} in {row}");
+    }
+
+    // Its connection gone, the app's client is too.
+    drop(app);
+    assert!(
+        wait_for(Duration::from_secs(15), || clients_of(&socket, SHELL).len()
+            == 2),
+        "the app's client never detached"
+    );
+}
+
 /// Every session's shell is told which pane it is and which daemon holds it (#684), and still sees
 /// none of the session's own `WORKROOM_SESSION_*` variables. The values are the daemon's own: an
 /// attach client typed in another pane forwards that pane's, which never reach this one.
@@ -988,6 +1165,19 @@ fn every_method_publishes_schemas_its_replies_match() {
                 json!({"target": "1111-4222-8333-44445555beef"}),
             ),
         ),
+        (
+            "session.list",
+            json!({"all": true, "clients": true}),
+            &api.call("session.list", json!({"all": true, "clients": true})),
+        ),
+        (
+            "session.resolve",
+            json!({"target": "beef", "clients": true}),
+            &api.call(
+                "session.resolve",
+                json!({"target": "1111-4222-8333-44445555beef", "clients": true}),
+            ),
+        ),
     ];
     for (name, params, reply) in cases {
         assert_eq!(violation(&schema(name, "input"), &params, name), None);
@@ -998,6 +1188,17 @@ fn every_method_publishes_schemas_its_replies_match() {
             "{reply}"
         );
     }
+    // Each with its one client, the pane that opened it.
+    let with_clients = api.call("session.list", json!({"all": true, "clients": true}));
+    for session in with_clients["result"]["sessions"].as_array().unwrap() {
+        assert_eq!(
+            session["clients"].as_array().map(Vec::len),
+            Some(1),
+            "{session}"
+        );
+    }
+    let refused = api.call("session.list", json!({"clients": "yes"}));
+    assert_eq!(refused["error"]["kind"], "InvalidRequest", "{refused}");
     let ambiguous = api.call("session.resolve", json!({"target": "tests"}));
     assert_eq!(ambiguous["error"]["kind"], "TargetAmbiguous", "{ambiguous}");
     assert_eq!(violation(&error_schema, &ambiguous["error"], "error"), None);
