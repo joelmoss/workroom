@@ -64,6 +64,10 @@ pub struct Pty {
     /// send and the program is quiet (`wake_reader`). Read end, then write end; `None` if the
     /// pipe could not be made, which costs that session's images and nothing else.
     wake: Option<(libc::c_int, libc::c_int)>,
+    /// Held by each `write_all`, so one writer's input is never split by another's: a client's
+    /// keystrokes never land inside a `terminal.send`'s bracketed paste (#689), nor one send
+    /// inside another, when the program reads slower than they come.
+    input: std::sync::Mutex<()>,
 }
 
 impl Pty {
@@ -258,6 +262,7 @@ impl Pty {
             master,
             pid,
             wake: wake_pipe(),
+            input: std::sync::Mutex::new(()),
         })
     }
 
@@ -274,6 +279,7 @@ impl Pty {
             master,
             pid,
             wake: wake_pipe(),
+            input: std::sync::Mutex::new(()),
         }
     }
 
@@ -501,14 +507,21 @@ impl Pty {
     /// Bounded rather than patient: a shell that has not read anything for `WRITE_DEADLINE` is
     /// wedged, and blocking the connection thread on it would stall every other frame from that
     /// client. Report it instead.
+    ///
+    /// One writer at a time (`input`). The deadline is for reading nothing: it runs from when the
+    /// writer's turn comes, and again from each write the shell took, so a long paste (a
+    /// `terminal.send`'s 1 MiB, #689) to a program that reads it as fast as it can is never cut off
+    /// half-typed for taking longer than `WRITE_DEADLINE` in all.
     pub fn write_all(&self, bytes: &[u8]) -> std::io::Result<()> {
-        let deadline = std::time::Instant::now() + WRITE_DEADLINE;
+        let _turn = crate::util::lock_or_recover(&self.input);
+        let mut deadline = std::time::Instant::now() + WRITE_DEADLINE;
         let mut written = 0;
         while written < bytes.len() {
             match self.write(&bytes[written..]) {
                 Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
                 Ok(n) => {
                     written += n;
+                    deadline = std::time::Instant::now() + WRITE_DEADLINE;
                     continue;
                 }
                 Err(e)
