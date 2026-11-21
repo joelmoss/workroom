@@ -1914,6 +1914,31 @@ fn wait_for_a_regex_counts_only_output_after_it_starts_unless_it_includes_the_sc
         let screen = met(&socket, screen);
         assert_eq!(screen["condition"], "regex");
         assert_eq!(screen["match"], json!({"text": "OLDMARK"}), "{screen}");
+        // The screen's top row starts the wait's text, where `\A` and a single-line `^` match.
+        type_line(&mut shell, r#"printf '\033[H\033[2J'; printf 'TOP''ROW\n'"#);
+        assert!(
+            output
+                .read_until("TOPROW\r\n", Duration::from_secs(20))
+                .contains("TOPROW\r\n"),
+            "the top row never printed"
+        );
+        for pattern in [r"\ATOP(ROW)", r"(?-m:^)TOP(ROW)"] {
+            let top = met(
+                &socket,
+                wait(
+                    &socket,
+                    &[
+                        "server",
+                        "--regex",
+                        pattern,
+                        "--include-screen",
+                        "--timeout",
+                        "20s",
+                    ],
+                ),
+            );
+            assert_eq!(top["match"], json!({"text": "TOPROW"}), "{pattern}: {top}");
+        }
     } else {
         // No shadow terminal, so no screen to look at: refused, rather than left to time out.
         assert_eq!(failed(screen), (2, "InvalidRequest".into()));
