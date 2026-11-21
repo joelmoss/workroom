@@ -90,9 +90,11 @@ pub mod kind {
     pub const NO_SHELL_INTEGRATION: &str = "NoShellIntegration";
     /// A wait for a run to exit with one code, which it exited with another.
     pub const EXIT_CODE_MISMATCH: &str = "ExitCodeMismatch";
+    /// A send into the caller's own session, which it didn't allow.
+    pub const REFUSED_SELF: &str = "RefusedSelf";
     /// The daemon is at a limit on concurrent work (`MAX_CAPTURES` captures of history, or the
     /// waits `wait::LIMITS` bounds), so it refuses rather than queue, and a retry once some has
-    /// finished can succeed.
+    /// finished can succeed. A send during a hand-off is refused so too.
     pub const BUSY: &str = "Busy";
     /// Anything else, such as a screen the daemon has no copy of (a build without terminal-state,
     /// or a shadow terminal that failed) or one the formatter could not read.
@@ -330,6 +332,21 @@ pub const METHODS: &[Method] = &[
         run: Run::Now(capture),
     },
     Method {
+        name: send::NAME,
+        summary: "Types into a session without attaching to it: `text` as it is (as a bracketed \
+                  paste when the program has turned that on), then `keys`, each encoded for \
+                  the session's keyboard modes, then Enter with `enter`. It takes no size, counts \
+                  as nobody attached and gets no probes. More than 1 MiB is `TooLarge`; the \
+                  caller's own session is `RefusedSelf` without `allow_self`. Each send is told \
+                  as a `session.input` event naming the session it came from.",
+        input: send::input,
+        output: send::output,
+        errors: send::ERRORS,
+        params_example: send::params_example,
+        result_example: send::result_example,
+        run: Run::Now(send::send),
+    },
+    Method {
         name: wait::NAME,
         summary: "Waits for one thing to happen in a session: a program status, a run state, \
                   output matching a regex, the session ending, or the next command to finish. \
@@ -349,8 +366,9 @@ pub const METHODS: &[Method] = &[
         summary: "The daemon's events, streamed: the sessions as they are (one `session` event \
                   each, then `snapshot-complete`), then each session created, ended and moved \
                   to another workroom, each change of its coding agent's program status, \
-                  each run state and each client attaching and detaching, as they happen, every \
-                  one with the `boot` and `revision` a caller resumes from with `since`. By default the caller's scope's; `workroom`, `all`, `session` and \
+                  each run state, each client attaching and detaching and each send typed into \
+                  it, as they happen, every one with the `boot` and `revision` a caller resumes \
+                  from with `since`. By default the caller's scope's; `workroom`, `all`, `session` and \
                   `types` say whose and which. The stream goes on until the caller hangs up. A \
                   connection and the daemon each hold a few subscriptions at once, and one past \
                   them is `Busy`.",
@@ -1338,7 +1356,10 @@ fn stream(
 }
 
 mod events;
+mod send;
 mod wait;
+
+pub use send::MAX_BYTES as SEND_MAX_BYTES;
 
 #[cfg(test)]
 mod tests;

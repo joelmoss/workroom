@@ -45,6 +45,7 @@ mod log;
 mod namegen;
 mod panel;
 mod prompt;
+mod send;
 mod sessions;
 mod start;
 mod teardown;
@@ -734,6 +735,22 @@ const COMMANDS: &[Command] = &[
         arity: Arity::None,
         operands: Operands::Files,
         implementation: list::run,
+    },
+    Command {
+        name: "send",
+        aliases: &[],
+        usage: "send TARGET [TEXT] [flags]",
+        short: "Type text and keys into a terminal session",
+        long: None,
+        hidden: false,
+        mac_only: false,
+        flags: send::FLAGS,
+        subcommands: &[],
+        // A TARGET and an optional TEXT, which `send::run` checks.
+        arity: Arity::Own,
+        // A TARGET is a session the daemon knows, never a file, as for `sessions`.
+        operands: Operands::Nothing,
+        implementation: send::run,
     },
     Command {
         name: "sessions",
@@ -1653,7 +1670,8 @@ mod tests {
         assert_eq!(
             (stdout.as_str(), code),
             (
-                "sessions\tList the daemon's terminal sessions, or the one TARGET names\n:4\n",
+                "send\tType text and keys into a terminal session\nsessions\tList the daemon's \
+                 terminal sessions, or the one TARGET names\n:4\n",
                 0
             )
         );
@@ -1729,6 +1747,25 @@ mod tests {
         }
         let ((stdout, _), code) = run_on(Platform::Other, &["__complete", "events", ""]);
         assert_eq!((stdout.as_str(), code), (":4\n", 0));
+    }
+
+    /// `send` is Rust's alone too (#689): completion offers it and its flags, and nothing for its
+    /// TARGET or TEXT, neither of which is a file name.
+    #[test]
+    fn completion_offers_send_and_its_flags() {
+        let ((stdout, _), _) = run_on(Platform::Other, &["__completeNoDesc", ""]);
+        assert!(stdout.lines().any(|line| line == "send"), "{stdout}");
+        let ((stdout, _), _) = run_on(Platform::Other, &["__completeNoDesc", "send", "--"]);
+        for flag in ["--allow-self", "--enter", "--key", "--stdin", "--json"] {
+            assert!(stdout.lines().any(|line| line == flag), "{flag}: {stdout}");
+        }
+        for args in [
+            &["__complete", "send", ""][..],
+            &["__complete", "send", "server", ""],
+        ] {
+            let ((stdout, _), code) = run_on(Platform::Other, args);
+            assert_eq!((stdout.as_str(), code), (":4\n", 0), "{args:?}");
+        }
     }
 
     /// As in Go, `base`'s flags are `set`'s and `clear`'s, and each subcommand's `--help` is its

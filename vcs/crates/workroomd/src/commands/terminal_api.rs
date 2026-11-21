@@ -80,10 +80,11 @@ pub(super) fn stream(
     // A request too big to send is bad input whether or not a daemon would take it, so it is
     // refused (2) before one is looked for.
     let mut request = encode(&params);
-    if request.len() > MAX_ENVELOPE_PAYLOAD {
+    let ceiling = max_request(method);
+    if request.len() > ceiling {
         return Err(CliError::new(
             Kind::TooLarge,
-            format!("the request is over {MAX_ENVELOPE_PAYLOAD} bytes"),
+            format!("the request is over {ceiling} bytes"),
         ));
     }
     let Some(socket) = context
@@ -115,7 +116,7 @@ pub(super) fn stream(
     let mut resumes = 0;
     'connection: loop {
         stream
-            .write_all(&Envelope::new(Service::TerminalApi, STREAM, request.clone()).encode())
+            .write_all(&envelopes(&request))
             .map_err(|error| unreachable(format!("the daemon on {socket} hung up: {error}")))?;
         // A timeout the socket can't hold (macOS refuses one past its bounds) is none, rather
         // than leaving `TIMEOUT` to cut a long wait short.
@@ -189,6 +190,40 @@ pub(super) fn stream(
 }
 
 const WAIT: &str = "terminal.wait";
+
+const SEND: &str = "terminal.send";
+
+/// The longest request the CLI sends for `method`: one envelope's payload, but for
+/// `terminal.send`, whose 1 MiB of text JSON may escape to six times that (a control character is
+/// `\u001b`), so it goes in chunks up to the 16 MiB the daemon reassembles (`rpc::reassemble`).
+fn max_request(method: &str) -> usize {
+    if method == SEND {
+        16 * 1024 * 1024
+    } else {
+        MAX_ENVELOPE_PAYLOAD
+    }
+}
+
+/// The first byte of a chunked request's payload (`rpc::REQUEST_CHUNK_MARKER`); the second says
+/// whether it is the last. A request that fits one envelope goes as it is, JSON, which starts `{`.
+const CHUNK_MARKER: u8 = 0x02;
+
+/// `request` as the envelopes that carry it, encoded: one when it fits, else chunks.
+fn envelopes(request: &[u8]) -> Vec<u8> {
+    if request.len() <= MAX_ENVELOPE_PAYLOAD {
+        return Envelope::new(Service::TerminalApi, STREAM, request.to_vec()).encode();
+    }
+    let chunks = request.chunks(MAX_ENVELOPE_PAYLOAD - 2);
+    let count = chunks.len();
+    chunks
+        .enumerate()
+        .flat_map(|(index, chunk)| {
+            let mut payload = vec![CHUNK_MARKER, u8::from(index + 1 == count)];
+            payload.extend_from_slice(chunk);
+            Envelope::new(Service::TerminalApi, STREAM, payload).encode()
+        })
+        .collect()
+}
 
 const EVENTS: &str = "events.subscribe";
 

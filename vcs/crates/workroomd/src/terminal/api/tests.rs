@@ -192,6 +192,7 @@ fn describe_publishes_every_method_with_both_schemas() {
             "session.list",
             "session.resolve",
             "terminal.capture",
+            "terminal.send",
             "terminal.wait",
             "events.subscribe"
         ]
@@ -1174,4 +1175,144 @@ fn a_subscriber_that_stops_reading_slows_nothing_and_is_told_it_lagged() {
         stalled.written.replies()[2]["result"]["event"],
         "session.created"
     );
+}
+
+/// `terminal.send` called as `caller`, as the connection's reader calls it.
+fn send_as(store: &SessionStore, caller: Option<&str>, params: Value) -> Result<Value, ApiError> {
+    let call = Call {
+        sessions: store,
+        params: &params,
+        caller: caller.map(str::to_string),
+    };
+    match send::send(&call)? {
+        Answer::One(value) => Ok(value),
+        Answer::Stream(_) => panic!("a stream from {params}"),
+    }
+}
+
+/// A send's parameters, its keys and its size are checked before any session is looked for: bad
+/// input is `InvalidRequest`, and text past the limit `TooLarge`, whatever the target.
+#[test]
+fn a_send_with_input_it_cannot_take_is_refused_before_its_target() {
+    let store = SessionStore::new();
+    for params in [
+        json!({}),
+        json!({"target": 3, "text": "x"}),
+        json!({"target": "x"}),
+        json!({"target": "x", "text": ""}),
+        json!({"target": "x", "text": 7}),
+        json!({"target": "x", "keys": "Enter"}),
+        json!({"target": "x", "keys": [1]}),
+        json!({"target": "x", "keys": ["Hyper+a"]}),
+        json!({"target": "x", "keys": ["Return"]}),
+        json!({"target": "x", "enter": "yes"}),
+        json!({"target": "x", "text": "x", "allow_self": 1}),
+        json!({"target": "x", "text": "ls\u{1b}[201~rm -rf ~\n"}),
+    ] {
+        let error = send_as(&store, None, params.clone()).expect_err(&params.to_string());
+        assert_eq!(error.kind, kind::INVALID_REQUEST, "{params}: {error:?}");
+    }
+    let over = json!({"target": "x", "text": "x".repeat(send::MAX_BYTES + 1)});
+    assert_eq!(
+        send_as(&store, None, over).unwrap_err().kind,
+        kind::TOO_LARGE
+    );
+    let at = json!({"target": "x", "text": "x".repeat(send::MAX_BYTES)});
+    assert_eq!(
+        send_as(&store, None, at).unwrap_err().kind,
+        kind::TARGET_NOT_FOUND
+    );
+}
+
+/// The caller's own session is refused without `allow_self`, and typed into with it; a send from
+/// another session, or from none, is typed. Each one typed is told as `session.input` naming the
+/// session it came from, and how many bytes it typed; one refused is not.
+#[test]
+fn a_send_into_the_callers_own_session_needs_allow_self_and_each_is_told() {
+    use crate::terminal::events::{Cursor, Next, Start};
+    let store = SessionStore::new();
+    let target = sleeping(&store, 0x91).to_hyphenated();
+    let other = sleeping(&store, 0x92).to_hyphenated();
+    let hub = std::sync::Arc::clone(&store.hooks().events);
+    let mut cursor = Cursor::new(Start::Fresh);
+    assert!(matches!(
+        hub.next(&mut cursor, &|| false),
+        Next::Snapshot { .. }
+    ));
+
+    let refused = send_as(
+        &store,
+        Some(&target),
+        json!({"target": target, "text": "x"}),
+    );
+    assert_eq!(refused.unwrap_err().kind, kind::REFUSED_SELF);
+    let own = send_as(
+        &store,
+        Some(&target),
+        json!({"target": target, "text": "x", "allow_self": true}),
+    )
+    .expect("typed with allow_self");
+    assert_eq!(own["session"], target.as_str());
+    assert_eq!(own["caller"], target.as_str());
+    let from_other = send_as(
+        &store,
+        Some(&other),
+        json!({"target": target, "keys": ["Ctrl+A"], "enter": true}),
+    );
+    let from_none = send_as(&store, None, json!({"target": target, "text": "ab"}));
+    if cfg!(feature = "terminal-state") {
+        let from_other = from_other.expect("typed from another session");
+        assert_eq!(from_other["bytes"], 2, "{from_other}");
+        assert_eq!(from_other["modes"]["kitty_flags"], 0, "{from_other}");
+    } else {
+        // No screen, so no modes to encode keys for.
+        assert_eq!(from_other.unwrap_err().kind, kind::INTERNAL_ERROR);
+    }
+    let from_none = from_none.expect("typed from no session");
+    assert_eq!(from_none["caller"], Value::Null);
+    assert_eq!(from_none["bytes"], 2);
+
+    let told: Vec<Value> = match hub.next_until(
+        &mut cursor,
+        &|| false,
+        Some(std::time::Instant::now() + std::time::Duration::from_secs(5)),
+    ) {
+        Next::Events(events) => events.iter().map(|event| event.json.clone()).collect(),
+        other => panic!("{other:?}"),
+    };
+    let senders: Vec<(Value, Value)> = told
+        .iter()
+        .filter(|event| event["event"] == "session.input")
+        .inspect(|event| assert_eq!(event["session"], target.as_str(), "{event}"))
+        .map(|event| (event["sender"].clone(), event["bytes"].clone()))
+        .collect();
+    let mut expected = vec![(json!(target), json!(1))];
+    if cfg!(feature = "terminal-state") {
+        expected.push((json!(other), json!(2)));
+    }
+    expected.push((Value::Null, json!(2)));
+    assert_eq!(senders, expected, "{told:?}");
+    store.kill_all();
+}
+
+/// Past the limit counting its keys, a send is refused whole, as `TooLarge`, once its target is
+/// known; and while a hand-off holds the events, it is `Busy`, and typed once they are let go.
+#[cfg(feature = "terminal-state")]
+#[test]
+fn a_send_too_large_with_its_keys_or_during_a_hand_off_is_refused() {
+    let store = SessionStore::new();
+    let target = sleeping(&store, 0x93).to_hyphenated();
+    let over = json!({"target": target, "text": "x".repeat(send::MAX_BYTES), "enter": true});
+    assert_eq!(
+        send_as(&store, None, over).unwrap_err().kind,
+        kind::TOO_LARGE
+    );
+
+    let hub = std::sync::Arc::clone(&store.hooks().events);
+    let _carried = hub.carry();
+    let held = send_as(&store, None, json!({"target": target, "text": "x"}));
+    assert_eq!(held.unwrap_err().kind, kind::BUSY);
+    hub.unseal();
+    assert!(send_as(&store, None, json!({"target": target, "text": "x"})).is_ok());
+    store.kill_all();
 }
