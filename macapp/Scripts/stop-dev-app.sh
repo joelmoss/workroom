@@ -68,32 +68,39 @@ stopped_helpers=""
 # `-ww`: never truncate the command, which is where the path is. The COMMAND column is argv, so a
 # process only counts when argv[0] is itself the executable inside a bundle: the part before the
 # first `/Contents/MacOS/` must be an existing `<name>.app` directory. That keeps out a process
-# that merely mentions such a path in its arguments (`tail -f …/workroomd.log`).
+# that merely mentions such a path in its arguments (`tail -f …/workroomd.log`). The daemon and its
+# attach clients are `Contents/Resources/workroom` since #681 (ADR 0078), the CLI's file too, so
+# there only the daemon's own subcommands count (`daemon_command`).
 processes="$(process_table)"
 while read -r pid cmdline; do
   case "$cmdline" in
-    /*/"$name.app/Contents/MacOS/"*) ;;
+    /*/"$name.app/Contents/MacOS/"*) folder=MacOS ;;
+    /*/"$name.app/Contents/Resources/workroom "*) folder=Resources ;;
     *) continue ;;
   esac
-  owner="${cmdline%%/Contents/MacOS/*}"
+  owner="${cmdline%%/Contents/"$folder"/*}"
   case "$owner" in
     */"$name.app") ;;
     *) continue ;;
   esac
   [ -d "$owner" ] || continue
 
-  executable="${cmdline#"$owner/Contents/MacOS/"}"
-  case "$executable" in
-    "$name" | "$name "*)
+  executable="${cmdline#"$owner/Contents/$folder/"}"
+  if [ "$folder" = Resources ]; then
+    daemon_command "$executable" || continue
+  fi
+  case "$folder:$executable" in
+    MacOS:"$name" | MacOS:"$name "*)
       [ "$(bundle_id "$owner")" = "$want" ] || continue
       apps="$apps $pid"
       ;;
-    workroomd | "workroomd "* | wr-agent | "wr-agent "* | workroom-session | "workroom-session "*)
+    Resources:* | MacOS:workroomd | MacOS:"workroomd "* | MacOS:wr-agent | MacOS:"wr-agent "* \
+      | MacOS:workroom-session | MacOS:"workroom-session "*)
       # A helper belongs to the id whose socket it serves, and that is not always the id of the
       # bundle its binary lives in: a daemon runs whichever copy spawned it or last handed it off,
       # so one still serving the plain id can run from a workroom's bundle that has since been
       # rebuilt under the workroom's own id — and stopping it would end the project checkout's
-      # sessions. Only `workroomd serve` names its socket; anything else (a pane's attach client,
+      # sessions. Only `serve` names its socket; anything else (a pane's attach client,
       # an old Swift helper) goes by its bundle.
       served="$(served_id "$executable")" || served="$(bundle_id "$owner")" || served=""
       [ "$served" = "$want" ] || continue

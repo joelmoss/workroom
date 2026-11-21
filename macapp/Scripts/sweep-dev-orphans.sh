@@ -6,12 +6,14 @@
 #   sweep-dev-orphans.sh [--quiet]
 #
 # Each workroom builds "<worktree>/macapp/DerivedData/…/Workroom Dev.app" under its own bundle id
-# (dev-identity.sh), and that build's `workroomd serve` outlives the app by design. Once the worktree
+# (dev-identity.sh), and that build's `workroom serve` outlives the app by design. Once the worktree
 # is deleted nothing ever stops it. Two things go, and nothing else:
 #
-# - a `workroomd serve` (or `wr-agent serve`, from a build before the rename, #525) whose argv[0]
-#   is the executable inside a `…/Build/Products/<config>/Workroom Dev.app/Contents/MacOS/` (this
-#   repo's DerivedData, or Xcode's) whose bundle directory is gone.
+# - a `workroom serve` whose argv[0] is `Contents/Resources/workroom` (ADR 0078), or a
+#   `workroomd serve` (or `wr-agent serve`, from a build before the rename, #525) whose argv[0] is
+#   the executable in `Contents/MacOS/` (a build before #681), inside a
+#   `…/Build/Products/<config>/Workroom Dev.app` (this repo's DerivedData, or Xcode's) whose bundle
+#   directory is gone.
 #   A daemon whose bundle still exists is never touched, whatever it serves: stop-dev-app.sh owns
 #   that. A release or Nightly app is not called "Workroom Dev", so its daemon never matches.
 # - a dev socket directory `/tmp/workroom-<uid>-com.developwithstyle.workroom.dev.<suffix>` that no
@@ -46,21 +48,24 @@ processes="$(process_table 2>/dev/null)" || processes=""
 stopped=""
 while read -r pid cmdline; do
   [ -n "$pid" ] || continue
+  # The daemon is `Contents/Resources/workroom serve` since #681 (ADR 0078), and
+  # `Contents/MacOS/workroomd serve` when an earlier build started it.
   case "$cmdline" in
-    /*/"Workroom Dev.app/Contents/MacOS/"*) ;;
+    /*/"Workroom Dev.app/Contents/MacOS/"*) folder=MacOS ;;
+    /*/"Workroom Dev.app/Contents/Resources/workroom serve "*) folder=Resources ;;
     *) continue ;;
   esac
   # The bundle has to be argv[0]'s, a build product's. stop-dev-app.sh can rely on the bundle
   # existing to rule out `tail -f …/Workroom Dev.app/…`, where "the bundle" is the whole command up
   # to it; here a missing bundle is the trigger, so a command that reaches the path only through
   # its arguments (` -f`, ` /…`) is ruled out by shape.
-  owner="${cmdline%%/Contents/MacOS/*}"
+  owner="${cmdline%%/Contents/"$folder"/*}"
   case "$owner" in
     *" -"* | *" /"*) continue ;;
     /*/Build/Products/*/"Workroom Dev.app") ;;
     *) continue ;;
   esac
-  executable="${cmdline#"$owner/Contents/MacOS/"}"
+  executable="${cmdline#"$owner/Contents/$folder/"}"
   served_socket "$executable" >/dev/null || continue
   [ -d "$owner" ] && continue
 
