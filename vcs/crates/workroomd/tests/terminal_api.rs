@@ -1844,7 +1844,8 @@ fn api_list_names_every_method_the_daemon_has() {
     assert!(
         human
             .stdout
-            .contains(&format!("session.list      {summary}\n")),
+            // Padded to the longest name, `events.unsubscribe`, and two spaces.
+            .contains(&format!("session.list        {summary}\n")),
         "{}",
         human.stdout
     );
@@ -2018,6 +2019,8 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
             json!({"target": OTHER, "regex": "API-CALL-WAITED", "timeout_ms": 30000}),
         ),
         ("events.subscribe", json!({"all": true})),
+        // From a connection of its own, which holds no subscription there: `ended` false.
+        ("events.unsubscribe", json!({"stream": 1})),
     ];
     let listed = api_json(&socket, &["list"]);
     for method in listed["methods"].as_array().expect("methods") {
