@@ -1,8 +1,9 @@
 """The toolchain pins agree wherever they are written.
 
-Zig, cargo-zigbuild and Rust are each pinned once, with copies a bump has to find: Zig in the
-install-zig composite and in the libghostty-vt build script, cargo-zigbuild in its composite, and
-Rust in mk/vcs.mk (read through make) and in ci-rust.yml's three install steps. A caller can also
+Zig, cargo-zigbuild, cargo-about and Rust are each pinned once, with copies a bump has to find: Zig
+in the install-zig composite and in the libghostty-vt build script, cargo-zigbuild in its
+composite, cargo-about in mk/notices.mk and its composite, and Rust in mk/vcs.mk (read through
+make) and in ci-rust.yml's three install steps. A caller can also
 pass a composite another version. Any copy that disagrees fails here rather than on the next run.
 """
 
@@ -75,6 +76,14 @@ class ToolPinTests(unittest.TestCase):
                   for path in CI_FILES if path != own
                   for line in path.read_text().splitlines() if installs_cargo_zigbuild(line)]
         self.assertEqual(others, [], "cargo-zigbuild installed outside install-cargo-zigbuild")
+
+    def test_cargo_about_is_the_version_make_notices_checks_for(self):
+        pin = make_value("CARGO_ABOUT_VERSION")
+        self.assertRegex(pin, r"^\d+\.\d+\.\d+$")
+        self.assertEqual(input_default("install-cargo-about", "version"), pin)
+        for where, version in passed_inputs("install-cargo-about", "version"):
+            with self.subTest(where=where):
+                self.assertEqual(version, pin)
 
     def test_rust_is_the_toolchain_the_makefile_lints_with(self):
         pin = make_value("VCS_RUST")

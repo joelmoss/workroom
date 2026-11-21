@@ -56,6 +56,16 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --manifest-path vcs/Cargo.toml --workspace --no-deps
 
+      # The third-party notices the binary embeds and the app bundles (#714): fails when either is
+      # stale against Cargo.lock or components.json's pins, or a shipped crate's licence is not on
+      # third-party/about.toml's accepted list. Make, unlike this job's other steps, so the
+      # cargo-about pin is read where `make notices` reads it.
+      - name: Install cargo-about
+        uses: ./.github/actions/install-cargo-about
+
+      - name: Third-party notices
+        run: make notices-check
+
       # This already covers workroomd, and covers it on LINUX — the workspace has no
       # `default-members`, so every member's unit and integration tests run here. That matters
       # because the daemon's pty, /proc introspection and socket code are the parts most likely to

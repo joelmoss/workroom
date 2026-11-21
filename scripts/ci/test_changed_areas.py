@@ -149,8 +149,21 @@ class ChangedAreasTests(unittest.TestCase):
                          set())
 
     def test_markdown_inside_a_tree_follows_that_tree(self):
-        self.assertEqual(needed("macapp/Resources/markdown/VENDOR.md"), {"app", "scripts"})
+        self.assertEqual(needed("macapp/Resources/ghostty/SOURCE.md"), {"app", "scripts"})
         self.assertEqual(needed("vcs/crates/workroomd/README.md"), {"rust", "app", "scripts"})
+
+    def test_the_notices_inputs_also_run_the_rust_job_that_checks_them(self):
+        self.assertEqual(needed("third-party/components.json", "scripts/third_party_notices.py",
+                                ".github/actions/install-cargo-about/action.yml"), {"rust"})
+        for path in ("macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/"
+                     "Package.resolved", "macapp/Resources/THIRD-PARTY-NOTICES.txt",
+                     "macapp/Resources/markdown/VENDOR.md"):
+            with self.subTest(path=path):
+                self.assertEqual(needed(path), {"rust", "app", "scripts"})
+        for path in ("mk/notices.mk", "macapp/Packages/TreeSitter/VENDOR.md",
+                     "macapp/Packages/SyntaxHighlighting/Grammars/tree-sitter-css/VENDOR.md"):
+            with self.subTest(path=path):
+                self.assertEqual(needed(path), {"rust", "packages", "app", "scripts"})
 
     def test_the_apps_and_the_daemons_own_docs_run_nothing_filtered(self):
         self.assertEqual(needed("macapp/AGENTS.md", "macapp/README.md", "macapp/QA-libghostty.md",

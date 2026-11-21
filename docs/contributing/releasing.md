@@ -201,6 +201,26 @@ GoReleaser builds the CLI for `darwin`/`linux`/`windows` × `amd64`/`arm64` with
 two paths must stay in lockstep — a rename in one without the others breaks `curl | sh` and
 `workroom update`.
 
+## Third-party notices
+
+Workroom's dependencies' licences ask for their copyright and licence text to go with every copy
+(#714). `make notices` writes two files, and `make notices-check`, in CI's `rust` job, fails when
+either is stale or a shipped crate's licence is not on `third-party/about.toml`'s accepted list:
+
+- `vcs/crates/workroomd/THIRD-PARTY-NOTICES.txt`, the `workroom` binary's: every crate it links on
+  its four targets, read by cargo-about from `Cargo.lock`, and the other code compiled into it. The
+  binary embeds it, since a remote host is pushed only the binary, and the standalone archives
+  carry it beside the binary (from #681).
+- `macapp/Resources/THIRD-PARTY-NOTICES.txt`, the app's, at `Contents/Resources/` in the bundle:
+  the binary's notices and everything else the bundle ships.
+
+What isn't a crate is listed in `third-party/components.json`, with its licence files under
+`third-party/licenses/`. Each entry is pinned to the line that decides its version, such as
+`GHOSTTY_SHA` or a `Package.resolved` pin, so bumping one fails the check until the entry and its
+licence files are copied from the new version. A new Swift package or vendored grammar fails it
+too, until it has an entry. Install the pinned cargo-about with
+`cargo install cargo-about --locked --features cli --version <CARGO_ABOUT_VERSION in mk/notices.mk>`.
+
 ## The macOS app release pipeline
 
 The `macapp` job runs `make app-release` (`macapp/Scripts/release.sh`) on `xcode-27` with Xcode 27.1:

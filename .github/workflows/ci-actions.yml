@@ -81,6 +81,10 @@ jobs:
       - name: Test the local tools check
         run: python3 scripts/ci/test_tools_check.py
 
+      # The notices check's own rules; the rust job runs the check itself.
+      - name: Test the third-party notices check
+        run: python3 scripts/ci/test_third_party_notices.py
+
       # Also in a local `make app-test-scripts` (CI's app-scripts job skips it), but that job runs
       # only when a change touches the app or the daemon, and this test greps the whole tracked
       # tree: a docs-only change can turn it red. Needs nothing but sh and git, so it runs here on
