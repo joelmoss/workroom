@@ -120,8 +120,9 @@ final class ThemePickerUITests: XCTestCase {
     return element.label
   }
 
-  /// Open Settings → Appearance, through the app menu as `SettingsSidebarUITests` does.
-  private func openAppearanceSettings(_ app: XCUIApplication) {
+  /// Open Settings ▸ Themes the way the Appearance pane offers it: through the app menu as
+  /// `SettingsSidebarUITests` does, then Appearance's Themes row, which names the family.
+  private func openThemesSettings(_ app: XCUIApplication, family expected: String = "Workroom") {
     let appMenu = app.menuBarItems.element(boundBy: 1)
     XCTAssertTrue(appMenu.waitForExistence(timeout: 10), "no app menu")
     appMenu.click()
@@ -131,37 +132,84 @@ final class ThemePickerUITests: XCTestCase {
     let pane = element(app, "settingsPane.appearance")
     XCTAssertTrue(pane.waitForExistence(timeout: 10), "the Settings sidebar did not render")
     pane.click()
+    let themesRow = element(app, "settings.control.themes")
+    XCTAssertTrue(themesRow.waitForExistence(timeout: 5), "Settings ▸ Appearance has no Themes row")
     XCTAssertTrue(
-      settingsRow(app, "themeFamily").waitForExistence(timeout: 5),
-      "Settings → Appearance has no Theme family row")
+      text(of: themesRow).contains(expected),
+      "the Themes row shows '\(text(of: themesRow))', not the family '\(expected)'")
+    themesRow.click()
+    XCTAssertTrue(
+      element(app, "settings.themes.stage.light").waitForExistence(timeout: 5),
+      "Settings ▸ Themes has no stage")
   }
 
-  /// A Settings → Appearance theme row: `themeFamily`, `lightTheme` or `darkTheme`.
-  private func settingsRow(_ app: XCUIApplication, _ id: String) -> XCUIElement {
-    element(app, "settings.control.\(id)")
-  }
-
-  /// Wait for a Settings theme row to show `expected`. Polled: the Settings scene's `@Default`
+  /// Wait for a Themes pane label — `themes.family`, `themes.stage.light.name` or
+  /// `themes.stage.dark.name` — to show `expected`. Polled: the Settings scene's `@Default`
   /// invalidates asynchronously, so an immediate read can still show the previous value.
-  private func waitForSettingsRow(
+  private func waitForLabel(
     _ app: XCUIApplication, _ id: String, toShow expected: String, timeout: TimeInterval = 5,
     file: StaticString = #filePath, line: UInt = #line
   ) {
-    let row = settingsRow(app, id)
+    let label = element(app, id)
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
-      if row.exists, row.label == expected || (row.value as? String) == expected { return }
+      if label.exists, text(of: label) == expected { return }
       usleep(150_000)
     }
     XCTFail(
-      "the \(id) row shows '\(row.exists ? text(of: row) : "nothing")', expected '\(expected)'",
+      "\(id) shows '\(label.exists ? text(of: label) : "nothing")', expected '\(expected)'",
       file: file, line: line)
   }
 
-  /// Close the open picker with Esc, and prove it closed.
-  private func closePicker(_ app: XCUIApplication) {
-    app.typeKey(.escape, modifierFlags: [])
-    XCTAssertTrue(app.popovers.firstMatch.waitForNonExistence(timeout: 5), "Esc left the picker up")
+  /// A tile in the Themes pane's grid: `family-<name>`, `light-<name>` or `dark-<name>`.
+  private func tile(_ app: XCUIApplication, _ id: String) -> XCUIElement {
+    element(app, "settings.themes.\(id)")
+  }
+
+  /// Wait for the loading state of a theme list to clear, so the list has settled.
+  private func waitForListToSettle(
+    _ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line
+  ) {
+    let loading = app.descendants(matching: .any)
+      .matching(NSPredicate(format: "label == %@", "Loading themes")).firstMatch
+    XCTAssertTrue(
+      loading.waitForNonExistence(timeout: 5), "the theme list never settled", file: file,
+      line: line)
+  }
+
+  /// Wait for the generated conf's theme to stop changing, and return it.
+  private func waitForConfToSettle(timeout: TimeInterval = 5) -> String? {
+    let deadline = Date().addingTimeInterval(timeout)
+    var name = confTheme()
+    var stableSince = Date()
+    while Date() < deadline {
+      usleep(100_000)
+      let now = confTheme()
+      if now != name {
+        name = now
+        stableSince = Date()
+      } else if Date().timeIntervalSince(stableSince) >= 0.6 {
+        return name
+      }
+    }
+    return name
+  }
+
+  /// Choose Family, Light or Dark in the Themes pane's browser.
+  private func browse(_ app: XCUIApplication, _ label: String) {
+    let segment = element(app, "settings.themes.browse")
+      .descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch
+    XCTAssertTrue(segment.waitForExistence(timeout: 3), "the browser has no '\(label)' segment")
+    segment.click()
+  }
+
+  /// Replace the Themes pane's search with `query`.
+  private func search(_ app: XCUIApplication, _ query: String) {
+    let field = element(app, "settings.themes.search")
+    XCTAssertTrue(field.waitForExistence(timeout: 3), "the Themes pane has no search field")
+    field.click()
+    app.typeKey("a", modifierFlags: [.command])
+    app.typeText(query)
   }
 
   /// The whole picker lifecycle in ONE launch (each launch costs a full app start), as an ordered
@@ -335,133 +383,161 @@ final class ThemePickerUITests: XCTestCase {
       "the engine was handed '\(applied ?? "nil")' — expected the '\(family)' family's dark theme")
   }
 
-  /// Choosing a family sets both themes and the Settings rows name it; then choosing one side alone
-  /// changes only that side, and the family row says "Custom" (#735). One launch for both, since the
-  /// second needs the first's family as its starting point. The appearance is Dark, so the generated
-  /// config names the dark theme each time.
+  /// Settings ▸ Themes (#733) chooses a family, then one side alone. A family sets both themes and
+  /// the stage and family label follow; a dark theme alone leaves the light one and makes the pair
+  /// Custom. The appearance is Dark, so the generated config names the dark theme each time.
   func testAFamilySetsBothThemesAndChangingOneSideAloneShowsCustom() throws {
     let app = launchedApp()
     XCTAssertEqual(
       waitForConfTheme(oneOf: ["Workroom"]), "Workroom", "the fixture's dark theme isn't showing")
 
-    openAppearanceSettings(app)
-    waitForSettingsRow(app, "themeFamily", toShow: "Workroom")
-    waitForSettingsRow(app, "lightTheme", toShow: "Workroom Light")
-    waitForSettingsRow(app, "darkTheme", toShow: "Workroom")
+    openThemesSettings(app)
+    waitForLabel(app, "settings.themes.family", toShow: "Workroom")
+    waitForLabel(app, "settings.themes.stage.light.name", toShow: "Workroom Light")
+    waitForLabel(app, "settings.themes.stage.dark.name", toShow: "Workroom")
 
-    // The Theme family row opens the picker on the Family tab.
-    settingsRow(app, "themeFamily").click()
+    browse(app, "Family")
     XCTAssertTrue(
-      app.popovers.firstMatch.waitForExistence(timeout: 5), "the Theme family row opened no picker")
-    XCTAssertTrue(
-      row(app, "Workroom").waitForExistence(timeout: 3),
-      "the Theme family row did not open the picker on the Family tab")
-
-    app.typeText(family)
-    let target = row(app, family)
-    XCTAssertTrue(target.waitForExistence(timeout: 5), "'\(family)' is not on the Family tab")
+      tile(app, "family-Workroom").waitForExistence(timeout: 3),
+      "Families did not list the families")
+    search(app, family)
+    let target = tile(app, "family-\(family)")
+    XCTAssertTrue(target.waitForExistence(timeout: 5), "'\(family)' is not among the families")
     target.click()
     XCTAssertEqual(
       waitForConfTheme(oneOf: [darkVariantFile]), darkVariantFile,
       "choosing '\(family)' did not reach the engine")
-    closePicker(app)
+    waitForLabel(app, "settings.themes.family", toShow: family)
+    waitForLabel(app, "settings.themes.stage.light.name", toShow: lightVariantFile)
+    waitForLabel(app, "settings.themes.stage.dark.name", toShow: darkVariantFile)
 
-    waitForSettingsRow(app, "themeFamily", toShow: family)
-    waitForSettingsRow(app, "lightTheme", toShow: lightVariantFile)
-    waitForSettingsRow(app, "darkTheme", toShow: darkVariantFile)
-
-    // The Dark theme row opens the picker on the Dark tab, on the current dark theme.
-    settingsRow(app, "darkTheme").click()
-    XCTAssertTrue(
-      app.popovers.firstMatch.waitForExistence(timeout: 5), "the Dark theme row opened no picker")
-    XCTAssertTrue(
-      element(app, "theme-dark-\(darkVariantFile)").waitForExistence(timeout: 3),
-      "the Dark theme row did not open the picker on the Dark tab")
-    XCTAssertFalse(row(app, family).exists, "the Dark tab listed theme families")
+    // The Dark stage window browses dark themes, and lists no family and no light theme.
+    element(app, "settings.themes.stage.dark").click()
+    search(app, "Nord")
+    let nord = tile(app, "dark-Nord")
+    XCTAssertTrue(nord.waitForExistence(timeout: 5), "'Nord' is not among the dark themes")
+    XCTAssertFalse(tile(app, "family-\(family)").exists, "the dark themes listed a family")
     XCTAssertFalse(
-      element(app, "theme-light-\(lightVariantFile)").exists, "the Dark tab listed a light theme")
-    XCTAssertFalse(
-      element(app, "theme-picker.note").exists,
-      "the Dark tab noted the other appearance while Dark is showing")
-
-    app.typeText("Nord")
-    let nord = element(app, "theme-dark-Nord")
-    XCTAssertTrue(nord.waitForExistence(timeout: 5), "'Nord' is not on the Dark tab")
+      element(app, "settings.themes.note").exists,
+      "the dark themes noted the other appearance while Dark is showing")
     nord.click()
     XCTAssertEqual(
       waitForConfTheme(oneOf: ["Nord"]), "Nord", "choosing the dark theme 'Nord' didn't show")
-    closePicker(app)
-
-    waitForSettingsRow(app, "themeFamily", toShow: "Custom")
-    waitForSettingsRow(app, "lightTheme", toShow: lightVariantFile)
-    waitForSettingsRow(app, "darkTheme", toShow: "Nord")
+    waitForLabel(app, "settings.themes.family", toShow: "Custom")
+    waitForLabel(app, "settings.themes.stage.light.name", toShow: lightVariantFile)
+    waitForLabel(app, "settings.themes.stage.dark.name", toShow: "Nord")
   }
 
   /// Browsing the side that isn't showing saves the choice without changing the generated config
-  /// (#735). The appearance is Dark, so the Light tab is the hidden side: it says so, an arrow key
+  /// (#735). The appearance is Dark, so the light themes are the hidden side: they say so, a click
   /// there saves the light theme, and the engine keeps the dark theme it had.
   func testBrowsingTheHiddenSideSavesWithoutChangingTheGeneratedConfig() throws {
     let app = launchedApp()
     XCTAssertEqual(
       waitForConfTheme(oneOf: ["Workroom"]), "Workroom", "the fixture's dark theme isn't showing")
 
-    openAppearanceSettings(app)
-    settingsRow(app, "lightTheme").click()
+    openThemesSettings(app)
+    element(app, "settings.themes.stage.light").click()
     XCTAssertTrue(
-      app.popovers.firstMatch.waitForExistence(timeout: 5), "the Light theme row opened no picker")
-    XCTAssertTrue(
-      element(app, "theme-light-Workroom Light").waitForExistence(timeout: 3),
-      "the Light theme row did not open the picker on the Light tab")
-    XCTAssertFalse(element(app, "theme-dark-Workroom").exists, "the Light tab listed a dark theme")
+      tile(app, "light-Workroom Light").waitForExistence(timeout: 3),
+      "the Light stage window did not browse light themes")
+    XCTAssertFalse(tile(app, "dark-Workroom").exists, "the light themes listed a dark one")
 
-    let note = element(app, "theme-picker.note")
-    XCTAssertTrue(note.waitForExistence(timeout: 3), "the Light tab doesn't say it applies later")
+    let note = element(app, "settings.themes.note")
+    XCTAssertTrue(note.waitForExistence(timeout: 3), "the light themes don't say they apply later")
     XCTAssertEqual(text(of: note), "Applies when the appearance is Light")
 
-    app.typeText(lightVariantFile)
-    XCTAssertTrue(
-      element(app, "theme-light-\(lightVariantFile)").waitForExistence(timeout: 5),
-      "'\(lightVariantFile)' is not on the Light tab")
-    app.typeKey(.downArrow, modifierFlags: [])
+    search(app, lightVariantFile)
+    let target = tile(app, "light-\(lightVariantFile)")
+    XCTAssertTrue(target.waitForExistence(timeout: 5), "'\(lightVariantFile)' is not listed")
+    target.click()
 
     // The positive signal first, so the unchanged config below can't be read before anything
     // happened.
-    waitForSettingsRow(app, "lightTheme", toShow: lightVariantFile)
-    waitForSettingsRow(app, "themeFamily", toShow: "Custom")
-    waitForSettingsRow(app, "darkTheme", toShow: "Workroom")
+    waitForLabel(app, "settings.themes.stage.light.name", toShow: lightVariantFile)
+    waitForLabel(app, "settings.themes.family", toShow: "Custom")
+    waitForLabel(app, "settings.themes.stage.dark.name", toShow: "Workroom")
     usleep(1_000_000)
     XCTAssertEqual(
       confTheme(), "Workroom",
-      "browsing the hidden Light side changed the generated config, so the screen repainted")
+      "choosing a hidden light theme changed the generated config, so the screen repainted")
   }
 
-  /// A Settings row whose theme fell back says so. Your own dark file called `Ayu Light` puts the
-  /// stored light theme on the wrong side, so Workroom Light shows in its place: the Light theme row
-  /// keeps the stored name and notes the fallback, the Dark theme row notes nothing, and choosing a
-  /// real light theme clears the note.
-  func testASettingsRowSaysWhenItsThemeFellBack() throws {
+  /// The stage says when a side fell back. Your own dark file called `Ayu Light` puts the stored
+  /// light theme on the wrong side, so Workroom Light shows in its place: the Light window keeps the
+  /// stored name and notes the fallback, the Dark window notes nothing, and choosing a real light
+  /// theme clears the note.
+  func testTheStageSaysWhenAThemeFellBack() throws {
     let app = launchedApp(withUserThemes: true, lightTheme: "Ayu Light")
-    openAppearanceSettings(app)
-    waitForSettingsRow(app, "lightTheme", toShow: "Ayu Light")
+    openThemesSettings(app, family: "Custom")
+    waitForLabel(app, "settings.themes.stage.light.name", toShow: "Ayu Light")
 
-    let note = element(app, "settings.themeFallback.lightTheme")
-    XCTAssertTrue(note.waitForExistence(timeout: 5), "the Light theme row doesn't say it fell back")
+    let note = element(app, "settings.themes.fallback.light")
+    XCTAssertTrue(note.waitForExistence(timeout: 5), "the Light window doesn't say it fell back")
     XCTAssertEqual(text(of: note), "Not a light theme: showing Workroom Light")
     XCTAssertFalse(
-      element(app, "settings.themeFallback.darkTheme").exists,
-      "the Dark theme row says it fell back, although Workroom is a dark theme")
+      element(app, "settings.themes.fallback.dark").exists,
+      "the Dark window says it fell back, although Workroom is a dark theme")
 
-    settingsRow(app, "lightTheme").click()
-    XCTAssertTrue(
-      app.popovers.firstMatch.waitForExistence(timeout: 5), "the Light theme row opened no picker")
-    app.typeText(lightVariantFile)
-    XCTAssertTrue(
-      element(app, "theme-light-\(lightVariantFile)").waitForExistence(timeout: 5),
-      "'\(lightVariantFile)' is not on the Light tab")
-    app.typeKey(.downArrow, modifierFlags: [])
-    waitForSettingsRow(app, "lightTheme", toShow: lightVariantFile)
+    element(app, "settings.themes.stage.light").click()
+    search(app, lightVariantFile)
+    let target = tile(app, "light-\(lightVariantFile)")
+    XCTAssertTrue(target.waitForExistence(timeout: 5), "'\(lightVariantFile)' is not listed")
+    target.click()
+    waitForLabel(app, "settings.themes.stage.light.name", toShow: lightVariantFile)
     XCTAssertTrue(
       note.waitForNonExistence(timeout: 5), "the fallback note stayed after choosing a light theme")
+  }
+
+  /// Quick arrow presses keep the highlighted theme on screen. Each press applies a theme and
+  /// repaints the picker, and an animated scroll that the next press interrupted used to stop short,
+  /// leaving the highlight below the bottom edge. The highlight is the theme the generated config
+  /// names, so this finds that row and checks it lies wholly inside the list, under the tabs.
+  ///
+  /// A guard, not a reproduction: in the VM the old animated scroll kept up too, so this passed
+  /// against it. The failure needed a real machine's timing.
+  func testQuickArrowPressesKeepTheHighlightedThemeOnScreen() throws {
+    let app = launchedApp()
+    XCTAssertEqual(
+      waitForConfTheme(oneOf: ["Workroom"]), "Workroom", "the fixture's dark theme isn't showing")
+    openPicker(app)
+    XCTAssertTrue(
+      element(app, "theme-dark-Workroom").waitForExistence(timeout: 5),
+      "⌘⇧K did not open the picker on the Dark tab")
+    waitForListToSettle(app)
+
+    @discardableResult
+    func assertHighlightOnScreen(
+      after presses: String, movedFrom previous: String?, file: StaticString = #filePath,
+      line: UInt = #line
+    ) -> String? {
+      // Let the last press's theme reach the conf.
+      guard let name = waitForConfToSettle() else {
+        XCTFail("no theme in the conf", file: file, line: line)
+        return nil
+      }
+      XCTAssertNotEqual(name, previous, "\(presses) moved nothing", file: file, line: line)
+      let row = element(app, "theme-dark-\(name)")
+      XCTAssertTrue(
+        row.waitForExistence(timeout: 3), "no row for '\(name)'", file: file, line: line)
+      let list = app.popovers.firstMatch.frame
+      let top = element(app, "theme-picker.tab.dark").frame.maxY
+      XCTAssertGreaterThanOrEqual(
+        row.frame.minY, top - 1, "after \(presses), '\(name)' is above the list", file: file,
+        line: line)
+      XCTAssertLessThanOrEqual(
+        row.frame.maxY, list.maxY + 1, "after \(presses), '\(name)' is below the list",
+        file: file, line: line)
+      return name
+    }
+
+    // One `typeText` burst, not a `typeKey` loop: `typeKey` waits for the app to go idle between
+    // presses, which lets each scroll finish and hides the bug. The arrow keys' function-key
+    // characters arrive back to back, as a held or quickly repeated key does.
+    app.typeText(String(repeating: "\u{F701}", count: 14))
+    let down = assertHighlightOnScreen(after: "14 quick ↓", movedFrom: "Workroom")
+    app.typeText(String(repeating: "\u{F700}", count: 9))
+    assertHighlightOnScreen(after: "9 quick ↑", movedFrom: down)
   }
 
   /// Your own theme files in the Light and Dark lists (#737). `-WorkroomUITestUserThemes 1` has the
