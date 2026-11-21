@@ -3251,6 +3251,145 @@ fn over_ssh_sessions_clients_and_client_events_on_a_host() {
     }
 }
 
+/// `workroom send` on a host (#689), as a coding agent in a remote pane runs it, from the host's
+/// static musl daemon: text into another pane as a bracketed paste and a key for its kitty
+/// keyboard flags, both of which the host's shadow terminal read; the reply naming the pane it
+/// came from (its caller found through `SO_PEERCRED`) and the modes; a `session.input` event
+/// naming it too; and its own pane refused with `RefusedSelf` (3).
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_send_types_into_another_host_pane_for_its_modes() {
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
+    let sender_id = "7e0e7e0e-0000-4000-8000-000000000689";
+    let target_id = "7e0e7e0e-0000-4000-8000-00000000689b";
+    let mut sender = Pane::attach_with(
+        &fixture,
+        sender_id,
+        false,
+        "'WORKROOM_SESSION_TITLE=send pane'",
+    );
+    let mut target = Pane::attach_with(
+        &fixture,
+        target_id,
+        false,
+        "'WORKROOM_SESSION_TITLE=typed pane'",
+    );
+    for pane in [&mut sender, &mut target] {
+        pane.type_line("echo \"PANE-\"\"UP\"");
+        assert!(
+            pane.read_until("PANE-UP\r\n", Duration::from_secs(30))
+                .contains("PANE-UP\r\n"),
+            "a pane's shell never started"
+        );
+    }
+    // A folder of this run's own on the host, made here and so removed at the end.
+    let dir = (0..)
+        .map(|attempt| format!("/tmp/wr-689-{}-{attempt}", std::process::id()))
+        .find(|dir| {
+            fixture
+                .ssh()
+                .arg(format!("mkdir {dir}"))
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+        .expect("a folder on the host");
+    let read = |name: &str| {
+        let output = fixture
+            .ssh()
+            .arg(format!("cat {dir}/{name} 2>/dev/null"))
+            .output()
+            .expect("read the host's file");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let until = |name: &str, what: &str, done: &dyn Fn(&str) -> bool| {
+        let reached = (0..120).any(|_| {
+            if done(&read(name)) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+            false
+        });
+        assert!(reached, "{name}: no {what}: {}", read(name));
+    };
+    let binary = INSTALLED_DAEMON;
+    sender.type_line(&format!(
+        "{binary} events --all --type session.input > {dir}/events 2>&1 & echo $! > {dir}/pid"
+    ));
+    until("events", "snapshot", &|text| {
+        text.contains("snapshot-complete")
+    });
+
+    // Bracketed paste and the kitty keyboard protocol's first flag, then a mark the pane sees only
+    // once the host's shadow terminal has read them. Split in the typed line, so its echo is not
+    // the mark.
+    let expected = b"\x1b[200~echo hi\x1b[201~\x1b[99;5u\r";
+    target.type_line(&format!(
+        r"stty raw -echo; printf '\033[?2004h\033[>1uREAD''Y'; head -c {} | od -An -v -tx1 > {dir}/typed.partial; mv {dir}/typed.partial {dir}/typed; printf '\033[<u\033[?2004l'; stty sane",
+        expected.len()
+    ));
+    assert!(
+        target
+            .read_until("READY", Duration::from_secs(30))
+            .contains("READY"),
+        "the reader never started"
+    );
+    sender.type_line(&format!(
+        "{binary} send 'typed pane' 'echo hi' --key Ctrl+C --enter --json > {dir}/sent; \
+         {binary} send \"$WORKROOM_PANE\" x --json > {dir}/self; echo \"SELF-$?-\"DONE"
+    ));
+    assert!(
+        sender
+            .read_until("-DONE", Duration::from_secs(30))
+            .contains("SELF-3-DONE"),
+        "the send to its own pane was not refused with 3"
+    );
+    until("typed", "typed bytes", &|text| !text.is_empty());
+    let typed: Vec<u8> = read("typed")
+        .split_whitespace()
+        .map(|byte| u8::from_str_radix(byte, 16).expect("a hex byte"))
+        .collect();
+    assert_eq!(
+        String::from_utf8_lossy(&typed),
+        String::from_utf8_lossy(expected)
+    );
+    let sent: Value = serde_json::from_str(&read("sent")).expect("the send's envelope");
+    assert_eq!(sent["session"], target_id, "{sent}");
+    assert_eq!(sent["caller"], sender_id, "{sent}");
+    assert_eq!(sent["bytes"], expected.len(), "{sent}");
+    assert_eq!(
+        sent["modes"],
+        json!({"kitty_flags": 1, "application_cursor_keys": false, "bracketed_paste": true}),
+        "{sent}"
+    );
+    let refused: Value = serde_json::from_str(&read("self")).expect("the refusal's envelope");
+    assert_eq!(refused["error"]["kind"], "RefusedSelf", "{refused}");
+    until("events", "session.input", &|text| {
+        text.contains("session.input")
+    });
+    let told: Vec<Value> = read("events")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["event"] == "session.input")
+        .collect();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0]["session"], target_id, "{told:?}");
+    assert_eq!(told[0]["sender"], sender_id, "{told:?}");
+
+    let _ = fixture
+        .ssh()
+        .arg(format!("kill $(cat {dir}/pid); rm -r {dir}"))
+        .status();
+    for pane in [&mut sender, &mut target] {
+        pane.type_line("exit");
+        assert!(
+            pane.exit_code(Duration::from_secs(20)).is_some(),
+            "a pane's session did not end"
+        );
+    }
+}
+
 /// Two Macs on one remote workroom (#255): Mac A's session carries its workroom and title to the
 /// host, Mac B finds it in the host's list and A's layout in the Layout service, and reattaches to
 /// the same shell; A dropping its link leaves B attached; a close on A ends the session for B too;
