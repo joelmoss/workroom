@@ -178,6 +178,9 @@ pub fn run_serve(
         .hooks()
         .runs
         .keep(crate::terminal::run::dir_beside(&socket));
+    // The copy of this binary its run sessions start from (#681), so an update that moves or
+    // replaces the file this program runs from cannot stop it starting one.
+    crate::daemon::own_copy::keep(&crate::daemon::own_copy::dir_beside(&socket));
     // Where the bootstrap puts Ghostty's terminfo and shell integration on a host
     // (`DaemonInstall.resources`), for a remote pane's session attached from the Mac (ADR 0074).
     if let Some(folder) = socket.parent() {
