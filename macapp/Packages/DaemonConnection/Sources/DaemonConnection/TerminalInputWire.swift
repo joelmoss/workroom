@@ -41,6 +41,12 @@ public enum TerminalInputEvent: Sendable, Equatable {
   public static let subscribeRequest = Data(
     #"{"method":"events.subscribe","params":{"all":true,"types":["session.input"]}}"#.utf8)
 
+  /// The request that ends this connection's subscription on `stream` on the daemon
+  /// (`events.unsubscribe`, #696).
+  public static func unsubscribeRequest(stream: UInt32) -> Data {
+    Data(#"{"method":"events.unsubscribe","params":{"stream":\#(stream)}}"#.utf8)
+  }
+
   private struct Wire: Decodable {
     let result: Event?
     let error: Failure?
@@ -65,12 +71,30 @@ public enum TerminalInputEvent: Sendable, Equatable {
   }
 }
 
+/// A live subscription to who types where: `end()` ends it, here and on the daemon, which frees
+/// its place there (a connection holds 8). Its subscriber ends it when it stops listening (its
+/// task cancelled, or its host forgotten); otherwise it lasts as long as the connection.
+public struct TerminalInputSubscription: Sendable, Equatable {
+  /// The stream it was asked on, which names it to `events.unsubscribe`.
+  public let stream: UInt32
+  private let ending: @Sendable () -> Void
+
+  public init(stream: UInt32, end: @escaping @Sendable () -> Void) {
+    self.stream = stream
+    ending = end
+  }
+
+  public func end() { ending() }
+
+  public static func == (lhs: Self, rhs: Self) -> Bool { lhs.stream == rhs.stream }
+}
+
 /// How a subscription to the terminal API's events ended.
 public enum TerminalInputAvailability: Sendable, Equatable {
-  /// Subscribed: live events follow on the handler.
-  case available
+  /// Subscribed: live events follow on the handler until the subscription ends.
+  case available(TerminalInputSubscription)
   /// The daemon refused it, with its error's message (`Busy` past its subscription limits).
   case refused(String)
-  /// The daemon predates the terminal API.
+  /// The daemon has no typing to tell: it predates the terminal API, or `session.input`.
   case unsupported
 }
