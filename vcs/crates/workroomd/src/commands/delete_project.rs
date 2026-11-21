@@ -20,7 +20,7 @@ use serde::Serialize;
 use super::config::{self, Config, Json};
 use super::envelope;
 use super::kind::{CliError, Kind};
-use super::teardown::Delete;
+use super::teardown::{Confirm, Delete, Watcher};
 use super::{Args, Context, Outcome};
 
 #[derive(Serialize)]
@@ -75,6 +75,7 @@ fn delete_project(context: &Context, args: &Args) -> Result<Outcome, CliError> {
         context,
         config: &config,
         skip_teardown: args.is_set("skip-teardown"),
+        watcher: Watcher::App,
     };
 
     if args.is_set("from-disk") {
@@ -130,7 +131,8 @@ fn delete_project(context: &Context, args: &Args) -> Result<Outcome, CliError> {
         for name in &names {
             // Again before each: a descriptor written during the cascade stops it here.
             refuse_remote_project(&config, &canon)?;
-            delete.delete(&canon, name)?;
+            // Go's `Delete(dir, name, name)`: the name confirms itself.
+            delete.delete(&canon, name, Confirm::Value(name))?;
         }
     }
     config.remove_project(&canon)?;
