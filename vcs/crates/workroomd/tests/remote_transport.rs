@@ -3360,7 +3360,11 @@ fn over_ssh_send_types_into_another_host_pane_for_its_modes() {
     assert_eq!(sent["bytes"], expected.len(), "{sent}");
     assert_eq!(
         sent["modes"],
-        json!({"kitty_flags": 1, "application_cursor_keys": false, "bracketed_paste": true}),
+        json!({
+            "kitty_keyboard_flags": 1,
+            "application_cursor_keys": false,
+            "bracketed_paste": true,
+        }),
         "{sent}"
     );
     let refused: Value = serde_json::from_str(&read("self")).expect("the refusal's envelope");

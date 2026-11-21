@@ -735,7 +735,7 @@ impl ShadowTerminal {
     /// flags, DECCKM and bracketed paste. `None` if any can't be read.
     pub fn input_modes(&self) -> Option<crate::terminal::keys::Modes> {
         Some(crate::terminal::keys::Modes {
-            kitty_flags: self
+            kitty_keyboard_flags: self
                 .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS)?,
             application_cursor_keys: self.mode(modes::APP_CURSOR_KEYS)?,
             bracketed_paste: self.mode(modes::BRACKETED_PASTE)?,

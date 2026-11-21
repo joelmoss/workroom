@@ -1208,6 +1208,7 @@ fn a_send_with_input_it_cannot_take_is_refused_before_its_target() {
         json!({"target": "x", "enter": "yes"}),
         json!({"target": "x", "text": "x", "allow_self": 1}),
         json!({"target": "x", "text": "ls\u{1b}[201~rm -rf ~\n"}),
+        json!({"target": "x", "text": "ls\u{9b}201~rm -rf ~\n"}),
     ] {
         let error = send_as(&store, None, params.clone()).expect_err(&params.to_string());
         assert_eq!(error.kind, kind::INVALID_REQUEST, "{params}: {error:?}");
@@ -1263,7 +1264,10 @@ fn a_send_into_the_callers_own_session_needs_allow_self_and_each_is_told() {
     if cfg!(feature = "terminal-state") {
         let from_other = from_other.expect("typed from another session");
         assert_eq!(from_other["bytes"], 2, "{from_other}");
-        assert_eq!(from_other["modes"]["kitty_flags"], 0, "{from_other}");
+        assert_eq!(
+            from_other["modes"]["kitty_keyboard_flags"], 0,
+            "{from_other}"
+        );
     } else {
         // No screen, so no modes to encode keys for.
         assert_eq!(from_other.unwrap_err().kind, kind::INTERNAL_ERROR);

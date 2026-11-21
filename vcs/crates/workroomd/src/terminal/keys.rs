@@ -31,7 +31,7 @@
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Modes {
     /// The active screen's kitty keyboard flags (`CSI > flags u`); 0 for the legacy encoding.
-    pub kitty_flags: u32,
+    pub kitty_keyboard_flags: u32,
     /// DECCKM (`CSI ? 1 h`): unmodified cursor keys, Home and End as `SS3`.
     pub application_cursor_keys: bool,
     /// `CSI ? 2004 h`: text goes as a bracketed paste ([`pasted`]). No key depends on it.
@@ -197,10 +197,10 @@ impl Key {
 
     /// The bytes a terminal in `modes` sends for this key.
     pub fn encode(self, modes: Modes) -> Vec<u8> {
-        if modes.kitty_flags == 0 {
+        if modes.kitty_keyboard_flags == 0 {
             self.legacy(modes.application_cursor_keys)
         } else {
-            self.kitty(modes.kitty_flags)
+            self.kitty(modes.kitty_keyboard_flags)
         }
     }
 
@@ -415,6 +415,13 @@ fn function_number(key: u8) -> u32 {
 /// The bracketed paste's end (`CSI 201 ~`): text holding it would end a paste early, and what
 /// followed it would reach the program as typed keys.
 pub const PASTE_END: &str = "\x1b[201~";
+
+/// Whether `text` holds a paste's end, as ESC `[` ([`PASTE_END`]) or as C1's CSI, U+009B (UTF-8
+/// `C2 9B`), which a terminal that reads C1 controls in UTF-8 takes for the same sequence. Either
+/// would end a paste early.
+pub fn holds_paste_end(text: &str) -> bool {
+    text.contains(PASTE_END) || text.contains("\u{9b}201~")
+}
 
 /// `text` as a program that turned bracketed paste on (`CSI ? 2004 h`) is pasted it, or as it is
 /// for one that didn't. Text holding [`PASTE_END`] is refused before this.

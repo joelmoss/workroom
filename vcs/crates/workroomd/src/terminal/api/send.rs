@@ -53,7 +53,8 @@ pub fn input() -> Value {
                 "type": "string",
                 "description": "Typed as it is, first: as a bracketed paste when the session's \
                                 program has turned that on. It may not hold the paste's end \
-                                (ESC [ 2 0 1 ~), which would end the paste early.",
+                                (ESC [ 2 0 1 ~, or its C1 form, U+009B 2 0 1 ~), which would \
+                                end the paste early.",
             },
             "keys": {
                 "type": "array",
@@ -92,9 +93,9 @@ pub fn output() -> Value {
                                 the daemon can't read them (built without terminal-state, or its \
                                 shadow terminal failed): the text then went as it is, never as a \
                                 paste, and keys are refused.",
-                "required": ["kitty_flags", "application_cursor_keys", "bracketed_paste"],
+                "required": ["kitty_keyboard_flags", "application_cursor_keys", "bracketed_paste"],
                 "properties": {
-                    "kitty_flags": {
+                    "kitty_keyboard_flags": {
                         "type": "integer",
                         "description": "The kitty keyboard protocol's flags its program pushed; \
                                         0 for none, the legacy encoding.",
@@ -118,7 +119,7 @@ pub fn result_example() -> Value {
         "session": "c0ffee00-1111-4222-8333-44445555beef",
         "caller": "5a1e0f7e-0d6c-4c9f-9c3e-2b7f1d0a8e11",
         "bytes": 21,
-        "modes": {"kitty_flags": 0, "application_cursor_keys": false, "bracketed_paste": true},
+        "modes": {"kitty_keyboard_flags": 0, "application_cursor_keys": false, "bracketed_paste": true},
     })
 }
 
@@ -173,10 +174,10 @@ fn asked(call: &Call) -> Result<Asked, ApiError> {
             "{NAME} has nothing to type: give it `text`, `keys` or `enter`"
         )));
     }
-    if text.contains(keys::PASTE_END) {
+    if keys::holds_paste_end(&text) {
         return Err(ApiError::invalid(
-            "the text holds a bracketed paste's end (ESC [ 2 0 1 ~), which would end the paste \
-             early and type what follows it as keys",
+            "the text holds a bracketed paste's end (ESC [ 2 0 1 ~, or C1's CSI 2 0 1 ~), which \
+             would end the paste early and type what follows it as keys",
         ));
     }
     if text.len() > MAX_BYTES {
@@ -277,7 +278,7 @@ pub fn send(call: &Call) -> Result<Answer, ApiError> {
         "caller": call.caller,
         "bytes": typed.len(),
         "modes": modes.map(|modes| json!({
-            "kitty_flags": modes.kitty_flags,
+            "kitty_keyboard_flags": modes.kitty_keyboard_flags,
             "application_cursor_keys": modes.application_cursor_keys,
             "bracketed_paste": modes.bracketed_paste,
         })),
