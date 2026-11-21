@@ -1,7 +1,7 @@
 //! Asking a person at the CLI: a yes or no ([`confirm`], [`ask`]) and the approval of a script this
-//! Mac hasn't approved ([`approve_script`], [`approve`]). `trust` and `delete` ask with these;
-//! `create` (#677) will too. Each is a plain line prompt (`[y/N]`), where Go's prompts are a
-//! full-screen form (charmbracelet/huh).
+//! Mac hasn't approved ([`approve_script`], [`approve`]). `trust`, `delete` and `create` ask with
+//! these (`create` asks where to start with a numbered choice of its own). Each is a plain line
+//! prompt (`[y/N]`), where Go's prompts are a full-screen form (charmbracelet/huh).
 
 use std::io::{BufRead, BufReader, IsTerminal, Write};
 
