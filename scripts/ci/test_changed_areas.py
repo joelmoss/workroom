@@ -140,7 +140,8 @@ class ChangedAreasTests(unittest.TestCase):
                          {"packages", "app", "scripts"})
 
     def test_go_mod_runs_everything_that_builds_the_cli(self):
-        self.assertEqual(needed("go.mod"), {"cli", "app", "scripts"})
+        # The app builds no Go since the swap (ADR 0078); the script tests build the Go CLI.
+        self.assertEqual(needed("go.mod"), {"cli", "scripts"})
 
     def test_docs_site_runs_the_go_checks_and_the_shortcuts_page_the_app(self):
         self.assertEqual(needed("docs-site/pages/guides/remote.md"), {"cli"})

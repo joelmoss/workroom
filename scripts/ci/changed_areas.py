@@ -90,8 +90,9 @@ RULES = (
     (("vcs/crates/workroomd/tests/commands_contract.rs",), {"cli", "rust", "app", "scripts"}),
     # The app bundles the daemon and runs its macOS-only tests; the script tests build it.
     (("vcs/*",), {"rust", "app", "scripts"}),
-    # The app's setup-go and the CLI it compiles read the toolchain from go.mod.
-    (("go.mod", "go.sum"), {"cli", "app", "scripts"}),
+    # The script tests' setup-go, and the Go CLI cli-archives_test.sh compiles, read the toolchain
+    # from go.mod. The app builds no Go (ADR 0078).
+    (("go.mod", "go.sum"), {"cli", "scripts"}),
     # KeyboardShortcutsDocsTests reads this page; cmd/docs_test.go and internal/docsite read all.
     (("docs-site/pages/reference/keyboard-shortcuts.md",), {"cli", "app"}),
     (("docs-site/*",), {"cli"}),
