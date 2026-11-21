@@ -189,7 +189,7 @@ struct WorkroomTabBar: View {
           if store.incomingQuickTerminalPane == tab.sid
             || store.incomingPaneDrop == .target(tab.sid)
           {
-            DropAccent(cornerRadius: 6)
+            DropAccent(cornerRadius: Radius.s)
           }
         }
         // A pane let go in the empty space beside this tab becomes a standalone terminal there:
