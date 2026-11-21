@@ -178,8 +178,68 @@ final class ThemeServiceTests: XCTestCase {
       try withUserThemes {
         XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "Workroom", name)
         XCTAssertTrue(GhosttyApp.shared.writeThemeConfig(dark: true))
-        XCTAssertEqual(try generatedConfigTheme(), "theme = \"Workroom\"", name)
+        XCTAssertEqual(try generatedConfigTheme(), try bundledFallbackLine("Workroom"), name)
       }
+    }
+  }
+
+  /// The `theme =` line a fallback writes: the bundled file's absolute path, never the bare name.
+  private func bundledFallbackLine(_ name: String) throws -> String {
+    let path = try XCTUnwrap(ThemeService.bundledThemeDirectory()) + "/" + name
+    XCTAssertTrue(FileManager.default.fileExists(atPath: path), "no bundled theme at \(path)")
+    return "theme = \"\(path)\""
+  }
+
+  /// A broken user file called `Workroom`, the very theme the dark side falls back to, can't stand in
+  /// for it: the config names the bundled file by its path, so ghostty loads that rather than finding
+  /// the user's broken file first, and the chrome paints the same bundled file.
+  func testABrokenUserFileNamedLikeTheFallbackCannotReplaceIt() throws {
+    Defaults[.appearance] = .dark
+    for chosen in ["Workroom", "Does Not Exist"] {
+      Defaults[.darkTheme] = chosen
+      try "garbage\n".write(
+        to: userThemeDir.appendingPathComponent("Workroom"), atomically: true, encoding: .utf8)
+      try withUserThemes {
+        ThemeService.shared.applyActiveTheme()
+        XCTAssertEqual(try generatedConfigTheme(), try bundledFallbackLine("Workroom"), chosen)
+        let workroom = try XCTUnwrap(
+          ThemeCatalog.themePreview(
+            named: "Workroom", bundledDirectory: ThemeService.bundledThemeDirectory(), in: .empty))
+        XCTAssertEqual(
+          ThemeService.shared.tokens.nsBg, ThemeTokens(preview: workroom).nsBg,
+          "the chrome didn't paint the bundled Workroom")
+      }
+    }
+  }
+
+  /// The light side falls back the same way, to the bundled Workroom Light by its path.
+  func testTheLightSideFallsBackToTheBundledWorkroomLightByItsPath() throws {
+    Defaults[.lightTheme] = "Does Not Exist"
+    try withUserThemes {
+      XCTAssertTrue(GhosttyApp.shared.writeThemeConfig(dark: false))
+      XCTAssertEqual(try generatedConfigTheme(), try bundledFallbackLine("Workroom Light"))
+    }
+  }
+
+  /// A theme that is the setting, not a fallback, is still written by name, so a user file of that
+  /// name keeps replacing the bundled one as ghostty resolves it.
+  func testAChosenWorkroomThemeIsStillWrittenByName() throws {
+    Defaults[.darkTheme] = "Workroom"
+    try withUserThemes {
+      XCTAssertTrue(GhosttyApp.shared.writeThemeConfig(dark: true))
+      XCTAssertEqual(try generatedConfigTheme(), "theme = \"Workroom\"")
+    }
+  }
+
+  /// A bundled path that ghostty would misread, or that would break out of the quoted value, is
+  /// written as the file's name instead.
+  func testABundledPathGhosttyWouldMisreadIsWrittenByName() {
+    for path in [
+      "/Apps/Work, Room.app/themes/Workroom", "/Apps/a:b/themes/Workroom",
+      "/Apps/a=b/themes/Workroom", "/Apps/\"q\"/themes/Workroom", "relative/themes/Workroom",
+    ] {
+      XCTAssertEqual(
+        GhosttyApp.ThemeValue.bundledFile(path).configLine, "theme = \"Workroom\"", path)
     }
   }
 
@@ -193,7 +253,7 @@ final class ThemeServiceTests: XCTestCase {
       to: userThemeDir.appendingPathComponent("Nord"), atomically: true, encoding: .utf8)
     try withUserThemes {
       ThemeService.shared.applyActiveTheme()
-      XCTAssertEqual(try generatedConfigTheme(), "theme = \"Workroom\"")
+      XCTAssertEqual(try generatedConfigTheme(), try bundledFallbackLine("Workroom"))
       let workroom = try XCTUnwrap(ThemeService.themePreview(named: "Workroom"))
       XCTAssertEqual(
         ThemeService.shared.tokens.nsBg, ThemeTokens(preview: workroom).nsBg,

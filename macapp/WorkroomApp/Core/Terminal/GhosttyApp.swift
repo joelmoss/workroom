@@ -239,10 +239,10 @@ final class GhosttyApp {
   /// they agreed only because `RootView.applyAppearance` happens to set `NSApp.appearance` first,
   /// which is an invariant held in another file.
   ///
-  /// `theme` is the theme name the caller already resolved for `dark` (`ThemeService.applyActiveTheme`
+  /// `theme` is the theme the caller already resolved for `dark` (`ThemeService.applyActiveTheme`
   /// resolves it once for the chrome and hands it on, so one apply reads the user's theme files once);
   /// nil resolves it here.
-  func reloadConfig(force: Bool = false, dark: Bool, theme: String? = nil) {
+  func reloadConfig(force: Bool = false, dark: Bool, theme: ThemeValue? = nil) {
     guard let app else { return }
     // Unchanged appearance and not forced → nothing to rebuild.
     guard force || dark != lastConfiguredDark else { return }
@@ -386,9 +386,9 @@ final class GhosttyApp {
   /// Written at the app-wide terminal appearance, with the theme preview `ThemeService` already
   /// resolved for its tokens, so a glass write parses no theme file of its own.
   @discardableResult
-  func writeThemeConfig(dark: Bool, theme: String? = nil) -> Bool {
+  func writeThemeConfig(dark: Bool, theme: ThemeValue? = nil) -> Bool {
     let written = Self.writeThemeConfig(
-      theme: theme ?? ThemeService.activeThemeName(for: ThemeSide(isDark: dark)),
+      theme: theme ?? ThemeService.activeTheme(for: ThemeSide(isDark: dark)).configValue,
       term: TerminalType(reportsGhostty: Defaults[.terminalReportsGhostty]),
       command: Self.fixtureShellCommand, glass: GlassService.shared.terminalAppearance,
       preview: ThemeService.shared.activePreview, to: themeConfigURL)
@@ -438,6 +438,50 @@ final class GhosttyApp {
     return palette + (fixed(preview.foreground).map { ["foreground = \($0)"] } ?? [])
   }
 
+  /// What the generated config's `theme =` line names: a theme by name, which ghostty looks up in the
+  /// user's theme directory first and then the bundled one, or a bundled theme file by its absolute
+  /// path, which ghostty loads as is. A fallback is written as a path (`ThemeService.activeTheme`), so
+  /// a user file sharing the fallback's name can't stand in for it.
+  enum ThemeValue: Equatable, Sendable {
+    case named(String)
+    case bundledFile(String)
+
+    /// The quoted value for `theme =`. A name is sanitised. A path is written as is only when it is
+    /// absolute and holds nothing that would end the quoted value or start a directive, and no comma,
+    /// `=` or colon, any of which ghostty's `Theme.parseCLI` reads as a light/dark pair; otherwise
+    /// the file's name is written instead, which is what the config held before paths.
+    /// The theme's name: the sanitised name, or the bundled file's.
+    var name: String {
+      switch self {
+      case .named(let name): return ThemeCatalog.sanitizedThemeName(name)
+      case .bundledFile(let path): return (path as NSString).lastPathComponent
+      }
+    }
+
+    var configLine: String {
+      switch self {
+      case .named(let name):
+        return "theme = \"\(ThemeCatalog.sanitizedThemeName(name))\""
+      case .bundledFile(let path):
+        guard path.hasPrefix("/"), !path.contains(where: { "\"\\\n\r,=:".contains($0) }) else {
+          return Self.named((path as NSString).lastPathComponent).configLine
+        }
+        return "theme = \"\(path)\""
+      }
+    }
+  }
+
+  /// `writeThemeConfig(theme:term:command:glass:preview:to:)` with a theme named, as the config held
+  /// before paths.
+  @discardableResult
+  nonisolated static func writeThemeConfig(
+    theme: String, term: TerminalType = .xterm256Color, command: String? = nil,
+    glass: GlassAppearance = .opaque, preview: ThemePreview? = nil, to url: URL
+  ) -> Bool {
+    writeThemeConfig(
+      theme: .named(theme), term: term, command: command, glass: glass, preview: preview, to: url)
+  }
+
   /// The write itself, apart from the `Defaults` lookup, so `GhosttyConfigLocationTests` can write
   /// two identities' files side by side through the production path. Returns false if the directory
   /// could not be created or the file could not be written; the instance overload above is what logs.
@@ -446,10 +490,9 @@ final class GhosttyApp {
   /// and without one a glass write resolves it.
   @discardableResult
   nonisolated static func writeThemeConfig(
-    theme: String, term: TerminalType = .xterm256Color, command: String? = nil,
+    theme: ThemeValue, term: TerminalType = .xterm256Color, command: String? = nil,
     glass: GlassAppearance = .opaque, preview: ThemePreview? = nil, to url: URL
   ) -> Bool {
-    let theme = ThemeCatalog.sanitizedThemeName(theme)
     // The terminal's colours come from the active theme family's variant for this appearance
     // (issue #36). libghostty resolves `theme = "<name>"` from $GHOSTTY_RESOURCES_DIR/themes (and
     // ~/.config/ghostty/themes, which wins) — verified on the pinned GhosttyKit for new and live
@@ -496,7 +539,7 @@ final class GhosttyApp {
     // would start a directive of its own, so a path holding one is dropped.
     var contents = """
       # Generated by Workroom — active theme for the current appearance. Do not edit.
-      theme = "\(theme)"
+      \(theme.configLine)
       term = \(term.rawValue)
       window-padding-x = 8
       window-padding-y = 8
@@ -505,7 +548,8 @@ final class GhosttyApp {
       """
     if glass.isGlass {
       contents += "\nbackground-opacity = 0"
-      let preview = preview?.name == theme ? preview : ThemeService.themePreview(named: theme)
+      let preview =
+        preview?.name == theme.name ? preview : ThemeService.themePreview(named: theme.name)
       for line in preview.map(glassContrastOverrides) ?? [] { contents += "\n" + line }
     } else {
       contents += "\nminimum-contrast = 3.0"
