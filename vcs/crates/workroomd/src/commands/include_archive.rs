@@ -160,7 +160,8 @@ pub(super) fn included_files(root: &Path) -> Result<Included, String> {
     Ok(included)
 }
 
-fn split_nul(bytes: &[u8]) -> Vec<Vec<u8>> {
+/// The paths of a `git ls-files -z` listing, each as git's bytes.
+pub(super) fn split_nul(bytes: &[u8]) -> Vec<Vec<u8>> {
     bytes
         .split(|byte| *byte == 0)
         .filter(|part| !part.is_empty())

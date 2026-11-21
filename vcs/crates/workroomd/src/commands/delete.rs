@@ -134,11 +134,7 @@ fn said(paint: Paint, home: Option<&str>, name: &str, deleted: &Deleted) -> Stri
             paint.green(&format!("Workroom '{name}' deleted successfully."))
         ),
         Deleted::ForgotNonGit { path } => {
-            // Go's `DisplayPath`: HOME as `~`.
-            let shown = match home.and_then(|home| path.strip_prefix(home)) {
-                Some(rest) => format!("~{rest}"),
-                None => path.clone(),
-            };
+            let shown = config::display_path(home, path);
             format!(
                 "{}\nNote: its folder was left at {shown}. Delete it manually if needed.\n",
                 paint.green(&format!(
