@@ -134,7 +134,9 @@ struct SidebarTerminalRowAdapter: View, Equatable {
   private func model(of tab: TerminalTab) -> SidebarTerminalRowModel {
     let title: SidebarTerminalRowModel.TitleSource =
       if case .terminal(let state) = tab.content {
-        .live(ObjectIdentifier(state.titleCell), userTitle: state.userTitle)
+        .live(
+          ObjectIdentifier(state.titleCell), userTitle: state.userTitle,
+          defaultName: state.defaultName)
       } else {
         .fixed(tab.title)
       }
