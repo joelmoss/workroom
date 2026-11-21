@@ -223,6 +223,29 @@ final class StandaloneNavigationTests: XCTestCase {
     XCTAssertFalse(store.isWorkroomSplitVisible, "a dead leaf is no split")
   }
 
+  /// Closing a selected standalone terminal shown beside a workroom drops it from the split and
+  /// lands on the workroom, also with no history to go back to (a restored window): its row going
+  /// at once must not leave the window on nothing (#664 review).
+  func testClosingAStandaloneTerminalBesideAWorkroomLandsOnTheWorkroom() throws {
+    let store = makeStore()
+    store.openExisting(workroom)
+    let target = try XCTUnwrap(store.target(for: workroom))
+    if store.terminals.tabCount(forTargetID: target.id) == 0 { store.terminals.addTab(for: target) }
+    store.newStandaloneTerminal()
+    let standalone = try XCTUnwrap(store.selectedTargetID)
+    store.selectedTargetID = workroom
+    store.openExistingAsSplit(standalone)
+    XCTAssertEqual(store.selectedTargetID, standalone)
+    store.history = NavigationHistory()
+
+    store.closeCurrentTerminalTab()
+
+    XCTAssertNil(store.liveSelection(standalone, in: projects.projects), "its row went")
+    XCTAssertEqual(store.selectedTargetID, workroom, "the window falls back to the workroom")
+    XCTAssertFalse(
+      store.workroomSplits.contains { $0.tabIDs.contains(standalone) }, "it left the split")
+  }
+
   // MARK: Surviving a quit
 
   func testTheSplitSurvivesAQuit() throws {

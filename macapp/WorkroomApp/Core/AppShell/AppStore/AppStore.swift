@@ -1007,8 +1007,6 @@ final class AppStore: ObservableObject {
       // the previous place, read before the prune and the row going take it away.
       let successor = self.closeSuccessor(of: targetID, closing: Set(ids))
       self.history.prune(removing: Set(ids))
-      self.standaloneTabsRemoved(targetID)
-      self.groupTabsRemoved(targetID)
       if self.terminals.tabCount(forTargetID: targetID) < 2 {
         self.expandedTerminalTargets.remove(targetID)
       }
@@ -1033,6 +1031,11 @@ final class AppStore: ObservableObject {
       } else {
         self.selectFallbackWorkroomAfterEmpty(targetID)
       }
+      // A Terminals-section row goes only now: the split auto-close and the fallback above resolve
+      // the closed target through its row (`sidebarID(for:)`), and a standalone terminal's goes at
+      // once.
+      self.standaloneTabsRemoved(targetID)
+      self.groupTabsRemoved(targetID)
       // After the fallback re-point (or not): if the selected target now has no tabs, the inspector
       // empties (issue: History/Changes/PR stayed on the last workroom after closing all its tabs).
       self.refreshSelectionHasTabs()
