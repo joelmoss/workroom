@@ -2309,6 +2309,20 @@ final class TerminalPanes {
     panes.updateState { $0.move(draggedID, toIndex: index) }
   }
 
+  /// Reorder (a terminal's row let go above another's in the sidebar, #652): move the tab just
+  /// before tab `other` in the strip order, or to the end when `other` isn't one of the target's.
+  func moveTab(
+    _ draggedID: TerminalTab.ID, before other: TerminalTab.ID, for target: TerminalTarget
+  ) {
+    guard draggedID != other, let panes = targets[target.id],
+      panes.state.order.contains(draggedID)
+    else { return }
+    panes.updateState { state in
+      state.order.removeAll { $0 == draggedID }
+      state.order.insert(draggedID, at: state.order.firstIndex(of: other) ?? state.order.endIndex)
+    }
+  }
+
   /// Set the divider ratio of one split node (the view clamps to the points-based minimum first).
   /// Addressed by the node's own id, so it finds the right group without the caller knowing which.
   func setRatio(_ ratio: CGFloat, forSplit splitID: UUID, for target: TerminalTarget) {

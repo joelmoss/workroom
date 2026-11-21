@@ -67,7 +67,29 @@ Right-click a terminal group's or a standalone terminal's tab in the title bar f
 
 Right-click a terminal's tab, a standalone terminal's row or the terminal itself and choose **Move to…**, or use the move button in its pane's title bar. It lists **Standalone Terminal**, the **Quick Terminal**, your terminal groups, **New Terminal Group…**, and every workroom that is open in a window, written *project / workroom*. A checkmark marks where the terminal is now. The terminal moves still running, with its scrollback.
 
-You can also drag a terminal's tab onto a row in the sidebar, onto a workroom or group's tab in the title bar, or onto the **Terminals** heading to make it standalone. While you drag, the place it will go is highlighted. A terminal that runs on a remote host can't become standalone or join a group, and nothing can move into a remote workroom, because the shell runs where it started.
+You can also drag terminals onto each other. One set of rules covers every drag, wherever it starts and wherever you let go.
+
+What you can drag:
+
+- A terminal: its tab in the tab strip, its pane's title bar, or its row in the sidebar (under a group, the Quick Terminal or a workroom).
+- A standalone terminal: its row or its title-bar tab.
+- A terminal group, meaning all its terminals in order: its row, its title-bar tab, or its title bar above its panes.
+
+A workroom's row or tab doesn't take part. Dragging one reorders, splits the window or moves the workroom to another window, as before.
+
+Where you can let go, and what happens:
+
+- **A group, a workroom or the Quick Terminal** (its row, its title-bar tab or its title bar): the terminals join it at the end. A folded group's row takes them anywhere below its top edge.
+- **A standalone terminal** (its row or tab): the two become an unnamed group. If you dragged a group, the standalone terminal joins it at the end instead, and the group keeps its name.
+- **A terminal** (its tab in the tab strip, or its row in the sidebar): the terminals join its group or workroom in that place. On a tab, the half you let go over decides whether they land before or after it. On a row, or between two of a group's terminals' rows, they land above it.
+- **The Terminals heading**: a terminal becomes standalone.
+- **The title bar's empty space** (between or after its tabs, not on one): a terminal becomes standalone, its tab in the title bar where you let go. A standalone terminal's own terminal only moves its tab there.
+
+While you drag, the place it will go is highlighted, with a line where the terminals will land. Anywhere it can't go shows no highlight, and letting go there does nothing. Every drag inside the window carries the same label with the dragged item's name next to the pointer.
+
+Edges and gaps keep their meaning. Let a row go between the section's own rows and it reorders the section, or a group's terminal becomes standalone there. Let a title-bar tab go near another's edge and it reorders the tabs. Dragging a tab along its own strip reorders it, and onto a pane's edge splits it, as before.
+
+Whichever way you drag, the terminal keeps running, with its scrollback. A group left with no terminals is deleted. A terminal that runs on a remote host can't become standalone or join a group, and nothing can move into a remote workroom, because the shell runs where it started.
 
 **File ▸ Close Other Tabs** and **File ▸ Close All Tabs** close several at once. Closing a terminal ends its shell and anything running in it. When a process is still running, Workroom asks first. This is on by default. Turn it off with **Settings ▸ Terminal ▸ Confirm before closing a terminal**, **File ▸ Confirm Before Closing a Terminal**, or **Don't ask me again** in the prompt.
 

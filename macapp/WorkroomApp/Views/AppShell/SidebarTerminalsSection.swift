@@ -7,13 +7,14 @@ import WorkroomDomain
 /// (`SidebarTerminalsHeader`, ADR 0077): one row per terminal with no project and per terminal
 /// group, a group's terminals under it while it is unfolded. The rows are the app's
 /// `TerminalsSection`, so every window lists the same ones; a group's terminals are this window's.
-/// Rows reorder by dragging, and a standalone terminal's row dragged onto another's makes a group of
-/// the two. Its own `List`, so it scrolls on its own; hosted in the pane, so it is gated on the
-/// store alone (it reads the section itself).
+/// Rows reorder by dragging; a standalone terminal's row dragged onto another's makes a group of
+/// the two, and any terminal's row dragged onto a group's joins it (`SidebarRowDrag`). Its own
+/// `List`, so it scrolls on its own; hosted in the pane, so it is gated on the store alone (it
+/// reads the section itself).
 struct SidebarTerminalsList: View, Equatable {
   let store: AppStore
   @Environment(\.themeTokens) private var tokens
-  /// A standalone terminal's row being dragged, in this window's sidebar.
+  /// A terminal's row being dragged, in this window's sidebar.
   @State private var rowDrag = SidebarRowDrag()
 
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.store === rhs.store }
@@ -24,10 +25,10 @@ struct SidebarTerminalsList: View, Equatable {
     .live(store: store, select: actions.select, rowDrag: rowDrag)
   }
 
-  /// One List row of the section: an entry's own row, or one of a group's terminals under it.
+  /// One List row of the section: an entry's own row, or one of `group`'s terminals under it.
   enum Item: Hashable {
     case entry(TargetID)
-    case terminal(TerminalTab.ID)
+    case terminal(TerminalTab.ID, group: SidebarID)
   }
 
   var body: some View {
@@ -38,16 +39,11 @@ struct SidebarTerminalsList: View, Equatable {
         ForEach(rows, id: \.item) { row in
           view(for: row)
         }
-        // Reorders. A row let go on another's middle groups instead (`SidebarRowDrag`), and the List
-        // makes no move of that drop; should one come anyway, it doesn't also reorder the row.
+        // Reorders, and takes a group's terminal out to standalone or into another group. A row
+        // let go on another's middle drops on it instead (`SidebarRowDrag`), and the List makes no
+        // move of that drop; should one come anyway, it doesn't also move the row.
         .onMove { offsets, destination in
-          let items = rows.map(\.item)
-          if let offset = offsets.first, offsets.count == 1, case .entry(let id) = items[offset],
-            let sid = id.sidebarID, rowDrag.grouped(sid)
-          {
-            return
-          }
-          Self.move(items, offsets, to: destination, in: section)
+          listMove(rows.map(\.item), offsets, to: destination)
         }
       }
     }
@@ -85,13 +81,15 @@ struct SidebarTerminalsList: View, Equatable {
         let target = panel.target
         return [own]
           + panel.terminals.tabs(for: target).map {
-            Row(item: .terminal($0.id), entry: entry, target: target, holder: panel)
+            Row(
+              item: .terminal($0.id, group: entry.sidebarID), entry: entry, target: target,
+              holder: panel)
           }
       }
       guard let target = store.target(for: entry.sidebarID) else { return [own] }
       return [own]
         + store.terminals.tabs(for: target).map {
-          Row(item: .terminal($0.id), entry: entry, target: target)
+          Row(item: .terminal($0.id, group: entry.sidebarID), entry: entry, target: target)
         }
     }
   }
@@ -115,13 +113,12 @@ struct SidebarTerminalsList: View, Equatable {
   @ViewBuilder private func view(for row: Row) -> some View {
     let sid = row.entry.sidebarID
     switch (row.item, row.entry) {
-    case (.terminal(let tabID), _):
+    case (.terminal(let tabID, _), _):
       if let target = row.target {
         SidebarTerminalGroupChild(
           store: store, tokens: tokens, tabID: tabID, target: target, parent: sid,
-          holder: row.holder, actions: actions
+          holder: row.holder, actions: actions, rowDrag: rowDrag
         )
-        .moveDisabled(true)
       }
     case (.entry, .standalone):
       SidebarHoverRegion(id: sid) { hovered in
@@ -140,6 +137,13 @@ struct SidebarTerminalsList: View, Equatable {
         )
         .equatable()
         .paneDropZone(.target(sid), store: store)
+        // Its terminals, all of them, dragged as one (#652): `SidebarRowDrag` follows the List's
+        // drag, as for a standalone terminal's row. The Quick Terminal's row stays put.
+        .simultaneousGesture(
+          DragGesture(minimumDistance: SidebarRowDrag.startDistance, coordinateSpace: .global)
+            .onChanged { [store, rowDrag] _ in rowDrag.moved(.entry(sid), in: store) },
+          including: group.isBuiltIn ? .subviews : .all
+        )
         .moveDisabled(group.isBuiltIn)
         .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
@@ -151,19 +155,90 @@ struct SidebarTerminalsList: View, Equatable {
     }
   }
 
-  /// A drag of the rows at `offsets` (always entries' own rows: a group's terminals don't move) to
-  /// List position `destination`: each lands above the first entry row at or after it, so a drop
-  /// among a group's terminals lands after that group.
+  /// A drag of the entries' own rows at `offsets` to List position `destination`: each lands above
+  /// the first entry row at or after it, so a group's row let go among another group's terminals
+  /// lands after that group. `rowMove` says where a single row lands.
   static func move(
     _ items: [Item], _ offsets: IndexSet, to destination: Int, in section: TerminalsSection
   ) {
-    let before = items[min(destination, items.count)...].lazy.compactMap { item -> TargetID? in
-      if case .entry(let id) = item { return id }
-      return nil
-    }.first
+    let before = entry(atOrAfter: destination, in: items)
     for offset in offsets {
       guard case .entry(let id) = items[offset], id != before else { continue }
       section.move(id, before: before)
+    }
+  }
+
+  /// Where the List's drop of one row lands (#652).
+  enum RowMove: Equatable {
+    /// Let go in its own place: nothing moves.
+    case stays
+    /// An entry's row between the section's rows: it goes just above `before` (nil: the end).
+    case reorders(before: TargetID?)
+    /// A terminal's row among `group`'s terminals' rows: it joins the group (or, one of its own,
+    /// moves) just above terminal `before`, in its tabs' order.
+    case joins(SidebarID, before: TerminalTab.ID)
+    /// A group's terminal's row between the section's rows: a standalone terminal just above
+    /// `before` (nil: the end).
+    case standalone(before: TargetID?)
+  }
+
+  /// Where the row at `offset`, dropped at List position `destination`, lands. The row below the
+  /// gap says where that is: a group's terminal's row puts it in that group, just above that
+  /// terminal; an entry's row, or none, is between the section's rows, below the last terminal of
+  /// any group above. A group's row only reorders.
+  static func rowMove(_ items: [Item], from offset: Int, to destination: Int) -> RowMove {
+    let below = destination < items.count ? items[destination] : nil
+    let next = entry(atOrAfter: destination, in: items)
+    switch items[offset] {
+    case .entry(let id):
+      if case .standalone = id, case .terminal(let tab, let group) = below {
+        return .joins(group, before: tab)
+      }
+      return id == next || destination == offset + 1 ? .stays : .reorders(before: next)
+    case .terminal(let tabID, let group):
+      if case .terminal(let tab, let other) = below {
+        let inPlace = other == group && (tab == tabID || destination == offset + 1)
+        return inPlace ? .stays : .joins(other, before: tab)
+      }
+      return .standalone(before: next)
+    }
+  }
+
+  /// The first entry row at or after List position `destination`.
+  private static func entry(atOrAfter destination: Int, in items: [Item]) -> TargetID? {
+    items[min(destination, items.count)...].lazy.compactMap { item -> TargetID? in
+      if case .entry(let id) = item { return id }
+      return nil
+    }.first
+  }
+
+  /// The List's move of the rows at `offsets` to `destination`, where `rowMove` says. A row that
+  /// just dropped on another row's middle (`SidebarRowDrag`) doesn't also move.
+  private func listMove(_ items: [Item], _ offsets: IndexSet, to destination: Int) {
+    guard let offset = offsets.first, offsets.count == 1 else {
+      return Self.move(items, offsets, to: destination, in: section)
+    }
+    let dragged: TerminalDragSource? =
+      switch items[offset] {
+      case .entry(let id): id.sidebarID.map(TerminalDragSource.entry)
+      case .terminal(let tabID, let group): .terminal(tabID, of: group)
+      }
+    if let dragged, rowDrag.dropped(dragged) { return }
+    switch Self.rowMove(items, from: offset, to: destination) {
+    case .stays: break
+    case .reorders(let before):
+      guard case .entry(let id) = items[offset] else { return }
+      section.move(id, before: before)
+    case .joins(let group, let before):
+      guard let dragged else { return }
+      Task { [store] in
+        await store.dropTerminals(dragged, on: .tab(before, in: group, after: false))
+      }
+    case .standalone(let before):
+      guard case .terminal(let tabID, let group) = items[offset] else { return }
+      Task { [store] in
+        await store.dropRowAsStandalone(.terminal(tabID, group: group), before: before)
+      }
     }
   }
 }
@@ -273,7 +348,7 @@ struct SidebarSectionActions {
     SidebarSectionActions(
       select: select,
       showWaiting: { [store] id in store.showWaiting(inSectionTarget: id) },
-      rowDragMoved: { [store, rowDrag] sid in rowDrag.moved(sid, in: store) },
+      rowDragMoved: { [store, rowDrag] sid in rowDrag.moved(.entry(sid), in: store) },
       setFolded: { [store] id, folded in store.terminalsSection.setFolded(id, folded) },
       rename: { [store] sid, name in store.renameTerminalGroup(sid, to: name) },
       renameStandalone: { [store] sid, name in store.renameStandaloneTerminal(sid, to: name) },
@@ -387,11 +462,12 @@ struct SidebarStandaloneRow: View, Equatable {
     .padding(.trailing, SidebarRowMetrics.iconColumnInset)
     .sidebarRowFrame(ProjectSidebar.sectionRowInsets)
     .onTapGesture { actions.select(sid) }
-    // Dragged onto another standalone terminal's row, the two become a group (#659). Beside the
-    // List's own drag, which reorders; `minimumDistance` keeps a click a click. Only its start is
-    // used: the List's drag takes the mouse, and `SidebarRowDrag` follows it to the end.
+    // Dragged onto another standalone terminal's row, the two become a group (#659); onto a
+    // group's row, or one of its terminals' rows, it joins that group (#652). Beside the
+    // List's own drag, which reorders. Only its start is used: the List's drag takes the mouse,
+    // and `SidebarRowDrag` follows it to the end (`SidebarRowDrag.startDistance`).
     .simultaneousGesture(
-      DragGesture(minimumDistance: 6, coordinateSpace: .global)
+      DragGesture(minimumDistance: SidebarRowDrag.startDistance, coordinateSpace: .global)
         .onChanged { _ in actions.rowDragMoved(sid) }
     )
     .contextMenu { SidebarStandaloneRowMenu(sid: sid, rename: beginRename) }

@@ -370,12 +370,14 @@ final class TerminalGroupTests: XCTestCase {
     let store = makeStore()
     store.newStandaloneTerminal()
     let a = try XCTUnwrap(store.selectedTargetID?.targetID)
-    let g = try XCTUnwrap(try group(store).targetID)
+    let gSid = try group(store)
+    let g = try XCTUnwrap(gSid.targetID)
     store.selectedTargetID = nil
     store.newStandaloneTerminal()
     let b = try XCTUnwrap(store.selectedTargetID?.targetID)
     let items: [SidebarTerminalsList.Item] = [
-      .entry(a), .entry(g), .terminal(UUID()), .terminal(UUID()), .entry(b),
+      .entry(a), .entry(g), .terminal(UUID(), group: gSid), .terminal(UUID(), group: gSid),
+      .entry(b),
     ]
 
     SidebarTerminalsList.move(items, [4], to: 3, in: section)
@@ -383,7 +385,8 @@ final class TerminalGroupTests: XCTestCase {
     SidebarTerminalsList.move(items, [0], to: 3, in: section)
     XCTAssertEqual(section.entries.map(\.targetID), [g, a, b])
     let now: [SidebarTerminalsList.Item] = [
-      .entry(g), .terminal(UUID()), .terminal(UUID()), .entry(a), .entry(b),
+      .entry(g), .terminal(UUID(), group: gSid), .terminal(UUID(), group: gSid), .entry(a),
+      .entry(b),
     ]
     SidebarTerminalsList.move(now, [4], to: 0, in: section)
     XCTAssertEqual(section.entries.map(\.targetID), [b, g, a])

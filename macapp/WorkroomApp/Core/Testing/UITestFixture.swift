@@ -429,6 +429,16 @@ import WorkroomVCS
     /// The fixed id of the seeded terminal group.
     static let terminalGroupID = UUID(uuidString: "00000000-0000-0000-0000-000000000658")!
 
+    /// When set (`-WorkroomUITestSecondTerminalGroup`), the fixture also seeds a second named
+    /// terminal group, "Dev" (#652), under `secondTerminalGroupID`, with one terminal, below
+    /// "Ops" when that is seeded too, so a UI test can drag a terminal from one group to another.
+    static var secondTerminalGroup: Bool {
+      flag("WorkroomUITestSecondTerminalGroup")
+    }
+
+    /// The fixed id of the second seeded terminal group.
+    static let secondTerminalGroupID = UUID(uuidString: "00000000-0000-0000-0000-000000006520")!
+
     /// When set (`-WorkroomUITestTerminalTabs <n>`), the fixture opens `n` terminal tabs in the
     /// auto-selected workroom instead of one, so the **terminal** tab strip overflows on launch — the
     /// scenario the pinned-"+" XCUITests need (issue #129) without a dozen flaky ⌘T round-trips. Clamped

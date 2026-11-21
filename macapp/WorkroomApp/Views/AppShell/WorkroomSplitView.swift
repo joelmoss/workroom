@@ -129,10 +129,6 @@ struct WorkroomSplitView: View {
         }
         dropHighlight(plan: plan)
         incomingPaneHighlight(plan: plan)
-        // The dragged workroom's title follows the cursor over the panes, as a dragged pane's does.
-        if let drag = externalDrag, let dragged = resolve(drag.sid) {
-          DragTitleGhost(title: dragged.title, at: drag.location)
-        }
       }
       .coordinateSpace(.named(Self.space))
     }
@@ -325,6 +321,8 @@ private struct WorkroomPaneLeaf: View {
       // store — supplies the action.
       onCloseAll: { store.requestCloseAllTerminalTabs(for: target) }
     )
+    // Somewhere a terminal drag lands: its group's, workroom's or root's terminals' end (#652).
+    .paneDropZone(.target(sid), store: store)
     // Drag the group by its title bar to move the whole member within the split (issue #110) —
     // the SAME gesture/closures the tab-bar chip uses, so it drops onto the same panes and shows
     // the same drop-edge highlight. A plain click (no movement past `minimumDistance`) still
@@ -346,12 +344,27 @@ private struct WorkroomPaneLeaf: View {
             return
           }
           WorkroomWindowDrag.cancel()
+          // A group's title bar over a title-bar tab, a sidebar row, a pane tab or another
+          // group's title bar: a drop there takes its terminals (#652).
+          if store.terminalDrag.moved(
+            .entry(sid), from: .groupTitleBar, to: NSEvent.mouseLocation)
+          {
+            externalDrag = nil
+            return
+          }
           guard multi else { return }
           externalDrag = localize(value.location).map {
             WorkroomPaneDrag(sid: sid, location: $0)
           }
         }
         .onEnded { value in
+          if !isDragOutsideWindow(value.location),
+            store.terminalDrag.ended(at: NSEvent.mouseLocation)
+          {
+            externalDrag = nil
+            return
+          }
+          store.terminalDrag.cancel()
           if isDragOutsideWindow(value.location) {
             WorkroomWindowDrag.end(store: store, sid: sid)
           } else if multi, let drop = dropTarget(value.location), drop.sid != sid {
