@@ -11,7 +11,9 @@ use std::io::{self, Write};
 use serde::Serialize;
 use serde_json::value::RawValue;
 
+use super::create::CreatePayload;
 use super::kind::CliError;
+use super::start::LocalWorkPayload;
 use super::trusted_script::ScriptPayload;
 
 /// The `--json` contract's version. Bumped only for a breaking change (ADR 0013); a new field or a
@@ -103,25 +105,34 @@ pub(crate) fn failure(command: Option<&str>, error: &CliError) -> String {
         cli_version: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
         command: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        created: Option<&'a CreatePayload>,
         error: Body<'a>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        local_work: Option<&'a LocalWorkPayload>,
         ok: bool,
         schema_version: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         script: Option<&'a ScriptPayload>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        start_commit: Option<&'a str>,
     }
     let mut line = encode(
         &Envelope {
             cli_version: super::VERSION,
             command,
+            created: error.created.as_deref(),
             error: Body {
                 kind: error.kind.code(),
                 message: &error.message,
                 matches: &error.matches,
                 details: error.details.as_deref(),
             },
+            local_work: error.local_work.as_deref(),
             ok: false,
             schema_version: SCHEMA_VERSION,
             script: error.script.as_deref(),
+            start_commit: error.start_commit.as_deref(),
         },
         false,
     );

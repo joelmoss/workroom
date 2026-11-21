@@ -207,7 +207,7 @@ impl Judge<'_> {
     }
 
     /// Judges the root's copy of script `name`, or none when it has none.
-    fn root_script(&self, name: &'static str) -> Result<Option<Script>, CliError> {
+    pub(super) fn root_script(&self, name: &'static str) -> Result<Option<Script>, CliError> {
         let path = Path::new(self.dir).join("scripts").join(name);
         self.file_script(name, Origin::Root, &path)
     }
@@ -231,7 +231,7 @@ impl Judge<'_> {
 
     /// Judges the setup script a create starting from `start` ("" is HEAD) would run: the base
     /// commit's, which the new checkout holds, else the root's copy. None when neither has one.
-    fn setup_script_at(&self, start: &str) -> Result<Option<Script>, CliError> {
+    pub(super) fn setup_script_at(&self, start: &str) -> Result<Option<Script>, CliError> {
         let file = format!("scripts/{SETUP_SCRIPT}");
         match git::file_at(Path::new(self.dir), start, &file) {
             // Its bytes can't be known until the checkout exists: the check just before it runs

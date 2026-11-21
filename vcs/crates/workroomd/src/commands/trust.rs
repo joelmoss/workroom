@@ -154,7 +154,7 @@ fn project(context: &Context, config: &Config, args: &Args) -> Result<String, Cl
 
 /// Writes one `--verbose` status line, as Go's `Service.Status` prints one, straight to stdout:
 /// before anything the command prints at its end.
-fn say(context: &Context, status: &str, message: &str) {
+pub(super) fn say(context: &Context, status: &str, message: &str) {
     if context.verbose && !context.json {
         let mut stdout = std::io::stdout();
         let _ = writeln!(stdout, "{status:>12}  {message}");

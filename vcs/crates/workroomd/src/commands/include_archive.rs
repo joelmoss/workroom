@@ -28,7 +28,7 @@ use super::{Args, Context, Outcome};
 
 /// The root's include file: `.gitignore`-style patterns naming the gitignored files every new
 /// workroom gets a copy of.
-const INCLUDE_FILE: &str = ".worktreeinclude";
+pub(super) const INCLUDE_FILE: &str = ".worktreeinclude";
 
 #[derive(Serialize)]
 struct Payload {
@@ -97,15 +97,15 @@ fn archive(context: &Context, args: &Args, output: &str) -> Result<Outcome, Stri
 /// What the root's include file matches: the regular files to archive, and the symlinks that
 /// matched but are never archived. Both are paths relative to the root, as git's bytes, sorted.
 #[derive(Default)]
-struct Included {
-    files: Vec<Vec<u8>>,
-    symlinks: Vec<Vec<u8>>,
+pub(super) struct Included {
+    pub(super) files: Vec<Vec<u8>>,
+    pub(super) symlinks: Vec<Vec<u8>>,
 }
 
 /// The files the include file matches among the ones git ignores in `root`: those the patterns
 /// name that git doesn't track, then those of them that git ignores. None when there is no include
 /// file. A match that is neither a regular file nor a symlink, or that is gone, is dropped.
-fn included_files(root: &Path) -> Result<Included, String> {
+pub(super) fn included_files(root: &Path) -> Result<Included, String> {
     let patterns = root.join(INCLUDE_FILE);
     match std::fs::metadata(&patterns) {
         Ok(_) => {}
