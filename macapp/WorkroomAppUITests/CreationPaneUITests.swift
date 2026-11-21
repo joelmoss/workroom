@@ -158,4 +158,75 @@ final class CreationPaneUITests: XCTestCase {
         .waitForExistence(timeout: 10),
       "its terminal didn't mount")
   }
+
+  // Value: protects=the reported bug, a split create (⌥⌘N) from a terminal whose checklist closes
+  // by itself hands the keyboard to the new workroom's terminal; fails_when=the dialog closes in a
+  // render of its own, whose late focus claim pulls the selection back to the workroom beside it,
+  // so keys keep going to that terminal; no_claim=a real `workroom create`, a create that waits for
+  // Done (its click selects the pane anyway)
+  func testASplitCreatesTerminalTakesTheKeyboardWhenItsChecklistClosesItself() {
+    let app = XCUIApplication()
+    app.launchArguments += [
+      "-WorkroomUITestFixture", "1", "-WorkroomUITestScriptedCreate", "1",
+      "-ApplePersistenceIgnoreState", "YES",
+      // A plist value, so the argument domain holds a Bool that `Defaults` reads (a bare YES is a
+      // string, which it doesn't); the checkbox assertion below goes red if that ever stops.
+      "-closeCreationPaneWhenDone", "<true/>",
+    ]
+    app.launch()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+    // Start where the user does: typing in a terminal, which is where focus stayed (the bug).
+    let chip = app.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab.")).firstMatch
+    XCTAssertTrue(chip.waitForExistence(timeout: 20), "the fixture workroom has a terminal tab")
+    chip.click()
+    RunLoop.current.run(until: Date().addingTimeInterval(1))
+    // New Workroom (split right), ⌥⌘N: the workroom typed in stays on screen beside the create.
+    app.typeKey("n", modifierFlags: [.command, .option])
+    let project = element(app, "newWorkroom.project.UITestProject")
+    XCTAssertTrue(project.waitForExistence(timeout: 5), "the picker didn't list the project")
+    project.click()
+    let thisMac = app.buttons["newWorkroom.place.thisMac"]
+    XCTAssertTrue(thisMac.waitForExistence(timeout: 5), "the picker didn't ask where")
+    thisMac.click()
+    // On from launch, as Settings leaves it: nothing in the pane is clicked.
+    let closeWhenDone = element(app, "CreationPane.closeWhenDone")
+    XCTAssertTrue(closeWhenDone.waitForExistence(timeout: 5), "the checkbox isn't offered mid-run")
+    XCTAssertEqual(closeWhenDone.value as? Int, 1, "the setting wasn't on from launch")
+    XCTAssertTrue(
+      element(app, "CreationPane").waitForNonExistence(timeout: 30),
+      "the checklist didn't close by itself")
+    assertTypingReachesTheNewTerminal(app)
+  }
+
+  private func assertTypingReachesTheNewTerminal(_ app: XCUIApplication) {
+    XCTAssertTrue(
+      element(app, "CreationPane").waitForNonExistence(timeout: 5), "the checklist never gave way")
+    // The NEW workroom's surface, not whichever one comes first: keys still landing in the terminal
+    // focused before the create would otherwise read as a pass.
+    let workroomPane = app.descendants(matching: .any).matching(identifier: "workroom.pane")
+      .matching(NSPredicate(format: "label == %@", "Workroom uitest-created")).firstMatch
+    XCTAssertTrue(workroomPane.waitForExistence(timeout: 5), "the new workroom's pane isn't shown")
+    let surface = workroomPane.descendants(matching: .any).matching(identifier: "terminal.surface")
+      .firstMatch
+    XCTAssertTrue(surface.waitForExistence(timeout: 10), "its terminal didn't mount")
+    let surfaces = app.descendants(matching: .any).matching(identifier: "terminal.surface")
+    // Let the crossfade finish and the shell print its prompt before typing.
+    RunLoop.current.run(until: Date().addingTimeInterval(2))
+    app.typeText("echo WRFOCUS$((40+2))")
+    RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    app.typeText("\r")
+    let deadline = Date().addingTimeInterval(15)
+    var text = ""
+    while Date() < deadline {
+      text = (surface.value as? String) ?? ""
+      if text.contains("WRFOCUS42") { break }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    let elsewhere = surfaces.allElementsBoundByIndex.map { ($0.value as? String) ?? "" }
+      .filter { $0.contains("WRFOCUS42") && $0 != text }
+    XCTAssertTrue(
+      text.contains("WRFOCUS42"),
+      "typing never reached the new terminal: \(text)\nother surfaces: \(elsewhere)")
+  }
 }

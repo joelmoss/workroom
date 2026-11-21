@@ -101,9 +101,14 @@ struct NewWorkroomDialog: View {
   /// Creates `project`'s workroom at `place`, unless it can't go there now.
   private func pick(_ place: WorkroomPlace, in project: Project, split: Bool = false) {
     guard isUsable(place, in: project) else { return }
-    onClose()
     let anchor = placeAnchor ?? (split ? store.selectedTargetID : nil)
     Task {
+      // Closed in the same main-actor job that places the create's pane (both creates do that
+      // before their first suspension), so one render sees the dialog gone AND the new pane
+      // selected. Closed first, on its own, the render in between re-focused the selected
+      // workroom's terminal; that late async claim, landing after a split create (⌥⌘N) had
+      // selected its new pane, pulled the selection back, so the new terminal never took focus.
+      onClose()
       if let remote = place.remote {
         await store.lifecycle.createRemoteWorkroom(
           in: project, place: remote, splitAnchor: anchor, from: store)
@@ -222,9 +227,9 @@ struct NewWorkroomDialog: View {
 
   /// Creates `project`'s workroom at `place` with the options chosen in its step.
   private func create(in project: Project, at place: HostKind, options: HostOptions?) {
-    onClose()
     let anchor = placeAnchor
     Task {
+      onClose()  // with the pane's placement, as `pick(_:in:split:)` explains
       await store.lifecycle.createRemoteWorkroom(
         in: project, place: place, splitAnchor: anchor, hostOptions: options, from: store)
     }
