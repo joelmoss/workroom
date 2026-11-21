@@ -221,6 +221,15 @@ pub fn output() -> Value {
                     "attached_at_ms": 1_763_700_000_000_u64,
                 },
             },
+            {
+                "event": name::INPUT,
+                "boot": "9b2f6c1e-3d4a-4f5b-8c6d-7e8f9a0b1c2d",
+                "revision": 45,
+                "session": "c0ffee00-1111-4222-8333-44445555beef",
+                "scope": {"kind": "workroom", "id": "4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0d4e"},
+                "sender": "5a1e0f7e-0d6c-4c9f-9c3e-2b7f1d0a8e11",
+                "bytes": 14,
+            },
         ],
         "properties": {
             "event": {
@@ -240,7 +249,8 @@ pub fn output() -> Value {
                                 scope, sent to the subscribers of both), `client.attached` and \
                                 `client.detached` (a client attached to the session, or left \
                                 it; a session's end is its clients' too, with no \
-                                `client.detached` each): live events.",
+                                `client.detached` each) and `session.input` (`terminal.send` \
+                                typed into it, from the session `sender` names): live events.",
             },
             "boot": {
                 "type": "string",
@@ -315,6 +325,18 @@ pub fn output() -> Value {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "`snapshot-complete`: the ids of the snapshot's sessions.",
+            },
+            "sender": {
+                "type": ["string", "null"],
+                "description": "`session.input`: the id of the session the send came from, the \
+                                caller as `terminal.send` found it; null for a send from no \
+                                session. The session itself when it was sent to with \
+                                `allow_self`.",
+            },
+            "bytes": {
+                "type": "integer",
+                "description": "`session.input`: how many bytes the send typed, its bracketed \
+                                paste's markers included. Never the text.",
             },
             "reason": {
                 "type": "string",

@@ -53,11 +53,14 @@ pub mod name {
     /// A client attached to a session, and one detached from it (#688).
     pub const CLIENT_ATTACHED: &str = "client.attached";
     pub const CLIENT_DETACHED: &str = "client.detached";
+    /// The terminal API typed into a session (`terminal.send`, #689), naming the session it came
+    /// from.
+    pub const INPUT: &str = "session.input";
     /// Where a filtered stream stands, when the events it skipped have moved its place on: never
     /// shown by the CLI, which resumes from it.
     pub const PLACE: &str = "place";
     /// The live events, which `types` filters.
-    pub const LIVE: [&str; 7] = [
+    pub const LIVE: [&str; 8] = [
         CREATED,
         ENDED,
         PROGRAM_STATUS,
@@ -65,6 +68,7 @@ pub mod name {
         MOVED,
         CLIENT_ATTACHED,
         CLIENT_DETACHED,
+        INPUT,
     ];
 }
 
@@ -404,6 +408,32 @@ impl Hub {
             "previous_scope": previous,
         });
         self.publish(&mut state, json);
+    }
+
+    /// `terminal.send` is about to type into session `id` (#689): `session.input`, naming as
+    /// `sender` the session the send comes from (hyphenated; null from none) and how many `bytes`
+    /// it types, never what. `scope` is the session's, for one whose creation the events have not
+    /// told yet. False, and no event, while a hand-off has the ring sealed: an event numbered now
+    /// would never be sent should the hand-off go ahead, and nothing after it could tell what was
+    /// typed, so the send is refused rather than typed untold.
+    pub fn input(&self, id: SessionId, scope: Value, sender: Option<&str>, bytes: usize) -> bool {
+        let mut state = self.lock();
+        if state.sealed.is_some() {
+            return false;
+        }
+        let scope = state
+            .sessions
+            .get(&id)
+            .map_or(scope, |known| known.listing["scope"].clone());
+        let json = json!({
+            "event": name::INPUT,
+            "session": id.to_hyphenated(),
+            "scope": scope,
+            "sender": sender,
+            "bytes": bytes,
+        });
+        self.publish(&mut state, json);
+        true
     }
 
     /// A session's program status changed: `agent` is its coding agent now (the listing's
