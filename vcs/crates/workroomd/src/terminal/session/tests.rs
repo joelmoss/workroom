@@ -2084,6 +2084,48 @@ fn a_second_clients_resize_is_recorded_but_not_applied() {
     store.kill_all();
 }
 
+/// What the terminal API's `terminal.send` types (#689) is no client's: it claims no size,
+/// whoever owns it or with nobody owning it, and counts as nobody attached, where a client typing
+/// the same takes the size.
+#[test]
+fn input_sent_through_the_api_attaches_nothing_and_claims_no_size() {
+    let store = SessionStore::new();
+    sized_session(&store, id(0x89));
+    assert_eq!(
+        store.send_input(id(0x89), b"x").map(|r| r.is_ok()),
+        Some(true)
+    );
+    assert_eq!(
+        store.size_owner(id(0x89)),
+        None,
+        "a vacant size stays vacant"
+    );
+    assert_eq!(pty_size(&store, id(0x89)), (80, 24));
+    assert!(!store.list()[0].attached, "nobody is attached");
+
+    let (_first, first) = attach_sized(&store, id(0x89), 100, 30);
+    let (_second, second) = attach_sized(&store, id(0x89), 120, 40);
+    store.resize(id(0x89), second, Size::cells(200, 50));
+    assert_eq!(
+        store.send_input(id(0x89), b"y").map(|r| r.is_ok()),
+        Some(true)
+    );
+    assert_eq!(
+        store.size_owner(id(0x89)),
+        Some(first),
+        "the owner keeps it"
+    );
+    assert_eq!(pty_size(&store, id(0x89)), (100, 30));
+    store.write_input(id(0x89), second, b"z");
+    assert_eq!(store.size_owner(id(0x89)), Some(second), "as typing does");
+
+    assert!(
+        store.send_input(id(0x8a), b"x").is_none(),
+        "no such session"
+    );
+    store.kill_all();
+}
+
 /// ...and typing is what takes it, applying the size recorded while it was not the owner.
 #[test]
 fn typing_claims_the_size_and_applies_what_was_recorded() {

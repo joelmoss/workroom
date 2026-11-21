@@ -283,6 +283,18 @@ impl SessionStore {
         sessions.get(&id).map(|session| Arc::clone(&session.shadow))
     }
 
+    /// What the terminal API's `terminal.send` types (#689), written to the session's pty as no
+    /// client: nothing an attach does happens, so no repaint, no client counted as attached, no
+    /// size claimed or arbitrated (ADR 0042) and no keepalive probes. Its attachment lock is never
+    /// taken, so the reader's echo of a long paste is never held up behind the write. `None` when
+    /// the session has gone.
+    pub fn send_input(&self, id: SessionId, bytes: &[u8]) -> Option<std::io::Result<()>> {
+        let pty = lock_or_recover(&self.sessions)
+            .get(&id)
+            .map(|session| Arc::clone(&session.pty))?;
+        Some(pty.write_all(bytes))
+    }
+
     pub fn is_empty(&self) -> bool {
         lock_or_recover(&self.sessions).is_empty()
     }
