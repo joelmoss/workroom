@@ -4372,8 +4372,14 @@ fn delete_cancelled_during_the_teardown_reports_it_failed_and_keeps_the_workroom
     // SAFETY: signals the binary under test, which this test started.
     assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGTERM) }, 0);
     let run = finish(&args, child);
-    run.assert_code(5);
-    assert_eq!(run.error_kind(), "TeardownScriptFailed");
+    run.assert_code(5).assert_quiet_stderr();
+    assert_eq!(
+        normalize_version(&run.stdout),
+        format!(
+            "{{\"cli_version\":\"dev\",\"command\":\"delete\",\"error\":{{\"kind\":\"TeardownScriptFailed\",\"message\":\"teardown script failed: {}/scripts/workroom_teardown returned a non-zero exit code\"}},\"ok\":false,\"schema_version\":1}}\n",
+            project.display()
+        )
+    );
     eventually("the teardown script outlived the cancel", || {
         !process_alive(script)
     });
