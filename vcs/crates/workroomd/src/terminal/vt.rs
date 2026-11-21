@@ -794,6 +794,13 @@ impl ShadowTerminal {
     /// (#691) refuses to type into, since the next D would be that command's, not its own. `None`
     /// before the shell has shown this terminal a prompt, when the marks can't say: after a
     /// hand-off, a command begun before it is open with no C seen here.
+    /// Lets the scrollback hold `bytes` rather than a pane's `SCROLLBACK_MAX_BYTES`: for a
+    /// terminal that renders a command's output (#691), sized so nothing it is fed is evicted.
+    pub fn hold_scrollback(&mut self, bytes: usize) {
+        self.terminal.set_scrollback_max_lines(None);
+        self.terminal.set_scrollback_max_bytes(bytes);
+    }
+
     /// Whether the alternate screen is up; false when it can't be read.
     pub fn alternate_screen(&self) -> bool {
         self.terminal.on_alternate_screen().unwrap_or(false)
