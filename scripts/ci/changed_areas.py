@@ -55,7 +55,10 @@ RULES = (
     # What the rust job's notices check reads (#714): its inputs and the app's copy, the licence
     # files components.json names and the version lines it pins. Each also runs the jobs its own
     # tree does. test_changed_areas.py checks every file components.json names is covered.
-    (("third-party/*", "scripts/third_party_notices.py"), {"rust"}),
+    # cli-archives_test.sh (app-scripts) checks the standalone archives' targets and features
+    # against these two (#681).
+    (("third-party/about.toml", "scripts/third_party_notices.py"), {"rust", "scripts"}),
+    (("third-party/*",), {"rust"}),
     (("macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
       "macapp/Resources/THIRD-PARTY-NOTICES.txt", "macapp/Resources/markdown/VENDOR.md",
       "macapp/Resources/ghostty/themes/SOURCE.md", "macapp/Resources/ghostty/themes/LICENSE",
@@ -94,6 +97,9 @@ RULES = (
     (("docs-site/*",), {"cli"}),
     # Go sources only: a data file under cmd/ or internal/ (channel_cases.tsv, which the app and
     # the script tests read) has no rule and so runs everything.
+    # The Go CLI's updater, which cli-archives_test.sh (app-scripts) builds to update an old Go
+    # CLI into the Rust binary (#681).
+    (("internal/updater/updater.go",), {"cli", "scripts"}),
     (("*.go", ".golangci.yml", ".goreleaser.yml"), {"cli"}),
     # Read by no job's tests. The `workflows` job, which is never filtered, covers scripts/ci/.
     (("docs/*", "*.md", ".agents/*", ".claude/*", ".out-of-scope/*", "scripts/ci/*",
