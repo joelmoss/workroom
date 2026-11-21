@@ -56,6 +56,37 @@ for f in d.get("testFailures", []):
     name = f.get("testIdentifierString") or f.get("testName", "?")
     text = (f.get("failureText") or "").strip().replace("\n", " ")
     print("  FAIL %s/%s: %s" % (f.get("targetName", "?"), name, text))
-print("Result bundle: " + bundle)
 ' "$bundle"
+
+# A test that failed and then passed on a retry (`make app-test` retries a failure once) counts as
+# passed above. Name each one, so a flake stays visible instead of turning a run red: the per-test
+# tree lists every run of a test case as a "Repetition" child.
+if tests="$(xcrun xcresulttool get test-results tests --compact --path "$bundle" 2>/dev/null)"; then
+  printf '%s' "$tests" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+def walk(node, path):
+    kind = node.get("nodeType")
+    name = node.get("name", "?")
+    children = node.get("children", [])
+    if kind == "Test Case":
+        runs = [c for c in children if c.get("nodeType") == "Repetition"]
+        if node.get("result") == "Passed" and any(r.get("result") == "Failed" for r in runs):
+            first = next((m.get("name", "") for r in runs if r.get("result") == "Failed"
+                          for m in r.get("children", []) if m.get("nodeType") == "Failure Message"), "")
+            print("  FLAKY %s: passed on retry after: %s" % ("/".join(path + [name]),
+                                                            first.strip().replace("\n", " ")))
+        return
+    if kind in ("Unit test bundle", "UI test bundle", "Test Suite"):
+        path = path + [name]
+    for child in children:
+        walk(child, path)
+for node in d.get("testNodes", []):
+    walk(node, [])
+'
+fi
+echo "Result bundle: ${bundle}"
 exit 0

@@ -83,6 +83,12 @@ APP_TEST_TIMEOUTS ?= -test-timeouts-enabled YES -default-test-execution-time-all
 # the result bundle (256 MB unpacked for a 26-test run), whatever the outcome; the test host itself
 # exits within 20ms. The unit tests are diagnosed from the bundle's own records, so skip it.
 APP_TEST_DIAGNOSTICS ?= -collect-test-diagnostics never
+# A unit test that fails is run once more, and passes the run if the retry passes: a few timing
+# tests (TitleLayoutBenchmarkTests, CreationFlowTests) fail now and then under the full parallel
+# load and pass alone, and each one used to cost a rerun of the suite to rule out a real failure.
+# A real failure fails both runs. The summary names every test that passed only on its retry as
+# `FLAKY`, so a flake stays visible (Scripts/test-summary.sh). `APP_TEST_RETRY=` turns it off.
+APP_TEST_RETRY ?= -retry-tests-on-failure -test-iterations 2
 
 # Extra xcodebuild options for app-uitest. Skips the 3 most expensive/flaky cases by default (each
 # does a real quit+relaunch or a hard timing budget), since XCUITest never runs in CI and a routine
@@ -140,7 +146,7 @@ app-test: ## Run the app's unit tests (other workrooms' unit runs can overlap)
 	  touch DerivedData/.WorkroomApp.test-stamp && { \
 	  $(call gui_lock,$(APP_TEST_GUI_MODE),app-test) \
 	  $(APP_XCODEBUILD) -destination 'platform=macOS' $(APP_TEST_FLAGS) $(APP_TEST_TIMEOUTS) \
-	    $(APP_TEST_DIAGNOSTICS) test-without-building; \
+	    $(APP_TEST_DIAGNOSTICS) $(APP_TEST_RETRY) test-without-building; \
 	  $(call test_summary,WorkroomApp); }
 
 # Proves a unit test covers a line (macapp/Scripts/red-proof.sh): breaks FILE by replacing PATTERN,
@@ -286,6 +292,15 @@ app-uitest-vm: ## Run the UI tests in Tart macOS guests, off this Mac's screen, 
 
 app-identity: ## Print the bundle id this checkout's Debug build gets (one per workroom)
 	@echo "com.developwithstyle.workroom.dev$(APP_DEV_ID_SUFFIX)"
+
+# Where `make app-capture` writes; pass CAPTURE=<path> for another (an agent: its scratchpad).
+CAPTURE ?= macapp/DerivedData/app-capture.png
+
+# The dev app as it really looks on screen, translucency included, which a window capture and the
+# VM's screenshots don't show (macapp/Scripts/capture-dev-app.sh). It brings this checkout's running
+# dev app forward for about a second and takes the front back after, so ask before running it.
+app-capture: ## Capture this checkout's running dev app as it looks on screen, translucency included (CAPTURE=path)
+	sh macapp/Scripts/capture-dev-app.sh "com.developwithstyle.workroom.dev$(APP_DEV_ID_SUFFIX)" "$(CAPTURE)"
 
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py

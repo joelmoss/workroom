@@ -10,9 +10,14 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/test-summary_test.XXXXXX")" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
 mkdir -p "$TMP/bin" "$TMP/logs"
+# `get test-results summary` answers with $STUB_JSON, `get test-results tests` with $STUB_TESTS
+# (an empty tree unless a case sets it).
 cat >"$TMP/bin/xcrun" <<'EOF'
 #!/bin/sh
-cat "$STUB_JSON"
+case "$*" in
+*"test-results tests"*) cat "${STUB_TESTS:-/dev/null}" ;;
+*) cat "$STUB_JSON" ;;
+esac
 EOF
 chmod +x "$TMP/bin/xcrun"
 cat >"$TMP/failed.json" <<'EOF'
@@ -68,6 +73,33 @@ check "named bundle path" "$out" "Result bundle: $TMP/ci.xcresult"
 
 out="$(sh "$DIR/test-summary.sh" "$TMP/missing.xcresult")"
 check "named bundle missing" "$out" "test-summary: no result bundle at $TMP/missing.xcresult"
+
+# A test that failed, then passed on its retry, is named as FLAKY; one that passed first time, or
+# failed every time, is not.
+cat >"$TMP/tests.json" <<'EOF'
+{"testNodes":[{"nodeType":"Test Plan","name":"WorkroomApp","children":[
+ {"nodeType":"Unit test bundle","name":"WorkroomAppTests","children":[
+  {"nodeType":"Test Suite","name":"BarTests","children":[
+   {"nodeType":"Test Case","name":"testFlaky()","result":"Passed","children":[
+    {"nodeType":"Repetition","name":"First Run","result":"Failed","children":[
+     {"nodeType":"Failure Message","name":"XCTAssertLessThan failed:\n(8) is not less than (5)"}]},
+    {"nodeType":"Repetition","name":"Retry 1","result":"Passed"}]},
+   {"nodeType":"Test Case","name":"testSteady()","result":"Passed"},
+   {"nodeType":"Test Case","name":"testBroken()","result":"Failed","children":[
+    {"nodeType":"Repetition","name":"First Run","result":"Failed"},
+    {"nodeType":"Repetition","name":"Retry 1","result":"Failed"}]}]}]}]}]}
+EOF
+out="$(PATH="$TMP/bin:$PATH" STUB_JSON="$TMP/failed.json" STUB_TESTS="$TMP/tests.json" \
+  sh "$DIR/test-summary.sh" "$TMP/ci.xcresult")"
+check "flaky line" "$out" \
+  "FLAKY WorkroomAppTests/BarTests/testFlaky(): passed on retry after: XCTAssertLessThan failed: (8) is not less than (5)"
+case "$out" in
+*"FLAKY"*"testSteady"* | *"FLAKY"*"testBroken"*)
+  echo "FAIL: only the test that passed on a retry is FLAKY. Got:"
+  echo "$out"
+  fails=$((fails + 1))
+  ;;
+esac
 
 if [ "$fails" -ne 0 ]; then
   echo "test-summary_test: $fails failure(s)" >&2

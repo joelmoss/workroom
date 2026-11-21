@@ -12,7 +12,16 @@ Builds share this checkout's `macapp/DerivedData/` and its resolved packages.
 
 `make app-test` prints the canonical result counts and failing tests using `Scripts/test-summary.sh`.
 For a downloaded CI bundle, run `sh macapp/Scripts/test-summary.sh <bundle.xcresult>` with the
-command sandbox disabled. A skipped test asserted nothing.
+command sandbox disabled. A skipped test asserted nothing. A failing test is retried once
+(`APP_TEST_RETRY`); one that passes only on its retry passes the run, and is listed as a `FLAKY`
+line under the counts. A `FLAKY` line is a timing flake to note, not a failure to chase.
+
+**Seeing it as the owner does.** A window capture (⌘⇧4 then Space, `screencapture -l`) holds only the
+window's own pixels, so it never shows translucency, and the VM's screenshots come from another
+macOS release, which renders system materials such as Liquid Glass differently. To judge how the dev
+app really looks, run `make app-capture CAPTURE=<path>`: it captures the screen region under this
+checkout's running dev app (`Scripts/capture-dev-app.sh`). It brings the app forward for about a
+second, so ask the owner before each run.
 
 `make red-proof FILE=… PATTERN=… TEST=<Class>[/<method>]` breaks a line, runs the selected test and
 restores the source however the run ends. Break the effect under test, not setup that would make
