@@ -1090,7 +1090,15 @@ fn a_subscription_whose_write_fails_closes_its_connection() {
 #[derive(Clone, Default)]
 struct Stalled {
     open: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    /// Whether a write has been held, so a test knows its writer is stuck before it goes on.
+    held: std::sync::Arc<std::sync::atomic::AtomicBool>,
     written: Written,
+}
+
+impl Stalled {
+    fn held(&self) -> bool {
+        self.held.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 impl std::io::Write for Stalled {
@@ -1098,6 +1106,7 @@ impl std::io::Write for Stalled {
         let (open, wake) = &*self.open;
         let mut open = open.lock().unwrap();
         while !*open {
+            self.held.store(true, std::sync::atomic::Ordering::SeqCst);
             open = wake.wait(open).unwrap();
         }
         self.written.write(bytes)
@@ -1118,6 +1127,9 @@ fn a_subscriber_that_stops_reading_slows_nothing_and_is_told_it_lagged() {
         std::sync::Arc::new(std::sync::Mutex::new(Box::new(stalled.clone())));
     let mut subscriptions = events::Subscriptions::default();
     subscribe(&mut subscriptions, &store, &writer, 1);
+    // Its thread has taken the state as it is (at revision 0) and is stuck sending it: events
+    // made before then would be in that snapshot, and it would never fall behind.
+    assert!(eventually(|| stalled.held()), "the subscriber never wrote");
 
     let hub = &store.hooks().events;
     let id = crate::terminal::session::SessionId([0x70; 16]);
