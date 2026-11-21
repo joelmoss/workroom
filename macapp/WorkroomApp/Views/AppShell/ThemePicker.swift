@@ -50,8 +50,8 @@ private enum ThemePickerEntry: Identifiable, Equatable {
 
   var id: String {
     switch self {
-    case .family(let family): return "family:\(family.name)"
-    case .theme(let theme): return "\(theme.side.rawValue):\(theme.name)"
+    case .family(let family): return ThemeRowID.family(family.name)
+    case .theme(let theme): return ThemeRowID.theme(theme.name, on: theme.side)
     }
   }
 
@@ -63,48 +63,22 @@ private enum ThemePickerEntry: Identifiable, Equatable {
   }
 }
 
-/// The picker's lists, read once per presentation (#737): the user's own theme files are read from
-/// disk when the list loads, not on every body pass, since each ↑/↓ applies a theme and re-renders
-/// every row. A plain class held in `@State`: a host re-render builds a throwaway instance whose init
-/// reads nothing, and only the instance SwiftUI keeps ever loads.
-@MainActor
-private final class ThemePickerLists {
-  private var themes: [ThemeSide: [ListedTheme]] = [:]
-  private var families: [ThemeFamily]?
-
-  func themes(on side: ThemeSide) -> [ListedTheme] {
-    Self.memoized(&themes[side]) { ThemeCatalog.themes(on: side) }
-  }
-
-  /// The families whose themes are both on their sides (`ThemeCatalog.availableFamilies`).
-  func availableFamilies() -> [ThemeFamily] {
-    Self.memoized(&families, ThemeCatalog.availableFamilies)
-  }
-
-  /// `slot`'s value, loading it into `slot` the first time.
-  private static func memoized<T>(_ slot: inout T?, _ load: () -> T) -> T {
-    if let cached = slot { return cached }
-    let loaded = load()
-    slot = loaded
-    return loaded
-  }
-}
-
 /// Theme chooser (issues #36, #733, #735). A **Family | Light | Dark** tab control over one search
 /// field shared by every tab:
 ///
-/// - **Family** rows show a dual (dark + light) swatch; choosing one sets both the light theme and the
+/// - **Family** rows show the dark and light themes' previews side by side; choosing one sets both the light theme and the
 ///   dark theme.
-/// - **Light** and **Dark** rows list only the themes on that side, each with one swatch; choosing one
+/// - **Light** and **Dark** rows list only the themes on that side, each with one preview; choosing one
 ///   changes only that side.
 ///
 /// ↑/↓ apply live on every tab, and the current choice is scrolled into view when the picker opens or
 /// the tab changes. On the tab for the side that isn't showing (Light while in Dark), a choice is saved
 /// without changing the appearance or repainting (`ThemeService.apply(theme:for:)`), and a note says
-/// when it applies. Both hosts are popovers: the titlebar's theme dropdown (`TrailingTitlebarBar`,
-/// ⌘⇧K), which opens on the current appearance's tab, and the Settings rows, each opening its own.
+/// when it applies. It's the titlebar's theme dropdown (`TrailingTitlebarBar`, ⌘⇧K), a popover that
+/// opens on the current appearance's tab; Settings ▸ Themes (`ThemesSettingsPane`) shows every theme
+/// in a pane of its own.
 struct ThemePicker: View {
-  /// The size this picker frames itself to; both popovers size themselves from the rendered frame.
+  /// The size this picker frames itself to; its popover sizes itself from the rendered frame.
   static let contentSize = CGSize(width: 300, height: 420)
 
   @Environment(\.themeTokens) private var tokens
@@ -116,7 +90,7 @@ struct ThemePicker: View {
   @Default(.appearance) private var appearance
 
   @State private var tab: ThemePickerTab
-  @State private var lists = ThemePickerLists()
+  @State private var lists = ThemeLists()
   @State private var query = ""
   /// Index into `entries` of the keyboard-highlighted row (↑/↓ move it, ⏎ dismisses).
   @State private var highlighted = 0
@@ -124,6 +98,11 @@ struct ThemePicker: View {
   /// focus in this tree nothing works — not typing, and not ↑/↓, which reach `.onKeyPress` only
   /// through the focused SwiftUI view.
   @FocusState private var searchFocused: Bool
+  /// Moves the list to the current choice out of sight, on opening and on each tab, so it never
+  /// visibly scrolls there.
+  @State private var settle = ThemeListSettle()
+  /// The rows wholly on screen, so a highlight that leaves them can be brought back.
+  @State private var fullyVisible: Set<String> = []
 
   init(tab: ThemePickerTab = .family) {
     _tab = State(initialValue: tab)
@@ -148,9 +127,7 @@ struct ThemePicker: View {
     case nil: all = lists.availableFamilies().map { .family($0) }
     case let side?: all = lists.themes(on: side).map { .theme($0) }
     }
-    let q = query.trimmingCharacters(in: .whitespaces)
-    guard !q.isEmpty else { return all }
-    return all.filter { $0.name.localizedCaseInsensitiveContains(q) }
+    return ThemeLists.filtered(all, by: query, name: \.name)
   }
 
   private func isActive(_ entry: ThemePickerEntry) -> Bool {
@@ -189,7 +166,7 @@ struct ThemePicker: View {
           identifier: "theme-family-\(family.name)"
         )
       case .theme(let theme):
-        let sideName = theme.side == .dark ? "dark" : "light"
+        let sideName = theme.side.title.lowercased()
         ThemePickerRow(
           name: theme.name,
           swatches: [(theme.name, ThemeService.themePreview(named: theme.name))],
@@ -220,9 +197,6 @@ struct ThemePicker: View {
     VStack(spacing: 0) {
       searchField
       tabBar
-      if let side = tab.side, side != showingSide {
-        appliesLaterNote(side)
-      }
 
       ScrollViewReader { proxy in
         ScrollView {
@@ -241,14 +215,23 @@ struct ThemePicker: View {
               }
             }
           }
+          .scrollTargetLayout()
           .padding(.horizontal, 10)
           .padding(.vertical, 8)
         }
-        .onChange(of: highlighted) { _, new in
-          let rows = entries
-          if rows.indices.contains(new) {
-            withAnimation(.easeInOut(duration: 0.1)) { proxy.scrollTo(rows[new].id) }
-          }
+        .opacity(settle.ready ? 1 : 0)
+        .overlay { if !settle.ready { ThemeListLoading() } }
+        // Which rows are wholly on screen, for `reveal`.
+        .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.99) { ids in
+          fullyVisible = Set(ids)
+        }
+        // Keeps the keyboard highlight wholly on screen. Not while settling: that move is the hidden
+        // one. Not animated: each arrow press also applies a theme and repaints the picker, and an
+        // animated scroll that a quick next press interrupts was left short, with the highlight
+        // below the bottom edge.
+        .onChange(of: highlighted) { old, new in
+          guard settle.ready else { return }
+          reveal(highlight: new, movingDown: new >= old, proxy)
         }
         // Start the highlight on the current choice and scroll it into view — when the picker opens,
         // and again on each tab, since each tab has a choice of its own. Neither applies anything:
@@ -260,6 +243,11 @@ struct ThemePicker: View {
           if let first = entries.first { proxy.scrollTo(first.id, anchor: .top) }
         }
         .onChange(of: tab) { _, _ in highlightActive(proxy) }
+      }
+
+      // A footer, not a line above the list, so the list starts in the same place on every tab.
+      if let side = tab.side, side != showingSide {
+        appliesLaterNote(side)
       }
     }
     .frame(width: Self.contentSize.width, height: Self.contentSize.height)
@@ -278,24 +266,40 @@ struct ThemePicker: View {
       return .handled
     }
     // Esc closes too, explicitly rather than trusting the host: a popover's own cancel handling depends
-    // on its behaviour mode, which SwiftUI doesn't expose, and the Settings popover has no other way out
-    // besides clicking away.
+    // on its behaviour mode, which SwiftUI doesn't expose.
     .onExitCommand { dismiss() }
     .onChange(of: query) { _, _ in highlighted = 0 }
     // `.task`, not `.onAppear`: it runs after the view is installed in its window, and focus set before
     // that is dropped — which leaves a picker you can't type into. There is no `await` here, so this is
-    // not a suspension; it relies only on when SwiftUI schedules the task. Both hosts are popovers,
-    // which rebuild their content on each presentation, so `searchFocused` starts false every time and
-    // this can't no-op on a reused view.
+    // not a suspension; it relies only on when SwiftUI schedules the task. The popover rebuilds its
+    // content on each presentation, so `searchFocused` starts false every time and this can't no-op
+    // on a reused view.
     .task { searchFocused = true }
   }
 
-  private func highlightActive(_ proxy: ScrollViewProxy) {
+  /// Brings the highlighted row wholly on screen when it isn't, flush with the edge it's moving
+  /// towards, so the list moves only as far as it must. Checked again on the next frame, after the
+  /// theme the press applied has repainted the rows.
+  private func reveal(highlight index: Int, movingDown: Bool, _ proxy: ScrollViewProxy) {
     let rows = entries
-    let idx = activeIndex
-    highlighted = idx
-    if rows.indices.contains(idx) {
-      proxy.scrollTo(rows[idx].id, anchor: .center)
+    guard rows.indices.contains(index) else { return }
+    let id = rows[index].id
+    let anchor: UnitPoint = movingDown ? .bottom : .top
+    if !fullyVisible.contains(id) { proxy.scrollTo(id, anchor: anchor) }
+    Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(16))
+      guard highlighted == index, !fullyVisible.contains(id) else { return }
+      proxy.scrollTo(id, anchor: anchor)
+    }
+  }
+
+  /// Highlights the current choice and settles the list on the highlight out of sight. The settle
+  /// follows the highlight, so an arrow pressed while it runs is where the list ends up.
+  private func highlightActive(_ proxy: ScrollViewProxy) {
+    highlighted = activeIndex
+    settle.settle(proxy) {
+      let rows = entries
+      return rows.indices.contains(highlighted) ? rows[highlighted].id : nil
     }
   }
 
@@ -339,9 +343,9 @@ struct ThemePicker: View {
   /// Shown on the tab for the side that isn't showing: a choice there is saved, but the screen keeps
   /// the theme it has until the appearance changes.
   private func appliesLaterNote(_ side: ThemeSide) -> some View {
-    let appearance = side == .dark ? "Dark" : "Light"
-    let showing = side == .dark ? "Light" : "Dark"
-    return HStack(spacing: 4) {
+    let appearance = side.title
+    let showing = side.other.title
+    return HStack(spacing: 5) {
       Image(systemName: "info.circle").accessibilityHidden(true)
       Text("Applies when the appearance is \(appearance)")
         .accessibilityIdentifier("theme-picker.note")
@@ -349,8 +353,9 @@ struct ThemePicker: View {
     .font(.footnote)
     .foregroundStyle(tokens.fgMuted)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, 14)
-    .padding(.bottom, 4)
+    .padding(.horizontal, 18)
+    .padding(.vertical, 8)
+    .overlay(alignment: .top) { Rectangle().fill(tokens.border).frame(height: 0.5) }
     .help(
       "The appearance is \(showing), so the \(appearance.lowercased()) theme you choose here is "
         + "saved and shows when the appearance is \(appearance).")
@@ -386,8 +391,8 @@ struct ThemePicker: View {
   }
 }
 
-/// One row of the picker: a theme family on the Family tab (a dual swatch, dark left and light
-/// right) or a theme on the Light or Dark tab (its single swatch, with a "Yours" label on the user's
+/// One row of the picker: a theme family on the Family tab (two previews, dark left and light
+/// right) or a theme on the Light or Dark tab (its single preview, with a "Yours" label on the user's
 /// own theme files, #737). The name, the checkmark on the current choice, and the row's chrome and
 /// hover are the same on every tab.
 ///
@@ -441,7 +446,7 @@ struct ThemePickerRow: View {
           Swatch(preview: swatches[index].preview, variantName: swatches[index].file)
         }
       }
-      .frame(height: 16)
+      .frame(height: 40)
     }
     .padding(.horizontal, 8)
     .padding(.vertical, 6)
@@ -478,37 +483,27 @@ struct ThemePickerRow: View {
   }
 }
 
-/// A single variant preview: the background with an "Ab" sample over a strip of the 16 palette
-/// colours — the muxy swatch pattern.
+/// A single theme's preview: two lines of coloured terminal output in its own colours
+/// (`TerminalSnippet`, as Settings ▸ Themes shows them).
 private struct Swatch: View {
-  @Environment(\.themeTokens) private var tokens
   let preview: ThemePreview?
   /// The variant's theme-file name. Carried purely so the swatch can report, through accessibility,
   /// *which* file it is drawing and whether that file resolved — the visible symptom of a registry
-  /// typo is a grey fallback swatch, and that is the one failure a bundle-reading unit test can't see.
+  /// typo is an uncoloured preview, and that is the one failure a bundle-reading unit test can't see.
   let variantName: String
 
   var body: some View {
-    HStack(spacing: 0) {
-      Rectangle()
-        .fill(preview.map { Color(nsColor: $0.background) } ?? tokens.surface)
-        .overlay(
-          Text("Ab")
-            .font(.system(size: 9, weight: .medium, design: .monospaced))
-            .foregroundStyle(preview.map { Color(nsColor: $0.foreground) } ?? tokens.fgMuted)
-        )
-        .frame(width: 26)
-      ForEach(Array((preview?.palette ?? []).enumerated()), id: \.offset) { _, c in
-        Rectangle().fill(Color(nsColor: c))
-      }
-    }
-    .clipShape(RoundedRectangle(cornerRadius: 3))
-    .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(tokens.border, lineWidth: 0.5))
-    .accessibilityElement()
-    // Resolution state rides the IDENTIFIER, not `accessibilityValue`: a value set on a
-    // non-control element like this one comes back empty through XCUIElement (measured), while
-    // identifiers are reliably queryable.
-    .accessibilityIdentifier(
-      "theme-swatch-\(variantName)-\(preview == nil ? "unresolved" : "resolved")")
+    TerminalSnippet(preview: preview, fontSize: 9, lines: 2)
+      .clipShape(RoundedRectangle(cornerRadius: Radius.xs, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: Radius.xs, style: .continuous)
+          .strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.5)
+      )
+      .accessibilityElement(children: .ignore)
+      // Resolution state rides the IDENTIFIER, not `accessibilityValue`: a value set on a
+      // non-control element like this one comes back empty through XCUIElement (measured), while
+      // identifiers are reliably queryable.
+      .accessibilityIdentifier(
+        "theme-swatch-\(variantName)-\(preview == nil ? "unresolved" : "resolved")")
   }
 }
