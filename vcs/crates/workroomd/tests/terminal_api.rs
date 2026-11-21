@@ -5238,6 +5238,101 @@ fn prompt_types_a_paste_and_enter_only_into_a_coding_agent_that_can_take_it() {
     mention.open("quit");
 }
 
+/// An agent whose `done` the app has seen, which drops the record (the user looked at its pane),
+/// has still reported a status: `prompt --wait` takes it, and does after a hand-off too. A new
+/// program in the pane that never reported is `NotAnAgent` for a wait, as ever.
+#[test]
+fn a_prompt_wait_takes_an_agent_whose_done_was_seen_and_not_a_new_program() {
+    if !has_terminal_state() {
+        eprintln!("skipped: a prompt's wait needs a daemon built with terminal-state");
+        return;
+    }
+    let workspace = Workspace::new("api-prompt-seen");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut pane = open(&socket, SHELL, "claude", "wr-1", &workspace.dir);
+    let mut output = common::ClientReader::new(&mut pane);
+    let mut other = open(&socket, OTHER, "next", "wr-1", &workspace.dir);
+    let mut other_output = common::ClientReader::new(&mut other);
+    listing_until(&socket, |listing| listing.len() == 2);
+
+    // An agent that reported and went, then another program in its pane, which has never
+    // reported: no agent to wait on. (Before the hand-off below, which ends the panes' clients.)
+    let gone = FakeAgent::new(&workspace.dir, "claude");
+    gone.launch(&mut other, &mut other_output, "FIRST=done", 1);
+    listing_until(&socket, |listing| {
+        session(listing, OTHER)["coding_agent"]["state"] == "done"
+    });
+    let sent = workroom(Some(&socket), &["send", "next", "x"]);
+    assert_eq!(sent.code, 0, "{}", sent.stdout);
+    for gate in ["go", "end", "quit"] {
+        gone.open(gate);
+    }
+    assert!(
+        other_output
+            .read_until("-gone", Duration::from_secs(20))
+            .contains("-gone"),
+        "the first program never went"
+    );
+    let next = FakeAgent::new(&workspace.dir, "codex");
+    next.launch(&mut other, &mut other_output, "APP=codex", 1);
+    assert_eq!(
+        prompt_refused(&socket, &["next", "hi", "--wait", "--timeout", "20s"]),
+        (3, "NotAnAgent".into())
+    );
+
+    let agent = FakeAgent::new(&workspace.dir, "claude");
+    agent.launch(
+        &mut pane,
+        &mut output,
+        "PROBE=1 FIRST=done",
+        prompted("go on").len(),
+    );
+    listing_until(&socket, |listing| {
+        session(listing, SHELL)["coding_agent"]["state"] == "done"
+    });
+    // The app's `seen`, as focusing the pane sends it: the `done` goes.
+    let mut client = Api::connect(&socket);
+    let stream = client.0.take_stream();
+    let seen = client.0.request(
+        Service::ProgramStatus,
+        stream,
+        &json!({
+            "version": 1,
+            "method": "seen",
+            "session": SHELL,
+            "revision": u64::MAX,
+            "states": ["done"],
+        }),
+    );
+    assert_eq!(seen["result"]["ok"], true, "{seen}");
+    listing_until(&socket, |listing| {
+        session(listing, SHELL)["coding_agent"].is_null()
+    });
+    hand_off(&socket, &workspace.dir);
+
+    let waiting = started(
+        &socket,
+        &[
+            "prompt",
+            "claude",
+            "go on",
+            "--wait",
+            "--timeout",
+            "60s",
+            "--json",
+        ],
+    );
+    assert_eq!(agent.typed(), prompted("go on"));
+    agent.open("go");
+    agent.open("end");
+    let ended = finished(waiting);
+    assert_eq!(ended.code, 0, "{} {}", ended.stdout, ended.stderr);
+    assert_eq!(ended.envelope()["status"], "done", "{}", ended.stdout);
+    agent.open("quit");
+    next.open("quit");
+}
+
 /// The prompt's Enter goes only into an agent still ready for it, and its turn is only one a
 /// `working` after that Enter starts (#692). The daemon waits 3 s between the paste and the Enter
 /// here (its test-only seam), so the stand-in agent's reports land in between however busy the
