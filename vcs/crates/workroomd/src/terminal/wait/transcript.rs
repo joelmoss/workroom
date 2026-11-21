@@ -186,13 +186,61 @@ impl Transcript {
                 truncated: dropped,
             };
         }
-        let text = render(kept, columns.max(1), rows.max(1));
+        let (columns, rows) = (columns.max(1), rows.max(1));
+        let (kept, fewer) = last_rows(
+            kept,
+            columns,
+            render_rows(columns).saturating_sub(rows.into()),
+        );
+        let text = render(kept, columns, rows);
         let (text, cut) = last(&text, OUTPUT_MAX);
         Output {
             text: text.to_string(),
-            truncated: dropped || cut,
+            truncated: dropped || fewer || cut,
         }
     }
+}
+
+/// The most a render's terminal holds, in bytes of its scrollback and screen: what it renders is
+/// cut to fit (`render_rows`), so nothing is evicted, which would drop the output's start with
+/// `truncated` none the wiser.
+const RENDER_BYTES: usize = 32 * 1024 * 1024;
+
+/// The most rows a render's terminal is fed at `columns`, by what a row costs it: a cell takes 8
+/// bytes in libghostty's pages, and each row a header; counted at twice that, and the scrollback
+/// given four times `RENDER_BYTES`, so the cap is never what binds.
+fn render_rows(columns: u16) -> usize {
+    RENDER_BYTES / (usize::from(columns) * 16 + 64)
+}
+
+/// The end of `raw` that fills at most `most` rows at `columns`, from a line's start, and whether
+/// any was left out. Counted over: each line (to a `\n`, `\x0b` or `\x0c`, each a line feed) takes
+/// a row for every `columns` bytes in it, a tab as 8, at least one, which is never fewer than the
+/// terminal gives it, since a cell takes at least a byte and a tab at most 8 cells.
+fn last_rows(raw: &[u8], columns: u16, most: usize) -> (&[u8], bool) {
+    let columns = usize::from(columns);
+    let mut rows = 0;
+    // The bytes of the line being counted, and where the earliest line that fits starts.
+    let mut cells: usize = 0;
+    let mut fits_from = raw.len();
+    for (at, byte) in raw.iter().enumerate().rev() {
+        match byte {
+            b'\n' | 0x0b | 0x0c => {
+                rows += cells.div_ceil(columns).max(1);
+                if rows > most {
+                    return (&raw[fits_from..], true);
+                }
+                cells = 0;
+                fits_from = at + 1;
+            }
+            b'\t' => cells += 8,
+            _ => cells += 1,
+        }
+    }
+    if rows + cells.div_ceil(columns).max(1) > most {
+        return (&raw[fits_from..], true);
+    }
+    (raw, false)
 }
 
 /// `raw` without zsh's PROMPT_SP at its end, which zsh prints before its prompt when output
@@ -269,6 +317,7 @@ fn render(bytes: &[u8], columns: u16, rows: u16) -> String {
     let Some(mut terminal) = crate::terminal::vt::ShadowTerminal::new(columns, rows) else {
         return String::from_utf8_lossy(bytes).into_owned();
     };
+    terminal.hold_scrollback(4 * RENDER_BYTES);
     terminal.write(bytes);
     terminal
         .capture_text(Capture {
@@ -386,6 +435,57 @@ mod tests {
             fed(&[wrapped.as_bytes()]).output(10, 5, false).text,
             "x".repeat(30),
             "a line the pane wrapped is one line"
+        );
+    }
+
+    /// Many short lines fit under the byte bounds but not in a render's rows: what is rendered is
+    /// the end, every line of it, none evicted from the render's scrollback, and `truncated` says
+    /// the start is gone. Fewer are all there.
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn many_short_lines_render_their_end_whole_and_say_it_is_cut() {
+        let lines = |count: usize| {
+            let mut bytes = b"\x1b]133;C\x07".to_vec();
+            for line in 0..count {
+                bytes.extend(format!("{line}\r\n").into_bytes());
+            }
+            bytes.extend(b"\x1b]133;D;0\x07");
+            fed(&[&bytes])
+        };
+        let many = lines(250_000);
+        let output = many.output(80, 24, false);
+        assert!(output.truncated);
+        let numbers: Vec<usize> = output
+            .text
+            .lines()
+            .map(|line| line.parse().expect("a whole line"))
+            .collect();
+        assert_eq!(numbers.last(), Some(&249_999));
+        let first = numbers[0];
+        assert!(first > 0);
+        assert_eq!(
+            numbers,
+            (first..250_000).collect::<Vec<_>>(),
+            "every line from the first kept, none evicted"
+        );
+        let few = lines(20_000).output(80, 24, false);
+        assert!(!few.truncated);
+        assert_eq!(few.text.lines().count(), 20_000);
+        assert!(few.text.starts_with("0\n"));
+    }
+
+    /// The rows a line takes are counted over, never under: by its bytes at the width, a tab as 8.
+    #[test]
+    fn the_end_that_fits_is_counted_by_rows() {
+        assert_eq!(last_rows(b"a\nb\nc", 10, 3), (&b"a\nb\nc"[..], false));
+        assert_eq!(last_rows(b"a\nb\nc", 10, 2), (&b"b\nc"[..], true));
+        let long = [b"x".repeat(25), b"\nshort".to_vec()].concat();
+        assert_eq!(last_rows(&long, 10, 4), (&long[..], false), "3 rows and 1");
+        assert_eq!(last_rows(&long, 10, 3), (&b"short"[..], true));
+        assert_eq!(
+            last_rows(b"\t\t\na", 10, 2),
+            (&b"a"[..], true),
+            "two tabs, 16 cells"
         );
     }
 
