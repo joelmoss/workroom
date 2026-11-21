@@ -7851,6 +7851,50 @@ fn create_human_offers_the_editor() {
     }
 }
 
+/// With no one at a terminal, the human create asks nothing, as Go's asks nothing: a setup script
+/// this Mac hasn't approved is refused before anything exists, and work the start would leave out
+/// is left out, with a warning. `in_a_terminal.rs` types the answers a person gives.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_human_with_no_one_at_a_terminal_asks_nothing() {
+    let home = Home::new("create-no-terminal");
+    let project = setup_project(&home, "echo installing\n", "");
+    let before = config_text(&home);
+    let run = human_create(&home, &project, &[], &[]);
+    assert_eq!(
+        (run.code, run.stdout.as_str(), run.stderr.as_str()),
+        (
+            3,
+            "",
+            "Error: script is not trusted on this Mac: scripts/workroom_setup in the project's \
+             root is new, or changed since it was approved. Review and approve it with `workroom \
+             trust`\n"
+        )
+    );
+    assert_eq!(config_text(&home), before);
+    assert_eq!(
+        git_output(&home, &project, &["branch", "--list", "workroom/*"]),
+        ""
+    );
+
+    let home = Home::new("create-no-terminal-ahead");
+    let project = ahead_create_project(&home);
+    let run = human_create(&home, &project, &[], &[]);
+    assert_eq!(
+        (run.code, run.stdout.as_str(), run.stderr.as_str()),
+        (
+            0,
+            "You have 1 commit on main that you haven't pushed yet. This workroom doesn't include \
+             that work, because new workrooms start from what you've pushed.\nWorkroom \
+             'calm-river' created successfully at ~/workrooms/calm-river.\n",
+            ""
+        )
+    );
+}
+
 /// The events are encoded as Go's are: a `step` or `created` event without HTML escaping, as its
 /// `encodeJSON` writes one, and a `log` event with it, as `json.Marshal` writes one.
 #[test]
