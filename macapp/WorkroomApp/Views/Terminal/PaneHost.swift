@@ -65,7 +65,7 @@ protocol PaneHost: AnyObject, Sendable {
 
   // MARK: The Quick Terminal
 
-  func quickTerminalPaneWorkroomChoices(
+  func paneMoveChoices(
     _ tabID: TerminalTab.ID, of target: TerminalTarget, windows: [AppStore]
   ) -> [PaneWorkroomGroup]
 

@@ -16,6 +16,7 @@ final class TargetIDTests: XCTestCase {
       (.workroom(project: "/p", name: "calm-otter"), "wr|/p|calm-otter"),
       (.creation(Self.run), "creation:6F9619FF-8B86-D011-B42D-00C04FC964FF"),
       (.quickTerminal, "workroom.quickTerminal"),
+      (.standalone(Self.run), "standalone:6F9619FF-8B86-D011-B42D-00C04FC964FF"),
     ]
     for (id, string) in cases {
       XCTAssertEqual(id.encoded, string)
@@ -43,7 +44,10 @@ final class TargetIDTests: XCTestCase {
   }
 
   func testAStringNoBuildWroteIsNoTarget() {
-    for string in ["", "wr|/p", "creation:not-a-uuid", "creation|\(Self.run)", "/p", "x"] {
+    for string in [
+      "", "wr|/p", "creation:not-a-uuid", "creation|\(Self.run)", "/p", "x",
+      "standalone:not-a-uuid", "standalone|\(Self.run)",
+    ] {
       XCTAssertNil(TargetID(encoded: string), string)
     }
   }
@@ -65,5 +69,18 @@ final class TargetIDTests: XCTestCase {
       SidebarID.workroom(project: "/p", name: "a").targetID, .workroom(project: "/p", name: "a"))
     XCTAssertEqual(SidebarID.creation(project: "/p", id: Self.run).targetID, .creation(Self.run))
     XCTAssertNil(SidebarID.project("/p").targetID)
+  }
+
+  /// Value: protects=a standalone terminal's row, title-bar tab and sessions living apart from
+  /// every project (ADR 0077); fails_when=a standalone id claims a project or loses its row;
+  /// why_new=the standalone kind (#655); seam=none; no_claim=whether the terminal still exists
+  func testAStandaloneTerminalBelongsToNoProject() {
+    let id = TargetID.standalone(Self.run)
+    XCTAssertNil(id.projectPath)
+    XCTAssertEqual(id.sidebarID, .standalone(Self.run))
+    XCTAssertEqual(SidebarID.standalone(Self.run).targetID, id)
+    XCTAssertFalse(SidebarID.standalone(Self.run).belongsToProject("/p"))
+    XCTAssertTrue(SidebarID.standalone(Self.run).isInTerminalsSection)
+    XCTAssertFalse(SidebarID.root(project: "/p").isInTerminalsSection)
   }
 }

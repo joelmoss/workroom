@@ -91,6 +91,8 @@ struct WorkroomApp: App {
     #else
       AppServices.current = .live
     #endif
+    // The Quick Terminal's "Opens in" became "New terminals open in" (ADR 0077).
+    TerminalsSection.migrateNewTerminalDirectory(.app)
   }
 
   var body: some Scene {
@@ -228,7 +230,8 @@ struct RootWindow: View {
     self.seed = seed
     // Every window shows the app's one notification list (ADR 0064).
     let store = AppStore(
-      runCommands: .shared, lifecycle: .shared, notifications: WindowRegistry.shared.notifications)
+      runCommands: .shared, lifecycle: .shared, terminalsSection: .shared,
+      notifications: WindowRegistry.shared.notifications)
     // Capture the current window's size ONCE, at this window's creation, so the new window can be
     // sized to match it before it's shown (issue #70). nil for the launch window.
     store.pendingInitialWindowSize = WindowRegistry.shared.preferredNewWindowSize

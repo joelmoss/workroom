@@ -34,9 +34,9 @@ final class QuickTerminalPaneMoveTests: XCTestCase {
       targetID: quickTarget.id, tabID: pane.id, activity: .osc(title: "done", body: nil),
       focused: false, origin: ObjectIdentifier(source))
 
-    await QuickTerminalPaneMove.move(
+    await PaneMove.move(
       pane.id, of: quickTarget, source: source, notifications: notifications, to: window,
-      into: sid)
+      into: sid.targetID!)
 
     XCTAssertNotNil(window.terminals.tab(pane.id, for: target), "it arrives")
     XCTAssertEqual(window.terminals.allTabs(for: target).last?.id, pane.id)
@@ -56,7 +56,7 @@ final class QuickTerminalPaneMoveTests: XCTestCase {
     let (source, pane, window, target) = try makeMove()
     let quickTarget = QuickTerminalController.target()
 
-    let groups = QuickTerminalPaneMove.choices(
+    let groups = PaneMove.choices(
       pane.id, of: quickTarget, source: source, notifications: registry.notifications,
       windows: [window])
 

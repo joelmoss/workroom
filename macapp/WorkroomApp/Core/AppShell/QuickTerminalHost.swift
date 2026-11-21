@@ -194,11 +194,11 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
   // MARK: PaneHost: the Quick Terminal
 
   /// "Move to Workroom" for its pane `tabID`, over every workroom open in `windows`.
-  func quickTerminalPaneWorkroomChoices(
+  func paneMoveChoices(
     _ tabID: TerminalTab.ID, of target: TerminalTarget,
     windows: [AppStore] = WindowRegistry.shared.allStores
   ) -> [PaneWorkroomGroup] {
-    QuickTerminalPaneMove.choices(
+    PaneMove.choices(
       tabID, of: target, source: terminals, notifications: notifications, windows: windows)
   }
 

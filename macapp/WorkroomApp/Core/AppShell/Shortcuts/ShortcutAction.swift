@@ -71,7 +71,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable, Sendable {
   case switchToWorkroomTab9
   case nextWorkroomTab, previousWorkroomTab, lastUsedWorkroom
   // Terminal Tabs
-  case newTerminal, closeTab, closeOtherTabs, closeAllTabs
+  case newTerminal, newStandaloneTerminal, closeTab, closeOtherTabs, closeAllTabs
   case focusTerminalTab1, focusTerminalTab2, focusTerminalTab3, focusTerminalTab4
   case focusTerminalTab5, focusTerminalTab6, focusTerminalTab7, focusTerminalTab8
   case focusTerminalTab9
@@ -112,7 +112,8 @@ enum ShortcutAction: String, CaseIterable, Identifiable, Sendable {
       .switchToWorkroomTab5, .switchToWorkroomTab6, .switchToWorkroomTab7, .switchToWorkroomTab8,
       .switchToWorkroomTab9, .nextWorkroomTab, .previousWorkroomTab, .lastUsedWorkroom:
       .workroomTabs
-    case .newTerminal, .closeTab, .closeOtherTabs, .closeAllTabs, .focusTerminalTab1,
+    case .newTerminal, .newStandaloneTerminal, .closeTab, .closeOtherTabs, .closeAllTabs,
+      .focusTerminalTab1,
       .focusTerminalTab2, .focusTerminalTab3, .focusTerminalTab4, .focusTerminalTab5,
       .focusTerminalTab6, .focusTerminalTab7, .focusTerminalTab8, .focusTerminalTab9,
       .nextTerminalTab, .previousTerminalTab, .confirmBeforeClosingTerminal:
@@ -168,6 +169,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable, Sendable {
     case .previousWorkroomTab: "Previous Workroom Tab"
     case .lastUsedWorkroom: "Last-Used Workroom"
     case .newTerminal: "New Terminal"
+    case .newStandaloneTerminal: "New Standalone Terminal"
     case .closeTab: "Close Tab"
     case .closeOtherTabs: "Close Other Tabs"
     case .closeAllTabs: "Close All Tabs"
@@ -250,6 +252,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable, Sendable {
     case .previousWorkroomTab: "Switch to the workroom tab on the left."
     case .lastUsedWorkroom: "Step through open workrooms, most recent first. Hold to see them all."
     case .newTerminal: "Open a terminal tab in the selected workroom."
+    case .newStandaloneTerminal: "Open a terminal that belongs to no project, with its own row."
     case .closeTab: "Close the focused tab or pane."
     case .closeOtherTabs: "Close every tab but the focused one."
     case .closeAllTabs: "Close every tab in the selected workroom."
@@ -333,6 +336,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable, Sendable {
     case .previousWorkroomTab: return named(kVK_LeftArrow, [.command, .option, .shift])
     case .lastUsedWorkroom: return .modifiers(.option)
     case .newTerminal: return key("t", .command)
+    case .newStandaloneTerminal: return key("t", [.command, .option])
     case .closeTab: return key("w", .command)
     case .focusTerminalTab1, .focusTerminalTab2, .focusTerminalTab3, .focusTerminalTab4,
       .focusTerminalTab5, .focusTerminalTab6, .focusTerminalTab7, .focusTerminalTab8,

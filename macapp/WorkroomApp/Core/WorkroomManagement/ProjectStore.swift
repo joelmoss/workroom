@@ -176,6 +176,11 @@ final class ProjectStore: ObservableObject {
         for target in window.targets { ids.formUnion(target.sessionIDs) }
       }
   }
+  /// Run once the saved windows have all been restored, by owner. A window's store adds one for
+  /// the app's Terminals section, which prunes the standalone rows no restored window holds.
+  /// Not observed: `RootWindow` builds its `AppStore`, which registers here, while SwiftUI evaluates
+  /// the window's content, so an observed write would re-run that content forever (a launch hang).
+  @ObservationIgnored var sessionRestoreObservers: [ObjectIdentifier: () -> Void] = [:]
   /// Keys handed to `openWindow` whose window has not claimed yet. Dispatched once so a `.task`
   /// re-fire cannot open a second copy of the same window.
   private var dispatchedSessionKeys: Set<UUID> = []
@@ -277,6 +282,8 @@ final class ProjectStore: ObservableObject {
     }
     keyWindowSessionKey = nil
     sessionCoordinator.resumeSaves()
+    // Every saved window is back: what none of them holds is not coming (ADR 0077).
+    for observer in sessionRestoreObservers.values { observer() }
   }
 
   private func loadSessionIfNeeded() {

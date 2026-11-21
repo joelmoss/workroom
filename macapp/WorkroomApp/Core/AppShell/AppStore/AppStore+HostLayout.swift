@@ -466,6 +466,11 @@ extension AppStore {
   /// is held however often it is asked for: a user clicking again on a pane that has not opened yet
   /// wants that one terminal, not one per click once the host answers.
   func newTerminal(in target: TerminalTarget) {
+    // A standalone terminal is one terminal: another is a standalone terminal of its own (ADR 0077).
+    if case .standalone = target.id {
+      newStandaloneTerminal()
+      return
+    }
     if hostLayouts.fetching.contains(target.id) {
       guard hostLayouts.heldNewTerminal.insert(target.id).inserted else { return }
     }

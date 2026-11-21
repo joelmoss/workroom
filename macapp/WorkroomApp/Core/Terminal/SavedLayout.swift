@@ -310,6 +310,9 @@ struct TerminalPayload: Codable, Hashable, Sendable {
   /// The workroom's run tab (#522): its session is a run session, reattached as the target's run,
   /// never started again. Additive: an older build reads it as an ordinary terminal.
   var run: Bool? = nil
+  /// The name the user gave the terminal (Rename…). Additive, so no schema bump: an older build
+  /// ignores it and shows the default title.
+  var userTitle: String? = nil
 }
 
 /// `DiffSource` on disk. Split into a kind plus an optional commit id so a new case is an additive
@@ -738,6 +741,7 @@ extension TabSession {
     if var terminal = tab.terminal {
       terminal.defaultTitle = clamp(terminal.defaultTitle)
       terminal.cwd = clamp(terminal.cwd)
+      terminal.userTitle = clamp(terminal.userTitle)
       tab.terminal = terminal
     }
     if var diff = tab.diff {

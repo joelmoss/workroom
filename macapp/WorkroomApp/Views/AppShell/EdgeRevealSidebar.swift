@@ -331,7 +331,7 @@ struct EdgeRevealSidebars: ViewModifier {
           // dialog. Folded into `enabled` rather than added beside it because `enabled` already has the
           // reset path this needs (`onChange(of: enabled)` below).
           side: .leading,
-          enabled: !sidebarVisible && modals.activePicker == nil && !projectStore.projects.isEmpty,
+          enabled: !sidebarVisible && modals.activePicker == nil && store.sidebarHasContent,
           width: panelWidth
         ) {
           ProjectSidebar(
