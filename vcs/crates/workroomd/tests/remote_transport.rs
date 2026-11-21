@@ -3032,6 +3032,225 @@ fn over_ssh_events_stream_a_host_panes_workroom() {
     );
 }
 
+/// `workroom sessions --clients` and the client events on a host (#688), as a coding agent in a
+/// remote pane runs them. The app's panes attach on the host (`attach --no-spawn`): one whose app
+/// named its Mac says that Mac, one that named none says none, never the host's own name. A
+/// `workroom attach` typed in a pane is `cli`, on the host, at the pane's size, which it owns as
+/// the only client with one. Each attaching is an event, and each leaving, with the client as it
+/// attached.
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_sessions_clients_and_client_events_on_a_host() {
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
+    let session = "7e0e7e0e-0000-4000-8000-000000000688";
+    let target = "7e0e7e0e-0000-4000-8000-00000000688b";
+    let workroom = "4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0688";
+    let in_workroom = format!("WORKROOM_SESSION_WORKROOM={workroom}");
+    let mut pane = Pane::attach_with(&fixture, session, false, &in_workroom);
+    pane.type_line("echo \"PANE-\"\"UP\"");
+    assert!(
+        pane.read_until("PANE-UP\r\n", Duration::from_secs(30))
+            .contains("PANE-UP\r\n"),
+        "the pane's shell never started"
+    );
+    let host = {
+        let output = fixture.ssh().arg("hostname").output().expect("hostname");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    assert!(!host.is_empty(), "the host has no hostname");
+    // A folder of this run's own on the host, made here and so removed at the end.
+    let dir = (0..)
+        .map(|attempt| format!("/tmp/wr-688-{}-{attempt}", std::process::id()))
+        .find(|dir| {
+            fixture
+                .ssh()
+                .arg(format!("mkdir {dir}"))
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+        .expect("a folder on the host");
+    let binary = INSTALLED_DAEMON;
+    let events = || -> Vec<Value> {
+        let output = fixture
+            .ssh()
+            .arg(format!("cat {dir}/clients"))
+            .output()
+            .expect("read the events");
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect()
+    };
+    pane.type_line(&format!(
+        "{binary} events --type client.attached,client.detached > {dir}/clients 2>&1 & \
+         echo $! > {dir}/pid"
+    ));
+    let started = (0..120).any(|_| {
+        if events()
+            .iter()
+            .any(|event| event["event"] == "snapshot-complete")
+        {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        false
+    });
+    assert!(started, "the pane's events never began: {:?}", events());
+
+    // The target's first client: the app's pane, naming the Mac it is on, and asking to be probed.
+    let mut mac = Pane::attach_with(
+        &fixture,
+        target,
+        false,
+        &format!(
+            "{in_workroom} WORKROOM_SESSION_HOSTNAME=mac-a.local WORKROOM_SESSION_KEEPALIVE=1"
+        ),
+    );
+    mac.type_line("echo \"MAC-\"\"UP\"");
+    assert!(
+        mac.read_until("MAC-UP\r\n", Duration::from_secs(30))
+            .contains("MAC-UP\r\n"),
+        "the target's shell never started"
+    );
+    let listed = || -> Vec<Value> {
+        let output = fixture
+            .ssh()
+            .arg(format!(
+                "WORKROOM_DAEMON={} {binary} sessions --clients --json",
+                fixture.socket
+            ))
+            .output()
+            .expect("run sessions --clients");
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+        envelope["sessions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|listed| listed["id"] == target)
+            .map(|listed| listed["clients"].as_array().cloned().unwrap_or_default())
+            .unwrap_or_default()
+    };
+    let mut clients = Vec::new();
+    let mut attached = |count: usize| {
+        (0..120).any(|_| {
+            clients = listed();
+            if clients.len() == count {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+            false
+        })
+    };
+    let unnamed = Pane::attach_with(&fixture, target, false, "");
+    // Each attached before the next, so they are listed in this order.
+    assert!(attached(2), "the unnamed pane never attached");
+    // Typed in the first pane, so on the host, in the pane's 80x24 terminal.
+    pane.type_line(&format!(
+        "{binary} attach --socket {} --session {target}",
+        fixture.socket
+    ));
+    assert!(attached(3), "the typed attach never attached");
+    let [named, unknown, cli] = clients.as_slice() else {
+        unreachable!()
+    };
+    assert_eq!(named["kind"], "pane", "{named}");
+    assert_eq!(named["hostname"], "mac-a.local", "{named}");
+    assert_eq!(named["owns_size"], false, "{named}");
+    assert!(
+        ["answering", "late"].contains(&named["keepalive"].as_str().unwrap_or_default()),
+        "probed, and not yet stale: {named}"
+    );
+    assert_eq!(unknown["kind"], "pane", "{unknown}");
+    assert_eq!(
+        unknown["hostname"],
+        Value::Null,
+        "never the host's: {unknown}"
+    );
+    assert_eq!(unknown["keepalive"], "off", "{unknown}");
+    assert_eq!(cli["kind"], "cli", "{cli}");
+    assert_eq!(cli["hostname"], host.as_str(), "{cli}");
+    assert_eq!(cli["size"], json!({"columns": 80, "rows": 24}), "{cli}");
+    assert_eq!(cli["owns_size"], true, "the only client with a size: {cli}");
+    assert_eq!(cli["keepalive"], "off", "{cli}");
+    for client in &clients {
+        assert!(client["attached_at_ms"].as_u64().is_some(), "{client}");
+    }
+
+    // The unnamed pane's link dropped, and the typed attach stopped. Its relay on the host learns
+    // the link is gone only when it next writes, so the target prints something.
+    drop(unnamed);
+    mac.type_line("echo \"LINK-\"\"GONE\"");
+    // `[-]`, so the pattern doesn't match the shell running `pkill`.
+    let _ = fixture
+        .ssh()
+        .arg(format!("pkill -f -- '[-]-session {target}'"))
+        .status();
+    let mut seen = Vec::new();
+    let left = (0..120).any(|_| {
+        seen = events();
+        if seen
+            .iter()
+            .filter(|event| event["event"] == "client.detached")
+            .count()
+            == 2
+        {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        false
+    });
+    assert!(left, "two clients never left: {seen:#?}");
+    let told = |name: &str| -> Vec<Value> {
+        seen.iter()
+            .filter(|event| event["event"] == name && event["session"] == target)
+            .map(|event| event["client"].clone())
+            .collect()
+    };
+    let attached = told("client.attached");
+    let kinds: Vec<(&str, &Value)> = attached
+        .iter()
+        .map(|client| {
+            (
+                client["kind"].as_str().unwrap_or_default(),
+                &client["hostname"],
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("pane", &json!("mac-a.local")),
+            ("pane", &Value::Null),
+            ("cli", &json!(host))
+        ],
+        "{seen:#?}"
+    );
+    // The two that went, in whichever order their connections ended, each as it attached.
+    let mut detached = told("client.detached");
+    detached.sort_by_key(|client| client["id"].as_u64());
+    assert_eq!(detached, attached[1..], "{seen:#?}");
+    for event in &seen {
+        if event["event"] == "client.attached" {
+            assert_eq!(event["scope"]["id"], workroom, "{event}");
+        }
+    }
+
+    let _ = fixture
+        .ssh()
+        .arg(format!("kill $(cat {dir}/pid); rm -r {dir}"))
+        .status();
+    mac.type_line("exit");
+    pane.type_line("exit");
+    for pane in [&mut mac, &mut pane] {
+        assert!(
+            pane.exit_code(Duration::from_secs(20)).is_some(),
+            "a session did not end"
+        );
+    }
+}
+
 /// Two Macs on one remote workroom (#255): Mac A's session carries its workroom and title to the
 /// host, Mac B finds it in the host's list and A's layout in the Layout service, and reattaches to
 /// the same shell; A dropping its link leaves B attached; a close on A ends the session for B too;
