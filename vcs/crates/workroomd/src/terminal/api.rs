@@ -1035,6 +1035,13 @@ pub fn error_schema() -> Value {
                             not 0",
                 "details": {"exit_code": 1},
             }),
+            json!({
+                "kind": kind::AGENT_BUSY,
+                "message": "the coding agent in session 5a1e0f7e-0d6c-4c9f-9c3e-2b7f1d0a8e11 \
+                            started working after the prompt's text was pasted, so Enter was not \
+                            pressed: the text is in its input box, unsubmitted",
+                "details": {"typed": true, "submitted": false},
+            }),
         ],
     )
 }
@@ -1055,9 +1062,14 @@ fn error_fields() -> Value {
                 "type": "object",
                 "description": "What some kinds say beside the message, for a script to read: \
                                 `ExitCodeMismatch`'s `exit_code`, the code the run exited with \
-                                (null when it is unknown).",
+                                (null when it is unknown); a prompt's `AgentBusy` once its text \
+                                was pasted, `typed` and `submitted`: the agent went busy before \
+                                its Enter, which was not pressed, so the text is in its input \
+                                box.",
                 "properties": {
                     "exit_code": {"type": ["integer", "null"]},
+                    "typed": {"type": "boolean"},
+                    "submitted": {"type": "boolean"},
                 },
             },
         },

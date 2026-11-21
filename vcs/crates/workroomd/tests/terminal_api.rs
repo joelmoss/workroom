@@ -5141,6 +5141,11 @@ fn prompt_types_a_paste_and_enter_only_into_a_coding_agent_that_can_take_it() {
         );
         return;
     }
+    // Codex reports nothing until it works, so its turn's end could never be heard.
+    assert_eq!(
+        prompt_refused(&socket, &["codex", text, "--wait", "--timeout", "20s"]),
+        (3, "NotAnAgent".into())
+    );
     let run = workroom(Some(&socket), &["prompt", "codex", text, "--json"]);
     assert_eq!(run.code, 0, "{} {}", run.stdout, run.stderr);
     let envelope = run.envelope();
@@ -5203,6 +5208,127 @@ fn prompt_types_a_paste_and_enter_only_into_a_coding_agent_that_can_take_it() {
         (3, "AgentBusy".into())
     );
     starting.open("quit");
+    // A last word that opens a completion gets a space, so Enter submits rather than pick. In a
+    // pane of its own: the agents above still wait for the byte no prompt sent them.
+    let mut mention_pane = open(&socket, RUN, "mention", "wr-1", &workspace.dir);
+    let mut mention_output = common::ClientReader::new(&mut mention_pane);
+    let mention = FakeAgent::new(&workspace.dir, "codex");
+    let spaced = "look at @src/main.rs ";
+    mention.launch(
+        &mut mention_pane,
+        &mut mention_output,
+        "APP=codex",
+        prompted(spaced).len(),
+    );
+    let run = workroom(
+        Some(&socket),
+        &["prompt", "mention", "look at @src/main.rs", "--json"],
+    );
+    assert_eq!(run.code, 0, "{} {}", run.stdout, run.stderr);
+    assert_eq!(
+        run.envelope()["bytes"],
+        prompted(spaced).len(),
+        "{}",
+        run.stdout
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&mention.typed()),
+        String::from_utf8_lossy(&prompted(spaced))
+    );
+    mention.open("quit");
+}
+
+/// The prompt's Enter goes only into an agent still ready for it, and its turn is only one a
+/// `working` after that Enter starts (#692). The daemon waits 3 s between the paste and the Enter
+/// here (its test-only seam), so the stand-in agent's reports land in between however busy the
+/// machine is. One that starts working reading the paste is not sent the Enter: `AgentBusy`,
+/// typed and not submitted, its text in the input box. One that runs a turn of its own, `working`
+/// then `done`, before the Enter, is sent it, and `--wait` waits on past that turn (3 s and more)
+/// for the one the Enter starts.
+#[test]
+fn a_prompt_presses_enter_only_into_an_agent_still_ready_and_waits_on_the_turn_it_starts() {
+    if !has_terminal_state() {
+        eprintln!("skipped: a prompt's checks need a daemon built with terminal-state");
+        return;
+    }
+    let workspace = Workspace::new("api-prompt-enter");
+    let socket = workspace.socket();
+    let _daemon =
+        common::start_daemon_with_env(&socket, &[], &[("WORKROOMD_TEST_ENTER_PAUSE_MS", "3000")]);
+    let mut busy_pane = open(&socket, SHELL, "busy", "wr-1", &workspace.dir);
+    let mut busy_output = common::ClientReader::new(&mut busy_pane);
+    let mut own_pane = open(&socket, OTHER, "own", "wr-1", &workspace.dir);
+    let mut own_output = common::ClientReader::new(&mut own_pane);
+    listing_until(&socket, |listing| listing.len() == 2);
+
+    let busy = FakeAgent::new(&workspace.dir, "claude");
+    busy.launch(
+        &mut busy_pane,
+        &mut busy_output,
+        "PROBE=1 FIRST=idle PRE=working",
+        prompted("hi").len(),
+    );
+    listing_until(&socket, |listing| {
+        session(listing, SHELL)["coding_agent"]["state"] == "idle"
+    });
+    let run = workroom(Some(&socket), &["prompt", "busy", "hi", "--json"]);
+    assert_eq!(run.code, 3, "{} {}", run.stdout, run.stderr);
+    let error = &run.envelope()["error"];
+    assert_eq!(error["kind"], "AgentBusy", "{error}");
+    assert_eq!(
+        error["details"],
+        json!({"typed": true, "submitted": false}),
+        "{error}"
+    );
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("input box")),
+        "{error}"
+    );
+    let pasted = prompted("hi");
+    assert_eq!(
+        busy.typed(),
+        pasted[..pasted.len() - 1],
+        "the paste, and no Enter"
+    );
+    busy.open("quit");
+
+    let own = FakeAgent::new(&workspace.dir, "claude");
+    own.launch(
+        &mut own_pane,
+        &mut own_output,
+        "PROBE=1 FIRST=done PRE=turn",
+        prompted("go on").len(),
+    );
+    listing_until(&socket, |listing| {
+        session(listing, OTHER)["coding_agent"]["state"] == "done"
+    });
+    let mut waiting = started(
+        &socket,
+        &[
+            "prompt",
+            "own",
+            "go on",
+            "--wait",
+            "--timeout",
+            "60s",
+            "--json",
+        ],
+    );
+    assert_eq!(own.typed(), prompted("go on"), "the paste, then the Enter");
+    // Its own turn, between the paste and the Enter, is no answer.
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        waiting.try_wait().expect("the wait's state").is_none(),
+        "the wait answered on the turn the agent ran before the prompt's Enter"
+    );
+    own.open("go");
+    own.open("end");
+    let ended = finished(waiting);
+    assert_eq!(ended.code, 0, "{} {}", ended.stdout, ended.stderr);
+    assert_eq!(ended.envelope()["status"], "done", "{}", ended.stdout);
+    own.open("quit");
 }
 
 /// `workroom prompt --wait` returns once the turn the prompt starts has ended, never on the

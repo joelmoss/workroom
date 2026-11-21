@@ -115,6 +115,14 @@ impl Stop {
     }
 }
 
+/// What a send writes after its first part (`Pty::send_then`), in the same turn: `bytes`, `pause`
+/// after it, once `before`, called then with the turn still held, says they are still wanted.
+pub struct Then<'a> {
+    pub pause: std::time::Duration,
+    pub bytes: &'a [u8],
+    pub before: &'a mut dyn FnMut() -> bool,
+}
+
 /// The bracketed paste's end, which a paste a send began is owed.
 const PASTE_END: &[u8] = crate::terminal::keys::PASTE_END.as_bytes();
 
@@ -583,20 +591,20 @@ impl Pty {
         self.send_with(bytes, paste, WRITE_DEADLINE, until)
     }
 
-    /// [`Pty::send`], then `then` written `pause` after `bytes`, in the same turn: no other input
-    /// lands between the two, and the program has had `pause` to read `bytes` on their own, so it
-    /// reads `then` apart from them. A prompt's Enter (#692): Claude Code drops a bracketed paste
-    /// a key follows in the same read. A send stopped in `then` says so by `written` past
+    /// [`Pty::send`], then `then`'s bytes written its pause after `bytes`, in the same turn: no
+    /// other input lands between the two, and the program has had the pause to read `bytes` on
+    /// their own, so it reads `then`'s apart from them. A prompt's Enter (#692): Claude Code drops
+    /// a bracketed paste a key follows in the same read. Whether `then`'s bytes were written:
+    /// `false` when its `before` said no. A send stopped in them says so by `written` past
     /// `bytes.len()`.
     pub fn send_then(
         &self,
         bytes: &[u8],
         paste: Option<std::ops::Range<usize>>,
-        pause: std::time::Duration,
-        then: &[u8],
+        then: Then<'_>,
         until: std::time::Instant,
-    ) -> Result<(), Stopped> {
-        self.send_parts(bytes, paste, Some((pause, then)), WRITE_DEADLINE, until)
+    ) -> Result<bool, Stopped> {
+        self.send_parts(bytes, paste, Some(then), WRITE_DEADLINE, until)
     }
 
     /// [`Pty::send`] with `idle` for `WRITE_DEADLINE`, so a test reaches it in less.
@@ -607,18 +615,19 @@ impl Pty {
         idle: std::time::Duration,
         until: std::time::Instant,
     ) -> Result<(), Stopped> {
-        self.send_parts(bytes, paste, None, idle, until)
+        self.send_parts(bytes, paste, None, idle, until).map(drop)
     }
 
-    /// [`Pty::send_with`], and `then`'s bytes written its pause after, in the same turn.
+    /// [`Pty::send_with`], and `then`'s bytes written its pause after, in the same turn, if its
+    /// `before` says so: whether everything was written.
     fn send_parts(
         &self,
         bytes: &[u8],
         paste: Option<std::ops::Range<usize>>,
-        then: Option<(std::time::Duration, &[u8])>,
+        then: Option<Then<'_>>,
         idle: std::time::Duration,
         until: std::time::Instant,
-    ) -> Result<(), Stopped> {
+    ) -> Result<bool, Stopped> {
         let stopped = |written, why| Stopped {
             written,
             why,
@@ -637,8 +646,13 @@ impl Pty {
             .map_err(|why| stopped(0, why))?;
         let (written, result) = self.write_until(bytes, idle, Some(until));
         let Err(why) = result else {
-            let Some((pause, then)) = then else {
-                return Ok(());
+            let Some(Then {
+                pause,
+                bytes: then,
+                before,
+            }) = then
+            else {
+                return Ok(true);
             };
             // The pause is within the send's deadline, and holds the turn.
             let now = std::time::Instant::now();
@@ -646,8 +660,13 @@ impl Pty {
             if std::time::Instant::now() >= until {
                 return Err(stopped(written, Stop::Deadline));
             }
+            if !before() {
+                return Ok(false);
+            }
             let (more, result) = self.write_until(then, idle, Some(until));
-            return result.map_err(|why| stopped(written + more, why));
+            return result
+                .map(|()| true)
+                .map_err(|why| stopped(written + more, why));
         };
         let mut stop = stopped(written, why);
         if let Some(paste) = paste.filter(|paste| written > paste.start && written < paste.end) {

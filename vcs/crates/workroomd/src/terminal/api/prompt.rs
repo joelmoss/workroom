@@ -19,13 +19,31 @@
 //! more newline in the agent's input, never a submit. Codex submits on an Enter right after an
 //! explicit paste, which clears its paste-burst window; Claude Code drops a bracketed paste that a
 //! key follows in the same read (anthropics/claude-code#91205), so the pause lets it read the paste
-//! on its own first.
+//! on its own first. Just before the Enter the agent is looked at again, under the shadow's lock:
+//! one that started working or waiting on the user since the paste is not sent it, and the prompt
+//! is `AgentBusy` with `details` `{"typed": true, "submitted": false}`, its text left in the
+//! agent's input box.
+//!
+//! **What is submitted.** Text already in the agent's input box (a draft the user was typing) is
+//! submitted with the prompt after it: clearing it would destroy the draft. A last word that
+//! starts with `@` or `$` gets a space after it ([`submitted`]), so Enter submits rather than pick
+//! from the completion it opens; a bare `/name` is the agent's own command, which Enter runs as
+//! its command list picks it.
+//!
+//! **Over ssh.** A pane running `ssh` to another machine shows the remote agent's reports, which
+//! come from the `ssh` process group in its foreground. Once that agent has crashed, its last
+//! report stays and `ssh` is still the foreground, so the session still counts as an agent, and a
+//! prompt would go to the remote shell. Unlikely: the agent must die without its `clear`, and a
+//! remote shell's prompt drops a `working` or `blocked` report (OSC 133).
 //!
 //! **`wait`** answers when the turn the prompt starts has ended: a `working` reported after the
-//! prompt's wait was added, which happens before anything is typed and under the locks every read
-//! holds, then the first status other than `working` (`Condition::Turn`). The agent was not
-//! working when the wait was added, or the prompt was refused, so the `done` its last turn left is
-//! never taken for this one's end. The stream says how far it has got, each a reply in the result's
+//! prompt's Enter, then the first status other than `working` (`Condition::Turn`). Its wait is
+//! added before anything is typed, under the locks every read holds, and held (`hold_turn`) until
+//! the Enter marks it, under the shadow's lock (`mark_turn`): a `working` read before the mark (the
+//! agent reading the paste, or a turn it ran on its own meanwhile) is never the prompt's, and the
+//! `done` its last turn left is never taken for this one's end. An agent that has never reported a
+//! status (Codex before its first turn) can't be heard to end a turn: a `wait` there is
+//! `NotAnAgent`. The stream says how far it has got, each a reply in the result's
 //! shape: typed (`status` null, `more`), the turn started (`status` `working`, `more`), and its end
 //! (`more` false), so a caller whose daemon is handed off meanwhile knows whether to wait on for
 //! the next turn or the current one, and never types the prompt again.
@@ -83,12 +101,18 @@ pub fn input() -> Value {
                 "type": "string",
                 "description": "The prompt, typed as a bracketed paste and then Enter. It may \
                                 not hold the paste's end (ESC [ 2 0 1 ~, or its C1 form), and is \
-                                at most 1 MiB.",
+                                at most 1 MiB. Text already in the agent's input box is \
+                                submitted with it, after it. A last word starting `@` or `$` \
+                                gets a space after it, so Enter submits rather than pick a \
+                                completion; a bare `/name` is the agent's own command, which \
+                                Enter runs.",
             },
             "wait": flag(
                 "Answer once the turn the prompt starts has ended: after a `working` reported \
-                 since the prompt, the first status other than `working`, in the last reply's \
-                 `status`. Earlier replies say the prompt was typed and the turn started.",
+                 since the prompt's Enter, the first status other than `working`, in the last \
+                 reply's `status`. Earlier replies say the prompt was typed and the turn started. \
+                 An agent that has never reported a status is `NotAnAgent`: its turn's end \
+                 can't be heard.",
             ),
             "timeout_ms": {
                 "type": "integer",
@@ -277,6 +301,77 @@ fn ready(shadow: &mut Shadow, hyphenated: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// The pause before a prompt's Enter: [`ENTER_PAUSE`], but for a test, which may stretch it
+/// (`WORKROOMD_TEST_ENTER_PAUSE_MS`) so its stand-in agent reports between the paste and the
+/// Enter however busy its machine is. Only a build with `test-support` reads it.
+fn enter_pause() -> Duration {
+    #[cfg(feature = "test-support")]
+    if let Some(millis) = std::env::var("WORKROOMD_TEST_ENTER_PAUSE_MS")
+        .ok()
+        .and_then(|millis| millis.parse().ok())
+    {
+        return Duration::from_millis(millis);
+    }
+    ENTER_PAUSE
+}
+
+/// The text a prompt pastes: as given, but for a last word that starts with `@` or `$`, which
+/// gets one space after it. Codex completes such a word as it is typed (`@` a file, a plugin or a
+/// skill, `$` a skill or an app), and its Enter would pick the popup's first entry rather than
+/// submit; Claude Code's `@` opens a file list too. With the space the word is done, and both
+/// submit. Codex trims what it submits (`trim_submission`, on by default), so the space goes
+/// nowhere; Claude Code's handling could not be read (its package is a native binary), and at
+/// worst its model is sent one trailing space.
+pub fn submitted(text: &str) -> std::borrow::Cow<'_, str> {
+    let ends_open = !text.ends_with(char::is_whitespace)
+        && text
+            .split_whitespace()
+            .last()
+            .is_some_and(|word| word.starts_with(['@', '$']));
+    if ends_open {
+        format!("{text} ").into()
+    } else {
+        text.into()
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn a_last_word_that_opens_a_completion_gets_a_space() {
+    for (text, want) in [
+        ("look at @src/main.rs", "look at @src/main.rs "),
+        ("use $deploy", "use $deploy "),
+        ("@a", "@a "),
+        ("fix @src/main.rs please", "fix @src/main.rs please"),
+        ("look at @src/main.rs ", "look at @src/main.rs "),
+        ("@a\n", "@a\n"),
+        ("costs 5$", "costs 5$"),
+        ("/review", "/review"),
+        ("plain", "plain"),
+    ] {
+        assert_eq!(submitted(text), want, "{text:?}");
+    }
+}
+
+/// The error for a prompt whose agent, in session `hyphenated`, went to `state` between its paste
+/// and its Enter: the Enter wasn't sent, so the text is in the agent's input box, unsubmitted.
+fn not_submitted(hyphenated: &str, state: State) -> ApiError {
+    let why = if state == State::Working {
+        "started working"
+    } else {
+        "began waiting on the user"
+    };
+    let mut error = ApiError::new(
+        kind::AGENT_BUSY,
+        format!(
+            "the coding agent in session {hyphenated} {why} after the prompt's text was pasted, \
+             so Enter was not pressed: the text is in its input box, unsubmitted"
+        ),
+    );
+    error.details = Some(json!({"typed": true, "submitted": false}));
+    error
+}
+
 /// A prompt checked, ready to type.
 struct Prepared {
     asked: Asked,
@@ -291,19 +386,43 @@ impl Prepared {
     }
 
     /// The prompt typed, as a request from `caller`, refused by [`ready`] under the shadow's lock.
+    /// Just before its Enter, the agent is looked at again under that lock: one that started
+    /// working, or waits on the user, since the paste (by itself, or reading it) is not sent the
+    /// Enter, and the text stays in its input box. Otherwise `waiter`, the prompt's turn, is marked
+    /// there, so only a `working` read after it starts the prompt's turn.
     fn type_prompt(
         &self,
         sessions: &SessionStore,
         caller: Option<&str>,
+        waiter: Option<&Waiter>,
     ) -> Result<Typed, ApiError> {
+        let shadow = sessions.shadow(self.id);
+        let hyphenated = self.hyphenated();
+        let mut before_enter = || -> Result<(), ApiError> {
+            // Gone: the Enter's write says so.
+            let Some(shadow) = &shadow else {
+                return Ok(());
+            };
+            let seen = crate::util::lock_or_recover(shadow).seen();
+            if let Some(state @ (State::Working | State::Blocked)) = seen.agent {
+                return Err(not_submitted(hyphenated, state));
+            }
+            if let Some(waiter) = waiter {
+                waiter.mark_turn(seen.reads);
+            }
+            Ok(())
+        };
         send::type_checked(
             sessions,
             &self.session,
             caller,
-            &self.asked.text,
+            &submitted(&self.asked.text),
             &[Key::ENTER],
-            Some(ENTER_PAUSE),
-            |shadow| ready(shadow, self.hyphenated()),
+            Some(send::KeysAfter {
+                pause: enter_pause(),
+                check: &mut before_enter,
+            }),
+            |shadow| ready(shadow, hyphenated),
         )
     }
 
@@ -371,7 +490,7 @@ pub fn start(waits: &mut Waits, call: &Call, writer: &SharedWriter, stream: u32)
     };
     let caller = call.caller.clone();
     if !prepared.asked.wait {
-        let typed = prepared.type_prompt(call.sessions, caller.as_deref());
+        let typed = prepared.type_prompt(call.sessions, caller.as_deref(), None);
         send(
             typed.map(|typed| prepared.result(caller.as_deref(), &typed, Value::Null)),
             false,
@@ -416,10 +535,27 @@ pub fn start(waits: &mut Waits, call: &Call, writer: &SharedWriter, stream: u32)
     }
 }
 
+/// Whether a prompt in session `hyphenated`, as `shadow` holds it, can be waited on: [`ready`],
+/// and its agent has reported a program status, or no turn of its could be heard to end. An agent
+/// known only by its name that has never reported is `NotAnAgent` for a wait.
+fn waitable(shadow: &mut Shadow, hyphenated: &str) -> Result<(), ApiError> {
+    if shadow.seen().agent.is_none() {
+        return Err(ApiError::new(
+            kind::NOT_AN_AGENT,
+            format!(
+                "the coding agent in session {hyphenated} doesn't report its program status, so \
+                 `wait` can't tell when its turn ends; prompt it without `wait`"
+            ),
+        ));
+    }
+    ready(shadow, hyphenated)
+}
+
 /// Adds the wait for the turn the prompt will start to its session, under the locks every read
-/// holds, refusing a session past its waits or not [`ready`]; and takes a place among the
-/// connection's and the daemon's waits. Readiness first, as a precondition always comes before
-/// `Busy`, then again as the wait is added, where it decides.
+/// holds, refusing a session past its waits or not [`waitable`]; and takes a place among the
+/// connection's and the daemon's waits. The session first, as a precondition always comes before
+/// `Busy`, then again as the wait is added, where it decides. The wait hears no `working` until
+/// the prompt's Enter marks it (`Waiter::hold_turn`).
 fn add(
     waits: &mut Waits,
     sessions: &SessionStore,
@@ -433,18 +569,17 @@ fn add(
         )
     };
     let shadow = sessions.shadow(prepared.id).ok_or_else(ended)?;
-    ready(&mut crate::util::lock_or_recover(&shadow), hyphenated)?;
+    waitable(&mut crate::util::lock_or_recover(&shadow), hyphenated)?;
     let slot = wait::admit(waits)?;
     let most = waits.limits.session;
     let added = sessions.add_waiter(prepared.id, |shadow, held| {
         if held.len() >= most {
             return Err(wait::busy(held.len(), &format!("session {hyphenated}")));
         }
-        ready(shadow, hyphenated)?;
-        Ok(Arc::new(Waiter::new(
-            Condition::Turn(Turn::Next),
-            shadow.seen(),
-        )))
+        waitable(shadow, hyphenated)?;
+        let waiter = Waiter::new(Condition::Turn(Turn::Next), shadow.seen());
+        waiter.hold_turn();
+        Ok(Arc::new(waiter))
     });
     match added {
         None => Err(ended()),
@@ -474,7 +609,7 @@ fn run(
             "the prompt ran out of time before it was typed, and nothing was typed",
         )));
     }
-    let typed = match prepared.type_prompt(sessions, caller) {
+    let typed = match prepared.type_prompt(sessions, caller, Some(waiter)) {
         Ok(typed) => typed,
         Err(error) => return Some(Err(error)),
     };
