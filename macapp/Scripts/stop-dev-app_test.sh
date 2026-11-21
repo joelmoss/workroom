@@ -171,6 +171,8 @@ expect_alive "$other_app" "another workroom's app, on the second run"
 PLAIN_ID="com.developwithstyle.workroom.dev"
 OTHER_ID="com.developwithstyle.workroom.dev.wr-quiet-fern-0a1b2c"
 OTHER="$TMP/other/Workroom Dev.app/Contents/MacOS"
+THIS_RES="$TMP/this/Workroom Dev.app/Contents/Resources"
+OTHER_RES="$TMP/other/Workroom Dev.app/Contents/Resources"
 SUPPORT="/Users/someone/Library/Application Support"
 cat >"$TMP/table" <<EOF
 101 $THIS/Workroom Dev
@@ -183,6 +185,15 @@ cat >"$TMP/table" <<EOF
 108 $OTHER/workroomd serve --socket $SUPPORT/$OTHER_ID/sessions/workroomd
 109 $THIS/wr-agent serve --socket $SUPPORT/$DEV_ID/sessions/agent.sock
 110 $THIS/wr-agent serve --socket /tmp/workroom-501-$PLAIN_ID/agent.sock
+111 $THIS_RES/workroom serve --socket $SUPPORT/$DEV_ID/sessions/workroomd
+112 $THIS_RES/workroom serve --socket /tmp/workroom-501-$PLAIN_ID/workroomd
+113 $OTHER_RES/workroom serve --socket /tmp/workroom-501-$DEV_ID/workroomd --handoff /tmp/table
+114 $THIS_RES/workroom attach
+115 $THIS_RES/workroom run-supervisor --status /tmp/x/run.status -- make dev
+116 $THIS_RES/workroom list --json
+117 $THIS_RES/workroom events --follow
+118 $THIS_RES/workroom
+119 $OTHER_RES/workroom serve --socket $SUPPORT/$OTHER_ID/sessions/workroomd
 EOF
 got="$(STOP_DEV_APP_PS="$TMP/table" STOP_DEV_APP_DRY_RUN=1 \
   sh "$SCRIPT" "$TMP/this/Workroom Dev.app" | sed -n 's/^stop //p' | sort -n | tr '\n' ' ')"
@@ -190,8 +201,11 @@ got="$(STOP_DEV_APP_PS="$TMP/table" STOP_DEV_APP_DRY_RUN=1 \
 # goes by its bundle; 107 names no socket shape we know, so goes by its bundle; 109 is a daemon a
 # build from before the rename (#525) started, still serving this id. Not 103 or 110: each lives
 # in this bundle but serves the plain id — stopping it would end the project checkout's sessions.
-if [ "$got" != "101 102 104 105 107 109 " ]; then
-  echo "FAIL: stopped '$got', want '101 102 104 105 107 109 '"
+# The one binary in Contents/Resources (#681, ADR 0078): 111 serves this id, 113 this id from
+# another bundle, 114 and 115 are this bundle's attach client and run supervisor. Not 112 (the
+# plain id), 119 (another id), nor 116 to 118: CLI commands of the same binary are no helper.
+if [ "$got" != "101 102 104 105 107 109 111 113 114 115 " ]; then
+  echo "FAIL: stopped '$got', want '101 102 104 105 107 109 111 113 114 115 '"
   fails=$((fails + 1))
 fi
 
