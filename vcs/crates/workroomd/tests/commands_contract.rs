@@ -6,19 +6,21 @@
 //! Without `WORKROOM_BIN` the binary under test is this crate's own `workroom`. A group's tests
 //! are `#[ignore]`d until its commands are ported to Rust, so a plain `cargo test` runs only the
 //! ported groups (`version_`, `update_`, `list_`, `config_`, `include_archive_`, `base_`, `host_`,
-//! `trust_`, `completion_`, `add_project_`, `delete_project_` and `claim_provisioned_` today).
-//! `make contract-test` builds the Go CLI and runs every test against it with `--include-ignored`.
+//! `trust_`, `completion_`, `add_project_`, `delete_`, `delete_project_` and `claim_provisioned_`
+//! today). `make contract-test` builds the Go CLI and runs every test against it with
+//! `--include-ignored`.
 //!
 //! The Mac-only commands' groups (`list_`, `config_`, `include_archive_`, `base_`, `host_`,
-//! `trust_`, `add_project_`, `delete_project_`, `claim_provisioned_`) are ignored off the Mac too,
+//! `trust_`, `add_project_`, `delete_`, `delete_project_`, `claim_provisioned_`) are ignored off
+//! the Mac too,
 //! where the Rust binary answers them with `MacOnly` (ADR 0078): a plain `cargo test` on Linux runs
 //! `version_`, `update_` and `completion_`, which work anywhere, and
 //! `--include-ignored` against the Go CLI still runs everything.
 //!
 //! Tests are named for their command group (`version_`, `update_`, `list_`, `config_`,
-//! `include_archive_`, `base_`, `host_`, `trust_`, `completion_`, `add_project_`,
-//! `delete_project_`, `claim_provisioned_`), so a port can run only its own group's names against
-//! Rust.
+//! `include_archive_`, `base_`, `host_`, `trust_`, `completion_`, `add_project_`, `delete_`
+//! (whose filter takes `delete_project_` too), `delete_project_`, `claim_provisioned_`), so a port
+//! can run only its own group's names against Rust.
 //!
 //! The JSON goldens are `testdata/contracts`, the files Go's contract tests
 //! (`cmd/contract_test.go`) and the app's `CLIContractTests.swift` check too, with the temporary
@@ -4254,7 +4256,6 @@ fn run_without_a_terminal(home: &Home, cwd: &Path, args: &[&str]) -> Run {
 /// `--force`), and so does its entry; its branch, the project's scripts and a folder of the
 /// user's beside it in the workrooms folder stay.
 #[test]
-#[ignore = "not ported to Rust yet"]
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "Mac only: here the Rust binary is MacOnly"
@@ -4305,7 +4306,6 @@ fn delete_json_matches_the_goldens() {
 /// streamed first, and the workroom, its uncommitted work and its entry stay. The app's Delete
 /// Anyway (`--skip-teardown`) then deletes it without running the script.
 #[test]
-#[ignore = "not ported to Rust yet"]
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "Mac only: here the Rust binary is MacOnly"
@@ -4353,7 +4353,6 @@ fn delete_stops_at_a_failed_teardown_and_skip_teardown_deletes_anyway() {
 /// The app's Cancel (SIGTERM) during the teardown ends the script's tree and still writes the
 /// envelope, the teardown's failure (exit 5); the workroom stays.
 #[test]
-#[ignore = "not ported to Rust yet"]
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "Mac only: here the Rust binary is MacOnly"
@@ -4387,7 +4386,6 @@ fn delete_cancelled_during_the_teardown_reports_it_failed_and_keeps_the_workroom
 /// isn't there, or a project folder that isn't one, is reported before a wrong `--confirm` is,
 /// as Go checks them first; `--pretend` checks no `--confirm` at all. Nothing is touched.
 #[test]
-#[ignore = "not ported to Rust yet"]
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "Mac only: here the Rust binary is MacOnly"
@@ -4579,7 +4577,6 @@ fn delete_refuses_without_a_matching_confirmation() {
 /// A remote workroom whose host is still there is refused, and an entry git has no worktree for
 /// whose folder is a checkout (another project's worktree) is `WorkspaceNotFound`, kept.
 #[test]
-#[ignore = "not ported to Rust yet"]
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "Mac only: here the Rust binary is MacOnly"
@@ -4708,7 +4705,6 @@ fn delete_only_forgets_what_isnt_its_worktree() {
 /// the teardown ran, as Go runs it first; a locked worktree is refused the same way. Each keeps
 /// its files and its entry.
 #[test]
-#[ignore = "not ported to Rust yet"]
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "Mac only: here the Rust binary is MacOnly"
@@ -4803,7 +4799,6 @@ fn delete_never_removes_a_folder_git_wont_remove_for_the_project() {
 /// app to show and approve, and nothing is deleted; `--skip-teardown` runs none and deletes. With
 /// no terminal to ask on, a person's delete is refused the same way.
 #[test]
-#[ignore = "not ported to Rust yet"]
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "Mac only: here the Rust binary is MacOnly"
@@ -4855,7 +4850,6 @@ fn delete_refuses_an_unapproved_teardown_unless_skipped() {
 /// A person's delete says what it did, the teardown's output in a panel: Go's
 /// `TestDeleteOutput`. `--verbose` names each step; `--pretend` runs and removes nothing.
 #[test]
-#[ignore = "not ported to Rust yet"]
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "Mac only: here the Rust binary is MacOnly"
@@ -4969,7 +4963,6 @@ fn delete_human_text_says_what_it_did() {
 /// Without `--confirm` a person is asked, so with no terminal to ask on the delete fails, and
 /// without a name too (the picker); nothing is deleted.
 #[test]
-#[ignore = "not ported to Rust yet"]
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "Mac only: here the Rust binary is MacOnly"

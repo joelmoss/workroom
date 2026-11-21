@@ -4,8 +4,8 @@
 //!
 //! The Rust copy of Go's `jsonLogWriter` and `crSplitter` (`cmd/jsonlog.go`), event for event.
 //!
-//! `delete-project`'s teardowns (`teardown`) and `add-project --clone`'s progress
-//! (`add_project`) write to it; `create` (#677) and `delete` (#678) will too.
+//! `delete`'s and `delete-project`'s teardowns (`teardown`) and `add-project --clone`'s progress
+//! (`add_project`) write to it; `create` (#677) will too.
 
 use std::io::Write;
 

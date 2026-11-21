@@ -13,7 +13,8 @@
 //! `base --global` are ported (#671), on `config`, the Rust reader and writer of config.json, and
 //! so are `include-archive` (#675), the rest of `base` and `host` (#673), the app's project
 //! commands, `add-project`, `claim-provisioned` and `delete-project` (#672), and `trust`,
-//! `trust status` and `untrust` (#674). `update` is ported too (#679), which runs anywhere.
+//! `trust status` and `untrust` (#674), and `delete` (#678). `update` is ported too (#679), which
+//! runs anywhere.
 //!
 //! The terminal API's commands (#360, ADR 0079) are born here and run anywhere: each is a thin
 //! client of the daemon's terminal API (`terminal_api`).
@@ -31,6 +32,7 @@ mod claim;
 mod complete;
 mod completion;
 mod config;
+mod delete;
 mod delete_project;
 mod envelope;
 mod git;
@@ -39,6 +41,7 @@ mod include_archive;
 mod kind;
 mod list;
 mod log;
+mod panel;
 mod sessions;
 mod start;
 mod teardown;
@@ -557,6 +560,13 @@ const COMMANDS: &[Command] = &[
     },
     Command {
         aliases: &["d"],
+        long: Some(
+            "Delete an existing workroom. When run without a name, shows an interactive \
+             multi-select menu.",
+        ),
+        // cobra's `MaximumNArgs(1)`, which `run` checks.
+        arity: Arity::Own,
+        implementation: Implementation::Ported(delete::run),
         ..stub(
             "delete",
             "delete [NAME]",
@@ -1510,6 +1520,20 @@ mod tests {
             &["add-project", "/x", "/y", "--json"],
             &["add-project", "/tmp/x", "--json", "--clone", "file:///y"],
             &["add-project", "/tmp/x", "--json", "--create"],
+            // Before its arguments are counted or its confirmation checked, and it deletes nothing.
+            &["delete", "a", "b", "--json"],
+            &["delete", "--json"],
+            &["d", "calm-river", "--json", "--confirm", "nope"],
+            &[
+                "delete",
+                "calm-river",
+                "--json",
+                "--confirm",
+                "calm-river",
+                "--project",
+                "/x",
+                "--skip-teardown",
+            ],
             // Before its arguments are counted, and it deletes nothing.
             &["delete-project", "/x", "/y", "--json"],
             &[

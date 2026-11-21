@@ -325,7 +325,7 @@ fn absent(scripts: &[Script]) -> Vec<String> {
 
 /// Human output's colours, as Go's `ui` helpers (fatih/color) write them, when stdout takes them.
 #[derive(Clone, Copy)]
-struct Paint(bool);
+pub(super) struct Paint(pub(super) bool);
 
 impl Paint {
     fn code(self, code: &str, text: &str) -> String {
@@ -336,33 +336,33 @@ impl Paint {
         }
     }
 
-    fn green(self, text: &str) -> String {
+    pub(super) fn green(self, text: &str) -> String {
         self.code("32", text)
     }
 
-    fn red(self, text: &str) -> String {
+    pub(super) fn red(self, text: &str) -> String {
         self.code("31", text)
     }
 
-    fn yellow(self, text: &str) -> String {
+    pub(super) fn yellow(self, text: &str) -> String {
         self.code("33", text)
     }
 
-    fn dim(self, text: &str) -> String {
+    pub(super) fn dim(self, text: &str) -> String {
         self.code("90", text)
     }
 
-    fn bold_blue(self, text: &str) -> String {
+    pub(super) fn bold_blue(self, text: &str) -> String {
         self.code("1", &self.code("34", text))
     }
 }
 
 /// The width of a panel's top and bottom rules, as Go's `ui.LogPanel` draws them.
-const PANEL_WIDTH: usize = 60;
+pub(super) const PANEL_WIDTH: usize = 60;
 
 /// Shows `sc`, a script this Mac has not approved, on `out`, in a panel titled with its file, and
 /// asks on `input` whether to approve and run it. Go's `approveScript`.
-fn approve_script(
+pub(super) fn approve_script(
     out: &mut impl Write,
     input: &mut impl BufRead,
     paint: Paint,
@@ -400,7 +400,7 @@ fn approve_script(
 /// Asks `question` on `out` and reads the answer from `input`: yes for `y` or `yes`, in any case,
 /// and no for anything else, an empty answer included. Input that ends before an answer is the
 /// person giving up, which ends the command, as Go's prompt (charmbracelet/huh) reports Ctrl-C.
-fn confirm(
+pub(super) fn confirm(
     out: &mut impl Write,
     input: &mut impl BufRead,
     question: &str,
