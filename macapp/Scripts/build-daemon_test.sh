@@ -121,6 +121,17 @@ expect_archs() {
       fails=$((fails + 1))
     fi
   fi
+  expect_notices "ARCHS='$2'" "$OUT"
+}
+
+# expect_notices <label> <binary>: the binary carries its third-party notices (#714), which a
+# remote host gets no other copy of. main.rs keeps them from being optimised away.
+expect_notices() {
+  if ! grep -q 'Third-party software notices' "$2" 2>/dev/null \
+    || ! grep -q 'Rust crates under MIT: ' "$2" 2>/dev/null; then
+    echo "FAIL: $1: $(basename "$2") does not carry its third-party notices"
+    fails=$((fails + 1))
+  fi
 }
 
 # expect_failure <case-name> <ARCHS value> <substring the error must contain>
@@ -195,6 +206,7 @@ expect_linux_daemons() {
         fails=$((fails + 1))
         ;;
     esac
+    expect_notices "$1" "$WORK/out-$1/Resources/workroomd-linux-$arch"
   done
 }
 
