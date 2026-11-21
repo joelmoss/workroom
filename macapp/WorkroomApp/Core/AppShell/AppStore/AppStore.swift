@@ -448,7 +448,7 @@ final class AppStore: ObservableObject {
     let projectPath: String
     let path: String
     switch sid {
-    case .project, .creation, .standalone:
+    case .project, .creation, .standalone, .terminalGroup:
       return nil
     case .root(let p):
       projectPath = p
@@ -1306,7 +1306,7 @@ final class AppStore: ObservableObject {
     case .creation(let path, _):
       let project = projectStore.project(at: path)?.displayName ?? defaultWindowTitle
       return "\(project) — New workroom"
-    case .standalone:
+    case .standalone, .terminalGroup:
       return sid.flatMap(target(for:))?.title ?? defaultWindowTitle
     case .project, nil:
       return defaultWindowTitle
@@ -1808,6 +1808,16 @@ final class AppStore: ObservableObject {
             let sid = terminalsSection.addStandalone(id: id).sidebarID
             if let standalone = sid.flatMap(target(for:)) { terminals.ensureTab(for: standalone) }
           }
+          // A named terminal group (#658) with two terminals, beside the workroom's tab.
+          if UITestFixture.terminalGroup,
+            terminalsSection.group(.terminalGroup(UITestFixture.terminalGroupID)) == nil,
+            let sid = terminalsSection.addGroup(named: "Ops", id: UITestFixture.terminalGroupID)
+              .sidebarID,
+            let group = self.target(for: sid)
+          {
+            terminals.ensureTab(for: group)
+            _ = terminals.addTab(for: group)
+          }
           // Terminal-strip overflow scenario (pinned "+" XCUITest, issue #129): `ensureTab` opened the
           // first tab, so add the rest.
           for _ in 1..<UITestFixture.terminalTabs { _ = terminals.addTab(for: target) }
@@ -2071,7 +2081,7 @@ final class AppStore: ObservableObject {
       return projects.contains { $0.id == path }
     case .workroom(let path, let name):
       return projects.first { $0.id == path }?.workrooms.contains { $0.id == name } ?? false
-    case .project, .creation, .standalone:
+    case .project, .creation, .standalone, .terminalGroup:
       // A create's pane exists while its run does, which `reconcileWindow` checks itself. A
       // Terminals-section row is the section's to answer (`liveSelection`).
       return false
@@ -2888,7 +2898,7 @@ final class AppStore: ObservableObject {
     case .creation(_, let id):
       return WorkroomLabel(
         project: project, workroom: lifecycle.creationRuns[id]?.name ?? "New workroom")
-    case .standalone:
+    case .standalone, .terminalGroup:
       return WorkroomLabel(project: target(for: sid)?.title ?? TerminalsSection.untitled)
     case .project:
       return WorkroomLabel(project: project)
@@ -2913,7 +2923,7 @@ final class AppStore: ObservableObject {
       guard let project, let workroom = project.workrooms.first(where: { $0.name == name })
       else { return "" }
       return WorkroomLabel(project: project.displayName, workroom: workroom.displayName).full
-    case .creation, .standalone: return ""
+    case .creation, .standalone, .terminalGroup: return ""
     }
   }
 
@@ -2923,7 +2933,7 @@ final class AppStore: ObservableObject {
     switch id {
     case .root(let path), .workroom(let path, _), .project(let path), .creation(let path, _):
       return path
-    case .standalone, .none: return nil
+    case .standalone, .terminalGroup, .none: return nil
     }
   }
 

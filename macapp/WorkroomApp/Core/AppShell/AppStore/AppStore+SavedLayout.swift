@@ -249,7 +249,8 @@ extension AppStore {
   }
 
   /// Whether the launch sweep spares the session tagged `tag`: its target is still here, or the
-  /// listing was empty and the tag is not a standalone terminal's.
+  /// listing was empty and the tag is not a Terminals-section row's (a standalone terminal's or a
+  /// group's).
   func sessionSurvivesSweep(_ tag: String, in projects: [Project]) -> Bool {
     sessionSurvivesSweep(tag, listedNothing: projects.isEmpty)
   }
@@ -257,8 +258,8 @@ extension AppStore {
   private func sessionSurvivesSweep(_ tag: String, listedNothing: Bool) -> Bool {
     if sessionTagResolves(tag) { return true }
     guard listedNothing else { return false }
-    if case .standalone = TargetID(encoded: tag) { return false }
-    return true
+    // The Terminals section is known whatever the project listing says.
+    return TargetID(encoded: tag)?.sidebarID?.isInTerminalsSection != true
   }
 
   /// Whether a session tagged `tag` belongs to a target that is still here, which the launch sweep
