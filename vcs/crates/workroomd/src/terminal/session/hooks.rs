@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::{Described, SessionId, SessionInfo};
+use super::{ClientInfo, Described, SessionId, SessionInfo};
 use crate::terminal::program_status::{Hub, Store};
 use crate::terminal::run::Runs;
 use crate::terminal::screens::KeptScreens;
@@ -32,8 +32,9 @@ pub struct Hooks {
     /// What a remote pane's session attached from the Mac is built from (ADR 0074).
     pub host: crate::terminal::host_session::HostSource,
     /// The terminal API's events (#687): each session created and ended, each news of its coding
-    /// agent and each run transition, numbered, for `events.subscribe`. Told only with every
-    /// session lock released, as program status is.
+    /// agent, each run transition and each client attaching and leaving (#688), numbered, for
+    /// `events.subscribe`. Told only with every session lock released, as program status is, but a
+    /// client's coming and going, told under the attachment lock that changed it.
     pub events: Arc<crate::terminal::events::Hub>,
 }
 
@@ -122,6 +123,18 @@ impl Hooks {
         } = published;
         self.program_status.publish(id, event, blocked);
         self.events.program_status(id, agent);
+    }
+
+    /// A client attached to `id` (#688), under the attachment lock that registered it.
+    pub(super) fn client_attached(&self, id: SessionId, client: &ClientInfo) {
+        self.events
+            .client_attached(id, crate::terminal::api::client_identity_json(client));
+    }
+
+    /// The client numbered `client` left its session: it detached, or was dropped for not
+    /// reading (#688). Under the attachment lock that removed it.
+    pub(super) fn client_detached(&self, client: u64) {
+        self.events.client_detached(client);
     }
 
     /// The session's reader has ended it, with its shell's exit code when it saw one.

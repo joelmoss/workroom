@@ -416,3 +416,98 @@ fn an_uncarried_hand_off_takes_the_sessions_as_they_are() {
     assert!(sessions.contains_key(&id(1)));
     assert!(!hub.adopt(b"not json"));
 }
+
+fn client(number: u64) -> Value {
+    json!({"id": number, "kind": "pane", "hostname": "mac-a", "attached_at_ms": 1})
+}
+
+/// A client attaching and detaching is an event with its session and scope (#688), each told
+/// once whichever way it went, and a snapshot's session holds the clients attached as of its
+/// revision. A session's end takes its clients with it, with no event each.
+#[test]
+fn clients_attaching_and_detaching_are_events_and_in_the_snapshot() {
+    let hub = Hub::default();
+    hub.created(id(1), listing(1, "wr-1"));
+    hub.client_attached(id(1), client(7));
+    hub.client_attached(id(1), client(8));
+    hub.client_attached(id(9), client(9));
+    let mut cursor = Cursor::new(Start::Since {
+        boot: hub.boot().to_hyphenated(),
+        revision: 1,
+    });
+    assert!(matches!(next(&hub, &mut cursor), Next::Resumed { .. }));
+    let live = events(next(&hub, &mut cursor));
+    assert_eq!(
+        names(&live),
+        [name::CLIENT_ATTACHED, name::CLIENT_ATTACHED],
+        "no session 9: {live:?}"
+    );
+    assert_eq!(live[0]["session"], id(1).to_hyphenated());
+    assert_eq!(live[0]["scope"], json!({"kind": "workroom", "id": "wr-1"}));
+    assert_eq!(live[0]["client"], client(7));
+
+    hub.client_detached(7);
+    hub.client_detached(7);
+    let live = events(next(&hub, &mut cursor));
+    assert_eq!(names(&live), [name::CLIENT_DETACHED], "{live:?}");
+    assert_eq!(live[0]["client"], client(7));
+    assert_eq!(live[0]["session"], id(1).to_hyphenated());
+
+    let Next::Snapshot { sessions, .. } = next(&hub, &mut Cursor::new(Start::Fresh)) else {
+        panic!("no snapshot");
+    };
+    assert_eq!(sessions[&id(1)].clients, [client(8)]);
+    let snapshot = session_event(name::SESSION, id(1), &sessions[&id(1)]);
+    assert_eq!(snapshot["clients"], json!([client(8)]));
+
+    hub.ended(id(1), Some(0));
+    hub.client_detached(8);
+    assert_eq!(names(&events(next(&hub, &mut cursor))), [name::ENDED]);
+}
+
+/// A hand-off closes every client's connection, so the next program tells each client the events
+/// carried as detached, before any of its own attach, and numbers its clients past them. A table
+/// from before clients were carried adopts with none.
+#[test]
+fn a_hand_off_tells_every_carried_client_detached() {
+    let old = Hub::default();
+    old.created(id(1), listing(1, "wr-1"));
+    old.created(id(2), listing(2, "wr-1"));
+    old.client_attached(id(1), client(3));
+    old.client_attached(id(2), client(12));
+    let carried = old.carry();
+
+    let new = Hub::default();
+    assert!(new.adopt(&carried));
+    let highest = new.reconcile(
+        vec![(id(1), listing(1, "wr-1")), (id(2), listing(2, "wr-1"))],
+        true,
+    );
+    assert_eq!(highest, 12);
+    let mut resumed = Cursor::new(Start::Since {
+        boot: old.boot().to_hyphenated(),
+        revision: 4,
+    });
+    assert!(matches!(next(&new, &mut resumed), Next::Resumed { .. }));
+    let live = events(next(&new, &mut resumed));
+    assert_eq!(
+        names(&live),
+        [name::CLIENT_DETACHED, name::CLIENT_DETACHED],
+        "{live:?}"
+    );
+    let told: Vec<&Value> = live.iter().map(|event| &event["client"]["id"]).collect();
+    assert_eq!(told, [3, 12]);
+
+    // A table whose sessions carry no clients, as one from before them.
+    let mut table: Value = serde_json::from_slice(&old.carry()).unwrap();
+    for session in table["sessions"].as_array_mut().unwrap() {
+        session[1].as_object_mut().unwrap().remove("clients");
+    }
+    let older = Hub::default();
+    assert!(older.adopt(&serde_json::to_vec(&table).unwrap()));
+    assert_eq!(
+        older.reconcile(vec![(id(1), listing(1, "wr-1"))], true),
+        0,
+        "no clients carried"
+    );
+}

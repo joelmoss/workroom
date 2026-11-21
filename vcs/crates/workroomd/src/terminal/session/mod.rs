@@ -467,6 +467,8 @@ pub struct TakenScreen {
 ///       ├─ Waiter.state     a wait starting on a session whose reader has just ended
 ///       ├─ encoders        the image encoders' sender: `attach` starting a transfer
 ///       ├─ writer           a connection's writer: `attach`'s repaint
+///       ├─ events Hub.state a client attaching or leaving (`Hooks::client_attached`, #688), and
+///       │                   a hand-off carrying the events (`Hub::carry`)
 ///       └─ KeptScreens.work raised on output and on a resize (`Hooks::screen_changed`)
 /// ```
 ///
@@ -478,8 +480,9 @@ pub struct TakenScreen {
 /// `Subscriber.queue` as a publish takes them (`Hub::publish` copies the list first, and publishes
 /// only with every session lock released); the terminal API's `events::Hub.state` as an event is
 /// made (`Hooks`, with every session lock released, a reader's end under `TERMINATING`'s read
-/// lock) and as a subscriber reads, which take nothing under it, and under the freeze's locks only
-/// as a hand-off carries it (`Hub::carry`); a
+/// lock) and as a subscriber reads, which take nothing under it, and under a session's attachment
+/// lock only as a client arrives or leaves, so the events' clients change in the order the
+/// session's do (#688), and as a hand-off carries it under the freeze's locks (`Hub::carry`); a
 /// `Waiter.state` as a reader, the runs watcher or a
 /// program status change tells it what happened, and as its request waits on it, each with every
 /// session lock released; a `Waiter.matcher` by its wait's thread alone, which takes

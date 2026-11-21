@@ -348,9 +348,9 @@ pub const METHODS: &[Method] = &[
         name: events::NAME,
         summary: "The daemon's events, streamed: the sessions as they are (one `session` event \
                   each, then `snapshot-complete`), then each session created, ended and moved \
-                  to another workroom, each change of its coding agent's program status and \
-                  each run state, as they happen, every one with the `boot` and `revision` a caller resumes from with \
-                  `since`. By default the caller's scope's; `workroom`, `all`, `session` and \
+                  to another workroom, each change of its coding agent's program status, \
+                  each run state and each client attaching and detaching, as they happen, every \
+                  one with the `boot` and `revision` a caller resumes from with `since`. By default the caller's scope's; `workroom`, `all`, `session` and \
                   `types` say whose and which. The stream goes on until the caller hangs up. A \
                   connection and the daemon each hold a few subscriptions at once, and one past \
                   them is `Busy`.",

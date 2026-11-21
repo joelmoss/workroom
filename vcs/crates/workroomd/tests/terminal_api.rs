@@ -3134,6 +3134,115 @@ fn events_are_a_snapshot_then_snapshot_complete_then_live_events_in_order() {
     events.stop();
 }
 
+/// `events.subscribe`'s output schema, as the daemon at `socket` publishes it.
+fn events_schema(socket: &Path) -> Value {
+    let described =
+        Api::connect(socket).call("api.describe", json!({"method": "events.subscribe"}));
+    described["result"]["methods"][0]["output"].clone()
+}
+
+/// Each client attaching and detaching is an event (#688), with its session, scope and the client
+/// as it attached, in the snapshot's sessions too, and `--type` keeps to them: a pane, a
+/// `workroom attach` someone ran and the app's connection, each leaving as it goes, its client
+/// the one that attached. Every event matches the schema `api describe` publishes.
+#[test]
+fn events_tell_each_client_attaching_and_detaching() {
+    let workspace = Workspace::new("api-events-clients");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let _pane = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+
+    let mut events = Events::start(&socket, &["--type", "client.attached,client.detached"]);
+    let first = events.until("the snapshot", |e| is(e, "session", SHELL));
+    let pane = first["clients"]
+        .as_array()
+        .and_then(|clients| clients.first())
+        .cloned()
+        .unwrap_or_else(|| panic!("the pane is not in the snapshot: {first}"));
+    assert_eq!(pane["kind"], "pane", "{first}");
+    assert_eq!(pane["hostname"], this_hostname().as_str(), "{first}");
+    events.until("snapshot-complete", |e| e["event"] == "snapshot-complete");
+
+    let cli = attach_with_env(&socket, SHELL, &[], &[]);
+    let attached = events.until("the cli's attach", |e| is(e, "client.attached", SHELL));
+    assert_eq!(attached["client"]["kind"], "cli", "{attached}");
+    assert_eq!(attached["scope"], json!({"kind": "workroom", "id": "wr-1"}));
+    let app = attach_as_app(&socket, SHELL, "mac-b.local", (100, 30));
+    let app_attached = events.until("the app's attach", |e| is(e, "client.attached", SHELL));
+    assert_eq!(app_attached["client"]["kind"], "app", "{app_attached}");
+    assert_eq!(app_attached["client"]["hostname"], "mac-b.local");
+    for key in ["id", "kind", "hostname", "attached_at_ms"] {
+        assert!(
+            app_attached["client"].get(key).is_some(),
+            "{key}: {app_attached}"
+        );
+    }
+
+    drop(app);
+    let left = events.until("the app leaving", |e| is(e, "client.detached", SHELL));
+    assert_eq!(left["client"], app_attached["client"], "{left}");
+    drop(cli);
+    let left = events.until("the cli leaving", |e| is(e, "client.detached", SHELL));
+    assert_eq!(left["client"], attached["client"], "{left}");
+    let live: Vec<&Value> = events
+        .seen
+        .iter()
+        .skip_while(|e| e["event"] != "snapshot-complete")
+        .skip(1)
+        .collect();
+    assert_eq!(live.len(), 4, "each once: {:#?}", events.seen);
+    assert_numbered(&events.seen, &first["boot"]);
+    let schema = events_schema(&socket);
+    for event in &events.seen {
+        assert_eq!(violation(&schema, event, "event"), None, "{event}");
+    }
+    events.stop();
+}
+
+/// A hand-off closes every client's connection, so the next program tells each client the events
+/// held as detached, and a client attaching to it is numbered past every one before (#688): a
+/// stream that goes on across the hand-off hears the pane leave and come back as another client.
+#[test]
+fn clients_detach_across_a_hand_off_and_attach_again_numbered_past_the_last() {
+    if !has_terminal_state() {
+        eprintln!("skipped: a hand-off needs a daemon built with terminal-state");
+        return;
+    }
+    let workspace = Workspace::new("api-clients-handoff");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let _pane = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+    let mut events = Events::start(&socket, &["--type", "client.attached,client.detached"]);
+    let first = events.until("the snapshot", |e| is(e, "session", SHELL));
+    let before = first["clients"][0]["id"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("no client in the snapshot: {first}"));
+    events.until("snapshot-complete", |e| e["event"] == "snapshot-complete");
+
+    hand_off(&socket, &workspace.dir);
+    let left = events.until("the pane leaving", |e| is(e, "client.detached", SHELL));
+    assert_eq!(left["client"], first["clients"][0], "{left}");
+    let _again = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    let back = events.until("the pane back", |e| is(e, "client.attached", SHELL));
+    let after = back["client"]["id"].as_u64().expect("an id");
+    assert!(after > before, "{after} after {before}");
+    assert_numbered(&events.seen, &first["boot"]);
+    assert_eq!(events.count("snapshot-complete"), 1, "{:#?}", events.seen);
+    assert_eq!(events.count("client.detached"), 1, "{:#?}", events.seen);
+    let listed: Vec<Value> = clients_of(&socket, SHELL);
+    assert_eq!(
+        listed
+            .iter()
+            .map(|client| client["id"].as_u64())
+            .collect::<Vec<_>>(),
+        [Some(after)],
+        "{listed:?}"
+    );
+    events.stop();
+}
+
 /// The events a `workroom events` that `shell` runs in the background writes to `name` under
 /// `dir`, read once its snapshot is complete.
 fn events_in_pane(shell: &mut Spawned, dir: &Path, name: &str, args: &str) -> std::path::PathBuf {
@@ -3301,9 +3410,11 @@ fn events_go_on_across_a_hand_off_from_their_boot_and_revision() {
     signal(&events.child, libc::SIGCONT);
 
     events.until("the third session", |e| is(e, "session.created", RUN));
+    // The sessions' own events: their clients' are
+    // `clients_detach_across_a_hand_off_and_attach_again_numbered_past_the_last`'s.
     let live: Vec<(String, String)> = told(&events.seen)
         .into_iter()
-        .filter(|(name, _)| name.contains('.'))
+        .filter(|(name, _)| name.starts_with("session."))
         .collect();
     assert_eq!(
         live,
@@ -3523,7 +3634,8 @@ fn events_keep_to_the_callers_workroom_and_to_each_filter() {
     }
 
     let mut elsewhere = open(&socket, RUN, "elsewhere", "wr-2", &workspace.dir);
-    second.until("its session created", |e| is(e, "session.created", RUN));
+    // Its client follows it at once, the pane that created it (#688).
+    second.until("its pane attached", |e| is(e, "client.attached", RUN));
     type_line(&mut other, "exit 4");
     named.until("its session's end", |e| is(e, "session.ended", OTHER));
     type_line(&mut elsewhere, "exit 5");
@@ -3562,6 +3674,7 @@ fn events_keep_to_the_callers_workroom_and_to_each_filter() {
         told(&events_written(&all)),
         with_snapshot(&[
             pair("session.created", RUN),
+            pair("client.attached", RUN),
             pair("session.ended", OTHER),
             pair("session.ended", RUN)
         ]),
@@ -3577,6 +3690,7 @@ fn events_keep_to_the_callers_workroom_and_to_each_filter() {
         [
             complete.clone(),
             pair("session.created", RUN),
+            pair("client.attached", RUN),
             pair("session.ended", RUN)
         ],
         "--workroom"
