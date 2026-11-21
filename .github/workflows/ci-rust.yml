@@ -27,9 +27,8 @@ jobs:
         with:
           persist-credentials: false
 
-      # Pinned for the lint gates below, unlike the `app` job (which deliberately tracks the runner's
-      # rustc so a toolchain bump invalidates its output cache). rustfmt's layout and clippy's lint set
-      # both change between releases, so an unpinned toolchain makes `--check` and `-D warnings` fail
+      # Pinned for the lint gates below, as the app's daemon build is (setup-daemon-build, #714).
+      # rustfmt's layout and clippy's lint set both change between releases, so an unpinned toolchain makes `--check` and `-D warnings` fail
       # when GitHub rolls its image rather than when someone's code is wrong. Same reasoning as the
       # pinned golangci-lint in `cli`. The same as mk/vcs.mk's VCS_RUST, here and in the jobs below
       # (scripts/ci/test_tool_pins.py).

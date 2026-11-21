@@ -22,6 +22,9 @@ fails=0
 command -v cargo >/dev/null 2>&1 || { echo "build-daemon_test: SKIP (cargo not on PATH)"; exit 0; }
 command -v lipo >/dev/null 2>&1 || { echo "build-daemon_test: SKIP (lipo not on PATH)"; exit 0; }
 
+# build-daemon.sh builds on mk/vcs.mk's VCS_RUST unless told otherwise (#714).
+TOOLCHAIN="${WORKROOMD_RUST_TOOLCHAIN:-$(awk '$1 == "VCS_RUST" && $2 == ":=" {print $3}' "$DIR/../../mk/vcs.mk")}"
+
 # Cross-compiling needs rustup with both targets installed. Skip rather than fail on a machine that
 # has only the host arch — the single-arch cases below still run and still catch a broken loop.
 CROSS=1
@@ -29,7 +32,7 @@ if ! command -v rustup >/dev/null 2>&1; then
   CROSS=0
 else
   for t in aarch64-apple-darwin x86_64-apple-darwin; do
-    rustup target list --installed --toolchain "${WORKROOMD_RUST_TOOLCHAIN:-stable}" 2>/dev/null | grep -qx "$t" || CROSS=0
+    rustup target list --installed --toolchain "$TOOLCHAIN" 2>/dev/null | grep -qx "$t" || CROSS=0
   done
 fi
 
@@ -39,7 +42,7 @@ LINUX=1
 command -v cargo-zigbuild >/dev/null 2>&1 || LINUX=0
 for t in aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
   command -v rustup >/dev/null 2>&1 \
-    && rustup target list --installed --toolchain "${WORKROOMD_RUST_TOOLCHAIN:-stable}" 2>/dev/null | grep -qx "$t" \
+    && rustup target list --installed --toolchain "$TOOLCHAIN" 2>/dev/null | grep -qx "$t" \
     || LINUX=0
 done
 [ "$LINUX" -eq 1 ] || { echo "build-daemon_test: SKIP (cargo-zigbuild or musl targets not installed)"; exit 0; }
@@ -183,6 +186,22 @@ fi
 # An unknown arch must be a hard error, not a silent fallback to the host — that fallback is
 # precisely how the arm64-only CLI shipped.
 expect_failure unknown_arch "arm64 ppc64" "unsupported arch"
+
+# A shipped build is built by the pinned Rust its notices describe (#714): a Release told to use
+# another toolchain refuses before building anything.
+saved_toolchain="${WORKROOMD_RUST_TOOLCHAIN-}"
+export WORKROOMD_RUST_TOOLCHAIN=no-such-toolchain
+run_daemon other_rust "$HOST_ARCH" Release
+if [ -n "$saved_toolchain" ]; then
+  WORKROOMD_RUST_TOOLCHAIN="$saved_toolchain"
+else
+  unset WORKROOMD_RUST_TOOLCHAIN
+fi
+if [ "$RC" -eq 0 ] || ! grep -q "VCS_RUST" "$WORK/out-other_rust/log"; then
+  echo "FAIL: a Release build on another toolchain did not refuse (exit $RC). Log:"
+  sed 's/^/    /' "$WORK/out-other_rust/log"
+  fails=$((fails + 1))
+fi
 # Whitespace-only ARCHS survives `${ARCHS:-...}` (it is set and non-empty) and yields no
 # iterations; that must be a readable error, not a bash "unbound variable" death.
 expect_failure blank_archs "   " "no architectures"

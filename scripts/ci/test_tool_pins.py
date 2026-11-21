@@ -7,6 +7,7 @@ make) and in ci-rust.yml's three install steps. A caller can also
 pass a composite another version. Any copy that disagrees fails here rather than on the next run.
 """
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -85,11 +86,28 @@ class ToolPinTests(unittest.TestCase):
             with self.subTest(where=where):
                 self.assertEqual(version, pin)
 
+    def test_the_shipped_daemon_is_built_by_the_rust_its_notices_describe(self):
+        # #714: the notices pin the Rust runtime and musl to VCS_RUST, so the daemon the app and
+        # the release ship is built by it too, read from mk/vcs.mk rather than written again.
+        pin = make_value("VCS_RUST")
+        setup = (ACTIONS / "setup-daemon-build" / "action.yml").read_text()
+        self.assertIn('toolchain="$(make -s print-VCS_RUST)"', setup)
+        self.assertNotIn("--toolchain stable", setup)
+        build = (ROOT / "macapp" / "Scripts" / "build-daemon.sh").read_text()
+        self.assertIn('$1 == "VCS_RUST"', build)
+        self.assertIn('AGENT_TOOLCHAIN="${WORKROOMD_RUST_TOOLCHAIN:-$PINNED_RUST}"', build)
+        components = json.loads((ROOT / "third-party" / "components.json").read_text())
+        pins = {c["id"]: c["pin"] for c in components["components"] if c["id"] in
+                ("rust-std", "musl")}
+        self.assertEqual(sorted(pins), ["musl", "rust-std"])
+        for cid, entry in pins.items():
+            with self.subTest(component=cid):
+                self.assertEqual((entry["file"], entry["value"]), ("mk/vcs.mk", pin))
+
     def test_rust_is_the_toolchain_the_makefile_lints_with(self):
         pin = make_value("VCS_RUST")
         self.assertRegex(pin, r"^\d+\.\d+\.\d+$")
-        # Every numbered toolchain a workflow names; `stable`, which the app's daemon build tracks
-        # on purpose, is not a pin.
+        # Every numbered toolchain a workflow names; `stable` is not a pin.
         version = r"(\d+\.\d+(?:\.\d+)?)"
         pattern = "|".join((
             rf"rustup (?:toolchain install|install|default|run|override set) {version}",

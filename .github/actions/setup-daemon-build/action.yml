@@ -1,13 +1,14 @@
 name: Set up the daemon build
 description: >-
   Prepare a macOS runner to build the workroomd the app bundles, the Linux daemons included: the
-  pinned Zig, the stable toolchain's targets, and cargo-zigbuild. Shared by CI, the nightly and the
-  release, so all three set the build up the same way and the macOS Zig checksum lives in one
-  place. The Zig and cargo-zigbuild versions are install-zig's and install-cargo-zigbuild's.
+  pinned Zig, the pinned Rust (mk/vcs.mk's VCS_RUST) and its targets, and cargo-zigbuild. Shared
+  by CI, the nightly and the release, so all three set the build up the same way and the macOS Zig
+  checksum lives in one place. The Zig and cargo-zigbuild versions are install-zig's and
+  install-cargo-zigbuild's.
 
 inputs:
   targets:
-    description: rustup targets to add to the stable toolchain, space-separated
+    description: rustup targets to add to the pinned toolchain, space-separated
     required: true
   cache:
     description: >-
@@ -32,15 +33,19 @@ runs:
         cache: ${{ inputs.cache }}
 
     # The app bundle carries a static Linux workroomd per arch for remote hosts (issue #227),
-    # cross-built by build-daemon.sh with cargo-zigbuild and the Zig above. `--toolchain stable`
-    # explicitly, because that is the toolchain build-daemon.sh builds on and the one
-    # build-daemon_test.sh's `rustup target list --installed --toolchain stable` query checks: a
-    # bare `rustup target add` installs into the DEFAULT toolchain.
-    - name: Add rustup targets
+    # cross-built by build-daemon.sh with cargo-zigbuild and the Zig above. The toolchain is
+    # mk/vcs.mk's VCS_RUST, read through make, which build-daemon.sh builds on: the notices of the
+    # Rust runtime the daemon ships pin it too (#714), so the shipped binary is never built by a
+    # compiler other than the one they describe. Named explicitly, because a bare
+    # `rustup target add` installs into the DEFAULT toolchain.
+    - name: Install the pinned Rust and its targets
       shell: bash
       env:
         TARGETS: ${{ inputs.targets }}
-      run: echo "$TARGETS" | xargs rustup target add --toolchain stable
+      run: |
+        toolchain="$(make -s print-VCS_RUST)"
+        rustup toolchain install "$toolchain" --profile minimal
+        echo "$TARGETS" | xargs rustup target add --toolchain "$toolchain"
 
     - name: Install cargo-zigbuild
       uses: ./.github/actions/install-cargo-zigbuild
