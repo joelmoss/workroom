@@ -409,27 +409,41 @@ fn sessions_clients_reports_every_field_of_a_pane_an_app_connection_and_a_cli_ca
     );
     assert!(sessions(&socket)[0].get("clients").is_none());
 
-    // For a person: the sessions, then a table of their clients.
+    // For a person: the session's row, then a row for each client under it, in the order they
+    // attached, their columns lined up.
     let table = workroom(Some(&socket), &["sessions", "--clients"]);
     assert_eq!(table.code, 0, "{}", table.stderr);
     let lines: Vec<&str> = table.stdout.lines().collect();
-    let header = lines
-        .iter()
-        .position(|line| line.starts_with("SESSION "))
-        .unwrap_or_else(|| panic!("{}", table.stdout));
-    assert!(
-        lines[header].contains("KIND") && lines[header].ends_with("KEEPALIVE"),
-        "{}",
+    assert!(lines[0].starts_with("ID "), "{}", table.stdout);
+    assert!(lines[1].starts_with("1d0a8e11  server"), "{}", table.stdout);
+    let rows = &lines[2..];
+    assert_eq!(rows.len(), 3, "{}", table.stdout);
+    for (row, kind) in rows.iter().zip(["pane", "app", "cli"]) {
+        assert!(row.starts_with(&format!("  └ {kind} ")), "{row}");
+        assert!(
+            row.contains(" attached ") && row.contains("s ago "),
+            "{row}"
+        );
+    }
+    let app_row = rows[1];
+    for cell in [
+        " mac-b.local ",
+        " 100×30 ",
+        " owns size ",
+        "keepalive answering",
+    ] {
+        assert!(app_row.contains(cell), "{cell:?} in {app_row}");
+    }
+    assert!(rows[0].contains(" no size "), "{}", rows[0]);
+    let column = |row: &str, cell: &str| {
+        row.chars().count() - row[row.find(cell).unwrap()..].chars().count()
+    };
+    assert_eq!(
+        column(rows[0], "attached"),
+        column(rows[1], "attached"),
+        "lined up: {}",
         table.stdout
     );
-    let row = lines
-        .iter()
-        .find(|line| line.contains("mac-b.local"))
-        .unwrap_or_else(|| panic!("{}", table.stdout));
-    assert!(row.starts_with("1d0a8e11  "), "{row}");
-    for cell in [" app ", " 100x30 ", " yes ", "answering"] {
-        assert!(row.contains(cell), "{cell:?} in {row}");
-    }
 
     // Its connection gone, the app's client is too.
     drop(app);

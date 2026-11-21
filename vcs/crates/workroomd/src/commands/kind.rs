@@ -58,8 +58,8 @@ pub(crate) enum Kind {
     TargetNotFound,
     /// No daemon to ask: none is named, or none is listening where it was.
     DaemonUnreachable,
-    /// A daemon that predates the terminal API (below protocol 12): it needs updating, not
-    /// starting.
+    /// A daemon that predates the terminal API (below protocol 12), or what a command asked of it
+    /// (`sessions --clients`): it needs updating, not starting.
     DaemonTooOld,
     /// A terminal API wait that ran out of time.
     WaitTimeout,
