@@ -142,6 +142,40 @@ fn a_session_tagged_with_another_scope_is_moved() {
     assert_eq!(live[1]["scope"], to, "its end is in the new scope");
 }
 
+/// A send typed into a session (#689) is `session.input`, in the session's scope as the events
+/// know it, naming its sender and its size; the ring a hand-off carries holds it, so a subscriber
+/// resuming in the next program is told it. While the ring is sealed for a hand-off, none is
+/// made, and the send is refused.
+#[test]
+fn a_send_is_told_naming_its_sender_carried_across_a_hand_off_and_refused_while_sealed() {
+    let hub = Hub::default();
+    hub.created(id(1), listing(1, "wr-1"));
+    let sender = id(2).to_hyphenated();
+    assert!(hub.input(id(1), Value::Null, Some(&sender), 12));
+    assert!(hub.input(id(1), Value::Null, None, 3));
+
+    let carried = hub.carry();
+    assert!(!hub.input(id(1), Value::Null, Some(&sender), 1), "sealed");
+    let new = Hub::default();
+    assert!(new.adopt(&carried));
+    let mut resumed = Cursor::new(Start::Since {
+        boot: hub.boot().to_hyphenated(),
+        revision: 1,
+    });
+    let _ = next(&new, &mut resumed);
+    let live = events(next(&new, &mut resumed));
+    assert_eq!(names(&live), [name::INPUT, name::INPUT], "{live:?}");
+    assert_eq!(live[0]["session"], id(1).to_hyphenated());
+    assert_eq!(live[0]["scope"], json!({"kind": "workroom", "id": "wr-1"}));
+    assert_eq!(live[0]["sender"], sender);
+    assert_eq!(live[0]["bytes"], 12);
+    assert_eq!(live[1]["sender"], Value::Null);
+    assert!(
+        new.input(id(1), Value::Null, None, 1),
+        "the next program takes sends"
+    );
+}
+
 /// A logged run is told each transition once, by number, and never again from its status file; a
 /// run with no log is told its file's changes.
 #[test]

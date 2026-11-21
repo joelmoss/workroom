@@ -31,7 +31,7 @@ pub(super) const FLAGS: &[Flag] = &[
         name: "type",
         usage: "Only live events of this type, repeated or comma-separated: session.created, \
                 session.ended, session.program_status, session.run_state, session.moved, \
-                client.attached or client.detached",
+                client.attached, client.detached or session.input",
         hidden: false,
         ..Flag::VALUE
     },
