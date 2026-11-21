@@ -53,7 +53,7 @@ Click the hand on a workroom row or on a collapsed project to go to the terminal
 
 ### The alert
 
-When a program starts waiting on you and you are not looking at its terminal, Workroom posts a notification such as "Terminal 2 in fix-auth needs you". It also counts the request on the Dock badge and turns the menu bar logo yellow. The count drops when you answer the request, on this Mac or another, or when the program ends. Reading the notification does not lower it.
+When a program starts waiting on you and you are not looking at its terminal, Workroom posts a notification such as "Terminal 2 in fix-auth needs you" (in Nightly builds, "zsh ~/dev/app in fix-auth needs you", the terminal named by its program and folder). It also counts the request on the Dock badge and turns the menu bar logo yellow. The count drops when you answer the request, on this Mac or another, or when the program ends. Reading the notification does not lower it.
 
 In the menu bar list, requests appear under **Waiting for you** and everything else under **Unread notifications**.
 
@@ -63,7 +63,7 @@ Codex does not ask Workroom whether it supports status. Workroom trusts it once 
 
 ### A finished turn
 
-When a program finishes its turn in a terminal you are not looking at, Workroom posts an ordinary notification, such as "Terminal 2 in fix-auth finished". It alerts once per turn, and the terminal's next finish replaces it. A session that runs turns on its own leaves one entry, not one per turn. A finish you watched happen leaves only the check mark.
+When a program finishes its turn in a terminal you are not looking at, Workroom posts an ordinary notification, such as "Terminal 2 in fix-auth finished" (in Nightly builds, "claude ~/dev/app in fix-auth finished"). It alerts once per turn, and the terminal's next finish replaces it. A session that runs turns on its own leaves one entry, not one per turn. A finish you watched happen leaves only the check mark.
 
 ### Turn the alerts off
 

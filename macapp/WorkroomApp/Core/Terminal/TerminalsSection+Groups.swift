@@ -5,8 +5,8 @@ import WorkroomDomain
 /// terminals are each window's own tabs in `TargetID.terminalGroup(id)`, as a workroom's are.
 struct TerminalGroup: Hashable, Sendable {
   let id: UUID
-  /// The name the user gave it. Nil is an unnamed group, labelled by its terminals' names; a name
-  /// is what keeps a group once its terminals have gone (`isKept`).
+  /// The name the user gave it. Nil is an unnamed group, labelled by its terminals' names, which
+  /// goes when one terminal is left in it (`TerminalsSection.settleGroup`).
   var name: String?
   /// The folder its new terminals start in; nil follows "New terminals open in".
   var startingFolder: String?
@@ -22,10 +22,6 @@ struct TerminalGroup: Hashable, Sendable {
   /// What a group is called when it has no name and no terminals to be labelled by.
   static let untitled = "Terminal Group"
 
-  /// Whether the group stays when it has no terminals: a named one does (glossary: Terminal group).
-  /// The Quick Terminal's is named, so it always stays.
-  var isKept: Bool { name != nil }
-
   /// The Quick Terminal's group, built in (ADR 0077): a fixed id and name, and nothing else set.
   static let quickTerminal = TerminalGroup(
     id: TargetID.quickTerminalGroupID, name: "Quick Terminal")
@@ -33,11 +29,13 @@ struct TerminalGroup: Hashable, Sendable {
   /// Whether this is the Quick Terminal's group, which can't be deleted, moved or renamed.
   var isBuiltIn: Bool { id == TargetID.quickTerminalGroupID }
 
-  /// Its row's and title-bar tab's label: its name, else its terminals' names joined with " + ",
-  /// else `untitled`.
+  /// Its row's and title-bar tab's label: its name, else its first terminal's name and how many
+  /// more it has ("~ + 2 more"), else `untitled`.
   func title(terminalNames: [String]) -> String {
     if let name { return name }
-    return terminalNames.isEmpty ? Self.untitled : terminalNames.joined(separator: " + ")
+    guard let first = terminalNames.first else { return Self.untitled }
+    let more = terminalNames.count - 1
+    return more == 0 ? first : "\(first) + \(more) more"
   }
 
   /// Where its new terminals start: its starting folder while that is still a folder, else "New
@@ -74,16 +72,7 @@ extension TerminalsSection {
   /// by the UI-test fixture.
   @discardableResult
   func addGroup(named name: String?, after anchor: TargetID? = nil, id: UUID = UUID()) -> TargetID {
-    let entry = Entry.group(TerminalGroup(id: id, name: TerminalPanes.cleanedName(name)))
-    let index = index(after: anchor)
-    updateEntries { entries in
-      if let index {
-        entries.insert(entry, at: index)
-      } else {
-        entries.append(entry)
-      }
-    }
-    return entry.targetID
+    insert(.group(TerminalGroup(id: id, name: TerminalPanes.cleanedName(name))), after: anchor)
   }
 
   /// Names group `id`. The name is trimmed; an empty one clears it, which makes the group unnamed.
@@ -131,9 +120,9 @@ extension TerminalsSection {
   }
 }
 
-/// Unnamed groups (#659): they come together when a standalone terminal is split or dropped on
-/// another, and dissolve back into a standalone terminal once they are down to one terminal across
-/// every holder. Each change moves terminals between targets in place, keeping their shells, in
+/// Groups coming and going (#659, ADR 0077): unnamed ones come together when a standalone terminal
+/// is split or dropped on another, and dissolve back into a standalone terminal once they are down
+/// to one terminal across every holder; every group, named or not, goes with its last terminal. Each change moves terminals between targets in place, keeping their shells, in
 /// every holder that has them, and runs in turn with the others (`enqueueRegroup`).
 extension TerminalsSection {
   /// Runs `work` once every regroup queued before it has finished, and returns its task.
@@ -226,23 +215,28 @@ extension TerminalsSection {
     return moved ? groupID : nil
   }
 
-  /// Queues the unnamed group rule for group `id`: with no terminal left in any holder it goes, and
-  /// with one, that terminal becomes a standalone terminal in its place. A named group, or one with
-  /// two terminals or more, stays as it is. Counted when its turn comes, not when asked, so a
-  /// terminal on its way between holders is counted where it lands.
-  func settleUnnamedGroup(_ id: TargetID) {
+  /// Queues the group rules for group `id`: with no terminal left in any holder it goes, named or
+  /// not, and an unnamed one with one left makes that terminal standalone in its place. A group
+  /// with more stays as it is, and so does the Quick Terminal's, which is built in. Counted when its
+  /// turn comes, not when asked, so a terminal on its way between holders is counted where it
+  /// lands; and never during a quit, whose teardown empties every holder but must bring each group
+  /// back as it was.
+  func settleGroup(_ id: TargetID) {
     enqueueRegroup { [weak self] in await self?.settleNow(id) }
   }
 
   private func settleNow(_ id: TargetID) async {
-    guard let group = group(id), !group.isKept else { return }
+    guard let group = group(id), !group.isBuiltIn, !WindowRegistry.shared.isTerminating else {
+      return
+    }
     switch terminalNames(of: id).count {
     case 0:
       remove(id)
-    case 1:
+    case 1 where group.name == nil:
       let standalone = UUID()
       _ = await rehome([(id, .standalone(standalone))]) {
-        guard self.group(id)?.isKept == false, terminalNames(of: id).count == 1 else {
+        guard let current = self.group(id), current.name == nil, terminalNames(of: id).count == 1
+        else {
           return false
         }
         replace(id, with: .standalone(standalone))

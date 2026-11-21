@@ -431,6 +431,13 @@ private struct WorkroomTabChip: View {
     }
   }
 
+  /// A standalone terminal's title in its parts, so the chip fades a default title's folder; nil
+  /// for any other kind of tab.
+  private var standaloneTitle: TerminalTitle? {
+    guard case .standalone = sid, let id = sid.targetID else { return nil }
+    return store.terminalsSection.terminalTitles(of: id).first
+  }
+
   /// A workroom's own name (nil for a root/project) — rendered as trailing secondary text. Resolves
   /// to the display label when one is set (issue #41); this also feeds the "Close" prompt below, so
   /// that dialog shows the label too.
@@ -521,8 +528,17 @@ private struct WorkroomTabChip: View {
             count: terminals.blockedTerminalCount(forTargetID: target.id)))
       }
       HStack(alignment: .firstTextBaseline, spacing: 4) {
-        Text(primaryLabel)
-          .foregroundStyle(hasActivity ? tokens.accent : Color.primary)
+        if let standaloneTitle {
+          TerminalTitleLabel(title: standaloneTitle)
+            .foregroundStyle(
+              hasActivity ? tokens.accent : Color.primary,
+              hasActivity ? tokens.accent.opacity(0.7) : tokens.fgMuted
+            )
+            .truncationMode(.middle)
+        } else {
+          Text(primaryLabel)
+            .foregroundStyle(hasActivity ? tokens.accent : Color.primary)
+        }
         if let workroomName {
           Text("/").foregroundStyle(.tertiary)
           Text(workroomName).foregroundStyle(isActive ? Color.primary : .secondary)

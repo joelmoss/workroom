@@ -22,11 +22,9 @@ extension AppStore {
   ) async -> Bool {
     if case .standalone = target.id { return false }
     guard PaneMove.sourceRefusal(tabID, of: target, source: source) == nil else { return false }
-    let id = terminalsSection.addStandalone(after: sectionAnchor(target))
-    let moved = await PaneMove.move(
-      tabID, of: target, source: source, notifications: notifications, to: self, into: id)
-    if !moved { terminalsSection.remove(id) }
-    return moved
+    return await movePane(
+      tabID, of: target, source: source, notifications: notifications,
+      intoNewRow: terminalsSection.addStandalone(after: target.id))
   }
 
   /// Move to → New Terminal Group…: a group named `name`, just below `target`'s row when that is in
@@ -40,16 +38,22 @@ extension AppStore {
     guard TerminalPanes.cleanedName(name) != nil,
       PaneMove.sourceRefusal(tabID, of: target, source: source) == nil
     else { return false }
-    let id = terminalsSection.addGroup(named: name, after: sectionAnchor(target))
-    let moved = await PaneMove.move(
-      tabID, of: target, source: source, notifications: notifications, to: self, into: id)
-    if !moved { terminalsSection.remove(id) }
-    return moved
+    return await movePane(
+      tabID, of: target, source: source, notifications: notifications,
+      intoNewRow: terminalsSection.addGroup(named: name, after: target.id))
   }
 
-  /// `target` when it is a row of the Terminals section, so a new row lands beside it.
-  private func sectionAnchor(_ target: TerminalTarget) -> TargetID? {
-    terminalsSection.contains(target.id) ? target.id : nil
+  /// Moves the pane into `row`, a row just listed for it (below `target`'s when that is in the
+  /// Terminals section: `TerminalsSection.index(after:)` sends any other anchor to the end), and
+  /// drops the row again when the pane can't move.
+  private func movePane(
+    _ tabID: TerminalTab.ID, of target: TerminalTarget, source: TerminalPanes,
+    notifications: NotificationCenterStore, intoNewRow row: TargetID
+  ) async -> Bool {
+    let moved = await PaneMove.move(
+      tabID, of: target, source: source, notifications: notifications, to: self, into: row)
+    if !moved { terminalsSection.remove(row) }
+    return moved
   }
 
   /// Why this window's tab `tabID` in `target` can't move at all, or nil when it can: only a
@@ -115,11 +119,7 @@ extension AppStore {
     guard case .standalone = sid, let target = target(for: sid),
       !terminalsSection.terminalNames(of: target.id).isEmpty
     else { return false }
-    if target.remoteHost != nil || target.isRemoteWorkroom { return false }
-    if lifecycle.isCreationBlocking(target.id) || target.unavailability == .creating {
-      return false
-    }
-    return target.opensTerminals
+    return terminalJoinRefusal(target) == nil
   }
 
   /// Moves this window's tab `tabID` in `target` to `zone`, when it can go there.

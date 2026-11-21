@@ -180,6 +180,12 @@ final class QuickTerminalUITests: XCTestCase {
       XCTAssertLessThan(row.frame.minY, project.frame.minY, "above the projects")
     }
     XCTAssertFalse(quickTerminal(app).exists, "no Quick Terminal yet")
+    let fold = workroom.descendants(matching: .any)
+      .matching(identifier: "sidebar.group.fold.group:51C10A7E-0D4F-4E6A-9B2C-000000000001")
+      .firstMatch
+    row.hover()
+    XCTAssertFalse(
+      fold.waitForExistence(timeout: 2), "with no terminals to list, hovering shows no chevron")
 
     row.click()
 
@@ -189,6 +195,11 @@ final class QuickTerminalUITests: XCTestCase {
     XCTAssertTrue(
       waitForCount(tabs(in: workroom), workroomTabsBefore), "the window opened no terminal")
     XCTAssertTrue(panes(in: workroom).firstMatch.exists, "and still shows its workroom")
+    // Listing its terminal under it, its row folds as the other groups' do: hovered, the chevron
+    // stands in its glyph's column.
+    row.hover()
+    XCTAssertTrue(fold.waitForExistence(timeout: 6), "a chevron once it lists a terminal")
+    XCTAssertLessThan(fold.frame.maxX, row.frame.minX + 30, "in the rows' leading glyph column")
   }
 
   /// The Quick Terminal's sidebar row, the built-in group's.
@@ -356,10 +367,14 @@ final class QuickTerminalUITests: XCTestCase {
     XCTAssertTrue(
       waitForCount(tabs(in: qt), 2),
       "the panel should hold its 2 saved terminals, has \(tabs(in: qt).count)")
-    for key in ["a", "b"] {
-      XCTAssertTrue(
-        qt.staticTexts["terminal.tab.Restored \(key)"].waitForExistence(timeout: 5),
-        "the saved terminal keeps the name it was given")
+    // A chip is identified by its app-given name ("Terminal 1"); its label is the title it shows.
+    for (key, name) in [("a", "Terminal 1"), ("b", "Terminal 2")] {
+      let chip = qt.staticTexts["terminal.tab.\(name)"]
+      let named = NSPredicate(format: "label CONTAINS %@", "Restored \(key)")
+      XCTAssertEqual(
+        XCTWaiter().wait(
+          for: [XCTNSPredicateExpectation(predicate: named, object: chip)], timeout: 5),
+        .completed, "the saved terminal keeps the name it was given")
     }
 
     // The second quit writes the panel's entry back whole.
@@ -385,7 +400,7 @@ final class QuickTerminalUITests: XCTestCase {
   /// The on-screen "Move to workroom" item for the fixture workroom (`uitest-room`), not the
   /// project's root.
   private func workroomItem(_ app: XCUIApplication) -> XCUIElement? {
-    app.menuItems.matching(NSPredicate(format: "title ENDSWITH %@", "— uitest-room"))
+    app.menuItems.matching(NSPredicate(format: "title ENDSWITH %@", " / uitest-room"))
       .allElementsBoundByIndex.first { $0.isHittable }
   }
 }

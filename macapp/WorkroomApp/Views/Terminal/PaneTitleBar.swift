@@ -106,7 +106,11 @@ enum PaneTitlePresentation {
       return Title(
         prefix: String(path.dropLast(name.count)), name: name, truncation: .head)
     }
-    // A terminal's live/default title, or a changeset's subject.
+    // A terminal's title ("zsh ~/dev/workroom") is cut in the middle, so its program and the end
+    // of its folder both stay in view; a changeset's subject is cut at its tail.
+    if case .terminal = content {
+      return Title(prefix: "", name: tabTitle, truncation: .middle)
+    }
     return Title(prefix: "", name: tabTitle, truncation: .tail)
   }
 }
@@ -251,13 +255,22 @@ struct PaneTitleBar: View {
         .overlay(alignment: .leading) {
           TabTitleReader(content: content) { text in
             let title = PaneTitlePresentation.title(for: content, tabTitle: text)
-            panePathText(prefix: title.prefix, name: title.name)
-              .font(.subheadline)
-              .foregroundStyle(focused ? Color.primary : tokens.fgMuted)
-              .lineLimit(1)
-              .truncationMode(title.truncation)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .help(help(text))
+            Group {
+              // A terminal's default title fades its folder (`TerminalTitleLabel`).
+              if case .terminal = content {
+                TerminalTitleLabel(title: content.titleParts)
+              } else {
+                panePathText(prefix: title.prefix, name: title.name)
+              }
+            }
+            .font(.subheadline)
+            .foregroundStyle(
+              focused ? Color.primary : tokens.fgMuted, focused ? tokens.fgMuted : tokens.fgDim
+            )
+            .lineLimit(1)
+            .truncationMode(title.truncation)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(help(text))
           }
         }
       trailing(collapsed: collapsed)

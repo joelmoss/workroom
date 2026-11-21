@@ -69,7 +69,7 @@ final class QuickTerminalGroupTests: XCTestCase {
       section.rows.dropFirst().first?.sidebarID, ops, "a row moved above it lands below")
     XCTAssertEqual(store.target(for: builtIn)?.title, "Quick Terminal", "its name is fixed")
     XCTAssertTrue(
-      section.group(.quickTerminal)?.isKept == true, "an unnamed group's dissolve spares it")
+      section.group(.quickTerminal) != nil, "a group's delete spares it")
   }
 
   /// A window with no projects and nothing in the section still shows its empty state: the
@@ -114,7 +114,10 @@ final class QuickTerminalGroupTests: XCTestCase {
     _ = panel.terminals.addTab(for: panel.target)
     _ = panel.terminals.addTab(for: panel.target)
 
-    XCTAssertEqual(section.terminalNames(of: .quickTerminal), ["Terminal 1", "Terminal 2"])
+    let name = TerminalState.programAndFolder(
+      program: TerminalState.shellName, folder: panel.target.path
+    ).text
+    XCTAssertEqual(section.terminalNames(of: .quickTerminal), [name, name], "never numbered")
     XCTAssertTrue(section.holder(of: .quickTerminal, other: store) === panel)
     let anchor = TargetID.standalone(UUID())
     let released = await panel.releaseTerminals(of: .quickTerminal, after: anchor)
@@ -144,6 +147,25 @@ final class QuickTerminalGroupTests: XCTestCase {
     XCTAssertEqual(revealed, 2)
     XCTAssertEqual(
       panel.terminals.tabCount(forTargetID: .quickTerminal), 1, "New Terminal in Group")
+  }
+
+  /// Value: protects=the built-in group outlives its last terminal, though every other group goes
+  /// with its own; fails_when=closing the panel's last terminal, or settling its group, drops it;
+  /// why_new=the owner's "a group goes with its last terminal"; seam=the panel over the shared
+  /// section; no_claim=the panel hiding (QuickTerminalControllerTests)
+  func testClosingItsLastTerminalKeepsTheGroup() async {
+    let panel = makePanel()
+    let store = makeStore()
+    let tab = panel.terminals.addTab(for: panel.target)
+
+    panel.terminals.closeTab(tab.id, for: panel.target)
+    section.settleGroup(.quickTerminal)
+    await section.regroupsSettled()
+
+    XCTAssertEqual(panel.terminals.tabCount(forTargetID: .quickTerminal), 0)
+    XCTAssertNotNil(section.group(.quickTerminal))
+    XCTAssertEqual(section.rows.first?.sidebarID, builtIn)
+    XCTAssertNotNil(store.target(for: builtIn))
   }
 
   /// Value: protects=one of the panel's terminals listed under its row in a window slides the
@@ -183,8 +205,8 @@ final class QuickTerminalGroupTests: XCTestCase {
 
     let groups = store.paneMoveChoices(tab.id, of: target, windows: [store], quickTerminal: panel)
     XCTAssertEqual(
-      groups.first?.choices.prefix(2).map(\.title), ["Standalone", "Quick Terminal"],
-      "in the Terminals section's places, right after Standalone")
+      groups.first?.choices.prefix(2).map(\.title), ["Standalone Terminal", "Quick Terminal"],
+      "in the Terminals section's places, right after Standalone Terminal")
     let choice = try XCTUnwrap(groups.first?.choices.dropFirst().first)
     XCTAssertTrue(choice.enabled)
     choice.move()
@@ -280,7 +302,7 @@ final class QuickTerminalGroupTests: XCTestCase {
 
     let places = panel.paneMoveChoices(
       first.id, of: panel.target, windows: [behind, front], front: front)[0].choices
-    try XCTUnwrap(places.first { $0.title == "Standalone" }).move()
+    try XCTUnwrap(places.first { $0.title == "Standalone Terminal" }).move()
     for _ in 0..<100 where panel.terminals.tab(first.id, for: panel.target) != nil {
       await Task.yield()
     }

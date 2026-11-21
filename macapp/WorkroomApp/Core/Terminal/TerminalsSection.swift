@@ -127,9 +127,9 @@ final class TerminalsSection {
 
   /// Drops the rows nothing restored, and returns them. A standalone terminal is exactly one live
   /// terminal, so a row no holder has (a crash that lost its window's layout) has nothing to show;
-  /// nor has an unnamed group none of whose terminals came back. An unnamed group with one terminal
-  /// back is settled as any such group is: that terminal becomes standalone in its place (#659). A
-  /// named group is kept empty, so it stays. Run once, at launch, after the saved windows are
+  /// nor has a group none of whose terminals came back, named or not, since a group goes with its
+  /// last terminal. An unnamed group with one terminal back is settled as any such group is: that
+  /// terminal becomes standalone in its place (#659). Run once, at launch, after the saved windows are
   /// restored. Does nothing while no window has registered, which would read every row as empty.
   @discardableResult
   func pruneUnheld() -> [TargetID] {
@@ -142,13 +142,12 @@ final class TerminalsSection {
         if !holders.elements.contains(where: { $0.holdsTerminals(forTargetID: id) }) {
           unheld.append(id)
         }
-      case .group(let group) where !group.isKept:
+      case .group(let group):
         switch terminalNames(of: id).count {
         case 0: unheld.append(id)
-        case 1: settleUnnamedGroup(id)
+        case 1 where group.name == nil: settleGroup(id)
         default: break
         }
-      case .group: break
       }
     }
     for id in unheld { remove(id) }
@@ -193,13 +192,13 @@ final class TerminalsSection {
   /// else at the end, and returns its target. `id` is fixed only by the UI-test fixture.
   @discardableResult
   func addStandalone(after anchor: TargetID? = nil, id: UUID = UUID()) -> TargetID {
-    let entry = Entry.standalone(id)
-    if let index = index(after: anchor) {
-      entries.insert(entry, at: index)
-    } else {
-      entries.append(entry)
-    }
-    save()
+    insert(.standalone(id), after: anchor)
+  }
+
+  /// Lists `entry` just below `anchor` (`index(after:)`), else at the end, and returns its target.
+  func insert(_ entry: Entry, after anchor: TargetID?) -> TargetID {
+    let index = index(after: anchor)
+    updateEntries { $0.insert(entry, at: index ?? $0.endIndex) }
     return entry.targetID
   }
 
@@ -214,9 +213,7 @@ final class TerminalsSection {
 
   /// Drops `id`'s row, if it has one.
   func remove(_ id: TargetID) {
-    let before = entries.count
-    entries.removeAll { $0.targetID == id }
-    if entries.count != before { save() }
+    updateEntries { $0.removeAll { $0.targetID == id } }
   }
 
   /// Whether `id` names a row of this section, the Quick Terminal's group included.
@@ -257,7 +254,13 @@ final class TerminalsSection {
 
   /// The names of `id`'s terminals across every holder, in holder order.
   func terminalNames(of id: TargetID) -> [String] {
-    holders.elements.flatMap { $0.terminalNames(forTargetID: id) }
+    terminalTitles(of: id).map(\.text)
+  }
+
+  /// `terminalNames(of:)` in their parts: what a standalone terminal's row and title-bar tab draw,
+  /// a default title's folder faded.
+  func terminalTitles(of id: TargetID) -> [TerminalTitle] {
+    holders.elements.flatMap { $0.terminalTitles(forTargetID: id) }
   }
 
   /// Where a new terminal with no project starts: "New terminals open in", or the home folder when
@@ -298,8 +301,8 @@ final class TerminalsSection {
 /// A window, or the Quick Terminal host, that holds tabs of the section's targets.
 @MainActor
 protocol TerminalsSectionHolder: AnyObject {
-  /// The names of this holder's terminals in `targetID`, in tab order; empty when it holds none.
-  func terminalNames(forTargetID targetID: TargetID) -> [String]
+  /// The titles of this holder's terminals in `targetID`, in tab order; empty when it holds none.
+  func terminalTitles(forTargetID targetID: TargetID) -> [TerminalTitle]
   /// Makes each of this holder's terminals in `group` a standalone terminal of its own, listed
   /// after `anchor` in turn, and returns the last row it listed (`anchor` when none): a group's
   /// delete, asked of every holder. A terminal that can't be moved stays in the group.

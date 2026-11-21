@@ -32,6 +32,8 @@ struct SidebarActions {
   var closeTerminal: @MainActor (TerminalTab.ID, TerminalTarget) -> Void
   /// Form or extend a workroom split: a row dropped beside a pane, on one of its edges.
   var insertSplit: @MainActor (SidebarID, SidebarID, PaneEdge, CGRect) -> Void
+  /// Name a terminal of this window's; an empty name gives its default back.
+  var renameTerminal: @MainActor (TerminalTab.ID, TerminalTarget, String) -> Void = { _, _, _ in }
 
   @MainActor static func live(store: AppStore) -> SidebarActions {
     SidebarActions(
@@ -70,6 +72,9 @@ struct SidebarActions {
       closeTerminal: { [store] tabID, target in store.requestCloseTerminalTab(tabID, for: target) },
       insertSplit: { [store] id, beside, edge, rect in
         store.insertWorkroomSplit(id, beside: beside, edge: edge, destinationRect: rect)
+      },
+      renameTerminal: { [store] tabID, target, name in
+        store.terminals.setUserTitle(name, forTab: tabID, in: target)
       })
   }
 
@@ -94,6 +99,16 @@ enum SidebarRowMetrics {
   /// Terminal rows are a deliberately more compact tier (their own glyph + footnote) and keep
   /// their own insets.
   static let rowHeight: CGFloat = 20
+  /// The sidebar's trailing button column, which every "+" sits in: the Terminals and Projects
+  /// headings' and each terminal group's and project's row (`SidebarIconButton`). Each is the row's
+  /// last control, `iconColumnInset` in from the row's trailing edge, in a square slot this wide
+  /// (`TerminalGroupUITests.testEverySidebarPlusSharesOneColumn`).
+  static let iconColumnWidth: CGFloat = 20
+  /// The rounded hover well drawn behind a sidebar icon button, as behind a terminal disclosure
+  /// chevron (`TerminalDisclosureButton`).
+  static let hoverWell: CGFloat = 18
+  /// Between a row's trailing edge and its last control.
+  static let iconColumnInset: CGFloat = Spacing.s
 }
 
 /// What a root or workroom row's leading column shows: whether the row owns a terminal subtree
@@ -101,6 +116,48 @@ enum SidebarRowMetrics {
 struct SidebarSubtreeState: Equatable {
   var hasSubtree = false
   var expanded = false
+
+  /// Its row's Expand or Collapse item, offered when its hover chevron would be: only with a
+  /// subtree.
+  var foldItem: SidebarFoldItem? {
+    hasSubtree ? SidebarFoldItem(expanded: expanded) : nil
+  }
+}
+
+/// The Expand or Collapse item a foldable row (a root, a workroom, a terminal group) offers in its
+/// menu and to VoiceOver: the hover chevron's toggle, for the keyboard and VoiceOver. Plain words,
+/// since what folds isn't always terminals.
+struct SidebarFoldItem: Equatable {
+  /// Whether the row's children show now: it then offers Collapse.
+  let expanded: Bool
+
+  var title: String { expanded ? "Collapse" : "Expand" }
+  var help: String { expanded ? "Hide the rows under this one" : "Show the rows under this one" }
+}
+
+/// A foldable row's Expand or Collapse, first in its menu and set apart from what follows. Nothing
+/// when the row can't fold.
+struct SidebarFoldMenuItem: View {
+  let item: SidebarFoldItem?
+  let toggle: () -> Void
+
+  var body: some View {
+    if let item {
+      Button(item.title, action: toggle).help(item.help)
+      Divider()
+    }
+  }
+}
+
+extension View {
+  /// The row's Expand or Collapse, as a VoiceOver action.
+  func sidebarFoldAccessibilityAction(_ item: SidebarFoldItem?, toggle: @escaping () -> Void)
+    -> some View
+  {
+    accessibilityActions {
+      if let item { Button(item.title, action: toggle) }
+    }
+  }
 }
 
 /// What a target's terminals report on its root or workroom row (#358): how many wait on the user
@@ -204,6 +261,7 @@ struct SidebarProjectRow: View, Equatable {
         places: { NewWorkroomPlacesMenu(project: project) }
       )
     }
+    .padding(.trailing, SidebarRowMetrics.iconColumnInset)
     .frame(height: SidebarRowMetrics.rowHeight)
     .contentShape(Rectangle())
     .accessibilityIdentifier("sidebar.project.\(project.displayName)")
@@ -309,7 +367,9 @@ struct SidebarRootRow: View, Equatable {
           Button(ProgramStatusPresentation.showWaitingAction) { actions.showWaiting([target.id]) }
         }
       }
+      .sidebarFoldAccessibilityAction(model.subtree.foldItem) { actions.toggleTerminals(target.id) }
       .contextMenu {
+        SidebarFoldMenuItem(item: model.subtree.foldItem) { actions.toggleTerminals(target.id) }
         SidebarRunMenu(target: target)
       }
   }
@@ -443,7 +503,9 @@ struct SidebarWorkroomRow: View, Equatable {
           Button(ProgramStatusPresentation.showWaitingAction) { actions.showWaiting([target.id]) }
         }
       }
+      .sidebarFoldAccessibilityAction(model.subtree.foldItem) { actions.toggleTerminals(target.id) }
       .contextMenu {
+        SidebarFoldMenuItem(item: model.subtree.foldItem) { actions.toggleTerminals(target.id) }
         // A workroom still being made has nothing to open, label or delete yet.
         if !model.pending {
           // No Close and no Remove from Split: a row is neither a tab nor a split member.
@@ -503,6 +565,10 @@ struct SidebarTerminalRow: View, Equatable {
   /// Who holds the terminal when it isn't this window, for its menu: the Quick Terminal's panel.
   var holder: (any PaneHost)? = nil
 
+  /// Whether Rename… has the name field up in place of the title.
+  @State private var renaming = false
+  @State private var draft = ""
+
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
     lhs.model == rhs.model && lhs.hovered == rhs.hovered && lhs.holder === rhs.holder
   }
@@ -511,6 +577,52 @@ struct SidebarTerminalRow: View, Equatable {
     #if DEBUG
       let _ = { SidebarRowPasses.terminal += 1 }()
     #endif
+    if renaming {
+      renameRow
+    } else {
+      row
+    }
+  }
+
+  /// The row while Rename… edits its name in place: its glyph and the field, which keeps the name
+  /// on Return or a click away and drops it on Escape. An empty name gives the program's own title
+  /// back, as the tab's Rename… sheet does.
+  private var renameRow: some View {
+    HStack(spacing: Spacing.s) {
+      Image(systemName: model.glyph)
+        .font(.system(size: 10))
+        .foregroundStyle(.secondary)
+        .frame(width: SidebarRowMetrics.caretWidth, alignment: .center)
+      SidebarInlineNameField(
+        placeholder: content.title, draft: $draft,
+        help: "The terminal's name. Leave it empty to show the title the program sets",
+        id: "sidebar.terminal.rename.\(model.tabID)", font: .footnote,
+        commit: {
+          renaming = false
+          if let holder {
+            holder.terminals.setUserTitle(draft, forTab: model.tabID, in: model.target)
+          } else {
+            actions.renameTerminal(model.tabID, model.target, draft)
+          }
+        },
+        cancel: { renaming = false })
+      Spacer(minLength: 0)
+    }
+    .padding(.leading, Spacing.m)
+  }
+
+  /// Shows the name field, starting from the name the user gave it (empty for none), so keeping
+  /// it unchanged never pins the program's title as a name.
+  private func beginRename() {
+    if case .live(_, let userTitle) = model.title {
+      draft = userTitle ?? ""
+    } else {
+      return
+    }
+    renaming = true
+  }
+
+  private var row: some View {
     HStack(spacing: Spacing.s) {
       // Leading glyph centered in the shared caret slot, same size/weight as the root house and
       // the workroom chevron so the leading-icon column reads as one set. The fixed-width frame
@@ -526,9 +638,10 @@ struct SidebarTerminalRow: View, Equatable {
         #if DEBUG
           let _ = { SidebarRowPasses.terminalTitles[model.tabID] = title }()
         #endif
-        Text(title)
+        // The program as bright as a row's name, the folder faded as the row's title was.
+        TerminalTitleLabel(title: content.titleParts)
           .font(.footnote)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(.primary, .secondary)
           .lineLimit(1)
           .truncationMode(.middle)
       }
@@ -577,7 +690,8 @@ struct SidebarTerminalRow: View, Equatable {
             + ProgramStatusPresentation.accessibilityParts(
               indicator: model.indicator, rollup: model.programStatus)).joined(separator: ", ")
         )
-        .accessibilityIdentifier("sidebar.terminal.\(title)")
+        // By the tab, not its title: terminals in one folder share a title ("zsh ~").
+        .accessibilityIdentifier("sidebar.terminal.\(model.tabID)")
         // Outermost: the tooltip schedules its own repaint, so the labels stay on the row itself.
         .modifier(
           SidebarTerminalTooltip(
@@ -586,7 +700,8 @@ struct SidebarTerminalRow: View, Equatable {
         )
     }
     .contextMenu {
-      SidebarTerminalMenu(tabID: model.tabID, target: model.target, holder: holder)
+      SidebarTerminalMenu(
+        tabID: model.tabID, target: model.target, holder: holder, rename: beginRename)
     }
   }
 }

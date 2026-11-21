@@ -63,6 +63,11 @@ final class PaneLiveState {
   private var claudeProfileQueries: [TerminalTab.ID: Task<Void, Never>] = [:]
   /// Each pane's in-flight branch read: a newer folder's must win over an older one's.
   private var branchQueries: [TerminalTab.ID: Task<Void, Never>] = [:]
+  /// Each pane's in-flight foreground-program read (`refreshForegroundProgram`).
+  private var programQueries: [TerminalTab.ID: Task<Void, Never>] = [:]
+  /// How long after a command starts its program is read: the shell titles the command before it
+  /// forks it, so a read at once would still find the shell. Settable for tests.
+  var programReadDelay: Duration = .milliseconds(300)
 
   init(
     access: TerminalTabAccess, codingAgentManager: TerminalCodingAgentManager,
@@ -79,6 +84,7 @@ final class PaneLiveState {
     hostCwdQueries.removeValue(forKey: tabID)?.cancel()
     claudeProfileQueries.removeValue(forKey: tabID)?.cancel()
     branchQueries.removeValue(forKey: tabID)?.cancel()
+    programQueries.removeValue(forKey: tabID)?.cancel()
   }
 
   // MARK: Surface reports
@@ -86,9 +92,18 @@ final class PaneLiveState {
   /// A surface-reported title. The first one is the first prompt, which `command_finished` never
   /// marks, so it is also when a remote pane first asks its host where its shell is.
   func titleChanged(_ title: String, tab tabID: TerminalTab.ID, target: TerminalTarget.ID) {
+    let hadTitle = access.state(tabID, target)?.liveTitle != nil
     updateTitle(title, forTab: tabID, target: target)
     if hostCwdQueries[tabID] == nil {
       refreshHostCwd(forTab: tabID, target: target)
+    }
+    // The first prompt, and each command's start (its first title since the last finished): the
+    // moments the foreground program changes, short of watching the pty.
+    let firstPrompt = programQueries[tabID] == nil
+    let commandStarted = !hadTitle && access.state(tabID, target)?.liveTitle != nil
+    if firstPrompt || commandStarted {
+      refreshForegroundProgram(
+        forTab: tabID, target: target, after: commandStarted ? programReadDelay : .zero)
     }
   }
 
@@ -116,6 +131,7 @@ final class PaneLiveState {
     }
     refreshHostCwd(forTab: tabID, target: target)
     refreshBranch(forTab: tabID, target: target)
+    refreshForegroundProgram(forTab: tabID, target: target)
   }
 
   /// Apply an OSC 9;4 progress report (issue #28 follow-up). `active` is false only for the REMOVE state
@@ -316,6 +332,65 @@ final class PaneLiveState {
   nonisolated static func claudeProfile(from descriptor: SessionDescriptor?) -> PaneClaudeProfile {
     descriptor?.value(forMetadataKey: "claude_profile").map(PaneClaudeProfile.reported)
       ?? .notReported
+  }
+
+  // MARK: Foreground program
+
+  /// Read which program is in the pane's foreground now, for its default title ("vim · ~/dev").
+  /// Asked at the first prompt, as each command starts (`after` it has had time to fork) and when
+  /// it finishes; never per title, since a TUI that animates its title sends one per frame. A
+  /// daemon-backed pane is asked of its daemon, whose pty runs the shell (the app's own pty only
+  /// runs the attach helper); a pane with no session, of its own pty, off the main thread. A newer
+  /// read replaces an older one, and only a changed name is written.
+  func refreshForegroundProgram(
+    forTab tabID: TerminalTab.ID, target: TerminalTarget.ID, after delay: Duration = .zero
+  ) {
+    guard let s = access.state(tabID, target) else { return }
+    programQueries[tabID]?.cancel()
+    let read: @Sendable () async -> String?
+    if let seeded = access.surface(tabID)?.foregroundProcessNameForTesting {
+      read = { seeded }  // the tests' seam, as `foregroundExecutableName` reads it
+    } else if let session = s.sessionID {
+      if let host = sessionService.remoteHost(of: session) {
+        let connections = hostConnections
+        read = {
+          let sessions = (try? await connections.sessions(on: host)) ?? []
+          return Self.program(from: sessions.first { $0.identifier.uuid == session })
+        }
+      } else {
+        let service = sessionService
+        read = {
+          let sessions = await service.liveSessions()
+          return Self.program(from: sessions.first { $0.identifier.uuid == session })
+        }
+      }
+    } else {
+      guard let view = access.surface(tabID) else { return }
+      // The pid is libghostty's, read here on the main thread; its argv is read off it.
+      let pid = view.foregroundPID
+      read = {
+        guard let pid else { return nil }
+        return await Task.detached(priority: .utility) {
+          ProcessEnvironment.command(pid: pid).flatMap(TerminalState.programName)
+        }.value
+      }
+      if delay == .zero, pid == nil { return }
+    }
+    programQueries[tabID] = Task { [weak self] in
+      if delay > .zero {
+        do { try await Task.sleep(for: delay) } catch { return }
+      }
+      let program = await read()
+      guard let self, !Task.isCancelled, let program,
+        self.access.state(tabID, target)?.foregroundProgram != program
+      else { return }
+      self.access.mutate(tabID, target) { $0.foregroundProgram = program }
+    }
+  }
+
+  /// The program a session descriptor names (its `command`), by its short name.
+  nonisolated static func program(from descriptor: SessionDescriptor?) -> String? {
+    descriptor?.value(forMetadataKey: "command").flatMap(TerminalState.programName)
   }
 
   // MARK: Host cwd (#239)

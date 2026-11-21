@@ -67,6 +67,46 @@ final class StandaloneTerminalUITests: XCTestCase {
 
   /// #657: with no projects the empty state offers New Terminal; using it opens a terminal that has
   /// a row in the sidebar, which is shown (with its toggle) though there is still no project.
+  /// Rename… on a standalone terminal's row edits its name in place, as a group's row does (#652
+  /// critique); its title-bar tab's menu offers Rename… too, with no Run, Restart or Stop, and
+  /// that also edits the row.
+  func testRenameEditsAStandaloneTerminalsNameInItsRow() {
+    let app = launchedApp()
+    let id = seeded[0]
+    let row = element(app, "sidebar.standalone.\(id)")
+    XCTAssertTrue(row.waitForExistence(timeout: 15))
+    let field = element(app, "sidebar.standalone.rename.\(id)")
+
+    row.rightClick()
+    app.waitForHittableMenuItem(titled: "Rename…")?.click()
+    XCTAssertTrue(field.waitForExistence(timeout: 6), "an inline name field, not a sheet")
+    XCTAssertFalse(app.sheets.firstMatch.exists, "no sheet")
+    field.typeText("Build box\r")
+    let named = { (name: String) in
+      XCTNSPredicateExpectation(
+        predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", name, name),
+        object: self.element(app, "workroom.tab.\(id)"))
+    }
+    XCTAssertEqual(XCTWaiter().wait(for: [named("Build box")], timeout: 6), .completed)
+    XCTAssertFalse(field.exists, "the field closes")
+
+    // From its title-bar tab: no run items, and Rename… edits the row.
+    element(app, "workroom.tab.\(id)").rightClick()
+    let rename = app.waitForHittableMenuItem(titled: "Rename…")
+    XCTAssertNotNil(rename, "its tab offers Rename…")
+    // The menu bar's Room menu has its own Run, Restart and Stop, closed and so not hittable.
+    for title in ["Run", "Restart", "Stop"] {
+      XCTAssertFalse(
+        app.menuItems.matching(NSPredicate(format: "title == %@", title)).allElementsBoundByIndex
+          .contains { $0.isHittable }, "no \(title) on a standalone terminal's tab")
+    }
+    rename?.click()
+    XCTAssertTrue(field.waitForExistence(timeout: 6), "the row's inline name field")
+    field.typeKey("a", modifierFlags: .command)
+    field.typeText("Logs\r")
+    XCTAssertEqual(XCTWaiter().wait(for: [named("Logs")], timeout: 6), .completed)
+  }
+
   func testWithNoProjectsNewTerminalOpensATerminalWithARow() {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1", "-WorkroomUITestNoProjects", "1"]

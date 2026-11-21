@@ -4,8 +4,8 @@ import WorkroomDomain
 /// Standalone terminals in a window (ADR 0077): opening one, and its row going when its terminal
 /// closes. The rows themselves are the app's `TerminalsSection`; the tabs are this window's.
 extension AppStore: TerminalsSectionHolder {
-  func terminalNames(forTargetID targetID: TargetID) -> [String] {
-    terminals.terminalNames(forTargetID: targetID)
+  func terminalTitles(forTargetID targetID: TargetID) -> [TerminalTitle] {
+    terminals.terminalTitles(forTargetID: targetID)
   }
 
   func holdsTerminals(forTargetID targetID: TargetID) -> Bool {
@@ -62,8 +62,8 @@ extension AppStore: TerminalsSectionHolder {
   }
 
   /// A window closing ends the standalone terminals it holds, and their rows go. Not on a quit,
-  /// which keeps them for the next launch. It stops holding terminals for the section, so an
-  /// unnamed group it had terminals in is counted without them, and settled (#659).
+  /// which keeps them for the next launch. It stops holding terminals for the section, so a group
+  /// it had terminals in is counted without them, and settled: one no other window holds goes.
   func endStandaloneTerminalsOnClose() async {
     guard !WindowRegistry.shared.isTerminating else { return }
     let groups = terminals.activeTargetIDs.filter {
@@ -71,7 +71,7 @@ extension AppStore: TerminalsSectionHolder {
       return false
     }
     terminalsSection.unregister(self)
-    for id in groups { unnamedGroupTabsRemoved(id) }
+    for id in groups { groupTabsRemoved(id) }
     for id in terminals.activeTargetIDs where id.isStandaloneTerminal {
       await terminals.reap(id)
       terminalsSection.remove(id)
@@ -82,8 +82,7 @@ extension AppStore: TerminalsSectionHolder {
   /// below the selected one when that is in the Terminals section, else at the section's end,
   /// selected, with its one terminal open in "New terminals open in".
   func newStandaloneTerminal() {
-    let anchor = selectedTargetID.flatMap { $0.isInTerminalsSection ? $0.targetID : nil }
-    let id = terminalsSection.addStandalone(after: anchor)
+    let id = terminalsSection.addStandalone(after: selectedTargetID?.targetID)
     guard let sid = id.sidebarID, let target = target(for: sid) else { return }
     selectedTargetID = sid
     terminals.addTab(for: target)

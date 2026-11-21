@@ -44,7 +44,8 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
   @ObservationIgnored let detachedPanes = DetachedPaneWindows()
   /// The app's Terminals section, whose built-in group this host holds.
   @ObservationIgnored let section: TerminalsSection
-  /// Marks the saved session dirty on any pane change, as a window's store does (issue #46).
+  /// Marks the saved session dirty on any pane change, as a window's store does (issue #46): a
+  /// close, a pop-out or a dock included, so no event below marks it again.
   @ObservationIgnored private var sessionObservation: AnyCancellable?
   /// Its one target, the built-in group's, always on screen in its window with no selection to say
   /// so: its panes count as seen and focused as a selected workroom's do (#573). Resolved live, so
@@ -86,7 +87,6 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
       for id in ids { detachedPanes.close(tabID: id) }
       // A closed pane's waiting requests stop counting.
       WindowRegistry.shared.recomputeBadge()
-      SavedLayoutCoordinator.shared.markDirty()
       if terminals.tabCount(forTargetID: targetID) == 0 { onTargetEmptied?(targetID) }
     // Effective focus is the one authority for reading a terminal's notifications (#358).
     case .terminalSeen(_, let tabID):
@@ -107,29 +107,21 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
       case .split(let edge): terminals.splitTab(tabID, on: edge, for: target)
       case .close: requestCloseTerminalTab(tabID, for: target)
       }
-    // No navigation history, workroom split or selection to follow these; its saved layout does.
-    case .tabContentChanged, .paneCountChanged:
-      SavedLayoutCoordinator.shared.markDirty()
-    case .surfaceFocused:
+    // No navigation history, workroom split or selection to follow a content change, a pane count
+    // or a surface focus. Its saved layout follows `paneWillChange`, which every pane change sends.
+    case .tabContentChanged, .paneCountChanged, .surfaceFocused:
       break
     // Pop-out panes (issue #172), as a window's store opens and closes them.
     case .paneDetached(_, let tabID, let screenPoint):
       openDetachedPane(tabID, origin: screenPoint, frame: nil)
-      SavedLayoutCoordinator.shared.markDirty()
       // Its last docked pane left: the panel hides, as when its last terminal closes.
-      if terminals.allTabs(for: target).allSatisfy({ terminals.detachedTabIDs.contains($0.id) }) {
-        onTargetEmptied?(target.id)
-      }
+      if !hasDockedTab { onTargetEmptied?(target.id) }
     case .paneRestoredDetached(_, let tabID, let frame):
       openDetachedPane(tabID, origin: nil, frame: frame)
     case .paneDocked(let tabID):
       detachedPanes.close(tabID: tabID)
-      SavedLayoutCoordinator.shared.markDirty()
     case .paneRaiseRequested(let tabID):
-      if let window = detachedPanes.window(for: tabID) {
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-      }
+      raiseDetachedPane(tabID)
     case .paneWindowToggleRequested(let targetID, let tabID):
       togglePaneWindow(tabID, targetID: targetID)
     // Its panes are this Mac's, so no host can fail to end one.
@@ -158,6 +150,11 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
     open(target)
   }
 
+  /// Whether the panel itself shows a terminal: one not popped out into a window of its own.
+  var hasDockedTab: Bool {
+    terminals.allTabs(for: target).contains { !terminals.detachedTabIDs.contains($0.id) }
+  }
+
   /// A pane's Move to New Window / Move Back to Quick Terminal.
   func togglePaneWindow(_ tabID: TerminalTab.ID, targetID: TerminalTarget.ID) {
     guard targetID == target.id else { return }
@@ -166,6 +163,16 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
     } else {
       terminals.detachPane(tabID, for: target, at: NSEvent.mouseLocation)
     }
+  }
+
+  /// Raises its pane `tabID`'s own window and returns true, or returns false when the pane isn't
+  /// popped out, as a window's store does (`AppStore.raiseDetachedPane`).
+  @discardableResult
+  func raiseDetachedPane(_ tabID: TerminalTab.ID) -> Bool {
+    guard let window = detachedPanes.window(for: tabID) else { return false }
+    NSApp.activate(ignoringOtherApps: true)
+    window.makeKeyAndOrderFront(nil)
+    return true
   }
 
   /// Docks a popped-out pane back into the panel, and slides the panel in on it.
@@ -357,8 +364,8 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
 // MARK: - A holder of the built-in group's terminals
 
 extension QuickTerminalHost: TerminalsSectionHolder {
-  func terminalNames(forTargetID targetID: TargetID) -> [String] {
-    terminals.terminalNames(forTargetID: targetID)
+  func terminalTitles(forTargetID targetID: TargetID) -> [TerminalTitle] {
+    terminals.terminalTitles(forTargetID: targetID)
   }
 
   func holdsTerminals(forTargetID targetID: TargetID) -> Bool {

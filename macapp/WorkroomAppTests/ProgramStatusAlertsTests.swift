@@ -110,7 +110,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
     let id = session(store.terminals.addTab(for: target))
     monitor.seed(id, records: [blocked()])
     XCTAssertEqual(requests.count, 1)
-    XCTAssertEqual(requests.first?.title, "Terminal 1 needs you")
+    XCTAssertEqual(requests.first?.title, "\(TerminalState.shellName) /tmp needs you")
     XCTAssertEqual(alerts.countedWaiting, 1)
 
     monitor.seed(id, records: [blocked(), ProgramStatusRecord(id: "x", state: .working)])
@@ -170,7 +170,7 @@ final class ProgramStatusAlertsTests: XCTestCase {
     let id = session(store.terminals.addTab(for: target))
     monitor.seed(id, records: [ProgramStatusRecord(id: "", state: .working)])
     monitor.seed(id, records: [done(message: "Fixed the build")])
-    XCTAssertEqual(finishes.map(\.title), ["Terminal 1 finished"])
+    XCTAssertEqual(finishes.map(\.title), ["\(TerminalState.shellName) /tmp finished"])
     XCTAssertEqual(finishes.first?.body, "Turn finished: \u{201C}Fixed the build\u{201D}")
     XCTAssertNil(finishes.first?.episode, "an ordinary notification, not a waiting request")
 
@@ -493,8 +493,11 @@ final class ProgramStatusAlertsTests: XCTestCase {
         workrooms: [Workroom(name: "al", path: "/p/al", vcsName: "git", warnings: [])])
     ]
     for (sid, title, source) in [
-      (SidebarID.workroom(project: "/p", name: "al"), "Terminal 1 in al needs you", "p"),
-      (SidebarID.root(project: "/p"), "Terminal 1 in p needs you", ""),
+      (
+        SidebarID.workroom(project: "/p", name: "al"),
+        "\(TerminalState.shellName) /p/al in al needs you", "p"
+      ),
+      (SidebarID.root(project: "/p"), "\(TerminalState.shellName) /p in p needs you", ""),
     ] {
       let target = store.target(for: sid)!
       let tab = store.terminals.addTab(for: target)
@@ -541,7 +544,9 @@ final class ProgramStatusAlertsTests: XCTestCase {
   /// alerts were turned off, or the request was answered meanwhile.
   func testABannerWaitingOnPermissionIsCheckedAgainBeforeItPosts() async {
     let posted = await banner(after: { _, _ in })
-    XCTAssertEqual(posted, ["Terminal 1 needs you"], "control: nothing changed, so it posts")
+    XCTAssertEqual(
+      posted, ["\(TerminalState.shellName) /tmp needs you"],
+      "control: nothing changed, so it posts")
     let read = await banner(after: { _, tab in self.store.notifications.dismiss(tab: tab) })
     XCTAssertEqual(read, [], "read while permission was pending")
     let off = await banner(after: { _, _ in self.enabled = false })

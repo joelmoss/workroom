@@ -24,3 +24,27 @@ extension View {
     TabTitleReader(content: content) { title in apply(self, title) }
   }
 }
+
+/// A terminal's title drawn in its parts (`TerminalTitle`): a default title's program in the
+/// foreground style around it, which carries the selected and focused emphasis, and its folder
+/// faded, in that style's second level. A caller sets both levels with `.foregroundStyle(_:_:)`.
+/// The program truncates only when it is alone too wide; the folder gives way first and is cut in
+/// the middle, so the end of its path stays. Any other title is one `Text`, as the caller styles it.
+struct TerminalTitleLabel: View {
+  let title: TerminalTitle
+
+  var body: some View {
+    if let folder = title.folder {
+      HStack(alignment: .firstTextBaseline, spacing: 0) {
+        Text(title.name).layoutPriority(1)
+        Text(" " + folder).foregroundStyle(.secondary).truncationMode(.middle)
+      }
+      // One element for VoiceOver, read as the title in plain text ("zsh ~/dev/workroom").
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(title.text)
+      .accessibilityAddTraits(.isStaticText)
+    } else {
+      Text(title.name)
+    }
+  }
+}

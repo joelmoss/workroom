@@ -462,29 +462,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
           setting: Defaults[.quitWithRunningServers],
           hasLiveRuns: RunCommands.shared.hasAnyLiveRun,
           isUpdateRelaunch: Updater.isInstallingUpdate, canAsk: false)
-        RunCommands.shared.quitStopsRuns = action == .stop
-        let group = DispatchGroup()
-        group.enter()
-        Task {
-          await AppStore.flushHostLayouts(budget: 1)
-          SavedLayoutCoordinator.shared.flushAndFreeze()
-          // Only once frozen: the document is built from the live windows, which stopping changes.
-          if action == .stop {
-            group.enter()
-            RunCommands.shared.gracefullyStopAllWindows(timeout: 4) { group.leave() }
-          }
-          group.leave()
-        }
-        // A tab closed moments before this signal fires an unstructured kill Task; without
-        // waiting for it here too, quitting fast enough after a close leaves that one session
-        // running despite the explicit close.
-        group.enter()
-        Task {
-          await PersistentSessionService.shared.awaitPendingCloseKills(
-            until: ContinuousClock.now + PersistentSessionService.closeKillQuitBudget)
-          group.leave()
-        }
-        group.notify(queue: .main) { exit(EXIT_SUCCESS) }
+        Self.saveAndDrain(stoppingRuns: action == .stop, stopTimeout: 4) { exit(EXIT_SUCCESS) }
       }
     }
     source.resume()
@@ -649,11 +627,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // dialog, and freezing above that guard would silently kill session saving for the rest of the
     // app's life after one cancelled ⌘Q. This point is past the guard and still before any window
     // closes — which is exactly what the freeze protects, since the document is rebuilt from the
-    // live windows: the reply below, which closes them, waits on the group.
-    //
-    // Remote workrooms' layouts go to their hosts first, for at most a second (#255, D14), so the
-    // session written next marks only what did not get there as stale.
-    // Runs this quit stops don't come back, so their tabs are left out of what is saved (#522).
+    // live windows: the reply below, which closes them, waits on the drain.
+    Self.saveAndDrain(stoppingRuns: stoppingRuns, stopTimeout: 5) {
+      sender.reply(toApplicationShouldTerminate: true)
+    }
+    return .terminateLater
+  }
+
+  /// The end of a quit, ⌘Q's and a signal's, once nothing is left to ask: save the session and
+  /// stop saving, stop the run commands when `stoppingRuns`, wait for pending close kills, then
+  /// `done`.
+  ///
+  /// Remote workrooms' layouts go to their hosts first, for at most a second (#255, D14), so the
+  /// session written next marks only what did not get there as stale. Runs this quit stops don't
+  /// come back, so their tabs are left out of what is saved (#522).
+  @MainActor
+  private static func saveAndDrain(
+    stoppingRuns: Bool, stopTimeout: TimeInterval, then done: @escaping @MainActor () -> Void
+  ) {
     RunCommands.shared.quitStopsRuns = stoppingRuns
     let group = DispatchGroup()
     group.enter()
@@ -664,7 +655,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       if stoppingRuns {
         group.enter()
         // Stop every window's run commands, not just the focused one's.
-        RunCommands.shared.gracefullyStopAllWindows(timeout: 5) { group.leave() }
+        RunCommands.shared.gracefullyStopAllWindows(timeout: stopTimeout) { group.leave() }
       }
       group.leave()
     }
@@ -677,8 +668,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         until: ContinuousClock.now + PersistentSessionService.closeKillQuitBudget)
       group.leave()
     }
-    group.notify(queue: .main) { sender.reply(toApplicationShouldTerminate: true) }
-    return .terminateLater
+    group.notify(queue: .main) { MainActor.assumeIsolated { done() } }
   }
 
   /// Reactivation (Dock click, or clicking a notification while the app is inactive): bring an

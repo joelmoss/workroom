@@ -97,10 +97,11 @@ final class TerminalGroupTests: XCTestCase {
 
   // MARK: Using one
 
-  /// Value: protects=⌘T, splits and ⌘W inside a group act on its own tabs, as in a workroom;
-  /// fails_when=⌘T opens a standalone terminal, a split leaves the group, or closing its last
-  /// terminal drops a named group; why_new=#658; seam=AppStore; no_claim=the tab strip's drawing
-  func testTerminalsOpenSplitAndCloseInsideTheGroupWhichStaysWhenEmpty() throws {
+  /// Value: protects=⌘T, splits and ⌘W inside a group act on its own tabs, as in a workroom, and
+  /// closing its last terminal deletes the group, named or not; fails_when=⌘T opens a standalone
+  /// terminal, a split leaves the group, or an empty named group stays listed; why_new=#658, and
+  /// the owner's "a group goes with its last terminal"; seam=AppStore; no_claim=the tab strip
+  func testTerminalsOpenSplitAndCloseInsideTheGroupWhichGoesWithItsLastTerminal() async throws {
     let store = makeStore()
     let sid = try group(store)
 
@@ -110,11 +111,67 @@ final class TerminalGroupTests: XCTestCase {
     XCTAssertEqual(tabCount(store, sid), 3, "⌘D splits inside it")
     XCTAssertEqual(rows, [sid], "and no standalone terminal appears")
 
-    for _ in 0..<3 { store.closeCurrentTerminalTab() }
+    for _ in 0..<2 { store.closeCurrentTerminalTab() }
+    await section.regroupsSettled()
+    XCTAssertEqual(rows, [sid], "a named group with one terminal stays")
+
+    store.closeCurrentTerminalTab()
+    await section.regroupsSettled()
 
     XCTAssertEqual(tabCount(store, sid), 0)
-    XCTAssertEqual(rows, [sid], "a named group stays when its last terminal closes")
-    XCTAssertEqual(store.liveSelection(sid, in: projects.projects), sid)
+    XCTAssertTrue(rows.isEmpty, "the group goes with its last terminal")
+    XCTAssertNil(store.liveSelection(sid, in: projects.projects))
+  }
+
+  /// Value: protects=a group goes only once no window holds any of its terminals, counted across
+  /// every window as the unnamed rule is; fails_when=closing the last terminal in one window drops
+  /// a group another window still holds, or the last window's close keeps it; why_new=the owner's
+  /// "a group goes with its last terminal"; seam=two AppStores over one section; no_claim=none
+  func testAGroupGoesOnlyWhenNoWindowHoldsItsTerminals() async throws {
+    let first = makeStore()
+    let second = makeStore()
+    let sid = try group(first)
+    second.selectedTargetID = sid
+    second.ensureInitialTerminal(for: try XCTUnwrap(second.selectedTarget))
+
+    first.closeCurrentTerminalTab()
+    await section.regroupsSettled()
+    XCTAssertEqual(rows, [sid], "the second window still holds one of its terminals")
+    XCTAssertEqual(first.terminalGroup(sid)?.name, "Ops")
+
+    second.closeCurrentTerminalTab()
+    await section.regroupsSettled()
+    XCTAssertTrue(rows.isEmpty, "none is left in any window")
+  }
+
+  /// Value: protects=closing the window that holds a group's only terminals deletes the group, as
+  /// closing them by hand does, while a quit's teardown never does; fails_when=the close leaves an
+  /// empty group listed, or a quit drops one; why_new=the owner's "a group goes with its last
+  /// terminal"; seam=AppStore's window close; no_claim=the close prompt
+  func testClosingTheWindowHoldingAGroupsOnlyTerminalsDeletesIt() async throws {
+    let holder = makeStore()
+    let other = makeStore()
+    let sid = try group(holder)
+    holder.newTerminalInSelectedTarget()
+    let kept = try XCTUnwrap(other.newTerminalGroup(named: "Kept"))
+
+    await holder.endStandaloneTerminalsOnClose()
+    await section.regroupsSettled()
+
+    XCTAssertEqual(rows, [kept], "only the group no other window holds goes: \(sid)")
+  }
+
+  func testAQuitsWindowTeardownKeepsTheGroup() async throws {
+    let holder = makeStore()
+    let sid = try group(holder)
+    WindowRegistry.shared.isTerminating = true
+    defer { WindowRegistry.shared.isTerminating = false }
+
+    await holder.terminals.reapAll()
+    await holder.endStandaloneTerminalsOnClose()
+    await section.regroupsSettled()
+
+    XCTAssertEqual(rows, [sid])
   }
 
   /// Value: protects=each window keeps its own terminals in a group (story 33); fails_when=a
@@ -174,8 +231,11 @@ final class TerminalGroupTests: XCTestCase {
     first.newTerminalInSelectedTarget()
     first.renameTerminalGroup(sid, to: "")
     XCTAssertNil(first.terminalGroup(sid)?.name, "an empty name clears it")
+    let folder = TerminalState.programAndFolder(
+      program: TerminalState.shellName, folder: try XCTUnwrap(first.target(for: sid)).path
+    ).text
     XCTAssertEqual(
-      first.target(for: sid)?.title, "Terminal 1 + Terminal 2", "labelled by its terminals")
+      first.target(for: sid)?.title, "\(folder) + 1 more", "labelled by its first terminal")
   }
 
   /// Value: protects=a group's terminal row selects the group and focuses that terminal;
@@ -230,17 +290,18 @@ final class TerminalGroupTests: XCTestCase {
     XCTAssertEqual(store.selectedTargetID, made.first)
   }
 
-  /// An empty group is deleted without asking.
+  /// An empty group (one no window has opened a terminal in yet) is deleted without asking.
   func testAnEmptyGroupIsDeletedWithoutAsking() async throws {
     let store = makeStore()
-    let sid = try group(store)
-    store.closeCurrentTerminalTab()
+    let sid = try XCTUnwrap(section.addGroup(named: "Ops").sidebarID)
+    store.selectedTargetID = sid
 
     XCTAssertFalse(store.terminalGroupDeleteAsks(sid))
     await store.deleteTerminalGroup(sid)
 
     XCTAssertTrue(rows.isEmpty)
-    XCTAssertNil(store.selectedTargetID, "the window showing it shows nothing")
+    XCTAssertNil(
+      store.liveSelection(sid, in: projects.projects), "the window showing it shows nothing")
   }
 
   /// Every window's terminals in the group become standalone, each in its own window.
@@ -368,17 +429,19 @@ final class TerminalGroupTests: XCTestCase {
     XCTAssertFalse(store.sessionSurvivesSweep(TargetID.terminalGroup(UUID()).encoded, in: []))
   }
 
-  /// Value: protects=a named group with no terminals left survives the launch's prune of empty
-  /// rows; fails_when=the prune drops every row no window holds; why_new=#658 over #656's prune;
-  /// seam=the section; no_claim=unnamed groups (#659)
-  func testTheLaunchPruneKeepsAnEmptyNamedGroup() throws {
+  /// Value: protects=the launch's prune drops a group none of whose terminals came back, named or
+  /// not, and keeps one a window holds; fails_when=an empty named group lingers after a launch, or
+  /// a held one goes; why_new=the owner's "a group goes with its last terminal" over #658's prune;
+  /// seam=the section with a registered window; no_claim=unnamed groups (UnnamedTerminalGroupTests)
+  func testTheLaunchPruneDropsANamedGroupNoWindowHolds() throws {
     let store = makeStore()
-    let sid = try group(store)
-    store.closeCurrentTerminalTab()
+    let held = try group(store)
+    let empty = try XCTUnwrap(section.addGroup(named: "Gone").sidebarID)
     section.addStandalone()
 
-    section.pruneUnheld()
+    let pruned = section.pruneUnheld()
 
-    XCTAssertEqual(rows, [sid], "the empty named group stays; an unheld standalone row goes")
+    XCTAssertEqual(rows, [held], "the held group stays; the empty one and the unheld row go")
+    XCTAssertTrue(pruned.contains(try XCTUnwrap(empty.targetID)))
   }
 }

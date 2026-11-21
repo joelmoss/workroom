@@ -58,6 +58,12 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
     let second = element(app, "sidebar.standalone.\(seeded[1])")
     XCTAssertTrue(first.waitForExistence(timeout: 15))
     XCTAssertTrue(second.waitForExistence(timeout: 5))
+    // Both start in the home folder: each is named by its shell and folder, "zsh ~", unnumbered.
+    let names = [text(of: first), text(of: second)]
+    XCTAssertTrue(
+      names.allSatisfy { $0.contains("zsh ~") }, "named by program and folder: \(names)")
+    XCTAssertFalse(names.joined().contains("~ 2"), "never numbered apart: \(names)")
+    XCTAssertFalse(names.joined().contains("Terminal 1"), "nor numbered as before: \(names)")
     first.click()
 
     app.typeKey("d", modifierFlags: .command)
@@ -73,7 +79,8 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
     XCTAssertTrue(
       waitForRows(elements(app, prefix: "sidebar.terminal."), 2), "its two terminals under it")
     let label = [group.label, group.value as? String ?? ""].joined(separator: " ")
-    XCTAssertTrue(label.contains(" + "), "labelled by its terminals' names: \(label)")
+    XCTAssertTrue(
+      label.contains(" + 1 more"), "labelled by its first terminal and one more: \(label)")
 
     app.typeKey("w", modifierFlags: .command)
 
@@ -83,10 +90,16 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
     XCTAssertTrue(waitForRows(elements(app, prefix: "workroom.tab.standalone:"), 2))
   }
 
-  /// Whether the one group's row is labelled by two terminals' names. Their own rows can't be
-  /// counted: each is identified by its title, and both here are "Terminal 1".
+  /// A row's label and value: a StaticText's text may be in either.
+  private func text(of row: XCUIElement) -> String {
+    [row.label, row.value as? String ?? ""].joined(separator: " ")
+  }
+
+  /// Whether the one group's row is labelled by its first terminal's name "+ 1 more". Their own
+  /// rows can't be counted: each is identified by its title.
   private func groupsTwoTerminals(_ app: XCUIApplication) -> Bool {
-    let named = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", " + ", " + ")
+    let named = NSPredicate(
+      format: "label CONTAINS %@ OR value CONTAINS %@", " + 1 more", " + 1 more")
     let row = elements(app, prefix: "sidebar.group.group:").firstMatch
     return XCTWaiter().wait(
       for: [XCTNSPredicateExpectation(predicate: named, object: row)], timeout: 6) == .completed

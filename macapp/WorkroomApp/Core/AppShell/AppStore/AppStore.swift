@@ -229,6 +229,19 @@ final class AppStore: ObservableObject {
   var collapsedProjects: Set<String> = Defaults[.collapsedProjects] {
     didSet { if persistsSidebarPrefs { Defaults[.collapsedProjects] = collapsedProjects } }
   }
+  /// Whether the sidebar's Projects section is folded under its heading, hiding every project's
+  /// rows, as the Terminals section folds (#652). Gated and persisted as `collapsedProjects` is;
+  /// unfolded under the fixture, whose launches share the real `Defaults` domain.
+  var projectsFolded: Bool = AppStore.initialProjectsFolded {
+    didSet { if persistsSidebarPrefs { Defaults[.projectsFolded] = projectsFolded } }
+  }
+
+  nonisolated private static var initialProjectsFolded: Bool {
+    #if DEBUG
+      if AppEnvironment.current.isFixture { return false }
+    #endif
+    return Defaults[.projectsFolded]
+  }
   /// Remembered workroom tab-bar order (issue #23), stored as `TargetID.encoded`. `@Published`
   /// (not read via `@Default` in the view) because a `@Default` write doesn't reliably re-render the
   /// `NavigationSplitView` detail, so a drag-reorder's write didn't take and the dropped chip snapped
@@ -261,6 +274,9 @@ final class AppStore: ObservableObject {
   var sidebarVisible: Bool = AppStore.initialSidebarVisible {
     didSet { if persistsSidebarPrefs { Defaults[.sidebarVisible] = sidebarVisible } }
   }
+  /// Which Terminals-section row Rename… on a title-bar tab asks to edit its name in place. This
+  /// window's own; never written at init.
+  let sidebarRename = SidebarInlineRename()
 
   nonisolated private static var initialSidebarVisible: Bool {
     #if DEBUG
@@ -973,7 +989,7 @@ final class AppStore: ObservableObject {
       guard !self.isMovingTerminalsInPlace else { return }
       self.history.prune(removing: Set(ids))
       self.standaloneTabsRemoved(targetID)
-      self.unnamedGroupTabsRemoved(targetID)
+      self.groupTabsRemoved(targetID)
       if self.terminals.tabCount(forTargetID: targetID) < 2 {
         self.expandedTerminalTargets.remove(targetID)
       }
@@ -1324,18 +1340,19 @@ final class AppStore: ObservableObject {
   var windowTitle: String { title(for: selectedTargetID) }
 
   /// `sid` named as `windowTitle` names the selected one: "<project> — <workroom>", or the project
-  /// for a root. Also how "Move to Workroom" lists the workrooms open in every window.
-  func title(for sid: SidebarID?) -> String {
+  /// for a root. "Move to…" lists the workrooms open in every window with `separator`
+  /// `WorkroomLabel.separator` ("<project> / <workroom>"), as the rest of the app writes them.
+  func title(for sid: SidebarID?, separator: String = " — ") -> String {
     switch sid {
     case .root(let path):
       return projectStore.project(at: path)?.displayName ?? defaultWindowTitle
     case .workroom(let path, let name):
       guard let project = projectStore.project(at: path)?.displayName else { return name }
       // Show the workroom's display label when set (issue #41); falls back to the real name.
-      return "\(project) — \(displayName(forWorkroom: name, inProject: path))"
+      return "\(project)\(separator)\(displayName(forWorkroom: name, inProject: path))"
     case .creation(let path, _):
       let project = projectStore.project(at: path)?.displayName ?? defaultWindowTitle
-      return "\(project) — New workroom"
+      return "\(project)\(separator)New workroom"
     case .standalone, .terminalGroup:
       return sid.flatMap(target(for:))?.title ?? defaultWindowTitle
     case .project, nil:
@@ -2801,7 +2818,8 @@ final class AppStore: ObservableObject {
     guard let sid = sidebarID(for: targetID) else { return name }
     let label = label(for: sid)
     let place = label.workroom ?? label.project
-    return place.isEmpty ? name : "\(name) in \(place)"
+    // A standalone terminal's place is its own name: say it once.
+    return place.isEmpty || place == name ? name : "\(name) in \(place)"
   }
 
   /// The program-status session of the terminal focused in this window, for ⇧⌘M. Only with keyboard

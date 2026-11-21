@@ -104,6 +104,44 @@ final class WorkroomLabelTests: XCTestCase {
         sid: .project("/p"), target: wr.target(inProject: "/p")))
   }
 
+  /// Value: protects=a standalone terminal's or terminal group's pane header shows its name with no
+  /// house glyph, as a workroom's shows "project / workroom"; fails_when=the header falls back to an
+  /// empty project label and the root's house (the #652 critique); why_new=#652;
+  /// seam=WorkroomSplitTitlePresentation; no_claim=rendering.
+  func testATerminalsSectionPaneHeaderShowsItsNameAndNoGlyph() {
+    let id = UUID()
+    for sid in [SidebarID.standalone(id), .terminalGroup(id)] {
+      let target = TerminalTarget(
+        id: sid.targetID!, title: "Ops", path: "/tmp", isMissing: false)
+      XCTAssertEqual(WorkroomSplitTitlePresentation.primaryLabel(sid: sid, target: target), "Ops")
+      XCTAssertNil(WorkroomSplitTitlePresentation.workroomName(sid: sid, target: target))
+      XCTAssertFalse(WorkroomSplitTitlePresentation.showsGlyph(sid: sid))
+    }
+    let wr = Workroom(name: "fox", path: "/p/fox", vcsName: "workroom/fox", warnings: [])
+    let sid = SidebarID.workroom(project: "/p", name: "fox")
+    XCTAssertEqual(
+      WorkroomSplitTitlePresentation.primaryLabel(sid: sid, target: wr.target(inProject: "/p")),
+      "p", "a workroom's leads with its project")
+    XCTAssertTrue(WorkroomSplitTitlePresentation.showsGlyph(sid: sid))
+    XCTAssertTrue(WorkroomSplitTitlePresentation.showsGlyph(sid: .root(project: "/p")))
+  }
+
+  /// Value: protects=a terminal group row's New Terminal names the group: "New Terminal in Quick
+  /// Terminal" for the Quick Terminal's, its name for a named one, "Group" for an unnamed one;
+  /// fails_when=every group says "New Terminal in Terminal Group" (the #652 critique);
+  /// why_new=#652; seam=SidebarTerminalGroupRowModel; no_claim=menu rendering.
+  func testAGroupRowsNewTerminalNamesTheGroup() {
+    XCTAssertEqual(
+      SidebarTerminalGroupRowModel.newTerminalTitle(for: .quickTerminal),
+      "New Terminal in Quick Terminal")
+    XCTAssertEqual(
+      SidebarTerminalGroupRowModel.newTerminalTitle(for: TerminalGroup(id: UUID(), name: "Ops")),
+      "New Terminal in Ops")
+    XCTAssertEqual(
+      SidebarTerminalGroupRowModel.newTerminalTitle(for: TerminalGroup(id: UUID(), name: nil)),
+      "New Terminal in Group")
+  }
+
   // MARK: Store — displayName(forWorkroom:inProject:)
 
   func testStoreDisplayNameLookup() {

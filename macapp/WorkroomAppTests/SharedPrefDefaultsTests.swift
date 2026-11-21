@@ -37,6 +37,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
   private let activeSectionKey = "inspector.activeSection"
   private let diffModeKey = "diffViewMode"
   private let sidebarVisibleKey = "sidebar.visible"
+  private let projectsFoldedKey = "sidebar.projectsFolded"
   private let dimArgKey = "WorkroomUITestDimUnfocusedPanes"
   private let autoEvenArgKey = "WorkroomUITestAutoResizeSplitsEvenly"
   private let dimKey = "dimUnfocusedPanes"
@@ -53,6 +54,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
   private var keys: [String] {
     [
       sectionArgKey, diffModeArgKey, visibleKey, activeSectionKey, diffModeKey, sidebarVisibleKey,
+      projectsFoldedKey,
       dimArgKey, dimKey, autoEvenArgKey, "autoResizeSplitsEvenly",
     ]
   }
@@ -152,6 +154,18 @@ final class SharedPrefDefaultsTests: XCTestCase {
 
     Defaults[.sidebarVisible] = true
     XCTAssertTrue(AppStore().sidebarVisible, "and must reopen a persisted-visible sidebar")
+  }
+
+  /// Value: protects=the sidebar's Projects section stays folded across a relaunch, as the
+  /// Terminals section does; fails_when=a new store reads the fold from anywhere but the persisted
+  /// setting, or the setting starts folded; no_claim=the write-back (see above), the heading's view
+  @MainActor
+  func testAStoreSeedsTheProjectsFoldFromThePersistedSetting() {
+    XCTAssertFalse(Defaults[.projectsFolded], "the Projects section starts unfolded")
+    Defaults[.projectsFolded] = true
+    XCTAssertTrue(AppStore().projectsFolded, "a folded Projects section stays folded")
+    Defaults[.projectsFolded] = false
+    XCTAssertFalse(AppStore().projectsFolded, "and an unfolded one unfolded")
   }
 
   /// Value: protects=with no projects the sidebar toggles (⌃⌘S, ⌥⌘S, the title-bar button) do
