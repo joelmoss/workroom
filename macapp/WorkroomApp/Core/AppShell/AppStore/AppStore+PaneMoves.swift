@@ -93,8 +93,20 @@ extension AppStore {
       return true
     case .target(let sid):
       guard sid.targetID != target.id else { return false }
+      if sid.targetID == .quickTerminal { return quickTerminalPanel != nil }
       return paneMoveTarget(sid) != nil || canGroup(onto: sid)
     }
+  }
+
+  /// The Quick Terminal's panel, the built-in group's one holder, once it is made. A tab dropped on
+  /// the group's row moves into it, never into this window (stories 29, 37).
+  private var quickTerminalPanel: QuickTerminalHost? {
+    if let panel = terminalsSection.quickTerminalHolder as? QuickTerminalHost { return panel }
+    // Not made yet (never summoned this launch): the app's controller makes it on the drop.
+    guard let controller = WindowRegistry.shared.quickTerminal,
+      controller.section === terminalsSection
+    else { return nil }
+    return controller.ensureHost()
   }
 
   /// Whether a terminal dropped on standalone terminal `sid`, which has its one terminal, makes an
@@ -122,6 +134,11 @@ extension AppStore {
         tabID, of: target, source: terminals, notifications: notifications)
     case .target(let sid):
       guard let into = sid.targetID else { return false }
+      if into == .quickTerminal, let panel = quickTerminalPanel {
+        return await PaneMove.move(
+          tabID, of: target, source: terminals, notifications: notifications, to: panel,
+          into: into)
+      }
       if paneMoveTarget(sid) == nil {
         return await groupPane(tabID, of: target, onto: into)
       }
@@ -263,45 +280,5 @@ extension AppStore {
     let zone = sidebarDropZone { Self.groupBand(of: $0).contains(screenPoint) }
     guard case .target(let sid) = zone, canDropRow(dragged, onto: sid) else { return nil }
     return sid
-  }
-
-  /// Standalone terminal `sid`'s row is being dragged: highlights the row it would group with.
-  /// The List's reorder drag takes the mouse once it starts, so a timer follows the pointer from
-  /// then until the button comes up, and lets the row go there (`rowDragEnded`).
-  func rowDragMoved(_ sid: SidebarID) {
-    if rowDrag?.sid != sid {
-      rowDrag?.poll.invalidate()
-      let poll = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
-        MainActor.assumeIsolated { self?.followRowDrag() }
-      }
-      RunLoop.main.add(poll, forMode: .common)
-      rowDrag = (sid, poll)
-    }
-    followRowDrag()
-  }
-
-  private func followRowDrag() {
-    guard let sid = rowDrag?.sid else { return }
-    guard NSEvent.pressedMouseButtons & 1 != 0 else {
-      rowDragEnded(sid, at: NSEvent.mouseLocation)
-      return
-    }
-    let shown = rowDropDestination(sid, at: NSEvent.mouseLocation).map(PaneDropZone.target)
-    if incomingPaneDrop != shown { incomingPaneDrop = shown }
-  }
-
-  /// Standalone terminal `sid`'s row is let go at `screenPoint`: over the middle of another
-  /// standalone terminal's row, the two become an unnamed group. Whether they did, so the List
-  /// doesn't also reorder. Called by whichever sees the drop first (the gesture, the timer or the
-  /// List's move); a second call finds the row gone and does nothing.
-  @discardableResult
-  func rowDragEnded(_ sid: SidebarID, at screenPoint: CGPoint) -> Bool {
-    if rowDrag?.sid == sid {
-      rowDrag?.poll.invalidate()
-      rowDrag = nil
-      if incomingPaneDrop != nil { incomingPaneDrop = nil }
-    }
-    guard let destination = rowDropDestination(sid, at: screenPoint) else { return false }
-    return dropRow(sid, onto: destination)
   }
 }

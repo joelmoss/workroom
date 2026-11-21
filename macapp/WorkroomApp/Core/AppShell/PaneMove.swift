@@ -26,16 +26,19 @@ protocol PaneMoveDestination: AnyObject {
 enum PaneMove {
   /// "Move to…" for `source`'s pane `tabID` in `target`, in sections: first the Terminals section's
   /// places (Standalone, the Quick Terminal, the user's terminal groups, New Terminal Group…),
-  /// which the pane joins in its own window, else in the first of `windows`; then every workroom open in `windows`, in
-  /// each window's tab order, a section per window. The pane's own place is listed disabled, and
-  /// every place is when the pane can't move at all (`refusal`, or `sourceRefusal`), each with why.
+  /// which the pane joins in its own window, else (a Quick Terminal pane) in `front`, the window in
+  /// front, else in the first of `windows`; then every workroom open in `windows`, in each window's
+  /// tab order, a section per window. The pane's own place is listed disabled, and every place is
+  /// when the pane can't move at all (`refusal`, or `sourceRefusal`), each with why.
   static func choices(
     _ tabID: TerminalTab.ID, of target: TerminalTarget, source: TerminalPanes,
-    notifications: NotificationCenterStore, windows: [AppStore], refusal: String? = nil,
-    quickTerminal: QuickTerminalHost? = nil
+    notifications: NotificationCenterStore, windows: [AppStore], front: AppStore? = nil,
+    refusal: String? = nil, quickTerminal: QuickTerminalHost? = nil
   ) -> [PaneWorkroomGroup] {
     let stuck = refusal ?? sourceRefusal(tabID, of: target, source: source)
-    let home = windows.first { $0.terminals === source } ?? windows.first
+    let home =
+      windows.first { $0.terminals === source } ?? windows.first { $0 === front }
+      ?? windows.first
     let section = home.map {
       terminalsChoices(
         tabID, of: target, source: source, notifications: notifications, in: $0,
@@ -89,7 +92,8 @@ enum PaneMove {
     let isStandalone = if case .standalone = target.id { true } else { false }
     var choices = [
       PaneWorkroomChoice(
-        title: "Standalone", glyph: "terminal", enabled: stuck == nil && !isStandalone,
+        title: "Standalone", glyph: TerminalGroup.standaloneGlyph,
+        enabled: stuck == nil && !isStandalone,
         help: stuck ?? (isStandalone ? nil : "A terminal of its own, with its own row and tab")
       ) { [weak source, weak notifications, weak home] in
         guard let source, let notifications, let home else { return }
@@ -137,7 +141,7 @@ enum PaneMove {
   }
 
   /// The Quick Terminal's place: its panel's built-in group, listed disabled for its own panes and
-  /// for a pane that can't move at all (a terminal on another computer among them).
+  /// for a pane that can't move at all (a terminal on a host among them).
   private static func quickTerminalChoice(
     _ tabID: TerminalTab.ID, of target: TerminalTarget, source: TerminalPanes,
     notifications: NotificationCenterStore, _ host: QuickTerminalHost, _ stuck: String?
@@ -158,12 +162,12 @@ enum PaneMove {
   }
 
   /// Why `source`'s pane `tabID` in `target` can't move anywhere, or nil when it can. A terminal
-  /// on another computer stays there; a popped-out pane goes back to its window first.
+  /// on a host stays there; a popped-out pane goes back to its window first.
   static func sourceRefusal(
     _ tabID: TerminalTab.ID, of target: TerminalTarget, source: TerminalPanes
   ) -> String? {
     if target.remoteHost != nil || target.isRemoteWorkroom {
-      return "This terminal runs on another computer, so it can't move to this Mac."
+      return "This terminal runs on a host, so it can't move to this Mac."
     }
     if source.detachedTabIDs.contains(tabID) {
       return "Move this terminal back to its main window first."

@@ -51,6 +51,9 @@ final class WindowRegistry: ObservableObject {
   enum DropWindow {
     /// A Workroom window, or the one that owns a torn-off pane's window there (Q22).
     case store(AppStore)
+    /// A pane torn off the Quick Terminal's panel: the panel's, which is no window (ADR 0064), so
+    /// no workroom joins it, as over the panel itself.
+    case quickTerminal(QuickTerminalHost)
     /// Nothing of ours, or another app's window in front of ours: a new window.
     case none
   }
@@ -62,15 +65,23 @@ final class WindowRegistry: ObservableObject {
       skipping: skipped,
       numberBelow: { NSWindow.windowNumber(at: screenPoint, belowWindowWithWindowNumber: $0) },
       resolve: { [self] number in
-        guard let window = NSApp.window(withWindowNumber: number) else { return DropWindow.none }
-        if let store = store(for: window) { return .store(store) }
-        if let pane = window as? DetachedPaneWindow, let tab = pane.tabID,
-          let owner = ownerOf(tabID: tab)
-        {
-          return .store(owner)
-        }
-        return DropWindow.none
+        dropWindow(resolving: NSApp.window(withWindowNumber: number))
       })
+  }
+
+  /// What `window`, frontmost under a drop, is: a Workroom window, or the owner of the torn-off
+  /// pane it holds, a window's or the Quick Terminal's.
+  func dropWindow(resolving window: NSWindow?) -> DropWindow {
+    guard let window else { return DropWindow.none }
+    if let store = store(for: window) { return .store(store) }
+    guard let pane = window as? DetachedPaneWindow, let tab = pane.tabID else {
+      return DropWindow.none
+    }
+    switch paneHolder(ofTab: tab) {
+    case .window(let owner): return .store(owner)
+    case .quickTerminal(let host): return .quickTerminal(host)
+    case nil: return DropWindow.none
+    }
   }
 
   /// The Workroom window a drag is over at `screenPoint`, looking past the drag's own ghost
@@ -301,6 +312,11 @@ final class WindowRegistry: ObservableObject {
     store(for: keyWindow()) ?? lastActiveStore ?? allStores.first
   }
 
+  /// The Workroom window in front: the key one, else the last active. Nil with none open.
+  var frontStore: AppStore? {
+    store(for: keyWindow()) ?? lastActiveStore
+  }
+
   /// The key window, `NSApp.keyWindow`. A seam because a test host's windows never become key.
   var keyWindow: () -> NSWindow? = { NSApp.keyWindow }
 
@@ -317,6 +333,40 @@ final class WindowRegistry: ObservableObject {
   /// routing an OS-notification click to the right window (issue #70, OV #4).
   func ownerOf(tabID: TerminalTab.ID) -> AppStore? {
     allStores.first { $0.terminals.containsTab(tabID) }
+  }
+
+  /// What holds a terminal's pane: a window's store, or the Quick Terminal's panel, which is in no
+  /// window entry here (ADR 0064).
+  enum PaneHolder {
+    case window(AppStore)
+    case quickTerminal(QuickTerminalHost)
+  }
+
+  /// Whichever holds tab `tabID`: a window, else the Quick Terminal's panel once it is made.
+  func paneHolder(ofTab tabID: TerminalTab.ID) -> PaneHolder? {
+    if let owner = ownerOf(tabID: tabID) { return .window(owner) }
+    if let host = quickTerminal?.host, host.terminals.containsTab(tabID) {
+      return .quickTerminal(host)
+    }
+    return nil
+  }
+
+  /// Docks popped-out pane `tabID` back into whichever holds it, and shows it there: the Window
+  /// menu's "Move back to main window", which runs while the pane's own window is key. Whether a
+  /// holder took it.
+  @discardableResult
+  func dockDetachedPane(_ tabID: TerminalTab.ID) -> Bool {
+    switch paneHolder(ofTab: tabID) {
+    case .window(let store):
+      guard let target = store.targetOwning(tabID) else { return false }
+      store.dockPane(tabID, for: target)
+    case .quickTerminal(let host):
+      guard host.terminals.detachedTabIDs.contains(tabID) else { return false }
+      host.dockPane(tabID)
+    case nil:
+      return false
+    }
+    return true
   }
 
   /// Open a notification's terminal wherever it lives (#573): the window that has the pane comes

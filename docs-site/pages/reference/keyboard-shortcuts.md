@@ -79,6 +79,8 @@ The two **Global** shortcuts work from any app; every other shortcut works while
 | Next Terminal Tab | <kbd>⌥⌘→</kbd> |
 | Previous Terminal Tab | <kbd>⌥⌘←</kbd> |
 
+Nightly only: **New Standalone Terminal** opens a terminal that belongs to no project, from anywhere. <kbd>⌘T</kbd> does the same when a project's row or nothing is selected, or when a standalone terminal is. See [Terminals with no project](../app/terminals-and-tabs.md#terminals-with-no-project).
+
 <!-- stable -->
 ## Panes & Splits
 
@@ -92,6 +94,8 @@ The two **Global** shortcuts work from any app; every other shortcut works while
 | Focus Pane Down | <kbd>⌃⌘↓</kbd> |
 | Last-Used Pane | <kbd>⌃⇥</kbd> |
 | Move Pane into New Window / Back | <kbd>⌃⌘O</kbd> |
+
+Nightly only: <kbd>⌘D</kbd> and <kbd>⇧⌘D</kbd> on a standalone terminal turn it and the new terminal into an unnamed terminal group. See [Terminal groups](../app/terminals-and-tabs.md#terminal-groups).
 
 <!-- stable -->
 ## In the Terminal
