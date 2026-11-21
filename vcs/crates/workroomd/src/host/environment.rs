@@ -8,6 +8,7 @@
 //! home, and keeps it (ADR 0063). A run session's shell is chosen by the same rule
 //! (`probe_invocation`).
 use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -308,6 +309,38 @@ pub(crate) fn fallback() -> BTreeMap<String, String> {
 /// This process's PATH, then the standard directories.
 pub(crate) fn floor_path() -> String {
     union_path(&std::env::var("PATH").unwrap_or_default(), FLOOR_PATH)
+}
+
+/// The name a host's panes and scripts run this binary by: the bootstrap's link beside the
+/// installed `workroomd` (ADR 0078).
+const COMMAND_LINK: &str = "workroom";
+
+/// The folder of this program's file when `workroom` is beside it (the bootstrap's link on a host,
+/// or the binary itself), which a host's panes and scripts get on their PATH. Through
+/// `/proc/self/exe` on Linux: the file this process runs, wherever an install renamed it to.
+pub(crate) fn commands_folder() -> Option<std::path::PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|binary| binary.parent().map(std::path::Path::to_path_buf))
+        .filter(|folder| {
+            std::fs::metadata(folder.join(COMMAND_LINK)).is_ok_and(|meta| meta.is_file())
+        })
+}
+
+/// `path` with `folder` after its own entries, so a `workroom` the user installed elsewhere still
+/// wins; with no `path`, or an empty one, the standard directories and then `folder`, since a PATH
+/// of the folder alone would leave the shell no `ls`.
+pub(crate) fn with_commands(path: Option<&OsStr>, folder: &Path) -> OsString {
+    let mut joined = match path.filter(|path| !path.is_empty()) {
+        Some(path) if std::env::split_paths(path).any(|entry| entry == folder) => {
+            return path.to_os_string();
+        }
+        Some(path) => path.to_os_string(),
+        None => OsString::from(FLOOR_PATH),
+    };
+    joined.push(":");
+    joined.push(folder);
+    joined
 }
 
 fn union_path(first: &str, second: &str) -> String {

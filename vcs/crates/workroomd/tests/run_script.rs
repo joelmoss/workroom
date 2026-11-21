@@ -65,6 +65,47 @@ fn remote_contract(host: &str, fixture: &str) {
     assert_eq!(String::from_utf8(output.stdout).unwrap(), want);
 }
 
+/// A host's script runs `workroom` by name (ADR 0078): the folder of the binary running it, where
+/// `workroom` is (on a host, the bootstrap's link beside `workroomd`), goes after the login's PATH,
+/// so the login's own entries still come first.
+#[test]
+fn a_script_finds_workroom_on_its_path_after_the_logins_own_entries() {
+    let root = std::env::temp_dir().join(format!("wr-run-script-path-{}", std::process::id()));
+    std::fs::create_dir(&root).expect("a scratch folder of this run's own");
+    let script = root.join("workroom_setup");
+    std::fs::write(&script, "#!/bin/sh\necho \"PATH=$PATH\"\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(daemon_binary())
+        .args(["run-script", "--dir"])
+        .arg(&root)
+        .args(["--timeout", "60", "--"])
+        .arg(&script)
+        .env("HOME", &root)
+        .env("SHELL", "/bin/sh")
+        .stderr(Stdio::null())
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+    let seen = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{seen}");
+    let folder = std::fs::canonicalize(daemon_binary())
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let path = seen
+        .lines()
+        .find_map(|line| line.strip_prefix("PATH="))
+        .expect("the script's PATH");
+    let entries: Vec<&str> = path.split(':').collect();
+    assert_eq!(
+        entries.last().copied(),
+        folder.to_str(),
+        "the folder is not last on {path}"
+    );
+    assert!(entries.contains(&"/usr/bin"), "{path}");
+}
+
 /// What the login shell selects in the workroom is what the script gets, as from a terminal opened
 /// there (#560), and what it would select at home isn't.
 #[test]
