@@ -155,6 +155,8 @@ pub struct Shadow {
     /// The coding agent's states the last pty write's events left it in, in order, when it had
     /// several (`Store::apply_read`), for the waits that hear about that write.
     passed: Vec<crate::terminal::program_status::State>,
+    /// The pty writes taken so far (`wait::Seen::reads`).
+    reads: u64,
 }
 
 /// How many commands a session's shell has ended through its OSC 133 marks since this program
@@ -206,6 +208,7 @@ impl Shadow {
             disturbed: None,
             marks: Marks::default(),
             passed: Vec::new(),
+            reads: 0,
         }
     }
 
@@ -232,6 +235,7 @@ impl Shadow {
         bytes: &[u8],
         foreground: impl FnOnce() -> Option<libc::pid_t>,
     ) -> Written {
+        self.reads = self.reads.wrapping_add(1);
         let Some(terminal) = self.terminal.as_mut() else {
             return (Vec::new(), None);
         };
@@ -446,6 +450,7 @@ impl Shadow {
             passed: Vec::new(),
             shell_marks: self.status.shell_marks(),
             commands: self.marks.commands,
+            reads: self.reads,
             exits: self.marks.exits.iter().copied().collect(),
             alternate: self.alternate_screen(),
         }

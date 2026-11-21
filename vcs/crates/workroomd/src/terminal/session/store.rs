@@ -322,22 +322,22 @@ impl SessionStore {
         Some(pty.send(bytes, paste, until))
     }
 
-    /// [`SessionStore::send_input`], then `then` written `pause` after `bytes` in the same turn of
-    /// the pty's input (`Pty::send_then`): a prompt's Enter (#692), which no other input lands
-    /// before, kept out of the read that takes its paste.
+    /// [`SessionStore::send_input`], then `then`'s bytes its pause after `bytes`, in the same turn
+    /// of the pty's input, if its `before` still says so then (`Pty::send_then`): a prompt's Enter
+    /// (#692), which no other input lands before, kept out of the read that takes its paste.
+    /// Whether they were written.
     pub fn send_input_then(
         &self,
         id: SessionId,
         bytes: &[u8],
         paste: Option<std::ops::Range<usize>>,
-        pause: std::time::Duration,
-        then: &[u8],
+        then: crate::terminal::pty::Then<'_>,
         until: Instant,
-    ) -> Option<Result<(), crate::terminal::pty::Stopped>> {
+    ) -> Option<Result<bool, crate::terminal::pty::Stopped>> {
         let pty = lock_or_recover(&self.sessions)
             .get(&id)
             .map(|session| Arc::clone(&session.pty))?;
-        Some(pty.send_then(bytes, paste, pause, then, until))
+        Some(pty.send_then(bytes, paste, then, until))
     }
 
     /// What runs in session `id`'s foreground now (#692): its process group, the name a user would

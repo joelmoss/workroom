@@ -136,6 +136,10 @@ pub struct Seen {
     pub shell_marks: bool,
     /// How many commands the shell has ended (OSC 133 D after a C) since the daemon started it.
     pub commands: u64,
+    /// How many reads of the pty the shadow has taken in this program, this one included straight
+    /// after a read: which read a state came from, so a prompt's turn (#692) counts only a
+    /// `working` read after it pressed Enter (`Waiter::mark_turn`).
+    pub reads: u64,
     /// The exit codes of the last of them, oldest first, as many as the shadow keeps
     /// (`shadow::RECENT_EXITS`): the last is that of the `commands`th. Several end within one
     /// read when commands are quick, and a wait for the next to finish answers with the first's.
@@ -221,6 +225,10 @@ struct Progress {
     wanted: Wanted,
     /// A `Turn` wait has seen its turn start: a `working`, or `Turn::Current` from the first.
     turn_started: bool,
+    /// A `Turn` wait's start counts only from a read numbered past this (`Seen::reads`): a
+    /// prompt's, once it has pressed Enter (`mark_turn`), and none before (`hold_turn`). `None`:
+    /// any read's, and the state as the wait starts.
+    turn_after: Option<u64>,
     /// The commands the shell had ended when the wait started, for `CommandFinished`.
     commands_before: u64,
     /// A regex wait's output, handed over by the reader and not yet taken by its thread.
@@ -327,6 +335,7 @@ impl Waiter {
             state: Mutex::new(Progress {
                 wanted,
                 turn_started: matches!(condition_turn, Some(Turn::Current)),
+                turn_after: None,
                 commands_before: now.commands,
                 queue: Queue::default(),
                 in_hand: 0,
@@ -450,6 +459,20 @@ impl Waiter {
         }
     }
 
+    /// A prompt's `Turn` wait, before its Enter (#692): no `working` starts its turn until
+    /// `mark_turn`, so neither one the agent reported reading the paste nor a turn it ran on its
+    /// own before the Enter is taken for the prompt's.
+    pub fn hold_turn(&self) {
+        lock_or_recover(&self.state).turn_after = Some(u64::MAX);
+    }
+
+    /// The prompt's Enter is about to be written, the shadow at its `reads`th read: a `working`
+    /// from a later read starts its turn. Called under the shadow's lock, so a read the shadow had
+    /// taken by then, told to the wait after, is never one of them.
+    pub fn mark_turn(&self, reads: u64) {
+        lock_or_recover(&self.state).turn_after = Some(reads);
+    }
+
     /// For a `Turn` wait's thread: blocks until its turn has started, the wait has ended or
     /// `deadline` passes (none: never). Whether the turn started: a wait that ended without one
     /// (its session's end, its caller gone) or ran out of time says no, and `wait` then says how.
@@ -482,9 +505,10 @@ impl Waiter {
             // the `done` a prompt finds, is none of its end.
             Wanted::Turn => {
                 let states = seen.passed.iter().copied().map(Some).chain([seen.agent]);
+                let may_start = progress.turn_after.is_none_or(|after| seen.reads > after);
                 for state in states {
                     if !progress.turn_started {
-                        progress.turn_started = state == Some(State::Working);
+                        progress.turn_started = may_start && state == Some(State::Working);
                     } else if state != Some(State::Working) {
                         return Some(Met::Turn(state));
                     }

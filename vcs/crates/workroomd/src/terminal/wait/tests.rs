@@ -1022,3 +1022,30 @@ fn a_turn_ends_only_after_a_working_seen_since_it_started() {
     working.shadow(&now(Some(State::Error)));
     assert_eq!(working.outcome(), ended(Some(State::Error)));
 }
+
+/// Value: protects=`prompt --wait` taking a turn the agent started before the prompt's Enter for the prompt's (#692); fails_when=a held turn starts on a `working` from a read at or before its mark; why_new=only a prompt holds its turn; seam=none
+#[test]
+fn a_held_turn_starts_only_on_a_working_read_after_its_mark() {
+    let read = |reads, passed: &[State], agent| Seen {
+        agent,
+        passed: passed.to_vec(),
+        reads,
+        ..Seen::default()
+    };
+    let turn = Waiter::new(Condition::Turn(Turn::Next), read(3, &[], Some(State::Done)));
+    turn.hold_turn();
+    // Reading the paste, and a turn of its own, before the Enter: held, none of them counts.
+    turn.shadow(&read(4, &[], Some(State::Working)));
+    turn.shadow(&read(5, &[State::Working, State::Done], Some(State::Done)));
+    assert_eq!(turn.outcome(), None);
+    turn.mark_turn(6);
+    // Read before the mark, told after it: still not the prompt's.
+    turn.shadow(&read(6, &[State::Working, State::Done], Some(State::Done)));
+    assert_eq!(turn.outcome(), None);
+    turn.shadow(&read(7, &[], Some(State::Working)));
+    turn.shadow(&read(8, &[], Some(State::Done)));
+    assert_eq!(
+        turn.outcome(),
+        Some(Outcome::Met(Met::Turn(Some(State::Done))))
+    );
+}

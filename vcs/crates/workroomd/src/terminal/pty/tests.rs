@@ -534,8 +534,10 @@ fn writers_of_input_take_turns_and_never_interleave() {
 }
 
 /// A prompt's Enter (#692) comes its pause after the paste, in a read of its own, and nothing typed
-/// meanwhile lands between the two: the send keeps its turn through the pause. The pause is 3 s
-/// here, so a busy runner's program still reads the paste first.
+/// meanwhile lands between the two: the send keeps its turn through the pause and its `before`.
+/// The typing starts only once `before` runs, with the turn held, so it can only come after; the
+/// pause is 3 s, so a busy runner's program still reads the paste first. A `before` that says no
+/// leaves the second part unwritten.
 #[test]
 fn a_send_then_writes_its_second_part_apart_and_in_the_same_turn() {
     let scratch = Scratch::new("then");
@@ -547,19 +549,35 @@ fn a_send_then_writes_its_second_part_apart_and_in_the_same_turn() {
         rest = rest.display(),
     )));
     let until = Instant::now() + Duration::from_secs(30);
+    let (holding, held) = std::sync::mpsc::channel();
+    let (typing_soon, will_type) = std::sync::mpsc::channel();
     let send = {
         let pty = std::sync::Arc::clone(&pty);
         std::thread::spawn(move || {
-            pty.send_then(b"PASTE", None, Duration::from_secs(3), b"\r", until)
-                .is_ok()
+            let mut before = || {
+                holding.send(()).expect("tell the typing");
+                will_type.recv().expect("the typing's start");
+                // Time for the typing to reach the turn and wait for it.
+                std::thread::sleep(Duration::from_secs(3));
+                true
+            };
+            let then = Then {
+                pause: Duration::from_secs(3),
+                bytes: b"\r",
+                before: &mut before,
+            };
+            pty.send_then(b"PASTE", None, then, until)
         })
     };
-    std::thread::sleep(Duration::from_secs(1));
+    held.recv().expect("the send holds its turn");
     let typing = {
         let pty = std::sync::Arc::clone(&pty);
-        std::thread::spawn(move || pty.write_all(b"KEY").is_ok())
+        std::thread::spawn(move || {
+            typing_soon.send(()).expect("say so");
+            pty.write_all(b"KEY").is_ok()
+        })
     };
-    assert!(send.join().unwrap(), "the send stopped");
+    assert!(matches!(send.join().unwrap(), Ok(true)), "the send stopped");
     assert!(typing.join().unwrap(), "the typing stopped");
     let rest = file_until(&rest, "the rest", |held| held.len() == 4);
     assert_eq!(std::fs::read(&first).unwrap(), b"PASTE", "the first read");
@@ -567,6 +585,25 @@ fn a_send_then_writes_its_second_part_apart_and_in_the_same_turn() {
         rest, b"\rKEY",
         "the typing landed before the send's second part"
     );
+
+    let (second, after) = (scratch.0.join("second"), scratch.0.join("after"));
+    let pty = raw(&format!(
+        "dd bs=1024 count=1 of='{second}' 2>/dev/null; head -c 3 > '{after}.partial'; \
+         mv '{after}.partial' '{after}'",
+        second = second.display(),
+        after = after.display(),
+    ));
+    let then = Then {
+        pause: Duration::ZERO,
+        bytes: b"\r",
+        before: &mut || false,
+    };
+    let sent = pty.send_then(b"PASTE", None, then, until);
+    assert!(matches!(sent, Ok(false)), "{sent:?}");
+    let _ = file_until(&second, "the paste", |held| held == b"PASTE");
+    pty.write_all(b"KEY").expect("type");
+    let after = file_until(&after, "what came after", |held| held.len() == 3);
+    assert_eq!(after, b"KEY", "the second part was written all the same");
 }
 
 /// A paste whose program stops reading inside it owes the paste's end (#689): what is typed next

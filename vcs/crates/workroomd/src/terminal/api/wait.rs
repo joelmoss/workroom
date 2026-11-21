@@ -101,8 +101,11 @@ pub fn input() -> Value {
                                 other than `working` after a `working`, which the result's \
                                 `status` gives (null when its report went: it exited). `next`: \
                                 the turn a `working` reported now or later starts, so a `done` \
-                                left from the turn before is no end of it. `current`: the turn \
-                                under way, which any status but `working` ends, now counting.",
+                                left from the turn before is no end of it; on an agent already \
+                                working, that is the turn under way, and the wait ends with it \
+                                (`terminal.prompt` refuses a working agent, so its wait is the \
+                                turn after its prompt). `current`: the turn under way, which any \
+                                status but `working` ends, now counting.",
             },
             "timeout_ms": {
                 "type": "integer",
