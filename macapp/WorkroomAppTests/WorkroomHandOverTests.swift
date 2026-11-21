@@ -1025,7 +1025,7 @@ final class WorkroomHandOverTests: XCTestCase {
       t.sessionWorkroomKey, "a reattach names its new workroom")
     paneSurface?.handleTitleChange("vim")
     XCTAssertEqual(window.terminals.tab(pane.id, for: t)?.title, "vim", "it reports to the window")
-    XCTAssertNil(paneSurface?.moveToWorkroomChoices, "no Move to Workroom once it is a workroom's")
+    XCTAssertNotNil(paneSurface?.moveToWorkroomChoices, "the window's Move to once it is its")
   }
 
   /// Value: protects=the shell is retagged as the workroom's before it moves, and a refusal moves
@@ -1081,7 +1081,7 @@ final class WorkroomHandOverTests: XCTestCase {
 
     let choices = quick.paneMoveChoices(
       pane.id, of: QuickTerminalController.target(), windows: [window]
-    ).flatMap(\.choices)
+    ).dropFirst().flatMap(\.choices)
 
     XCTAssertEqual(choices.map(\.enabled), [true, false], "a, then b (being created)")
   }
@@ -1152,8 +1152,9 @@ final class WorkroomHandOverTests: XCTestCase {
     second.selectedTargetID = third
     let quickTarget = QuickTerminalController.target()
 
-    let groups = quick.paneMoveChoices(
-      pane.id, of: quickTarget, windows: [first, second])
+    // After the Terminals section's places.
+    let groups = Array(
+      quick.paneMoveChoices(pane.id, of: quickTarget, windows: [first, second]).dropFirst())
 
     XCTAssertEqual(groups.map(\.choices.count), [2, 1], "the unselected `b` too")
     XCTAssertEqual(
@@ -1162,7 +1163,7 @@ final class WorkroomHandOverTests: XCTestCase {
     XCTAssertEqual(
       groups.first?.choices.map(\.title), [first.title(for: sid), first.title(for: otherSid)])
     XCTAssertNil(
-      quick.paneMoveChoices(pane.id, of: quickTarget, windows: [first]).first?
+      quick.paneMoveChoices(pane.id, of: quickTarget, windows: [first]).last?
         .header, "one window: no header")
 
     groups[1].choices[0].move()

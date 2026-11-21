@@ -321,7 +321,7 @@ final class ThemeRepaintTests: XCTestCase {
       let panes = host.terminals
       _ = panes.addTab(for: host.target)
       opened.append(panes)
-      return QuickTerminalContent(panes: panes).quickTerminalEnvironment(host: host)
+      return QuickTerminalContent(host: host).quickTerminalEnvironment(host: host)
     }
   }
 

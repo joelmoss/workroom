@@ -2,9 +2,9 @@ import XCTest
 
 @testable import Workroom
 
-/// The Quick Terminal runs a workroom's own `TerminalPanes`, with three differences: its shells
-/// are ended at quit rather than kept, its panes never move to a window of their own, and each pane
-/// reads its own folder's branch, since no workroom knows it.
+/// The Quick Terminal runs a workroom's own `TerminalPanes`, with one difference: each pane reads
+/// its own folder's branch, since no workroom knows it. Its shells are kept across a quit and its
+/// panes pop out, as any group's do (ADR 0077).
 @MainActor
 final class QuickTerminalPanesTests: XCTestCase {
   private let target = TerminalTarget(
@@ -25,7 +25,6 @@ final class QuickTerminalPanesTests: XCTestCase {
       probe: { _ in backend }, ownership: { _ in .notOwned })
     if quickTerminal {
       sessions.readsPaneBranches = true
-      sessions.allowsDetach = false
     }
     return sessions
   }
@@ -44,33 +43,16 @@ final class QuickTerminalPanesTests: XCTestCase {
     XCTAssertNotNil(try XCTUnwrap(state(tab.id, in: sessions)).sessionID)
   }
 
-  /// Value: protects=its shells ending at quit while its panes stay open, since a quit must not free
-  /// surfaces (ADR 0064); fails_when=a session is missed or the tabs are closed; why_new=new path;
-  /// seam=none; no_claim=the daemon actually ending the session (no helper in a unit test).
-  func testAtQuitItsSessionsEndAndItsPanesStay() throws {
-    let sessions = makeSessions(backend: .ready(version: "test"))
-    let first = sessions.addTab(for: target)
-    let second = sessions.addTab(for: target)
-    let ids = [first, second].compactMap { state($0.id, in: sessions)?.sessionID }
-    XCTAssertEqual(ids.count, 2)
-
-    XCTAssertEqual(Set(sessions.endSessionsAtQuit(for: target)), Set(ids))
-    XCTAssertEqual(sessions.tabs(for: target).count, 2, "no tab closed, no surface freed")
-  }
-
-  func testAQuickTerminalPaneNeverMovesToAWindow() {
+  /// Value: protects=a Quick Terminal pane popping out into a window of its own, as any pane does
+  /// (ADR 0077, story 39); fails_when=its panes are kept from detaching again; why_new=the Quick
+  /// Terminal is an ordinary group now (#661); seam=none; no_claim=the window itself
+  /// (QuickTerminalControllerTests).
+  func testAQuickTerminalPaneCanPopOut() {
     let sessions = makeSessions()
     let tab = sessions.addTab(for: target)
-    XCTAssertEqual(
-      sessions.surface(tab)?.offersWindowToggle, false,
-      "no Move to New Window in its right-click menu")
+    XCTAssertEqual(sessions.surface(tab)?.offersWindowToggle, true, "Move to New Window offered")
     sessions.detachPane(tab.id, for: target, at: .zero)
-    XCTAssertTrue(sessions.detachedTabIDs.isEmpty, "a drag out of the window leaves it put")
-
-    let workroom = makeSessions(quickTerminal: false)
-    XCTAssertEqual(
-      workroom.surface(workroom.addTab(for: target))?.offersWindowToggle, true,
-      "workroom panes still can")
+    XCTAssertEqual(sessions.detachedTabIDs, [tab.id])
   }
 
   func testEachPaneReadsItsOwnFoldersBranch() async throws {

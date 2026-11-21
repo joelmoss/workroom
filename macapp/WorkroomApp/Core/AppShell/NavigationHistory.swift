@@ -107,6 +107,18 @@ struct NavigationHistory {
     }
   }
 
+  /// Point every entry at `old` at `new` instead: a target replaced in place, whose tabs moved
+  /// with it (a standalone terminal becoming a group and back, #659). The cursor stays; an adjacent
+  /// duplicate this exposes is left, as `record` would never have made one.
+  mutating func retarget(_ old: SidebarID, to new: SidebarID) {
+    for index in entries.indices where entries[index].target == old {
+      let entry = entries[index]
+      entries[index] = NavLocation(
+        target: new, tab: entry.tab, contentID: entry.contentID,
+        selectedPath: entry.selectedPath, payload: entry.payload)
+    }
+  }
+
   /// Drop every entry whose tab was removed (a closed tab / reaped workroom), so back/forward
   /// enablement stays honest — no entry that would no-op on replay survives (issue #26).
   ///

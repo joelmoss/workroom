@@ -60,7 +60,7 @@ final class QuickTerminalPaneMoveTests: XCTestCase {
       pane.id, of: quickTarget, source: source, notifications: registry.notifications,
       windows: [window])
 
-    let choice = try XCTUnwrap(groups.first?.choices.first)
+    let choice = try XCTUnwrap(groups.last?.choices.first, "after the Terminals section")
     XCTAssertEqual(choice.title, window.title(for: sid))
     choice.move()
     for _ in 0..<50 where window.terminals.tab(pane.id, for: target) == nil {

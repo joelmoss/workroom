@@ -137,7 +137,8 @@ struct OpenWorkroomDialog: View {
     }
     .frame(width: 420, height: 460)
     .onAppear {
-      targets = OpenPickerModel.targets(from: store.projectStore.projects)
+      targets = OpenPickerModel.targets(
+        from: store.projectStore.projects, terminals: store.terminalsSection)
       searchFocused = true
     }
     // ↑/↓ move the highlight; ⏎ opens the highlighted target. The single-line search field doesn't
@@ -244,7 +245,7 @@ private struct OpenTargetRow: View {
   var body: some View {
     HStack(spacing: 8) {
       // Same SF Symbols the sidebar uses for root / workroom rows (ProjectSidebar.leadingSlot).
-      Image(systemName: target.isRoot ? "house" : "cube")
+      Image(systemName: target.glyph)
         .font(.system(size: 11))
         .foregroundStyle(tokens.fgDim)
         .frame(width: 14, alignment: .center)

@@ -114,6 +114,7 @@ struct ProjectSidebar: View, Equatable {
               drag: drag, actions: actions
             )
             .equatable()
+            .paneDropZone(.target(rid), store: store)
             .listRowInsets(Self.childRowInsets)
             .listRowSeparator(.hidden)
             .listRowBackground(SidebarRowBackground(store: store, id: rid, hovered: hovered))
@@ -129,6 +130,7 @@ struct ProjectSidebar: View, Equatable {
                 actions: actions
               )
               .equatable()
+              .paneDropZone(.target(wid), store: store)
               .listRowInsets(Self.childRowInsets)
               .listRowSeparator(.hidden)
               .listRowBackground(SidebarRowBackground(store: store, id: wid, hovered: hovered))

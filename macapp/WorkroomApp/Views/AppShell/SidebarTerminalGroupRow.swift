@@ -5,7 +5,9 @@ import WorkroomDomain
 
 /// A terminal group's row in the Terminals section (ADR 0077): a fold chevron, the group glyph, its
 /// name (edited inline by Rename…) and New Terminal in Group. Selecting it shows the group in this
-/// window as a workroom shows; its menu renames it, sets its starting folder and deletes it.
+/// window as a workroom shows; its menu renames it, sets its starting folder and deletes it. The
+/// Quick Terminal's group is listed first: its row slides the panel in, and it has no fold, rename
+/// or delete, since its terminals are its panel's and it is built in.
 struct SidebarTerminalGroupRow: View {
   let store: AppStore
   let sid: SidebarID
@@ -23,22 +25,26 @@ struct SidebarTerminalGroupRow: View {
 
   var body: some View {
     HStack(spacing: 6) {
-      Button {
-        guard let id = sid.targetID else { return }
-        store.terminalsSection.setFolded(id, !group.isFolded)
-      } label: {
-        Image(systemName: group.isFolded ? "chevron.right" : "chevron.down")
-          .font(.system(size: 9, weight: .semibold))
-          .foregroundStyle(.secondary)
-          .frame(width: SidebarRowMetrics.caretWidth, height: 18)
-          .contentShape(Rectangle())
+      if group.isBuiltIn {
+        Color.clear.frame(width: SidebarRowMetrics.caretWidth, height: 18)
+      } else {
+        Button {
+          guard let id = sid.targetID else { return }
+          store.terminalsSection.setFolded(id, !group.isFolded)
+        } label: {
+          Image(systemName: group.isFolded ? "chevron.right" : "chevron.down")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: SidebarRowMetrics.caretWidth, height: 18)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(group.isFolded ? "Show this group's terminals" : "Hide this group's terminals")
+        .accessibilityLabel(group.isFolded ? "Expand \(title)" : "Collapse \(title)")
+        .accessibilityIdentifier("sidebar.group.fold.\(key)")
       }
-      .buttonStyle(.plain)
-      .help(group.isFolded ? "Show this group's terminals" : "Hide this group's terminals")
-      .accessibilityLabel(group.isFolded ? "Expand \(title)" : "Collapse \(title)")
-      .accessibilityIdentifier("sidebar.group.fold.\(key)")
 
-      Image(systemName: TerminalGroup.glyph)
+      Image(systemName: group.isBuiltIn ? QuickTerminalController.glyph : TerminalGroup.glyph)
         .font(.system(size: 10))
         .foregroundStyle(.secondary)
         .frame(width: SidebarRowMetrics.caretWidth, height: 18, alignment: .center)
@@ -81,7 +87,7 @@ struct SidebarTerminalGroupRow: View {
     .frame(height: SidebarRowMetrics.rowHeight)
     .contentShape(Rectangle())
     .onTapGesture { select(sid) }
-    .help(group.startingFolder.map { "\(title) — starts in \($0)" } ?? title)
+    .help(rowHelp)
     .contextMenu { menu }
     .accessibilityElement(children: .contain)
     .accessibilityLabel(title)
@@ -89,12 +95,19 @@ struct SidebarTerminalGroupRow: View {
     .accessibilityIdentifier("sidebar.group.\(key)")
   }
 
+  private var rowHelp: String {
+    let base = group.isBuiltIn ? "Show the Quick Terminal" : title
+    return group.startingFolder.map { "\(base) — starts in \($0)" } ?? base
+  }
+
   @ViewBuilder private var menu: some View {
     Button("New Terminal in Group", action: newTerminal)
-    Button("Rename…") {
-      draft = group.name ?? ""
-      fieldHadFocus = false
-      renaming = true
+    if !group.isBuiltIn {
+      Button("Rename…") {
+        draft = group.name ?? ""
+        fieldHadFocus = false
+        renaming = true
+      }
     }
     Divider()
     Button("Set Starting Folder…", action: chooseStartingFolder)
@@ -103,8 +116,10 @@ struct SidebarTerminalGroupRow: View {
         store.setTerminalGroupStartingFolder(sid, to: nil)
       }
     }
-    Divider()
-    Button("Delete “\(title)”…", action: delete)
+    if !group.isBuiltIn {
+      Divider()
+      Button("Delete “\(title)”…", action: delete)
+    }
   }
 
   private func commitRename() {
@@ -114,6 +129,7 @@ struct SidebarTerminalGroupRow: View {
 
   /// A terminal in the group, in this window, with the group selected to show it.
   private func newTerminal() {
+    if group.isBuiltIn { return store.revealQuickTerminal(newTerminal: true) }
     select(sid)
     guard let target = store.target(for: sid) else { return }
     store.newTerminal(in: target)

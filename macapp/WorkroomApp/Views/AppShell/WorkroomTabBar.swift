@@ -111,11 +111,10 @@ struct WorkroomTabBar: View {
   /// branch-independent.
   private var trailingControls: some View {
     HStack(spacing: tabSpacing) {
-      // No projects: nothing to open or create a workroom in (⌘O and ⌘N are off too).
-      if !projectStore.projects.isEmpty {
-        openWorkroomButton
-        addWorkroomButton
-      }
+      // No projects: nothing to create a workroom in (⌘N is off too); nothing at all: nothing to open.
+      // A terminal with no project is still something to open (#662), so the open button stays.
+      if store.sidebarHasContent { openWorkroomButton }
+      if !projectStore.projects.isEmpty { addWorkroomButton }
     }
     .fixedSize()
   }
@@ -153,7 +152,11 @@ struct WorkroomTabBar: View {
         )
         // A Quick Terminal pane dragged over this window would join this workroom.
         .overlay {
-          if store.incomingQuickTerminalPane == tab.sid { DropAccent(cornerRadius: 6) }
+          if store.incomingQuickTerminalPane == tab.sid
+            || store.incomingPaneDrop == .target(tab.sid)
+          {
+            DropAccent(cornerRadius: 6)
+          }
         }
         .onHover { inside in
           if inside { hoveredID = tab.sid } else if hoveredID == tab.sid { hoveredID = nil }

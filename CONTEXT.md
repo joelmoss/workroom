@@ -255,7 +255,7 @@ A badge or desktop banner raised when a program in a terminal asks for attention
 _Avoid_: Alert (for an entry in that list)
 
 **Quick Terminal**:
-The built-in terminal group, which can't be deleted, that a global shortcut also slides in from any app as a panel of its own. Its terminals are ordinary ones: they survive a quit and move in and out like any other. Until ADR 0077 is built, they end at quit.
+The built-in terminal group, which can't be deleted, that a global shortcut also slides in from any app as a panel of its own. Its terminals are ordinary ones: they survive a quit and move in and out like any other.
 
 **Shortcut**:
 The keys bound to one of Workroom's own actions. The user can record another, reset it to its default, or unset it so the action has no keys and terminals get them back. Standard items macOS supplies (Quit, Hide, Settings…, Copy, Paste) are not shortcuts in this sense.

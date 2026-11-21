@@ -810,13 +810,14 @@ final class TerminalPanes {
   /// False for the Quick Terminal's sessions: none of its panes moves to a window of its own, by
   /// menu, title-bar button or dragging out.
   @ObservationIgnored var allowsDetach = true
-  /// The Quick Terminal's: the open workrooms its pane can move into, for the terminal's
-  /// right-click menu. Nil elsewhere, so a pane that moved on loses the item when it is rewired.
+  /// Where a pane can move ("Move to…", `PaneMove.choices`), for the terminal's right-click menu.
+  /// Nil for panes that offer none; a moved pane is rewired with its new holder's.
   @ObservationIgnored
   var moveToWorkroomChoices: ((TerminalTab.ID, TerminalTarget) -> [PaneWorkroomGroup])?
   /// The Quick Terminal's: a pane dragged out of its window and let go, by its tab or its title bar,
-  /// in place of `detachPane` (`QuickTerminalPaneDrag.end`).
-  @ObservationIgnored var dropOutsideWindow: ((TerminalTab.ID, TerminalTarget) -> Void)?
+  /// over a workroom it joins (`QuickTerminalPaneDrag.end`). False when it took no pane, which then
+  /// pops out into a window of its own.
+  @ObservationIgnored var dropOutsideWindow: ((TerminalTab.ID, TerminalTarget) -> Bool)?
 
   init() {
     // Under the UI-test agent fixture, drive a stub backend (no network) with the feature + auto on
@@ -1739,6 +1740,11 @@ final class TerminalPanes {
   func splitFocusedPane(for target: TerminalTarget, edge: PaneEdge) {
     guard let focused = focusedTab(for: target) else { return }
     guard fits(splitting: focused, orientation: edge.orientation, for: target) else { return }
+    // A standalone terminal is one terminal: its window makes it a group to split in (#659).
+    if target.id.isStandaloneTerminal, let splitStandalone {
+      splitStandalone(focused.id, edge, target.id)
+      return
+    }
 
     let newTab = newPaneTab(splitting: focused, for: target)
     store(newTab)
@@ -1900,32 +1906,36 @@ final class TerminalPanes {
 
   // MARK: A pane dragged out of its window, by its tab or its title bar
 
-  /// Show what letting go here would do: the ghost of the window it would become, or for the
-  /// Quick Terminal's (no window of their own), the workroom it would join.
+  /// Show what letting go here would do: for the Quick Terminal's, the workroom it would join
+  /// when one is under the pointer; else the ghost of the window it would become.
   func showDragOutside(_ tab: TerminalTab) {
+    if dropOutsideWindow != nil,
+      QuickTerminalPaneDrag.update(
+        title: tab.title, glyph: tab.content.glyph, canDetach: allowsDetach)
+    {
+      return
+    }
     if allowsDetach {
       DetachedPaneDragPreview.shared.show(
         title: tab.title, glyph: tab.content.glyph, at: NSEvent.mouseLocation)
-    } else {
-      QuickTerminalPaneDrag.update(title: tab.title, glyph: tab.content.glyph)
     }
   }
 
   /// The drag came back inside, or ended.
   func hideDragOutside() {
-    if allowsDetach {
-      DetachedPaneDragPreview.shared.hide()
-    } else {
+    if dropOutsideWindow != nil {
       QuickTerminalPaneDrag.cancel()
+    } else {
+      DetachedPaneDragPreview.shared.hide()
     }
   }
 
-  /// Let go outside the window: its own window, or the workroom under the pointer.
+  /// Let go outside the window: the workroom under the pointer, for the Quick Terminal's, else its
+  /// own window.
   func dropOutside(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
+    if let dropOutsideWindow, dropOutsideWindow(tabID, target) { return }
     if allowsDetach {
       detachPane(tabID, for: target, at: NSEvent.mouseLocation)
-    } else {
-      dropOutsideWindow?(tabID, target)
     }
   }
 
@@ -1983,6 +1993,10 @@ final class TerminalPanes {
   /// leaves them alive, for another holder to adopt there, where a close's ends them. Nil otherwise.
   @ObservationIgnored private(set) var handingOffTo: TerminalTarget.ID?
 
+  /// Runs a split asked in a standalone terminal instead of splitting it: the tab to split, the
+  /// edge, and the standalone terminal's target. Its window turns it into a group first (#659).
+  @ObservationIgnored var splitStandalone: ((TerminalTab.ID, PaneEdge, TerminalTarget.ID) -> Void)?
+
   /// Lift `target`'s tabs out of this window WITHOUT ending a session or freeing a surface: the one
   /// removal that leaves the tabs alive, for another window to `adopt`. Fires `.tabsRemoved`, so this
   /// window tidies up as it does for a close (history, split membership, selection). Detached
@@ -2028,7 +2042,11 @@ final class TerminalPanes {
     if tab.isPreview { persist(tabID, for: target) }
     let view = surface(of: tabID)
     let handOff = TargetHandOff(
-      target: destination, layout: PaneState(order: [tabID], focused: tabID, counter: 0),
+      // The source's "Terminal N" counter goes with it, so the next terminal opened beside it
+      // isn't numbered the same (a standalone terminal split into a group, #659).
+      target: destination,
+      layout: PaneState(
+        order: [tabID], focused: tabID, counter: targets[target.id]?.state.counter ?? 0),
       detached: [:], agent: [tabID: codingAgentManager.handOff(tabID)])
     if let view {
       let title = view.attachment.metadata.first { $0.key == SessionMetadataKey.title }?.value
@@ -2864,23 +2882,6 @@ final class TerminalPanes {
   private func isRemoteSession(_ tab: TerminalTab) -> Bool {
     guard let sessionID = tab.terminal?.sessionID else { return false }
     return sessionService.isRemote(sessionID)
-  }
-
-  /// End `target`'s background sessions while its tabs stay open, and return them: the Quick
-  /// Terminal's at quit, since its shells are not kept and a quit must not free surfaces
-  /// (`AppDelegate.applicationWillTerminate`). Counted as close kills, so the quit waits for them.
-  @discardableResult
-  func endSessionsAtQuit(for target: TerminalTarget) -> [UUID] {
-    let service = sessionService
-    let ended = allTabs(for: target).compactMap(\.terminal?.sessionID)
-    for id in ended {
-      service.closeKillStarted(remote: false)
-      Task {
-        _ = await service.endSession(sessionID: id)
-        service.closeKillEnded(remote: false)
-      }
-    }
-    return ended
   }
 
   @discardableResult

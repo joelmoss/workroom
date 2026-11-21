@@ -43,8 +43,14 @@ final class TerminalsSection {
     }
   }
 
-  /// The section's rows, top to bottom.
+  /// The section's rows the user made, top to bottom. The Quick Terminal's group is not one of
+  /// them: it is `quickTerminal`, always listed first (`rows`).
   private(set) var entries: [Entry]
+  /// The built-in group, the Quick Terminal's (ADR 0077): listed first, and never deleted, moved or
+  /// renamed. Only its starting folder and fold change, and are kept in the file.
+  private(set) var quickTerminal = TerminalGroup.quickTerminal
+  /// Every row the sidebar lists, top to bottom: the Quick Terminal's group, then `entries`.
+  var rows: [Entry] { [.group(quickTerminal)] + entries }
   /// Whether the sidebar shows the section folded, as a project folds. Kept in the file.
   var isFolded: Bool {
     didSet { if isFolded != oldValue { save() } }
@@ -54,6 +60,12 @@ final class TerminalsSection {
   /// The windows (and, from #661, the Quick Terminal host) that hold these targets' tabs, weakly
   /// (ADR 0068), so a name or a count can be asked across all of them.
   @ObservationIgnored private var holders = WeakList<any TerminalsSectionHolder>()
+  /// The last of the regroups queued so far (`enqueueRegroup`): forming, dissolving and deleting
+  /// groups run one at a time, each seeing the section the one before left.
+  @ObservationIgnored var regroupTail: Task<Void, Never>?
+  /// The Quick Terminal's panel, which answers for the built-in group even while it holds none of
+  /// its terminals: its row's click slides it in.
+  @ObservationIgnored weak var quickTerminalHolder: (any TerminalsSectionHolder)?
 
   /// Loads `file` synchronously, so the section is known before anything resolves a saved id: the
   /// launch's restore and its orphaned-session sweep both run after this. No file keeps the section
@@ -61,8 +73,14 @@ final class TerminalsSection {
   init(file: TerminalsSectionFile? = nil) {
     self.file = file
     let document = file?.read()
-    self.entries = document?.entries.compactMap(\.entry) ?? []
+    let stored = document?.entries.compactMap(\.entry) ?? []
+    self.entries = stored.filter { $0.targetID != .quickTerminal }
     self.isFolded = document?.folded ?? false
+    // Only what can change of it is read back: its id, name and place are fixed.
+    for case .group(let group) in stored where group.isBuiltIn {
+      quickTerminal.startingFolder = group.startingFolder
+      quickTerminal.isFolded = group.isFolded
+    }
   }
 
   // MARK: Holders
@@ -83,19 +101,31 @@ final class TerminalsSection {
     holders.elements.first { $0 !== asker && $0.holdsTerminals(forTargetID: id) }
   }
 
-  /// Drops the standalone terminals' rows whose terminal no holder has, and returns them. A
-  /// standalone terminal is exactly one live terminal, so a row nothing restored (a crash that lost
-  /// its window's layout) has nothing to show. A named group is kept empty, so it stays. Run once,
-  /// at launch, after the saved windows are restored. Does nothing while no window has registered,
-  /// which would read every row as empty.
+  /// Drops the rows nothing restored, and returns them. A standalone terminal is exactly one live
+  /// terminal, so a row no holder has (a crash that lost its window's layout) has nothing to show;
+  /// nor has an unnamed group none of whose terminals came back. An unnamed group with one terminal
+  /// back is settled as any such group is: that terminal becomes standalone in its place (#659). A
+  /// named group is kept empty, so it stays. Run once, at launch, after the saved windows are
+  /// restored. Does nothing while no window has registered, which would read every row as empty.
   @discardableResult
   func pruneUnheld() -> [TargetID] {
     guard !holders.elements.isEmpty else { return [] }
-    let unheld = entries.compactMap { entry -> TargetID? in
-      guard case .standalone = entry else { return nil }
-      return entry.targetID
-    }.filter { id in
-      !holders.elements.contains { $0.holdsTerminals(forTargetID: id) }
+    var unheld: [TargetID] = []
+    for entry in entries {
+      let id = entry.targetID
+      switch entry {
+      case .standalone:
+        if !holders.elements.contains(where: { $0.holdsTerminals(forTargetID: id) }) {
+          unheld.append(id)
+        }
+      case .group(let group) where !group.isKept:
+        switch terminalNames(of: id).count {
+        case 0: unheld.append(id)
+        case 1: settleUnnamedGroup(id)
+        default: break
+        }
+      case .group: break
+      }
     }
     for id in unheld { remove(id) }
     return unheld
@@ -104,10 +134,35 @@ final class TerminalsSection {
   // MARK: Rows
 
   /// Changes the rows in place and saves them once: how the groups' own edits (`+Groups`) write.
+  /// The Quick Terminal's group is no entry, so no change here can drop or move it.
   func updateEntries(_ change: (inout [Entry]) -> Void) {
     let before = entries
     change(&entries)
+    entries.removeAll { $0.targetID == .quickTerminal }
     if entries != before { save() }
+  }
+
+  /// Changes the Quick Terminal's group's starting folder or fold, and saves it. Its id and name
+  /// stay what they are.
+  func updateQuickTerminal(_ change: (inout TerminalGroup) -> Void) {
+    var group = quickTerminal
+    change(&group)
+    group.name = TerminalGroup.quickTerminal.name
+    guard
+      group.startingFolder != quickTerminal.startingFolder
+        || group.isFolded != quickTerminal.isFolded
+    else { return }
+    quickTerminal.startingFolder = group.startingFolder
+    quickTerminal.isFolded = group.isFolded
+    save()
+  }
+
+  /// Where in `entries` a row listed just below `anchor` goes: after it, at the top when it is the
+  /// Quick Terminal's group, else nil (the end).
+  func index(after anchor: TargetID?) -> Int? {
+    guard let anchor else { return nil }
+    if anchor == .quickTerminal { return 0 }
+    return entries.firstIndex { $0.targetID == anchor }.map { $0 + 1 }
   }
 
   /// Adds a standalone terminal's row, just below `anchor` when that is a row of this section,
@@ -115,13 +170,22 @@ final class TerminalsSection {
   @discardableResult
   func addStandalone(after anchor: TargetID? = nil, id: UUID = UUID()) -> TargetID {
     let entry = Entry.standalone(id)
-    if let anchor, let index = entries.firstIndex(where: { $0.targetID == anchor }) {
-      entries.insert(entry, at: index + 1)
+    if let index = index(after: anchor) {
+      entries.insert(entry, at: index)
     } else {
       entries.append(entry)
     }
     save()
     return entry.targetID
+  }
+
+  /// Puts `entry` in row `id`'s place: a standalone terminal becoming a group, or a group
+  /// dissolving into a standalone terminal (#659). Does nothing when `id` isn't listed.
+  func replace(_ id: TargetID, with entry: Entry) {
+    updateEntries { entries in
+      guard let index = entries.firstIndex(where: { $0.targetID == id }) else { return }
+      entries[index] = entry
+    }
   }
 
   /// Drops `id`'s row, if it has one.
@@ -131,9 +195,9 @@ final class TerminalsSection {
     if entries.count != before { save() }
   }
 
-  /// Whether `id` names a row of this section.
+  /// Whether `id` names a row of this section, the Quick Terminal's group included.
   func contains(_ id: TargetID) -> Bool {
-    entries.contains { $0.targetID == id }
+    id == .quickTerminal || entries.contains { $0.targetID == id }
   }
 
   /// `id`'s row while it is listed, else nil.
@@ -149,7 +213,7 @@ final class TerminalsSection {
   /// a group is titled and started as `TerminalGroup` says. Neither is ever unavailable: they need
   /// nothing but this Mac.
   func target(for sid: SidebarID) -> TerminalTarget? {
-    guard let id = sid.targetID, let entry = entries.first(where: { $0.targetID == id }) else {
+    guard let id = sid.targetID, let entry = rows.first(where: { $0.targetID == id }) else {
       return nil
     }
     switch entry {
@@ -194,8 +258,11 @@ final class TerminalsSection {
 
   // MARK: Saving
 
+  /// The Quick Terminal's group is written first, and only once something of it is set, so a file
+  /// that never changed it reads as it did before it was built in.
   private func save() {
-    file?.write(entries, folded: isFolded)
+    let builtIn = quickTerminal.startingFolder != nil || quickTerminal.isFolded
+    file?.write(builtIn ? rows : entries, folded: isFolded)
   }
 
   /// Waits for the last write to land: the quit path, and tests reading the file back.
@@ -218,6 +285,24 @@ protocol TerminalsSectionHolder: AnyObject {
   func holdsTerminals(forTargetID targetID: TargetID) -> Bool
   /// Brings this holder forward and shows `targetID`'s terminal in it.
   func revealTerminals(forTargetID targetID: TargetID)
+  /// The first half of moving this holder's terminals in `targetID` to `newID` in place: retags
+  /// their sessions as `newID`'s, so a quit in between reattaches them there. False, with nothing
+  /// left retagged, when one can't be; `newID` is `targetID` to undo it.
+  func retagTerminals(forTargetID targetID: TargetID, as newID: TargetID) async -> Bool
+  /// The second half: hands this holder's terminals in `from` over to `newID`, keeping their
+  /// shells, and puts `newID` wherever `from` was in this holder (selection, title-bar order,
+  /// side-by-side splits, history). Runs after the section lists `newID`, and may no longer list
+  /// `from`, which is why it is passed whole.
+  func rehomeTerminals(from: TerminalTarget, to newID: TargetID)
+}
+
+extension TerminalsSectionHolder {
+  /// A holder that can't move its terminals in place refuses: whatever is being regrouped stays.
+  func retagTerminals(forTargetID targetID: TargetID, as newID: TargetID) async -> Bool {
+    !holdsTerminals(forTargetID: targetID)
+  }
+
+  func rehomeTerminals(from: TerminalTarget, to newID: TargetID) {}
 }
 
 // MARK: - The file
