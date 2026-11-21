@@ -457,9 +457,10 @@ struct SidebarWorkroomRow: View, Equatable {
 
 struct SidebarTerminalRowModel: Equatable {
   /// Where a row's title is read from, comparable without reading the title: a terminal's
-  /// live-title cell by identity, a content tab's own title by value.
+  /// live-title cell by identity with the name the user gave it (which outranks the cell, so a
+  /// rename re-runs the row), a content tab's own title by value.
   enum TitleSource: Equatable {
-    case live(ObjectIdentifier)
+    case live(ObjectIdentifier, userTitle: String?)
     case fixed(String)
   }
 
@@ -499,9 +500,11 @@ struct SidebarTerminalRow: View, Equatable {
   let content: TabContent
   let hovered: Bool
   let actions: SidebarActions
+  /// Who holds the terminal when it isn't this window, for its menu: the Quick Terminal's panel.
+  var holder: (any PaneHost)? = nil
 
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-    lhs.model == rhs.model && lhs.hovered == rhs.hovered
+    lhs.model == rhs.model && lhs.hovered == rhs.hovered && lhs.holder === rhs.holder
   }
 
   var body: some View {
@@ -542,7 +545,11 @@ struct SidebarTerminalRow: View, Equatable {
         }
         TabTitleReader(content: content) { title in
           CloseTerminalRowButton(title: title, visible: hovered) {
-            actions.closeTerminal(model.tabID, model.target)
+            if let holder {
+              holder.requestCloseTerminalTab(model.tabID, for: model.target)
+            } else {
+              actions.closeTerminal(model.tabID, model.target)
+            }
           }
         }
       }
@@ -579,7 +586,7 @@ struct SidebarTerminalRow: View, Equatable {
         )
     }
     .contextMenu {
-      SidebarTerminalMenu(tabID: model.tabID, target: model.target)
+      SidebarTerminalMenu(tabID: model.tabID, target: model.target, holder: holder)
     }
   }
 }

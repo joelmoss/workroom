@@ -233,7 +233,9 @@ struct ProjectSidebar: View, Equatable {
     static var root = 0
     static var workroom = 0
     static var terminal = 0
-    /// Project, root and workroom rows, by id.
+    /// The Terminals section's standalone terminal and terminal group rows (#652).
+    static var section = 0
+    /// Project, root, workroom, standalone terminal and terminal group rows, by id.
     static var byRow: [SidebarID: Int] = [:]
     static var runButton = 0
     static var background = 0
@@ -251,7 +253,7 @@ struct ProjectSidebar: View, Equatable {
     /// The fill each terminal row's background last drew, by tab.
     static var terminalFills: [TerminalTab.ID: Color] = [:]
 
-    static var total: Int { project + root + workroom + terminal }
+    static var total: Int { project + root + workroom + terminal + section }
 
     static func reset() {
       tree = 0
@@ -259,6 +261,7 @@ struct ProjectSidebar: View, Equatable {
       root = 0
       workroom = 0
       terminal = 0
+      section = 0
       byRow = [:]
       runButton = 0
       background = 0

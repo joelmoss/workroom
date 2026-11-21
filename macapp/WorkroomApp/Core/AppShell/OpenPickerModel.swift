@@ -52,11 +52,7 @@ struct OpenTarget: Identifiable, Hashable {
   /// The row's leading symbol, matching the sidebar's: a house for a root, a cube for a workroom, a
   /// terminal for a standalone terminal, stacked terminals for a group.
   var glyph: String {
-    switch sid {
-    case .standalone: return "terminal"
-    case .terminalGroup: return TerminalGroup.glyph
-    default: return isRoot ? "house" : "cube"
-    }
+    sid.terminalsGlyph ?? (isRoot ? "house" : "cube")
   }
 
   /// What the query matches against: the project name **then** the title, so a fuzzy subsequence can

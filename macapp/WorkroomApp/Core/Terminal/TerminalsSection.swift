@@ -87,14 +87,38 @@ final class TerminalsSection {
 
   func register(_ holder: any TerminalsSectionHolder) {
     holders.insert(holder)
+    holdersDidChange()
   }
 
   func unregister(_ holder: any TerminalsSectionHolder) {
     holders.remove(holder)
+    holdersDidChange()
+  }
+
+  /// Bumped a tick after a holder comes or goes, so a row that read every holder's terminals reads
+  /// them again (`observedHolders`). Late because a holder registers from its init, and a window's
+  /// store is built inside SwiftUI's evaluation, where writing an observed property of this shared
+  /// owner hangs the launch.
+  private(set) var holderGeneration = 0
+
+  private func holdersDidChange() {
+    DispatchQueue.main.async { [weak self] in self?.holderGeneration &+= 1 }
   }
 
   /// Every window (and, from #661, the Quick Terminal host) holding these targets' tabs now.
   var allHolders: [any TerminalsSectionHolder] { holders.elements }
+  /// The same, read so that a holder coming later re-runs the reader: what a sidebar row shows of
+  /// every window's terminals reads this.
+  var observedHolders: [any TerminalsSectionHolder] {
+    _ = holderGeneration
+    return holders.elements
+  }
+  /// The Quick Terminal's panel, read as `observedHolders` is, so its sidebar row lists terminals
+  /// that came after the sidebar was first drawn.
+  var observedQuickTerminalHolder: (any TerminalsSectionHolder)? {
+    _ = holderGeneration
+    return quickTerminalHolder
+  }
   /// The holder other than `asker` that has `id`'s terminal, if any: the window (or panel) a
   /// standalone terminal is in, which is one at a time.
   func holder(of id: TargetID, other asker: AnyObject) -> (any TerminalsSectionHolder)? {
@@ -285,6 +309,12 @@ protocol TerminalsSectionHolder: AnyObject {
   func holdsTerminals(forTargetID targetID: TargetID) -> Bool
   /// Brings this holder forward and shows `targetID`'s terminal in it.
   func revealTerminals(forTargetID targetID: TargetID)
+  /// Brings this holder forward and focuses its terminal `tabID` in `targetID`: a waiting mark's
+  /// click, or the Quick Terminal's terminal row, in a window that doesn't hold it.
+  func revealTerminal(_ tabID: TerminalTab.ID, inTarget targetID: TargetID)
+  /// Its panes: what a row in any window shows of the terminals it holds (program status, command
+  /// results).
+  var terminals: TerminalPanes { get }
   /// The first half of moving this holder's terminals in `targetID` to `newID` in place: retags
   /// their sessions as `newID`'s, so a quit in between reattaches them there. False, with nothing
   /// left retagged, when one can't be; `newID` is `targetID` to undo it.

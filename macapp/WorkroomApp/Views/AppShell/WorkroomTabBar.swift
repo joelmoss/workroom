@@ -413,8 +413,7 @@ private struct WorkroomTabChip: View {
   private var glyph: String {
     switch sid {
     case .root: return "house"
-    case .standalone: return "terminal"
-    case .terminalGroup: return TerminalGroup.glyph
+    case .standalone, .terminalGroup: return sid.terminalsGlyph ?? TerminalGroup.glyph
     case .project, .workroom, .creation: return target.workroomGlyph
     }
   }

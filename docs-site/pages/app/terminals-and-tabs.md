@@ -21,6 +21,7 @@ For long titles, the pane's title bar provides more room than the tab. Hover ove
 | --- | --- |
 | Open a new terminal | <kbd>⌘T</kbd>, or the new-terminal button in the tab strip |
 | Open a terminal with no project | Nightly only. <kbd>⌥⌘T</kbd> (**File ▸ New Standalone Terminal**) |
+| Rename a terminal | Nightly only. Right-click its tab or its row in the sidebar and choose **Rename…** |
 | Focus tab 1 to 9, left to right | <kbd>⌘1</kbd> to <kbd>⌘9</kbd> |
 | Next or previous terminal tab | <kbd>⌥⌘→</kbd> and <kbd>⌥⌘←</kbd> |
 | Flip to the pane you used last | <kbd>⌃Tab</kbd> (**Go ▸ Last-Used Pane**) |
@@ -29,9 +30,30 @@ For long titles, the pane's title bar provides more room than the tab. Hover ove
 
 ### Terminals with no project {nightly}
 
-A standalone terminal belongs to no project. It has its own row in the **Terminals** section at the top of the sidebar, and its own tab in the title bar, with a terminal icon and its name. Press <kbd>⌥⌘T</kbd> from anywhere, or <kbd>⌘T</kbd> when a project's row or nothing is selected, or click the **+** beside **Terminals**. <kbd>⌘T</kbd> on a standalone terminal opens another one. A standalone terminal starts in the **New terminals open in** folder, comes back after a quit or a crash like a workroom's terminals, and has no inspector, version control or run command. Click **Terminals** to fold the section.
+A standalone terminal belongs to no project. It has its own row in the **Terminals** section at the top of the sidebar, and its own tab in the title bar, with a terminal icon and its name. Press <kbd>⌥⌘T</kbd> from anywhere, or <kbd>⌘T</kbd> when a project's row or nothing is selected, or click the **+** beside **Terminals**. <kbd>⌘T</kbd> on a standalone terminal opens another one. A standalone terminal is one terminal: it starts in the **New terminals open in** folder, comes back after a quit or a crash like a workroom's terminals, and has no inspector, version control or run command. Click **Terminals** to fold the section. A window with no projects shows the section too, so you can use Workroom for terminals alone.
 
-A terminal group keeps several terminals with no project together. Click the group button beside **Terminals** and give it a name. A group has one tab in the title bar, with a group icon and its name, and the usual tab strip underneath: <kbd>⌘T</kbd>, <kbd>⌘W</kbd>, splits and <kbd>⌘1</kbd> to <kbd>⌘9</kbd> work inside it as in a workroom. Each window keeps its own terminals in a group. Its row folds open to list them, and Workroom remembers the fold. Right-click the row to rename the group, to set the folder its terminals start in (otherwise **New terminals open in**), or to delete it. Deleting a group keeps its terminals open, each as a standalone terminal in its place, and asks first when it has any. A named group stays when its last terminal closes, and comes back after a quit. Drag rows to reorder the section.
+Select a standalone terminal that another window holds, and that window comes forward. Closing a window closes its standalone terminals, and asks first when it has any.
+
+#### Rename a terminal
+
+Any terminal can have a name of its own, in a workroom, a group or on its own. Right-click its tab, or a standalone terminal's row, and choose **Rename…**. The name shows on the tab, the pane's title bar and the row, and it comes back after a quit. Leave the name empty to show the title the program sets again.
+
+#### Terminal groups
+
+A terminal group keeps several terminals with no project together. A window selects it and uses it as it does a workroom, with no branch or worktree behind it. It has one tab in the title bar, with a group icon and its name, and the usual tab strip underneath: <kbd>⌘T</kbd>, <kbd>⌘W</kbd>, splits and <kbd>⌘1</kbd> to <kbd>⌘9</kbd> work inside it as in a workroom. Each window keeps its own terminals in a group. Its row folds open to list them, and Workroom remembers the fold. Drag rows to reorder the section.
+
+A group is named or unnamed:
+
+- **Unnamed.** Split a standalone terminal with <kbd>⌘D</kbd> or <kbd>⇧⌘D</kbd>, drag one standalone terminal's row onto another's, or drop a terminal's tab on a standalone terminal's row or title-bar tab, and the terminals become an unnamed group in its place. Its row and tab are labelled with the terminals' names, such as **Terminal 1 + Terminal 2**. When one terminal is left in it, counting every window, the group goes and that terminal is standalone again. A split followed by closing one half gets you back where you started.
+- **Named.** Click the group button beside **Terminals**, or choose **New Terminal Group…** in **Move to…**, and give it a name. A named group stays when its last terminal closes, and comes back after a quit. Right-click its row and choose **Rename…** to change the name. Clearing the name makes it unnamed, and it then goes when one terminal is left.
+
+Right-click a terminal group's row for **New Terminal in Terminal Group**, **Rename…**, **Set Starting Folder…** (otherwise its terminals start in **New terminals open in**) and **Delete**. Deleting a group keeps its terminals open, each as a standalone terminal in its place, and asks first when it has any.
+
+#### Move a terminal
+
+Right-click a terminal's tab, a standalone terminal's row or the terminal itself and choose **Move to…**, or use the move button in its pane's title bar. It lists **Standalone**, the **Quick Terminal**, your terminal groups, **New Terminal Group…**, and every workroom that is open in a window. The terminal moves still running, with its scrollback.
+
+You can also drag a terminal's tab onto a row in the sidebar, onto a workroom or group's tab in the title bar, or onto the **Terminals** heading to make it standalone. While you drag, the place it will go is highlighted. A terminal that runs on a remote host can't become standalone or join a group, and nothing can move into a remote workroom, because the shell runs where it started.
 
 **File ▸ Close Other Tabs** and **File ▸ Close All Tabs** close several at once. Closing a terminal ends its shell and anything running in it. When a process is still running, Workroom asks first. This is on by default. Turn it off with **Settings ▸ Terminal ▸ Confirm before closing a terminal**, **File ▸ Confirm Before Closing a Terminal**, or **Don't ask me again** in the prompt.
 
@@ -79,7 +101,7 @@ Log out and back in so apps you open from the Dock see the new shell, then open 
 
 ## Terminals that outlive their tabs
 
-A terminal's shell is held by a background helper, not by its tab. That is why terminals keep running when you quit Workroom, and reattach when you open it again. Closing a terminal ends it. Run commands are kept too, unless you choose to stop them when you quit (see [Quitting with a run going](#quitting-with-a-run-going)). The Quick Terminal is never kept.
+A terminal's shell is held by a background helper, not by its tab. That is why terminals keep running when you quit Workroom, and reattach when you open it again. Closing a terminal ends it. Run commands are kept too, unless you choose to stop them when you quit (see [Quitting with a run going](#quitting-with-a-run-going)). Nightly only: standalone terminals, terminal groups and the Quick Terminal's terminals are kept in the same way, and reattach when you open Workroom again.
 
 > [!NOTE]
 > Before Workroom 3.0 this was a setting named **Persist sessions**. It is gone, and terminals always survive a quit.
@@ -166,16 +188,16 @@ On a remote or container workroom, the run command runs on the workroom's host, 
 
 ## Quick Terminal
 
-The Quick Terminal is a window of shells of its own that slides in from the top of the screen, in your home folder unless you choose another. It is not part of any workroom.
+The Quick Terminal is a window of shells of its own that slides in from the top of the screen, in your home folder unless you choose another starting folder. It is not part of any workroom. Nightly only: it is also the built-in terminal group, with a row in the **Terminals** section of the sidebar. Click the row to slide the panel in, or right-click it for **Set Starting Folder…**. The terminal group can't be deleted or renamed.
 
 - Press <kbd>⌥§</kbd> (or the shortcut you set) from any app to slide it in, and press it again to slide it away. It also slides away when you click another window or switch apps. Hiding keeps the shell and its scrollback.
 - It appears on the screen your pointer is on, centred along the edge until you move it. Drag the empty part of its tab bar or a footer to slide it along the edge, or towards another edge to move it there. It stays against an edge the whole way. Drag its sides to resize it. It keeps its size and place the next time it opens, even after you close it.
 - You can also open it from **File ▸ Quick Terminal** or the Quick Terminal button in the title bar.
 - Its tabs and panes work as a workroom's do. <kbd>⌘T</kbd> or the **+** opens a tab in the **New terminals open in** folder, and <kbd>⌘1</kbd>–<kbd>⌘9</kbd> pick one. Drag a tab along the tab bar to reorder it, or onto a pane's edge to split it there. <kbd>⌘D</kbd> splits the focused pane to the right and <kbd>⇧⌘D</kbd> below, and <kbd>⌃⌘</kbd> with an arrow key moves between panes. Each pane has its title bar, focus border and footer, with the folder its shell is in and that folder's branch. See [Splits and windows](splits-and-windows.md).
 - Its terminals' notifications work as a workroom terminal's do. They go in the notification list as "Quick Terminal", count on the bell, the menu bar and the Dock badge, and show as a toast or a banner. Programs that report status, such as Claude Code and Codex, get the "needs you" and finished-turn alerts too. Opening one slides the Quick Terminal in on that pane. While the Quick Terminal is in front, toasts show in it. Closing it removes its notifications. See [Notifications](notifications.md).
-- Its shells run in Workroom's background helper, as a workroom's do, but they end when you close their pane, close the Quick Terminal or quit Workroom, and never come back after a relaunch. If Workroom crashes, they are ended the next time it starts.
-- A pane can move into any workroom open in a Workroom window, still running. Click **Move to workroom** in the pane's title bar, or right-click its tab or the terminal and choose **Move to Workroom**, then pick the workroom. With more than one window open, the workrooms are listed under each window. You can also drag its tab or title bar out of the Quick Terminal and drop it on a window. It joins the workroom whose tab or pane you drop it on, or that window's selected one if you drop it anywhere else in the window. While you drag, the workroom it will join is highlighted, and the pointer shows it can't be dropped anywhere else. From then on it is that workroom's terminal: it is kept when you quit and comes back after a relaunch. A workroom on a remote host can't take one. Its panes can't move to a window of their own: there is no **Move to New Window**.
-- <kbd>⌘W</kbd> closes the focused pane and ends its shell. **Confirm before closing a terminal** applies, as it does in a workroom. A pane whose shell exits stays open until you close it, also as in a workroom. Closing the last tab closes the Quick Terminal. The next time you open it, you get a new shell.
-- **Settings ▸ Terminal ▸ Quick Terminal** chooses the edge it slides in from, whether it slides away when it loses focus, and the folder it opens in. A new folder applies from the next new shell. See [Settings](settings.md#quick-terminal).
+- Its shells run in Workroom's background helper, as a workroom's do. Nightly only: they are kept when you quit, and come back when you open Workroom again, as a workroom's do, whatever happens to the panel. Before then they ended when you closed their pane, closed the Quick Terminal or quit, and never came back. A crash no longer ends them either.
+- Nightly only: **Move to…** works on a Quick Terminal pane as on any terminal, and lists the Quick Terminal among the places other terminals can go. Click **Move to…** in the pane's title bar, or right-click its tab or the terminal, and pick a standalone terminal, a group or a workroom. With more than one window open, the workrooms are listed under each window. Dragging works too: drag its tab or title bar out of the panel and drop it on a window. It joins the workroom whose tab or pane you drop it on, or that window's selected one if you drop it anywhere else in the window. From then on it is that workroom's terminal. A workroom on a remote host can't take one. A pane can also pop out to a window of its own with **Move to New Window**, and **Move Back to Main Window** returns it.
+- <kbd>⌘W</kbd> closes the focused pane and ends its shell. **Confirm before closing a terminal** applies, as it does in a workroom. A pane whose shell exits stays open until you close it, also as in a workroom. Closing the last tab hides the Quick Terminal. Nightly only: the group outlives its terminals, so the next time you open it you get a new shell. A starting folder set on its row applies to its new terminals, as it does for any terminal group; with none set they start in **New terminals open in**.
+- **Settings ▸ Terminal ▸ Quick Terminal** chooses the edge it slides in from and whether it slides away when it loses focus. Its starting folder is set on its sidebar row, or follows **New terminals open in** in Settings ▸ Terminal. A new folder applies from the next new shell. See [Settings](settings.md#quick-terminal).
 
 The Quick Terminal's global shortcut is <kbd>⌥§</kbd> by default. It can be changed or removed in **Settings ▸ Shortcuts**, as can the <kbd>⌘§</kbd> show and hide shortcut. In the Quick Terminal, the tab and pane keys are the ones you set for workrooms. See [Settings](settings.md#shortcuts) and [Splits and windows](splits-and-windows.md#show-or-hide-workroom-from-anywhere).

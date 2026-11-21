@@ -369,7 +369,7 @@ final class PaneMoveAnywhereTests: XCTestCase {
     XCTAssertFalse(choice.enabled)
     XCTAssertEqual(
       choice.help,
-      "\(far.title) runs on another computer, so a terminal on this Mac can't move into it.")
+      "\(far.title) runs on a host, so a terminal on this Mac can't move into it.")
     XCTAssertFalse(dropped)
     XCTAssertNotNil(window.terminals.tab(pane.id, for: from))
   }
@@ -393,7 +393,7 @@ final class PaneMoveAnywhereTests: XCTestCase {
     XCTAssertTrue(choices.allSatisfy { !$0.enabled })
     XCTAssertTrue(
       choices.allSatisfy {
-        $0.help == "This terminal runs on another computer, so it can't move to this Mac."
+        $0.help == "This terminal runs on a host, so it can't move to this Mac."
       })
     XCTAssertFalse(dropped)
     XCTAssertFalse(moved)

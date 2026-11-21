@@ -146,6 +146,26 @@ final class QuickTerminalGroupTests: XCTestCase {
       panel.terminals.tabCount(forTargetID: .quickTerminal), 1, "New Terminal in Group")
   }
 
+  /// Value: protects=one of the panel's terminals listed under its row in a window slides the
+  /// panel in on that terminal (story 10); fails_when=the click opens it in the window, or slides
+  /// the panel in on another terminal; why_new=#652 review P8; seam=AppStore.revealTerminal;
+  /// no_claim=the slide and focus themselves (QuickTerminalController.reveal(tab:))
+  func testClickingOneOfItsTerminalsRowsSlidesThePanelInOnIt() {
+    let panel = makePanel()
+    let first = panel.terminals.addTab(for: panel.target)
+    _ = panel.terminals.addTab(for: panel.target)
+    var revealed: [TerminalTab.ID?] = []
+    panel.onReveal = { revealed.append($0) }
+    let store = makeStore()
+    store.selectedTargetID = workroom
+
+    store.revealTerminal(first.id, at: builtIn)
+
+    XCTAssertEqual(revealed, [first.id], "the panel slides in on that terminal")
+    XCTAssertEqual(store.selectedTargetID, workroom, "the window's selection stays")
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: .quickTerminal), 0)
+  }
+
   /// Value: protects=Move to… → Quick Terminal moving a window's terminal into the panel, keeping
   /// its shell, and sliding the panel in (stories 28, 37); fails_when=the choice is missing,
   /// disabled, or the terminal stays in the window; why_new=#661 adds it to the shared choices;
@@ -180,6 +200,152 @@ final class QuickTerminalGroupTests: XCTestCase {
     let own = panel.paneMoveChoices(tab.id, of: panel.target, windows: [store])
     let ownPlace = own.first?.choices.first { $0.title == "Quick Terminal" }
     XCTAssertEqual(ownPlace?.enabled, false, "its own place is listed disabled")
+  }
+
+  /// Value: protects=a terminal's tab dropped on the Quick Terminal's row moving it into the
+  /// panel, keeping its shell, and sliding the panel in (stories 29, 37); fails_when=the row
+  /// refuses the drop, or the window adopts the pane under the built-in group as a second holder;
+  /// why_new=the row refused every tab (P1 of the #652 review); seam=AppStore.dropPane;
+  /// no_claim=hit-testing the pointer (QuickTerminalUITests)
+  func testATabDroppedOnTheQuickTerminalsRowMovesIntoThePanel() async throws {
+    let panel = makePanel()
+    var revealed: [TerminalTab.ID?] = []
+    panel.onReveal = { revealed.append($0) }
+    let store = makeStore()
+    let target = try XCTUnwrap(store.target(for: workroom))
+    let tab = store.terminals.addTab(for: target)
+    let session = UUID()
+    store.terminals.giveSession(session, toTab: tab.id, in: target)
+    store.selectedTargetID = workroom
+
+    XCTAssertTrue(store.canDropPane(tab.id, of: target, on: .target(builtIn)))
+    let dropped = await store.dropPane(tab.id, of: target, on: .target(builtIn))
+
+    XCTAssertTrue(dropped)
+    XCTAssertNotNil(panel.terminals.tab(tab.id, for: panel.target), "it arrives in the panel")
+    XCTAssertEqual(panel.terminals.sessionID(forTab: tab.id, inTarget: .quickTerminal), session)
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: target.id), 0, "and leaves the window")
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: .quickTerminal), 0, "no second holder")
+    XCTAssertEqual(revealed, [tab.id], "the panel slides in on it")
+  }
+
+  /// Value: protects=the Quick Terminal's row taking no pane the window can't hand over: one in a
+  /// remote workroom, and none at all while no panel holds the group; and the window itself never
+  /// adopting a pane under the built-in group (ADR 0077: the panel is its one holder);
+  /// fails_when=a remote shell moves into the panel, or a direct move into `.quickTerminal` lands
+  /// in the window; why_new=the row now takes a tab (P1); seam=AppStore; no_claim=none
+  func testTheQuickTerminalsRowRefusesARemoteTerminalAndTheWindowNeverHoldsTheGroup() async throws {
+    let panel = makePanel()
+    let store = makeStore()
+    let target = try XCTUnwrap(store.target(for: workroom))
+    let tab = store.terminals.addTab(for: target)
+
+    let intoWindow = await PaneMove.move(
+      tab.id, of: target, source: store.terminals, notifications: registry.notifications,
+      to: store, into: .quickTerminal)
+    XCTAssertFalse(intoWindow, "a window takes no pane under the built-in group")
+    XCTAssertNotNil(store.terminals.tab(tab.id, for: target))
+
+    projects.projects = [
+      Project(
+        path: "/p", vcs: "git",
+        workrooms: [
+          Workroom(name: "a", path: "/p/a", vcsName: "workroom/a", warnings: []),
+          Workroom(
+            name: "far", path: "/p/far", vcsName: "workroom/far", warnings: [],
+            host: HostDescriptor(id: UUID())),
+        ])
+    ]
+    let remote = SidebarID.workroom(project: "/p", name: "far")
+    let far = try XCTUnwrap(store.target(for: remote))
+    let farTab = store.terminals.addTab(for: far)
+    XCTAssertFalse(store.canDropPane(farTab.id, of: far, on: .target(builtIn)))
+    let dropped = await store.dropPane(farTab.id, of: far, on: .target(builtIn))
+    XCTAssertFalse(dropped)
+    XCTAssertNotNil(store.terminals.tab(farTab.id, for: far))
+    XCTAssertEqual(panel.terminals.tabCount(forTargetID: .quickTerminal), 0)
+  }
+
+  /// Value: protects=Move to… → Standalone, or a group, from a panel's terminal making it in the
+  /// front window (P9 of the #652 review); fails_when=it lands in the first window listed
+  /// whichever is in front; why_new=the panel's pane has no window of its own, so `windows.first`
+  /// took it; seam=PaneMove.choices; no_claim=which window is key on screen (WindowRegistry)
+  func testAPanelTerminalMovesToStandaloneOrAGroupInTheFrontWindow() async throws {
+    let panel = makePanel()
+    let behind = makeStore()
+    let front = makeStore()
+    let group = try XCTUnwrap(front.newTerminalGroup(named: "Ops"))
+    let first = panel.terminals.addTab(for: panel.target)
+    let second = panel.terminals.addTab(for: panel.target)
+
+    let places = panel.paneMoveChoices(
+      first.id, of: panel.target, windows: [behind, front], front: front)[0].choices
+    try XCTUnwrap(places.first { $0.title == "Standalone" }).move()
+    for _ in 0..<100 where panel.terminals.tab(first.id, for: panel.target) != nil {
+      await Task.yield()
+    }
+    let standalone = try XCTUnwrap(
+      section.rows.first { if case .standalone = $0.sidebarID { true } else { false } })
+    let into = try XCTUnwrap(front.target(for: standalone.sidebarID))
+    XCTAssertNotNil(front.terminals.tab(first.id, for: into), "standalone in the front window")
+    XCTAssertEqual(behind.terminals.tabCount(forTargetID: into.id), 0)
+
+    let again = panel.paneMoveChoices(
+      second.id, of: panel.target, windows: [behind, front], front: front)[0].choices
+    try XCTUnwrap(again.first { $0.title == "Ops" }).move()
+    let ops = try XCTUnwrap(front.target(for: group))
+    for _ in 0..<100 where front.terminals.tab(second.id, for: ops) == nil { await Task.yield() }
+    XCTAssertNotNil(front.terminals.tab(second.id, for: ops), "the group's, in the front window")
+    XCTAssertEqual(behind.terminals.tabCount(forTargetID: ops.id), 0)
+  }
+
+  /// The app's Quick Terminal controller, its panel over this test's section with no real
+  /// sessions, joined to this test's registry as the app's is to the shared one.
+  private func joinedController() -> QuickTerminalController {
+    let controller = QuickTerminalController()
+    controller.section = section
+    controller.makeSurface = {
+      GhosttySurfaceView(workingDirectory: $0, command: $1, spawnsSurface: false)
+    }
+    let service = PersistentSessionService(
+      probe: { _ in .notBundled }, ownership: { _ in .notOwned })
+    _ = service.backend
+    controller.sessionServiceOverride = service
+    controller.hidesWhenUnfocused = { false }
+    controller.recoverSessions = { _, _ in }
+    registry.quickTerminal = controller
+    return controller
+  }
+
+  /// Value: protects=a pane popped out of the panel docking back from the Window menu's "Move back
+  /// to main window", and a drop over its window naming the panel as its owner (P2 of the #652
+  /// review, story 39), while the panel stays out of the registry's windows (ADR 0064);
+  /// fails_when=the owner lookup reads only registered windows, so the dock does nothing and the
+  /// drop over the pane's window reads as empty desktop; why_new=the panel's panes pop out since
+  /// #661; seam=WindowRegistry; no_claim=the menu item's rendering (QuickTerminalUITests)
+  func testAPanePoppedOutOfThePanelDocksBackThroughTheRegistry() throws {
+    let controller = joinedController()
+    let panel = controller.ensureHost()
+    var revealed: [TerminalTab.ID?] = []
+    panel.onReveal = { revealed.append($0) }
+    let store = makeStore()
+    let tab = panel.terminals.addTab(for: panel.target)
+    panel.togglePaneWindow(tab.id, targetID: .quickTerminal)
+    let window = try XCTUnwrap(panel.detachedPanes.window(for: tab.id))
+
+    guard case .quickTerminal(let owner) = registry.dropWindow(resolving: window) else {
+      return XCTFail("a drop over the popped-out pane names the panel as its owner")
+    }
+    XCTAssertTrue(owner === panel)
+    XCTAssertTrue(registry.allStores.isEmpty, "the panel registers as no window")
+
+    XCTAssertTrue(registry.dockDetachedPane(tab.id))
+
+    XCTAssertTrue(panel.terminals.detachedTabIDs.isEmpty, "docked back")
+    XCTAssertNotNil(panel.terminals.tab(tab.id, for: panel.target), "into the panel")
+    XCTAssertNil(panel.detachedPanes.window(for: tab.id), "its window went")
+    XCTAssertEqual(revealed, [tab.id], "and the panel slides in on it")
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: .quickTerminal), 0)
   }
 
   /// Value: protects=popping a pane out of the panel and docking it back (story 39);

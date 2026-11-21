@@ -191,6 +191,68 @@ final class QuickTerminalUITests: XCTestCase {
     XCTAssertTrue(panes(in: workroom).firstMatch.exists, "and still shows its workroom")
   }
 
+  /// The Quick Terminal's sidebar row, the built-in group's.
+  private func quickTerminalRow(in window: XCUIElement) -> XCUIElement {
+    window.descendants(matching: .any)
+      .matching(identifier: "sidebar.group.group:51C10A7E-0D4F-4E6A-9B2C-000000000001").firstMatch
+  }
+
+  /// #652 stories 29, 37: a workroom terminal's tab dragged onto the Quick Terminal's sidebar row
+  /// moves into its panel, which slides in holding it; the workroom's strip loses the tab.
+  func testATabDroppedOnItsSidebarRowMovesIntoThePanel() {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    let workroom = workroomWindow(app)
+    let chip = workroom.descendants(matching: .any).matching(identifier: "terminal.tab.Terminal 1")
+      .firstMatch
+    XCTAssertTrue(chip.waitForExistence(timeout: 15), "the fixture workroom's terminal tab")
+    let workroomTabsBefore = tabs(in: workroom).count
+    let row = quickTerminalRow(in: workroom)
+    XCTAssertTrue(row.waitForExistence(timeout: 10), "the Quick Terminal has a sidebar row")
+    XCTAssertFalse(quickTerminal(app).exists, "no Quick Terminal yet")
+
+    // `click(forDuration:thenDragTo:)`, the mouse drag: on macOS 27 `press` posts no mouse
+    // events from an element, so nothing drags (#269).
+    chip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click(
+      forDuration: 0.6,
+      thenDragTo: row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)))
+
+    let qt = quickTerminal(app)
+    XCTAssertTrue(qt.waitForExistence(timeout: 15), "the drop slides the panel in")
+    assertCounts(in: qt, tabs: 1, panes: 1, "holding the moved terminal")
+    XCTAssertTrue(
+      waitForCount(tabs(in: workroom), workroomTabsBefore - 1), "the workroom's strip lost it")
+  }
+
+  /// #652 story 39: the Quick Terminal's only pane popped out by its right-click Move to New Window
+  /// hides the panel; the Window menu's "Move back to main window", with the pane's window key,
+  /// docks it back into the panel, which slides in holding it.
+  func testAPanePoppedOutOfThePanelDocksBackFromTheWindowMenu() {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    XCTAssertTrue(
+      panes(in: workroomWindow(app)).firstMatch.waitForExistence(timeout: 15),
+      "the fixture workroom should render a terminal pane on launch")
+    let qt = summon(app)
+    assertCounts(in: qt, tabs: 1, panes: 1, "summoned")
+
+    choose("Move to New Window", onAPaneIn: qt, app)
+    let detached = app.windows["detachedPane.window"]
+    XCTAssertTrue(detached.waitForExistence(timeout: 10), "the pane pops out into its own window")
+    XCTAssertTrue(
+      quickTerminal(app).waitForNonExistence(timeout: 10),
+      "its only docked pane left, so the panel hides")
+
+    let dock = app.menuBars.menuBarItems["Window"].menuItems["Move back to main window"]
+    XCTAssertTrue(dock.waitForExistence(timeout: 5), "the Window menu offers the dock")
+    dock.click()
+
+    XCTAssertTrue(detached.waitForNonExistence(timeout: 10), "the pane's window goes")
+    let back = quickTerminal(app)
+    XCTAssertTrue(back.waitForExistence(timeout: 15), "the panel slides in")
+    assertCounts(in: back, tabs: 1, panes: 1, "holding the docked pane")
+  }
+
   /// A Quick Terminal pane's right-click Split Right, New Terminal and Close Terminal act on the
   /// Quick Terminal, not on the workroom window behind it (#583), which keeps its tabs and panes.
   func testAPanesRightClickMenuActsOnTheQuickTerminal() {
@@ -217,6 +279,95 @@ final class QuickTerminalUITests: XCTestCase {
     XCTAssertTrue(
       waitForCount(tabs(in: workroom), workroomTabsBefore), "the workroom kept its tabs")
     XCTAssertTrue(waitForCount(panes(in: workroom), workroomPanesBefore), "and its panes")
+  }
+
+  /// Launch restore (#661, story 44): the Quick Terminal's saved layout in `session.json` comes
+  /// back at launch, hidden, and its first summon shows exactly the saved terminals, with their
+  /// names and no stray fresh one. Seeded by writing the panel's entry into the file a first launch
+  /// wrote, as `SessionRestoreUITests` seeds a sibling window; the second quit then checks the
+  /// panel's entry is written back whole.
+  ///
+  /// Not covered: reattaching to live sessions. The fixture runs no session daemon, so the seeded
+  /// session ids find nothing to attach to and the panes start fresh shells in their place, which
+  /// is the path `restore` documents for a session it can't reach. Reattach itself, and the
+  /// notifications a reattached pane raises before the first summon, are covered by
+  /// `QuickTerminalRestoreTests` and `PersistentSessionRecoveryTests` with a stubbed recover step.
+  func testTheQuickTerminalsSavedTerminalsComeBackAtLaunch() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("workroom-uitest-qt-\(UUID().uuidString)", isDirectory: true)
+    let sessionFile = directory.appendingPathComponent("session.json")
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    func launch() -> XCUIApplication {
+      let app = XCUIApplication()
+      app.launchArguments += ["-WorkroomUITestFixture", "1"]
+      app.launchArguments += ["-WorkroomUITestSessionFile", sessionFile.path]
+      app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+      app.launch()
+      app.activate()
+      return app
+    }
+    func quitAndWaitForSave(_ app: XCUIApplication) {
+      app.terminate()
+      let written = NSPredicate { _, _ in
+        ((try? FileManager.default.attributesOfItem(atPath: sessionFile.path)[.size]) as? Int ?? 0)
+          > 0
+      }
+      XCTAssertEqual(
+        XCTWaiter().wait(
+          for: [XCTNSPredicateExpectation(predicate: written, object: nil)], timeout: 10),
+        .completed, "quitting should write the session")
+    }
+
+    // First launch: just to have the app write a valid session file.
+    let first = launch()
+    XCTAssertTrue(first.wait(for: .runningForeground, timeout: 10))
+    XCTAssertTrue(
+      panes(in: workroomWindow(first)).firstMatch.waitForExistence(timeout: 15),
+      "the fixture workroom should render a terminal pane on launch")
+    quitAndWaitForSave(first)
+
+    func terminal(_ key: String, _ title: String) -> [String: Any] {
+      [
+        "key": key, "kind": "terminal",
+        "terminal": [
+          "defaultTitle": title, "userTitle": "Restored \(key)",
+          "sessionID": UUID().uuidString,
+        ],
+      ]
+    }
+    let data = try Data(contentsOf: sessionFile)
+    var document = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    document["quickTerminal"] = [
+      "targetID": "group:51C10A7E-0D4F-4E6A-9B2C-000000000001",
+      "tabs": [terminal("a", "Terminal 1"), terminal("b", "Terminal 2")],
+      "focusedKey": "a", "terminalCounter": 2,
+    ]
+    try JSONSerialization.data(withJSONObject: document).write(to: sessionFile)
+
+    // Relaunch: the panel is restored hidden, then summoned.
+    let app = launch()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    XCTAssertTrue(
+      panes(in: workroomWindow(app)).firstMatch.waitForExistence(timeout: 15),
+      "the fixture workroom should render a terminal pane on launch")
+    XCTAssertFalse(quickTerminal(app).exists, "restored hidden: no panel until it is summoned")
+    let qt = summon(app)
+    XCTAssertTrue(
+      waitForCount(tabs(in: qt), 2),
+      "the panel should hold its 2 saved terminals, has \(tabs(in: qt).count)")
+    for key in ["a", "b"] {
+      XCTAssertTrue(
+        qt.staticTexts["terminal.tab.Restored \(key)"].waitForExistence(timeout: 5),
+        "the saved terminal keeps the name it was given")
+    }
+
+    // The second quit writes the panel's entry back whole.
+    quitAndWaitForSave(app)
+    let after = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(contentsOf: sessionFile)) as? [String: Any])
+    let saved = try XCTUnwrap(after["quickTerminal"] as? [String: Any], "the panel is saved again")
+    XCTAssertEqual((saved["tabs"] as? [Any])?.count, 2)
   }
 
   /// Right-click a pane in `window` and choose `title` from its menu.
