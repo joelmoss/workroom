@@ -95,14 +95,19 @@ final class UnnamedTerminalGroupUITests: XCTestCase {
     [row.label, row.value as? String ?? ""].joined(separator: " ")
   }
 
-  /// Whether the one group's row is labelled by its first terminal's name "+ 1 more". Their own
-  /// rows can't be counted: each is identified by its title.
+  /// Whether the one group's row is labelled by two terminals: both names ("zsh ~ + Terminal 1"),
+  /// or the first and "+ 1 more" when they read the same, never "+ 2 more". Their own rows can't
+  /// be counted: each is identified by its title.
   private func groupsTwoTerminals(_ app: XCUIApplication) -> Bool {
     let named = NSPredicate(
+      format: "(label CONTAINS %@ OR value CONTAINS %@) AND NOT (label CONTAINS %@)", " + ", " + ",
+      " more")
+    let oneMore = NSPredicate(
       format: "label CONTAINS %@ OR value CONTAINS %@", " + 1 more", " + 1 more")
+    let two = NSCompoundPredicate(orPredicateWithSubpredicates: [named, oneMore])
     let row = elements(app, prefix: "sidebar.group.group:").firstMatch
     return XCTWaiter().wait(
-      for: [XCTNSPredicateExpectation(predicate: named, object: row)], timeout: 6) == .completed
+      for: [XCTNSPredicateExpectation(predicate: two, object: row)], timeout: 6) == .completed
   }
 
   /// `click(forDuration:thenDragTo:)`, the mouse drag: on macOS 27 `press` posts no mouse events
