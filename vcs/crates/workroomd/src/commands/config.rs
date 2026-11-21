@@ -825,6 +825,15 @@ pub(crate) fn home_dir(context: &Context) -> Result<String, String> {
         .ok_or_else(|| "$HOME is not defined".to_string())
 }
 
+/// `path` with `home`, when there is one, written as `~`, as Go's `ui.DisplayPath` shows it: a
+/// plain prefix, as Go's `strings.HasPrefix` takes it.
+pub(crate) fn display_path(home: Option<&str>, path: &str) -> String {
+    match home.and_then(|home| path.strip_prefix(home)) {
+        Some(rest) => format!("~{rest}"),
+        None => path.to_string(),
+    }
+}
+
 /// `path` with a leading `~` or `~/` replaced by the home directory, then cleaned; any other path,
 /// `~user` too, as given. Go has two of these (`expandPath`, `expandTilde`) that differ only in
 /// cleaning a bare `~`, which every caller here cleans anyway, and in their error's wording, which

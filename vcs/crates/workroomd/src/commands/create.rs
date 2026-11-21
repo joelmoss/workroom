@@ -79,7 +79,7 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
 /// Go's order: the config, `--start`, `--start-commit`, the project, then `--host`.
 fn create(context: &Context, args: &Args) -> Result<Outcome, CliError> {
     let config = Config::new(context)?;
-    let start = match args.value("start").unwrap_or_default() {
+    let start = match args.value_or_default("start") {
         "" => None,
         given => Some(
             STARTS
@@ -97,7 +97,7 @@ fn create(context: &Context, args: &Args) -> Result<Outcome, CliError> {
     };
     // A commit hash only: it goes to git as an argument, never as an option or a revision
     // expression.
-    let start_commit = args.value("start-commit").unwrap_or_default();
+    let start_commit = args.value_or_default("start-commit");
     if !start_commit.is_empty() && !is_commit_hash(start_commit) {
         return Err(CliError::internal(format!(
             "--start-commit must be a commit hash, not {start_commit:?}"
@@ -107,7 +107,7 @@ fn create(context: &Context, args: &Args) -> Result<Outcome, CliError> {
     if let Some(host) = args.value("host") {
         return remote(context, &config, args, &dir, host);
     }
-    let given = |flag: &str| !args.value(flag).unwrap_or_default().is_empty();
+    let given = |flag: &str| !args.value_or_default(flag).is_empty();
     if given("host-path") || given("host-parent") {
         return Err(invalid_host("--host-path and --host-parent require --host"));
     }
@@ -129,8 +129,7 @@ fn create(context: &Context, args: &Args) -> Result<Outcome, CliError> {
         },
     };
     if context.json {
-        let mut made = None;
-        let result = creator.create_named(&mut made);
+        let (made, result) = creator.create_named();
         creator.events.flush();
         return match (result, made) {
             (Ok(()), Some(made)) => Ok(Outcome::Success(envelope::success(
@@ -177,8 +176,8 @@ fn remote(
     text: &str,
 ) -> Result<Outcome, CliError> {
     let host = config::host_descriptor(text).ok_or_else(|| invalid_host(text))?;
-    let host_path = args.value("host-path").unwrap_or_default();
-    let parent = args.value("host-parent").unwrap_or_default();
+    let host_path = args.value_or_default("host-path");
+    let parent = args.value_or_default("host-parent");
     match (host_path.is_empty(), parent.is_empty()) {
         (true, true) => {
             return Err(invalid_host(
@@ -313,6 +312,8 @@ struct Made {
     include_skipped: Vec<String>,
     /// The warning of the step that copies the main checkout's changes, for the human create.
     changes_warning: String,
+    /// Whether the main checkout's changes are to be copied in, as the start chosen says.
+    carry: bool,
 }
 
 impl Made {
@@ -336,10 +337,23 @@ struct Creator<'a> {
 }
 
 impl Creator<'_> {
-    /// Makes the workroom, filling `made` once it exists so a failure after that can still say
-    /// what was made. Go's `CreateNamed`. Under `--pretend` nothing is made or run: the name and
-    /// path are what a create would use.
-    fn create_named(&mut self, made: &mut Option<Made>) -> Result<(), CliError> {
+    /// Makes the workroom and sets it up: Go's `CreateNamed`. Returns the workroom once it exists,
+    /// so a failure after that (its setup script, say) can still say what was made, with how the
+    /// create ended. Under `--pretend` nothing is made or run: the name and path are what a create
+    /// would use.
+    fn create_named(&mut self) -> (Option<Made>, Result<(), CliError>) {
+        match self.make() {
+            Ok(mut made) => {
+                let result = self.set_up(&mut made);
+                (Some(made), result)
+            }
+            Err(error) => (None, Err(error)),
+        }
+    }
+
+    /// Makes the workroom's worktree and config entry, once the checks and the create questions
+    /// before them have passed.
+    fn make(&mut self) -> Result<Made, CliError> {
         let context = self.plan.context;
         let pretend = context.pretend;
         let dir = PathBuf::from(&self.plan.dir);
@@ -380,17 +394,27 @@ impl Creator<'_> {
                 .config
                 .add_workroom(&self.plan.dir, &name, &path, "git")?;
         }
-        let made = made.insert(Made {
-            name: name.clone(),
-            path: path.clone(),
+        Ok(Made {
+            name,
+            path,
             warning,
             include_warning: String::new(),
             include_skipped: Vec::new(),
             changes_warning: String::new(),
-        });
+            carry,
+        })
+    }
+
+    /// Announces the workroom `made`, copies the main checkout's changes in when asked for and the
+    /// root's included files, then runs the setup script, once this Mac has approved it.
+    fn set_up(&mut self, made: &mut Made) -> Result<(), CliError> {
+        let context = self.plan.context;
+        let pretend = context.pretend;
+        let dir = PathBuf::from(&self.plan.dir);
+        let path = PathBuf::from(&made.path);
         // Found before the workroom is announced, so the `created` event says whether a setup
         // script will run, and before the include step, which may copy an ignored one in.
-        let (script, has_setup) = find_script(Path::new(&path), &dir);
+        let (script, has_setup) = find_script(&path, &dir);
         if !pretend {
             #[derive(Serialize)]
             struct Created<'a> {
@@ -414,12 +438,11 @@ impl Creator<'_> {
         }
         // The main checkout's changes, when asked for, then the root's included files, both before
         // the setup script so it can rely on them (#367).
-        if carry {
-            made.changes_warning = self.carry_changes(&dir, Path::new(&path));
+        if made.carry {
+            made.changes_warning = self.carry_changes(&dir, &path);
         }
         if !pretend {
-            (made.include_warning, made.include_skipped) =
-                self.copy_included(&dir, Path::new(&path));
+            (made.include_warning, made.include_skipped) = self.copy_included(&dir, &path);
         }
         if has_setup && self.plan.skip_setup {
             if !pretend {
@@ -437,18 +460,18 @@ impl Creator<'_> {
         trust::say(
             context,
             "setup",
-            &format!("Running {} from {path:?}", script.display()),
+            &format!("Running {} from {:?}", script.display(), made.path),
         );
         if pretend {
             return Ok(());
         }
         self.events.step("script", "running", "");
         // Again on the file about to run: it is what runs, whatever the early check read.
-        if let Err(error) = self.plan.gate_found(Path::new(&path), &script) {
+        if let Err(error) = self.plan.gate_found(&path, &script) {
             self.events.step("script", "failed", &error.message);
             return Err(error);
         }
-        if let Err(error) = self.run_setup(&name, Path::new(&path), &dir, &script) {
+        if let Err(error) = self.run_setup(&made.name, &path, &dir, &script) {
             self.events.step("script", "failed", &error.message);
             return Err(error);
         }
@@ -634,7 +657,7 @@ impl Creator<'_> {
         }
         let untracked =
             match git::output(root, &["ls-files", "-z", "--others", "--exclude-standard"]) {
-                Ok(out) => include_archive_split(&out),
+                Ok(out) => include_archive::split_nul(&out),
                 Err(error) => {
                     return warn(
                         &mut self.events,
@@ -995,15 +1018,6 @@ fn byte_size(n: u64) -> String {
     format!("{value:.1} {unit}")
 }
 
-/// `git ls-files -z`'s paths.
-fn include_archive_split(bytes: &[u8]) -> Vec<Vec<u8>> {
-    bytes
-        .split(|byte| *byte == 0)
-        .filter(|part| !part.is_empty())
-        .map(<[u8]>::to_vec)
-        .collect()
-}
-
 /// What copying files into a workroom did: the files copied and their total size, and each file
 /// that couldn't be, as `path: reason`.
 struct Copied {
@@ -1089,10 +1103,7 @@ fn copy_file(from: &Path, to: &Path) -> Result<u64, String> {
 
 /// `path` with the home folder written as `~`, as Go's `ui.DisplayPath` shows it.
 fn display_path(context: &Context, path: &str) -> String {
-    match config::home_dir(context) {
-        Ok(home) if path.starts_with(&home) => format!("~{}", &path[home.len()..]),
-        _ => path.to_string(),
-    }
+    config::display_path(config::home_dir(context).ok().as_deref(), path)
 }
 
 /// The human create: the setup script's output streams into a log panel, then any warnings, the
@@ -1102,8 +1113,7 @@ fn human(creator: &mut Creator, offer_editor: bool) -> Result<Outcome, CliError>
     let context = creator.plan.context;
     let paint = Paint(context.color);
     creator.panel = Some(LogPanel::new(std::io::stdout(), "Setup", paint));
-    let mut made = None;
-    let result = creator.create_named(&mut made);
+    let (made, result) = creator.create_named();
     let shown = creator.panel.take().is_some_and(|mut panel| {
         panel.close(result.is_ok());
         panel.shown()

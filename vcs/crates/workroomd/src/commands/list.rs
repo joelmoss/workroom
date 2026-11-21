@@ -275,10 +275,7 @@ fn human(context: &Context, config: &Config, out: &mut impl Write) -> Result<(),
     let cwd = config::getwd(context).map_err(CliError::internal)?;
     let data = config.read()?;
     let home = config::home_dir(context).ok();
-    let display = |path: &str| match &home {
-        Some(home) if path.starts_with(home.as_str()) => format!("~{}", &path[home.len()..]),
-        _ => path.to_string(),
-    };
+    let display = |path: &str| config::display_path(home.as_deref(), path);
     let paint = Paint(context.color);
     let table = |project: &ProjectInfo| {
         let rows: Vec<Vec<String>> = project
