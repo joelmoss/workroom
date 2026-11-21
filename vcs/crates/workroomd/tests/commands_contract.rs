@@ -7452,6 +7452,427 @@ fn create_start_commit_answers_the_question_it_was_asked() {
     assert!(!help.stdout.contains("start-commit"), "{}", help.stdout);
 }
 
+/// Go's `TestCreateSteps…`: the root's included files are in the new workroom before its setup
+/// script runs, the include step and its log between `worktree` and `script`; an include file
+/// that matches nothing, or only a symlink, ends the step skipped with its reason; and a file
+/// that can't be read ends it as a warning naming the file, while the create carries on.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_copies_the_included_files_before_the_setup_script() {
+    let home = Home::new("create-include");
+    let project = setup_project(&home, "cat .env\n", "");
+    let digest = {
+        let run = create(&home, &project, &[]);
+        run.assert_code(3);
+        run.envelope()["script"]["sha256"]
+            .as_str()
+            .expect("sha256")
+            .to_string()
+    };
+    register(&home, &project, &[("workroom_setup", &digest)]);
+    write_file(&project, ".gitignore", ".env\n", 0o644);
+    write_file(&project, ".env", "SECRET=1", 0o600);
+    write_file(&project, ".worktreeinclude", ".env\n", 0o644);
+    let run = create(&home, &project, &[]);
+    run.assert_code(0);
+    assert_eq!(
+        create_steps(&run.stderr),
+        [
+            "fetch:skipped:No remote to fetch from",
+            "worktree:running",
+            "worktree:done",
+            "include:running",
+            "include:done",
+            "script:running",
+            "script:done",
+        ]
+    );
+    assert_eq!(
+        create_log(&run.stderr, "include"),
+        ["Copied .env", "Copied 1 file (8 B)"]
+    );
+    assert_eq!(create_log(&run.stderr, "script"), ["SECRET=1"]);
+    let copied = created_path(&run).join(".env");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        std::fs::metadata(&copied)
+            .expect(".env")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+
+    let home = Home::new("create-include-nothing");
+    let project = create_project(&home);
+    write_file(&project, ".worktreeinclude", ".env\n", 0o644);
+    let run = create(&home, &project, &[]);
+    run.assert_code(0);
+    assert_eq!(
+        create_steps(&run.stderr)[3..],
+        [
+            "include:running",
+            "include:skipped:No matching files",
+            "script:skipped:No setup script"
+        ]
+    );
+
+    write_file(&project, ".gitignore", ".env\nshared.env\n", 0o644);
+    write_file(&project, "shared.env", "SECRET=1", 0o644);
+    std::os::unix::fs::symlink(project.join("shared.env"), project.join(".env")).expect("link");
+    let run = create(&home, &project, &[]);
+    run.assert_code(0);
+    assert_eq!(
+        create_steps(&run.stderr)[3..],
+        [
+            "include:running",
+            "include:skipped:Only symlinks matched: .env",
+            "script:skipped:No setup script"
+        ]
+    );
+    assert_eq!(
+        create_log(&run.stderr, "include"),
+        ["Skipped .env: it's a symlink"]
+    );
+
+    if skip_as_root("create_copies_the_included_files_before_the_setup_script") {
+        return;
+    }
+    let home = Home::new("create-include-unreadable");
+    let project = create_project(&home);
+    write_file(&project, ".gitignore", "*.key\n", 0o644);
+    write_file(&project, ".worktreeinclude", "*.key\n", 0o644);
+    write_file(&project, "a.key", "a", 0o644);
+    write_file(&project, "master.key", "k", 0o000);
+    let run = create(&home, &project, &[]);
+    run.assert_code(0);
+    let warning = format!(
+        "Could not copy 1 file: master.key: open {}: permission denied",
+        project.join("master.key").display()
+    );
+    assert_eq!(
+        create_steps(&run.stderr)[3..],
+        [
+            "include:running".to_string(),
+            format!("include:warning:{warning}"),
+            "script:skipped:No setup script".to_string()
+        ]
+    );
+    assert_eq!(
+        create_log(&run.stderr, "include"),
+        ["Copied a.key", "Copied 1 file (1 B)"]
+    );
+}
+
+/// The events are encoded as Go's are: a `step` or `created` event without HTML escaping, as its
+/// `encodeJSON` writes one, and a `log` event with it, as `json.Marshal` writes one.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_events_escape_as_gos_do() {
+    let home = Home::new("create-escaping");
+    let project = home.repo("src/app");
+    let workrooms = home.path("w&<r>");
+    home.write_config(&format!(
+        "{{\"workrooms_dir\": \"{}\", \"{}\": {{\"vcs\": \"git\"}}}}",
+        workrooms.display(),
+        project.display()
+    ));
+    let run = create(&home, &project, &[]);
+    run.assert_code(0);
+    let name = created_name(&run);
+    let path = format!("{}/{name}", workrooms.display());
+    assert!(
+        run.stderr.contains(&format!("\"path\":\"{path}\"")),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains(&format!(
+            "\"text\":\"$ git worktree add -b workroom/{name} {}\"",
+            path.replace('&', "\\u0026")
+                .replace('<', "\\u003c")
+                .replace('>', "\\u003e")
+        )),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        run.stdout.contains(&format!("\"path\":\"{path}\"")),
+        "{}",
+        run.stdout
+    );
+}
+
+/// `--pretend` names the workroom a create would make, and makes, records and runs nothing: no
+/// fetch, no trust gate, no events.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_pretend_makes_nothing() {
+    let home = Home::new("create-pretend");
+    let project = setup_project(&home, "echo installing\n", "");
+    home.git(
+        &project,
+        &[
+            "remote",
+            "add",
+            "origin",
+            &home.path("gone.git").to_string_lossy(),
+        ],
+    );
+    let before = config_text(&home);
+    let run = create(&home, &project, &["--pretend"]);
+    run.assert_code(0).assert_quiet_stderr();
+    let name = created_name(&run);
+    assert_eq!(created_path(&run), home.path(&format!("workrooms/{name}")));
+    assert_eq!(run.envelope().get("warning"), None);
+    assert_eq!(config_text(&home), before);
+    assert!(!home.path("workrooms").exists());
+    assert_eq!(
+        git_output(&home, &project, &["branch", "--list", "workroom/*"]),
+        ""
+    );
+}
+
+/// A worktree git can't make fails its step with git's exit, as `VCSCommandFailed`, before the
+/// workroom is recorded; and a setup script whose bytes can't be judged until the checkout
+/// exists (a link out of the repository) is judged just before it runs, refused there with the
+/// workroom already made, so the envelope has both `created` and `script`, and no `start_commit`.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_reports_a_failed_worktree_and_a_script_refused_once_it_exists() {
+    if skip_as_root("create_reports_a_failed_worktree_and_a_script_refused_once_it_exists") {
+        return;
+    }
+    let home = Home::new("create-worktree-failed");
+    let project = create_project(&home);
+    let workrooms = home.path("workrooms");
+    std::fs::create_dir(&workrooms).expect("workrooms");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&workrooms, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+    let before = config_text(&home);
+    let run = create(&home, &project, &[]);
+    std::fs::set_permissions(&workrooms, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    run.assert_code(1);
+    assert_eq!(run.error_kind(), "VCSCommandFailed");
+    assert_eq!(
+        run.envelope()["error"]["message"],
+        "version control command failed: exit status 128"
+    );
+    assert_eq!(run.envelope().get("created"), None);
+    assert_eq!(
+        create_steps(&run.stderr)[1..],
+        ["worktree:running", "worktree:failed:exit status 128"]
+    );
+    assert_eq!(config_text(&home), before);
+
+    let home = Home::new("create-refused-late");
+    let project = create_project(&home);
+    write_file(&home.dir, "outside.sh", "#!/bin/sh\necho outside\n", 0o755);
+    std::fs::create_dir(project.join("scripts")).expect("scripts");
+    std::os::unix::fs::symlink(
+        home.path("outside.sh"),
+        project.join("scripts/workroom_setup"),
+    )
+    .expect("link");
+    home.git(&project, &["add", "scripts"]);
+    commit(&home, &project, "linked setup");
+    let run = create(&home, &project, &[]);
+    run.assert_code(3);
+    let envelope = run.envelope();
+    let name = created_name(&run);
+    assert_eq!(envelope["error"]["kind"], "ScriptNotTrusted");
+    let message = "script is not trusted on this Mac: scripts/workroom_setup in the workroom is \
+                   new, or changed since it was approved. Run the same command in a terminal to \
+                   review and approve it";
+    assert_eq!(envelope["error"]["message"], message);
+    assert_eq!(envelope["script"]["origin"], "workroom");
+    assert_eq!(envelope["script"]["text"], "#!/bin/sh\necho outside\n");
+    assert_eq!(envelope["created"]["name"], name.as_str());
+    assert_eq!(envelope.get("start_commit"), None);
+    assert_eq!(
+        create_steps(&run.stderr)[3..],
+        [
+            "script:running".to_string(),
+            format!("script:failed:{message}")
+        ]
+    );
+    assert!(config_text(&home).contains(&name));
+}
+
+/// SIGTERM, how the app's Cancel reaches the CLI, while the setup script runs: the script's tree
+/// is ended, and the create still reports, as `SetupScriptFailed` (exit 5) with the workroom it
+/// made, since it exists.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_cancelled_during_setup_still_reports() {
+    let home = Home::new("create-cancel");
+    let pid_file = home.path("setup.pid");
+    let body = format!(
+        "echo started\necho $$ > {}\nexec sleep 30\n",
+        pid_file.display()
+    );
+    let project = setup_project(&home, &body, "");
+    let digest = {
+        let run = create(&home, &project, &[]);
+        run.envelope()["script"]["sha256"]
+            .as_str()
+            .expect("sha256")
+            .to_string()
+    };
+    register(&home, &project, &[("workroom_setup", &digest)]);
+    let project_arg = project.to_string_lossy().into_owned();
+    let args = ["create", "--json", "--no-editor", "--project", &project_arg];
+    let child = spawn_with_env(&home, &args, &[]);
+    let script = wait_for_pid(&pid_file);
+    // SAFETY: kill has no memory preconditions; the pid is the child this test started.
+    unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+    let run = finish(&args, child);
+    run.assert_code(5);
+    let envelope = run.envelope();
+    assert_eq!(envelope["error"]["kind"], "SetupScriptFailed");
+    assert!(envelope["created"]["name"].is_string(), "{envelope}");
+    assert_eq!(create_log(&run.stderr, "script"), ["started"]);
+    eventually("the setup script outlived the cancel", || {
+        !process_alive(script)
+    });
+}
+
+/// The git the create runs, argument for argument, as Go runs it: a `git` on PATH that records
+/// each call before running the real one.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_runs_git_as_go_does() {
+    let home = Home::new("create-git-calls");
+    let real = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .expect("find git")
+            .stdout,
+    )
+    .expect("UTF-8");
+    let log = home.path("git.log");
+    write_file(
+        &home.dir,
+        "shim/git",
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\nexec {} \"$@\"\n",
+            log.display(),
+            real.trim()
+        ),
+        0o755,
+    );
+    let path = format!(
+        "{}:{}",
+        home.path("shim").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let calls = |home: &Home, args: &[&str], name_from: &Run| {
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        let _ = std::fs::remove_file(&log);
+        let name = created_name(name_from);
+        // A commit's hash differs on every run: each run of 40 hex digits is written `<commit>`.
+        let text = normalize_create(home, &name, &text);
+        let mut masked = String::new();
+        let mut run = String::new();
+        // The log ends with a newline, so every run of hex digits ends before it.
+        for ch in text.chars() {
+            if ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase() {
+                run.push(ch);
+                continue;
+            }
+            masked += if run.len() == 40 { "<commit>" } else { &run };
+            run.clear();
+            masked.push(ch);
+        }
+        masked + &format!("# {args:?}")
+    };
+    let project = ahead_create_project(&home);
+    let project_arg = project.to_string_lossy().into_owned();
+    let mut seen = Vec::new();
+    for extra in [
+        &[][..],
+        &["--start", "local-with-changes"],
+        &["--start", "ask"],
+    ] {
+        if extra == ["--start", "local-with-changes"] {
+            write_file(&project, "local.txt", "edited\n", 0o644);
+        }
+        let mut args = vec!["create", "--json", "--no-editor", "--project", &project_arg];
+        args.extend_from_slice(extra);
+        let run = run_with_env(&home, &args, &[("PATH", OsStr::new(&path))]);
+        let name_from = if run.code == 0 {
+            run
+        } else {
+            Run {
+                stdout: "{\"name\":\"calm-river\"}\n".to_string(),
+                ..run
+            }
+        };
+        seen.push(calls(&home, extra, &name_from));
+    }
+    let pin = git_output(&home, &project, &["rev-parse", "origin/main"]);
+    let mut args = vec!["create", "--json", "--no-editor", "--project", &project_arg];
+    args.extend(["--start", "origin", "--start-commit", pin.trim()]);
+    let run = run_with_env(&home, &args, &[("PATH", OsStr::new(&path))]);
+    run.assert_code(0);
+    seen.push(calls(&home, &["--start-commit"], &run));
+    // The name, then where it starts and the work it leaves out, the setup script there, and the
+    // worktree; a pinned create fetches nothing and checks its pin is on the start.
+    let start = "worktree list --porcelain\nworktree list --porcelain\nremote\nfetch --prune \
+                 origin\nremote set-head origin --auto\nrev-parse --verify --quiet \
+                 refs/remotes/origin/HEAD^{commit}\nsymbolic-ref --quiet \
+                 refs/remotes/origin/HEAD\nrev-parse --verify --quiet refs/heads/main^{commit}\n\
+                 rev-list --left-right --count refs/remotes/origin/HEAD...refs/heads/main\n\
+                 symbolic-ref --quiet --short HEAD\nstatus --porcelain\n";
+    let want = [
+        format!(
+            "{start}rev-parse --verify --quiet refs/remotes/origin/HEAD^{{commit}}\nls-tree -z \
+             refs/remotes/origin/HEAD -- scripts\nworktree add --no-track -b \
+             workroom/calm-river /Users/dev/workrooms/calm-river refs/remotes/origin/HEAD\n# []"
+        ),
+        format!(
+            "{start}worktree add --no-track -b workroom/calm-river \
+             /Users/dev/workrooms/calm-river refs/heads/main\nrev-parse --verify --quiet \
+             HEAD^{{commit}}\nrev-parse --verify --quiet HEAD^{{commit}}\nstash create\nstash \
+             apply --quiet <commit>\nls-files -z --others --exclude-standard\n# [\"--start\", \
+             \"local-with-changes\"]"
+        ),
+        format!(
+            "{start}rev-parse --verify --quiet refs/remotes/origin/HEAD^{{commit}}\n# \
+             [\"--start\", \"ask\"]"
+        ),
+        "worktree list --porcelain\nworktree list --porcelain\nremote\nrev-parse --verify \
+         --quiet refs/remotes/origin/HEAD^{commit}\nmerge-base --is-ancestor <commit>^{commit} \
+         refs/remotes/origin/HEAD\nsymbolic-ref --quiet refs/remotes/origin/HEAD\nrev-parse \
+         --verify --quiet refs/heads/main^{commit}\nrev-list --left-right --count \
+         <commit>...refs/heads/main\nsymbolic-ref --quiet --short HEAD\nstatus --porcelain\n\
+         rev-parse --verify --quiet <commit>^{commit}\nls-tree -z <commit> -- scripts\nworktree \
+         add --no-track -b workroom/calm-river /Users/dev/workrooms/calm-river <commit>\n# \
+         [\"--start-commit\"]"
+            .to_string(),
+    ];
+    assert_eq!(seen, want);
+}
+
 // --- completion ---
 
 /// The variables a run adds to its environment, by name.
