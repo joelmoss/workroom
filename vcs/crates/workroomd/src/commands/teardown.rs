@@ -148,8 +148,9 @@ impl Delete<'_> {
         self.config.read()
     }
 
-    /// Where workroom `name`'s checkout is on this Mac: `workrooms_dir/<name>`, as Go's
-    /// `workroomPath` finds it, whatever the entry records. A `name` that is no name (`..`, `/x`,
+    /// Where workroom `name`'s checkout is on this Mac: `workrooms_dir/<name>`, joined and cleaned
+    /// as Go's `workroomPath` finds it (`filepath.Join`), whatever the entry records, so a `//` or
+    /// `..` in the setting names what Go's does. A `name` that is no name (`..`, `/x`,
     /// `a/b`, which a config key may be) is refused as `InvalidName`: joined on, it could lead out
     /// of the workrooms folder, and an absolute one would replace it.
     fn workroom_path(&self, name: &str) -> Result<PathBuf, CliError> {
@@ -157,7 +158,7 @@ impl Delete<'_> {
         // Go reads a config it can't parse as naming the default folder.
         let data = self.data().unwrap_or(Json::Null);
         let dir = config::workrooms_dir(&data, self.context).map_err(CliError::internal)?;
-        Ok(Path::new(&dir).join(name))
+        Ok(PathBuf::from(config::join(&dir, name)))
     }
 
     /// Deletes workroom `name` of project `dir`, once `confirm` says to: Go's `Delete`. What
