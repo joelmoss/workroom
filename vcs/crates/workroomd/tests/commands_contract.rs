@@ -3795,6 +3795,49 @@ fn delete_project_keeps_the_project_when_a_teardown_fails() {
     }
 }
 
+/// `--from-disk` runs each entry's teardown in `<workrooms folder>/<name>`, so a folder there git
+/// doesn't register for the project, here one of the user's, is refused (`WorkspaceNotFound`)
+/// before anything runs, `--skip-teardown` or not: the project stays registered and the folder
+/// keeps its files.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn delete_project_from_disk_refuses_a_folder_git_doesnt_register() {
+    let home = Home::new("delete-project-not-ours");
+    let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+    let mine = home.path("workrooms/mine");
+    std::fs::create_dir_all(&mine).expect("mine");
+    std::fs::write(mine.join("notes"), "keep").expect("notes");
+    let project_arg = project.to_string_lossy().into_owned();
+    let written = format!(
+        "{{\"{project_arg}\": {{\"trusted_scripts\": {{\"workroom_teardown\": \"{STOPPING_SHA256}\"}}, \"vcs\": \"git\", \"workrooms\": {{\"mine\": {{\"path\": \"{}\"}}}}}}}}",
+        mine.display()
+    );
+    home.write_config(&written);
+    let p = project_arg.as_str();
+    for skip in [false, true] {
+        let mut args = vec!["delete-project", p, "--json", "--confirm", p, "--from-disk"];
+        if skip {
+            args.push("--skip-teardown");
+        }
+        let run = home.run(&home.dir, &args);
+        run.assert_code(3).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "WorkspaceNotFound", "skip {skip}");
+        assert_eq!(
+            run.envelope()["error"]["message"],
+            format!(
+                "git worktree does not exist: git lists no worktree of this project at \"{}\"",
+                mine.display()
+            ),
+            "skip {skip}"
+        );
+        assert_eq!(config_text(&home), written, "skip {skip}");
+        assert_eq!(entries(&mine), ["notes"], "skip {skip}");
+    }
+}
+
 /// A workroom's config key that is no name, `..` or an absolute path (here the project's own
 /// worktree elsewhere, which the teardown would otherwise run in), is refused as `InvalidName`
 /// before anything runs, as `delete` refuses it: joined onto the workrooms folder it could lead
