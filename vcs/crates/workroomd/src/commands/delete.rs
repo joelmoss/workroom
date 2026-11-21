@@ -16,7 +16,7 @@ use serde::Serialize;
 use super::config::{self, Config, Json};
 use super::envelope;
 use super::kind::{CliError, Kind};
-use super::teardown::{Approve, Confirm, Delete, Deleted, INVALID_NAME, Watcher};
+use super::teardown::{Approve, Confirm, Delete, Deleted, INVALID_NAME, Watcher, check_name};
 use super::trust::{self, Paint};
 use super::trusted_script::Script;
 use super::{Args, Context, Outcome};
@@ -151,6 +151,9 @@ fn pick_and_delete(
     delete.detect_vcs(dir)?;
     let mut stdout = std::io::stdout();
     for name in &picked {
+        // A pick is a config key, which may be any string: one that is no name is refused, as
+        // `delete NAME` refuses it, before it is joined onto a path.
+        check_name(name)?;
         delete.destroyed_remote(dir, name)?;
         let orphan = if delete.context.pretend {
             None
