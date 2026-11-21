@@ -117,6 +117,10 @@ type VCS interface {
 	// lists once and does an in-memory lookup, rather than the interface exposing a second
 	// method that looks like a cheap single-name check but is secretly a full list-and-scan.
 	ListWorkrooms(dir string) ([]string, error)
+	// HasWorktree reports whether path itself is a workspace this VCS registers for the project
+	// at dir, symlinks resolved: the proof that a folder is the project's before a script runs
+	// in it, which a name ListWorkrooms lists is not.
+	HasWorktree(dir, path string) (bool, error)
 }
 
 // Detect returns the Git VCS when dir is itself a git repository (see IsGitRepo).

@@ -3,6 +3,7 @@ package workroom
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -36,6 +37,9 @@ func (f *fakeVCS) Delete(dir, vcsName, path string) (string, error) {
 func (f *fakeVCS) ListWorkrooms(dir string) ([]string, error) {
 	f.listCalls++
 	return f.list, f.err
+}
+func (f *fakeVCS) HasWorktree(_, path string) (bool, error) {
+	return slices.Contains(f.list, filepath.Base(path)), f.err
 }
 
 // storedVCS reads the persisted vcs string for a project path from the config on disk.

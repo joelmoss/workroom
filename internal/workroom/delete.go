@@ -232,12 +232,20 @@ func (s *Service) InteractiveDelete(dir string, report func(DeleteResult)) (Pick
 // respects Pretend mode and SkipTeardown.
 // Returns the script error if the script fails; returns nil when the script is absent.
 // deleteByName runs it first, so its remote refusal covers every delete.
+//
+// The script runs in <workrooms_dir>/<name>, so that folder must be one git registers as a
+// worktree of this project, or nothing runs: a folder of the user's, or another project's
+// worktree, there is refused (ErrGitWorktreeNotFound), under Pretend and SkipTeardown too. A
+// name git lists is no proof: it matches any folder of that name.
 func (s *Service) RunTeardown(dir, name string) error {
 	if err := s.refuseRemote(dir, name); err != nil {
 		return err
 	}
 	wrPath, err := s.workroomPath(name)
 	if err != nil {
+		return err
+	}
+	if err := s.refuseUnregistered(dir, wrPath); err != nil {
 		return err
 	}
 
@@ -262,6 +270,27 @@ func (s *Service) RunTeardown(dir, name string) error {
 				return scriptErr
 			}
 		}
+	}
+	return nil
+}
+
+// refuseUnregistered returns ErrGitWorktreeNotFound unless git registers wrPath as a worktree of
+// project dir. delete-project --from-disk detects no VCS first, and a project that is no git
+// repository registers none.
+func (s *Service) refuseUnregistered(dir, wrPath string) error {
+	v := s.VCS
+	if v == nil {
+		v, _ = vcs.Detect(dir)
+	}
+	registered := false
+	if v != nil {
+		var err error
+		if registered, err = v.HasWorktree(dir, wrPath); err != nil {
+			return err
+		}
+	}
+	if !registered {
+		return fmt.Errorf("%w: git lists no worktree of this project at %q", ErrGitWorktreeNotFound, wrPath)
 	}
 	return nil
 }
