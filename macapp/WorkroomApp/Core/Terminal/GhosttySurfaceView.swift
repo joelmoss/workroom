@@ -222,8 +222,19 @@ final class GhosttySurfaceView: NSView {
   private var paneNotice: PaneNoticeHost?
 
   /// Who else is typing into this pane's session (#696), floating at the top centre.
-  private(set) lazy var typingMarker = PaneTypingMarkerOverlay(surface: self) { [weak self] in
-    self?.attachment.sessionID
+  private(set) lazy var typingMarker = PaneTypingMarkerOverlay(
+    surface: self, session: { [weak self] in self?.attachment.sessionID },
+    isOnScreen: { [weak self] in
+      guard let self, let window = self.window else { return false }
+      return self.isPaneVisible && window.isVisible && window.occlusionState.contains(.visible)
+    },
+    noticeBottom: { [weak self] in self?.paneNoticeBottom ?? 0 })
+
+  /// How far from the top of the terminal the pane notice's card reaches, 0 with none showing:
+  /// the typing marker sits below it.
+  private var paneNoticeBottom: CGFloat {
+    guard let paneNotice else { return 0 }
+    return bounds.height - (paneNotice.frame.minY + PaneNoticeToast.shadowRoom)
   }
 
   // OSC 9;4 progress safety timer (issue #28 follow-up): a program that reports it's working but never
@@ -768,11 +779,13 @@ final class GhosttySurfaceView: NSView {
       rootView: PaneNoticeToast(message: message, width: paneNoticeWidth) { [weak self] in
         self?.paneNotice?.removeFromSuperview()
         self?.paneNotice = nil
+        self?.typingMarker.layout()
       }
       .themeTokensRoot())
     addSubview(host, positioned: .above, relativeTo: nil)
     paneNotice = host
     layoutPaneNotice()
+    typingMarker.layout()
     // Told to VoiceOver too: a user typing in the terminal would otherwise never learn of it.
     NSAccessibility.post(
       element: host, notification: .announcementRequested,

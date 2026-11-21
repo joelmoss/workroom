@@ -13,14 +13,24 @@ enum PaneTypingMarkerMetrics {
   static let shadowRoom: CGFloat = 14
   /// The least room kept either side of the pill in a narrow pane; its text truncates first.
   static let sideMargin: CGFloat = 12
-  /// The band across the top of the terminal the marker's host covers.
-  static var band: CGFloat { topInset + height + shadowRoom }
+  /// Between a pane notice's card and the pill below it (`PaneNoticeToast`).
+  static let noticeGap: CGFloat = 8
+  /// The band across the top of the terminal the marker's host covers, with the pill `topInset`
+  /// from its top.
+  static func band(topInset: CGFloat) -> CGFloat { topInset + height + shadowRoom }
 }
 
 /// What the pill shows, which `PaneTypingMarkerOverlay` sets with the animation it wants.
 @MainActor @Observable
 final class PaneTypingMarkerModel {
+  /// What the pill says: kept through its fade-out, so it fades with its words, and gone once the
+  /// fade has ended.
   var marker: PaneTypingMarker?
+  /// Fading in or shown, rather than fading out. A keystroke during the fade-out turns it back
+  /// from where it had got to: the one pill, never a second one beside the first.
+  var visible = false
+  /// From the top of the terminal to the pill: below a pane notice's card while one shows.
+  var topInset = PaneTypingMarkerMetrics.topInset
 }
 
 /// Who is typing into this pane (#696): a pill floating at the top centre of the terminal, in the
@@ -29,7 +39,7 @@ final class PaneTypingMarkerModel {
 /// focus (`PaneTypingMarkerHost`), so it never gets between the user and their terminal.
 struct PaneTypingMarkerView: View {
   let model: PaneTypingMarkerModel
-  /// The pill's frame in the host, for the tooltip's rect, and `.zero` once it has gone.
+  /// The pill's frame in the host, for the tooltip's rect.
   let onPillFrame: (CGRect) -> Void
 
   @Environment(\.themeTokens) private var tokens
@@ -39,21 +49,15 @@ struct PaneTypingMarkerView: View {
     ZStack(alignment: .top) {
       if let marker = model.marker {
         pill(marker)
-          .transition(
-            reduceMotion
-              ? .opacity
-              : .asymmetric(
-                insertion: .opacity.combined(with: .offset(y: -3)),
-                removal: .opacity))
+          .opacity(model.visible ? 1 : 0)
+          .offset(y: model.visible || reduceMotion ? 0 : -3)
+          .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: -3)))
       }
     }
-    .padding(.top, PaneTypingMarkerMetrics.topInset)
+    .padding(.top, model.topInset)
     .padding(.horizontal, PaneTypingMarkerMetrics.sideMargin)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .coordinateSpace(.named(Self.space))
-    .onChange(of: model.marker == nil) { _, gone in
-      if gone { onPillFrame(.zero) }
-    }
   }
 
   private static let space = "typingMarker"
@@ -61,18 +65,28 @@ struct PaneTypingMarkerView: View {
   private func pill(_ marker: PaneTypingMarker) -> some View {
     HStack(spacing: 5) {
       icon(marker.icon)
+      // The name keeps its room longest; the workroom gives way first, from its middle, so its
+      // ends still say which one it is, and the tab number never does.
       Text(marker.name)
         .fontWeight(.semibold)
         .foregroundStyle(tokens.fg)
         .lineLimit(1)
-      if let place = marker.place {
-        Text("·").foregroundStyle(tokens.fgDim)
-        // Kept whole in a narrow pane, where the name truncates first: the tab is what the user
-        // goes to.
-        Text(place)
-          .foregroundStyle(tokens.fgMuted)
-          .lineLimit(1)
+        .layoutPriority(2)
+      if let tab = marker.tab {
+        Text("·").foregroundStyle(tokens.fgDim).fixedSize()
+        Text(tab).foregroundStyle(tokens.fgMuted).lineLimit(1).fixedSize()
+        if let workroom = marker.workroom {
+          Text("in").foregroundStyle(tokens.fgMuted).fixedSize()
+          // At most as wide as a tab chip's title (`TabStripMetrics.maxChipTitle`), so a long
+          // name never stretches the pill across a wide pane, and a short one as wide as itself.
+          CappedWidth(TabStripMetrics.maxChipTitle) {
+            Text(workroom)
+              .foregroundStyle(tokens.fgMuted)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
           .layoutPriority(1)
+        }
       }
       if marker.others > 0 {
         Text("+\(marker.others)")
@@ -81,6 +95,7 @@ struct PaneTypingMarkerView: View {
           .padding(.horizontal, 5)
           .frame(height: 14)
           .background(Capsule().fill(tokens.surface))
+          .fixedSize()
       }
     }
     .font(.subheadline)
@@ -132,13 +147,40 @@ struct PaneTypingMarkerView: View {
     })
 }
 
-/// Hosts the typing marker over a terminal. It takes no mouse input at all: every click, drag,
-/// scroll and hover goes to the terminal beneath, whose cursor stays its own. The tooltip is the
-/// terminal's, over the pill's rect (`PaneTypingMarkerOverlay`).
+/// Its one subview no wider than `maximum`, and no wider than it needs: unlike
+/// `.frame(maxWidth:)`, which grows to fill whatever room it is offered up to its maximum.
+private struct CappedWidth: Layout {
+  let maximum: CGFloat
+
+  init(_ maximum: CGFloat) { self.maximum = maximum }
+
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    let width = min(proposal.width ?? .infinity, maximum)
+    return subviews.first?.sizeThatFits(ProposedViewSize(width: width, height: proposal.height))
+      ?? .zero
+  }
+
+  func placeSubviews(
+    in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+  ) {
+    subviews.first?.place(
+      at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
+  }
+}
+
+/// Hosts the typing marker over a terminal. It takes no mouse input at all, by construction: it is
+/// never hit (`hitTest` is nil), and it never installs a tracking area or a cursor rect (both
+/// refused here, whatever SwiftUI asks for), so every click, drag, scroll and hover goes to the
+/// terminal beneath, whose cursor is the only one over the band. The tooltip is the terminal's,
+/// over the pill's rect (`PaneTypingMarkerOverlay`).
 final class PaneTypingMarkerHost: NSHostingView<ThemeRooted<PaneTypingMarkerView>> {
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
-  override func resetCursorRects() {}
   override var acceptsFirstResponder: Bool { false }
+  override func addTrackingArea(_ trackingArea: NSTrackingArea) {}
+  override func updateTrackingAreas() {}
+  override func resetCursorRects() {}
+  override func addCursorRect(_ rect: NSRect, cursor object: NSCursor) {}
+  override func cursorUpdate(with event: NSEvent) {}
 }
 
 /// A terminal's typing marker (#696): follows `PaneTypingMonitor` for the pane's session, and shows
@@ -147,23 +189,54 @@ final class PaneTypingMarkerHost: NSHostingView<ThemeRooted<PaneTypingMarkerView
 /// split, a pane popped out into its own window, the Quick Terminal.
 @MainActor
 final class PaneTypingMarkerOverlay: NSObject, NSViewToolTipOwner {
+  /// How the marker comes and goes.
+  enum Fade {
+    static let inDuration = 0.2
+    static let outDuration = 0.35
+  }
+
   /// The terminal the marker floats over, which holds the tooltip.
   private weak var surface: NSView?
   /// The pane's session, read each time: its tab's.
   private let session: () -> UUID?
+  /// Whether the user can see the pane now: its tab selected, in a window on screen. Only then is
+  /// the marker announced to VoiceOver.
+  private let isOnScreen: () -> Bool
+  /// How far from the terminal's top a pane notice's card reaches (`PaneNoticeToast`), 0 with
+  /// none: the pill sits below it, so the two never overlap, whatever the pane's width.
+  private let noticeBottom: () -> CGFloat
   var monitor: PaneTypingMonitor = .shared
   /// Where a session's terminal is open. A seam for tests.
   var locate: (UUID) -> PaneTypingPlace? = { PaneTypingPlace.locate($0) }
+  /// Where VoiceOver announcements go. A seam for tests.
+  var announce: (NSView, String) -> Void = { element, text in
+    NSAccessibility.post(
+      element: element, notification: .announcementRequested,
+      userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+  }
+  /// Waits out the fade-out before the marker goes. A seam for tests.
+  var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
   let model = PaneTypingMarkerModel()
   private(set) var host: PaneTypingMarkerHost?
   private var listener: UUID?
   private var toolTip: NSView.ToolTipTag?
-  /// The pill's frame in the host's own coordinates, `.zero` while none shows.
+  /// The pill's frame in the host's own coordinates (SwiftUI's, from the top).
   private var pillFrame: CGRect = .zero
+  /// This run of typing was announced: from the marker's first appearance until its fade-out
+  /// ends, so a keystroke during the fade, which brings it back, is not announced again.
+  private var announced = false
+  /// Counts fade-outs, so one that a keystroke interrupted never removes the marker it brought
+  /// back.
+  private var fadeOuts = 0
 
-  init(surface: NSView, session: @escaping () -> UUID?) {
+  init(
+    surface: NSView, session: @escaping () -> UUID?, isOnScreen: @escaping () -> Bool = { true },
+    noticeBottom: @escaping () -> CGFloat = { 0 }
+  ) {
     self.surface = surface
     self.session = session
+    self.isOnScreen = isOnScreen
+    self.noticeBottom = noticeBottom
   }
 
   // A window closing frees its panes without a teardown: the monitor stops calling this one.
@@ -195,27 +268,40 @@ final class PaneTypingMarkerOverlay: NSObject, NSViewToolTipOwner {
       PaneTypingMarker.make(
         typists: monitor.typists(of: session), receiver: locate(session), locate: locate)
     }
-    guard marker != model.marker else { return }
-    let appearing = model.marker == nil
-    if marker != nil { installHost() }
-    let animation: Animation =
-      marker == nil
-      ? .easeIn(duration: 0.35) : appearing ? .easeOut(duration: 0.2) : .smooth(duration: 0.2)
-    withAnimation(animation) { model.marker = marker }
-    if marker == nil { removeToolTip() }
-    guard let marker, appearing, let host else { return }
-    // Told to VoiceOver too, once per run of typing: a user in the terminal would never see it.
-    NSAccessibility.post(
-      element: host, notification: .announcementRequested,
-      userInfo: [
-        .announcement: marker.help, .priority: NSAccessibilityPriorityLevel.medium.rawValue,
-      ])
+    guard let marker else {
+      fadeOut()
+      return
+    }
+    installHost()
+    if model.visible {
+      if marker != model.marker {
+        withAnimation(.smooth(duration: Fade.inDuration)) { model.marker = marker }
+      }
+    } else {
+      // Appearing, or back during a fade-out: from wherever the fade had got to.
+      fadeOuts += 1
+      withAnimation(.easeOut(duration: Fade.inDuration)) {
+        model.marker = marker
+        model.visible = true
+      }
+    }
+    updateToolTip()
+    announceIfSeen(marker)
   }
 
-  /// Lays the host across the top of the terminal: called as the terminal resizes.
+  /// Lays the host across the top of the terminal, below any pane notice: called as the terminal
+  /// resizes and as a notice comes and goes.
   func layout() {
     guard let host, let surface else { return }
-    let band = PaneTypingMarkerMetrics.band
+    let reserved = noticeBottom()
+    let top =
+      reserved > 0
+      ? max(PaneTypingMarkerMetrics.topInset, reserved + PaneTypingMarkerMetrics.noticeGap)
+      : PaneTypingMarkerMetrics.topInset
+    if model.topInset != top {
+      withAnimation(.smooth(duration: Fade.inDuration)) { model.topInset = top }
+    }
+    let band = PaneTypingMarkerMetrics.band(topInset: top)
     // The surface is not flipped: y counts from the bottom.
     host.frame = CGRect(
       x: 0, y: max(0, surface.bounds.height - band), width: surface.bounds.width, height: band)
@@ -227,6 +313,32 @@ final class PaneTypingMarkerOverlay: NSObject, NSViewToolTipOwner {
   func raise() {
     guard let host, let surface else { return }
     surface.addSubview(host, positioned: .above, relativeTo: nil)
+  }
+
+  private func fadeOut() {
+    guard model.marker != nil, model.visible else { return }
+    removeToolTip()
+    fadeOuts += 1
+    let fade = fadeOuts
+    withAnimation(.easeIn(duration: Fade.outDuration)) { model.visible = false }
+    // Gone once the fade has run its course, on the overlay's own clock rather than the
+    // animation's completion, so a keystroke meanwhile reliably finds it still there.
+    let sleep = self.sleep
+    Task { [weak self] in
+      try? await sleep(.milliseconds(Int(Fade.outDuration * 1000)))
+      // Not when a keystroke brought it back meanwhile.
+      guard let self, self.fadeOuts == fade, !self.model.visible else { return }
+      var quiet = Transaction()
+      quiet.disablesAnimations = true
+      withTransaction(quiet) { self.model.marker = nil }
+      self.announced = false
+    }
+  }
+
+  private func announceIfSeen(_ marker: PaneTypingMarker) {
+    guard !announced, isOnScreen(), let host else { return }
+    announced = true
+    announce(host, marker.help)
   }
 
   private func installHost() {
@@ -245,10 +357,10 @@ final class PaneTypingMarkerOverlay: NSObject, NSViewToolTipOwner {
   }
 
   /// The tooltip over the pill, on the terminal: the view the mouse is over is the terminal's, as
-  /// the marker takes no mouse input.
+  /// the marker takes no mouse input. Only while the marker shows, not while it fades out.
   private func updateToolTip() {
     removeToolTip()
-    guard model.marker != nil, pillFrame != .zero, let host, let surface else { return }
+    guard model.visible, pillFrame != .zero, let host, let surface else { return }
     // SwiftUI measures from the top; a host that is not flipped measures from the bottom.
     var local = pillFrame
     if !host.isFlipped { local.origin.y = host.bounds.height - pillFrame.maxY }
@@ -261,7 +373,10 @@ final class PaneTypingMarkerOverlay: NSObject, NSViewToolTipOwner {
   }
 
   /// The tooltip's text: who is typing, from which tab, into this pane.
-  var help: String? { model.marker?.help }
+  var help: String? { model.visible ? model.marker?.help : nil }
+
+  /// Whether the tooltip is on the terminal now.
+  var hasToolTip: Bool { toolTip != nil }
 
   nonisolated func view(
     _ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint,
