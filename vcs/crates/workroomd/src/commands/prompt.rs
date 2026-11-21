@@ -296,7 +296,7 @@ mod tests {
         assert!(
             out.starts_with(
                 "\x1b[33mscripts/workroom_setup from the base commit has not been approved on this \
-             Mac.\x1b[0m\n\x1b[90m╭─\x1b[0m\x1b[1m\x1b[34m scripts/workroom_setup \x1b[0m\x1b[0m"
+             Mac.\x1b[0m\n\x1b[90m╭─\x1b[0m\x1b[1m\x1b[34m scripts/workroom_setup \x1b[0m\x1b[22m"
             ),
             "{out:?}"
         );
