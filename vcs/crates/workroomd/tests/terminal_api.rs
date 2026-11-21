@@ -2294,6 +2294,82 @@ fn wait_for_a_run_state_with_its_exit_code() {
     );
 }
 
+/// A restart's `stopping` lasts only until its supervisor starts the command again, a moment, far
+/// less than the runs watcher takes between two reads of the run's status, yet a wait for it is
+/// met: the supervisor logs every transition, and the watcher hands each to the run's waits. The
+/// wait is started before the restarts, which go on until it answers, since nothing says when it
+/// has reached the daemon; without the log, each is heard one time in fifty, or so.
+#[test]
+fn a_wait_for_a_runs_stopping_hears_it_across_a_restart() {
+    // Short: the socket's path must fit a Unix socket's.
+    let workspace = Workspace::new("api-wait-stop");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let _run = attach_with_env(
+        &socket,
+        RUN,
+        &[],
+        &[
+            ("WORKROOM_SESSION_RUN", "1"),
+            ("WORKROOM_SESSION_COMMAND", "sleep 60"),
+            ("WORKROOM_SESSION_TITLE", "dev"),
+        ],
+    );
+    listing_until(&socket, |listing| listing.len() == 1);
+    met(
+        &socket,
+        wait(&socket, &["dev", "--run", "running", "--timeout", "20s"]),
+    );
+    let restart = || {
+        let mut payload: Vec<u8> = (0..16)
+            .map(|at| u8::from_str_radix(&RUN.replace('-', "")[at * 2..at * 2 + 2], 16).unwrap())
+            .collect();
+        payload.push(wr_protocol::frame::RunSignal::Restart as u8);
+        let reply = common::control(
+            &socket,
+            wr_protocol::frame::Frame::new(wr_protocol::frame::FrameKind::Signal, payload),
+        );
+        assert_eq!(reply.kind, wr_protocol::frame::FrameKind::Acknowledged);
+    };
+    for round in 0..2 {
+        let mut stopping = started(
+            &socket,
+            &[
+                "wait",
+                "dev",
+                "--run",
+                "stopping",
+                "--timeout",
+                "20s",
+                "--json",
+            ],
+        );
+        let mut restarts = 0;
+        while stopping.try_wait().expect("the wait").is_none() && restarts < 8 {
+            std::thread::sleep(Duration::from_millis(1500));
+            restart();
+            restarts += 1;
+        }
+        let stopping = finished(stopping);
+        assert_eq!(
+            stopping.code, 0,
+            "round {round}, {restarts} restarts: {} {}",
+            stopping.stdout, stopping.stderr
+        );
+        assert_eq!(
+            stopping.envelope()["run_state"],
+            "stopping",
+            "{}",
+            stopping.stdout
+        );
+        // Running again, in the same session.
+        met(
+            &socket,
+            wait(&socket, &["dev", "--run", "running", "--timeout", "20s"]),
+        );
+    }
+}
+
 /// A bad command line is 1, as for every command (they share one parser), and no daemon is 7.
 #[test]
 fn wait_takes_one_target_and_one_condition() {

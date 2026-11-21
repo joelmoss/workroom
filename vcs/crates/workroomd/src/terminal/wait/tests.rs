@@ -376,6 +376,37 @@ fn a_wait_joining_inside_a_csi_keeps_the_text_after_it() {
     );
 }
 
+/// A run wait hears its run's logged transitions numbered past the last when it started, and
+/// whatever the status file shows: one logged before it started is no news.
+#[test]
+fn a_run_wait_hears_only_transitions_after_it_started() {
+    let waiter = Waiter::new(Condition::Run(RunState::Stopping), Seen::default());
+    waiter.runs_after(5);
+    waiter.run("stopping", Some(4));
+    waiter.run("stopping", Some(5));
+    assert_eq!(waiter.outcome(), None, "logged before the wait started");
+    waiter.run("starting", Some(6));
+    assert_eq!(waiter.outcome(), None, "not the state waited for");
+    waiter.run("stopping", Some(7));
+    assert_eq!(
+        waiter.outcome(),
+        Some(Outcome::Met(Met::Run {
+            state: RunState::Stopping,
+            exit_code: None,
+        }))
+    );
+    // A supervisor that logs nothing: its status file's changes, as ever.
+    let waiter = Waiter::new(Condition::Run(RunState::Exited), Seen::default());
+    waiter.run("exited 3 1", None);
+    assert_eq!(
+        waiter.outcome(),
+        Some(Outcome::Met(Met::Run {
+            state: RunState::Exited,
+            exit_code: Some(3),
+        }))
+    );
+}
+
 /// Commands that end together are heard in order: a wait for the next to finish answers with the
 /// first after it started, the last's code only when that is the one.
 #[test]

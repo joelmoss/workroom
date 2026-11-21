@@ -5,6 +5,13 @@
 //! run's state to a status file the daemon names by session id, beside its socket, so a hand-off
 //! needs to carry nothing to find it again. The daemon reads that file and publishes it with the
 //! session's program status, so an app sees how a run ended even when it was closed at the time.
+//!
+//! The file holds the latest state alone, and a restart writes `stopping` and goes straight on to
+//! `starting` and `running`, between two of the watcher's reads. So the supervisor also appends
+//! each transition, numbered, to a log beside it ([`transitions_file`]), and the watcher hands the
+//! waits on the run (`workroom wait --run`, `terminal::wait`) every one it has not yet, by number:
+//! the log is bounded, started afresh every 64th. A run whose supervisor writes no log (one an
+//! older daemon started, adopted in a hand-off) is heard as before, from the file's changes.
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -95,6 +102,37 @@ pub fn status_file(dir: &Path, id: SessionId) -> PathBuf {
     dir.join(format!("{}.status", id.to_hyphenated()))
 }
 
+/// The log of every transition beside a status file, as `run_supervisor.sh` names it: the status
+/// file's name and `.log`, so nothing that looks for `*.status` sees it.
+pub fn transitions_file(status: &Path) -> PathBuf {
+    let mut name = status.as_os_str().to_os_string();
+    name.push(".log");
+    PathBuf::from(name)
+}
+
+/// The transitions a log holds, oldest first: each line's number and status line. A line still
+/// being written (no line end yet), or one that isn't a transition, is left out. None when there
+/// is no log: a supervisor older than it, or none has written yet.
+pub fn transitions(status: &Path) -> Option<Vec<(u64, String)>> {
+    let raw = std::fs::read_to_string(transitions_file(status)).ok()?;
+    let complete = raw.rfind('\n').map_or("", |end| &raw[..end]);
+    Some(
+        complete
+            .lines()
+            .filter_map(|line| {
+                let (seq, status) = line.split_once(' ')?;
+                Some((seq.parse().ok()?, status.trim().to_string()))
+            })
+            .collect(),
+    )
+}
+
+/// The number of the last transition the log holds, for a wait starting now to hear only those
+/// after it.
+pub fn last_transition(status: &Path) -> Option<u64> {
+    transitions(status)?.last().map(|(seq, _)| *seq)
+}
+
 /// Whether an attach environment asks for a run session.
 pub fn is_requested(env: &[(OsString, OsString)]) -> bool {
     env.iter()
@@ -120,7 +158,7 @@ pub fn spawn_watcher(sessions: SessionStore) {
     let spawned = std::thread::Builder::new()
         .name("runs".into())
         .spawn(move || {
-            let mut published = HashMap::new();
+            let mut watched = HashMap::new();
             let mut grace = Grace {
                 counted: sessions.hooks().runs.wake(),
                 until: Instant::now(),
@@ -130,7 +168,7 @@ pub fn spawn_watcher(sessions: SessionStore) {
                 // and the wait still wakes it.
                 let seen = sessions.hooks().runs.wake();
                 grace.count(seen, Instant::now());
-                let running = tick(&sessions, &dir, &mut published);
+                let running = tick(&sessions, &dir, &mut watched);
                 if running || grace.polling(Instant::now()) {
                     std::thread::sleep(POLL);
                 } else {
@@ -168,33 +206,60 @@ impl Grace {
     }
 }
 
-/// One pass: each live run's status, published when it changed, and the files of runs that ended.
-/// Whether any live run is still running, or has no status yet, so the next pass is owed soon.
-fn tick(sessions: &SessionStore, dir: &Path, published: &mut HashMap<SessionId, String>) -> bool {
+/// What the watcher has done for one live run.
+#[derive(Default)]
+struct Watched {
+    /// The status line it last published.
+    published: Option<String>,
+    /// The number of the last transition it handed the run's waits.
+    heard: Option<u64>,
+}
+
+/// One pass: each live run's transitions since the last, handed to its waits, its status,
+/// published when it changed, and the files of runs that ended. Whether any live run is still
+/// running, or has no status yet, so the next pass is owed soon.
+fn tick(sessions: &SessionStore, dir: &Path, watched: &mut HashMap<SessionId, Watched>) -> bool {
     let live = sessions.run_session_ids();
     for &id in &live {
-        let Ok(raw) = std::fs::read_to_string(status_file(dir, id)) else {
+        let status = status_file(dir, id);
+        let run = watched.entry(id).or_default();
+        // Those numbered past the last heard: a log started afresh keeps counting, so none is
+        // heard twice, and one past the last pass's is never left out.
+        for (seq, line) in transitions(&status).unwrap_or_default() {
+            if run.heard.is_none_or(|heard| seq > heard) {
+                sessions.run_changed(id, &line, Some(seq));
+                run.heard = Some(seq);
+            }
+        }
+        let Ok(raw) = std::fs::read_to_string(&status) else {
             continue;
         };
         let line = raw.trim();
-        if line.is_empty() || published.get(&id).map(String::as_str) == Some(line) {
+        if line.is_empty() || run.published.as_deref() == Some(line) {
             continue;
         }
         let line = line.to_string();
         if sessions.update_program_status(id, |status| status.set_run(line.clone())) {
-            sessions.run_changed(id, &line);
-            published.insert(id, line);
+            // As well as the log's, for a supervisor that writes none.
+            sessions.run_changed(id, &line, None);
+            run.published = Some(line);
         }
     }
-    published.retain(|id, _| {
+    watched.retain(|id, _| {
         let alive = live.contains(id);
         if !alive {
-            let _ = std::fs::remove_file(status_file(dir, *id));
+            let status = status_file(dir, *id);
+            let _ = std::fs::remove_file(transitions_file(&status));
+            let _ = std::fs::remove_file(status);
         }
         alive
     });
-    live.iter()
-        .any(|id| published.get(id).is_none_or(|status| still_running(status)))
+    live.iter().any(|id| {
+        watched
+            .get(id)
+            .and_then(|run| run.published.as_deref())
+            .is_none_or(still_running)
+    })
 }
 
 /// Whether a supervisor's status line can still change on its own: `running <pid>` or
@@ -206,15 +271,18 @@ fn still_running(status: &str) -> bool {
     )
 }
 
-/// Removes every status file in `dir`, and every temporary one its supervisor left, whose session
-/// is not in `live`.
+/// Removes every status file and transitions log in `dir`, and every temporary file a supervisor
+/// left, whose session is not in `live`.
 fn remove_stale(dir: &Path, live: &[SessionId]) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     let kept: Vec<String> = live
         .iter()
-        .map(|id| format!("{}.status", id.to_hyphenated()))
+        .flat_map(|id| {
+            let status = format!("{}.status", id.to_hyphenated());
+            [format!("{status}.log"), status]
+        })
         .collect();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();

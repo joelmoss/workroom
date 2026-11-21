@@ -11,7 +11,7 @@
 #
 # The screen is CLEARED before each (re)launch, so every start/restart begins fresh.
 #
-# argv: $1 = status file (we write transitions here, atomically)
+# argv: $1 = status file (we write transitions here, atomically; and each, numbered, to "$1.log")
 #       $2.. = the child command in argv form (e.g. zsh -lic '...'), run in the foreground.
 #
 # Signals (daemon -> our pid): USR1 = restart (relaunch in place), USR2 = stop (keep pane, park),
@@ -26,8 +26,22 @@ ACTION=""
 # Ends each outcome line ("exited <code> <launch>", "stopped <launch>"): a restart that fails at once
 # the same way is over before the daemon next reads the file, and the same line would publish nothing.
 LAUNCH=0
+# Every transition, numbered, one a line ("<seq> <status>"), beside the status file: the daemon
+# hands each to the waits on this run (`workroom wait --run`), so a state written and replaced
+# between two of its reads (`stopping`, straight into `starting` on a restart) still reaches them.
+# The status file keeps only the latest, for the app. Bounded: every 64th transition starts the
+# log afresh, and the daemon keeps its place by number, not by offset.
+TRANSITIONS="$STATUS.log"
+SEQ=0
 
 write_status() {  # atomic: temp + rename, so a watcher never reads a half-written line
+  SEQ=$((SEQ + 1))
+  if [ $((SEQ % 64)) -eq 0 ]; then
+    printf '' 2>/dev/null >"$TRANSITIONS"  # not `:`, whose failed redirect would end the shell
+  fi
+  # Before the status file, so a transition the daemon has read there is in the log already.
+  # (stderr first, so a log that can't be written says nothing on the run's screen.)
+  printf '%s %s\n' "$SEQ" "$1" 2>/dev/null >>"$TRANSITIONS"
   __t="$STATUS.tmp.$$"
   printf '%s\n' "$1" >"$__t" 2>/dev/null && mv -f "$__t" "$STATUS" 2>/dev/null
 }
