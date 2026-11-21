@@ -65,7 +65,7 @@ workroom/
 ├── .github/workflows/       # CI + release + appcast automation
 ├── .goreleaser.yml          # The Go CLI's former release config; no workflow runs it since #681
 ├── .golangci.yml            # Linter config
-├── install.sh / install.ps1 # Standalone CLI installers
+├── install.sh / install.ps1 # Standalone CLI installer; install.ps1 only says Windows has ended
 ├── Makefile                 # Dev tasks: app-* (macOS app), cli-* (Go engine) and vcs-lint (Rust)
 └── mk/                      # The Makefile's targets, one file per area (cli, docs, actions, vcs, app)
 ```
