@@ -1,19 +1,26 @@
 import AppKit
 import SwiftUI
 
-/// Marks a sidebar row, or the Terminals heading, as somewhere a terminal tab dragged inside its
-/// window can be let go (#660): registers a view with the window's store, which asks it where it
-/// is on screen at the moment of the drag (`AppStore.paneDropZone(at:)`). The sidebar sits in its
-/// own hosting view, so SwiftUI's frames are not in the tab strip's space.
+/// Marks a sidebar row, the Terminals heading, a pane tab or a group's title bar as somewhere a
+/// terminal drag inside its window can be let go (#660, #652): registers a view with the window's
+/// store, which asks it where it is on screen when the drag starts
+/// (`AppStore.terminalDropZones`). The sidebar sits in its own hosting view, so SwiftUI's frames
+/// are not in the tab strip's space.
 struct PaneDropZoneMarker: NSViewRepresentable {
   /// A weak hold on a zone's view, so a row scrolled away or gone drops out.
   final class Box {
     weak var view: NSView?
-    init(_ view: NSView) { self.view = view }
+    /// The view is a pane tab's, whose halves are before and after it.
+    let isPaneTab: Bool
+    init(_ view: NSView, isPaneTab: Bool) {
+      self.view = view
+      self.isPaneTab = isPaneTab
+    }
   }
 
   let store: AppStore
   let zone: PaneDropZone
+  var isPaneTab = false
 
   func makeNSView(context: Context) -> NSView {
     let view = PassThroughView()
@@ -34,7 +41,7 @@ struct PaneDropZoneMarker: NSViewRepresentable {
       zones[other] = kept.isEmpty ? nil : kept
     }
     if !(zones[zone] ?? []).contains(where: { $0.view === view }) {
-      zones[zone, default: []].append(Box(view))
+      zones[zone, default: []].append(Box(view, isPaneTab: isPaneTab))
     }
     store.paneDropZoneViews = zones
   }
@@ -47,23 +54,79 @@ struct PaneDropZoneMarker: NSViewRepresentable {
   }
 }
 
-/// The marker under a row, and the accent over it while a tab dragged here would move into it.
+/// The marker under a row, and the accent over it while a drag here would drop on it; for a
+/// terminal's place (`PaneDropZone.tab`), an insertion mark on the side it would land.
 private struct PaneDropZoneModifier: ViewModifier {
   let store: AppStore
   let zone: PaneDropZone
+  let isPaneTab: Bool
 
   func body(content: Content) -> some View {
     content
-      .background(PaneDropZoneMarker(store: store, zone: zone))
-      .overlay {
-        if store.incomingPaneDrop == zone { DropAccent(cornerRadius: 6) }
+      .background(PaneDropZoneMarker(store: store, zone: zone, isPaneTab: isPaneTab))
+      .overlay(alignment: markAlignment) {
+        if insertion != nil {
+          DropInsertionMark(vertical: isPaneTab)
+        } else if store.incomingPaneDrop == zone {
+          DropAccent(cornerRadius: 6)
+        }
       }
+  }
+
+  /// Where the insertion mark sits: a pane tab's leading or trailing edge, a row's top.
+  private var markAlignment: Alignment {
+    guard let after = insertion else { return .center }
+    if !isPaneTab { return .top }
+    return after ? .trailing : .leading
+  }
+
+  /// Whether the drop would land after (true) or before (false) this terminal's place, or nil
+  /// when no positional drop is over it.
+  private var insertion: Bool? {
+    switch (zone, store.incomingPaneDrop) {
+    case (.tab(let tab, let container, _), .tab(let hovered, let over, let after)):
+      return hovered == tab && over == container ? after : nil
+    case (.terminalRow, let hovered?) where hovered == zone:
+      return false
+    default:
+      return nil
+    }
+  }
+}
+
+/// The accent line between two terminals' places where a drop would land: a vertical caret
+/// between pane tabs, a horizontal line above a sidebar row.
+struct DropInsertionMark: View {
+  let vertical: Bool
+
+  var body: some View {
+    Capsule()
+      .fill(Color.accentColor)
+      .frame(width: vertical ? 2 : nil, height: vertical ? nil : 2)
+      .padding(vertical ? .vertical : .horizontal, 3)
+      .allowsHitTesting(false)
+      .accessibilityIdentifier("dropInsertionMark")
   }
 }
 
 extension View {
-  /// Makes this row `zone`, somewhere a terminal tab dragged in `store`'s window can move to.
-  func paneDropZone(_ zone: PaneDropZone, store: AppStore) -> some View {
-    modifier(PaneDropZoneModifier(store: store, zone: zone))
+  /// Makes pane tab `tab` of `target` somewhere a terminal drag in its window can land, before or
+  /// after it (#652), when its strip is a window's (`host` is its store); the Quick Terminal's
+  /// panel has no drag session.
+  @ViewBuilder
+  func paneTabDropZone(_ tab: TerminalTab.ID, of target: TerminalTarget, host: (any PaneHost)?)
+    -> some View
+  {
+    if let store = host as? AppStore, let owner = target.id.sidebarID {
+      paneDropZone(.tab(tab, in: owner, after: false), store: store, isPaneTab: true)
+    } else {
+      self
+    }
+  }
+
+  /// Makes this view `zone`, somewhere a terminal drag in `store`'s window can drop; a pane tab's
+  /// halves are before and after it.
+  func paneDropZone(_ zone: PaneDropZone, store: AppStore, isPaneTab: Bool = false) -> some View {
+    modifier(PaneDropZoneModifier(store: store, zone: zone, isPaneTab: isPaneTab))
   }
 }

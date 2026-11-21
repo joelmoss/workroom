@@ -96,6 +96,8 @@ final class AppStore: ObservableObject {
   @ObservationIgnored var paneDropZoneViews: [PaneDropZone: [PaneDropZoneMarker.Box]] = [:]
   /// Whether a tab drag over a zone that refuses it set the "not allowed" pointer.
   @ObservationIgnored var paneDragRefusing = false
+  /// The window's one drag of terminals, from whichever surface (#652).
+  @ObservationIgnored lazy var terminalDrag = TerminalDragSession(store: self)
   /// Each workroom tab's frame within its row (`workroomTabRun`), top-left origin, for working out
   /// where a workroom dragged in from another window lands. A measurement, not state: nothing
   /// renders from it.
@@ -1883,6 +1885,16 @@ final class AppStore: ObservableObject {
           {
             terminals.ensureTab(for: group)
             _ = terminals.addTab(for: group)
+          }
+          // A second named group (#652) with one terminal, for dragging a terminal between groups.
+          if UITestFixture.secondTerminalGroup,
+            terminalsSection.group(.terminalGroup(UITestFixture.secondTerminalGroupID)) == nil,
+            let sid = terminalsSection.addGroup(
+              named: "Dev", id: UITestFixture.secondTerminalGroupID
+            ).sidebarID,
+            let group = self.target(for: sid)
+          {
+            terminals.ensureTab(for: group)
           }
           // Terminal-strip overflow scenario (pinned "+" XCUITest, issue #129): `ensureTab` opened the
           // first tab, so add the rest.

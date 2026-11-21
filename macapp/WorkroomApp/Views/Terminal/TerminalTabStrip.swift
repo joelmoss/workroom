@@ -214,6 +214,7 @@ struct TerminalTabStrip: View {
           }
         }
         .tabChipContextMenu(tab: tab, target: target, host: host, panes: panes)
+        .paneTabDropZone(tab.id, of: target, host: host)
         // Measure in .global space: a .local drag reads coordinates relative to the
         // chip, which itself moves via .offset(drag.translation) — that feedback loop
         // dampens the translation so the chip lags the cursor. Global space is fixed.

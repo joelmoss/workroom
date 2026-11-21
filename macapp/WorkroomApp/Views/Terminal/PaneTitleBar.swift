@@ -205,7 +205,8 @@ struct PaneTitleBar: View {
     .contentShape(Rectangle())
     // Drag the pane by its bar to move it within the split, or up to the strip to pop it out — the
     // affordance that replaced the hover-only grip chip (issue #150), and the same gesture the
-    // workroom title bar uses for its group.
+    // workroom title bar uses for its group. Anywhere else in the window it drags as its tab does
+    // (#652): `PaneTreeView` reports it to the window's drag session (`AppStore.paneDragMoved`).
     .gesture(
       DragGesture(minimumDistance: 6, coordinateSpace: .named(coordinateSpace))
         .onChanged { onDragChanged($0.location) }
