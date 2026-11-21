@@ -6,7 +6,9 @@
 # than the host, so neither shows translucency or Liquid Glass as the owner sees it.
 #
 # It brings the app forward for about a second, captures, and gives the front back to whichever app
-# had it. It drives the owner's screen, so an agent asks before running it, every time.
+# had it. It drives the owner's screen, so an agent asks before running it, every time. Run it
+# through `make app-capture`, which holds the GUI session exclusively (Scripts/gui-lock.py) so it
+# never takes the front from another workroom's UI test mid-run.
 #
 # Usage: capture-dev-app.sh <bundle-id> <out.png>
 #   `make app-capture` passes this checkout's id (`make app-identity`) and CAPTURE as the path.
