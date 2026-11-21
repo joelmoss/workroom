@@ -8,6 +8,7 @@ pub(crate) mod events;
 pub(crate) mod host_session;
 pub(crate) mod images;
 pub(crate) mod input;
+pub(crate) mod keys;
 pub(crate) mod process;
 pub(crate) mod program_status;
 pub(crate) mod pty;

@@ -731,6 +731,17 @@ impl ShadowTerminal {
         self.terminal.mode(mode)
     }
 
+    /// The modes a key's bytes and a paste depend on (#689): the active screen's kitty keyboard
+    /// flags, DECCKM and bracketed paste. `None` if any can't be read.
+    pub fn input_modes(&self) -> Option<crate::terminal::keys::Modes> {
+        Some(crate::terminal::keys::Modes {
+            kitty_flags: self
+                .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS)?,
+            application_cursor_keys: self.mode(modes::APP_CURSOR_KEYS)?,
+            bracketed_paste: self.mode(modes::BRACKETED_PASTE)?,
+        })
+    }
+
     /// The live title, as the program last set it with OSC 0 or 2; `None` when it set none.
     pub fn title(&self) -> Option<String> {
         self.terminal.title().filter(|title| !title.is_empty())
@@ -1456,7 +1467,6 @@ fn screen_switch_at(bytes: &[u8]) -> Option<usize> {
 pub mod modes {
     use super::GhosttyMode;
     use ghostty_vt::mode_new;
-    #[cfg(test)]
     pub const APP_CURSOR_KEYS: GhosttyMode = mode_new(1, false);
     #[cfg(test)]
     pub const MOUSE_BUTTON: GhosttyMode = mode_new(1002, false);
@@ -1464,7 +1474,6 @@ pub mod modes {
     pub const MOUSE_SGR: GhosttyMode = mode_new(1006, false);
     #[cfg(test)]
     pub const FOCUS_EVENTS: GhosttyMode = mode_new(1004, false);
-    #[cfg(test)]
     pub const BRACKETED_PASTE: GhosttyMode = mode_new(2004, false);
     pub const ALT_SCREEN: GhosttyMode = mode_new(1049, false);
     pub const ORIGIN: GhosttyMode = mode_new(6, false);

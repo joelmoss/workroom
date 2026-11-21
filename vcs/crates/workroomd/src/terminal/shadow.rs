@@ -463,6 +463,14 @@ impl Shadow {
         self.status.shell_marks()
     }
 
+    /// The input modes the session's program has turned on, which what `terminal.send` types is
+    /// encoded for (#689); `None` when the screen can't be read.
+    pub fn input_modes(&self) -> Option<crate::terminal::keys::Modes> {
+        self.terminal
+            .as_ref()
+            .and_then(|terminal| terminal.input_modes())
+    }
+
     /// The visible screen as plain text, no history, its soft-wrapped lines joined: what
     /// `wait --include-screen` (#690) matches, so a line the pane wrapped matches as the program
     /// printed it. Bounded by the screen's size, so read under the session's locks, and matched
@@ -509,6 +517,10 @@ impl Shadow {
     }
     /// No terminal, so no title is ever seen.
     pub fn title(&self) -> Option<String> {
+        None
+    }
+    /// No terminal, so the modes a program turned on are never known.
+    pub fn input_modes(&self) -> Option<crate::terminal::keys::Modes> {
         None
     }
     /// No terminal, so no screen to capture, whatever was asked.
