@@ -232,15 +232,22 @@ pub(crate) struct CliError {
     /// The script a `ScriptNotTrusted` refused, as the envelope's `script` carries it for the app
     /// to show and approve.
     pub(crate) script: Option<Box<ScriptPayload>>,
+    /// What a failed create says beside its message. Boxed, as most errors have none, so a
+    /// `Result` carrying the error stays small.
+    pub(crate) create: Option<Box<CreateDetails>>,
+}
+
+/// What the envelope of a failed `create` carries for the app, beside the error.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct CreateDetails {
     /// The workroom a create made before it failed (its setup script, say), as the envelope's
     /// `created` carries it, so the app can offer to delete it.
-    pub(crate) created: Option<Box<CreatePayload>>,
+    pub(crate) created: Option<CreatePayload>,
     /// The work a `LocalWorkLeftOut` create would leave out, for the app to ask where it starts.
-    pub(crate) local_work: Option<Box<LocalWorkPayload>>,
+    pub(crate) local_work: Option<LocalWorkPayload>,
     /// The commit a create question was asked about, for the answer to pass back as
-    /// `--start-commit` (ADR 0059). Boxed, as the others are, so a `Result` carrying the error
-    /// stays small.
-    pub(crate) start_commit: Option<Box<str>>,
+    /// `--start-commit` (ADR 0059).
+    pub(crate) start_commit: Option<String>,
 }
 
 impl CliError {
@@ -251,10 +258,13 @@ impl CliError {
             matches: Vec::new(),
             details: None,
             script: None,
-            created: None,
-            local_work: None,
-            start_commit: None,
+            create: None,
         }
+    }
+
+    /// [`CliError::create`], made empty when the error has none yet.
+    pub(crate) fn create_details(&mut self) -> &mut CreateDetails {
+        self.create.get_or_insert_default()
     }
 
     /// An unclassified failure, which a usage error is too.
