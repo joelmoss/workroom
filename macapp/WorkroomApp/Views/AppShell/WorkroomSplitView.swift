@@ -202,6 +202,17 @@ enum WorkroomSplitTitlePresentation {
     if case .workroom = sid { return target.title }
     return nil
   }
+
+  /// The title bar's leading label: the project's directory name for a project's root or workroom;
+  /// for a standalone terminal or a terminal group, which has no project, its own name (ADR 0077).
+  static func primaryLabel(sid: SidebarID, target: TerminalTarget) -> String {
+    if sid.isInTerminalsSection { return target.title }
+    return AppStore.projectPath(of: sid).map { ($0 as NSString).lastPathComponent } ?? ""
+  }
+
+  /// Whether the title bar leads with the house or workroom glyph. A standalone terminal or a
+  /// terminal group is neither a root nor a workroom, so its name stands alone.
+  static func showsGlyph(sid: SidebarID) -> Bool { !sid.isInTerminalsSection }
 }
 
 /// One workroom pane: a title bar naming the workroom and carrying its own actions, above the full
@@ -287,10 +298,12 @@ private struct WorkroomPaneLeaf: View {
     .accessibilityAddTraits(focused && multi ? .isSelected : [])
   }
 
-  /// What VoiceOver calls this pane: its workroom, a create not yet named (#483), or its project.
+  /// What VoiceOver calls this pane: its workroom, a create not yet named (#483), a standalone
+  /// terminal's or group's name, or its project.
   private var paneLabel: String {
     if let workroomName { return "Workroom \(workroomName)" }
     if case .creation = sid { return "New workroom in \(projectLabel)" }
+    if sid.isInTerminalsSection { return target.title }
     return "Project \(target.title)"
   }
 
@@ -298,7 +311,8 @@ private struct WorkroomPaneLeaf: View {
   private var titleBar: some View {
     WorkroomPaneTitleBar(
       target: target, projectPath: projectPath, projectLabel: projectLabel,
-      workroomName: workroomName, focused: focused, memberCount: memberCount,
+      showsGlyph: WorkroomSplitTitlePresentation.showsGlyph(sid: sid), workroomName: workroomName,
+      focused: focused, memberCount: memberCount,
       controls: toolbarControls, onClose: onClose,
       // The bar stays store-free (see `WorkroomSplitView.store`), so the leaf — which has the
       // store — supplies the action.
@@ -383,7 +397,7 @@ private struct WorkroomPaneLeaf: View {
   /// The project name — the chip's primary label format (`AppStore.projectPath` last component),
   /// matching `WorkroomTabChip.primaryLabel`. Empty only if the sid resolves no project.
   private var projectLabel: String {
-    projectPath.map { ($0 as NSString).lastPathComponent } ?? ""
+    WorkroomSplitTitlePresentation.primaryLabel(sid: sid, target: target)
   }
 
   /// This member's own display name (nil for a project root) — the label-aware `target.title`,
@@ -528,6 +542,8 @@ private struct WorkroomPaneTitleBar: View {
   /// The project name, derived (with `workroomName`) by the leaf — which needs it for the close prompt
   /// anyway, so deriving it a second time here would be two copies of one format to keep in step.
   let projectLabel: String
+  /// False for a standalone terminal or a terminal group: its name alone, no house or cube.
+  let showsGlyph: Bool
   let workroomName: String?
   let focused: Bool
   /// See `WorkroomPaneLeaf.memberCount` — the group's size, so the fade below can sit out a close.
@@ -541,6 +557,11 @@ private struct WorkroomPaneTitleBar: View {
   let controls: WorkroomPaneToolbarPresentation.Controls
   let onClose: () -> Void
   let onCloseAll: () -> Void
+
+  /// The close-all button's name: a standalone terminal or a terminal group isn't a workroom.
+  private var closeAllLabel: String {
+    showsGlyph ? "Close all tabs in this workroom" : "Close all tabs"
+  }
 
   /// The animation for this bar's focus fade — nil while the group is changing shape, so a member
   /// closing lands instantly. One decision, shared with the terminal panes.
@@ -560,10 +581,12 @@ private struct WorkroomPaneTitleBar: View {
     HStack(spacing: 6) {
       // Leading glyph mirrors the tab chip's: a house for a project root, a cube for a workroom
       // (`workroomName` is nil only for a root). Accent on the focused pane, muted otherwise.
-      Image(systemName: workroomName == nil ? "house" : target.workroomGlyph)
-        .font(.system(size: 10))
-        .foregroundStyle(focused ? tokens.accent : tokens.fgMuted)
-        .help(workroomName == nil ? "" : target.hostTooltip)
+      if showsGlyph {
+        Image(systemName: workroomName == nil ? "house" : target.workroomGlyph)
+          .font(.system(size: 10))
+          .foregroundStyle(focused ? tokens.accent : tokens.fgMuted)
+          .help(workroomName == nil ? "" : target.hostTooltip)
+      }
       if let reason = target.terminalUnavailability {
         WarningGlyph()
           .font(.system(size: 10))
@@ -607,8 +630,8 @@ private struct WorkroomPaneTitleBar: View {
           // Shares `PaneToolbarButton` with the detail-panel title bar below this one, so both bars'
           // buttons carry the same hover well and the same tooltip tracking.
           PaneToolbarButton(
-            systemImage: "xmark.square", help: "Close all tabs in this workroom",
-            accessibilityLabel: "Close all tabs in this workroom",
+            systemImage: "xmark.square", help: closeAllLabel,
+            accessibilityLabel: closeAllLabel,
             identifier: "workroom.pane.closeAll", action: onCloseAll)
         }
         if controls.removeFromSplit {

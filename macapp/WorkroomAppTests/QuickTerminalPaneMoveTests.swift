@@ -61,7 +61,7 @@ final class QuickTerminalPaneMoveTests: XCTestCase {
       windows: [window])
 
     let choice = try XCTUnwrap(groups.last?.choices.first, "after the Terminals section")
-    XCTAssertEqual(choice.title, window.title(for: sid))
+    XCTAssertEqual(choice.title, window.title(for: sid, separator: WorkroomLabel.separator))
     choice.move()
     for _ in 0..<50 where window.terminals.tab(pane.id, for: target) == nil {
       await Task.yield()

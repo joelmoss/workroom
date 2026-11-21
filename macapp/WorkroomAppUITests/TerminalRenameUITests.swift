@@ -28,19 +28,27 @@ final class TerminalRenameUITests: XCTestCase {
     field.typeKey("a", modifierFlags: .command)
     field.typeText("Build box")
     app.sheets.buttons["Rename"].click()
+    // The chip keeps its identifier ("Terminal 1", never shown); its label is the title it shows.
     XCTAssertTrue(
-      element(app, id: "terminal.tab.Build box").waitForExistence(timeout: 6),
-      "the tab shows the name the user gave it")
+      waitForLabel(chip, containing: "Build box"), "the tab shows the name the user gave it")
 
-    // Clearing the name (an empty one) brings the default title back.
-    element(app, id: "terminal.tab.Build box").rightClick()
+    // Clearing the name (an empty one) brings the default title back: the shell and its folder.
+    chip.rightClick()
     app.waitForHittableMenuItem(titled: "Rename…")?.click()
     XCTAssertTrue(field.waitForExistence(timeout: 6))
     field.typeKey("a", modifierFlags: .command)
     field.typeKey(.delete, modifierFlags: [])
     app.sheets.buttons["Rename"].click()
     XCTAssertTrue(
-      element(app, id: "terminal.tab.Terminal 1").waitForExistence(timeout: 6),
-      "an empty name clears it")
+      waitForLabel(chip, containing: "zsh "), "an empty name clears it: \(chip.label)")
+    XCTAssertFalse(chip.label.contains("Build box"))
+    XCTAssertFalse(chip.label.contains("Terminal 1"), "no number is shown: \(chip.label)")
+  }
+
+  private func waitForLabel(_ element: XCUIElement, containing text: String) -> Bool {
+    let predicate = NSPredicate(format: "label CONTAINS %@", text)
+    return XCTWaiter().wait(
+      for: [XCTNSPredicateExpectation(predicate: predicate, object: element)], timeout: 8)
+      == .completed
   }
 }

@@ -45,7 +45,7 @@ final class WorkroomHandOffs {
 
 // MARK: Quick Terminal panes into a window
 
-/// One place in a pane's "Move to…" menu (`PaneMove.choices`): Standalone, a terminal group, New
+/// One place in a pane's "Move to…" menu (`PaneMove.choices`): Standalone Terminal, a terminal group, New
 /// Terminal Group…, or a workroom open in a window. A class, to ride an `NSMenuItem`'s
 /// `representedObject`.
 @MainActor
@@ -56,17 +56,20 @@ final class PaneWorkroomChoice {
   /// False for the pane's own place, and for any move involving a remote workroom or a place still
   /// being created: a shell on this Mac can't join it.
   let enabled: Bool
+  /// Whether this is where the pane is now: its menu item wears a checkmark (and is disabled).
+  let isCurrent: Bool
   /// Why it is disabled, for its tooltip; nil when there is nothing to explain (its own place).
   let help: String?
   let move: () -> Void
 
   init(
-    title: String, glyph: String, enabled: Bool, help: String? = nil,
+    title: String, glyph: String, enabled: Bool, isCurrent: Bool = false, help: String? = nil,
     move: @escaping () -> Void
   ) {
     self.title = title
     self.glyph = glyph
     self.enabled = enabled
+    self.isCurrent = isCurrent
     self.help = help
     self.move = move
   }
@@ -198,6 +201,17 @@ extension AppStore {
       return "The Quick Terminal's terminals are in its own panel."
     }
     guard let target = target(for: sid) else { return "It is no longer open." }
+    if let why = terminalJoinRefusal(target) { return why }
+    if case .standalone = sid, !terminalsSection.terminalNames(of: target.id).isEmpty {
+      return "\(target.title) is a standalone terminal: it holds one terminal."
+    }
+    return nil
+  }
+
+  /// Why a terminal on this Mac can't join `target` at all, or nil when it can: it runs on a host,
+  /// is still being created, or opens no terminals. Moving a pane in and grouping onto a
+  /// standalone terminal both ask this.
+  func terminalJoinRefusal(_ target: TerminalTarget) -> String? {
     if target.remoteHost != nil || target.isRemoteWorkroom {
       return
         "\(target.title) runs on a host, so a terminal on this Mac can't move into it."
@@ -206,9 +220,6 @@ extension AppStore {
       return "\(target.title) is still being created."
     }
     if !target.opensTerminals { return "\(target.title) can't open terminals." }
-    if case .standalone = sid, !terminalsSection.terminalNames(of: target.id).isEmpty {
-      return "\(target.title) is a standalone terminal: it holds one terminal."
-    }
     return nil
   }
 

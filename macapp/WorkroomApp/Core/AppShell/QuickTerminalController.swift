@@ -226,10 +226,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     let host = ensureHost()
     // Its last terminal closed, or left for a window of its own, and hid it: a summon opens a fresh
     // one in the panel.
-    let docked = host.terminals.allTabs(for: host.target).filter {
-      !host.terminals.detachedTabIDs.contains($0.id)
-    }
-    if docked.isEmpty {
+    if !host.hasDockedTab {
       _ = host.terminals.addTab(for: host.target)
     }
     if window == nil { createWindow(host) }
@@ -264,11 +261,7 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   func reveal(tab tabID: TerminalTab.ID?) {
     if let tabID, let host, host.terminals.tab(tabID, for: host.target) != nil {
       // A popped-out pane is in a window of its own: that comes forward instead.
-      if let detached = host.detachedPanes.window(for: tabID) {
-        NSApp.activate(ignoringOtherApps: true)
-        detached.makeKeyAndOrderFront(nil)
-        return
-      }
+      if host.raiseDetachedPane(tabID) { return }
       host.terminals.focus(tabID, for: host.target)
     }
     show()

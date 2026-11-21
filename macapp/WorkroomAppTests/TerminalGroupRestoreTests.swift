@@ -74,11 +74,47 @@ final class TerminalGroupRestoreTests: XCTestCase {
     XCTAssertNil(relaunched.terminalGroup(servers)?.name, "an unnamed group stays unnamed")
     XCTAssertEqual(relaunched.terminals.tabCount(forTargetID: try XCTUnwrap(ops.targetID)), 2)
     XCTAssertEqual(relaunched.terminals.tabCount(forTargetID: try XCTUnwrap(servers.targetID)), 1)
-    XCTAssertEqual(relaunched.target(for: servers)?.title, "Terminal 1")
+    let title = try XCTUnwrap(relaunched.target(for: servers)?.title)
+    XCTAssertTrue(
+      title.hasPrefix("\(TerminalState.shellName) "),
+      "\(title) is named by its program and folder")
     XCTAssertEqual(
       relaunched.pendingRestoreSelection.flatMap(\.sidebarID).flatMap {
         relaunched.liveSelection($0, in: [])
       }, servers)
+  }
+
+  /// Value: protects=a quit never deletes a group: the windows' teardown and the saved-layout
+  /// capture leave every group listed, and its terminals come back at launch, where the prune keeps
+  /// it (ADR 0077, ADR 0058); fails_when=the teardown's closing tabs or unregistering windows reads
+  /// a group as empty and drops it, or the relaunch's prune does; why_new=the owner's "a group goes
+  /// with its last terminal"; seam=quit-and-restore over both files; no_claim=the live daemon
+  func testAQuitKeepsEveryGroupAndItsTerminalsComeBack() async throws {
+    let before = makeSection()
+    let window = makeStore(section: before, claims: false)
+    let ops = try XCTUnwrap(window.newTerminalGroup(named: "Ops"))
+    let id = try XCTUnwrap(ops.targetID)
+
+    WindowRegistry.shared.isTerminating = true
+    let session = SessionFile(savedAt: Date(), windows: [window.captureWindowSession()])
+    await window.terminals.reapAll()
+    await window.endStandaloneTerminalsOnClose()
+    await before.regroupsSettled()
+    WindowRegistry.shared.isTerminating = false
+    XCTAssertEqual(before.entries.map(\.sidebarID), [ops], "the quit left the group listed")
+    SavedLayoutStore(url: sessionURL).writeSynchronously(session)
+    before.flush()
+
+    let after = makeSection()
+    let relaunched = makeStore(section: after, claims: true)
+    relaunched.claimSessionIfNeeded()
+    relaunched.restorePersistedSessionIfPending(in: [])
+    after.pruneUnheld()
+    await after.regroupsSettled()
+
+    XCTAssertEqual(after.entries.map(\.sidebarID), [ops])
+    XCTAssertEqual(relaunched.terminalGroup(ops)?.name, "Ops")
+    XCTAssertEqual(relaunched.terminals.tabCount(forTargetID: id), 1, "its terminal is back")
   }
 
   // MARK: The file

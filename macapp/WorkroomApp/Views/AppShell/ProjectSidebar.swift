@@ -50,6 +50,8 @@ struct ProjectSidebar: View, Equatable {
     top: 2, leading: 6 + 6, bottom: 2, trailing: 0)
   static let terminalRowInsets = EdgeInsets(
     top: 3, leading: 6 + 6, bottom: 3, trailing: 0)
+  /// A section heading's (`SidebarSectionHeading`): none, so its band reaches both sidebar edges.
+  fileprivate static let headingInsets = EdgeInsets()
 
   var body: some View {
     Group {
@@ -68,10 +70,6 @@ struct ProjectSidebar: View, Equatable {
     }
     // Reserve the footer's height so the list scrolls above its shared sidebar background.
     .safeAreaInset(edge: .bottom, spacing: 0) { footer }
-    // Breathing room above the first project so it doesn't jam against the card's top edge (the card
-    // sits flush under the title bar via `SidebarColumn`'s `topMargin: 0`). A solid `safeAreaInset`
-    // like the footer — reserves an 8pt strip of the card surface, matching the card's side margin.
-    .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: 8) }
     // A project's settings (issue #7) open in Settings ▸ Projects through
     // `store.modals.pendingProjectSettings`, which ⌘R (a global shortcut) sets too (issue #127).
     // The add-project importer and the delete confirmation are re-homed to RootView (issue #23 OV1)
@@ -94,9 +92,15 @@ struct ProjectSidebar: View, Equatable {
     return List {
       // Terminals with no project, above the projects (ADR 0077).
       SidebarTerminalsSection(
-        store: store, actions: actions, headingInsets: Self.rowInsets,
+        store: store, actions: actions, headingInsets: Self.headingInsets,
         rowInsets: Self.childRowInsets, terminalRowInsets: Self.terminalRowInsets)
-      ForEach(projectStore.projects) { project in
+      // The Projects section's heading, shown with no projects too: its "+" is the sidebar's Add
+      // Project. Its band sets it off from the Terminals section, as the inspector's do, with no rule.
+      SidebarProjectsHeading(store: store)
+        .listRowInsets(Self.headingInsets)
+        .listRowSeparator(.hidden)
+        .listRowBackground(SidebarSectionHeadingBand())
+      ForEach(store.projectsFolded ? [] : projectStore.projects) { project in
         SidebarHoverRegion(id: .project(project.path)) { hovered in
           SidebarProjectRowAdapter(project: project, hovered: hovered, actions: actions)
             .equatable()
@@ -163,6 +167,7 @@ struct ProjectSidebar: View, Equatable {
     .scrollContentBackground(.hidden)
     .environment(\.defaultMinListRowHeight, 1)
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.collapsedProjects)
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.projectsFolded)
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.expandedTerminalTargets)
   }
 
@@ -196,29 +201,9 @@ struct ProjectSidebar: View, Equatable {
 
   // MARK: Chrome
 
-  /// The notification band and Add Project bar share the sidebar's background. The safe-area
-  /// inset reserves their height, keeping list rows from scrolling underneath.
-  private var footer: some View {
-    VStack(spacing: 0) {
-      tokens.border.frame(height: 1)
-      SidebarNotificationStrip()
-      bottomBar
-    }
-    // A band of the sidebar card: under glass the card's own tint shows through it (#730).
-    .background { ChromeBackground(role: .cardBand) }
-  }
-
-  /// The sidebar's bottom bar: "Add Project" on the right.
-  private var bottomBar: some View {
-    HStack {
-      Spacer()
-
-      SidebarAddProjectButton()
-    }
-    .padding(.horizontal, 8)
-    .padding(.vertical, 6)
-    // The enclosing footer provides the shared sidebar background.
-  }
+  /// The notification band, under a hairline, on the sidebar's background. The safe-area inset
+  /// reserves its height, keeping list rows from scrolling underneath.
+  private var footer: some View { SidebarFooter() }
 }
 
 #if DEBUG
@@ -278,7 +263,7 @@ struct ProjectSidebar: View, Equatable {
 #endif
 
 /// Hover belongs to a row: changing it must not invalidate the sidebar's List (#534).
-private struct SidebarHoverRegion<Content: View>: View {
+struct SidebarHoverRegion<Content: View>: View {
   var id: SidebarID? = nil
   @ViewBuilder let content: (Bool) -> Content
   @State private var hovered = false
@@ -330,32 +315,86 @@ private struct SidebarTerminalSubtree: View, Equatable {
   }
 }
 
-private struct SidebarAddProjectButton: View {
-  @EnvironmentObject private var store: AppStore
-  @State private var hovering = false
+/// The sidebar's footer: the oldest notification, under the hairline the sidebar draws between its
+/// sections; nothing while there are none.
+private struct SidebarFooter: View {
+  @EnvironmentObject private var notifications: NotificationCenterStore
   @Environment(\.themeTokens) private var tokens
 
   var body: some View {
-    // Add Project, bottom-right. No key equivalent — File ▸ New Project… lost ⌘O to Open Workroom…
-    // (issue #94). Routes through the store's request flag so the importer (re-homed to RootView,
-    // issue #23 OV1) can present even when this sidebar is collapsed in Workrooms View.
-    Button {
-      store.modals.requestAddProject = true
-    } label: {
-      Image(systemName: "plus")
-        .font(.system(size: 11))
-        .foregroundStyle(.secondary)
-        .frame(width: 24, height: 24)
-        .background(
-          RoundedRectangle(cornerRadius: 6)
-            .fill(tokens.hover.opacity(hovering ? 1 : 0))
-        )
+    VStack(spacing: 0) {
+      if !notifications.items.isEmpty { tokens.border.frame(height: 1) }
+      SidebarNotificationStrip()
+    }
+    // A band of the sidebar card: under glass the card's own tint shows through it (#730).
+    .background { ChromeBackground(role: .cardBand) }
+  }
+}
+
+/// "Projects", its fold chevron, which hides every project's rows, and Add Project. Its "+" routes
+/// through the store's request flag, so the sheet (re-homed to RootView, issue #23 OV1) presents as
+/// File ▸ New Project…'s does.
+private struct SidebarProjectsHeading: View {
+  let store: AppStore
+
+  var body: some View {
+    SidebarSectionHeading(
+      title: "Projects",
+      isFolded: Binding(get: { store.projectsFolded }, set: { store.projectsFolded = $0 }),
+      id: "sidebar.projects"
+    ) {
+      SidebarIconButton(
+        systemImage: "plus", help: "Add Project…", label: "Add Project", id: "AddProject"
+      ) {
+        store.modals.requestAddProject = true
+      }
+    }
+  }
+}
+
+/// A sidebar row's icon button in the rows' trailing column (`SidebarRowMetrics.iconColumnWidth`):
+/// the "+" on the Terminals and Projects headings and a terminal group's row, and the Terminals
+/// heading's New Terminal Group…. Hover paints the same rounded well as a terminal disclosure chevron's.
+struct SidebarIconButton: View {
+  let systemImage: String
+  let help: String
+  var label: String? = nil
+  let id: String
+  let action: () -> Void
+  @State private var hovering = false
+
+  var body: some View {
+    Button(action: action) {
+      SidebarIconGlyph(systemImage: systemImage, hovering: hovering)
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
-    .help("Add a project folder")
-    .accessibilityLabel("Add Project")
-    .accessibilityIdentifier("AddProject")
+    .help(help)
+    .accessibilityLabel(label ?? help)
+    .accessibilityIdentifier(id)
+  }
+}
+
+/// What every sidebar icon button draws: its glyph centred in the trailing column's square slot,
+/// over a rounded hover well while `hovering`. `CreateRowButton`, a menu, draws it too.
+struct SidebarIconGlyph: View {
+  let systemImage: String
+  let hovering: Bool
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    Image(systemName: systemImage)
+      .font(.system(size: 11))
+      .foregroundStyle(.secondary)
+      .frame(
+        width: SidebarRowMetrics.iconColumnWidth, height: SidebarRowMetrics.iconColumnWidth
+      )
+      .background {
+        RoundedRectangle(cornerRadius: 5)
+          .fill(tokens.hover.opacity(hovering ? 1 : 0))
+          .frame(width: SidebarRowMetrics.hoverWell, height: SidebarRowMetrics.hoverWell)
+      }
+      .contentShape(Rectangle())
   }
 }
 
@@ -515,18 +554,8 @@ struct CreateRowButton<Places: View>: View {
   let help: String
   @ViewBuilder let places: () -> Places
   @State private var hovering = false
-  @Environment(\.themeTokens) private var tokens
 
-  private var glyph: some View {
-    Image(systemName: "plus")
-      .font(.system(size: 11))
-      .foregroundStyle(.secondary)
-      .padding(4)
-      .background(
-        RoundedRectangle(cornerRadius: 5)
-          .fill(tokens.hover.opacity(hovering ? 1 : 0))
-      )
-  }
+  private var glyph: some View { SidebarIconGlyph(systemImage: "plus", hovering: hovering) }
 
   var body: some View {
     // A menu that looks exactly like a button: drawn by SwiftUI as a plain button, so the glyph
@@ -688,6 +717,9 @@ struct DeleteRowButton: View {
 struct TerminalDisclosureButton: View {
   let expanded: Bool
   let width: CGFloat
+  /// Its tooltip and VoiceOver name; a workroom row's say "Show terminals" / "Hide terminals".
+  var help: String? = nil
+  var label: String? = nil
   let action: () -> Void
   @State private var hovering = false
   @Environment(\.themeTokens) private var tokens
@@ -711,9 +743,11 @@ struct TerminalDisclosureButton: View {
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
-    .help(expanded ? "Hide terminals" : "Show terminals")
-    .accessibilityLabel(expanded ? "Hide terminals" : "Show terminals")
+    .help(help ?? defaultTitle)
+    .accessibilityLabel(label ?? defaultTitle)
   }
+
+  private var defaultTitle: String { expanded ? "Hide terminals" : "Show terminals" }
 }
 
 /// The ✕ revealed when a terminal row is hovered (issue #30). Mirrors `DeleteRowButton`'s

@@ -625,20 +625,22 @@ private struct TerminalTabChip: View {
       }
       // The title is read in a leaf (`TabTitleReader`): a terminal's changes many times a second,
       // and only this text re-renders for it, not the chip.
-      TabTitleReader(content: tab.content) { title in
-        Text(title)
+      TabTitleReader(content: tab.content) { _ in
+        TerminalTitleLabel(title: tab.content.titleParts)
           .font(.callout)
           // The focused tab's title is brighter (full primary) so it reads as selected; unfocused
           // titles dim to muted. Brightness only — NOT weight: a bold↔regular swap on switch
           // re-measures the title and nudges the chips sideways. Unread activity (accent) overrides
-          // either, on any tab.
+          // either, on any tab. A default title's folder sits one step fainter than its program.
           .foregroundStyle(
-            hasActivity ? tokens.accent : (isActive ? Color.primary : tokens.fgMuted)
+            hasActivity ? tokens.accent : (isActive ? Color.primary : tokens.fgMuted),
+            hasActivity
+              ? tokens.accent.opacity(0.7) : (isActive ? tokens.fgMuted : tokens.fgDim)
           )
           // A preview tab's name is italic until it's persisted (VS-Code semantics, #66).
           .italic(tab.isPreview)
           .lineLimit(1)
-          .truncationMode(.tail)
+          .truncationMode(.middle)
           // Cap the title (~25 chars at `.callout`) so a long name (a file path, a shell-set
           // terminal title) tail-truncates with an ellipsis instead of stretching the chip
           // arbitrarily wide; the full title rides in the chip's `.help` tooltip below. A short
@@ -730,7 +732,7 @@ private struct TerminalTabChip: View {
     .withTabTitle(tab.content) { chip, title in
       chip
         .help(tooltip(title))
-        .accessibilityIdentifier("terminal.tab.\(title)")
+        .accessibilityIdentifier("terminal.tab.\(tab.content.accessibilityKey ?? title)")
         .accessibilityLabel(chipAccessibilityLabel(title))
     }
     .accessibilityAddTraits(isActive ? .isSelected : [])
@@ -1069,14 +1071,7 @@ extension View {
       }
       // Any terminal can be named; an empty name gives the program's own title back.
       if case .terminal = tab.content {
-        Button {
-          TabRenamePrompt.present(currentName: tab.title) {
-            panes.setUserTitle($0, forTab: tab.id, in: target)
-          }
-        } label: {
-          Label("Rename…", systemImage: "pencil")
-        }
-        .help("Give this terminal a name")
+        terminalRenameMenuItem(panes: panes, tab: tab, target: target)
         Divider()
       }
       // The escape hatch for a program that left a request behind (#358).

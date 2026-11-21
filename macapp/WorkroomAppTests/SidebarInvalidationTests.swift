@@ -176,14 +176,15 @@ final class SidebarInvalidationTests: XCTestCase {
     let f = try fixture()
     defer { close(f) }
     try await render(f)
-    // The Quick Terminal's row, projects A and B, A's root and workroom, B's root.
-    XCTAssertEqual(try listRows(f), 6)
+    // The Quick Terminal's row, the Projects heading, projects A and B, A's root and
+    // workroom, B's root.
+    XCTAssertEqual(try listRows(f), 7)
 
     _ = f.store.terminals.addTab(for: f.a.rootTarget)
     f.store.toggleTerminals(for: f.a.rootTarget.id)
     try await render(f)
 
-    XCTAssertEqual(try listRows(f), 8, "A's root lists its two terminals")
+    XCTAssertEqual(try listRows(f), 9, "A's root lists its two terminals")
     XCTAssertGreaterThan(SidebarRowPasses.terminal, 0, "the terminal rows drew")
   }
 
@@ -631,13 +632,31 @@ final class SidebarInvalidationTests: XCTestCase {
     XCTAssertGreaterThan(SidebarRowPasses.byRow[sid] ?? 0, 0, "this window's row shows it")
   }
 
+  /// Value: protects=the Projects heading's fold hides every project's rows and brings them back,
+  /// leaving the Terminals section and the heading itself; fails_when=folding leaves a project row,
+  /// or takes the heading or a Terminals row with it; no_claim=the chevron's click (a UI test's)
+  func testFoldingTheProjectsHidesEveryProjectsRows() async throws {
+    let f = try fixture()
+    defer { close(f) }
+    try await render(f)
+    XCTAssertEqual(try listRows(f), 7)
+
+    f.store.projectsFolded = true
+    try await render(f)
+    XCTAssertEqual(try listRows(f), 2, "the Quick Terminal's row and the heading")
+
+    f.store.projectsFolded = false
+    try await render(f)
+    XCTAssertEqual(try listRows(f), 7, "unfolded, every project's rows are back")
+  }
+
   /// The Quick Terminal's row lists its panel's terminals under it (story 10), also when the
   /// panel and its terminals came after this sidebar was first drawn.
   func testTheQuickTerminalsRowListsItsPanelsTerminals() async throws {
     let f = try fixture()
     defer { close(f) }
     try await render(f)
-    XCTAssertEqual(try listRows(f), 6)
+    XCTAssertEqual(try listRows(f), 7)
 
     let panel = makeQuickTerminalHost(
       notifications: f.store.notifications, section: f.store.terminalsSection)
@@ -646,7 +665,7 @@ final class SidebarInvalidationTests: XCTestCase {
     _ = panel.terminals.addTab(for: panel.target)
     try await render(f)
 
-    XCTAssertEqual(try listRows(f), 8, "one row per terminal in the panel, under its row")
+    XCTAssertEqual(try listRows(f), 9, "one row per terminal in the panel, under its row")
     XCTAssertEqual(f.store.terminals.tabCount(forTargetID: .quickTerminal), 0, "none here")
   }
 
@@ -665,6 +684,65 @@ final class SidebarInvalidationTests: XCTestCase {
 
     XCTAssertEqual(f.store.terminals.tabs(for: f.b.rootTarget).count, 3, "the change landed")
     XCTAssertEqual(SidebarRowPasses.section, 0, "no Terminals-section row shows it")
+  }
+
+  /// A group's row is hovered as a workroom's is (#652): the pointer over it re-runs that row
+  /// alone, which swaps its glyph for the fold chevron while it can fold.
+  func testHoveringAGroupsRowReRunsOnlyThatRow() async throws {
+    // The rows first draw while the fixture hosts them, so the hook is set before it.
+    var hovers: [SidebarID: Binding<Bool>] = [:]
+    ProjectSidebar.didRenderHover = { rowID, binding in hovers[rowID] = binding }
+    defer { ProjectSidebar.didRenderHover = nil }
+    let f = try fixture(section: true)
+    defer { close(f) }
+    let group = try XCTUnwrap(f.group)
+    try await render(f)
+    let binding = try XCTUnwrap(hovers[group], "the group's row must register its hover")
+
+    SidebarRowPasses.reset()
+    binding.wrappedValue = true
+    try await render(f)
+
+    XCTAssertEqual(Set(SidebarRowPasses.byRow.keys), [group], "only the hovered row re-runs")
+  }
+
+  /// The fold chevron stands in the glyph's column only while the row is hovered and can fold.
+  func testAGroupsRowShowsItsFoldChevronOnlyWhileHoveredAndFoldable() throws {
+    let group = TerminalGroup(id: UUID(), name: "Ops")
+    func model(canFold: Bool, hovered: Bool) -> SidebarTerminalGroupRowModel {
+      SidebarTerminalGroupRowModel(
+        sid: .terminalGroup(group.id), group: group, title: "Ops",
+        activity: SidebarTargetActivity(), canFold: canFold, hovered: hovered)
+    }
+    XCTAssertFalse(model(canFold: true, hovered: false).showsFoldButton, "its glyph at rest")
+    XCTAssertTrue(model(canFold: true, hovered: true).showsFoldButton)
+    XCTAssertFalse(
+      model(canFold: false, hovered: true).showsFoldButton, "an empty Quick Terminal never folds")
+  }
+
+  /// A group's menu and VoiceOver offer Collapse while its terminals show and Expand while folded,
+  /// and nothing when it can't fold (the Quick Terminal's, before its panel has terminals).
+  func testAGroupsRowOffersExpandOrCollapseWhenItCanFold() throws {
+    func item(canFold: Bool, folded: Bool) -> SidebarFoldItem? {
+      var group = TerminalGroup(id: UUID(), name: "Ops")
+      group.isFolded = folded
+      return SidebarTerminalGroupRowModel(
+        sid: .terminalGroup(group.id), group: group, title: "Ops",
+        activity: SidebarTargetActivity(), canFold: canFold
+      ).foldItem
+    }
+    XCTAssertEqual(item(canFold: true, folded: false)?.title, "Collapse")
+    XCTAssertEqual(item(canFold: true, folded: true)?.title, "Expand")
+    XCTAssertNil(item(canFold: false, folded: false), "an empty Quick Terminal offers neither")
+  }
+
+  /// A root's or workroom's menu and VoiceOver offer Collapse while its terminals show and Expand
+  /// while folded, and nothing without a subtree (fewer than two terminals).
+  func testARootOrWorkroomRowOffersExpandOrCollapseOnlyWithASubtree() {
+    XCTAssertEqual(
+      SidebarSubtreeState(hasSubtree: true, expanded: true).foldItem?.title, "Collapse")
+    XCTAssertEqual(SidebarSubtreeState(hasSubtree: true, expanded: false).foldItem?.title, "Expand")
+    XCTAssertNil(SidebarSubtreeState(hasSubtree: false).foldItem, "no subtree, nothing to fold")
   }
 
   /// Selecting a standalone terminal repaints the backgrounds and re-runs no row.
@@ -711,14 +789,15 @@ final class SidebarInvalidationTests: XCTestCase {
     f.store.selectedTargetID = f.rootA
     f.store.selectionStatusTask?.cancel()
     try await render(f)
-    // With the Quick Terminal's row, first in the Terminals section.
-    XCTAssertEqual(try listRows(f), 8)
+    // With the Quick Terminal's row, first in the Terminals section, and the Projects
+    // heading.
+    XCTAssertEqual(try listRows(f), 9)
 
     SidebarRowPasses.reset()
     f.store.collapsedProjects.insert(f.a.path)
     try await render(f)
 
-    XCTAssertEqual(try listRows(f), 4, "collapse removes A's root, its terminals and workroom")
+    XCTAssertEqual(try listRows(f), 5, "collapse removes A's root, its terminals and workroom")
     XCTAssertGreaterThan(
       SidebarRowPasses.byRow[.project(f.a.path)] ?? 0, 0, "A's row shows its chevron turn")
   }

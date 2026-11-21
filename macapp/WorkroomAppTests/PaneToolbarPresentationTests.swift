@@ -98,12 +98,12 @@ final class PaneToolbarPresentationTests: XCTestCase {
     XCTAssertEqual(title.name, "README.md")
   }
 
-  /// A shell-set terminal title is front-loaded (`npm run dev — building…`), so it tail-truncates. It
-  /// is also shown whole, not split: there is no path to dim.
-  func testTerminalTitlesTailTruncate() {
+  /// A terminal's title is cut in the middle, so a default "zsh ~/dev/workroom/macapp" keeps its
+  /// program and the end of its folder. It is shown whole, not split: there is no path to dim.
+  func testTerminalTitlesTruncateInTheMiddle() {
     let title = PaneTitlePresentation.title(
       for: terminal(), tabTitle: "npm run dev — building")
-    XCTAssertEqual(title.truncation, .tail)
+    XCTAssertEqual(title.truncation, .middle)
     XCTAssertEqual(title.prefix, "")
     XCTAssertEqual(title.name, "npm run dev — building")
   }

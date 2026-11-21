@@ -91,6 +91,16 @@ final class GhosttySurfaceView: NSView {
     return String(cString: name)
   }
 
+  /// The PTY's foreground program by its short name ("zsh", "vim"), for the tab's default title:
+  /// from its exec-time `argv[0]` (what workroomd reads too), else `proc_name`. For a daemon-backed
+  /// pane this names the attach helper, so only a pane the app runs itself asks it.
+  var foregroundProgramName: String? {
+    if let foregroundProcessNameForTesting { return foregroundProcessNameForTesting }
+    guard let pid = foregroundPID else { return nil }
+    return ProcessEnvironment.command(pid: pid).flatMap(TerminalState.programName)
+      ?? foregroundExecutableName.flatMap(TerminalState.programName)
+  }
+
   /// The PTY's foreground process id, or nil (no surface, or no real process).
   var foregroundPID: pid_t? {
     guard let surface else { return nil }
@@ -1858,6 +1868,8 @@ final class GhosttySurfaceView: NSView {
           item.target = self
           item.representedObject = choice
           item.isEnabled = choice.enabled
+          // The pane's own place is checked, as a native menu marks where something is now.
+          item.state = choice.isCurrent ? .on : .off
           // Why a move it can't make is disabled (a remote workroom's, say).
           item.toolTip = choice.help
           item.image = NSImage(systemSymbolName: choice.glyph, accessibilityDescription: nil)

@@ -3,7 +3,8 @@ import WorkroomDomain
 
 /// Unnamed terminal groups in a window (#659, ADR 0077): splitting a standalone terminal, or
 /// dropping one standalone terminal's row on another's, makes one in its place, and a group that is
-/// down to one terminal across every holder dissolves back into a standalone terminal. Each is a
+/// down to one terminal across every holder dissolves back into a standalone terminal; any group
+/// goes with its last terminal. Each is a
 /// move of terminals between targets in place (`TerminalsSection.rehome`), which every holder
 /// applies to its own terminals here.
 extension AppStore {
@@ -31,14 +32,15 @@ extension AppStore {
     }
   }
 
-  /// A terminal left group `targetID` in this window, closed or moved: an unnamed group that is
-  /// now down to one terminal, or none, across every holder is settled (`settleUnnamedGroup`).
-  /// Not during a quit, which must bring it back as it was.
-  func unnamedGroupTabsRemoved(_ targetID: TargetID) {
+  /// A terminal left group `targetID` in this window, closed or moved: the group is settled
+  /// (`settleGroup`), so it goes once no holder has a terminal in it, and an unnamed one that is
+  /// down to one becomes a standalone terminal. Not during a quit, which must bring it back as it
+  /// was.
+  func groupTabsRemoved(_ targetID: TargetID) {
     guard case .terminalGroup = targetID, !WindowRegistry.shared.isTerminating,
-      let group = terminalsSection.group(targetID), !group.isKept
+      terminalsSection.group(targetID) != nil
     else { return }
-    terminalsSection.settleUnnamedGroup(targetID)
+    terminalsSection.settleGroup(targetID)
   }
 
   // MARK: Holder

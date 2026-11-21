@@ -194,11 +194,12 @@ final class NewWorkroomDialogUITests: XCTestCase {
     app.descendants(matching: .any).matching(identifier: id).firstMatch
   }
 
-  /// The visible terminal pane whose a11y label names `title` — the signal for "which tab is showing".
-  private func pane(_ app: XCUIApplication, titled title: String) -> XCUIElement {
+  /// The selected tab chip `name` ("Terminal 2", its identifier) — the signal for "which tab is
+  /// showing". Not the pane's label: two terminals in one folder share a title ("zsh ~/…").
+  private func pane(_ app: XCUIApplication, titled name: String) -> XCUIElement {
     app.descendants(matching: .any)
       .matching(
-        NSPredicate(format: "identifier == %@ AND label CONTAINS %@", "terminal.pane", title)
+        NSPredicate(format: "identifier == %@ AND selected == true", "terminal.tab.\(name)")
       )
       .firstMatch
   }
