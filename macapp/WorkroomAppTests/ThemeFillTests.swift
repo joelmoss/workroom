@@ -117,7 +117,7 @@ final class ThemeFillTests: XCTestCase {
     let tokens = ThemeService.shared.tokens
     let glass = GlassAppearance.glass(opacity: 0.9)
     XCTAssertEqual(ThemeFill.panel.nsColor(glass: glass), tokens.nsPanelWash)
-    XCTAssertEqual(tokens.nsPanelWash, tokens.nsFg.withAlphaComponent(tokens.panelWashAlpha))
+    XCTAssertEqual(tokens.nsPanelWash.alphaComponent, tokens.panelWashAlpha)
     XCTAssertEqual(ThemeFill.background.nsColor(glass: glass), .clear)
     XCTAssertEqual(ThemeFill.ground.nsColor(glass: glass), .clear)
     XCTAssertNil(ThemeFill.background.nsFill(tokens, glass: glass), "so a view stops drawing")

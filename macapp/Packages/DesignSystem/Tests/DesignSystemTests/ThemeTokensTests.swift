@@ -37,7 +37,8 @@ final class ThemeTokensTests: XCTestCase {
   /// Glass draws the chrome as `panelWash` over `bg` (#725), so the wash composited over the
   /// background, per sRGB channel as the screen composites, must come out as `panel`, on dark and
   /// light themes and a coloured one alike. A fixed 5.5% wash drew the cards visibly darker than the
-  /// panel on a dark theme, because `panel` is not a 5.5% sRGB blend.
+  /// panel on a dark theme, because `panel` is not a 5.5% sRGB blend; and on a coloured theme
+  /// (Solarized Dark) no single alpha of `fg` matched every channel.
   func testThePanelWashOverTheBackgroundIsThePanel() throws {
     func hex(_ value: Int) -> NSColor {
       NSColor(
