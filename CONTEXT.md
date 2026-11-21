@@ -171,8 +171,11 @@ The title a session's program last set for its terminal (OSC 0 or 2), which chan
 How a terminal API command names one session: its id, the end of its id, its label or its live title. A target that names more than one session names none.
 
 **Event**:
-Something the terminal API's `workroom events` reports as it happens: a session created, ended or moved to another workroom, a change of its coding agent's program status, or a run state. Each is numbered by the daemon's boot and its revision, so a script that reconnects goes on from the last one it saw (ADR 0079).
+Something the terminal API's `workroom events` reports as it happens: a session created, ended or moved to another workroom, a change of its coding agent's program status, a run state, or a client attaching or detaching. Each is numbered by the daemon's boot and its revision, so a script that reconnects goes on from the last one it saw (ADR 0079).
 _Avoid_: Notification (the app's own, shown to the user)
+
+**Client** (of a session):
+Something attached to a session, which is shown its output and has a size: a pane of the app, the app's own connection, or a `workroom attach` someone ran. `workroom sessions --clients` lists each with its kind, its machine, when it attached, its size, whether it owns the size and its keepalive (ADR 0079). The terminal API's own commands never attach, so they are no session's clients.
 
 **Bootstrap**:
 Putting the bundled Linux workroomd, with Ghostty's terminfo and shell integration, on a host that has none or an older one, and handing a running older daemon off to it. It runs on every connect. A provider or container's supervisor starts the daemon; on an SSH host, the app starts it when nothing is listening.
