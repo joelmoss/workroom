@@ -414,7 +414,7 @@ fn a_command_wait_answers_with_the_first_command_to_end_after_it() {
     let seen = |commands: u64, exits: &[i32]| Seen {
         shell_marks: true,
         commands,
-        exits: exits.to_vec(),
+        exits: exits.iter().copied().map(Some).collect(),
         ..Seen::default()
     };
     for (before, want) in [(0, Some(1)), (1, Some(2)), (2, Some(0))] {

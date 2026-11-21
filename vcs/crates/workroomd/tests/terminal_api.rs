@@ -4291,18 +4291,44 @@ fn command(socket: &Path, args: &[&str]) -> (i32, Value) {
 /// schema the daemon publishes.
 fn ran(socket: &Path, outcome: (i32, Value)) -> Value {
     let (code, envelope) = outcome;
-    assert_eq!(envelope["ok"], true, "{envelope}");
-    assert_eq!(envelope["command"], "command", "{envelope}");
     assert_eq!(
         code,
         i32::try_from(envelope["exit_code"].as_i64().expect("an exit code")).unwrap(),
         "it exits with the command's own code: {envelope}"
     );
+    ran_unknown(socket, (code, envelope))
+}
+
+/// [`ran`] for a command whose exit code may be unknown, which `workroom command` exits 1 for.
+fn ran_unknown(socket: &Path, outcome: (i32, Value)) -> Value {
+    let (code, envelope) = outcome;
+    assert_eq!(envelope["ok"], true, "{envelope}");
+    assert_eq!(envelope["command"], "command", "{envelope}");
+    if envelope["exit_code"].is_null() {
+        assert_eq!(code, 1, "an unknown exit code exits 1: {envelope}");
+    }
     let described =
         Api::connect(socket).call("api.describe", json!({"method": "terminal.command"}));
     let schema = &described["result"]["methods"][0]["output"];
     assert_eq!(violation(schema, &envelope, "result"), None, "{envelope}");
     envelope
+}
+
+/// `command <args>` once the session can take it: asked again while it is `Busy` or has a
+/// full-screen program up, for a pane the test has just told to finish what it was doing, for up
+/// to 20 s. Its envelope, which ran.
+fn command_when_ready(socket: &Path, args: &[&str]) -> Value {
+    let mut last = None;
+    let ready = wait_for(Duration::from_secs(20), || {
+        let outcome = command(socket, args);
+        let refused = ["Busy", "AlternateScreen"]
+            .contains(&outcome.1["error"]["kind"].as_str().unwrap_or_default());
+        last = Some(outcome);
+        !refused
+    });
+    let outcome = last.expect("a run");
+    assert!(ready, "the session never took the command: {}", outcome.1);
+    ran(socket, outcome)
 }
 
 /// `workroom command TARGET -- COMMAND` runs the command in a session's shell and exits with its
@@ -4400,8 +4426,15 @@ fn command_runs_in_a_shell_and_gives_its_code_and_the_output_between_its_marks()
     );
     assert_eq!(pasted["output"], "pasted=1", "{pasted}");
 
-    // A command typed into the pane, still running, owns the next command's end.
-    type_line(&mut shell, r#"echo "SLEEP""ING"; sleep 4"#);
+    // A command typed into the pane, running until `go` exists, owns the next command's end.
+    let go = workspace.dir.join("go");
+    type_line(
+        &mut shell,
+        &format!(
+            r#"echo "SLEEP""ING"; while [ ! -e '{}' ]; do sleep 0.05; done"#,
+            go.display()
+        ),
+    );
     assert!(
         output
             .read_until("SLEEPING\r\n", Duration::from_secs(20))
@@ -4410,15 +4443,62 @@ fn command_runs_in_a_shell_and_gives_its_code_and_the_output_between_its_marks()
     );
     assert_eq!(
         failed(command(&socket, &["server", "--", "true"])),
-        (3, "Busy".into())
+        (3, "Busy".into()),
+        "the pane's command runs until `go` exists"
     );
-    met(
-        &socket,
-        wait(
+    std::fs::write(&go, b"").expect("go");
+    let after = command_when_ready(&socket, &["server", "--", "echo after"]);
+    assert_eq!(after["output"], "after", "{after}");
+
+    // Text typed at the prompt and not run: a command would be joined to it.
+    shell
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(b": half")
+        .expect("type");
+    shell.stdin.as_mut().expect("stdin").flush().expect("flush");
+    assert!(
+        output
+            .read_until(": half", Duration::from_secs(20))
+            .contains(": half"),
+        "fixture: the half-typed line never echoed"
+    );
+    assert_eq!(
+        failed(command(&socket, &["server", "--", "echo NEVER-TYPED"])),
+        (3, "Busy".into()),
+        "a prompt holding `: half`"
+    );
+    type_line(&mut shell, "");
+    let joined = command_when_ready(&socket, &["server", "--", "echo cleared"]);
+    assert_eq!(joined["output"], "cleared", "{joined}");
+
+    // A full-screen program the command puts up answers at once, the program left running; once
+    // it is gone, the shell takes commands again.
+    assert_eq!(
+        failed(command(
             &socket,
-            &["server", "--command-finished", "--timeout", "60s"],
+            &[
+                "server",
+                "--",
+                r"printf '\033[?1049hFULL'; read x; printf '\033[?1049l'"
+            ]
+        )),
+        (3, "AlternateScreen".into())
+    );
+    type_line(&mut shell, "");
+    let back = command_when_ready(&socket, &["server", "--", "echo back"]);
+    assert_eq!(back["output"], "back", "{back}");
+
+    // As printed, with `--vt`.
+    let raw = ran(
+        &socket,
+        command(
+            &socket,
+            &["server", "--vt", "--", r"printf '\033[1mbold\033[0m\n'"],
         ),
     );
+    assert_eq!(raw["output"], "\x1b[1mbold\x1b[0m\r\n", "{raw}");
 
     // The caller's own session, and a command that is not one line.
     let own = Api::connect(&socket).request(&json!({
@@ -4456,20 +4536,41 @@ fn command_runs_in_a_shell_and_gives_its_code_and_the_output_between_its_marks()
         )),
         (8, "WaitTimeout".into())
     );
-    // Out of time, its command left running; its end then comes as any command's does.
+    // A shell that replaced the one that ran the command shows its prompt with no D: the command
+    // has ended, its code unknown, and the new shell takes the next.
+    let script = workspace.dir.join("integrated.sh");
+    std::fs::write(&script, INTEGRATED_SHELL).expect("the integrated shell's script");
+    let replaced = ran_unknown(
+        &socket,
+        command(
+            &socket,
+            &["server", "--", &format!("exec sh '{}'", script.display())],
+        ),
+    );
+    assert_eq!(replaced["exit_code"], Value::Null, "{replaced}");
+    let next = ran(&socket, command(&socket, &["server", "--", "echo next"]));
+    assert_eq!(next["output"], "next", "{next}");
+
+    // Out of time, its command left running: one that waits until `stop` exists, which nothing
+    // makes, so it is still running once the 3 s timeout has passed, and the shell is busy.
+    let stop = workspace.dir.join("stop");
     assert_eq!(
         failed(command(
             &socket,
-            &["server", "--timeout", "1s", "--", "sleep 5"]
+            &[
+                "server",
+                "--timeout",
+                "3s",
+                "--",
+                &format!("while [ ! -e '{}' ]; do sleep 0.05; done", stop.display()),
+            ]
         )),
         (8, "WaitTimeout".into())
     );
-    met(
-        &socket,
-        wait(
-            &socket,
-            &["server", "--command-finished", "--timeout", "60s"],
-        ),
+    assert_eq!(
+        failed(command(&socket, &["server", "--", "true"])),
+        (3, "Busy".into()),
+        "the timed-out command runs until `stop` exists"
     );
     let screen = capture(&socket, &["server", "--json"]);
     assert!(
@@ -4480,6 +4581,232 @@ fn command_runs_in_a_shell_and_gives_its_code_and_the_output_between_its_marks()
         "{}",
         screen.stdout
     );
+}
+
+/// The first of `paths` that is a shell this machine has, and that the daemon gives Ghostty's
+/// integration to (not macOS's `/bin/bash`, a 3.2 that ignores `ENV`), or why there is none.
+fn installed_shell(name: &str, paths: &[&str]) -> Result<String, String> {
+    paths
+        .iter()
+        .filter(|path| !(cfg!(target_os = "macos") && **path == "/bin/bash"))
+        .find(|path| Path::new(path).exists())
+        .map(|path| (*path).to_string())
+        .ok_or_else(|| format!("no {name} with Ghostty's integration here (looked in {paths:?})"))
+}
+
+/// A session running the real shell `path` with Workroom's bundled Ghostty integration, as the app
+/// starts one: `WORKROOM_SESSION_RESOURCES` names the integration, which the daemon wires into the
+/// shell's environment. Its home is a folder of this test's own, whose startup files give it the
+/// prompt `PROMPT> ` and load the integration again in a shell `exec` starts, so no startup file of
+/// the developer's is read. Returns once the prompt is up.
+fn real_shell(socket: &Path, id: &str, path: &str, dir: &Path) -> (Spawned, common::ClientReader) {
+    let home = dir.join(format!("home-{}", super_name(path)));
+    std::fs::create_dir(&home).expect("a home of this test's own");
+    let config = home.join(".config");
+    std::fs::create_dir_all(config.join("fish")).expect("fish's config folder");
+    let resources = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../macapp/Resources/ghostty");
+    let integration = resources.join("shell-integration");
+    // The first shell has its integration from the daemon; one `exec` starts loads it here.
+    let files = [
+        (
+            home.join(".zshrc"),
+            format!(
+                "PS1='PROMPT> '\nif [[ -n $WR_TEST_EXECED ]]; then autoload -Uz -- '{0}/zsh/ghostty-integration' && ghostty-integration; fi\nexport WR_TEST_EXECED=1\n",
+                integration.display()
+            ),
+        ),
+        (home.join(".bash_profile"), ". ~/.bashrc\n".to_string()),
+        (
+            home.join(".bashrc"),
+            format!(
+                "PS1='PROMPT> '\nif [ -n \"$WR_TEST_EXECED\" ]; then . '{0}/bash/ghostty.bash'; fi\nexport WR_TEST_EXECED=1\n",
+                integration.display()
+            ),
+        ),
+        (
+            config.join("fish/config.fish"),
+            format!(
+                "function fish_prompt; echo -n 'PROMPT> '; end\nfunction fish_greeting; end\nif set -q WR_TEST_EXECED; source '{0}/fish/vendor_conf.d/ghostty-shell-integration.fish'; end\nset -gx WR_TEST_EXECED 1\n",
+                integration.display()
+            ),
+        ),
+    ];
+    for (file, text) in files {
+        std::fs::write(file, text).expect("a startup file");
+    }
+    let mut shell = attach_with_env(
+        socket,
+        id,
+        &[],
+        &[
+            ("SHELL", path),
+            ("WORKROOM_SESSION_RESOURCES", resources.to_str().unwrap()),
+            ("WORKROOM_SESSION_TITLE", "real"),
+            ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+            ("HOME", home.to_str().unwrap()),
+            ("ZDOTDIR", home.to_str().unwrap()),
+            ("XDG_CONFIG_HOME", config.to_str().unwrap()),
+            ("XDG_DATA_HOME", home.to_str().unwrap()),
+            ("TERM", "xterm-256color"),
+            ("TERM_PROGRAM", ""),
+            ("ENV", ""),
+            ("BASH_ENV", ""),
+            ("PROMPT_COMMAND", ""),
+        ],
+    );
+    let mut output = common::ClientReader::new(&mut shell);
+    assert!(
+        output
+            .read_until("PROMPT> ", Duration::from_secs(30))
+            .contains("PROMPT> "),
+        "{path} never prompted"
+    );
+    (shell, output)
+}
+
+/// A shell path's last part.
+fn super_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// `workroom command` in real bash, zsh and fish (each where this machine has it) with Workroom's
+/// bundled Ghostty integration: a passing and a failing command's codes, two commands in one line,
+/// output with no final newline (zsh's PROMPT_SP mark left out), and `exec` of the shell, which
+/// shows its prompt with no D, answered with no exit code, the new shell taking the next command.
+/// In zsh, half-typed text at the prompt and an open quote's PS2 are `Busy`, nothing typed.
+#[test]
+fn command_runs_in_real_shells_with_the_bundled_integration() {
+    if !has_terminal_state() {
+        eprintln!("skipped: a command's end needs a daemon built with terminal-state");
+        return;
+    }
+    let shells = [
+        (
+            "bash",
+            &[
+                "/opt/homebrew/bin/bash",
+                "/usr/local/bin/bash",
+                "/bin/bash",
+                "/usr/bin/bash",
+            ][..],
+        ),
+        (
+            "zsh",
+            &["/opt/homebrew/bin/zsh", "/bin/zsh", "/usr/bin/zsh"][..],
+        ),
+        (
+            "fish",
+            &[
+                "/opt/homebrew/bin/fish",
+                "/usr/local/bin/fish",
+                "/usr/bin/fish",
+            ][..],
+        ),
+    ];
+    let resources = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../macapp/Resources/ghostty");
+    if !resources.join("shell-integration").is_dir() {
+        eprintln!(
+            "skipped: no bundled shell integration at {} (a test run with only vcs/)",
+            resources.display()
+        );
+        return;
+    }
+    let workspace = Workspace::new("api-command-real");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    for (name, paths) in shells {
+        let path = match installed_shell(name, paths) {
+            Ok(path) => path,
+            Err(why) => {
+                eprintln!("skipped {name}: {why}");
+                continue;
+            }
+        };
+        let id = match name {
+            "bash" => "b0b0b0b0-0000-4000-8000-000000000691",
+            "zsh" => "a0a0a0a0-0000-4000-8000-000000000691",
+            _ => "f0f0f0f0-0000-4000-8000-000000000691",
+        };
+        let (mut shell, mut output) = real_shell(&socket, id, &path, &workspace.dir);
+        // Out of time is a fixture that never ended a command: its screen says why.
+        let run = |args: &[&str]| {
+            let args: Vec<&str> = [&[id, "--timeout", "30s", "--"][..], args].concat();
+            let outcome = command(&socket, &args);
+            if outcome.1["error"]["kind"] == "WaitTimeout" {
+                let screen = capture(&socket, &[id, "--vt", "--json"]);
+                panic!("{name} {args:?}: no end: {:?}", screen.envelope()["text"]);
+            }
+            outcome
+        };
+        let passed = ran(&socket, run(&["echo one; echo two"]));
+        assert_eq!(
+            (passed["exit_code"].clone(), passed["output"].clone()),
+            (json!(0), json!("one\ntwo")),
+            "{name}: {passed}"
+        );
+        let failing = ran(&socket, run(&["sh -c 'echo bad; exit 3'"]));
+        assert_eq!(
+            (failing["exit_code"].clone(), failing["output"].clone()),
+            (json!(3), json!("bad")),
+            "{name}: {failing}"
+        );
+        let unended = ran(&socket, run(&["printf foo"]));
+        assert_eq!(unended["output"], "foo", "{name}: {unended}");
+
+        if name == "zsh" {
+            let stdin = shell.stdin.as_mut().expect("stdin");
+            stdin.write_all(b": half").expect("type");
+            stdin.flush().expect("flush");
+            assert!(
+                output
+                    .read_until(": half", Duration::from_secs(20))
+                    .contains(": half"),
+                "fixture: zsh never echoed the half-typed line"
+            );
+            assert_eq!(
+                failed(run(&["echo NEVER-TYPED"])),
+                (3, "Busy".into()),
+                "a prompt holding `: half`"
+            );
+            // Run, it leaves the prompt empty; an open quote then goes on at PS2.
+            type_line(&mut shell, "");
+            let _ = command_when_ready(&socket, &[id, "--", "true"]);
+            type_line(&mut shell, "echo \"open");
+            assert!(
+                output
+                    .read_until("dquote> ", Duration::from_secs(20))
+                    .contains("dquote> "),
+                "fixture: zsh never showed PS2"
+            );
+            assert_eq!(
+                failed(run(&["echo NEVER-TYPED"])),
+                (3, "Busy".into()),
+                "an open quote's PS2"
+            );
+            // Closed, the line runs and the prompt is empty again.
+            type_line(&mut shell, "\"");
+            let _ = command_when_ready(&socket, &[id, "--", "true"]);
+        }
+
+        let replaced = ran_unknown(&socket, run(&[&format!("exec {path}")]));
+        assert!(
+            replaced["exit_code"].is_null() || replaced["exit_code"] == 0,
+            "{name}: {replaced}"
+        );
+        let next = command_when_ready(&socket, &[id, "--", "echo next"]);
+        assert_eq!(next["output"], "next", "{name}: {next}");
+        let screen = capture(&socket, &[id, "--json"]);
+        assert!(
+            !screen.envelope()["text"]
+                .as_str()
+                .unwrap()
+                .contains("NEVER-TYPED"),
+            "{name}: {}",
+            screen.stdout
+        );
+        drop(output);
+        drop(shell);
+    }
 }
 
 /// A session whose shell sends no OSC 133 marks is `NoShellIntegration` (3), the command never
@@ -4537,6 +4864,9 @@ fn a_command_across_a_hand_off_is_interrupted_and_not_run_again() {
             .contains("IS> "),
         "fixture: the integrated shell never prompted"
     );
+    // Running until `go` exists, in one process the whole time, so a program other than the
+    // shell has its terminal throughout.
+    let go = workspace.dir.join("go");
     let running = started(
         &socket,
         &[
@@ -4546,7 +4876,10 @@ fn a_command_across_a_hand_off_is_interrupted_and_not_run_again() {
             "--timeout",
             "60s",
             "--",
-            r#"echo "RUN""NING"; sleep 10"#,
+            &format!(
+                r#"echo "RUN""NING"; sh -c 'while [ ! -e "{}" ]; do sleep 0.05; done'"#,
+                go.display()
+            ),
         ],
     );
     assert!(
@@ -4566,12 +4899,12 @@ fn a_command_across_a_hand_off_is_interrupted_and_not_run_again() {
         running.stdout,
         running.stderr
     );
-    // The sleep has most of its 10 s still to go: the hand-off takes a second or two.
     assert_eq!(
         failed(command(&socket, &["server", "--", "echo NOT-NOW"])),
         (3, "Busy".into()),
-        "a command typed now would go to the sleep"
+        "a command typed now would go to the one running until `go` exists"
     );
+    std::fs::write(&go, b"").expect("go");
     // Its prompt back (trimmed, as a capture trims), the command was run once.
     let after = |run: &Run| {
         let text = run.envelope()["text"]

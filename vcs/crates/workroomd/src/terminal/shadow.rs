@@ -165,8 +165,9 @@ pub struct Shadow {
 struct Marks {
     commands: u64,
     /// The last commands' exit codes, oldest first, at most `RECENT_EXITS`: every one that ended
-    /// in a read, in order, so a wait hears of the first, not only the last.
-    exits: std::collections::VecDeque<i32>,
+    /// in a read, in order, so a wait hears of the first, not only the last. `None` for one that
+    /// ended with no code.
+    exits: std::collections::VecDeque<Option<i32>>,
 }
 
 /// The most recent commands' exit codes the shadow keeps for the waits (`wait::Seen::exits`):
@@ -446,6 +447,7 @@ impl Shadow {
             shell_marks: self.status.shell_marks(),
             commands: self.marks.commands,
             exits: self.marks.exits.iter().copied().collect(),
+            alternate: self.alternate_screen(),
         }
     }
 
@@ -476,8 +478,15 @@ impl Shadow {
     pub fn alternate_screen(&self) -> bool {
         self.terminal
             .as_ref()
-            .and_then(|terminal| terminal.screen_facts())
-            .is_some_and(|facts| facts.alternate)
+            .is_some_and(crate::terminal::vt::ShadowTerminal::alternate_screen)
+    }
+
+    /// Whether the shell's input line already holds text (`ShadowTerminal::input_typed`), which
+    /// `terminal.command` (#691) won't type after.
+    pub fn input_typed(&self) -> bool {
+        self.terminal
+            .as_ref()
+            .is_some_and(crate::terminal::vt::ShadowTerminal::input_typed)
     }
 
     /// The input modes the session's program has turned on, which what `terminal.send` types is
@@ -613,6 +622,9 @@ impl Shadow {
         None
     }
     pub fn alternate_screen(&self) -> bool {
+        false
+    }
+    pub fn input_typed(&self) -> bool {
         false
     }
     /// No terminal, so no screen; `terminal.wait` refuses `include_screen` before asking.

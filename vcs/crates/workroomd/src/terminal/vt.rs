@@ -252,6 +252,26 @@ struct Effects {
     /// says whether a command is open. A hand-off's next program starts without one: a command
     /// begun before it is open with no C this terminal saw.
     prompted: bool,
+    /// The shell is taking input: a B since its prompt started and no C since.
+    input: bool,
+    /// The input goes on in a secondary prompt (PS2: an open quote, a trailing `\`), started after
+    /// the input's B: no command runs on Enter there, so `terminal.command` (#691) types nothing.
+    continued: bool,
+}
+
+impl Effects {
+    /// Ends the command a C started, if one is open, with `exit_code`: a D's, or `None` for one
+    /// that carried none, or a prompt that came with no D.
+    fn end_command(&mut self, exit_code: Option<i32>) {
+        let command = std::mem::take(&mut self.command);
+        if let Some(started) = command.started {
+            self.program.push(Event::Command {
+                exit_code,
+                ran: started.elapsed(),
+                line: command.line.unwrap_or_default(),
+            });
+        }
+    }
 }
 
 /// What `OSC 7501 ; ?` is answered with, up to the states and kinds that follow it.
@@ -335,20 +355,45 @@ impl Callbacks for Effects {
     }
 
     /// A new prompt ends the program run that reported, and a command end clears the progress
-    /// report, as a REMOVE does, and closes the command C started.
-    fn semantic_prompt(&mut self, kind: GhosttySemanticPromptKind, exit_code: Option<i32>) {
+    /// report, as a REMOVE does, and closes the command C started. A prompt (A, P or B) after a C
+    /// that no D closed ends that command too, with no exit code (#691): a shell that replaced the
+    /// one that ran it (`exec zsh`) shows its prompt without one.
+    fn semantic_prompt(
+        &mut self,
+        kind: GhosttySemanticPromptKind,
+        prompt: GhosttySemanticPromptPromptKind,
+        exit_code: Option<i32>,
+    ) {
         match kind {
             GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_PROMPT_START => {
-                self.command = CommandSlot::default();
+                self.end_command(None);
                 self.prompted = true;
+                // A secondary prompt after the input started is the line's continuation (PS2,
+                // an open quote); a primary one starts a prompt afresh. A secondary one before
+                // the input is a prompt of several lines.
+                let secondary = prompt
+                    == GhosttySemanticPromptPromptKind_GHOSTTY_SEMANTIC_PROMPT_PROMPT_CONTINUATION
+                    || prompt
+                        == GhosttySemanticPromptPromptKind_GHOSTTY_SEMANTIC_PROMPT_PROMPT_SECONDARY;
+                if secondary {
+                    self.continued |= self.input;
+                } else if prompt
+                    != GhosttySemanticPromptPromptKind_GHOSTTY_SEMANTIC_PROMPT_PROMPT_RIGHT
+                {
+                    self.input = false;
+                    self.continued = false;
+                }
                 self.program.push(Event::Prompt);
             }
             GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_INPUT_START => {
-                self.command = CommandSlot::default();
+                self.end_command(None);
                 self.prompted = true;
+                self.input = true;
             }
             GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_OUTPUT_START => {
                 self.command.started = Some(Instant::now());
+                self.input = false;
+                self.continued = false;
             }
             GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_COMMAND_END => {
                 // Only a held report: a fresh one makes the next read ask the pty for its foreground.
@@ -358,16 +403,7 @@ impl Callbacks for Effects {
                         fresh: true,
                     };
                 }
-                let command = std::mem::take(&mut self.command);
-                if let Some(started) = command.started
-                    && let Some(exit_code) = exit_code
-                {
-                    self.program.push(Event::Command {
-                        exit_code,
-                        ran: started.elapsed(),
-                        line: command.line.unwrap_or_default(),
-                    });
-                }
+                self.end_command(exit_code);
             }
             _ => {}
         }
@@ -758,6 +794,61 @@ impl ShadowTerminal {
     /// (#691) refuses to type into, since the next D would be that command's, not its own. `None`
     /// before the shell has shown this terminal a prompt, when the marks can't say: after a
     /// hand-off, a command begun before it is open with no C seen here.
+    /// Whether the alternate screen is up; false when it can't be read.
+    pub fn alternate_screen(&self) -> bool {
+        self.terminal.on_alternate_screen().unwrap_or(false)
+    }
+
+    /// Whether the shell's input line already holds text, so a command typed now would be joined
+    /// to it (#691): the input goes on in a secondary prompt (PS2: an open quote, a trailing `\`),
+    /// or a cell of the prompt's input (after its B, by libghostty's semantic marks) holds a
+    /// character other than a space, from the prompt's first line to the cursor. Only before the
+    /// cursor: a right prompt (zsh's RPROMPT) and an autosuggestion are drawn after it, and the
+    /// input's own cells are where the cursor has been. False when the shell isn't taking input
+    /// by its marks, or the screen can't be read.
+    pub fn input_typed(&self) -> bool {
+        let effects = self.terminal.callbacks();
+        if effects.continued {
+            return true;
+        }
+        if !effects.input {
+            return false;
+        }
+        let read = |data| self.get_u32(data);
+        let (Some(x), Some(y), Some(columns)) = (
+            read(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_X),
+            read(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_Y),
+            read(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS),
+        ) else {
+            return false;
+        };
+        let at = |x: u32, y: u32| Point {
+            tag: GhosttyPointTag_GHOSTTY_POINT_TAG_ACTIVE,
+            x: u16::try_from(x).unwrap_or(u16::MAX),
+            y,
+        };
+        // The prompt's first line: the nearest at or above the cursor that a primary prompt
+        // starts.
+        let first = (0..=y)
+            .rev()
+            .find(|row| {
+                self.terminal.row_semantic_prompt(at(0, *row))
+                    == Some(GhosttyRowSemanticPrompt_GHOSTTY_ROW_SEMANTIC_PROMPT)
+            })
+            .unwrap_or(y);
+        (first..=y).any(|row| {
+            let end = if row == y { x } else { columns };
+            (0..end).any(|column| {
+                self.terminal
+                    .cell_semantic(at(column, row))
+                    .is_some_and(|(semantic, codepoint)| {
+                        semantic == GhosttyCellSemanticContent_GHOSTTY_CELL_SEMANTIC_INPUT
+                            && !matches!(codepoint, 0 | 0x20)
+                    })
+            })
+        })
+    }
+
     pub fn command_open(&self) -> Option<bool> {
         let effects = self.terminal.callbacks();
         if effects.command.started.is_some() {

@@ -319,7 +319,7 @@ fn seen_is_gated_on_the_revision_the_app_showed() {
 
 fn command(exit_code: i32, ran: Duration) -> Event {
     Event::Command {
-        exit_code,
+        exit_code: Some(exit_code),
         ran,
         line: "npm test".into(),
     }

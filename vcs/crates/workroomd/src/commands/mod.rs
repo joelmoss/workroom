@@ -454,7 +454,7 @@ const COMMANDS: &[Command] = &[
         aliases: &[],
         usage: "command TARGET [flags] -- COMMAND...",
         short: "Run a shell command in a terminal session and exit with its code",
-        long: None,
+        long: Some(command::LONG),
         hidden: false,
         mac_only: false,
         flags: command::FLAGS,

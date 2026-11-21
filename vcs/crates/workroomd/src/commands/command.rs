@@ -18,10 +18,28 @@ use super::kind::{CliError, Kind};
 use super::{Args, Context, Flag, Outcome, terminal_api};
 use crate::terminal::api::SEND_MAX_BYTES;
 
+/// `workroom command --help`'s text above its usage.
+pub(super) const LONG: &str = "Run a shell command in a terminal session and exit with its code.\n\n\
+The command is typed at the session's shell prompt and Enter pressed, and workroom waits for the \
+shell's integration to say it has ended. What it printed is written to stdout, as the pane shows \
+it (or as printed, with --vt), and workroom exits with the command's own exit code.\n\n\
+When workroom command itself fails (no such session, no shell integration, a shell busy with \
+another command, the timeout, no daemon), it prints an Error: line on stderr and nothing on \
+stdout, and exits with its own code, which a command can exit with too. With --json, the \
+envelope is the reliable way to tell the two apart: exit_code beside ok: true for the command's, \
+error.kind for workroom's.";
+
 pub(super) const FLAGS: &[Flag] = &[
     Flag {
         name: "allow-self",
         usage: "Run it in the session this command runs in, which is otherwise refused",
+        hidden: false,
+        ..Flag::BOOL
+    },
+    Flag {
+        name: "vt",
+        usage: "Print the output as the command printed it, escape codes and all, not read back \
+                as the screen shows it",
         hidden: false,
         ..Flag::BOOL
     },
@@ -96,6 +114,9 @@ fn params(args: &Args) -> Result<Map<String, Value>, Refused> {
     params.insert("command".into(), json!(command));
     if args.is_set("allow-self") {
         params.insert("allow_self".into(), json!(true));
+    }
+    if args.is_set("vt") {
+        params.insert("vt".into(), json!(true));
     }
     if let Some(timeout) = args.value("timeout") {
         let duration = super::wait::parse_duration(timeout).ok_or_else(|| {

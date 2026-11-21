@@ -109,7 +109,10 @@ pub struct Seen {
     /// The exit codes of the last of them, oldest first, as many as the shadow keeps
     /// (`shadow::RECENT_EXITS`): the last is that of the `commands`th. Several end within one
     /// read when commands are quick, and a wait for the next to finish answers with the first's.
-    pub exits: Vec<i32>,
+    pub exits: Vec<Option<i32>>,
+    /// Whether a full-screen program has the alternate screen up, which ends a
+    /// `terminal.command`'s wait (#691): its output is no longer a stream to read back.
+    pub alternate: bool,
 }
 
 impl Seen {
@@ -117,7 +120,7 @@ impl Seen {
     fn exit_of(&self, nth: u64) -> Option<i32> {
         let back = usize::try_from(self.commands.checked_sub(nth)?).ok()?;
         let at = self.exits.len().checked_sub(back + 1)?;
-        self.exits.get(at).copied()
+        self.exits.get(at).copied().flatten()
     }
 }
 
@@ -136,6 +139,9 @@ pub enum Outcome {
     /// A regex wait fell a [`QUEUE`] behind its session's output, so what came after was dropped
     /// unmatched, and matched nothing in what it kept: a match may have gone by unseen.
     FellBehind,
+    /// A `terminal.command`'s command put a full-screen program's alternate screen up (a pager,
+    /// an editor): what it shows is no output to read back, and it may wait on a person (#691).
+    AlternateScreen,
     /// Its caller went away.
     Cancelled,
 }
@@ -191,6 +197,9 @@ struct Progress {
     /// A `CommandFinished` wait's shell has sent no mark yet: the wait is `NoShellIntegration`
     /// if none comes by then (`Waiter::marks_by`).
     marks_by: Option<Instant>,
+    /// A `terminal.command`'s wait, once added to its session (`Waiter::begin`): the alternate
+    /// screen coming up ends it.
+    command: bool,
     /// A `Run` wait hears its run's logged transitions numbered past this, the last when it
     /// started (`Waiter::runs_after`): one before is no news, its state read as the wait started.
     runs_after: Option<u64>,
@@ -282,6 +291,7 @@ impl Waiter {
                 in_hand: 0,
                 ended: false,
                 marks_by: None,
+                command: false,
                 runs_after: None,
                 outcome: None,
             }),
@@ -306,7 +316,9 @@ impl Waiter {
     /// session: under the locks every read holds, so the next command the shell ends is the
     /// first after this.
     pub fn begin(&self, now: &Seen) {
-        lock_or_recover(&self.state).commands_before = now.commands;
+        let mut progress = lock_or_recover(&self.state);
+        progress.commands_before = now.commands;
+        progress.command = true;
     }
 
     /// Whether this is a `terminal.command`'s wait.
@@ -370,14 +382,24 @@ impl Waiter {
         }
     }
 
-    /// The shadow's state after a read, or after the program status changed.
+    /// The shadow's state after a read, or after the program status changed. A command's wait
+    /// whose command is still running when the alternate screen comes up ends there.
     pub fn shadow(&self, seen: &Seen) {
-        self.update(|progress| {
-            if seen.shell_marks {
-                progress.marks_by = None;
-            }
-            Self::met(progress, seen)
-        });
+        let mut progress = lock_or_recover(&self.state);
+        if progress.outcome.is_some() {
+            return;
+        }
+        if seen.shell_marks {
+            progress.marks_by = None;
+        }
+        let outcome = match Self::met(&progress, seen) {
+            Some(met) => Outcome::Met(met),
+            None if progress.command && seen.alternate => Outcome::AlternateScreen,
+            None => return,
+        };
+        progress.outcome = Some(outcome);
+        drop(progress);
+        self.wake.notify_all();
     }
 
     fn met(progress: &Progress, seen: &Seen) -> Option<Met> {
