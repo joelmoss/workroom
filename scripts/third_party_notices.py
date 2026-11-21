@@ -46,7 +46,8 @@ FEATURES = "terminal-state"
 # naming it, so it is never added quietly.
 PERMISSIVE = {
     "MIT", "ISC", "Zlib", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "Unicode-3.0", "CC0-1.0",
-    "FTL", "libpng-2.0", "OFL-1.1", "MPL-2.0", "LicenseRef-KhronosFreeUse",
+    "FTL", "libpng-2.0", "OFL-1.1", "MPL-2.0", "LicenseRef-KhronosFreeUse", "CC-BY-4.0",
+    "Unlicense", "LicenseRef-Powerline-Symbols",
 }
 COPYLEFT = {"GPL-2.0-only", "GPL-3.0-or-later", "LGPL-2.1-or-later",
             "LicenseRef-libgit2-linking-exception"}
@@ -61,7 +62,9 @@ HEADERS = {
     ),
     "app": (
         "This file covers the Workroom app bundle, including the workroom binary inside it "
-        "(Contents/MacOS/workroomd and Contents/Resources/workroomd-linux-*)."
+        "(Contents/MacOS/workroomd and Contents/Resources/workroomd-linux-*). The names and "
+        "logos of the tools Workroom shows beside their terminals belong to their owners, and "
+        "are used only to identify those tools."
     ),
 }
 
@@ -196,32 +199,87 @@ def run_cargo_about(cargo_about, version):
     return json.loads(result.stdout)
 
 
-def crate_sections(about, supplements, root=ROOT):
+def about_targets():
+    """The targets third-party/about.toml lists (Python 3.9, macOS's, has no TOML reader)."""
+    block = re.search(r"^targets = \[(.*?)\]", ABOUT_CONFIG.read_text(), re.M | re.S)[1]
+    return re.findall(r'"([^"]+)"', block)
+
+
+def linked_packages(metadata):
+    """The package ids `cargo metadata --filter-platform` output says the root links: its normal
+    dependencies, transitively. A proc-macro runs in the compiler and is not linked, so it and
+    what only it depends on are left out, as are build and dev dependencies."""
+    packages = {p["id"]: p for p in metadata["packages"]}
+    nodes = {n["id"]: n for n in metadata["resolve"]["nodes"]}
+    root = metadata["resolve"]["root"]
+    linked, queue = set(), [root]
+    while queue:
+        for dep in nodes[queue.pop()]["deps"]:
+            if not any(kind["kind"] is None for kind in dep["dep_kinds"]):
+                continue
+            pkg = dep["pkg"]
+            if pkg in linked or any("proc-macro" in t["kind"] for t in packages[pkg]["targets"]):
+                continue
+            linked.add(pkg)
+            queue.append(pkg)
+    return linked
+
+
+def run_cargo_metadata():
+    """The packages the shipped binary links on any of its targets."""
+    linked = set()
+    for target in about_targets():
+        result = subprocess.run(
+            ["cargo", "metadata", "--format-version", "1", "--frozen", "--manifest-path",
+             str(CRATE_MANIFEST), "--features", FEATURES, "--filter-platform", target],
+            capture_output=True, text=True, check=True)
+        linked |= linked_packages(json.loads(result.stdout))
+    return linked
+
+
+def crate_sections(about, supplements, linked=None, root=ROOT):
     """The crates' notices: one section per licence text, naming every crate under it.
 
-    Workroom's own crates (no registry source) are left out. A text cargo-about found no file for
-    is the bare licence, without the crate's copyright: such a crate needs a supplement."""
+    Only cargo-about's crates that are also in `linked` (all of them, when it is None) are named,
+    less Workroom's own (no registry source), and each of those must have a licence. A text cargo-about found no file for
+    is the bare licence, without the crate's copyright: such a crate needs a supplement, which
+    names the licence it takes (one the crate offers) and the files that hold it."""
     own = {c["package"]["id"] for c in about["crates"] if c["package"]["source"] is None}
+
+    def shipped(crate):
+        return crate["id"] not in own and (linked is None or crate["id"] in linked)
+
     groups = {}
+    covered = set()
     for licence in about["licenses"]:
-        users = [u["crate"] for u in licence["used_by"] if u["crate"]["id"] not in own]
+        users = [u["crate"] for u in licence["used_by"] if shipped(u["crate"])]
         if not users:
             continue
+        covered.update(c["id"] for c in users)
         if licence.get("source_path") is None:
             for crate in users:
-                files = supplements.get(crate["name"])
-                if not files:
+                supplement = supplements.get(crate["name"])
+                if not supplement:
                     raise NoticeError(
                         f"{crate['name']} {crate['version']} ships no licence file, so its "
                         f"{licence['id']} notice would have no copyright. Copy the licence from "
                         "its repository into third-party/licenses and list it under "
                         "crate_supplements in components.json.")
-                text = "\n\n".join(clean((root / f).read_text()) for f in files)
-                groups.setdefault((licence["id"], text), set()).add(
+                if supplement["license"] not in licence_tokens(crate["license"] or ""):
+                    raise NoticeError(f"{crate['name']} does not offer {supplement['license']}")
+                text = "\n\n".join(clean((root / f).read_text()) for f in supplement["files"])
+                groups.setdefault((supplement["license"], text), set()).add(
                     (crate["name"], crate["version"]))
             continue
         groups.setdefault((licence["id"], clean(licence["text"])), set()).update(
             (c["name"], c["version"]) for c in users)
+    # cargo-about's graph is the one that counts (cargo metadata's also unifies dev-dependencies'
+    # features); `linked` only takes out of it what is not linked.
+    graph = {c["package"]["id"] for c in about["crates"]}
+    if linked is not None:
+        missing = sorted((graph & linked) - own - covered)
+        if missing:
+            raise NoticeError(f"cargo-about gave no licence for linked crates: {missing}")
     # Ordered by licence, then crate, then text: cargo-about's own order varies from run to run.
     sections = []
     for (licence_id, text), crates in sorted(
@@ -278,7 +336,7 @@ def main(argv=None):
     problems = check_components(manifest)
     try:
         about = run_cargo_about(args.cargo_about, args.cargo_about_version)
-        crates = crate_sections(about, manifest["crate_supplements"])
+        crates = crate_sections(about, manifest["crate_supplements"], run_cargo_metadata())
     except NoticeError as e:
         problems.append(str(e))
         crates = None

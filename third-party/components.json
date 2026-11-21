@@ -89,22 +89,37 @@
     {
       "id": "musl",
       "name": "musl libc (statically linked into the Linux builds of the workroom binary)",
-      "version": "as shipped with Rust's musl targets",
+      "version": "1.2.5",
       "license": "MIT",
-      "source": "https://musl.libc.org",
+      "source": "https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT?h=v1.2.5",
       "ships": "workroom",
-      "files": ["third-party/licenses/musl/COPYRIGHT"]
+      "note": "The musl Rust's musl targets link (self-contained libc.a). Its COPYRIGHT is musl's at v1.2.5.",
+      "files": ["third-party/licenses/musl/COPYRIGHT"],
+      "pin": {"file": "mk/vcs.mk", "pattern": "(?m)^VCS_RUST := ([0-9.]+)$", "value": "1.99.1"}
     },
     {
       "id": "rust-std",
-      "name": "The Rust standard library",
-      "version": "the stable Rust the release is built with",
+      "name": "The Rust standard library, and the crates it links",
+      "version": "1.99.1",
       "license": "MIT",
       "offered": "Apache-2.0 OR MIT",
-      "source": "https://github.com/rust-lang/rust",
+      "source": "https://github.com/rust-lang/rust/tree/1.99.1/library",
       "ships": "workroom",
-      "note": "The notices of the standard library's own dependencies are in COPYRIGHT-library.html in each Rust release, under share/doc/rust.",
-      "files": ["third-party/licenses/rust-std/LICENSE-MIT"]
+      "note": "The crates std links on the binary's targets, from library/Cargo.lock at 1.99.1: addr2line 0.27.1, adler2 2.0.1, cfg-if 1.0.4, gimli 0.34.0, hashbrown 0.17.1, libc 0.2.189, memchr 2.8.3, miniz_oxide 0.9.1, object 0.39.1 and rustc-demangle 0.1.28, each offered under MIT among others and taken under it. The LLVM libunwind and compiler-rt code it embeds is Apache-2.0 WITH LLVM-exception, whose exception needs no notice for object code.",
+      "files": [
+        "third-party/licenses/rust-std/LICENSE-MIT",
+        "third-party/licenses/rust-std/addr2line-0.27.1-LICENSE-MIT",
+        "third-party/licenses/rust-std/adler2-2.0.1-LICENSE-MIT",
+        "third-party/licenses/rust-std/cfg-if-1.0.4-LICENSE-MIT",
+        "third-party/licenses/rust-std/gimli-0.34.0-LICENSE-MIT",
+        "third-party/licenses/rust-std/hashbrown-0.17.1-LICENSE-MIT",
+        "third-party/licenses/rust-std/libc-0.2.189-LICENSE-MIT",
+        "third-party/licenses/rust-std/memchr-2.8.3-LICENSE-MIT",
+        "third-party/licenses/rust-std/miniz_oxide-0.9.1-LICENSE-MIT",
+        "third-party/licenses/rust-std/object-0.39.1-LICENSE-MIT",
+        "third-party/licenses/rust-std/rustc-demangle-0.1.28-LICENSE-MIT"
+      ],
+      "pin": {"file": "mk/vcs.mk", "pattern": "(?m)^VCS_RUST := ([0-9.]+)$", "value": "1.99.1"}
     },
     {
       "id": "freetype",
@@ -176,7 +191,8 @@
       "license": "MIT",
       "source": "https://github.com/getsentry/sentry-native",
       "ships": "app",
-      "files": ["third-party/licenses/sentry-native/LICENSE"],
+      "note": "With the code it vendors and Workroom links: MPack 1.0 (vendor/mpack.c, MIT) and jsmn (vendor/jsmn.h, MIT), whose notices are their files' headers, copied here.",
+      "files": ["third-party/licenses/sentry-native/LICENSE", "third-party/licenses/mpack/LICENSE", "third-party/licenses/jsmn/LICENSE"],
       "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
     },
     {
@@ -192,12 +208,12 @@
     },
     {
       "id": "imgui",
-      "name": "Dear ImGui and its C bindings (in libghostty)",
-      "version": "1.92.5-docking",
+      "name": "Dear ImGui and its C bindings, Dear Bindings (in libghostty)",
+      "version": "1.92.5-docking, Dear Bindings 0.17",
       "license": "MIT",
-      "source": "https://github.com/ocornut/imgui",
+      "source": "https://github.com/ocornut/imgui and https://github.com/dearimgui/dear_bindings/tree/v0.17",
       "ships": "app",
-      "files": ["third-party/licenses/imgui/LICENSE.txt"],
+      "files": ["third-party/licenses/imgui/LICENSE.txt", "third-party/licenses/dear-bindings/LICENSE.txt"],
       "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
     },
     {
@@ -287,10 +303,22 @@
       "id": "nerd-fonts-symbols",
       "name": "Symbols Nerd Font (embedded in libghostty)",
       "version": "3.4.0",
-      "license": "MIT AND OFL-1.1",
-      "source": "https://github.com/ryanoasis/nerd-fonts",
+      "license": "OFL-1.1 AND MIT AND CC-BY-4.0 AND Apache-2.0 AND Unlicense AND LicenseRef-Powerline-Symbols",
+      "source": "https://github.com/ryanoasis/nerd-fonts/tree/v3.4.0",
       "ships": "app",
-      "files": ["third-party/licenses/nerd-fonts-symbols/LICENSE"],
+      "note": "The font is OFL-1.1, Nerd Fonts' own code MIT, and each glyph set its own licence: license-audit.md lists them, and the glyph sets' licence files at v3.4.0 follow it. Devicons, Font Awesome Extension, IEC Power Symbols and Seti-UI are MIT and Font Logos is Unlicense, with no licence file in Nerd Fonts' tree.",
+      "files": [
+        "third-party/licenses/nerd-fonts-symbols/LICENSE-repo",
+        "third-party/licenses/nerd-fonts-symbols/license-audit.md",
+        "third-party/licenses/nerd-fonts-symbols/glyphs/codicons-LICENSE.txt",
+        "third-party/licenses/nerd-fonts-symbols/glyphs/font-awesome-LICENSE.txt",
+        "third-party/licenses/nerd-fonts-symbols/glyphs/materialdesign-LICENSE",
+        "third-party/licenses/nerd-fonts-symbols/glyphs/octicons-LICENSE",
+        "third-party/licenses/nerd-fonts-symbols/glyphs/pomicons-LICENSE",
+        "third-party/licenses/nerd-fonts-symbols/glyphs/powerline-extra-LICENSE",
+        "third-party/licenses/nerd-fonts-symbols/glyphs/powerline-symbols-LICENSE.txt",
+        "third-party/licenses/nerd-fonts-symbols/glyphs/weather-icons-OFL.txt"
+      ],
       "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
     },
     {
@@ -312,17 +340,17 @@
       "license": "GPL-3.0-or-later",
       "source": "https://github.com/ghostty-org/ghostty/tree/ea8b12a8a/src/shell-integration",
       "ships": "app",
-      "note": "These scripts ship as source, with their licence headers, in Contents/Resources/ghostty/shell-integration.",
-      "review": "GPL-3.0-or-later scripts in the bundle, also pushed to remote hosts.",
-      "files": ["third-party/licenses/gpl-3.0/COPYING"],
+      "note": "These scripts ship as source, unmodified, with their licence headers, in Contents/Resources/ghostty/shell-integration. A LICENSE with the licence's text sits beside them there and on every remote host they are pushed to (the files below).",
+      "review": "GPL-3.0-or-later scripts in the bundle, also pushed to remote hosts. Owner, 2026-11-21: ship the licence text beside them.",
+      "files": ["macapp/Resources/ghostty/shell-integration/bash/LICENSE", "macapp/Resources/ghostty/shell-integration/zsh/LICENSE"],
       "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
     },
     {
       "id": "bash-preexec",
       "name": "bash-preexec (in Ghostty's bash shell integration)",
-      "version": "as vendored by Ghostty",
+      "version": "0.7.0",
       "license": "MIT",
-      "source": "https://github.com/rcaloras/bash-preexec",
+      "source": "https://github.com/rcaloras/bash-preexec/tree/0.7.0",
       "ships": "app",
       "files": ["third-party/licenses/bash-preexec/LICENSE.md"],
       "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
@@ -341,12 +369,12 @@
       "id": "libgit2",
       "name": "libgit2",
       "version": "1.9.2",
-      "license": "GPL-2.0-only WITH LicenseRef-libgit2-linking-exception",
+      "license": "GPL-2.0-only WITH LicenseRef-libgit2-linking-exception AND LGPL-2.1-or-later",
       "source": "https://github.com/ibrahimcetin/libgit2/tree/1.9.2",
       "ships": "app",
       "swiftpm": {"identity": "libgit2", "revision": "52287b0914f300f916b58fec80e13d8dd8f6824f"},
-      "note": "COPYING is libgit2's whole licence file: the linking exception, and the terms of the code it bundles.",
-      "review": "libgit2 is GPL-2.0 with its linking exception, and its bundled xdiff (deps/xdiff, statically linked) is LGPL-2.1-or-later.",
+      "note": "COPYING is libgit2's whole licence file: GPL-2.0 with the linking exception, the terms of the code it bundles, and the LGPL-2.1 text at its end. Its bundled xdiff (LibXDiff, Copyright (C) 2003 Davide Libenzi) is LGPL-2.1-or-later and statically linked into the app. Its source, as built, is deps/xdiff of libgit2 1.9.2, commit 52287b0914f300f916b58fec80e13d8dd8f6824f: https://github.com/ibrahimcetin/libgit2/tree/52287b0914f300f916b58fec80e13d8dd8f6824f/deps/xdiff",
+      "review": "libgit2 is GPL-2.0 with its linking exception, and its bundled xdiff (deps/xdiff, statically linked) is LGPL-2.1-or-later. Owner, 2026-11-21: ship the LGPL-2.1 text and name xdiff's source.",
       "files": ["third-party/licenses/libgit2/COPYING"]
     },
     {
@@ -480,14 +508,15 @@
       "license": "MIT",
       "source": "https://github.com/obsidianmd/pele/tree/1.8.0",
       "ships": "app",
+      "note": "pele.global.js bundles no third-party code: Pele 1.8.0 has no runtime dependencies, and its devDependencies are build and test tools (checked against its package.json and sources at 1.8.0).",
       "files": ["third-party/licenses/pele/LICENSE"],
       "pin": {"file": "macapp/Resources/markdown/VENDOR.md", "pattern": "\\| `pele\\.global\\.js` \\| pele \\| ([^ ]+) \\|", "value": "1.8.0"}
     }
   ],
   "crate_supplements": {
-    "_comment": "Licence files for crates published without one: cargo-about would fall back to the bare licence text, with no copyright line. The copyright is the crate's repository's.",
-    "objc2-core-foundation": ["third-party/licenses/objc2/LICENSE-MIT"],
-    "objc2-core-services": ["third-party/licenses/objc2/LICENSE-MIT"]
+    "_comment": "Licence files for crates published without one: cargo-about would fall back to the bare licence text, with no copyright line. Each names the licence it takes, one the crate offers. objc2's repository had no licence text at the commit 0.3.2 is from (7b1abfd7), only LICENSE.md, so these take Apache-2.0, whose text names no copyright holder: LICENSE.md at that commit, then the licence (the canonical text, from addr2line 0.27.1's LICENSE-APACHE).",
+    "objc2-core-foundation": {"license": "Apache-2.0", "files": ["third-party/licenses/objc2/LICENSE.md", "third-party/licenses/objc2/LICENSE-APACHE"]},
+    "objc2-core-services": {"license": "Apache-2.0", "files": ["third-party/licenses/objc2/LICENSE.md", "third-party/licenses/objc2/LICENSE-APACHE"]}
   },
   "not_shipped": {
     "_comment": "Pins and packages that look shipped but are not, and why. The check requires every Package.resolved pin to be a component or listed here.",

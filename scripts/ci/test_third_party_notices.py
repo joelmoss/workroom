@@ -90,8 +90,50 @@ def about(*licences, own=()):
               for licence in licences for n in licence["users"]]
     return {"crates": crates, "licenses": [
         {"id": licence["id"], "text": licence["text"], "source_path": licence.get("path"),
-         "used_by": [{"crate": {"id": n, "name": n, "version": "1.0"}} for n in licence["users"]]}
+         "used_by": [{"crate": {"id": n, "name": n, "version": "1.0", "license": "MIT OR Zlib"}}
+                     for n in licence["users"]]}
         for licence in licences]}
+
+
+def metadata(*packages):
+    """`cargo metadata` for packages given as (name, kind, [(dep, dep kind)]); the first is root."""
+    return {
+        "packages": [{"id": name, "targets": [{"kind": [kind]}]} for name, kind, _ in packages],
+        "resolve": {"root": packages[0][0], "nodes": [
+            {"id": name, "deps": [{"pkg": dep, "dep_kinds": [{"kind": dep_kind}]}
+                                  for dep, dep_kind in deps]}
+            for name, _, deps in packages]},
+    }
+
+
+class LinkedPackagesTests(unittest.TestCase):
+    def test_normal_dependencies_are_linked_and_proc_macros_and_build_tools_are_not(self):
+        linked = notices.linked_packages(metadata(
+            ("workroom", "bin", [("serde", None), ("cc", "build"), ("tempfile", "dev")]),
+            ("serde", "lib", [("serde_derive", None), ("itoa", None)]),
+            ("serde_derive", "proc-macro", [("syn", None)]),
+            ("syn", "lib", [("unicode-ident", None)]),
+            ("unicode-ident", "lib", []),
+            ("itoa", "lib", []),
+            ("cc", "lib", []),
+            ("tempfile", "lib", []),
+        ))
+        self.assertEqual(linked, {"serde", "itoa"})
+
+    def test_a_linked_crate_with_no_licence_fails(self):
+        graph = about({"id": "MIT", "text": "MIT", "path": "x", "users": ["serde"]})
+        graph["crates"].append({"package": {"id": "itoa", "source": "registry"}})
+        with self.assertRaisesRegex(notices.NoticeError, "no licence for linked crates.*itoa"):
+            notices.crate_sections(graph, {}, linked={"serde", "itoa"})
+        # A crate only cargo metadata names (a dev-dependency's feature, say) is not asked for.
+        notices.crate_sections(graph, {}, linked={"serde", "regex"})
+        graph["crates"].pop()
+
+    def test_a_crate_only_a_proc_macro_uses_is_left_out(self):
+        sections = notices.crate_sections(
+            about({"id": "MIT", "text": "MIT", "path": "x", "users": ["serde", "syn"]}), {},
+            linked={"serde"})
+        self.assertIn("Rust crates under MIT: serde 1.0\n", sections[0])
 
 
 class CrateSectionTests(unittest.TestCase):
@@ -108,8 +150,14 @@ class CrateSectionTests(unittest.TestCase):
         with self.assertRaisesRegex(notices.NoticeError, "objc2 1.0 ships no licence file"):
             notices.crate_sections(bare, {})
         with tempfile.TemporaryDirectory() as scratch:
-            (Path(scratch) / "LICENSE-MIT").write_text("Copyright objc2's authors\n")
-            sections = notices.crate_sections(bare, {"objc2": ["LICENSE-MIT"]}, Path(scratch))
+            (Path(scratch) / "LICENSE-ZLIB").write_text("Copyright objc2's authors\n")
+            supplement = {"objc2": {"license": "Zlib", "files": ["LICENSE-ZLIB"]}}
+            sections = notices.crate_sections(bare, supplement, root=Path(scratch))
+            with self.assertRaisesRegex(notices.NoticeError, "does not offer Apache-2.0"):
+                notices.crate_sections(
+                    bare, {"objc2": {"license": "Apache-2.0", "files": ["LICENSE-ZLIB"]}},
+                    root=Path(scratch))
+        self.assertIn("Rust crates under Zlib: objc2 1.0\n", sections[0])
         self.assertIn("Copyright objc2's authors", sections[0])
 
 
