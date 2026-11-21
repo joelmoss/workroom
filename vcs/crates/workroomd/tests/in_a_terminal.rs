@@ -1,11 +1,14 @@
-//! `workroom delete` asked by a person at a terminal (#678): with no `--confirm` it asks, with no
-//! name it offers the project's workrooms to pick, and a teardown script this Mac hasn't approved
-//! is shown and asked about. Each answer is typed into a real pty, the binary's stdin, so the
-//! binary sees a terminal as it does in one; what it writes goes to a pipe.
+//! The commands that ask a person at a terminal, asked by one. `workroom delete` (#678): with no
+//! `--confirm` it asks, with no name it offers the project's workrooms to pick, and a teardown
+//! script this Mac hasn't approved is shown and asked about. `workroom create` (#677): a setup
+//! script this Mac hasn't approved is shown and asked about, and so is work the start would leave
+//! out. Each answer is typed into a real pty, the binary's stdin, so the binary sees a terminal as
+//! it does in one; what it writes goes to a pipe.
 //!
 //! The contract suite (`commands_contract.rs`) runs against the Go CLI too, whose prompts are a
 //! full-screen form (charmbracelet/huh) no line of input drives, so these run against this crate's
-//! binary only. Each run gets a throwaway HOME and config, as the contract suite's do.
+//! binary only; the contract suite has what each command does with no one at a terminal. Each run
+//! gets a throwaway HOME and config, as the contract suite's do.
 #![cfg(target_os = "macos")]
 
 use std::io::Write;
@@ -13,9 +16,12 @@ use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// The digest of `#!/bin/sh\necho stopping\n`, the teardown each project here has.
 const STOPPING_SHA256: &str = "46afe9251fa214a976ea23e0094166dceb1f79f39ef879bd4cc3d59b26808059";
+/// The digest of `#!/bin/sh\necho installing\n`, a create's setup script here.
+const INSTALLING_SHA256: &str = "0ce619c6c940c7c71a56a15360c8f4d662b6358bd35c47bbf3b70d2b3714d3f7";
 
 /// A throwaway HOME, removed when the test ends; one this run made itself, never a leftover.
 struct Home {
@@ -27,7 +33,7 @@ impl Home {
         let parent = std::env::temp_dir();
         for attempt in 0u32.. {
             let dir = parent.join(format!(
-                "workroom-delete-tty-{name}-{}-{attempt}",
+                "workroom-tty-{name}-{}-{attempt}",
                 std::process::id()
             ));
             match std::fs::create_dir(&dir) {
@@ -81,14 +87,9 @@ impl Home {
         );
     }
 
-    /// A registered project with an approved (or, with another `digest`, unapproved) teardown
-    /// script, and a real workroom for each of `names` under `~/workrooms`.
-    fn project(&self, names: &[&str], digest: &str) -> PathBuf {
-        let project = self.path("src/app");
-        std::fs::create_dir_all(project.join("scripts")).expect("project");
-        self.git(&project, &["init", "-q", "-b", "main"]);
+    fn commit(&self, dir: &Path, message: &str) {
         self.git(
-            &project,
+            dir,
             &[
                 "-c",
                 "commit.gpgsign=false",
@@ -96,12 +97,65 @@ impl Home {
                 "-q",
                 "--allow-empty",
                 "-m",
-                "first",
+                message,
             ],
         );
-        let script = project.join("scripts/workroom_teardown");
-        std::fs::write(&script, "#!/bin/sh\necho stopping\n").expect("teardown");
+    }
+
+    /// What git prints for `args` in `dir`, trimmed.
+    fn git_output(&self, dir: &Path, args: &[&str]) -> String {
+        let output = self.command("git", dir).args(args).output().expect("git");
+        assert!(output.status.success(), "git {args:?}");
+        String::from_utf8(output.stdout)
+            .expect("UTF-8")
+            .trim()
+            .to_string()
+    }
+
+    /// `src/app`, a git repository on `main` with one commit.
+    fn repo(&self) -> PathBuf {
+        let project = self.path("src/app");
+        std::fs::create_dir_all(project.join("scripts")).expect("project");
+        self.git(&project, &["init", "-q", "-b", "main"]);
+        self.commit(&project, "first");
+        project
+    }
+
+    /// Writes the executable `scripts/<name>` in `project`.
+    fn script(&self, project: &Path, name: &str, text: &str) {
+        let script = project.join("scripts").join(name);
+        std::fs::write(&script, text).expect("script");
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+
+    /// Registers `project`, with no script approved and no workroom.
+    fn register(&self, project: &Path) {
+        std::fs::create_dir_all(self.config_path().parent().expect("dir")).expect("config dir");
+        std::fs::write(
+            self.config_path(),
+            format!(
+                "{{\"{}\": {{\"vcs\": \"git\", \"workrooms\": {{}}}}}}",
+                project.display()
+            ),
+        )
+        .expect("config");
+    }
+
+    /// The one workroom a create made under `~/workrooms`, if it made one.
+    fn workroom(&self) -> Option<PathBuf> {
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(self.path("workrooms"))
+            .ok()?
+            .map(|entry| entry.expect("entry").path())
+            .collect();
+        assert!(entries.len() <= 1, "{entries:?}");
+        entries.pop()
+    }
+
+    /// A registered project with an approved (or, with another `digest`, unapproved) teardown
+    /// script, and a real workroom for each of `names` under `~/workrooms`.
+    fn project(&self, names: &[&str], digest: &str) -> PathBuf {
+        let project = self.repo();
+        self.script(&project, "workroom_teardown", "#!/bin/sh\necho stopping\n");
         let mut workrooms = Vec::new();
         for name in names {
             let path = self.path(&format!("workrooms/{name}"));
@@ -368,4 +422,160 @@ fn an_unapproved_teardown_is_shown_and_asked_about() {
         home.config()
     );
     assert!(!home.path("workrooms/calm-river").exists());
+}
+
+/// A registered project whose root has `scripts/workroom_setup`, `#!/bin/sh\n<body>`, untracked
+/// and approved by nothing.
+fn setup_project(home: &Home, body: &str) -> PathBuf {
+    let project = home.repo();
+    home.script(&project, "workroom_setup", &format!("#!/bin/sh\n{body}"));
+    home.register(&project);
+    project
+}
+
+/// The human create's success line for the workroom at `path`.
+fn created(path: &Path) -> String {
+    let name = path.file_name().expect("name").to_string_lossy();
+    format!("Workroom '{name}' created successfully at ~/workrooms/{name}.\n")
+}
+
+/// The panel a create shows its setup script in before it asks, for `scripts/workroom_setup`
+/// with `lines`.
+fn approval(lines: &[&str]) -> String {
+    let shown: String = lines.iter().map(|line| format!("│ {line}\n")).collect();
+    format!(
+        "scripts/workroom_setup in the project's root has not been approved on this Mac.\n\
+         ╭─ scripts/workroom_setup {}\n{shown}╰{}\nApprove scripts/workroom_setup and run it? \
+         [y/N] ",
+        "─".repeat(34),
+        "─".repeat(59)
+    )
+}
+
+/// A setup script this Mac hasn't approved is shown and asked about before anything exists: a no
+/// cancels the create (exit 4) with nothing made or recorded, and a yes records its digest before
+/// the workroom is made, then runs it.
+#[test]
+fn create_asks_about_an_unapproved_setup_script() {
+    let home = Home::new("create-approve");
+    let project = setup_project(&home, "echo installing\n");
+    let before = home.config();
+    let shown = approval(&["#!/bin/sh", "echo installing"]);
+
+    let (code, stdout, stderr) = home.run_typing(&project, &["create"], "n\n");
+    assert_eq!(code, 4, "{stdout}{stderr}");
+    assert_eq!(stdout, shown);
+    assert_eq!(
+        stderr,
+        "Error: operation cancelled: scripts/workroom_setup was not approved\n"
+    );
+    assert_eq!(home.config(), before);
+    assert_eq!(home.workroom(), None);
+    assert_eq!(
+        home.git_output(&project, &["branch", "--list", "workroom/*"]),
+        ""
+    );
+
+    let (code, stdout, stderr) = home.run_typing(&project, &["c"], "y\n");
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    let workroom = home.workroom().expect("a workroom");
+    let panel = format!(
+        "╭─ Setup {}\n│ installing\n╰{}\n\n",
+        "─".repeat(51),
+        "─".repeat(59)
+    );
+    assert_eq!(stdout, format!("{shown}{panel}{}", created(&workroom)));
+    assert!(
+        home.config()
+            .contains(&format!("\"workroom_setup\": \"{INSTALLING_SHA256}\"")),
+        "{}",
+        home.config()
+    );
+}
+
+/// Input that ends before the answer gives up, as Go's prompt reports Ctrl-C: nothing is made or
+/// recorded.
+#[test]
+fn create_given_no_answer_gives_up() {
+    let home = Home::new("create-no-answer");
+    let project = setup_project(&home, "echo installing\n");
+    let before = home.config();
+    let (code, stdout, stderr) = home.run_typing(&project, &["create"], "\x04");
+    assert_eq!(code, 1, "{stdout}{stderr}");
+    assert_eq!(stdout, approval(&["#!/bin/sh", "echo installing"]));
+    assert_eq!(stderr, "Error: user aborted\n");
+    assert_eq!(home.config(), before);
+    assert_eq!(home.workroom(), None);
+}
+
+/// Work the start would leave out (here a commit on `main` origin lacks) is asked about, offering
+/// only what applies: a choice that is no choice is asked again, the commits start the workroom
+/// from the local branch, and leaving it out starts it from origin's, without a warning.
+#[test]
+fn create_asks_whether_to_include_work_the_start_leaves_out() {
+    let asked = "You have 1 commit on main that you haven't pushed yet.\nNew workrooms start from \
+                 what you've pushed. Include this work in the new one?\n  1) Include my \
+                 commits\n  2) Leave it out\nChoose 1-2: ";
+    for (typed, local) in [("x\n3\n1\n", true), ("2\n", false)] {
+        let home = Home::new("create-start");
+        home.git(
+            &home.dir,
+            &["init", "-q", "--bare", "-b", "main", "app.git"],
+        );
+        let project = home.repo();
+        let origin = home.path("app.git");
+        home.git(
+            &project,
+            &["remote", "add", "origin", &origin.to_string_lossy()],
+        );
+        home.git(&project, &["push", "-q", "-u", "origin", "main"]);
+        home.git(&project, &["remote", "set-head", "origin", "main"]);
+        home.commit(&project, "unpushed");
+        home.register(&project);
+
+        let (code, stdout, stderr) = home.run_typing(&project, &["create"], typed);
+        assert_eq!((code, stderr.as_str()), (0, ""), "{typed:?}: {stdout}");
+        let workroom = home.workroom().expect("a workroom");
+        let again = "Choose 1-2: ".repeat(typed.lines().count() - 1);
+        assert_eq!(
+            stdout,
+            format!("{asked}{again}{}", created(&workroom)),
+            "{typed:?}"
+        );
+        let start = if local { "main" } else { "origin/main" };
+        assert_eq!(
+            home.git_output(&workroom, &["rev-parse", "HEAD"]),
+            home.git_output(&project, &["rev-parse", start]),
+            "{typed:?}"
+        );
+    }
+}
+
+/// A setup script's output is still read for a second after it exits (the runner's drain, which
+/// a local setup script keeps), for a background job it left holding the output: what the job
+/// prints within that second is shown, what it prints later is not, and the create doesn't wait
+/// for it.
+#[test]
+fn create_reads_a_setup_scripts_output_for_a_second_after_it_exits() {
+    let home = Home::new("create-drain");
+    let body = "echo installing\n(sleep 0.2; echo soon) &\n(sleep 8; echo late) &\n";
+    let project = setup_project(&home, body);
+    let started = Instant::now();
+    let (code, stdout, stderr) = home.run_typing(&project, &["create"], "y\n");
+    let took = started.elapsed();
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    let shown = approval(&[
+        "#!/bin/sh",
+        "echo installing",
+        "(sleep 0.2; echo soon) &",
+        "(sleep 8; echo late) &",
+    ]);
+    let workroom = home.workroom().expect("a workroom");
+    let panel = format!(
+        "╭─ Setup {}\n│ installing\n│ soon\n╰{}\n\n",
+        "─".repeat(51),
+        "─".repeat(59)
+    );
+    assert_eq!(stdout, format!("{shown}{panel}{}", created(&workroom)));
+    assert!(took < Duration::from_secs(6), "took {took:?}");
 }
