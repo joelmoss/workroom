@@ -2575,9 +2575,13 @@ fn over_ssh_workroom_runs_on_a_host_by_name_and_refuses_what_only_the_mac_does()
         "7e0e7e0e-0000-4000-8000-000000000682",
         "xterm-256color",
         &["env", "SHELL=/bin/dash"],
-        b"tr '\\0' '\\n' < /proc/$$/environ | grep '^PATH='; echo \"DASH=$0=\"\"END\"\nexit\n",
+        b"tr '\\0' '\\n' < /proc/$$/environ | grep '^PATH='; echo \"DASH=$0=\"\"END\"\n\
+          \"$(dirname \"$WORKROOM_DAEMON\")/workroom\" version > /dev/null && echo BYPATH=\"\"OK\n\
+          exit\n",
     );
     assert!(seen.contains("DASH=-dash=END"), "not a dash login: {seen}");
+    // The full path the docs give for a shell whose profile took the folder off PATH.
+    assert!(seen.contains("BYPATH=OK"), "{seen}");
     let started = seen
         .lines()
         .find_map(|line| line.trim_end().strip_prefix("PATH="))
@@ -2642,8 +2646,7 @@ fn dialed_pane(
     }
     reader.join().expect("the pane's output");
     drop(stdin);
-    let seen = String::from_utf8_lossy(&seen.lock().unwrap()).into_owned();
-    seen
+    String::from_utf8_lossy(&seen.lock().unwrap()).into_owned()
 }
 
 /// `workroom api` on a host (#685), as a coding agent in a remote pane runs it: `list` names the
