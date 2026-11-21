@@ -17,6 +17,7 @@ final class TargetIDTests: XCTestCase {
       (.creation(Self.run), "creation:6F9619FF-8B86-D011-B42D-00C04FC964FF"),
       (.quickTerminal, "workroom.quickTerminal"),
       (.standalone(Self.run), "standalone:6F9619FF-8B86-D011-B42D-00C04FC964FF"),
+      (.terminalGroup(Self.run), "group:6F9619FF-8B86-D011-B42D-00C04FC964FF"),
     ]
     for (id, string) in cases {
       XCTAssertEqual(id.encoded, string)
@@ -46,7 +47,7 @@ final class TargetIDTests: XCTestCase {
   func testAStringNoBuildWroteIsNoTarget() {
     for string in [
       "", "wr|/p", "creation:not-a-uuid", "creation|\(Self.run)", "/p", "x",
-      "standalone:not-a-uuid", "standalone|\(Self.run)",
+      "standalone:not-a-uuid", "standalone|\(Self.run)", "group:not-a-uuid", "group|\(Self.run)",
     ] {
       XCTAssertNil(TargetID(encoded: string), string)
     }
@@ -82,5 +83,19 @@ final class TargetIDTests: XCTestCase {
     XCTAssertFalse(SidebarID.standalone(Self.run).belongsToProject("/p"))
     XCTAssertTrue(SidebarID.standalone(Self.run).isInTerminalsSection)
     XCTAssertFalse(SidebarID.root(project: "/p").isInTerminalsSection)
+  }
+
+  /// Value: protects=a terminal group's row, title-bar tab and sessions living apart from every
+  /// project (ADR 0077); fails_when=a group id claims a project or loses its row; why_new=terminal
+  /// groups (#658); seam=none; no_claim=whether the group still exists
+  func testATerminalGroupBelongsToNoProject() {
+    let id = TargetID.terminalGroup(Self.run)
+    XCTAssertNil(id.projectPath)
+    XCTAssertEqual(id.sidebarID, .terminalGroup(Self.run))
+    XCTAssertEqual(SidebarID.terminalGroup(Self.run).targetID, id)
+    XCTAssertFalse(SidebarID.terminalGroup(Self.run).belongsToProject("/p"))
+    XCTAssertTrue(SidebarID.terminalGroup(Self.run).isInTerminalsSection)
+    XCTAssertNotEqual(
+      id, .standalone(Self.run), "a group and a standalone terminal never share an id")
   }
 }

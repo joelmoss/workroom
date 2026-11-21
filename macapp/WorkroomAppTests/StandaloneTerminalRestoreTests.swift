@@ -119,7 +119,7 @@ final class StandaloneTerminalRestoreTests: XCTestCase {
 
   /// Value: protects=the stored contract of `terminals.json`, and an older build reading a newer
   /// one's entries; fails_when=a field renames, or an unknown kind fails the whole file;
-  /// why_new=#655; seam=the file; no_claim=groups' fields (#658)
+  /// why_new=#655; seam=the file; no_claim=groups' fields (TerminalGroupRestoreTests)
   func testTheFileReadsAsWrittenAndDropsAKindItDoesNotKnow() throws {
     let id = try XCTUnwrap(UUID(uuidString: "6F9619FF-8B86-D011-B42D-00C04FC964FF"))
     let golden = """
@@ -140,7 +140,7 @@ final class StandaloneTerminalRestoreTests: XCTestCase {
 
     let newer = """
       {"schemaVersion": 1, "entries": [
-        {"kind": "group", "id": "00000000-0000-0000-0000-000000000001", "name": "ops"},
+        {"kind": "folder", "id": "00000000-0000-0000-0000-000000000001", "name": "ops"},
         {"kind": "standalone", "id": "6F9619FF-8B86-D011-B42D-00C04FC964FF"}
       ]}
       """
