@@ -52,18 +52,31 @@ rust_target() {
   esac
 }
 
-# check_file_type <platform> <binary>: `file` says it is one thin Mach-O (not a universal one), or
+# check_file_type <platform> <binary>: it is one thin Mach-O executable (not a universal one), or
 # a static ELF, for that platform's arch. A dynamically linked ELF would fail on a host without
 # glibc.
+#
+# The Mach-O header is read, not `file`'s description: `publish` runs this on Linux, whose `file`
+# words a Mach-O differently from macOS's. Its first 16 bytes, little-endian: the 64-bit magic
+# (feedfacf), the CPU type (arm64 0100000c, x86_64 01000007), the subtype, and the file type
+# (MH_EXECUTE, 2). A universal binary starts with cafebabe instead.
 check_file_type() {
-  local desc
+  local desc header
+  case "$1" in
+    darwin_*)
+      header="$(od -A n -t x1 -N 16 "$2" | tr -d ' \n')"
+      case "$1:$header" in
+        darwin_arm64:cffaedfe0c000001????????02000000) return 0 ;;
+        darwin_amd64:cffaedfe07000001????????02000000) return 0 ;;
+      esac
+      die "$1: workroom is '$(file -b "$2")' (header $header), not a thin Mach-O executable for $1."
+      ;;
+  esac
   desc="$(file -b "$2")"
   case "$1:$desc" in
-    "darwin_arm64:Mach-O 64-bit executable arm64"*) ;;
-    "darwin_amd64:Mach-O 64-bit executable x86_64"*) ;;
     "linux_arm64:ELF 64-bit LSB "*", ARM aarch64,"*"statically linked"*) ;;
     "linux_amd64:ELF 64-bit LSB "*", x86-64,"*"statically linked"*) ;;
-    *) die "$1: workroom is '$desc', not a thin Mach-O or static ELF for $1." ;;
+    *) die "$1: workroom is '$desc', not a static ELF for $1." ;;
   esac
 }
 
