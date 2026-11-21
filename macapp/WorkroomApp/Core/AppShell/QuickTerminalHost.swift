@@ -18,7 +18,7 @@ import WorkroomVCS
 /// app's one list (ADR 0064), named live from the app's projects.
 @MainActor
 @Observable
-final class QuickTerminalHost: PaneHost, PaneNotifierHost {
+final class QuickTerminalHost: PaneHost, PaneNotifierHost, PaneDropZoneHost {
   let terminals: TerminalPanes
   /// Its Investigate tabs, and the graceful close a run-command tab's "press any key" goes through.
   let runCommand: RunCommandController
@@ -35,6 +35,12 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
 
   /// The Quick Terminal's window, once it has one.
   @ObservationIgnored weak var hostWindow: NSWindow?
+  /// Where a terminal drag from a window over this panel would drop, highlighted on its pane tabs
+  /// while it hovers (#652): set by that window's drag session, which has none of its own here.
+  var incomingPaneDrop: PaneDropZone?
+  /// Its pane tabs' drop zones' views (`PaneDropZoneMarker`), which a window's drag measures at its
+  /// start (`AppStore.terminalDropZones`). A registry, not state: nothing renders from it.
+  @ObservationIgnored var paneDropZoneViews: [PaneDropZone: [PaneDropZoneMarker.Box]] = [:]
   /// Called when a target's last tab closes: the controller hides the window on it.
   @ObservationIgnored var onTargetEmptied: ((TerminalTarget.ID) -> Void)?
   /// Slides the panel in, focused on the tab given when it has it: a row click, a move into it or

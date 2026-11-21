@@ -85,6 +85,8 @@ Where you can let go, and what happens:
 - **The Terminals heading**: a terminal becomes standalone.
 - **The title bar's empty space** (between or after its tabs, not on one): a terminal becomes standalone, its tab in the title bar where you let go. A standalone terminal's own terminal only moves its tab there.
 
+The Quick Terminal's tabs take a drag from any window while its panel is showing: drag a terminal, a standalone terminal or a group over one of its tabs and let go, and the terminals join the Quick Terminal in that place, as on a window's tab. The panel stays up and in front while you drag, and slides away when you let go anywhere else.
+
 While you drag, the place it will go is highlighted, with a line where the terminals will land. Anywhere it can't go shows no highlight, and letting go there does nothing. Every drag inside the window carries the same label with the dragged item's name next to the pointer.
 
 Edges and gaps keep their meaning. Let a row go between the section's own rows and it reorders the section, or a group's terminal becomes standalone there. Let a title-bar tab go near another's edge and it reorders the tabs. Dragging a tab along its own strip reorders it, and onto a pane's edge splits it, as before.

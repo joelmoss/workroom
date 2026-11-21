@@ -338,6 +338,12 @@ private struct WorkroomPaneLeaf: View {
         .onChanged { value in
           if isDragOutsideWindow(value.location) {
             externalDrag = nil
+            // Onto the Quick Terminal panel's tabs (#652), else into another window or a new one.
+            if store.terminalDrag.moved(
+              .entry(sid), from: .groupTitleBar, to: NSEvent.mouseLocation)
+            {
+              return WorkroomWindowDrag.cancel()
+            }
             WorkroomWindowDrag.update(
               store: store, sid: sid, target: target,
               width: store.workroomTabFrames[sid]?.width ?? 0)
@@ -358,9 +364,8 @@ private struct WorkroomPaneLeaf: View {
           }
         }
         .onEnded { value in
-          if !isDragOutsideWindow(value.location),
-            store.terminalDrag.ended(at: NSEvent.mouseLocation)
-          {
+          // Out of the window, only the Quick Terminal panel's tabs take it (#652).
+          if store.terminalDrag.ended(at: NSEvent.mouseLocation) {
             externalDrag = nil
             return
           }

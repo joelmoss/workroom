@@ -88,8 +88,8 @@ final class AppStore: ObservableObject {
   /// The workroom a Quick Terminal pane dragged over this window would join, highlighted while it
   /// hovers (`QuickTerminalPaneDrag`).
   var incomingQuickTerminalPane: SidebarID?
-  /// Where this window's terminal tab dragged inside it would move, highlighted while it hovers
-  /// (#660): a sidebar row, a title-bar tab or the Terminals heading.
+  /// Where this window's terminal drag would move, highlighted while it hovers (#660, #652): a
+  /// sidebar row, a title-bar tab, the Terminals heading, a pane tab or a group's title bar.
   var incomingPaneDrop: PaneDropZone?
   /// The sidebar's drop zones' views (`PaneDropZoneMarker`), which say where each is on screen at
   /// the moment of a drag. A registry, not state: nothing renders from it.
