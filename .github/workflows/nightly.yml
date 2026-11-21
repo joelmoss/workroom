@@ -10,6 +10,15 @@ on:
   schedule:
     - cron: "0 5 * * *" # daily ~05:00 UTC (5am GMT)
   workflow_dispatch:
+    inputs:
+      # Builds, signs and notarizes as a real night does, then the `dry-run` job uploads into a
+      # draft release of its own (`nightly-dryrun-<run id>`), checks it the way `publish` does,
+      # and deletes it. Nothing is published: `publish`, the appcast, the download stats and the
+      # `nightly` release are never touched (macapp/Scripts/publish-assets.sh --dry-run).
+      dry_run:
+        description: Dry run (publish nothing; upload into a throwaway draft and delete it)
+        type: boolean
+        default: false
 
 # Nothing is granted workflow-wide; each job asks for only what it uses.
 permissions: {}
@@ -46,6 +55,7 @@ jobs:
       - id: guard
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           # --match 'v*' skips the `nightly` release tag, which would otherwise win
@@ -66,7 +76,10 @@ jobs:
 
           PUBLISHED="$(gh release view nightly --json name -q .name 2>/dev/null || echo '')"
           PUB_COUNT="${PUBLISHED##*-nightly.}"
-          if [ "${PUB_COUNT}" = "${COUNT}" ]; then
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "Dry run: building whatever was published, and publishing nothing."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          elif [ "${PUB_COUNT}" = "${COUNT}" ]; then
             echo "No new commits since nightly build ${COUNT}; skipping."
             echo "should_build=false" >> "$GITHUB_OUTPUT"
           else
@@ -82,7 +95,9 @@ jobs:
     needs: check
     if: needs.check.outputs.should_build == 'true'
     runs-on: xcode-27
-    timeout-minutes: 120
+    # The app took 49-69 minutes before #681; the standalone archives add four builds, a
+    # notarization and the contract suite's build.
+    timeout-minutes: 150
     permissions:
       contents: read
     env:
@@ -121,6 +136,11 @@ jobs:
             aarch64-apple-darwin x86_64-apple-darwin
             aarch64-unknown-linux-musl x86_64-unknown-linux-musl
           cache: "false"
+
+      # cli-archives.sh runs every darwin binary it ships before anything publishes: the x86_64
+      # one under Rosetta.
+      - name: Install Rosetta (runs the darwin amd64 binary)
+        run: sudo softwareupdate --install-rosetta --agree-to-license
 
       - name: Import Developer ID signing certificate
         uses: ./.github/actions/import-signing-certificate
@@ -168,7 +188,8 @@ jobs:
           # nightly shipped unsymbolicated every night, which is why the app frames in WORKROOM-2B's
           # hang report were three unnamed addresses. ORG/PROJECT are slugs, not secrets, but kept as
           # secrets to match this job's convention (and release.yml's).
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          # A dry run uploads no symbols: release.sh skips the upload without the token.
+          SENTRY_AUTH_TOKEN: ${{ !inputs.dry_run && secrets.SENTRY_AUTH_TOKEN || '' }}
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
           # release.sh derives MARKETING_VERSION = ${VERSION#v} and CURRENT_PROJECT_VERSION = commit
@@ -191,9 +212,23 @@ jobs:
           WORKROOM_RELEASE_CHANNEL: nightly
           CODESIGN_IDENTITY: Developer ID Application
         run: NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" macapp/Scripts/cli-archives.sh build macapp/build/release/cli
-      # No contract suite here, unlike release.yml: its goldens are the main binary's, and the
-      # nightly's baked channel deliberately changes `version --json`'s channel and refuses
-      # `update --channel`, so four of its cases fail on it by design. CI runs it on every change.
+
+      # The CLI contract suite against the binary this Nightly ships, unpacked from its archive,
+      # but for the four cases whose goldens are the main binary's: the nightly's baked channel
+      # changes `version --json`'s channel and refuses `update --channel`, by design.
+      # test-invariants_test.sh pins this list.
+      - name: Test (contract suite against the shipped binary)
+        run: |
+          SHIPPED="$RUNNER_TEMP/shipped"
+          mkdir "$SHIPPED"
+          tar -xzf macapp/build/release/cli/workroom_nightly_darwin_arm64.tar.gz -C "$SHIPPED"
+          WORKROOM_BIN="$SHIPPED/workroom" rustup run "$(make -s print-VCS_RUST)" \
+            cargo test --manifest-path vcs/Cargo.toml -p workroom --test commands_contract -- \
+            --include-ignored --exact \
+            --skip version_json_matches_the_golden \
+            --skip version_json_flag_may_come_before_the_command \
+            --skip version_json_reports_the_configured_channel \
+            --skip update_json_refuses_a_channel_it_cant_switch_to
 
       - name: Preserve signed installer for publication
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -214,9 +249,44 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-  # Publish the archives and the app together, once both are built and signed.
+  # A dry run's publish: the archives and the DMG go into a draft of its own, which is checked as
+  # `publish` checks the nightly, kept from GitHub's Latest, and deleted. It never names the
+  # `nightly` release (publish-assets.sh refuses any other tag in a dry run), and has none of the
+  # appcast, the download stats or the skip marker. test-invariants_test.sh pins both guards.
+  dry-run:
+    needs: [check, macapp]
+    if: ${{ inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nightly-macapp
+          path: macapp/build/release
+
+      # cli-archives.sh check, which publish-assets.sh runs first, runs the linux binaries: the
+      # arm64 one under qemu.
+      - name: Install qemu-user (runs the linux arm64 binary)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+
+      - name: Dry-run the nightly's upload into a throwaway draft
+        run: |
+          ASSET="$RUNNER_TEMP/workroom-macos-app_nightly.dmg"
+          cp "macapp/build/release/Workroom Nightly.dmg" "$ASSET"
+          macapp/Scripts/publish-assets.sh --dry-run nightly macapp/build/release/cli "$ASSET"
+
+  # Publish the archives and the app together, once both are built and signed. Never in a dry run.
   publish:
     needs: [check, macapp]
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -248,6 +318,11 @@ jobs:
         env:
           REPO: ${{ github.repository }}
         run: scripts/ci/download-stats.sh nightly-publish
+
+      # cli-archives.sh check, which publish-assets.sh runs first, runs the linux binaries: the
+      # arm64 one under qemu.
+      - name: Install qemu-user (runs the linux arm64 binary)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
 
       # Uploads the archives, checksums.txt and the DMG, removes the Go CLI's Windows archives,
       # and checks the release's archives are exactly this build's.

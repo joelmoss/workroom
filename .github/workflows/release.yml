@@ -26,7 +26,9 @@ jobs:
   # crashes symbolicate; release.sh skips that step when any of them (or sentry-cli) is absent.
   macapp:
     runs-on: xcode-27
-    timeout-minutes: 120
+    # The app took about 60 minutes before #681; the standalone archives add four builds, a
+    # notarization and the contract suite's build.
+    timeout-minutes: 150
     permissions:
       contents: read
     steps:
@@ -55,6 +57,11 @@ jobs:
             aarch64-apple-darwin x86_64-apple-darwin
             aarch64-unknown-linux-musl x86_64-unknown-linux-musl
           cache: "false"
+
+      # cli-archives.sh runs every darwin binary it ships before anything publishes: the x86_64
+      # one under Rosetta.
+      - name: Install Rosetta (runs the darwin amd64 binary)
+        run: sudo softwareupdate --install-rosetta --agree-to-license
 
       - name: Import Developer ID signing certificate
         uses: ./.github/actions/import-signing-certificate
@@ -154,6 +161,11 @@ jobs:
         env:
           REPO: ${{ github.repository }}
         run: scripts/ci/download-stats.sh release
+
+      # cli-archives.sh check, which publish-assets.sh runs first, runs the linux binaries: the
+      # arm64 one under qemu.
+      - name: Install qemu-user (runs the linux arm64 binary)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
 
       # Creates the release as a draft, uploads the archives, checksums.txt and the DMG, checks
       # they are exactly this build's, then publishes it: Latest for a clean vX.Y.Z, a pre-release
