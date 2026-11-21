@@ -768,8 +768,17 @@ private struct AppearanceSettingsPane: View {
   }
 
   var body: some View {
+    #if DEBUG
+      // PROTOTYPE (prototype/theme-gallery): the theme gallery variants replace this pane.
+      ThemeGalleryPrototypeHost()
+    #else
+      realBody
+    #endif
+  }
+
+  private var realBody: some View {
     let familyLabel = ThemeCatalog.familyLabel(light: lightTheme, dark: darkTheme)
-    Form {
+    return Form {
       Picker("Appearance", selection: $appearance) {
         ForEach(AppearanceMode.allCases, id: \.self) { mode in
           Text(mode.label).tag(mode)
