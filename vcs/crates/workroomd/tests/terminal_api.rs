@@ -906,7 +906,11 @@ fn with_no_daemon_every_run_exits_7_daemon_unreachable() {
         None => workroom_outside_any_daemon(&workspace.dir, args),
     };
     for daemon in [None, Some(nowhere.as_path())] {
-        for args in [&["sessions", "--json"][..], &["sessions", "x", "--json"]] {
+        for args in [
+            &["sessions", "--json"][..],
+            &["sessions", "x", "--json"],
+            &["send", "x", "hi", "--json"],
+        ] {
             let run = run(daemon, args);
             assert_eq!(run.code, 7, "{args:?} {}", run.stdout);
             assert_eq!(run.envelope()["error"]["kind"], "DaemonUnreachable");
@@ -926,6 +930,8 @@ fn a_daemon_older_than_the_terminal_api_is_sent_nothing() {
     let workspace = Workspace::new("api-old-daemon");
     let socket = workspace.socket();
     assert_too_old(&socket, &["sessions", "--json"], "sessions");
+    // One that types, too: nothing it would type reaches the old daemon.
+    assert_too_old(&socket, &["send", "x", "hi", "--json"], "send");
 }
 
 /// Every `api` subcommand checks the greeting as `sessions` does, and names itself in the failure.
@@ -1244,6 +1250,27 @@ fn every_method_publishes_schemas_its_replies_match() {
     }
     let refused = api.call("terminal.capture", json!({"target": RUN, "lines": -1}));
     assert_eq!(refused["error"]["kind"], "InvalidRequest", "{refused}");
+
+    // A send, typed into a shell (a no-op command), and one into the caller's own session.
+    let params = json!({"target": OTHER, "text": ":\n"});
+    assert_eq!(
+        violation(&schema("terminal.send", "input"), &params, "send"),
+        None
+    );
+    let sent = api.call("terminal.send", params);
+    assert_eq!(sent["revision"], 1, "{sent}");
+    assert_eq!(
+        violation(&schema("terminal.send", "output"), &sent["result"], "send"),
+        None,
+        "{sent}"
+    );
+    let own = api.request(&json!({
+        "method": "terminal.send",
+        "params": {"target": OTHER, "text": "x"},
+        "caller": OTHER,
+    }));
+    assert_eq!(own["error"]["kind"], "RefusedSelf", "{own}");
+    assert_eq!(violation(&error_schema, &own["error"], "error"), None);
 
     // A wait answers on its stream when it ends: here at once, out of time.
     let params = json!({"target": "beef", "ended": true, "timeout_ms": 0});
@@ -1931,6 +1958,8 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
         ("session.list", json!({})),
         ("session.resolve", json!({"target": OTHER})),
         ("terminal.capture", json!({"target": OTHER, "lines": 2})),
+        // A no-op command, typed into the shell.
+        ("terminal.send", json!({"target": OTHER, "text": ":\n"})),
         (
             "terminal.wait",
             json!({"target": OTHER, "regex": "API-CALL-WAITED", "timeout_ms": 30000}),
@@ -3754,4 +3783,364 @@ fn events_keep_to_the_callers_workroom_and_to_each_filter() {
         refused(&["events", "--all", "--workroom", "wr-1", "--json"]),
         (1, json!("InternalError"))
     );
+}
+
+/// What a [`raw_reader`] reads: the modes its program turns on (`setup`, a `printf` format) and
+/// off after (`teardown`), how many bytes it reads, and what it hands them to (`od` for hex, say),
+/// whose output goes to `name`.
+struct Reading<'a> {
+    name: &'a str,
+    setup: &'a str,
+    teardown: &'a str,
+    count: usize,
+    keep: &'a str,
+}
+
+/// Has the program in `pane` (session `id`) turn on its modes, put its terminal in raw mode and
+/// read what `reading` says, its output in a file under `dir`; once it is reading, with its modes
+/// in the daemon's shadow terminal, which a wait for what it prints after them says.
+fn raw_reader(
+    socket: &Path,
+    pane: &mut Spawned,
+    id: &str,
+    dir: &Path,
+    reading: Reading,
+) -> std::path::PathBuf {
+    let Reading {
+        name,
+        setup,
+        teardown,
+        count,
+        keep,
+    } = reading;
+    let path = dir.join(name);
+    let partial = dir.join(format!("{name}.partial"));
+    let raw = dir.join(format!("{name}.raw"));
+    // Split in the typed line, so the line's echo is not the mark.
+    type_line(
+        pane,
+        &format!(
+            "stty raw -echo; printf '{setup}READ''Y-{name}'; touch '{}'; head -c {count} | {keep} > \
+             '{}'; mv '{}' '{}'; printf '{teardown}'; stty sane",
+            raw.display(),
+            partial.display(),
+            partial.display(),
+            path.display()
+        ),
+    );
+    assert!(
+        wait_for(Duration::from_secs(20), || raw.exists()),
+        "{name}: the reader never started"
+    );
+    if has_terminal_state() {
+        // The mark came after the modes, so once the shadow has it, it has them.
+        let mark = format!("READY-{name}");
+        let (code, ready) = wait(
+            socket,
+            &[id, "--regex", &mark, "--include-screen", "--timeout", "20s"],
+        );
+        assert_eq!(code, 0, "{name}: no mark: {ready}");
+    }
+    path
+}
+
+/// The bytes a [`raw_reader`] kept, once it has all it was waiting for.
+fn read_raw(path: &Path) -> Vec<u8> {
+    assert!(
+        wait_for(Duration::from_secs(20), || path.exists()),
+        "the reader never had all its bytes"
+    );
+    std::fs::read_to_string(path)
+        .expect("read the hex")
+        .split_whitespace()
+        .map(|byte| u8::from_str_radix(byte, 16).expect("a hex byte"))
+        .collect()
+}
+
+/// `workroom send <args> --json` run in `shell`, through a `sh` of its own as a coding agent
+/// runs it: its exit code and envelope.
+fn send_from(shell: &mut Spawned, dir: &Path, name: &str, args: &str) -> (i32, Value) {
+    let output = shell_output(
+        shell,
+        dir,
+        name,
+        &format!(
+            "/bin/sh -c \"'{}' send {args} --json; echo exit=\\$?\"",
+            common::daemon_binary().display()
+        ),
+    );
+    let (envelope, code) = output
+        .rsplit_once("exit=")
+        .unwrap_or_else(|| panic!("no exit status in {output:?}"));
+    let envelope = serde_json::from_str(envelope.trim())
+        .unwrap_or_else(|e| panic!("not one envelope ({e}): {output:?}"));
+    (code.trim().parse().expect("an exit code"), envelope)
+}
+
+/// `workroom send` from one pane into another: the text as given, as a bracketed paste once the
+/// program has turned that on, then each key encoded for the program's modes (the legacy
+/// encoding, application cursor keys, the kitty keyboard protocol), then Enter. The reply says
+/// which modes it typed for, and each send is a `session.input` event naming the pane it came
+/// from. Typing into the caller's own pane is `RefusedSelf` (3) without `--allow-self`. A daemon
+/// built without terminal-state can't read the modes: text goes as it is, never as a paste, and
+/// keys are refused.
+#[test]
+fn send_types_text_and_keys_for_the_programs_modes_and_names_its_sender() {
+    let workspace = Workspace::new("api-send");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut sender = open(&socket, SHELL, "sender", "wr-1", &workspace.dir);
+    let mut target = open(&socket, OTHER, "target", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 2);
+    let mut events = Events::start(&socket, &["--all", "--type", "session.input"]);
+    events.until("the snapshot's end", |e| e["event"] == "snapshot-complete");
+
+    let keys = "'echo hi' --key Up --key Ctrl+C --key Escape --enter";
+    let paste = |text: &[u8]| [b"\x1b[200~".as_slice(), text, b"\x1b[201~"].concat();
+    /// One send: the modes its program turns on and off, its arguments, what reaches the program
+    /// and the `modes` its reply says.
+    struct Case {
+        name: &'static str,
+        setup: &'static str,
+        teardown: &'static str,
+        args: &'static str,
+        expected: Vec<u8>,
+        said: Value,
+    }
+    let mut cases = Vec::new();
+    if has_terminal_state() {
+        let modes = |kitty: u32, cursor: bool, paste: bool| {
+            json!({
+                "kitty_flags": kitty,
+                "application_cursor_keys": cursor,
+                "bracketed_paste": paste,
+            })
+        };
+        cases.push(Case {
+            name: "legacy",
+            setup: "",
+            teardown: "",
+            args: keys,
+            expected: b"echo hi\x1b[A\x03\x1b\r".to_vec(),
+            said: modes(0, false, false),
+        });
+        cases.push(Case {
+            name: "pasted-decckm",
+            setup: "\\033[?2004h\\033[?1h",
+            teardown: "\\033[?1l\\033[?2004l",
+            args: keys,
+            expected: [paste(b"echo hi"), b"\x1bOA\x03\x1b\r".to_vec()].concat(),
+            said: modes(0, true, true),
+        });
+        // Ghostty consults DECCKM only for the legacy encoding.
+        cases.push(Case {
+            name: "kitty",
+            setup: "\\033[?2004h\\033[?1h\\033[>1u",
+            teardown: "\\033[<u\\033[?1l\\033[?2004l",
+            args: keys,
+            expected: [paste(b"echo hi"), b"\x1b[A\x1b[99;5u\x1b[27u\r".to_vec()].concat(),
+            said: modes(1, true, true),
+        });
+    } else {
+        // The program turned bracketed paste on, but the daemon can't know.
+        cases.push(Case {
+            name: "no-modes",
+            setup: "\\033[?2004h",
+            teardown: "\\033[?2004l",
+            args: "'echo hi'",
+            expected: b"echo hi".to_vec(),
+            said: Value::Null,
+        });
+    }
+    for Case {
+        name,
+        setup,
+        teardown,
+        args,
+        expected,
+        said,
+    } in cases
+    {
+        let kept = raw_reader(
+            &socket,
+            &mut target,
+            OTHER,
+            &workspace.dir,
+            Reading {
+                name: &format!("{name}-typed"),
+                setup,
+                teardown,
+                count: expected.len(),
+                keep: "od -An -v -tx1",
+            },
+        );
+        let (code, envelope) = send_from(
+            &mut sender,
+            &workspace.dir,
+            name,
+            &format!("{OTHER} {args}"),
+        );
+        assert_eq!(code, 0, "{name}: {envelope}");
+        assert_eq!(envelope["command"], "send", "{envelope}");
+        assert_eq!(envelope["session"], OTHER, "{envelope}");
+        assert_eq!(envelope["caller"], SHELL, "{envelope}");
+        assert_eq!(envelope["bytes"], expected.len(), "{envelope}");
+        assert_eq!(envelope["modes"], said, "{name}: {envelope}");
+        assert_eq!(
+            String::from_utf8_lossy(&read_raw(&kept)),
+            String::from_utf8_lossy(&expected),
+            "{name}"
+        );
+        let told = events.until("the send's event", |e| e["event"] == "session.input");
+        assert_eq!(told["session"], OTHER, "{told}");
+        assert_eq!(told["sender"], SHELL, "{told}");
+        assert_eq!(told["bytes"], expected.len(), "{told}");
+        assert_eq!(told["scope"], json!({"kind": "workroom", "id": "wr-1"}));
+    }
+    if !has_terminal_state() {
+        let (code, envelope) = send_from(
+            &mut sender,
+            &workspace.dir,
+            "keys",
+            &format!("{OTHER} --key Up"),
+        );
+        assert_eq!(code, 1, "{envelope}");
+        assert_eq!(envelope["error"]["kind"], "InternalError", "{envelope}");
+    }
+
+    // Its own pane, by its variable: refused, and with `--allow-self` typed (a space before the
+    // next command line, which changes nothing).
+    let (code, envelope) = send_from(&mut sender, &workspace.dir, "self", "\\$WORKROOM_PANE x");
+    assert_eq!(code, 3, "{envelope}");
+    assert_eq!(envelope["error"]["kind"], "RefusedSelf", "{envelope}");
+    let (code, envelope) = send_from(
+        &mut sender,
+        &workspace.dir,
+        "allowed",
+        "\\$WORKROOM_PANE ' ' --allow-self",
+    );
+    assert_eq!(code, 0, "{envelope}");
+    assert_eq!(envelope["session"], SHELL, "{envelope}");
+    let told = events.until("the send to itself", |e| e["event"] == "session.input");
+    assert_eq!(
+        (&told["session"], &told["sender"]),
+        (&json!(SHELL), &json!(SHELL))
+    );
+
+    // From no pane, the sender is none.
+    let outside = workroom(Some(&socket), &["send", OTHER, ":\n", "--json"]);
+    assert_eq!(outside.code, 0, "{}", outside.stdout);
+    assert_eq!(outside.envelope()["caller"], Value::Null);
+    let told = events.until("the send from no pane", |e| e["event"] == "session.input");
+    assert_eq!(told["sender"], Value::Null, "{told}");
+    assert_eq!(
+        events.count("session.input"),
+        if has_terminal_state() { 5 } else { 3 },
+        "a refused send is not told: {:#?}",
+        events.seen
+    );
+}
+
+/// A send is no client (ADR 0042): a session nobody is attached to stays detached at the size its
+/// last client left, and the connection that sent it is sent its reply and nothing else, no
+/// repaint and no keepalive probe.
+#[test]
+fn a_send_attaches_nothing_takes_no_size_and_gets_no_probes() {
+    let workspace = Workspace::new("api-send-detached");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut target = open(&socket, OTHER, "target", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+    let before = shell_output(&mut target, &workspace.dir, "before", "stty size");
+    drop(target);
+    assert!(
+        wait_for(Duration::from_secs(20), || {
+            common::list_sessions(&socket).contains("detached")
+        }),
+        "the session never detached: {}",
+        common::list_sessions(&socket)
+    );
+
+    let after = workspace.dir.join("after");
+    let mut api = Api::connect(&socket);
+    let sent = api.call(
+        "terminal.send",
+        json!({"target": OTHER, "text": format!("stty size > '{}'\n", after.display())}),
+    );
+    assert!(sent.get("error").is_none(), "{sent}");
+    // Nothing more, on any service: no repaint, no probe, no output of the session's.
+    assert_eq!(api.0.next(Duration::from_secs(2)).map(|e| e.service), None);
+    assert!(api.0.seen.is_empty() && api.0.failures.is_empty());
+    assert!(
+        wait_for(Duration::from_secs(20), || std::fs::read_to_string(&after)
+            .is_ok_and(|size| size.ends_with('\n'))),
+        "the shell never ran what was sent"
+    );
+    assert_eq!(std::fs::read_to_string(&after).unwrap(), before);
+    let listed = common::list_sessions(&socket);
+    assert!(
+        listed.contains("detached") && !listed.contains(" attached"),
+        "{listed}"
+    );
+}
+
+/// One send types at most 1 MiB, whole: from stdin, exactly that much reaches the program, in
+/// chunked requests the CLI makes of it; a byte more is `TooLarge` (2) before any daemon is looked
+/// for, and so is that much with a key after it, which the daemon refuses.
+#[test]
+fn a_send_types_one_mib_whole_and_refuses_more() {
+    const MIB: usize = 1024 * 1024;
+    let workspace = Workspace::new("api-send-large");
+    let socket = workspace.socket();
+    let nowhere = workspace.dir.join("nobody.sock");
+    let over = workroom_with_stdin(
+        Some(&nowhere),
+        &["send", OTHER, "--stdin", "--json"],
+        Some(&"x".repeat(MIB + 1)),
+    );
+    assert_eq!(over.code, 2, "{}", over.stdout);
+    assert_eq!(over.envelope()["error"]["kind"], "TooLarge");
+    assert_eq!(over.envelope()["command"], "send");
+
+    let _daemon = start_daemon(&socket);
+    let mut target = open(&socket, OTHER, "target", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+    let counted = raw_reader(
+        &socket,
+        &mut target,
+        OTHER,
+        &workspace.dir,
+        Reading {
+            name: "counted",
+            setup: "",
+            teardown: "",
+            count: MIB,
+            keep: "wc -c",
+        },
+    );
+    let whole = workroom_with_stdin(
+        Some(&socket),
+        &["send", OTHER, "--stdin", "--json"],
+        Some(&"x".repeat(MIB)),
+    );
+    assert_eq!(whole.code, 0, "{} {}", whole.stdout, whole.stderr);
+    assert_eq!(whole.envelope()["bytes"], MIB);
+    assert!(
+        wait_for(Duration::from_secs(20), || counted.exists()),
+        "the program never had all of it"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&counted).unwrap().trim(),
+        MIB.to_string()
+    );
+
+    if has_terminal_state() {
+        let past = workroom_with_stdin(
+            Some(&socket),
+            &["send", OTHER, "--stdin", "--enter", "--json"],
+            Some(&"x".repeat(MIB)),
+        );
+        assert_eq!(past.code, 2, "{}", past.stdout);
+        assert_eq!(past.envelope()["error"]["kind"], "TooLarge");
+    }
 }
