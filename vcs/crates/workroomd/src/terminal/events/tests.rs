@@ -498,8 +498,20 @@ fn a_hand_off_tells_every_carried_client_detached() {
     let told: Vec<&Value> = live.iter().map(|event| &event["client"]["id"]).collect();
     assert_eq!(told, [3, 12]);
 
-    // A table whose sessions carry no clients, as one from before them.
+    // A client that left before the hand-off still had its number: the next program numbers
+    // past it too, not past only those still attached.
+    let old = Hub::default();
+    old.created(id(1), listing(1, "wr-1"));
+    old.client_attached(id(1), client(1));
+    old.client_attached(id(1), client(2));
+    old.client_detached(2);
+    let new = Hub::default();
+    assert!(new.adopt(&old.carry()));
+    assert_eq!(new.reconcile(vec![(id(1), listing(1, "wr-1"))], true), 2);
+
+    // A table that carries no clients, as one from before them.
     let mut table: Value = serde_json::from_slice(&old.carry()).unwrap();
+    table.as_object_mut().unwrap().remove("highest_client");
     for session in table["sessions"].as_array_mut().unwrap() {
         session[1].as_object_mut().unwrap().remove("clients");
     }
