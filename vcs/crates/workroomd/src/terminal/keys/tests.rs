@@ -98,7 +98,6 @@ fn legacy_keys_that_type_a_byte_are_c0_controls_and_alt_prefixes_escape() {
         ("Enter", LEGACY, b"\r"),
         ("Enter", APPLICATION, b"\r"),
         ("Alt+Enter", LEGACY, b"\x1b\r"),
-        ("Ctrl+Enter", LEGACY, b"\r"),
         ("Tab", LEGACY, b"\t"),
         ("Shift+Tab", LEGACY, b"\x1b[Z"),
         ("Alt+Tab", LEGACY, b"\x1b\t"),
@@ -139,6 +138,44 @@ fn legacy_keys_that_type_a_byte_are_c0_controls_and_alt_prefixes_escape() {
         ("+", LEGACY, b"+"),
         ("Alt++", LEGACY, b"\x1b+"),
         ("é", LEGACY, "é".as_bytes()),
+    ]);
+}
+
+/// Enter, Tab, Escape and Backspace with modifiers, as Ghostty's `function_keys.zig` has them with
+/// modifyOtherKeys off: Alt alone puts ESC before the key and Shift+Tab is `CSI Z`; any other
+/// modifiers on Enter, Tab or Escape are `CSI 27;m;code~` (13, 9, 27), Super included in `m`;
+/// Backspace is DEL, BS with Ctrl, ESC before either with Alt, Shift and Super changing nothing.
+#[test]
+fn legacy_modified_enter_tab_escape_and_backspace_are_ghosttys() {
+    check(&[
+        ("Shift+Enter", LEGACY, b"\x1b[27;2;13~"),
+        ("Alt+Enter", LEGACY, b"\x1b\r"),
+        ("Alt+Shift+Enter", LEGACY, b"\x1b[27;4;13~"),
+        ("Ctrl+Enter", LEGACY, b"\x1b[27;5;13~"),
+        ("Ctrl+Shift+Enter", LEGACY, b"\x1b[27;6;13~"),
+        ("Ctrl+Alt+Enter", LEGACY, b"\x1b[27;7;13~"),
+        ("Ctrl+Alt+Shift+Enter", LEGACY, b"\x1b[27;8;13~"),
+        ("Super+Enter", LEGACY, b"\x1b[27;9;13~"),
+        ("Ctrl+Alt+Shift+Super+Enter", APPLICATION, b"\x1b[27;16;13~"),
+        ("Shift+Tab", LEGACY, b"\x1b[Z"),
+        ("Alt+Tab", LEGACY, b"\x1b\t"),
+        ("Alt+Shift+Tab", LEGACY, b"\x1b[27;4;9~"),
+        ("Ctrl+Tab", LEGACY, b"\x1b[27;5;9~"),
+        ("Ctrl+Shift+Tab", LEGACY, b"\x1b[27;6;9~"),
+        ("Super+Tab", LEGACY, b"\x1b[27;9;9~"),
+        ("Shift+Escape", LEGACY, b"\x1b[27;2;27~"),
+        ("Alt+Escape", LEGACY, b"\x1b\x1b"),
+        ("Ctrl+Escape", LEGACY, b"\x1b[27;5;27~"),
+        ("Ctrl+Alt+Escape", LEGACY, b"\x1b[27;7;27~"),
+        ("Super+Esc", LEGACY, b"\x1b[27;9;27~"),
+        ("Shift+Backspace", LEGACY, b"\x7f"),
+        ("Super+Backspace", LEGACY, b"\x7f"),
+        ("Ctrl+Backspace", LEGACY, b"\x08"),
+        ("Ctrl+Shift+Backspace", LEGACY, b"\x08"),
+        ("Alt+Backspace", LEGACY, b"\x1b\x7f"),
+        ("Alt+Shift+Backspace", LEGACY, b"\x1b\x7f"),
+        ("Ctrl+Alt+Backspace", LEGACY, b"\x1b\x08"),
+        ("Ctrl+Alt+Super+Backspace", LEGACY, b"\x1b\x08"),
     ]);
 }
 
