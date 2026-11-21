@@ -191,7 +191,7 @@ pub const LIMITS: Limits = Limits {
 static WAITS: AtomicUsize = AtomicUsize::new(0);
 
 /// How a wait's thread is started: `std::thread`, but for a test's seam.
-type Spawn = fn(Box<dyn FnOnce() + Send>) -> std::io::Result<()>;
+pub(super) type Spawn = fn(Box<dyn FnOnce() + Send>) -> std::io::Result<()>;
 
 fn spawn_thread(work: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
     std::thread::Builder::new()
@@ -203,11 +203,12 @@ fn spawn_thread(work: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
 /// One connection's waits, cancelled when it closes: a caller that has gone away is waited for by
 /// nobody, and must not leave a matcher on a session's output.
 pub struct Waits {
-    held: Vec<Arc<Waiter>>,
-    limits: Limits,
+    /// Its waits, and its `terminal.command`s' (#691).
+    pub(super) held: Vec<Arc<Waiter>>,
+    pub(super) limits: Limits,
     /// What the daemon's waits count against: `WAITS`, or a test's own.
     daemon: &'static AtomicUsize,
-    spawn: Spawn,
+    pub(super) spawn: Spawn,
 }
 
 impl Default for Waits {
@@ -249,7 +250,7 @@ impl Drop for Waits {
     }
 }
 
-fn busy(held: usize, on: &str) -> ApiError {
+pub(super) fn busy(held: usize, on: &str) -> ApiError {
     ApiError::new(
         kind::BUSY,
         format!(
@@ -434,32 +435,18 @@ fn register(
         deadline,
     };
     // A precondition of the session's, before any bound: a wait that could never be met is
-    // refused as such, never as `Busy`. A shell's marks only ever start, so one seen here is
-    // still there when the waiter is added. A session young enough that its first prompt may
-    // be still to come gets until `marks_grace` from its creation for one, on the wait's thread.
-    let mut marks_by = None;
-    if matches!(condition, Condition::CommandFinished)
-        && let Some(shadow) = sessions.shadow(id)
-        && !lock_or_recover(&shadow).has_shell_marks()
-    {
-        let left = age(sessions, id).and_then(|age| waits.limits.marks_grace.checked_sub(age));
-        match left {
-            Some(left) if !left.is_zero() => marks_by = Instant::now().checked_add(left),
-            _ => return Err(no_shell_integration(target)),
-        }
-    }
-    // Only waits not yet over count: a thread ending its wait leaves it here a moment longer.
-    waits.held.retain(|held| held.outcome().is_none());
-    if waits.held.len() >= waits.limits.connection {
-        return Err(busy(waits.held.len(), "this connection"));
-    }
-    let slot = Slot::acquire_from(waits.daemon, waits.limits.daemon)
-        .ok_or_else(|| busy(waits.limits.daemon, "this daemon"))?;
+    // refused as such, never as `Busy`.
+    let marks_by = if matches!(condition, Condition::CommandFinished) {
+        marks_by(sessions, id, waits.limits, target)?
+    } else {
+        None
+    };
+    let slot = admit(waits)?;
     let most = waits.limits.session;
     let mut condition = condition;
     let added = sessions.add_waiter(id, |shadow, held| {
-        if held >= most {
-            return Err(busy(held, &format!("session {}", id.to_hyphenated())));
+        if held.len() >= most {
+            return Err(busy(held.len(), &format!("session {}", id.to_hyphenated())));
         }
         // Joined mid-sequence, the next bytes are its rest, never text.
         if let Condition::Output(matcher) = &mut condition
@@ -503,7 +490,43 @@ fn register(
     Ok((request, waiter, slot))
 }
 
-fn no_shell_integration(target: &str) -> ApiError {
+/// Whether session `id`, which `target` named, can show a command's end: `None` when its shell has
+/// sent a mark, which only ever starts, so one seen here is still there once a waiter is added.
+/// A session young enough that its first prompt may be still to come gets until `marks_grace`
+/// from its creation for one, the `Instant` returned. An older one without marks is
+/// `NoShellIntegration`.
+pub(super) fn marks_by(
+    sessions: &SessionStore,
+    id: SessionId,
+    limits: Limits,
+    target: &str,
+) -> Result<Option<Instant>, ApiError> {
+    let Some(shadow) = sessions.shadow(id) else {
+        return Ok(None);
+    };
+    if lock_or_recover(&shadow).has_shell_marks() {
+        return Ok(None);
+    }
+    let left = age(sessions, id).and_then(|age| limits.marks_grace.checked_sub(age));
+    match left {
+        Some(left) if !left.is_zero() => Ok(Instant::now().checked_add(left)),
+        _ => Err(no_shell_integration(target)),
+    }
+}
+
+/// A place for one more wait on `waits`' connection and on the daemon, or `Busy`: the slot, held
+/// until the wait's thread ends.
+pub(super) fn admit(waits: &mut Waits) -> Result<Slot, ApiError> {
+    // Only waits not yet over count: a thread ending its wait leaves it here a moment longer.
+    waits.held.retain(|held| held.outcome().is_none());
+    if waits.held.len() >= waits.limits.connection {
+        return Err(busy(waits.held.len(), "this connection"));
+    }
+    Slot::acquire_from(waits.daemon, waits.limits.daemon)
+        .ok_or_else(|| busy(waits.limits.daemon, "this daemon"))
+}
+
+pub(super) fn no_shell_integration(target: &str) -> ApiError {
     ApiError::new(
         kind::NO_SHELL_INTEGRATION,
         format!(
