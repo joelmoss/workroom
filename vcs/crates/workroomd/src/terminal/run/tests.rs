@@ -6,14 +6,17 @@ use crate::terminal::session::SessionId;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// A directory of the test's own, gone when it is dropped.
+/// A directory this run made itself (an exclusive `create_dir`, skipping any name already
+/// there), and only that one is removed when it is dropped.
 struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(name: &str) -> Scratch {
-        let dir = std::env::temp_dir().join(format!("wr-runs-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let base = std::env::temp_dir();
+        let dir = (0..)
+            .map(|n| base.join(format!("wr-runs-{name}-{}-{n}", std::process::id())))
+            .find(|dir| std::fs::create_dir(dir).is_ok())
+            .unwrap();
         Scratch(dir)
     }
 }
