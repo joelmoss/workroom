@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 
 use super::{ApiError, Call, Slot, kind, listed, resolve};
 use crate::daemon::rpc::SharedWriter;
+use crate::daemon::transport::Closer;
 use crate::terminal::events::{Cursor, Known, Next, Start, name, session_event};
 
 pub const NAME: &str = "events.subscribe";
@@ -45,6 +46,11 @@ pub struct Subscriptions {
     daemon: &'static AtomicUsize,
     /// The hub they wait on, for closing to wake them: the store's, set by the first.
     hub: Option<Arc<crate::terminal::events::Hub>>,
+    /// Ends the connection, which a subscription whose write fails calls: a write fails once its
+    /// caller has read nothing for the transport's `WRITE_TIMEOUT`, and may leave part of an
+    /// envelope behind it, so the stream can't go on. Its caller sees the connection drop and asks
+    /// again with `since`.
+    closer: Option<Closer>,
 }
 
 impl Default for Subscriptions {
@@ -54,21 +60,27 @@ impl Default for Subscriptions {
             limits: LIMITS,
             daemon: &SUBSCRIPTIONS,
             hub: None,
+            closer: None,
         }
     }
 }
 
 impl Subscriptions {
+    /// A connection's subscriptions, whose failed writes end it with `closer`.
+    pub fn closing(closer: Closer) -> Subscriptions {
+        let mut subscriptions = Subscriptions::default();
+        subscriptions.closer = Some(closer);
+        subscriptions
+    }
+
     /// A connection's subscriptions under `limits`, counted against `daemon`, so a test reaches
     /// each bound with a few and its own counter.
     #[cfg(test)]
     pub fn with(limits: Limits, daemon: &'static AtomicUsize) -> Subscriptions {
-        Subscriptions {
-            held: Vec::new(),
-            limits,
-            daemon,
-            hub: None,
-        }
+        let mut subscriptions = Subscriptions::default();
+        subscriptions.limits = limits;
+        subscriptions.daemon = daemon;
+        subscriptions
     }
 }
 
@@ -324,6 +336,7 @@ pub fn start(subscriptions: &mut Subscriptions, call: &Call, writer: &SharedWrit
     let closed = Arc::new(AtomicBool::new(false));
     let sessions = call.sessions.clone();
     let ended = Arc::clone(&closed);
+    let closer = subscriptions.closer.clone();
     let spawned = std::thread::Builder::new()
         .name("terminal events".into())
         .spawn(move || {
@@ -349,9 +362,15 @@ pub fn start(subscriptions: &mut Subscriptions, call: &Call, writer: &SharedWrit
                         .filter(|event| filter.passes(&event.json, false))
                         .all(|event| send(Ok(event.json.clone()), true)),
                 };
-                // A caller that hung up ends it.
+                // A caller that hung up, or stopped reading, ends it, and its connection with it.
                 if !sent {
                     ended.store(true, Ordering::SeqCst);
+                    if let Some(close) = &closer {
+                        crate::note!(
+                            "terminal API: an events subscriber stopped reading; closing it"
+                        );
+                        close();
+                    }
                     return;
                 }
             }

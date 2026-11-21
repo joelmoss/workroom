@@ -1075,6 +1075,19 @@ pub struct Connection {
     subscriptions: events::Subscriptions,
 }
 
+impl Connection {
+    /// A connection's side of the service that `closer` ends: what a subscription whose caller
+    /// stopped reading does, so the caller sees its connection drop and asks again with `since`,
+    /// rather than wait on a stream that will never go on.
+    pub fn closing(closer: crate::daemon::transport::Closer) -> Connection {
+        Connection {
+            partial: PartialRequests::default(),
+            waits: wait::Waits::default(),
+            subscriptions: events::Subscriptions::closing(closer),
+        }
+    }
+}
+
 /// Answers one envelope on its own stream: at once, or for a wait, when it ends.
 pub fn dispatch(
     connection: &mut Connection,

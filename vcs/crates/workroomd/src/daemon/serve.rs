@@ -600,7 +600,7 @@ pub fn handle_connection_with<T: Transport>(
         peer_pid,
         partial: crate::daemon::rpc::PartialRequests::default(),
         layout_partial: crate::daemon::rpc::PartialRequests::default(),
-        api: crate::terminal::api::Connection::default(),
+        api: crate::terminal::api::Connection::closing(Arc::clone(&closer)),
         subscriptions: crate::vcs::watch::Subscriptions::new(
             Arc::clone(&writer),
             Arc::clone(&closer),

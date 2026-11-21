@@ -2910,9 +2910,25 @@ fn events_are_a_snapshot_then_snapshot_complete_then_live_events_in_order() {
     assert_eq!(ended["exit_code"], 3, "{ended}");
     assert_eq!(ended["scope"], json!({"kind": "workroom", "id": "wr-1"}));
 
+    // Killed, as the app closing its pane does: ended, its exit code unknown.
+    let id = wr_protocol::terminal::parse_session_id(std::ffi::OsStr::new(SHELL))
+        .expect("an id")
+        .0
+        .to_vec();
+    let reply = common::control(
+        &socket,
+        wr_protocol::frame::Frame::new(wr_protocol::frame::FrameKind::Kill, id),
+    );
+    assert_eq!(reply.kind, wr_protocol::frame::FrameKind::Acknowledged);
+    let killed = events.until("the killed session's end", |e| {
+        is(e, "session.ended", SHELL)
+    });
+    assert_eq!(killed["exit_code"], Value::Null, "{killed}");
+
     assert_numbered(&events.seen, &first["boot"]);
     assert!(first["boot"].is_string(), "{first}");
     assert_eq!(events.count("session.created"), 1, "{:#?}", events.seen);
+    assert_eq!(events.count("session.ended"), 2, "{:#?}", events.seen);
     assert_eq!(events.count("snapshot-complete"), 1, "{:#?}", events.seen);
     events.stop();
 }
