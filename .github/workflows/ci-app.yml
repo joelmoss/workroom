@@ -339,7 +339,8 @@ jobs:
   app-scripts:
     if: inputs.scripts
     runs-on: xcode-27
-    timeout-minutes: 30
+    # 45, not 30: cli-archives_test.sh adds two release builds of the workroom crate (#681).
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -377,6 +378,15 @@ jobs:
         with:
           workspaces: vcs -> build-daemon-target
           key: app-scripts-build-agent
+
+      # Go and python3 for cli-archives_test.sh, which builds a Go CLI from this checkout and
+      # updates it into the Rust binary from a releases server on 127.0.0.1 (#681). It fails in CI
+      # without them. Its own step, not setup-app-build's, as the app builds no Go.
+      - name: Set up Go (the Go CLI cli-archives_test.sh updates)
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
 
       # `build-daemon_test.sh`'s universal cases need BOTH darwin targets installed and skip
       # themselves otherwise — and the step still prints OK, so the skip is invisible. Measured on
