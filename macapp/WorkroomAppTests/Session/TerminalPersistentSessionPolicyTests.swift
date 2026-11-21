@@ -1,3 +1,4 @@
+import WorkroomDomain
 import WorkroomWire
 import XCTest
 
@@ -141,16 +142,19 @@ final class OrphanedSessionTests: XCTestCase {
     XCTAssertEqual(returned, ended)
   }
 
-  /// Value: protects=the launch sweep ending a Quick Terminal session a crash left running, and only
-  /// that (ADR 0064); fails_when=its tag resolves, an attached (live) one is ended, or a workroom's is
-  /// touched; why_new=the workroom sweep needs a project list; seam=none; no_claim=a real crash.
-  func testTheQuickTerminalSweepEndsOnlyItsDetachedSessions() async {
-    let orphan = session(workroom: QuickTerminalController.targetID.encoded)
-    let live = session(workroom: QuickTerminalController.targetID.encoded, attached: true)
+  /// Value: protects=the launch sweep ending a session an older build's Quick Terminal left
+  /// running, and only that, while today's Quick Terminal sessions (the built-in group's) survive
+  /// to reattach (ADR 0077); fails_when=the legacy tag resolves, the built-in group's tag is ended,
+  /// an attached (live) one is ended, or a workroom's is touched; why_new=the Quick Terminal's
+  /// sessions survive a quit now (#661); seam=none; no_claim=a real crash.
+  func testTheQuickTerminalSweepEndsOnlyLegacyDetachedSessions() async {
+    let orphan = session(workroom: TargetID.legacyQuickTerminalTag)
+    let live = session(workroom: TargetID.legacyQuickTerminalTag, attached: true)
+    let builtIn = session(workroom: TargetID.quickTerminal.encoded)
     let workroom = session(workroom: "wr|/p|gone")
     var ended: [UUID] = []
     _ = await PersistentSessionService.endOrphans(
-      in: [orphan, live, workroom], resolves: QuickTerminalController.sweepResolves,
+      in: [orphan, live, builtIn, workroom], resolves: QuickTerminalController.sweepResolves,
       end: { ended.append($0) })
     XCTAssertEqual(ended, [orphan.identifier.uuid!])
   }

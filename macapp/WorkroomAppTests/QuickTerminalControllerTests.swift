@@ -7,7 +7,8 @@ import XCTest
 @testable import Workroom
 
 /// The quick-terminal lifecycle (issue #39): ABSENT → summon a fresh ~/ window, hide keeps the
-/// surface alive across a re-summon, and a close fully tears it down so the next summon is fresh.
+/// surface alive across a re-summon, and its last terminal closing hides it, so the next summon
+/// opens a fresh terminal (ADR 0077).
 /// Surfaces are injected non-spawning (`spawnsSurface: false`) so no real PTY / Metal renderer is
 /// created — mounting and tearing one down is unsafe in the headless test host.
 @MainActor
@@ -16,6 +17,7 @@ final class QuickTerminalControllerTests: XCTestCase {
     backendPrepared: Bool = true, backend: SessionBackendAvailability = .notBundled
   ) -> QuickTerminalController {
     let controller = QuickTerminalController()
+    controller.section = TerminalsSection()
     controller.makeSurface = {
       GhosttySurfaceView(workingDirectory: $0, command: $1, spawnsSurface: false)
     }
@@ -235,19 +237,63 @@ final class QuickTerminalControllerTests: XCTestCase {
     XCTAssertTrue(controller.currentSurface === surface, "re-summon restores the same session")
   }
 
-  func testCloseTearsDownAndNextSummonIsFresh() {
+  /// Value: protects=the panel hiding, not tearing down, when its last terminal closes, and the
+  /// next summon opening a fresh terminal (story 38); fails_when=the window or host is destroyed,
+  /// or a summon shows an empty panel; why_new=the Quick Terminal is the built-in group (#661);
+  /// seam=none; no_claim=the slide animation
+  func testItsLastTerminalClosingHidesItAndTheNextSummonIsFresh() throws {
+    let controller = makeController()
+    defer { controller.close() }
+    controller.toggle()
+    let host = try XCTUnwrap(controller.host)
+    host.closeFlow.confirmOnCloseOverride = false
+    let first = controller.currentSurface
+
+    controller.perform(.closePane)
+    XCTAssertFalse(controller.isVisible, "hidden")
+    XCTAssertTrue(controller.host === host, "the group's panel stays")
+    XCTAssertEqual(host.terminals.tabCount(forTargetID: .quickTerminal), 0)
+
+    controller.toggle()
+    XCTAssertTrue(controller.isVisible)
+    XCTAssertEqual(host.terminals.tabCount(forTargetID: .quickTerminal), 1)
+    XCTAssertNotNil(controller.currentSurface)
+    XCTAssertFalse(controller.currentSurface === first, "a fresh terminal")
+  }
+
+  /// Its only terminal popping out hides the panel, and the next summon opens a fresh one there.
+  func testPoppingOutItsOnlyTerminalHidesItAndASummonOpensAFreshOne() throws {
+    let controller = makeController()
+    defer { controller.close() }
+    controller.toggle()
+    let host = try XCTUnwrap(controller.host)
+    let only = try XCTUnwrap(host.terminals.activeTab(for: host.target)).id
+
+    host.togglePaneWindow(only, targetID: .quickTerminal)
+    defer { host.detachedPanes.closeAll() }
+    XCTAssertFalse(controller.isVisible, "nothing left in the panel")
+
+    controller.toggle()
+    XCTAssertTrue(controller.isVisible)
+    XCTAssertEqual(host.terminals.tabCount(forTargetID: .quickTerminal), 2)
+    XCTAssertNotEqual(host.terminals.activeTab(for: host.target)?.id, only, "a fresh one")
+  }
+
+  /// Value: protects=closing its window (AppKit at exit, or a test) keeping its terminals, which are
+  /// the group's; fails_when=the teardown closes tabs and so ends sessions a quit must keep;
+  /// why_new=the teardown closed every tab (#661); seam=none; no_claim=a real quit
+  func testClosingItsWindowKeepsItsTerminals() throws {
     let controller = makeController()
     controller.toggle()
-    let first = controller.currentSurface
+    let surface = controller.currentSurface
 
     controller.close()
     XCTAssertFalse(controller.hasWindow)
-    XCTAssertNil(controller.currentSurface)
+    XCTAssertTrue(controller.currentSurface === surface, "its terminal lives on")
 
-    controller.toggle()  // a brand-new terminal — no session resurrection
+    controller.toggle()
     defer { controller.close() }
-    XCTAssertNotNil(controller.currentSurface)
-    XCTAssertFalse(controller.currentSurface === first, "reopen creates a different surface")
+    XCTAssertTrue(controller.currentSurface === surface, "and shows in the new window")
   }
 
   func testTheTerminalGetsTheWindowsHeightNotItsChrome() throws {
@@ -350,13 +396,13 @@ final class QuickTerminalControllerTests: XCTestCase {
     controller.toggle()
     let host = try XCTUnwrap(controller.host)
     XCTAssertTrue(host.terminals.readsPaneBranches, "each pane reads its own branch")
-    XCTAssertFalse(host.terminals.allowsDetach, "no pane moves to a window of its own")
+    XCTAssertTrue(host.terminals.allowsDetach, "its panes pop out, as any group's do")
     XCTAssertNil(
       WindowRegistry.shared.store(for: try XCTUnwrap(controller.currentWindow)),
       "never registered, so never saved or restored")
   }
 
-  func testKeysActOnItsTabsAndTheLastCloseClosesTheWindow() throws {
+  func testKeysActOnItsTabsAndTheLastCloseHidesTheWindow() throws {
     let controller = makeController()
     defer { controller.close() }
     controller.toggle()
@@ -375,7 +421,8 @@ final class QuickTerminalControllerTests: XCTestCase {
     XCTAssertEqual(panes.activeTab(for: target)?.id, panes.tabs(for: target).first?.id)
 
     for _ in 0..<4 { controller.perform(.closePane) }
-    XCTAssertFalse(controller.hasWindow, "⌘W on the last pane of the last tab closes the window")
+    XCTAssertFalse(controller.isVisible, "⌘W on the last pane of the last tab hides the window")
+    XCTAssertTrue(controller.hasWindow, "hidden, not closed")
   }
 
   func testArrowKeysMoveFocusBetweenItsPanes() throws {
@@ -496,10 +543,11 @@ final class QuickTerminalControllerTests: XCTestCase {
     XCTAssertTrue(registry.notifications.items.contains { $0.title.hasSuffix("finished") })
   }
 
-  /// Value: protects=closing it dropping its notifications, as a closing window's go (#573 D3);
-  /// fails_when=its rows outlive it and open nothing; why_new=new path; seam=none;
-  /// no_claim=banner withdrawal on the real notification center.
-  func testClosingItDropsItsNotifications() throws {
+  /// Value: protects=its notifications outliving its window, since its terminals do (ADR 0077);
+  /// fails_when=closing the window drops what its still-running terminals raised; why_new=the
+  /// window's close dropped them while it ended its terminals (#573 D3, changed by #661);
+  /// seam=none; no_claim=banner withdrawal on the real notification center.
+  func testClosingItsWindowKeepsItsNotifications() throws {
     let controller = makeController()
     let registry = joinRegistry(controller)
     controller.toggle()
@@ -511,7 +559,7 @@ final class QuickTerminalControllerTests: XCTestCase {
     XCTAssertEqual(registry.notifications.items.count, 1)
 
     controller.close()
-    XCTAssertTrue(registry.notifications.items.isEmpty)
+    XCTAssertEqual(registry.notifications.items.count, 1)
   }
 
   /// Value: protects=a toast showing in the Quick Terminal while it is the front window (#573 D2);

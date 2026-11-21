@@ -171,9 +171,10 @@ final class SavedLayoutStore: @unchecked Sendable {
     if !report.isEmpty {
       logger.notice("session file dropped entries — \(report.summary, privacy: .public)")
     }
-    // A file whose windows all dropped is not a session. Saying so lets the caller take its
-    // cold-start fallback instead of launching emptier than deleting the file would have.
-    guard !sanitized.windows.isEmpty else { return .none }
+    // A file whose windows all dropped is not a session, unless it keeps the Quick Terminal's
+    // panel, which is restored alone. Saying so lets the caller take its cold-start fallback
+    // instead of launching emptier than deleting the file would have.
+    guard !sanitized.windows.isEmpty || sanitized.quickTerminal != nil else { return .none }
     return .restored(sanitized, report)
   }
 

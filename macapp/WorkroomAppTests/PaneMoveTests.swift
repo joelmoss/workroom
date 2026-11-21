@@ -118,12 +118,14 @@ final class PaneMoveTests: XCTestCase {
     let pane = first.terminals.addTab(for: from)
     _ = second.terminals.addTab(for: into)
 
-    let groups = first.paneMoveChoices(pane.id, of: from, windows: [first, second])
+    let groups = first.paneMoveChoices(
+      pane.id, of: from, windows: [first, second], quickTerminal: nil)
 
-    XCTAssertEqual(groups.map(\.choices.count), [1, 1])
-    XCTAssertEqual(groups[0].choices.map(\.enabled), [false], "its own target: nothing to move to")
-    XCTAssertEqual(groups[1].choices.map(\.enabled), [true])
-    groups[1].choices[0].move()
+    XCTAssertEqual(
+      groups.map(\.choices.count), [2, 1, 1], "the Terminals section's, then each window's")
+    XCTAssertEqual(groups[1].choices.map(\.enabled), [false], "its own target: nothing to move to")
+    XCTAssertEqual(groups[2].choices.map(\.enabled), [true])
+    groups[2].choices[0].move()
     for _ in 0..<50 where second.terminals.tab(pane.id, for: into) == nil { await Task.yield() }
     XCTAssertNotNil(second.terminals.tab(pane.id, for: into))
   }

@@ -243,7 +243,7 @@ struct RootView: View {
       // The menu command gates on `hasProjects`, so it only fires with ≥1 project; the dialog itself
       // still handles a filter that matches nothing.
       .modifier(NewWorkroomPresenter(store: store))
-      // Open Workroom picker (⌘O, issue #94): same store-flag bridge, also gated on `hasProjects`.
+      // Open Workroom picker (⌘O, issue #94): same store-flag bridge, gated on `hasSidebarContent` (a project or a terminal).
       .modifier(OpenWorkroomPresenter(store: store))
       .modifier(StartChoicePresenter(store: store))
       .confirmationDialog(

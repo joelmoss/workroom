@@ -1,3 +1,4 @@
+import AppKit
 import DesignSystem
 import SwiftUI
 import WorkroomDomain
@@ -6,7 +7,8 @@ import WorkroomDomain
 /// does, with New Standalone Terminal and New Terminal Group… beside it, and one row per terminal
 /// with no project and per terminal group, a group's terminals under it while it is unfolded. The
 /// rows are the app's `TerminalsSection`, so every window lists the same ones; a group's terminals
-/// are this window's. Rows reorder by dragging.
+/// are this window's. Rows reorder by dragging, and a standalone terminal's row dragged onto
+/// another's makes a group of the two.
 struct SidebarTerminalsSection: View {
   let store: AppStore
   let actions: SidebarActions
@@ -30,6 +32,8 @@ struct SidebarTerminalsSection: View {
         TerminalGroupNamePrompt.present { [store] name in _ = store.newTerminalGroup(named: name) }
       }
     )
+    // A terminal's tab let go here becomes a standalone terminal (#660).
+    .paneDropZone(.standalone, store: store)
     .listRowInsets(headingInsets)
     .listRowSeparator(.hidden)
     .listRowBackground(Color.clear)
@@ -39,7 +43,14 @@ struct SidebarTerminalsSection: View {
         view(for: row)
       }
       .onMove { offsets, destination in
-        Self.move(rows.map(\.item), offsets, to: destination, in: section)
+        let items = rows.map(\.item)
+        // Let go over the middle of another standalone terminal's row: they group instead (#659).
+        if let offset = offsets.first, offsets.count == 1, case .entry(let id) = items[offset],
+          let sid = id.sidebarID, store.rowDragEnded(sid, at: NSEvent.mouseLocation)
+        {
+          return
+        }
+        Self.move(items, offsets, to: destination, in: section)
       }
     }
   }
@@ -52,7 +63,7 @@ struct SidebarTerminalsSection: View {
 
   /// The section's rows top to bottom, each unfolded group followed by this window's terminals in it.
   private var items: [Row] {
-    section.entries.flatMap { entry -> [Row] in
+    section.rows.flatMap { entry -> [Row] in
       let own = Row(item: .entry(entry.targetID), entry: entry, target: nil)
       guard case .group(let group) = entry, !group.isFolded,
         let target = store.target(for: entry.sidebarID)
@@ -77,11 +88,14 @@ struct SidebarTerminalsSection: View {
       }
     case (.entry, .standalone):
       SidebarStandaloneRow(store: store, sid: sid, actions: actions)
+        .paneDropZone(.target(sid), store: store)
         .listRowInsets(rowInsets)
         .listRowSeparator(.hidden)
         .listRowBackground(SidebarRowBackground(store: store, id: sid, hovered: false))
     case (.entry, .group(let group)):
       SidebarTerminalGroupRow(store: store, sid: sid, group: group, select: actions.select)
+        .paneDropZone(.target(sid), store: store)
+        .moveDisabled(group.isBuiltIn)
         .listRowInsets(rowInsets)
         .listRowSeparator(.hidden)
         .listRowBackground(SidebarRowBackground(store: store, id: sid, hovered: false))
@@ -198,9 +212,61 @@ private struct SidebarStandaloneRow: View {
     .frame(height: SidebarRowMetrics.rowHeight)
     .contentShape(Rectangle())
     .onTapGesture { actions.select(sid) }
+    // Dragged onto another standalone terminal's row, the two become a group (#659). Beside the
+    // List's own drag, which reorders; `minimumDistance` keeps a click a click.
+    .simultaneousGesture(
+      DragGesture(minimumDistance: 6, coordinateSpace: .global)
+        .onChanged { _ in store.rowDragMoved(sid) }
+        .onEnded { _ in store.rowDragEnded(sid, at: NSEvent.mouseLocation) }
+    )
+    .contextMenu { SidebarStandaloneRowMenu(store: store, sid: sid) }
     .help(title)
     .accessibilityElement(children: .combine)
     .accessibilityAddTraits(.isButton)
     .accessibilityIdentifier("sidebar.standalone.\(sid.targetID?.encoded ?? "")")
+  }
+}
+
+/// A standalone terminal's row menu (#660): Rename…, Move to…, Pop Out and Close, acting on the
+/// window that holds its terminal, which may not be the one drawing the row.
+private struct SidebarStandaloneRowMenu: View {
+  let store: AppStore
+  let sid: SidebarID
+
+  var body: some View {
+    if let (holder, target, tab) = store.standaloneTerminal(sid) {
+      Button {
+        TabRenamePrompt.present(currentName: tab.title) {
+          holder.terminals.setUserTitle($0, forTab: tab.id, in: target)
+        }
+      } label: {
+        Label("Rename…", systemImage: "pencil")
+      }
+      .help("Give this terminal a name")
+      Menu {
+        PaneMoveChoicesList(groups: holder.paneMoveChoices(tab.id, of: target))
+      } label: {
+        Label {
+          Text("Move to…")
+        } icon: {
+          Image(nsImage: .moveTerminal)
+        }
+      }
+      .help("Move this terminal into a group or a workroom")
+      Button {
+        holder.togglePaneWindow(tab.id, targetID: target.id)
+      } label: {
+        Label("Pop Out", systemImage: "macwindow.badge.plus")
+      }
+      .disabled(holder.terminals.detachedTabIDs.contains(tab.id))
+      .help("Show this terminal in a window of its own")
+      Divider()
+      Button(role: .destructive) {
+        holder.requestCloseTerminalTab(tab.id, for: target)
+      } label: {
+        Label("Close", systemImage: "xmark")
+      }
+      .help("Close this terminal")
+    }
   }
 }

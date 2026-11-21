@@ -15,7 +15,7 @@ final class TargetIDTests: XCTestCase {
       (.root(project: "/p"), "root|/p"),
       (.workroom(project: "/p", name: "calm-otter"), "wr|/p|calm-otter"),
       (.creation(Self.run), "creation:6F9619FF-8B86-D011-B42D-00C04FC964FF"),
-      (.quickTerminal, "workroom.quickTerminal"),
+      (.quickTerminal, "group:51C10A7E-0D4F-4E6A-9B2C-000000000001"),
       (.standalone(Self.run), "standalone:6F9619FF-8B86-D011-B42D-00C04FC964FF"),
       (.terminalGroup(Self.run), "group:6F9619FF-8B86-D011-B42D-00C04FC964FF"),
     ]
@@ -58,10 +58,21 @@ final class TargetIDTests: XCTestCase {
     XCTAssertEqual(
       TargetID.workroom(project: "/p", name: "a").sidebarID, .workroom(project: "/p", name: "a"))
     XCTAssertNil(TargetID.creation(Self.run).sidebarID)
-    XCTAssertNil(TargetID.quickTerminal.sidebarID)
     XCTAssertEqual(TargetID.workroom(project: "/p", name: "a").projectPath, "/p")
     XCTAssertNil(TargetID.creation(Self.run).projectPath)
+  }
+
+  /// Value: protects=the Quick Terminal's sessions and row keeping one id across launches, and an
+  /// older build's Quick Terminal sessions being recognisable only to the launch sweep (ADR 0077);
+  /// fails_when=its well-known id drifts, or the legacy tag parses as a target that could be
+  /// restored; why_new=the Quick Terminal became the built-in group (#661); seam=none;
+  /// no_claim=what the sweep does with the tag
+  func testTheQuickTerminalIsTheBuiltInGroupAndItsOldTagIsNoTarget() {
+    XCTAssertEqual(TargetID.quickTerminal, .terminalGroup(TargetID.quickTerminalGroupID))
+    XCTAssertEqual(TargetID.quickTerminal.sidebarID, .terminalGroup(TargetID.quickTerminalGroupID))
     XCTAssertNil(TargetID.quickTerminal.projectPath)
+    XCTAssertEqual(TargetID.legacyQuickTerminalTag, "workroom.quickTerminal")
+    XCTAssertNil(TargetID(encoded: TargetID.legacyQuickTerminalTag))
   }
 
   func testEverySidebarRowButAProjectOpensATarget() {

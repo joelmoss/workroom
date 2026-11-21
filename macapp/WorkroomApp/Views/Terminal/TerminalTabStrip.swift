@@ -226,17 +226,29 @@ struct TerminalTabStrip: View {
               // Dragged clear of the window → a tear-off (issue #172), or into a workroom from the
               // Quick Terminal: show where it goes and stop previewing a drop into the panes.
               if isDragOutsideWindow(value.location) {
+                host.paneDragMoved(tab.id, of: target, to: nil)
                 chipPaneDrag = nil
                 panes.showDragOutside(tab)
                 return
               }
               panes.hideDragOutside()
+              // Over a sidebar row, a title-bar tab or the Terminals heading → it moves there
+              // (#660): no drop into the panes.
+              if host.paneDragMoved(tab.id, of: target, to: NSEvent.mouseLocation) {
+                chipPaneDrag = nil
+                return
+              }
               // Dragged down over the pane area → preview a drop-into-pane (the strip stops gapping).
               chipPaneDrag = localize(value.location)
                 .map { PaneDragState(tabID: tab.id, location: $0) }
             }
             .onEnded { value in
               panes.hideDragOutside()
+              if host.paneDragEnded(tab.id, of: target, at: NSEvent.mouseLocation) {
+                drag.cancel()
+                chipPaneDrag = nil
+                return
+              }
               if isDragOutsideWindow(value.location) {
                 // A chip dragged out of the window does what dragging the pane's own title bar out
                 // does — the chip is the other handle on the same pane.
@@ -1213,9 +1225,12 @@ extension View {
       // This pane into a window of its own (#444), as dragging the chip out of the window does.
       if panes.allowsDetach {
         paneWindowMenuItem(host: host, tabID: tab.id, targetID: target.id)
-        Divider()
-      } else if target.id == QuickTerminalController.targetID {
+      }
+      // Any terminal moves anywhere (#660).
+      if case .terminal = tab.content {
         QuickTerminalMoveToWorkroomMenu(tabID: tab.id, target: target, style: .menuItem)
+        Divider()
+      } else if panes.allowsDetach {
         Divider()
       }
       Button(role: .destructive) {

@@ -292,13 +292,14 @@ struct WorkroomCommands: Commands {
       // Open workroom… (⌘O, issue #94): raises the open-existing picker (RootView observes
       // `requestOpenWorkroomPicker`); picking a root/workroom switches + focuses it. ⌘O moved here
       // from the Go-menu "Open in Editor" (which keeps its menu item, no shortcut). Disabled with no
-      // projects, so ⌘O is a silent no-op rather than an empty picker.
+      // projects and no terminals, so ⌘O is a silent no-op rather than an empty picker; a window with
+      // only terminals still has those to open (#662).
       Button("Open Workroom…") { store?.raiseWorkroomPicker(.open) }
         .shortcut(.openWorkroom)
-        .disabled(hasProjects != true)
+        .disabled(noSidebarContent)
       Button("Open Workroom (split right)") { store?.raiseWorkroomPicker(.open, split: true) }
         .shortcut(.openWorkroomSplit)
-        .disabled(hasProjects != true || !workroomCommandEnabled(hasWorkroomAnchor))
+        .disabled(noSidebarContent || !workroomCommandEnabled(hasWorkroomAnchor))
 
       Divider()
     }
