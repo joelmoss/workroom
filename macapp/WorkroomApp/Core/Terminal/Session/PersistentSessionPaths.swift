@@ -27,10 +27,18 @@ enum PersistentSessionPaths {
 
   static func binaryURL(for backend: SessionBackend) -> URL? {
     let name = backend.binaryName
-    let candidates = [
-      Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/\(name)"),
-      Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent(name),
-    ]
+    let candidates: [URL?]
+    switch backend {
+    // The one binary (ADR 0078) is the CLI's file, `Contents/Resources/workroom`, and only that:
+    // `Contents/MacOS/workroom` would be the app's own executable, `Workroom`, on a case-insensitive
+    // disk.
+    case .daemon: candidates = [Bundle.main.resourceURL?.appendingPathComponent(name)]
+    case .legacySessionHelper:
+      candidates = [
+        Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/\(name)"),
+        Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent(name),
+      ]
+    }
     return candidates.compactMap { $0 }.first {
       FileManager.default.isExecutableFile(atPath: $0.path)
     }
@@ -39,11 +47,12 @@ enum PersistentSessionPaths {
   /// The Linux daemon the app bundles for `architecture` (`uname -m` on the host: `aarch64` or
   /// `x86_64`), for pushing to a remote host (`DaemonBootstrap`, #231). Put in
   /// `Contents/Resources` by `build-daemon.sh`, sealed as a resource rather than codesigned. Nil
-  /// only for a bundle missing that file.
+  /// only for a bundle missing that file. On the host it is installed as `workroomd` still
+  /// (`DaemonInstall.binary`, ADR 0057), with a `workroom` link beside it.
   static func linuxDaemonURL(architecture: String) -> URL? {
     guard
       let url = Bundle.main.resourceURL?.appendingPathComponent(
-        "workroomd-linux-\(architecture)"),
+        "workroom-linux-\(architecture)"),
       FileManager.default.isReadableFile(atPath: url.path)
     else { return nil }
     return url

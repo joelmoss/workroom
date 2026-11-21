@@ -187,17 +187,13 @@ public enum SSHTransport {
       .map(shellQuoted).joined(separator: " ")
   }
 
-  /// This Mac's own `workroomd`, which a remote pane runs to attach (`attachCommand`): the app
-  /// bundle's, as a local pane's (`PersistentSessionPaths.binaryURL`). Where it would be when it
-  /// is missing, so the pane says it could not start it rather than the app throwing.
+  /// This Mac's own `workroom`, which a remote pane runs to attach (`attachCommand`): the app
+  /// bundle's, as a local pane's (`PersistentSessionPaths.binaryURL`), in `Contents/Resources`
+  /// (ADR 0078). Its path even when it is missing, so the pane says it could not start it rather
+  /// than the app throwing.
   public static var attachClient: String {
-    let candidates = [
-      Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/workroomd"),
-      Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent("workroomd"),
-    ].compactMap { $0 }
-    return
-      (candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
-      ?? candidates[0]).path
+    (Bundle.main.resourceURL ?? Bundle.main.bundleURL.appendingPathComponent("Contents/Resources"))
+      .appendingPathComponent("workroom").path
   }
 
   /// The session variables a pane's environment may already hold, from the app's own environment

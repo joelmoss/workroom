@@ -7,7 +7,7 @@ import XCTest
 /// `ContainerHostDriver` on Docker (#252, #308): containers made from a stock image, reached
 /// through `docker exec`. Opt-in, on a Mac with Docker running:
 ///
-///   TEST_RUNNER_WR_DOCKER_CONTAINER_TESTS=1 TEST_RUNNER_WR_LINUX_DAEMON=<workroomd-linux-<arch>> \
+///   TEST_RUNNER_WR_DOCKER_CONTAINER_TESTS=1 TEST_RUNNER_WR_LINUX_DAEMON=<workroom-linux-<arch>> \
 ///     make app-test APP_TEST_FLAGS=-only-testing:WorkroomAppTests/ContainerProvisioningIntegrationTests
 final class ContainerProvisioningIntegrationTests: ContainerIntegrationTestCase {
   override var dialect: ContainerRuntime { .docker }

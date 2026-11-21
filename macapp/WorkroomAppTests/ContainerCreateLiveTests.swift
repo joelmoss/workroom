@@ -11,7 +11,7 @@ import XCTest
 /// postStartCommand run again after the container restarts. Opt-in, by hand on a Mac:
 /// `container system start` first, then
 ///
-///   TEST_RUNNER_WR_APPLE_CONTAINER_TESTS=1 TEST_RUNNER_WR_LINUX_DAEMON=<workroomd-linux-aarch64> \
+///   TEST_RUNNER_WR_APPLE_CONTAINER_TESTS=1 TEST_RUNNER_WR_LINUX_DAEMON=<workroom-linux-aarch64> \
 ///     make app-test APP_TEST_FLAGS=-only-testing:WorkroomAppTests/ContainerCreateLiveTests
 final class ContainerCreateLiveTests: XCTestCase {
   func testADevcontainerBecomesAContainerOnApplesRuntime() async throws {

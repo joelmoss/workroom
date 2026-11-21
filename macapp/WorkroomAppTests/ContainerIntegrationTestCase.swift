@@ -13,9 +13,9 @@ import XCTest
 /// suite subclasses this, says its dialect and runtime, and calls each case from a `test…` method
 /// of its own; none of these is a test by itself.
 ///
-/// Opt-in, on a Mac with the runtime up: `WR_LINUX_DAEMON` names the Linux `workroomd` for the
+/// Opt-in, on a Mac with the runtime up: `WR_LINUX_DAEMON` names the Linux `workroom` for the
 /// runtime's architecture (`TEST_RUNNER_` in front of each, through `make app-test`): the one a
-/// Debug build bundles (`Workroom Dev.app/Contents/Resources/workroomd-linux-<arch>`), which has
+/// Debug build bundles (`Workroom Dev.app/Contents/Resources/workroom-linux-<arch>`), which has
 /// the `terminal-state` feature that keeps screens; a plain `cargo zigbuild` leaves it out.
 class ContainerIntegrationTestCase: XCTestCase {
   /// The runtime's suite says which.

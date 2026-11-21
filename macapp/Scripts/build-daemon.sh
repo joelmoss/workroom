@@ -1,26 +1,37 @@
 #!/bin/bash
 #
-# Builds the `workroomd` Rust helper and embeds it in the app bundle's Contents/MacOS, then signs
-# it with the same identity as the app. Run as a post-compile Xcode script phase (before Xcode's
-# final code-sign) so the embedded binary is covered by the app signature — an unsigned or
-# post-sign-modified helper fails notarization/Gatekeeper.
+# Builds the one `workroom` binary (ADR 0078: the CLI, and the daemon as `workroom serve`) and
+# embeds it in the app bundle's Contents/Resources, then signs it with the same identity as the
+# app. Run as a post-compile Xcode script phase (before Xcode's final code-sign) so the embedded
+# binary is covered by the app signature — an unsigned or post-sign-modified helper fails
+# notarization/Gatekeeper.
 #
-# Unlike the Go CLI (see build-helper.sh), this one CAN live in Contents/MacOS: "workroomd" does
-# not collide with the app executable "Workroom" on a case-insensitive filesystem. It goes there
-# because that is where `PersistentSessionPaths.binaryURL(for:)` looks, beside workroom-session.
+# Resources, NOT Contents/MacOS: "workroom" there would be the app executable "Workroom" on a
+# case-insensitive filesystem, and the build would overwrite the GUI. It is the Go CLI's old path,
+# so the `/usr/local/bin/workroom` link the app installs (`CommandLineInstaller`) doesn't change, and
+# `PersistentSessionPaths.binaryURL(for:)` and `WorkroomCLI.bundledBinaryURL` both look there.
 #
-# Every build also puts a static Linux daemon per arch in Contents/Resources, for remote hosts. See
+# Every build also puts a static Linux build per arch in Contents/Resources, for remote hosts. See
 # the end of this file.
 #
 # Env vars provided by Xcode: SRCROOT, TARGET_BUILD_DIR, EXECUTABLE_FOLDER_PATH,
 # UNLOCALIZED_RESOURCES_FOLDER_PATH, EXPANDED_CODE_SIGN_IDENTITY, ARCHS, DERIVED_FILE_DIR,
-# CONFIGURATION.
+# CONFIGURATION, MARKETING_VERSION, WORKROOM_RELEASE_CHANNEL.
 set -euo pipefail
 
-HELPER_NAME="workroomd"
+HELPER_NAME="workroom"
 CARGO_DIR="$(cd "${SRCROOT}/../vcs" && pwd)"
-DEST_DIR="${TARGET_BUILD_DIR}/${EXECUTABLE_FOLDER_PATH}"
+DEST_DIR="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
 DEST="${DEST_DIR}/${HELPER_NAME}"
+# Where the daemon was until #681. See "One binary" below.
+FORMER_DAEMON="${TARGET_BUILD_DIR}/${EXECUTABLE_FOLDER_PATH}/workroomd"
+
+# Stamped into the binary for `workroom version` and `update`'s channel logic, as build-helper.sh
+# stamped the Go CLI until #681: the app's version (release.sh sets MARKETING_VERSION from the tag;
+# a Debug build has project.yml's), and "nightly" for the Nightly build, empty otherwise. Read by
+# `option_env!` in the commands module, which cargo rebuilds when either changes.
+export WORKROOM_VERSION="${MARKETING_VERSION:-dev}"
+export WORKROOM_RELEASE_CHANNEL="${WORKROOM_RELEASE_CHANNEL:-}"
 
 # Xcode's build environment lacks cargo/rustup on PATH. `~/.local/bin` is on it for mise, which is
 # how vcs/scripts/build-ghostty-vt.sh gets the pinned Zig on a cache miss — without it an engine-sha
@@ -190,7 +201,16 @@ else
   codesign --force --options runtime --timestamp --sign "$IDENTITY" "$DEST"
 fi
 
-# Linux daemons (issue #227). Workroom.app pushes the daemon to a remote box on first connect
+# One binary (ADR 0078: no release ships two). A bundle an earlier build of this checkout made still
+# holds the daemon it put in Contents/MacOS, and the app's signature would seal it in again beside
+# the new one. Both names are this script's own outputs, at fixed paths inside the bundle Xcode is
+# building, so nothing else's file is at either: the former daemon (`workroomd`, which no other
+# phase writes) and, below, the former Linux daemons. A Dev daemon still running from the old file
+# keeps its inode; the next launch hands it off to `$DEST` (`DaemonHandOff.mustMove`).
+rm -f "$FORMER_DAEMON" "$(dirname "$FORMER_DAEMON")/.workroomd-staged" \
+  "$(dirname "$FORMER_DAEMON")/workroomd-slice-"*
+
+# Linux builds (issue #227). Workroom.app pushes the daemon to a remote box on first connect
 # (docs/designs/remote-workrooms.md, Distribution Plan), so the bundle carries a static musl build
 # for each Linux arch, named by what `uname -m` prints there.
 #
@@ -254,4 +274,6 @@ for arch in $LINUX_ARCHES; do
   ( cd "$CARGO_DIR" && PATH="$LINUX_PATH" cargo zigbuild --release -p workroom \
     --features "$DAEMON_FEATURES" --target "$target" )
   cp -f "$OUT_ROOT/$target/release/workroom" "$RES_DIR/${HELPER_NAME}-linux-$arch"
+  # Their names until #681 (see "One binary" above).
+  rm -f "$RES_DIR/workroomd-linux-$arch"
 done
