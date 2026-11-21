@@ -194,9 +194,6 @@ fn candidate_directories(requested: Option<&std::ffi::OsString>) -> Vec<PathBuf>
     .collect()
 }
 
-/// The attach request this process's environment makes (`AttachRequest::from_vars`): the
-/// variables `PersistentSessionService.launchEnvironment` sets, and the environment the child is
-/// given.
 /// The variable an app sets on a pane's attach to name the Mac showing it (#688), for an attach
 /// that runs on the host rather than the Mac (`--no-spawn`), whose own hostname is the host's.
 pub(crate) const HOSTNAME_VARIABLE: &str = "WORKROOM_SESSION_HOSTNAME";
@@ -225,6 +222,9 @@ fn declared(
     (Some(kind), hostname)
 }
 
+/// The attach request this process's environment makes (`AttachRequest::from_vars`): the
+/// variables `PersistentSessionService.launchEnvironment` sets, and the environment the child is
+/// given.
 fn request_from_env() -> AttachRequest {
     AttachRequest::from_vars(|name| std::env::var_os(name), std::env::vars_os().collect())
 }

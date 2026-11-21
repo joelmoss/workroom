@@ -779,7 +779,9 @@ pub fn session_schema() -> Value {
                 "type": "array",
                 "items": client_schema(),
                 "description": "Every client attached to it, in the order they attached. Only \
-                                when the request asks for `clients`.",
+                                when the request asks for `clients`, and then always, `[]` for \
+                                none: a session without it is from a daemon too old to list \
+                                clients.",
             },
         },
     })
@@ -823,9 +825,10 @@ pub fn client_schema() -> Value {
             "type": "string",
             "enum": states,
             "description": "Whether its terminal answers the daemon's probes, which a remote \
-                            pane asks for. `off`: it didn't ask. `answering`: it answered the \
-                            last. `late`: it missed one or more. `stale`: it missed enough that \
-                            it no longer counts as attached, and its connection is being closed.",
+                            pane asks for. `off`: it didn't ask. `answering`: it asked, and has \
+                            missed no probe, which includes one not sent its first yet. `late`: \
+                            it missed one or more in a row. `stale`: it missed enough that it no \
+                            longer counts as attached, and its connection is being closed.",
         }),
     );
     schema
