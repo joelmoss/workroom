@@ -444,7 +444,7 @@ struct TerminalTabStrip: View {
   }
 }
 
-/// A single terminal tab chip: its title, an always-visible close button, and the active/hover/
+/// A single terminal tab chip: its title, a close button shown on hover, and the active/hover/
 /// activity/dragging styling. Purely presentational — the strip wraps it with the hover, tap, and
 /// drag gestures, since those drive (and read) the strip's shared drag state.
 private struct TerminalTabChip: View {
@@ -537,8 +537,6 @@ private struct TerminalTabChip: View {
   }
 
   var body: some View {
-    // Title and close button laid out side by side: a compact gap keeps the ✕ visibly tied to its
-    // tab (a wide gap reads as detached) while still clearing the title so they never crowd.
     HStack(spacing: 6) {
       // Inline-agent diagnosis available (issue #49): a ✦ badge that opens the diagnosis popover.
       if codingAgentBadge {
@@ -626,7 +624,8 @@ private struct TerminalTabChip: View {
       // The title is read in a leaf (`TabTitleReader`): a terminal's changes many times a second,
       // and only this text re-renders for it, not the chip.
       TabTitleReader(content: tab.content) { _ in
-        TerminalTitleLabel(title: tab.content.titleParts)
+        // A default title's folder is one size smaller than its program, on the same baseline.
+        TerminalTitleLabel(title: tab.content.titleParts, folderFont: .subheadline)
           .font(.callout)
           // The focused tab's title is brighter (full primary) so it reads as selected; unfocused
           // titles dim to muted. Brightness only — NOT weight: a bold↔regular swap on switch
@@ -647,17 +646,20 @@ private struct TerminalTabChip: View {
           // title stays tight (leading alignment, Text sizes to its ideal width up to the cap).
           .frame(maxWidth: TabStripMetrics.maxChipTitle, alignment: .leading)
       }
-      // The ✕ is always shown (every tab is closable at a glance), so the chip width is constant.
+    }
+    .padding(.horizontal, 10)
+    // A fixed height, so the row is centred by construction whatever its tallest glyph is.
+    .frame(height: TabStripMetrics.chipHeight)
+    // The ✕ shows on hover only, over the title's trailing end: the chip keeps no room for it.
+    .tabHoverClose(isHovered: isHovered) {
       TabCloseButton(action: onClose)
         .withTabTitle(tab.content) { button, title in
           button
             .help("Close \(title)")
             .accessibilityLabel("Close \(title)")
+            .accessibilityIdentifier("terminal.tabClose")
         }
     }
-    .padding(.leading, 10)
-    .padding(.trailing, 4)  // tighter than the leading inset — the ✕ sits near the chip's edge
-    .padding(.vertical, 6)
     // Every tab is a self-contained pill, rounded on all four corners — no tab bleeds into the panel
     // (the focused pane isn't necessarily the one directly below the strip, e.g. a split). The active
     // tab is filled with the terminal background (`bg`) so it stands distinct from the recessed strip;
@@ -739,12 +741,13 @@ private struct TerminalTabChip: View {
     // The ✦ badge is a real control that assistive technology could not reach at all: it is a nested
     // `Button`, and the chip's own label above collapses the chip into a single element. Announcing
     // it in the label (see `chipAccessibilityLabel`) makes it perceivable; this makes it OPERABLE,
-    // so VoiceOver can open the diagnosis without a mouse. Same reasoning applies to the nested ✕,
-    // which is still unreachable — see the TODOS entry.
+    // so VoiceOver can open the diagnosis without a mouse. The nested ✕ is swallowed the same way,
+    // and is hidden besides until the pointer is over the tab, so Close is an action here too.
     .accessibilityActions {
       if codingAgentBadge {
         Button("Show diagnosis") { onCodingAgentTap() }
       }
+      Button("Close") { onClose() }
     }
     // The running state is otherwise conveyed ONLY by the flowing underline above — invisible to
     // VoiceOver, and unassertable in XCUITest. `GhosttyActionDispatchUITests` reads this to prove
@@ -901,32 +904,6 @@ final class SweepView: KeyWindowAnimationView {
   var isSweeping: Bool { gradient.animation(forKey: Self.animationKey) != nil }
 }
 
-/// A tab's close button, overlaid on the title's right edge. Its own hover paints a subtle
-/// background behind the ✕. (Show/hide is handled by the caller's overlay.)
-private struct TabCloseButton: View {
-  let action: () -> Void
-  @State private var hovering = false
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @Environment(\.themeTokens) private var tokens
-
-  var body: some View {
-    Button(action: action) {
-      Image(systemName: "xmark")
-        .font(.system(size: 9, weight: .semibold))
-        .foregroundStyle(hovering ? .primary : .secondary)
-        .padding(3)
-        // A circular hover well behind the ✕ (matches a round close affordance), faded in/out.
-        .background(
-          Circle()
-            .fill(tokens.hover.opacity(hovering ? 1 : 0))
-        )
-    }
-    .buttonStyle(.plain)
-    .onHover { hovering = $0 }
-    .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: hovering)
-  }
-}
-
 /// A grouped two-segment switch for the diff view mode (issue #66): unified | side-by-side, rendered
 /// as one control — a faint rounded track with a raised "thumb" behind the active segment — so it
 /// reads as a single switch rather than two loose buttons. Clicking a segment reports that mode.
@@ -1030,6 +1007,8 @@ struct MarkdownModeSwitch: View {
 /// used to be `.plain` with its own 8pt horizontal padding, so it was the one control in the header
 /// whose well was a different size and shape from its neighbours'.
 struct CloseWorkroomPaneButton: View {
+  /// What the pane is: "workroom", "terminal" or "terminal group".
+  var noun = "workroom"
   let action: () -> Void
   @State private var hovering = false
 
@@ -1041,8 +1020,8 @@ struct CloseWorkroomPaneButton: View {
         .foregroundStyle(hovering ? .primary : .secondary)
     }
     .onHover { hovering = $0 }
-    .help("Remove this workroom from the split")
-    .accessibilityLabel("Remove workroom from split")
+    .help("Remove this \(noun) from the split")
+    .accessibilityLabel("Remove \(noun) from split")
     .accessibilityIdentifier("workroom.pane.close")
   }
 }

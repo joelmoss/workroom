@@ -170,6 +170,9 @@ struct PaneTitleBar: View {
   let onDragChanged: (CGPoint) -> Void
   let onDragEnded: () -> Void
   @Environment(\.themeTokens) private var tokens
+  /// Set on a standalone terminal's pane in a split of the window's panes, which has no group
+  /// title bar to hold its remove-from-split button, so this bar holds it.
+  @Environment(\.removeFromWorkroomSplit) private var removeFromWorkroomSplit
 
   var body: some View {
     #if DEBUG
@@ -310,6 +313,9 @@ struct PaneTitleBar: View {
           action: onPopOut)
       }
       if let moveToWorkroom { moveToWorkroom }
+      if let removeFromWorkroomSplit {
+        CloseWorkroomPaneButton(noun: "terminal", action: removeFromWorkroomSplit.run)
+      }
       PaneToolbarButton(
         systemImage: "rectangle.trailinghalf.inset.filled",
         help: "Split right" + Shortcuts.shared.table.hint(for: .splitRight),
@@ -438,4 +444,14 @@ struct PaneToolbarButton: View {
     .accessibilityLabel(accessibilityLabel)
     .accessibilityIdentifier(identifier)
   }
+}
+
+/// Takes a standalone terminal out of the window's split (`WorkroomPaneLeaf`'s ✕), for its pane's
+/// own title bar to offer when it has no group title bar.
+struct RemoveFromWorkroomSplit {
+  let run: () -> Void
+}
+
+extension EnvironmentValues {
+  @Entry var removeFromWorkroomSplit: RemoveFromWorkroomSplit? = nil
 }

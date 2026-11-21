@@ -107,12 +107,16 @@ enum SidebarRowMetrics {
   /// The rounded hover well drawn behind a sidebar icon button, as behind a terminal disclosure
   /// chevron (`TerminalDisclosureButton`).
   static let hoverWell: CGFloat = 18
-  /// Between a row's trailing edge and its last control.
-  static let iconColumnInset: CGFloat = Spacing.s
+  /// Between a row's trailing edge and its last control's column: 1, so the control's hover well
+  /// sits 2pt in from the row's highlight (with the column's own 1pt margin around its well).
+  static let iconColumnInset: CGFloat = 1
   /// What a plain `List` keeps between each side of the sidebar and a row's content, over the
   /// row's own insets. The sticky headings sit above their pane's List, not in it (#652), so they
-  /// add it themselves to keep their chevron and "+" in line with the rows'.
+  /// add it themselves to keep their chevron and "+" in line with the rows'. A row's hover and
+  /// selection fills are inset by it too, so they span exactly the rows' and headings' content.
   static let listContentInset: CGFloat = 9
+  /// Between a pane's sticky heading and its first row, at the top of the pane's List.
+  static let headingGap: CGFloat = Spacing.xs
 }
 
 /// How a terminal's row looks (`SidebarTerminalRow`): compact under a root or workroom, or as a
@@ -125,11 +129,13 @@ enum SidebarTerminalRowStyle: Equatable {
   case section
 
   var font: Font { self == .section ? .callout : .footnote }
+  /// A terminal title's folder: a size smaller than `font`, as a pane tab draws it.
+  var folderFont: Font { self == .section ? .subheadline : .caption }
   /// The row's content height; nil is its title's own.
   var height: CGFloat? { self == .section ? SidebarRowMetrics.rowHeight : nil }
   /// Its spacing, inside the row (`sidebarRowFrame`).
   var padding: EdgeInsets {
-    self == .section ? ProjectSidebar.childRowInsets : ProjectSidebar.terminalRowInsets
+    self == .section ? ProjectSidebar.sectionRowInsets : ProjectSidebar.terminalRowInsets
   }
 }
 
@@ -246,7 +252,7 @@ struct SidebarProjectRow: View, Equatable {
           // The project chevron sits to the right of the project name — projects keep their own
           // disclosure idiom, distinct from the leading caret column the root/workroom/terminal
           // rows share. Always shown (every project has at least the root as a child).
-          Text(project.displayName).font(.callout).fontWeight(.medium)
+          Text(project.displayName).font(.subheadline).fontWeight(.medium)
             .foregroundStyle(.secondary)
           Image(systemName: model.expanded ? "chevron.down" : "chevron.right")
             .font(.system(size: 10, weight: .semibold))
@@ -569,6 +575,8 @@ struct SidebarTerminalRowModel: Equatable {
   /// for a terminal (the unmarked default elsewhere), and this row is the one place that wants an
   /// explicit terminal glyph instead, since every row here carries one.
   let glyph: String
+  /// The program its pane tab shows the logo of (#141), shown here in the glyph's place.
+  var tool: RecognizedTool? = nil
   let indicator: PaneIndicator
   let programStatus: ProgramStatusRollup?
   /// Whether it is a terminal attached to a daemon session, whose host can say why its program
@@ -623,9 +631,7 @@ struct SidebarTerminalRow: View, Equatable {
   /// back, as the tab's Rename… sheet does.
   private var renameRow: some View {
     HStack(spacing: Spacing.s) {
-      Image(systemName: model.glyph)
-        .font(.system(size: 10))
-        .foregroundStyle(.secondary)
+      SidebarTabIcon(glyph: model.glyph, tool: model.tool)
         .frame(width: SidebarRowMetrics.caretWidth, alignment: .center)
       SidebarInlineNameField(
         placeholder: content.title, draft: $draft,
@@ -663,9 +669,7 @@ struct SidebarTerminalRow: View, Equatable {
       // the workroom chevron so the leading-icon column reads as one set. The fixed-width frame
       // keeps the title in the same column as the root/workroom labels regardless of the symbol's
       // intrinsic width.
-      Image(systemName: model.glyph)
-        .font(.system(size: 10))
-        .foregroundStyle(.secondary)
+      SidebarTabIcon(glyph: model.glyph, tool: model.tool)
         .frame(width: SidebarRowMetrics.caretWidth, alignment: .center)
       // The title is read in a leaf (`TabTitleReader`): a terminal's changes many times a second,
       // and the row's body must not re-run for each one.
@@ -674,7 +678,7 @@ struct SidebarTerminalRow: View, Equatable {
           let _ = { SidebarRowPasses.terminalTitles[model.tabID] = title }()
         #endif
         // The program as bright as a row's name, the folder faded as the row's title was.
-        TerminalTitleLabel(title: content.titleParts)
+        TerminalTitleLabel(title: content.titleParts, folderFont: model.style.folderFont)
           .font(model.style.font)
           .foregroundStyle(.primary, .secondary)
           .lineLimit(1)
@@ -684,12 +688,21 @@ struct SidebarTerminalRow: View, Equatable {
 
       SidebarUnreadDot(source: .tab(model.tabID))
 
-      // Same swapped slot as the workroom row: a spinner while a command runs, replaced by the
+      // The trailing column, as a standalone terminal's row has it: its status at rest (a spinner
+      // while a command runs, or a waiting or finished program's mark, #358), replaced by the
       // close button on hover. The close button is always laid out (revealed via opacity) so the
-      // row size is stable and the smaller spinner can't shift it.
+      // row size is stable and the smaller marks can't shift it.
       ZStack {
-        if model.isRunning || model.indicator == .error, !hovered {
-          RunningSpinner(failed: model.isProgressFailed || model.indicator == .error)
+        if !hovered {
+          if model.indicator == .blocked || model.indicator == .done {
+            ProgramStatusGlyph(
+              mark: model.indicator == .blocked ? .blocked : .done,
+              stale: model.programStatus?.stale == true
+            )
+            .accessibilityHidden(true)
+          } else if model.isRunning || model.indicator == .error {
+            RunningSpinner(failed: model.isProgressFailed || model.indicator == .error)
+          }
         }
         TabTitleReader(content: content) { title in
           CloseTerminalRowButton(title: title, visible: hovered) {
@@ -701,19 +714,12 @@ struct SidebarTerminalRow: View, Equatable {
           }
         }
       }
-      // A waiting or finished program (#358) takes the spinner's place and stays on hover, with the
-      // close button in its own slot on the glyph's leading side.
-      if model.indicator == .blocked || model.indicator == .done {
-        ProgramStatusGlyph(
-          mark: model.indicator == .blocked ? .blocked : .done,
-          stale: model.programStatus?.stale == true
-        )
-        .frame(width: 16)
-        .accessibilityHidden(true)
-      }
+      .frame(width: SidebarRowMetrics.iconColumnWidth)
     }
     // A small indent so the expanded terminal rows read as children of their root/workroom row.
     .padding(.leading, Spacing.m)
+    // Its close button in the trailing column every sidebar "+" is in.
+    .padding(.trailing, SidebarRowMetrics.iconColumnInset)
     .sidebarRowFrame(model.style.padding, height: model.style.height)
     .onTapGesture { actions.revealTerminal(model.tabID, model.parent) }
     // One element over the whole row, its close button inside it, so the row's frame is its own.
@@ -822,3 +828,26 @@ private struct SidebarLeadingSlot: View {
     .frame(width: 280)
   }
 #endif
+
+/// A terminal row's leading icon: the one its pane tab shows. A recognised program's logo (#141),
+/// else its glyph (a content tab's, or the terminal glyph a plain terminal's row carries).
+struct SidebarTabIcon: View {
+  let glyph: String
+  let tool: RecognizedTool?
+
+  var body: some View {
+    if let tool {
+      Image(ToolLogoRegistry.assetName(for: tool.id))
+        .resizable()
+        .aspectRatio(contentMode: .fit)
+        .frame(width: 12, height: 12)
+        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+        .help(tool.displayName)
+        .accessibilityHidden(true)
+    } else {
+      Image(systemName: glyph)
+        .font(.system(size: 10))
+        .foregroundStyle(.secondary)
+    }
+  }
+}

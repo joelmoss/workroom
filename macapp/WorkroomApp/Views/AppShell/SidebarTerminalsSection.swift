@@ -32,6 +32,7 @@ struct SidebarTerminalsList: View, Equatable {
 
   var body: some View {
     List {
+      SidebarHeadingGap()
       if !section.isFolded {
         let rows = Self.rows(of: section, in: store)
         ForEach(rows, id: \.item) { row in
@@ -57,9 +58,10 @@ struct SidebarTerminalsList: View, Equatable {
   /// saved: each entry's row, and each of an unfolded group's terminals, which are as tall.
   static func contentHeight(of section: TerminalsSection, in store: AppStore) -> CGFloat {
     let rowHeight =
-      SidebarRowMetrics.rowHeight + ProjectSidebar.childRowInsets.top
-      + ProjectSidebar.childRowInsets.bottom
+      SidebarRowMetrics.rowHeight + ProjectSidebar.sectionRowInsets.top
+      + ProjectSidebar.sectionRowInsets.bottom
     return CGFloat(rows(of: section, in: store).count) * rowHeight + ProjectSidebar.listPadding
+      + SidebarRowMetrics.headingGap
   }
 
   private struct Row {
@@ -94,6 +96,14 @@ struct SidebarTerminalsList: View, Equatable {
     }
   }
 
+  /// Whether a group's terminals are listed under its row: unfolded, with terminals.
+  private func showsTerminals(of group: TerminalGroup, _ sid: SidebarID) -> Bool {
+    guard !group.isFolded else { return false }
+    if group.isBuiltIn { return quickTerminalHasTerminals }
+    guard let target = store.target(for: sid) else { return false }
+    return !store.terminals.tabs(for: target).isEmpty
+  }
+
   /// Whether the Quick Terminal's panel has terminals to list under its row, folded or not.
   private var quickTerminalHasTerminals: Bool {
     guard let panel = section.observedQuickTerminalHolder as? QuickTerminalHost else {
@@ -115,7 +125,7 @@ struct SidebarTerminalsList: View, Equatable {
       }
     case (.entry, .standalone):
       SidebarHoverRegion(id: sid) { hovered in
-        SidebarStandaloneRowAdapter(sid: sid, actions: sectionActions)
+        SidebarStandaloneRowAdapter(sid: sid, hovered: hovered, actions: sectionActions)
           .equatable()
           .paneDropZone(.target(sid), store: store)
           .listRowInsets(EdgeInsets())
@@ -133,7 +143,10 @@ struct SidebarTerminalsList: View, Equatable {
         .moveDisabled(group.isBuiltIn)
         .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
-        .listRowBackground(SidebarRowBackground(store: store, id: sid, hovered: hovered))
+        .listRowBackground(
+          SidebarRowBackground(
+            store: store, id: sid, hovered: hovered,
+            passesSelectionToChild: showsTerminals(of: group, sid)))
       }
     }
   }
@@ -247,6 +260,8 @@ struct SidebarSectionActions {
   /// New Terminal in a group: in this window with the group selected, or in the Quick Terminal's
   /// panel for its group.
   var newTerminal: @MainActor (SidebarID) -> Void
+  /// Close a standalone terminal, in whichever window or panel holds it, as its menu's Close does.
+  var closeStandalone: @MainActor (SidebarID) -> Void
   var setStartingFolder: @MainActor (SidebarID, String?) -> Void
   /// Whether deleting a group asks first: only when it has terminals.
   var deleteAsks: @MainActor (SidebarID) -> Bool
@@ -270,6 +285,10 @@ struct SidebarSectionActions {
         guard let target = store.target(for: sid) else { return }
         store.newTerminal(in: target)
       },
+      closeStandalone: { [store] sid in
+        guard let (holder, target, tab) = store.standaloneTerminal(sid) else { return }
+        holder.requestCloseTerminalTab(tab.id, for: target)
+      },
       setStartingFolder: { [store] sid, folder in
         store.setTerminalGroupStartingFolder(sid, to: folder)
       },
@@ -282,17 +301,20 @@ struct SidebarSectionActions {
 struct SidebarStandaloneRowAdapter: View, Equatable {
   @EnvironmentObject private var store: AppStore
   let sid: SidebarID
+  var hovered = false
   let actions: SidebarSectionActions
 
-  nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.sid == rhs.sid }
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+    lhs.sid == rhs.sid && lhs.hovered == rhs.hovered
+  }
 
   var body: some View {
-    SidebarStandaloneRow(model: model, actions: actions).equatable()
+    SidebarStandaloneRow(model: model, hovered: hovered, actions: actions).equatable()
   }
 
   private var model: SidebarStandaloneRowModel {
     SidebarStandaloneRowModel(
-      sid: sid, title: title,
+      sid: sid, title: title, tool: store.standaloneTerminal(sid)?.tab.recognizedTool,
       activity: sid.targetID.map(store.sectionActivity(of:)) ?? SidebarTargetActivity())
   }
 
@@ -306,21 +328,26 @@ struct SidebarStandaloneRowAdapter: View, Equatable {
 struct SidebarStandaloneRowModel: Equatable {
   let sid: SidebarID
   let title: TerminalTitle
+  /// The program its pane tab shows the logo of (#141), shown in its glyph's place.
+  var tool: RecognizedTool? = nil
   /// What its terminal reports, in whichever window holds it, as a workroom's row shows it (#358):
   /// waiting, then a stopped error, then running.
   let activity: SidebarTargetActivity
 }
 
-/// A standalone terminal's row: a terminal glyph and its terminal's name. Selecting it shows the
-/// terminal in this window.
+/// A standalone terminal's row: a terminal glyph, its terminal's name and, while hovered, a close
+/// button, as a group's terminal's row has. Selecting it shows the terminal in this window.
 struct SidebarStandaloneRow: View, Equatable {
   let model: SidebarStandaloneRowModel
+  var hovered = false
   let actions: SidebarSectionActions
 
   @State private var renaming = false
   @State private var draft = ""
 
-  nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.model == rhs.model }
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+    lhs.model == rhs.model && lhs.hovered == rhs.hovered
+  }
 
   var body: some View {
     #if DEBUG
@@ -331,9 +358,7 @@ struct SidebarStandaloneRow: View, Equatable {
     #endif
     let sid = model.sid
     HStack(spacing: Spacing.s) {
-      Image(systemName: TerminalGroup.standaloneGlyph)
-        .font(.system(size: 10))
-        .foregroundStyle(.secondary)
+      SidebarTabIcon(glyph: TerminalGroup.standaloneGlyph, tool: model.tool)
         .frame(width: SidebarRowMetrics.caretWidth, height: 18, alignment: .center)
       if renaming {
         SidebarInlineNameField(
@@ -346,14 +371,21 @@ struct SidebarStandaloneRow: View, Equatable {
           },
           cancel: { renaming = false })
       } else {
-        TerminalTitleLabel(title: model.title)
+        TerminalTitleLabel(title: model.title, folderFont: .subheadline)
           .font(.callout).foregroundStyle(.primary, .secondary)
           .lineLimit(1).truncationMode(.middle)
       }
       Spacer(minLength: 0)
-      SidebarSectionActivityMarks(sid: sid, activity: model.activity, actions: actions)
+      if let id = sid.targetID { SidebarUnreadDot(source: .target(id)) }
+      // The trailing column: its status at rest, its close button on hover. The button is drawn
+      // over it (below), out of the row's combined accessibility element, so it stays a button of
+      // its own.
+      SidebarSectionStatusMark(sid: sid, activity: model.activity, actions: actions)
+        .opacity(hovered && !renaming ? 0 : 1)
+        .frame(width: SidebarRowMetrics.iconColumnWidth)
     }
-    .sidebarRowFrame(ProjectSidebar.childRowInsets)
+    .padding(.trailing, SidebarRowMetrics.iconColumnInset)
+    .sidebarRowFrame(ProjectSidebar.sectionRowInsets)
     .onTapGesture { actions.select(sid) }
     // Dragged onto another standalone terminal's row, the two become a group (#659). Beside the
     // List's own drag, which reorders; `minimumDistance` keeps a click a click. Only its start is
@@ -371,6 +403,13 @@ struct SidebarStandaloneRow: View, Equatable {
     .accessibilityElement(children: renaming ? .contain : .combine)
     .accessibilityAddTraits(.isButton)
     .accessibilityIdentifier("sidebar.standalone.\(sid.targetID?.encoded ?? "")")
+    .overlay(alignment: .trailing) {
+      CloseTerminalRowButton(
+        title: model.title.text, visible: hovered && !renaming, help: "Close this terminal",
+        id: "sidebar.close.\(sid.targetID?.encoded ?? "")"
+      ) { actions.closeStandalone(sid) }
+      .padding(.trailing, SidebarRowMetrics.iconColumnInset)
+    }
   }
 
   /// Shows the name field, starting from the name the user gave it (empty for none), so keeping
@@ -389,8 +428,21 @@ struct SidebarSectionActivityMarks: View {
   let actions: SidebarSectionActions
 
   var body: some View {
+    if let id = sid.targetID { SidebarUnreadDot(source: .target(id)) }
+    SidebarSectionStatusMark(sid: sid, activity: activity, actions: actions)
+  }
+}
+
+/// A Terminals-section row's status alone, without its unread dot: waiting (which focuses the
+/// terminal that has waited longest), a stopped error or running. A standalone terminal's row
+/// shows it in its trailing column, where its close button takes its place on hover.
+struct SidebarSectionStatusMark: View {
+  let sid: SidebarID
+  let activity: SidebarTargetActivity
+  let actions: SidebarSectionActions
+
+  var body: some View {
     if let id = sid.targetID {
-      SidebarUnreadDot(source: .target(id))
       if activity.waiting > 0 {
         NeedsYouButton(count: activity.waiting, stale: activity.waitingStale) {
           actions.showWaiting(id)

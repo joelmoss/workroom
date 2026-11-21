@@ -47,12 +47,17 @@ struct ProjectSidebar: View, Equatable {
     top: 2, leading: 6 + 6, bottom: 2, trailing: 0)
   static let terminalRowInsets = EdgeInsets(
     top: 3, leading: 6 + 6, bottom: 3, trailing: 0)
+  /// The Terminals section's rows (a group's, a standalone terminal's, a group's terminal's): the
+  /// section's top level, so at a project row's leading inset, which puts each row's glyph under its
+  /// heading's chevron and its title under the heading's title (`SectionHeaderMetrics`). A group's
+  /// terminals step one level in themselves (`SidebarTerminalRow`).
+  static let sectionRowInsets = rowInsets
   /// What a plain `List` adds above and below its rows, for sizing the Terminals pane to them.
   static let listPadding: CGFloat = 12
   /// The Terminals pane's floor: its heading and one row, the Quick Terminal's, which it always has.
   static let terminalsPaneMinHeight: CGFloat =
-    SectionHeaderMetrics.height + SidebarRowMetrics.rowHeight + childRowInsets.top
-    + childRowInsets.bottom + listPadding
+    SectionHeaderMetrics.height + SidebarRowMetrics.rowHeight + sectionRowInsets.top
+    + sectionRowInsets.bottom + listPadding + SidebarRowMetrics.headingGap
   /// The Projects pane's floor: its heading and a few rows.
   static let projectsPaneMinHeight: CGFloat = 120
   /// The most of the sidebar the Terminals pane takes when sized to its rows.
@@ -180,13 +185,17 @@ struct SidebarProjectsList: View, Equatable {
     #endif
     let actions = SidebarActions.live(store: store)
     return List {
+      SidebarHeadingGap()
       ForEach(store.projectsFolded ? [] : projectStore.projects) { project in
         SidebarHoverRegion(id: .project(project.path)) { hovered in
           SidebarProjectRowAdapter(project: project, hovered: hovered, actions: actions)
             .equatable()
             .listRowInsets(Self.rowInsets)
             .listRowSeparator(.hidden)
-            .listRowBackground(RowHighlight(selected: false, hovered: hovered))
+            .listRowBackground(
+              RowHighlight(
+                selected: false, hovered: hovered,
+                horizontalPadding: SidebarRowMetrics.listContentInset))
         }
         if isExpanded(project.path) {
           // The root is always the first child, before any workrooms; each selectable row is
@@ -264,6 +273,20 @@ struct SidebarProjectsList: View, Equatable {
   // MARK: Expansion
 
   private func isExpanded(_ path: String) -> Bool { !store.collapsedProjects.contains(path) }
+}
+
+/// The first row of a sidebar pane's `List`: a little air between the pane's sticky heading and
+/// its first row (a List ignores `contentMargins`).
+struct SidebarHeadingGap: View {
+  var body: some View {
+    Color.clear
+      .frame(height: SidebarRowMetrics.headingGap)
+      .listRowInsets(EdgeInsets())
+      .listRowSeparator(.hidden)
+      .listRowBackground(Color.clear)
+      .moveDisabled(true)
+      .accessibilityHidden(true)
+  }
 }
 
 extension View {
@@ -457,11 +480,12 @@ struct SidebarIconButton: View {
 struct SidebarIconGlyph: View {
   let systemImage: String
   let hovering: Bool
+  var font: Font = .system(size: 11)
   @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Image(systemName: systemImage)
-      .font(.system(size: 11))
+      .font(font)
       .foregroundStyle(.secondary)
       .frame(
         width: SidebarRowMetrics.iconColumnWidth, height: SidebarRowMetrics.iconColumnWidth
@@ -833,25 +857,23 @@ struct TerminalDisclosureButton: View {
 struct CloseTerminalRowButton: View {
   let title: String
   let visible: Bool
+  /// Its tooltip; "Close <title>" when nil.
+  var help: String? = nil
+  var id: String? = nil
   let action: () -> Void
   @State private var hovering = false
-  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Button(action: action) {
-      Image(systemName: "xmark")
-        .font(.system(size: 10, weight: .medium))
-        .foregroundStyle(.secondary)
-        .padding(4)
-        .background(
-          RoundedRectangle(cornerRadius: 5)
-            .fill(tokens.hover.opacity(hovering ? 1 : 0))
-        )
+      // In the rows' trailing column, as every sidebar "+" is (`SidebarIconGlyph`).
+      SidebarIconGlyph(
+        systemImage: "xmark", hovering: hovering, font: .system(size: 10, weight: .medium))
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
-    .help("Close \(title)")
+    .help(help ?? "Close \(title)")
     .accessibilityLabel("Close \(title)")
+    .accessibilityIdentifier(id ?? "")
     .opacity(visible ? 1 : 0)
     .allowsHitTesting(visible)
   }

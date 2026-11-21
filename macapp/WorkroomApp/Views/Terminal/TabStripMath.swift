@@ -174,6 +174,9 @@ enum TabStripMetrics {
   /// precisely so a pane's identity is readable when the chip's cap has cut it, so capping it here too
   /// would be capping the fix. It takes whatever width its toolbar leaves instead.
   static let maxChipTitle: CGFloat = 180
+  /// A pane tab's height. Fixed, so the row is centred by construction whatever its tallest glyph:
+  /// it used to come from the row plus 6pt above and below, about 27pt with the ✕ in the row.
+  static let chipHeight: CGFloat = 24
 }
 
 /// The overflow decision for a horizontal tab strip (issue #129): does the *inline* layout — the chip
