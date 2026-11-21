@@ -2612,21 +2612,37 @@ fn dialed_pane(
     let mut pane = Spawned(pane);
     // Held open until the shell has exited, as a pane's is: an attach whose stdin ends detaches.
     let mut stdin = pane.0.stdin.take().expect("stdin");
+    let mut stdout = pane.0.stdout.take().expect("stdout");
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let reader = {
+        let seen = std::sync::Arc::clone(&seen);
+        std::thread::spawn(move || {
+            let mut buffer = [0u8; 4096];
+            while let Ok(n) = stdout.read(&mut buffer) {
+                if n == 0 {
+                    break;
+                }
+                seen.lock().unwrap().extend_from_slice(&buffer[..n]);
+            }
+        })
+    };
+    // Typed once the shell has drawn its prompt: dash discards what arrives while it starts.
+    let prompted = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < prompted
+        && !String::from_utf8_lossy(&seen.lock().unwrap()).contains("$ ")
+    {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     // Split by the quotes, so the pty's echo of each line is not its answer.
     stdin.write_all(typed).expect("type into the pane");
-    let mut stdout = pane.0.stdout.take().expect("stdout");
-    let reader = std::thread::spawn(move || {
-        let mut seen = String::new();
-        let _ = stdout.read_to_string(&mut seen);
-        seen
-    });
     let deadline = Instant::now() + Duration::from_secs(60);
     while pane.0.try_wait().expect("the pane's status").is_none() {
         assert!(Instant::now() < deadline, "the pane never ended");
         std::thread::sleep(Duration::from_millis(50));
     }
-    let seen = reader.join().expect("the pane's output");
+    reader.join().expect("the pane's output");
     drop(stdin);
+    let seen = String::from_utf8_lossy(&seen.lock().unwrap()).into_owned();
     seen
 }
 
