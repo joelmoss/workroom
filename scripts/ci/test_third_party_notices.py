@@ -1,14 +1,16 @@
 """scripts/third_party_notices.py: what the notices check catches, against a scratch tree (#714)."""
 
+import importlib.util
 import json
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-import third_party_notices as notices  # noqa: E402
+# The script lives in scripts/, outside this directory, so it is loaded by path.
+_SPEC = importlib.util.spec_from_file_location(
+    "third_party_notices", Path(__file__).resolve().parents[1] / "third_party_notices.py")
+notices = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(notices)
 
 RESOLVED = notices.APP_RESOLVED.relative_to(notices.ROOT)
 GRAMMARS = notices.GRAMMARS.relative_to(notices.ROOT)
