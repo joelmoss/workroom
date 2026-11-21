@@ -35,6 +35,9 @@ struct PaneTreeView: View {
   /// "Dim unfocused panes" (issue #162) — read here, at the tree, and passed to every leaf.
   @Default(.dimUnfocusedPanes) private var dimUnfocusedPanes
   @State private var drag: PaneDragState?
+  /// The pane's title bar is dragged over somewhere outside the panes that takes it (#652).
+  @State private var overTerminalDrop = false
+  @Environment(\.paneHost) private var host
   /// The divider ratio being dragged right now, held here rather than written to the panes on
   /// every mouse-moved tick: a write changes the target's panes, which re-runs every view of the
   /// workroom (its strip, each pane's title and status bar) and marks the saved layout dirty, at
@@ -146,7 +149,6 @@ struct PaneTreeView: View {
           .position(x: d.rect.midX, y: d.rect.midY)
         }
         dropHighlight(plan: plan)
-        dragGhost()
       }
       .coordinateSpace(.named(Self.space))
       // Hand the measured pane rects to the store so `fits` can apply the pane floor to a CONTENT
@@ -170,7 +172,7 @@ struct PaneTreeView: View {
   /// The accent band previewing where a dragged pane will land.
   @ViewBuilder
   private func dropHighlight(plan: PaneTreeLayout.Plan<TerminalTab.ID>) -> some View {
-    if let drag = activeDrag,
+    if !overTerminalDrop, let drag = activeDrag,
       let hit = PaneTreeLayout.dropTarget(at: drag.location, panes: plan.panes),
       hit.tab != drag.tabID
         || (externalDrag != nil
@@ -179,15 +181,6 @@ struct PaneTreeView: View {
       let rect = plan.panes[hit.tab]
     {
       DropAccent(cornerRadius: 8).placed(in: PaneTreeLayout.edgeBand(hit.edge, in: rect))
-    }
-  }
-
-  /// A floating preview of the pane being dragged (its title + grip), tracking the cursor with a
-  /// shadow — so it's clear what's being moved and to where.
-  @ViewBuilder
-  private func dragGhost() -> some View {
-    if let drag = activeDrag, let tab = panes.tab(drag.tabID, for: target) {
-      DragTitleGhost(title: tab.title, at: drag.location)
     }
   }
 
@@ -206,6 +199,10 @@ struct PaneTreeView: View {
     } else {
       drag = PaneDragState(tabID: tabID, location: location)
     }
+    // Over a sidebar row, a title-bar tab or the title bar's empty space, a pane tab or a group's
+    // title bar, it drops there as its tab would (#652): no split preview meanwhile.
+    let over = host.paneDragMoved(tabID, of: target, to: NSEvent.mouseLocation)
+    if overTerminalDrop != over { overTerminalDrop = over }
     updateDetachPreview(tabID: tabID, at: location, plan: plan, contentFrame: contentFrame)
   }
 
@@ -230,10 +227,12 @@ struct PaneTreeView: View {
   ) {
     defer {
       drag = nil
+      overTerminalDrop = false
       // Unconditional: the ghost may never have been shown, and hiding is idempotent.
       panes.hideDragOutside()
     }
     guard let drag else { return }
+    if host.paneDragEnded(drag.tabID, of: target, at: NSEvent.mouseLocation) { return }
     switch PaneTreeLayout.dragOutcome(
       cursor: drag.location, windowBounds: Self.windowBounds(contentFrame: contentFrame),
       panes: plan.panes, dragging: drag.tabID)
@@ -924,29 +923,5 @@ struct SplitDivider: View {
     else { return }
     startRatio = ratio
     baseTranslation = translation
-  }
-}
-
-/// What a drag carries across the window: the dragged thing's title and a grip, with a shadow,
-/// tracking the cursor. A pane's (`PaneTreeView`) and a workroom's (`WorkroomSplitView`, #444).
-struct DragTitleGhost: View {
-  let title: String
-  /// The cursor, in the space the ghost is drawn in: it floats just above it.
-  let at: CGPoint
-
-  var body: some View {
-    HStack(spacing: 5) {
-      Image(systemName: "line.3.horizontal").font(.system(size: 9, weight: .semibold))
-      Text(title).font(.caption).lineLimit(1)
-    }
-    .foregroundStyle(.primary)
-    .padding(.horizontal, 10)
-    .padding(.vertical, 6)
-    .background(.regularMaterial, in: Capsule())
-    .overlay(Capsule().strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
-    .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
-    .fixedSize()
-    .position(x: at.x, y: at.y - 14)
-    .allowsHitTesting(false)
   }
 }

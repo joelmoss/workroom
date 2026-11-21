@@ -66,13 +66,33 @@ struct SidebarDragPlumbing: Equatable, Sendable {
         handlers.drag.wrappedValue = handlers.localize(value.location).map {
           WorkroomPaneDrag(sid: id, location: $0)
         }
+        // Over the panes, the shared ghost carries its name (#652).
+        if handlers.drag.wrappedValue != nil {
+          DragGhost.shared.show(title: id.ghostTitle, at: NSEvent.mouseLocation)
+        } else {
+          DragGhost.shared.hide()
+        }
       }
       .onEnded { value in
+        DragGhost.shared.hide()
         if let drop = handlers.dropTarget(value.location) {
           actions.insertSplit(id, drop.sid, drop.edge, drop.rect)
         }
         handlers.drag.wrappedValue = nil
       }
+  }
+}
+
+extension SidebarID {
+  /// The name a workroom's or root's row carries on the drag ghost: the workroom's, or the
+  /// project's folder.
+  var ghostTitle: String {
+    switch self {
+    case .workroom(_, let name): return name
+    case .root(let project), .project(let project):
+      return (project as NSString).lastPathComponent
+    default: return ""
+    }
   }
 }
 

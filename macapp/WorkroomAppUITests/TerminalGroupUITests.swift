@@ -360,4 +360,273 @@ final class TerminalGroupUITests: XCTestCase {
       predicate: NSPredicate { _, _ in row.frame.minY < standalone.frame.minY }, object: nil)
     XCTAssertEqual(XCTWaiter().wait(for: [moved], timeout: 6), .completed, "the group is first")
   }
+
+  // MARK: Dragging a terminal into a group (#652)
+
+  /// The second fixture group, "Dev" (`UITestFixture.secondTerminalGroupID`), below "Ops".
+  private let secondGroup = "group:00000000-0000-0000-0000-000000006520"
+
+  /// The terminals' rows listed below `row` and above `limit` (nil: to the end), by identifier: a
+  /// group's terminals' rows sit under its row.
+  private func terminalRows(
+    _ app: XCUIApplication, below row: XCUIElement, above limit: XCUIElement? = nil
+  ) -> Set<String> {
+    let top = row.frame.maxY - 1
+    let bottom = limit.map { $0.frame.minY + 1 } ?? .greatestFiniteMagnitude
+    return Set(
+      elements(app, prefix: "sidebar.terminal.").allElementsBoundByIndex.filter {
+        $0.frame.minY >= top && $0.frame.maxY <= bottom
+      }.map(\.identifier))
+  }
+
+  private func waitFor(_ timeout: TimeInterval = 8, _ condition: @escaping () -> Bool) -> Bool {
+    let done = XCTNSPredicateExpectation(
+      predicate: NSPredicate { _, _ in condition() }, object: nil)
+    return XCTWaiter().wait(for: [done], timeout: timeout) == .completed
+  }
+
+  /// `click(forDuration:thenDragTo:)`, the mouse drag: on macOS 27 `press` posts no mouse events
+  /// from an element, so nothing drags (#269). Let go over `to`'s middle, where a row drops on it.
+  private func drag(_ from: XCUIElement, onto to: XCUIElement) {
+    from.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).click(
+      forDuration: 0.6,
+      thenDragTo: to.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)))
+  }
+
+  /// Value: protects=a standalone terminal's row dragged onto a group's row joins the group, its
+  /// own row going (#652 case 1); fails_when=the drop is refused, reorders instead, or the
+  /// terminal is lost; why_new=#652; seam=the real sidebar drag; no_claim=the session kept
+  /// (SidebarTerminalRowDropTests)
+  func testAStandaloneRowDraggedOntoAGroupsRowJoinsIt() {
+    let app = XCUIApplication()
+    app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    app.launchArguments += ["-WorkroomUITestStandaloneTerminals", "1"]
+    app.launchArguments += ["-WorkroomUITestTerminalGroup", "1"]
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launch()
+    app.activate()
+    let standalone = element(
+      app, "sidebar.standalone.standalone:00000000-0000-0000-0000-000000000651")
+    let row = element(app, "sidebar.group.\(group)")
+    XCTAssertTrue(row.waitForExistence(timeout: 15))
+    XCTAssertTrue(standalone.waitForExistence(timeout: 5))
+    XCTAssertTrue(waitFor { self.terminalRows(app, below: row).count == 2 }, "Ops has two")
+
+    drag(standalone, onto: row)
+
+    XCTAssertTrue(
+      waitForRows(elements(app, prefix: "sidebar.standalone."), 0), "its own row goes")
+    XCTAssertTrue(
+      waitFor { self.terminalRows(app, below: row).count == 3 }, "and its terminal is Ops's")
+  }
+
+  /// The identifiers of the terminals' rows below `row`, top to bottom.
+  private func terminalRowsInOrder(_ app: XCUIApplication, below row: XCUIElement) -> [String] {
+    let ids = terminalRows(app, below: row)
+    var seen = Set<String>()
+    return elements(app, prefix: "sidebar.terminal.").allElementsBoundByIndex
+      .filter { ids.contains($0.identifier) }
+      .sorted { $0.frame.minY < $1.frame.minY }
+      .map(\.identifier)
+      .filter { seen.insert($0).inserted }
+  }
+
+  /// Value: protects=a standalone terminal's row let go at the top edge of a group's second
+  /// terminal's row joins the group second (#652 follow-up); fails_when=it lands after the group,
+  /// or last in it; why_new=the owner wants the drop's position to count; seam=the real List drop;
+  /// no_claim=the title bar's order (SidebarTerminalRowDropTests)
+  func testAStandaloneRowLetGoAboveAGroupsSecondTerminalJoinsItSecond() throws {
+    let app = XCUIApplication()
+    app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    app.launchArguments += ["-WorkroomUITestStandaloneTerminals", "1"]
+    app.launchArguments += ["-WorkroomUITestTerminalGroup", "1"]
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launch()
+    app.activate()
+    let standalone = element(
+      app, "sidebar.standalone.standalone:00000000-0000-0000-0000-000000000651")
+    let ops = element(app, "sidebar.group.\(group)")
+    XCTAssertTrue(ops.waitForExistence(timeout: 15))
+    XCTAssertTrue(standalone.waitForExistence(timeout: 5))
+    XCTAssertTrue(waitFor { self.terminalRows(app, below: ops).count == 2 })
+    let before = terminalRowsInOrder(app, below: ops)
+    XCTAssertEqual(before.count, 2)
+
+    // At the top edge of Ops's second terminal's row: between its two terminals.
+    standalone.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).click(
+      forDuration: 0.6,
+      thenDragTo: element(app, before[1]).coordinate(
+        withNormalizedOffset: CGVector(dx: 0.3, dy: 0.1)))
+
+    XCTAssertTrue(
+      waitForRows(elements(app, prefix: "sidebar.standalone."), 0), "its own row goes")
+    XCTAssertTrue(waitFor { self.terminalRowsInOrder(app, below: ops).count == 3 })
+    let after = terminalRowsInOrder(app, below: ops)
+    XCTAssertEqual(after.first, before[0], "Ops's first stays first")
+    XCTAssertEqual(after.last, before[1], "its second is third now")
+    XCTAssertFalse(before.contains(after[1]), "the dropped terminal is second")
+  }
+
+  /// Value: protects=a group's terminal's row let go between the section's rows becomes a
+  /// standalone terminal there (#652 case 3); fails_when=the List makes no move of a group's
+  /// terminal's row, or it stays in the group; why_new=#652; seam=the real List drop;
+  /// no_claim=the session kept (SidebarTerminalRowDropTests)
+  func testAGroupsTerminalLetGoBetweenRowsBecomesStandalone() throws {
+    let app = XCUIApplication()
+    app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    app.launchArguments += ["-WorkroomUITestStandaloneTerminals", "1"]
+    app.launchArguments += ["-WorkroomUITestTerminalGroup", "1"]
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launch()
+    app.activate()
+    let standalone = element(
+      app, "sidebar.standalone.standalone:00000000-0000-0000-0000-000000000651")
+    let ops = element(app, "sidebar.group.\(group)")
+    XCTAssertTrue(ops.waitForExistence(timeout: 15))
+    XCTAssertTrue(standalone.waitForExistence(timeout: 5))
+    XCTAssertTrue(waitFor { self.terminalRows(app, below: ops).count == 2 })
+    let id = try XCTUnwrap(terminalRows(app, below: ops).sorted().first)
+
+    // At the standalone row's top edge: between the section's rows, not on one.
+    element(app, id).coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).click(
+      forDuration: 0.6,
+      thenDragTo: standalone.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.1)))
+
+    XCTAssertTrue(
+      waitForRows(elements(app, prefix: "sidebar.standalone."), 2), "it is standalone now")
+    XCTAssertTrue(waitFor { self.terminalRows(app, below: ops).count == 1 }, "Ops keeps one")
+  }
+
+  /// Value: protects=a group's terminal's row dragged onto another group's row moves into that
+  /// group (#652 case 2); fails_when=the row can't be dragged, the drop is refused, or it lands
+  /// elsewhere; why_new=#652 (a group's terminals' rows didn't drag); seam=the real sidebar drag;
+  /// no_claim=the session kept (SidebarTerminalRowDropTests)
+  func testAGroupsTerminalDraggedOntoAnotherGroupsRowMovesThere() throws {
+    let app = XCUIApplication()
+    app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    app.launchArguments += ["-WorkroomUITestTerminalGroup", "1"]
+    app.launchArguments += ["-WorkroomUITestSecondTerminalGroup", "1"]
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launch()
+    app.activate()
+    let ops = element(app, "sidebar.group.\(group)")
+    let dev = element(app, "sidebar.group.\(secondGroup)")
+    XCTAssertTrue(ops.waitForExistence(timeout: 15))
+    XCTAssertTrue(dev.waitForExistence(timeout: 5))
+    XCTAssertLessThan(ops.frame.minY, dev.frame.minY, "Ops is above Dev")
+    XCTAssertTrue(waitFor { self.terminalRows(app, below: ops, above: dev).count == 2 })
+    XCTAssertTrue(waitFor { self.terminalRows(app, below: dev).count == 1 })
+    let id = try XCTUnwrap(terminalRows(app, below: ops, above: dev).sorted().first)
+
+    drag(element(app, id), onto: dev)
+
+    XCTAssertTrue(waitFor { self.terminalRows(app, below: dev).contains(id) }, "it is Dev's now")
+    XCTAssertTrue(waitFor { self.terminalRows(app, below: dev).count == 2 })
+    XCTAssertTrue(waitFor { self.terminalRows(app, below: ops, above: dev).count == 1 })
+  }
+
+  // MARK: Dropping into a folded group (#652)
+
+  /// Folds `row`'s group with a click on the row, and waits for its terminals' rows to go.
+  private func fold(_ app: XCUIApplication, _ row: XCUIElement, above limit: XCUIElement? = nil) {
+    row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+    XCTAssertTrue(
+      waitFor { self.terminalRows(app, below: row, above: limit).isEmpty }, "folded")
+    Thread.sleep(forTimeInterval: 1)  // the List's fold animation settles before a drag
+  }
+
+  /// Unfolds `row`'s group with a click on the row, unless its terminals' rows already show.
+  private func unfold(_ app: XCUIApplication, _ row: XCUIElement) {
+    Thread.sleep(forTimeInterval: 1)
+    guard terminalRows(app, below: row).isEmpty else { return }
+    row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+  }
+
+  /// Drags `from` to `to`, let go at normalized height `dy` of `to`'s row. No hold before letting
+  /// go (`thenHoldForDuration`): in the VM a held drop never reaches `SidebarRowDrag`.
+  private func drag(_ from: XCUIElement, to: XCUIElement, dy: CGFloat) {
+    from.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).click(
+      forDuration: 0.6,
+      thenDragTo: to.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: dy)))
+  }
+
+  /// A standalone terminal's row let go at height `dy` of folded Ops's row: it joins Ops, last.
+  private func assertStandaloneJoinsFoldedOpsLast(dy: CGFloat) {
+    let app = XCUIApplication()
+    app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    app.launchArguments += ["-WorkroomUITestStandaloneTerminals", "2"]
+    app.launchArguments += ["-WorkroomUITestTerminalGroup", "1"]
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launch()
+    app.activate()
+    let ops = element(app, "sidebar.group.\(group)")
+    let standalones = elements(app, prefix: "sidebar.standalone.")
+    XCTAssertTrue(ops.waitForExistence(timeout: 15))
+    XCTAssertTrue(waitForRows(standalones, 2))
+    XCTAssertTrue(waitFor { self.terminalRows(app, below: ops).count == 2 })
+    let before = terminalRowsInOrder(app, below: ops)
+    fold(app, ops)
+    let standalone = standalones.allElementsBoundByIndex.sorted { $0.frame.minY < $1.frame.minY }
+      .first!
+
+    drag(standalone, to: ops, dy: dy)
+
+    XCTAssertTrue(waitForRows(standalones, 1), "its own row goes")
+    unfold(app, ops)
+    XCTAssertTrue(
+      waitFor { self.terminalRowsInOrder(app, below: ops).count == 3 },
+      "Ops has three: \(terminalRowsInOrder(app, below: ops))")
+    let after = terminalRowsInOrder(app, below: ops)
+    XCTAssertEqual(Array(after.prefix(2)), before, "Ops's own keep their places")
+    XCTAssertFalse(before.contains(after[2]), "the dropped terminal is last")
+  }
+
+  /// Value: protects=a standalone terminal's row let go on a folded group's row's middle joins the
+  /// group, last (#652 owner report); fails_when=the drop is refused or reorders; why_new=the
+  /// owner couldn't drop into a collapsed group; seam=the real sidebar drag; no_claim=the session
+  /// kept (SidebarTerminalRowDropTests)
+  func testAStandaloneRowDroppedOnAFoldedGroupsRowJoinsItLast() {
+    assertStandaloneJoinsFoldedOpsLast(dy: 0.5)
+  }
+
+  /// Value: protects=let go at a folded group's row's lower edge, a List reorder gap, a terminal
+  /// still joins the group, last (#652 owner report); fails_when=it reorders below the group;
+  /// why_new=the owner couldn't drop into a collapsed group; seam=the real List drop;
+  /// no_claim=the top edge, which still reorders (SidebarTerminalRowDropTests)
+  func testAStandaloneRowLetGoAtAFoldedGroupsLowerEdgeJoinsItLast() {
+    assertStandaloneJoinsFoldedOpsLast(dy: 0.85)
+  }
+
+  /// Value: protects=another group's terminal's row let go on a folded group's row moves into it,
+  /// last (#652 owner report); fails_when=the drop is refused, or it becomes standalone;
+  /// why_new=the owner couldn't drop into a collapsed group; seam=the real sidebar drag;
+  /// no_claim=the session kept (SidebarTerminalRowDropTests)
+  func testAGroupsTerminalDroppedOnAnotherFoldedGroupsRowJoinsItLast() throws {
+    let app = XCUIApplication()
+    app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    app.launchArguments += ["-WorkroomUITestTerminalGroup", "1"]
+    app.launchArguments += ["-WorkroomUITestSecondTerminalGroup", "1"]
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launch()
+    app.activate()
+    let ops = element(app, "sidebar.group.\(group)")
+    let dev = element(app, "sidebar.group.\(secondGroup)")
+    XCTAssertTrue(ops.waitForExistence(timeout: 15))
+    XCTAssertTrue(dev.waitForExistence(timeout: 5))
+    XCTAssertTrue(waitFor { self.terminalRows(app, below: ops, above: dev).count == 2 })
+    XCTAssertTrue(waitFor { self.terminalRows(app, below: dev).count == 1 })
+    let devOwn = terminalRowsInOrder(app, below: dev)
+    let id = try XCTUnwrap(terminalRows(app, below: ops, above: dev).sorted().first)
+    fold(app, dev)
+
+    drag(element(app, id), to: dev, dy: 0.5)
+
+    XCTAssertTrue(waitFor { self.terminalRows(app, below: ops, above: dev).count == 1 }, "moved")
+    XCTAssertFalse(terminalRows(app, below: ops, above: dev).contains(id), "out of Ops")
+    XCTAssertTrue(waitForRows(elements(app, prefix: "sidebar.standalone."), 0), "not standalone")
+    unfold(app, dev)
+    XCTAssertTrue(
+      waitFor { self.terminalRowsInOrder(app, below: dev) == devOwn + [id] },
+      "last: \(terminalRowsInOrder(app, below: dev)), was \(devOwn) + \(id)")
+  }
 }

@@ -1,3 +1,4 @@
+import AppKit
 import DesignSystem
 import SwiftUI
 import WorkroomDomain
@@ -48,6 +49,10 @@ struct WorkroomTabBar: View {
   // Drag-to-reorder: the order is frozen during a drag (the dragged chip follows the cursor, the rest
   // slide aside to open a gap), committed once on drop — mirrors `TerminalTabStrip`.
   @State private var drag = TabReorderDrag<SidebarID>()
+  /// Whether the dragged tab is over somewhere it would drop its terminals (#652, the window's
+  /// `terminalDrag`): another tab's middle, a sidebar row, a pane tab or a group's title bar. The
+  /// reorder gap closes so the destination stays under the pointer.
+  @State private var overTerminalDrop = false
 
   private let tabSpacing: CGFloat = 4
   /// The tab row's coordinate space, which the tabs' frames are measured in.
@@ -71,7 +76,8 @@ struct WorkroomTabBar: View {
     // While dragging a chip down into the content (forming a split), the strip stops opening a reorder
     // gap — mirrors `TerminalTabStrip`.
     let dropIndex = drag.dropIndex(
-      ids: tabs.map(\.sid), spacing: tabSpacing, suspendedByPaneDrag: chipPaneDrag != nil)
+      ids: tabs.map(\.sid), spacing: tabSpacing,
+      suspendedByPaneDrag: chipPaneDrag != nil || overTerminalDrop)
     let draggedWidth = drag.draggedWidth
 
     // The bar fills the gap between the leading and trailing title-bar controls (the container's
@@ -151,12 +157,23 @@ struct WorkroomTabBar: View {
           isHovered: isHovered, isDragging: isDragging,
           showLeadingSeparator: showsLeadingSeparator(at: index, groupOf: groupOf)
         )
+        // Over a tab it would group with, the dragged tab lets the target's accent show through.
+        .opacity(isDragging && overTerminalDrop ? 0.55 : 1)
         // A Quick Terminal pane dragged over this window would join this workroom.
         .overlay {
           if store.incomingQuickTerminalPane == tab.sid
             || store.incomingPaneDrop == .target(tab.sid)
           {
             DropAccent(cornerRadius: 6)
+          }
+        }
+        // A pane let go in the empty space beside this tab becomes a standalone terminal there:
+        // the caret marks the gap (#652).
+        .overlay(alignment: gapCaretEdge(of: tab.sid, at: index) ?? .leading) {
+          if gapCaretEdge(of: tab.sid, at: index) != nil {
+            DropInsertionMark(vertical: true).offset(
+              x: gapCaretEdge(of: tab.sid, at: index) == .leading
+                ? -tabSpacing / 2 - 1 : tabSpacing / 2 + 1)
           }
         }
         .onHover { inside in
@@ -178,20 +195,32 @@ struct WorkroomTabBar: View {
               // Out of the window: into another window, or a new one (#444).
               if isDragOutsideWindow(value.location) {
                 chipPaneDrag = nil
+                endTerminalDrag()
                 WorkroomWindowDrag.update(
                   store: store, sid: tab.sid, target: tab.target,
                   width: drag.widths[tab.sid] ?? 0)
                 return
               }
               WorkroomWindowDrag.cancel()
+              // A standalone terminal's or group's tab over another tab's middle, a sidebar row, a
+              // pane tab or a group's title bar: a drop there takes its terminals (#652).
+              overTerminalDrop = store.terminalDrag.moved(
+                .entry(tab.sid), from: .titleBar, to: NSEvent.mouseLocation)
               // Dragged into the detail content → preview a drop-into-pane split (the strip stops
               // gapping); otherwise it's a plain reorder.
-              chipPaneDrag = localize(value.location).map {
-                WorkroomPaneDrag(sid: tab.sid, location: $0)
-              }
+              chipPaneDrag =
+                overTerminalDrop
+                ? nil
+                : localize(value.location).map { WorkroomPaneDrag(sid: tab.sid, location: $0) }
             }
             .onEnded { value in
-              if isDragOutsideWindow(value.location) {
+              let dropped =
+                !isDragOutsideWindow(value.location)
+                && store.terminalDrag.ended(at: NSEvent.mouseLocation)
+              endTerminalDrag()
+              if dropped {
+                drag.cancel()
+              } else if isDragOutsideWindow(value.location) {
                 drag.cancel()
                 WorkroomWindowDrag.end(store: store, sid: tab.sid)
               } else if let drop = dropTarget(value.location) {
@@ -282,6 +311,22 @@ struct WorkroomTabBar: View {
     return TabStripSeparators.between(
       tabs[index - 1].sid, tabs[index].sid, active: selectedID, hovered: hoveredID,
       groupOf: groupOf)
+  }
+
+  /// Which edge of tab `sid` (at `index`) the title bar's caret sits on while a pane hovers in the
+  /// empty space there (`PaneDropZone.titleBarGap`): the leading edge of the tab it would land
+  /// before, or the trailing edge of the last tab. Nil: no caret on this tab.
+  private func gapCaretEdge(of sid: SidebarID, at index: Int) -> Alignment? {
+    guard case .titleBarGap(let before) = store.incomingPaneDrop else { return nil }
+    if before == sid { return .leading }
+    if before == nil, index == tabs.count - 1 { return .trailing }
+    return nil
+  }
+
+  /// Ends this bar's part in the window's terminal drag, and its highlight.
+  private func endTerminalDrag() {
+    overTerminalDrop = false
+    store.terminalDrag.cancel()
   }
 
   /// A reorder translation kept within the tab run (`TabReorderDrag.clamped`): the bar spans the

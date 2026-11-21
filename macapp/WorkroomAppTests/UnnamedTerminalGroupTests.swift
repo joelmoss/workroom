@@ -309,27 +309,26 @@ final class UnnamedTerminalGroupTests: XCTestCase {
     XCTAssertEqual(rows, [a])
   }
 
-  /// Value: protects=only a standalone terminal's row dropped on another's groups them, the drag
-  /// gesture's model (#659 AC 2); fails_when=a row groups with itself or a group's row, or a
-  /// group's row is taken for one; why_new=#659 left the gesture open; seam=AppStore;
-  /// no_claim=hit-testing the pointer.
-  func testOnlyAStandaloneRowDropsOnAnotherStandaloneRow() async throws {
+  /// Value: protects=a standalone terminal's row dropped on another's groups them, the drag
+  /// gesture's model (#659 AC 2), and a group's row is somewhere it joins instead (#652);
+  /// fails_when=a row groups with itself, or a drop on a group's row is refused;
+  /// why_new=#659 left the gesture open; seam=AppStore; no_claim=hit-testing the pointer.
+  func testAStandaloneRowDropsOnAnotherStandaloneRowToGroupThem() async throws {
     let store = makeStore()
     let a = try standalone(store)
     let b = try standalone(store)
     let named = try XCTUnwrap(store.newTerminalGroup(named: "Ops"))
 
-    XCTAssertTrue(store.canDropRow(b, onto: a))
-    XCTAssertFalse(store.canDropRow(a, onto: a))
-    XCTAssertFalse(store.canDropRow(a, onto: named))
-    XCTAssertFalse(store.canDropRow(named, onto: a))
+    XCTAssertTrue(store.canDropRow(.standalone(b), onto: a))
+    XCTAssertFalse(store.canDropRow(.standalone(a), onto: a))
+    XCTAssertTrue(store.canDropRow(.standalone(a), onto: named), "it joins the group (#652)")
 
-    XCTAssertTrue(store.dropRow(b, onto: a))
+    let dropped = await store.dropRow(.standalone(b), onto: a)
+    XCTAssertTrue(dropped)
     await settle()
 
     XCTAssertTrue(isUnnamedGroup(rows.first))
     XCTAssertEqual(rows.count, 2)
-    XCTAssertFalse(store.dropRow(named, onto: a))
   }
 
   // MARK: Names

@@ -254,7 +254,10 @@ enum TerminalGroupNamePrompt {
 /// One of a group's terminals under its row: this window's, at any count, selecting the group and
 /// focusing that terminal on a tap; or one of the Quick Terminal's, held by its panel (`holder`),
 /// sliding the panel in on it. It looks as a standalone terminal's row does, indented under the
-/// group (`SidebarTerminalRowStyle.section`).
+/// group (`SidebarTerminalRowStyle.section`). Dragged onto another group's row, or one of its
+/// terminals' rows, it moves into that group; let go between the section's rows, it becomes a
+/// standalone terminal there (#652). It is also part of its group's drop zone, so a terminal let go
+/// on it joins the group, whose own row shows the highlight.
 struct SidebarTerminalGroupChild: View {
   let store: AppStore
   let tokens: ThemeTokens
@@ -263,6 +266,7 @@ struct SidebarTerminalGroupChild: View {
   let parent: SidebarID
   var holder: QuickTerminalHost? = nil
   let actions: SidebarActions
+  let rowDrag: SidebarRowDrag
 
   @State private var hovered = false
 
@@ -272,6 +276,17 @@ struct SidebarTerminalGroupChild: View {
       holder: holder, style: .section
     )
     .equatable()
+    // A terminal let go on it lands in its group just above it (#652).
+    .paneDropZone(.terminalRow(tabID, in: parent), store: store)
+    // Beside the List's own drag, which takes it out to standalone (`SidebarTerminalsList`); only
+    // its start is used, and `SidebarRowDrag` follows the pointer to the end, as a standalone
+    // terminal's row's drag does.
+    .simultaneousGesture(
+      DragGesture(minimumDistance: SidebarRowDrag.startDistance, coordinateSpace: .global)
+        .onChanged { [store, rowDrag, tabID, parent] _ in
+          rowDrag.moved(.terminal(tabID, of: parent), in: store)
+        }
+    )
     .onHover { hovered = $0 }
     .listRowInsets(EdgeInsets())
     .listRowSeparator(.hidden)

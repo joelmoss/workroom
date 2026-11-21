@@ -87,7 +87,7 @@ final class WindowRegistry: ObservableObject {
   /// The Workroom window a drag is over at `screenPoint`, looking past the drag's own ghost
   /// (`DetachedPaneDragPreview`), which sits under the cursor.
   func dropStore(at screenPoint: CGPoint) -> AppStore? {
-    let ghost = DetachedPaneDragPreview.shared.windowNumber.map { Set([$0]) } ?? []
+    let ghost = DragGhost.windowNumbers
     guard case .store(let store) = dropWindow(at: screenPoint, skipping: ghost) else { return nil }
     return store
   }
@@ -95,7 +95,7 @@ final class WindowRegistry: ObservableObject {
   /// The torn-off pane (issue #172) whose window is in front under `screenPoint`, past the drag's
   /// ghost, if one is. `dropStore` answers with its owner, whose main window it isn't.
   func detachedPane(at screenPoint: CGPoint) -> TerminalTab.ID? {
-    let ghost = DetachedPaneDragPreview.shared.windowNumber.map { Set([$0]) } ?? []
+    let ghost = DragGhost.windowNumbers
     var pane: TerminalTab.ID?
     _ = Self.frontmostDropWindow(
       skipping: ghost,

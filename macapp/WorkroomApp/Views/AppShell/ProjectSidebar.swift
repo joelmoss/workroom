@@ -401,6 +401,17 @@ private struct SidebarTerminalSubtree: View, Equatable {
             tabID: tabID, target: target, parent: parent, hovered: hovered, actions: actions
           )
           .equatable()
+          // A terminal let go on it lands in this workroom just above it; dragged, it is that
+          // terminal (#652, `TerminalDragSession`).
+          .paneDropZone(.terminalRow(tabID, in: parent), store: store)
+          .simultaneousGesture(
+            DragGesture(minimumDistance: 6, coordinateSpace: .global)
+              .onChanged { [store, tabID, parent] _ in
+                store.terminalDrag.moved(
+                  .terminal(tabID, of: parent), from: .sidebar, to: NSEvent.mouseLocation)
+              }
+              .onEnded { [store] _ in store.terminalDrag.ended(at: NSEvent.mouseLocation) }
+          )
           .listRowInsets(EdgeInsets())
           .listRowSeparator(.hidden)
           .listRowBackground(
