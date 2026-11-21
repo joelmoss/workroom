@@ -102,6 +102,32 @@ final class StandaloneAcrossWindowsTests: XCTestCase {
     XCTAssertEqual(other.selectedTargetID, stayed)
   }
 
+  /// ⌥⌘O on a standalone terminal another window holds takes you to that window, as selecting it
+  /// does, and leaves this window's layout alone: no split member with no terminal (#664 review).
+  func testOpeningItAsASplitInAnotherWindowRaisesTheHolderAndLeavesTheLayout() throws {
+    projects.projects = [
+      Project(
+        path: "/p", vcs: "git",
+        workrooms: [Workroom(name: "a", path: "/p/a", vcsName: "workroom/a", warnings: [])])
+    ]
+    let workroom = SidebarID.workroom(project: "/p", name: "a")
+    let (holder, sid, id) = try makeHolder()
+    let other = makeStore()
+    other.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1400, height: 800)
+    other.openExisting(workroom)
+    let target = try XCTUnwrap(other.target(for: workroom))
+    if other.terminals.tabCount(forTargetID: target.id) == 0 { other.terminals.addTab(for: target) }
+    var raised: [NSWindow] = []
+    holder.raiseWindow = { raised.append($0) }
+
+    other.openExistingAsSplit(sid)
+
+    XCTAssertEqual(raised, [try XCTUnwrap(holder.hostWindow)], "the holder comes forward")
+    XCTAssertTrue(other.workroomSplits.isEmpty, "this window's layout is left alone")
+    XCTAssertEqual(other.selectedTargetID, workroom)
+    XCTAssertEqual(other.terminals.tabCount(forTargetID: id), 0, "no second terminal")
+  }
+
   /// A workroom is not one terminal: each window keeps its own in it (ADR 0069).
   func testAWorkroomIsStillSelectedInEveryWindow() {
     projects.projects = [

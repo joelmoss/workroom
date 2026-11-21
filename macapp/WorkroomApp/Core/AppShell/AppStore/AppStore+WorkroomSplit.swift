@@ -158,7 +158,9 @@ extension AppStore {
     // directory is gone (`isMissing`) — a missing leaf would render a "Directory not found" pane that
     // can only be backed out of again, so don't let one into the split in the first place (#23).
     // A create's pane is the one unavailable leaf let in (R1, #483): it opens beside its anchor.
-    guard sid != beside, let dropped = target(for: sid),
+    // A standalone terminal another window holds is shown there, never as a member here with no
+    // terminal (ADR 0077).
+    guard sid != beside, otherHolder(of: sid) == nil, let dropped = target(for: sid),
       dropped.opensTerminals || dropped.unavailability == .creating,
       target(for: beside) != nil
     else { return false }
@@ -226,6 +228,12 @@ extension AppStore {
   ///
   /// It deliberately does NOT retry on another edge: landing to the right is the whole contract.
   func openExistingAsSplit(_ sid: SidebarID) {
+    // A standalone terminal another window holds: that window comes forward with it, as selecting
+    // it does, and this window's layout stays as it was.
+    if let holder = otherHolder(of: sid), let id = sid.targetID {
+      holder.revealTerminals(forTargetID: id)
+      return
+    }
     guard let anchor = selectedTargetID,
       insertWorkroomSplit(
         sid, beside: anchor, edge: .right, destinationRect: workroomPaneRect(for: anchor))
