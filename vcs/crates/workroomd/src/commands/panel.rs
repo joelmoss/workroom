@@ -1,6 +1,6 @@
 //! What a person at the CLI is shown in colour: [`Paint`], Go's `ui` colour helpers, and a
 //! script's streamed output in a titled, bordered panel, Go's `ui.LogPanel`. `delete`'s teardown
-//! writes to one; `create`'s setup (#677) will too. With `--json` the same output goes to stderr
+//! and `create`'s setup script write to one. With `--json` the same output goes to stderr
 //! as NDJSON events instead (`log`). `trust`'s approval panel (`prompt`) is drawn to the same
 //! width in the same colours.
 

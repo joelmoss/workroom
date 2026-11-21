@@ -4389,11 +4389,15 @@ fn delete_args<'a>(project: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
 }
 
 /// Runs the binary under test as [`Home::run`] does, with nothing on stdin and in a session of its
-/// own, so there is no terminal it could ask on even when the test runs in one.
-fn run_without_a_terminal(home: &Home, cwd: &Path, args: &[&str]) -> Run {
+/// own, so there is no terminal it could ask on even when the test runs in one (Go's prompt opens
+/// /dev/tty, which would wait on the developer's), with `env` set on top.
+fn run_without_a_terminal(home: &Home, cwd: &Path, args: &[&str], env: &[(&str, &OsStr)]) -> Run {
     use std::os::unix::process::CommandExt;
     let mut command = home.command(binary(), cwd);
     command.args(args).stdin(std::process::Stdio::null());
+    for (key, value) in env {
+        command.env(key, value);
+    }
     // SAFETY: between fork and exec the child only calls setsid, which is async-signal-safe.
     unsafe {
         command.pre_exec(|| {
@@ -5205,7 +5209,7 @@ fn delete_without_a_terminal_to_ask_on_deletes_nothing() {
     let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
     let before = config_text(&home);
     for args in [&["delete", "calm-river"][..], &["delete"]] {
-        let run = run_without_a_terminal(&home, &project, args);
+        let run = run_without_a_terminal(&home, &project, args, &[]);
         run.assert_code(1).assert_quiet_stdout();
         assert!(
             run.stderr.starts_with("Error: "),
@@ -7623,22 +7627,7 @@ fn human_create(home: &Home, project: &Path, extra: &[&str], env: &[(&str, &OsSt
     let project_arg = project.to_string_lossy().into_owned();
     let mut args = vec!["create", "--project", &project_arg];
     args.extend_from_slice(extra);
-    // No one to answer: stdin empty, and a session of its own, so it has no terminal either (Go's
-    // prompt opens /dev/tty, which would wait on the developer's).
-    let mut command = home.command(binary(), &home.dir);
-    command.args(&args).stdin(std::process::Stdio::null());
-    for (key, value) in env {
-        command.env(key, value);
-    }
-    use std::os::unix::process::CommandExt;
-    // SAFETY: setsid is async-signal-safe and touches no memory of this process.
-    unsafe {
-        command.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
-    let run = Run::from(&args, command.output().expect("run the binary"));
+    let run = run_without_a_terminal(home, &home.dir, &args, env);
     // The one workroom made, else the one the success line names (`--pretend` makes none).
     let named = run
         .stdout
