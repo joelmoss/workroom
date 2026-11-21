@@ -276,12 +276,13 @@ fn unique_name(context: &Context, config: &Config, dir: &str) -> Result<String, 
     ))
 }
 
-/// Where workroom `name` goes: `workrooms_dir/<name>`. A config that can't be read names the
-/// default folder, as Go's `WorkroomsDir` reads it.
+/// Where workroom `name` goes: `workrooms_dir/<name>`, joined and cleaned as Go's `workroomPath`
+/// joins it (`filepath.Join`), so `//`, `/./` or `..` in the setting don't reach the path config
+/// records. A config that can't be read names the default folder, as Go's `WorkroomsDir` reads it.
 fn workroom_path(context: &Context, config: &Config, name: &str) -> Result<String, CliError> {
     let data = config.read().unwrap_or(Json::Null);
     let dir = config::workrooms_dir(&data, context).map_err(CliError::internal)?;
-    Ok(Path::new(&dir).join(name).to_string_lossy().into_owned())
+    Ok(config::join(&dir, name))
 }
 
 /// What one create is asked to do, and the questions it asks on the way.
