@@ -2,6 +2,8 @@ import Foundation
 import WorkroomWire
 import XCTest
 
+@testable import Workroom
+
 /// Launches a throwaway `workroomd serve` against a temp socket, and can put real sessions on it.
 ///
 /// The Rust side has its own integration tests and they are cheaper, so this exists for the one
@@ -17,15 +19,17 @@ final class DaemonHarness {
 
   /// `screens` starts it as a real host's supervisor does (`--screens`), which is also what gives it
   /// a Layout service (#255): `layouts` beside the screens.
+  /// `binary` runs the daemon from another file than this build's own (a copy at an older build's
+  /// path, say); its clients are this build's either way.
   static func start(
-    environment: [String: String]? = nil, screens: Bool = false
+    environment: [String: String]? = nil, screens: Bool = false, binary: URL? = nil
   ) throws -> DaemonHarness {
     // sun_path is 104 bytes; NSTemporaryDirectory() + a UUID overflows it.
     let directory = URL(
       fileURLWithPath: "/tmp/wra-\(UUID().uuidString.prefix(8))", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
     let socketPath = directory.appendingPathComponent("a.sock").path
-    let binary = try binaryURL()
+    let binary = try binary ?? binaryURL()
 
     let process = Process()
     process.executableURL = binary
@@ -84,6 +88,9 @@ final class DaemonHarness {
     }
   }
 
+  /// The daemon's pid, which a hand-off keeps.
+  var pid: pid_t { process.processIdentifier }
+
   private init(socketPath: String, process: Process, directory: URL) {
     self.socketPath = socketPath
     self.process = process
@@ -99,9 +106,12 @@ final class DaemonHarness {
   ///
   /// `metadata` goes into the environment through `SessionMetadataKey.environmentVariables`, the
   /// table `PersistentSessionService.launchEnvironment` uses, so a session carries what a pane's does.
+  /// `run` makes it a run session (`WORKROOM_SESSION_RUN`), whose pty runs the daemon's own
+  /// `run-supervisor` around `command`.
   @discardableResult
   func startSession(
-    identifier: UUID, command: String = "cat", metadata: [(key: String, value: String)] = []
+    identifier: UUID, command: String = "cat", metadata: [(key: String, value: String)] = [],
+    run: Bool = false
   ) throws -> Process {
     let process = Process()
     process.executableURL = try Self.binaryURL()
@@ -122,6 +132,7 @@ final class DaemonHarness {
     for entry in metadata {
       if let variable = variables[entry.key] { environment[variable] = entry.value }
     }
+    if run { environment["WORKROOM_SESSION_RUN"] = "1" }
     process.environment = environment
     process.standardInput = Pipe()
     process.standardOutput = Pipe()
@@ -185,24 +196,14 @@ final class DaemonHarness {
   }
 
   static func binaryURL() throws -> URL {
-    for name in ["BUILT_PRODUCTS_DIR", "TARGET_BUILD_DIR"] {
-      if let directory = ProcessInfo.processInfo.environment[name] {
-        let url = URL(fileURLWithPath: directory).appendingPathComponent("workroomd")
-        if FileManager.default.isExecutableFile(atPath: url.path) { return url }
-      }
-    }
-    // These are host-based tests, so `Bundle.main` is the app itself and the daemon is where the
-    // build phase embedded it — the same place `PersistentSessionPaths.binaryURL(for:)` looks.
-    let embedded = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/workroomd")
-    if FileManager.default.isExecutableFile(atPath: embedded.path) { return embedded }
-    var candidate = Bundle(for: DaemonHarness.self).bundleURL
-    for _ in 0..<6 {
-      let url = candidate.appendingPathComponent("workroomd")
-      if FileManager.default.isExecutableFile(atPath: url.path) { return url }
-      candidate.deleteLastPathComponent()
-    }
+    // These are host-based tests, so `Bundle.main` is the app itself and the daemon is the one
+    // binary the build phase embedded (ADR 0078): the same place `PersistentSessionPaths
+    // .binaryURL(for:)` looks.
+    if let embedded = PersistentSessionPaths.binaryURL(for: .daemon) { return embedded }
     throw NSError(
       domain: "DaemonHarness", code: 2,
-      userInfo: [NSLocalizedDescriptionKey: "workroomd binary not found"])
+      userInfo: [
+        NSLocalizedDescriptionKey: "the app's workroom binary (Contents/Resources) is not built"
+      ])
   }
 }
