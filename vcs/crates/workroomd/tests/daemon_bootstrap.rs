@@ -186,6 +186,40 @@ fn a_push_that_changes_the_daemon_or_states_no_daemon_build_is_handed_off() {
     }
 }
 
+/// An older build of this daemon build, as an older app pushes it (#681): refused, never `current`,
+/// so the newer file stays installed and the daemon keeps every session.
+#[test]
+fn an_older_build_of_the_same_daemon_build_is_refused_and_the_newer_file_stays() {
+    let mut host = Host::new("wrb-older");
+    std::fs::copy(daemon_binary(), host.installed()).expect("install this build");
+    let before = sha256_hex(&host.installed());
+    let older = daemon_script(
+        &host.workspace.dir.join("older"),
+        Some(&stated_daemon_build()),
+    );
+    let mut script = std::fs::read_to_string(&older).unwrap();
+    script = script.replacen("\n", "\n# WORKROOMD-BUILD:1;\n", 1);
+    std::fs::write(&older, script).unwrap();
+
+    let output = host.install(&older);
+    let outcome = reported(&output, "outcome").unwrap_or_default();
+    assert!(outcome.starts_with("refused "), "{output}");
+    assert!(
+        outcome.contains("older than this daemon's build"),
+        "{output}"
+    );
+    assert_eq!(
+        sha256_hex(&host.installed()),
+        before,
+        "the newer file was replaced"
+    );
+    assert!(
+        !daemon_script_runs(&older).contains("serve"),
+        "the daemon was handed to the older build"
+    );
+    host.assert_sessions_kept("an older push");
+}
+
 /// A container's daemon, placed by its driver (#308): placed.sh asks the same hand-off, so a
 /// placed binary whose CLI commands alone changed is current too.
 #[test]
