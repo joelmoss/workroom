@@ -543,6 +543,14 @@ impl Store {
             .filter(|owner| *owner > 0)
     }
 
+    /// The process group of the program run that has reported a status, whatever its records
+    /// are now (#692): set by any report, kept when the app's `seen` drops the `done` it left, and
+    /// gone with the run (its prompt, a reset, the group's death, Clear Status). Carried by a
+    /// hand-off, as the whole store is. `None` when no run is reporting, or its group was unknown.
+    pub fn reporting_group(&self) -> Option<Group> {
+        self.reporting.filter(|group| *group > 0)
+    }
+
     /// The app's "Clear status": every record, the command result, and `reporting`. Not
     /// `probed`: that names the program, which is still running and asked once, so its later
     /// requests still notify.

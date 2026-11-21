@@ -261,9 +261,11 @@ fn runs_agent(sessions: &SessionStore, id: SessionId) -> Option<bool> {
         return Some(true);
     }
     let shadow = sessions.shadow(id)?;
+    // The record's sender, or with none left (the app's `seen` dropped the `done`), the run
+    // that reported.
     let owner = crate::util::lock_or_recover(&shadow)
         .status()
-        .and_then(|status| status.coding_agent_owner());
+        .and_then(|status| status.coding_agent_owner().or(status.reporting_group()));
     Some(!foreground.shell && owner.is_some() && owner == foreground.group)
 }
 
@@ -536,10 +538,22 @@ pub fn start(waits: &mut Waits, call: &Call, writer: &SharedWriter, stream: u32)
 }
 
 /// Whether a prompt in session `hyphenated`, as `shadow` holds it, can be waited on: [`ready`],
-/// and its agent has reported a program status, or no turn of its could be heard to end. An agent
-/// known only by its name that has never reported is `NotAnAgent` for a wait.
-fn waitable(shadow: &mut Shadow, hyphenated: &str) -> Result<(), ApiError> {
-    if shadow.seen().agent.is_none() {
+/// and the program in its foreground, process group `foreground`, has itself reported a program
+/// status, or no turn of its could be heard to end: it is the run that reported
+/// (`Store::reporting_group`), which its records going doesn't change (the app's `seen` drops the
+/// `done` a turn left once the user has looked), or it sent the record the session reports. An
+/// agent known only by its name that has never reported, or a new program since the one that did
+/// (whose `done` may linger), is `NotAnAgent` for a wait.
+fn waitable(
+    shadow: &mut Shadow,
+    hyphenated: &str,
+    foreground: Option<libc::pid_t>,
+) -> Result<(), ApiError> {
+    let ours = |group: Option<libc::pid_t>| group.is_some() && group == foreground;
+    let reported = shadow
+        .status()
+        .is_some_and(|status| ours(status.reporting_group()) || ours(status.coding_agent_owner()));
+    if !reported {
         return Err(ApiError::new(
             kind::NOT_AN_AGENT,
             format!(
@@ -569,14 +583,20 @@ fn add(
         )
     };
     let shadow = sessions.shadow(prepared.id).ok_or_else(ended)?;
-    waitable(&mut crate::util::lock_or_recover(&shadow), hyphenated)?;
+    // Read before the locks, as it takes none of them.
+    let foreground = sessions.foreground(prepared.id).ok_or_else(ended)?.group;
+    waitable(
+        &mut crate::util::lock_or_recover(&shadow),
+        hyphenated,
+        foreground,
+    )?;
     let slot = wait::admit(waits)?;
     let most = waits.limits.session;
     let added = sessions.add_waiter(prepared.id, |shadow, held| {
         if held.len() >= most {
             return Err(wait::busy(held.len(), &format!("session {hyphenated}")));
         }
-        waitable(shadow, hyphenated)?;
+        waitable(shadow, hyphenated, foreground)?;
         let waiter = Waiter::new(Condition::Turn(Turn::Next), shadow.seen());
         waiter.hold_turn();
         Ok(Arc::new(waiter))
