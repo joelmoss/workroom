@@ -4097,7 +4097,9 @@ fn a_send_to_a_slow_reader_outlasts_ten_seconds_and_a_hand_off() {
     let _daemon = start_daemon(&socket);
     let mut target = open(&socket, OTHER, "target", "wr-1", &workspace.dir);
     listing_until(&socket, |listing| listing.len() == 1);
-    // At most 1 KiB each tenth of a second, one read each, so 15 s and more for all of it.
+    // At most 1 KiB each tenth of a second, one read each, so 15 s and more for all of it. The
+    // count is written beside its file and renamed into it, so it appears whole: a shell's `>`
+    // makes the file before `wc` has written anything, and a test that saw it then read "".
     let (ready, kept, counted) = (
         workspace.dir.join("slow-ready"),
         workspace.dir.join("slow-kept"),
@@ -4108,7 +4110,7 @@ fn a_send_to_a_slow_reader_outlasts_ten_seconds_and_a_hand_off() {
         &format!(
             "stty raw -echo; touch '{ready}'; : > '{kept}'; while [ $(wc -c < '{kept}') -lt {} \
              ]; do dd bs={KIB} count=1 2>/dev/null >> '{kept}'; sleep 0.1; done; wc -c < \
-             '{kept}' > '{counted}'; stty sane",
+             '{kept}' > '{counted}.partial'; mv '{counted}.partial' '{counted}'; stty sane",
             CHUNKS * KIB,
             ready = ready.display(),
             kept = kept.display(),
