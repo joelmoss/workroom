@@ -139,8 +139,8 @@ from the tag and `CFBundleVersion` to the commit count (monotonic, so Sparkle al
 release as an upgrade).
 
 The update dialog renders each item's `<description>`, which holds the GitHub release notes.
-Because those notes are curated *after* the release publishes (the release ships with goreleaser's
-raw commit list), the `appcast-notes` workflow re-renders the matching item's `<description>` from
+Because those notes are curated *after* the release publishes (the release ships with GitHub's
+generated notes), the `appcast-notes` workflow re-renders the matching item's `<description>` from
 the release's current body on every `release: edited` event — so editing a release's notes
 refreshes the in-app changelog automatically. Fix a published feed by hand with
 `TAG=vX.Y.Z REPO=owner/repo GH_TOKEN=$(gh auth token) Scripts/appcast-notes.sh`.
