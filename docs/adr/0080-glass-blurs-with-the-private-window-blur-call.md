@@ -1,0 +1,9 @@
+# Glass blurs the window with the private CoreGraphics window-blur call, resolved at runtime
+
+Decided 2026-11-20 (review of #725, Glass).
+
+Under Glass the main window, the Quick Terminal and detached pane windows are non-opaque with a clear background, and the window server blurs what is behind them: `CGSSetWindowBackgroundBlurRadius` on the main CGS connection (`CGSMainConnectionID`) and the window's number, at a fixed radius, and radius 0 when the window turns opaque. It is the call Ghostty, iTerm2 and Alacritty use for their window blur. It is a pure blur with no tint of its own, so the theme colour at the Glass slider's opacity (70–100%, where 100% is opaque and Glass off) is the only colour over it, and 85% looks like 85%. The chrome adds only a flat panel wash over that colour: no material of its own, and no Liquid Glass, whose clear style paints a pale frost that read as light-grey patches in dark mode.
+
+The call is private API. `WindowBlur` resolves both symbols with `dlsym` on first use and never links them, so a macOS that drops or renames them gives a clear, unblurred glass window rather than a crash or a launch failure. Workroom ships outside the Mac App Store, so the private call doesn't block distribution. Nothing else in the app uses private window-server API.
+
+Rejected: a behind-window `NSVisualEffectView` under the window content (what Glass first shipped with). Every behind-window material carries a near-opaque tint of its own: `.underWindowBackground` and `.hudWindow` are near-white in light mode, and even `.sidebar`, the most see-through, read as opaque under an 80% theme tint (the #728 VM screenshot). The chrome's own materials and Liquid Glass stacked on top of that. It also had to be added to the window's frame view, beside the SwiftUI content, where AppKit logs "adding an unknown subview". Rejected: Ghostty's own `background-blur`. It blurs only the terminals' surfaces, not the sidebar, inspector or title bar.
