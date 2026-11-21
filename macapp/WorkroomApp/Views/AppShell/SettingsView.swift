@@ -52,7 +52,7 @@ struct SettingsView: View {
       }
       .frame(minWidth: 440, maxWidth: .infinity)
     }
-    // Opens at its smallest, and the panes grow with the window.
+    // The panes grow with the window. It opens taller than this minimum (`SettingsWindowThemer`).
     .frame(minWidth: 621, maxWidth: .infinity, minHeight: 432, maxHeight: .infinity)
     .ignoresSafeArea(.container, edges: .top)
     .background(tokens.panel.ignoresSafeArea())
@@ -177,7 +177,9 @@ struct SettingsView: View {
     switch selection {
     case .general: GeneralSettingsPane()
     case .notifications: NotificationsSettingsPane()
-    case .appearance: AppearanceSettingsPane()
+    case .appearance:
+      AppearanceSettingsPane(openThemes: { go(to: SettingsLocation(pane: .themes)) })
+    case .themes: ThemesSettingsPane()
     case .terminal: TerminalSettingsPane()
     case .keyboardShortcuts: KeyboardShortcutsSettingsPane()
     case .agent: CodingAgentSettingsPane()
@@ -220,6 +222,7 @@ extension SettingsPane {
     case .general: .gray
     case .notifications: .red
     case .appearance: .indigo
+    case .themes: .pink
     case .terminal: Color(white: 0.25)
     case .keyboardShortcuts: Color(white: 0.45)
     case .agent: .purple
@@ -256,10 +259,15 @@ private struct SettingsWindowThemer: NSViewRepresentable {
     // once nothing else holds the coordinator.
     nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
     private weak var probe: NSView?
+    /// The window this presentation has already sized, so it opens tall once and is left alone after.
+    private weak var sizedWindow: NSWindow?
 
     func attach(to probe: NSView) {
       self.probe = probe
-      DispatchQueue.main.async { [weak self] in Self.applyToProbe(self?.probe) }
+      DispatchQueue.main.async { [weak self] in
+        Self.applyToProbe(self?.probe)
+        self?.openTall()
+      }
 
       let center = NotificationCenter.default
       // Theme switch: re-apply regardless of which window posted it.
@@ -284,9 +292,29 @@ private struct SettingsWindowThemer: NSViewRepresentable {
                 (note.object as? NSWindow) === window
               else { return }
               SettingsWindowThemer.apply(to: window)
+              self?.openTall()
             }
           })
       }
+    }
+
+    /// The height the window opens at, so Themes shows its stage and several rows of its grid; the
+    /// `Settings` scene would otherwise open it at its minimum.
+    static let openingHeight: CGFloat = 720
+
+    /// Grows the window to `openingHeight` the first time it's seen, keeping its top edge and staying
+    /// on its screen. Once per presentation, so a window the user resized is left alone.
+    private func openTall() {
+      guard let window = probe?.window, sizedWindow !== window else { return }
+      sizedWindow = window
+      var frame = window.frame
+      let visible = window.screen?.visibleFrame ?? frame
+      let height = min(max(frame.height, Self.openingHeight), visible.height)
+      guard height > frame.height else { return }
+      let top = frame.maxY
+      frame.size.height = height
+      frame.origin.y = max(visible.minY, top - height)
+      window.setFrame(frame, display: true)
     }
 
     @MainActor private static func applyToProbe(_ probe: NSView?) {
@@ -674,43 +702,76 @@ private struct AboutSettingsPane: View {
   }
 }
 
+/// What a Settings Light theme or Dark theme row says while its side has fallen back (#733): the
+/// stored theme is missing or on the wrong side, so the screen shows Workroom's theme for that side
+/// instead (`ThemeService.activeThemeName`), and the row's name isn't what's on screen. The setting
+/// itself is kept, so the theme comes back when its file does.
+struct ThemeFallbackNote: Equatable {
+  /// The muted line under the row's button.
+  let text: String
+  /// Its tooltip, which the button's tooltip also carries.
+  let help: String
+
+  /// Nil when `showing`, the theme resolved for `side`, is the stored one. `storedSide` is the side
+  /// the stored theme is on (`ThemeCatalog.side(ofThemeNamed:)`), nil when it can't be found.
+  init?(side: ThemeSide, stored: String, showing: String, storedSide: ThemeSide?) {
+    guard showing != ThemeCatalog.sanitizedThemeName(stored) else { return nil }
+    let sideName = side == .dark ? "dark" : "light"
+    let reason: String
+    if let storedSide, storedSide != side {
+      text = "Not a \(sideName) theme: showing \(showing)"
+      reason = "“\(stored)” is a \(storedSide == .dark ? "dark" : "light") theme"
+    } else {
+      text = "Not found: showing \(showing)"
+      reason = "Workroom can't find a theme called “\(stored)”"
+    }
+    help =
+      "\(reason), so Workroom shows \(showing) while the appearance is \(sideName). Your choice is "
+      + "kept, and comes back when the theme does."
+  }
+}
+
 private struct AppearanceSettingsPane: View {
-  @Default(.theme) private var theme
-  @Default(.themeFamily) private var themeFamily
+  @Default(.appearance) private var appearance
+  @Default(.lightTheme) private var lightTheme
+  @Default(.darkTheme) private var darkTheme
   @Default(.diffViewMode) private var diffViewMode
   @Default(.loadRemoteAvatars) private var loadRemoteAvatars
   @Default(.dimUnfocusedPanes) private var dimUnfocusedPanes
   @Default(.autoResizeSplitsEvenly) private var autoResizeSplitsEvenly
-  @State private var showThemePopover = false
+  /// Goes to Settings ▸ Themes.
+  let openThemes: () -> Void
 
   var body: some View {
+    let familyLabel = ThemeCatalog.familyLabel(light: lightTheme, dark: darkTheme)
     Form {
-      Picker("Appearance", selection: $theme) {
-        ForEach(ThemePreference.allCases, id: \.self) { pref in
-          Text(pref.label).tag(pref)
+      Picker("Appearance", selection: $appearance) {
+        ForEach(AppearanceMode.allCases, id: \.self) { mode in
+          Text(mode.label).tag(mode)
         }
       }
       .help("Match the system appearance, or force Light or Dark.")
 
-      // Theme family (issue #36): a family bundles a light + dark variant; the active one follows
-      // Appearance above. The button opens the swatch picker (also reachable via ⌘⇧K).
-      LabeledContent("Theme") {
+      // Themes (issues #36, #733): chosen in their own pane, where every theme is in view. This row
+      // names the family the light and dark themes match, or "Custom", and goes there.
+      LabeledContent("Themes") {
         Button {
-          showThemePopover = true
+          openThemes()
         } label: {
-          HStack(spacing: 6) {
-            Text(themeFamily).lineLimit(1).truncationMode(.tail)
-            Image(systemName: "chevron.up.chevron.down").font(.caption2)
+          HStack(spacing: 4) {
+            Text(familyLabel)
+            Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+              .accessibilityHidden(true)
           }
-          // Fixed width so the button (and the popover anchored to it) doesn't shift left/right as
-          // the selected family name changes length.
-          .frame(width: 160, alignment: .trailing)
         }
-        .popover(isPresented: $showThemePopover, arrowEdge: .bottom) {
-          ThemePicker()
-        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .help(
+          "\(ThemeCatalog.familySummary(light: lightTheme, dark: darkTheme)). Choose themes in "
+            + "Settings ▸ Themes."
+        )
+        .accessibilityIdentifier("settings.control.themes")
       }
-      .help("Choose the color theme family (its light or dark variant follows Appearance).")
 
       // Diff viewer layout (issue #66): unified (default) or side-by-side. Applies to newly opened
       // diff tabs; a narrow diff pane falls back to unified regardless.

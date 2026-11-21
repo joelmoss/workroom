@@ -6,47 +6,400 @@ import XCTest
 
 @testable import Workroom
 
-/// Pure-logic tests for the theming engine (issue #36): the ghostty theme-file parser, name
-/// sanitisation, and family/override resolution. Filesystem- and UI-free — `activeThemeName`
-/// resolves names from the family table + `Defaults`, so it never touches the bundle.
+/// The theming engine at the `ThemeService` seam (issues #36, #733): settings in, the active theme's
+/// name, the generated ghostty config and the stored settings out. Every resolution runs with the user
+/// theme directory pointed at an empty temp dir, never the developer's real `~/.config/ghostty/themes`.
+/// `Defaults` here is the per-process test suite (`UserDefaults.app`), never the developer's domain.
 @MainActor
 final class ThemeServiceTests: XCTestCase {
-  // Save/restore the theme Defaults each test mutates, so tests don't leak into each other or the
-  // running app's prefs.
-  private var savedFamily: String!
-  private var savedAppearance: ThemePreference!
+  // Save/restore the theme Defaults each test mutates, so tests don't leak into each other.
+  private var savedLight: String!
+  private var savedDark: String!
+  private var savedAppearance: AppearanceMode!
+  private var userThemeDir: URL!
 
   override func setUp() async throws {
     try await super.setUp()
-    savedFamily = Defaults[.themeFamily]
-    savedAppearance = Defaults[.theme]
+    savedLight = Defaults[.lightTheme]
+    savedDark = Defaults[.darkTheme]
+    savedAppearance = Defaults[.appearance]
+    userThemeDir = URL(fileURLWithPath: NSTemporaryDirectory())
+      .appendingPathComponent("workroom-user-themes-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: userThemeDir, withIntermediateDirectories: true)
   }
 
   override func tearDown() async throws {
-    Defaults[.themeFamily] = savedFamily
-    Defaults[.theme] = savedAppearance
+    Defaults[.lightTheme] = savedLight
+    Defaults[.darkTheme] = savedDark
+    Defaults[.appearance] = savedAppearance
+    for key in Self.oldKeys { UserDefaults.app.removeObject(forKey: key) }
+    try? FileManager.default.removeItem(at: userThemeDir)
     try await super.tearDown()
   }
 
-  // MARK: parseHex
-
-  // MARK: parseThemeFile
-
-  // MARK: sanitisation
-
-  // MARK: family / override resolution
-
-  func testActiveNamePicksFamilyVariantPerAppearance() {
-    Defaults[.theme] = .dark
-    Defaults[.themeFamily] = "Catppuccin"
-    XCTAssertEqual(ThemeService.activeThemeName(isDark: true), "Catppuccin Mocha")
-    XCTAssertEqual(ThemeService.activeThemeName(isDark: false), "Catppuccin Latte")
+  /// Run `body` with the user theme directory at this test's own temp dir.
+  private func withUserThemes<T>(_ body: () throws -> T) rethrows -> T {
+    try ThemeCatalog.withUserThemeDirectory(userThemeDir.path, body)
   }
 
-  func testUnknownFamilyFallsBackToWorkroom() {
-    Defaults[.themeFamily] = "DoesNotExist"
-    XCTAssertEqual(ThemeService.activeThemeName(isDark: true), "Workroom")
-    XCTAssertEqual(ThemeService.activeThemeName(isDark: false), "Workroom Light")
+  private func writeUserTheme(_ name: String, background: String) throws {
+    try "background = \(background)\nforeground = #808080\n".write(
+      to: userThemeDir.appendingPathComponent(name), atomically: true, encoding: .utf8)
+  }
+
+  // MARK: resolution (#733)
+
+  /// The active theme on screen for an appearance, with the app's effective appearance pinned to
+  /// `systemIsDark`, through the entry point an apply uses.
+  private func showingTheme(_ appearance: AppearanceMode, systemIsDark: Bool) -> String {
+    let saved = NSApp.appearance
+    defer { NSApp.appearance = saved }
+    NSApp.appearance = NSAppearance(named: systemIsDark ? .darkAqua : .aqua)
+    Defaults[.appearance] = appearance
+    return withUserThemes { ThemeService.activeTheme(for: ThemeService.showingSide()).name }
+  }
+
+  func testEachForcedAppearanceResolvesToItsOwnSetting() {
+    Defaults[.lightTheme] = "Catppuccin Latte"
+    Defaults[.darkTheme] = "Nord"
+    // A forced appearance ignores the system's.
+    for systemIsDark in [false, true] {
+      XCTAssertEqual(showingTheme(.light, systemIsDark: systemIsDark), "Catppuccin Latte")
+      XCTAssertEqual(showingTheme(.dark, systemIsDark: systemIsDark), "Nord")
+    }
+  }
+
+  func testSystemAppearanceFollowsTheEffectiveAppearance() {
+    Defaults[.lightTheme] = "Catppuccin Latte"
+    Defaults[.darkTheme] = "Nord"
+    XCTAssertEqual(showingTheme(.system, systemIsDark: false), "Catppuccin Latte")
+    XCTAssertEqual(showingTheme(.system, systemIsDark: true), "Nord")
+  }
+
+  /// A missing light theme falls back to Workroom Light, and the dark theme is left alone.
+  func testAMissingLightThemeFallsBackOnItsOwn() {
+    Defaults[.lightTheme] = "Does Not Exist"
+    Defaults[.darkTheme] = "Nord"
+    withUserThemes {
+      XCTAssertEqual(ThemeService.activeThemeName(for: .light), "Workroom Light")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "Nord")
+    }
+  }
+
+  /// A missing dark theme falls back to Workroom, and the light theme is left alone.
+  func testAMissingDarkThemeFallsBackOnItsOwn() {
+    Defaults[.lightTheme] = "Catppuccin Latte"
+    Defaults[.darkTheme] = "Does Not Exist"
+    withUserThemes {
+      XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "Workroom")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .light), "Catppuccin Latte")
+    }
+  }
+
+  /// A theme on the wrong side falls back: a light theme in the dark setting, a dark one in the light.
+  func testAThemeOnTheWrongSideFallsBack() {
+    Defaults[.lightTheme] = "Nord"
+    Defaults[.darkTheme] = "Catppuccin Latte"
+    withUserThemes {
+      XCTAssertEqual(ThemeService.activeThemeName(for: .light), "Workroom Light")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "Workroom")
+    }
+  }
+
+  /// A user's file that replaces a bundled theme and puts it on the other side makes that side fall
+  /// back; a user's own theme on the right side is used.
+  func testAUserFileDecidesItsThemesSide() throws {
+    try writeUserTheme("Nord", background: "#fafafa")
+    try writeUserTheme("My Paper", background: "#f4f1e8")
+    Defaults[.lightTheme] = "My Paper"
+    Defaults[.darkTheme] = "Nord"
+    withUserThemes {
+      XCTAssertEqual(ThemeService.activeThemeName(for: .light), "My Paper")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "Workroom")
+    }
+  }
+
+  /// A chosen user theme whose file is deleted, or stops parsing, falls back to Workroom's theme for
+  /// that side, and the other side's chosen user theme is untouched (#737).
+  func testAChosenUserThemeThatGoesAwayFallsBackOnItsOwnSide() throws {
+    try writeUserTheme("My Paper", background: "#f4f1e8")
+    try writeUserTheme("My Night", background: "#101418")
+    Defaults[.lightTheme] = "My Paper"
+    Defaults[.darkTheme] = "My Night"
+    try withUserThemes {
+      XCTAssertEqual(ThemeService.activeThemeName(for: .light), "My Paper")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "My Night")
+
+      try FileManager.default.removeItem(at: userThemeDir.appendingPathComponent("My Paper"))
+      XCTAssertEqual(ThemeService.activeThemeName(for: .light), "Workroom Light")
+      XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "My Night")
+
+      try "garbage\n".write(
+        to: userThemeDir.appendingPathComponent("My Night"), atomically: true, encoding: .utf8)
+      XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "Workroom")
+      XCTAssertEqual(Defaults[.lightTheme], "My Paper", "a fallback rewrote the setting")
+      XCTAssertEqual(Defaults[.darkTheme], "My Night", "a fallback rewrote the setting")
+    }
+  }
+
+  /// The fallback is resolution only: the stored setting is kept, so a user theme file that is missing
+  /// for a while comes back when it does.
+  func testFallingBackLeavesTheSettingAlone() {
+    Defaults[.lightTheme] = "Does Not Exist"
+    withUserThemes {
+      _ = ThemeService.activeThemeName(for: .light)
+      ThemeService.shared.applyActiveTheme()
+    }
+    XCTAssertEqual(Defaults[.lightTheme], "Does Not Exist")
+  }
+
+  // MARK: generated config
+
+  /// The generated ghostty config names the active theme, on one `theme =` line.
+  func testTheGeneratedConfigNamesTheActiveTheme() throws {
+    Defaults[.lightTheme] = "Catppuccin Latte"
+    Defaults[.darkTheme] = "Nord"
+    for (isDark, expected) in [(true, "Nord"), (false, "Catppuccin Latte")] {
+      try withUserThemes {
+        XCTAssertTrue(GhosttyApp.shared.writeThemeConfig(dark: isDark))
+        let conf = try String(contentsOf: GhosttyApp.shared.themeConfigURL, encoding: .utf8)
+        let themeLines = conf.split(separator: "\n").filter { $0.hasPrefix("theme") }
+        XCTAssertEqual(themeLines, ["theme = \"\(expected)\""])
+      }
+    }
+  }
+
+  /// A chosen user theme whose name ghostty reads as a light/dark pair is never written as `theme =`:
+  /// the side falls back to Workroom's theme (#737).
+  func testAUserThemeNamedLikeAPairNeverReachesTheGeneratedConfig() throws {
+    for name in ["dark:Nord", "Nord,Nord Light", "light=Nord Light"] {
+      try writeUserTheme(name, background: "#101418")
+      Defaults[.darkTheme] = name
+      try withUserThemes {
+        XCTAssertEqual(ThemeService.activeThemeName(for: .dark), "Workroom", name)
+        XCTAssertTrue(GhosttyApp.shared.writeThemeConfig(dark: true))
+        XCTAssertEqual(try generatedConfigTheme(), try bundledFallbackLine("Workroom"), name)
+      }
+    }
+  }
+
+  /// The `theme =` line a fallback writes: the bundled file's absolute path, never the bare name.
+  private func bundledFallbackLine(_ name: String) throws -> String {
+    let path = try XCTUnwrap(ThemeService.bundledThemeDirectory()) + "/" + name
+    XCTAssertTrue(FileManager.default.fileExists(atPath: path), "no bundled theme at \(path)")
+    return "theme = \"\(path)\""
+  }
+
+  /// A broken user file called `Workroom`, the very theme the dark side falls back to, can't stand in
+  /// for it: the config names the bundled file by its path, so ghostty loads that rather than finding
+  /// the user's broken file first, and the chrome paints the same bundled file.
+  func testABrokenUserFileNamedLikeTheFallbackCannotReplaceIt() throws {
+    Defaults[.appearance] = .dark
+    for chosen in ["Workroom", "Does Not Exist"] {
+      Defaults[.darkTheme] = chosen
+      try "garbage\n".write(
+        to: userThemeDir.appendingPathComponent("Workroom"), atomically: true, encoding: .utf8)
+      try withUserThemes {
+        ThemeService.shared.applyActiveTheme()
+        XCTAssertEqual(try generatedConfigTheme(), try bundledFallbackLine("Workroom"), chosen)
+        let workroom = try XCTUnwrap(
+          ThemeCatalog.themePreview(
+            named: "Workroom", bundledDirectory: ThemeService.bundledThemeDirectory(), in: .empty))
+        XCTAssertEqual(
+          ThemeService.shared.tokens.nsBg, ThemeTokens(preview: workroom).nsBg,
+          "the chrome didn't paint the bundled Workroom")
+      }
+    }
+  }
+
+  /// The light side falls back the same way, to the bundled Workroom Light by its path.
+  func testTheLightSideFallsBackToTheBundledWorkroomLightByItsPath() throws {
+    Defaults[.lightTheme] = "Does Not Exist"
+    try withUserThemes {
+      XCTAssertTrue(GhosttyApp.shared.writeThemeConfig(dark: false))
+      XCTAssertEqual(try generatedConfigTheme(), try bundledFallbackLine("Workroom Light"))
+    }
+  }
+
+  /// A theme that is the setting, not a fallback, is still written by name, so a user file of that
+  /// name keeps replacing the bundled one as ghostty resolves it.
+  func testAChosenWorkroomThemeIsStillWrittenByName() throws {
+    Defaults[.darkTheme] = "Workroom"
+    try withUserThemes {
+      XCTAssertTrue(GhosttyApp.shared.writeThemeConfig(dark: true))
+      XCTAssertEqual(try generatedConfigTheme(), "theme = \"Workroom\"")
+    }
+  }
+
+  /// A bundled path that ghostty would misread, or that would break out of the quoted value, is
+  /// written as the file's name instead.
+  func testABundledPathGhosttyWouldMisreadIsWrittenByName() {
+    for path in [
+      "/Apps/Work, Room.app/themes/Workroom", "/Apps/a:b/themes/Workroom",
+      "/Apps/a=b/themes/Workroom", "/Apps/\"q\"/themes/Workroom", "relative/themes/Workroom",
+    ] {
+      XCTAssertEqual(
+        GhosttyApp.ThemeValue.bundledFile(path).configLine, "theme = \"Workroom\"", path)
+    }
+  }
+
+  /// A user file sharing a bundled theme's name that stops parsing makes that side fall back, in the
+  /// chrome and the generated config alike: ghostty would load the broken user file for that name, so
+  /// keeping the bundled colours would paint the chrome over a terminal that doesn't match (#737).
+  func testABrokenReplacementFallsBackInTheChromeAndTheTerminal() throws {
+    Defaults[.appearance] = .dark
+    Defaults[.darkTheme] = "Nord"
+    try "garbage\n".write(
+      to: userThemeDir.appendingPathComponent("Nord"), atomically: true, encoding: .utf8)
+    try withUserThemes {
+      ThemeService.shared.applyActiveTheme()
+      XCTAssertEqual(try generatedConfigTheme(), try bundledFallbackLine("Workroom"))
+      let workroom = try XCTUnwrap(ThemeService.themePreview(named: "Workroom"))
+      XCTAssertEqual(
+        ThemeService.shared.tokens.nsBg, ThemeTokens(preview: workroom).nsBg,
+        "the chrome didn't fall back with the terminal")
+    }
+    XCTAssertEqual(Defaults[.darkTheme], "Nord", "a fallback rewrote the setting")
+  }
+
+  /// A hosted unit run never reads the developer's real theme folder: the host points the catalog at
+  /// an empty scratch directory at launch, before any test runs.
+  func testTheTestHostNeverReadsTheRealThemeFolder() throws {
+    let dir = ThemeCatalog.userThemeDirectory()
+    XCTAssertNotEqual(dir, NSHomeDirectory() + "/.config/ghostty/themes")
+    XCTAssertFalse(dir.hasPrefix(NSHomeDirectory() + "/.config"), dir)
+    XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir), [])
+  }
+
+  // MARK: choosing a family
+
+  /// Choosing a family sets both settings, in one apply.
+  func testChoosingAFamilySetsBothThemesInOneApply() throws {
+    Defaults[.lightTheme] = "Nord Light"
+    Defaults[.darkTheme] = "Nord"
+    let family = try XCTUnwrap(ThemeCatalog.family(named: "Catppuccin"))
+    let before = ThemeService.shared.generation
+    withUserThemes { ThemeService.shared.applyFamily(family) }
+    XCTAssertEqual(Defaults[.lightTheme], "Catppuccin Latte")
+    XCTAssertEqual(Defaults[.darkTheme], "Catppuccin Mocha")
+    XCTAssertEqual(ThemeService.shared.generation, before &+ 1, "choosing a family applied twice")
+  }
+
+  // MARK: choosing one side (#735)
+
+  /// The `theme =` line of the generated config, as the app last wrote it.
+  private func generatedConfigTheme() throws -> String? {
+    let conf = try String(contentsOf: GhosttyApp.shared.themeConfigURL, encoding: .utf8)
+    return conf.split(separator: "\n").first { $0.hasPrefix("theme") }.map(String.init)
+  }
+
+  /// Choosing the theme for the side that's showing saves it and repaints, once.
+  func testChoosingTheShowingSidesThemeSavesItAndRepaints() throws {
+    Defaults[.appearance] = .dark
+    Defaults[.lightTheme] = "Catppuccin Latte"
+    Defaults[.darkTheme] = "Catppuccin Mocha"
+    try withUserThemes {
+      let before = ThemeService.shared.generation
+      ThemeService.shared.apply(theme: "Nord", for: .dark)
+      XCTAssertEqual(Defaults[.darkTheme], "Nord")
+      XCTAssertEqual(Defaults[.lightTheme], "Catppuccin Latte", "the other side changed")
+      XCTAssertEqual(ThemeService.shared.generation, before &+ 1, "expected exactly one apply")
+      XCTAssertEqual(try generatedConfigTheme(), "theme = \"Nord\"")
+    }
+  }
+
+  /// Choosing the theme for the side that isn't showing saves it, and changes neither the screen nor
+  /// the generated config: the appearance stays put while you browse the other side.
+  func testChoosingTheHiddenSidesThemeSavesItWithoutRepainting() throws {
+    Defaults[.lightTheme] = "Catppuccin Latte"
+    Defaults[.darkTheme] = "Catppuccin Mocha"
+    for (appearance, hidden, theme) in [
+      (AppearanceMode.dark, ThemeSide.light, "Nord Light"), (.light, .dark, "Nord"),
+    ] {
+      Defaults[.appearance] = appearance
+      try withUserThemes {
+        ThemeService.shared.applyActiveTheme()
+        let confBefore = try generatedConfigTheme()
+        let before = ThemeService.shared.generation
+        ThemeService.shared.apply(theme: theme, for: hidden)
+        XCTAssertEqual(hidden == .light ? Defaults[.lightTheme] : Defaults[.darkTheme], theme)
+        XCTAssertEqual(ThemeService.shared.generation, before, "the hidden side repainted")
+        XCTAssertEqual(try generatedConfigTheme(), confBefore, "the generated config changed")
+        XCTAssertEqual(Defaults[.appearance], appearance, "the appearance changed")
+      }
+    }
+  }
+
+  // MARK: upgrade (#733)
+
+  /// The keys the single-family settings used. Raw, because their typed keys are gone.
+  private static let oldKeys = ["themeFamily", "themePreference"]
+
+  /// Clear the new keys, so `Defaults` reads their defaults, and write the old ones as an older build
+  /// stored them: plain strings.
+  private func storeOldSettings(family: String?, appearance: String?) {
+    for key in ["lightTheme", "darkTheme", "appearance"] {
+      UserDefaults.app.removeObject(forKey: key)
+    }
+    UserDefaults.app.set(family, forKey: "themeFamily")
+    UserDefaults.app.set(appearance, forKey: "themePreference")
+  }
+
+  func testUpgradeCarriesTheFamilyAndAppearanceAcross() {
+    storeOldSettings(family: "Catppuccin", appearance: "dark")
+    ThemeService.upgradeThemeSettings(in: .app)
+    XCTAssertEqual(Defaults[.lightTheme], "Catppuccin Latte")
+    XCTAssertEqual(Defaults[.darkTheme], "Catppuccin Mocha")
+    XCTAssertEqual(Defaults[.appearance], .dark)
+    for key in Self.oldKeys {
+      XCTAssertNil(UserDefaults.app.object(forKey: key), "\(key) survived the upgrade")
+    }
+  }
+
+  func testUpgradeSendsAnUnknownFamilyToWorkroom() {
+    storeOldSettings(family: "Retired Family", appearance: "light")
+    ThemeService.upgradeThemeSettings(in: .app)
+    XCTAssertEqual(Defaults[.lightTheme], "Workroom Light")
+    XCTAssertEqual(Defaults[.darkTheme], "Workroom")
+    XCTAssertEqual(Defaults[.appearance], .light)
+    XCTAssertNil(UserDefaults.app.object(forKey: "themeFamily"))
+  }
+
+  /// Each old key upgrades on its own: someone who only ever changed the appearance keeps it.
+  func testUpgradeCarriesAnAppearanceWithNoFamily() {
+    storeOldSettings(family: nil, appearance: "light")
+    ThemeService.upgradeThemeSettings(in: .app)
+    XCTAssertEqual(Defaults[.appearance], .light)
+    XCTAssertEqual(Defaults[.lightTheme], "Workroom Light")
+    XCTAssertEqual(Defaults[.darkTheme], "Workroom")
+    XCTAssertNil(UserDefaults.app.object(forKey: "themePreference"))
+  }
+
+  func testUpgradeCarriesAFamilyWithNoAppearance() {
+    storeOldSettings(family: "Nord", appearance: nil)
+    ThemeService.upgradeThemeSettings(in: .app)
+    XCTAssertEqual(Defaults[.lightTheme], "Nord Light")
+    XCTAssertEqual(Defaults[.darkTheme], "Nord")
+    XCTAssertEqual(Defaults[.appearance], .system)
+  }
+
+  /// A fresh install gets Workroom's two themes and System.
+  func testAFreshInstallGetsWorkroomAndSystem() {
+    storeOldSettings(family: nil, appearance: nil)
+    ThemeService.upgradeThemeSettings(in: .app)
+    XCTAssertEqual(Defaults[.lightTheme], "Workroom Light")
+    XCTAssertEqual(Defaults[.darkTheme], "Workroom")
+    XCTAssertEqual(Defaults[.appearance], .system)
+  }
+
+  /// Running the upgrade again changes nothing: settings chosen since are kept.
+  func testUpgradeRunsOnce() {
+    storeOldSettings(family: "Catppuccin", appearance: "dark")
+    ThemeService.upgradeThemeSettings(in: .app)
+    Defaults[.darkTheme] = "Nord"
+    ThemeService.upgradeThemeSettings(in: .app)
+    XCTAssertEqual(Defaults[.darkTheme], "Nord")
+    XCTAssertEqual(Defaults[.lightTheme], "Catppuccin Latte")
   }
 
   // MARK: registry ↔ bundle integrity
@@ -71,73 +424,65 @@ final class ThemeServiceTests: XCTestCase {
       names.filter { ThemeCatalog.parseThemeFile(atPath: dir + "/" + $0, name: $0) != nil })
   }
 
-  /// 1 + 2: every declared variant resolves to a real bundled file, AND that file carries a complete
-  /// 16-colour palette.
+  /// 1 + 2: every bundled theme the catalog lists resolves to a real bundled file, AND that file
+  /// carries a complete 16-colour palette.
   ///
   /// The palette half is not belt-and-braces. `parseThemeFile` returns non-nil as soon as it has a
   /// background and a foreground, while `ThemeTokens` reads the palette for the accent
   /// (`p(4) ?? .controlAccentColor`), the diff colours and all 14 syntax categories — so a truncated
   /// file resolves fine and then silently paints the whole chrome with macOS system colours.
-  func testEveryFamilyVariantResolvesToACompleteBundledTheme() throws {
+  func testEveryBundledThemeResolvesToACompleteBundledFile() throws {
     let dir = try bundledThemeDir()
-    for family in ThemeCatalog.families {
-      for (role, name) in [("dark", family.dark), ("light", family.light)] {
-        let preview = ThemeCatalog.parseThemeFile(atPath: dir + "/" + name, name: name)
-        XCTAssertNotNil(
-          preview, "\(family.name): the \(role) variant '\(name)' is not a bundled theme file")
-        XCTAssertEqual(
-          preview?.palette.count, 16,
-          "\(family.name): the \(role) variant '\(name)' has an incomplete palette, so the chrome "
-            + "would fall back to system colours while the terminal renders correctly")
-      }
+    for theme in ThemeCatalog.bundledThemes {
+      let preview = ThemeCatalog.parseThemeFile(atPath: dir + "/" + theme.name, name: theme.name)
+      XCTAssertNotNil(preview, "'\(theme.name)' is not a bundled theme file")
+      XCTAssertEqual(
+        preview?.palette.count, 16,
+        "'\(theme.name)' has an incomplete palette, so the chrome would fall back to system "
+          + "colours while the terminal renders correctly")
     }
   }
 
-  /// 3: the dark slot holds a dark theme and the light slot a light one.
+  /// 3: every bundled theme's fixed side matches its background (#733), by the same
+  /// `perceivedBrightness` test that decides the interface's colour scheme.
   ///
-  /// Scoped claim: this catches a pair whose two variants are **swapped between the slots**. It does
-  /// NOT prove the two were designed as a pair. It matters because `ThemeTokens` derives
-  /// `colorScheme` from the theme's own background, and `SwitcherMark.tileColor` picks which
-  /// direction to walk its brightness ladder from that — so a swapped pair renders a light theme in
-  /// dark mode and searches the wrong way for legible mark tiles.
-  func testEveryFamilyVariantIsOnTheCorrectSideOfTheAppearance() throws {
+  /// It matters because `ThemeTokens` derives `colorScheme` from the theme's own background, and
+  /// `SwitcherMark.tileColor` picks which direction to walk its brightness ladder from that — so a
+  /// light theme listed as dark would render in dark mode and search the wrong way for legible mark
+  /// tiles. Families are checked against these sides in `ThemeCatalogTests`.
+  func testEveryBundledThemesSideMatchesItsBackground() throws {
     let dir = try bundledThemeDir()
-    for family in ThemeCatalog.families {
+    for theme in ThemeCatalog.bundledThemes {
       guard
-        let dark = ThemeCatalog.parseThemeFile(atPath: dir + "/" + family.dark, name: family.dark),
-        let light = ThemeCatalog.parseThemeFile(
-          atPath: dir + "/" + family.light, name: family.light)
+        let preview = ThemeCatalog.parseThemeFile(
+          atPath: dir + "/" + theme.name, name: theme.name)
       else {
-        XCTFail("\(family.name): variants must resolve before orientation can be checked")
+        XCTFail("'\(theme.name)' must resolve before its side can be checked")
         continue
       }
-      XCTAssertLessThanOrEqual(
-        ThemeTokens.perceivedBrightness(of: dark.background), 0.5,
-        "\(family.name): '\(family.dark)' sits in the dark slot but has a light background")
-      XCTAssertGreaterThan(
-        ThemeTokens.perceivedBrightness(of: light.background), 0.5,
-        "\(family.name): '\(family.light)' sits in the light slot but has a dark background")
+      let brightness = ThemeTokens.perceivedBrightness(of: preview.background)
+      switch theme.side {
+      case .dark:
+        XCTAssertLessThanOrEqual(
+          brightness, 0.5, "'\(theme.name)' is listed as dark but has a light background")
+      case .light:
+        XCTAssertGreaterThan(
+          brightness, 0.5, "'\(theme.name)' is listed as light but has a dark background")
+      }
     }
   }
 
-  /// 5: the registry and the themes dir are in exact correspondence — compared as **sets**, not by
-  /// count. A count check passes when two families share a variant and an unregistered file pads the
-  /// total back to even, which is precisely the mistake it is supposed to catch.
+  /// 5: the catalog and the themes dir are in exact correspondence — compared as **sets**, not by
+  /// count, with each theme listed once (`ThemeCatalogTests` pins the "once").
   ///
-  /// Consequence worth knowing: shipping a theme file without registering it here fails this test.
-  func testRegistryAndBundledThemesAreInExactCorrespondence() throws {
-    let declared = ThemeCatalog.families.flatMap { [$0.dark, $0.light] }
+  /// Consequence worth knowing: shipping a theme file without listing it in
+  /// `ThemeCatalog.bundledThemes` fails this test.
+  func testTheCatalogAndBundledThemesAreInExactCorrespondence() throws {
+    let listed = Set(ThemeCatalog.bundledThemes.map(\.name))
     let onDisk = try parseableBundledThemeNames()
 
-    XCTAssertEqual(
-      Set(declared).subtracting(onDisk), [], "declared variants with no bundled file")
-    XCTAssertEqual(
-      onDisk.subtracting(Set(declared)), [], "bundled theme files no family references")
-    XCTAssertEqual(
-      declared.count, Set(declared).count,
-      "two families share a variant file: \(Dictionary(grouping: declared, by: { $0 }).filter { $0.value.count > 1 }.keys)"
-    )
-    XCTAssertEqual(declared.count, ThemeCatalog.families.count * 2)
+    XCTAssertEqual(listed.subtracting(onDisk), [], "listed themes with no bundled file")
+    XCTAssertEqual(onDisk.subtracting(listed), [], "bundled theme files the catalog doesn't list")
   }
 
   /// 7: the shipped bytes are the vetted bytes. Structural tests cannot catch this — an upstream
@@ -227,8 +572,8 @@ final class ThemeServiceTests: XCTestCase {
   /// `themePreview` resolves the two directories by name instead of by index.
   func testThemeDirectoriesReportTheUserDirFirst() {
     let dirs = ThemeService.themeDirectories()
-    XCTAssertTrue(
-      dirs.first?.hasSuffix("/.config/ghostty/themes") == true, "user dir must come first")
+    // The test host points the user dir at a scratch folder, so compare against it, not `~/.config`.
+    XCTAssertEqual(dirs.first, ThemeCatalog.userThemeDirectory(), "user dir must come first")
     XCTAssertEqual(dirs.count, 2, "user dir + bundled dir")
     XCTAssertEqual(dirs.last, ThemeService.bundledThemeDirectory())
   }
@@ -236,14 +581,14 @@ final class ThemeServiceTests: XCTestCase {
   // MARK: dark/light quick toggle (issue #57)
 
   func testToggledLightDarkFlipsForcedModes() {
-    XCTAssertEqual(ThemePreference.light.toggledLightDark, .dark)
-    XCTAssertEqual(ThemePreference.dark.toggledLightDark, .light)
+    XCTAssertEqual(AppearanceMode.light.toggledLightDark, .dark)
+    XCTAssertEqual(AppearanceMode.dark.toggledLightDark, .light)
   }
 
   func testToggledLightDarkFromSystemIsAlwaysForced() {
     // From System the toggle resolves the live appearance and lands on a forced mode — never
     // `.system` — so repeat presses flip cleanly between light and dark.
-    XCTAssertNotEqual(ThemePreference.system.toggledLightDark, .system)
+    XCTAssertNotEqual(AppearanceMode.system.toggledLightDark, .system)
   }
 
   // MARK: observer ownership (WORKROOM-3R)

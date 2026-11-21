@@ -95,7 +95,7 @@ final class SettingsRoute {
 ///
 /// Persisted via `Defaults[.settingsSelectedPane]` so the last-viewed pane reopens (macOS System
 /// Settings behaviour). Stored as the bare raw string ("general"/…) via `PreferRawRepresentable` —
-/// matching the `DiffViewMode`/`ThemePreference` convention. A stored raw string that no longer
+/// matching the `DiffViewMode`/`AppearanceMode` convention. A stored raw string that no longer
 /// matches a case decodes to `nil`, and `Defaults` falls back to the key's default (`.general`), so
 /// a rename or corrupt value degrades gracefully rather than crashing.
 ///
@@ -106,6 +106,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Defaults.Serializable,
   case general
   case notifications
   case appearance
+  case themes
   case terminal
   case keyboardShortcuts
   case agent
@@ -121,6 +122,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Defaults.Serializable,
     case .general: return "General"
     case .notifications: return "Notifications"
     case .appearance: return "Appearance"
+    case .themes: return "Themes"
     case .terminal: return "Terminal"
     case .keyboardShortcuts: return "Shortcuts"
     case .agent: return "AI Agents"
@@ -145,6 +147,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Defaults.Serializable,
     case .general: return "gearshape"
     case .notifications: return "bell"
     case .appearance: return "paintbrush"
+    case .themes: return "swatchpalette"
     case .terminal: return "terminal"
     case .keyboardShortcuts: return "keyboard"
     case .agent: return "sparkles"

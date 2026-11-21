@@ -169,7 +169,7 @@ final class GhosttyConfigLocationTests: XCTestCase {
     engine.reloadConfig(force: false, dark: true)
     XCTAssertNotEqual(
       engine.config, light, "the dark config was never loaded once the write recovered")
-    XCTAssertEqual(try theme(in: live), ThemeService.activeThemeName(isDark: true))
+    XCTAssertEqual(try theme(in: live), ThemeService.activeThemeName(for: .dark))
   }
 
   func testDefaultURLIsScopedByBundleID() {
@@ -207,7 +207,7 @@ final class GhosttyConfigLocationTests: XCTestCase {
     XCTAssertNotEqual(live, GhosttyApp.defaultThemeConfigURL())
 
     GhosttyApp.shared.writeThemeConfig(dark: false)
-    XCTAssertEqual(try theme(in: live), ThemeService.activeThemeName(isDark: false))
+    XCTAssertEqual(try theme(in: live), ThemeService.activeThemeName(for: .light))
   }
 
   /// A file the XCUITest runner names wins, because the runner reads it back; a launch with neither

@@ -23,18 +23,20 @@ import XCTest
 ///    time, past the rows' equality gates: the invalidation storm ADR 0018 keeps out of hot rows.
 @MainActor
 final class ThemeTokensEnvironmentTests: XCTestCase {
-  private var savedFamily: String!
+  private var savedLight: String!
+  private var savedDark: String!
 
   override func setUp() async throws {
     try await super.setUp()
-    savedFamily = Defaults[.themeFamily]
+    savedLight = Defaults[.lightTheme]
+    savedDark = Defaults[.darkTheme]
     Probe.bodyPasses = 0
     Probe.lastBackground = nil
     Root.bodyPasses = 0
   }
 
   override func tearDown() async throws {
-    ThemeService.shared.applyFamily(savedFamily)
+    ThemeService.shared.apply(light: savedLight, dark: savedDark)
     try await super.tearDown()
   }
 
@@ -88,7 +90,7 @@ final class ThemeTokensEnvironmentTests: XCTestCase {
   }
 
   func testASwitchReachesAReaderUnderTheRoot() throws {
-    ThemeService.shared.applyFamily("Workroom")
+    ThemeService.shared.applyFamily(ThemeCatalog.defaultFamily)
     let hosting = NSHostingView(rootView: Root(model: Unrelated()))
     let window = host(hosting)
     defer { window.close() }
@@ -96,7 +98,7 @@ final class ThemeTokensEnvironmentTests: XCTestCase {
     let before = try XCTUnwrap(Probe.lastBackground)
 
     let other = try XCTUnwrap(
-      ThemeCatalog.families.first { $0.name != "Workroom" }?.name,
+      ThemeCatalog.families.first { $0.name != "Workroom" },
       "fixture needs a second family to switch to")
     ThemeService.shared.applyFamily(other)
     let after = ThemeService.shared.tokens.nsBg

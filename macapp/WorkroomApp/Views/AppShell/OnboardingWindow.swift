@@ -127,7 +127,7 @@ struct OnboardingWindow: View {
   @State private var addProjectError: String?
 
   @Environment(\.themeTokens) private var tokens
-  @Default(.theme) private var themePreference
+  @Default(.appearance) private var appearance
 
   var body: some View {
     VStack(spacing: 0) {
@@ -181,7 +181,7 @@ struct OnboardingWindow: View {
       // theme (`tokens.panel`, resolved independently) — on a light-system/dark-theme machine
       // that's black text on a dark panel. `NSApp.appearance` is app-wide, so setting it here fixes
       // this window and costs nothing once `RootView` later re-applies the same value.
-      NSApp.appearance = themePreference.nsAppearance
+      NSApp.appearance = appearance.nsAppearance
     }
     // ⌘W and the red button close the wizard mid-clone; the clone goes with it, not on unseen.
     .onDisappear { clone.cancel() }

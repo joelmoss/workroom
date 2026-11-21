@@ -33,7 +33,8 @@ final class SettingsPaneTests: XCTestCase {
     XCTAssertEqual(
       SettingsPane.allCases,
       [
-        .general, .notifications, .appearance, .terminal, .keyboardShortcuts, .agent, .projects,
+        .general, .notifications, .appearance, .themes, .terminal, .keyboardShortcuts, .agent,
+        .projects,
         .remoteHosts, .about,
       ])
   }
