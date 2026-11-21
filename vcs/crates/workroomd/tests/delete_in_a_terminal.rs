@@ -292,6 +292,41 @@ fn a_picked_workroom_that_isnt_a_checkout_is_only_forgotten() {
     assert!(home.path("workrooms/calm-river/.git").exists());
 }
 
+/// A picked config key that is no name, here `..`, is refused as `delete NAME` refuses it, before
+/// it is joined onto the workrooms folder: no teardown runs and nothing is forgotten.
+#[test]
+fn a_picked_key_that_is_no_name_is_refused() {
+    let home = Home::new("pick-no-name");
+    let project = home.project(&["calm-river"], STOPPING_SHA256);
+    let config = home.config().replacen(
+        "\"workrooms\": {",
+        &format!(
+            "\"workrooms\": {{\"..\": {{\"path\": \"{}\"}}, ",
+            home.path("workrooms/calm-river").display()
+        ),
+        1,
+    );
+    std::fs::write(home.config_path(), &config).expect("config");
+
+    let (code, stdout, stderr) = home.run_typing(&project, &["delete"], "1\ny\n");
+    assert_eq!(code, 3, "{stdout}{stderr}");
+    assert_eq!(
+        stdout,
+        "Select workrooms to delete:\n  1) ..\n  2) calm-river\nNumbers to delete, separated by \
+         spaces (none to delete nothing): Are you sure you want to delete 1 workroom(s): '..'? \
+         [y/N] "
+    );
+    assert!(
+        stderr.contains(
+            "workroom name must be alphanumeric (dashes and underscores allowed), and must not \
+             start or end with a dash or underscore: \"..\""
+        ),
+        "{stderr}"
+    );
+    assert_eq!(home.config(), config);
+    assert!(home.path("workrooms/calm-river/.git").exists());
+}
+
 /// A teardown script this Mac hasn't approved is shown and asked about: a no cancels the delete
 /// (exit 4) with nothing recorded or run, a yes records its digest and deletes.
 #[test]

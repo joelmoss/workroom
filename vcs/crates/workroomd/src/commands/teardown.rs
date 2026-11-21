@@ -15,8 +15,9 @@
 //! git is asked, so `run_teardown` first checks that git registers that very folder as a worktree
 //! of the project, symlinks resolved, and refuses it otherwise: a name git lists is no proof, as
 //! any folder of that name matches it. This covers every caller: `delete NAME`, a person's picks,
-//! and `delete-project`'s cascade and `--from-disk`. `delete NAME` also first checks that the name
-//! is letters, digits, dashes and underscores, so the path never leaves the workrooms folder.
+//! and `delete-project`'s cascade and `--from-disk`. Every name, a config key's too, must be
+//! letters, digits, dashes and underscores before it is joined onto the workrooms folder, so the
+//! path never leaves it.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -129,8 +130,11 @@ impl Delete<'_> {
     }
 
     /// Where workroom `name`'s checkout is on this Mac: `workrooms_dir/<name>`, as Go's
-    /// `workroomPath` finds it, whatever the entry records.
+    /// `workroomPath` finds it, whatever the entry records. A `name` that is no name (`..`, `/x`,
+    /// `a/b`, which a config key may be) is refused as `InvalidName`: joined on, it could lead out
+    /// of the workrooms folder, and an absolute one would replace it.
     fn workroom_path(&self, name: &str) -> Result<PathBuf, CliError> {
+        check_name(name)?;
         // Go reads a config it can't parse as naming the default folder.
         let data = self.data().unwrap_or(Json::Null);
         let dir = config::workrooms_dir(&data, self.context).map_err(CliError::internal)?;
@@ -149,12 +153,7 @@ impl Delete<'_> {
         confirm: Confirm<'_>,
     ) -> Result<Deleted, CliError> {
         self.check_not_in_workroom(dir)?;
-        if !valid_name(name) {
-            return Err(CliError::new(
-                Kind::InvalidName,
-                format!("{INVALID_NAME}: {}", super::envelope::encode(name, false)),
-            ));
-        }
+        check_name(name)?;
         let destroyed = self.destroyed_remote(dir, name)?;
         // A destroyed remote workroom is only dropped from config, which needs no repository: the
         // project's checkout may be gone by then.
@@ -477,6 +476,17 @@ fn find_script(workroom: &Path, root: &Path) -> Option<PathBuf> {
         .iter()
         .map(|base| base.join("scripts").join(TEARDOWN_SCRIPT))
         .find(|path| std::fs::metadata(path).is_ok())
+}
+
+/// Refuses `name` as `InvalidName` unless it is [`valid_name`]: Go's `checkName`.
+pub(super) fn check_name(name: &str) -> Result<(), CliError> {
+    if valid_name(name) {
+        return Ok(());
+    }
+    Err(CliError::new(
+        Kind::InvalidName,
+        format!("{INVALID_NAME}: {}", super::envelope::encode(name, false)),
+    ))
 }
 
 /// Go's `validNameRe`: letters and digits, with dashes and underscores inside.

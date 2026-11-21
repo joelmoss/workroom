@@ -316,6 +316,34 @@ func TestTeardownRunsOnlyInAWorktreeGitRegistersForTheProject(t *testing.T) {
 	}
 }
 
+// A config key that is no name is refused before it is joined onto the workrooms folder: by
+// RunTeardown, which --from-disk calls with every key, and by a person's pick.
+func TestAKeyThatIsNoNameIsRefusedBeforeItIsAPath(t *testing.T) {
+	dir := t.TempDir()
+	vcstest.MakeGitDir(t, dir)
+	away := filepath.Join(t.TempDir(), "away")
+	writeTeardown(t, away, "echo ran")
+	svc, buf, cfg := newTestService(t, &vcs.Git{Executor: &mockExecutor{output: gitWorktrees(dir, away)}})
+	for _, key := range []string{"..", away, "a/b"} {
+		if err := cfg.AddWorkroom(dir, key, away, "git"); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.RunTeardown(dir, key); !errors.Is(err, ErrInvalidName) {
+			t.Fatalf("RunTeardown(%q): err = %v, want ErrInvalidName", key, err)
+		}
+		svc.PromptFn = func(string, []string) ([]string, error) { return []string{key}, nil }
+		if _, err := svc.InteractiveDelete(dir, func(DeleteResult) {}); !errors.Is(err, ErrInvalidName) {
+			t.Fatalf("a pick of %q: err = %v, want ErrInvalidName", key, err)
+		}
+		if err := cfg.RemoveWorkroom(dir, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("a teardown ran: %q", buf.String())
+	}
+}
+
 func writeTeardown(t *testing.T, base, body string) {
 	t.Helper()
 	scripts := filepath.Join(base, "scripts")

@@ -3795,6 +3795,65 @@ fn delete_project_keeps_the_project_when_a_teardown_fails() {
     }
 }
 
+/// A workroom's config key that is no name, `..` or an absolute path (here the project's own
+/// worktree elsewhere, which the teardown would otherwise run in), is refused as `InvalidName`
+/// before anything runs, as `delete` refuses it: joined onto the workrooms folder it could lead
+/// out of it.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn delete_project_refuses_a_workroom_key_that_is_no_name() {
+    let home = Home::new("delete-project-no-name");
+    let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+    let elsewhere = home.path("elsewhere/away");
+    home.git(
+        &project,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "workroom/away",
+            &elsewhere.to_string_lossy(),
+        ],
+    );
+    let project_arg = project.to_string_lossy().into_owned();
+    for key in ["..".to_string(), elsewhere.to_string_lossy().into_owned()] {
+        let written = format!(
+            "{{\"{project_arg}\": {{\"trusted_scripts\": {{\"workroom_teardown\": \"{STOPPING_SHA256}\"}}, \"vcs\": \"git\", \"workrooms\": {{\"{key}\": {{\"path\": \"{}\"}}}}}}}}",
+            elsewhere.display()
+        );
+        home.write_config(&written);
+        for flag in ["--with-workrooms", "--from-disk"] {
+            let run = home.run(
+                &home.dir,
+                &[
+                    "delete-project",
+                    &project_arg,
+                    "--json",
+                    "--confirm",
+                    &project_arg,
+                    flag,
+                ],
+            );
+            run.assert_code(3).assert_quiet_stderr();
+            assert_eq!(run.error_kind(), "InvalidName", "{key} {flag}");
+            assert_eq!(
+                run.envelope()["error"]["message"],
+                format!(
+                    "workroom name must be alphanumeric (dashes and underscores allowed), and must \
+                     not start or end with a dash or underscore: \"{key}\""
+                ),
+                "{key} {flag}"
+            );
+            assert_eq!(config_text(&home), written, "{key} {flag}");
+            assert!(elsewhere.join(".git").exists(), "{key} {flag}");
+        }
+    }
+}
+
 /// A teardown script this Mac hasn't approved is refused with the script in the envelope, as the
 /// app reads it to ask, and nothing is torn down; `--skip-teardown` runs none and goes ahead.
 #[test]

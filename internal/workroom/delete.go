@@ -38,8 +38,8 @@ func (s *Service) Delete(dir, name, confirmValue string) (DeleteResult, error) {
 		return DeleteResult{}, err
 	}
 
-	if !validNameRe.MatchString(name) {
-		return DeleteResult{}, fmt.Errorf("%w: %q", ErrInvalidName, name)
+	if err := checkName(name); err != nil {
+		return DeleteResult{}, err
 	}
 
 	destroyed, err := s.destroyedRemote(dir, name)
@@ -196,6 +196,11 @@ func (s *Service) InteractiveDelete(dir string, report func(DeleteResult)) (Pick
 	}
 
 	for _, name := range selected {
+		// A pick is a config key, which may be any string: one that is no name is refused, as
+		// Delete refuses it, before it is joined onto a path.
+		if err := checkName(name); err != nil {
+			return 0, err
+		}
 		// Same rules as Delete: a remote workroom is refused unless its host is destroyed (then
 		// deleteByName only forgets it), and a selection git does not list as a worktree may be a
 		// workroom Jujutsu made (#266), which is only forgotten.
@@ -241,6 +246,11 @@ func (s *Service) RunTeardown(dir, name string) error {
 	if err := s.refuseRemote(dir, name); err != nil {
 		return err
 	}
+	// --from-disk's names are config keys: one that is no name ("..", "/x", "a/b") could lead out
+	// of the workrooms folder.
+	if err := checkName(name); err != nil {
+		return err
+	}
 	wrPath, err := s.workroomPath(name)
 	if err != nil {
 		return err
@@ -270,6 +280,15 @@ func (s *Service) RunTeardown(dir, name string) error {
 				return scriptErr
 			}
 		}
+	}
+	return nil
+}
+
+// checkName returns ErrInvalidName unless name is letters and digits, with dashes and underscores
+// inside, so <workrooms_dir>/<name> is a folder in the workrooms folder.
+func checkName(name string) error {
+	if !validNameRe.MatchString(name) {
+		return fmt.Errorf("%w: %q", ErrInvalidName, name)
 	}
 	return nil
 }
