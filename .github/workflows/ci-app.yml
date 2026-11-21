@@ -60,10 +60,11 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      # Xcode, Go (Scripts/build-helper.sh compiles + embeds the workroom CLI during the test
-      # build) and XcodeGen.
+      # Xcode and XcodeGen. No Go: the app embeds the Rust `workroom` (ADR 0078).
       - name: Set up the app build
         uses: ./.github/actions/setup-app-build
+        with:
+          go: "false"
 
       - name: Lint (swift-format --strict)
         run: make app-lint
@@ -356,10 +357,11 @@ jobs:
         run: make app-test-preflight
 
       # The script tests run xcrun, lipo and codesign; the image's default Xcode is 27.0, not 27.1.
-      # build-helper_test.sh cross-compiles the workroom CLI, so Go too. No Homebrew tools.
+      # No Go and no Homebrew tools.
       - name: Set up the app build
         uses: ./.github/actions/setup-app-build
         with:
+          go: "false"
           formulae: ""
 
       - name: Cache libghostty-vt
@@ -382,11 +384,9 @@ jobs:
       # themselves otherwise — and the step still prints OK, so the skip is invisible. Measured on
       # run 34783566140: "SKIP universal cases (rustup targets not installed)" followed by
       # "build-daemon_test: OK". The workroomd half of the guard below had therefore never run on a
-      # PR, only on nightly/release, which install these before `make app-release`.
-      #
-      # Its Go sibling has no such gate (Go cross-compiles with no extra install), which is why the
-      # asymmetry went unnoticed: `build-helper_test.sh` really was exercising the multi-arch path
-      # on every PR while `build-daemon_test.sh` quietly was not.
+      # PR, only on nightly/release, which install these before `make app-release`. (Its Go
+      # sibling, build-helper_test.sh, gone with #681, needed no such install, which is how the gap
+      # went unnoticed.)
       #
       # The musl targets and cargo-zigbuild are the same gap for the Linux daemons (#227): without
       # them the Linux case skips, and build-daemon.sh's Linux branch would first run on a nightly.
@@ -402,7 +402,7 @@ jobs:
             aarch64-unknown-linux-musl x86_64-unknown-linux-musl
 
       # Shell-script tests. `make app-test` builds Debug with a single native arch, so it can never
-      # exercise build-helper.sh's / build-daemon.sh's multi-arch path — the branch whose absence
+      # exercise build-daemon.sh's multi-arch path — the branch whose absence
       # shipped an arm64-only CLI inside every universal .app. These run them directly with
       # ARCHS="arm64 x86_64".
       #

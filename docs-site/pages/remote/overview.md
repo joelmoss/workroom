@@ -43,7 +43,7 @@ The project's run command runs on the host too, in its own tab. See [Run on a re
 
 ### `workroom` in a host's terminals {nightly}
 
-The program on the host is the same `workroom` as on your Mac, so `workroom` works in every terminal of a remote workroom, and `workroom --help` lists the same commands. Commands that need your Mac, such as `create`, `delete` and `add-project`, are marked "(Mac only)" and say so when run on a host, with the error kind `MacOnly`. `workroom update` says the app keeps it up to date, with the kind `ManagedInstall`: Workroom installs a newer one the next time it connects.
+The program on the host is the same `workroom` as on your Mac, and `workroom --help` lists the same commands. Workroom puts the folder it lives in on the `PATH` that every terminal of a remote workroom, and every setup and teardown script, starts with, after your own entries, so a `workroom` you installed yourself comes first. A login profile can replace `PATH` (Debian's `/etc/profile` does): in bash, zsh, fish and elvish the terminal adds the folder back afterwards; in `sh` or `dash` it is then not on `PATH`, and you run it by its full path, which `dirname "$WORKROOM_DAEMON"` names on an SSH host or a boxd or exe.dev host (`$(dirname "$WORKROOM_DAEMON")/workroom`), and which is `/.workroom/bin/workroom` in a container. Commands that need your Mac, such as `create`, `delete` and `add-project`, are marked "(Mac only)" and say so when run on a host, with the error kind `MacOnly`. `workroom update` says the app keeps it up to date, with the kind `ManagedInstall`: Workroom installs a newer one the next time it connects.
 
 What stays on your Mac:
 
