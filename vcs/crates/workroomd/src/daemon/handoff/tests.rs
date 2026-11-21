@@ -52,11 +52,29 @@ fn a_table_survives_encoding() {
                 program_status: Default::default(),
             },
         ],
+        events: Some(br#"{"boot":"x","revision":3}"#.to_vec()),
     };
     assert_eq!(
         Table::decode(&table.encode()).map_err(|e| e.to_string()),
         Ok(table)
     );
+}
+
+/// The terminal API's events cross a version 4 table after the sessions (#687), and one that
+/// carries none reads back as none.
+#[test]
+fn the_events_cross_the_table_after_the_sessions() {
+    let table = Table {
+        listener: 3,
+        lock: 4,
+        boot: Some(SessionId([9; 16])),
+        sessions: Vec::new(),
+        events: None,
+    };
+    let bytes = table.encode();
+    assert_eq!(bytes[4..6], 4u16.to_be_bytes(), "version 4");
+    assert_eq!(bytes[bytes.len() - 4..], [0, 0, 0, 0], "no events");
+    assert_eq!(Table::decode(&bytes).map_err(|e| e.to_string()), Ok(table));
 }
 
 /// A shell's OSC 133 marks cross the table in its program status, so the next program takes a
@@ -81,6 +99,7 @@ fn a_shells_marks_cross_the_table() {
             metadata: Vec::new(),
             program_status: status,
         }],
+        events: None,
     };
     let back = Table::decode(&table.encode()).expect("the table reads back");
     assert!(back.sessions[0].program_status.shell_marks());
@@ -105,6 +124,7 @@ fn screens_are_refused_by_a_build_that_cannot_paint_them() {
             metadata: Vec::new(),
             program_status: Default::default(),
         }],
+        events: None,
     };
     std::fs::write(&path, table.encode()).expect("table");
     let checked = check_table(&path);
@@ -356,6 +376,7 @@ fn a_damaged_table_is_refused() {
             metadata: Vec::new(),
             program_status: Default::default(),
         }],
+        events: None,
     };
     let bytes = table.encode();
     assert!(Table::decode(&bytes[..bytes.len() - 1]).is_err());
@@ -363,7 +384,7 @@ fn a_damaged_table_is_refused() {
     longer.push(0);
     assert!(Table::decode(&longer).is_err());
     let mut newer = bytes;
-    newer[5] = 4;
+    newer[5] = 5;
     assert!(Table::decode(&newer).is_err());
 }
 
@@ -371,7 +392,7 @@ fn a_damaged_table_is_refused() {
 /// upgrading a host keeps every shell; its sessions come over with no metadata (D6), no
 /// program status and no boot, so the new program keeps its own (#358).
 ///
-/// The bytes are written out by hand, not by `encode`, which now writes version 3: a fixture an
+/// The bytes are written out by hand, not by `encode`, which now writes version 4: a fixture an
 /// encoder produces would move with the encoder and stop proving anything about old tables.
 #[test]
 fn a_version_1_table_from_an_older_daemon_is_adopted_without_metadata() {
@@ -403,6 +424,7 @@ fn a_version_1_table_from_an_older_daemon_is_adopted_without_metadata() {
                 metadata: Vec::new(),
                 program_status: Default::default(),
             }],
+            events: None,
         }
     );
 }
@@ -441,6 +463,7 @@ fn a_version_3_table_from_the_shipped_daemon_is_adopted_with_its_program_status(
     version_3.extend_from_slice(status);
     let table = Table::decode(&version_3).expect("a version 3 table is read");
     assert_eq!(table.boot, Some(SessionId([9; 16])));
+    assert_eq!(table.events, None, "a version 3 table carries no events");
     let store = &table.sessions[0].program_status;
     assert_eq!(store, &blocked_status());
     let event: serde_json::Value =

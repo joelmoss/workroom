@@ -162,7 +162,11 @@ pub fn spawn_watcher(sessions: SessionStore) {
     let mut watched: HashMap<SessionId, Watched> = adopted
         .into_iter()
         .map(|id| {
-            let heard = last_transition(&status_file(&dir, id));
+            // Read once, so the events are told (#687) what the old program's never were up to
+            // exactly where this watcher starts.
+            let log = transitions(&status_file(&dir, id)).unwrap_or_default();
+            sessions.hooks().events.adopted_run(id, &log);
+            let heard = log.last().map(|(seq, _)| *seq);
             (
                 id,
                 Watched {

@@ -1333,6 +1333,7 @@ fn measure_hand_off() {
         lock: -1,
         boot: None,
         sessions: frozen,
+        events: None,
     };
     let path = std::env::temp_dir().join(format!("wr-measure-table-{}", std::process::id()));
     let started = Instant::now();
