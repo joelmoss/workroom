@@ -410,7 +410,20 @@ const MAX_DAEMON_BUILD: usize = 128;
 /// #680, or not a daemon at all, which is a different daemon from this one. The first complete
 /// marker counts; a universal Mac binary carries one per architecture, all the same.
 pub fn daemon_build_in(path: &Path) -> std::io::Result<Option<String>> {
-    let marker = std::hint::black_box(DAEMON_BUILD_MARKER);
+    marker_in(path, std::hint::black_box(DAEMON_BUILD_MARKER))
+}
+
+/// The build number marked in the file at `path` (`BUILD_MARKER`), as the app reads it out of a
+/// bundled daemon (`DaemonBootstrap.buildNumber(in:)`): `None` for a file with none.
+pub fn build_number_marked_in(path: &Path) -> std::io::Result<Option<u64>> {
+    Ok(marker_in(path, std::hint::black_box(BUILD_MARKER))?
+        .filter(|value| value.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|value| value.parse().ok()))
+}
+
+/// The value of the first complete marker shaped like `marker` (its prefix up to the colon) in the
+/// file at `path`.
+fn marker_in(path: &Path, marker: &str) -> std::io::Result<Option<String>> {
     let prefix = &marker.as_bytes()[..=marker.find(':').unwrap_or(0)];
     // A marker split across two reads is found whole in the next: each read is searched after the
     // tail of the one before, as long as a marker can be.
@@ -501,6 +514,25 @@ pub fn hand_off(
         path: binary.to_path_buf(),
         source,
     })?;
+    // Never an older build, even one of this daemon build: `current` would have the bootstrap
+    // install it over a newer file of the same daemon (#681), which the next start then runs. Read
+    // out of its bytes, as the app reads a bundled daemon's; a file with no number goes on to the
+    // checks below, which run it and ask.
+    let ours = build_number();
+    if ours > 0
+        && let Some(theirs) =
+            build_number_marked_in(binary).map_err(|source| HandOffError::Read {
+                path: binary.to_path_buf(),
+                source,
+            })?
+        && theirs < ours
+    {
+        return Err(HandOffError::Older {
+            binary: binary.to_path_buf(),
+            theirs,
+            ours,
+        });
+    }
     if !force && offered.as_deref() == Some(daemon_build()) {
         return Ok(());
     }
