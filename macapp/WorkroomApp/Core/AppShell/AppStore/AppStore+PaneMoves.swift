@@ -205,7 +205,13 @@ extension AppStore {
       boxes.contains { box in
         guard let view = box.view, view.window === window, !view.isHiddenOrHasHiddenAncestor
         else { return false }
-        let visible = view.visibleRect
+        // Kept within its height: a marker in a sidebar pane's sticky header (#652) reports a
+        // visible rect as tall as its pane, which would take the drops meant for the rows below.
+        // Not its width: a row's reaches across the List's, past the row's own insets.
+        let shown = view.visibleRect
+        let visible = shown.intersection(
+          CGRect(x: shown.minX, y: view.bounds.minY, width: shown.width, height: view.bounds.height)
+        )
         guard !visible.isEmpty else { return false }
         return hit(window.convertToScreen(view.convert(visible, to: nil)))
       }

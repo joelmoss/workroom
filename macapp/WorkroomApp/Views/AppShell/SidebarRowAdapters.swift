@@ -114,10 +114,11 @@ struct SidebarTerminalRowAdapter: View, Equatable {
   let actions: SidebarActions
   /// Who holds the terminal when it isn't this window: the Quick Terminal's panel (story 10).
   var holder: (any PaneHost)? = nil
+  var style: SidebarTerminalRowStyle = .tree
 
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
     lhs.tabID == rhs.tabID && lhs.target == rhs.target && lhs.parent == rhs.parent
-      && lhs.hovered == rhs.hovered && lhs.holder === rhs.holder
+      && lhs.hovered == rhs.hovered && lhs.holder === rhs.holder && lhs.style == rhs.style
   }
 
   var body: some View {
@@ -140,7 +141,7 @@ struct SidebarTerminalRowAdapter: View, Equatable {
     return SidebarTerminalRowModel(
       tabID: tab.id, target: target, parent: parent, title: title,
       glyph: tab.content.glyph ?? "terminal", indicator: tab.indicator,
-      programStatus: tab.programStatus, hasSession: tab.terminal?.sessionID != nil)
+      programStatus: tab.programStatus, hasSession: tab.terminal?.sessionID != nil, style: style)
   }
 }
 
@@ -213,13 +214,20 @@ struct SidebarRowBackground: View {
       let _ = { SidebarRowPasses.background += 1 }()
     #endif
     if store.selectedTargetID == id {
-      WorkroomPaneCardBackground(highlighted: true)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.s))
-        .padding(.horizontal, Spacing.m)
-        .padding(.vertical, 1)
+      SidebarSelectedRowFill()
     } else {
       RowHighlight(selected: false, hovered: hovered)
     }
+  }
+}
+
+/// A selected sidebar row's fill: the focused workroom card's, inset as a hovered row's is.
+struct SidebarSelectedRowFill: View {
+  var body: some View {
+    WorkroomPaneCardBackground(highlighted: true)
+      .clipShape(RoundedRectangle(cornerRadius: Radius.s))
+      .padding(.horizontal, Spacing.m)
+      .padding(.vertical, 1)
   }
 }
 
@@ -233,11 +241,25 @@ struct SidebarTerminalRowBackground: View {
   let target: TerminalTarget
   let parent: SidebarID
   let hovered: Bool
+  /// A `.section` row wears a standalone terminal's row's highlights (`SidebarRowBackground`).
+  var style: SidebarTerminalRowStyle = .tree
 
   var body: some View {
     // The focused terminal is read only for the selected target's rows.
     let selected =
       store.selectedTargetID == parent && store.terminals.focusedTab(for: target)?.id == tabID
+    if style == .section {
+      if selected {
+        SidebarSelectedRowFill()
+      } else {
+        RowHighlight(selected: false, hovered: hovered)
+      }
+    } else {
+      treeFill(selected: selected)
+    }
+  }
+
+  @ViewBuilder private func treeFill(selected: Bool) -> some View {
     // Lighter than the root/workroom selection fill (0.13): the selected workroom is the primary
     // selection, the focused terminal a secondary "active within" cue — so the two don't read as
     // two equal selections when a subtree is open (issue #30 design pass).

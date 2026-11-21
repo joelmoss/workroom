@@ -89,6 +89,31 @@ extension AppStore: TerminalsSectionHolder {
     refreshSelectionHasTabs()
   }
 
+  /// Where this window's selection goes when the tabs in `closing` were the last of selected
+  /// Terminals-section row `targetID`, and so the row goes: a standalone terminal closed, or a
+  /// group's last terminal. The previous place this window showed that is still live
+  /// (`previousLiveLocation`), else the nearest row above with terminals in this window, else the
+  /// nearest below. nil leaves it to the fallback every target has (`selectFallbackWorkroomAfterEmpty`),
+  /// and so does a row that stays: moved, or a group another window still has terminals in.
+  /// Read before the close prunes the history and drops the row.
+  func closeSuccessor(of targetID: TargetID, closing: Set<TerminalTab.ID>)
+    -> (sid: SidebarID, tab: TerminalTab.ID?)?
+  {
+    guard let sid = targetID.sidebarID, sid.isInTerminalsSection, targetID != .quickTerminal,
+      selectedTargetID == sid, terminals.tabCount(forTargetID: targetID) == 0,
+      terminals.handingOffTo == nil, !WindowRegistry.shared.isTerminating,
+      terminalsSection.contains(targetID), terminalsSection.terminalNames(of: targetID).isEmpty
+    else { return nil }
+    if let previous = previousLiveLocation(excluding: sid, closing: closing) {
+      return (previous.target, previous.tab)
+    }
+    let ids = terminalsSection.entries.map(\.targetID)
+    guard let index = ids.firstIndex(of: targetID) else { return nil }
+    let nearest = Array(ids[..<index].reversed()) + ids[(index + 1)...]
+    return nearest.first { $0 != .quickTerminal && holdsTerminals(forTargetID: $0) }
+      .flatMap(\.sidebarID).map { ($0, nil) }
+  }
+
   /// A standalone terminal's row goes once its terminal has left it in every holder: closed, or
   /// moved into another target. Moving to another window keeps it, and so does a quit, which must
   /// bring it back at the next launch.

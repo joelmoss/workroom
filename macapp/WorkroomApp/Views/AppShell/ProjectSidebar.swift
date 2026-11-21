@@ -17,7 +17,7 @@ import os
 /// of the tree re-runs no row whose inputs are unchanged, and the sidebar is gated on its drag
 /// plumbing, so a pass of the view that holds it re-runs no tree.
 struct ProjectSidebar: View, Equatable {
-  private static let signposter = OSSignposter(
+  static let signposter = OSSignposter(
     subsystem: "com.developwithstyle.workroom", category: "Sidebar")
   #if DEBUG
     /// Project, root and workroom row bodies, together (`SidebarBenchmarkTests`); terminal rows are
@@ -27,10 +27,6 @@ struct ProjectSidebar: View, Equatable {
     static var didRenderHover: ((SidebarID, Binding<Bool>) -> Void)?
   #endif
   @EnvironmentObject var store: AppStore
-  @EnvironmentObject var projectStore: ProjectStore
-  @EnvironmentObject var lifecycle: WorkroomLifecycle
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @Environment(\.themeTokens) private var tokens
 
   /// Live drag of a root/workroom row into the detail content to form a workroom split (issue
   /// #101). The default makes the gesture an inert no-op for previews / any host that doesn't wire
@@ -43,18 +39,36 @@ struct ProjectSidebar: View, Equatable {
   /// their root/workroom children one `levelIndent` deeper (`childRowInsets`), and a target's terminal
   /// rows deeper again — the terminal base matches its root/workroom, then the in-row `caretWidth`
   /// glyph column carries the final step (so the terminal glyph lines up under the root/workroom
-  /// label). Vertical insets are unchanged: 4 for the selectable rows, a tighter 2 for the smaller
-  /// terminal rows. (`6 + 12`: the base sidebar margin plus one 12pt level step.)
-  fileprivate static let rowInsets = EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 0)
-  fileprivate static let childRowInsets = EdgeInsets(
+  /// label). Vertical insets: 2 above and below the selectable rows, 3 for the smaller terminal
+  /// rows. Every row but a project's takes its insets as padding inside itself (`sidebarRowFrame`),
+  /// with none from the List, so the whole row is its hit target (#652 critique).
+  static let rowInsets = EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 0)
+  static let childRowInsets = EdgeInsets(
     top: 2, leading: 6 + 6, bottom: 2, trailing: 0)
   static let terminalRowInsets = EdgeInsets(
     top: 3, leading: 6 + 6, bottom: 3, trailing: 0)
-  /// A section heading's (`SidebarSectionHeading`): none, so its band reaches both sidebar edges.
-  fileprivate static let headingInsets = EdgeInsets()
+  /// What a plain `List` adds above and below its rows, for sizing the Terminals pane to them.
+  static let listPadding: CGFloat = 12
+  /// The Terminals pane's floor: its heading and one row, the Quick Terminal's, which it always has.
+  static let terminalsPaneMinHeight: CGFloat =
+    SectionHeaderMetrics.height + SidebarRowMetrics.rowHeight + childRowInsets.top
+    + childRowInsets.bottom + listPadding
+  /// The Projects pane's floor: its heading and a few rows.
+  static let projectsPaneMinHeight: CGFloat = 120
+  /// The most of the sidebar the Terminals pane takes when sized to its rows.
+  static let terminalsPaneCap: CGFloat = 0.4
+
+  /// How the sidebar's split sizes its panes: the Terminals pane floored at one row and held
+  /// through a window resize, so the Projects pane takes the slack; folding a pane and unfolding it
+  /// returns both to where they were.
+  static let splitSizing = InspectorSplitContainerController.Sizing(
+    minHeights: [terminalsPaneMinHeight, projectsPaneMinHeight],
+    holdingPriorities: [.defaultLow + 10, .defaultLow],
+    restoresLayoutOnExpand: true,
+    preferredCap: terminalsPaneCap)
 
   var body: some View {
-    Group {
+    VStack(spacing: 0) {
       if !store.sidebarHasContent {
         ContentUnavailableView {
           Label("No projects yet", systemImage: "folder.badge.plus")
@@ -64,12 +78,13 @@ struct ProjectSidebar: View, Equatable {
           Button("Add Project…") { store.modals.requestAddProject = true }
             .buttonStyle(.borderedProminent)
         }
+        .frame(maxHeight: .infinity)
       } else {
-        tree
+        split
       }
+      // Under the panes, on the sidebar's background, so neither list scrolls beneath it.
+      footer
     }
-    // Reserve the footer's height so the list scrolls above its shared sidebar background.
-    .safeAreaInset(edge: .bottom, spacing: 0) { footer }
     // A project's settings (issue #7) open in Settings ▸ Projects through
     // `store.modals.pendingProjectSettings`, which ⌘R (a global shortcut) sets too (issue #127).
     // The add-project importer and the delete confirmation are re-homed to RootView (issue #23 OV1)
@@ -78,28 +93,93 @@ struct ProjectSidebar: View, Equatable {
     // `pendingDeletion`).
   }
 
-  /// Flat list of rows (project, then its root + workrooms when expanded, then their terminals). All
-  /// rows are flush; the hierarchy is conveyed by each row's icons/buttons (project chevron, root
-  /// house, workroom caret, terminal glyph), not indentation. A flat structure also keeps List
-  /// selection and keyboard navigation simple across the levels.
-  private var tree: some View {
-    let interval = Self.signposter.beginInterval("Sidebar tree")
-    defer { Self.signposter.endInterval("Sidebar tree", interval) }
+  /// The Terminals and Projects sections as the inspector's panes (#652): each a sticky heading over
+  /// its own scrolling list, the divider between them resizing both. Collapsing a pane folds its
+  /// section (`AppStore.sidebarPanesCollapsed`). While the user hasn't dragged the divider, the
+  /// Terminals pane is sized to its rows, up to `terminalsPaneCap`, and Projects takes the rest.
+  private var split: some View {
+    let weights = store.sidebarPaneWeights
+    return InspectorSplitView(
+      headers: [
+        hosted(SidebarTerminalsHeader(store: store)),
+        hosted(SidebarProjectsHeading(store: store)),
+      ],
+      bodies: [
+        hosted(
+          SidebarTerminalsList(
+            store: store
+          ).equatable()),
+        hosted(SidebarProjectsList(drag: drag).equatable()),
+      ],
+      collapsed: store.sidebarPanesCollapsed,
+      // Each pane's List scrolls itself.
+      fills: [true, true],
+      sectionKey: "sidebar",
+      workroomKey: "sidebar",
+      weights: weights,
+      onWeightsChanged: { [store] in store.updateSidebarPaneWeights($0) },
+      preferredHeights: weights.isEmpty
+        ? [
+          SectionHeaderMetrics.height
+            + SidebarTerminalsList.contentHeight(of: store.terminalsSection, in: store),
+          nil,
+        ] : nil,
+      sizing: Self.splitSizing,
+      // A legacy scroller would narrow the rows but not the headings, and their "+" columns
+      // would part.
+      forcesOverlayScrollers: true
+    )
+  }
+
+  /// A pane's view with the window's environment: a pane is hosted in AppKit, so it inherits none of
+  /// it. The objects are the store's own, so this view subscribes to none of them.
+  private func hosted(_ view: some View) -> AnyView {
+    AnyView(
+      view
+        .environmentObject(store)
+        .paneHost(store)
+        .environmentObject(store.modals)
+        .environmentObject(store.runCommand)
+        .environmentObject(store.runCommands)
+        .environmentObject(store.projectStore)
+        .environmentObject(store.vcsStatus)
+        .environmentObject(store.lifecycle)
+        .environmentObject(store.notifications)
+        .environmentObject(store.terminals.codingAgentManager)
+        .environmentObject(store.remoteState))
+  }
+
+  // MARK: Chrome
+
+  /// The notification band, under a hairline, on the sidebar's background.
+  private var footer: some View { SidebarFooter() }
+}
+
+/// The Projects section's list, the sidebar's bottom pane under its sticky heading: projects at the
+/// root, their root + workrooms when expanded, then their terminals. All rows are flush; the
+/// hierarchy is conveyed by each row's icons/buttons (project chevron, root house, workroom caret,
+/// terminal glyph), not indentation. A flat structure also keeps List selection and keyboard
+/// navigation simple across the levels. Gated on its drag plumbing, as the sidebar is.
+struct SidebarProjectsList: View, Equatable {
+  @EnvironmentObject var store: AppStore
+  @EnvironmentObject var projectStore: ProjectStore
+  @EnvironmentObject var lifecycle: WorkroomLifecycle
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  var drag: SidebarDragPlumbing = .inert
+
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.drag == rhs.drag }
+
+  private static var rowInsets: EdgeInsets { ProjectSidebar.rowInsets }
+  private static var childRowInsets: EdgeInsets { ProjectSidebar.childRowInsets }
+
+  var body: some View {
+    let interval = ProjectSidebar.signposter.beginInterval("Sidebar tree")
+    defer { ProjectSidebar.signposter.endInterval("Sidebar tree", interval) }
     #if DEBUG
       SidebarRowPasses.tree += 1
     #endif
     let actions = SidebarActions.live(store: store)
     return List {
-      // Terminals with no project, above the projects (ADR 0077).
-      SidebarTerminalsSection(
-        store: store, actions: actions, headingInsets: Self.headingInsets,
-        rowInsets: Self.childRowInsets, terminalRowInsets: Self.terminalRowInsets)
-      // The Projects section's heading, shown with no projects too: its "+" is the sidebar's Add
-      // Project. Its band sets it off from the Terminals section, as the inspector's do, with no rule.
-      SidebarProjectsHeading(store: store)
-        .listRowInsets(Self.headingInsets)
-        .listRowSeparator(.hidden)
-        .listRowBackground(SidebarSectionHeadingBand())
       ForEach(store.projectsFolded ? [] : projectStore.projects) { project in
         SidebarHoverRegion(id: .project(project.path)) { hovered in
           SidebarProjectRowAdapter(project: project, hovered: hovered, actions: actions)
@@ -119,7 +199,7 @@ struct ProjectSidebar: View, Equatable {
             )
             .equatable()
             .paneDropZone(.target(rid), store: store)
-            .listRowInsets(Self.childRowInsets)
+            .listRowInsets(EdgeInsets())
             .listRowSeparator(.hidden)
             .listRowBackground(SidebarRowBackground(store: store, id: rid, hovered: hovered))
           }
@@ -135,7 +215,7 @@ struct ProjectSidebar: View, Equatable {
               )
               .equatable()
               .paneDropZone(.target(wid), store: store)
-              .listRowInsets(Self.childRowInsets)
+              .listRowInsets(EdgeInsets())
               .listRowSeparator(.hidden)
               .listRowBackground(SidebarRowBackground(store: store, id: wid, hovered: hovered))
             }
@@ -146,28 +226,15 @@ struct ProjectSidebar: View, Equatable {
           // create dropped its record.
           ForEach(lifecycle.provisionalCreationRows(inProject: project.path)) { row in
             provisionalCreationRow(row, actions: actions)
-              .listRowInsets(Self.childRowInsets)
+              .listRowInsets(EdgeInsets())
               .listRowSeparator(.hidden)
               .listRowBackground(SidebarRowBackground(store: store, id: row.id, hovered: false))
           }
         }
       }
-      // No trailing spacer needed: the footer is a solid `safeAreaInset` (see `body`) that reserves
-      // its own height, so the list already scrolls clear of it (issue #118 feedback).
     }
-    // Plain style (not the NavigationSplitView sidebar default): the `.sidebar` style forces a
-    // comfortable ~28pt row-height floor and ignores small `listRowInsets` + `defaultMinListRowHeight`,
-    // so the compact terminal rows couldn't shrink. Plain sizes each row by its content + insets.
-    // Selection/hover are already hand-rolled via `listRowBackground`, so no native sidebar styling is
-    // lost; `scrollContentBackground(.hidden)` keeps the window's sidebar material showing through.
-    .listStyle(.plain)
-    // Hide the List's own background so the `sidebarCard` (applied at the use site, for both the
-    // docked column and the edge-reveal panel) shows through — its `tokens.bg` replaces
-    // NavigationSplitView's native sidebar material, so pinned and unpinned share one card style.
-    .scrollContentBackground(.hidden)
-    .environment(\.defaultMinListRowHeight, 1)
+    .sidebarListStyle()
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.collapsedProjects)
-    .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.projectsFolded)
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.expandedTerminalTargets)
   }
 
@@ -186,8 +253,7 @@ struct ProjectSidebar: View, Equatable {
       Spacer()
       if let run = lifecycle.creationRun(for: row.id) { CreateStepCircle(run: run) }
     }
-    .frame(height: SidebarRowMetrics.rowHeight)
-    .contentShape(Rectangle())
+    .sidebarRowFrame(ProjectSidebar.childRowInsets)
     .onTapGesture { actions.select(row.id) }
     .help(row.label)
     .accessibilityElement(children: .combine)
@@ -198,12 +264,21 @@ struct ProjectSidebar: View, Equatable {
   // MARK: Expansion
 
   private func isExpanded(_ path: String) -> Bool { !store.collapsedProjects.contains(path) }
+}
 
-  // MARK: Chrome
-
-  /// The notification band, under a hairline, on the sidebar's background. The safe-area inset
-  /// reserves its height, keeping list rows from scrolling underneath.
-  private var footer: some View { SidebarFooter() }
+extension View {
+  /// A sidebar pane's `List`. Plain style (not the NavigationSplitView sidebar default): the
+  /// `.sidebar` style forces a comfortable ~28pt row-height floor and ignores small `listRowInsets` +
+  /// `defaultMinListRowHeight`, so the compact terminal rows couldn't shrink. Plain sizes each row by
+  /// its content + insets. Selection/hover are already hand-rolled via `listRowBackground`, so no
+  /// native sidebar styling is lost. Its own background is hidden so the `sidebarCard` (applied at
+  /// the use site, for both the docked column and the edge-reveal panel) shows through, so pinned
+  /// and unpinned share one card style.
+  func sidebarListStyle() -> some View {
+    listStyle(.plain)
+      .scrollContentBackground(.hidden)
+      .environment(\.defaultMinListRowHeight, 1)
+  }
 }
 
 #if DEBUG
@@ -303,7 +378,7 @@ private struct SidebarTerminalSubtree: View, Equatable {
             tabID: tabID, target: target, parent: parent, hovered: hovered, actions: actions
           )
           .equatable()
-          .listRowInsets(ProjectSidebar.terminalRowInsets)
+          .listRowInsets(EdgeInsets())
           .listRowSeparator(.hidden)
           .listRowBackground(
             SidebarTerminalRowBackground(
@@ -340,7 +415,8 @@ private struct SidebarProjectsHeading: View {
   var body: some View {
     SidebarSectionHeading(
       title: "Projects",
-      isFolded: Binding(get: { store.projectsFolded }, set: { store.projectsFolded = $0 }),
+      isFolded: Binding(
+        get: { store.isCollapsed(.projects) }, set: { store.setCollapsed(.projects, $0) }),
       id: "sidebar.projects"
     ) {
       SidebarIconButton(
@@ -349,6 +425,7 @@ private struct SidebarProjectsHeading: View {
         store.modals.requestAddProject = true
       }
     }
+    .background(SidebarSectionHeadingBand())
   }
 }
 

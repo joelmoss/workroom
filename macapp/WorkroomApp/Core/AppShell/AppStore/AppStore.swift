@@ -242,6 +242,20 @@ final class AppStore: ObservableObject {
     #endif
     return Defaults[.projectsFolded]
   }
+  /// The sidebar's Terminals and Projects panes' relative heights (`SidebarPane` order), once the
+  /// user has dragged the divider between them; empty sizes the Terminals pane to its rows. Global,
+  /// as the inspector's pane weights are, and gated and persisted as `projectsFolded` is. Written
+  /// only through `updateSidebarPaneWeights`.
+  var sidebarPaneWeights: [Double] = AppStore.initialSidebarPaneWeights {
+    didSet { if persistsSidebarPrefs { Defaults[.sidebarPaneWeights] = sidebarPaneWeights } }
+  }
+
+  nonisolated private static var initialSidebarPaneWeights: [Double] {
+    #if DEBUG
+      if AppEnvironment.current.isFixture { return [] }
+    #endif
+    return Defaults[.sidebarPaneWeights]
+  }
   /// Remembered workroom tab-bar order (issue #23), stored as `TargetID.encoded`. `@Published`
   /// (not read via `@Default` in the view) because a `@Default` write doesn't reliably re-render the
   /// `NavigationSplitView` detail, so a drag-reorder's write didn't take and the dropped chip snapped
@@ -987,6 +1001,9 @@ final class AppStore: ObservableObject {
     case .tabsRemoved(let targetID, let ids):
       // Handed to another target of this window in place: the tabs are still here.
       guard !self.isMovingTerminalsInPlace else { return }
+      // A selected terminal outside any project closing with its row hands the selection back to
+      // the previous place, read before the prune and the row going take it away.
+      let successor = self.closeSuccessor(of: targetID, closing: Set(ids))
       self.history.prune(removing: Set(ids))
       self.standaloneTabsRemoved(targetID)
       self.groupTabsRemoved(targetID)
@@ -1009,7 +1026,11 @@ final class AppStore: ObservableObject {
       // auto-close, which re-points selection off a split member first — so this only fires for a
       // selected *solo* workroom. No-op for a background close or a delete (selection isn't the
       // emptied target by the time its reap reaches here).
-      self.selectFallbackWorkroomAfterEmpty(targetID)
+      if let successor, self.selectedTargetID == targetID.sidebarID {
+        self.applyLocation(target: successor.sid, tab: successor.tab, recordHistory: true)
+      } else {
+        self.selectFallbackWorkroomAfterEmpty(targetID)
+      }
       // After the fallback re-point (or not): if the selected target now has no tabs, the inspector
       // empties (issue: History/Changes/PR stayed on the last workroom after closing all its tabs).
       self.refreshSelectionHasTabs()

@@ -42,6 +42,8 @@ A terminal in the **Terminals** section is named like any other, after its progr
 
 Select a standalone terminal that another window holds, and that window comes forward. Closing a window closes its standalone terminals, and asks first when it has any.
 
+When you close the terminal you're in and its row goes with it, because it was a standalone terminal or the last terminal of a group, the window goes back to where you were before. That is the last place you selected in that window that still has a terminal open, a workroom's included, so you can type straight away. If there isn't one, the nearest row above it in the **Terminals** section that has a terminal in this window is selected, else the nearest one below. Closing a terminal in a group that has others left stays in the group, on the tab beside it.
+
 #### Rename a terminal
 
 Any terminal can have a name of its own, in a workroom, a group or on its own. Right-click its tab or its row in the sidebar and choose **Rename…**. On a row, the name is edited in place, as a terminal group's is: press <kbd>Return</kbd> or click away to keep it, or <kbd>Esc</kbd> to leave it as it was. From a tab, a sheet asks for it. The name shows on the tab, the pane's title bar and the row, and it comes back after a quit. Leave the name empty to show the title the program sets again.
