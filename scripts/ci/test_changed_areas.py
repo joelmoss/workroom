@@ -155,7 +155,7 @@ class ChangedAreasTests(unittest.TestCase):
         self.assertEqual(needed("vcs/crates/workroomd/README.md"), {"rust", "app", "scripts"})
 
     def test_the_notices_inputs_also_run_the_rust_job_that_checks_them(self):
-        self.assertEqual(needed("third-party/components.json", "scripts/third_party_notices.py",
+        self.assertEqual(needed("third-party/components.json",
                                 ".github/actions/install-cargo-about/action.yml"), {"rust"})
         for path in ("macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/"
                      "Package.resolved", "macapp/Resources/THIRD-PARTY-NOTICES.txt",
@@ -166,6 +166,13 @@ class ChangedAreasTests(unittest.TestCase):
                      "macapp/Packages/SyntaxHighlighting/Grammars/tree-sitter-css/VENDOR.md"):
             with self.subTest(path=path):
                 self.assertEqual(needed(path), {"rust", "packages", "app", "scripts"})
+
+    def test_what_the_archive_test_reads_also_runs_the_script_tests(self):
+        # cli-archives_test.sh checks the archives' targets and features against about.toml and
+        # the notices script, and builds the Go CLI's updater to update it into the Rust binary.
+        self.assertEqual(needed("third-party/about.toml"), {"rust", "scripts"})
+        self.assertEqual(needed("scripts/third_party_notices.py"), {"rust", "scripts"})
+        self.assertEqual(needed("internal/updater/updater.go"), {"cli", "scripts"})
 
     def test_every_file_the_notices_check_reads_runs_the_rust_job(self):
         # The licence files and pinned version lines components.json names, and the generated
