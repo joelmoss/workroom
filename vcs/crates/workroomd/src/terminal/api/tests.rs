@@ -1051,6 +1051,41 @@ fn events_past_a_bound_are_busy_until_a_connection_closes() {
     drop((second, third));
 }
 
+/// A connection whose every write fails, as one whose caller has read nothing for the transport's
+/// `WRITE_TIMEOUT` does.
+struct TimedOut;
+
+impl std::io::Write for TimedOut {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "peer stopped reading",
+        ))
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A subscription whose write fails ends its connection, so its caller sees it drop and asks
+/// again with `since`, rather than wait on a stream a half-written envelope has broken.
+#[test]
+fn a_subscription_whose_write_fails_closes_its_connection() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let store = SessionStore::new();
+    let writer: SharedWriter = std::sync::Arc::new(std::sync::Mutex::new(Box::new(TimedOut)));
+    let closed = std::sync::Arc::new(AtomicBool::new(false));
+    let seen = std::sync::Arc::clone(&closed);
+    let mut subscriptions = events::Subscriptions::closing(std::sync::Arc::new(move || {
+        seen.store(true, Ordering::SeqCst)
+    }));
+    subscribe(&mut subscriptions, &store, &writer, 1);
+    assert!(
+        eventually(|| closed.load(Ordering::SeqCst)),
+        "the connection was left open"
+    );
+}
+
 /// A connection that writes nothing a moment, as a caller that stops reading leaves it.
 #[derive(Clone, Default)]
 struct Stalled {

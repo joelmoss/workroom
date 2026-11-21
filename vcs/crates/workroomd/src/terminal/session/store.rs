@@ -116,6 +116,11 @@ impl SessionStore {
                 .metadata
                 .push(("workroom".to_string(), workroom.to_string())),
         }
+        drop(sessions);
+        // Its events from here on carry the new scope, and its filters keep to it.
+        self.hooks
+            .events
+            .rescoped(id, serde_json::json!({"kind": "workroom", "id": workroom}));
         true
     }
 

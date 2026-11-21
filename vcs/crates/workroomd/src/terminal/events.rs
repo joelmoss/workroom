@@ -317,6 +317,14 @@ impl Hub {
         self.publish(&mut state, json);
     }
 
+    /// A session was tagged with another scope (`SessionStore::set_workroom`): its events from
+    /// here on, and its snapshots, carry `scope`. Not an event of its own.
+    pub fn rescoped(&self, id: SessionId, scope: Value) {
+        if let Some(known) = self.lock().sessions.get_mut(&id) {
+            known.listing["scope"] = scope;
+        }
+    }
+
     /// A session's program status changed: `agent` is its coding agent now (the listing's
     /// shape, null for none). An event only when it is news (`agent_changed`).
     pub fn program_status(&self, id: SessionId, agent: Value) {
