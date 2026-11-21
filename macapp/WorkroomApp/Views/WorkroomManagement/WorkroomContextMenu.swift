@@ -87,6 +87,24 @@ struct WorkroomMenuModel: Equatable {
     case delete(enabled: Bool)
     /// "Remove Workroom…", a gone host's only item.
     case remove
+    /// A Terminals-section target's items (ADR 0077), as its sidebar row offers them.
+    case rename
+    /// "New Terminal in <group>", as its row words it.
+    case newTerminalInGroup(title: String)
+    case setStartingFolder
+    /// "Use “New terminals open in”": a group's starting folder back to the setting's.
+    case clearStartingFolder
+    /// "Delete “<group>”…", as its row words it.
+    case deleteGroup(title: String)
+  }
+
+  /// A target in the Terminals section (ADR 0077), which has no run command: its tab's menu offers
+  /// what its sidebar row's does in place of Run, Restart and Stop.
+  enum SectionTarget: Equatable {
+    case standalone
+    /// The Quick Terminal's group is `builtIn`: it has no rename or delete. `title` is its label,
+    /// `newTerminal` its New Terminal item's (`SidebarTerminalGroupRowModel.newTerminalTitle`).
+    case group(builtIn: Bool, hasStartingFolder: Bool, title: String, newTerminal: String)
   }
 
   /// What a workroom offers that a project root, never labelled or deleted, does not.
@@ -120,10 +138,13 @@ struct WorkroomMenuModel: Equatable {
   var canMoveWorkroom = false
   /// Nil for a project root.
   var workroom: WorkroomState? = nil
+  /// Set for a standalone terminal or a terminal group: no run items, its row's items instead.
+  var section: SectionTarget? = nil
 
   func entries(for style: Style) -> [Entry] {
     // A workroom whose host is gone has nothing left to run, open, label or move.
     if workroom?.hostGone == true { return [.remove] }
+    if let section { return entries(for: section, style: style) }
     var entries: [Entry] = []
     var top: [Entry] = []
     if style != .inspectorHeader {
@@ -146,6 +167,33 @@ struct WorkroomMenuModel: Equatable {
     entries += [.divider, .delete(enabled: !workroom.isCreating)]
     return entries
   }
+
+  /// A Terminals-section target's entries: its row's own items, then the tab's Close, split and
+  /// window items, then a group's Delete, each run apart by a divider.
+  private func entries(for section: SectionTarget, style: Style) -> [Entry] {
+    var own: [[Entry]] = []
+    switch section {
+    case .standalone:
+      own.append([.rename])
+    case .group(let builtIn, let hasStartingFolder, _, let newTerminal):
+      let new = Entry.newTerminalInGroup(title: newTerminal)
+      own.append(builtIn ? [new] : [new, .rename])
+      own.append(
+        hasStartingFolder ? [.setStartingFolder, .clearStartingFolder] : [.setStartingFolder])
+    }
+    var top: [Entry] = []
+    if style != .inspectorHeader {
+      if closeName != nil { top.append(.close) }
+      if canOpenInSplit { top.append(.openInSplit) }
+      if removableFromSplit { top.append(.removeFromSplit) }
+    }
+    if showsMoveToNewWindow { top.append(.moveToNewWindow(enabled: canMoveWorkroom)) }
+    var sections = own + [top]
+    if case .group(builtIn: false, _, let title, _) = section {
+      sections.append([.deleteGroup(title: title)])
+    }
+    return Array(sections.filter { !$0.isEmpty }.joined(separator: [.divider]))
+  }
 }
 
 /// What `WorkroomMenuItems` does for each item.
@@ -165,6 +213,13 @@ struct WorkroomMenuActions {
   var removeLabel: () -> Void
   /// Asks first, through `RootView`'s confirmation.
   var delete: () -> Void
+  /// A Terminals-section target's items (`WorkroomMenuModel.SectionTarget`).
+  var rename: () -> Void = {}
+  var newTerminalInGroup: () -> Void = {}
+  var setStartingFolder: () -> Void = {}
+  var clearStartingFolder: () -> Void = {}
+  /// Asks first when the group has terminals.
+  var deleteGroup: () -> Void = {}
 
   /// Does nothing, for previews.
   static var inert: WorkroomMenuActions {
@@ -237,6 +292,27 @@ struct WorkroomMenuItems: View {
       Button(role: .destructive, action: actions.delete) {
         Label("Remove Workroom…", systemImage: "trash")
       }
+    case .rename:
+      Button(action: actions.rename) { Label("Rename…", systemImage: "pencil") }
+        .help("Give it a name")
+    case .newTerminalInGroup(let title):
+      Button(action: actions.newTerminalInGroup) {
+        Label(title, systemImage: "plus")
+      }
+      .help("Open another terminal in this group")
+    case .setStartingFolder:
+      Button(action: actions.setStartingFolder) {
+        Label("Set Starting Folder…", systemImage: "folder")
+      }
+      .help("Choose the folder this group's new terminals start in")
+    case .clearStartingFolder:
+      Button("Use “New terminals open in”", action: actions.clearStartingFolder)
+        .help("Start this group's new terminals where the setting says")
+    case .deleteGroup(let title):
+      Button(role: .destructive, action: actions.deleteGroup) {
+        Label("Delete “\(title)”…", systemImage: "trash")
+      }
+      .help("Delete this group; its terminals stay open")
     }
   }
 }
@@ -263,7 +339,23 @@ extension WorkroomMenuModel {
           hasLabel: $0.workroom.label != nil,
           isCreating: lifecycle.isCreatingWorkroom($0.workroom, in: $0.project),
           hostGone: GoneHosts.shared.contains($0.workroom.host?.id))
-      })
+      },
+      section: Self.section(of: sid, in: store))
+  }
+
+  /// What `sid` is in the Terminals section, or nil when it is a project's.
+  @MainActor
+  static func section(of sid: SidebarID, in store: AppStore) -> SectionTarget? {
+    switch sid {
+    case .standalone: return .standalone
+    case .terminalGroup:
+      guard let group = store.terminalGroup(sid) else { return nil }
+      return .group(
+        builtIn: group.isBuiltIn, hasStartingFolder: group.startingFolder != nil,
+        title: store.target(for: sid)?.title ?? TerminalGroup.untitled,
+        newTerminal: SidebarTerminalGroupRowModel.newTerminalTitle(for: group))
+    case .project, .root, .workroom, .creation: return nil
+    }
   }
 }
 
@@ -320,7 +412,43 @@ struct WorkroomMenuAdapter: View {
         guard let pair else { return }
         store.removeWorkroomLabel(pair.workroom, in: pair.project)
       },
-      delete: { [store, sid] in store.requestDeleteWorkroom(sid) })
+      delete: { [store, sid] in store.requestDeleteWorkroom(sid) },
+      rename: { [store, sid] in Self.rename(sid, in: store) },
+      newTerminalInGroup: { [store, sid] in store.newTerminalInGroup(sid) },
+      setStartingFolder: { [store, sid] in
+        guard let group = store.terminalGroup(sid),
+          let folder = TerminalGroupPrompts.chooseStartingFolder(
+            for: store.target(for: sid)?.title ?? TerminalGroup.untitled, current: group)
+        else { return }
+        store.setTerminalGroupStartingFolder(sid, to: folder)
+      },
+      clearStartingFolder: { [store, sid] in store.setTerminalGroupStartingFolder(sid, to: nil) },
+      deleteGroup: { [store, sid] in
+        let title = store.target(for: sid)?.title ?? TerminalGroup.untitled
+        guard TerminalGroupPrompts.confirmDelete(title, asks: store.terminalGroupDeleteAsks(sid))
+        else { return }
+        Task { await store.deleteTerminalGroup(sid) }
+      })
+  }
+
+  /// Rename… on a Terminals-section target's tab: its sidebar row edits the name in place when the
+  /// row is in view, else a sheet asks, as a terminal's tab does.
+  private static func rename(_ sid: SidebarID, in store: AppStore) {
+    guard !store.beginSidebarRename(sid) else { return }
+    switch sid {
+    case .standalone:
+      guard let tab = store.standaloneTerminal(sid)?.tab else { return }
+      TabRenamePrompt.present(currentName: tab.title) { [weak store] name in
+        store?.renameStandaloneTerminal(sid, to: name)
+      }
+    case .terminalGroup:
+      guard let group = store.terminalGroup(sid), !group.isBuiltIn else { return }
+      TerminalGroupPrompts.rename(group) { [weak store] name in
+        store?.renameTerminalGroup(sid, to: name)
+      }
+    case .project, .root, .workroom, .creation:
+      return
+    }
   }
 }
 
@@ -361,6 +489,51 @@ func paneWindowMenuItem(
       detached ? "Move Back to Main Window" : "Move to New Window",
       systemImage: detached ? "arrow.down.right.and.arrow.up.left" : "macwindow.badge.plus")
   }
+}
+
+/// A terminal's "Rename…": the prompt prefilled with its name, an empty name giving the program's
+/// own title back. Shared by its tab chip's menu and its sidebar rows' (stories 28, 41).
+@MainActor
+func terminalRenameMenuItem(
+  panes: TerminalPanes, tab: TerminalTab, target: TerminalTarget
+) -> some View {
+  Button {
+    TabRenamePrompt.present(currentName: tab.title) {
+      panes.setUserTitle($0, forTab: tab.id, in: target)
+    }
+  } label: {
+    Label("Rename…", systemImage: "pencil")
+  }
+  .help("Give this terminal a name")
+}
+
+/// "Rename…" on a sidebar row, which edits the row's name in place (`SidebarInlineNameField`), as
+/// a terminal group's row, a standalone terminal's and a terminal's under its workroom or group do.
+@MainActor
+func sidebarRenameMenuItem(action: @escaping () -> Void) -> some View {
+  Button(action: action) {
+    Label("Rename…", systemImage: "pencil")
+  }
+  .help("Give this terminal a name")
+}
+
+/// A terminal's "Move to…" submenu in a sidebar row's menu, over `host`'s choices for it, which
+/// may not be the window drawing the row (`PaneMoveChoicesList`).
+@MainActor
+func terminalMoveMenu(
+  host: any PaneHost, tabID: TerminalTab.ID, target: TerminalTarget, help: String
+) -> some View {
+  Menu {
+    PaneMoveChoicesList(
+      groups: host.paneMoveChoices(tabID, of: target, windows: WindowRegistry.shared.allStores))
+  } label: {
+    Label {
+      Text("Move to…")
+    } icon: {
+      Image(nsImage: .moveTerminal)
+    }
+  }
+  .help(help)
 }
 
 extension NSImage {
@@ -419,11 +592,12 @@ extension NSImage {
   }
 }
 
-/// "Move to Workroom" for a Quick Terminal pane: every workroom open in every Workroom window, in
-/// each window's tab order and under the window's name when there is more than one
-/// (`QuickTerminalHost.quickTerminalPaneWorkroomChoices`), moving the pane into the one chosen. One on a host,
-/// or still being created, is listed but disabled. A submenu in the tab chip's menu, a button in the
-/// pane's title bar.
+/// "Move to…" for any terminal (#660): the Terminals section's places (Standalone Terminal, the user's
+/// groups, New Terminal Group…), then every workroom open in every Workroom window, in each
+/// window's tab order and under the window's name when there is more than one
+/// (`PaneMove.choices`), moving the pane into the one chosen. A move it can't make (to or from a
+/// remote workroom, into one still being created) is listed disabled, its tooltip saying why. A
+/// submenu in the tab chip's menu, a button in the pane's title bar.
 struct QuickTerminalMoveToWorkroomMenu: View {
   enum Style { case menuItem, toolbar }
 
@@ -450,7 +624,7 @@ struct QuickTerminalMoveToWorkroomMenu: View {
       case .menuItem:
         menu {
           Label {
-            Text("Move to Workroom")
+            Text("Move to…")
           } icon: {
             Image(nsImage: .moveTerminal)
           }
@@ -466,8 +640,8 @@ struct QuickTerminalMoveToWorkroomMenu: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .onHover { hovering = $0 }
-        .help("Move to workroom")
-        .accessibilityLabel("Move pane to workroom")
+        .help("Move this terminal to a standalone terminal, a group or a workroom")
+        .accessibilityLabel("Move terminal to…")
         .accessibilityIdentifier("pane.toolbar.moveToWorkroom")
       }
     }
@@ -477,29 +651,47 @@ struct QuickTerminalMoveToWorkroomMenu: View {
   }
 
   private func menu(@ViewBuilder label: () -> some View) -> some View {
-    let groups = host.quickTerminalPaneWorkroomChoices(tabID, of: target, windows: windows)
-    return Menu {
-      if groups.isEmpty {
-        Button("No Open Workrooms") {}.disabled(true)
-      }
-      ForEach(groups.indices, id: \.self) { index in
-        let group = groups[index]
-        if let header = group.header {
-          Section(header) { items(group) }
-        } else {
-          items(group)
-        }
-      }
+    Menu {
+      PaneMoveChoicesList(groups: host.paneMoveChoices(tabID, of: target, windows: windows))
     } label: {
       label()
+    }
+  }
+}
+
+/// The items of a "Move to…" menu (`PaneMove.choices`): each section after a divider, a window's
+/// under its name, and a move it can't make disabled with its reason as the tooltip.
+struct PaneMoveChoicesList: View {
+  let groups: [PaneWorkroomGroup]
+
+  var body: some View {
+    if groups.isEmpty {
+      Button("Nowhere to Move") {}.disabled(true)
+    }
+    ForEach(groups.indices, id: \.self) { index in
+      let group = groups[index]
+      if index > 0 { Divider() }
+      if let header = group.header {
+        Section(header) { items(group) }
+      } else {
+        items(group)
+      }
     }
   }
 
   private func items(_ group: PaneWorkroomGroup) -> some View {
     ForEach(group.choices.indices, id: \.self) { index in
       let choice = group.choices[index]
-      Button(action: choice.move) { Label(choice.title, systemImage: choice.glyph) }
-        .disabled(!choice.enabled)
+      // The pane's own place wears a checkmark, as a native menu marks where something is now.
+      if choice.isCurrent {
+        Toggle(isOn: .constant(true)) { Label(choice.title, systemImage: choice.glyph) }
+          .disabled(true)
+          .help(choice.help ?? "This terminal is here now")
+      } else {
+        Button(action: choice.move) { Label(choice.title, systemImage: choice.glyph) }
+          .disabled(!choice.enabled)
+          .help(choice.help ?? "Move this terminal to \(choice.title)")
+      }
     }
   }
 }

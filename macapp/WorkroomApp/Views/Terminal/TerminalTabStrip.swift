@@ -214,6 +214,7 @@ struct TerminalTabStrip: View {
           }
         }
         .tabChipContextMenu(tab: tab, target: target, host: host, panes: panes)
+        .paneTabDropZone(tab.id, of: target, host: host)
         // Measure in .global space: a .local drag reads coordinates relative to the
         // chip, which itself moves via .offset(drag.translation) — that feedback loop
         // dampens the translation so the chip lags the cursor. Global space is fixed.
@@ -223,20 +224,36 @@ struct TerminalTabStrip: View {
               drag.setWidths(measuredWidths.values)
               // Kept within the tab run, as a workroom tab is: not past the last chip.
               drag.update(tab.id, translation: clampReorder(value.translation.width, index))
-              // Dragged clear of the window → a tear-off (issue #172), or into a workroom from the
-              // Quick Terminal: show where it goes and stop previewing a drop into the panes.
+              // Dragged clear of the window → over the Quick Terminal panel's tabs, it drops there
+              // (#652); else a tear-off (issue #172), or into a workroom from the Quick Terminal:
+              // show where it goes and stop previewing a drop into the panes.
               if isDragOutsideWindow(value.location) {
                 chipPaneDrag = nil
-                panes.showDragOutside(tab)
+                if host.paneDragMoved(tab.id, of: target, to: NSEvent.mouseLocation) {
+                  panes.hideDragOutside()
+                } else {
+                  panes.showDragOutside(tab)
+                }
                 return
               }
               panes.hideDragOutside()
+              // Over a sidebar row, a title-bar tab or the Terminals heading → it moves there
+              // (#660): no drop into the panes.
+              if host.paneDragMoved(tab.id, of: target, to: NSEvent.mouseLocation) {
+                chipPaneDrag = nil
+                return
+              }
               // Dragged down over the pane area → preview a drop-into-pane (the strip stops gapping).
               chipPaneDrag = localize(value.location)
                 .map { PaneDragState(tabID: tab.id, location: $0) }
             }
             .onEnded { value in
               panes.hideDragOutside()
+              if host.paneDragEnded(tab.id, of: target, at: NSEvent.mouseLocation) {
+                drag.cancel()
+                chipPaneDrag = nil
+                return
+              }
               if isDragOutsideWindow(value.location) {
                 // A chip dragged out of the window does what dragging the pane's own title bar out
                 // does — the chip is the other handle on the same pane.
@@ -432,7 +449,7 @@ struct TerminalTabStrip: View {
   }
 }
 
-/// A single terminal tab chip: its title, an always-visible close button, and the active/hover/
+/// A single terminal tab chip: its title, a close button shown on hover, and the active/hover/
 /// activity/dragging styling. Purely presentational — the strip wraps it with the hover, tap, and
 /// drag gestures, since those drive (and read) the strip's shared drag state.
 private struct TerminalTabChip: View {
@@ -525,8 +542,6 @@ private struct TerminalTabChip: View {
   }
 
   var body: some View {
-    // Title and close button laid out side by side: a compact gap keeps the ✕ visibly tied to its
-    // tab (a wide gap reads as detached) while still clearing the title so they never crowd.
     HStack(spacing: 6) {
       // Inline-agent diagnosis available (issue #49): a ✦ badge that opens the diagnosis popover.
       if codingAgentBadge {
@@ -613,37 +628,43 @@ private struct TerminalTabChip: View {
       }
       // The title is read in a leaf (`TabTitleReader`): a terminal's changes many times a second,
       // and only this text re-renders for it, not the chip.
-      TabTitleReader(content: tab.content) { title in
-        Text(title)
+      TabTitleReader(content: tab.content) { _ in
+        // A default title's folder is one size smaller than its program, on the same baseline.
+        TerminalTitleLabel(title: tab.content.titleParts, folderFont: .subheadline)
           .font(.callout)
           // The focused tab's title is brighter (full primary) so it reads as selected; unfocused
           // titles dim to muted. Brightness only — NOT weight: a bold↔regular swap on switch
           // re-measures the title and nudges the chips sideways. Unread activity (accent) overrides
-          // either, on any tab.
+          // either, on any tab. A default title's folder sits one step fainter than its program.
           .foregroundStyle(
-            hasActivity ? tokens.accent : (isActive ? Color.primary : tokens.fgMuted)
+            hasActivity ? tokens.accent : (isActive ? Color.primary : tokens.fgMuted),
+            hasActivity
+              ? tokens.accent.opacity(0.7) : (isActive ? tokens.fgMuted : tokens.fgDim)
           )
           // A preview tab's name is italic until it's persisted (VS-Code semantics, #66).
           .italic(tab.isPreview)
           .lineLimit(1)
-          .truncationMode(.tail)
+          .truncationMode(.middle)
           // Cap the title (~25 chars at `.callout`) so a long name (a file path, a shell-set
           // terminal title) tail-truncates with an ellipsis instead of stretching the chip
           // arbitrarily wide; the full title rides in the chip's `.help` tooltip below. A short
           // title stays tight (leading alignment, Text sizes to its ideal width up to the cap).
           .frame(maxWidth: TabStripMetrics.maxChipTitle, alignment: .leading)
       }
-      // The ✕ is always shown (every tab is closable at a glance), so the chip width is constant.
+    }
+    .padding(.horizontal, 10)
+    // A fixed height, so the row is centred by construction whatever its tallest glyph is.
+    .frame(height: TabStripMetrics.chipHeight)
+    // The ✕ shows on hover only, over the title's trailing end: the chip keeps no room for it.
+    .tabHoverClose(isHovered: isHovered) {
       TabCloseButton(action: onClose)
         .withTabTitle(tab.content) { button, title in
           button
             .help("Close \(title)")
             .accessibilityLabel("Close \(title)")
+            .accessibilityIdentifier("terminal.tabClose")
         }
     }
-    .padding(.leading, 10)
-    .padding(.trailing, 4)  // tighter than the leading inset — the ✕ sits near the chip's edge
-    .padding(.vertical, 6)
     // Every tab is a self-contained pill, rounded on all four corners — no tab bleeds into the panel
     // (the focused pane isn't necessarily the one directly below the strip, e.g. a split). The active
     // tab is filled with the terminal background (`bg`) so it stands distinct from the recessed strip;
@@ -718,19 +739,20 @@ private struct TerminalTabChip: View {
     .withTabTitle(tab.content) { chip, title in
       chip
         .help(tooltip(title))
-        .accessibilityIdentifier("terminal.tab.\(title)")
+        .accessibilityIdentifier("terminal.tab.\(tab.content.accessibilityKey ?? title)")
         .accessibilityLabel(chipAccessibilityLabel(title))
     }
     .accessibilityAddTraits(isActive ? .isSelected : [])
     // The ✦ badge is a real control that assistive technology could not reach at all: it is a nested
     // `Button`, and the chip's own label above collapses the chip into a single element. Announcing
     // it in the label (see `chipAccessibilityLabel`) makes it perceivable; this makes it OPERABLE,
-    // so VoiceOver can open the diagnosis without a mouse. Same reasoning applies to the nested ✕,
-    // which is still unreachable — see the TODOS entry.
+    // so VoiceOver can open the diagnosis without a mouse. The nested ✕ is swallowed the same way,
+    // and is hidden besides until the pointer is over the tab, so Close is an action here too.
     .accessibilityActions {
       if codingAgentBadge {
         Button("Show diagnosis") { onCodingAgentTap() }
       }
+      Button("Close") { onClose() }
     }
     // The running state is otherwise conveyed ONLY by the flowing underline above — invisible to
     // VoiceOver, and unassertable in XCUITest. `GhosttyActionDispatchUITests` reads this to prove
@@ -743,7 +765,7 @@ private struct TerminalTabChip: View {
     // value instead of a descendant's.
     .accessibilityValue(runOrBusyAccessibilityValue)
     .scaleEffect(isDragging ? 1.04 : 1)
-    .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)
+    .shadow(color: .black.opacity(isDragging ? 0.2 : 0), radius: isDragging ? 2.5 : 0, y: 1)
   }
 }
 
@@ -887,32 +909,6 @@ final class SweepView: KeyWindowAnimationView {
   var isSweeping: Bool { gradient.animation(forKey: Self.animationKey) != nil }
 }
 
-/// A tab's close button, overlaid on the title's right edge. Its own hover paints a subtle
-/// background behind the ✕. (Show/hide is handled by the caller's overlay.)
-private struct TabCloseButton: View {
-  let action: () -> Void
-  @State private var hovering = false
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @Environment(\.themeTokens) private var tokens
-
-  var body: some View {
-    Button(action: action) {
-      Image(systemName: "xmark")
-        .font(.system(size: 9, weight: .semibold))
-        .foregroundStyle(hovering ? .primary : .secondary)
-        .padding(3)
-        // A circular hover well behind the ✕ (matches a round close affordance), faded in/out.
-        .background(
-          Circle()
-            .fill(tokens.hover.opacity(hovering ? 1 : 0))
-        )
-    }
-    .buttonStyle(.plain)
-    .onHover { hovering = $0 }
-    .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: hovering)
-  }
-}
-
 /// A grouped two-segment switch for the diff view mode (issue #66): unified | side-by-side, rendered
 /// as one control — a faint rounded track with a raised "thumb" behind the active segment — so it
 /// reads as a single switch rather than two loose buttons. Clicking a segment reports that mode.
@@ -1016,6 +1012,8 @@ struct MarkdownModeSwitch: View {
 /// used to be `.plain` with its own 8pt horizontal padding, so it was the one control in the header
 /// whose well was a different size and shape from its neighbours'.
 struct CloseWorkroomPaneButton: View {
+  /// What the pane is: "workroom", "terminal" or "terminal group".
+  var noun = "workroom"
   let action: () -> Void
   @State private var hovering = false
 
@@ -1027,8 +1025,8 @@ struct CloseWorkroomPaneButton: View {
         .foregroundStyle(hovering ? .primary : .secondary)
     }
     .onHover { hovering = $0 }
-    .help("Remove this workroom from the split")
-    .accessibilityLabel("Remove workroom from split")
+    .help("Remove this \(noun) from the split")
+    .accessibilityLabel("Remove \(noun) from split")
     .accessibilityIdentifier("workroom.pane.close")
   }
 }
@@ -1053,6 +1051,11 @@ extension View {
     self.contextMenu {
       if host.runTabID(for: target.id) == tab.id {
         runCommandMenuItems(host: host, target: target)
+        Divider()
+      }
+      // Any terminal can be named; an empty name gives the program's own title back.
+      if case .terminal = tab.content {
+        terminalRenameMenuItem(panes: panes, tab: tab, target: target)
         Divider()
       }
       // The escape hatch for a program that left a request behind (#358).
@@ -1201,9 +1204,12 @@ extension View {
       // This pane into a window of its own (#444), as dragging the chip out of the window does.
       if panes.allowsDetach {
         paneWindowMenuItem(host: host, tabID: tab.id, targetID: target.id)
-        Divider()
-      } else if target.id == QuickTerminalController.targetID {
+      }
+      // Any terminal moves anywhere (#660).
+      if case .terminal = tab.content {
         QuickTerminalMoveToWorkroomMenu(tabID: tab.id, target: target, style: .menuItem)
+        Divider()
+      } else if panes.allowsDetach {
         Divider()
       }
       Button(role: .destructive) {

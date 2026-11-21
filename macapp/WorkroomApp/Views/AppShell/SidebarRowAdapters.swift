@@ -112,16 +112,20 @@ struct SidebarTerminalRowAdapter: View, Equatable {
   let parent: SidebarID
   let hovered: Bool
   let actions: SidebarActions
+  /// Who holds the terminal when it isn't this window: the Quick Terminal's panel (story 10).
+  var holder: (any PaneHost)? = nil
+  var style: SidebarTerminalRowStyle = .tree
 
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
     lhs.tabID == rhs.tabID && lhs.target == rhs.target && lhs.parent == rhs.parent
-      && lhs.hovered == rhs.hovered
+      && lhs.hovered == rhs.hovered && lhs.holder === rhs.holder && lhs.style == rhs.style
   }
 
   var body: some View {
-    if let tab = store.terminals.tab(tabID, for: target) {
+    if let tab = (holder?.terminals ?? store.terminals).tab(tabID, for: target) {
       SidebarTerminalRow(
-        model: model(of: tab), content: tab.content, hovered: hovered, actions: actions
+        model: model(of: tab), content: tab.content, hovered: hovered, actions: actions,
+        holder: holder
       )
       .equatable()
     }
@@ -130,14 +134,14 @@ struct SidebarTerminalRowAdapter: View, Equatable {
   private func model(of tab: TerminalTab) -> SidebarTerminalRowModel {
     let title: SidebarTerminalRowModel.TitleSource =
       if case .terminal(let state) = tab.content {
-        .live(ObjectIdentifier(state.titleCell))
+        .live(ObjectIdentifier(state.titleCell), userTitle: state.userTitle)
       } else {
         .fixed(tab.title)
       }
     return SidebarTerminalRowModel(
       tabID: tab.id, target: target, parent: parent, title: title,
-      glyph: tab.content.glyph ?? "terminal", indicator: tab.indicator,
-      programStatus: tab.programStatus, hasSession: tab.terminal?.sessionID != nil)
+      glyph: tab.content.glyph ?? "terminal", tool: tab.recognizedTool, indicator: tab.indicator,
+      programStatus: tab.programStatus, hasSession: tab.terminal?.sessionID != nil, style: style)
   }
 }
 
@@ -151,7 +155,7 @@ extension AppStore {
   }
 
   /// What `targetID`'s terminals report on its row (#358).
-  fileprivate func sidebarActivity(of targetID: TerminalTarget.ID) -> SidebarTargetActivity {
+  func sidebarActivity(of targetID: TerminalTarget.ID) -> SidebarTargetActivity {
     let waiting = terminals.blockedTerminalCount(forTargetID: targetID)
     return SidebarTargetActivity(
       waiting: waiting,
@@ -159,6 +163,32 @@ extension AppStore {
       failed: terminals.isProgressFailed(forTargetID: targetID)
         || terminals.hasProgramError(forTargetID: targetID),
       running: terminals.isRunning(forTargetID: targetID))
+  }
+
+  /// What a Terminals-section row's terminals report on it (story 13): every holder's, since a
+  /// standalone terminal or a group's terminals may be in another window or the Quick Terminal's
+  /// panel, and the row is in every window.
+  func sectionActivity(of targetID: TargetID) -> SidebarTargetActivity {
+    let panes = terminalsSection.observedHolders.map(\.terminals)
+    let waiting = panes.reduce(0) { $0 + $1.blockedTerminalCount(forTargetID: targetID) }
+    return SidebarTargetActivity(
+      waiting: waiting,
+      waitingStale: waiting > 0 && panes.contains { $0.isWaitingStale(forTargetID: targetID) },
+      failed: panes.contains {
+        $0.isProgressFailed(forTargetID: targetID) || $0.hasProgramError(forTargetID: targetID)
+      },
+      running: panes.contains { $0.isRunning(forTargetID: targetID) })
+  }
+
+  /// A Terminals-section row's waiting mark was clicked: focus the terminal in it that has waited
+  /// longest, in whichever holder has it, bringing that window (or panel) forward.
+  func showWaiting(inSectionTarget targetID: TargetID) {
+    let oldest = terminalsSection.allHolders.flatMap { holder in
+      holder.terminals.blockedTabs(forTargetID: targetID).map { (holder, $0.tab, $0.since) }
+    }
+    .min { $0.2 < $1.2 }
+    guard let (holder, tab, _) = oldest else { return }
+    holder.revealTerminal(tab, inTarget: targetID)
   }
 }
 
@@ -178,19 +208,30 @@ struct SidebarRowBackground: View {
   let store: AppStore
   let id: SidebarID
   let hovered: Bool
+  /// A terminal group whose terminals show under it: the focused one's row wears the selection,
+  /// so the group's doesn't.
+  var passesSelectionToChild = false
 
   var body: some View {
     #if DEBUG
       let _ = { SidebarRowPasses.background += 1 }()
     #endif
-    if store.selectedTargetID == id {
-      WorkroomPaneCardBackground(highlighted: true)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.s))
-        .padding(.horizontal, Spacing.m)
-        .padding(.vertical, 1)
+    if store.selectedTargetID == id, !passesSelectionToChild {
+      SidebarSelectedRowFill()
     } else {
-      RowHighlight(selected: false, hovered: hovered)
+      RowHighlight(
+        selected: false, hovered: hovered, horizontalPadding: SidebarRowMetrics.listContentInset)
     }
+  }
+}
+
+/// A selected sidebar row's fill: the focused workroom card's, inset as a hovered row's is.
+struct SidebarSelectedRowFill: View {
+  var body: some View {
+    WorkroomPaneCardBackground(highlighted: true)
+      .clipShape(RoundedRectangle(cornerRadius: Radius.s))
+      .padding(.horizontal, SidebarRowMetrics.listContentInset)
+      .padding(.vertical, 1)
   }
 }
 
@@ -204,11 +245,26 @@ struct SidebarTerminalRowBackground: View {
   let target: TerminalTarget
   let parent: SidebarID
   let hovered: Bool
+  /// A `.section` row wears a standalone terminal's row's highlights (`SidebarRowBackground`).
+  var style: SidebarTerminalRowStyle = .tree
 
   var body: some View {
     // The focused terminal is read only for the selected target's rows.
     let selected =
       store.selectedTargetID == parent && store.terminals.focusedTab(for: target)?.id == tabID
+    if style == .section {
+      if selected {
+        SidebarSelectedRowFill()
+      } else {
+        RowHighlight(
+          selected: false, hovered: hovered, horizontalPadding: SidebarRowMetrics.listContentInset)
+      }
+    } else {
+      treeFill(selected: selected)
+    }
+  }
+
+  @ViewBuilder private func treeFill(selected: Bool) -> some View {
     // Lighter than the root/workroom selection fill (0.13): the selected workroom is the primary
     // selection, the focused terminal a secondary "active within" cue — so the two don't read as
     // two equal selections when a subtree is open (issue #30 design pass).
@@ -219,7 +275,7 @@ struct SidebarTerminalRowBackground: View {
     #endif
     RoundedRectangle(cornerRadius: Radius.s)
       .fill(fill)
-      .padding(.horizontal, Spacing.m)
+      .padding(.horizontal, SidebarRowMetrics.listContentInset)
       .padding(.vertical, 1)
   }
 }
@@ -269,23 +325,36 @@ struct SidebarRunMenu: View {
   }
 }
 
-/// A terminal row's context menu.
+/// A terminal row's context menu, acting on whoever holds the terminal: this window, or the Quick
+/// Terminal's panel (`holder`).
 struct SidebarTerminalMenu: View {
   @EnvironmentObject private var store: AppStore
-  @EnvironmentObject private var runCommand: RunCommandController
   let tabID: TerminalTab.ID
   let target: TerminalTarget
+  var holder: (any PaneHost)? = nil
+  /// Rename…, which the row edits in place.
+  var rename: () -> Void = {}
 
   var body: some View {
-    let tab = store.terminals.tab(tabID, for: target)
-    if runCommand.runTabID(for: target.id) == tabID {
-      runCommandMenuItems(host: store, target: target)
+    let host: any PaneHost = holder ?? store
+    let panes = host.terminals
+    let tab = panes.tab(tabID, for: target)
+    if host.runTabID(for: target.id) == tabID {
+      runCommandMenuItems(host: host, target: target)
+      Divider()
+    }
+    // Any terminal can be named, and moved anywhere, from its row as from its tab (stories 28, 41).
+    if let tab, case .terminal = tab.content {
+      sidebarRenameMenuItem(action: rename)
+      terminalMoveMenu(
+        host: host, tabID: tabID, target: target,
+        help: "Move this terminal to a standalone terminal, a group or a workroom")
       Divider()
     }
     // The escape hatch for a program that left a request behind (#358).
     if tab?.programStatus?.hasReport == true {
       Button {
-        store.terminals.clearProgramStatus(tab: tabID, target: target.id)
+        panes.clearProgramStatus(tab: tabID, target: target.id)
       } label: {
         Label("Clear Status", systemImage: "hand.raised.slash")
       }
@@ -293,10 +362,10 @@ struct SidebarTerminalMenu: View {
       .disabled(tab?.programStatus?.stale == true)
       Divider()
     }
-    paneWindowMenuItem(host: store, tabID: tabID, targetID: target.id)
+    paneWindowMenuItem(host: host, tabID: tabID, targetID: target.id)
     Divider()
     Button(role: .destructive) {
-      store.requestCloseTerminalTab(tabID, for: target)
+      host.requestCloseTerminalTab(tabID, for: target)
     } label: {
       Label("Close \(tab?.title ?? "")", systemImage: "xmark")
     }

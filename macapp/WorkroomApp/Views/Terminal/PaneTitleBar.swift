@@ -106,7 +106,11 @@ enum PaneTitlePresentation {
       return Title(
         prefix: String(path.dropLast(name.count)), name: name, truncation: .head)
     }
-    // A terminal's live/default title, or a changeset's subject.
+    // A terminal's title ("zsh ~/dev/workroom") is cut in the middle, so its program and the end
+    // of its folder both stay in view; a changeset's subject is cut at its tail.
+    if case .terminal = content {
+      return Title(prefix: "", name: tabTitle, truncation: .middle)
+    }
     return Title(prefix: "", name: tabTitle, truncation: .tail)
   }
 }
@@ -166,6 +170,9 @@ struct PaneTitleBar: View {
   let onDragChanged: (CGPoint) -> Void
   let onDragEnded: () -> Void
   @Environment(\.themeTokens) private var tokens
+  /// Set on a standalone terminal's pane in a split of the window's panes, which has no group
+  /// title bar to hold its remove-from-split button, so this bar holds it.
+  @Environment(\.removeFromWorkroomSplit) private var removeFromWorkroomSplit
 
   var body: some View {
     #if DEBUG
@@ -198,7 +205,8 @@ struct PaneTitleBar: View {
     .contentShape(Rectangle())
     // Drag the pane by its bar to move it within the split, or up to the strip to pop it out — the
     // affordance that replaced the hover-only grip chip (issue #150), and the same gesture the
-    // workroom title bar uses for its group.
+    // workroom title bar uses for its group. Anywhere else in the window it drags as its tab does
+    // (#652): `PaneTreeView` reports it to the window's drag session (`AppStore.paneDragMoved`).
     .gesture(
       DragGesture(minimumDistance: 6, coordinateSpace: .named(coordinateSpace))
         .onChanged { onDragChanged($0.location) }
@@ -251,13 +259,22 @@ struct PaneTitleBar: View {
         .overlay(alignment: .leading) {
           TabTitleReader(content: content) { text in
             let title = PaneTitlePresentation.title(for: content, tabTitle: text)
-            panePathText(prefix: title.prefix, name: title.name)
-              .font(.subheadline)
-              .foregroundStyle(focused ? Color.primary : tokens.fgMuted)
-              .lineLimit(1)
-              .truncationMode(title.truncation)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .help(help(text))
+            Group {
+              // A terminal's default title fades its folder (`TerminalTitleLabel`).
+              if case .terminal = content {
+                TerminalTitleLabel(title: content.titleParts)
+              } else {
+                panePathText(prefix: title.prefix, name: title.name)
+              }
+            }
+            .font(.subheadline)
+            .foregroundStyle(
+              focused ? Color.primary : tokens.fgMuted, focused ? tokens.fgMuted : tokens.fgDim
+            )
+            .lineLimit(1)
+            .truncationMode(title.truncation)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(help(text))
           }
         }
       trailing(collapsed: collapsed)
@@ -297,6 +314,9 @@ struct PaneTitleBar: View {
           action: onPopOut)
       }
       if let moveToWorkroom { moveToWorkroom }
+      if let removeFromWorkroomSplit {
+        CloseWorkroomPaneButton(noun: "terminal", action: removeFromWorkroomSplit.run)
+      }
       PaneToolbarButton(
         systemImage: "rectangle.trailinghalf.inset.filled",
         help: "Split right" + Shortcuts.shared.table.hint(for: .splitRight),
@@ -425,4 +445,14 @@ struct PaneToolbarButton: View {
     .accessibilityLabel(accessibilityLabel)
     .accessibilityIdentifier(identifier)
   }
+}
+
+/// Takes a standalone terminal out of the window's split (`WorkroomPaneLeaf`'s ✕), for its pane's
+/// own title bar to offer when it has no group title bar.
+struct RemoveFromWorkroomSplit {
+  let run: () -> Void
+}
+
+extension EnvironmentValues {
+  @Entry var removeFromWorkroomSplit: RemoveFromWorkroomSplit? = nil
 }

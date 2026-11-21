@@ -17,7 +17,7 @@ import os
 /// of the tree re-runs no row whose inputs are unchanged, and the sidebar is gated on its drag
 /// plumbing, so a pass of the view that holds it re-runs no tree.
 struct ProjectSidebar: View, Equatable {
-  private static let signposter = OSSignposter(
+  static let signposter = OSSignposter(
     subsystem: "com.developwithstyle.workroom", category: "Sidebar")
   #if DEBUG
     /// Project, root and workroom row bodies, together (`SidebarBenchmarkTests`); terminal rows are
@@ -27,10 +27,6 @@ struct ProjectSidebar: View, Equatable {
     static var didRenderHover: ((SidebarID, Binding<Bool>) -> Void)?
   #endif
   @EnvironmentObject var store: AppStore
-  @EnvironmentObject var projectStore: ProjectStore
-  @EnvironmentObject var lifecycle: WorkroomLifecycle
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @Environment(\.themeTokens) private var tokens
 
   /// Live drag of a root/workroom row into the detail content to form a workroom split (issue
   /// #101). The default makes the gesture an inert no-op for previews / any host that doesn't wire
@@ -43,17 +39,42 @@ struct ProjectSidebar: View, Equatable {
   /// their root/workroom children one `levelIndent` deeper (`childRowInsets`), and a target's terminal
   /// rows deeper again — the terminal base matches its root/workroom, then the in-row `caretWidth`
   /// glyph column carries the final step (so the terminal glyph lines up under the root/workroom
-  /// label). Vertical insets are unchanged: 4 for the selectable rows, a tighter 2 for the smaller
-  /// terminal rows. (`6 + 12`: the base sidebar margin plus one 12pt level step.)
-  fileprivate static let rowInsets = EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 0)
-  fileprivate static let childRowInsets = EdgeInsets(
+  /// label). Vertical insets: 2 above and below the selectable rows, 3 for the smaller terminal
+  /// rows. Every row but a project's takes its insets as padding inside itself (`sidebarRowFrame`),
+  /// with none from the List, so the whole row is its hit target (#652 critique).
+  static let rowInsets = EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 0)
+  static let childRowInsets = EdgeInsets(
     top: 2, leading: 6 + 6, bottom: 2, trailing: 0)
-  fileprivate static let terminalRowInsets = EdgeInsets(
+  static let terminalRowInsets = EdgeInsets(
     top: 3, leading: 6 + 6, bottom: 3, trailing: 0)
+  /// The Terminals section's rows (a group's, a standalone terminal's, a group's terminal's): the
+  /// section's top level, so at a project row's leading inset, which puts each row's glyph under its
+  /// heading's chevron and its title under the heading's title (`SectionHeaderMetrics`). A group's
+  /// terminals step one level in themselves (`SidebarTerminalRow`).
+  static let sectionRowInsets = rowInsets
+  /// What a plain `List` adds above and below its rows, for sizing the Terminals pane to them.
+  static let listPadding: CGFloat = 12
+  /// The Terminals pane's floor: its heading and one row, the Quick Terminal's, which it always has.
+  static let terminalsPaneMinHeight: CGFloat =
+    SectionHeaderMetrics.height + SidebarRowMetrics.rowHeight + sectionRowInsets.top
+    + sectionRowInsets.bottom + listPadding + SidebarRowMetrics.headingGap
+  /// The Projects pane's floor: its heading and a few rows.
+  static let projectsPaneMinHeight: CGFloat = 120
+  /// The most of the sidebar the Terminals pane takes when sized to its rows.
+  static let terminalsPaneCap: CGFloat = 0.4
+
+  /// How the sidebar's split sizes its panes: the Terminals pane floored at one row and held
+  /// through a window resize, so the Projects pane takes the slack; folding a pane and unfolding it
+  /// returns both to where they were.
+  static let splitSizing = InspectorSplitContainerController.Sizing(
+    minHeights: [terminalsPaneMinHeight, projectsPaneMinHeight],
+    holdingPriorities: [.defaultLow + 10, .defaultLow],
+    restoresLayoutOnExpand: true,
+    preferredCap: terminalsPaneCap)
 
   var body: some View {
-    Group {
-      if projectStore.projects.isEmpty {
+    VStack(spacing: 0) {
+      if !store.sidebarHasContent {
         ContentUnavailableView {
           Label("No projects yet", systemImage: "folder.badge.plus")
         } description: {
@@ -62,16 +83,13 @@ struct ProjectSidebar: View, Equatable {
           Button("Add Project…") { store.modals.requestAddProject = true }
             .buttonStyle(.borderedProminent)
         }
+        .frame(maxHeight: .infinity)
       } else {
-        tree
+        split
       }
+      // Under the panes, on the sidebar's background, so neither list scrolls beneath it.
+      footer
     }
-    // Reserve the footer's height so the list scrolls above its shared sidebar background.
-    .safeAreaInset(edge: .bottom, spacing: 0) { footer }
-    // Breathing room above the first project so it doesn't jam against the card's top edge (the card
-    // sits flush under the title bar via `SidebarColumn`'s `topMargin: 0`). A solid `safeAreaInset`
-    // like the footer — reserves an 8pt strip of the card surface, matching the card's side margin.
-    .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: 8) }
     // A project's settings (issue #7) open in Settings ▸ Projects through
     // `store.modals.pendingProjectSettings`, which ⌘R (a global shortcut) sets too (issue #127).
     // The add-project importer and the delete confirmation are re-homed to RootView (issue #23 OV1)
@@ -80,25 +98,104 @@ struct ProjectSidebar: View, Equatable {
     // `pendingDeletion`).
   }
 
-  /// Flat list of rows (project, then its root + workrooms when expanded, then their terminals). All
-  /// rows are flush; the hierarchy is conveyed by each row's icons/buttons (project chevron, root
-  /// house, workroom caret, terminal glyph), not indentation. A flat structure also keeps List
-  /// selection and keyboard navigation simple across the levels.
-  private var tree: some View {
-    let interval = Self.signposter.beginInterval("Sidebar tree")
-    defer { Self.signposter.endInterval("Sidebar tree", interval) }
+  /// The Terminals and Projects sections as the inspector's panes (#652): each a sticky heading over
+  /// its own scrolling list, the divider between them resizing both. Collapsing a pane folds its
+  /// section (`AppStore.sidebarPanesCollapsed`). While the user hasn't dragged the divider, the
+  /// Terminals pane is sized to its rows, up to `terminalsPaneCap`, and Projects takes the rest.
+  private var split: some View {
+    let weights = store.sidebarPaneWeights
+    return InspectorSplitView(
+      headers: [
+        hosted(SidebarTerminalsHeader(store: store)),
+        hosted(SidebarProjectsHeading(store: store)),
+      ],
+      bodies: [
+        hosted(
+          SidebarTerminalsList(
+            store: store
+          ).equatable()),
+        hosted(SidebarProjectsList(drag: drag).equatable()),
+      ],
+      collapsed: store.sidebarPanesCollapsed,
+      // Each pane's List scrolls itself.
+      fills: [true, true],
+      sectionKey: "sidebar",
+      workroomKey: "sidebar",
+      weights: weights,
+      onWeightsChanged: { [store] in store.updateSidebarPaneWeights($0) },
+      preferredHeights: weights.isEmpty
+        ? [
+          SectionHeaderMetrics.height
+            + SidebarTerminalsList.contentHeight(of: store.terminalsSection, in: store),
+          nil,
+        ] : nil,
+      sizing: Self.splitSizing,
+      // A legacy scroller would narrow the rows but not the headings, and their "+" columns
+      // would part.
+      forcesOverlayScrollers: true
+    )
+  }
+
+  /// A pane's view with the window's environment: a pane is hosted in AppKit, so it inherits none of
+  /// it. The objects are the store's own, so this view subscribes to none of them.
+  private func hosted(_ view: some View) -> AnyView {
+    AnyView(
+      view
+        .environmentObject(store)
+        .paneHost(store)
+        .environmentObject(store.modals)
+        .environmentObject(store.runCommand)
+        .environmentObject(store.runCommands)
+        .environmentObject(store.projectStore)
+        .environmentObject(store.vcsStatus)
+        .environmentObject(store.lifecycle)
+        .environmentObject(store.notifications)
+        .environmentObject(store.terminals.codingAgentManager)
+        .environmentObject(store.remoteState))
+  }
+
+  // MARK: Chrome
+
+  /// The notification band, under a hairline, on the sidebar's background.
+  private var footer: some View { SidebarFooter() }
+}
+
+/// The Projects section's list, the sidebar's bottom pane under its sticky heading: projects at the
+/// root, their root + workrooms when expanded, then their terminals. All rows are flush; the
+/// hierarchy is conveyed by each row's icons/buttons (project chevron, root house, workroom caret,
+/// terminal glyph), not indentation. A flat structure also keeps List selection and keyboard
+/// navigation simple across the levels. Gated on its drag plumbing, as the sidebar is.
+struct SidebarProjectsList: View, Equatable {
+  @EnvironmentObject var store: AppStore
+  @EnvironmentObject var projectStore: ProjectStore
+  @EnvironmentObject var lifecycle: WorkroomLifecycle
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  var drag: SidebarDragPlumbing = .inert
+
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.drag == rhs.drag }
+
+  private static var rowInsets: EdgeInsets { ProjectSidebar.rowInsets }
+  private static var childRowInsets: EdgeInsets { ProjectSidebar.childRowInsets }
+
+  var body: some View {
+    let interval = ProjectSidebar.signposter.beginInterval("Sidebar tree")
+    defer { ProjectSidebar.signposter.endInterval("Sidebar tree", interval) }
     #if DEBUG
       SidebarRowPasses.tree += 1
     #endif
     let actions = SidebarActions.live(store: store)
     return List {
-      ForEach(projectStore.projects) { project in
+      SidebarHeadingGap()
+      ForEach(store.projectsFolded ? [] : projectStore.projects) { project in
         SidebarHoverRegion(id: .project(project.path)) { hovered in
           SidebarProjectRowAdapter(project: project, hovered: hovered, actions: actions)
             .equatable()
             .listRowInsets(Self.rowInsets)
             .listRowSeparator(.hidden)
-            .listRowBackground(RowHighlight(selected: false, hovered: hovered))
+            .listRowBackground(
+              RowHighlight(
+                selected: false, hovered: hovered,
+                horizontalPadding: SidebarRowMetrics.listContentInset))
         }
         if isExpanded(project.path) {
           // The root is always the first child, before any workrooms; each selectable row is
@@ -110,7 +207,8 @@ struct ProjectSidebar: View, Equatable {
               drag: drag, actions: actions
             )
             .equatable()
-            .listRowInsets(Self.childRowInsets)
+            .paneDropZone(.target(rid), store: store)
+            .listRowInsets(EdgeInsets())
             .listRowSeparator(.hidden)
             .listRowBackground(SidebarRowBackground(store: store, id: rid, hovered: hovered))
           }
@@ -125,7 +223,8 @@ struct ProjectSidebar: View, Equatable {
                 actions: actions
               )
               .equatable()
-              .listRowInsets(Self.childRowInsets)
+              .paneDropZone(.target(wid), store: store)
+              .listRowInsets(EdgeInsets())
               .listRowSeparator(.hidden)
               .listRowBackground(SidebarRowBackground(store: store, id: wid, hovered: hovered))
             }
@@ -136,26 +235,14 @@ struct ProjectSidebar: View, Equatable {
           // create dropped its record.
           ForEach(lifecycle.provisionalCreationRows(inProject: project.path)) { row in
             provisionalCreationRow(row, actions: actions)
-              .listRowInsets(Self.childRowInsets)
+              .listRowInsets(EdgeInsets())
               .listRowSeparator(.hidden)
               .listRowBackground(SidebarRowBackground(store: store, id: row.id, hovered: false))
           }
         }
       }
-      // No trailing spacer needed: the footer is a solid `safeAreaInset` (see `body`) that reserves
-      // its own height, so the list already scrolls clear of it (issue #118 feedback).
     }
-    // Plain style (not the NavigationSplitView sidebar default): the `.sidebar` style forces a
-    // comfortable ~28pt row-height floor and ignores small `listRowInsets` + `defaultMinListRowHeight`,
-    // so the compact terminal rows couldn't shrink. Plain sizes each row by its content + insets.
-    // Selection/hover are already hand-rolled via `listRowBackground`, so no native sidebar styling is
-    // lost; `scrollContentBackground(.hidden)` keeps the window's sidebar material showing through.
-    .listStyle(.plain)
-    // Hide the List's own background so the `sidebarCard` (applied at the use site, for both the
-    // docked column and the edge-reveal panel) shows through — its `tokens.bg` replaces
-    // NavigationSplitView's native sidebar material, so pinned and unpinned share one card style.
-    .scrollContentBackground(.hidden)
-    .environment(\.defaultMinListRowHeight, 1)
+    .sidebarListStyle()
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.collapsedProjects)
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.expandedTerminalTargets)
   }
@@ -175,8 +262,7 @@ struct ProjectSidebar: View, Equatable {
       Spacer()
       if let run = lifecycle.creationRun(for: row.id) { CreateStepCircle(run: run) }
     }
-    .frame(height: SidebarRowMetrics.rowHeight)
-    .contentShape(Rectangle())
+    .sidebarRowFrame(ProjectSidebar.childRowInsets)
     .onTapGesture { actions.select(row.id) }
     .help(row.label)
     .accessibilityElement(children: .combine)
@@ -187,31 +273,34 @@ struct ProjectSidebar: View, Equatable {
   // MARK: Expansion
 
   private func isExpanded(_ path: String) -> Bool { !store.collapsedProjects.contains(path) }
+}
 
-  // MARK: Chrome
-
-  /// The notification band and Add Project bar share the sidebar's background. The safe-area
-  /// inset reserves their height, keeping list rows from scrolling underneath.
-  private var footer: some View {
-    VStack(spacing: 0) {
-      tokens.border.frame(height: 1)
-      SidebarNotificationStrip()
-      bottomBar
-    }
-    // A band of the sidebar card: under glass the card's own tint shows through it (#730).
-    .background { ChromeBackground(role: .cardBand) }
+/// The first row of a sidebar pane's `List`: a little air between the pane's sticky heading and
+/// its first row (a List ignores `contentMargins`).
+struct SidebarHeadingGap: View {
+  var body: some View {
+    Color.clear
+      .frame(height: SidebarRowMetrics.headingGap)
+      .listRowInsets(EdgeInsets())
+      .listRowSeparator(.hidden)
+      .listRowBackground(Color.clear)
+      .moveDisabled(true)
+      .accessibilityHidden(true)
   }
+}
 
-  /// The sidebar's bottom bar: "Add Project" on the right.
-  private var bottomBar: some View {
-    HStack {
-      Spacer()
-
-      SidebarAddProjectButton()
-    }
-    .padding(.horizontal, 8)
-    .padding(.vertical, 6)
-    // The enclosing footer provides the shared sidebar background.
+extension View {
+  /// A sidebar pane's `List`. Plain style (not the NavigationSplitView sidebar default): the
+  /// `.sidebar` style forces a comfortable ~28pt row-height floor and ignores small `listRowInsets` +
+  /// `defaultMinListRowHeight`, so the compact terminal rows couldn't shrink. Plain sizes each row by
+  /// its content + insets. Selection/hover are already hand-rolled via `listRowBackground`, so no
+  /// native sidebar styling is lost. Its own background is hidden so the `sidebarCard` (applied at
+  /// the use site, for both the docked column and the edge-reveal panel) shows through, so pinned
+  /// and unpinned share one card style.
+  func sidebarListStyle() -> some View {
+    listStyle(.plain)
+      .scrollContentBackground(.hidden)
+      .environment(\.defaultMinListRowHeight, 1)
   }
 }
 
@@ -227,7 +316,9 @@ struct ProjectSidebar: View, Equatable {
     static var root = 0
     static var workroom = 0
     static var terminal = 0
-    /// Project, root and workroom rows, by id.
+    /// The Terminals section's standalone terminal and terminal group rows (#652).
+    static var section = 0
+    /// Project, root, workroom, standalone terminal and terminal group rows, by id.
     static var byRow: [SidebarID: Int] = [:]
     static var runButton = 0
     static var background = 0
@@ -245,7 +336,7 @@ struct ProjectSidebar: View, Equatable {
     /// The fill each terminal row's background last drew, by tab.
     static var terminalFills: [TerminalTab.ID: Color] = [:]
 
-    static var total: Int { project + root + workroom + terminal }
+    static var total: Int { project + root + workroom + terminal + section }
 
     static func reset() {
       tree = 0
@@ -253,6 +344,7 @@ struct ProjectSidebar: View, Equatable {
       root = 0
       workroom = 0
       terminal = 0
+      section = 0
       byRow = [:]
       runButton = 0
       background = 0
@@ -269,7 +361,7 @@ struct ProjectSidebar: View, Equatable {
 #endif
 
 /// Hover belongs to a row: changing it must not invalidate the sidebar's List (#534).
-private struct SidebarHoverRegion<Content: View>: View {
+struct SidebarHoverRegion<Content: View>: View {
   var id: SidebarID? = nil
   @ViewBuilder let content: (Bool) -> Content
   @State private var hovered = false
@@ -309,7 +401,18 @@ private struct SidebarTerminalSubtree: View, Equatable {
             tabID: tabID, target: target, parent: parent, hovered: hovered, actions: actions
           )
           .equatable()
-          .listRowInsets(ProjectSidebar.terminalRowInsets)
+          // A terminal let go on it lands in this workroom just above it; dragged, it is that
+          // terminal (#652, `TerminalDragSession`).
+          .paneDropZone(.terminalRow(tabID, in: parent), store: store)
+          .simultaneousGesture(
+            DragGesture(minimumDistance: 6, coordinateSpace: .global)
+              .onChanged { [store, tabID, parent] _ in
+                store.terminalDrag.moved(
+                  .terminal(tabID, of: parent), from: .sidebar, to: NSEvent.mouseLocation)
+              }
+              .onEnded { [store] _ in store.terminalDrag.ended(at: NSEvent.mouseLocation) }
+          )
+          .listRowInsets(EdgeInsets())
           .listRowSeparator(.hidden)
           .listRowBackground(
             SidebarTerminalRowBackground(
@@ -321,32 +424,89 @@ private struct SidebarTerminalSubtree: View, Equatable {
   }
 }
 
-private struct SidebarAddProjectButton: View {
-  @EnvironmentObject private var store: AppStore
-  @State private var hovering = false
+/// The sidebar's footer: the oldest notification, under the hairline the sidebar draws between its
+/// sections; nothing while there are none.
+private struct SidebarFooter: View {
+  @EnvironmentObject private var notifications: NotificationCenterStore
   @Environment(\.themeTokens) private var tokens
 
   var body: some View {
-    // Add Project, bottom-right. No key equivalent — File ▸ New Project… lost ⌘O to Open Workroom…
-    // (issue #94). Routes through the store's request flag so the importer (re-homed to RootView,
-    // issue #23 OV1) can present even when this sidebar is collapsed in Workrooms View.
-    Button {
-      store.modals.requestAddProject = true
-    } label: {
-      Image(systemName: "plus")
-        .font(.system(size: 11))
-        .foregroundStyle(.secondary)
-        .frame(width: 24, height: 24)
-        .background(
-          RoundedRectangle(cornerRadius: 6)
-            .fill(tokens.hover.opacity(hovering ? 1 : 0))
-        )
+    VStack(spacing: 0) {
+      if !notifications.items.isEmpty { tokens.border.frame(height: 1) }
+      SidebarNotificationStrip()
+    }
+    // A band of the sidebar card: under glass the card's own tint shows through it (#730).
+    .background { ChromeBackground(role: .cardBand) }
+  }
+}
+
+/// "Projects", its fold chevron, which hides every project's rows, and Add Project. Its "+" routes
+/// through the store's request flag, so the sheet (re-homed to RootView, issue #23 OV1) presents as
+/// File ▸ New Project…'s does.
+private struct SidebarProjectsHeading: View {
+  let store: AppStore
+
+  var body: some View {
+    SidebarSectionHeading(
+      title: "Projects",
+      isFolded: Binding(
+        get: { store.isCollapsed(.projects) }, set: { store.setCollapsed(.projects, $0) }),
+      id: "sidebar.projects"
+    ) {
+      SidebarIconButton(
+        systemImage: "plus", help: "Add Project…", label: "Add Project", id: "AddProject"
+      ) {
+        store.modals.requestAddProject = true
+      }
+    }
+    .background(SidebarSectionHeadingBand())
+  }
+}
+
+/// A sidebar row's icon button in the rows' trailing column (`SidebarRowMetrics.iconColumnWidth`):
+/// the "+" on the Terminals and Projects headings and a terminal group's row, and the Terminals
+/// heading's New Terminal Group…. Hover paints the same rounded well as a terminal disclosure chevron's.
+struct SidebarIconButton: View {
+  let systemImage: String
+  let help: String
+  var label: String? = nil
+  let id: String
+  let action: () -> Void
+  @State private var hovering = false
+
+  var body: some View {
+    Button(action: action) {
+      SidebarIconGlyph(systemImage: systemImage, hovering: hovering)
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
-    .help("Add a project folder")
-    .accessibilityLabel("Add Project")
-    .accessibilityIdentifier("AddProject")
+    .help(help)
+    .accessibilityLabel(label ?? help)
+    .accessibilityIdentifier(id)
+  }
+}
+
+/// What every sidebar icon button draws: its glyph centred in the trailing column's square slot,
+/// over a rounded hover well while `hovering`. `CreateRowButton`, a menu, draws it too.
+struct SidebarIconGlyph: View {
+  let systemImage: String
+  let hovering: Bool
+  var font: Font = .system(size: 11)
+  @Environment(\.themeTokens) private var tokens
+
+  var body: some View {
+    Image(systemName: systemImage)
+      .font(font)
+      .foregroundStyle(.secondary)
+      .frame(
+        width: SidebarRowMetrics.iconColumnWidth, height: SidebarRowMetrics.iconColumnWidth
+      )
+      .background {
+        RoundedRectangle(cornerRadius: Radius.xs)
+          .fill(tokens.hover.opacity(hovering ? 1 : 0))
+          .frame(width: SidebarRowMetrics.hoverWell, height: SidebarRowMetrics.hoverWell)
+      }
+      .contentShape(Rectangle())
   }
 }
 
@@ -506,18 +666,8 @@ struct CreateRowButton<Places: View>: View {
   let help: String
   @ViewBuilder let places: () -> Places
   @State private var hovering = false
-  @Environment(\.themeTokens) private var tokens
 
-  private var glyph: some View {
-    Image(systemName: "plus")
-      .font(.system(size: 11))
-      .foregroundStyle(.secondary)
-      .padding(4)
-      .background(
-        RoundedRectangle(cornerRadius: 5)
-          .fill(tokens.hover.opacity(hovering ? 1 : 0))
-      )
-  }
+  private var glyph: some View { SidebarIconGlyph(systemImage: "plus", hovering: hovering) }
 
   var body: some View {
     // A menu that looks exactly like a button: drawn by SwiftUI as a plain button, so the glyph
@@ -598,7 +748,7 @@ private struct RowRunToggle: View {
       }
       .padding(4)
       .background(
-        RoundedRectangle(cornerRadius: 5)
+        RoundedRectangle(cornerRadius: Radius.xs)
           .fill(tint.opacity(hovering ? 0.18 : 0))
       )
     }
@@ -627,7 +777,7 @@ struct SettingsRowButton: View {
         .foregroundStyle(.secondary)
         .padding(4)
         .background(
-          RoundedRectangle(cornerRadius: 5)
+          RoundedRectangle(cornerRadius: Radius.xs)
             .fill(tokens.hover.opacity(hovering ? 1 : 0))
         )
     }
@@ -657,7 +807,7 @@ struct DeleteRowButton: View {
         .foregroundStyle(hovering ? tokens.failure : .secondary)
         .padding(4)
         .background(
-          RoundedRectangle(cornerRadius: 5)
+          RoundedRectangle(cornerRadius: Radius.xs)
             .fill(tokens.failure.opacity(hovering ? 0.18 : 0))
         )
     }
@@ -679,6 +829,9 @@ struct DeleteRowButton: View {
 struct TerminalDisclosureButton: View {
   let expanded: Bool
   let width: CGFloat
+  /// Its tooltip and VoiceOver name; a workroom row's say "Show terminals" / "Hide terminals".
+  var help: String? = nil
+  var label: String? = nil
   let action: () -> Void
   @State private var hovering = false
   @Environment(\.themeTokens) private var tokens
@@ -694,7 +847,7 @@ struct TerminalDisclosureButton: View {
         .foregroundStyle(.secondary)
         .frame(width: width, height: 18, alignment: .center)
         .background {
-          RoundedRectangle(cornerRadius: 5)
+          RoundedRectangle(cornerRadius: Radius.xs)
             .fill(tokens.hover.opacity(hovering ? 1 : 0))
             .frame(width: 18, height: 18)
         }
@@ -702,9 +855,11 @@ struct TerminalDisclosureButton: View {
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
-    .help(expanded ? "Hide terminals" : "Show terminals")
-    .accessibilityLabel(expanded ? "Hide terminals" : "Show terminals")
+    .help(help ?? defaultTitle)
+    .accessibilityLabel(label ?? defaultTitle)
   }
+
+  private var defaultTitle: String { expanded ? "Hide terminals" : "Show terminals" }
 }
 
 /// The ✕ revealed when a terminal row is hovered (issue #30). Mirrors `DeleteRowButton`'s
@@ -713,25 +868,23 @@ struct TerminalDisclosureButton: View {
 struct CloseTerminalRowButton: View {
   let title: String
   let visible: Bool
+  /// Its tooltip; "Close <title>" when nil.
+  var help: String? = nil
+  var id: String? = nil
   let action: () -> Void
   @State private var hovering = false
-  @Environment(\.themeTokens) private var tokens
 
   var body: some View {
     Button(action: action) {
-      Image(systemName: "xmark")
-        .font(.system(size: 10, weight: .medium))
-        .foregroundStyle(.secondary)
-        .padding(4)
-        .background(
-          RoundedRectangle(cornerRadius: 5)
-            .fill(tokens.hover.opacity(hovering ? 1 : 0))
-        )
+      // In the rows' trailing column, as every sidebar "+" is (`SidebarIconGlyph`).
+      SidebarIconGlyph(
+        systemImage: "xmark", hovering: hovering, font: .system(size: 10, weight: .medium))
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
-    .help("Close \(title)")
+    .help(help ?? "Close \(title)")
     .accessibilityLabel("Close \(title)")
+    .accessibilityIdentifier(id ?? "")
     .opacity(visible ? 1 : 0)
     .allowsHitTesting(visible)
   }

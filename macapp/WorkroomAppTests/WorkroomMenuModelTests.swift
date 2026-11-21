@@ -51,6 +51,65 @@ final class WorkroomMenuModelTests: XCTestCase {
     XCTAssertEqual(model.entries(for: .inspectorHeader), [.remove])
   }
 
+  // MARK: A Terminals-section target (ADR 0077)
+
+  /// Value: protects=a terminal group's tab offers its row's items, not a project's run command
+  /// (#652 critique); fails_when=Run, Restart or Stop shows, or Rename…, New Terminal in Group,
+  /// Set Starting Folder… or Delete is missing or out of order; seam=WorkroomMenuModel.entries
+  func testAGroupsTabOffersItsRowsItemsAndNoRunItems() {
+    let model = WorkroomMenuModel(
+      run: .off, closeName: "Ops", canOpenInSplit: true, showsMoveToNewWindow: true,
+      canMoveWorkroom: true,
+      section: .group(
+        builtIn: false, hasStartingFolder: false, title: "Ops", newTerminal: "New Terminal in Ops"))
+    XCTAssertEqual(
+      model.entries(for: .full),
+      [
+        .newTerminalInGroup(title: "New Terminal in Ops"), .rename, .divider, .setStartingFolder,
+        .divider, .close,
+        .openInSplit, .moveToNewWindow(enabled: true), .divider, .deleteGroup(title: "Ops"),
+      ])
+  }
+
+  /// With a starting folder it also offers the setting's back; with nothing below, no stray divider.
+  func testAGroupWithAStartingFolderAndNoTabItems() {
+    let model = WorkroomMenuModel(
+      run: .off,
+      section: .group(
+        builtIn: false, hasStartingFolder: true, title: "Ops", newTerminal: "New Terminal in Ops"))
+    XCTAssertEqual(
+      model.entries(for: .full),
+      [
+        .newTerminalInGroup(title: "New Terminal in Ops"), .rename, .divider, .setStartingFolder,
+        .clearStartingFolder,
+        .divider, .deleteGroup(title: "Ops"),
+      ])
+  }
+
+  /// The Quick Terminal's group is built in: no rename and no delete.
+  func testTheQuickTerminalsGroupHasNoRenameOrDelete() {
+    let model = WorkroomMenuModel(
+      run: .off, closeName: "Quick Terminal",
+      section: .group(
+        builtIn: true, hasStartingFolder: false, title: "Quick Terminal",
+        newTerminal: "New Terminal in Quick Terminal"))
+    XCTAssertEqual(
+      model.entries(for: .full),
+      [
+        .newTerminalInGroup(title: "New Terminal in Quick Terminal"), .divider, .setStartingFolder,
+        .divider, .close,
+      ])
+  }
+
+  /// A standalone terminal's tab: Rename…, then the tab's own items.
+  func testAStandaloneTerminalsTabOffersRenameAndNoRunItems() {
+    let model = WorkroomMenuModel(
+      run: .off, closeName: "Terminal 1", showsMoveToNewWindow: true, canMoveWorkroom: false,
+      section: .standalone)
+    XCTAssertEqual(
+      model.entries(for: .full), [.rename, .divider, .close, .moveToNewWindow(enabled: false)])
+  }
+
   // MARK: A root
 
   /// A project root on its tab chip: Close names the project, and there is nothing to label or

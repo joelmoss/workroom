@@ -689,7 +689,9 @@ extension AppStore {
   func ensureInitialTerminal(for target: TerminalTarget) {
     // A delete drops the target first, and a failed create's pane still runs this as it leaves: the
     // terminal would be freed moments later, mid-attach, which is the #547 freeze.
-    guard sidebarID(for: target.id) != nil else { return }
+    guard let sid = sidebarID(for: target.id) else { return }
+    // A standalone terminal another window holds is shown there, not opened again here.
+    guard otherHolder(of: sid) == nil else { return }
     // A remote workroom whose host keeps its layout waits for it rather than open a fresh pane
     // (#255, D4): `applyHostLayout` comes back here once the host has answered, or not in time.
     if fetchHostLayoutIfNeeded(for: target) {

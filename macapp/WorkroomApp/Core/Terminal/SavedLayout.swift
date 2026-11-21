@@ -310,6 +310,9 @@ struct TerminalPayload: Codable, Hashable, Sendable {
   /// The workroom's run tab (#522): its session is a run session, reattached as the target's run,
   /// never started again. Additive: an older build reads it as an ordinary terminal.
   var run: Bool? = nil
+  /// The name the user gave the terminal (Rename…). Additive, so no schema bump: an older build
+  /// ignores it and shows the default title.
+  var userTitle: String? = nil
 }
 
 /// `DiffSource` on disk. Split into a kind plus an optional commit id so a new case is an additive
@@ -513,15 +516,33 @@ struct SessionFile: Codable, Sendable {
   /// Diagnostics only — never branched on. Read it in a bug report, not in code.
   var appVersion: String?
   @Lossy var windows: [WindowSession]
+  /// The Quick Terminal's panel: the built-in group's panes (ADR 0077). App-wide, not a window's,
+  /// so it is its own entry. Additive: written only when it has panes, and read leniently, so a bad
+  /// entry loses only itself and an older build ignores it.
+  var quickTerminal: TargetSession?
 
   init(
     schemaVersion: Int = SessionFile.currentSchemaVersion, savedAt: Date,
-    appVersion: String? = nil, windows: [WindowSession]
+    appVersion: String? = nil, windows: [WindowSession], quickTerminal: TargetSession? = nil
   ) {
     self.schemaVersion = schemaVersion
     self.savedAt = savedAt
     self.appVersion = appVersion
     self.windows = windows
+    self.quickTerminal = quickTerminal
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case schemaVersion, savedAt, appVersion, windows, quickTerminal
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+    savedAt = try container.decode(Date.self, forKey: .savedAt)
+    appVersion = try container.decodeIfPresent(String.self, forKey: .appVersion)
+    _windows = try container.decode(Lossy<WindowSession>.self, forKey: .windows)
+    quickTerminal = try? container.decodeIfPresent(TargetSession.self, forKey: .quickTerminal)
   }
 
   /// How a decoded file relates to what this build can do.
@@ -590,6 +611,7 @@ extension SessionFile {
 
     var sanitized = self
     sanitized.windows = windows
+    sanitized.quickTerminal = quickTerminal.flatMap { $0.sanitized(into: &report) }
     return (sanitized, report)
   }
 }
@@ -738,6 +760,7 @@ extension TabSession {
     if var terminal = tab.terminal {
       terminal.defaultTitle = clamp(terminal.defaultTitle)
       terminal.cwd = clamp(terminal.cwd)
+      terminal.userTitle = clamp(terminal.userTitle)
       tab.terminal = terminal
     }
     if var diff = tab.diff {

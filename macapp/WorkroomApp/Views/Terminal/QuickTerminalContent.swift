@@ -5,12 +5,12 @@ import SwiftUI
 /// Everything in the Quick Terminal's window: a workroom's own terminals view (tab strip, pane
 /// tree, title bars, footers) over its one target, with the strip where the titlebar would be.
 struct QuickTerminalContent: View {
-  let panes: TerminalPanes
+  let host: QuickTerminalHost
   /// Read here so a changed "Opens in" applies to the next tab, not only the next window.
-  @Default(.quickTerminalDirectory) private var directory
+  @Default(.newTerminalDirectory) private var directory
   var body: some View {
     let _ = directory
-    WorkroomTerminalsView(target: QuickTerminalController.target(), panes: panes)
+    WorkroomTerminalsView(target: host.target, panes: host.terminals)
       // Clear of the window's rounded corners: the first tab and the panes' bottoms touched them.
       .padding(8)
       // Toasts while it is the front window (#573 D2). `.pointerStyle`: the arrow over a toast,
@@ -42,6 +42,13 @@ extension View {
     self
       .themeTokensRoot()
       .environment(\.isQuickTerminal, true)
+      .quickTerminalPaneEnvironment(host: host)
+  }
+
+  /// What a pane of the Quick Terminal's needs wherever it is shown: its panel, or a window of its
+  /// own once popped out, which is no panel to drag along the screen's edges.
+  func quickTerminalPaneEnvironment(host: QuickTerminalHost) -> some View {
+    self
       .paneHost(host)
       .environmentObject(host.modals)
       .environmentObject(host.runCommand)

@@ -81,7 +81,9 @@ final class ProgramStatusUITests: XCTestCase {
     XCTAssertTrue(
       poll(timeout: 5) { (permission.value as? String) == "Waiting for your permission" },
       "got \(permission.value ?? "<nil>")")
-    XCTAssertTrue(permission.label.hasPrefix("Terminal 2"))
+    XCTAssertTrue(
+      permission.label.contains(" ~") || permission.label.contains(" /"),
+      "titled by program and folder: \(permission.label)")
     XCTAssertFalse(permission.label.contains("may be out of date"), "its host is live")
 
     let stale = chip(app, "Terminal 3")

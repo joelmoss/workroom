@@ -76,8 +76,8 @@ struct LeadingTitlebarBar: View {
 
   var body: some View {
     HStack(spacing: 6) {
-      // No projects: no sidebar to show, so no button for it.
-      if !projectStore.projects.isEmpty {
+      // Nothing to list (no projects, no terminals): no sidebar to show, so no button for it.
+      if store.sidebarHasContent {
         Button {
           store.toggleSidebar()
         } label: {

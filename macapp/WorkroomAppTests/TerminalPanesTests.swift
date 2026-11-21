@@ -124,7 +124,7 @@ final class TerminalPanesTests: XCTestCase {
     s.addTab(for: target)
     XCTAssertEqual(s.tabs(for: target).count, 1)
     XCTAssertEqual(s.activeTab(for: target)?.id, s.tabs(for: target).first?.id)
-    XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")
+    XCTAssertEqual(s.tabs(for: target).first?.content.accessibilityKey, "Terminal 1")
   }
 
   func testEnsureTabIsIdempotent() {
@@ -139,12 +139,16 @@ final class TerminalPanesTests: XCTestCase {
     s.addTab(for: target)
     s.addTab(for: target)
     s.addTab(for: target)
-    XCTAssertEqual(s.tabs(for: target).map(\.title), ["Terminal 1", "Terminal 2", "Terminal 3"])
+    XCTAssertEqual(
+      s.tabs(for: target).map(\.content.accessibilityKey),
+      ["Terminal 1", "Terminal 2", "Terminal 3"])
     let second = s.tabs(for: target)[1].id
     s.closeTab(second, for: target)
     s.addTab(for: target)
     // Counter keeps climbing; titles stay stable rather than renumbering.
-    XCTAssertEqual(s.tabs(for: target).map(\.title), ["Terminal 1", "Terminal 3", "Terminal 4"])
+    XCTAssertEqual(
+      s.tabs(for: target).map(\.content.accessibilityKey),
+      ["Terminal 1", "Terminal 3", "Terminal 4"])
   }
 
   /// Issue #160: closing the active tab lands you back on the tab you were last in, not on whichever
@@ -158,7 +162,7 @@ final class TerminalPanesTests: XCTestCase {
     s.select(first, for: target)
     s.closeTab(first, for: target)
     // "Terminal 2" slid into slot 0, but "Terminal 3" is where the user was before this tab.
-    XCTAssertEqual(s.activeTab(for: target)?.title, "Terminal 3")
+    XCTAssertEqual(s.activeTab(for: target)?.content.accessibilityKey, "Terminal 3")
     XCTAssertEqual(s.tabs(for: target).count, 2)
   }
 
@@ -173,7 +177,7 @@ final class TerminalPanesTests: XCTestCase {
     s.select(first, for: target)
     s.recency = SwitcherRecency()  // as if none of these tabs had ever been focused
     s.closeTab(first, for: target)
-    XCTAssertEqual(s.activeTab(for: target)?.title, "Terminal 2")
+    XCTAssertEqual(s.activeTab(for: target)?.content.accessibilityKey, "Terminal 2")
   }
 
   /// A split that survives the close keeps focus inside itself — `split(for:)` follows focus, so a
@@ -230,7 +234,8 @@ final class TerminalPanesTests: XCTestCase {
     let successor = s.activeTab(for: target)?.id
     XCTAssertNotEqual(successor, elsewhere)
     XCTAssertEqual(
-      s.activeTab(for: target)?.title, "Terminal 3", "the last tab focused in THIS target")
+      s.activeTab(for: target)?.content.accessibilityKey, "Terminal 3",
+      "the last tab focused in THIS target")
   }
 
   func testCloseLastLeavesNoActive() {
@@ -249,7 +254,9 @@ final class TerminalPanesTests: XCTestCase {
     s.addTab(for: target)
     let first = s.tabs(for: target)[0].id  // "Terminal 1"
     s.moveTab(first, toIndex: 99, for: target)
-    XCTAssertEqual(s.tabs(for: target).map(\.title), ["Terminal 2", "Terminal 3", "Terminal 1"])
+    XCTAssertEqual(
+      s.tabs(for: target).map(\.content.accessibilityKey),
+      ["Terminal 2", "Terminal 3", "Terminal 1"])
   }
 
   func testReapClearsTabsActiveAndCounter() async {
@@ -261,7 +268,7 @@ final class TerminalPanesTests: XCTestCase {
     XCTAssertNil(s.activeTab(for: target))
     // Counter reset: the next tab is "Terminal 1" again.
     s.addTab(for: target)
-    XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")
+    XCTAssertEqual(s.tabs(for: target).first?.content.accessibilityKey, "Terminal 1")
   }
 
   // MARK: Running state (issue #28)
@@ -353,7 +360,10 @@ final class TerminalPanesTests: XCTestCase {
     view.handlePwd("/var/data/dev/workroom/macapp/WorkroomApp")  // ≥4 deep → zsh truncates
 
     view.handleTitleChange("…/workroom/macapp/WorkroomApp")
-    XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")  // not shown as the tab name
+    // Not shown as the tab name: the default, its program and folder, is.
+    XCTAssertEqual(
+      s.tabs(for: target).first?.title,
+      "\(TerminalState.shellName) /var/data/dev/workroom/macapp/WorkroomApp")
     XCTAssertFalse(s.isRunning(forTargetID: target.id))  // and never marks the tab busy
   }
 
@@ -391,9 +401,10 @@ final class TerminalPanesTests: XCTestCase {
     view.handleTitleChange("vim README.md")
     XCTAssertEqual(s.tabs(for: target).first?.title, "vim README.md")
 
-    // …and finishing the command falls back to the default "Terminal N".
+    // …and finishing the command falls back to the default, its program and folder.
     view.handleCommandFinished(rawExitCode: 0)
-    XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")
+    XCTAssertNotEqual(s.tabs(for: target).first?.title, "vim README.md")
+    XCTAssertEqual(s.tabs(for: target).first?.title.contains(" /tmp"), true)
     XCTAssertNil(activeCodingAgent(in: s), "command_finished removes quota immediately")
   }
 
@@ -692,7 +703,8 @@ final class TerminalPanesTests: XCTestCase {
 
     // The directory title the shell sets at the prompt is ignored → default stays.
     view.handleTitleChange("/var/data/proj")
-    XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")
+    XCTAssertEqual(
+      s.tabs(for: target).first?.title, "\(TerminalState.shellName) /var/data/proj")
 
     // The command shows…
     view.handleTitleChange("sleep 5")
@@ -708,7 +720,7 @@ final class TerminalPanesTests: XCTestCase {
     s.addTab(for: target)
     s.addTab(for: target)
     s.surface(s.tabs(for: target)[1])!.handleTitleChange("vim")
-    XCTAssertEqual(s.tabs(for: target).map(\.title), ["Terminal 1", "vim"])
+    XCTAssertEqual(s.tabs(for: target).map(\.title), ["\(TerminalState.shellName) /tmp", "vim"])
   }
 
   /// The `home` default must be the cached value, not a fresh `NSHomeDirectory()` per call: this is

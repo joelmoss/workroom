@@ -68,9 +68,9 @@ final class ProgramStatusLiveDaemonUITests: XCTestCase {
       .firstMatch
   }
 
-  /// A "needs you" alert, toast or row: named by the terminal's own name and its workroom, never
-  /// the title its program set (the chip now shows the running command).
-  private var needsYouAlert: XCUIElement { labelled("Terminal 1 in uitest-room needs you") }
+  /// A "needs you" alert, toast or row: named by the terminal's own name ("zsh ~/…", its program
+  /// and folder) and its workroom, never the title its program set (the chip shows the command).
+  private var needsYouAlert: XCUIElement { labelled(" in uitest-room needs you") }
 
   private func poll(timeout: TimeInterval, until condition: () -> Bool) -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
@@ -106,7 +106,7 @@ final class ProgramStatusLiveDaemonUITests: XCTestCase {
   }
 
   /// A program waiting in a terminal you are not looking at: its chip and workroom say so, one
-  /// in-app alert says "Terminal 1 in uitest-room needs you", Claude's own alert is folded into it rather than
+  /// in-app alert says "zsh ~/… in uitest-room needs you", Claude's own alert is folded into it rather than
   /// shown again, ⇧⌘M goes there (which reads the alert), and the finished turn shows while you
   /// watch it.
   func testAWaitingProgramElsewhereAlertsOnceAndShiftCommandMGoesThere() {

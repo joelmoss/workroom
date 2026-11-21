@@ -158,7 +158,8 @@ final class WorkroomLifecycle: ObservableObject {
       return TerminalTarget(
         id: TargetID.creation(id), title: run.project.displayName, path: path,
         unavailability: .creating)
-    case .project:
+    case .project, .standalone, .terminalGroup:
+      // A standalone terminal or a group is the Terminals section's (`AppStore.target(for:)`).
       return nil
     }
   }

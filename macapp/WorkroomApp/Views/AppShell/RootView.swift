@@ -151,12 +151,15 @@ struct RootView: View {
     // Re-renders on every activity-bar click, so `showInspector` is read fresh
     // (`AppStore.inspectorToggles`).
     let _ = store.inspectorToggles
-    let inspectorVisible = showInspector && store.selectedTarget != nil
+    // A terminal with no project has nothing to inspect (ADR 0077).
+    let inspectorVisible =
+      showInspector && store.selectedTarget != nil
+      && store.selectedTargetID?.isInTerminalsSection != true
     // Same reasoning as `inspectorVisible`: with zero projects, `SidebarColumn` has nothing to list
     // but its own "No projects yet" empty state — which `detailContent`'s empty state now also shows
     // (with the same "Add Project…" action), so the sidebar just doubles it. Gated on
     // `projectStore.projects`, not a write to `Defaults[.sidebarVisible]`, for the same other-window reason.
-    let sidebarShown = store.sidebarVisible && !projectStore.projects.isEmpty
+    let sidebarShown = store.sidebarVisible && store.sidebarHasContent
     return NavigationSplitView(columnVisibility: .constant(.detailOnly)) {
       Color.clear.frame(width: 0)
     } detail: {
@@ -240,7 +243,7 @@ struct RootView: View {
       // The menu command gates on `hasProjects`, so it only fires with ≥1 project; the dialog itself
       // still handles a filter that matches nothing.
       .modifier(NewWorkroomPresenter(store: store))
-      // Open Workroom picker (⌘O, issue #94): same store-flag bridge, also gated on `hasProjects`.
+      // Open Workroom picker (⌘O, issue #94): same store-flag bridge, gated on `hasSidebarContent` (a project or a terminal).
       .modifier(OpenWorkroomPresenter(store: store))
       .modifier(StartChoicePresenter(store: store))
       .confirmationDialog(
@@ -652,7 +655,7 @@ struct RootView: View {
         // Zero projects: the sidebar's own empty-state copy (`ProjectSidebar`) — the sidebar itself
         // is hidden in this state (see `splitView`), so this is the only place left to say it.
         if projectStore.projects.isEmpty {
-          Text("Add your first project!")
+          Text("Add your first project, or open a terminal.")
         } else {
           Text(
             "Select a project's root, or open\(Shortcuts.shared.table.hint(for: .openWorkroom)) "
@@ -664,6 +667,10 @@ struct RootView: View {
           Button("Add Project…") { modals.requestAddProject = true }
             .buttonStyle(.borderedProminent)
             .accessibilityIdentifier("EmptyStateAddProject")
+          // A terminal needs no project (ADR 0077): ⌘T does the same.
+          Button("New Terminal") { store.newTerminalInSelectedTarget() }
+            .help("Open a terminal" + Shortcuts.shared.table.hint(for: .newTerminal))
+            .accessibilityIdentifier("EmptyStateNewTerminal")
         }
       }
       // The detail column is `.ground`, which draws nothing under Glass; with no pane on it, this

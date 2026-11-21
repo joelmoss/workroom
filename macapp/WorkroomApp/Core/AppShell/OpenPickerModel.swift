@@ -1,7 +1,8 @@
 import Foundation
 import WorkroomDomain
 
-/// One openable row in the Open Workroom picker (issue #94): a project root or a workroom, carrying
+/// One openable row in the Open Workroom picker (issue #94): a project root, a workroom, a standalone
+/// terminal or a terminal group (#662), carrying
 /// the `SidebarID` the picker hands to `AppStore.openExisting`. The picker groups rows under a
 /// per-project header, so each row also carries its `projectName` (the header text) and `projectPath`
 /// (the grouping key).
@@ -19,6 +20,40 @@ struct OpenTarget: Identifiable, Hashable {
   let isRoot: Bool
 
   var id: SidebarID { sid }
+
+  /// The heading the terminals with no project are listed under, and its grouping key (a project
+  /// path is never empty).
+  static let terminalsHeading = "Terminals"
+
+  /// A standalone terminal's or a terminal group's row: no project behind it, so it sits under the
+  /// Terminals heading.
+  init(terminal sid: SidebarID, title: String, path: String) {
+    self.init(
+      sid: sid, title: title, name: title, projectName: Self.terminalsHeading, projectPath: "",
+      path: path, isRoot: false)
+  }
+
+  init(
+    sid: SidebarID, title: String, name: String, projectName: String, projectPath: String,
+    path: String, isRoot: Bool
+  ) {
+    self.sid = sid
+    self.title = title
+    self.name = name
+    self.projectName = projectName
+    self.projectPath = projectPath
+    self.path = path
+    self.isRoot = isRoot
+  }
+
+  /// Whether this is a standalone terminal or a terminal group, rather than a project's.
+  var isTerminal: Bool { sid.isInTerminalsSection }
+
+  /// The row's leading symbol, matching the sidebar's: a house for a root, a cube for a workroom, a
+  /// terminal for a standalone terminal, stacked terminals for a group.
+  var glyph: String {
+    sid.terminalsGlyph ?? (isRoot ? "house" : "cube")
+  }
 
   /// What the query matches against: the project name **then** the title, so a fuzzy subsequence can
   /// span both fields in reading order — e.g. "proapp" matches project "projectA"'s workroom "apple"
@@ -52,6 +87,22 @@ enum OpenPickerModel {
   /// `Project.rootTarget` / `Workroom.target`. Keyboard highlight indexes into this flat list; the
   /// view regroups it for display via `grouped`.
   static func targets(from projects: [Project]) -> [OpenTarget] {
+    projectTargets(from: projects)
+  }
+
+  /// The same, with the Terminals section's standalone terminals and groups first (#662).
+  @MainActor
+  static func targets(from projects: [Project], terminals: TerminalsSection) -> [OpenTarget] {
+    // The Terminals section leads, as it sits above the projects in the sidebar (ADR 0077). They
+    // need nothing but this Mac, so none is ever missing.
+    let terminalRows = terminals.entries.compactMap { entry -> OpenTarget? in
+      guard let target = terminals.target(for: entry.sidebarID) else { return nil }
+      return OpenTarget(terminal: entry.sidebarID, title: target.title, path: target.path)
+    }
+    return terminalRows + projectTargets(from: projects)
+  }
+
+  private static func projectTargets(from projects: [Project]) -> [OpenTarget] {
     projects.flatMap { project -> [OpenTarget] in
       var rows: [OpenTarget] = []
       if !project.rootTarget.isMissing {

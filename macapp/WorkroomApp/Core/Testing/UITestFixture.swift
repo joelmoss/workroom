@@ -407,6 +407,38 @@ import WorkroomVCS
       flag("WorkroomUITestTwoTabs")
     }
 
+    /// When set (`-WorkroomUITestStandaloneTerminals <n>`), the fixture seeds `n` standalone
+    /// terminals (#655), each with its row and its terminal, under `standaloneTerminalIDs`, so a UI
+    /// test can find their rows and title-bar tabs by id. Clamped to 0...4.
+    static var standaloneTerminals: Int {
+      max(0, min(number("WorkroomUITestStandaloneTerminals"), 4))
+    }
+
+    /// The fixed ids of the seeded standalone terminals, in their rows' order.
+    static let standaloneTerminalIDs = (1...4).map {
+      UUID(uuidString: "00000000-0000-0000-0000-00000000065\($0)")!
+    }
+
+    /// When set (`-WorkroomUITestTerminalGroup`), the fixture seeds one named terminal group, "Ops"
+    /// (#658), under `terminalGroupID`, with two terminals, so a UI test can find its row, its
+    /// terminals' rows and its title-bar tab by id.
+    static var terminalGroup: Bool {
+      flag("WorkroomUITestTerminalGroup")
+    }
+
+    /// The fixed id of the seeded terminal group.
+    static let terminalGroupID = UUID(uuidString: "00000000-0000-0000-0000-000000000658")!
+
+    /// When set (`-WorkroomUITestSecondTerminalGroup`), the fixture also seeds a second named
+    /// terminal group, "Dev" (#652), under `secondTerminalGroupID`, with one terminal, below
+    /// "Ops" when that is seeded too, so a UI test can drag a terminal from one group to another.
+    static var secondTerminalGroup: Bool {
+      flag("WorkroomUITestSecondTerminalGroup")
+    }
+
+    /// The fixed id of the second seeded terminal group.
+    static let secondTerminalGroupID = UUID(uuidString: "00000000-0000-0000-0000-000000006520")!
+
     /// When set (`-WorkroomUITestTerminalTabs <n>`), the fixture opens `n` terminal tabs in the
     /// auto-selected workroom instead of one, so the **terminal** tab strip overflows on launch — the
     /// scenario the pinned-"+" XCUITests need (issue #129) without a dozen flaky ⌘T round-trips. Clamped

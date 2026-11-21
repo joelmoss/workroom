@@ -211,7 +211,7 @@ struct OnboardingWindow: View {
       // — this window owns no `AppStore` of its own by design (see the type doc comment).
       // `restore: false` so it does NOT consume `ProjectStore.consumeInitialRestore()`'s one-shot
       // flag; the real main window (opened by the close-handler) still needs that.
-      let probe = AppStore(runCommands: .shared, lifecycle: .shared)
+      let probe = AppStore(runCommands: .shared, lifecycle: .shared, terminalsSection: .shared)
       await probe.bootstrap(restore: false)
       if !OnboardingGate.shouldShow(
         hasCompleted: Defaults[.hasCompletedOnboarding],
@@ -301,7 +301,7 @@ struct OnboardingWindow: View {
   private func startClone() {
     let store =
       WindowRegistry.shared.lastActiveStore
-      ?? AppStore(runCommands: .shared, lifecycle: .shared)
+      ?? AppStore(runCommands: .shared, lifecycle: .shared, terminalsSection: .shared)
     addProjectError = nil
     clone.start(
       url: addProjectURL.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -328,7 +328,7 @@ struct OnboardingWindow: View {
     // with whatever window opens next. Accepted minor gap: one extra sidebar click, not a redo.
     let store =
       WindowRegistry.shared.lastActiveStore
-      ?? AppStore(runCommands: .shared, lifecycle: .shared)
+      ?? AppStore(runCommands: .shared, lifecycle: .shared, terminalsSection: .shared)
     let normalized = AddProjectSheetModel.normalize(addProjectPath)
     switch await store.addProject(normalized, create: addProjectMode == .createNew) {
     case .success:

@@ -21,7 +21,7 @@ Automatic update checks start after the first window appears. **Check for Update
 
 ### Updating keeps your terminals
 
-Next to the **Update** button, a short note scrolls past: Safe to update: workroom terminals and run commands keep running. The Quick Terminal stops. Terminals and run commands in your workrooms keep their sessions across the update, whatever you chose for quitting with dev servers running. The Quick Terminal has no session to keep.
+Next to the **Update** button, a short note scrolls past: Safe to update: your terminals and run commands keep running. Every terminal, including those in the Quick Terminal, and every run command keeps its session across the update, whatever you chose for quitting with dev servers running.
 
 ## Release channels
 

@@ -273,7 +273,8 @@ final class AppStoreSessionRestoreTests: XCTestCase {
     store.ensureInitialTerminal(for: target)
 
     XCTAssertEqual(
-      store.terminals.tabs(for: target).map(\.title), ["Terminal 1", "Terminal 2"],
+      store.terminals.tabs(for: target).map(\.content.accessibilityKey),
+      ["Terminal 1", "Terminal 2"],
       "no stray terminal may appear beside the restored panes")
   }
 

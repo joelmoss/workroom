@@ -129,10 +129,6 @@ struct WorkroomSplitView: View {
         }
         dropHighlight(plan: plan)
         incomingPaneHighlight(plan: plan)
-        // The dragged workroom's title follows the cursor over the panes, as a dragged pane's does.
-        if let drag = externalDrag, let dragged = resolve(drag.sid) {
-          DragTitleGhost(title: dragged.title, at: drag.location)
-        }
       }
       .coordinateSpace(.named(Self.space))
     }
@@ -202,6 +198,17 @@ enum WorkroomSplitTitlePresentation {
     if case .workroom = sid { return target.title }
     return nil
   }
+
+  /// The title bar's leading label: the project's directory name for a project's root or workroom;
+  /// for a standalone terminal or a terminal group, which has no project, its own name (ADR 0077).
+  static func primaryLabel(sid: SidebarID, target: TerminalTarget) -> String {
+    if sid.isInTerminalsSection { return target.title }
+    return AppStore.projectPath(of: sid).map { ($0 as NSString).lastPathComponent } ?? ""
+  }
+
+  /// Whether the title bar leads with the house or workroom glyph. A standalone terminal or a
+  /// terminal group is neither a root nor a workroom, so its name stands alone.
+  static func showsGlyph(sid: SidebarID) -> Bool { !sid.isInTerminalsSection }
 }
 
 /// One workroom pane: a title bar naming the workroom and carrying its own actions, above the full
@@ -246,12 +253,19 @@ private struct WorkroomPaneLeaf: View {
       // *which* member this is and offers the way back out of the group. A create's pane is bare
       // (#483): its checklist names it, and it has no ✕ or menu to close it by while it runs. The
       // bar is a sibling above the content, so the content keeps its one structural slot.
-      if store.lifecycle.creationRun(forTargetID: target.id) == nil {
+      // A standalone terminal goes without one too: its row and its pane's own bar name it, and in
+      // a split that bar carries its way out (`removeFromWorkroomSplit`).
+      if store.lifecycle.creationRun(forTargetID: target.id) == nil,
+        !target.id.isStandaloneTerminal
+      {
         titleBar
       }
       // One unconditional slot. The "Directory not found" state and the withheld-during-setup state
       // both live INSIDE `TargetTerminalDetail`'s own ZStack, so nothing here ever swaps branches.
       TargetTerminalDetail(target: target, surfaceActive: focused, workroomIsSplit: multi)
+        .environment(
+          \.removeFromWorkroomSplit,
+          target.id.isStandaloneTerminal && multi ? RemoveFromWorkroomSplit(run: onClose) : nil)
     }
     // The pane reads as a unit by a subtle raised fill over the `panel` base plus the shadow +
     // rounded corners (issue #110). The frame itself stays the plain neutral hairline regardless of
@@ -287,10 +301,12 @@ private struct WorkroomPaneLeaf: View {
     .accessibilityAddTraits(focused && multi ? .isSelected : [])
   }
 
-  /// What VoiceOver calls this pane: its workroom, a create not yet named (#483), or its project.
+  /// What VoiceOver calls this pane: its workroom, a create not yet named (#483), a standalone
+  /// terminal's or group's name, or its project.
   private var paneLabel: String {
     if let workroomName { return "Workroom \(workroomName)" }
     if case .creation = sid { return "New workroom in \(projectLabel)" }
+    if sid.isInTerminalsSection { return target.title }
     return "Project \(target.title)"
   }
 
@@ -298,12 +314,15 @@ private struct WorkroomPaneLeaf: View {
   private var titleBar: some View {
     WorkroomPaneTitleBar(
       target: target, projectPath: projectPath, projectLabel: projectLabel,
-      workroomName: workroomName, focused: focused, memberCount: memberCount,
+      showsGlyph: WorkroomSplitTitlePresentation.showsGlyph(sid: sid), workroomName: workroomName,
+      focused: focused, memberCount: memberCount,
       controls: toolbarControls, onClose: onClose,
       // The bar stays store-free (see `WorkroomSplitView.store`), so the leaf — which has the
       // store — supplies the action.
       onCloseAll: { store.requestCloseAllTerminalTabs(for: target) }
     )
+    // Somewhere a terminal drag lands: its group's, workroom's or root's terminals' end (#652).
+    .paneDropZone(.target(sid), store: store)
     // Drag the group by its title bar to move the whole member within the split (issue #110) —
     // the SAME gesture/closures the tab-bar chip uses, so it drops onto the same panes and shows
     // the same drop-edge highlight. A plain click (no movement past `minimumDistance`) still
@@ -319,18 +338,38 @@ private struct WorkroomPaneLeaf: View {
         .onChanged { value in
           if isDragOutsideWindow(value.location) {
             externalDrag = nil
+            // Onto the Quick Terminal panel's tabs (#652), else into another window or a new one.
+            if store.terminalDrag.moved(
+              .entry(sid), from: .groupTitleBar, to: NSEvent.mouseLocation)
+            {
+              return WorkroomWindowDrag.cancel()
+            }
             WorkroomWindowDrag.update(
               store: store, sid: sid, target: target,
               width: store.workroomTabFrames[sid]?.width ?? 0)
             return
           }
           WorkroomWindowDrag.cancel()
+          // A group's title bar over a title-bar tab, a sidebar row, a pane tab or another
+          // group's title bar: a drop there takes its terminals (#652).
+          if store.terminalDrag.moved(
+            .entry(sid), from: .groupTitleBar, to: NSEvent.mouseLocation)
+          {
+            externalDrag = nil
+            return
+          }
           guard multi else { return }
           externalDrag = localize(value.location).map {
             WorkroomPaneDrag(sid: sid, location: $0)
           }
         }
         .onEnded { value in
+          // Out of the window, only the Quick Terminal panel's tabs take it (#652).
+          if store.terminalDrag.ended(at: NSEvent.mouseLocation) {
+            externalDrag = nil
+            return
+          }
+          store.terminalDrag.cancel()
           if isDragOutsideWindow(value.location) {
             WorkroomWindowDrag.end(store: store, sid: sid)
           } else if multi, let drop = dropTarget(value.location), drop.sid != sid {
@@ -383,7 +422,7 @@ private struct WorkroomPaneLeaf: View {
   /// The project name — the chip's primary label format (`AppStore.projectPath` last component),
   /// matching `WorkroomTabChip.primaryLabel`. Empty only if the sid resolves no project.
   private var projectLabel: String {
-    projectPath.map { ($0 as NSString).lastPathComponent } ?? ""
+    WorkroomSplitTitlePresentation.primaryLabel(sid: sid, target: target)
   }
 
   /// This member's own display name (nil for a project root) — the label-aware `target.title`,
@@ -528,6 +567,8 @@ private struct WorkroomPaneTitleBar: View {
   /// The project name, derived (with `workroomName`) by the leaf — which needs it for the close prompt
   /// anyway, so deriving it a second time here would be two copies of one format to keep in step.
   let projectLabel: String
+  /// False for a standalone terminal or a terminal group: its name alone, no house or cube.
+  let showsGlyph: Bool
   let workroomName: String?
   let focused: Bool
   /// See `WorkroomPaneLeaf.memberCount` — the group's size, so the fade below can sit out a close.
@@ -541,6 +582,17 @@ private struct WorkroomPaneTitleBar: View {
   let controls: WorkroomPaneToolbarPresentation.Controls
   let onClose: () -> Void
   let onCloseAll: () -> Void
+
+  /// The close-all button's name: a standalone terminal or a terminal group isn't a workroom.
+  private var closeAllLabel: String {
+    showsGlyph ? "Close all tabs in this workroom" : "Close all tabs"
+  }
+
+  /// What this pane is, for its remove-from-split button: a workroom, a standalone terminal or a
+  /// terminal group.
+  private var paneNoun: String {
+    showsGlyph ? "workroom" : target.id.isStandaloneTerminal ? "terminal" : "terminal group"
+  }
 
   /// The animation for this bar's focus fade — nil while the group is changing shape, so a member
   /// closing lands instantly. One decision, shared with the terminal panes.
@@ -560,10 +612,12 @@ private struct WorkroomPaneTitleBar: View {
     HStack(spacing: 6) {
       // Leading glyph mirrors the tab chip's: a house for a project root, a cube for a workroom
       // (`workroomName` is nil only for a root). Accent on the focused pane, muted otherwise.
-      Image(systemName: workroomName == nil ? "house" : target.workroomGlyph)
-        .font(.system(size: 10))
-        .foregroundStyle(focused ? tokens.accent : tokens.fgMuted)
-        .help(workroomName == nil ? "" : target.hostTooltip)
+      if showsGlyph {
+        Image(systemName: workroomName == nil ? "house" : target.workroomGlyph)
+          .font(.system(size: 10))
+          .foregroundStyle(focused ? tokens.accent : tokens.fgMuted)
+          .help(workroomName == nil ? "" : target.hostTooltip)
+      }
       if let reason = target.terminalUnavailability {
         WarningGlyph()
           .font(.system(size: 10))
@@ -607,13 +661,13 @@ private struct WorkroomPaneTitleBar: View {
           // Shares `PaneToolbarButton` with the detail-panel title bar below this one, so both bars'
           // buttons carry the same hover well and the same tooltip tracking.
           PaneToolbarButton(
-            systemImage: "xmark.square", help: "Close all tabs in this workroom",
-            accessibilityLabel: "Close all tabs in this workroom",
+            systemImage: "xmark.square", help: closeAllLabel,
+            accessibilityLabel: closeAllLabel,
             identifier: "workroom.pane.closeAll", action: onCloseAll)
         }
         if controls.removeFromSplit {
           TitlebarDivider()
-          CloseWorkroomPaneButton(action: onClose)
+          CloseWorkroomPaneButton(noun: paneNoun, action: onClose)
         }
       }
       .buttonStyle(ToolbarIconButtonStyle())

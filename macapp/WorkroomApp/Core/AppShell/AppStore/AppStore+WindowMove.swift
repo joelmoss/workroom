@@ -45,48 +45,64 @@ final class WorkroomHandOffs {
 
 // MARK: Quick Terminal panes into a window
 
-/// One workroom in a Quick Terminal pane's "Move to Workroom" menu. A class, to ride an
-/// `NSMenuItem`'s `representedObject`.
+/// One place in a pane's "Move to…" menu (`PaneMove.choices`): Standalone Terminal, a terminal group, New
+/// Terminal Group…, or a workroom open in a window. A class, to ride an `NSMenuItem`'s
+/// `representedObject`.
 @MainActor
 final class PaneWorkroomChoice {
   let title: String
-  /// The workroom's glyph, as its tab shows it.
+  /// The place's glyph, as its tab or row shows it.
   let glyph: String
-  /// False for one on a host, or still being created: a shell on this Mac can't join it.
+  /// False for the pane's own place, and for any move involving a remote workroom or a place still
+  /// being created: a shell on this Mac can't join it.
   let enabled: Bool
+  /// Whether this is where the pane is now: its menu item wears a checkmark (and is disabled).
+  let isCurrent: Bool
+  /// Why it is disabled, for its tooltip; nil when there is nothing to explain (its own place).
+  let help: String?
   let move: () -> Void
 
-  init(title: String, glyph: String, enabled: Bool, move: @escaping () -> Void) {
+  init(
+    title: String, glyph: String, enabled: Bool, isCurrent: Bool = false, help: String? = nil,
+    move: @escaping () -> Void
+  ) {
     self.title = title
     self.glyph = glyph
     self.enabled = enabled
+    self.isCurrent = isCurrent
+    self.help = help
     self.move = move
   }
 }
 
-/// The workrooms open in one Workroom window, for "Move to Workroom". `header` names the window
-/// when there is more than one, so two windows' workrooms can be told apart; nil otherwise.
+/// One section of "Move to…": the Terminals section's places (no header), or the workrooms open in
+/// one Workroom window. `header` names the window when more than one lists workrooms, so two
+/// windows' workrooms can be told apart; nil otherwise.
 struct PaneWorkroomGroup {
   let header: String?
   let choices: [PaneWorkroomChoice]
 }
 
 /// Dragging a Quick Terminal pane out of its window: over a workroom that can take it, its ghost
-/// shows and that workroom is highlighted; anywhere else the pointer says it can't drop there.
+/// shows and that workroom is highlighted; anywhere else it pops out into a window of its own, or,
+/// where it can't, the pointer says it can't drop there.
 @MainActor
 enum QuickTerminalPaneDrag {
   /// While the pointer shows "not allowed", so `cancel` only puts back a cursor this changed.
   private static var refusing = false
 
-  static func update(title: String, glyph: String?) {
+  /// True when a workroom under the pointer would take the pane.
+  @discardableResult
+  static func update(title: String, glyph: String?, canDetach: Bool = false) -> Bool {
     let hit = destination()
     show(hit)
-    refuse(hit == nil)
+    refuse(hit == nil && !canDetach)
     if hit != nil {
       DetachedPaneDragPreview.shared.show(title: title, glyph: glyph, at: NSEvent.mouseLocation)
-    } else {
+    } else if !canDetach {
       DetachedPaneDragPreview.shared.hide()
     }
+    return hit != nil
   }
 
   /// The drag came back inside the Quick Terminal, or ended: no ghost, highlight or refusal.
@@ -114,19 +130,22 @@ enum QuickTerminalPaneDrag {
     refusing = on
   }
 
-  /// The drag of `source`'s pane was let go outside the Quick Terminal.
+  /// The drag of `source`'s pane was let go outside the Quick Terminal. False when no workroom
+  /// under the pointer takes it.
+  @discardableResult
   static func end(
     source: TerminalPanes, notifications: NotificationCenterStore, tabID: TerminalTab.ID,
     target: TerminalTarget
-  ) {
+  ) -> Bool {
     defer { cancel() }
     // The workroom under the pointer, when the window shows several side by side.
-    guard let (window, workroom) = destination() else { return }
+    guard let (window, workroom) = destination(), let into = workroom.targetID else { return false }
     Task {
-      await QuickTerminalPaneMove.move(
+      await PaneMove.move(
         tabID, of: target, source: source, notifications: notifications, to: window,
-        into: workroom)
+        into: into)
     }
+    return true
   }
 
   /// The Workroom window under the pointer and its workroom there, when that can take the pane.
@@ -149,13 +168,13 @@ extension AppStore {
     if let pane = WindowRegistry.shared.detachedPane(at: screenPoint),
       let paneTarget = terminals.targetID(ofTab: pane)
     {
-      return quickTerminalPaneTarget(sidebarID(for: paneTarget))?.sid
+      return paneMoveTarget(sidebarID(for: paneTarget))?.sid
     }
     let hit =
       workroomTabRowPoint(screenPoint).flatMap { point in
         workroomTabFrames.first { $0.value.contains(point) }?.key
       } ?? workroom(atScreenPoint: screenPoint)
-    return quickTerminalPaneTarget(hit ?? selectedTargetID)?.sid
+    return paneMoveTarget(hit ?? selectedTargetID)?.sid
   }
 
   /// `screenPoint` in the workroom tab row's space (top-left origin), which the tab frames are in.
@@ -165,14 +184,43 @@ extension AppStore {
     return CGPoint(x: screenPoint.x - row.minX, y: row.maxY - screenPoint.y)
   }
 
-  /// `sid`'s workroom, when a Quick Terminal pane can join it.
-  func quickTerminalPaneTarget(
+  /// `sid`'s target, when a moved pane can join it in this window (`paneMoveRefusal`).
+  func paneMoveTarget(
     _ sid: SidebarID?
   ) -> (sid: SidebarID, target: TerminalTarget)? {
-    guard let sid, let target = target(for: sid), target.remoteHost == nil,
-      !target.isRemoteWorkroom, target.opensTerminals, !lifecycle.isCreationBlocking(target.id)
-    else { return nil }
+    guard let sid, let target = target(for: sid), paneMoveRefusal(sid) == nil else { return nil }
     return (sid, target)
+  }
+
+  /// Why a pane can't move into `sid`'s target, for a disabled "Move to…" item's tooltip; nil when
+  /// it can. A shell on this Mac can't join a remote workroom, one still being created, or a
+  /// standalone terminal that already has its one terminal.
+  func paneMoveRefusal(_ sid: SidebarID) -> String? {
+    // The Quick Terminal's group is its panel's: a pane joins it through that panel.
+    if sid.targetID == .quickTerminal {
+      return "The Quick Terminal's terminals are in its own panel."
+    }
+    guard let target = target(for: sid) else { return "It is no longer open." }
+    if let why = terminalJoinRefusal(target) { return why }
+    if case .standalone = sid, !terminalsSection.terminalNames(of: target.id).isEmpty {
+      return "\(target.title) is a standalone terminal: it holds one terminal."
+    }
+    return nil
+  }
+
+  /// Why a terminal on this Mac can't join `target` at all, or nil when it can: it runs on a host,
+  /// is still being created, or opens no terminals. Moving a pane in and grouping onto a
+  /// standalone terminal both ask this.
+  func terminalJoinRefusal(_ target: TerminalTarget) -> String? {
+    if target.remoteHost != nil || target.isRemoteWorkroom {
+      return
+        "\(target.title) runs on a host, so a terminal on this Mac can't move into it."
+    }
+    if lifecycle.isCreationBlocking(target.id) || target.unavailability == .creating {
+      return "\(target.title) is still being created."
+    }
+    if !target.opensTerminals { return "\(target.title) can't open terminals." }
+    return nil
   }
 
   /// The workroom this window draws under `screenPoint`, or nil when it is over none of them.
@@ -193,14 +241,6 @@ extension AppStore {
     let local = CGPoint(x: global.x - space.minX, y: global.y - space.minY)
     let plan = PaneTreeLayout.plan(layout, in: CGRect(origin: .zero, size: space.size))
     return plan.panes.first { $0.value.contains(local) }?.key
-  }
-
-  /// None: "Move to Workroom" is offered only on the Quick Terminal's target, whose panes are
-  /// `QuickTerminalHost`'s, so a window's own panes never show the menu that asks.
-  func quickTerminalPaneWorkroomChoices(
-    _ tabID: TerminalTab.ID, of target: TerminalTarget, windows: [AppStore]
-  ) -> [PaneWorkroomGroup] {
-    []
   }
 }
 

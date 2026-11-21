@@ -159,9 +159,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     if !AppEnvironment.current.isTestProcess {
       // Hand an older running daemon to the bundled one (#230), before panes are likely to attach.
       MainActor.assumeIsolated { DaemonHandOff.start() }
-      // A crash or force quit leaves the Quick Terminal's shells running, unseen: end them. Its own
-      // sweep, since the workroom one waits for a project list, which may be empty (ADR 0064). A
-      // live Quick Terminal opened meanwhile is attached, and attached sessions are spared.
+      // An older build's Quick Terminal ended its shells at quit, so one still running under its
+      // legacy tag was left by a crash or force quit, unseen: end those, and only those (ADR 0077).
+      // Today's are the built-in group's, which come back below. Its own sweep, since the workroom
+      // one waits for a project list.
       if !Self.isFixtureLaunch {
         Task { @MainActor in
           let service = PersistentSessionService.shared
@@ -418,8 +419,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
     // Its terminals share the app's notification list, and opening one of theirs slides it in.
     WindowRegistry.shared.quickTerminal = quickTerminal
+    // Its panel's saved layout comes back, hidden, so its sessions reattach and notify (ADR 0077).
+    // Held synchronously, so a save before the restore lands writes it back as it was read.
+    quickTerminal.restoreAtLaunch(SavedLayoutCoordinator.shared.savedQuickTerminal())
 
     installSigtermHandler()
+  }
+
+  /// The first step of every quit: ⌘Q's, a signal's and a UI-test fixture's. The app is
+  /// terminating, so a window's own close handler doesn't also prompt or stop (#70), and nothing that
+  /// closes as the process goes ends a terminal or drops a Terminals-section row: every terminal,
+  /// the Quick Terminal's included, comes back at the next launch (ADR 0077).
+  @MainActor static func beginQuit(_ registry: WindowRegistry = .shared) {
+    registry.isTerminating = true
   }
 
   /// Stop run commands gracefully on SIGTERM, then exit. macOS routes only a real ⌘Q / Quit
@@ -434,10 +446,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   private func installSigtermHandler() {
     signal(SIGTERM, SIG_IGN)
     let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-    source.setEventHandler { [quickTerminal] in
+    source.setEventHandler {
       // The source fires on the main queue, so we're main-actor-isolated in practice (same pattern
       // as the NSEvent monitor above) — assert it so we can touch the store synchronously.
       MainActor.assumeIsolated {
+        // A quit, as ⌘Q's is: nothing that closes from here on ends a terminal or drops a row.
+        Self.beginQuit()
         // SIGTERM is the path `XCUIApplication.terminate()`, `make app-run` and `pkill` take —
         // `applicationShouldTerminate` never runs for a signal, so the session flush has to happen
         // here too or none of those exits save anything (issue #46). Remote workrooms' layouts go
@@ -448,31 +462,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
           setting: Defaults[.quitWithRunningServers],
           hasLiveRuns: RunCommands.shared.hasAnyLiveRun,
           isUpdateRelaunch: Updater.isInstallingUpdate, canAsk: false)
-        RunCommands.shared.quitStopsRuns = action == .stop
-        let group = DispatchGroup()
-        group.enter()
-        Task {
-          await AppStore.flushHostLayouts(budget: 1)
-          SavedLayoutCoordinator.shared.flushAndFreeze()
-          // Only once frozen: the document is built from the live windows, which stopping changes.
-          if action == .stop {
-            group.enter()
-            RunCommands.shared.gracefullyStopAllWindows(timeout: 4) { group.leave() }
-          }
-          group.leave()
-        }
-        // The Quick Terminal's shells are not kept across a quit (ADR 0064), a signalled one too.
-        quickTerminal.endSessionsAtQuit()
-        // A tab closed moments before this signal fires an unstructured kill Task; without
-        // waiting for it here too, quitting fast enough after a close leaves that one session
-        // running despite the explicit close.
-        group.enter()
-        Task {
-          await PersistentSessionService.shared.awaitPendingCloseKills(
-            until: ContinuousClock.now + PersistentSessionService.closeKillQuitBudget)
-          group.leave()
-        }
-        group.notify(queue: .main) { exit(EXIT_SUCCESS) }
+        Self.saveAndDrain(stoppingRuns: action == .stop, stopTimeout: 4) { exit(EXIT_SUCCESS) }
       }
     }
     source.resume()
@@ -566,6 +556,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // session still flushes here: this branch IS terminating, and a UI test that relaunches to check
     // what was restored must not race the coalescing timer (issue #46).
     if Self.isFixtureLaunch {
+      Self.beginQuit()
       SavedLayoutCoordinator.shared.flushAndFreeze()
       return .terminateNow
     }
@@ -630,22 +621,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   private func stopRunCommandsThenTerminate(
     _ sender: NSApplication, stoppingRuns: Bool
   ) -> NSApplication.TerminateReply {
-    let registry = WindowRegistry.shared
-    // Mark the app as terminating so a window's own close handler doesn't also prompt/stop (#70).
-    registry.isTerminating = true
-    // The Quick Terminal's shells are not kept across a quit (ADR 0064). Ended before the close-kill
-    // wait below, which counts them.
-    quickTerminal.endSessionsAtQuit()
+    Self.beginQuit()
     // Write the session and stop writing (issue #46). Deliberately HERE and not at the top of
     // `applicationShouldTerminate`: that method can still return `.terminateCancel` at the confirm
     // dialog, and freezing above that guard would silently kill session saving for the rest of the
     // app's life after one cancelled ⌘Q. This point is past the guard and still before any window
     // closes — which is exactly what the freeze protects, since the document is rebuilt from the
-    // live windows: the reply below, which closes them, waits on the group.
-    //
-    // Remote workrooms' layouts go to their hosts first, for at most a second (#255, D14), so the
-    // session written next marks only what did not get there as stale.
-    // Runs this quit stops don't come back, so their tabs are left out of what is saved (#522).
+    // live windows: the reply below, which closes them, waits on the drain.
+    Self.saveAndDrain(stoppingRuns: stoppingRuns, stopTimeout: 5) {
+      sender.reply(toApplicationShouldTerminate: true)
+    }
+    return .terminateLater
+  }
+
+  /// The end of a quit, ⌘Q's and a signal's, once nothing is left to ask: save the session and
+  /// stop saving, stop the run commands when `stoppingRuns`, wait for pending close kills, then
+  /// `done`.
+  ///
+  /// Remote workrooms' layouts go to their hosts first, for at most a second (#255, D14), so the
+  /// session written next marks only what did not get there as stale. Runs this quit stops don't
+  /// come back, so their tabs are left out of what is saved (#522).
+  @MainActor
+  private static func saveAndDrain(
+    stoppingRuns: Bool, stopTimeout: TimeInterval, then done: @escaping @MainActor () -> Void
+  ) {
     RunCommands.shared.quitStopsRuns = stoppingRuns
     let group = DispatchGroup()
     group.enter()
@@ -656,7 +655,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       if stoppingRuns {
         group.enter()
         // Stop every window's run commands, not just the focused one's.
-        RunCommands.shared.gracefullyStopAllWindows(timeout: 5) { group.leave() }
+        RunCommands.shared.gracefullyStopAllWindows(timeout: stopTimeout) { group.leave() }
       }
       group.leave()
     }
@@ -669,8 +668,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         until: ContinuousClock.now + PersistentSessionService.closeKillQuitBudget)
       group.leave()
     }
-    group.notify(queue: .main) { sender.reply(toApplicationShouldTerminate: true) }
-    return .terminateLater
+    group.notify(queue: .main) { MainActor.assumeIsolated { done() } }
   }
 
   /// Reactivation (Dock click, or clicking a notification while the app is inactive): bring an

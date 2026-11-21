@@ -1,3 +1,4 @@
+import AppKit
 import DesignSystem
 import SwiftUI
 import WorkroomDomain
@@ -7,8 +8,9 @@ import WorkroomDomain
 /// appears when its workroom gains a terminal and disappears when it loses its last. The "selected"
 /// chip **is** `store.selectedTargetID` — tapping one selects that target (like the sidebar), so every
 /// selection-driven command (⌘T/⌘W/splits/run/notifications/⌥⌘1–9) operates on the focused workroom.
-/// No per-chip close button: a tab vanishes when its terminals are closed, and closing-as-kill would
-/// defeat the parallel-monitoring purpose.
+/// A tab vanishes when its terminals are closed. Its ✕ shows only while the pointer is over it, laid
+/// over its title (`tabHoverClose`), and asks first, as the right-click menu's Close does; at rest the
+/// tabs carry no close control, so a row of them reads as places to monitor rather than to close.
 ///
 /// The bar is mounted whether or not there are any tabs: its trailing controls are how a fresh window
 /// opens its first workroom, so an empty run still shows them (over the otherwise bare, draggable
@@ -47,6 +49,28 @@ struct WorkroomTabBar: View {
   // Drag-to-reorder: the order is frozen during a drag (the dragged chip follows the cursor, the rest
   // slide aside to open a gap), committed once on drop — mirrors `TerminalTabStrip`.
   @State private var drag = TabReorderDrag<SidebarID>()
+  /// Whether the dragged tab is over somewhere it would drop its terminals (#652, the window's
+  /// `terminalDrag`): another tab's middle, a sidebar row, a pane tab or a group's title bar. The
+  /// reorder gap closes so the destination stays under the pointer.
+  @State private var overTerminalDrop = false
+  /// Where a dragged standalone terminal's or group's tab would land, from the pointer against the
+  /// tabs as they were when the drag started (#652). Nil for a workroom's tab, which no tab takes
+  /// a drop of: that reorders by its translation, as the terminal strip does.
+  @State private var pointerReorder: PointerReorder?
+  /// The tab just let go on another, whose drop (`AppStore.dropTerminals`) lands a moment later:
+  /// till then it stays hidden where it was let go and the rest stay put, so nothing slides back
+  /// to where it started only to move again once the tabs change.
+  @State private var landing: SidebarID?
+  /// The tab just let go, while the bar waits for the tabs to change (`settle`): the row stays as
+  /// it was let go, gap and all, so the change slides in from there and nothing jumps back first.
+  /// The tabs come from the store a pass after the drop, not in the drop's own update.
+  @State private var settling: SidebarID?
+  /// Where the tab let go is landing (`settling`), which holds the gap open while the tabs change.
+  @State private var settleIndex: Int?
+  /// Where the dragged tab's slot began when its drag started, along the row. The tab is drawn at
+  /// its translation less how far its slot has moved since, so when the new order puts it in its
+  /// new slot it stays exactly where it was let go, in the same pass, and then settles.
+  @State private var dragOriginX: CGFloat?
 
   private let tabSpacing: CGFloat = 4
   /// The tab row's coordinate space, which the tabs' frames are measured in.
@@ -69,8 +93,16 @@ struct WorkroomTabBar: View {
     let draggedIndex = drag.id.flatMap { id in tabs.firstIndex { $0.sid == id } }
     // While dragging a chip down into the content (forming a split), the strip stops opening a reorder
     // gap — mirrors `TerminalTabStrip`.
-    let dropIndex = drag.dropIndex(
-      ids: tabs.map(\.sid), spacing: tabSpacing, suspendedByPaneDrag: chipPaneDrag != nil)
+    // A tab dragged over another it would drop on keeps the gap where it is: each tab moves once,
+    // and stays put while it is the one under the pointer (`TabReorder.dropTargetIndex(spans:…)`).
+    let dropIndex =
+      settleIndex
+      ?? pointerReorder.map { reorder in
+        chipPaneDrag != nil || (overTerminalDrop && !reorder.inRow) ? nil : reorder.index
+      }
+      ?? drag.dropIndex(
+        ids: tabs.map(\.sid), spacing: tabSpacing,
+        suspendedByPaneDrag: chipPaneDrag != nil || overTerminalDrop)
     let draggedWidth = drag.draggedWidth
 
     // The bar fills the gap between the leading and trailing title-bar controls (the container's
@@ -111,11 +143,10 @@ struct WorkroomTabBar: View {
   /// branch-independent.
   private var trailingControls: some View {
     HStack(spacing: tabSpacing) {
-      // No projects: nothing to open or create a workroom in (⌘O and ⌘N are off too).
-      if !projectStore.projects.isEmpty {
-        openWorkroomButton
-        addWorkroomButton
-      }
+      // No projects: nothing to create a workroom in (⌘N is off too); nothing at all: nothing to open.
+      // A terminal with no project is still something to open (#662), so the open button stays.
+      if store.sidebarHasContent { openWorkroomButton }
+      if !projectStore.projects.isEmpty { addWorkroomButton }
     }
     .fixedSize()
   }
@@ -142,7 +173,7 @@ struct WorkroomTabBar: View {
         let isHovered = hoveredID == tab.sid && !drag.isDragging
         let offsetX =
           isDragging
-          ? drag.translation
+          ? drag.translation - (dragOriginX.map { slotX(at: index) - $0 } ?? 0)
           : TabReorder.gapShift(
             index: index, draggedIndex: draggedIndex, target: dropIndex,
             amount: draggedWidth + tabSpacing) + incomingShift(at: index)
@@ -151,9 +182,24 @@ struct WorkroomTabBar: View {
           isHovered: isHovered, isDragging: isDragging,
           showLeadingSeparator: showsLeadingSeparator(at: index, groupOf: groupOf)
         )
+        // Over a tab it would group with, the dragged tab lets the target's accent show through.
+        .opacity(isDragging && landing == tab.sid ? 0 : isDragging && overTerminalDrop ? 0.55 : 1)
         // A Quick Terminal pane dragged over this window would join this workroom.
         .overlay {
-          if store.incomingQuickTerminalPane == tab.sid { DropAccent(cornerRadius: 6) }
+          if store.incomingQuickTerminalPane == tab.sid
+            || store.incomingPaneDrop == .target(tab.sid)
+          {
+            DropAccent(cornerRadius: Radius.s)
+          }
+        }
+        // A pane let go in the empty space beside this tab becomes a standalone terminal there:
+        // the caret marks the gap (#652).
+        .overlay(alignment: gapCaretEdge(of: tab.sid, at: index) ?? .leading) {
+          if gapCaretEdge(of: tab.sid, at: index) != nil {
+            DropInsertionMark(vertical: true).offset(
+              x: gapCaretEdge(of: tab.sid, at: index) == .leading
+                ? -tabSpacing / 2 - 1 : tabSpacing / 2 + 1)
+          }
         }
         .onHover { inside in
           if inside { hoveredID = tab.sid } else if hoveredID == tab.sid { hoveredID = nil }
@@ -168,26 +214,47 @@ struct WorkroomTabBar: View {
               // tab run — it can't be pulled left into the leading controls or right across the empty
               // fill (the bar spans the full title-bar width). Vertical drag-into-a-split is
               // unaffected (that reads `value.location`, below).
+              if drag.id == nil { dragOriginX = slotX(at: index) }
               drag.update(
                 tab.sid,
                 translation: clampReorder(value.translation.width, draggedIndex: index))
-              // Out of the window: into another window, or a new one (#444).
+              // Out of the window: onto the Quick Terminal panel's tabs (#652), else into another
+              // window, or a new one (#444).
               if isDragOutsideWindow(value.location) {
                 chipPaneDrag = nil
+                pointerReorder = nil
+                overTerminalDrop = store.terminalDrag.moved(
+                  .entry(tab.sid), from: .titleBar, to: NSEvent.mouseLocation)
+                if overTerminalDrop { return WorkroomWindowDrag.cancel() }
                 WorkroomWindowDrag.update(
                   store: store, sid: tab.sid, target: tab.target,
                   width: drag.widths[tab.sid] ?? 0)
                 return
               }
               WorkroomWindowDrag.cancel()
+              // A standalone terminal's or group's tab over another tab's middle, a sidebar row, a
+              // pane tab or a group's title bar: a drop there takes its terminals (#652).
+              overTerminalDrop = store.terminalDrag.moved(
+                .entry(tab.sid), from: .titleBar, to: NSEvent.mouseLocation)
+              pointerReorder = pointerReorder(draggedIndex: index, at: NSEvent.mouseLocation)
               // Dragged into the detail content → preview a drop-into-pane split (the strip stops
               // gapping); otherwise it's a plain reorder.
-              chipPaneDrag = localize(value.location).map {
-                WorkroomPaneDrag(sid: tab.sid, location: $0)
-              }
+              chipPaneDrag =
+                overTerminalDrop
+                ? nil
+                : localize(value.location).map { WorkroomPaneDrag(sid: tab.sid, location: $0) }
             }
             .onEnded { value in
-              if isDragOutsideWindow(value.location) {
+              // Worked out before the session ends, while it still has the tabs it measured.
+              let reorder = pointerReorder(draggedIndex: index, at: NSEvent.mouseLocation)
+              // Out of the window, only the Quick Terminal panel's tabs take it.
+              let dropped = store.terminalDrag.ended(at: NSEvent.mouseLocation)
+              endTerminalDrag()
+              if dropped {
+                // The gap stays where it was as the tab goes.
+                settleIndex = reorder?.index ?? index
+                settle(tab.sid, hidden: true)
+              } else if isDragOutsideWindow(value.location) {
                 drag.cancel()
                 WorkroomWindowDrag.end(store: store, sid: tab.sid)
               } else if let drop = dropTarget(value.location) {
@@ -200,8 +267,12 @@ struct WorkroomTabBar: View {
                 // (XCUITest's interpolation, or a fast real trackpad flick) can deliver its last
                 // `onChanged` sample short of the true release point, before `onEnded` fires with the
                 // full, accurate displacement — committing off a stale, under-shot translation.
-                commitDrag(
-                  translation: clampReorder(value.translation.width, draggedIndex: index))
+                if let reorder {
+                  commitDrag(at: reorder.index)
+                } else {
+                  commitDrag(
+                    translation: clampReorder(value.translation.width, draggedIndex: index))
+                }
               }
               chipPaneDrag = nil
             }
@@ -209,7 +280,10 @@ struct WorkroomTabBar: View {
         .offset(x: offsetX)
         .zIndex(isDragging ? 1 : 0)
         .animation(
-          isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX
+          // Not while a reorder settles: the tabs reach their new slots in one pass with their
+          // offsets cleared to match, so animating either alone would fling them out and back.
+          isDragging || reduceMotion || (settling != nil && landing == nil)
+            ? nil : .easeInOut(duration: 0.18), value: offsetX
         )
         // Scroll target for `OverflowingTabScroller`'s `ScrollViewReader` (issue #129 follow-up) — the
         // same id `ForEach` already keys identity on.
@@ -244,6 +318,36 @@ struct WorkroomTabBar: View {
     .background { ViewAnchor { [store] in store.workroomTabRun = $0 } }
     .onPreferenceChange(WorkroomTabWidthKey.self) { drag.setWidths($0) }
     .onPreferenceChange(WorkroomTabFrameKey.self) { store.workroomTabFrames = $0 }
+    // A tab let go on another goes: the rest slide up to close its place, offsets and all.
+    .animation(
+      landing == nil || reduceMotion ? nil : .easeInOut(duration: 0.18), value: tabs.map(\.sid)
+    )
+    .onChange(of: tabs.map(\.sid)) { if settling != nil { finishSettling() } }
+  }
+
+  /// Tab `sid` was let go: holds the bar as it is till the tabs change (`settling`), or, should
+  /// they change none, a moment. `hidden`: it was let go on something that takes it, so it goes.
+  private func settle(_ sid: SidebarID, hidden: Bool) {
+    settling = sid
+    if hidden { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { landing = sid } }
+    Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(600))
+      if settling == sid { finishSettling() }
+    }
+  }
+
+  private func finishSettling() {
+    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+      drag.cancel()
+      settling = nil
+      settleIndex = nil
+      landing = nil
+    }
+  }
+
+  /// How far along the row tab `index`'s slot starts: the tabs before it and their spacing.
+  private func slotX(at index: Int) -> CGFloat {
+    tabs[..<index].reduce(0) { $0 + (drag.widths[$1.sid] ?? 0) + tabSpacing }
   }
 
   /// How far a tab moves aside for a workroom dragged in from another window (#444): every tab at or
@@ -280,6 +384,23 @@ struct WorkroomTabBar: View {
       groupOf: groupOf)
   }
 
+  /// Which edge of tab `sid` (at `index`) the title bar's caret sits on while a pane hovers in the
+  /// empty space there (`PaneDropZone.titleBarGap`): the leading edge of the tab it would land
+  /// before, or the trailing edge of the last tab. Nil: no caret on this tab.
+  private func gapCaretEdge(of sid: SidebarID, at index: Int) -> Alignment? {
+    guard case .titleBarGap(let before) = store.incomingPaneDrop else { return nil }
+    if before == sid { return .leading }
+    if before == nil, index == tabs.count - 1 { return .trailing }
+    return nil
+  }
+
+  /// Ends this bar's part in the window's terminal drag, and its highlight.
+  private func endTerminalDrag() {
+    overTerminalDrop = false
+    pointerReorder = nil
+    store.terminalDrag.cancel()
+  }
+
   /// A reorder translation kept within the tab run (`TabReorderDrag.clamped`): the bar spans the
   /// full title-bar width, so the chip would otherwise cross the empty fill.
   private func clampReorder(_ translation: CGFloat, draggedIndex index: Int) -> CGFloat {
@@ -288,27 +409,53 @@ struct WorkroomTabBar: View {
 
   /// Commit the reorder on drop: rewrite `store.workroomTabOrder` (a `@Published`, so the parent view
   /// re-renders with the new order — a bare `Defaults` write didn't re-render, so the chip snapped
-  /// back), then clear drag state (animated, so the row settles). The order is filtered through
-  /// `orderedActiveTargets` on every read, so writing the current active order is self-healing.
-  /// `translation` is the caller's own final, clamped displacement (from `onEnded`'s `value`) —
-  /// `drag.commit` itself resolves off exactly that, never the live `drag.translation`.
-  ///
-  /// `drag.commit` must be CALLED inside `withAnimation`, not just the order write it gates: `commit`
-  /// resets `drag.id`/`translation` as a side effect, which is what drives this chip's `offsetX` back
-  /// to 0. Calling it outside the animation block (as a prior version of this function did, via a
-  /// `guard` ahead of `withAnimation`) snapped the chip back to its pre-drag position instantly, one
-  /// frame before the reorder animated in — a visible flick-back before the tab settled.
+  /// back). The order is filtered through `orderedActiveTargets` on every read, so writing the
+  /// current active order is self-healing. `translation` is the caller's own final, clamped
+  /// displacement (from `onEnded`'s `value`), never the live `drag.translation`, which a fast drag's
+  /// last `onChanged` can leave short.
   private func commitDrag(translation: CGFloat) {
-    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-      guard
-        let move = drag.commit(
-          ids: tabs.map(\.sid), spacing: tabSpacing, finalTranslation: translation)
-      else { return }
-      var order = tabs.compactMap { $0.sid.targetID }
-      let moved = order.remove(at: move.from)
-      order.insert(moved, at: move.to)
-      store.workroomTabOrder = order
+    guard let id = drag.id, let from = tabs.firstIndex(where: { $0.sid == id }) else {
+      return drag.cancel()
     }
+    commitDrag(
+      at: TabReorder.dropTargetIndex(
+        widths: tabs.map { drag.widths[$0.sid] ?? 0 }, draggedIndex: from,
+        translation: translation, spacing: tabSpacing))
+  }
+
+  /// Commit the reorder to drop index `target`. The drag isn't cleared here but once the new order
+  /// reaches the bar (`settle`): the tabs arrive a pass later, and clearing it now slid the dropped
+  /// tab back toward where it started, then flung it to its new place when they came (#652).
+  private func commitDrag(at target: Int) {
+    guard let id = drag.id, let from = tabs.firstIndex(where: { $0.sid == id }),
+      tabs.indices.contains(target), target != from
+    else {
+      return withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { drag.cancel() }
+    }
+    settleIndex = target
+    settle(id, hidden: false)
+    var order = tabs.compactMap { $0.sid.targetID }
+    let moved = order.remove(at: from)
+    order.insert(moved, at: target)
+    store.workroomTabOrder = order
+  }
+
+  /// Where the tab at `index` would land with the pointer at `point`, when some tab takes its drop.
+  struct PointerReorder: Equatable {
+    let index: Int
+    /// The pointer is in the tabs' row, where the gap stays open.
+    let inRow: Bool
+  }
+
+  private func pointerReorder(draggedIndex index: Int, at point: CGPoint) -> PointerReorder? {
+    let measured = store.terminalDrag.titleBarTabs()
+    let spans = tabs.compactMap { measured[$0.sid] }
+    guard spans.count == tabs.count, spans.contains(where: \.takes) else { return nil }
+    let target = TabReorder.dropTargetIndex(
+      spans: spans.map { $0.rect.minX...$0.rect.maxX }, draggedIndex: index, pointerX: point.x,
+      joinable: spans.map(\.takes), band: TerminalDragSession.titleBarBandInset)
+    let row = spans.map(\.rect).reduce(spans[0].rect) { $0.union($1) }
+    return PointerReorder(index: target, inRow: (row.minY...row.maxY).contains(point.y))
   }
 
   /// The glyph box inside each trailing button's hover well. **Fixed**, not the symbol's intrinsic
@@ -405,6 +552,16 @@ private struct WorkroomTabChip: View {
     return false
   }
 
+  /// A house marks a project root, a terminal a standalone terminal, stacked squares a terminal
+  /// group, else the workroom's glyph.
+  private var glyph: String {
+    switch sid {
+    case .root: return "house"
+    case .standalone, .terminalGroup: return sid.terminalsGlyph ?? TerminalGroup.glyph
+    case .project, .workroom, .creation: return target.workroomGlyph
+    }
+  }
+
   /// The project name — the chip's primary label for every kind of target. A workroom's own name
   /// rides alongside as `workroomName` (secondary text); a root is marked by its house glyph.
   private var primaryLabel: String {
@@ -412,7 +569,17 @@ private struct WorkroomTabChip: View {
     case .workroom(let project, _), .root(let project), .project(let project),
       .creation(let project, _):
       return (project as NSString).lastPathComponent
+    case .standalone, .terminalGroup:
+      // A standalone terminal's tab is its terminal's name, a group's its own (ADR 0077).
+      return target.title
     }
+  }
+
+  /// A standalone terminal's title in its parts, so the chip fades a default title's folder; nil
+  /// for any other kind of tab.
+  private var standaloneTitle: TerminalTitle? {
+    guard case .standalone = sid, let id = sid.targetID else { return nil }
+    return store.terminalsSection.terminalTitles(of: id).first
   }
 
   /// A workroom's own name (nil for a root/project) — rendered as trailing secondary text. Resolves
@@ -439,6 +606,18 @@ private struct WorkroomTabChip: View {
     WorkroomLabel(project: primaryLabel, workroom: workroomName).full
   }
 
+  /// The name Close asks about, for the right-click menu and the hover ✕. Nil while a create's run
+  /// lasts (#483): its chip has no terminals to close then, and its pane's own actions end it.
+  private var closeName: String? {
+    lifecycle.isCreationBlocking(target.id) ? nil : workroomName ?? primaryLabel
+  }
+
+  /// Close every terminal of this tab, as the menu's Close does: it asks first.
+  private func requestClose() {
+    guard let closeName else { return }
+    store.modals.pendingWorkroomClose = PendingWorkroomClose(target: target, name: closeName)
+  }
+
   private var hasActivity: Bool { notifications.count(target: target.id) > 0 }
   private var hasRunTab: Bool { runCommand.runTabID(for: target.id) != nil }
   private var runRunning: Bool { runCommand.isRunCommandRunning(for: target.id) }
@@ -458,19 +637,20 @@ private struct WorkroomTabChip: View {
       // only, a workroom chip shows the full set — same as before the extraction. A create's chip has
       // no terminals to close while its run lasts (#483): its pane's own actions end it.
       .contextMenu {
-        WorkroomMenuAdapter(
-          sid: sid, target: target,
-          closeName: lifecycle.isCreationBlocking(target.id) ? nil : workroomName ?? primaryLabel,
-          style: .full)
+        WorkroomMenuAdapter(sid: sid, target: target, closeName: closeName, style: .full)
       }
       .accessibilityElement(children: .combine)
       .accessibilityLabel(
         accessibilityLabel(hasActivity: hasActivity, running: hasRunTab && runRunning)
       )
+      // The hover ✕ is hidden until the pointer is over the tab, so Close is an action here too.
+      .accessibilityActions {
+        if closeName != nil { Button("Close") { requestClose() } }
+      }
       .accessibilityIdentifier("workroom.tab.\(target.id)")
       .accessibilityAddTraits(isActive ? .isSelected : [])
       .scaleEffect(isDragging ? 1.04 : 1)
-      .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)
+      .shadow(color: .black.opacity(isDragging ? 0.2 : 0), radius: isDragging ? 2.5 : 0, y: 1)
   }
 
   /// The icons + title row: everything inside the pill's padding.
@@ -480,7 +660,7 @@ private struct WorkroomTabChip: View {
     HStack(spacing: 6) {
       // Leading glyph: a house marks a project root, a cube an isolated workroom — set before the name.
       // Its tint carries the VCS dirty signal (orange) in place of a separate status dot.
-      Image(systemName: isRoot ? "house" : target.workroomGlyph)
+      Image(systemName: glyph)
         .font(.system(size: 10))
         .foregroundStyle(
           VCSStatusPresentation.iconTint(vcsStatus.workroomStatuses[sid] ?? .unresolved, tokens)
@@ -505,8 +685,18 @@ private struct WorkroomTabChip: View {
             count: terminals.blockedTerminalCount(forTargetID: target.id)))
       }
       HStack(alignment: .firstTextBaseline, spacing: 4) {
-        Text(primaryLabel)
-          .foregroundStyle(hasActivity ? tokens.accent : Color.primary)
+        if let standaloneTitle {
+          // Its folder a size smaller than its program, as on a pane's tabs.
+          TerminalTitleLabel(title: standaloneTitle, folderFont: .caption)
+            .foregroundStyle(
+              hasActivity ? tokens.accent : Color.primary,
+              hasActivity ? tokens.accent.opacity(0.7) : tokens.fgMuted
+            )
+            .truncationMode(.middle)
+        } else {
+          Text(primaryLabel)
+            .foregroundStyle(hasActivity ? tokens.accent : Color.primary)
+        }
         if let workroomName {
           Text("/").foregroundStyle(.tertiary)
           Text(workroomName).foregroundStyle(isActive ? Color.primary : .secondary)
@@ -555,6 +745,13 @@ private struct WorkroomTabChip: View {
     contentRow
       .padding(.horizontal, 10)
       .padding(.vertical, 4)
+      // The ✕ shows on hover only, over the title's trailing end, as on a pane's tabs.
+      .tabHoverClose(isHovered: isHovered && closeName != nil) {
+        TabCloseButton(action: requestClose)
+          .help("Close \(closeName ?? fullTitle)")
+          .accessibilityLabel("Close \(closeName ?? fullTitle)")
+          .accessibilityIdentifier("workroom.tabClose.\(target.id)")
+      }
       // Selection & hover fill — the same treatment as the terminal tab chips: the selected tab is
       // filled with the terminal background (`bg`) so it stands distinct from the strip; a hovered idle
       // tab gets the faint hover wash. Front-most background so a dragged chip's material lift sits

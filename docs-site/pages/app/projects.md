@@ -15,9 +15,13 @@ Right-click a project row for **New Workroom**, **Project Settings…** and **De
 
 To hide or show the sidebar, use **View ▸ Projects** (<kbd>⌃⌘S</kbd>).
 
+### The Projects section {nightly}
+
+The projects sit in the **Projects** section of the sidebar, under the **Terminals** section. Each section's heading stays at the top of its part of the sidebar, and each section scrolls on its own, as the inspector's sections do. Drag the line between the two sections to give one more room; Workroom remembers where you leave it. Until you drag it, the **Terminals** section is as tall as its rows, up to under half the sidebar, and **Projects** takes the rest. Click **Projects** to fold every project away, down to the heading, and click it again to show them. Workroom remembers the fold when you relaunch. The **+** beside **Projects** adds a project, and it is there even when you have no projects yet but the sidebar shows standalone terminals.
+
 ## Add a project
 
-1. Click the **+** at the bottom right of the sidebar, or choose **File ▸ New Project…**. With no projects yet, the sidebar is hidden and the main window shows an **Add Project…** button instead.
+1. Click the **+** at the bottom right of the sidebar, or choose **File ▸ New Project…**. Nightly only: the **+** is beside **Projects** at the top of the projects instead. With no projects yet, the sidebar is hidden and the main window shows an **Add Project…** button instead.
 2. Choose one of the three sources:
    - **From existing path…** adds a Git repository that is already on disk.
    - **Create new directory…** makes a new folder and runs `git init` in it.

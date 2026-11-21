@@ -50,6 +50,8 @@ struct MenuStateAdapter: ViewModifier {
           // gated on `modal` — ⌘N/⌘O must still work while a picker is open, because raising one
           // picker replaces the other and that's the documented behaviour (issue #94).
           hasProjects: !store.projectStore.projects.isEmpty,
+          // `hasSidebarContent`: the Projects toggle, on for a window with only terminals (#657).
+          hasSidebarContent: store.sidebarHasContent,
           // `hasWorkroomAnchor`: the two "(split right)" items (⌥⌘N/⌥⌘O, issue #163) need a
           // workroom to split BESIDE. Deliberately NOT gated on `modal`, for the same reason
           // `hasProjects` isn't — a disabled item drops its key equivalent, and these chords must
@@ -125,6 +127,7 @@ private struct MenuStateValues: ViewModifier {
   let hasNotifications: Bool
   let hasWaitingTerminals: Bool
   let hasProjects: Bool
+  let hasSidebarContent: Bool
   let hasWorkroomAnchor: Bool
   let canNavigateBack: Bool
   let canNavigateForward: Bool
@@ -150,6 +153,7 @@ private struct MenuStateValues: ViewModifier {
       .focusedSceneValue(\.hasNotifications, hasNotifications)
       .focusedSceneValue(\.hasWaitingTerminals, hasWaitingTerminals)
       .focusedSceneValue(\.hasProjects, hasProjects)
+      .focusedSceneValue(\.hasSidebarContent, hasSidebarContent)
       .focusedSceneValue(\.hasWorkroomAnchor, hasWorkroomAnchor)
       .focusedSceneValue(\.canNavigateBack, canNavigateBack)
       .focusedSceneValue(\.canNavigateForward, canNavigateForward)
