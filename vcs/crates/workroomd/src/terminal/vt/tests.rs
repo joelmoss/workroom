@@ -1321,9 +1321,9 @@ fn a_command_end_closes_only_a_command_the_shell_started() {
     assert_eq!(commands(b"\x1b]133;D;0\x07"), [], "a D with no C");
 }
 
-/// Value: protects=`terminal.command` never joins its command to text at the prompt (#691); fails_when=typed text, a PS2 line or a cursor moved back is missed, or a multi-line prompt, a right prompt or an earlier command's line counts; why_new=the input's cells are known only by libghostty's semantic marks; seam=none
+/// Value: protects=`terminal.command` never joins its command to text at the prompt (#691); fails_when=typed text, a PS2 line or text after a cursor moved back (to the line's start too) is missed, or a multi-line prompt, a right prompt at the row's end or an earlier command's line counts; why_new=the input's cells are known only by libghostty's semantic marks; seam=none
 #[test]
-fn typed_input_is_the_prompts_input_before_the_cursor_or_a_continued_line() {
+fn typed_input_is_text_anywhere_in_the_prompts_input_but_a_right_prompt() {
     let typed = |bytes: &str| {
         let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
         terminal.write(bytes.as_bytes());
@@ -1353,8 +1353,24 @@ fn typed_input_is_the_prompts_input_before_the_cursor_or_a_continued_line() {
         "the last command's line"
     );
     assert!(
-        !typed(&format!("{prompt}\x1b7\x1b[70Gright\x1b8")),
-        "a right prompt, after the cursor"
+        typed(&format!("{prompt}git st\x1b[6D")),
+        "a recalled line, the cursor moved to its start"
+    );
+    assert!(
+        !typed(&format!("{prompt}\x1b7\x1b[76Gright\x1b8")),
+        "a right prompt, at the row's end"
+    );
+    assert!(
+        !typed(&format!("{prompt}\x1b7\x1b[75Gright\x1b8")),
+        "a right prompt a column short of it, as zsh's RPROMPT indent leaves it"
+    );
+    assert!(
+        typed(&format!("{prompt}\x1b7\x1b[40Gmiddle\x1b8")),
+        "text after the cursor that no right prompt would be: taken as input"
+    );
+    assert!(
+        typed(&format!("{prompt}git st\x1b[6D\x1b7\x1b[75Gright\x1b8")),
+        "a recalled line beside a right prompt"
     );
     assert!(!typed("$ "), "no marks");
 }

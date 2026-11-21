@@ -809,10 +809,15 @@ impl ShadowTerminal {
     /// Whether the shell's input line already holds text, so a command typed now would be joined
     /// to it (#691): the input goes on in a secondary prompt (PS2: an open quote, a trailing `\`),
     /// or a cell of the prompt's input (after its B, by libghostty's semantic marks) holds a
-    /// character other than a space, from the prompt's first line to the cursor. Only before the
-    /// cursor: a right prompt (zsh's RPROMPT) and an autosuggestion are drawn after it, and the
-    /// input's own cells are where the cursor has been. False when the shell isn't taking input
-    /// by its marks, or the screen can't be read.
+    /// character other than a space, anywhere on the prompt's rows, from its first line (the
+    /// nearest a primary prompt starts) to the screen's foot, the cursor wherever it is: a
+    /// recalled line with the cursor moved to its start is text after the cursor. The one text
+    /// that isn't the input is a right prompt (zsh's RPROMPT, which its integration doesn't mark):
+    /// text after the cursor, on its row, that the cursor and the cell after it don't touch and
+    /// that reaches the row's last two columns, where a right prompt ends. Anything else after the
+    /// cursor is taken as input, the safe side: an autosuggestion on an empty line (which
+    /// zsh-autosuggestions and fish show only once something is typed) would start at the cursor.
+    /// False when the shell isn't taking input by its marks; true when the screen can't be read.
     pub fn input_typed(&self) -> bool {
         let effects = self.terminal.callbacks();
         if effects.continued {
@@ -822,12 +827,13 @@ impl ShadowTerminal {
             return false;
         }
         let read = |data| self.get_u32(data);
-        let (Some(x), Some(y), Some(columns)) = (
+        let (Some(x), Some(y), Some(columns), Some(rows)) = (
             read(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_X),
             read(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_Y),
             read(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS),
+            read(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS),
         ) else {
-            return false;
+            return true;
         };
         let at = |x: u32, y: u32| Point {
             tag: GhosttyPointTag_GHOSTTY_POINT_TAG_ACTIVE,
@@ -843,17 +849,29 @@ impl ShadowTerminal {
                     == Some(GhosttyRowSemanticPrompt_GHOSTTY_ROW_SEMANTIC_PROMPT)
             })
             .unwrap_or(y);
-        (first..=y).any(|row| {
+        // Unreadable counts as text, the safe side.
+        let text = |column: u32, row: u32| {
+            self.terminal
+                .cell_semantic(at(column, row))
+                .is_none_or(|(semantic, codepoint)| {
+                    semantic == GhosttyCellSemanticContent_GHOSTTY_CELL_SEMANTIC_INPUT
+                        && !matches!(codepoint, 0 | 0x20)
+                })
+        };
+        let before = (first..=y).any(|row| {
             let end = if row == y { x } else { columns };
-            (0..end).any(|column| {
-                self.terminal
-                    .cell_semantic(at(column, row))
-                    .is_some_and(|(semantic, codepoint)| {
-                        semantic == GhosttyCellSemanticContent_GHOSTTY_CELL_SEMANTIC_INPUT
-                            && !matches!(codepoint, 0 | 0x20)
-                    })
-            })
-        })
+            (0..end).any(|column| text(column, row))
+        });
+        let below = (y + 1..rows).any(|row| (0..columns).any(|column| text(column, row)));
+        if before || below {
+            return true;
+        }
+        let after: Vec<u32> = (x..columns).filter(|column| text(*column, y)).collect();
+        let Some(&last) = after.last() else {
+            return false;
+        };
+        let right_prompt = after[0] > x + 1 && last + 2 >= columns;
+        !right_prompt
     }
 
     pub fn command_open(&self) -> Option<bool> {
