@@ -3,37 +3,113 @@ import SwiftUI
 import WorkroomDomain
 
 /// The Terminals section at the top of the sidebar (ADR 0077): a heading that folds as a project
-/// does, with New Standalone Terminal beside it, and one row per terminal with no project. The rows
-/// are the app's `TerminalsSection`, so every window lists the same ones.
+/// does, with New Standalone Terminal and New Terminal Group… beside it, and one row per terminal
+/// with no project and per terminal group, a group's terminals under it while it is unfolded. The
+/// rows are the app's `TerminalsSection`, so every window lists the same ones; a group's terminals
+/// are this window's. Rows reorder by dragging.
 struct SidebarTerminalsSection: View {
   let store: AppStore
   let actions: SidebarActions
   let headingInsets: EdgeInsets
   let rowInsets: EdgeInsets
+  let terminalRowInsets: EdgeInsets
+  @Environment(\.themeTokens) private var tokens
 
   private var section: TerminalsSection { store.terminalsSection }
 
+  /// One List row of the section: an entry's own row, or one of a group's terminals under it.
+  enum Item: Hashable {
+    case entry(TargetID)
+    case terminal(TerminalTab.ID)
+  }
+
   var body: some View {
-    SidebarTerminalsHeading(section: section, newTerminal: { store.newStandaloneTerminal() })
-      .listRowInsets(headingInsets)
-      .listRowSeparator(.hidden)
-      .listRowBackground(Color.clear)
-    if !section.isFolded {
-      ForEach(section.entries, id: \.self) { entry in
-        let sid = entry.sidebarID
-        SidebarStandaloneRow(store: store, sid: sid, actions: actions)
-          .listRowInsets(rowInsets)
-          .listRowSeparator(.hidden)
-          .listRowBackground(SidebarRowBackground(store: store, id: sid, hovered: false))
+    SidebarTerminalsHeading(
+      section: section, newTerminal: { store.newStandaloneTerminal() },
+      newGroup: {
+        TerminalGroupNamePrompt.present { [store] name in _ = store.newTerminalGroup(named: name) }
       }
+    )
+    .listRowInsets(headingInsets)
+    .listRowSeparator(.hidden)
+    .listRowBackground(Color.clear)
+    if !section.isFolded {
+      let rows = items
+      ForEach(rows, id: \.item) { row in
+        view(for: row)
+      }
+      .onMove { offsets, destination in
+        Self.move(rows.map(\.item), offsets, to: destination, in: section)
+      }
+    }
+  }
+
+  private struct Row {
+    let item: Item
+    let entry: TerminalsSection.Entry
+    let target: TerminalTarget?
+  }
+
+  /// The section's rows top to bottom, each unfolded group followed by this window's terminals in it.
+  private var items: [Row] {
+    section.entries.flatMap { entry -> [Row] in
+      let own = Row(item: .entry(entry.targetID), entry: entry, target: nil)
+      guard case .group(let group) = entry, !group.isFolded,
+        let target = store.target(for: entry.sidebarID)
+      else { return [own] }
+      return [own]
+        + store.terminals.tabs(for: target).map {
+          Row(item: .terminal($0.id), entry: entry, target: target)
+        }
+    }
+  }
+
+  @ViewBuilder private func view(for row: Row) -> some View {
+    let sid = row.entry.sidebarID
+    switch (row.item, row.entry) {
+    case (.terminal(let tabID), _):
+      if let target = row.target {
+        SidebarTerminalGroupChild(
+          store: store, tokens: tokens, tabID: tabID, target: target, parent: sid,
+          actions: actions, insets: terminalRowInsets
+        )
+        .moveDisabled(true)
+      }
+    case (.entry, .standalone):
+      SidebarStandaloneRow(store: store, sid: sid, actions: actions)
+        .listRowInsets(rowInsets)
+        .listRowSeparator(.hidden)
+        .listRowBackground(SidebarRowBackground(store: store, id: sid, hovered: false))
+    case (.entry, .group(let group)):
+      SidebarTerminalGroupRow(store: store, sid: sid, group: group, select: actions.select)
+        .listRowInsets(rowInsets)
+        .listRowSeparator(.hidden)
+        .listRowBackground(SidebarRowBackground(store: store, id: sid, hovered: false))
+    }
+  }
+
+  /// A drag of the rows at `offsets` (always entries' own rows: a group's terminals don't move) to
+  /// List position `destination`: each lands above the first entry row at or after it, so a drop
+  /// among a group's terminals lands after that group.
+  static func move(
+    _ items: [Item], _ offsets: IndexSet, to destination: Int, in section: TerminalsSection
+  ) {
+    let before = items[min(destination, items.count)...].lazy.compactMap { item -> TargetID? in
+      if case .entry(let id) = item { return id }
+      return nil
+    }.first
+    for offset in offsets {
+      guard case .entry(let id) = items[offset], id != before else { continue }
+      section.move(id, before: before)
     }
   }
 }
 
-/// "Terminals", its fold chevron and its New Standalone Terminal button.
+/// "Terminals", its fold chevron, and its New Standalone Terminal and New Terminal Group… buttons.
 private struct SidebarTerminalsHeading: View {
   let section: TerminalsSection
   let newTerminal: () -> Void
+  let newGroup: () -> Void
 
   var body: some View {
     HStack(spacing: Spacing.s) {
@@ -68,6 +144,18 @@ private struct SidebarTerminalsHeading: View {
       )
       .accessibilityLabel("New Standalone Terminal")
       .accessibilityIdentifier("sidebar.terminals.new")
+
+      Button(action: newGroup) {
+        Image(systemName: TerminalGroup.glyph)
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(.secondary)
+          .frame(width: SidebarRowMetrics.caretWidth, height: SidebarRowMetrics.rowHeight)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .help("New Terminal Group…")
+      .accessibilityLabel("New Terminal Group")
+      .accessibilityIdentifier("sidebar.terminals.newGroup")
     }
     .padding(.trailing, Spacing.s)
     .frame(height: SidebarRowMetrics.rowHeight)

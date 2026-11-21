@@ -21,21 +21,24 @@ final class TerminalsSection {
   /// unless they pass a file, through `AppStore`'s init.
   static let shared = TerminalsSection(file: .forCurrentEnvironment())
 
-  /// One row of the section. A terminal group's case (name, starting folder, fold state, whether
-  /// it is the built-in one) lands beside `standalone` (#658); the stored form already carries a
-  /// `kind` so an older build drops a group entry rather than the whole file.
+  /// One row of the section: a standalone terminal, or a terminal group with what the user set on
+  /// it. The stored form carries a `kind`, so an older build drops an entry it doesn't know rather
+  /// than the whole file.
   enum Entry: Hashable, Sendable {
     case standalone(UUID)
+    case group(TerminalGroup)
 
     var targetID: TargetID {
       switch self {
       case .standalone(let id): return .standalone(id)
+      case .group(let group): return .terminalGroup(group.id)
       }
     }
 
     var sidebarID: SidebarID {
       switch self {
       case .standalone(let id): return .standalone(id)
+      case .group(let group): return .terminalGroup(group.id)
       }
     }
   }
@@ -72,20 +75,26 @@ final class TerminalsSection {
     holders.remove(holder)
   }
 
+  /// Every window (and, from #661, the Quick Terminal host) holding these targets' tabs now.
+  var allHolders: [any TerminalsSectionHolder] { holders.elements }
   /// The holder other than `asker` that has `id`'s terminal, if any: the window (or panel) a
   /// standalone terminal is in, which is one at a time.
   func holder(of id: TargetID, other asker: AnyObject) -> (any TerminalsSectionHolder)? {
     holders.elements.first { $0 !== asker && $0.holdsTerminals(forTargetID: id) }
   }
 
-  /// Drops the rows whose terminal no holder has, and returns them. A standalone terminal is
-  /// exactly one live terminal, so a row nothing restored (a crash that lost its window's layout)
-  /// has nothing to show. Run once, at launch, after the saved windows are restored. Does nothing
-  /// while no window has registered, which would read every row as empty.
+  /// Drops the standalone terminals' rows whose terminal no holder has, and returns them. A
+  /// standalone terminal is exactly one live terminal, so a row nothing restored (a crash that lost
+  /// its window's layout) has nothing to show. A named group is kept empty, so it stays. Run once,
+  /// at launch, after the saved windows are restored. Does nothing while no window has registered,
+  /// which would read every row as empty.
   @discardableResult
   func pruneUnheld() -> [TargetID] {
     guard !holders.elements.isEmpty else { return [] }
-    let unheld = entries.map(\.targetID).filter { id in
+    let unheld = entries.compactMap { entry -> TargetID? in
+      guard case .standalone = entry else { return nil }
+      return entry.targetID
+    }.filter { id in
       !holders.elements.contains { $0.holdsTerminals(forTargetID: id) }
     }
     for id in unheld { remove(id) }
@@ -93,6 +102,13 @@ final class TerminalsSection {
   }
 
   // MARK: Rows
+
+  /// Changes the rows in place and saves them once: how the groups' own edits (`+Groups`) write.
+  func updateEntries(_ change: (inout [Entry]) -> Void) {
+    let before = entries
+    change(&entries)
+    if entries != before { save() }
+  }
 
   /// Adds a standalone terminal's row, just below `anchor` when that is a row of this section,
   /// else at the end, and returns its target. `id` is fixed only by the UI-test fixture.
@@ -129,13 +145,23 @@ final class TerminalsSection {
 
   /// The live target `sid` opens, or nil when it is not a row of this section.
   ///
-  /// A standalone terminal is titled by its terminal's name, starts in "New terminals open in", and
-  /// is never unavailable: it needs nothing but this Mac.
+  /// A standalone terminal is titled by its terminal's name and starts in "New terminals open in";
+  /// a group is titled and started as `TerminalGroup` says. Neither is ever unavailable: they need
+  /// nothing but this Mac.
   func target(for sid: SidebarID) -> TerminalTarget? {
-    guard let id = sid.targetID, contains(id) else { return nil }
-    return TerminalTarget(
-      id: id, title: terminalNames(of: id).first ?? Self.untitled,
-      path: Self.newTerminalDirectory(), unavailability: nil)
+    guard let id = sid.targetID, let entry = entries.first(where: { $0.targetID == id }) else {
+      return nil
+    }
+    switch entry {
+    case .standalone:
+      return TerminalTarget(
+        id: id, title: terminalNames(of: id).first ?? Self.untitled,
+        path: Self.newTerminalDirectory(), unavailability: nil)
+    case .group(let group):
+      return TerminalTarget(
+        id: id, title: group.title(terminalNames: terminalNames(of: id)),
+        path: group.workingDirectory, unavailability: nil)
+    }
   }
 
   /// What a standalone terminal is called before its terminal has a name to give it.
@@ -183,6 +209,10 @@ final class TerminalsSection {
 protocol TerminalsSectionHolder: AnyObject {
   /// The names of this holder's terminals in `targetID`, in tab order; empty when it holds none.
   func terminalNames(forTargetID targetID: TargetID) -> [String]
+  /// Makes each of this holder's terminals in `group` a standalone terminal of its own, listed
+  /// after `anchor` in turn, and returns the last row it listed (`anchor` when none): a group's
+  /// delete, asked of every holder. A terminal that can't be moved stays in the group.
+  func releaseTerminals(of group: TargetID, after anchor: TargetID) async -> TargetID
   /// Whether this holder has a terminal in `targetID`, one popped out into a window of its own
   /// included.
   func holdsTerminals(forTargetID targetID: TargetID) -> Bool
@@ -214,17 +244,28 @@ final class TerminalsSectionFile: @unchecked Sendable {
     }
   }
 
-  /// One entry as stored: its kind and id. The field names are the contract.
+  /// One entry as stored: its kind and id, and a group's name, starting folder and fold, each
+  /// written only when set. The field names are the contract.
   struct StoredEntry: Codable, Sendable, Equatable {
     static let standaloneKind = "standalone"
+    static let groupKind = "group"
     var kind: String
     var id: UUID
+    var name: String?
+    var folder: String?
+    var folded: Bool?
 
     init(_ entry: TerminalsSection.Entry) {
       switch entry {
       case .standalone(let id):
         kind = Self.standaloneKind
         self.id = id
+      case .group(let group):
+        kind = Self.groupKind
+        id = group.id
+        name = group.name
+        folder = group.startingFolder
+        folded = group.isFolded ? true : nil
       }
     }
 
@@ -232,6 +273,10 @@ final class TerminalsSectionFile: @unchecked Sendable {
       let container = try decoder.container(keyedBy: CodingKeys.self)
       kind = try container.decode(String.self, forKey: .kind)
       id = try container.decode(UUID.self, forKey: .id)
+      // A field of the wrong type is read as unset, so one bad value never drops the group.
+      name = try? container.decodeIfPresent(String.self, forKey: .name)
+      folder = try? container.decodeIfPresent(String.self, forKey: .folder)
+      folded = try? container.decodeIfPresent(Bool.self, forKey: .folded)
       // A kind no build of this one's knows is dropped by `@Lossy`, not kept as something else.
       guard entry != nil else {
         throw DecodingError.dataCorruptedError(
@@ -240,7 +285,15 @@ final class TerminalsSectionFile: @unchecked Sendable {
     }
 
     var entry: TerminalsSection.Entry? {
-      kind == Self.standaloneKind ? .standalone(id) : nil
+      switch kind {
+      case Self.standaloneKind: return .standalone(id)
+      case Self.groupKind:
+        return .group(
+          TerminalGroup(
+            id: id, name: TerminalPanes.cleanedName(name), startingFolder: folder,
+            isFolded: folded ?? false))
+      default: return nil
+      }
     }
   }
 

@@ -11,6 +11,8 @@ public enum SidebarID: Hashable, Sendable {
   case creation(project: String, id: UUID)
   /// A standalone terminal's row in the Terminals section, above the projects (ADR 0077).
   case standalone(UUID)
+  /// A terminal group's row in the Terminals section (ADR 0077).
+  case terminalGroup(UUID)
 
   /// Whether this id is scoped to the given project path — its row, its root, or one of its
   /// workrooms. Used to clear selection when a whole project is deleted.
@@ -19,7 +21,7 @@ public enum SidebarID: Hashable, Sendable {
     case .project(let p), .root(project: let p), .workroom(project: let p, name: _),
       .creation(project: let p, id: _):
       return p == path
-    case .standalone:
+    case .standalone, .terminalGroup:
       return false
     }
   }
@@ -27,7 +29,9 @@ public enum SidebarID: Hashable, Sendable {
   /// Whether this row is in the Terminals section above the projects: a terminal with no project,
   /// so it has no project path, no version-control status and no inspector (ADR 0077).
   public var isInTerminalsSection: Bool {
-    if case .standalone = self { return true }
-    return false
+    switch self {
+    case .standalone, .terminalGroup: return true
+    case .project, .root, .workroom, .creation: return false
+    }
   }
 }

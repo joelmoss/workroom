@@ -48,7 +48,7 @@ struct ProjectSidebar: View, Equatable {
   fileprivate static let rowInsets = EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 0)
   fileprivate static let childRowInsets = EdgeInsets(
     top: 2, leading: 6 + 6, bottom: 2, trailing: 0)
-  fileprivate static let terminalRowInsets = EdgeInsets(
+  static let terminalRowInsets = EdgeInsets(
     top: 3, leading: 6 + 6, bottom: 3, trailing: 0)
 
   var body: some View {
@@ -95,7 +95,7 @@ struct ProjectSidebar: View, Equatable {
       // Terminals with no project, above the projects (ADR 0077).
       SidebarTerminalsSection(
         store: store, actions: actions, headingInsets: Self.rowInsets,
-        rowInsets: Self.childRowInsets)
+        rowInsets: Self.childRowInsets, terminalRowInsets: Self.terminalRowInsets)
       ForEach(projectStore.projects) { project in
         SidebarHoverRegion(id: .project(project.path)) { hovered in
           SidebarProjectRowAdapter(project: project, hovered: hovered, actions: actions)
