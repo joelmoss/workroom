@@ -29,15 +29,18 @@ LAUNCH=0
 # Every transition, numbered, one a line ("<seq> <status>"), beside the status file: the daemon
 # hands each to the waits on this run (`workroom wait --run`), so a state written and replaced
 # between two of its reads (`stopping`, straight into `starting` on a restart) still reaches them.
-# The status file keeps only the latest, for the app. Bounded: every 64th transition starts the
-# log afresh, and the daemon keeps its place by number, not by offset.
+# The status file keeps only the latest, for the app. Bounded: every 64th transition cuts the log
+# to its last 32 lines (atomically, temp + rename), so the transitions the daemon hasn't read yet
+# (a fast restart writes three between two of its reads) survive the cut; it keeps its place by
+# number, not by offset, so the overlap is read once.
 TRANSITIONS="$STATUS.log"
 SEQ=0
 
 write_status() {  # atomic: temp + rename, so a watcher never reads a half-written line
   SEQ=$((SEQ + 1))
   if [ $((SEQ % 64)) -eq 0 ]; then
-    printf '' 2>/dev/null >"$TRANSITIONS"  # not `:`, whose failed redirect would end the shell
+    __l="$TRANSITIONS.tmp.$$"
+    tail -n 32 "$TRANSITIONS" 2>/dev/null >"$__l" && mv -f "$__l" "$TRANSITIONS" 2>/dev/null
   fi
   # Before the status file, so a transition the daemon has read there is in the log already.
   # (stderr first, so a log that can't be written says nothing on the run's screen.)

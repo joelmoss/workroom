@@ -36,3 +36,44 @@ fn a_quote_in_the_command_survives() {
     let argv = strings(invocation("/s", "echo 'hi'", "/bin/sh"));
     assert_eq!(argv[7], r"exec '/bin/sh' -c 'echo '\''hi'\'''");
 }
+
+/// The cut every 64th transition keeps the ones the daemon hasn't read yet: a restart that
+/// writes `stopping` (63rd), `starting` (64th, the cut) and `running` between two of its reads
+/// still leaves `stopping` in the log, and the log stays bounded.
+#[test]
+fn the_logs_cut_keeps_the_transitions_before_it() {
+    let base = std::env::temp_dir();
+    let dir = (0..)
+        .map(|n| base.join(format!("wr-supervisor-log-{}-{n}", std::process::id())))
+        .find(|dir| std::fs::create_dir(dir).is_ok())
+        .unwrap();
+    let status = dir.join("run.status");
+    let start = SUPERVISOR.find("write_status() {").unwrap();
+    let end = start + SUPERVISOR[start..].find("\n}\n").unwrap() + 3;
+    let script = format!(
+        "STATUS='{}'; TRANSITIONS=\"$STATUS.log\"; SEQ=0\n{}\
+         i=1; while [ $i -le 62 ]; do write_status \"x $i\"; i=$((i + 1)); done\n\
+         write_status stopping; write_status starting; write_status 'running 7'\n",
+        status.display(),
+        &SUPERVISOR[start..end]
+    );
+    let ran = std::process::Command::new("/bin/sh")
+        .args(["-c", &script])
+        .status()
+        .unwrap();
+    let log = crate::terminal::run::transitions(&status);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(ran.success());
+    let log = log.expect("a log");
+    let tail: Vec<_> = log.iter().rev().take(3).rev().cloned().collect();
+    assert_eq!(
+        tail,
+        [
+            (63, "stopping".to_string()),
+            (64, "starting".to_string()),
+            (65, "running 7".to_string())
+        ]
+    );
+    assert!(log.len() <= 34, "bounded: {} lines", log.len());
+}
