@@ -70,13 +70,14 @@ pub(super) fn stream(
     params: Value,
     mut each: impl FnMut(Replied) -> bool,
 ) -> Result<(), CliError> {
-    let encode = |params: &Value| {
+    let encode_as = |method: &str, params: &Value| {
         let mut request = json!({"method": method, "params": params});
         if let Some(pane) = context.env(PANE_VARIABLE).filter(|pane| !pane.is_empty()) {
             request["caller"] = Value::String(pane);
         }
         serde_json::to_vec(&request).expect("a request serializes")
     };
+    let encode = |params: &Value| encode_as(method, params);
     // A request too big to send is bad input whether or not a daemon would take it, so it is
     // refused (2) before one is looked for.
     let mut request = encode(&params);
@@ -114,6 +115,11 @@ pub(super) fn stream(
     let mut answer = answer_timeout(method, &params);
     let mut stream = connect(&socket)?;
     let mut resumes = 0;
+    // A waited prompt's last reply, once one has said it was typed: where a hand-off goes on
+    // from, and the shape the turn's end, waited on in the new program, is told in.
+    let mut prompted: Option<Value> = None;
+    // Whether the replies now answer that wait rather than the prompt.
+    let mut turn_waited = false;
     'connection: loop {
         stream
             .write_all(&envelopes(&request))
@@ -144,6 +150,23 @@ pub(super) fn stream(
                 }
                 // Never sent again: that would type the command a second time.
                 Err(Ended::HungUp) if method == COMMAND => return Err(cut_off(&socket)),
+                // Never sent again, which would type it a second time: once it was typed, its
+                // turn is waited on in the new program (`turn_resumed`).
+                Err(Ended::HungUp) if method == PROMPT && resumes < MAX_RESUMES => {
+                    let Some(last) = &prompted else {
+                        return Err(prompt_cut_off(&socket));
+                    };
+                    resumes += 1;
+                    let (next, wait) = turn_resumed(&socket, last, &params, started)?;
+                    eprintln!(
+                        "workroom: the daemon on {socket} was handed off after the prompt was \
+                         typed; waiting on its turn in the new one"
+                    );
+                    (stream, request) = (next, encode_as(WAIT, &wait));
+                    answer = answer_timeout(WAIT, &wait);
+                    turn_waited = true;
+                    continue 'connection;
+                }
                 Err(_) => {
                     return Err(unreachable(format!(
                         "the daemon on {socket} did not answer"
@@ -153,6 +176,15 @@ pub(super) fn stream(
             answered = true;
             let reply: Value = serde_json::from_slice(&reply)
                 .map_err(|_| CliError::internal("the daemon's reply is not JSON"))?;
+            if turn_waited && let Some(last) = &prompted {
+                let ended = turn_ended(last, &reply)?;
+                each(Replied {
+                    revision: reply.get("revision").cloned().unwrap_or(Value::Null),
+                    result: ended,
+                    more: false,
+                });
+                return Ok(());
+            }
             if let Some(error) = reply.get("error") {
                 if resumes > 0
                     && let Some(id) = &pinned
@@ -184,6 +216,9 @@ pub(super) fn stream(
                 more: reply.get("more") == Some(&Value::Bool(true)),
             };
             let more = replied.more;
+            if method == PROMPT && more {
+                prompted = Some(replied.result.clone());
+            }
             if !each(replied) || !more {
                 return Ok(());
             }
@@ -197,12 +232,91 @@ const SEND: &str = "terminal.send";
 
 const COMMAND: &str = "terminal.command";
 
+const PROMPT: &str = "terminal.prompt";
+
+/// A `terminal.prompt` the daemon on `socket` hung up on before it said the prompt was typed: a
+/// hand-off, when a daemon answers there at once, which is `WaitInterrupted` (3), since whether
+/// it was typed went unsaid; else nobody listening, 7. Never sent again, which could type the
+/// prompt a second time.
+fn prompt_cut_off(socket: &str) -> CliError {
+    match connect(socket) {
+        Ok(_) => CliError::new(
+            Kind::WaitInterrupted,
+            format!(
+                "the daemon on {socket} was handed off (replaced by its update) before it said \
+                 whether the prompt was typed; it is not typed again, and `workroom capture` \
+                 shows whether it was"
+            ),
+        ),
+        Err(mut error) => {
+            if error.kind == Kind::DaemonUnreachable {
+                error.message = format!(
+                    "the daemon on {socket} went away during the prompt, and none is listening \
+                     there now"
+                );
+            }
+            error
+        }
+    }
+}
+
+/// After the daemon on `socket` hung up on a waited prompt whose `last` reply said it was typed:
+/// a connection to the program a hand-off put there, and the `terminal.wait` for its turn's end
+/// to send it, by the session's id, with what is left of the prompt's timeout. `current` once the
+/// last reply said the turn had started (`working`), as a wait for a state, since the status it
+/// ends in stays; else `next`, for the turn still to start.
+///
+/// The one gap: a turn that started after the old program's last read and ended before the new
+/// program's wait is added (the hand-off's frozen moment) is no `next` turn there, so it is waited
+/// on to the timeout.
+fn turn_resumed(
+    socket: &str,
+    last: &Value,
+    params: &Value,
+    started: Instant,
+) -> Result<(UnixStream, Value), CliError> {
+    let (stream, again) = resumed(socket, params, started)?;
+    let turn = if last["status"] == "working" {
+        "current"
+    } else {
+        "next"
+    };
+    let mut wait = json!({"target": last["session"], "turn": turn});
+    if let Some(left) = again.get("timeout_ms") {
+        wait["timeout_ms"] = left.clone();
+    }
+    Ok((stream, wait))
+}
+
+/// What the wait for a prompt's turn, sent after a hand-off, answers as the prompt would have:
+/// its `last` reply with the status the turn ended in. A session the new program doesn't have
+/// ended between the two, after the prompt was typed: `SessionEnded`, as the old would have said.
+fn turn_ended(last: &Value, reply: &Value) -> Result<Value, CliError> {
+    if let Some(error) = reply.get("error") {
+        if error["kind"] == TARGET_NOT_FOUND {
+            return Err(CliError::new(
+                Kind::SessionEnded,
+                format!(
+                    "session {} ended during the daemon's hand-off, after the prompt was typed, \
+                     before its turn did",
+                    last["session"].as_str().unwrap_or_default()
+                ),
+            ));
+        }
+        return Err(failure(error));
+    }
+    let mut ended = last.clone();
+    ended["status"] = reply["result"]["status"].clone();
+    Ok(ended)
+}
+
 /// The longest request the CLI sends for `method`: one envelope's payload, but for
 /// `terminal.send`, whose 1 MiB of text JSON may escape to six times that (a control character is
 /// `\u001b`), so it goes in chunks up to the 16 MiB the daemon reassembles (`rpc::reassemble`),
 /// and `terminal.command`, whose 1 MiB line may escape to twice that (a quote or a backslash).
 fn max_request(method: &str) -> usize {
-    if method == SEND || method == COMMAND {
+    // A prompt's 1 MiB of text likewise.
+    if method == SEND || method == COMMAND || method == PROMPT {
         crate::daemon::rpc::MAX_REQUEST
     } else {
         MAX_ENVELOPE_PAYLOAD
@@ -539,9 +653,13 @@ pub(super) fn answer_timeout(method: &str, params: &Value) -> Option<Duration> {
     if method == SEND {
         return Some(send + TIMEOUT);
     }
+    // A prompt types as a send does, and with `wait` waits as a wait does, so it gets both.
+    if method == PROMPT && params.get("wait") != Some(&Value::Bool(true)) {
+        return Some(send + TIMEOUT);
+    }
     let typing = match method {
         WAIT => Duration::ZERO,
-        COMMAND => send,
+        COMMAND | PROMPT => send,
         _ => return Some(TIMEOUT),
     };
     match params.get("timeout_ms") {

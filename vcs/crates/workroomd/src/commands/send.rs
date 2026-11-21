@@ -59,7 +59,7 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
 
 /// Why the command line makes no request.
 #[derive(Debug, PartialEq)]
-enum Refused {
+pub(super) enum Refused {
     /// A malformed command line: 1, as for every command.
     Usage(String),
     /// Input no request may carry: text over the limit, or stdin that isn't UTF-8.
@@ -141,7 +141,7 @@ fn request(
     Ok(params)
 }
 
-fn too_large(bytes: usize) -> CliError {
+pub(super) fn too_large(bytes: usize) -> CliError {
     CliError::new(
         Kind::TooLarge,
         format!(
@@ -152,8 +152,8 @@ fn too_large(bytes: usize) -> CliError {
 }
 
 /// The text `reader` holds, read no further than one byte past the limit, so an endless stdin
-/// ends: more is `TooLarge`, and text that isn't UTF-8 `InvalidRequest`.
-fn read_text(reader: &mut dyn Read) -> Result<String, Refused> {
+/// ends: more is `TooLarge`, and text that isn't UTF-8 `InvalidRequest`. `prompt --stdin`'s too.
+pub(super) fn read_text(reader: &mut dyn Read) -> Result<String, Refused> {
     let mut bytes = Vec::new();
     Read::take(reader, SEND_MAX_BYTES as u64 + 1)
         .read_to_end(&mut bytes)

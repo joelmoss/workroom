@@ -583,11 +583,39 @@ impl Pty {
         self.send_with(bytes, paste, WRITE_DEADLINE, until)
     }
 
+    /// [`Pty::send`], then `then` written `pause` after `bytes`, in the same turn: no other input
+    /// lands between the two, and the program has had `pause` to read `bytes` on their own, so it
+    /// reads `then` apart from them. A prompt's Enter (#692): Claude Code drops a bracketed paste
+    /// a key follows in the same read. A send stopped in `then` says so by `written` past
+    /// `bytes.len()`.
+    pub fn send_then(
+        &self,
+        bytes: &[u8],
+        paste: Option<std::ops::Range<usize>>,
+        pause: std::time::Duration,
+        then: &[u8],
+        until: std::time::Instant,
+    ) -> Result<(), Stopped> {
+        self.send_parts(bytes, paste, Some((pause, then)), WRITE_DEADLINE, until)
+    }
+
     /// [`Pty::send`] with `idle` for `WRITE_DEADLINE`, so a test reaches it in less.
     pub(crate) fn send_with(
         &self,
         bytes: &[u8],
         paste: Option<std::ops::Range<usize>>,
+        idle: std::time::Duration,
+        until: std::time::Instant,
+    ) -> Result<(), Stopped> {
+        self.send_parts(bytes, paste, None, idle, until)
+    }
+
+    /// [`Pty::send_with`], and `then`'s bytes written its pause after, in the same turn.
+    fn send_parts(
+        &self,
+        bytes: &[u8],
+        paste: Option<std::ops::Range<usize>>,
+        then: Option<(std::time::Duration, &[u8])>,
         idle: std::time::Duration,
         until: std::time::Instant,
     ) -> Result<(), Stopped> {
@@ -609,7 +637,17 @@ impl Pty {
             .map_err(|why| stopped(0, why))?;
         let (written, result) = self.write_until(bytes, idle, Some(until));
         let Err(why) = result else {
-            return Ok(());
+            let Some((pause, then)) = then else {
+                return Ok(());
+            };
+            // The pause is within the send's deadline, and holds the turn.
+            let now = std::time::Instant::now();
+            std::thread::sleep(pause.min(until.saturating_duration_since(now)));
+            if std::time::Instant::now() >= until {
+                return Err(stopped(written, Stop::Deadline));
+            }
+            let (more, result) = self.write_until(then, idle, Some(until));
+            return result.map_err(|why| stopped(written + more, why));
         };
         let mut stop = stopped(written, why);
         if let Some(paste) = paste.filter(|paste| written > paste.start && written < paste.end) {

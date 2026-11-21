@@ -1306,6 +1306,30 @@ fn every_method_publishes_schemas_its_replies_match() {
     assert_eq!(timed_out["more"], false, "{timed_out}");
     assert_eq!(timed_out["error"]["kind"], "WaitTimeout", "{timed_out}");
     assert_eq!(violation(&error_schema, &timed_out["error"], "error"), None);
+    // A coding agent's turn: none to end in a shell, out of time at once.
+    let params = json!({"target": OTHER, "turn": "next", "timeout_ms": 0});
+    assert_eq!(
+        violation(&schema("terminal.wait", "input"), &params, "params"),
+        None
+    );
+    let turn = api.call("terminal.wait", params);
+    let kind = if has_terminal_state() {
+        "WaitTimeout"
+    } else {
+        "InvalidRequest"
+    };
+    assert_eq!(turn["error"]["kind"], kind, "{turn}");
+
+    // A prompt, which a shell can't take: its replies are the prompt tests'.
+    let params = json!({"target": OTHER, "text": "hi", "wait": true, "timeout_ms": 1000});
+    assert_eq!(
+        violation(&schema("terminal.prompt", "input"), &params, "params"),
+        None
+    );
+    let refused = api.call("terminal.prompt", json!({"target": OTHER, "text": "hi"}));
+    assert_eq!(refused["error"]["kind"], "NotAnAgent", "{refused}");
+    assert_eq!(refused["more"], false, "{refused}");
+    assert_eq!(violation(&error_schema, &refused["error"], "error"), None);
 
     // Events stream, every reply `more`, while the connection takes other requests: a snapshot,
     // a live event, a resume from it and one from a place this daemon never had.
@@ -1970,9 +1994,15 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
     listing_until(&socket, |listing| {
         listing.len() == 2 && listing.iter().all(|session| !session["cwd"].is_null())
     });
+    // A stand-in coding agent to prompt, which needs the shadow terminal to take one.
+    let mut agent_pane = open(&socket, SHELL, "agent", "wr-1", &workspace.dir);
+    let mut agent_output = common::ClientReader::new(&mut agent_pane);
+    let agent = FakeAgent::new(&workspace.dir, "codex");
+    agent.launch(&mut agent_pane, &mut agent_output, "", prompted("hi").len());
 
     // Each method's params for one real call that succeeds.
     let cases = [
+        ("terminal.prompt", json!({"target": SHELL, "text": "hi"})),
         ("api.describe", json!({})),
         ("session.list", json!({})),
         ("session.resolve", json!({"target": OTHER})),
@@ -1997,8 +2027,10 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
             .find(|(case, _)| *case == name)
             .unwrap_or_else(|| panic!("{name} has no case here: add one"));
         // A capture needs a screen to read, which only terminal-state keeps, as a command's end
-        // does; and a command, a shell that sends marks.
-        if ["terminal.capture", "terminal.command"].contains(&name) && !has_terminal_state() {
+        // does; a command, a shell that sends marks; and a prompt, the modes to encode Enter for.
+        if ["terminal.capture", "terminal.command", "terminal.prompt"].contains(&name)
+            && !has_terminal_state()
+        {
             continue;
         }
         if name == "terminal.command" {
@@ -2052,6 +2084,7 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
             "{called}"
         );
     }
+    agent.open("quit");
 
     let error_schema = api_json(&socket, &["describe", "session.list"])["error_schema"].clone();
     let ambiguous = workroom(
@@ -4956,4 +4989,478 @@ fn a_command_across_a_hand_off_is_interrupted_and_not_run_again() {
     hand_off(&socket, &workspace.dir);
     let idle = ran(&socket, command(&socket, &["server", "--", "echo idle"]));
     assert_eq!(idle["output"], "idle", "{idle}");
+}
+
+/// One stand-in coding agent (`common::FAKE_AGENT`), written as `claude`, `codex` or any other
+/// name in a folder of its own and run by its absolute path, never a name looked up on PATH, so no
+/// real coding agent is ever started: its program and the files it reads and writes.
+struct FakeAgent {
+    program: std::path::PathBuf,
+}
+
+impl FakeAgent {
+    /// Writes the program as `name` in a folder of its own under `dir`, made here.
+    fn new(dir: &Path, name: &str) -> FakeAgent {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = (0..)
+            .map(|attempt| dir.join(format!("agent-{name}-{attempt}")))
+            .find(|folder| std::fs::create_dir(folder).is_ok())
+            .expect("a folder for the agent");
+        let program = folder.join(name);
+        std::fs::write(&program, common::FAKE_AGENT).expect("write the agent");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .expect("make the agent runnable");
+        FakeAgent { program }
+    }
+
+    fn file(&self, suffix: &str) -> std::path::PathBuf {
+        let mut name = self.program.clone().into_os_string();
+        name.push(format!(".{suffix}"));
+        name.into()
+    }
+
+    /// Runs it in `shell`'s session, whose output `output` reads, by its absolute path, with
+    /// `env` (`KEY=value` words) and reading `prompt_bytes`, and waits for it to be ready.
+    fn launch(
+        &self,
+        shell: &mut Spawned,
+        output: &mut common::ClientReader,
+        env: &str,
+        prompt_bytes: usize,
+    ) {
+        let mark = self
+            .program
+            .parent()
+            .and_then(Path::file_name)
+            .expect("the agent's folder")
+            .to_string_lossy()
+            .into_owned();
+        type_line(
+            shell,
+            &format!(
+                "{env} MARK={mark} N={prompt_bytes} '{}'",
+                self.program.display()
+            ),
+        );
+        let ready = format!("AGENT-{mark}");
+        assert!(
+            output
+                .read_until(&ready, Duration::from_secs(20))
+                .contains(&ready),
+            "the stand-in agent never started"
+        );
+    }
+
+    /// Lets it go on past `gate`: `go` (it reports `working`), `end` or `quit`.
+    fn open(&self, gate: &str) {
+        std::fs::write(self.file(gate), b"").expect("open the agent's gate");
+    }
+
+    /// What it read as its prompt, once it has read it all.
+    fn typed(&self) -> Vec<u8> {
+        let typed = self.file("typed");
+        assert!(
+            wait_for(Duration::from_secs(20), || typed.exists()),
+            "the agent never read its whole prompt"
+        );
+        std::fs::read(typed).expect("read what the agent read")
+    }
+}
+
+/// What a prompt of `text` types for a program with bracketed paste on: the paste, then Enter.
+fn prompted(text: &str) -> Vec<u8> {
+    [
+        b"\x1b[200~".as_slice(),
+        text.as_bytes(),
+        b"\x1b[201~",
+        b"\r",
+    ]
+    .concat()
+}
+
+/// `workroom prompt <args> --json`'s exit code and error kind, from a run that must fail.
+fn prompt_refused(socket: &Path, args: &[&str]) -> (i32, String) {
+    let args: Vec<&str> = [&["prompt"][..], args, &["--json"]].concat();
+    let run = workroom(Some(socket), &args);
+    let envelope = run.envelope();
+    assert_eq!(envelope["ok"], false, "{envelope}");
+    assert_eq!(envelope["command"], "prompt", "{envelope}");
+    (
+        run.code,
+        envelope["error"]["kind"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+    )
+}
+
+/// `terminal.prompt`'s result schema, as the daemon describes it.
+fn prompt_schema(socket: &Path) -> Value {
+    let described = Api::connect(socket).call("api.describe", json!({"method": "terminal.prompt"}));
+    described["result"]["methods"][0]["output"].clone()
+}
+
+/// `workroom prompt` types its text as a bracketed paste and then Enter, apart from it, into a
+/// coding agent: one known by its program's name (`codex` here, which never reports until it
+/// works), or one whose program reported program status and is in the foreground still. A shell
+/// is `NotAnAgent` (3), even one that printed a report itself; an agent working, waiting on the
+/// user or with bracketed paste off is `AgentBusy` (3). Without terminal-state the daemon can't
+/// encode Enter, nor hear a status: `InternalError` (1), and `--wait` is `InvalidRequest` (2).
+#[test]
+fn prompt_types_a_paste_and_enter_only_into_a_coding_agent_that_can_take_it() {
+    let workspace = Workspace::new("api-prompt");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "shell", "wr-1", &workspace.dir);
+    let mut shell_output = common::ClientReader::new(&mut shell);
+    let mut codex = open(&socket, OTHER, "codex", "wr-1", &workspace.dir);
+    let mut codex_output = common::ClientReader::new(&mut codex);
+    listing_until(&socket, |listing| listing.len() == 2);
+
+    assert_eq!(
+        prompt_refused(&socket, &["shell", "hi"]),
+        (3, "NotAnAgent".into())
+    );
+    let agent = FakeAgent::new(&workspace.dir, "codex");
+    let text = "fix the login test\nthen run them all";
+    agent.launch(
+        &mut codex,
+        &mut codex_output,
+        "APP=codex",
+        prompted(text).len(),
+    );
+    if !has_terminal_state() {
+        assert_eq!(
+            prompt_refused(&socket, &["codex", text]),
+            (1, "InternalError".into()),
+            "Enter can't be encoded without the session's modes"
+        );
+        assert_eq!(
+            prompt_refused(&socket, &["codex", text, "--wait"]),
+            (2, "InvalidRequest".into())
+        );
+        return;
+    }
+    let run = workroom(Some(&socket), &["prompt", "codex", text, "--json"]);
+    assert_eq!(run.code, 0, "{} {}", run.stdout, run.stderr);
+    let envelope = run.envelope();
+    assert_eq!(envelope["command"], "prompt", "{envelope}");
+    assert_eq!(
+        violation(&prompt_schema(&socket), &envelope, "result"),
+        None,
+        "{envelope}"
+    );
+    assert_eq!(envelope["session"], OTHER, "{envelope}");
+    assert_eq!(envelope["status"], Value::Null, "{envelope}");
+    assert_eq!(envelope["bytes"], prompted(text).len(), "{envelope}");
+    assert_eq!(envelope["modes"]["bracketed_paste"], true, "{envelope}");
+    // Its newline stays inside the paste, and Enter comes after the paste's end.
+    assert_eq!(
+        String::from_utf8_lossy(&agent.typed()),
+        String::from_utf8_lossy(&prompted(text))
+    );
+    // Working: busy, and so it says.
+    agent.open("go");
+    listing_until(&socket, |listing| {
+        session(listing, OTHER)["coding_agent"]["state"] == "working"
+    });
+    assert_eq!(
+        prompt_refused(&socket, &["codex", "and the docs"]),
+        (3, "AgentBusy".into())
+    );
+    agent.open("end");
+    agent.open("quit");
+
+    // A report the shell printed itself is no coding agent, nor one left over the shell by a
+    // program that has gone.
+    type_line(
+        &mut shell,
+        r"printf '\033]7501;state=done:app=claude\033\\'",
+    );
+    listing_until(&socket, |listing| {
+        session(listing, SHELL)["coding_agent"]["state"] == "done"
+    });
+    assert_eq!(
+        prompt_refused(&socket, &["shell", "hi"]),
+        (3, "NotAnAgent".into())
+    );
+    // A program known by its report, not its name, waiting on the user: an agent, and busy.
+    let reporter = FakeAgent::new(&workspace.dir, "helper");
+    reporter.launch(&mut shell, &mut shell_output, "FIRST=blocked", 1);
+    listing_until(&socket, |listing| {
+        session(listing, SHELL)["coding_agent"]["state"] == "blocked"
+    });
+    assert_eq!(
+        prompt_refused(&socket, &["shell", "hi"]),
+        (3, "AgentBusy".into())
+    );
+    reporter.open("quit");
+    // With its prompt not up, bracketed paste off: busy too.
+    let starting = FakeAgent::new(&workspace.dir, "claude");
+    starting.launch(&mut codex, &mut codex_output, "PASTE=0", 1);
+    assert_eq!(
+        prompt_refused(&socket, &["codex", "hi"]),
+        (3, "AgentBusy".into())
+    );
+    starting.open("quit");
+}
+
+/// `workroom prompt --wait` returns once the turn the prompt starts has ended, never on the
+/// `done` the turn before left: it waits for a `working` reported after it typed the prompt (here
+/// held back 3 s and more), then answers with the status the turn ended in. The API's stream says
+/// each step as it happens: typed, the turn started, and its end, each reply in the published
+/// shape.
+#[test]
+fn prompt_wait_ignores_a_stale_done_and_waits_for_a_fresh_working() {
+    if !has_terminal_state() {
+        eprintln!("skipped: a prompt's wait needs a daemon built with terminal-state");
+        return;
+    }
+    let workspace = Workspace::new("api-prompt-wait");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut first = open(&socket, SHELL, "claude", "wr-1", &workspace.dir);
+    let mut first_output = common::ClientReader::new(&mut first);
+    let mut second = open(&socket, OTHER, "other", "wr-1", &workspace.dir);
+    let mut second_output = common::ClientReader::new(&mut second);
+    listing_until(&socket, |listing| listing.len() == 2);
+    let agent = FakeAgent::new(&workspace.dir, "claude");
+    agent.launch(
+        &mut first,
+        &mut first_output,
+        "PROBE=1 FIRST=done",
+        prompted("go on").len(),
+    );
+    listing_until(&socket, |listing| {
+        session(listing, SHELL)["coding_agent"]["state"] == "done"
+    });
+
+    let waiting = started(
+        &socket,
+        &[
+            "prompt",
+            "claude",
+            "go on",
+            "--wait",
+            "--timeout",
+            "60s",
+            "--json",
+        ],
+    );
+    assert_eq!(agent.typed(), prompted("go on"));
+    // The `done` from before is there all along, and is no answer.
+    std::thread::sleep(Duration::from_secs(3));
+    let mut waiting = waiting;
+    assert!(
+        waiting.try_wait().expect("the wait's state").is_none(),
+        "the wait answered on the done left from the turn before, within 3 s of the prompt"
+    );
+    agent.open("go");
+    listing_until(&socket, |listing| {
+        session(listing, SHELL)["coding_agent"]["state"] == "working"
+    });
+    assert_eq!(
+        prompt_refused(&socket, &["claude", "and again"]),
+        (3, "AgentBusy".into())
+    );
+    assert!(waiting.try_wait().expect("the wait's state").is_none());
+    agent.open("end");
+    let ended = finished(waiting);
+    assert_eq!(ended.code, 0, "{} {}", ended.stdout, ended.stderr);
+    let envelope = ended.envelope();
+    assert_eq!(envelope["status"], "done", "{envelope}");
+    assert_eq!(
+        violation(&prompt_schema(&socket), &envelope, "result"),
+        None,
+        "{envelope}"
+    );
+    // `wait --turn`: the turn under way has ended, now counting; the next is still to start,
+    // whatever `done` is there. The short timeout is the one this test wants to pass.
+    let current = workroom(
+        Some(&socket),
+        &["wait", "claude", "--turn", "current", "--timeout", "20s"],
+    );
+    assert_eq!(
+        (current.code, current.stdout.as_str()),
+        (0, "status: done\n"),
+        "{}",
+        current.stderr
+    );
+    assert_eq!(
+        failed(wait(
+            &socket,
+            &["claude", "--turn", "next", "--timeout", "1s"]
+        )),
+        (8, "WaitTimeout".into())
+    );
+    agent.open("quit");
+
+    // The API's stream, step by step, a turn that ends `blocked`.
+    let streamed = FakeAgent::new(&workspace.dir, "claude");
+    streamed.launch(
+        &mut second,
+        &mut second_output,
+        "PROBE=1 FIRST=idle END=blocked",
+        prompted("ask").len(),
+    );
+    listing_until(&socket, |listing| {
+        session(listing, OTHER)["coding_agent"]["state"] == "idle"
+    });
+    let schema = prompt_schema(&socket);
+    let mut api = Api::connect(&socket);
+    let step = |reply: &Value, more: bool| {
+        assert_eq!(reply["revision"], 1, "{reply}");
+        assert_eq!(reply["more"], more, "{reply}");
+        assert_eq!(
+            violation(&schema, &reply["result"], "prompt"),
+            None,
+            "{reply}"
+        );
+        reply["result"]["status"].clone()
+    };
+    let (stream, typed) = api.stream(
+        "terminal.prompt",
+        json!({"target": OTHER, "text": "ask", "wait": true, "timeout_ms": 60_000}),
+    );
+    assert_eq!(step(&typed, true), Value::Null);
+    assert_eq!(streamed.typed(), prompted("ask"));
+    streamed.open("go");
+    assert_eq!(step(&api.reply_on(stream), true), "working");
+    streamed.open("end");
+    assert_eq!(step(&api.reply_on(stream), false), "blocked");
+    streamed.open("quit");
+
+    let human = FakeAgent::new(&workspace.dir, "claude");
+    human.launch(
+        &mut second,
+        &mut second_output,
+        "FIRST=done",
+        prompted("more").len(),
+    );
+    let waiting = started(&socket, &["prompt", "other", "more", "--wait"]);
+    human.typed();
+    human.open("go");
+    human.open("end");
+    let said = finished(waiting);
+    assert_eq!(
+        (said.code, said.stdout.as_str()),
+        (0, "status: done\n"),
+        "{}",
+        said.stderr
+    );
+    human.open("quit");
+}
+
+/// A hand-off during `prompt --wait` closes the CLI's connection with the old program, and once
+/// the prompt was typed it goes on waiting for its turn's end in the new one, never typing the
+/// prompt again: for the turn under way, with an agent already working, and for a turn still to
+/// start, where the `done` the turn before left, which the new program holds too, is still no
+/// answer (3 s and more). An agent's bracketed paste crosses the hand-off, so it takes a prompt
+/// after it.
+#[test]
+fn a_prompt_wait_across_a_hand_off_goes_on_in_the_new_program() {
+    if !has_terminal_state() {
+        eprintln!("skipped: a hand-off needs a daemon built with terminal-state");
+        return;
+    }
+    let workspace = Workspace::new("api-prompt-handoff");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut working_pane = open(&socket, SHELL, "working", "wr-1", &workspace.dir);
+    let mut starting_pane = open(&socket, OTHER, "starting", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 2);
+    // Kept reading, so the sessions' output never stalls on a full pipe across the hand-off.
+    let mut working_output = common::ClientReader::new(&mut working_pane);
+    let mut starting_output = common::ClientReader::new(&mut starting_pane);
+    let working = FakeAgent::new(&workspace.dir, "claude");
+    working.launch(
+        &mut working_pane,
+        &mut working_output,
+        "PROBE=1 FIRST=done",
+        prompted("go on").len(),
+    );
+    let starting = FakeAgent::new(&workspace.dir, "claude");
+    starting.launch(
+        &mut starting_pane,
+        &mut starting_output,
+        "PROBE=1 FIRST=done",
+        prompted("go on").len(),
+    );
+    listing_until(&socket, |listing| {
+        [SHELL, OTHER]
+            .iter()
+            .all(|id| session(listing, id)["coding_agent"]["state"] == "done")
+    });
+
+    let prompt = |target: &str| {
+        started(
+            &socket,
+            &[
+                "prompt",
+                target,
+                "go on",
+                "--wait",
+                "--timeout",
+                "90s",
+                "--json",
+            ],
+        )
+    };
+    let (working_wait, mut starting_wait) = (prompt("working"), prompt("starting"));
+    assert_eq!(working.typed(), prompted("go on"));
+    assert_eq!(starting.typed(), prompted("go on"));
+    working.open("go");
+    listing_until(&socket, |listing| {
+        session(listing, SHELL)["coding_agent"]["state"] == "working"
+    });
+    // Time for the turn's start and the typing to reach each CLI before the hand-off.
+    std::thread::sleep(Duration::from_secs(3));
+    hand_off(&socket, &workspace.dir);
+    working.open("end");
+    let ended = finished(working_wait);
+    assert!(
+        ended
+            .stderr
+            .contains("handed off after the prompt was typed"),
+        "the wait never spanned the hand-off: {}",
+        ended.stderr
+    );
+    assert_eq!(ended.code, 0, "{} {}", ended.stdout, ended.stderr);
+    assert_eq!(ended.envelope()["status"], "done", "{}", ended.stdout);
+    assert_eq!(ended.envelope()["session"], SHELL, "{}", ended.stdout);
+
+    // The turn still to start: the new program's `done`, from before, is no answer.
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        starting_wait
+            .try_wait()
+            .expect("the wait's state")
+            .is_none(),
+        "the wait answered across the hand-off on the done left from the turn before"
+    );
+    starting.open("go");
+    starting.open("end");
+    let ended = finished(starting_wait);
+    assert!(
+        ended
+            .stderr
+            .contains("handed off after the prompt was typed"),
+        "the wait never spanned the hand-off: {}",
+        ended.stderr
+    );
+    assert_eq!(ended.code, 0, "{} {}", ended.stdout, ended.stderr);
+    assert_eq!(ended.envelope()["status"], "done", "{}", ended.stdout);
+    assert_eq!(ended.envelope()["session"], OTHER, "{}", ended.stdout);
+
+    // Still at its prompt, bracketed paste on as the old program read it.
+    let again = workroom(Some(&socket), &["prompt", "working", "and then", "--json"]);
+    assert_eq!(again.code, 0, "{} {}", again.stdout, again.stderr);
+    assert_eq!(
+        again.envelope()["modes"]["bracketed_paste"],
+        true,
+        "{}",
+        again.stdout
+    );
+    working.open("quit");
+    starting.open("quit");
 }

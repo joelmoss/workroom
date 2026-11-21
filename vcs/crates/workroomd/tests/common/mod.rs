@@ -280,6 +280,39 @@ pub fn list_sessions(socket: &Path) -> String {
 
 /// Whether the daemon under test was built with the shadow terminal.
 ///
+/// A stand-in coding agent's program (#692), for a test to write as `claude`, `codex` or any other
+/// name and run by its absolute path, never a name looked up on PATH, so no real coding agent is
+/// ever started. It reports program status as docs/program-status.md says the real ones do. Its
+/// environment sets it up: `PROBE=1` probes for program status and reads the answer, as Claude
+/// Code does (Codex never probes); `FIRST` is the report it makes first (the `done` its turn
+/// before left, `idle` or `blocked`; none when unset); `PASTE=0` leaves bracketed paste off, which
+/// it otherwise turns on, as both agents do with their prompt up. It then says `AGENT-<MARK>` and
+/// reads the `N` bytes of its prompt into `<it>.typed`, written whole. It reports `working` once
+/// `<it>.go` exists, `END` (`done`) once `<it>.end` does, and stays in the foreground until
+/// `<it>.quit`, or a minute at most, when it says `AGENT-<MARK>-gone`.
+pub const FAKE_AGENT: &str = r#"#!/bin/sh
+app=${APP:-claude-code}
+report() { printf '\033]7501;state=%s:app=%s\033\\' "$1" "$app"; }
+gate() { i=0; while [ ! -e "$0.$1" ] && [ $i -lt 1200 ]; do sleep 0.05; i=$((i+1)); done; }
+old=$(stty -g)
+stty raw -echo
+if [ "${PROBE:-0}" = 1 ]; then
+  stty min 0 time 10
+  printf '\033]7501;?\007'
+  dd bs=1 count=256 > /dev/null 2>&1
+  stty min 1 time 0
+fi
+[ -n "$FIRST" ] && report "$FIRST"
+[ "${PASTE:-1}" = 1 ] && printf '\033[?2004h'
+printf 'AGENT-%s\r\n' "$MARK"
+head -c "$N" > "$0.typed.partial"; mv "$0.typed.partial" "$0.typed"
+gate go; report working
+gate end; report "${END:-done}"
+gate quit
+printf '\033[?2004l'; stty "$old"
+printf 'AGENT-%s-%s\r\n' "$MARK" gone
+"#;
+
 /// Empty counts as absent. `var_os` returns `Some("")` for a variable that is set but empty, which
 /// is exactly what a container runner passing `--env NAME=` produces — and an `is_none()` check
 /// then runs assertions against a build that cannot satisfy them.

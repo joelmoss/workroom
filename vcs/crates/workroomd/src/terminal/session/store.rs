@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 use super::reader::read_session;
 use super::refusals::wall_now;
 use super::{
-    Attached, CREATED_KEY, ClientInfo, Described, Hooks, NEXT_SESSION, RunSignalError, Session,
-    SessionError, SessionId, SessionInfo, SessionParts, SessionSpec, SessionStore, TakenScreen,
-    until,
+    Attached, CREATED_KEY, ClientInfo, Described, Foreground, Hooks, NEXT_SESSION, RunSignalError,
+    Session, SessionError, SessionId, SessionInfo, SessionParts, SessionSpec, SessionStore,
+    TakenScreen, until,
 };
 use crate::terminal::program_status::Store;
 use crate::terminal::pty::Pty;
@@ -320,6 +320,40 @@ impl SessionStore {
             .get(&id)
             .map(|session| Arc::clone(&session.pty))?;
         Some(pty.send(bytes, paste, until))
+    }
+
+    /// [`SessionStore::send_input`], then `then` written `pause` after `bytes` in the same turn of
+    /// the pty's input (`Pty::send_then`): a prompt's Enter (#692), which no other input lands
+    /// before, kept out of the read that takes its paste.
+    pub fn send_input_then(
+        &self,
+        id: SessionId,
+        bytes: &[u8],
+        paste: Option<std::ops::Range<usize>>,
+        pause: std::time::Duration,
+        then: &[u8],
+        until: Instant,
+    ) -> Option<Result<(), crate::terminal::pty::Stopped>> {
+        let pty = lock_or_recover(&self.sessions)
+            .get(&id)
+            .map(|session| Arc::clone(&session.pty))?;
+        Some(pty.send_then(bytes, paste, pause, then, until))
+    }
+
+    /// What runs in session `id`'s foreground now (#692): its process group, the name a user would
+    /// know its program by (`process::executable_name`, the exec-time argv a self-renaming CLI
+    /// can't change), and whether that group is the session's interactive shell. `None` when the
+    /// session has gone.
+    pub fn foreground(&self, id: SessionId) -> Option<Foreground> {
+        let (pty, interactive) = lock_or_recover(&self.sessions)
+            .get(&id)
+            .map(|session| (Arc::clone(&session.pty), session.interactive))?;
+        let group = pty.foreground_pgid();
+        Some(Foreground {
+            group,
+            name: group.and_then(crate::terminal::process::executable_name),
+            shell: interactive && group == Some(pty.child_pid()),
+        })
     }
 
     /// For a hand-off: each session's paste a send left open closed, if its program takes the
