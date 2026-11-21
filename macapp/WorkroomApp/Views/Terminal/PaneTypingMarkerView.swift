@@ -74,19 +74,25 @@ struct PaneTypingMarkerView: View {
         .layoutPriority(2)
       if let tab = marker.tab {
         Text("·").foregroundStyle(tokens.fgDim).fixedSize()
-        Text(tab).foregroundStyle(tokens.fgMuted).lineLimit(1).fixedSize()
-        if let workroom = marker.workroom {
-          Text("in").foregroundStyle(tokens.fgMuted).fixedSize()
-          // At most as wide as a tab chip's title (`TabStripMetrics.maxChipTitle`), so a long
-          // name never stretches the pill across a wide pane, and a short one as wide as itself.
-          CappedWidth(TabStripMetrics.maxChipTitle) {
-            Text(workroom)
-              .foregroundStyle(tokens.fgMuted)
-              .lineLimit(1)
-              .truncationMode(.middle)
+        // One phrase with the font's own word spaces: "tab 1 in " is one run, and the workroom
+        // follows it with no gap of the stack's own.
+        HStack(spacing: 0) {
+          Text(marker.workroom == nil ? tab : "\(tab) in ")
+            .foregroundStyle(tokens.fgMuted)
+            .lineLimit(1)
+            .fixedSize()
+          if let workroom = marker.workroom {
+            // At most as wide as a tab chip's title (`TabStripMetrics.maxChipTitle`), so a long
+            // name never stretches the pill across a wide pane, and a short one as wide as itself.
+            CappedWidth(TabStripMetrics.maxChipTitle) {
+              Text(workroom)
+                .foregroundStyle(tokens.fgMuted)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            }
           }
-          .layoutPriority(1)
         }
+        .layoutPriority(1)
       }
       if marker.others > 0 {
         Text("+\(marker.others)")
