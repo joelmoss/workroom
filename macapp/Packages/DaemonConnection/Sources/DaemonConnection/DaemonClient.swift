@@ -55,6 +55,9 @@ public final class DaemonClient: @unchecked Sendable {
     let onReply: @Sendable (Data) -> Bool
     /// The stream ended under it: the connection did, or a reply past the ceiling.
     let onLost: @Sendable () -> Void
+    /// A subscription, which counts toward the connection's few; an `events.unsubscribe`'s one
+    /// answer does not.
+    var holdsSlot = true
     var bytes = Data()
   }
   /// Reply streams given up on (their first reply was too late), whose envelopes are dropped
@@ -601,7 +604,9 @@ public final class DaemonClient: @unchecked Sendable {
     let answer = SubscriptionAnswer()
     let allocated: Result<UInt32, HostConnectionError> = lock.withLock {
       if closed { return .failure(.connectionLost) }
-      guard nextStream < UInt32.max, replyStreams.count < 4 else { return .failure(.notDispatched) }
+      guard nextStream < UInt32.max, replyStreams.values.filter(\.holdsSlot).count < 4 else {
+        return .failure(.notDispatched)
+      }
       let stream = nextStream
       nextStream += 1
       return .success(stream)
@@ -659,14 +664,17 @@ public final class DaemonClient: @unchecked Sendable {
           }
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
-          // Given up on: ended here and on the daemon, so neither holds it.
-          guard answer.resume(.failure(HostConnectionError.requestTimedOut)) else { return }
-          self?.endReplyStream(stream, unsubscribe: true)
+          // Given up on: ended here and on the daemon, so neither holds it, before the caller is
+          // told and can subscribe again.
+          answer.resume(.failure(HostConnectionError.requestTimedOut)) {
+            self?.endReplyStream(stream, unsubscribe: true)
+          }
         }
       }
     } onCancel: { [weak self] in
-      guard answer.resume(.failure(CancellationError())) else { return }
-      self?.endReplyStream(stream, unsubscribe: true)
+      answer.resume(.failure(CancellationError())) {
+        self?.endReplyStream(stream, unsubscribe: true)
+      }
     }
   }
 
@@ -682,27 +690,41 @@ public final class DaemonClient: @unchecked Sendable {
     if held, unsubscribe { self.unsubscribe(stream) }
   }
 
-  /// Asks the daemon to end its subscription on `stream`. A daemon of protocol 12 from before
+  /// Asks the daemon to end its subscription on `stream`. Queued on the connection's writes now,
+  /// before the caller can send anything else, so the daemon reads it ahead of whatever the caller
+  /// sends next (a subscribe that would otherwise find the place still held). Its answer is read on
+  /// a stream of its own that holds no subscription slot. A daemon of protocol 12 from before
   /// `events.unsubscribe` refuses it as bad input and keeps the subscription until the connection
-  /// ends, as every daemon did before: nothing more can be done there, so the answer is only
-  /// logged.
+  /// ends, as every daemon did before: nothing more can be done there, so that is logged, as an
+  /// error, since such a daemon refuses a link that gives up on 8 subscriptions.
   private func unsubscribe(_ stream: UInt32) {
     let host = String(describing: host)
-    Task.detached { [weak self] in
-      guard let self else { return }
+    let asked: UInt32? = lock.withLock {
+      guard !closed, nextStream < UInt32.max else { return nil }
+      let asked = nextStream
+      nextStream += 1
+      replyStreams[asked] = ReplyStream(
+        onReply: { reply in
+          if case .refused(let kind, let message) = try? TerminalInputEvent.decode(reply: reply) {
+            Self.logger.error(
+              "terminal API on \(host, privacy: .public): the daemon kept subscription \(stream, privacy: .public), refusing events.unsubscribe (\(kind, privacy: .public): \(message, privacy: .public)); it lasts until the connection ends"
+            )
+          }
+          return false
+        },
+        onLost: {}, holdsSlot: false)
+      return asked
+    }
+    guard let asked else { return }
+    writes.async { [self] in
       do {
-        let reply = try await self.request(
-          bytes: TerminalInputEvent.unsubscribeRequest(stream: stream), timeout: 15,
-          service: .terminalAPI)
-        if case .refused(let kind, let message) = try TerminalInputEvent.decode(reply: reply) {
-          Self.logger.info(
-            "terminal API on \(host, privacy: .public): unsubscribe refused, \(kind, privacy: .public): \(message, privacy: .public)"
-          )
-        }
+        try sendOnWrites(
+          DaemonEnvelope.encode(
+            service: .terminalAPI, stream: asked,
+            payload: TerminalInputEvent.unsubscribeRequest(stream: stream)),
+          stallAfter: 7.5)
       } catch {
-        Self.logger.info(
-          "terminal API on \(host, privacy: .public): unsubscribe failed: \(String(describing: error), privacy: .public)"
-        )
+        fail(error)
       }
     }
   }
@@ -981,7 +1003,8 @@ public final class DaemonClient: @unchecked Sendable {
               guard entry.bytes.count + payload.count - 1 <= 16 * 1024 * 1024 else {
                 replyStreams.removeValue(forKey: stream)
                 silencedStreams.insert(stream)
-                oversized = entry.onLost
+                // Only a subscription needs ending on the daemon.
+                oversized = entry.holdsSlot ? entry.onLost : nil
                 return true
               }
               entry.bytes.append(payload.dropFirst())
@@ -1168,8 +1191,13 @@ private final class SubscriptionAnswer: @unchecked Sendable {
   var isAnswered: Bool { lock.withLock { answered != nil } }
 
   /// Answers with `result` unless an answer was given already; returns whether it did.
+  /// `first` runs before the caller is told, only when this answer is the one given: what must
+  /// happen before the caller can go on (a give-up's `events.unsubscribe`, queued ahead of
+  /// whatever the caller sends next).
   @discardableResult
-  func resume(_ result: Result<TerminalInputAvailability, Error>) -> Bool {
+  func resume(
+    _ result: Result<TerminalInputAvailability, Error>, first: () -> Void = {}
+  ) -> Bool {
     let answer = lock.withLock {
       () -> (won: Bool, continuation: CheckedContinuation<TerminalInputAvailability, Error>?) in
       guard answered == nil else { return (false, nil) }
@@ -1177,6 +1205,7 @@ private final class SubscriptionAnswer: @unchecked Sendable {
       defer { self.continuation = nil }
       return (true, self.continuation)
     }
+    if answer.won { first() }
     answer.continuation?.resume(with: result)
     return answer.won
   }
