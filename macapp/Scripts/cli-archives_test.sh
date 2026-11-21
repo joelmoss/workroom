@@ -228,15 +228,35 @@ API="$SRV/repos/joelmoss/workroom/releases"
 mkdir -p "$API/tags" "$SRV/download/v9.9.9" "$SRV/download/nightly"
 cp "$WORK/stable/"* "$SRV/download/v9.9.9/"
 cp "$WORK/nightly/"* "$SRV/download/nightly/"
-python3 -u -m http.server 0 --bind 127.0.0.1 --directory "$SRV" >"$WORK/server.log" 2>&1 &
+# Not `python3 -m http.server`: its HTTPServer.server_bind names the server by socket.getfqdn, a
+# reverse lookup of 127.0.0.1, before it prints the port, and on a GitHub macOS runner that lookup
+# outlasted the wait below with nothing printed (#681). This binds the port and prints it, with no
+# name lookup; each request is still logged to stderr, which the error check at the end reads.
+python3 -I -u -c '
+import functools, http.server, socketserver, sys
+
+class Server(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=sys.argv[1])
+with Server(("127.0.0.1", 0), handler) as server:
+    print("releases server port", server.server_port)
+    server.serve_forever()
+' "$SRV" >"$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 PORT=""
 tries=0
 while [ -z "$PORT" ] && [ "$tries" -lt 100 ]; do
-  PORT="$(sed -n 's/^Serving HTTP on .* port \([0-9][0-9]*\) .*/\1/p' "$WORK/server.log")"
+  PORT="$(sed -n 's/^releases server port \([0-9][0-9]*\)$/\1/p' "$WORK/server.log")"
   [ -n "$PORT" ] || { tries=$((tries + 1)); sleep 0.1; }
 done
-[ -n "$PORT" ] || { fail "the releases server did not start: $(cat "$WORK/server.log")"; exit 1; }
+if [ -z "$PORT" ]; then
+  if kill -0 "$SERVER_PID" 2>/dev/null; then state="still running, printed nothing"; else state="exited"; fi
+  fail "the releases server did not start ($(python3 --version 2>&1), $state): $(cat "$WORK/server.log")"
+  exit 1
+fi
 BASE="http://127.0.0.1:$PORT"
 
 # release_json <tag> <name> <download dir>: the release as GitHub's API returns it.
