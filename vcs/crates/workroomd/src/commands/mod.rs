@@ -8,12 +8,11 @@
 //! code for each failure (`kind`). Human output keeps Go's information but may change wording.
 //!
 //! The commands that read or write the Mac's config are Mac-only: listed in `--help` everywhere,
-//! marked "(Mac only)", and failing with `MacOnly` anywhere else. Until its own ticket ports it
-//! (#672–#678), each of those is a stub here; the Go CLI still runs them. `list` and
-//! `base --global` are ported (#671), on `config`, the Rust reader and writer of config.json, and
-//! so are `include-archive` (#675), the rest of `base` and `host` (#673), the app's project
-//! commands, `add-project`, `claim-provisioned` and `delete-project` (#672), and `trust`,
-//! `trust status` and `untrust` (#674), and `delete` (#678). `update` is ported too (#679), which
+//! marked "(Mac only)", and failing with `MacOnly` anywhere else. Each is ported (#671–#678), on
+//! `config`, the Rust reader and writer of config.json: `list` and `base --global` (#671),
+//! `include-archive` (#675), the rest of `base` and `host` (#673), the app's project commands,
+//! `add-project`, `claim-provisioned` and `delete-project` (#672), `trust`, `trust status` and
+//! `untrust` (#674), `create` (#677) and `delete` (#678). `update` is ported too (#679), which
 //! runs anywhere.
 //!
 //! The terminal API's commands (#360, ADR 0079) are born here and run anywhere: each is a thin
@@ -32,6 +31,7 @@ mod claim;
 mod complete;
 mod completion;
 mod config;
+mod create;
 mod delete;
 mod delete_project;
 mod envelope;
@@ -42,6 +42,7 @@ mod include_archive;
 mod kind;
 mod list;
 mod log;
+mod namegen;
 mod panel;
 mod prompt;
 mod sessions;
@@ -499,6 +500,7 @@ const COMMANDS: &[Command] = &[
     },
     Command {
         aliases: &["c"],
+        implementation: Implementation::Ported(create::run),
         ..stub(
             "create",
             "create",
@@ -1912,15 +1914,6 @@ mod tests {
             stdout.contains("flag needs an argument: --channel"),
             "{stdout}"
         );
-    }
-
-    #[test]
-    fn on_the_mac_an_unported_command_says_so_rather_than_mac_only() {
-        let ((stdout, _), code) = run_on(Platform::Mac, &["create", "--json", "--project", "x"]);
-        assert_eq!(code, 1);
-        let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-        assert_eq!(envelope["error"]["kind"], "InternalError");
-        assert_eq!(envelope["command"], "create");
     }
 
     #[test]

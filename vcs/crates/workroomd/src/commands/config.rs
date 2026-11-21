@@ -318,6 +318,85 @@ impl Config {
         })
     }
 
+    /// Records workroom `name` of `project` at `path`, as Go's `AddWorkroom` does: the project's
+    /// entry is made if it has none, its `vcs` refreshed, and an entry of the same name replaced
+    /// whole.
+    pub(crate) fn add_workroom(
+        &self,
+        project: &str,
+        name: &str,
+        path: &str,
+        vcs: &str,
+    ) -> Result<(), CliError> {
+        self.update(|data| {
+            let top = top_level(data);
+            if !top
+                .get(project)
+                .is_some_and(|entry| entry.as_object().is_some())
+            {
+                let mut entry = Object::new();
+                entry.insert("workrooms".to_string(), Json::Object(Object::new()));
+                top.insert(project.to_string(), Json::Object(entry));
+            }
+            let entry = top
+                .get_mut(project)
+                .and_then(Json::as_object_mut)
+                .expect("just made an object");
+            entry.insert("vcs".to_string(), Json::String(vcs.to_string()));
+            if !entry
+                .get("workrooms")
+                .is_some_and(|w| w.as_object().is_some())
+            {
+                entry.insert("workrooms".to_string(), Json::Object(Object::new()));
+            }
+            let mut workroom = Object::new();
+            workroom.insert("path".to_string(), Json::String(path.to_string()));
+            entry
+                .get_mut("workrooms")
+                .and_then(Json::as_object_mut)
+                .expect("just made an object")
+                .insert(name.to_string(), Json::Object(workroom));
+            Ok(true)
+        })
+    }
+
+    /// Records workroom `name` of a registered `project` as one on another host (#253), at `path`
+    /// there, with its `host` descriptor, in one write: Go's `AddRemoteWorkroom`. An entry of the
+    /// same name is refused rather than replaced, since its descriptor may be the only record of a
+    /// remote machine.
+    pub(crate) fn add_remote_workroom(
+        &self,
+        project: &str,
+        name: &str,
+        path: &str,
+        host: Json,
+    ) -> Result<(), CliError> {
+        self.update(|data| {
+            let entry = project_entry(data, project)?;
+            if !entry
+                .get("workrooms")
+                .is_some_and(|w| w.as_object().is_some())
+            {
+                entry.insert("workrooms".to_string(), Json::Object(Object::new()));
+            }
+            let workrooms = entry
+                .get_mut("workrooms")
+                .and_then(Json::as_object_mut)
+                .expect("just made an object");
+            if workrooms.contains_key(name) {
+                return Err(CliError::new(
+                    Kind::WorkroomExists,
+                    format!("a workroom of that name is already registered: '{name}' in {project}"),
+                ));
+            }
+            let mut workroom = Object::new();
+            workroom.insert("host".to_string(), host);
+            workroom.insert("path".to_string(), Json::String(path.to_string()));
+            workrooms.insert(name.to_string(), Json::Object(workroom));
+            Ok(true)
+        })
+    }
+
     /// Stores the branch a registered project's new workrooms start from; "" removes it, so they
     /// start from the global base, else origin's default branch.
     pub(crate) fn set_base_branch(&self, project: &str, branch: &str) -> Result<(), CliError> {

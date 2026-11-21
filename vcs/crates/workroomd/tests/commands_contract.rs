@@ -6,21 +6,21 @@
 //! Without `WORKROOM_BIN` the binary under test is this crate's own `workroom`. A group's tests
 //! are `#[ignore]`d until its commands are ported to Rust, so a plain `cargo test` runs only the
 //! ported groups (`version_`, `update_`, `list_`, `config_`, `include_archive_`, `base_`, `host_`,
-//! `trust_`, `completion_`, `add_project_`, `delete_`, `delete_project_` and `claim_provisioned_`
-//! today). `make contract-test` builds the Go CLI and runs every test against it with
+//! `trust_`, `completion_`, `add_project_`, `delete_`, `delete_project_`, `claim_provisioned_` and
+//! `create_` today). `make contract-test` builds the Go CLI and runs every test against it with
 //! `--include-ignored`.
 //!
 //! The Mac-only commands' groups (`list_`, `config_`, `include_archive_`, `base_`, `host_`,
-//! `trust_`, `add_project_`, `delete_`, `delete_project_`, `claim_provisioned_`) are ignored off
-//! the Mac too,
+//! `trust_`, `add_project_`, `delete_`, `delete_project_`, `claim_provisioned_`, `create_`) are
+//! ignored off the Mac too,
 //! where the Rust binary answers them with `MacOnly` (ADR 0078): a plain `cargo test` on Linux runs
 //! `version_`, `update_` and `completion_`, which work anywhere, and
 //! `--include-ignored` against the Go CLI still runs everything.
 //!
 //! Tests are named for their command group (`version_`, `update_`, `list_`, `config_`,
 //! `include_archive_`, `base_`, `host_`, `trust_`, `completion_`, `add_project_`, `delete_`
-//! (whose filter takes `delete_project_` too), `delete_project_`, `claim_provisioned_`), so a port
-//! can run only its own group's names against Rust.
+//! (whose filter takes `delete_project_` too), `delete_project_`, `claim_provisioned_`,
+//! `create_`), so a port can run only its own group's names against Rust.
 //!
 //! The JSON goldens are `testdata/contracts`, the files Go's contract tests
 //! (`cmd/contract_test.go`) and the app's `CLIContractTests.swift` check too, with the temporary
@@ -6460,6 +6460,996 @@ fn trust_status_judges_a_base_script_by_the_commits_own_line_endings() {
     let script = setup();
     assert_eq!(script["text"], "#!/bin/sh\necho hi\n");
     assert_eq!(script["sha256"], SHA_HI);
+}
+
+// --- create (#677) ---
+//
+// `create` makes a workroom: a name, a git worktree, its config entry, the root's included files
+// and the main checkout's changes when asked, then the setup script. The app runs it with
+// `--json`, reading the NDJSON step and log events on stderr as they come, so each fixture checks
+// the envelope, the events, the config and what is on disk. A random name is in all of them, so
+// each run's is written as `calm-river`, as Go's goldens write it.
+
+/// The name of the workroom a create's envelope reports: its own, or the `created` one of a
+/// create that failed after making it.
+fn created_name(run: &Run) -> String {
+    let envelope = run.envelope();
+    envelope["name"]
+        .as_str()
+        .or_else(|| envelope["created"]["name"].as_str())
+        .unwrap_or_else(|| panic!("`{}` reports no workroom: {envelope}", run.args))
+        .to_string()
+}
+
+/// `text` as Go's goldens write a create's output: this HOME as `/Users/dev`, `name` as
+/// `calm-river`, the version as a plain `go build`'s, and each commit hash git prints or the
+/// envelope reports as `<commit>`.
+fn normalize_create(home: &Home, name: &str, text: &str) -> String {
+    let mut text = home.normalize(text).replace(name, "calm-river");
+    for line in text
+        .clone()
+        .lines()
+        .filter(|line| line.starts_with("{\"cli_version\""))
+    {
+        text = text.replace(line, &normalize_version(line));
+    }
+    for key in ["HEAD is now at ", "\"start_commit\":\""] {
+        let mut out = String::new();
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find(key) {
+            let from = at + key.len();
+            out.push_str(&rest[..from]);
+            let hex = rest[from..]
+                .find(|c: char| !c.is_ascii_hexdigit())
+                .unwrap_or(rest.len() - from);
+            out.push_str(if hex > 0 { "<commit>" } else { "" });
+            rest = &rest[from + hex..];
+        }
+        out.push_str(rest);
+        text = out;
+    }
+    text
+}
+
+/// A registered project with one commit and no remote, at `src/app`.
+fn create_project(home: &Home) -> PathBuf {
+    let project = home.repo("src/app");
+    home.write_config(&format!(
+        "{{\"{}\": {{\"vcs\": \"git\", \"workrooms\": {{}}}}}}",
+        project.display()
+    ));
+    project
+}
+
+/// `create --json --no-editor --project <project>` with `extra`.
+fn create(home: &Home, project: &Path, extra: &[&str]) -> Run {
+    let project = project.to_string_lossy();
+    let mut args = vec!["create", "--json", "--no-editor", "--project", &project];
+    args.extend_from_slice(extra);
+    home.run(&home.dir, &args)
+}
+
+/// The step events of a create's stderr, as `id:state`, with `:detail` when one is given.
+fn create_steps(stderr: &str) -> Vec<String> {
+    stderr
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("NDJSON"))
+        .filter(|event| event["type"] == "step")
+        .map(|event| {
+            let mut step = format!("{}:{}", event["id"].as_str().expect("id"), event["state"]);
+            step = step.replace('"', "");
+            if let Some(detail) = event["detail"].as_str() {
+                step += &format!(":{detail}");
+            }
+            step
+        })
+        .collect()
+}
+
+/// The `text` of each log event a create's stderr has for `step`.
+fn create_log(stderr: &str, step: &str) -> Vec<String> {
+    stderr
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("NDJSON"))
+        .filter(|event| event["type"] == "log" && event["step"] == step)
+        .map(|event| event["text"].as_str().expect("text").to_string())
+        .collect()
+}
+
+/// Go's `TestContractCreateRemote` and `TestCreateWithHostRecordsARemoteWorkroomAndMakesNothingHere`:
+/// the app records a remote workroom before it makes the host (#253), under a generated name, with
+/// the host's path and its descriptor verbatim in one entry, and nothing made on this Mac.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_remote_records_the_workroom_and_makes_nothing_here() {
+    let home = Home::new("create-remote");
+    let project = create_project(&home);
+    let run = create(
+        &home,
+        &project,
+        &[
+            "--host",
+            r#"{"driver":"boxd","state":"creating","n":1.50}"#,
+            "--host-path",
+            "/home/workroom/app",
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    let name = created_name(&run);
+    let golden = normalize_create(&home, &name, &run.stdout);
+    check_golden(Owner::GoContractTests, "create-remote.json", &golden);
+    assert_eq!(
+        normalize_create(&home, &name, &config_text(&home)),
+        "{\n  \"/Users/dev/src/app\": {\n    \"vcs\": \"git\",\n    \"workrooms\": {\n      \
+         \"calm-river\": {\n        \"host\": {\n          \"driver\": \"boxd\",\n          \
+         \"n\": 1.50,\n          \"state\": \"creating\"\n        },\n        \"path\": \
+         \"/home/workroom/app\"\n      }\n    }\n  }\n}"
+    );
+    assert_eq!(
+        git_output(&home, &project, &["branch", "--list", "workroom/*"]),
+        ""
+    );
+    assert!(!home.path("workrooms").exists(), "a folder was made here");
+
+    // Without a path the descriptor is refused, and so is anything but one JSON object.
+    for (extra, message) in [
+        (
+            &["--host", "{}"][..],
+            "a host descriptor must be a JSON object: --host-path or --host-parent is required \
+             with --host",
+        ),
+        (
+            &["--host", "null", "--host-path", "/x"],
+            "a host descriptor must be a JSON object: null",
+        ),
+        (
+            &["--host", "[1]", "--host-path", "/x"],
+            "a host descriptor must be a JSON object: [1]",
+        ),
+        (
+            &["--host", "{} {}", "--host-path", "/x"],
+            "a host descriptor must be a JSON object: {} {}",
+        ),
+        (
+            &["--host", "", "--host-path", "/x"],
+            "a host descriptor must be a JSON object: ",
+        ),
+    ] {
+        let before = config_text(&home);
+        let run = create(&home, &project, extra);
+        run.assert_code(2).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "InvalidHostDescriptor", "{extra:?}");
+        assert_eq!(run.envelope()["error"]["message"], message, "{extra:?}");
+        assert_eq!(run.envelope()["command"], "create", "{extra:?}");
+        assert_eq!(config_text(&home), before, "{extra:?}");
+    }
+
+    // Plain, it prints the name.
+    let plain = home.run(
+        &home.dir,
+        &[
+            "create",
+            "--project",
+            &project.to_string_lossy(),
+            "--host",
+            "{}",
+            "--host-path",
+            "/home/workroom/other",
+        ],
+    );
+    plain.assert_code(0).assert_quiet_stderr();
+    let name = plain.stdout.trim_end().to_string();
+    assert!(
+        config_text(&home).contains(&format!("\"{name}\"")),
+        "{name}"
+    );
+    assert_eq!(plain.stdout, format!("{name}\n"));
+}
+
+/// Go's `TestCreateWithHostParentReservesTheGeneratedLeaf` and
+/// `TestCreateRejectsInvalidHostParentWithoutRecordingAnything`: `--host-parent` reserves
+/// `<parent>/<generated name>`, a new name each time; a parent that isn't absolute, or one given
+/// with `--host-path` or without `--host`, is refused with nothing recorded.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_remote_host_parent_reserves_the_generated_leaf() {
+    let home = Home::new("create-remote-parent");
+    let project = create_project(&home);
+    let descriptor =
+        r#"{"driver":"ssh","id":"shared-host","destination":"myserver","state":"creating"}"#;
+    let mut names = Vec::new();
+    for _ in 0..2 {
+        let run = create(
+            &home,
+            &project,
+            &[
+                "--host",
+                descriptor,
+                "--host-parent",
+                "/srv/joel/workrooms with spaces/",
+            ],
+        );
+        run.assert_code(0).assert_quiet_stderr();
+        let name = created_name(&run);
+        assert_eq!(
+            run.envelope()["path"],
+            format!("/srv/joel/workrooms with spaces/{name}")
+        );
+        assert!(
+            config_text(&home).contains(&format!(
+                "\"path\": \"/srv/joel/workrooms with spaces/{name}\""
+            )),
+            "{}",
+            config_text(&home)
+        );
+        names.push(name);
+    }
+    assert_ne!(names[0], names[1]);
+    assert!(!home.path("workrooms").exists(), "a folder was made here");
+
+    for (extra, message) in [
+        (
+            &["--host", "{}", "--host-parent", "relative/workrooms"][..],
+            "a host descriptor must be a JSON object: --host-parent must be an absolute path on \
+             the host",
+        ),
+        (
+            &["--host", "{}", "--host-parent", "~/workrooms"],
+            "a host descriptor must be a JSON object: --host-parent must be an absolute path on \
+             the host",
+        ),
+        (
+            &["--host", "{}", "--host-parent", "/a", "--host-path", "/b"],
+            "a host descriptor must be a JSON object: --host-path and --host-parent are mutually \
+             exclusive",
+        ),
+        (
+            &["--host-parent", "/a"],
+            "a host descriptor must be a JSON object: --host-path and --host-parent require \
+             --host",
+        ),
+        (
+            &["--host-path", "/a"],
+            "a host descriptor must be a JSON object: --host-path and --host-parent require \
+             --host",
+        ),
+    ] {
+        let before = config_text(&home);
+        let run = create(&home, &project, extra);
+        run.assert_code(2).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "InvalidHostDescriptor", "{extra:?}");
+        assert_eq!(run.envelope()["error"]["message"], message, "{extra:?}");
+        assert_eq!(config_text(&home), before, "{extra:?}");
+    }
+
+    // A project that isn't registered isn't one to record a workroom in, and a directory that
+    // isn't a repository has no VCS to name.
+    let other = home.repo("src/other");
+    let run = create(&home, &other, &["--host", "{}", "--host-path", "/a"]);
+    run.assert_code(3);
+    assert_eq!(run.error_kind(), "ProjectNotFound");
+    assert_eq!(
+        run.envelope()["error"]["message"],
+        format!("project is not registered: {}", other.display())
+    );
+    let plain = home.path("src/plain");
+    std::fs::create_dir_all(&plain).expect("plain");
+    let run = create(&home, &plain, &["--host", "{}", "--host-path", "/a"]);
+    run.assert_code(3);
+    assert_eq!(run.error_kind(), "UnsupportedVCS");
+    // A workroom is no project to create one in.
+    std::fs::write(project.join(".Workroom"), "").expect(".Workroom");
+    let run = create(&home, &project, &["--host", "{}", "--host-path", "/a"]);
+    run.assert_code(3);
+    assert_eq!(run.error_kind(), "InWorkroom");
+}
+
+/// SHA-256 of `#!/bin/sh\necho installing\necho done\n` (`shasum -a 256`).
+const SHA_INSTALLING: &str = "4d8ae5db2ce29afadf684314193ac5e4002d244dac6a45945d2c2ea74f19978e";
+/// SHA-256 of `#!/bin/sh\necho boom\nexit 3\n`.
+const SHA_BOOM: &str = "acbcf49df537208647eb32e0cf1924d3e4a73c9a0b07d58010f8fb2b19da48b7";
+
+/// A registered project at `src/app` with one commit, no remote, and in its root an untracked
+/// setup script, `#!/bin/sh\n<body>`, approved by `digest` ("" approves nothing).
+fn setup_project(home: &Home, body: &str, digest: &str) -> PathBuf {
+    let project = home.repo("src/app");
+    write_script(&project, "workroom_setup", &format!("#!/bin/sh\n{body}"));
+    let trusted = if digest.is_empty() {
+        String::new()
+    } else {
+        format!("\"trusted_scripts\": {{\"workroom_setup\": \"{digest}\"}}, ")
+    };
+    home.write_config(&format!(
+        "{{\"{}\": {{{trusted}\"vcs\": \"git\", \"workrooms\": {{}}}}}}",
+        project.display()
+    ));
+    project
+}
+
+/// The goldens Go's `TestContractCreate`, `TestContractCreateSetupFailed`,
+/// `TestContractScriptNotTrusted` and `TestContractCreateFetchWarning` record: a create whose
+/// approved setup script passes, one whose script fails after the workroom is made (`created`,
+/// exit 5), one refused before anything exists because the script isn't approved (with the
+/// `start_commit` it was asked at), and one whose fetch fails, which only warns.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_json_matches_the_goldens() {
+    let home = Home::new("create-golden");
+    let project = setup_project(&home, "echo installing\necho done\n", SHA_INSTALLING);
+    let run = create(&home, &project, &[]);
+    run.assert_code(0);
+    let name = created_name(&run);
+    check_golden(
+        Owner::GoContractTests,
+        "create.json",
+        &normalize_create(&home, &name, &run.stdout),
+    );
+    check_golden(
+        Owner::GoContractTests,
+        "create-events.ndjson",
+        &normalize_create(&home, &name, &run.stderr),
+    );
+    let worktree = home.path(&format!("workrooms/{name}"));
+    assert!(
+        worktree.join(".git").is_file(),
+        "no worktree at {worktree:?}"
+    );
+    assert_eq!(
+        git_output(&home, &worktree, &["branch", "--show-current"]),
+        format!("workroom/{name}\n")
+    );
+    // An upstream only once published: `--no-track`, or no start at all.
+    assert_eq!(
+        normalize_create(&home, &name, &config_text(&home)),
+        format!(
+            "{{\n  \"/Users/dev/src/app\": {{\n    \"trusted_scripts\": {{\n      \
+             \"workroom_setup\": \"{SHA_INSTALLING}\"\n    }},\n    \"vcs\": \"git\",\n    \
+             \"workrooms\": {{\n      \"calm-river\": {{\n        \"path\": \
+             \"/Users/dev/workrooms/calm-river\"\n      }}\n    }}\n  }}\n}}"
+        )
+    );
+
+    let home = Home::new("create-golden-failed");
+    let project = setup_project(&home, "echo boom\nexit 3\n", SHA_BOOM);
+    let run = create(&home, &project, &[]);
+    run.assert_code(5);
+    let name = created_name(&run);
+    check_golden(
+        Owner::GoContractTests,
+        "create-setup-failed.json",
+        &normalize_create(&home, &name, &run.stdout),
+    );
+    check_golden(
+        Owner::GoContractTests,
+        "create-setup-failed-events.ndjson",
+        &normalize_create(&home, &name, &run.stderr),
+    );
+    // Not transactional: the workroom stays, for the app to offer to delete.
+    assert!(home.path(&format!("workrooms/{name}")).exists());
+    assert!(config_text(&home).contains(&name));
+
+    let home = Home::new("create-golden-untrusted");
+    let project = setup_project(&home, "echo installing\n", "");
+    let before = config_text(&home);
+    let run = create(&home, &project, &[]);
+    run.assert_code(3);
+    // The start was settled before the question, so its step ended.
+    assert_eq!(
+        create_steps(&run.stderr),
+        ["fetch:skipped:No remote to fetch from"]
+    );
+    check_golden(
+        Owner::GoContractTests,
+        "create-script-not-trusted.json",
+        &normalize_create(&home, "calm-river", &run.stdout),
+    );
+    assert_eq!(
+        run.envelope()["start_commit"],
+        git_output(&home, &project, &["rev-parse", "HEAD"]).trim()
+    );
+    assert!(!home.path("workrooms").exists() || entries(&home.path("workrooms")).is_empty());
+    assert_eq!(config_text(&home), before);
+
+    let home = Home::new("create-golden-fetch");
+    let project = create_project(&home);
+    home.git(
+        &project,
+        &[
+            "remote",
+            "add",
+            "origin",
+            &home.path("gone.git").to_string_lossy(),
+        ],
+    );
+    let run = create(&home, &project, &[]);
+    run.assert_code(0);
+    let name = created_name(&run);
+    check_golden(
+        Owner::GoContractTests,
+        "create-fetch-warning.json",
+        &normalize_create(&home, &name, &run.stdout),
+    );
+    check_golden(
+        Owner::GoContractTests,
+        "create-fetch-warning-events.ndjson",
+        &normalize_create(&home, &name, &run.stderr),
+    );
+}
+
+/// Registers `project` in config, approving each `(script, digest)` of `trusted`.
+fn register(home: &Home, project: &Path, trusted: &[(&str, &str)]) {
+    let trusted: Vec<String> = trusted
+        .iter()
+        .map(|(name, digest)| format!("\"{name}\": \"{digest}\""))
+        .collect();
+    home.write_config(&format!(
+        "{{\"{}\": {{\"trusted_scripts\": {{{}}}, \"vcs\": \"git\", \"workrooms\": {{}}}}}}",
+        project.display(),
+        trusted.join(", ")
+    ));
+}
+
+/// Go's `originProject`: `src/app`, registered, whose origin (`app.git`) has `main`, with the local
+/// `main` the same and a clean tree, and origin/HEAD set as a clone leaves it. `base.txt` is a
+/// tracked file to change.
+fn origin_project(home: &Home) -> PathBuf {
+    home.git(
+        &home.dir,
+        &["init", "-q", "--bare", "-b", "main", "app.git"],
+    );
+    let project = home.repo("src/app");
+    write_file(&project, "base.txt", "base\n", 0o644);
+    home.git(&project, &["add", "base.txt"]);
+    commit(home, &project, "base");
+    let origin = home.path("app.git");
+    home.git(
+        &project,
+        &["remote", "add", "origin", &origin.to_string_lossy()],
+    );
+    home.git(&project, &["push", "-q", "-u", "origin", "main"]);
+    home.git(&project, &["remote", "set-head", "origin", "main"]);
+    register(home, &project, &[]);
+    project
+}
+
+/// Go's `aheadProject` for a create: [`origin_project`] with the local `main` one commit ahead,
+/// adding `local.txt`.
+fn ahead_create_project(home: &Home) -> PathBuf {
+    let project = origin_project(home);
+    write_file(&project, "local.txt", "unpushed\n", 0o644);
+    home.git(&project, &["add", "local.txt"]);
+    commit(home, &project, "local");
+    project
+}
+
+/// The path a create's envelope reports.
+fn created_path(run: &Run) -> PathBuf {
+    let envelope = run.envelope();
+    PathBuf::from(
+        envelope["path"]
+            .as_str()
+            .or_else(|| envelope["created"]["path"].as_str())
+            .unwrap_or_else(|| panic!("`{}` reports no path: {envelope}", run.args)),
+    )
+}
+
+/// Go's `TestCreateStartAskRefusesWithTheLocalWork`, `TestContractLocalWorkLeftOut` and
+/// `TestCreateWithNobodyToAskStartsFromOriginAndWarns`: `--start ask` refuses a create that
+/// would leave unpushed work out, before anything exists, saying what it is and the commit it was
+/// asked at; with nobody to ask, a create starts from origin's copy and says what it left out.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_start_ask_refuses_with_the_local_work_and_nobody_to_ask_warns() {
+    let home = Home::new("create-ask");
+    let project = ahead_create_project(&home);
+    let run = create(&home, &project, &["--start", "ask"]);
+    run.assert_code(3);
+    assert_eq!(run.error_kind(), "LocalWorkLeftOut");
+    let envelope = run.envelope();
+    assert_eq!(
+        envelope["start_commit"],
+        git_output(&home, &project, &["rev-parse", "origin/main"]).trim()
+    );
+    assert_eq!(envelope["local_work"]["ahead"], 1);
+    assert_eq!(
+        envelope["local_work"]["summary"],
+        "You have 1 commit on main that you haven't pushed yet"
+    );
+    assert!(entries(&home.path("workrooms")).is_empty());
+    assert_eq!(create_steps(&run.stderr), ["fetch:running", "fetch:done"]);
+
+    write_file(&project, "untracked.txt", "untracked\n", 0o644);
+    let run = create(&home, &project, &["--start", "ask"]);
+    run.assert_code(3);
+    check_golden(
+        Owner::GoContractTests,
+        "create-local-work.json",
+        &normalize_create(&home, "calm-river", &run.stdout),
+    );
+    std::fs::remove_file(project.join("untracked.txt")).expect("remove");
+
+    let run = create(&home, &project, &[]);
+    run.assert_code(0);
+    assert_eq!(
+        run.envelope()["warning"],
+        "You have 1 commit on main that you haven't pushed yet. This workroom doesn't include \
+         that work, because new workrooms start from what you've pushed."
+    );
+    assert!(!created_path(&run).join("local.txt").exists());
+    // The app reads the warning from the `created` event too.
+    assert!(
+        run.stderr
+            .contains("\"warning\":\"You have 1 commit on main that you haven't pushed yet."),
+        "{}",
+        run.stderr
+    );
+}
+
+/// Go's `TestCreateStartLocalHasTheUnpushedCommits`, `TestCreateStartOriginLeavesTheUnpushedCommitsOut`
+/// and `TestCreateStartLocalWithChangesCopiesThem`: `--start local` starts from the local branch,
+/// `origin` leaves the work out without a word, and `local-with-changes` copies the main
+/// checkout's changes (a modified tracked file, a staged new one and an untracked one, not an
+/// ignored one) into the new workroom, leaving them in the main checkout too.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_start_local_origin_and_local_with_changes() {
+    let home = Home::new("create-start");
+    let project = ahead_create_project(&home);
+    let run = create(&home, &project, &["--start", "local"]);
+    run.assert_code(0);
+    assert_eq!(run.envelope().get("warning"), None);
+    assert!(created_path(&run).join("local.txt").exists());
+    assert!(
+        create_log(&run.stderr, "worktree")[0].starts_with(&format!(
+            "$ git worktree add --no-track -b workroom/{} ",
+            created_name(&run)
+        )),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        create_log(&run.stderr, "worktree")[0].ends_with(" refs/heads/main"),
+        "{}",
+        run.stderr
+    );
+
+    let run = create(&home, &project, &["--start", "origin"]);
+    run.assert_code(0);
+    assert_eq!(run.envelope().get("warning"), None);
+    assert!(!created_path(&run).join("local.txt").exists());
+    assert!(
+        create_log(&run.stderr, "worktree")[0].ends_with(" refs/remotes/origin/HEAD"),
+        "{}",
+        run.stderr
+    );
+
+    write_file(&project, "local.txt", "edited\n", 0o644);
+    write_file(&project, "staged.txt", "staged\n", 0o644);
+    home.git(&project, &["add", "staged.txt"]);
+    write_file(&project, "untracked.txt", "untracked\n", 0o644);
+    write_file(&project, ".gitignore", "ignored.txt\n", 0o644);
+    write_file(&project, "ignored.txt", "secret\n", 0o644);
+    let before = git_output(&home, &project, &["status", "--porcelain"]);
+    let run = create(&home, &project, &["--start", "local-with-changes"]);
+    run.assert_code(0);
+    assert_eq!(
+        create_steps(&run.stderr),
+        [
+            "fetch:running",
+            "fetch:done",
+            "worktree:running",
+            "worktree:done",
+            "changes:running",
+            "changes:done",
+            "script:skipped:No setup script",
+        ]
+    );
+    assert_eq!(
+        create_log(&run.stderr, "changes"),
+        [
+            "Copied your changes to existing files",
+            "Copied .gitignore",
+            "Copied untracked.txt",
+        ]
+    );
+    let workroom = created_path(&run);
+    for (file, want) in [
+        ("local.txt", "edited\n"),
+        ("staged.txt", "staged\n"),
+        ("untracked.txt", "untracked\n"),
+        (".gitignore", "ignored.txt\n"),
+    ] {
+        assert_eq!(
+            std::fs::read_to_string(workroom.join(file)).ok().as_deref(),
+            Some(want),
+            "{file}"
+        );
+    }
+    assert!(
+        !workroom.join("ignored.txt").exists(),
+        "an ignored file was copied"
+    );
+    assert_eq!(
+        git_output(&home, &project, &["status", "--porcelain"]),
+        before
+    );
+
+    // Go's `TestCopyingChangesSaysWhenItSkipsANestedRepository`.
+    let nested = project.join("vendored");
+    std::fs::create_dir_all(&nested).expect("vendored");
+    home.git(&nested, &["init", "-q"]);
+    write_file(&nested, "lib.txt", "lib\n", 0o644);
+    write_file(&project, "mine.txt", "mine\n", 0o644);
+    let run = create(&home, &project, &["--start", "local-with-changes"]);
+    run.assert_code(0);
+    assert!(
+        create_steps(&run.stderr).contains(
+            &"changes:warning:Didn't copy vendored/: each is a separate git repository".to_string()
+        ),
+        "{}",
+        run.stderr
+    );
+    assert!(create_log(&run.stderr, "changes").contains(&"Copied mine.txt".to_string()));
+    assert!(
+        create_log(&run.stderr, "changes")
+            .contains(&"Skipped vendored/: it's a separate git repository".to_string())
+    );
+}
+
+/// Go's `TestCreateStartAskOnlyRefusesForWorkItWouldLeaveOut` and
+/// `TestCreateStartAskSaysWhenTheLocalBranchIsBehind`: `--start ask` refuses only for work a
+/// create would leave out (not when main matches origin, nor for changes on another branch, but
+/// for uncommitted changes alone), and says when the local branch is behind origin.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_start_ask_refuses_only_for_work_it_would_leave_out() {
+    let home = Home::new("create-ask-only");
+    let project = origin_project(&home);
+    create(&home, &project, &["--start", "ask"]).assert_code(0);
+    home.git(&project, &["checkout", "-q", "-b", "other"]);
+    write_file(&project, "base.txt", "edited\n", 0o644);
+    create(&home, &project, &["--start", "ask"]).assert_code(0);
+    home.git(&project, &["checkout", "-q", "main"]);
+    let run = create(&home, &project, &["--start", "ask"]);
+    run.assert_code(3);
+    let envelope = run.envelope();
+    assert_eq!(envelope["error"]["kind"], "LocalWorkLeftOut");
+    assert_eq!(envelope["local_work"]["uncommitted"], true);
+    assert_eq!(envelope["local_work"]["ahead"], 0);
+    assert_eq!(
+        envelope["local_work"]["summary"],
+        "You have changes on main that you haven't committed yet"
+    );
+
+    // A teammate pushes a commit this checkout hasn't pulled.
+    let other = home.path("other");
+    home.git(
+        &home.dir,
+        &[
+            "clone",
+            "-q",
+            &home.path("app.git").to_string_lossy(),
+            "other",
+        ],
+    );
+    write_file(&other, "theirs.txt", "theirs\n", 0o644);
+    home.git(&other, &["add", "theirs.txt"]);
+    commit(&home, &other, "theirs");
+    home.git(&other, &["push", "-q", "origin", "main"]);
+    let run = create(&home, &project, &["--start", "ask"]);
+    run.assert_code(3);
+    let envelope = run.envelope();
+    let note = "Your main is also 1 commit behind origin, so including your work starts from your older \
+         copy.";
+    assert_eq!(envelope["local_work"]["behind"], 1);
+    assert_eq!(envelope["local_work"]["behind_note"], note);
+    assert_eq!(
+        envelope["error"]["message"],
+        format!(
+            "the new workroom would leave out some of your work: You have changes on main that \
+             you haven't committed yet. {note} Choose what to include with --start \
+             local-with-changes (your commits and changes), local (your commits) or origin \
+             (neither)"
+        )
+    );
+}
+
+/// Go's `TestContractCreateOfflineLocalStart`, `TestAChosenStartHoldsWhenTheFetchFails` and
+/// `TestALocalStartAgainstAMissingDefaultBaseSaysWhy`: a start chosen beforehand holds when the
+/// fetch fails, and the fetch row and the warning say where it really starts; nobody is asked
+/// against a stale copy; and a local start against the fallback from a missing app-wide default
+/// base keeps that fact.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_chosen_start_holds_offline_and_against_a_missing_default_base() {
+    let home = Home::new("create-offline");
+    let project = ahead_create_project(&home);
+    home.git(
+        &project,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &home.path("gone.git").to_string_lossy(),
+        ],
+    );
+    let run = create(&home, &project, &["--start", "local"]);
+    run.assert_code(0);
+    let name = created_name(&run);
+    check_golden(
+        Owner::GoContractTests,
+        "create-offline-local-start.json",
+        &normalize_create(&home, &name, &run.stdout),
+    );
+    check_golden(
+        Owner::GoContractTests,
+        "create-offline-local-start-events.ndjson",
+        &normalize_create(&home, &name, &run.stderr),
+    );
+    assert!(created_path(&run).join("local.txt").exists());
+    create(&home, &project, &["--start", "ask"]).assert_code(0);
+
+    let home = Home::new("create-missing-base");
+    let project = ahead_create_project(&home);
+    home.write_config(&format!(
+        "{{\"base_branch\": \"nope\", \"{}\": {{\"vcs\": \"git\"}}}}",
+        project.display()
+    ));
+    let run = create(&home, &project, &["--start", "local"]);
+    run.assert_code(0);
+    assert_eq!(
+        run.envelope()["warning"],
+        "The default base branch nope doesn't exist in this project. The workroom starts from \
+         your local main, as you chose."
+    );
+    assert!(created_path(&run).join("local.txt").exists());
+    // Without a choice, the fallback says it gave way to origin's default branch.
+    let run = create(&home, &project, &[]);
+    run.assert_code(0);
+    assert_eq!(
+        run.envelope()["warning"],
+        "The default base branch nope doesn't exist in this project, so the workroom starts from \
+         origin/main."
+    );
+    // A project's own base that is nowhere fails the fetch step, and the create.
+    home.write_config(&format!(
+        "{{\"{}\": {{\"base_branch\": \"nope\", \"vcs\": \"git\"}}}}",
+        project.display()
+    ));
+    let run = create(&home, &project, &[]);
+    run.assert_code(3);
+    assert_eq!(run.error_kind(), "BaseBranchNotFound");
+    let message = "the base branch exists neither on its remote nor locally: 'nope'";
+    assert_eq!(run.envelope()["error"]["message"], message);
+    assert_eq!(run.envelope().get("start_commit"), None);
+    assert_eq!(
+        create_steps(&run.stderr),
+        [
+            "fetch:running".to_string(),
+            format!("fetch:failed:{message}")
+        ]
+    );
+    assert_eq!(
+        create_log(&run.stderr, "fetch").last().map(String::as_str),
+        Some(message)
+    );
+}
+
+/// Go's `TestCreateStartLocalGatesAScriptOnlyTheUnpushedCommitHas` and
+/// `TestIncludingChangesJudgesTheEditedSetupScriptFirst`: the setup script is judged at the start
+/// actually chosen, before anything exists, so a script only the unpushed commit has is refused
+/// unrun, and including changes judges the edited copy that will run; approving its bytes lets the
+/// same create through.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_judges_the_setup_script_at_the_start_chosen() {
+    let home = Home::new("create-gate-start");
+    let project = origin_project(&home);
+    let marker = home.path("ran");
+    commit_script(
+        &home,
+        &project,
+        "workroom_setup",
+        &format!("#!/bin/sh\ntouch {}\n", marker.display()),
+    );
+    let run = create(&home, &project, &["--start", "local"]);
+    run.assert_code(3);
+    let envelope = run.envelope();
+    assert_eq!(envelope["error"]["kind"], "ScriptNotTrusted");
+    assert_eq!(envelope["script"]["origin"], "base");
+    assert_eq!(envelope.get("created"), None);
+    assert_eq!(
+        envelope["start_commit"],
+        git_output(&home, &project, &["rev-parse", "origin/main"]).trim()
+    );
+    assert!(entries(&home.path("workrooms")).is_empty());
+    assert!(
+        !config_text(&home).contains("workroom/"),
+        "{}",
+        config_text(&home)
+    );
+    assert!(!marker.exists(), "the unapproved setup script ran");
+
+    let home = Home::new("create-gate-changes");
+    let project = origin_project(&home);
+    commit_script(&home, &project, "workroom_setup", "#!/bin/sh\necho hi\n");
+    home.git(&project, &["push", "-q", "origin", "main"]);
+    register(&home, &project, &[("workroom_setup", SHA_HI)]);
+    let marker = home.path("ran");
+    let edited = format!("#!/bin/sh\ntouch {}\n", marker.display());
+    write_script(&project, "workroom_setup", &edited);
+    let run = create(&home, &project, &["--start", "local-with-changes"]);
+    run.assert_code(3);
+    let envelope = run.envelope();
+    assert_eq!(envelope["error"]["kind"], "ScriptNotTrusted");
+    assert_eq!(envelope["script"]["text"], edited.as_str());
+    assert_eq!(envelope["script"]["origin"], "root");
+    assert_eq!(envelope.get("created"), None);
+    assert!(entries(&home.path("workrooms")).is_empty());
+    let digest = envelope["script"]["sha256"]
+        .as_str()
+        .expect("sha256")
+        .to_string();
+    register(&home, &project, &[("workroom_setup", &digest)]);
+    let run = create(&home, &project, &["--start", "local-with-changes"]);
+    run.assert_code(0);
+    assert!(marker.exists(), "the approved edited script didn't run");
+
+    // --skip-setup judges and runs nothing, and says so.
+    let home = Home::new("create-skip-setup");
+    let project = setup_project(&home, &format!("touch {}\n", marker.display()), "");
+    std::fs::remove_file(&marker).expect("remove marker");
+    let run = create(&home, &project, &["--skip-setup"]);
+    run.assert_code(0);
+    assert!(!marker.exists(), "--skip-setup ran the script");
+    assert_eq!(
+        create_steps(&run.stderr).last().map(String::as_str),
+        Some("script:skipped:Skipped without approval")
+    );
+    assert!(run.stderr.contains("\"setup\":true"), "{}", run.stderr);
+}
+
+/// Go's `TestAnsweringTheStartQuestionContinuesFromItsStartCommit`,
+/// `TestAnsweringTheScriptQuestionContinuesFromTheCommitItWasAskedAbout`,
+/// `TestAnUnusableStartCommitIsItsOwnErrorKind` and `TestStartCommitMustBeACommitHash` (ADR
+/// 0059): the answer to a create question, pinned to the commit it was asked about, starts there
+/// with no fetch step though origin has since moved, and runs the script that was approved there.
+/// A pin it can't use is `StartCommitUnusable`, exit 3; anything but a commit hash is refused by
+/// name.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_start_commit_answers_the_question_it_was_asked() {
+    let home = Home::new("create-pin");
+    let project = ahead_create_project(&home);
+    let asked = git_output(&home, &project, &["rev-parse", "origin/main"]);
+    let asked = asked.trim();
+    let run = create(&home, &project, &["--start", "ask"]);
+    run.assert_code(3);
+    assert_eq!(run.envelope()["start_commit"], asked);
+    // Someone else pushes, and the app's background fetch lands it.
+    let other = home.path("other");
+    home.git(
+        &home.dir,
+        &[
+            "clone",
+            "-q",
+            &home.path("app.git").to_string_lossy(),
+            "other",
+        ],
+    );
+    commit_script(&home, &other, "workroom_setup", "#!/bin/sh\necho second\n");
+    home.git(&other, &["push", "-q", "origin", "HEAD:main"]);
+    home.git(&project, &["fetch", "-q", "origin"]);
+    let run = create(
+        &home,
+        &project,
+        &["--start", "origin", "--start-commit", asked],
+    );
+    run.assert_code(0);
+    assert_eq!(
+        git_output(&home, &created_path(&run), &["rev-parse", "HEAD"]).trim(),
+        asked
+    );
+    assert!(!run.stderr.contains("\"id\":\"fetch\""), "{}", run.stderr);
+    assert_eq!(
+        create_steps(&run.stderr),
+        [
+            "worktree:running",
+            "worktree:done",
+            "script:skipped:No setup script"
+        ]
+    );
+
+    // The script question: refused at the commit it was asked about, approved, then answered
+    // there, though origin moved on to another script in between.
+    let home = Home::new("create-pin-script");
+    let project = origin_project(&home);
+    commit_script(&home, &project, "workroom_setup", "#!/bin/sh\necho first\n");
+    home.git(&project, &["push", "-q", "origin", "main"]);
+    let first = git_output(&home, &project, &["rev-parse", "HEAD"]);
+    let run = create(&home, &project, &[]);
+    run.assert_code(3);
+    let envelope = run.envelope();
+    assert_eq!(envelope["start_commit"], first.trim());
+    let digest = envelope["script"]["sha256"]
+        .as_str()
+        .expect("sha256")
+        .to_string();
+    home.git(
+        &home.dir,
+        &[
+            "clone",
+            "-q",
+            &home.path("app.git").to_string_lossy(),
+            "other",
+        ],
+    );
+    let other = home.path("other");
+    commit_script(&home, &other, "workroom_setup", "#!/bin/sh\necho second\n");
+    home.git(&other, &["push", "-q", "origin", "HEAD:main"]);
+    home.git(&project, &["fetch", "-q", "origin"]);
+    register(&home, &project, &[("workroom_setup", &digest)]);
+    let run = create(&home, &project, &["--start-commit", first.trim()]);
+    run.assert_code(0);
+    assert_eq!(create_log(&run.stderr, "script"), ["first"]);
+
+    let run = create(&home, &project, &["--start-commit", &"ab".repeat(20)]);
+    run.assert_code(3);
+    assert_eq!(run.error_kind(), "StartCommitUnusable");
+    assert_eq!(
+        run.envelope()["error"]["message"],
+        format!(
+            "the commit this create was asked about is no longer where it starts: {} is not on \
+             origin/main",
+            "ab".repeat(20)
+        )
+    );
+
+    for pin in ["--upload-pack=touch x", "HEAD~1", "abc"] {
+        let run = create(&home, &project, &["--start-commit", pin]);
+        run.assert_code(1).assert_quiet_stderr();
+        assert_eq!(
+            run.envelope()["error"]["message"],
+            format!("--start-commit must be a commit hash, not {pin:?}")
+        );
+        assert_eq!(run.envelope()["command"], "create");
+    }
+    let run = create(&home, &project, &["--start", "bogus"]);
+    run.assert_code(1).assert_quiet_stderr();
+    assert_eq!(
+        run.envelope()["error"]["message"],
+        "--start must be one of origin, local, local-with-changes, ask, not \"bogus\""
+    );
+    assert_eq!(run.envelope()["command"], "create");
+    let help = home.run(&home.dir, &["create", "--help"]);
+    assert!(!help.stdout.contains("start-commit"), "{}", help.stdout);
 }
 
 // --- completion ---

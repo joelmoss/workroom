@@ -13,6 +13,8 @@
 //! found, 4 cancelled, 5 a setup or teardown script failed, 6 config couldn't be read or written,
 //! 7 no daemon could be reached, or the one reached is too old for the request, 8 a wait timed out.
 
+use super::create::CreatePayload;
+use super::start::LocalWorkPayload;
 use super::trusted_script::ScriptPayload;
 
 /// One failure class a command can end with.
@@ -230,6 +232,15 @@ pub(crate) struct CliError {
     /// The script a `ScriptNotTrusted` refused, as the envelope's `script` carries it for the app
     /// to show and approve.
     pub(crate) script: Option<Box<ScriptPayload>>,
+    /// The workroom a create made before it failed (its setup script, say), as the envelope's
+    /// `created` carries it, so the app can offer to delete it.
+    pub(crate) created: Option<Box<CreatePayload>>,
+    /// The work a `LocalWorkLeftOut` create would leave out, for the app to ask where it starts.
+    pub(crate) local_work: Option<Box<LocalWorkPayload>>,
+    /// The commit a create question was asked about, for the answer to pass back as
+    /// `--start-commit` (ADR 0059). Boxed, as the others are, so a `Result` carrying the error
+    /// stays small.
+    pub(crate) start_commit: Option<Box<str>>,
 }
 
 impl CliError {
@@ -240,6 +251,9 @@ impl CliError {
             matches: Vec::new(),
             details: None,
             script: None,
+            created: None,
+            local_work: None,
+            start_commit: None,
         }
     }
 

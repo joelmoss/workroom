@@ -2,8 +2,9 @@
 //! the project's base on its remote, freshly fetched, else the local branch, else origin's default
 //! branch, and the local work that start leaves out of the main checkout (`Git.LocalWork`).
 //!
-//! Only what `trust status` needs today: no create's fetch step events, and no pinned start
-//! commit (ADR 0059), which `create` adds when it is ported (#677).
+//! `trust status` resolves the start silently. `create` reports its fetch as the create's `fetch`
+//! step, with git's output in its log ([`FetchStep`]), and a create answering a create question
+//! starts from the commit it was asked about, fetching nothing (ADR 0059).
 
 use std::path::Path;
 
@@ -11,6 +12,102 @@ use serde::Serialize;
 
 use super::git;
 use super::kind::{CliError, Kind};
+
+/// Where a create's steps and the git output behind them go: Go's `vcs.Progress`. States are
+/// `running`, `done`, `warning`, `skipped` and `failed`; `detail` is the warning, the skip
+/// reason or the failure.
+pub(super) trait Progress {
+    fn step(&mut self, id: &str, state: &str, detail: &str);
+    /// One line of the running step's log, as Go's `fmt.Fprintln` writes one to it.
+    fn log(&mut self, line: &str);
+}
+
+/// No one to tell: `trust status`'s start, and a create without `--json`.
+pub(super) struct Silent;
+
+impl Progress for Silent {
+    fn step(&mut self, _: &str, _: &str, _: &str) {}
+    fn log(&mut self, _: &str) {}
+}
+
+/// git `args` in `dir` as Go's `Git.run` runs it for a create: `$ git <args>` in the log, then
+/// what git printed there, both streams in the order printed. Its output and whether it exited 0,
+/// or, when it didn't, how it ended in Go's words (`exit status 128`).
+pub(super) fn logged_git(
+    progress: &mut dyn Progress,
+    dir: &Path,
+    args: &[&str],
+) -> Result<String, String> {
+    progress.log(&format!("$ git {}", args.join(" ")));
+    let (out, ended) = git::combined(dir, args);
+    if !out.is_empty() {
+        progress.log(&out);
+    }
+    ended.map(|()| out)
+}
+
+/// The create's `fetch` step: unannounced until a fetch is tried, so a project with no remote goes
+/// straight to skipped. A pinned create has none: the create whose question it answers fetched,
+/// and reported it. Go's `fetchStep`.
+pub(super) struct FetchStep<'a> {
+    pub(super) progress: &'a mut dyn Progress,
+    attempted: bool,
+    /// The fetch was tried and failed.
+    pub(super) failed: bool,
+    pinned: bool,
+}
+
+impl<'a> FetchStep<'a> {
+    /// The fetch step of a create; `pinned` when it starts from a commit it was given.
+    pub(super) fn new(progress: &'a mut dyn Progress, pinned: bool) -> FetchStep<'a> {
+        FetchStep {
+            progress,
+            attempted: false,
+            failed: false,
+            pinned,
+        }
+    }
+
+    /// Ends the step once the start is settled: a base found nowhere fails it, and a start-point
+    /// warning ends it with that warning.
+    pub(super) fn finish(&mut self, warning: &str, error: Option<&CliError>) {
+        if self.pinned {
+            return;
+        }
+        if let Some(error) = error {
+            self.progress.log(&error.message);
+            self.progress.step("fetch", "failed", &error.message);
+        } else if !warning.is_empty() {
+            self.progress.step("fetch", "warning", warning);
+        } else if !self.attempted {
+            self.progress
+                .step("fetch", "skipped", "No remote to fetch from");
+        } else {
+            self.progress.step("fetch", "done", "");
+        }
+    }
+
+    /// Fetches `remote`, pruned, and with `set_head` refreshes its HEAD, which fetch never moves
+    /// after a default-branch rename. Whether the fetch worked; a pinned create fetches nothing
+    /// and counts as fetched.
+    fn fetch(&mut self, dir: &Path, remote: &str, set_head: bool) -> bool {
+        if self.pinned {
+            return true;
+        }
+        if !self.attempted {
+            self.progress.step("fetch", "running", "");
+        }
+        self.attempted = true;
+        if logged_git(self.progress, dir, &["fetch", "--prune", remote]).is_err() {
+            self.failed = true;
+            return false;
+        }
+        if set_head {
+            let _ = git::run(dir, &["remote", "set-head", remote, "--auto"]);
+        }
+        true
+    }
+}
 
 /// A base branch setting read as `<remote>/<branch>` when the part before the first `/` is one of
 /// `remotes`, else a branch on origin. So `upstream/main` is upstream's main, `origin/main` is
@@ -37,12 +134,24 @@ pub(super) fn start_point(
     base: &str,
     fallback: bool,
 ) -> Result<(String, String), CliError> {
+    let mut silent = Silent;
+    let mut fetch = FetchStep::new(&mut silent, false);
+    resolve(dir, base, fallback, &mut fetch)
+}
+
+/// [`start_point`], fetching through `fs`, which the caller finishes once the start is settled.
+pub(super) fn resolve(
+    dir: &Path,
+    base: &str,
+    fallback: bool,
+    fs: &mut FetchStep,
+) -> Result<(String, String), CliError> {
     // Whatever git said, as Go reads it: a failure's words are split into "remotes" too.
     let (out, _) = git::run(dir, &["remote"]);
     let remotes: Vec<&str> = out.split_whitespace().collect();
     let (remote, branch) = split_base(base, &remotes);
     let has_remote = remotes.contains(&remote);
-    let fetched = has_remote && fetch(dir, remote, branch.is_empty());
+    let fetched = has_remote && fs.fetch(dir, remote, branch.is_empty());
     // Fully qualified: a tag or branch named like the short form would make it ambiguous.
     let mut candidates = Vec::new();
     if has_remote {
@@ -70,6 +179,7 @@ pub(super) fn start_point(
             base,
             &remotes,
             remote == "origin" && fetched,
+            fs,
         ));
     }
     let warning = if has_remote && !fetched {
@@ -106,14 +216,19 @@ fn origin_default(
     base: &str,
     remotes: &[&str],
     mut origin_fetched: bool,
+    fs: &mut FetchStep,
 ) -> (String, String) {
     let has_origin = remotes.contains(&"origin");
     let mut start = String::new();
     if has_origin {
-        if origin_fetched {
+        if fs.pinned {
+            // `set-head --auto` asks the remote, and a pinned create reaches it for nothing: the
+            // create whose question it answers set origin/HEAD, and said if its fetch failed.
+            origin_fetched = true;
+        } else if origin_fetched {
             let _ = git::run(dir, &["remote", "set-head", "origin", "--auto"]);
         } else {
-            origin_fetched = fetch(dir, "origin", true);
+            origin_fetched = fs.fetch(dir, "origin", true);
         }
         start = first_ref(dir, &["refs/remotes/origin/HEAD".to_string()]);
     }
@@ -126,18 +241,6 @@ fn origin_default(
         warning += " Could not fetch origin, so it may be out of date.";
     }
     (start, warning)
-}
-
-/// Fetches `remote`, pruned, and with `set_head` refreshes its HEAD, which fetch never moves after
-/// a default-branch rename. Whether the fetch worked.
-fn fetch(dir: &Path, remote: &str, set_head: bool) -> bool {
-    if !git::run(dir, &["fetch", "--prune", remote]).1 {
-        return false;
-    }
-    if set_head {
-        let _ = git::run(dir, &["remote", "set-head", remote, "--auto"]);
-    }
-    true
 }
 
 /// The first of `refs` that names a commit, or "".
@@ -160,7 +263,7 @@ fn first_ref(dir: &Path, refs: &[String]) -> String {
 }
 
 /// `name` as a person knows it: origin/HEAD as the branch it points to, such as origin/main.
-fn ref_name(dir: &Path, name: &str) -> String {
+pub(super) fn ref_name(dir: &Path, name: &str) -> String {
     if name.is_empty() {
         return "HEAD".to_string();
     }
@@ -187,6 +290,10 @@ pub(super) struct LocalWork {
     pub(super) uncommitted: bool,
     /// How many commits the start has that the local branch lacks.
     pub(super) behind: u64,
+    /// The start already came with a warning (a failed fetch, a fallback), so the counts are
+    /// against a remote copy that may be out of date: nobody is asked, though a start chosen
+    /// beforehand still holds.
+    pub(super) stale: bool,
 }
 
 impl LocalWork {
@@ -196,7 +303,7 @@ impl LocalWork {
     }
 
     /// What the work is, plainly, for a person; "" when there is none.
-    fn summary(&self) -> String {
+    pub(super) fn summary(&self) -> String {
         let commits = if self.ahead == 1 { "commit" } else { "commits" };
         let branch = &self.branch;
         match (self.ahead > 0, self.uncommitted) {
@@ -216,7 +323,7 @@ impl LocalWork {
 
     /// What including the work would leave out instead, when the local branch lacks commits the
     /// remote has; "" when it isn't behind.
-    fn behind_note(&self) -> String {
+    pub(super) fn behind_note(&self) -> String {
         if self.behind == 0 {
             return String::new();
         }
@@ -248,8 +355,8 @@ impl LocalWork {
 
 /// Local work as an envelope reports it, with `summary` to show and `behind_note`, said beside it
 /// when the local branch is behind.
-#[derive(Serialize)]
-pub(super) struct LocalWorkPayload {
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct LocalWorkPayload {
     ahead: u64,
     behind: u64,
     behind_note: String,
@@ -262,6 +369,12 @@ pub(super) struct LocalWorkPayload {
 /// Compares `start`, a remote's branch such as refs/remotes/origin/HEAD, with the local branch of
 /// the same name and with the main checkout at `dir`. Empty unless `start` is a remote's branch.
 pub(super) fn local_work(dir: &Path, start: &str) -> LocalWork {
+    local_work_at(dir, start, start)
+}
+
+/// [`local_work`] with the counts taken against `at`, the commit a create starts from, which a
+/// pinned create holds behind where `start` has since moved. Go's `localWork`.
+pub(super) fn local_work_at(dir: &Path, start: &str, at: &str) -> LocalWork {
     let Some(mut rest) = start.strip_prefix("refs/remotes/").map(str::to_string) else {
         return LocalWork::default();
     };
@@ -288,7 +401,7 @@ pub(super) fn local_work(dir: &Path, start: &str) -> LocalWork {
         ..LocalWork::default()
     };
     // "<behind>\t<ahead>": the start's commits the local branch lacks, then the local branch's.
-    let range = format!("{start}...refs/heads/{branch}");
+    let range = format!("{at}...refs/heads/{branch}");
     if let (out, true) = git::run(dir, &["rev-list", "--left-right", "--count", &range])
         && let Some((behind, ahead)) = out.split_once('\t')
     {
@@ -302,6 +415,69 @@ pub(super) fn local_work(dir: &Path, start: &str) -> LocalWork {
         work.uncommitted = ok && !status.is_empty();
     }
     work
+}
+
+/// Whether `commit` is a commit that `name` ("" is HEAD) points to or descends from: where a
+/// pinned create may start from its start point. Go's `isAncestor`.
+pub(super) fn is_ancestor(dir: &Path, commit: &str, name: &str) -> bool {
+    let name = if name.is_empty() { "HEAD" } else { name };
+    git::run(
+        dir,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &format!("{commit}^{{commit}}"),
+            name,
+        ],
+    )
+    .1
+}
+
+/// The commit `start` ("" is HEAD) names, which a create question reports as its `start_commit`
+/// (ADR 0059); "" when it names none, as in a repository with no commits yet. Go's `question`.
+pub(super) fn question_commit(dir: &Path, start: &str) -> String {
+    let start = if start.is_empty() { "HEAD" } else { start };
+    match git::run(
+        dir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{start}^{{commit}}"),
+        ],
+    ) {
+        (commit, true) => commit,
+        _ => String::new(),
+    }
+}
+
+/// The warning for a start switched to the local branch against a remote copy that came with
+/// one: why the default base wasn't used, if it wasn't, that the workroom starts from the local
+/// branch, and, when the fetch failed, that it couldn't be compared with what was pushed. Go's
+/// `localStartWarning`.
+pub(super) fn local_start_warning(
+    base: &str,
+    remote_start: &str,
+    work: &LocalWork,
+    fetch_failed: bool,
+) -> String {
+    let mut parts = Vec::new();
+    // `origin_default`'s fallback: the app-wide default base gave way to origin's default branch.
+    if !base.is_empty() && remote_start == "refs/remotes/origin/HEAD" {
+        parts.push(format!(
+            "The default base branch {base} doesn't exist in this project."
+        ));
+    }
+    parts.push(format!(
+        "The workroom starts from your local {}, as you chose.",
+        work.branch
+    ));
+    if fetch_failed {
+        parts.push(
+            "It couldn't be compared with what you've pushed, so the two may differ.".to_string(),
+        );
+    }
+    parts.join(" ")
 }
 
 #[cfg(test)]
@@ -329,6 +505,7 @@ mod tests {
             ahead,
             uncommitted,
             behind,
+            stale: false,
         };
         assert_eq!(
             work(2, true, 0).summary(),

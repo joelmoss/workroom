@@ -49,6 +49,46 @@ pub(super) fn run(dir: &Path, args: &[&str]) -> (String, bool) {
     }
 }
 
+/// git `args` in `dir` as Go's `RealExecutor` runs it where the order of what git says matters:
+/// both streams into one pipe, so they interleave as printed (`worktree add` says "Preparing
+/// worktree" on stderr before "HEAD is now at" on stdout), trimmed. With it, how git ended: `Ok`
+/// for exit 0, else Go's `exec` error's words (`exit status 128`).
+pub(super) fn combined(dir: &Path, args: &[&str]) -> (String, Result<(), String>) {
+    use std::io::Read;
+    let started = std::io::pipe().and_then(|(mut reader, writer)| {
+        let mut command = command(dir);
+        command
+            .args(args)
+            .stdout(writer.try_clone()?)
+            .stderr(writer);
+        let child = command.spawn();
+        // The command holds the pipe's write ends; they must close for the read to end.
+        drop(command);
+        let mut child = child?;
+        let mut said = Vec::new();
+        let read = reader.read_to_end(&mut said);
+        let status = child.wait()?;
+        read?;
+        Ok((said, status))
+    });
+    match started {
+        Ok((said, status)) => {
+            let text = super::log::go_lossy(&said).trim().to_string();
+            let ended = if status.success() {
+                Ok(())
+            } else {
+                Err(super::teardown::go_exit(&status))
+            };
+            (text, ended)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
+            String::new(),
+            Err("exec: \"git\": executable file not found in $PATH".to_string()),
+        ),
+        Err(error) => (String::new(), Err(super::config::os_error(&error))),
+    }
+}
+
 /// git `args` in `dir` as Go's `gitOutput` runs it: its stdout, exact, or an error worded as Go's
 /// (`git <first arg>: exit status <n>: <stderr>`).
 pub(super) fn output(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
