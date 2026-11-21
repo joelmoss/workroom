@@ -198,17 +198,15 @@ const SEND: &str = "terminal.send";
 /// `\u001b`), so it goes in chunks up to the 16 MiB the daemon reassembles (`rpc::reassemble`).
 fn max_request(method: &str) -> usize {
     if method == SEND {
-        16 * 1024 * 1024
+        crate::daemon::rpc::MAX_REQUEST
     } else {
         MAX_ENVELOPE_PAYLOAD
     }
 }
 
-/// The first byte of a chunked request's payload (`rpc::REQUEST_CHUNK_MARKER`); the second says
-/// whether it is the last. A request that fits one envelope goes as it is, JSON, which starts `{`.
-const CHUNK_MARKER: u8 = 0x02;
-
-/// `request` as the envelopes that carry it, encoded: one when it fits, else chunks.
+/// `request` as the envelopes that carry it, encoded: one when it fits, else chunks, each
+/// payload starting with `rpc::REQUEST_CHUNK_MARKER` and then whether it is the last. A request
+/// that fits one envelope goes as it is, JSON, which starts `{`.
 fn envelopes(request: &[u8]) -> Vec<u8> {
     if request.len() <= MAX_ENVELOPE_PAYLOAD {
         return Envelope::new(Service::TerminalApi, STREAM, request.to_vec()).encode();
@@ -218,7 +216,10 @@ fn envelopes(request: &[u8]) -> Vec<u8> {
     chunks
         .enumerate()
         .flat_map(|(index, chunk)| {
-            let mut payload = vec![CHUNK_MARKER, u8::from(index + 1 == count)];
+            let mut payload = vec![
+                crate::daemon::rpc::REQUEST_CHUNK_MARKER,
+                u8::from(index + 1 == count),
+            ];
             payload.extend_from_slice(chunk);
             Envelope::new(Service::TerminalApi, STREAM, payload).encode()
         })
@@ -499,6 +500,14 @@ fn resumed(
 /// refusal comes at once. The same for `wait` and `api call terminal.wait`, so neither reads a
 /// long wait as a daemon gone quiet (7).
 pub(super) fn answer_timeout(method: &str, params: &Value) -> Option<Duration> {
+    // A send types for up to its deadline, then closes its paste, so it gets both and `TIMEOUT`.
+    if method == SEND {
+        return Some(
+            crate::terminal::api::SEND_DEADLINE
+                + crate::terminal::api::SEND_DEADLINE_GRACE
+                + TIMEOUT,
+        );
+    }
     if method != "terminal.wait" {
         return Some(TIMEOUT);
     }

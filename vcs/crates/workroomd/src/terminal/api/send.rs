@@ -13,15 +13,22 @@
 //! `allow_self` (`RefusedSelf`), keys for a session whose modes the daemon can't read
 //! (`InternalError`), and a hand-off under way (`Busy`).
 //!
+//! **Bounded.** A send types for at most [`DEADLINE`], its wait for the session's input included,
+//! and holds an `rpc::Permit` meanwhile, so a hand-off waits for it, or is refused, rather than
+//! cut it off. One that stops early says how many bytes went (`cut_short`), and never leaves its
+//! paste open for what comes next (`Pty::send`).
+//!
 //! **Every send is told** (`session.input`, `crate::terminal::events`), naming the session it came
 //! from, before it is typed: a send the events can't tell, while a hand-off holds them, is refused.
 
 use std::ffi::OsStr;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
 use super::{Answer, ApiError, Call, caller_schema, kind, listed, resolve};
 use crate::terminal::keys::{self, Key, Modes};
+use crate::terminal::pty::{Stop, Stopped};
 
 pub const NAME: &str = "terminal.send";
 
@@ -201,6 +208,59 @@ fn too_large(bytes: usize) -> ApiError {
     )
 }
 
+/// The longest one send types for, its wait for the session's input included (`Pty::send`): a
+/// program reading slowly is typed into for no longer, and an open paste is then closed, within
+/// the pty's `WRITE_DEADLINE` more. The CLI waits for the answer past both (`terminal_api`).
+pub const DEADLINE: Duration = Duration::from_secs(30);
+
+/// How long after [`DEADLINE`] a send's answer may still come: closing its paste.
+pub const DEADLINE_GRACE: Duration = crate::terminal::pty::WRITE_DEADLINE;
+
+/// The error for a send that stopped before typing all `total` bytes, saying how many went.
+/// `Busy` when another input to the session held it until the deadline, which a retry can get
+/// past; `InternalError` when the program stopped reading or read too slowly, which a retry would
+/// meet again.
+fn cut_short(session: &str, stopped: &Stopped, total: usize) -> ApiError {
+    let written = stopped.written;
+    let paste = if stopped.paste_open {
+        "; its paste was left open, and is closed before anything else is typed into the session"
+    } else {
+        ""
+    };
+    let (kind, why) = match &stopped.why {
+        Stop::Turn => (
+            kind::BUSY,
+            format!(
+                "another input to session {session} was still being typed after {} s; try \
+                 again when it has been",
+                DEADLINE.as_secs()
+            ),
+        ),
+        Stop::Stalled => (
+            kind::INTERNAL_ERROR,
+            format!(
+                "session {session}'s program read nothing for {} s",
+                crate::terminal::pty::WRITE_DEADLINE.as_secs()
+            ),
+        ),
+        Stop::Deadline => (
+            kind::INTERNAL_ERROR,
+            format!(
+                "session {session}'s program read too slowly to take it within {} s",
+                DEADLINE.as_secs()
+            ),
+        ),
+        Stop::Failed(error) => (
+            kind::INTERNAL_ERROR,
+            format!("typing into session {session} failed: {error}"),
+        ),
+    };
+    ApiError::new(
+        kind,
+        format!("{why}; {written} of {total} bytes were typed{paste}"),
+    )
+}
+
 /// `terminal.send`: what is asked checked, the target resolved, then what it types encoded for
 /// the session's modes, told, and written.
 pub fn send(call: &Call) -> Result<Answer, ApiError> {
@@ -238,6 +298,7 @@ pub fn send(call: &Call) -> Result<Answer, ApiError> {
     }
     let bracketed = modes.is_some_and(|modes| modes.bracketed_paste);
     let mut typed = keys::pasted(&asked.text, bracketed);
+    let paste = (bracketed && !asked.text.is_empty()).then_some(0..typed.len());
     let mut length = asked.text.len();
     for key in &asked.keys {
         let bytes = key.encode(modes.unwrap_or_default());
@@ -247,6 +308,16 @@ pub fn send(call: &Call) -> Result<Answer, ApiError> {
     if length > MAX_BYTES {
         return Err(too_large(length));
     }
+    // Held while it types, so a hand-off waits for it, or is refused, rather than cut it off with
+    // the exec; and refused while one is under way.
+    let Some(_permit) = crate::daemon::rpc::Permit::acquire() else {
+        return Err(ApiError::new(
+            kind::BUSY,
+            "the daemon is being handed off to its next program, or is at its limit on \
+             requests at once; try again when it has been",
+        ));
+    };
+    let until = std::time::Instant::now() + DEADLINE;
     let hub = &call.sessions.hooks().events;
     if !hub.input(
         id,
@@ -259,18 +330,10 @@ pub fn send(call: &Call) -> Result<Answer, ApiError> {
             "the daemon is being handed off to its next program; try again when it has been",
         ));
     }
-    match call.sessions.send_input(id, &typed) {
+    match call.sessions.send_input(id, &typed, paste, until) {
         None => return Err(ended()),
         Some(Err(_)) if !call.sessions.contains(id) => return Err(ended()),
-        Some(Err(error)) => {
-            return Err(ApiError::new(
-                kind::INTERNAL_ERROR,
-                format!(
-                    "session {hyphenated}'s program stopped reading its input ({error}), so only \
-                     part of what was sent may have been typed"
-                ),
-            ));
-        }
+        Some(Err(stopped)) => return Err(cut_short(&hyphenated, &stopped, typed.len())),
         Some(Ok(())) => {}
     }
     Ok(Answer::One(json!({

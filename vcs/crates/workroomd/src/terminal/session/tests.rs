@@ -2091,10 +2091,17 @@ fn a_second_clients_resize_is_recorded_but_not_applied() {
 fn input_sent_through_the_api_attaches_nothing_and_claims_no_size() {
     let store = SessionStore::new();
     sized_session(&store, id(0x89));
-    assert_eq!(
-        store.send_input(id(0x89), b"x").map(|r| r.is_ok()),
-        Some(true)
-    );
+    let send = |session: SessionId, bytes: &[u8]| {
+        store
+            .send_input(
+                session,
+                bytes,
+                None,
+                Instant::now() + Duration::from_secs(10),
+            )
+            .map(|sent| sent.is_ok())
+    };
+    assert_eq!(send(id(0x89), b"x"), Some(true));
     assert_eq!(
         store.size_owner(id(0x89)),
         None,
@@ -2106,10 +2113,7 @@ fn input_sent_through_the_api_attaches_nothing_and_claims_no_size() {
     let (_first, first) = attach_sized(&store, id(0x89), 100, 30);
     let (_second, second) = attach_sized(&store, id(0x89), 120, 40);
     store.resize(id(0x89), second, Size::cells(200, 50));
-    assert_eq!(
-        store.send_input(id(0x89), b"y").map(|r| r.is_ok()),
-        Some(true)
-    );
+    assert_eq!(send(id(0x89), b"y"), Some(true));
     assert_eq!(
         store.size_owner(id(0x89)),
         Some(first),
@@ -2119,10 +2123,7 @@ fn input_sent_through_the_api_attaches_nothing_and_claims_no_size() {
     store.write_input(id(0x89), second, b"z");
     assert_eq!(store.size_owner(id(0x89)), Some(second), "as typing does");
 
-    assert!(
-        store.send_input(id(0x8a), b"x").is_none(),
-        "no such session"
-    );
+    assert_eq!(send(id(0x8a), b"x"), None, "no such session");
     store.kill_all();
 }
 

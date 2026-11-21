@@ -286,13 +286,34 @@ impl SessionStore {
     /// What the terminal API's `terminal.send` types (#689), written to the session's pty as no
     /// client: nothing an attach does happens, so no repaint, no client counted as attached, no
     /// size claimed or arbitrated (ADR 0042) and no keepalive probes. Its attachment lock is never
-    /// taken, so the reader's echo of a long paste is never held up behind the write. `None` when
-    /// the session has gone.
-    pub fn send_input(&self, id: SessionId, bytes: &[u8]) -> Option<std::io::Result<()>> {
+    /// taken, so the reader's echo of a long paste is never held up behind the write. `paste` is
+    /// the range of `bytes` that is a bracketed paste, and `until` the send's deadline
+    /// (`Pty::send`). `None` when the session has gone.
+    pub fn send_input(
+        &self,
+        id: SessionId,
+        bytes: &[u8],
+        paste: Option<std::ops::Range<usize>>,
+        until: Instant,
+    ) -> Option<Result<(), crate::terminal::pty::Stopped>> {
         let pty = lock_or_recover(&self.sessions)
             .get(&id)
             .map(|session| Arc::clone(&session.pty))?;
-        Some(pty.write_all(bytes))
+        Some(pty.send(bytes, paste, until))
+    }
+
+    /// For a hand-off: each session's paste a send left open closed, if its program takes the
+    /// end by `until` (`Pty::close_owed_paste`). Whether every one was.
+    pub fn close_owed_pastes(&self, until: Instant) -> bool {
+        let ptys: Vec<Arc<Pty>> = lock_or_recover(&self.sessions)
+            .values()
+            .map(|session| Arc::clone(&session.pty))
+            .collect();
+        // Every one tried, the first left open stopping none after it.
+        ptys.iter()
+            .filter(|pty| !pty.close_owed_paste(until))
+            .count()
+            == 0
     }
 
     pub fn is_empty(&self) -> bool {
