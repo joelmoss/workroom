@@ -61,9 +61,11 @@ pub fn input() -> Value {
                 "description": "Wait for output matching this regex (Rust `regex` syntax), with \
                                 escape sequences stripped. Only output after the wait starts \
                                 counts; `^` and `$` match at line ends, `\\r\\n` included, and `$` \
-                                needs the line's end or the session's. The match is the first one \
-                                a search of the whole output finds, however it was read, answered \
-                                once more output can't change it. A match is at most 16 KiB. A \
+                                needs the line's end, or the output's once it stops. The match is \
+                                the first one a search of the whole output finds, however it was \
+                                read, answered once more output can't change it, or once the \
+                                output goes quiet or the session ends, as the output so far \
+                                gives it. A match is at most 16 KiB. A \
                                 wait that falls behind output printed faster \
                                 than it matches is `WaitInterrupted`, since what it dropped \
                                 unmatched may have held one.",

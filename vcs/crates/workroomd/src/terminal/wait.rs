@@ -203,6 +203,12 @@ pub const QUEUE: usize = 16 * WINDOW;
 /// fills at most two, and many small reads share one rather than take an allocation each.
 pub const CHUNK: usize = 8 * 1024;
 
+/// How long a regex wait's output goes with nothing new before what it holds is settled as it
+/// stands, expect-style: `$` matches the end of the output so far, and a match that could still
+/// grow (`\d+`, `Password: $`) is answered once the program has gone quiet. The time is this
+/// daemon's choice, not contract.
+pub const QUIET: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// What the reader has handed a regex waiter and its thread has not taken yet.
 #[derive(Default)]
 struct Queue {
@@ -379,22 +385,32 @@ impl Waiter {
     /// queue is taken under the waiter's lock and matched after it is released. What is queued is
     /// matched before the session's end or the deadline is believed, so output that came first
     /// still meets the wait.
+    ///
+    /// A regex wait whose output goes [`QUIET`] with nothing new after a batch settles what it
+    /// holds as the session's end would ([`Matcher::finish`]): the timer runs here, from when its
+    /// thread took that batch, so the reader pays nothing for it, and a batch taken meanwhile
+    /// starts it again.
     pub fn wait(&self, deadline: Option<Instant>) -> Outcome {
         let mut matcher = lock_or_recover(&self.matcher);
+        // When the output, quiet since the last batch, is settled: `None` until a batch is
+        // taken, and again once it is.
+        let mut quiet_at: Option<Instant> = None;
         loop {
             // Taken once the deadline has passed, a batch is the last: a session that prints
             // faster than it is matched would otherwise keep the queue full past any deadline.
-            let (queue, last) = {
+            let next = {
                 let mut progress = lock_or_recover(&self.state);
                 loop {
                     if let Some(outcome) = &progress.outcome {
                         return outcome.clone();
                     }
                     if !progress.queue.is_empty() {
-                        let last = deadline.is_some_and(|deadline| Instant::now() >= deadline);
+                        let now = Instant::now();
+                        let last = deadline.is_some_and(|deadline| now >= deadline);
                         let queue = std::mem::take(&mut progress.queue);
                         progress.in_hand = queue.len;
-                        break (queue, last);
+                        quiet_at = now.checked_add(QUIET);
+                        break Some((queue, last));
                     }
                     // Nothing left to match from before the end, which settles what is held: a
                     // match a byte more might have changed, and `$` at the output's end.
@@ -406,28 +422,38 @@ impl Waiter {
                         });
                         continue;
                     }
-                    // The deadline, or the end of a shell's grace for its first mark if sooner.
-                    let until = match (deadline, progress.marks_by) {
-                        (Some(deadline), Some(marks_by)) => Some(deadline.min(marks_by)),
-                        (deadline, marks_by) => deadline.or(marks_by),
-                    };
+                    // The deadline, the end of a shell's grace for its first mark, or the output
+                    // gone quiet, whichever is soonest.
+                    let until = [deadline, progress.marks_by, quiet_at]
+                        .into_iter()
+                        .flatten()
+                        .min();
                     match until {
                         None => progress = recover(self.wake.wait(progress)),
                         Some(until) => {
                             let now = Instant::now();
                             if now >= until {
-                                let timed_out = deadline.is_some_and(|deadline| now >= deadline);
-                                progress.outcome = Some(if timed_out {
-                                    Outcome::TimedOut
+                                if deadline.is_some_and(|deadline| now >= deadline) {
+                                    progress.outcome = Some(Outcome::TimedOut);
+                                } else if quiet_at.is_some_and(|quiet_at| now >= quiet_at) {
+                                    // Settled with the waiter's lock released.
+                                    break None;
                                 } else {
-                                    Outcome::NoShellIntegration
-                                });
+                                    progress.outcome = Some(Outcome::NoShellIntegration);
+                                }
                                 continue;
                             }
                             progress = recover(self.wake.wait_timeout(progress, until - now)).0;
                         }
                     }
                 }
+            };
+            let Some((queue, last)) = next else {
+                quiet_at = None;
+                if let Some(found) = matcher.as_mut().and_then(Matcher::finish) {
+                    self.update(|_| Some(Met::Output(found)));
+                }
+                continue;
             };
             let lagged = queue.lagged;
             let found = matcher.as_mut().and_then(|matcher| {
@@ -500,16 +526,18 @@ const CONTEXT: usize = 4;
 /// a time. So a match is answered only once more output can't change it: `TICK-\d+` once a byte
 /// that is no digit follows `TICK-12`, not at `TICK-1` because a read ended there (the lazy DFA's
 /// states say when, [`Matcher::settled`]). A match that can end in an anchor or a word boundary
-/// (`ready$`, `\bok\b`) is answered once a byte follows it, since that byte decides it. The
-/// session's end decides what is left. A match longer than [`WINDOW`] may be missed.
+/// (`ready$`, `\bok\b`) is answered once a byte follows it, since that byte decides it. Output
+/// that stops decides what is left, as if the stream ended there ([`Matcher::finish`]): the
+/// session's end, or [`QUIET`] with nothing new (`Waiter::wait`), so a prompt (`Password: $`) or
+/// a number at the output's end is answered once the program waits. A match longer than
+/// [`WINDOW`] may be missed.
 ///
 /// **Anchors.** `^` and `$` are line anchors (multi-line), `\r\n`, `\n` and `\r` line ends. `$`
-/// needs the line's end, or the session's: a prompt that ends what has arrived is waited for
-/// without `$`. The wait's text starts a line: its first output, or the screen's top row with
+/// needs the line's end, or the output's, once it stops. The wait's text starts a line: its first output, or the screen's top row with
 /// `include_screen`, where `^` and `\A` match. A wait that joins the stream inside an escape
 /// sequence starts mid-line, as far as is known, where neither does ([`Matcher::resync`]). `\A`
 /// matches only there, at the start of the wait's text, while the window still holds it, and `\z`
-/// only at the session's end.
+/// only where the output stops.
 #[cfg_attr(test, derive(Clone))]
 pub struct Matcher {
     /// Finds a match, and its text once it is settled.
@@ -648,8 +676,9 @@ impl Matcher {
         }
     }
 
-    /// The session has ended: what the window holds is all there will be, so its first match is
-    /// settled, `$` and `\z` at its end included.
+    /// The output has stopped, for good (the session's end) or for [`QUIET`]: what the window
+    /// holds is taken as all there is, so its first match is settled, `$` and `\z` at its end
+    /// included. What comes after a quiet is matched on as before.
     pub fn finish(&mut self) -> Option<Vec<u8>> {
         let input = Input::new(&self.window).range(self.context..);
         let found = self.regex.search(&input)?;

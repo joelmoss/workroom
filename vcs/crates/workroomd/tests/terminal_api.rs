@@ -1958,6 +1958,55 @@ fn wait_for_a_regex_counts_only_output_after_it_starts_unless_it_includes_the_sc
     assert!(human.stdout.starts_with("TICK-"), "{}", human.stdout);
 }
 
+/// Output that goes quiet settles a regex wait, expect-style: a prompt with no line end meets
+/// `$` once the program waits on its input. Output that keeps coming never does, however long
+/// the line it grows, so the wait runs to its timeout.
+#[test]
+fn a_regex_wait_settles_when_the_output_goes_quiet_and_not_before() {
+    let workspace = Workspace::new("api-wait-quiet");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    let _output = common::ClientReader::new(&mut shell);
+    let prompt = started(
+        &socket,
+        &[
+            "wait",
+            "server",
+            "--regex",
+            "Password: $",
+            "--timeout",
+            "20s",
+            "--json",
+        ],
+    );
+    // Long enough for the wait to have started, and split so the typed line's echo isn't it.
+    type_line(&mut shell, "sleep 3; printf 'Pass''word: '; read -r answer");
+    let prompt = finished(prompt);
+    assert_eq!(prompt.code, 0, "{} {}", prompt.stdout, prompt.stderr);
+    assert_eq!(
+        prompt.envelope()["match"],
+        json!({"text": "Password: "}),
+        "{}",
+        prompt.stdout
+    );
+    type_line(&mut shell, "");
+
+    // A dot every 10 ms, far within the quiet: the line never ends, nor goes quiet.
+    type_line(
+        &mut shell,
+        "i=0; while [ $i -lt 800 ]; do i=$((i+1)); printf .; sleep 0.01; done",
+    );
+    assert_eq!(
+        failed(wait(
+            &socket,
+            &["server", "--regex", r"\.+$", "--timeout", "3s"]
+        )),
+        (8, "WaitTimeout".into()),
+        "settled while output kept coming"
+    );
+}
+
 /// A program status and the shell's command end both come from the shadow terminal, which parses
 /// OSC 7501 and OSC 133.
 #[test]
