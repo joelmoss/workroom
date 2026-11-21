@@ -54,13 +54,21 @@ cat >"$TMP/table" <<EOF
 209 $GONE/Contents/MacOS/Workroom Dev
 210 /Applications/Workroom Nightly.app/Contents/MacOS/workroomd serve --socket /gone/Workroom Dev.app/x
 211 /Applications/Workroom Dev.app/Contents/MacOS/workroomd serve --socket /tmp/x/workroomd
+212 $GONE/Contents/Resources/workroom serve --socket /tmp/workroom-$uid-$GONE_ID/workroomd
+213 $LIVE/Contents/Resources/workroom serve --socket /tmp/workroom-$uid-$LIVE_ID/workroomd
+214 $GONE/Contents/Resources/workroom list --json
+215 $GONE/Contents/Resources/workroom events --socket /tmp/workroom-$uid-$GONE_ID/workroomd
+216 /Applications/Workroom.app/Contents/Resources/workroom serve --socket $SUPPORT/com.developwithstyle.workroom/sessions/workroomd
+217 /usr/bin/tail -f $GONE/Contents/Resources/workroom serve --socket /tmp/x/workroomd
 EOF
 got="$(sweep "$TMP/table" | sed -n 's/^stop //p' | sort -n | tr '\n' ' ')"
-# 201: its bundle is gone. 207: a pre-rename daemon from a gone bundle. Not 202 (bundle exists),
-# 203/204/210 (Nightly and release), 205/206 (only mention the path), 208 (not a serving daemon),
-# 209 (the app itself, which a deleted bundle cannot still be running for long), 211 (not a build
-# product: a copy someone moved, not a deleted workroom's build).
-[ "$got" = "201 207 " ] || fail "stopped '$got', want '201 207 '"
+# 201: its bundle is gone. 207: a pre-rename daemon from a gone bundle. 212: the one binary in
+# Contents/Resources (#681, ADR 0078) from a gone bundle. Not 202/213 (bundle exists),
+# 203/204/210/216 (Nightly and release), 205/206/217 (only mention the path), 208 (not a serving
+# daemon), 209 (the app itself, which a deleted bundle cannot still be running for long), 211 (not
+# a build product: a copy someone moved, not a deleted workroom's build), 214/215 (CLI commands of
+# the same binary, which serve nothing).
+[ "$got" = "201 207 212 " ] || fail "stopped '$got', want '201 207 212 '"
 
 # A real signal: a `sleep` listed under an orphan's command line is stopped; one under a live
 # bundle's is not.
