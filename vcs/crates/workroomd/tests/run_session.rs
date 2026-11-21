@@ -666,3 +666,71 @@ fn a_run_that_exits_parks_with_its_exit_code() {
     // Parked, not gone: the supervisor holds the session open for a restart.
     assert!(common::list_sessions(&socket).contains(SESSION));
 }
+
+/// A daemon started from `binary`, a file of the test's own standing in for an app bundle's.
+fn start_daemon_from(binary: &Path, socket: &Path) -> common::Spawned {
+    let child = std::process::Command::new(binary)
+        .args(["serve", "--socket"])
+        .arg(socket)
+        .args(["--idle-timeout", "60"])
+        .env("SHELL", "/bin/sh")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn daemon");
+    let child = common::Spawned(child);
+    assert!(
+        common::wait_listening(socket, Duration::from_secs(30)),
+        "daemon never listened on its socket"
+    );
+    child
+}
+
+/// The daemon starts its run sessions from its own copy of its binary (#681), never from the file
+/// it was started from: an update can take that file away (the swap took
+/// `Contents/MacOS/workroomd`) or put something there that is no daemon (a downgrade's Go CLI at
+/// `Contents/Resources/workroom`). After either, a new run session still starts its command.
+#[test]
+fn a_run_session_starts_after_the_daemons_own_file_is_gone_or_is_no_daemon() {
+    for (case, session, replace) in [
+        ("gone", "5a1e0f7e-0d6c-4c9f-9c3e-2b7f1d0a8e21", false),
+        ("other", "5a1e0f7e-0d6c-4c9f-9c3e-2b7f1d0a8e22", true),
+    ] {
+        // Short: the socket's path must fit in `sun_path` (104 bytes on macOS).
+        let workspace = Workspace::new(&format!("rc-{case}"));
+        let socket = workspace.socket();
+        let binary = workspace.dir.join("workroom");
+        std::fs::copy(common::daemon_binary(), &binary).expect("copy the binary");
+        let _daemon = start_daemon_from(&binary, &socket);
+        // Made on a thread of its own once the daemon starts, which logs it once it is in use.
+        let log = socket.with_extension("log");
+        let copied = || {
+            std::fs::read_to_string(&log)
+                .is_ok_and(|text| text.contains("starting run sessions from "))
+        };
+        assert!(
+            wait_for(Duration::from_secs(10), copied),
+            "{case}: no copy within 10 s: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+
+        std::fs::remove_file(&binary).expect("take the file away");
+        if replace {
+            std::fs::write(&binary, "#!/bin/sh\necho 'a Go CLI' >&2\nexit 1\n").unwrap();
+            let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+            std::fs::set_permissions(&binary, permissions).unwrap();
+        }
+        let (_client, mut reader) = start_run(&socket, session, "echo RUN-\"\"STARTED; sleep 30");
+        let seen = reader
+            .read_until("RUN-STARTED", Duration::from_secs(10))
+            .to_string();
+        assert!(seen.contains("RUN-STARTED"), "{case}: {seen:?}");
+        assert!(
+            wait_for(Duration::from_secs(10), || running(&socket, session)),
+            "{case}: status was {:?}",
+            read_status(&socket, session)
+        );
+    }
+}

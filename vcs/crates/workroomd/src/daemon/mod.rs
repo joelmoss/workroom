@@ -3,6 +3,7 @@
 
 pub(crate) mod handoff;
 pub(crate) mod log;
+pub(crate) mod own_copy;
 pub(crate) mod rpc;
 pub(crate) mod serve;
 pub(crate) mod transport;

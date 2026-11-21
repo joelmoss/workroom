@@ -438,7 +438,9 @@ fn run_invocation(
     // A file left by an earlier session under this id must not be read as this one's, nor its log.
     let _ = std::fs::remove_file(crate::terminal::run::transitions_file(&status));
     let _ = std::fs::remove_file(&status);
-    let binary = crate::daemon::handoff::own_binary()
+    // The daemon's own copy (`own_copy`), not the file it was started from, which an update may
+    // have moved or replaced with something that is no daemon.
+    let binary = crate::daemon::own_copy::binary()
         .map_err(|e| format!("could not find this daemon's own binary: {e}"))?;
     if let Some(shell) = shell.filter(|shell| !shell.is_empty()) {
         environment.retain(|(key, _)| key != "SHELL");
