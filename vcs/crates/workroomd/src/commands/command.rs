@@ -66,7 +66,7 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
             let outcome = if context.json {
                 Outcome::Success(super::envelope::success("command", &result))
             } else {
-                printed(&result)
+                printed(&result, args.is_set("vt"))
             };
             Outcome::Status(code, Box::new(outcome))
         }
@@ -140,12 +140,13 @@ fn exit_status(exit_code: &Value) -> u8 {
         .unwrap_or(1)
 }
 
-/// What the command printed, for a person: its output and a newline, nothing for none. A cut
-/// output says so on stderr, so stdout stays the command's.
-fn printed(result: &Value) -> Outcome {
+/// What the command printed, for a person: its output and a newline, nothing for none; with
+/// `vt`, the output exactly as it came, its own line ends and none added, the bytes between the
+/// marks. A cut output says so on stderr, so stdout stays the command's.
+fn printed(result: &Value, vt: bool) -> Outcome {
     let output = result["output"].as_str().unwrap_or_default();
-    let stdout = if output.is_empty() {
-        String::new()
+    let stdout = if output.is_empty() || vt {
+        output.to_string()
     } else {
         format!("{output}\n")
     };
@@ -248,5 +249,21 @@ mod tests {
         ] {
             assert_eq!(exit_status(&code), exits, "{code}");
         }
+    }
+
+    /// Rendered text gets a line's end for a person; `--vt` output is printed as it came.
+    #[test]
+    fn vt_output_is_printed_byte_for_byte() {
+        let stdout = |output: &str, vt: bool| match printed(
+            &json!({"output": output, "truncated": false}),
+            vt,
+        ) {
+            Outcome::Printed(stdout) => stdout,
+            _ => panic!("printed"),
+        };
+        assert_eq!(stdout("hello", false), "hello\n");
+        assert_eq!(stdout("hello\r\n", true), "hello\r\n");
+        assert_eq!(stdout("no end", true), "no end");
+        assert_eq!(stdout("", false), "");
     }
 }
