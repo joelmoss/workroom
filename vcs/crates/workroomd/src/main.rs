@@ -68,7 +68,14 @@ fn usage() -> &'static str {
 "
 }
 
+/// The third-party notices the licences of the code linked into this binary require (#714). The
+/// binary carries them itself because a remote host is pushed the binary alone. `make notices`
+/// writes the file from the dependency graph.
+static THIRD_PARTY_NOTICES: &str = include_str!("../THIRD-PARTY-NOTICES.txt");
+
 fn main() -> ExitCode {
+    // Nothing reads the notices; this keeps the optimiser and the linker from dropping them.
+    std::hint::black_box(THIRD_PARTY_NOTICES);
     // Before anything is started, so no session's shell inherits the port.
     #[cfg(target_os = "macos")]
     cli::drop_inherited_exception_ports();
