@@ -38,6 +38,12 @@ Press <kbd>⌘F</kbd> to search the focused terminal's scrollback. <kbd>⌘G</kb
 
 With **Copy on select** on, anything you select in a terminal is copied to the clipboard straight away. It is on by default. Switch it in **Settings ▸ Terminal ▸ Copy on select** or **Edit ▸ Copy on Select**.
 
+## When something else types into a terminal {nightly}
+
+A coding agent or a script can type into a terminal with `workroom send`, for example a Claude in one tab typing a command into the tab beside it. Whenever that happens, the terminal shows who is typing in a small marker at the top, such as **Claude · tab 2**. The marker shows the agent's logo, or a terminal symbol for any other program, and the tab it is typing from: its place in its workroom's tab strip, the one <kbd>⌘2</kbd> selects, with the workroom's name when it is another workroom's. It reads **Outside Workroom** for a script run outside any Workroom terminal.
+
+The marker fades out 3 seconds after the last keystroke. Hover over it to read who is typing, from which tab, into this terminal. When several are typing at once, it names the first and counts the others (**Claude · tab 2 +1**), and its tooltip names them all. It never takes a click or the keyboard from the terminal, and it can't be turned off, so typing you didn't do is never invisible.
+
 ## Open file paths in your editor
 
 <kbd>⌘</kbd>-click a file path in a terminal to open that file in your editor. It works on paths that point at a real file, including relative paths, and on `file:line:column` forms. VS Code, Zed and Xcode open the file at that line.
