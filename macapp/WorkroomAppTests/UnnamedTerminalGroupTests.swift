@@ -16,6 +16,8 @@ final class UnnamedTerminalGroupTests: XCTestCase {
   /// Every retag of a moved terminal's session, in order: (session, tag).
   private var retags: [(UUID, String)] = []
   private var retagSucceeds = true
+  /// Every session on this Mac ended, in order.
+  private var ended: [UUID] = []
 
   override func setUp() async throws {
     try await super.setUp()
@@ -39,6 +41,10 @@ final class UnnamedTerminalGroupTests: XCTestCase {
       retag: { [weak self] session, tag in
         guard let self, self.retagSucceeds else { return false }
         self.retags.append((session, tag))
+        return true
+      },
+      endLocal: { [weak self] session in
+        self?.ended.append(session)
         return true
       })
     return store
@@ -251,6 +257,80 @@ final class UnnamedTerminalGroupTests: XCTestCase {
     XCTAssertEqual(rows.count, 1)
     XCTAssertTrue(isStandalone(rows.first))
     XCTAssertEqual(first.selectedTargetID, rows.first)
+  }
+
+  /// Value: protects=closing a window ends its own terminals in a group, and only those
+  /// (ADR 0077: a window's close takes its group terminals with it); fails_when=the closed
+  /// window's group sessions keep running in workroomd with no tab, or another window's terminals
+  /// in the same group are ended too; why_new=#664 review 4643317392; seam=two AppStores over one
+  /// section, the session service's local end; no_claim=the daemon's kill
+  func testClosingAWindowEndsItsOwnGroupSessionsAndNoOthers() async throws {
+    let first = makeStore()
+    var second: AppStore? = makeStore()
+    let kept = UUID()
+    _ = try standalone(first, session: kept)
+    first.splitFocusedRight()
+    await settle()
+    let group = try XCTUnwrap(first.selectedTargetID)
+    let target = try XCTUnwrap(second?.target(for: group))
+    let mine = [UUID(), UUID()]
+    for session in mine { _ = second?.terminals.addTab(for: target, sessionID: session) }
+    second?.selectedTargetID = group
+    ended = []
+
+    await second?.endStandaloneTerminalsOnClose()
+    second = nil
+    await settle()
+
+    XCTAssertEqual(Set(ended), Set(mine), "the closed window's group terminals end")
+    XCTAssertFalse(ended.contains(kept), "the other window's terminal in the group runs on")
+    XCTAssertEqual(rows, [group])
+    XCTAssertEqual(tabs(first, group).count, 2)
+  }
+
+  /// A quit's close ends no group terminal: they come back at the next launch.
+  func testAQuitsCloseEndsNoGroupSession() async throws {
+    let store = makeStore()
+    _ = try standalone(store, session: UUID())
+    store.splitFocusedRight()
+    await settle()
+    ended = []
+    WindowRegistry.shared.isTerminating = true
+    defer { WindowRegistry.shared.isTerminating = false }
+
+    await store.endStandaloneTerminalsOnClose()
+
+    XCTAssertTrue(ended.isEmpty)
+  }
+
+  // MARK: Popped-out panes
+
+  /// Value: protects=a group down to one terminal that is popped out keeps it (#664 review
+  /// 4637800228): a popped-out pane can't be moved in place, so the group stays rather than
+  /// dissolve around it; fails_when=the group's row becomes a standalone terminal holding nothing
+  /// while the popped-out terminal stays under the gone group; why_new=#664 review; seam=AppStore;
+  /// no_claim=the detached window
+  func testAGroupDownToAPoppedOutTerminalKeepsIt() async throws {
+    let store = makeStore()
+    let session = UUID()
+    _ = try standalone(store, session: session)
+    store.splitFocusedRight()
+    await settle()
+    let group = try XCTUnwrap(store.selectedTargetID)
+    let target = try XCTUnwrap(store.target(for: group))
+    let all = store.terminals.allTabs(for: target).map(\.id)
+    XCTAssertEqual(all.count, 2)
+    let popped = all[0]
+    store.terminals.detachPane(popped, for: target, at: .zero)
+    XCTAssertTrue(store.terminals.detachedTabIDs.contains(popped))
+    retags = []
+
+    store.closeCurrentTerminalTab()
+    await settle()
+
+    XCTAssertEqual(rows, [group], "the group stays, its row holding the popped-out terminal")
+    XCTAssertEqual(store.terminals.allTabs(for: target).map(\.id), [popped])
+    XCTAssertTrue(retags.isEmpty, "its session keeps the group's tag")
   }
 
   // MARK: Dropping a row on a row

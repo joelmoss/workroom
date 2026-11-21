@@ -2376,7 +2376,11 @@ final class TerminalPanes {
   ///
   /// Awaits every persisted session's kill before returning — the caller relies on this to delete
   /// the workroom's directory only after any daemon-held shell has actually exited (issue #7).
-  func reap(_ id: TerminalTarget.ID) async {
+  ///
+  /// `endingTargetSessions: false` ends only the sessions of the tabs this window holds, by their
+  /// ids, and not every session tagged with the target: a window closing on a terminal group,
+  /// whose other windows' terminals in it run on (ADR 0077).
+  func reap(_ id: TerminalTarget.ID, endingTargetSessions: Bool = true) async {
     let removedIDs = heldTabs(id).map(\.id)
     for removed in removedIDs { undetach(removed) }  // no detached window outlives its tab (#172)
     for tab in heldTabs(id) {
@@ -2393,7 +2397,7 @@ final class TerminalPanes {
       teardown(tab)
       forgetPerTabWork(tab.id)
     }
-    await sessionService.endSessions(matchingWorkroom: id.encoded)
+    if endingTargetSessions { await sessionService.endSessions(matchingWorkroom: id.encoded) }
     // Tabs, order, splits, focus and numbering go at once, without a focus change to report, and
     // the surfaces with them: every tab the target holds now, as its layout goes.
     for held in heldTabs(id) { discard(held.id) }

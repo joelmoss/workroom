@@ -49,8 +49,9 @@ extension AppStore {
     guard let from = terminalTarget(forID: targetID) else {
       return !holdsTerminals(forTargetID: targetID)
     }
-    let tabs = terminals.tabs(for: from).map(\.id)
-    // A popped-out pane can't be handed over in place (`handOffTab`), so nothing moves.
+    // `allTabs`, popped-out panes included: one can't be handed over in place (`handOffTab`), so
+    // nothing moves, and the regroup is refused rather than leave it under a target that goes.
+    let tabs = terminals.allTabs(for: from).map(\.id)
     guard tabs.allSatisfy({ !terminals.detachedTabIDs.contains($0) }) else { return false }
     let service = terminals.sessionService
     var done: [UUID] = []
