@@ -131,3 +131,21 @@ fn a_symlink_is_never_a_copy() {
     assert!(fs::symlink_metadata(dir.join("workroom-bbbb")).is_ok());
     assert!(target.exists());
 }
+
+/// A copy that went from under the daemon (a `/tmp` cleaner's three days) leaves its children
+/// starting from its own file again, never from a path that is gone.
+#[test]
+fn a_copy_that_is_gone_falls_back_to_the_daemons_own_file() {
+    let scratch = Scratch::new("gone");
+    let source = binary(&scratch.0.join("workroom"), BUILD);
+    let dir = scratch.0.join("d.bin");
+    let kept = establish(&dir, &source, BUILD).expect("a copy");
+    let own = || Ok(PathBuf::from("/own/file"));
+    assert_eq!(pick(Some(&kept.path), own).unwrap(), kept.path);
+    fs::remove_file(&kept.path).unwrap();
+    assert_eq!(
+        pick(Some(&kept.path), own).unwrap(),
+        PathBuf::from("/own/file")
+    );
+    assert_eq!(pick(None, own).unwrap(), PathBuf::from("/own/file"));
+}

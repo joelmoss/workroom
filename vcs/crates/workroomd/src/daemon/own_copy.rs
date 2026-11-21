@@ -83,9 +83,20 @@ fn keep_now(dir: &Path, source: &Path) {
 
 /// The binary this daemon starts its own children from: its copy, or its own file without one.
 pub fn binary() -> io::Result<PathBuf> {
-    match KEPT.get() {
-        Some(kept) => Ok(kept.path.clone()),
-        None => handoff::own_binary(),
+    pick(
+        KEPT.get().map(|kept| kept.path.as_path()),
+        handoff::own_binary,
+    )
+}
+
+/// The copy while it is still there, else `own`: a copy can go from under a daemon, as macOS's
+/// cleaner deletes a `/tmp` fallback's files nobody touched for three days (#528).
+fn pick(kept: Option<&Path>, own: impl FnOnce() -> io::Result<PathBuf>) -> io::Result<PathBuf> {
+    match kept {
+        Some(path) if fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()) => {
+            Ok(path.to_path_buf())
+        }
+        _ => own(),
     }
 }
 
