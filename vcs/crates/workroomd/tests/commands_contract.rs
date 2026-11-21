@@ -4198,6 +4198,799 @@ fn delete_project_reports_a_missing_worktree_a_failed_git_and_an_unwritable_conf
     assert_eq!(config_text(&home), before);
 }
 
+// --- delete (#678) ---
+//
+// `workroom delete NAME`: the app runs it with `--json --confirm NAME`, a person without. Besides
+// the output, each test checks what the run leaves: what a delete removes (the worktree and its
+// entry), what it never does (the branch, a folder that isn't the workroom's checkout, another
+// project's worktree), and that a delete that stops leaves the workroom as it was.
+
+/// The digest of the teardown script that echoes `failing` and exits 3.
+const FAILING_SHA256: &str = "6c0b3283060e825e71a20b65542912cc472c2589a65612149764cc58e7d66afc";
+
+/// The config `project_with_workroom` leaves once `calm-river` is deleted, as Go writes it.
+fn config_without_calm_river(project: &Path, digest: &str) -> String {
+    format!(
+        "{{\n  \"{}\": {{\n    \"trusted_scripts\": {{\n      \"workroom_teardown\": \"{digest}\"\n    }},\n    \"vcs\": \"git\",\n    \"workrooms\": {{}}\n  }}\n}}",
+        project.display()
+    )
+}
+
+/// `delete calm-river --json --confirm calm-river --project <project>`, with `extra` after it.
+fn delete_args<'a>(project: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "delete",
+        "calm-river",
+        "--json",
+        "--confirm",
+        "calm-river",
+        "--project",
+        project,
+    ];
+    args.extend_from_slice(extra);
+    args
+}
+
+/// Runs the binary under test as [`Home::run`] does, with nothing on stdin and in a session of its
+/// own, so there is no terminal it could ask on even when the test runs in one.
+fn run_without_a_terminal(home: &Home, cwd: &Path, args: &[&str]) -> Run {
+    use std::os::unix::process::CommandExt;
+    let mut command = home.command(binary(), cwd);
+    command.args(args).stdin(std::process::Stdio::null());
+    // SAFETY: between fork and exec the child only calls setsid, which is async-signal-safe.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Run::from(args, command.output().expect("run the binary under test"))
+}
+
+/// The goldens Go's `TestContract` records for `delete`: the teardown's output as `teardown`
+/// events, then the envelope. The worktree goes, uncommitted work in it too (Go removes it with
+/// `--force`), and so does its entry; its branch, the project's scripts and a folder of the
+/// user's beside it in the workrooms folder stay.
+#[test]
+#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn delete_json_matches_the_goldens() {
+    let home = Home::new("delete-goldens");
+    let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+    let worktree = home.path("workrooms/calm-river");
+    std::fs::write(worktree.join("draft.txt"), "unsaved").expect("draft");
+    let notes = home.path("workrooms/notes");
+    std::fs::create_dir_all(&notes).expect("notes");
+    std::fs::write(notes.join("todo"), "keep").expect("todo");
+    let project_arg = project.to_string_lossy().into_owned();
+    let run = home.run(&home.dir, &delete_args(&project_arg, &[]));
+    run.assert_code(0);
+    check_golden(
+        Owner::GoContractTests,
+        "delete.json",
+        &home.normalize(&normalize_version(&run.stdout)),
+    );
+    check_golden(
+        Owner::GoContractTests,
+        "delete-events.ndjson",
+        &home.normalize(&run.stderr),
+    );
+    assert_eq!(
+        config_text(&home),
+        config_without_calm_river(&project, STOPPING_SHA256)
+    );
+    assert!(!worktree.exists(), "the worktree is still there");
+    assert_eq!(entries(&home.path("workrooms")), ["notes"]);
+    assert_eq!(entries(&notes), ["todo"]);
+    assert!(project.join("scripts/workroom_teardown").exists());
+    assert_eq!(
+        git_output(&home, &project, &["branch", "--format=%(refname:short)"]),
+        "main\nworkroom/calm-river\n"
+    );
+    assert_eq!(
+        git_output(&home, &project, &["worktree", "list", "--porcelain"])
+            .matches("worktree ")
+            .count(),
+        1,
+        "git still lists the workroom"
+    );
+}
+
+/// A teardown that fails stops the delete with `TeardownScriptFailed` (exit 5), its output
+/// streamed first, and the workroom, its uncommitted work and its entry stay. The app's Delete
+/// Anyway (`--skip-teardown`) then deletes it without running the script.
+#[test]
+#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn delete_stops_at_a_failed_teardown_and_skip_teardown_deletes_anyway() {
+    let home = Home::new("delete-teardown-fails");
+    let project = project_with_workroom(&home, "echo failing\nexit 3\n", FAILING_SHA256);
+    let worktree = home.path("workrooms/calm-river");
+    std::fs::write(worktree.join("draft.txt"), "unsaved").expect("draft");
+    let before = config_text(&home);
+    let project_arg = project.to_string_lossy().into_owned();
+    let run = home.run(&home.dir, &delete_args(&project_arg, &[]));
+    run.assert_code(5);
+    assert_eq!(
+        run.stderr,
+        "{\"type\":\"log\",\"phase\":\"teardown\",\"text\":\"failing\"}\n"
+    );
+    assert_eq!(
+        normalize_version(&run.stdout),
+        format!(
+            "{{\"cli_version\":\"dev\",\"command\":\"delete\",\"error\":{{\"kind\":\"TeardownScriptFailed\",\"message\":\"teardown script failed: {}/scripts/workroom_teardown returned a non-zero exit code\"}},\"ok\":false,\"schema_version\":1}}\n",
+            project.display()
+        )
+    );
+    assert_eq!(config_text(&home), before);
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("draft.txt")).expect("draft kept"),
+        "unsaved"
+    );
+
+    let run = home.run(&home.dir, &delete_args(&project_arg, &["--skip-teardown"]));
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(run.envelope()["name"], "calm-river");
+    assert_eq!(
+        config_text(&home),
+        config_without_calm_river(&project, FAILING_SHA256)
+    );
+    assert!(!worktree.exists(), "Delete Anyway left the worktree");
+    assert_eq!(
+        git_output(&home, &project, &["branch", "--format=%(refname:short)"]),
+        "main\nworkroom/calm-river\n"
+    );
+}
+
+/// The app's Cancel (SIGTERM) during the teardown ends the script's tree and still writes the
+/// envelope, the teardown's failure (exit 5); the workroom stays.
+#[test]
+#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn delete_cancelled_during_the_teardown_reports_it_failed_and_keeps_the_workroom() {
+    let home = Home::new("delete-cancel");
+    let project = project_with_workroom(
+        &home,
+        "echo $$ > \"$WORKROOM_PATH/../teardown.pid\"\nexec sleep 30\n",
+        "d98f6e168450582ce0c6bc023853d63e4d6ff916d9126893d7f43bcbac745216",
+    );
+    let before = config_text(&home);
+    let project_arg = project.to_string_lossy().into_owned();
+    let args = delete_args(&project_arg, &[]);
+    let child = spawn_with_env(&home, &args, &[]);
+    let script = wait_for_pid(&home.path("workrooms/teardown.pid"));
+    // SAFETY: signals the binary under test, which this test started.
+    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGTERM) }, 0);
+    let run = finish(&args, child);
+    run.assert_code(5);
+    assert_eq!(run.error_kind(), "TeardownScriptFailed");
+    eventually("the teardown script outlived the cancel", || {
+        !process_alive(script)
+    });
+    assert_eq!(config_text(&home), before);
+    assert!(home.path("workrooms/calm-river/.git").exists());
+}
+
+/// `--json` needs a name and a `--confirm` that matches it. A name that isn't one (a path, `..`)
+/// is `InvalidName`, so no path outside the workrooms folder is ever reached. A workroom that
+/// isn't there, or a project folder that isn't one, is reported before a wrong `--confirm` is,
+/// as Go checks them first; `--pretend` checks no `--confirm` at all. Nothing is touched.
+#[test]
+#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn delete_refuses_without_a_matching_confirmation() {
+    let home = Home::new("delete-confirm");
+    let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+    let before = config_text(&home);
+    let project_arg = project.to_string_lossy().into_owned();
+    let plain = home.path("src/plain");
+    std::fs::create_dir_all(&plain).expect("plain");
+    let plain_arg = plain.to_string_lossy().into_owned();
+    let inner = home.path("workrooms/calm-river");
+    std::fs::write(inner.join(".Workroom"), "").expect(".Workroom");
+    let inner_arg = inner.to_string_lossy().into_owned();
+    let invalid = "workroom name must be alphanumeric (dashes and underscores allowed), and must \
+                   not start or end with a dash or underscore";
+    let p = project_arg.as_str();
+    for (args, code, kind, message) in [
+        (
+            vec!["delete", "--json", "--project", p],
+            3,
+            "InvalidName",
+            format!(
+                "{invalid}: a workroom name is required in --json mode (interactive delete is \
+                 unavailable)"
+            ),
+        ),
+        (
+            vec![
+                "delete",
+                "--json",
+                "--confirm",
+                "calm-river",
+                "--project",
+                p,
+            ],
+            3,
+            "InvalidName",
+            format!(
+                "{invalid}: a workroom name is required in --json mode (interactive delete is \
+                 unavailable)"
+            ),
+        ),
+        (
+            vec!["delete", "calm-river", "--json", "--project", p],
+            2,
+            "ConfirmationMismatch",
+            "confirmation value does not match the workroom name: --confirm <name> is required \
+             in --json mode"
+                .to_string(),
+        ),
+        (
+            vec![
+                "delete",
+                "calm-river",
+                "--json",
+                "--confirm",
+                "nope",
+                "--project",
+                p,
+            ],
+            2,
+            "ConfirmationMismatch",
+            "confirmation value does not match the workroom name: --confirm value 'nope' does \
+             not match workroom name 'calm-river'"
+                .to_string(),
+        ),
+        (
+            vec!["delete", "..", "--json", "--confirm", "..", "--project", p],
+            3,
+            "InvalidName",
+            format!("{invalid}: \"..\""),
+        ),
+        (
+            vec![
+                "delete",
+                "a/b",
+                "--json",
+                "--confirm",
+                "a/b",
+                "--project",
+                p,
+            ],
+            3,
+            "InvalidName",
+            format!("{invalid}: \"a/b\""),
+        ),
+        (
+            vec!["delete", "_x", "--json", "--confirm", "_x", "--project", p],
+            3,
+            "InvalidName",
+            format!("{invalid}: \"_x\""),
+        ),
+        (
+            vec![
+                "delete",
+                "nope",
+                "--json",
+                "--confirm",
+                "other",
+                "--project",
+                p,
+            ],
+            3,
+            "WorkspaceNotFound",
+            "git worktree does not exist: Git worktree 'nope' does not exist".to_string(),
+        ),
+        (
+            vec![
+                "delete",
+                "calm-river",
+                "--json",
+                "--confirm",
+                "nope",
+                "--project",
+                &plain_arg,
+            ],
+            3,
+            "UnsupportedVCS",
+            "no supported VCS detected in this directory. Workroom requires Git to manage \
+             workrooms"
+                .to_string(),
+        ),
+        (
+            vec![
+                "delete",
+                "calm-river",
+                "--json",
+                "--confirm",
+                "nope",
+                "--project",
+                &inner_arg,
+            ],
+            3,
+            "InWorkroom",
+            "looks like you are already in a workroom. Run this command from the root of your \
+             main development directory, not from within an existing workroom"
+                .to_string(),
+        ),
+    ] {
+        let run = home.run(&home.dir, &args);
+        run.assert_code(code).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), kind, "{args:?}");
+        let envelope = run.envelope();
+        assert_eq!(envelope["error"]["message"], message.as_str(), "{args:?}");
+        assert_eq!(envelope["command"], "delete", "{args:?}");
+        assert_eq!(config_text(&home), before, "{args:?}");
+        assert!(inner.join(".git").exists(), "{args:?}");
+    }
+
+    // Two names are a usage error, before the command runs.
+    let run = home.run(&home.dir, &["delete", "a", "b", "--json", "--project", p]);
+    run.assert_code(1).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "InternalError");
+    let envelope = run.envelope();
+    assert_eq!(
+        envelope["error"]["message"],
+        "accepts at most 1 arg(s), received 2"
+    );
+    assert!(envelope.get("command").is_none(), "{envelope}");
+
+    // `--pretend` asks for no confirmation and changes nothing.
+    let run = home.run(
+        &home.dir,
+        &[
+            "delete",
+            "calm-river",
+            "--json",
+            "--confirm",
+            "nope",
+            "--pretend",
+            "--project",
+            p,
+        ],
+    );
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        normalize_version(&run.stdout),
+        "{\"cli_version\":\"dev\",\"command\":\"delete\",\"name\":\"calm-river\",\"ok\":true,\"schema_version\":1}\n"
+    );
+    assert_eq!(config_text(&home), before);
+    assert!(inner.join(".git").exists());
+}
+
+/// What a delete may only forget, never remove: a workroom whose folder holds no git checkout
+/// (a workspace Jujutsu made before #266) loses its entry, with its folder and files left and no
+/// teardown run in it; so does a remote workroom whose host is destroyed. Each is confirmed first.
+/// A remote workroom whose host is still there is refused, and an entry git has no worktree for
+/// whose folder is a checkout (another project's worktree) is `WorkspaceNotFound`, kept.
+#[test]
+#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn delete_only_forgets_what_isnt_its_worktree() {
+    let home = Home::new("delete-forget");
+    let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+    let project_arg = project.to_string_lossy().into_owned();
+    let orphan = home.path("elsewhere/orphan");
+    std::fs::create_dir_all(&orphan).expect("orphan");
+    std::fs::write(orphan.join("notes"), "keep").expect("notes");
+    let other = home.repo("src/other");
+    let shared = home.path("workrooms/shared");
+    home.git(
+        &other,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "workroom/shared",
+            &shared.to_string_lossy(),
+        ],
+    );
+    std::fs::write(shared.join("work"), "theirs").expect("work");
+    let config = |workrooms: &str| {
+        format!(
+            "{{\"{project}\": {{\"trusted_scripts\": {{\"workroom_teardown\": \"{STOPPING_SHA256}\"}}, \"vcs\": \"git\", \"workrooms\": {{\"calm-river\": {{\"path\": \"{calm}\"}}{workrooms}}}}}, \"{other}\": {{\"vcs\": \"git\", \"workrooms\": {{\"shared\": {{\"path\": \"{shared}\"}}}}}}}}",
+            project = project.display(),
+            calm = home.path("workrooms/calm-river").display(),
+            other = other.display(),
+            shared = shared.display(),
+        )
+    };
+    let entries_of = format!(
+        ", \"gone\": {{\"host\": {{\"state\": \"destroyed\"}}, \"path\": \"/home/workroom/gone\"}}, \"live\": {{\"host\": {{\"driver\": \"boxd\"}}, \"path\": \"/home/workroom/live\"}}, \"orphan\": {{\"path\": \"{}\"}}, \"shared\": {{\"path\": \"{}\"}}",
+        orphan.display(),
+        shared.display()
+    );
+    let written = config(&entries_of);
+    home.write_config(&written);
+    let p = project_arg.as_str();
+
+    for (name, code, kind, message) in [
+        (
+            "live",
+            3,
+            "RemoteWorkroomUnsupported",
+            "not supported for a remote workroom yet: workroom 'live' is remote",
+        ),
+        (
+            "shared",
+            3,
+            "WorkspaceNotFound",
+            "git worktree does not exist: Git worktree 'shared' does not exist",
+        ),
+        (
+            "orphan",
+            2,
+            "ConfirmationMismatch",
+            "confirmation value does not match the workroom name: --confirm value 'nope' does not \
+             match workroom name 'orphan'",
+        ),
+        (
+            "gone",
+            2,
+            "ConfirmationMismatch",
+            "confirmation value does not match the workroom name: --confirm value 'nope' does not \
+             match workroom name 'gone'",
+        ),
+    ] {
+        let run = home.run(
+            &home.dir,
+            &[
+                "delete",
+                name,
+                "--json",
+                "--confirm",
+                "nope",
+                "--project",
+                p,
+            ],
+        );
+        run.assert_code(code).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), kind, "{name}");
+        assert_eq!(run.envelope()["error"]["message"], message, "{name}");
+        assert_eq!(config_text(&home), written, "{name}");
+    }
+
+    for name in ["orphan", "gone"] {
+        let run = home.run(
+            &home.dir,
+            &["delete", name, "--json", "--confirm", name, "--project", p],
+        );
+        run.assert_code(0).assert_quiet_stderr();
+        assert_eq!(
+            normalize_version(&run.stdout),
+            format!(
+                "{{\"cli_version\":\"dev\",\"command\":\"delete\",\"name\":\"{name}\",\"ok\":true,\"schema_version\":1}}\n"
+            )
+        );
+    }
+    let left: serde_json::Value =
+        serde_json::from_str(&config_text(&home)).expect("config is JSON");
+    let names: Vec<&String> = left[&project_arg]["workrooms"]
+        .as_object()
+        .expect("workrooms")
+        .keys()
+        .collect();
+    assert_eq!(names, ["calm-river", "live", "shared"]);
+    assert_eq!(
+        left[other.to_string_lossy().as_ref()]["workrooms"]["shared"]["path"],
+        shared.to_string_lossy().as_ref()
+    );
+    assert_eq!(entries(&orphan), ["notes"]);
+    assert_eq!(
+        std::fs::read_to_string(shared.join("work")).expect("work"),
+        "theirs"
+    );
+    assert!(home.path("workrooms/calm-river/.git").exists());
+}
+
+/// `git worktree remove` is the only removal, and git removes only this project's own worktree
+/// at `<workrooms folder>/<name>`. When git lists the name for this project but that folder is
+/// another project's worktree, or a folder of the user's, git refuses (`VCSCommandFailed`), after
+/// the teardown ran, as Go runs it first; a locked worktree is refused the same way. Each keeps
+/// its files and its entry.
+#[test]
+#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn delete_never_removes_a_folder_git_wont_remove_for_the_project() {
+    let home = Home::new("delete-not-ours");
+    let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+    let project_arg = project.to_string_lossy().into_owned();
+    // The project's own worktrees named `theirs` and `mine`, elsewhere.
+    for name in ["theirs", "mine"] {
+        home.git(
+            &project,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                &format!("workroom/{name}"),
+                &home.path(&format!("elsewhere/{name}")).to_string_lossy(),
+            ],
+        );
+    }
+    // `workrooms/theirs` is another project's worktree, `workrooms/mine` a folder of the user's.
+    let other = home.repo("src/other");
+    let theirs = home.path("workrooms/theirs");
+    home.git(
+        &other,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "workroom/theirs",
+            &theirs.to_string_lossy(),
+        ],
+    );
+    std::fs::write(theirs.join("work"), "theirs").expect("work");
+    let mine = home.path("workrooms/mine");
+    std::fs::create_dir_all(&mine).expect("mine");
+    std::fs::write(mine.join("notes"), "keep").expect("notes");
+    let written = format!(
+        "{{\"{project}\": {{\"trusted_scripts\": {{\"workroom_teardown\": \"{STOPPING_SHA256}\"}}, \"vcs\": \"git\", \"workrooms\": {{\"calm-river\": {{\"path\": \"{calm}\"}}, \"mine\": {{\"path\": \"{em}\"}}, \"theirs\": {{\"path\": \"{et}\"}}}}}}}}",
+        project = project.display(),
+        calm = home.path("workrooms/calm-river").display(),
+        em = home.path("elsewhere/mine").display(),
+        et = home.path("elsewhere/theirs").display(),
+    );
+    home.write_config(&written);
+    let p = project_arg.as_str();
+    for name in ["theirs", "mine"] {
+        let run = home.run(
+            &home.dir,
+            &["delete", name, "--json", "--confirm", name, "--project", p],
+        );
+        run.assert_code(1);
+        assert_eq!(
+            run.stderr, "{\"type\":\"log\",\"phase\":\"teardown\",\"text\":\"stopping\"}\n",
+            "{name}"
+        );
+        assert_eq!(run.error_kind(), "VCSCommandFailed", "{name}");
+        assert_eq!(
+            run.envelope()["error"]["message"],
+            "version control command failed: exit status 128",
+            "{name}"
+        );
+        assert_eq!(config_text(&home), written, "{name}");
+        assert!(
+            home.path(&format!("elsewhere/{name}/.git")).exists(),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(theirs.join("work")).expect("work"),
+        "theirs"
+    );
+    assert_eq!(entries(&mine), ["notes"]);
+
+    let worktree = home.path("workrooms/calm-river");
+    std::fs::write(worktree.join("draft.txt"), "unsaved").expect("draft");
+    home.git(&project, &["worktree", "lock", &worktree.to_string_lossy()]);
+    let run = home.run(&home.dir, &delete_args(p, &["--skip-teardown"]));
+    run.assert_code(1).assert_quiet_stderr();
+    assert_eq!(run.error_kind(), "VCSCommandFailed");
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("draft.txt")).expect("draft kept"),
+        "unsaved"
+    );
+    assert_eq!(config_text(&home), written);
+}
+
+/// A teardown script this Mac hasn't approved is refused with the script in the envelope, for the
+/// app to show and approve, and nothing is deleted; `--skip-teardown` runs none and deletes. With
+/// no terminal to ask on, a person's delete is refused the same way.
+#[test]
+#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn delete_refuses_an_unapproved_teardown_unless_skipped() {
+    let home = Home::new("delete-untrusted");
+    let project = project_with_workroom(&home, "echo hi\n", "deadbeef");
+    let before = config_text(&home);
+    let project_arg = project.to_string_lossy().into_owned();
+    let run = home.run(&home.dir, &delete_args(&project_arg, &[]));
+    run.assert_code(3).assert_quiet_stderr();
+    assert_eq!(
+        normalize_version(&run.stdout),
+        "{\"cli_version\":\"dev\",\"command\":\"delete\",\"error\":{\"kind\":\"ScriptNotTrusted\",\"message\":\"script is not trusted on this Mac: scripts/workroom_teardown in the project's root is new, or changed since it was approved. Review and approve it with `workroom trust`\"},\"ok\":false,\"schema_version\":1,\"script\":{\"bytes\":\"IyEvYmluL3NoCmVjaG8gaGkK\",\"exempt\":false,\"file\":\"scripts/workroom_teardown\",\"name\":\"workroom_teardown\",\"origin\":\"root\",\"sha256\":\"299001868fb8c02fd431c336c6d058f5558c5dff5b5af5e6fe04b870a6a9cbba\",\"text\":\"#!/bin/sh\\necho hi\\n\",\"trusted\":false}}\n"
+    );
+    assert_eq!(config_text(&home), before);
+
+    let run = home.run_with_stdin(
+        &home.dir,
+        &[
+            "delete",
+            "calm-river",
+            "--confirm",
+            "calm-river",
+            "--project",
+            &project_arg,
+        ],
+        b"y\n",
+    );
+    run.assert_code(3).assert_quiet_stdout();
+    assert_eq!(
+        run.stderr,
+        "Error: script is not trusted on this Mac: scripts/workroom_teardown in the project's \
+         root is new, or changed since it was approved. Review and approve it with `workroom \
+         trust`\n"
+    );
+    assert_eq!(config_text(&home), before);
+    assert!(home.path("workrooms/calm-river/.git").exists());
+
+    let run = home.run(&home.dir, &delete_args(&project_arg, &["--skip-teardown"]));
+    run.assert_code(0).assert_quiet_stderr();
+    assert_eq!(
+        config_text(&home),
+        config_without_calm_river(&project, "deadbeef")
+    );
+    assert!(!home.path("workrooms/calm-river").exists());
+}
+
+/// A person's delete says what it did, the teardown's output in a panel: Go's
+/// `TestDeleteOutput`. `--verbose` names each step; `--pretend` runs and removes nothing.
+#[test]
+#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn delete_human_text_says_what_it_did() {
+    let deleted = "Workroom 'calm-river' deleted successfully.\n\nNote: Git branch \
+                   'workroom/calm-river' was not deleted.\n      Delete manually with `git branch \
+                   -D workroom/calm-river` if needed.\n";
+    let rule = "─".repeat(59);
+    let panel = format!("╭─ Teardown {}\n│ stopping\n╰{rule}\n\n", "─".repeat(48));
+    let running = "        repo  Detected Git worktree\n    teardown  Running \
+                   /Users/dev/src/app/scripts/workroom_teardown from \
+                   \"/Users/dev/workrooms/calm-river\"\n";
+    for (extra, stdout, removed) in [
+        (&[][..], format!("{panel}{deleted}"), true),
+        (
+            &["--verbose"][..],
+            format!("{running}{panel}{deleted}"),
+            true,
+        ),
+        (
+            &["--verbose", "--pretend"][..],
+            format!("{running}{deleted}"),
+            false,
+        ),
+        (
+            &["--verbose", "--skip-teardown"][..],
+            format!(
+                "        repo  Detected Git worktree\n    teardown  Skipping \
+                 /Users/dev/src/app/scripts/workroom_teardown, as asked\n{deleted}"
+            ),
+            true,
+        ),
+    ] {
+        let home = Home::new("delete-human");
+        let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+        let mut args = vec!["delete", "calm-river", "--confirm", "calm-river"];
+        args.extend_from_slice(extra);
+        let run = home.run(&project, &args);
+        run.assert_code(0).assert_quiet_stderr();
+        assert_eq!(home.normalize(&run.stdout), stdout, "{extra:?}");
+        assert_eq!(
+            home.path("workrooms/calm-river").exists(),
+            !removed,
+            "{extra:?}"
+        );
+    }
+
+    // A failed teardown's panel says so, and the error follows on stderr.
+    let home = Home::new("delete-human");
+    let project = project_with_workroom(
+        &home,
+        "echo boom\nexit 1\n",
+        "3cb372b4ece6a674ecb6976e58264d3f2e43a912006cdb413b691d4510a62591",
+    );
+    let before = config_text(&home);
+    let run = home.run(
+        &project,
+        &["delete", "calm-river", "--confirm", "calm-river"],
+    );
+    run.assert_code(5);
+    assert_eq!(
+        run.stdout,
+        format!(
+            "╭─ Teardown {}\n│ boom\n╰─ Teardown failed {}\n",
+            "─".repeat(48),
+            "─".repeat(41)
+        )
+    );
+    assert_eq!(
+        home.normalize(&run.stderr),
+        "Error: teardown script failed: /Users/dev/src/app/scripts/workroom_teardown returned a \
+         non-zero exit code\n"
+    );
+    assert_eq!(config_text(&home), before);
+
+    // A workroom that isn't a git checkout is only forgotten; one whose host is gone too.
+    let home = Home::new("delete-human");
+    let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+    let plain = home.path("workrooms/plain");
+    std::fs::create_dir_all(&plain).expect("plain");
+    home.write_config(&format!(
+        "{{\"{}\": {{\"trusted_scripts\": {{\"workroom_teardown\": \"{STOPPING_SHA256}\"}}, \"vcs\": \"git\", \"workrooms\": {{\"calm-river\": {{\"path\": \"{}\"}}, \"gone\": {{\"host\": {{\"state\": \"destroyed\"}}, \"path\": \"/home/workroom/gone\"}}, \"plain\": {{\"path\": \"{}\"}}}}}}}}",
+        project.display(),
+        home.path("workrooms/calm-river").display(),
+        plain.display()
+    ));
+    for (name, stdout) in [
+        (
+            "plain",
+            "Workroom 'plain' removed from Workroom. It is not a git worktree, so no git or \
+             teardown ran.\nNote: its folder was left at ~/workrooms/plain. Delete it manually \
+             if needed.\n",
+        ),
+        ("gone", "Workroom 'gone' deleted successfully.\n"),
+    ] {
+        let run = home.run(&project, &["delete", name, "--confirm", name]);
+        run.assert_code(0).assert_quiet_stderr();
+        assert_eq!(run.stdout, stdout, "{name}");
+    }
+    assert!(plain.exists());
+
+    let run = home.run(&project, &["delete", "nope", "--confirm", "nope"]);
+    run.assert_code(3).assert_quiet_stdout();
+    assert_eq!(
+        run.stderr,
+        "Error: git worktree does not exist: Git worktree 'nope' does not exist\n"
+    );
+}
+
+/// Without `--confirm` a person is asked, so with no terminal to ask on the delete fails, and
+/// without a name too (the picker); nothing is deleted.
+#[test]
+#[ignore = "not ported to Rust yet"]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn delete_without_a_terminal_to_ask_on_deletes_nothing() {
+    let home = Home::new("delete-no-terminal");
+    let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+    let before = config_text(&home);
+    for args in [&["delete", "calm-river"][..], &["delete"]] {
+        let run = run_without_a_terminal(&home, &project, args);
+        run.assert_code(1).assert_quiet_stdout();
+        assert!(
+            run.stderr.starts_with("Error: "),
+            "{args:?}: {:?}",
+            run.stderr
+        );
+        assert_eq!(config_text(&home), before, "{args:?}");
+        assert!(home.path("workrooms/calm-river/.git").exists(), "{args:?}");
+    }
+}
+
 // --- claim-provisioned ---
 
 /// What another build's config holds: the `dev` build made the project host of `/p/a` (in the
