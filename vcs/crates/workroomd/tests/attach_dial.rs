@@ -153,6 +153,7 @@ impl Host {
                 shell: "/bin/sh".into(),
                 home: scratch.home(),
                 user: "fixture".into(),
+                commands: None,
             },
         )
     }
@@ -330,6 +331,7 @@ fn a_dialed_session_on_a_host_without_a_passwd_entry_gets_the_ssh_logins_home_an
             shell: String::new(),
             home: PathBuf::from("/"),
             user: String::new(),
+            commands: None,
         },
     );
     let lines = session_environment(&host);
@@ -414,6 +416,40 @@ fn with_ghosttys_terminfo_on_the_host_the_session_is_xterm_ghostty_with_integrat
         format!("TERMINFO={}/terminfo", resources.display()),
         "GHOSTTY_SHELL_FEATURES=cursor,sudo,title".to_string(),
         format!("GHOSTTY_RESOURCES_DIR={}", resources.display()),
+    ] {
+        assert!(contains(&lines, &entry), "{entry} in {lines:?}");
+    }
+}
+
+/// A daemon with the bootstrap's `workroom` link beside it (ADR 0078): its folder goes after the
+/// login's PATH, and to the shell integration's `path` feature, which appends it again after a
+/// profile that sets PATH outright (Debian's /etc/profile). The over-ssh test sees it in a pane.
+#[test]
+fn a_daemon_with_the_workroom_link_beside_it_puts_its_folder_on_a_dialed_sessions_path() {
+    let scratch = Scratch::new("link");
+    let resources = scratch.0.join("ghostty");
+    std::fs::create_dir_all(resources.join("terminfo/x")).unwrap();
+    std::fs::write(resources.join("terminfo/x/xterm-ghostty"), b"compiled").unwrap();
+    let folder = scratch.0.join("daemon");
+    let host = Host::serve_as(
+        &scratch,
+        SessionStore::new(),
+        HostOrigin {
+            environment: DAEMON
+                .iter()
+                .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+                .collect(),
+            shell: "/bin/sh".into(),
+            home: scratch.home(),
+            user: "fixture".into(),
+            commands: Some(folder.clone()),
+        },
+    );
+    let lines = session_environment(&host);
+    for entry in [
+        format!("PATH=/login/bin:/usr/bin:/bin:{}", folder.display()),
+        "GHOSTTY_SHELL_FEATURES=cursor,sudo,title,path".to_string(),
+        format!("GHOSTTY_BIN_DIR={}", folder.display()),
     ] {
         assert!(contains(&lines, &entry), "{entry} in {lines:?}");
     }
