@@ -466,6 +466,27 @@ fn a_unicode_word_boundary_beside_non_ascii_text_still_answers_at_once() {
         first_match(r"\bécrit\b", &["✓ écrit ✓".as_bytes()]).as_deref(),
         Some("écrit")
     );
+    // The character after is whole at its own length, not at four bytes: a prompt that ends in
+    // `…` and waits for input meets the wait at once.
+    for reads in [&["Ready…"][..], &["Ready", "…"]] {
+        let reads: Vec<&[u8]> = reads.iter().map(|read| read.as_bytes()).collect();
+        assert_eq!(
+            first_match(r"\bReady\b", &reads).as_deref(),
+            Some("Ready"),
+            "{reads:?}"
+        );
+    }
+    assert_eq!(
+        first_match(r"\bok\b", &["ok🚀".as_bytes()]).as_deref(),
+        Some("ok"),
+        "a four-byte character that is no word's"
+    );
+    // A four-byte word character after a match shorter than the longest: the byte the longest
+    // reaches is inside it, and the whole of it says there is no boundary.
+    let mut matcher = Matcher::new(r"\b(ok|okay)\b").unwrap();
+    for byte in "ok𠀀 x".bytes() {
+        assert_eq!(matcher.feed(&[byte]), None, "{byte:#x}");
+    }
 }
 
 /// A match is the whole stream's, not the one a read happened to end in: a greedy match goes on
@@ -525,6 +546,13 @@ const SPLIT_PATTERNS: &[&str] = &[
     "^READY$",
     r"^DONE\r?\nREADY",
     r"\bok\b",
+    // Unicode `\b` and `\B` beside characters of two, three and four bytes, which the DFA leaves
+    // to the bound: one shorter than its longest, so the bound falls inside the next character.
+    r"\bREADY\b",
+    r"\b(ok|okay)\b",
+    r"\B(é|本)",
+    r"本\B|é\b",
+    r"\b\w{2}\b",
     "error|warn(ing)?",
     r"TICK-\d+",
     r"\d+$",
@@ -543,8 +571,12 @@ const SPLIT_PATTERNS: &[&str] = &[
 /// session's end at its end. Every pattern tested is far shorter than `WINDOW`, the one limit
 /// the matcher documents, so the window changes nothing here.
 ///
-/// With it, whether the answer is due before the session ends: a match that a line's end and a
-/// byte more follow is settled by then, for every pattern tested.
+/// With it, whether the answer is due before the session ends: a match of a pattern with a
+/// longest is settled once the text holds that many bytes from its start and the whole of the
+/// character that holds the byte after them, which is all a match from there, or a `\b` at its
+/// end, can look at. One that a line's end and a byte more follow is settled by then too, for
+/// every pattern tested, but for one with a Unicode `\b` over text that isn't ASCII, where the
+/// DFA gives up and only the bound settles it.
 fn oracle(pattern: &str, stream: &[u8]) -> (Option<Vec<u8>>, bool) {
     let sequences = regex::bytes::Regex::new(
         r"(?-u)\x1b\[[0-?]*[ -/]*[@-~]|\x1b[\]_P^X][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[ -/]*[0-~]",
@@ -559,13 +591,48 @@ fn oracle(pattern: &str, stream: &[u8]) -> (Option<Vec<u8>>, bool) {
         .build()
         .unwrap()
         .find(&text);
+    let syntax = syntax::Config::new()
+        .multi_line(true)
+        .crlf(true)
+        .utf8(false);
+    let hir = syntax::parse_with(pattern, &syntax).unwrap();
+    let longest = hir.properties().maximum_len();
+    // Settled by its bound alone, where the DFA gives up.
+    let bound_alone = hir.properties().look_set().contains_word_unicode() && !text.is_ascii();
     let due = found.is_some_and(|found| {
-        text[found.end()..]
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .is_some_and(|at| found.end() + at + 1 < text.len())
+        let line = !bound_alone
+            && text[found.end()..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .is_some_and(|at| found.end() + at + 1 < text.len());
+        let bound = longest.is_some_and(|longest| whole_through(&text, found.start() + longest));
+        line || bound
     });
     (found.map(|found| found.as_bytes().to_vec()), due)
+}
+
+/// Whether `text` holds the whole of the character byte `at` is in: walked as UTF-8 from the
+/// start, each character a unit, and each byte of a sequence that is invalid a unit of its own,
+/// but for a valid start of one cut short by the text's end, which more text would finish.
+fn whole_through(text: &[u8], at: usize) -> bool {
+    let mut start = 0;
+    let mut chunks = text.utf8_chunks().peekable();
+    while let Some(chunk) = chunks.next() {
+        for character in chunk.valid().chars() {
+            start += character.len_utf8();
+            if at < start {
+                return true;
+            }
+        }
+        let invalid = chunk.invalid();
+        let short = chunks.peek().is_none()
+            && std::str::from_utf8(invalid).is_err_and(|error| error.error_len().is_none());
+        start += invalid.len();
+        if at < start {
+            return !short;
+        }
+    }
+    false
 }
 
 /// What a wait answers for `stream`, read in `reads` (their lengths) and taken by its thread in
@@ -679,6 +746,10 @@ const PIECES: &[&str] = &[
     "✓ done",
     "日本",
     "é",
+    "本",
+    "…",
+    "𠀀",
+    "🚀",
     "\r\n",
     "\r\n",
     "\n",
@@ -694,8 +765,9 @@ const PIECES: &[&str] = &[
     "\x07",
 ];
 
-/// A stream, and the offsets between its pieces, where it may go quiet: no sequence or character
-/// is open there, so the output so far strips as it would on its own.
+/// A stream, and the offsets where it may go quiet: between its pieces, and inside a character
+/// of one that is text, where a program's write ended mid-character. No sequence is open at any,
+/// so the output so far strips as it would on its own.
 fn stream(rng: &mut Rng) -> (Vec<u8>, Vec<usize>) {
     let mut out = Vec::new();
     let mut between = Vec::new();
@@ -704,7 +776,16 @@ fn stream(rng: &mut Rng) -> (Vec<u8>, Vec<usize>) {
         if rng.one_in(60) {
             out.extend(std::iter::repeat_n(b'x', WINDOW + rng.below(3 * CHUNK)));
         }
-        out.extend_from_slice(PIECES[rng.below(PIECES.len())].as_bytes());
+        let piece = PIECES[rng.below(PIECES.len())];
+        if !piece.contains('\x1b') {
+            between.extend(
+                piece
+                    .char_indices()
+                    .filter(|(_, character)| character.len_utf8() > 1)
+                    .map(|(at, _)| out.len() + at + 1),
+            );
+        }
+        out.extend_from_slice(piece.as_bytes());
         between.push(out.len());
     }
     (out, between)
@@ -731,8 +812,9 @@ fn cuts(rng: &mut Rng, len: usize, one_in: usize) -> Vec<usize> {
 /// arrives: in one read or split anywhere, inside an escape sequence or a character included, and
 /// however the wait's thread takes the reads in batches. Checked against the whole stream
 /// searched once ([`oracle`]): every split of small streams, and a seeded sweep of generated ones
-/// with lines longer than the window. Output that goes quiet, at its end or between two pieces,
-/// is answered as the output so far searched once as if it ended there ([`oracle_paused`]). No
+/// with lines longer than the window, and characters of two, three and four bytes beside word
+/// boundaries. Output that goes quiet, at its end, between two pieces or inside a character, is
+/// answered as the output so far searched once as if it ended there ([`oracle_paused`]). No
 /// property-test crate: the workspace has none, and an exhaustive enumeration and a seeded
 /// generator need no dependency.
 #[test]
@@ -749,6 +831,11 @@ fn a_regex_waits_answer_is_the_same_however_its_output_is_split() {
         b"TICK-12\x07\n",
         b"\x1b]x\x07warn\n",
         b"DONEx\n",
+        // Ending at a character of three bytes, and of four, a word's and not.
+        "READY…".as_bytes(),
+        "ok𠀀".as_bytes(),
+        "ok🚀".as_bytes(),
+        "xé本 ".as_bytes(),
     ] {
         for (pattern, matcher) in &matchers {
             let want = oracle(pattern, small);
