@@ -4432,6 +4432,22 @@ fn command_runs_in_a_shell_and_gives_its_code_and_the_output_between_its_marks()
         (2, "InvalidRequest".into())
     );
 
+    // A command refused on its thread holds nothing of its connection's: past the 64 waits one
+    // connection holds, it runs.
+    let mut api = Api::connect(&socket);
+    for _ in 0..70 {
+        let refused = api.call(
+            "terminal.command",
+            json!({"target": SHELL, "command": "echo NEVER-TYPED", "timeout_ms": 0}),
+        );
+        assert_eq!(refused["error"]["kind"], "WaitTimeout", "{refused}");
+    }
+    let same = api.call(
+        "terminal.command",
+        json!({"target": SHELL, "command": "echo same", "timeout_ms": 30_000}),
+    );
+    assert_eq!(same["result"]["output"], "same", "{same}");
+
     // Out of time before it is typed: nothing is.
     assert_eq!(
         failed(command(
@@ -4572,4 +4588,9 @@ fn a_command_across_a_hand_off_is_interrupted_and_not_run_again() {
     // At its prompt again, a command runs.
     let again = ran(&socket, command(&socket, &["server", "--", "echo again"]));
     assert_eq!(again["output"], "again", "{again}");
+    // Handed off again with the shell idle at its prompt: no prompt since, but the shell has its
+    // terminal, so a command runs.
+    hand_off(&socket, &workspace.dir);
+    let idle = ran(&socket, command(&socket, &["server", "--", "echo idle"]));
+    assert_eq!(idle["output"], "idle", "{idle}");
 }

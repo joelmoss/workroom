@@ -165,6 +165,19 @@ mod tests {
         assert_eq!(
             requested(&[
                 "tests",
+                "--",
+                "cargo",
+                "test",
+                "--json",
+                "--verbose",
+                "--help"
+            ]),
+            Ok(json!({"target": "tests", "command": "cargo test --json --verbose --help"})),
+            "after `--`, the global flags are the command's"
+        );
+        assert_eq!(
+            requested(&[
+                "tests",
                 "--timeout",
                 "2m",
                 "--allow-self",

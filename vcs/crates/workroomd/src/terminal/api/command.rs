@@ -231,6 +231,9 @@ pub fn start(waits: &mut Waits, call: &Call, writer: &SharedWriter, stream: u32)
         if let Some(result) = ran.run(&asked, marks_by, most) {
             send(result);
         }
+        // Over, however it ended: a refusal on this thread left no outcome, and the connection
+        // counts every waiter without one as still held (`wait::admit`).
+        waiter.cancel();
     }));
     if let Err(error) = spawned {
         crate::note!("terminal API: no thread for a command: {error}");
