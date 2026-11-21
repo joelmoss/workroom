@@ -798,15 +798,33 @@ impl Matcher {
     /// ends after it: the one approximation, for a Unicode `\b` over text that isn't ASCII in a
     /// pattern with no bound (`\w+\b`), which may then miss a longer match a later line completes.
     fn settled_without_dfa(&self, found: std::ops::Range<usize>) -> Option<usize> {
-        // The character at `to` is whole: an ASCII byte is one, else a character's worth.
-        let held = |to: usize| {
-            self.window.get(to).is_some_and(u8::is_ascii) || self.window.len() >= to + CONTEXT
-        };
         let settled = match self.longest {
-            Some(longest) => held(found.start + longest),
-            None => held(found.end) && self.window[found.end..].contains(&b'\n'),
+            Some(longest) => self.whole_at(found.start + longest),
+            None => self.whole_at(found.end) && self.window[found.end..].contains(&b'\n'),
         };
         settled.then_some(found.end)
+    }
+
+    /// Whether the window holds the whole of the character byte `at` is part of, so nothing a
+    /// `\b` there looks at is still to come: from that character's first byte, as many as its
+    /// UTF-8 encoding says (an ASCII byte is one, `…` three, `𠀀` four). A byte that starts no
+    /// character UTF-8 could finish (a stray continuation byte, Latin-1 text) is whole as it is.
+    fn whole_at(&self, at: usize) -> bool {
+        if at >= self.window.len() {
+            return false;
+        }
+        // A continuation byte belongs to the character up to three bytes before it.
+        let is_continuation = |byte: u8| byte & 0xc0 == 0x80;
+        let first = (at.saturating_sub(3)..=at)
+            .rev()
+            .find(|&byte| !is_continuation(self.window[byte]))
+            .unwrap_or(at);
+        let held = &self.window[first..self.window.len().min(first + 4)];
+        // Short only when what is held is a valid start of a character that needs more.
+        !matches!(
+            std::str::from_utf8(held),
+            Err(error) if error.valid_up_to() == 0 && error.error_len().is_none()
+        )
     }
 
     /// Drops the oldest text past `WINDOW`, wherever it falls, keeping the `CONTEXT` bytes before
