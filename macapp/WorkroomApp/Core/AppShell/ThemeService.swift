@@ -68,12 +68,18 @@ final class ThemeService {
   nonisolated static func activeThemeName(for side: ThemeSide, in userThemes: UserThemes? = nil)
     -> String
   {
+    resolve(side, in: userThemes ?? userThemesToResolve(for: side)).name
+  }
+
+  /// The active theme's name for `side`, and whether it is the fallback rather than the setting.
+  nonisolated private static func resolve(_ side: ThemeSide, in users: UserThemes)
+    -> (name: String, isFallback: Bool)
+  {
     let chosen = Defaults[.theme(for: side)]
-    let users = userThemes ?? userThemesToResolve(for: side)
-    let resolved =
-      ThemeCatalog.side(ofThemeNamed: chosen, in: users) == side
-      ? chosen : ThemeCatalog.defaultFamily.theme(for: side)
-    return ThemeCatalog.sanitizedThemeName(resolved)
+    guard ThemeCatalog.side(ofThemeNamed: chosen, in: users) == side else {
+      return (ThemeCatalog.defaultFamily.theme(for: side), true)
+    }
+    return (ThemeCatalog.sanitizedThemeName(chosen), false)
   }
 
   /// The user's theme files `side` can resolve to: the chosen theme's and Workroom's for that side.
@@ -147,7 +153,7 @@ final class ThemeService {
     // The app-global half runs ONCE here, not inside the per-window loop below — it used to live in
     // `applyThemeToAll`, so N windows meant N writes + N parses of the same generated ghostty.conf
     // (and the regex compilation each parse implies) on the main thread. WORKROOM-3R is that stall.
-    GhosttyApp.shared.reloadConfig(force: force, dark: isDark, theme: active.name)
+    GhosttyApp.shared.reloadConfig(force: force, dark: isDark, theme: active.configValue)
     GhosttyApp.shared.setColorScheme(dark: isDark)
     for sessions in terminalSinks.allObjects { sessions.applyThemeToAll(isDark: isDark) }
     NotificationCenter.default.post(name: .themeDidChange, object: nil)
@@ -188,16 +194,34 @@ final class ThemeService {
     ThemeCatalog.themePreview(named: name, bundledDirectory: bundledThemeDirectory())
   }
 
-  /// The active theme for `side` (`activeThemeName(for:in:)`) and its colours, both resolved against
-  /// one read of the user's theme files, so the chrome paints the file the terminal is told to load.
-  nonisolated static func activeTheme(for side: ThemeSide) -> (name: String, preview: ThemePreview?)
-  {
+  /// The active theme for `side`: its name (`activeThemeName(for:in:)`), its colours, and what the
+  /// generated config's `theme =` line says, all resolved against one read of the user's theme files,
+  /// so the chrome paints the file the terminal is told to load.
+  struct ActiveTheme: Sendable {
+    let name: String
+    let preview: ThemePreview?
+    let configValue: GhosttyApp.ThemeValue
+  }
+
+  /// The active theme for `side`. A fallback is always the bundled Workroom or Workroom Light, never a
+  /// user file of that name: the config names the bundled file by its absolute path, so ghostty loads
+  /// it rather than looking the name up in the user's theme directory first, and the chrome paints
+  /// the same bundled file. Without that, a broken user file called `Workroom` would be the one ghostty
+  /// loaded for the very theme the app falls back to.
+  nonisolated static func activeTheme(for side: ThemeSide) -> ActiveTheme {
     let users = userThemesToResolve(for: side)
-    let name = activeThemeName(for: side, in: users)
-    return (
-      name,
-      ThemeCatalog.themePreview(named: name, bundledDirectory: bundledThemeDirectory(), in: users)
-    )
+    let (name, isFallback) = resolve(side, in: users)
+    let bundled = bundledThemeDirectory()
+    guard isFallback else {
+      return ActiveTheme(
+        name: name,
+        preview: ThemeCatalog.themePreview(named: name, bundledDirectory: bundled, in: users),
+        configValue: .named(name))
+    }
+    return ActiveTheme(
+      name: name,
+      preview: ThemeCatalog.themePreview(named: name, bundledDirectory: bundled, in: .empty),
+      configValue: bundled.map { .bundledFile($0 + "/" + name) } ?? .named(name))
   }
 
   /// `ThemeCatalog.themeDirectories` with this app's bundled themes.
