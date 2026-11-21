@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -109,16 +110,17 @@ struct Filter {
 
 impl Filter {
     /// Whether an event about a session (its `session` and `scope`), named `event`, is sent.
-    /// `snapshot` events (a snapshot's sessions) are sent whatever `types` names.
+    /// `snapshot` events (a snapshot's sessions) are sent whatever `types` names, and
+    /// `session.moved` to a scope it leaves (`previous_scope`) as to the one it joins.
     fn passes(&self, event: &Value, snapshot: bool) -> bool {
         let session = self
             .session
             .as_ref()
             .is_none_or(|id| event["session"] == *id.as_str());
-        let scope = self
-            .scope
-            .as_ref()
-            .is_none_or(|scope| event["scope"] == *scope);
+        let scope = self.scope.as_ref().is_none_or(|scope| {
+            event["scope"] == *scope
+                || (event["event"] == name::MOVED && event["previous_scope"] == *scope)
+        });
         let named = snapshot
             || self.types.as_ref().is_none_or(|types| {
                 event["event"]
@@ -177,7 +179,12 @@ pub fn input() -> Value {
 pub fn output() -> Value {
     let text_or_null =
         |description: &str| json!({"type": ["string", "null"], "description": description});
-    let mut names: Vec<&str> = vec![name::SESSION, name::SNAPSHOT_COMPLETE, name::RESUMED];
+    let mut names: Vec<&str> = vec![
+        name::SESSION,
+        name::SNAPSHOT_COMPLETE,
+        name::RESUMED,
+        name::PLACE,
+    ];
     names.extend(name::LIVE);
     let session = super::session_schema();
     json!({
@@ -186,6 +193,21 @@ pub fn output() -> Value {
         "description": "One event. Every one has `event`, `boot` and `revision`; the others are \
                         those its `event` carries, as each field says. Callers ignore an `event` \
                         they don't know: later revisions add more.",
+        "examples": [
+            {
+                "event": name::PLACE,
+                "boot": "9b2f6c1e-3d4a-4f5b-8c6d-7e8f9a0b1c2d",
+                "revision": 1800,
+            },
+            {
+                "event": name::MOVED,
+                "boot": "9b2f6c1e-3d4a-4f5b-8c6d-7e8f9a0b1c2d",
+                "revision": 43,
+                "session": "5a1e0f7e-0d6c-4c9f-9c3e-2b7f1d0a8e11",
+                "scope": {"kind": "workroom", "id": "7d1e2f3a-4b5c-4d6e-8f70-8192a3b4c5d6"},
+                "previous_scope": {"kind": "workroom", "id": "4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0d4e"},
+            },
+        ],
         "properties": {
             "event": {
                 "type": "string",
@@ -193,11 +215,15 @@ pub fn output() -> Value {
                 "description": "`session`: one session as it is, in a snapshot. \
                                 `snapshot-complete`: the snapshot's end; live events follow. \
                                 `resumed`: the subscription went on after `since`; live events \
-                                follow. `session.created`, `session.ended`, \
+                                follow. `place`: where a filtered stream stands, once the events \
+                                its filters skip have moved it on, at most once a second; a \
+                                caller resumes from it, and `workroom events` never prints it. \
+                                `session.created`, `session.ended`, \
                                 `session.program_status` (its coding agent's state, program or \
                                 waiting on the user changed, or its message did while it isn't \
-                                working) and `session.run_state` (each transition of a run, \
-                                passing ones included): live events.",
+                                working), `session.run_state` (each transition of a run, \
+                                passing ones included) and `session.moved` (tagged with another \
+                                scope, sent to the subscribers of both): live events.",
             },
             "boot": {
                 "type": "string",
@@ -210,17 +236,23 @@ pub fn output() -> Value {
                                 each live event's is higher than any before it, but a filtered \
                                 stream skips those it doesn't pass, so it is not consecutive. A \
                                 snapshot's sessions and its `snapshot-complete` have the revision \
-                                the snapshot was taken at, `resumed` the one it resumed after. \
-                                Not the reply's `revision`, the API's own, which it sits inside.",
+                                the snapshot was taken at, `resumed` the one it resumed after, \
+                                `place` the one the stream has reached. Not the reply's \
+                                `revision`, the API's own, which it sits inside.",
             },
             "session": {
                 "type": "string",
-                "description": "The session's id: every event but `snapshot-complete` and \
-                                `resumed`.",
+                "description": "The session's id: every event but `snapshot-complete`, \
+                                `resumed` and `place`.",
             },
             "scope": {
                 "type": ["object", "null"],
-                "description": "The session's scope, as `session.list` gives it.",
+                "description": "The session's scope, as `session.list` gives it; for \
+                                `session.moved`, the one it moved to.",
+            },
+            "previous_scope": {
+                "type": ["object", "null"],
+                "description": "`session.moved`: the scope it moved from.",
             },
             "label": text_or_null("`session` and `session.created`: as `session.list` gives it."),
             "title": text_or_null("`session` and `session.created`: as `session.list` gives it."),
@@ -342,25 +374,53 @@ pub fn start(subscriptions: &mut Subscriptions, call: &Call, writer: &SharedWrit
         .spawn(move || {
             let _slot = slot;
             let mut cursor = Cursor::new(begin);
+            let mut place = Place::default();
             loop {
-                let sent = match hub.next(&mut cursor, &|| ended.load(Ordering::SeqCst)) {
+                let closed = || ended.load(Ordering::SeqCst);
+                let sent = match hub.next_until(&mut cursor, &closed, place.due()) {
                     Next::Closed => return,
-                    Next::Resumed { boot, revision } => send(
-                        Ok(json!({"event": name::RESUMED, "boot": boot, "revision": revision})),
-                        true,
-                    ),
+                    Next::Idle => {
+                        place.sent(cursor.sent());
+                        send(
+                            Ok(json!({
+                                "event": name::PLACE,
+                                "boot": place.boot,
+                                "revision": cursor.sent(),
+                            })),
+                            true,
+                        )
+                    }
+                    Next::Resumed { boot, revision } => {
+                        place.told(&boot, revision);
+                        send(
+                            Ok(json!({"event": name::RESUMED, "boot": boot, "revision": revision})),
+                            true,
+                        )
+                    }
                     Next::Snapshot {
                         boot,
                         revision,
                         sessions: known,
                         reason,
-                    } => snapshot(&sessions, &filter, known, &boot, revision, reason)
-                        .into_iter()
-                        .all(|event| send(Ok(event), true)),
-                    Next::Events(events) => events
-                        .iter()
-                        .filter(|event| filter.passes(&event.json, false))
-                        .all(|event| send(Ok(event.json.clone()), true)),
+                    } => {
+                        place.told(&boot, revision);
+                        snapshot(&sessions, &filter, known, &boot, revision, reason)
+                            .into_iter()
+                            .all(|event| send(Ok(event), true))
+                    }
+                    Next::Events(events) => {
+                        let sent = events
+                            .iter()
+                            .filter(|event| filter.passes(&event.json, false))
+                            .all(|event| send(Ok(event.json.clone()), true));
+                        let last_told = events
+                            .iter()
+                            .rev()
+                            .find(|event| filter.passes(&event.json, false))
+                            .map(|event| event.revision);
+                        place.passed(last_told, cursor.sent());
+                        sent
+                    }
                 };
                 // A caller that hung up, or stopped reading, ends it, and its connection with it.
                 if !sent {
@@ -394,6 +454,52 @@ pub fn start(subscriptions: &mut Subscriptions, call: &Call, writer: &SharedWrit
                 ),
             );
         }
+    }
+}
+
+/// How often, at most, a filtered stream is sent a `place`.
+pub const PLACE_EVERY: Duration = Duration::from_secs(1);
+
+/// Where a subscription's caller last heard it stood, for a `place` once the events its filter
+/// skipped have moved it on: so a quiet filtered stream resumes after a hand-off from where it
+/// really stands, not from a place the ring has long dropped.
+#[derive(Default)]
+struct Place {
+    boot: String,
+    /// The last revision the caller was told, by an event, a snapshot or a `place`.
+    told: u64,
+    /// The revision the subscription has been handed up to, skipped events included.
+    reached: u64,
+    /// When the last `place` was sent.
+    last: Option<Instant>,
+}
+
+impl Place {
+    fn told(&mut self, boot: &str, revision: u64) {
+        self.boot = boot.to_string();
+        (self.told, self.reached) = (revision, revision);
+    }
+
+    /// A batch of events up to `reached`, the last of which the caller was sent `told`.
+    fn passed(&mut self, told: Option<u64>, reached: u64) {
+        if let Some(told) = told {
+            self.told = told;
+        }
+        self.reached = reached;
+    }
+
+    fn sent(&mut self, revision: u64) {
+        (self.told, self.reached) = (revision, revision);
+        self.last = Some(Instant::now());
+    }
+
+    /// When a `place` is next due: never while the caller knows where it stands, else a
+    /// `PLACE_EVERY` after the last.
+    fn due(&self) -> Option<Instant> {
+        (self.reached > self.told).then(|| {
+            self.last
+                .map_or_else(Instant::now, |last| last + PLACE_EVERY)
+        })
     }
 }
 
@@ -531,7 +637,9 @@ fn parse(call: &Call) -> Result<(Filter, Start), ApiError> {
     };
     let scope = match workroom {
         Some(workroom) => Some(json!({"kind": "workroom", "id": workroom})),
-        None if all => None,
+        // A session named is the one wanted, wherever it is: the caller's own scope is only a
+        // default, which naming it overrides. A `workroom` named still applies.
+        None if all || session.is_some() => None,
         None => call
             .caller
             .as_deref()
@@ -580,5 +688,47 @@ mod tests {
         };
         assert!(!types.passes(&event, false));
         assert!(types.passes(&event, true), "a snapshot's session");
+    }
+
+    /// A move reaches the subscribers of the scope it leaves as well as of the one it joins.
+    #[test]
+    fn a_move_passes_both_its_scopes() {
+        let moved = json!({
+            "event": name::MOVED,
+            "session": "a",
+            "scope": {"kind": "workroom", "id": "wr-2"},
+            "previous_scope": {"kind": "workroom", "id": "wr-1"},
+        });
+        let of = |workroom: &str| Filter {
+            scope: Some(json!({"kind": "workroom", "id": workroom})),
+            ..Filter::default()
+        };
+        assert!(of("wr-1").passes(&moved, false));
+        assert!(of("wr-2").passes(&moved, false));
+        assert!(!of("wr-3").passes(&moved, false));
+    }
+
+    /// A `place` is due only once skipped events have moved the stream on past what its caller
+    /// was told, at once the first time and then at most every `PLACE_EVERY`.
+    #[test]
+    fn a_place_is_due_only_when_skipped_events_moved_the_stream_on() {
+        let mut place = Place::default();
+        place.told("boot", 5);
+        assert_eq!(place.due(), None);
+        place.passed(Some(7), 7);
+        assert_eq!(place.due(), None, "told every event");
+        place.passed(None, 9);
+        assert!(
+            place.due().is_some_and(|at| at <= Instant::now()),
+            "at once"
+        );
+        place.sent(9);
+        assert_eq!(place.due(), None);
+        place.passed(Some(10), 12);
+        let due = place.due().expect("due");
+        assert!(
+            due > Instant::now() + PLACE_EVERY / 2,
+            "not twice in a second"
+        );
     }
 }

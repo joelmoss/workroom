@@ -117,6 +117,31 @@ fn only_news_of_a_coding_agent_is_an_event() {
     assert_eq!(sessions[&id(2)].coding_agent, agent("working", "ab"));
 }
 
+/// A session tagged with another scope is `session.moved`, saying both, once; its later events and
+/// its snapshots carry the new one. A tag it already has is no event.
+#[test]
+fn a_session_tagged_with_another_scope_is_moved() {
+    let hub = Hub::default();
+    hub.created(id(1), listing(1, "wr-1"));
+    let mut cursor = Cursor::new(Start::Since {
+        boot: hub.boot().to_hyphenated(),
+        revision: 1,
+    });
+    let _ = next(&hub, &mut cursor);
+    let to = json!({"kind": "workroom", "id": "wr-2"});
+    hub.rescoped(id(1), to.clone());
+    hub.rescoped(id(1), to.clone());
+    hub.ended(id(1), Some(0));
+    let live = events(next(&hub, &mut cursor));
+    assert_eq!(names(&live), [name::MOVED, name::ENDED], "{live:?}");
+    assert_eq!(live[0]["scope"], to);
+    assert_eq!(
+        live[0]["previous_scope"],
+        json!({"kind": "workroom", "id": "wr-1"})
+    );
+    assert_eq!(live[1]["scope"], to, "its end is in the new scope");
+}
+
 /// A logged run is told each transition once, by number, and never again from its status file; a
 /// run with no log is told its file's changes.
 #[test]

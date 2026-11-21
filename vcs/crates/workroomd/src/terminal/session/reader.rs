@@ -325,15 +325,18 @@ pub(super) fn read_session(
                     crate::daemon::log::describe_status(status)
                 );
             }
+            // Its end is an event under `TERMINATING` too, so a hand-off never carries events
+            // that still hold a session its table doesn't, whose end the next program would then
+            // tell with no exit code. Not held: `kill` reaped the shell, so `status` is not its
+            // exit.
+            if !replaced {
+                hooks.session_ended(id, held.then(|| exit_code(status)));
+            }
             drop(terminating);
             if !replaced {
                 hooks.program_ended(id, &shadow);
             }
-            // Not held: `kill` reaped the shell, so `status` is not its exit.
             super::waits::end(&attached, held.then(|| exit_code(status)));
-            if !replaced {
-                hooks.session_ended(id, held.then(|| exit_code(status)));
-            }
             for target in targets(&attached) {
                 let bytes = terminal_envelope(
                     target.stream,

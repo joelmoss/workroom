@@ -156,6 +156,43 @@ impl SessionStore {
     /// one store continue. Nothing is published: a program that just started has no subscriber,
     /// and the first one's snapshot carries them.
     pub fn adopt(&self, pty: Pty, frozen: FrozenSession) -> Result<(), SessionError> {
+        self.adopt_parked(pty, frozen).map(Parked::start)
+    }
+
+    /// Adopts every session a hand-off carried, then has the terminal API's events take in what
+    /// was adopted (`events::Hub::reconcile`, `events_carried` when the table carried them), and
+    /// only then starts the sessions' readers. A shell that ended during the hand-off is seen
+    /// ending by its reader, after the events know it, so its end is one event like any other,
+    /// with its exit code, never a session the events go on holding. A session that can't be
+    /// adopted is reported and dropped, which closes its pty and hangs up its shell.
+    pub fn adopt_all(&self, sessions: Vec<(Pty, FrozenSession)>, events_carried: bool) {
+        let mut parked = Vec::with_capacity(sessions.len());
+        for (pty, session) in sessions {
+            let id = session.id;
+            match self.adopt_parked(pty, session) {
+                Ok(reader) => parked.push(reader),
+                Err(e) => crate::note!(
+                    "error: session {} could not be adopted, so its shell is hung up: {e}",
+                    id.to_hyphenated()
+                ),
+            }
+        }
+        let live = self
+            .described()
+            .iter()
+            .map(|session| (session.info.id, crate::terminal::api::session_json(session)))
+            .collect();
+        self.hooks.events.reconcile(live, events_carried);
+        for reader in parked {
+            reader.start();
+        }
+    }
+
+    /// [`SessionStore::adopt`], its reader started but waiting until [`Parked::start`]: a
+    /// hand-off's next program holds every reader until the terminal API's events know what was
+    /// adopted (`events::Hub::reconcile`), so a shell that ended meanwhile is an end those events
+    /// tell, not one they miss.
+    pub fn adopt_parked(&self, pty: Pty, frozen: FrozenSession) -> Result<Parked, SessionError> {
         let FrozenSession {
             id,
             columns,
@@ -206,14 +243,29 @@ impl SessionStore {
             sessions.insert(id, session);
         }
         let pid = pty.child_pid();
-        let spawned = std::thread::Builder::new()
-            .spawn(move || read_session(id, number, pty, shadow, attached, store));
+        // Spawned now, so a thread that can't start fails the adoption, and parked until `start`:
+        // a sender dropped unsent starts it too, as `create_then`'s does.
+        let (go, parked) = std::sync::mpsc::channel::<()>();
+        let spawned = std::thread::Builder::new().spawn(move || {
+            let _ = parked.recv();
+            read_session(id, number, pty, shadow, attached, store)
+        });
         if spawned.is_err() {
             self.kill(id);
             return Err(SessionError::ReaderFailed(id.to_hyphenated()));
         }
         crate::note!("session {} adopted: shell pid {pid}", id.to_hyphenated());
-        Ok(())
+        Ok(Parked(go))
+    }
+}
+
+/// An adopted session whose reader waits to be started (`SessionStore::adopt_parked`). Dropped, it
+/// starts too.
+pub struct Parked(std::sync::mpsc::Sender<()>);
+
+impl Parked {
+    pub fn start(self) {
+        let _ = self.0.send(());
     }
 }
 

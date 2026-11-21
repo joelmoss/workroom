@@ -393,8 +393,9 @@ pub struct TakenScreen {
 /// Taken alone, under nothing and with nothing under them: `Hub.subscribers` and each
 /// `Subscriber.queue` as a publish takes them (`Hub::publish` copies the list first, and publishes
 /// only with every session lock released); the terminal API's `events::Hub.state` as an event is
-/// made (`Hooks`, with every session lock released) and as a subscriber reads, which take nothing
-/// under it, and under the freeze's locks only as a hand-off carries it (`Hub::carry`); a
+/// made (`Hooks`, with every session lock released, a reader's end under `TERMINATING`'s read
+/// lock) and as a subscriber reads, which take nothing under it, and under the freeze's locks only
+/// as a hand-off carries it (`Hub::carry`); a
 /// `Waiter.state` as a reader, the runs watcher or a
 /// program status change tells it what happened, and as its request waits on it, each with every
 /// session lock released; a `Waiter.matcher` by its wait's thread alone, which takes

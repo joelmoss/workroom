@@ -192,16 +192,19 @@ const WAIT: &str = "terminal.wait";
 
 const EVENTS: &str = "events.subscribe";
 
-/// The live events, which say where a stream stands, as against a snapshot's sessions.
-const PLACES: [&str; 2] = ["snapshot-complete", "resumed"];
+/// The events that say where a stream stands, besides the live ones, as against a snapshot's
+/// sessions: `place` is a filtered stream's, which nothing else would move on.
+const PLACES: [&str; 3] = ["snapshot-complete", "resumed", "place"];
 
 /// `events.subscribe`'s stream, from `workroom events` and `api call events.subscribe` alike: read
 /// with no timeout, since a quiet daemon is one with nothing to tell, and gone on with across a
 /// hand-off. The daemon hanging up mid-stream is a hand-off's doing when a daemon answers on the
 /// same socket at once (as for a wait, [`resumed`]): the stream is asked of the new program again,
-/// `since` the last place it reached (the last live event's `boot` and `revision`, or its
-/// snapshot's end), and its `session` pinned to the id it resolved to first. The new program
-/// answers `resumed`, which this swallows, saying so on stderr, and sends every event after that
+/// `since` the last place it reached (the last live event's `boot` and `revision`, its snapshot's
+/// end, or a `place` the daemon sends a filtered stream), and its `session` pinned to the id it
+/// resolved to first. A daemon also closes a stream whose reader has stopped reading, which reads
+/// the same here, so stderr says the connection ended, not why. The new program answers
+/// `resumed`, which this swallows, and sends every event after that
 /// place: nothing missed, nothing twice. When it can't (the daemon started afresh, or the place is
 /// older than it keeps), it sends the sessions afresh, a snapshot whose `snapshot-complete` says
 /// `gap`; that goes to `each` like any reply, and stderr says events may have been missed. With no
@@ -257,9 +260,11 @@ fn events(
                         again["since"] = json!({"boot": boot, "revision": revision});
                     }
                     resuming = place.is_some();
+                    // Not necessarily a hand-off: a daemon closes a stream its reader has stopped
+                    // reading, and nothing on the wire tells the two apart.
                     eprintln!(
-                        "workroom: the daemon on {socket} was handed off during the events; going \
-                         on in the new one"
+                        "workroom: the connection to the daemon on {socket} ended (a hand-off, or \
+                         a reader too slow, ends it); asking again from where the events stood"
                     );
                     request = encode(&again);
                     continue 'connection;

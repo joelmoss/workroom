@@ -51,6 +51,10 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
     // Each event goes to stdout as it arrives, so a script reads it at once.
     let mut stdout = std::io::stdout().lock();
     let streamed = terminal_api::stream(context, "events.subscribe", params, |replied| {
+        // Where a filtered stream stands, for resuming (`terminal_api::stream`): nothing to show.
+        if replied.result["event"] == "place" {
+            return true;
+        }
         let mut line = if context.json {
             super::envelope::success("events", &replied.result)
         } else {

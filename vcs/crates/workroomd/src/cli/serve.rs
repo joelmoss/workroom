@@ -230,30 +230,24 @@ fn adopt(
     // The terminal API's events number on from the old program's, so a client resumes across the
     // hand-off (#687). A table before them, or one whose events can't be read, leaves this
     // program's own boot, and a client resuming is sent the sessions afresh.
-    let events = &daemon.sessions.hooks().events;
     let carried = table
         .events
         .as_deref()
-        .is_some_and(|carried| events.adopt(carried));
-    for session in table.sessions {
-        let pty = crate::terminal::pty::Pty::adopt(session.master, session.pid);
-        let id = session.id;
-        if let Err(e) = daemon.sessions.adopt(pty, session) {
-            crate::note!(
-                "error: session {} could not be adopted, so its shell is hung up: {e}",
-                id.to_hyphenated()
-            );
-        }
-    }
-    // What changed while the hand-off was under way, after the old program carried its events:
-    // a session that ended or was created then, or whose coding agent changed.
-    let live = daemon
+        .is_some_and(|carried| daemon.sessions.hooks().events.adopt(carried));
+    // Every session, then what changed while the hand-off was under way after the old program
+    // carried its events (a session created then, or whose coding agent changed), then the
+    // readers, which tell any that ended meanwhile.
+    let sessions = table
         .sessions
-        .described()
-        .iter()
-        .map(|session| (session.info.id, crate::terminal::api::session_json(session)))
+        .into_iter()
+        .map(|session| {
+            (
+                crate::terminal::pty::Pty::adopt(session.master, session.pid),
+                session,
+            )
+        })
         .collect();
-    events.reconcile(live, carried);
+    daemon.sessions.adopt_all(sessions, carried);
     Ok((lock, listener))
 }
 

@@ -2675,3 +2675,124 @@ fn a_stale_client_left_on_its_own_is_not_handed_the_size() {
     assert_eq!(pty_size(&store, session), (120, 40));
     store.kill_all();
 }
+
+/// The terminal API's events after `since` of `store`'s numbering, and its state then: what a
+/// subscriber resuming there would be sent, waiting up to 10 s for `wanted` to be among them.
+fn events_after(
+    store: &SessionStore,
+    since: u64,
+    wanted: impl Fn(&[serde_json::Value]) -> bool,
+) -> Vec<serde_json::Value> {
+    use crate::terminal::events::{Cursor, Next, Start};
+    let hub = &store.hooks().events;
+    let boot = match hub.next(&mut Cursor::new(Start::Fresh), &|| false) {
+        Next::Snapshot { boot, .. } => boot,
+        other => panic!("no snapshot: {other:?}"),
+    };
+    let mut cursor = Cursor::new(Start::Since {
+        boot,
+        revision: since,
+    });
+    assert!(matches!(
+        hub.next(&mut cursor, &|| false),
+        Next::Resumed { .. }
+    ));
+    let mut seen = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !wanted(&seen) {
+        match hub.next_until(&mut cursor, &|| false, Some(deadline)) {
+            Next::Events(events) => seen.extend(events.iter().map(|event| event.json.clone())),
+            Next::Idle => panic!("not there within 10 s: {seen:?}"),
+            other => panic!("{other:?}"),
+        }
+    }
+    seen
+}
+
+/// Whether the events' state as it stands holds session `session`.
+fn events_hold(store: &SessionStore, session: SessionId) -> bool {
+    use crate::terminal::events::{Cursor, Next, Start};
+    match store
+        .hooks()
+        .events
+        .next(&mut Cursor::new(Start::Fresh), &|| false)
+    {
+        Next::Snapshot { sessions, .. } => sessions.contains_key(&session),
+        other => panic!("no snapshot: {other:?}"),
+    }
+}
+
+/// A hand-off's next program adopts every session, has the events take them in, and only then
+/// starts their readers: a shell that ended during the hand-off (here, before it was adopted) is
+/// one `session.ended` with its exit code, and no later snapshot holds it, whether the events
+/// came with the table or the next program numbers its own.
+#[test]
+fn a_shell_that_ended_during_a_hand_off_is_one_end_with_its_code() {
+    for carried in [true, false] {
+        let store = SessionStore::new();
+        let session = id(if carried { 0x91 } else { 0x92 });
+        if carried {
+            let old = crate::terminal::events::Hub::default();
+            old.created(
+                session,
+                serde_json::json!({"id": session.to_hyphenated(), "scope": null}),
+            );
+            assert!(store.hooks().events.adopt(&old.carry()));
+        }
+        let args = [OsString::from("-c"), OsString::from("exit 5")];
+        let e = env();
+        let pty = Pty::spawn(OsStr::new("/bin/sh"), None, &args, &e, None, 80, 24).expect("pty");
+        // Most likely gone, a zombie nobody has reaped, before the next program looks; either
+        // way, its end comes after the events have taken it in.
+        std::thread::sleep(Duration::from_millis(300));
+        let revision = u64::from(carried);
+        store.adopt_all(vec![(pty, frozen_with(session, b""))], carried);
+        let told = events_after(&store, revision, |seen| {
+            seen.iter().any(|event| event["event"] == "session.ended")
+        });
+        let names: Vec<&str> = told
+            .iter()
+            .map(|event| event["event"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["session.ended"], "carried {carried}: {told:?}");
+        assert_eq!(told[0]["exit_code"], 5, "carried {carried}: {told:?}");
+        assert!(
+            !events_hold(&store, session),
+            "carried {carried}: a phantom"
+        );
+    }
+}
+
+/// A session's end is told under `TERMINATING`, with its removal from the store: a hand-off's
+/// freeze, which takes `TERMINATING`, never finds the events holding a session the store has
+/// let go, which the next program would tell ended with no exit code.
+#[test]
+fn a_freeze_never_finds_the_events_holding_a_session_the_store_has_ended() {
+    let store = SessionStore::new();
+    let session = id(0x93);
+    let args = [OsString::from("-c"), OsString::from("sleep 0.3; exit 6")];
+    let e = env();
+    store.create(spec(session, &args, &e)).expect("create");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(Instant::now() < deadline, "the session never ended");
+        let gone = store
+            .frozen(Duration::from_secs(5), |frozen| {
+                let held = frozen.iter().any(|s| s.id == session);
+                assert_eq!(
+                    events_hold(&store, session),
+                    held,
+                    "the events and the store disagree under the freeze"
+                );
+                !held
+            })
+            .expect("frozen");
+        if gone {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let told = events_after(&store, 1, |seen| !seen.is_empty());
+    assert_eq!(told[0]["event"], "session.ended", "{told:?}");
+    assert_eq!(told[0]["exit_code"], 6, "{told:?}");
+}

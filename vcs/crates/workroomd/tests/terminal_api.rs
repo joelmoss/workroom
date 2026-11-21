@@ -3142,8 +3142,143 @@ fn events_go_on_across_a_hand_off_from_their_boot_and_revision() {
     assert_ne!(gap["boot"], boot, "{gap}");
     assert_eq!(gap["sessions"], json!([OTHER]), "{gap}");
     let stderr = events.stop();
-    assert!(stderr.contains("handed off during the events"), "{stderr}");
+    assert!(
+        stderr.contains("asking again from where the events stood"),
+        "{stderr}"
+    );
     assert!(stderr.contains("events may have been missed"), "{stderr}");
+}
+
+/// Tags session `id` with `workroom`, as the app's retag does.
+fn retag(socket: &Path, id: &str, workroom: &str) {
+    let mut payload = wr_protocol::terminal::parse_session_id(std::ffi::OsStr::new(id))
+        .expect("an id")
+        .0
+        .to_vec();
+    payload.extend_from_slice(workroom.as_bytes());
+    let reply = common::control(
+        socket,
+        wr_protocol::frame::Frame::new(wr_protocol::frame::FrameKind::Retag, payload),
+    );
+    assert_eq!(reply.kind, wr_protocol::frame::FrameKind::Acknowledged);
+}
+
+/// From a pane, `--session` names the session wanted wherever it is: the pane's workroom is only
+/// a default, which naming one overrides.
+#[test]
+fn events_for_a_session_named_from_a_pane_in_another_workroom() {
+    let workspace = Workspace::new("api-events-named");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    let mut away = open(&socket, RUN, "other-room", "wr-2", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 2);
+    let named = events_in_pane(&mut shell, &workspace.dir, "named", "--session other-room");
+    assert_eq!(
+        told(&events_written(&named)),
+        [
+            pair("session", RUN),
+            ("snapshot-complete".to_string(), String::new())
+        ]
+    );
+    type_line(&mut away, "exit 2");
+    assert!(
+        wait_for(Duration::from_secs(20), || {
+            events_written(&named)
+                .iter()
+                .any(|e| is(e, "session.ended", RUN))
+        }),
+        "{:#?}",
+        events_written(&named)
+    );
+}
+
+/// A session tagged with another workroom is `session.moved`, to the subscribers of the workroom
+/// it leaves, of the one it joins and of every session. From then on it is the new one's: its
+/// events reach that one's subscribers, not the old one's, and that one's snapshot holds it.
+#[test]
+fn a_session_moved_to_another_workroom_is_told_to_both() {
+    let workspace = Workspace::new("api-events-moved");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+    let mut old = Events::start(&socket, &["--workroom", "wr-1"]);
+    let mut new = Events::start(&socket, &["--workroom", "wr-2"]);
+    let mut every = Events::start(&socket, &[]);
+    for stream in [&mut old, &mut new, &mut every] {
+        stream.until("snapshot-complete", |e| e["event"] == "snapshot-complete");
+    }
+
+    retag(&socket, SHELL, "wr-2");
+    for stream in [&mut old, &mut new, &mut every] {
+        let moved = stream.until("the move", |e| is(e, "session.moved", SHELL));
+        assert_eq!(moved["scope"], json!({"kind": "workroom", "id": "wr-2"}));
+        assert_eq!(
+            moved["previous_scope"],
+            json!({"kind": "workroom", "id": "wr-1"})
+        );
+    }
+    let mut later = Events::start(&socket, &["--workroom", "wr-2"]);
+    let held = later.until("its snapshot", |e| e["event"] == "snapshot-complete");
+    assert_eq!(held["sessions"], json!([SHELL]), "{held}");
+    let mut left = Events::start(&socket, &["--workroom", "wr-1"]);
+    let empty = left.until("its snapshot", |e| e["event"] == "snapshot-complete");
+    assert_eq!(empty["sessions"], json!([]), "{empty}");
+
+    type_line(&mut shell, "exit 3");
+    new.until("its end", |e| is(e, "session.ended", SHELL));
+    every.until("its end", |e| is(e, "session.ended", SHELL));
+    // Time for the old workroom's stream to have had it, had it been sent there.
+    std::thread::sleep(Duration::from_secs(1));
+    while old.next(Duration::from_millis(100)).is_some() {}
+    assert_eq!(old.count("session.ended"), 0, "{:#?}", old.seen);
+}
+
+/// A filtered stream that hears nothing while more events than the daemon keeps go by still
+/// resumes after a hand-off: the daemon told it where it stood (`place`, which `workroom events`
+/// never prints), so it asks from there, not from a place long dropped.
+#[test]
+fn a_quiet_filtered_stream_resumes_after_a_hand_off_from_its_place() {
+    if !has_terminal_state() {
+        eprintln!("skipped: a hand-off needs a daemon built with terminal-state");
+        return;
+    }
+    let workspace = Workspace::new("api-events-place");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let _shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+    let mut quiet = Events::start(&socket, &["--type", "session.ended"]);
+    quiet.until("snapshot-complete", |e| e["event"] == "snapshot-complete");
+
+    // More moves than the daemon keeps events, none of which the stream passes.
+    for round in 0..1100 {
+        retag(&socket, SHELL, if round % 2 == 0 { "wr-2" } else { "wr-1" });
+    }
+    // Time for a `place`, at most a second after the last.
+    std::thread::sleep(Duration::from_secs(3));
+    hand_off(&socket, &workspace.dir);
+    let _other = open(&socket, OTHER, "tests", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 2);
+    common::control(
+        &socket,
+        wr_protocol::frame::Frame::new(
+            wr_protocol::frame::FrameKind::Kill,
+            wr_protocol::terminal::parse_session_id(std::ffi::OsStr::new(OTHER))
+                .expect("an id")
+                .0
+                .to_vec(),
+        ),
+    );
+    quiet.until("the end after the hand-off", |e| {
+        is(e, "session.ended", OTHER)
+    });
+    assert_eq!(quiet.count("snapshot-complete"), 1, "{:#?}", quiet.seen);
+    assert_eq!(quiet.count("place"), 0, "never printed");
+    let stderr = quiet.stop();
+    assert!(stderr.contains("asking again"), "{stderr}");
+    assert!(!stderr.contains("may have been missed"), "{stderr}");
 }
 
 /// `(event, session)` of each event, the session's last 4 characters, for an assertion to read.

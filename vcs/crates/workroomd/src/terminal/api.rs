@@ -335,9 +335,9 @@ pub const METHODS: &[Method] = &[
     Method {
         name: events::NAME,
         summary: "The daemon's events, streamed: the sessions as they are (one `session` event \
-                  each, then `snapshot-complete`), then each session created and ended, each \
-                  change of its coding agent's program status and each run state, as they \
-                  happen, every one with the `boot` and `revision` a caller resumes from with \
+                  each, then `snapshot-complete`), then each session created, ended and moved \
+                  to another workroom, each change of its coding agent's program status and \
+                  each run state, as they happen, every one with the `boot` and `revision` a caller resumes from with \
                   `since`. By default the caller's scope's; `workroom`, `all`, `session` and \
                   `types` say whose and which. The stream goes on until the caller hangs up. A \
                   connection and the daemon each hold a few subscriptions at once, and one past \
@@ -799,8 +799,12 @@ fn run_session_example() -> Value {
 }
 
 /// `schema` with `examples`, JSON Schema's keyword for values it accepts, as `api.describe`
-/// publishes it.
-fn with_examples(mut schema: Value, examples: Vec<Value>) -> Value {
+/// publishes it: these first, then any the schema has of its own (`events.subscribe`'s, one of
+/// each kind of event a caller may not expect).
+fn with_examples(mut schema: Value, mut examples: Vec<Value>) -> Value {
+    if let Some(Value::Array(own)) = schema.get_mut("examples") {
+        examples.append(own);
+    }
     schema["examples"] = Value::Array(examples);
     schema
 }
