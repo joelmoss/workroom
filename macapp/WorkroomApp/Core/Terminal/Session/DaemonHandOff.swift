@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import HostDrivers
 import os
 
 /// Replaces the running local daemon's program with the one this app bundles, keeping every session
@@ -15,9 +16,10 @@ import os
 /// nothing to hand off costs one connection and one read of the binary, and so does the first
 /// launch after a Sparkle update that changed only CLI commands. A daemon from before #680 compares
 /// the binary's bytes instead, so it is handed off to any other build. A daemon that predates
-/// hand-off is never asked and keeps running. A daemon running from another path than the bundled
-/// binary's is handed off whatever its build (`mustMove`): the first launch after the swap (#681)
-/// moves it from `Contents/MacOS/workroomd` to `Contents/Resources/workroom` that way.
+/// hand-off is never asked and keeps running. A daemon whose own file is gone is handed off whatever
+/// its build (`mustMove`): the first launch after the swap (#681) moves it from
+/// `Contents/MacOS/workroomd` to `Contents/Resources/workroom` that way, and tries again a while
+/// when the daemon refuses for now (`isTransient`).
 ///
 /// Panes do not wait for it, so launch never freezes on it. The daemon stops accepting while it
 /// hands off, so a pane that connects meanwhile is attached by the new program, and `workroomd
@@ -41,14 +43,33 @@ enum DaemonHandOff {
 
   /// Starts this launch's hand-off and returns at once. The outcome is logged at `notice`, which
   /// the log store keeps, where `info` is dropped unless someone is streaming.
-  @MainActor static func start() {
-    guard let binary = PersistentSessionPaths.binaryURL(for: .daemon),
-      let socket = PersistentSessionService.shared.existingSocketPath(for: .daemon)
-    else { return }
+  /// The waits between attempts at a move the daemon refused for now (`isTransient`): about a
+  /// minute and a half in all, while the app runs. A launch's move that never goes in leaves the
+  /// daemon as it was, starting its run sessions from its own copy (`own_copy.rs`).
+  static let retryDelays: [TimeInterval] = [1, 2, 4, 8, 15, 30, 30]
+
+  /// `binary` and `socket` default to this app's; a test passes its own, and awaits the task.
+  @MainActor @discardableResult
+  static func start(
+    binary: URL? = PersistentSessionPaths.binaryURL(for: .daemon),
+    socket: String? = PersistentSessionService.shared.existingSocketPath(for: .daemon),
+    delays: [TimeInterval] = retryDelays
+  ) -> Task<[String], Never>? {
+    guard let binary, let socket else { return nil }
     // Logged at the start too, so the hand-off's window can be placed beside what the daemon's own
     // log (`workroomd.log`) says happened to each session meanwhile.
     logger.notice("daemon hand-off: asking the daemon to become \(binary.path, privacy: .public)")
-    Task.detached(priority: .userInitiated) {
+    return Task.detached(priority: .userInitiated) {
+      await handOff(binary: binary, socket: socket, delays: delays)
+    }
+  }
+
+  /// This launch's hand-off, and the move again while one the daemon refused for now
+  /// (`isTransient`) is still needed (`mustMove`), after each of `delays`. Returns what each attempt
+  /// said, each also logged.
+  static func handOff(binary: URL, socket: String, delays: [TimeInterval]) async -> [String] {
+    var said: [String] = []
+    for attempt in 0...delays.count {
       let running = runningExecutable(socket: socket)
       let force = mustMove(running: running, to: binary)
       if force {
@@ -56,27 +77,48 @@ enum DaemonHandOff {
           "daemon hand-off: the daemon runs \(running ?? "?", privacy: .public), so it is moved")
       }
       let result = run(binary: binary, socket: socket, force: force)
+      said.append(result)
       logger.notice("daemon hand-off: \(result, privacy: .public)")
+      guard force, isTransient(result), attempt < delays.count else { break }
+      logger.notice("daemon hand-off: trying the move again in \(delays[attempt])s")
+      try? await Task.sleep(for: .seconds(delays[attempt]))
     }
+    return said
   }
 
-  /// Whether the daemon must be handed off even when it is this binary's daemon build already: it
-  /// runs from another path than `binary`'s. The daemon runs its own path again for every run
-  /// session (`run-supervisor`), and for the hand-off check, so a daemon left on a path the app no
-  /// longer has can't start one. The first launch after the swap (#681) is that: the daemon was
-  /// `Contents/MacOS/workroomd`, which the update took away, and is now `Contents/Resources/workroom`
-  /// (ADR 0078), and the two can be the same daemon build. So can an app moved to another folder.
+  /// Whether a hand-off was refused only for now: a repository command, a stuck mount or a session
+  /// ending or repainting held it up (`handoff.rs`: each says "try again when it…"), another one was
+  /// in progress, the daemon did not greet (92), or no answer came in `timeout`.
+  static func isTransient(_ result: String) -> Bool {
+    result.hasPrefix("exit 92:") || result.contains("try again when it")
+      || result.contains("another hand-off is in progress")
+      || result == SessionBackendProbe.ProbeError.timedOut(timeout).localizedDescription
+  }
+
+  /// Whether the daemon must be handed off even when it is this binary's daemon build already. The
+  /// daemon starts its run sessions from its own copy of itself (`own_copy.rs`), so a path the app
+  /// no longer has costs it nothing there; what it still needs its file for is to be checked, and
+  /// to be told apart from another build. So: when the file it was started from is gone, as the
+  /// swap (#681) took `Contents/MacOS/workroomd` away, or holds another daemon build than
+  /// `binary`. Not merely another path: a second copy of the app, or one App Translocation runs from
+  /// elsewhere, would otherwise move it on every launch.
   ///
-  /// The path is the one the daemon was exec'd with (`runningExecutable`), which a Sparkle update
-  /// replacing the file at the same path leaves equal: an update that changed CLI commands alone
+  /// The path is the one the daemon was exec'd with (`runningExecutable`). A Sparkle update
+  /// replacing the file at that path leaves it there, so an update that changed CLI commands alone
   /// still finds the daemon `current` (#680). A path that can't be read moves nothing: the daemon
   /// build decides, as before.
   static func mustMove(running: String?, to binary: URL) -> Bool {
     guard let running, !running.isEmpty else { return false }
     let ours = binary.standardizedFileURL
     let theirs = URL(fileURLWithPath: running).standardizedFileURL
-    return theirs.path != ours.path
-      && theirs.resolvingSymlinksInPath().path != ours.resolvingSymlinksInPath().path
+    if theirs.path == ours.path
+      || theirs.resolvingSymlinksInPath().path == ours.resolvingSymlinksInPath().path
+    {
+      return false
+    }
+    guard let found = try? Data(contentsOf: theirs, options: .alwaysMapped) else { return true }
+    guard let bundled = try? Data(contentsOf: ours, options: .alwaysMapped) else { return false }
+    return DaemonBootstrap.daemonBuild(in: found) != DaemonBootstrap.daemonBuild(in: bundled)
   }
 
   /// The path the daemon on `socket` was exec'd with: its pid from the connection
