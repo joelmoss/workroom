@@ -1,7 +1,7 @@
 use super::*;
 
 const LEGACY: Modes = Modes {
-    kitty_flags: 0,
+    kitty_keyboard_flags: 0,
     application_cursor_keys: false,
     bracketed_paste: false,
 };
@@ -13,7 +13,7 @@ const APPLICATION: Modes = Modes {
 
 const fn kitty(flags: u32) -> Modes {
     Modes {
-        kitty_flags: flags,
+        kitty_keyboard_flags: flags,
         ..LEGACY
     }
 }
@@ -188,7 +188,7 @@ fn legacy_modified_enter_tab_escape_and_backspace_are_ghosttys() {
 fn kitty_flags_disambiguate_keys_as_csi_u() {
     let one = kitty(0b1);
     let decckm = Modes {
-        kitty_flags: 0b1,
+        kitty_keyboard_flags: 0b1,
         ..APPLICATION
     };
     check(&[

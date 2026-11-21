@@ -3911,7 +3911,7 @@ fn send_types_text_and_keys_for_the_programs_modes_and_names_its_sender() {
     if has_terminal_state() {
         let modes = |kitty: u32, cursor: bool, paste: bool| {
             json!({
-                "kitty_flags": kitty,
+                "kitty_keyboard_flags": kitty,
                 "application_cursor_keys": cursor,
                 "bracketed_paste": paste,
             })
