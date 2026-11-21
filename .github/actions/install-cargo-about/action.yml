@@ -1,0 +1,31 @@
+name: Install cargo-about
+description: >-
+  Install the pinned cargo-about, which reads the workroom binary's crate licences for its
+  third-party notices (`make notices-check`, #714). The version is mk/notices.mk's
+  CARGO_ABOUT_VERSION (scripts/ci/test_tool_pins.py).
+
+inputs:
+  version:
+    description: cargo-about release
+    default: "0.9.3"
+
+runs:
+  using: composite
+  steps:
+    # `cargo install` compiles cargo-about from source (~1 minute). The binary is all that is
+    # installed, so cache it on the pinned version. Nothing this job builds is published.
+    - name: Cache cargo-about
+      id: cargo-about
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cargo/bin/cargo-about
+        key: cargo-about-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}
+
+    # `--force`, as in install-cargo-zigbuild: a restored ~/.cargo/bin can hold another version
+    # without cargo's install record. `cli` is the feature that builds the binary.
+    - name: Install cargo-about
+      if: steps.cargo-about.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: cargo install cargo-about --locked --force --features cli --version "$VERSION"

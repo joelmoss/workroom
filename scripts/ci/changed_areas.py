@@ -34,6 +34,7 @@ RULES = (
     ((".github/actions/setup-daemon-build/*",), {"app", "scripts"}),
     ((".github/actions/install-zig/*", ".github/actions/install-cargo-zigbuild/*"),
      {"rust", "app", "scripts"}),
+    ((".github/actions/install-cargo-about/*",), {"rust"}),
     # No pull request runs these, but test-invariants_test.sh (app-scripts) checks that both still
     # run the app's tests.
     ((".github/workflows/release.yml", ".github/workflows/nightly.yml"), {"scripts"}),
@@ -47,8 +48,21 @@ RULES = (
     # Only the macOS jobs run `make` (the cli and Rust jobs call go and cargo directly), and every
     # make parses every mk file: a setting in any of them reaches the app targets, and
     # test-invariants_test.sh (app-scripts) reads every file make reads.
+    # The rust job runs `make notices-check` from this one.
+    (("mk/notices.mk",), {"rust", "packages", "app", "scripts"}),
     (("Makefile", "mk/*"), {"packages", "app", "scripts"}),
     ((".github/*",), ALL),
+    # What the rust job's notices check reads (#714): its inputs and the app's copy, and the
+    # version lines components.json pins. Each also runs the jobs its own tree does.
+    (("third-party/*", "scripts/third_party_notices.py"), {"rust"}),
+    (("macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
+      "macapp/Resources/THIRD-PARTY-NOTICES.txt", "macapp/Resources/markdown/VENDOR.md",
+      "macapp/Resources/ghostty/themes/SOURCE.md", "macapp/Resources/ghostty/themes/LICENSE"),
+     {"rust", "app", "scripts"}),
+    (("macapp/Packages/TreeSitter/VENDOR.md", "macapp/Packages/TreeSitter/lib/LICENSE",
+      "macapp/Packages/SyntaxHighlighting/Grammars/*/VENDOR.md",
+      "macapp/Packages/SyntaxHighlighting/Grammars/*/LICENSE"),
+     {"rust", "packages", "app", "scripts"}),
     # The shared fixture tables, each with the jobs whose tests read it. The tables a Rust unit
     # test include_str!s count the app too: its macOS `cargo test --lib` compiles those tests.
     (("testdata/contracts/frames.tsv",), {"rust", "packages"}),

@@ -32,6 +32,7 @@ Run commands from the repository root; `make` lists available targets.
 - `make cli-lint`: run golangci-lint v2 and check gofmt/goimports formatting.
 - `make vcs-test`: run CI's Rust tests on its pinned toolchain: the whole `vcs/` workspace, then `workroomd` with `terminal-state` (in its own target dir, `vcs/target/terminal-state`). Narrow both with `VCS_TEST_FLAGS="-p workroom --test <name>"`. No `PATH` changes needed.
 - `make vcs-lint`: run rustfmt, clippy and `cargo doc -D warnings` over the `vcs/` Rust workspace, with and without `terminal-state`, on CI's Rust 1.99.1. For Linux-only code from a Mac, use `make vcs-lint-linux` (container prerequisites in `CONTRIBUTING.md`).
+- `make notices`, `make notices-check`: regenerate, or check, the third-party notices the binary embeds and the app bundles, after a change to `Cargo.lock`, a Swift package or a vendored dependency (`docs/contributing/releasing.md`). Needs the pinned cargo-about.
 - `make actions-lint`: lint `.github/workflows`, the composite actions and `dependabot.yml` with jactionlint, shellcheck included.
 - `make pre-push`: before every push, run CI's cheap gates (scripts, docs, Go, Rust on macOS and Linux, Swift lint and packages) and get one summary. It says when the branch is behind `origin/master`; merge that first, since CI tests the merge.
 

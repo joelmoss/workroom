@@ -1,0 +1,504 @@
+{
+  "_comment": "The third-party code Workroom ships that is not a Rust crate (the crates come from cargo-about; see scripts/third_party_notices.py). `ships` is `workroom` for what the workroom binary links (so the app bundle ships it too) and `app` for what only the app bundle ships. `pin` ties an entry to the line in the repo that decides its version: when that line changes, `make notices-check` fails until the entry (and its licence files, copied from the new version) is updated. `swiftpm` ties one to its Package.resolved pin the same way. `review` marks a copyleft licence the owner has to decide on; the entry still ships its licence text.",
+  "components": [
+    {
+      "id": "cobra-completions",
+      "name": "cobra shell completion scripts",
+      "version": "1.10.2",
+      "license": "Apache-2.0",
+      "source": "https://github.com/spf13/cobra/tree/v1.10.2",
+      "ships": "workroom",
+      "copyright": "Copyright 2013-2023 The Cobra Authors",
+      "note": "The bash, zsh, fish and PowerShell scripts `workroom completion` prints are cobra's, generated for `workroom`. Cobra has no NOTICE file.",
+      "files": ["vcs/crates/workroomd/src/commands/completion/LICENSE"],
+      "pin": {"file": "vcs/crates/workroomd/src/commands/completion.rs", "pattern": "cobra \\(v([0-9.]+)\\)", "value": "1.10.2"}
+    },
+    {
+      "id": "ghostty",
+      "name": "Ghostty (libghostty-vt in the workroom binary; libghostty, its terminfo and shell integration in the app)",
+      "version": "ea8b12a8a",
+      "license": "MIT",
+      "source": "https://github.com/ghostty-org/ghostty/tree/ea8b12a8a",
+      "ships": "workroom",
+      "files": ["third-party/licenses/ghostty/LICENSE"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "highway",
+      "name": "Highway (in libghostty)",
+      "version": "1.2.0",
+      "license": "BSD-3-Clause",
+      "offered": "Apache-2.0 OR BSD-3-Clause",
+      "source": "https://github.com/google/highway/tree/66486a10623fa0d72fe91260f96c892e41aceb06",
+      "ships": "workroom",
+      "files": ["third-party/licenses/highway/LICENSE-BSD3"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "simdutf",
+      "name": "simdutf (in libghostty)",
+      "version": "9.0.0",
+      "license": "MIT",
+      "offered": "Apache-2.0 OR MIT",
+      "source": "https://github.com/simdutf/simdutf",
+      "ships": "workroom",
+      "files": ["third-party/licenses/simdutf/LICENSE-MIT"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "uucode",
+      "name": "uucode (in libghostty)",
+      "version": "0.2.0 (1fb73433)",
+      "license": "MIT AND Unicode-3.0",
+      "source": "https://github.com/jacobsandlund/uucode/tree/1fb73433bba5d93366c57f23ff2e9d7939746500",
+      "ships": "workroom",
+      "files": ["third-party/licenses/uucode/LICENSE.md"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "wuffs",
+      "name": "Wuffs (in libghostty)",
+      "version": "0.4.0-alpha.10",
+      "license": "MIT",
+      "offered": "Apache-2.0 OR MIT",
+      "source": "https://github.com/google/wuffs/tree/7411f488fe2e2c205c3d3b3d28638b7356522930",
+      "ships": "workroom",
+      "files": ["third-party/licenses/wuffs/LICENSE-MIT"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "translate-c",
+      "name": "translate-c (in libghostty)",
+      "version": "2.0.0",
+      "license": "MIT",
+      "source": "https://github.com/ziglang/translate-c/tree/02ff0c523fb92a38939b04d0145c4a9602a74d56",
+      "ships": "workroom",
+      "files": ["third-party/licenses/translate-c/LICENSE"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "zig",
+      "name": "Zig standard library and compiler-rt (in libghostty)",
+      "version": "0.17.1",
+      "license": "MIT",
+      "source": "https://github.com/ziglang/zig/tree/0.17.1",
+      "ships": "workroom",
+      "files": ["third-party/licenses/zig/LICENSE"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "ZIG_VERSION=\"([^\"]+)\"", "value": "0.17.1"}
+    },
+    {
+      "id": "musl",
+      "name": "musl libc (statically linked into the Linux builds of the workroom binary)",
+      "version": "as shipped with Rust's musl targets",
+      "license": "MIT",
+      "source": "https://musl.libc.org",
+      "ships": "workroom",
+      "files": ["third-party/licenses/musl/COPYRIGHT"]
+    },
+    {
+      "id": "rust-std",
+      "name": "The Rust standard library",
+      "version": "the stable Rust the release is built with",
+      "license": "MIT",
+      "offered": "Apache-2.0 OR MIT",
+      "source": "https://github.com/rust-lang/rust",
+      "ships": "workroom",
+      "note": "The notices of the standard library's own dependencies are in COPYRIGHT-library.html in each Rust release, under share/doc/rust.",
+      "files": ["third-party/licenses/rust-std/LICENSE-MIT"]
+    },
+    {
+      "id": "freetype",
+      "name": "FreeType (in libghostty)",
+      "version": "2.13.2",
+      "license": "FTL",
+      "offered": "FTL OR GPL-2.0-or-later",
+      "source": "https://freetype.org",
+      "ships": "app",
+      "copyright": "Portions of this software are copyright (c) 2023 The FreeType Project (www.freetype.org). All rights reserved.",
+      "files": ["third-party/licenses/freetype/LICENSE.TXT", "third-party/licenses/freetype/FTL.TXT"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "libpng",
+      "name": "libpng (in libghostty)",
+      "version": "1.6.43",
+      "license": "libpng-2.0",
+      "source": "http://www.libpng.org/pub/png/libpng.html",
+      "ships": "app",
+      "files": ["third-party/licenses/libpng/LICENSE"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "zlib",
+      "name": "zlib (in libghostty)",
+      "version": "1.3.1",
+      "license": "Zlib",
+      "source": "https://zlib.net",
+      "ships": "app",
+      "files": ["third-party/licenses/zlib/LICENSE"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "oniguruma",
+      "name": "Oniguruma (in libghostty)",
+      "version": "6.9.9",
+      "license": "BSD-2-Clause",
+      "source": "https://github.com/kkos/oniguruma",
+      "ships": "app",
+      "files": ["third-party/licenses/oniguruma/COPYING"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "glslang",
+      "name": "glslang (in libghostty)",
+      "version": "14.2.0",
+      "license": "BSD-3-Clause AND BSD-2-Clause AND MIT AND Apache-2.0",
+      "source": "https://github.com/KhronosGroup/glslang",
+      "ships": "app",
+      "files": ["third-party/licenses/glslang/LICENSE.txt"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "spirv-cross",
+      "name": "SPIRV-Cross (in libghostty)",
+      "version": "13.1.1",
+      "license": "Apache-2.0 AND LicenseRef-KhronosFreeUse",
+      "source": "https://github.com/KhronosGroup/SPIRV-Cross",
+      "ships": "app",
+      "note": "SPIRV-Cross has no NOTICE file.",
+      "files": ["third-party/licenses/spirv-cross/LICENSE", "third-party/licenses/spirv-cross/LicenseRef-KhronosFreeUse.txt"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "sentry-native",
+      "name": "sentry-native (in libghostty)",
+      "version": "0.7.8",
+      "license": "MIT",
+      "source": "https://github.com/getsentry/sentry-native",
+      "ships": "app",
+      "files": ["third-party/licenses/sentry-native/LICENSE"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "breakpad",
+      "name": "Breakpad (in libghostty)",
+      "version": "b99f444b",
+      "license": "BSD-3-Clause",
+      "source": "https://chromium.googlesource.com/breakpad/breakpad",
+      "ships": "app",
+      "note": "Breakpad's licence file also covers build scripts that are not compiled into Workroom.",
+      "files": ["third-party/licenses/breakpad/LICENSE"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "imgui",
+      "name": "Dear ImGui and its C bindings (in libghostty)",
+      "version": "1.92.5-docking",
+      "license": "MIT",
+      "source": "https://github.com/ocornut/imgui",
+      "ships": "app",
+      "files": ["third-party/licenses/imgui/LICENSE.txt"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "stb",
+      "name": "stb_image and stb_image_resize (in libghostty)",
+      "version": "as vendored by Ghostty",
+      "license": "MIT",
+      "offered": "MIT OR Unlicense",
+      "source": "https://github.com/nothings/stb",
+      "ships": "app",
+      "files": ["third-party/licenses/stb/LICENSE"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "libxev",
+      "name": "libxev (in libghostty)",
+      "version": "819ffa18",
+      "license": "MIT",
+      "source": "https://github.com/mitchellh/libxev/tree/819ffa180ca20e31c7eded74e2e1aceb1eab557f",
+      "ships": "app",
+      "files": ["third-party/licenses/libxev/LICENSE"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "zig-objc",
+      "name": "zig-objc (in libghostty)",
+      "version": "3352c12a",
+      "license": "MIT",
+      "source": "https://github.com/mitchellh/zig-objc/tree/3352c12a868f8787ab71bf2ca6eab9fcfb635c52",
+      "ships": "app",
+      "files": ["third-party/licenses/zig-objc/LICENSE"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "vaxis",
+      "name": "libvaxis (in libghostty)",
+      "version": "0620b34e",
+      "license": "MIT",
+      "source": "https://github.com/rockorager/libvaxis/tree/0620b34e091deaa6f64608922be3814147128dfb",
+      "ships": "app",
+      "files": ["third-party/licenses/vaxis/LICENSE"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "zigimg",
+      "name": "zigimg (in libghostty)",
+      "version": "734fa919",
+      "license": "MIT",
+      "source": "https://github.com/zigimg/zigimg/tree/734fa919fb15b7917d4eb124f53600348f4ffa30",
+      "ships": "app",
+      "files": ["third-party/licenses/zigimg/LICENSE"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "zf",
+      "name": "zf (in libghostty)",
+      "version": "0.11.0",
+      "license": "MIT",
+      "source": "https://github.com/natecraddock/zf/tree/87153bb86b75d21fbac897b738f316d449f5d0c9",
+      "ships": "app",
+      "files": ["third-party/licenses/zf/LICENSE"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "z2d",
+      "name": "z2d (in libghostty)",
+      "version": "0.13.2",
+      "license": "MPL-2.0",
+      "source": "https://github.com/vancluever/z2d/tree/8787d71bac42d9aab00428ccb37a4fd453418761",
+      "ships": "app",
+      "note": "Its Source Code Form, unmodified, is available at the source above (MPL-2.0 section 3.2).",
+      "files": ["third-party/licenses/z2d/LICENSE", "third-party/licenses/z2d/COPYING"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "jetbrains-mono",
+      "name": "JetBrains Mono font (embedded in libghostty)",
+      "version": "2.304",
+      "license": "OFL-1.1",
+      "source": "https://github.com/JetBrains/JetBrainsMono",
+      "ships": "app",
+      "copyright": "Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)",
+      "files": ["third-party/licenses/jetbrains-mono/OFL.txt", "third-party/licenses/jetbrains-mono/AUTHORS.txt"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "nerd-fonts-symbols",
+      "name": "Symbols Nerd Font (embedded in libghostty)",
+      "version": "3.4.0",
+      "license": "MIT AND OFL-1.1",
+      "source": "https://github.com/ryanoasis/nerd-fonts",
+      "ships": "app",
+      "files": ["third-party/licenses/nerd-fonts-symbols/LICENSE"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "ghostty-fonts",
+      "name": "Inconsolata and Kawkab Mono fonts (embedded in libghostty)",
+      "version": "as vendored by Ghostty",
+      "license": "OFL-1.1",
+      "source": "https://github.com/ghostty-org/ghostty/tree/ea8b12a8a/src/font/res",
+      "ships": "app",
+      "copyright": "Inconsolata: Copyright 2006 The Inconsolata Project Authors (https://github.com/cyrealtype/Inconsolata)\nKawkab Mono: Copyright (c) 2015, Abdullah Arif (abdullah.a@gmail.com). Copyright 2010, 2012, 2014 Adobe Systems Incorporated (http://www.adobe.com/), with Reserved Font Name 'Source'.",
+      "note": "README.md is Ghostty's list of the fonts in that directory and their copyright holders.",
+      "files": ["third-party/licenses/ghostty-fonts/OFL.txt", "third-party/licenses/ghostty-fonts/README.md"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "ghostty-shell-integration-kitty",
+      "name": "Ghostty's bash and zsh shell integration (Contents/Resources/ghostty/shell-integration), based on Kitty's",
+      "version": "ea8b12a8a",
+      "license": "GPL-3.0-or-later",
+      "source": "https://github.com/ghostty-org/ghostty/tree/ea8b12a8a/src/shell-integration",
+      "ships": "app",
+      "note": "These scripts ship as source, with their licence headers, in Contents/Resources/ghostty/shell-integration.",
+      "review": "GPL-3.0-or-later scripts in the bundle, also pushed to remote hosts.",
+      "files": ["third-party/licenses/gpl-3.0/COPYING"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "bash-preexec",
+      "name": "bash-preexec (in Ghostty's bash shell integration)",
+      "version": "as vendored by Ghostty",
+      "license": "MIT",
+      "source": "https://github.com/rcaloras/bash-preexec",
+      "ships": "app",
+      "files": ["third-party/licenses/bash-preexec/LICENSE.md"],
+      "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
+    },
+    {
+      "id": "iterm2-color-schemes",
+      "name": "iTerm2-Color-Schemes (the terminal themes)",
+      "version": "0173c3cc",
+      "license": "MIT",
+      "source": "https://github.com/mbadolato/iTerm2-Color-Schemes/tree/0173c3cc154aab5d43b03241286d32372a87dec6",
+      "ships": "app",
+      "files": ["macapp/Resources/ghostty/themes/LICENSE"],
+      "pin": {"file": "macapp/Resources/ghostty/themes/SOURCE.md", "pattern": "iTerm2-Color-Schemes@([0-9a-f]+)", "value": "0173c3cc154aab5d43b03241286d32372a87dec6"}
+    },
+    {
+      "id": "libgit2",
+      "name": "libgit2",
+      "version": "1.9.2",
+      "license": "GPL-2.0-only WITH LicenseRef-libgit2-linking-exception",
+      "source": "https://github.com/ibrahimcetin/libgit2/tree/1.9.2",
+      "ships": "app",
+      "swiftpm": {"identity": "libgit2", "revision": "52287b0914f300f916b58fec80e13d8dd8f6824f"},
+      "note": "COPYING is libgit2's whole licence file: the linking exception, and the terms of the code it bundles.",
+      "review": "libgit2 is GPL-2.0 with its linking exception, and its bundled xdiff (deps/xdiff, statically linked) is LGPL-2.1-or-later.",
+      "files": ["third-party/licenses/libgit2/COPYING"]
+    },
+    {
+      "id": "swiftgitx",
+      "name": "SwiftGitX",
+      "version": "0.4.0",
+      "license": "MIT",
+      "source": "https://github.com/ibrahimcetin/SwiftGitX/tree/0.4.0",
+      "ships": "app",
+      "swiftpm": {"identity": "swiftgitx", "revision": "fcfb71e3dcbbaa70d120b98b7477ce173074aec3"},
+      "files": ["third-party/licenses/swiftgitx/LICENSE"]
+    },
+    {
+      "id": "sparkle",
+      "name": "Sparkle",
+      "version": "2.10.1",
+      "license": "MIT",
+      "source": "https://github.com/sparkle-project/Sparkle/tree/2.10.1",
+      "ships": "app",
+      "swiftpm": {"identity": "sparkle", "revision": "ab7d71291238df6e0492143b120c9b696a35f603"},
+      "note": "Sparkle's licence file also carries the terms of the code it bundles.",
+      "files": ["third-party/licenses/sparkle/LICENSE"]
+    },
+    {
+      "id": "sentry-cocoa",
+      "name": "Sentry Cocoa SDK",
+      "version": "9.33.0",
+      "license": "MIT",
+      "source": "https://github.com/getsentry/sentry-cocoa/tree/9.33.0",
+      "ships": "app",
+      "swiftpm": {"identity": "sentry-cocoa", "revision": "8cdf0fe8124d9daae8524f15c169c558a84ddacd"},
+      "files": ["third-party/licenses/sentry-cocoa/LICENSE.md", "third-party/licenses/sentry-cocoa/THIRD_PARTY_NOTICES.md"]
+    },
+    {
+      "id": "defaults",
+      "name": "Defaults",
+      "version": "9.0.9",
+      "license": "MIT",
+      "source": "https://github.com/sindresorhus/Defaults/tree/v9.0.9",
+      "ships": "app",
+      "swiftpm": {"identity": "defaults", "revision": "00a7465a0668a87fa159e779b9d80f1f9652357e"},
+      "files": ["third-party/licenses/defaults/LICENSE"]
+    },
+    {
+      "id": "tree-sitter",
+      "name": "tree-sitter",
+      "version": "v0.27.2",
+      "license": "MIT",
+      "source": "https://github.com/tree-sitter/tree-sitter/tree/v0.27.2",
+      "ships": "app",
+      "files": ["macapp/Packages/TreeSitter/lib/LICENSE"],
+      "pin": {"file": "macapp/Packages/TreeSitter/VENDOR.md", "pattern": "Version: `([^`]+)`", "value": "v0.27.2"}
+    },
+    {
+      "id": "tree-sitter-css",
+      "name": "tree-sitter-css",
+      "version": "v0.25.0",
+      "license": "MIT",
+      "source": "https://github.com/tree-sitter/tree-sitter-css/tree/v0.25.0",
+      "ships": "app",
+      "files": ["macapp/Packages/SyntaxHighlighting/Grammars/tree-sitter-css/LICENSE"],
+      "pin": {"file": "macapp/Packages/SyntaxHighlighting/Grammars/tree-sitter-css/VENDOR.md", "pattern": "Version: `([^`]+)`", "value": "v0.25.0"}
+    },
+    {
+      "id": "tree-sitter-javascript",
+      "name": "tree-sitter-javascript",
+      "version": "v0.25.0",
+      "license": "MIT",
+      "source": "https://github.com/tree-sitter/tree-sitter-javascript/tree/v0.25.0",
+      "ships": "app",
+      "files": ["macapp/Packages/SyntaxHighlighting/Grammars/tree-sitter-javascript/LICENSE"],
+      "pin": {"file": "macapp/Packages/SyntaxHighlighting/Grammars/tree-sitter-javascript/VENDOR.md", "pattern": "Version: `([^`]+)`", "value": "v0.25.0"}
+    },
+    {
+      "id": "tree-sitter-python",
+      "name": "tree-sitter-python",
+      "version": "v0.25.0",
+      "license": "MIT",
+      "source": "https://github.com/tree-sitter/tree-sitter-python/tree/v0.25.0",
+      "ships": "app",
+      "files": ["macapp/Packages/SyntaxHighlighting/Grammars/tree-sitter-python/LICENSE"],
+      "pin": {"file": "macapp/Packages/SyntaxHighlighting/Grammars/tree-sitter-python/VENDOR.md", "pattern": "Version: `([^`]+)`", "value": "v0.25.0"}
+    },
+    {
+      "id": "tree-sitter-yaml",
+      "name": "tree-sitter-yaml",
+      "version": "v0.7.2",
+      "license": "MIT",
+      "source": "https://github.com/tree-sitter-grammars/tree-sitter-yaml/tree/v0.7.2",
+      "ships": "app",
+      "files": ["macapp/Packages/SyntaxHighlighting/Grammars/tree-sitter-yaml/LICENSE"],
+      "pin": {"file": "macapp/Packages/SyntaxHighlighting/Grammars/tree-sitter-yaml/VENDOR.md", "pattern": "Version: `([^`]+)`", "value": "v0.7.2"}
+    },
+    {"id": "tree-sitter-bash", "name": "tree-sitter-bash", "version": "a06c2e44", "license": "MIT", "source": "https://github.com/tree-sitter/tree-sitter-bash", "ships": "app", "swiftpm": {"identity": "tree-sitter-bash", "revision": "a06c2e4415e9bc0346c6b86d401879ffb44058f7"}, "files": ["third-party/licenses/tree-sitter-bash/LICENSE"]},
+    {"id": "tree-sitter-go", "name": "tree-sitter-go", "version": "2346a3ab", "license": "MIT", "source": "https://github.com/tree-sitter/tree-sitter-go", "ships": "app", "swiftpm": {"identity": "tree-sitter-go", "revision": "2346a3ab1bb3857b48b29d779a1ef9799a248cd7"}, "files": ["third-party/licenses/tree-sitter-go/LICENSE"]},
+    {"id": "tree-sitter-html", "name": "tree-sitter-html", "version": "73a39473", "license": "MIT", "source": "https://github.com/tree-sitter/tree-sitter-html", "ships": "app", "swiftpm": {"identity": "tree-sitter-html", "revision": "73a3947324f6efddf9e17c0ea58d454843590cc0"}, "files": ["third-party/licenses/tree-sitter-html/LICENSE"]},
+    {"id": "tree-sitter-json", "name": "tree-sitter-json", "version": "001c28d7", "license": "MIT", "source": "https://github.com/tree-sitter/tree-sitter-json", "ships": "app", "swiftpm": {"identity": "tree-sitter-json", "revision": "001c28d7a29832b06b0e831ec77845553c89b56d"}, "files": ["third-party/licenses/tree-sitter-json/LICENSE"]},
+    {"id": "tree-sitter-markdown", "name": "tree-sitter-markdown", "version": "41ff24a6", "license": "MIT", "source": "https://github.com/tree-sitter-grammars/tree-sitter-markdown", "ships": "app", "swiftpm": {"identity": "tree-sitter-markdown", "revision": "41ff24a6c775492c543b09228aeb98d1cd2b3a0f"}, "files": ["third-party/licenses/tree-sitter-markdown/LICENSE"]},
+    {"id": "tree-sitter-ruby", "name": "tree-sitter-ruby", "version": "ad907a69", "license": "MIT", "source": "https://github.com/tree-sitter/tree-sitter-ruby", "ships": "app", "swiftpm": {"identity": "tree-sitter-ruby", "revision": "ad907a69da0c8a4f7a943a7fe012712208da6dee"}, "files": ["third-party/licenses/tree-sitter-ruby/LICENSE"]},
+    {"id": "tree-sitter-sql", "name": "tree-sitter-sql", "version": "2d088525", "license": "MIT", "source": "https://github.com/DerekStride/tree-sitter-sql", "ships": "app", "swiftpm": {"identity": "tree-sitter-sql", "revision": "2d088525f3f986108d969dab526a0d7129281e24"}, "files": ["third-party/licenses/tree-sitter-sql/LICENSE"]},
+    {"id": "tree-sitter-swift", "name": "tree-sitter-swift", "version": "82bb3a53", "license": "MIT", "source": "https://github.com/alex-pinkus/tree-sitter-swift", "ships": "app", "swiftpm": {"identity": "tree-sitter-swift", "revision": "82bb3a533e0801fd2bbaa11dc49676e10bf41948"}, "files": ["third-party/licenses/tree-sitter-swift/LICENSE"]},
+    {"id": "tree-sitter-toml", "name": "tree-sitter-toml", "version": "64b56832", "license": "MIT", "source": "https://github.com/tree-sitter-grammars/tree-sitter-toml", "ships": "app", "swiftpm": {"identity": "tree-sitter-toml", "revision": "64b56832c2cffe41758f28e05c756a3a98d16f41"}, "files": ["third-party/licenses/tree-sitter-toml/LICENSE"]},
+    {"id": "tree-sitter-typescript", "name": "tree-sitter-typescript", "version": "75b3874e", "license": "MIT", "source": "https://github.com/tree-sitter/tree-sitter-typescript", "ships": "app", "swiftpm": {"identity": "tree-sitter-typescript", "revision": "75b3874edb2dc714fb1fd77a32013d0f8699989f"}, "files": ["third-party/licenses/tree-sitter-typescript/LICENSE"]},
+    {
+      "id": "dompurify",
+      "name": "DOMPurify (Markdown preview)",
+      "version": "3.4.11",
+      "license": "Apache-2.0",
+      "offered": "MPL-2.0 OR Apache-2.0",
+      "source": "https://github.com/cure53/DOMPurify/tree/3.4.11",
+      "ships": "app",
+      "copyright": "Copyright (c) Cure53 and other contributors",
+      "note": "DOMPurify has no NOTICE file.",
+      "files": ["third-party/licenses/dompurify/LICENSE"],
+      "pin": {"file": "macapp/Resources/markdown/VENDOR.md", "pattern": "\\| `dompurify\\.min\\.js` \\| dompurify \\| ([^ ]+) \\|", "value": "3.4.11"}
+    },
+    {
+      "id": "marked",
+      "name": "marked (Markdown preview)",
+      "version": "18.0.5",
+      "license": "MIT AND BSD-3-Clause",
+      "source": "https://github.com/markedjs/marked/tree/v18.0.5",
+      "ships": "app",
+      "files": ["third-party/licenses/marked/LICENSE"],
+      "pin": {"file": "macapp/Resources/markdown/VENDOR.md", "pattern": "\\| `marked\\.min\\.js` \\| marked \\| ([^ ]+) \\|", "value": "18.0.5"}
+    },
+    {
+      "id": "pele",
+      "name": "Pele (Markdown preview diagrams)",
+      "version": "1.8.0",
+      "license": "MIT",
+      "source": "https://github.com/obsidianmd/pele/tree/1.8.0",
+      "ships": "app",
+      "files": ["third-party/licenses/pele/LICENSE"],
+      "pin": {"file": "macapp/Resources/markdown/VENDOR.md", "pattern": "\\| `pele\\.global\\.js` \\| pele \\| ([^ ]+) \\|", "value": "1.8.0"}
+    }
+  ],
+  "crate_supplements": {
+    "_comment": "Licence files for crates published without one: cargo-about would fall back to the bare licence text, with no copyright line. The copyright is the crate's repository's.",
+    "objc2-core-foundation": ["third-party/licenses/objc2/LICENSE-MIT"],
+    "objc2-core-services": ["third-party/licenses/objc2/LICENSE-MIT"]
+  },
+  "not_shipped": {
+    "_comment": "Pins and packages that look shipped but are not, and why. The check requires every Package.resolved pin to be a component or listed here.",
+    "swiftpm": {
+      "swift-syntax": "Only Defaults' macro plugin uses it, at build time; nothing of it is linked into the app."
+    },
+    "other": {
+      "libintl (GNU gettext 0.24, LGPL-2.1-or-later)": "In GhosttyKit's static archive, but nothing references it with i18n off, so the linker leaves it out of the app (checked with nm).",
+      "the Go workroom CLI and its modules": "Its notices go with Go at #682.",
+      "aro, and the Zig packages Ghostty lists for other platforms or builds": "Build tools, or not linked into the macOS app.",
+      "Rust build and dev dependencies (bindgen, cc, and the like)": "Build tools; cargo-about ignores them."
+    }
+  }
+}
