@@ -588,6 +588,23 @@ final class SidebarInvalidationTests: XCTestCase {
     XCTAssertEqual(SidebarRowPasses.terminalTitles[f.tabA], "two", "the row shows its new title")
   }
 
+  /// A shell's `cd` (OSC 7) with no live title of its own moves its default title's folder, which
+  /// shows on its row (#664 review).
+  func testATerminalsFolderChangeShowsOnItsRow() async throws {
+    let f = try fixture()
+    defer { close(f) }
+    _ = f.store.terminals.addTab(for: f.a.rootTarget)
+    f.store.toggleTerminals(for: f.a.rootTarget.id)
+    try await render(f)
+    let folder = f.folder.appendingPathComponent("b").path
+
+    f.surfaceA.handlePwd(folder)
+    try await render(f)
+
+    let title = try XCTUnwrap(SidebarRowPasses.terminalTitles[f.tabA])
+    XCTAssertTrue(title.hasSuffix(" \(folder)"), "the row shows the new folder, not \(title)")
+  }
+
   // MARK: Terminals section
 
   /// A standalone terminal's agent stopping changes what its row shows (its spinner), and nothing

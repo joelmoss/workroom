@@ -559,9 +559,10 @@ struct SidebarWorkroomRow: View, Equatable {
 struct SidebarTerminalRowModel: Equatable {
   /// Where a row's title is read from, comparable without reading the title: a terminal's
   /// live-title cell by identity with the name the user gave it (which outranks the cell, so a
-  /// rename re-runs the row), a content tab's own title by value.
+  /// rename re-runs the row) and the default title the cell falls back to (its program and folder,
+  /// so a `cd` with no live title re-runs it), a content tab's own title by value.
   enum TitleSource: Equatable {
-    case live(ObjectIdentifier, userTitle: String?)
+    case live(ObjectIdentifier, userTitle: String?, defaultName: TerminalTitle)
     case fixed(String)
   }
 
@@ -655,7 +656,7 @@ struct SidebarTerminalRow: View, Equatable {
   /// Shows the name field, starting from the name the user gave it (empty for none), so keeping
   /// it unchanged never pins the program's title as a name.
   private func beginRename() {
-    if case .live(_, let userTitle) = model.title {
+    if case .live(_, let userTitle, _) = model.title {
       draft = userTitle ?? ""
     } else {
       return
