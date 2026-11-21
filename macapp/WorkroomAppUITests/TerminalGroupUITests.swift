@@ -99,6 +99,29 @@ final class TerminalGroupUITests: XCTestCase {
     XCTAssertFalse(field.exists, "the field closes")
   }
 
+  /// A group's terminal row offers Rename… and Move to… as its tab does (stories 28, 41), and
+  /// renaming from the row names the terminal on its row.
+  func testATerminalsRowRenamesItAndOffersMoveTo() {
+    let app = launchedApp()
+    let terminals = elements(app, prefix: "sidebar.terminal.")
+    XCTAssertTrue(waitForRows(terminals, 2, timeout: 15), "the group's terminals under its row")
+
+    terminals.element(boundBy: 0).rightClick()
+    XCTAssertNotNil(app.waitForHittableMenuItem(titled: "Move to…"), "its row offers Move to…")
+    let rename = app.waitForHittableMenuItem(titled: "Rename…")
+    XCTAssertNotNil(rename, "its row offers Rename…")
+    rename?.click()
+
+    let field = app.sheets.textFields.firstMatch
+    XCTAssertTrue(field.waitForExistence(timeout: 6), "the rename sheet has a name field")
+    field.typeKey("a", modifierFlags: .command)
+    field.typeText("Build box")
+    app.sheets.buttons["Rename"].click()
+    XCTAssertTrue(
+      element(app, "sidebar.terminal.Build box").waitForExistence(timeout: 6),
+      "the row shows the name the user gave it")
+  }
+
   /// Dragging a row within the Terminals section reorders it.
   func testDraggingARowReordersTheSection() {
     let app = XCUIApplication()

@@ -21,6 +21,12 @@ extension AppStore: TerminalsSectionHolder {
     openTerminal(targetID: targetID, tabID: tab)
   }
 
+  /// Raise this window (or the pane's own, when it is popped out) and focus its terminal `tabID`.
+  func revealTerminal(_ tabID: TerminalTab.ID, inTarget targetID: TargetID) {
+    if let window = window(forTab: tabID) { raiseWindow(window) }
+    openTerminal(targetID: targetID, tabID: tabID)
+  }
+
   /// Slides the Quick Terminal's panel in, with a new terminal in it when `newTerminal`: its row's
   /// click and its New Terminal in Group. The panel is the group's only holder, so no window opens
   /// one of its terminals.

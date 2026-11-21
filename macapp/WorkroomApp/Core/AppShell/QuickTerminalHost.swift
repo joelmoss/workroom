@@ -271,14 +271,23 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
 
   // MARK: PaneHost: the Quick Terminal
 
-  /// "Move to Workroom" for its pane `tabID`, over every workroom open in `windows`.
+  /// "Move to…" for its pane `tabID`, over every workroom open in `windows`. Standalone and the
+  /// groups make or join it in the window in front: the key one, else the last active (this panel
+  /// is key while its menu is open).
   func paneMoveChoices(
     _ tabID: TerminalTab.ID, of target: TerminalTarget,
     windows: [AppStore] = WindowRegistry.shared.allStores
   ) -> [PaneWorkroomGroup] {
+    paneMoveChoices(tabID, of: target, windows: windows, front: WindowRegistry.shared.frontStore)
+  }
+
+  /// The same, with the window in front given: a test's.
+  func paneMoveChoices(
+    _ tabID: TerminalTab.ID, of target: TerminalTarget, windows: [AppStore], front: AppStore?
+  ) -> [PaneWorkroomGroup] {
     PaneMove.choices(
       tabID, of: target, source: terminals, notifications: notifications, windows: windows,
-      quickTerminal: self)
+      front: front, quickTerminal: self)
   }
 
   /// Its panel has no sidebar or title-bar tabs: a pane dragged out of it goes through
@@ -362,6 +371,13 @@ extension QuickTerminalHost: TerminalsSectionHolder {
   func revealTerminals(forTargetID targetID: TargetID) {
     guard targetID == target.id else { return }
     onReveal?(nil)
+  }
+
+  /// Slides the panel in on terminal `tabID`, focused (or brings its own window forward when it is
+  /// popped out): one of its terminals' rows clicked in a window's sidebar, or its waiting mark.
+  func revealTerminal(_ tabID: TerminalTab.ID, inTarget targetID: TargetID) {
+    guard targetID == target.id else { return }
+    onReveal?(tabID)
   }
 
   /// What `session.json` keeps of it: its panes, their split and focus, and where popped-out ones

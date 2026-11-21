@@ -96,9 +96,6 @@ final class AppStore: ObservableObject {
   @ObservationIgnored var paneDropZoneViews: [PaneDropZone: [PaneDropZoneMarker.Box]] = [:]
   /// Whether a tab drag over a zone that refuses it set the "not allowed" pointer.
   @ObservationIgnored var paneDragRefusing = false
-  /// The standalone terminal's row being dragged in this window's sidebar, and the timer that
-  /// follows the pointer while the List's own drag holds the mouse (`rowDragMoved`).
-  @ObservationIgnored var rowDrag: (sid: SidebarID, poll: Timer)?
   /// Each workroom tab's frame within its row (`workroomTabRun`), top-left origin, for working out
   /// where a workroom dragged in from another window lands. A measurement, not state: nothing
   /// renders from it.
@@ -1419,12 +1416,10 @@ final class AppStore: ObservableObject {
   /// Dock a detached pane from anywhere, given only its tab id — the Window-menu path, which runs
   /// while the DETACHED window is key and so has no focused store of its own to act on.
   ///
-  /// Tab ids are unique across windows, so the registry can name the store that owns this one.
+  /// Tab ids are unique across windows, so the registry can name the store that owns this one, or
+  /// the Quick Terminal's panel when the pane was popped out of that.
   static func dockDetachedPane(_ tabID: TerminalTab.ID) {
-    guard let store = WindowRegistry.shared.ownerOf(tabID: tabID),
-      let target = store.targetOwning(tabID)
-    else { return }
-    store.dockPane(tabID, for: target)
+    WindowRegistry.shared.dockDetachedPane(tabID)
   }
 
   /// A pane's own "Move to New Window" / "Move Back to Main Window" (#444): the right-click menus
@@ -2681,6 +2676,11 @@ final class AppStore: ObservableObject {
   /// in the sidebar subtree. Routes through the same `applyLocation` primitive as back/forward and
   /// notification jumps, so the selection + focus land together and record exactly one history entry.
   func revealTerminal(_ tabID: TerminalTab.ID, at sid: SidebarID) {
+    // The Quick Terminal's terminals are its panel's alone: their rows slide it in on one (#652).
+    if sid.targetID == .quickTerminal {
+      terminalsSection.quickTerminalHolder?.revealTerminal(tabID, inTarget: .quickTerminal)
+      return
+    }
     applyLocation(target: sid, tab: tabID, recordHistory: true)
   }
 

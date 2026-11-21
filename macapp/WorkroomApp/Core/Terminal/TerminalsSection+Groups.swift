@@ -16,6 +16,9 @@ struct TerminalGroup: Hashable, Sendable {
   /// A group's symbol on its row and title-bar tab: terminals stacked together.
   static let glyph = "square.on.square"
 
+  /// A standalone terminal's symbol on its row, title-bar tab, picker row and move menu.
+  static let standaloneGlyph = "terminal"
+
   /// What a group is called when it has no name and no terminals to be labelled by.
   static let untitled = "Terminal Group"
 
@@ -247,6 +250,18 @@ extension TerminalsSection {
       }
     default:
       break
+    }
+  }
+}
+
+extension SidebarID {
+  /// The symbol every surface shows for a no-project terminal: `TerminalGroup.standaloneGlyph` or
+  /// `TerminalGroup.glyph`. Nil for a project's target, whose symbol depends on the workroom.
+  var terminalsGlyph: String? {
+    switch self {
+    case .standalone: return TerminalGroup.standaloneGlyph
+    case .terminalGroup: return TerminalGroup.glyph
+    default: return nil
     }
   }
 }

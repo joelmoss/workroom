@@ -192,6 +192,60 @@ final class StandaloneAcrossWindowsTests: XCTestCase {
 
   // MARK: Marks
 
+  /// A group with one terminal in `holder`, attached to a session whose program waits on the user
+  /// as `monitor` reports it, and that terminal.
+  private func waitingGroup(in holder: AppStore, monitor: ProgramStatusMonitor) throws -> (
+    sid: SidebarID, tab: TerminalTab.ID
+  ) {
+    holder.terminals.programStatus = monitor
+    let sid = try XCTUnwrap(holder.newTerminalGroup(named: "Servers"))
+    let session = UUID()
+    let tab = holder.terminals.addTab(
+      for: try XCTUnwrap(holder.target(for: sid)), sessionID: session)
+    monitor.seed(
+      session, records: [ProgramStatusRecord(id: "", state: .blocked, kind: .question, episode: 1)])
+    return (sid, tab.id)
+  }
+
+  /// Value: protects=a terminal with no project tells you it needs you from any window (story 13);
+  /// fails_when=a row reads only the terminals of the window drawing it; why_new=#652 review P3;
+  /// seam=two AppStores over one section; no_claim=the row's drawing (SidebarInvalidationTests)
+  func testARowShowsTheMarksOfTerminalsHeldInAnotherWindow() throws {
+    let (holder, standaloneSid, standalone) = try makeHolder()
+    let other = makeStore()
+    let tabs = holder.terminals.tabs(for: try XCTUnwrap(holder.target(for: standaloneSid)))
+    let surface = try XCTUnwrap(holder.terminals.surface(try XCTUnwrap(tabs.first)))
+    let (groupSid, _) = try waitingGroup(in: holder, monitor: ProgramStatusMonitor())
+    let group = try XCTUnwrap(groupSid.targetID)
+
+    surface.handleProgressReport(true)
+
+    XCTAssertEqual(other.terminals.tabCount(forTargetID: standalone), 0, "held in the holder")
+    XCTAssertTrue(other.sectionActivity(of: standalone).running, "its agent working shows")
+    XCTAssertEqual(other.sectionActivity(of: group).waiting, 1, "the group's waiting one shows")
+  }
+
+  /// Value: protects=the waiting mark on a row is a live control in every window; fails_when=its
+  /// click looks only in the window drawing it, so it does nothing; why_new=#652 review P3;
+  /// seam=two AppStores over one section; no_claim=the button itself
+  func testItsWaitingMarkTakesYouToTheTerminalInTheWindowHoldingIt() throws {
+    let holder = makeStore()
+    let other = makeStore()
+    let (sid, tab) = try waitingGroup(in: holder, monitor: ProgramStatusMonitor())
+    let id = try XCTUnwrap(sid.targetID)
+    // A second, newer terminal, focused: the mark must move the focus to the waiting one.
+    let target = try XCTUnwrap(holder.target(for: sid))
+    _ = holder.terminals.addTab(for: target)
+    var raised: [NSWindow] = []
+    holder.raiseWindow = { raised.append($0) }
+
+    other.showWaiting(inSectionTarget: id)
+
+    XCTAssertEqual(raised, [try XCTUnwrap(holder.hostWindow)], "the holder comes forward")
+    XCTAssertEqual(holder.selectedTargetID, sid)
+    XCTAssertEqual(holder.terminals.focusedTab(for: target)?.id, tab, "on the waiting terminal")
+  }
+
   /// Its row reports what a workroom's row does: a terminal waiting on the user, and a command that
   /// failed.
   func testItsRowCarriesTheSameMarksAsAWorkroomRow() throws {

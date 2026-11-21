@@ -76,7 +76,7 @@ The setting applies to terminals you open after changing it. Remote workrooms do
 
 ### Stop Detached Terminals…
 
-The **Stop Detached Terminals…** button counts the background terminals that no open tab is attached to and asks before it stops them. The note under it explains that terminals keep running after you quit and reattach when you relaunch, that run commands do too unless you choose to stop them, and that the Quick Terminal is never kept. See [Terminals and tabs](terminals-and-tabs.md#detached-sessions).
+The **Stop Detached Terminals…** button counts the background terminals that no open tab is attached to and asks before it stops them. The note under it explains that terminals keep running after you quit and reattach when you relaunch, and that run commands do too unless you choose to stop them. See [Terminals and tabs](terminals-and-tabs.md#detached-sessions).
 
 ### Quick Terminal
 
@@ -85,13 +85,13 @@ The **Stop Detached Terminals…** button counts the background terminals that n
 | **Slides in from** | The screen edge the Quick Terminal slides in from: **Top** (the default), **Bottom**, **Left** or **Right**. It sits centred along that edge until you drag it somewhere else. Dragging it to another edge changes this setting too. |
 | **Slide away when it loses focus** | Hides the Quick Terminal when you click another window or switch to another app. On by default. Off leaves it up until you press its shortcut. |
 
-A Quick Terminal that is only hidden keeps its shells, so a new folder applies from the next new tab. Its global shortcut is <kbd>⌥§</kbd> by default. Change it in [Shortcuts](#shortcuts). See [Terminals and tabs](terminals-and-tabs.md#quick-terminal).
+A Quick Terminal that is only hidden keeps its shells, so a new folder applies from the next new tab. Nightly only: its starting folder is set from its sidebar row with **Set Starting Folder…**; without one it follows [**New terminals open in**](#terminals-with-no-project). Its global shortcut is <kbd>⌥§</kbd> by default. Change it in [Shortcuts](#shortcuts). See [Terminals and tabs](terminals-and-tabs.md#quick-terminal).
 
 ### Terminals with no project {nightly}
 
 | Setting | What it does |
 | --- | --- |
-| **New terminals open in** | Nightly only. The folder a new terminal with no project starts in, a standalone terminal's or the Quick Terminal's, shown as its full path. Your home folder is the default. **Choose…** picks another, and **Use Home**, shown only then, goes back. If the folder is gone, it opens in your home folder. |
+| **New terminals open in** | Nightly only. The folder a new terminal with no project starts in, a standalone terminal's, or a terminal group's or the Quick Terminal's when it has no starting folder of its own, shown as its full path. Your home folder is the default. **Choose…** picks another, and **Use Home**, shown only then, goes back. If the folder is gone, it opens in your home folder. |
 
 ## Shortcuts
 

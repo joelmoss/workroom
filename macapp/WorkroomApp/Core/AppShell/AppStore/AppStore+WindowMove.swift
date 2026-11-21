@@ -200,7 +200,7 @@ extension AppStore {
     guard let target = target(for: sid) else { return "It is no longer open." }
     if target.remoteHost != nil || target.isRemoteWorkroom {
       return
-        "\(target.title) runs on another computer, so a terminal on this Mac can't move into it."
+        "\(target.title) runs on a host, so a terminal on this Mac can't move into it."
     }
     if lifecycle.isCreationBlocking(target.id) || target.unavailability == .creating {
       return "\(target.title) is still being created."
