@@ -284,4 +284,16 @@ final class StandaloneTerminalTests: XCTestCase {
     XCTAssertFalse(store.sessionTagResolves(TargetID.standalone(UUID()).encoded), "a closed one")
     XCTAssertFalse(store.sessionTagResolves("standalone:not-a-uuid"))
   }
+
+  /// A workroom's terminal row drops the folder while the terminal is in the workroom's own one.
+  func testATitleOmitsItsFolderOnlyWhenItIsThePathGiven() {
+    let home = "/Users/me"
+    let inRoom = TerminalState.programAndFolder(
+      program: "zsh", folder: "/Users/me/dev/room", home: home)
+    XCTAssertEqual(inRoom.omittingFolder("/Users/me/dev/room", home: home).text, "zsh")
+    XCTAssertEqual(inRoom.omittingFolder("/Users/me/dev/room/", home: home).text, "zsh")
+    XCTAssertEqual(
+      inRoom.omittingFolder("/Users/me/dev/other", home: home).text, "zsh ~/dev/room")
+    XCTAssertEqual(TerminalTitle(name: "vim").omittingFolder("/x", home: home).text, "vim")
+  }
 }

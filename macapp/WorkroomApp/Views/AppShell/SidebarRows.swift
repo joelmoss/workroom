@@ -678,11 +678,16 @@ struct SidebarTerminalRow: View, Equatable {
           let _ = { SidebarRowPasses.terminalTitles[model.tabID] = title }()
         #endif
         // The program as bright as a row's name, the folder faded as the row's title was.
-        TerminalTitleLabel(title: content.titleParts, folderFont: model.style.folderFont)
-          .font(model.style.font)
-          .foregroundStyle(.primary, .secondary)
-          .lineLimit(1)
-          .truncationMode(.middle)
+        // A workroom's terminal names its folder only when it has left the workroom's own.
+        TerminalTitleLabel(
+          title: model.style == .tree
+            ? content.titleParts.omittingFolder(model.target.path) : content.titleParts,
+          folderFont: model.style.folderFont
+        )
+        .font(model.style.font)
+        .foregroundStyle(.primary, .secondary)
+        .lineLimit(1)
+        .truncationMode(.middle)
       }
       Spacer(minLength: 0)
 
