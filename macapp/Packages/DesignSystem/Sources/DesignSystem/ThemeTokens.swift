@@ -25,11 +25,17 @@ public struct ThemeTokens: Sendable {
   // overall blend.
   public let panel: Color
   public let nsPanel: NSColor
-  // `panel` as a wash: fg at `panelFraction`, which over `bg` composites to `panel`. Glass (#725)
+  // `panel` as a wash: fg at `panelWashAlpha`, which over `bg` composites to `panel`. Glass (#725)
   // draws the chrome with it over a window whose own background is already `bg`.
   public let panelWash: Color
   public let nsPanelWash: NSColor
-  /// How far `panel` is blended from `bg` toward `fg`, and `panelWash`'s alpha.
+  /// `panelWash`'s alpha: the share of `fg` that, composited over `bg`, gives `panel`. Not
+  /// `panelFraction` itself: `NSColor.blended` doesn't blend in the sRGB values the screen
+  /// composites with, so on a dark theme `panel` lands nearer 7.6% of the way to `fg`, and a 5.5%
+  /// wash drew the Glass cards visibly darker than the panel. Derived from `panel`, so it matches
+  /// in every theme and appearance.
+  public let panelWashAlpha: CGFloat
+  /// How far `panel` is blended from `bg` toward `fg` (`NSColor.blended(withFraction:of:)`).
   public static let panelFraction: CGFloat = 0.055
   public let fgMuted: Color  // fg @ 0.65 — secondary text
   public let fgDim: Color  // fg @ 0.40 — tertiary text / placeholders
@@ -137,7 +143,8 @@ public struct ThemeTokens: Sendable {
       ?? bgColor
     nsPanel = panelColor
     panel = Color(nsColor: panelColor)
-    nsPanelWash = fgColor.withAlphaComponent(Self.panelFraction)
+    panelWashAlpha = Self.washAlpha(from: bgColor, to: fgColor, giving: panelColor)
+    nsPanelWash = fgColor.withAlphaComponent(panelWashAlpha)
     panelWash = Color(nsColor: nsPanelWash)
     fgMuted = Color(nsColor: fgColor.withAlphaComponent(0.65))
     fgDim = Color(nsColor: fgColor.withAlphaComponent(0.40))
@@ -273,6 +280,27 @@ public struct ThemeTokens: Sendable {
   public static func perceivedBrightness(of color: NSColor) -> CGFloat {
     guard let srgb = color.usingColorSpace(.sRGB) else { return 0 }
     return 0.2126 * srgb.redComponent + 0.7152 * srgb.greenComponent + 0.0722 * srgb.blueComponent
+  }
+
+  /// The alpha `a` at which `fg` composited over `bg` (`a·fg + (1−a)·bg`, per sRGB channel, as the
+  /// screen composites) comes closest to `target`, by least squares over the three channels.
+  /// `panelFraction` when `fg` and `bg` are too close to tell apart.
+  public static func washAlpha(from bg: NSColor, to fg: NSColor, giving target: NSColor) -> CGFloat
+  {
+    guard let b = bg.usingColorSpace(.sRGB), let f = fg.usingColorSpace(.sRGB),
+      let t = target.usingColorSpace(.sRGB)
+    else { return panelFraction }
+    let d = [
+      f.redComponent - b.redComponent, f.greenComponent - b.greenComponent,
+      f.blueComponent - b.blueComponent,
+    ]
+    let n = [
+      t.redComponent - b.redComponent, t.greenComponent - b.greenComponent,
+      t.blueComponent - b.blueComponent,
+    ]
+    let dd = zip(d, d).map(*).reduce(0, +)
+    guard dd > 1e-6 else { return panelFraction }
+    return min(max(zip(n, d).map(*).reduce(0, +) / dd, 0), 1)
   }
 
   /// The themed surfaces a status colour sits on: a sidebar row, the rail, an idle tab and the

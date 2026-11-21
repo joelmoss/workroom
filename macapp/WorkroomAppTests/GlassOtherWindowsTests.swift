@@ -66,6 +66,13 @@ final class GlassOtherWindowsTests: XCTestCase {
     return rep.colorAt(x: 0, y: 0)?.usingColorSpace(.sRGB)
   }
 
+  /// What `fill` renders as in a plain window, through the same capture as `pixel`.
+  private func renderedReference(_ fill: Color) -> NSColor {
+    let (window, _) = hostInWindow(fill, size: NSSize(width: 40, height: 40))
+    defer { window.close() }
+    return pixel(window) ?? .clear
+  }
+
   private static func near(_ lhs: NSColor?, _ rhs: NSColor) -> Bool {
     guard let a = lhs?.usingColorSpace(.sRGB), let b = rhs.usingColorSpace(.sRGB) else {
       return false
@@ -301,11 +308,14 @@ final class GlassOtherWindowsTests: XCTestCase {
 
     full.fakesFullScreen = true
     NotificationCenter.default.post(name: NSWindow.didEnterFullScreenNotification, object: full)
-    wait(full) { full.isOpaque && Self.near(pixel(full), tokens.nsBg) }
+    // The theme background as this display renders it: a capture's colours come back through the
+    // display's profile, so in dark mode it is not the raw token (0.146 for a 0.110 grey here).
+    let opaqueBg = renderedReference(Color(nsColor: tokens.nsBg))
+    wait(full) { full.isOpaque && Self.near(pixel(full), opaqueBg) }
     XCTAssertTrue(full.isOpaque, "a full-screen window went opaque within 3 s")
     XCTAssertEqual(full.backgroundColor, ThemeFill.panel.nsColor())
     XCTAssertTrue(
-      Self.near(pixel(full), tokens.nsBg),
+      Self.near(pixel(full), opaqueBg),
       "its terminals lie on the opaque theme background, drew \(String(describing: pixel(full)))")
     XCTAssertEqual(
       other.backgroundColor, tokens.nsBg.withAlphaComponent(0.9), "the other window keeps the base")

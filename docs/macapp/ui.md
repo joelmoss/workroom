@@ -110,8 +110,9 @@ and an opacity change sets the background colour alone. A window the window serv
 yet stays opaque until the next apply, so it turns glass with its blur. A detached pane's normal title bar turns
 transparent under glass so the base shows through it; the Quick Terminal's is already. Nothing else
 tints at the opacity: `.background` and `.ground` draw nothing, `.panel` is the panel wash
-(`tokens.panelWash`, the foreground at the 5.5% that `tokens.panel` is blended by, so the wash over
-the base is the panel colour), `.raised` is unchanged, `.nestedRaised` (a raised wash inside a host
+(`tokens.panelWash`, the foreground at `tokens.panelWashAlpha`, the alpha derived from
+`tokens.panel` so the wash over the base is the panel colour in every theme; not a fixed 5.5%,
+which drew dark-theme cards darker than the panel), `.raised` is unchanged, `.nestedRaised` (a raised wash inside a host
 that already lays one) and `.textBackground` draw nothing, and a selected tab takes
 `tokens.tabActive` because the base already is `bg` (`ThemeFill.tab(active:hovered:)`, shared by
 the workroom tab bar and the terminal tab strip). A panel inside a panel uses `.ground`, so the wash
