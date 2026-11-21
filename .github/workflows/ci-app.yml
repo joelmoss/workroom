@@ -85,7 +85,7 @@ jobs:
           path: ~/.cache/workroom/ghostty-vt
           key: ghostty-vt-kit-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
 
-      # Xcode builds the bundled workroomd (Scripts/build-daemon.sh) on the stable toolchain, the
+      # Xcode builds the bundled workroomd (Scripts/build-daemon.sh) on mk/vcs.mk's VCS_RUST, the
       # macOS tests below build it again in debug, and all of it is cached here, the workspace's
       # own artifacts included: without them workroomd was rebuilt in release for all three targets
       # on every run, 38s + 1m41 + 1m44 one after another (measured 2026-10-18, run 39115663007).
@@ -109,7 +109,7 @@ jobs:
           CARGO_LOCK: ${{ hashFiles('vcs/Cargo.lock') }}
         shell: bash
         run: |
-          toolchain="app-daemon-8-$RUNNER_OS-$RUNNER_ARCH-$(rustc +stable -V | awk '{print $2}')"
+          toolchain="app-daemon-8-$RUNNER_OS-$RUNNER_ARCH-$(rustc +"$(make -s print-VCS_RUST)" -V | awk '{print $2}')"
           echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
           echo "lock=$toolchain-$CARGO_LOCK" >> "$GITHUB_OUTPUT"
 

@@ -59,10 +59,28 @@ fi
 # Homebrew's rust ships only the host arch's std, so cross-compiling needs rustup, or the build
 # fails with a cryptic "can't find crate for `core`".
 CARGO="cargo"
-AGENT_TOOLCHAIN="${WORKROOMD_RUST_TOOLCHAIN:-stable}"
+# The toolchain is mk/vcs.mk's VCS_RUST, the one source of truth: the shipped binary's notices
+# describe that Rust's standard library and musl (#714, third-party/components.json pins them to
+# it), and the daemon build identity hashes the compiler (#680), so a runner's newer `stable` would
+# ship code the notices do not cover and hand every host's daemon off for nothing.
+# WORKROOMD_RUST_TOOLCHAIN may name another for a Debug build; a Release or Nightly one refuses it.
+PINNED_RUST="$(awk '$1 == "VCS_RUST" && $2 == ":=" {print $3}' "${SRCROOT}/../mk/vcs.mk")"
+if [ -z "$PINNED_RUST" ]; then
+  echo "error: cannot read VCS_RUST from mk/vcs.mk." >&2
+  exit 1
+fi
+AGENT_TOOLCHAIN="${WORKROOMD_RUST_TOOLCHAIN:-$PINNED_RUST}"
+if [ "${CONFIGURATION:-Debug}" != "Debug" ]; then
+  # `|| true`: under pipefail a toolchain rustup does not have would end the script silently.
+  shipped="$(rustup run "$AGENT_TOOLCHAIN" rustc --version 2>/dev/null | awk '{print $2}' || true)"
+  if [ "$shipped" != "$PINNED_RUST" ]; then
+    echo "error: a ${CONFIGURATION} build ships the daemon built by Rust $PINNED_RUST (mk/vcs.mk's VCS_RUST), which its third-party notices describe; '$AGENT_TOOLCHAIN' is ${shipped:-not installed}. Run 'rustup toolchain install $PINNED_RUST' and add its targets." >&2
+    exit 1
+  fi
+fi
 # ponytail: the 1.93 floor came from jj-lib, which the daemon no longer links (#266). It stays until
 # the remaining crates' MSRV is checked. Xcode can expose an older default rustup toolchain than the
-# terminal's Homebrew rust, so select stable when necessary.
+# terminal's Homebrew rust, so select the pinned toolchain when necessary.
 if ! rustc --version | awk '{split($2,v,"."); exit !(v[1] > 1 || v[1] == 1 && v[2] >= 93)}'; then
   if ! rustup run "$AGENT_TOOLCHAIN" rustc --version 2>/dev/null | awk '{split($2,v,"."); exit !(v[1] > 1 || v[1] == 1 && v[2] >= 93)}'; then
     echo "error: workroomd needs Rust >= 1.93. Run 'rustup update $AGENT_TOOLCHAIN'." >&2
@@ -82,7 +100,7 @@ if [ "${#TARGETS[@]}" -gt 1 ] || [ "${TARGETS[0]}" != "$(rustc -vV | awk '/^host
     fi
   done
   if ! rustup run "$AGENT_TOOLCHAIN" rustc --version 2>/dev/null | awk '{split($2,v,"."); exit !(v[1] > 1 || v[1] == 1 && v[2] >= 93)}'; then
-    echo "error: workroomd needs Rust >= 1.93. Update stable or set WORKROOMD_RUST_TOOLCHAIN to a compatible installed toolchain." >&2
+    echo "error: workroomd needs Rust >= 1.93. Run 'rustup toolchain install $AGENT_TOOLCHAIN', or set WORKROOMD_RUST_TOOLCHAIN to a compatible installed toolchain." >&2
     exit 1
   fi
   CARGO="rustup run $AGENT_TOOLCHAIN cargo"
