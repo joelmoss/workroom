@@ -23,6 +23,13 @@ derived `terminfo/x/xterm-ghostty` with `terminfo/78/xterm-ghostty`). So a file 
 `terminfo/` or `shell-integration/` reaches remote hosts only once `CHECKSUMS` lists it, which
 `GhosttyResourcesTests` already requires.
 
+- `shell-integration/{bash,zsh}/LICENSE` — **ours, not upstream's** (#714). Ghostty's bash and zsh
+  integration are GPL-3.0-or-later, being based on Kitty's, so each directory carries the licence's
+  text beside them, naming the files; bash's also carries bash-preexec's MIT notice. They are in
+  `CHECKSUMS`, so a remote host is pushed them with the scripts. Rebuild them from the licence texts
+  under `third-party/licenses/` if upstream's terms change; `macapp/Scripts/ghostty-licence_test.sh`
+  checks they land beside the scripts.
+
 ## Provenance
 
 The GhosttyKit xcframework carries no terminfo or shell-integration, so both are vendored here (once,

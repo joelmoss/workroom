@@ -713,6 +713,8 @@ final class DaemonBootstrapScriptTests: XCTestCase {
     for path in [
       "CHECKSUMS", "terminfo/78/xterm-ghostty", "terminfo/x/xterm-ghostty", "terminfo/g/ghostty",
       "shell-integration/zsh/.zshenv", "shell-integration/bash/ghostty.bash",
+      // The GPL-3.0 the bash and zsh integration are under goes beside them (#714).
+      "shell-integration/zsh/LICENSE", "shell-integration/bash/LICENSE",
     ] {
       XCTAssertEqual(
         FileManager.default.contents(atPath: set.appendingPathComponent(path).path),
