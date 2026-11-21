@@ -107,11 +107,13 @@ final class DaemonBootstrapScriptTests: XCTestCase {
   /// file's bytes (`DaemonBootstrap.buildNumber(in:)`), for a stand-in that is the app's bundle.
   private func standIn(
     protocol status: Int = 0, protocolFirst: String = ":", handOff: String = "echo current",
-    list: Int = 0, marker: UInt64? = nil
+    list: Int = 0, marker: UInt64? = nil, daemonBuild: String? = nil, stamp: String = ""
   ) throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(
       "workroomd-standin-\(UUID().uuidString.prefix(8))")
-    let markerLine: String = marker.map { "# WORKROOMD-BUILD:\($0);\n" } ?? ""
+    let buildLine: String = marker.map { "# WORKROOMD-BUILD:\($0);\n" } ?? ""
+    let daemonLine: String = daemonBuild.map { "# WORKROOMD-DAEMON-BUILD:\($0);\n" } ?? ""
+    let markerLine: String = buildLine + daemonLine + (stamp.isEmpty ? "" : "# \(stamp)\n")
     let body: String =
       "case $1 in protocol) \(protocolFirst); exit \(status) ;; "
       + "hand-off) \(handOff); exit ;; "
@@ -575,6 +577,30 @@ final class DaemonBootstrapScriptTests: XCTestCase {
         architecture: "aarch64", pushed: false,
         daemon: .keptNewer("the host runs build 200, newer than this app's 100")))
     try assertLayout("after an older app connected")
+  }
+
+  /// A Nightly and a stable app of one commit share a host (#681): their binaries are the same build
+  /// and daemon build, and differ only in the version and channel stamped in. Neither pushes over
+  /// the other; a build newer than the host's is still pushed.
+  func testTheSameBuildOfTheSameDaemonStampedForAnotherChannelIsNotPushed() async throws {
+    let host = try localHost()
+    let answers = "echo build-number 200; echo daemon-build ab12"
+    let stable = try standIn(
+      protocolFirst: answers, marker: 200, daemonBuild: "ab12", stamp: "stable 3.2.0")
+    try preinstall(stable, on: host)
+    try listen(on: host)
+    let nightly = try standIn(
+      protocolFirst: answers, marker: 200, daemonBuild: "ab12", stamp: "nightly 3.2.0-nightly.9")
+    let outcome = try await ensure(host, bundling: nightly)
+    XCTAssertEqual(outcome, .init(architecture: "aarch64", pushed: false, daemon: .current))
+    XCTAssertEqual(try installed(on: host), try DaemonBootstrap.digest(of: stable))
+
+    let newer = try standIn(
+      protocolFirst: "echo build-number 201; echo daemon-build ab12", handOff: "echo current; :",
+      marker: 201, daemonBuild: "ab12")
+    let pushed = try await ensure(host, bundling: newer)
+    XCTAssertEqual(pushed, .init(architecture: "aarch64", pushed: true, daemon: .current))
+    XCTAssertEqual(try installed(on: host), try DaemonBootstrap.digest(of: newer))
   }
 
   /// A link is made only where nothing but a link is: a file of the user's at `workroom` beside the
