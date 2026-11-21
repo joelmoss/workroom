@@ -1085,6 +1085,7 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
     let copy = folder.appendingPathComponent(name)
     try FileManager.default.copyItem(at: binary, to: copy)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: copy.path)
+    try Self.linkCommand(in: folder)
     let tar = staging.appendingPathComponent("daemon.tar")
     let archive = Process()
     archive.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
@@ -1129,6 +1130,22 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
         + (keep ? ["mv", "-f", staged, Self.containerDaemon] : ["rm", "-f", staged]))
   }
 
+  /// The `workroom` link beside the daemon's `workroomd` in `folder` (ADR 0078), as install.sh
+  /// makes on other hosts: the name a container's panes run it by, which the daemon puts on their
+  /// PATH. Relative, so it names whichever `workroomd` is moved there. Made only where nothing or a
+  /// link is: anything else at that name is not this driver's.
+  static func linkCommand(in folder: URL) throws {
+    let link = folder.appendingPathComponent("workroom")
+    let fileManager = FileManager.default
+    if let existing = try? fileManager.destinationOfSymbolicLink(atPath: link.path) {
+      guard existing != "workroomd" else { return }
+      try fileManager.removeItem(at: link)
+    } else if fileManager.fileExists(atPath: link.path) {
+      return
+    }
+    try fileManager.createSymbolicLink(atPath: link.path, withDestinationPath: "workroomd")
+  }
+
   /// Apple: the folder on this Mac its containers mount the daemon from, holding `binary`'s bytes.
   /// One per build (a container is only ever opened by the build that made it), replaced in place.
   private func appleDaemonFolder(holding binary: URL) throws -> URL {
@@ -1136,6 +1153,7 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
       throw HostDriverError.notImplemented("A folder for Apple containers' daemon")
     }
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    try Self.linkCommand(in: folder)
     let target = folder.appendingPathComponent("workroomd")
     if FileManager.default.contentsEqual(atPath: binary.path, andPath: target.path) {
       return folder

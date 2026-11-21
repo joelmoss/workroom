@@ -2451,6 +2451,155 @@ fn over_ssh_the_terminal_api_lists_and_resolves_the_hosts_sessions() {
     );
 }
 
+/// A folder this run made, removed with what is in it when the test ends: never one found there.
+struct OwnScratch(PathBuf);
+
+impl OwnScratch {
+    fn new(name: &str) -> OwnScratch {
+        let dir = std::env::temp_dir().join(format!("wr-{name}-{}", std::process::id()));
+        std::fs::create_dir(&dir).expect("a scratch folder of this run's own");
+        OwnScratch(dir)
+    }
+}
+
+impl Drop for OwnScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The commands ADR 0078 keeps for the Mac, which a host's binary refuses with `MacOnly`.
+const MAC_ONLY: [&str; 12] = [
+    "create",
+    "delete",
+    "list",
+    "ls",
+    "base",
+    "host",
+    "trust",
+    "untrust",
+    "add-project",
+    "delete-project",
+    "claim-provisioned",
+    "include-archive",
+];
+
+/// A host this build set up (#681, ADR 0078): this build's install leaves `workroomd` the installed
+/// file, as an older app looks for it (ADR 0057), with a relative `workroom` link beside it. On the
+/// host each Mac-only command fails with `MacOnly` (exit 3), and `update` in the daemon's folder
+/// with `ManagedInstall` (exit 3), by either name: the bootstrap owns that file. A pane attached
+/// from the Mac as the app attaches one (ADR 0074), as `xterm-ghostty` with the bootstrap's
+/// Ghostty set, runs `workroom` by name after Debian's /etc/profile has set PATH outright.
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_workroom_runs_on_a_host_by_name_and_refuses_what_only_the_mac_does() {
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
+    let elf = PathBuf::from(
+        std::env::var("WR_SSH_FIXTURE_DAEMON").expect("run.sh exports WR_SSH_FIXTURE_DAEMON"),
+    );
+    let (status, output) = fixture.bootstrap(
+        "install",
+        &[INSTALLED_DAEMON, &fixture.socket, "1", &sha256_hex(&elf)],
+        Some(&elf),
+    );
+    assert_eq!(status, Some(0), "install: {output}");
+    let link = "/run/workroom/workroom";
+    assert_eq!(fixture.run(&format!("readlink {link}")).trim(), "workroomd");
+    fixture.run(&format!(
+        "test -f {INSTALLED_DAEMON} && ! test -L {INSTALLED_DAEMON}"
+    ));
+
+    let refused = |command: &str| {
+        let output = fixture
+            .ssh()
+            .arg(format!("{command} --json; echo \"exit=$?\""))
+            .output()
+            .expect("run on the host");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    for name in MAC_ONLY {
+        let said = refused(&format!("{link} {name}"));
+        assert!(said.contains("\"kind\":\"MacOnly\""), "{name}: {said}");
+        assert!(said.trim_end().ends_with("exit=3"), "{name}: {said}");
+    }
+    for binary in [link, INSTALLED_DAEMON] {
+        let said = refused(&format!("{binary} update"));
+        assert!(
+            said.contains("\"kind\":\"ManagedInstall\""),
+            "{binary}: {said}"
+        );
+        assert!(said.trim_end().ends_with("exit=3"), "{binary}: {said}");
+    }
+
+    // The bootstrap's Ghostty set, pushed as the app pushes it (`resources.sh`).
+    let ghostty = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../macapp/Resources/ghostty");
+    let manifest = std::fs::read_to_string(ghostty.join("CHECKSUMS")).expect("CHECKSUMS");
+    let mut files: Vec<String> = manifest
+        .lines()
+        .filter_map(|line| line.split_once("  ").map(|(_, path)| path.to_string()))
+        .collect();
+    files.push("CHECKSUMS".to_string());
+    let scratch = OwnScratch::new("ghostty-set");
+    let pushed = scratch.0.join("set");
+    let mut set = Vec::new();
+    let mut arguments = vec!["/run/workroom/ghostty".to_string()];
+    for file in &files {
+        let bytes = std::fs::read(ghostty.join(file)).expect("a file of the set");
+        arguments.push(bytes.len().to_string());
+        arguments.push(file.clone());
+        set.extend_from_slice(&bytes);
+    }
+    std::fs::write(&pushed, &set).expect("write the set");
+    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let (status, output) = fixture.bootstrap("resources", &arguments, Some(&pushed));
+    assert_eq!(status, Some(0), "resources: {output}");
+
+    let pane = Command::new(daemon_binary())
+        .arg("attach")
+        .args(["--dial", "ssh", "-F", &fixture.config, "-T", "fixture"])
+        .args([INSTALLED_DAEMON, "relay", "--socket", &fixture.socket])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("TERM", "xterm-ghostty")
+        .env(
+            "WORKROOM_SESSION_ID",
+            "7e0e7e0e-0000-4000-8000-000000000681",
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("attach from the Mac");
+    let mut pane = Spawned(pane);
+    // Held open until the shell has exited, as a pane's is: an attach whose stdin ends detaches.
+    let mut stdin = pane.0.stdin.take().expect("stdin");
+    // Split by the quotes, so the pty's echo of each line is not its answer.
+    stdin
+        .write_all(
+            b"echo \"FOUND=$(command -v workroom)=\"\"END\"\n\
+              workroom create probe --json; echo \"STATUS=$?=\"\"END\"\nexit\n",
+        )
+        .expect("type into the pane");
+    let mut stdout = pane.0.stdout.take().expect("stdout");
+    let reader = std::thread::spawn(move || {
+        let mut seen = String::new();
+        let _ = stdout.read_to_string(&mut seen);
+        seen
+    });
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while pane.0.try_wait().expect("the pane's status").is_none() {
+        assert!(Instant::now() < deadline, "the pane never ended");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let seen = reader.join().expect("the pane's output");
+    drop(stdin);
+    assert!(seen.contains(&format!("FOUND={link}=END")), "{seen}");
+    assert!(seen.contains("\"kind\":\"MacOnly\""), "{seen}");
+    assert!(seen.contains("STATUS=3=END"), "{seen}");
+}
+
 /// `workroom api` on a host (#685), as a coding agent in a remote pane runs it: `list` names the
 /// host daemon's methods, `describe` shows a method's schemas with examples, and `call` reaches a
 /// session the Mac opened with PARAMS inline, from a file on the host and from stdin.
