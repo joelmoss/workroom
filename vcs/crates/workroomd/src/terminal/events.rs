@@ -23,6 +23,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -47,8 +48,13 @@ pub mod name {
     pub const ENDED: &str = "session.ended";
     pub const PROGRAM_STATUS: &str = "session.program_status";
     pub const RUN_STATE: &str = "session.run_state";
+    /// A session tagged with another scope: sent to the subscribers of both.
+    pub const MOVED: &str = "session.moved";
+    /// Where a filtered stream stands, when the events it skipped have moved its place on: never
+    /// shown by the CLI, which resumes from it.
+    pub const PLACE: &str = "place";
     /// The live events, which `types` filters.
-    pub const LIVE: [&str; 4] = [CREATED, ENDED, PROGRAM_STATUS, RUN_STATE];
+    pub const LIVE: [&str; 5] = [CREATED, ENDED, PROGRAM_STATUS, RUN_STATE, MOVED];
 }
 
 /// What one live session's events have told, as of the hub's revision.
@@ -121,6 +127,8 @@ pub enum Next {
     Events(Vec<Arc<Event>>),
     /// The subscription has ended.
     Closed,
+    /// Nothing to send before the time `Hub::next_until` was given.
+    Idle,
 }
 
 /// A subscriber's place: the revision it has been sent up to, or what it starts from.
@@ -136,6 +144,11 @@ impl Cursor {
             start: Some(start),
             sent: 0,
         }
+    }
+
+    /// The revision it has been handed up to, filtered or not.
+    pub fn sent(&self) -> u64 {
+        self.sent
     }
 }
 
@@ -317,12 +330,25 @@ impl Hub {
         self.publish(&mut state, json);
     }
 
-    /// A session was tagged with another scope (`SessionStore::set_workroom`): its events from
-    /// here on, and its snapshots, carry `scope`. Not an event of its own.
+    /// A session was tagged with another scope (`SessionStore::set_workroom`): `session.moved`,
+    /// with the scope it had as `previous_scope`, when that is another; its events from here on,
+    /// and its snapshots, carry `scope`.
     pub fn rescoped(&self, id: SessionId, scope: Value) {
-        if let Some(known) = self.lock().sessions.get_mut(&id) {
-            known.listing["scope"] = scope;
+        let mut state = self.lock();
+        let Some(known) = state.sessions.get_mut(&id) else {
+            return;
+        };
+        if known.listing["scope"] == scope {
+            return;
         }
+        let previous = std::mem::replace(&mut known.listing["scope"], scope.clone());
+        let json = json!({
+            "event": name::MOVED,
+            "session": id.to_hyphenated(),
+            "scope": scope,
+            "previous_scope": previous,
+        });
+        self.publish(&mut state, json);
     }
 
     /// A session's program status changed: `agent` is its coding agent now (the listing's
@@ -411,6 +437,16 @@ impl Hub {
     /// Blocks until there is something to send, or `closed` says the subscription has ended
     /// (checked whenever the hub wakes). Nothing is sent while a hand-off has the ring sealed.
     pub fn next(&self, cursor: &mut Cursor, closed: &dyn Fn() -> bool) -> Next {
+        self.next_until(cursor, closed, None)
+    }
+
+    /// [`Hub::next`], or [`Next::Idle`] once `until` passes with nothing to send.
+    pub fn next_until(
+        &self,
+        cursor: &mut Cursor,
+        closed: &dyn Fn() -> bool,
+        until: Option<Instant>,
+    ) -> Next {
         let mut state = self.lock();
         loop {
             if closed() {
@@ -479,7 +515,15 @@ impl Hub {
                     return Next::Events(events);
                 }
             }
-            state = recover(self.wake.wait(state));
+            state = match until {
+                None => recover(self.wake.wait(state)),
+                Some(until) => {
+                    let Some(left) = until.checked_duration_since(Instant::now()) else {
+                        return Next::Idle;
+                    };
+                    recover(self.wake.wait_timeout(state, left)).0
+                }
+            };
         }
     }
 
