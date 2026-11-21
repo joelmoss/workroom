@@ -35,14 +35,18 @@ impl Paint {
         self.code("90", text)
     }
 
-    /// Bold, which fatih/color ends with `\x1b[22m` rather than a full reset, around blue.
-    pub(super) fn bold_blue(self, text: &str) -> String {
-        let blue = self.code("34", text);
+    /// Bold, which fatih/color ends with `\x1b[22m` rather than a full reset.
+    pub(super) fn bold(self, text: &str) -> String {
         if self.0 {
-            format!("\x1b[1m{blue}\x1b[22m")
+            format!("\x1b[1m{text}\x1b[22m")
         } else {
-            blue
+            text.to_string()
         }
+    }
+
+    /// [`Paint::bold`] around blue.
+    pub(super) fn bold_blue(self, text: &str) -> String {
+        self.bold(&self.code("34", text))
     }
 }
 

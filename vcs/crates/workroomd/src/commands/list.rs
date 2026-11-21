@@ -17,6 +17,7 @@ use serde::Serialize;
 use super::config::{self, Config, Json, Project};
 use super::git::is_git_repo;
 use super::kind::CliError;
+use super::panel::Paint;
 use super::{Args, Context, Outcome};
 
 /// How much work the listing does for its warnings.
@@ -278,21 +279,15 @@ fn human(context: &Context, config: &Config, out: &mut impl Write) -> Result<(),
         Some(home) if path.starts_with(home.as_str()) => format!("~{}", &path[home.len()..]),
         _ => path.to_string(),
     };
-    let paint = |code: &str, text: &str| {
-        if context.color {
-            format!("\x1b[{code}m{text}\x1b[0m")
-        } else {
-            text.to_string()
-        }
-    };
+    let paint = Paint(context.color);
     let table = |project: &ProjectInfo| {
         let rows: Vec<Vec<String>> = project
             .workrooms
             .iter()
             .map(|workroom| {
                 let mut row = vec![
-                    paint("1", &workroom.name),
-                    paint("90", &display(&workroom.path)),
+                    paint.bold(&workroom.name),
+                    paint.dim(&display(&workroom.path)),
                 ];
                 if !workroom.warnings.is_empty() {
                     let messages: Vec<&str> = workroom
@@ -300,7 +295,7 @@ fn human(context: &Context, config: &Config, out: &mut impl Write) -> Result<(),
                         .iter()
                         .map(|warning| warning.message.as_str())
                         .collect();
-                    row.push(paint("33", &format!("[{}]", messages.join(", "))));
+                    row.push(paint.yellow(&format!("[{}]", messages.join(", "))));
                 }
                 row
             })
@@ -315,7 +310,7 @@ fn human(context: &Context, config: &Config, out: &mut impl Write) -> Result<(),
         Some((parent, _)) if parent != cwd => {
             write(&format!(
                 "{}\nParent project is at {}\n",
-                paint("33", "You are already in a workroom."),
+                paint.yellow("You are already in a workroom."),
                 display(&parent)
             ));
         }
@@ -399,16 +394,17 @@ mod tests {
     #[test]
     fn a_table_pads_each_column_but_the_last_cell_by_its_text_alone() {
         let rows = vec![
-            vec!["\x1b[1ma\x1b[0m".to_string(), "~/x".to_string()],
+            vec![Paint(true).bold("a"), "~/x".to_string()],
             vec![
                 "calm".to_string(),
                 "~/workrooms/calm".to_string(),
                 "[gone]".to_string(),
             ],
         ];
+        // Go's `cmd/list_output_test.go` bytes: bold ends with `\x1b[22m`.
         assert_eq!(
             print_table(&rows, 2),
-            "  \x1b[1ma\x1b[0m     ~/x\n  calm  ~/workrooms/calm  [gone]\n"
+            "  \x1b[1ma\x1b[22m     ~/x\n  calm  ~/workrooms/calm  [gone]\n"
         );
     }
 
