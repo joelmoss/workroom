@@ -28,8 +28,7 @@ use super::git::is_git_repo;
 use super::kind::{CliError, Kind};
 use super::list::{workspace_names, worktree_paths};
 use super::log::LogWriter;
-use super::panel::LogPanel;
-use super::trust::Paint;
+use super::panel::{LogPanel, Paint};
 use super::trusted_script::{Judge, Script, TEARDOWN_SCRIPT};
 use super::{Context, git};
 
@@ -635,7 +634,7 @@ mod tests {
     use crate::commands::Context;
     use crate::commands::config::Config;
     use crate::commands::kind::{CliError, Kind};
-    use crate::commands::trust::Paint;
+    use crate::commands::panel::Paint;
     use crate::commands::trusted_script::Script;
 
     /// The digest of `#!/bin/sh\necho hi\n`.

@@ -1,10 +1,47 @@
-//! A script's streamed output in a titled, bordered panel, for a person at the CLI: Go's
-//! `ui.LogPanel`. `delete`'s teardown writes to one; `create`'s setup (#677) will too. With
-//! `--json` the same output goes to stderr as NDJSON events instead (`log`).
+//! What a person at the CLI is shown in colour: [`Paint`], Go's `ui` colour helpers, and a
+//! script's streamed output in a titled, bordered panel, Go's `ui.LogPanel`. `delete`'s teardown
+//! writes to one; `create`'s setup (#677) will too. With `--json` the same output goes to stderr
+//! as NDJSON events instead (`log`). `trust`'s approval panel (`prompt`) is drawn to the same
+//! width in the same colours.
 
 use std::io::Write;
 
-use super::trust::{PANEL_WIDTH, Paint};
+/// Human output's colours, as Go's `ui` helpers (fatih/color) write them, when stdout takes them.
+#[derive(Clone, Copy)]
+pub(super) struct Paint(pub(super) bool);
+
+impl Paint {
+    fn code(self, code: &str, text: &str) -> String {
+        if self.0 {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_string()
+        }
+    }
+
+    pub(super) fn green(self, text: &str) -> String {
+        self.code("32", text)
+    }
+
+    pub(super) fn red(self, text: &str) -> String {
+        self.code("31", text)
+    }
+
+    pub(super) fn yellow(self, text: &str) -> String {
+        self.code("33", text)
+    }
+
+    pub(super) fn dim(self, text: &str) -> String {
+        self.code("90", text)
+    }
+
+    pub(super) fn bold_blue(self, text: &str) -> String {
+        self.code("1", &self.code("34", text))
+    }
+}
+
+/// The width of a panel's top and bottom rules, as Go's `ui.LogPanel` draws them.
+pub(super) const PANEL_WIDTH: usize = 60;
 
 /// Renders each complete line it is given with a gutter border as it arrives. The header is drawn
 /// on the first byte, so a script that prints nothing draws no panel. [`LogPanel::close`] ends it.
@@ -110,8 +147,7 @@ impl<W: Write> Write for LogPanel<W> {
 mod tests {
     use std::io::Write;
 
-    use super::LogPanel;
-    use crate::commands::trust::Paint;
+    use super::{LogPanel, Paint};
 
     fn rendered(chunks: &[&[u8]], ok: bool, paint: bool) -> String {
         let mut out = Vec::new();
