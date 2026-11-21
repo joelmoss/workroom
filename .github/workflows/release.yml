@@ -15,33 +15,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-
-      # No module cache: this job's output is published, and a restored entry could be poisoned.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
-
-      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
-        with:
-          version: "~> v2"
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # Build a Developer ID-signed, notarized, stapled Workroom.dmg and hand it to `publish` as a
-  # workflow artifact. Runs in parallel with goreleaser; `publish` waits for both and is what
-  # actually attaches the DMG to the release.
+  # Build a Developer ID-signed, notarized, stapled Workroom.dmg and the standalone `workroom`
+  # archives (macapp/Scripts/cli-archives.sh: the Rust binary, which is the CLI and the daemon, for
+  # darwin and linux on arm64 and amd64, under goreleaser's names, with checksums.txt; ADR 0078),
+  # and hand them to `publish` as a workflow artifact. `publish` creates the GitHub release.
   # Requires repo secrets: MACOS_CERTIFICATE / MACOS_CERTIFICATE_PWD
   # (base64 .p12 + password), KEYCHAIN_PASSWORD, and the App Store Connect notary API key
   # NOTARY_KEY / NOTARY_KEY_ID / NOTARY_ISSUER_ID.
@@ -58,23 +35,25 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      # Xcode, Go (Scripts/build-helper.sh compiles + embeds the workroom CLI into the app bundle)
-      # and XcodeGen + create-dmg + sentry-cli. sentry-cli uploads dSYMs in release.sh (skipped
-      # there if the Sentry env vars are unset). No module cache: this job's output is published,
-      # and a restored entry could be poisoned.
+      # Xcode and XcodeGen + create-dmg + sentry-cli. sentry-cli uploads dSYMs in release.sh
+      # (skipped there if the Sentry env vars are unset). No Go: no release builds the Go CLI
+      # (ADR 0078). go-cache stays off as well, for the linter, which can't see the step is skipped.
       - name: Set up the app build
         uses: ./.github/actions/setup-app-build
         with:
+          go: "false"
           go-cache: "false"
           formulae: xcodegen create-dmg getsentry/tools/sentry-cli
 
-      # Zig, the darwin and Linux daemon targets (Homebrew rust can't cross-compile, hence
-      # rustup's), and cargo-zigbuild, downloaded and built rather than restored: this job's output
-      # is published.
+      # Zig, the darwin and Linux targets (Homebrew rust can't cross-compile, hence rustup's), and
+      # cargo-zigbuild, downloaded and built rather than restored: this job's output is published.
+      # x86_64-apple-darwin is the standalone archive's alone: the app is arm64 (ADR 0061).
       - name: Set up the daemon build
         uses: ./.github/actions/setup-daemon-build
         with:
-          targets: aarch64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+          targets: >-
+            aarch64-apple-darwin x86_64-apple-darwin
+            aarch64-unknown-linux-musl x86_64-unknown-linux-musl
           cache: "false"
 
       - name: Import Developer ID signing certificate
@@ -102,7 +81,33 @@ jobs:
           echo "$NOTARY_KEY" | openssl base64 -d -A > "$RUNNER_TEMP/notary.p8"
           make app-package-test
           NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-test APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="
-          NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-release
+          # Not cli-archives_test.sh: it builds both channels' archives to test the script the next
+          # step runs for real, and CI's app-scripts job runs it.
+          NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-release \
+            APP_SCRIPT_TESTS_SKIP=macapp/Scripts/cli-archives_test.sh
+
+      # The standalone archives: the same Rust binary the app bundles, built with the same
+      # toolchain and features for each platform, the darwin ones signed with the Developer ID and
+      # notarized, under goreleaser's names so install.sh and every Go CLI's `workroom update` reach
+      # it. cli-archives.sh checks what it wrote: no Go binary, no Windows build.
+      - name: Build, sign, notarize the standalone archives
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          VERSION: ${{ github.ref_name }}
+          CODESIGN_IDENTITY: Developer ID Application
+        run: NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" macapp/Scripts/cli-archives.sh build macapp/build/release/cli
+
+      # The CLI contract suite against the binary this release ships, unpacked from its archive.
+      - name: Test (contract suite against the shipped binary)
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          SHIPPED="$RUNNER_TEMP/shipped"
+          mkdir "$SHIPPED"
+          tar -xzf "macapp/build/release/cli/workroom_${VERSION#v}_darwin_arm64.tar.gz" -C "$SHIPPED"
+          WORKROOM_BIN="$SHIPPED/workroom" rustup run "$(make -s print-VCS_RUST)" \
+            cargo test --manifest-path vcs/Cargo.toml -p workroom --test commands_contract -- --include-ignored
 
       - name: Preserve signed installer for publication
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -111,6 +116,7 @@ jobs:
           path: |
             macapp/build/release/Workroom.dmg
             macapp/build/release/appcast-fields.env
+            macapp/build/release/cli/
           if-no-files-found: error
           # v4 artifact names are unique per RUN, not per attempt, and this action fails by
           # default when the name already exists — so "Re-run all jobs" would rebuild and
@@ -122,9 +128,9 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-  # Build both platforms concurrently; publish the app only after both jobs succeed.
+  # Create the GitHub release with the archives and the DMG, then the appcast.
   publish:
-    needs: [release, macapp]
+    needs: [macapp]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -149,13 +155,16 @@ jobs:
           REPO: ${{ github.repository }}
         run: scripts/ci/download-stats.sh release
 
-      - name: Upload installer to the release
+      # Creates the release as a draft, uploads the archives, checksums.txt and the DMG, checks
+      # they are exactly this build's, then publishes it: Latest for a clean vX.Y.Z, a pre-release
+      # for a prerelease tag. A re-run replaces the files of the release it finds.
+      - name: Publish the release
         run: |
           # Name matches the CLI archives' scheme; ${GITHUB_REF_NAME#v} drops the tag's leading
-          # v so it lines up with goreleaser's {{ .Version }} (e.g. workroom-macos-app_1.4.0.dmg).
+          # v so it lines up with the archives' version (e.g. workroom-macos-app_1.4.0.dmg).
           ASSET="$RUNNER_TEMP/workroom-macos-app_${GITHUB_REF_NAME#v}.dmg"
           cp macapp/build/release/Workroom.dmg "$ASSET"
-          gh release upload "$GITHUB_REF_NAME" "$ASSET" --clobber
+          macapp/Scripts/publish-assets.sh "$GITHUB_REF_NAME" macapp/build/release/cli "$ASSET"
 
       - name: Publish Sparkle appcast
         env:
