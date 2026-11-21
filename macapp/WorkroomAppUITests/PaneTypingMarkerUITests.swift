@@ -115,15 +115,21 @@ final class PaneTypingMarkerUITests: XCTestCase {
     XCTAssertTrue(
       marker.waitForExistence(timeout: 20),
       "Terminal 1 never showed who was typing into it: \(app.debugDescription.prefix(2000))")
+    // No later than the keystroke, which came before it showed.
+    let seen = Date()
     XCTAssertTrue(
       poll(timeout: 2) { said == "Claude in tab 2 is typing into this pane." },
       "the marker says \(said): \(marker.debugDescription)")
 
     XCTAssertTrue(poll(timeout: 20) { !marker.exists }, "the marker never went")
-    // The send went at least 4 s after `started`, and the marker lasts 3 s after it.
+    let gone = Date()
+    // From below: the send went at least 4 s after `started`, and the marker lasts 3 s after it.
     XCTAssertGreaterThanOrEqual(
-      Date().timeIntervalSince(started), 7,
-      "the marker went before 3 s had passed since the send")
+      gone.timeIntervalSince(started), 7, "the marker went before 3 s had passed since the send")
+    // From above: 3 s after the one keystroke, its 0.35 s fade, and a margin for a busy guest's
+    // accessibility queries; the keystroke was before `seen`.
+    XCTAssertLessThanOrEqual(
+      gone.timeIntervalSince(seen), 3 + 0.35 + 3, "the marker outstayed the keystroke's 3 s")
     XCTAssertTrue(
       poll(timeout: 10) {
         ((surface().value as? String) ?? "").contains("echo typed-by-claude")
@@ -134,35 +140,82 @@ final class PaneTypingMarkerUITests: XCTestCase {
   /// 85%. Seeded with no daemon (`-WorkroomUITestTypingMarker`), so it shows for as long as the
   /// capture takes.
   func testTheMarkerInEachAppearance() {
+    defer { resetSettings() }
     for (appearance, glass) in [("light", "1"), ("light", "0.85"), ("dark", "1"), ("dark", "0.85")]
     {
-      app = XCUIApplication()
-      app.launchArguments += ["-WorkroomUITestFixture", "1"]
-      app.launchArguments += ["-WorkroomUITestNoRunCommand", "1"]
-      app.launchArguments += ["-WorkroomUITestTypingMarker", "1"]
-      app.launchArguments += ["-WorkroomUITestGlassOpacity", glass]
-      app.launchArguments += ["-themePreference", appearance]
-      app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
-      app.launch()
-      app.activate()
-      XCTAssertTrue(marker.waitForExistence(timeout: 20), "no marker (\(appearance), \(glass))")
-      // Polled: a keystroke the fixture sends before the window is registered names a terminal
-      // no window has open, until the next one, a second later.
-      XCTAssertTrue(
-        poll(timeout: 5) { said == "Claude in tab 2 is typing into this pane." },
-        "the marker says \(said): \(marker.debugDescription)")
-      // Past the fade-in.
-      RunLoop.current.run(until: Date().addingTimeInterval(1))
-      let name = "\(appearance), Glass \(glass == "1" ? "off" : "85%")"
-      for (shot, suffix) in [
-        (XCUIScreen.main.screenshot(), "screen"), (marker.screenshot(), "marker"),
-      ] {
-        let attachment = XCTAttachment(screenshot: shot)
-        attachment.name = "Typing marker, \(name), \(suffix)"
-        attachment.lifetime = .keepAlways
-        add(attachment)
-      }
-      app.terminate()
+      capture(
+        "\(appearance), Glass \(glass == "1" ? "off" : "85%")",
+        saying: "Claude in tab 2 is typing into this pane.",
+        ["-WorkroomUITestGlassOpacity", glass, "-WorkroomUITestAppearance", appearance])
     }
+  }
+
+  /// A sender in another workroom with a very long name, in a wide pane and in a very narrow
+  /// one: the name and the tab stay whole, the workroom gives way from its middle, and the pill
+  /// never runs past the pane's edges.
+  func testALongWorkroomNameTruncatesFirstInANarrowPane() {
+    defer { resetSettings() }
+    let long = String(repeating: "abcdefghij", count: 13)
+    let anotherWorkroom = [
+      "-WorkroomUITestTwoTabs", "1", "-WorkroomUITestTypingMarkerElsewhere", "1",
+      "-WorkroomUITestAppearance", "dark", "-WorkroomUITestGlassOpacity", "1",
+    ]
+    // A short name first, which the pill holds tight round.
+    capture(
+      "another workroom", saying: "Claude in tab 1 in uitest-room is typing into this pane.",
+      anotherWorkroom)
+    let elsewhere = anotherWorkroom + ["-WorkroomUITestLongWorkroomName", "1"]
+    let saying = "Claude in tab 1 in \(long) is typing into this pane."
+    capture("long workroom name", saying: saying, elsewhere)
+    capture(
+      "long workroom name, narrow pane", saying: saying,
+      elsewhere + ["-WorkroomUITestWindowFrame", "{{80, 80}, {760, 560}}"])
+  }
+
+  /// Launches the seeded marker with `arguments`, checks what it says and that it sits inside its
+  /// pane, and attaches the screen and the pill.
+  private func capture(_ name: String, saying: String, _ arguments: [String]) {
+    app = XCUIApplication()
+    app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    app.launchArguments += ["-WorkroomUITestNoRunCommand", "1"]
+    app.launchArguments += ["-WorkroomUITestTypingMarker", "1"]
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launchArguments += arguments
+    app.launch()
+    app.activate()
+    XCTAssertTrue(marker.waitForExistence(timeout: 20), "no marker (\(name))")
+    // Polled: a keystroke the fixture sends before the window is registered names a terminal no
+    // window has open, until the next one, a second later.
+    XCTAssertTrue(
+      poll(timeout: 5) { said == saying }, "the marker says \(said): \(marker.debugDescription)")
+    // Past the fade-in.
+    RunLoop.current.run(until: Date().addingTimeInterval(1))
+    let pane = surface().frame
+    XCTAssertTrue(
+      pane.insetBy(dx: -1, dy: -1).contains(marker.frame),
+      "the pill \(marker.frame) runs past its pane \(pane) (\(name))")
+    for (shot, suffix) in [
+      (XCUIScreen.main.screenshot(), "screen"), (marker.screenshot(), "marker"),
+    ] {
+      let attachment = XCTAttachment(screenshot: shot)
+      attachment.name = "Typing marker, \(name), \(suffix)"
+      attachment.lifetime = .keepAlways
+      add(attachment)
+    }
+    app.terminate()
+  }
+
+  /// Puts back what the captures set, which persists in the app's defaults: Glass off and the
+  /// system's appearance, the settings' own defaults.
+  private func resetSettings() {
+    app = XCUIApplication()
+    app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    app.launchArguments += ["-WorkroomUITestNoRunCommand", "1"]
+    app.launchArguments += ["-WorkroomUITestGlassOpacity", "1"]
+    app.launchArguments += ["-WorkroomUITestAppearance", "system"]
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launch()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+    app.terminate()
   }
 }
