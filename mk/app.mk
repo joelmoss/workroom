@@ -298,9 +298,12 @@ CAPTURE ?= macapp/DerivedData/app-capture.png
 
 # The dev app as it really looks on screen, translucency included, which a window capture and the
 # VM's screenshots don't show (macapp/Scripts/capture-dev-app.sh). It brings this checkout's running
-# dev app forward for about a second and takes the front back after, so ask before running it.
+# dev app forward for about a second and takes the front back after, so ask before running it. It
+# holds the GUI session exclusively from activation to giving the front back, as `app-uitest` does:
+# taking the front mid-run would steal another workroom's UI test's keystrokes.
 app-capture: ## Capture this checkout's running dev app as it looks on screen, translucency included (CAPTURE=path)
-	sh macapp/Scripts/capture-dev-app.sh "com.developwithstyle.workroom.dev$(APP_DEV_ID_SUFFIX)" "$(CAPTURE)"
+	$(call gui_lock,exclusive,app-capture) \
+	  sh macapp/Scripts/capture-dev-app.sh "com.developwithstyle.workroom.dev$(APP_DEV_ID_SUFFIX)" "$(CAPTURE)"
 
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py
