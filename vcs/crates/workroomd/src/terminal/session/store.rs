@@ -276,6 +276,26 @@ impl SessionStore {
         sessions.get(&id).map(|session| f(&session.pty))
     }
 
+    /// The session's pty's columns and rows, from the kernel: what `terminal.command` (#691)
+    /// renders its command's output at. `None` when the session has gone or the size can't be
+    /// read.
+    pub fn pty_size(&self, id: SessionId) -> Option<(u16, u16)> {
+        let pty = lock_or_recover(&self.sessions)
+            .get(&id)
+            .map(|session| Arc::clone(&session.pty))?;
+        pty.size().ok()
+    }
+
+    /// Whether the session's shell has its terminal: its pty's foreground process group is the
+    /// shell's own, so no program it started is running in the foreground. What `terminal.command`
+    /// (#691) asks when the shell's marks can't say. `None` when the session has gone.
+    pub fn shell_in_foreground(&self, id: SessionId) -> Option<bool> {
+        let pty = lock_or_recover(&self.sessions)
+            .get(&id)
+            .map(|session| Arc::clone(&session.pty))?;
+        Some(pty.foreground_pgid() == Some(pty.child_pid()))
+    }
+
     /// The session's shadow terminal, taken out of the store so the caller can hold it across a
     /// read without keeping the store locked: the terminal API's capture (#686), and tests.
     pub fn shadow(&self, id: SessionId) -> Option<Arc<Mutex<Shadow>>> {

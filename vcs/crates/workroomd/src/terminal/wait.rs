@@ -163,6 +163,9 @@ pub struct Waiter {
     /// A regex wait's matcher, used only by the thread in [`Waiter::wait`], never by the session:
     /// matching happens there, off the session's reader.
     matcher: Mutex<Option<Matcher>>,
+    /// A `terminal.command`'s (#691): the output between its command's marks, kept as the reader
+    /// hands it over ([`Waiter::output`]). `None` for every other wait.
+    transcript: Mutex<Option<Transcript>>,
 }
 
 /// What a waiter waits for, its regex's matcher apart (`Waiter::matcher`).
@@ -284,9 +287,53 @@ impl Waiter {
             }),
             wake: Condvar::new(),
             matcher: Mutex::new(matcher),
+            transcript: Mutex::new(None),
         };
         waiter.shadow(&now);
         waiter
+    }
+
+    /// A `terminal.command`'s wait (#691), made before the session is looked at so the connection
+    /// can cancel it from the start: the next command to finish once it is [`Waiter::begin`]-ed,
+    /// with that command's output kept as it arrives.
+    pub fn command() -> Waiter {
+        let waiter = Waiter::new(Condition::CommandFinished, Seen::default());
+        *lock_or_recover(&waiter.transcript) = Some(Transcript::default());
+        waiter
+    }
+
+    /// Counts a command wait's commands from `now`, the shadow as the wait is added to its
+    /// session: under the locks every read holds, so the next command the shell ends is the
+    /// first after this.
+    pub fn begin(&self, now: &Seen) {
+        lock_or_recover(&self.state).commands_before = now.commands;
+    }
+
+    /// Whether this is a `terminal.command`'s wait.
+    pub fn transcribes(&self) -> bool {
+        lock_or_recover(&self.transcript).is_some()
+    }
+
+    /// A command wait's output as it was kept, taken once its wait has ended, so it is rendered
+    /// (`Transcript::output`) with no lock held that a reader still handing it a read would wait
+    /// on; `None` for any other wait.
+    pub fn take_transcript(&self) -> Option<Transcript> {
+        lock_or_recover(&self.transcript).take()
+    }
+
+    /// Blocks until `until`, or the wait ends first: its outcome then.
+    pub fn sleep(&self, until: Instant) -> Option<Outcome> {
+        let mut progress = lock_or_recover(&self.state);
+        loop {
+            if let Some(outcome) = &progress.outcome {
+                return Some(outcome.clone());
+            }
+            let now = Instant::now();
+            if now >= until {
+                return None;
+            }
+            progress = recover(self.wake.wait_timeout(progress, until - now)).0;
+        }
     }
 
     /// How it ended, if it has.
@@ -295,8 +342,12 @@ impl Waiter {
     }
 
     /// The next bytes of the session's output, from its reader: queued for the wait's own thread,
-    /// so the reader pays a copy, never a match.
+    /// so the reader pays a copy, never a match. A command's wait keeps what its command prints
+    /// (`Transcript::feed`: a scan for its marks and a copy).
     pub fn output(&self, bytes: &[u8]) {
+        if let Some(transcript) = lock_or_recover(&self.transcript).as_mut() {
+            transcript.feed(bytes);
+        }
         self.queue(|progress| {
             let in_hand = progress.in_hand;
             progress.queue.push(bytes, in_hand);
@@ -971,6 +1022,10 @@ impl Stripper {
         }
     }
 }
+
+pub mod transcript;
+
+use transcript::Transcript;
 
 #[cfg(test)]
 mod tests;

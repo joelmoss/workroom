@@ -193,6 +193,7 @@ fn describe_publishes_every_method_with_both_schemas() {
             "session.resolve",
             "terminal.capture",
             "terminal.send",
+            "terminal.command",
             "terminal.wait",
             "events.subscribe"
         ]

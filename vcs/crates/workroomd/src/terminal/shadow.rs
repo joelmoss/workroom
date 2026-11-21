@@ -463,6 +463,23 @@ impl Shadow {
         self.status.shell_marks()
     }
 
+    /// Whether the shell is running a command by its marks (`ShadowTerminal::command_open`): what
+    /// `terminal.command` (#691) won't type into. `None` when the marks can't say: no prompt seen
+    /// since this program started (a hand-off's next one), or no screen.
+    pub fn command_open(&self) -> Option<bool> {
+        self.terminal
+            .as_ref()
+            .and_then(crate::terminal::vt::ShadowTerminal::command_open)
+    }
+
+    /// Whether a full-screen program has the alternate screen up; false when it can't be read.
+    pub fn alternate_screen(&self) -> bool {
+        self.terminal
+            .as_ref()
+            .and_then(|terminal| terminal.screen_facts())
+            .is_some_and(|facts| facts.alternate)
+    }
+
     /// The input modes the session's program has turned on, which what `terminal.send` types is
     /// encoded for (#689); `None` when the screen can't be read.
     pub fn input_modes(&self) -> Option<crate::terminal::keys::Modes> {
@@ -590,6 +607,12 @@ impl Shadow {
         crate::terminal::wait::Seen::default()
     }
     pub fn has_shell_marks(&self) -> bool {
+        false
+    }
+    pub fn command_open(&self) -> Option<bool> {
+        None
+    }
+    pub fn alternate_screen(&self) -> bool {
         false
     }
     /// No terminal, so no screen; `terminal.wait` refuses `include_screen` before asking.
