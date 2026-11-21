@@ -373,6 +373,33 @@ func (g *Git) ListWorkrooms(dir string) ([]string, error) {
 	return names, nil
 }
 
+// HasWorktree reports whether git registers path as a linked worktree of the project at dir:
+// whether `git worktree list` lists it, symlinks resolved on both sides so a symlinked workrooms
+// folder still matches. The project's own checkout is not one.
+func (g *Git) HasWorktree(dir, path string) (bool, error) {
+	paths, err := g.listWorktreePaths(dir)
+	if err != nil {
+		return false, err
+	}
+	want := resolvedPath(path)
+	if want == resolvedPath(dir) {
+		return false, nil
+	}
+	return slices.ContainsFunc(paths, func(p string) bool { return resolvedPath(p) == want }), nil
+}
+
+// resolvedPath is path with its symlinks resolved; when it is gone, its parent's resolved with
+// its name joined on; else path cleaned.
+func resolvedPath(path string) string {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return real
+	}
+	if parent, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
+		return filepath.Join(parent, filepath.Base(path))
+	}
+	return filepath.Clean(path)
+}
+
 func (g *Git) listWorktreePaths(dir string) ([]string, error) {
 	out, err := g.Executor.Run(dir, "git", "worktree", "list", "--porcelain")
 	if err != nil {

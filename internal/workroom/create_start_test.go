@@ -266,6 +266,56 @@ func TestTeardownRunsTheWorkroomsOwnScript(t *testing.T) {
 	}
 }
 
+// A teardown runs only in a folder git registers as a worktree of the project. A folder of the
+// user's with a listed worktree's name, and the project's own checkout, are refused before
+// anything runs, under Pretend and SkipTeardown too. A symlinked workrooms folder still finds its
+// own worktree.
+func TestTeardownRunsOnlyInAWorktreeGitRegistersForTheProject(t *testing.T) {
+	dir := t.TempDir()
+	vcstest.MakeGitDir(t, dir)
+	workrooms := filepath.Join(t.TempDir(), "workrooms")
+	ours := filepath.Join(workrooms, "ours")
+	writeTeardown(t, ours, "echo ran-ours")
+	writeTeardown(t, filepath.Join(workrooms, "mine"), "echo ran-mine")
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(workrooms, link); err != nil {
+		t.Fatal(err)
+	}
+	// Git lists `ours` there, and a worktree named `mine` elsewhere.
+	listed := gitWorktrees(dir, ours, filepath.Join(t.TempDir(), "mine"))
+	svc, buf, cfg := newTestService(t, &vcs.Git{Executor: &mockExecutor{output: listed}})
+	if err := cfg.SetWorkroomsDir(link); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, mode := range []string{"run", "pretend", "skip"} {
+		svc.Pretend, svc.SkipTeardown = mode == "pretend", mode == "skip"
+		err := svc.RunTeardown(dir, "mine")
+		if !errors.Is(err, ErrGitWorktreeNotFound) {
+			t.Fatalf("%s: err = %v, want ErrGitWorktreeNotFound", mode, err)
+		}
+		want := `git worktree does not exist: git lists no worktree of this project at "` + filepath.Join(link, "mine") + `"`
+		if err.Error() != want {
+			t.Fatalf("%s: err = %q, want %q", mode, err, want)
+		}
+	}
+	svc.Pretend, svc.SkipTeardown = false, false
+	if err := svc.RunTeardown(dir, "ours"); err != nil {
+		t.Fatal(err)
+	}
+	if out := buf.String(); !strings.Contains(out, "ran-ours") || strings.Contains(out, "ran-mine") {
+		t.Fatalf("output = %q, want only the registered worktree's teardown", out)
+	}
+
+	// The project's own checkout, at <workrooms>/<name>, is no workroom.
+	if err := cfg.SetWorkroomsDir(filepath.Dir(dir)); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RunTeardown(dir, filepath.Base(dir)); !errors.Is(err, ErrGitWorktreeNotFound) {
+		t.Fatalf("the project's own checkout: err = %v, want ErrGitWorktreeNotFound", err)
+	}
+}
+
 func writeTeardown(t *testing.T, base, body string) {
 	t.Helper()
 	scripts := filepath.Join(base, "scripts")

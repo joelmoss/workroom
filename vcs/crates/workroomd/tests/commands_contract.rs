@@ -4705,11 +4705,11 @@ fn delete_only_forgets_what_isnt_its_worktree() {
     assert!(home.path("workrooms/calm-river/.git").exists());
 }
 
-/// `git worktree remove` is the only removal, and git removes only this project's own worktree
-/// at `<workrooms folder>/<name>`. When git lists the name for this project but that folder is
-/// another project's worktree, or a folder of the user's, git refuses (`VCSCommandFailed`), after
-/// the teardown ran, as Go runs it first; a locked worktree is refused the same way. Each keeps
-/// its files and its entry.
+/// The teardown runs in `<workrooms folder>/<name>` and `git worktree remove` removes it, so that
+/// folder must be a worktree git registers for this project. When git lists the name for this
+/// project but that folder is another project's worktree, or a folder of the user's, the delete
+/// is refused (`WorkspaceNotFound`) before the teardown runs, under `--pretend` too. A locked
+/// worktree is refused by git (`VCSCommandFailed`). Each keeps its files and its entry.
 #[test]
 #[cfg_attr(
     not(target_os = "macos"),
@@ -4760,20 +4760,25 @@ fn delete_never_removes_a_folder_git_wont_remove_for_the_project() {
     );
     home.write_config(&written);
     let p = project_arg.as_str();
-    for name in ["theirs", "mine"] {
-        let run = home.run(
-            &home.dir,
-            &["delete", name, "--json", "--confirm", name, "--project", p],
-        );
-        run.assert_code(1);
-        assert_eq!(
-            run.stderr, "{\"type\":\"log\",\"phase\":\"teardown\",\"text\":\"stopping\"}\n",
-            "{name}"
-        );
-        assert_eq!(run.error_kind(), "VCSCommandFailed", "{name}");
+    for (name, pretend) in [
+        ("theirs", false),
+        ("mine", false),
+        ("theirs", true),
+        ("mine", true),
+    ] {
+        let mut args = vec!["delete", name, "--json", "--confirm", name, "--project", p];
+        if pretend {
+            args.push("--pretend");
+        }
+        let run = home.run(&home.dir, &args);
+        run.assert_code(3).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "WorkspaceNotFound", "{name}");
         assert_eq!(
             run.envelope()["error"]["message"],
-            "version control command failed: exit status 128",
+            format!(
+                "git worktree does not exist: git lists no worktree of this project at \"{}\"",
+                home.path(&format!("workrooms/{name}")).display()
+            ),
             "{name}"
         );
         assert_eq!(config_text(&home), written, "{name}");

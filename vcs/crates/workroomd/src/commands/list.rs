@@ -227,6 +227,21 @@ pub(super) fn workspace_names(path: &str, vcs: &str) -> Option<Vec<String>> {
     if vcs != "git" {
         return None;
     }
+    let names = worktree_paths(path)?
+        .into_iter()
+        .map(|directory| {
+            Path::new(&directory).file_name().map_or_else(
+                || directory.clone(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+        })
+        .collect();
+    Some(names)
+}
+
+/// The folders of the git project at `path`'s linked worktrees, as `git worktree list` prints
+/// them: Go's `listWorktreePaths`. None when git fails.
+pub(super) fn worktree_paths(path: &str) -> Option<Vec<String>> {
     let output = super::git::command(Path::new(path))
         .args(["worktree", "list", "--porcelain"])
         .output()
@@ -235,7 +250,7 @@ pub(super) fn workspace_names(path: &str, vcs: &str) -> Option<Vec<String>> {
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    let mut names = Vec::new();
+    let mut paths = Vec::new();
     let mut directory = "";
     for line in text.trim().split('\n') {
         if let Some(listed) = line.strip_prefix("worktree ") {
@@ -244,14 +259,10 @@ pub(super) fn workspace_names(path: &str, vcs: &str) -> Option<Vec<String>> {
         }
         let mut fields = line.split_whitespace();
         if fields.next() == Some("HEAD") && fields.next().is_some() && directory != path {
-            let name = Path::new(directory).file_name().map_or_else(
-                || directory.to_string(),
-                |name| name.to_string_lossy().into_owned(),
-            );
-            names.push(name);
+            paths.push(directory.to_string());
         }
     }
-    Some(names)
+    Some(paths)
 }
 
 /// The human list from the working directory, written to `out` as it goes: the workroom it is in,

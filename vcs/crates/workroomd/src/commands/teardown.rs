@@ -9,12 +9,14 @@
 //! to be asked. The judging is `trusted_script`'s, the one `trust` uses (#674).
 //!
 //! Nothing here removes a folder itself. The one removal is `git worktree remove`, run in the
-//! project, of `<workrooms folder>/<name>`, and that is the proof: git removes only a worktree of
-//! that repository registered at that path, so a folder of the user's, or another project's
-//! worktree, there is refused, not removed. `delete NAME` also first checks that git lists a
-//! worktree of that name for the project and that the name is letters, digits, dashes and
-//! underscores, so the path never leaves the workrooms folder; a person's picks, as Go's, rest on
-//! git's check alone.
+//! project, of `<workrooms folder>/<name>`, and git's own check covers it: git removes only a
+//! worktree of that repository registered at that path, so a folder of the user's, or another
+//! project's worktree, there is refused, not removed. The teardown runs in that folder before
+//! git is asked, so `run_teardown` first checks that git registers that very folder as a worktree
+//! of the project, symlinks resolved, and refuses it otherwise: a name git lists is no proof, as
+//! any folder of that name matches it. This covers every caller: `delete NAME`, a person's picks,
+//! and `delete-project`'s cascade and `--from-disk`. `delete NAME` also first checks that the name
+//! is letters, digits, dashes and underscores, so the path never leaves the workrooms folder.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -23,7 +25,7 @@ use std::time::Duration;
 use super::config::{self, Config, Json};
 use super::git::is_git_repo;
 use super::kind::{CliError, Kind};
-use super::list::workspace_names;
+use super::list::{workspace_names, worktree_paths};
 use super::log::LogWriter;
 use super::panel::LogPanel;
 use super::trust::Paint;
@@ -297,7 +299,9 @@ impl Delete<'_> {
     /// Runs workroom `name`'s teardown script, if it has one, as Go's `RunTeardown`: the
     /// workroom's own copy, else the project root's, once this Mac has approved its bytes, with its
     /// output streamed to whoever watches. Under `--pretend` nothing runs, and `--skip-teardown`
-    /// skips it.
+    /// skips it. It runs in `<workrooms folder>/<name>`, so first, under both of those too, that
+    /// folder must be a worktree git registers for the project, or it is refused
+    /// (`WorkspaceNotFound`): a name git lists matches a folder of the user's of that name too.
     pub(super) fn run_teardown(&self, dir: &str, name: &str) -> Result<(), CliError> {
         let data = self.data()?;
         let projects = config::all_projects(&data);
@@ -309,6 +313,15 @@ impl Delete<'_> {
             return Err(remote_workroom(name));
         }
         let path = self.workroom_path(name)?;
+        if !registered(dir, &path)? {
+            return Err(CliError::new(
+                Kind::WorkspaceNotFound,
+                format!(
+                    "git worktree does not exist: git lists no worktree of this project at {}",
+                    super::envelope::encode(&path.to_string_lossy(), false)
+                ),
+            ));
+        }
         let Some(script) = find_script(&path, Path::new(dir)) else {
             return Ok(());
         };
@@ -422,6 +435,38 @@ impl Delete<'_> {
             Some(now) if now.sha256 != script.sha256 => Err(now.untrusted()),
             _ => Ok(()),
         }
+    }
+}
+
+/// Whether git registers `path` as a linked worktree of the project at `dir`, symlinks resolved on
+/// both sides, so a symlinked workrooms folder still matches: Go's `Git.HasWorktree`. The
+/// project's own checkout is not one, and a project that is no git repository registers none.
+fn registered(dir: &str, path: &Path) -> Result<bool, CliError> {
+    if !is_git_repo(Path::new(dir)) {
+        return Ok(false);
+    }
+    let listed = worktree_paths(dir)
+        .ok_or_else(|| CliError::internal(format!("git worktree list in {dir} failed")))?;
+    let want = resolved(path);
+    if want == resolved(Path::new(dir)) {
+        return Ok(false);
+    }
+    Ok(listed
+        .iter()
+        .any(|listed| resolved(Path::new(listed)) == want))
+}
+
+/// `path` with its symlinks resolved; when it is gone, its parent's resolved with its name joined
+/// on; else `path` as it is. Go's `resolvedPath`.
+fn resolved(path: &Path) -> PathBuf {
+    if let Ok(real) = path.canonicalize() {
+        return real;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => parent
+            .canonicalize()
+            .map_or_else(|_| path.to_path_buf(), |parent| parent.join(name)),
+        _ => path.to_path_buf(),
     }
 }
 
@@ -691,6 +736,60 @@ mod tests {
         let (result, asked) = gated(&config, &project, Some(Ok(false)));
         result.unwrap();
         assert_eq!(asked, 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Only the very folder git registers for the project is one, reached through a symlinked
+    /// workrooms folder too; a folder of the user's with a listed worktree's name, the project's
+    /// own checkout and a project that is no repository are not.
+    #[test]
+    fn a_teardown_folder_must_be_a_worktree_git_registers_for_the_project() {
+        let dir = scratch("registered");
+        let project = dir.join("src/app");
+        std::fs::create_dir_all(&project).unwrap();
+        let git = |args: &[&str]| {
+            let status = crate::commands::git::command(&project)
+                .args(args)
+                .stdout(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--no-verify",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "i",
+        ]);
+        let workrooms = dir.join("workrooms");
+        for (name, at) in [
+            ("ours", workrooms.join("ours")),
+            ("mine", dir.join("elsewhere/mine")),
+        ] {
+            git(&["worktree", "add", "-q", "-b", name, at.to_str().unwrap()]);
+        }
+        std::fs::create_dir_all(workrooms.join("mine")).unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&workrooms, &link).unwrap();
+        let app = project.to_str().unwrap();
+
+        assert!(super::registered(app, &workrooms.join("ours")).unwrap());
+        assert!(super::registered(app, &link.join("ours")).unwrap());
+        assert!(!super::registered(app, &link.join("mine")).unwrap());
+        assert!(!super::registered(app, &link.join("gone")).unwrap());
+        assert!(!super::registered(app, &project).unwrap());
+        let plain = dir.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(!super::registered(plain.to_str().unwrap(), &link.join("ours")).unwrap());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

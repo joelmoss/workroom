@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -25,6 +26,11 @@ type fakeVCS struct {
 	failOn      string   // vcsName to fail on (e.g. "workroom/bravo"); "" never fails
 	list        []string // names ListWorkrooms returns (Service.Delete's existence check)
 	onDelete    func()   // runs after each Delete, to change config mid-cascade
+}
+
+// HasWorktree registers each folder named in list, wherever it is.
+func (f *fakeVCS) HasWorktree(_, path string) (bool, error) {
+	return slices.Contains(f.list, filepath.Base(path)), nil
 }
 
 func (f *fakeVCS) Type() vcs.Type                                                   { return vcs.TypeGit }
@@ -178,7 +184,8 @@ func TestDeleteProjectCascadePartialFailureKeepsProject(t *testing.T) {
 // (none exist in this test), config is cleaned up, and the envelope contains
 // from_disk:true and trash_paths = [root, ...sorted workroom paths].
 func TestDeleteProjectFromDisk(t *testing.T) {
-	fake := &fakeVCS{}
+	// Git registers both, as a teardown runs only in a worktree of the project's.
+	fake := &fakeVCS{list: []string{"alpha", "bravo"}}
 	svc, cfg := newTestSvc(t, fake)
 	proj := t.TempDir()
 	canon, _ := config.CanonicalPath(proj)
@@ -313,14 +320,16 @@ func TestDeleteProjectFromDiskTeardownFailure(t *testing.T) {
 			if err := cfg.AddWorkroom(canon, wrName, filepath.Join(wrParent, wrName), "git"); err != nil {
 				t.Fatal(err)
 			}
+			// Git registers it, so its teardown is the one that fails.
+			fake.list = []string{wrName}
 
 			svc.SkipTeardown = skip
 			err := runDeleteProject(svc, true, canon, false, true, []string{proj}, &bytes.Buffer{}, &bytes.Buffer{})
 			data, _ := cfg.Read()
 			_, kept := data[canon]
 			if !skip {
-				if err == nil {
-					t.Fatal("expected error from failing teardown script")
+				if !errors.Is(err, errs.ErrTeardown) {
+					t.Fatalf("err = %v, want the failing teardown script's", err)
 				}
 				if !kept {
 					t.Fatal("project was removed from config despite teardown failure — should be retryable")
