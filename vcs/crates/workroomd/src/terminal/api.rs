@@ -1,6 +1,7 @@
 //! `Service::TerminalApi`: the terminal API (#360, ADR 0079), the daemon's public, versioned JSON
 //! service for coding agents and the user's scripts. The `workroom` commands are thin clients of
-//! it (`commands::terminal_api`); the app never sends it.
+//! it (`commands::terminal_api`); the app calls it only to subscribe to `session.input` events,
+//! for its typing marker (#696).
 //!
 //! **A contract, not an internal wire.** Fields and methods are only ever added; none is removed,
 //! renamed or given another meaning. [`REVISION`] counts the additions, and every reply carries
