@@ -1,5 +1,7 @@
 # Notifications are app-wide, and the Quick Terminal's terminals are ordinary ones
 
+**Superseded in part by ADR 0077 (2026-11-19):** the Quick Terminal becomes the built-in terminal group, and its terminals, like standalone terminals and every terminal group's, are kept across a quit; the launch sweep that ends them goes. The notification rules stand.
+
 Decided 2026-11-04 (owner, triage of #573). Reverses the per-window notifications of #70.
 
 The app keeps one list of notifications, not one per window. Every surface shows that one list and one count: each window's sidebar list and bell, the unread dots, the menu-bar item and its popover, the Dock badge, and toasts, which show in the front window.
