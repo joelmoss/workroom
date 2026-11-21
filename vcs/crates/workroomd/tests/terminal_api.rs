@@ -3201,8 +3201,9 @@ fn events_tell_each_client_attaching_and_detaching() {
 }
 
 /// A hand-off closes every client's connection, so the next program tells each client the events
-/// held as detached, and a client attaching to it is numbered past every one before (#688): a
-/// stream that goes on across the hand-off hears the pane leave and come back as another client.
+/// held as detached, and a client attaching to it is numbered past every one before (#688), those
+/// that left before the hand-off included: a stream that goes on across the hand-off hears the
+/// pane leave and come back as another client, never under a number one before it had.
 #[test]
 fn clients_detach_across_a_hand_off_and_attach_again_numbered_past_the_last() {
     if !has_terminal_state() {
@@ -3220,17 +3221,28 @@ fn clients_detach_across_a_hand_off_and_attach_again_numbered_past_the_last() {
         .as_u64()
         .unwrap_or_else(|| panic!("no client in the snapshot: {first}"));
     events.until("snapshot-complete", |e| e["event"] == "snapshot-complete");
+    // A second client, gone before the hand-off: the highest number given out, held by nobody.
+    let second = attach_with_env(&socket, SHELL, &[], &[]);
+    let gone = events.until("the second client", |e| is(e, "client.attached", SHELL));
+    let gone = gone["client"]["id"].as_u64().expect("an id");
+    assert!(gone > before, "{gone} after {before}");
+    drop(second);
+    events.until("the second client leaving", |e| {
+        is(e, "client.detached", SHELL) && e["client"]["id"] == gone
+    });
 
     hand_off(&socket, &workspace.dir);
-    let left = events.until("the pane leaving", |e| is(e, "client.detached", SHELL));
+    let left = events.until("the pane leaving", |e| {
+        is(e, "client.detached", SHELL) && e["client"]["id"] == before
+    });
     assert_eq!(left["client"], first["clients"][0], "{left}");
     let _again = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
     let back = events.until("the pane back", |e| is(e, "client.attached", SHELL));
     let after = back["client"]["id"].as_u64().expect("an id");
-    assert!(after > before, "{after} after {before}");
+    assert_eq!(after, gone + 1, "numbered past the client that left first");
     assert_numbered(&events.seen, &first["boot"]);
     assert_eq!(events.count("snapshot-complete"), 1, "{:#?}", events.seen);
-    assert_eq!(events.count("client.detached"), 1, "{:#?}", events.seen);
+    assert_eq!(events.count("client.detached"), 2, "{:#?}", events.seen);
     let listed: Vec<Value> = clients_of(&socket, SHELL);
     assert_eq!(
         listed

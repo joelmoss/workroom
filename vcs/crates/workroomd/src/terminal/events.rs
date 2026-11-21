@@ -178,6 +178,9 @@ struct State {
     sealed: Option<u64>,
     /// Whether this numbering came from the program a hand-off replaced (`Hub::adopt`).
     carried: bool,
+    /// The highest client number this boot has told attaching, detached since or not (#688): a
+    /// hand-off's next program numbers its clients past it, so one never names two in a boot.
+    highest_client: u64,
 }
 
 /// [`State`] as a hand-off carries it: ids hyphenated, each event its JSON, which holds its
@@ -188,6 +191,9 @@ struct Carried {
     revision: u64,
     ring: Vec<Value>,
     sessions: Vec<(String, Known)>,
+    /// 0 in a table from before clients were numbered across a hand-off.
+    #[serde(default)]
+    highest_client: u64,
 }
 
 impl Carried {
@@ -201,6 +207,7 @@ impl Carried {
                 .iter()
                 .map(|(id, known)| (id.to_hyphenated(), known.clone()))
                 .collect(),
+            highest_client: state.highest_client,
         }
     }
 
@@ -226,6 +233,7 @@ impl Carried {
             sessions,
             sealed: None,
             carried: true,
+            highest_client: self.highest_client,
         })
     }
 }
@@ -263,6 +271,7 @@ impl Default for Hub {
                 sessions: BTreeMap::new(),
                 sealed: None,
                 carried: false,
+                highest_client: 0,
             }),
             wake: Condvar::new(),
         }
@@ -328,6 +337,9 @@ impl Hub {
     /// them (`api::client_identity_json`).
     pub fn client_attached(&self, id: SessionId, client: Value) {
         let mut state = self.lock();
+        // Counted even for a session the events no longer hold: its number was still given out.
+        let number = client["id"].as_u64().unwrap_or(0);
+        state.highest_client = state.highest_client.max(number);
         let Some(known) = state.sessions.get_mut(&id) else {
             return;
         };
@@ -617,8 +629,9 @@ impl Hub {
     ///
     /// A hand-off closes every client's connection, and no client comes with an adopted session,
     /// so every client the events carried detached (#688): each is told so, before any client of
-    /// this program attaches. Returns the highest client number carried, 0 for none, which this
-    /// program's clients are numbered past, so a client's number never names two in one boot.
+    /// this program attaches. Returns the highest client number the boot gave out, attached now
+    /// or long gone, 0 for none, which this program's clients are numbered past, so a client's
+    /// number never names two in one boot.
     pub fn reconcile(&self, live: Vec<(SessionId, Value)>, carried: bool) -> u64 {
         if !carried {
             let mut state = self.lock();
@@ -627,7 +640,7 @@ impl Hub {
             }
             return 0;
         }
-        let (gone, clients) = {
+        let (gone, clients, given) = {
             let state = self.lock();
             let gone: Vec<SessionId> = state
                 .sessions
@@ -645,9 +658,9 @@ impl Hub {
                         .filter_map(|client| client["id"].as_u64())
                 })
                 .collect();
-            (gone, clients)
+            (gone, clients, state.highest_client)
         };
-        let highest = clients.iter().copied().max().unwrap_or(0);
+        let highest = clients.iter().copied().fold(given, u64::max);
         for id in gone {
             self.ended(id, None);
         }
