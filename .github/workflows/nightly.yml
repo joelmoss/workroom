@@ -191,15 +191,9 @@ jobs:
           WORKROOM_RELEASE_CHANNEL: nightly
           CODESIGN_IDENTITY: Developer ID Application
         run: NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" macapp/Scripts/cli-archives.sh build macapp/build/release/cli
-
-      # The CLI contract suite against the binary this Nightly ships, unpacked from its archive.
-      - name: Test (contract suite against the shipped binary)
-        run: |
-          SHIPPED="$RUNNER_TEMP/shipped"
-          mkdir "$SHIPPED"
-          tar -xzf macapp/build/release/cli/workroom_nightly_darwin_arm64.tar.gz -C "$SHIPPED"
-          WORKROOM_BIN="$SHIPPED/workroom" rustup run "$(make -s print-VCS_RUST)" \
-            cargo test --manifest-path vcs/Cargo.toml -p workroom --test commands_contract -- --include-ignored
+      # No contract suite here, unlike release.yml: its goldens are the main binary's, and the
+      # nightly's baked channel deliberately changes `version --json`'s channel and refuses
+      # `update --channel`, so four of its cases fail on it by design. CI runs it on every change.
 
       - name: Preserve signed installer for publication
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
