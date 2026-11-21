@@ -157,6 +157,9 @@ final class PersistentSessionService {
   private let hostUpdates: (HostID) async -> AsyncStream<HostConnectionManager.Snapshot>
   /// A test's answer to `retag`, in place of this Mac's daemon. Nil for `shared`.
   private var retagOverride: ((UUID, String) async -> Bool)?
+  /// A test's answer to `endSession` for a session on this Mac, in place of its daemon. Nil for
+  /// `shared`.
+  private var endLocalOverride: ((UUID) async -> Bool)?
   /// What a remote pane says while it waits on its host (`HostReachability.waitingNotice`); a
   /// test's own answer in place of it.
   var waitingNotice: (HostID) -> String? = {
@@ -213,9 +216,11 @@ final class PersistentSessionService {
       _ in AsyncStream { $0.finish() }
     },
     retag: ((UUID, String) async -> Bool)? = nil,
+    endLocal: ((UUID) async -> Bool)? = nil,
     reportShimReattach: @escaping () -> Void = {}
   ) {
     self.retagOverride = retag
+    self.endLocalOverride = endLocal
     self.reportShimReattach = reportShimReattach
     self.probe = probe
     self.ownershipOverride = ownership
@@ -945,6 +950,7 @@ final class PersistentSessionService {
       releasedRemote.removeValue(forKey: sessionID)
       return true
     }
+    if let endLocalOverride { return await endLocalOverride(sessionID) }
     // An UNKNOWN owner must report failure, not success. `reap` gates deleting the workroom's
     // directory on this (issue #7), so answering "killed" for a session we could not even route to
     // would delete a worktree out from under a live shell. A malformed id or a missing socket is

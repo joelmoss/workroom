@@ -66,6 +66,27 @@ final class StandaloneAcrossWindowsTests: XCTestCase {
     XCTAssertEqual(holder.terminals.tabCount(forTargetID: id), 1)
   }
 
+  /// Value: protects=selecting a popped-out standalone terminal in another window raises the
+  /// pane's own window (#664 review 4643636571); fails_when=the holder's main window comes forward
+  /// instead; why_new=#664 review; seam=two AppStores over one section; no_claim=the window's
+  /// activation
+  func testSelectingItWhenPoppedOutRaisesThePanesWindow() throws {
+    let (holder, sid, _) = try makeHolder()
+    let target = try XCTUnwrap(holder.target(for: sid))
+    let tab = try XCTUnwrap(holder.terminals.focusedTab(for: target))
+    holder.terminals.detachPane(tab.id, for: target, at: .zero)
+    let paneWindow = try XCTUnwrap(holder.detachedPanes.window(for: tab.id))
+    let other = makeStore()
+    var raised: [NSWindow] = []
+    holder.raiseWindow = { raised.append($0) }
+
+    other.selectedTargetID = sid
+    other.ensureInitialTerminal(for: try XCTUnwrap(other.target(for: sid)))
+
+    XCTAssertEqual(raised, [paneWindow], "the popped-out pane's window comes forward")
+    paneWindow.orderOut(nil)
+  }
+
   /// The holder focuses the terminal, also when it was showing something else.
   func testTheHolderShowsTheTerminalWhenItWasOnAnotherTarget() throws {
     let (holder, sid, _) = try makeHolder()

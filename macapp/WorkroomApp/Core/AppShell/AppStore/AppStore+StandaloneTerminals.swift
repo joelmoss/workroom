@@ -16,7 +16,8 @@ extension AppStore: TerminalsSectionHolder {
   /// selection made in another window, takes you to a standalone terminal.
   func revealTerminals(forTargetID targetID: TargetID) {
     guard let target = terminalTarget(forID: targetID) else { return }
-    let tab = terminals.focusedTab(for: target)?.id ?? terminals.tabs(for: target).first?.id
+    // `allTabs`: a popped-out terminal is still this window's, raised in its own window.
+    let tab = terminals.focusedTab(for: target)?.id ?? terminals.allTabs(for: target).first?.id
     if let window = window(forTab: tab) { raiseWindow(window) }
     openTerminal(targetID: targetID, tabID: tab)
   }
@@ -61,14 +62,17 @@ extension AppStore: TerminalsSectionHolder {
     )
   }
 
-  /// A window closing ends the standalone terminals it holds, and their rows go. Not on a quit,
-  /// which keeps them for the next launch. It stops holding terminals for the section, so a group
-  /// it had terminals in is counted without them, and settled: one no other window holds goes.
+  /// A window closing ends the standalone terminals it holds, and their rows go, and ends its own
+  /// terminals in a group: each by its session, so another window's terminals in that group run
+  /// on. Not on a quit, which keeps them for the next launch. It stops holding terminals for the
+  /// section, so a group it had terminals in is counted without them, and settled: one no other
+  /// window holds goes.
   func endStandaloneTerminalsOnClose() async {
     guard !WindowRegistry.shared.isTerminating else { return }
     let groups = terminals.activeTargetIDs.filter(\.isTerminalGroup)
     terminalsSection.unregister(self)
     for id in groups { groupTabsRemoved(id) }
+    for id in groups { await terminals.reap(id, endingTargetSessions: false) }
     for id in terminals.activeTargetIDs where id.isStandaloneTerminal {
       await terminals.reap(id)
       terminalsSection.remove(id)
