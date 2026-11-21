@@ -268,15 +268,19 @@ func TestTeardownRunsTheWorkroomsOwnScript(t *testing.T) {
 
 // A teardown runs only in a folder git registers as a worktree of the project. A folder of the
 // user's with a listed worktree's name, and the project's own checkout, are refused before
-// anything runs, under Pretend and SkipTeardown too. A symlinked workrooms folder still finds its
-// own worktree.
+// anything runs, under Pretend too; SkipTeardown runs nothing, so refuses nothing. A folder that
+// is gone, and a Jujutsu workroom's, run nothing and refuse nothing. A symlinked workrooms folder
+// still finds its own worktree.
 func TestTeardownRunsOnlyInAWorktreeGitRegistersForTheProject(t *testing.T) {
 	dir := t.TempDir()
 	vcstest.MakeGitDir(t, dir)
+	writeTeardown(t, dir, "echo ran-root")
 	workrooms := filepath.Join(t.TempDir(), "workrooms")
 	ours := filepath.Join(workrooms, "ours")
 	writeTeardown(t, ours, "echo ran-ours")
 	writeTeardown(t, filepath.Join(workrooms, "mine"), "echo ran-mine")
+	legacy := filepath.Join(workrooms, "legacy")
+	writeTeardown(t, legacy, "echo ran-legacy")
 	link := filepath.Join(t.TempDir(), "link")
 	if err := os.Symlink(workrooms, link); err != nil {
 		t.Fatal(err)
@@ -287,17 +291,31 @@ func TestTeardownRunsOnlyInAWorktreeGitRegistersForTheProject(t *testing.T) {
 	if err := cfg.SetWorkroomsDir(link); err != nil {
 		t.Fatal(err)
 	}
+	if err := cfg.AddWorkroom(dir, "legacy", legacy, "git"); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, mode := range []string{"run", "pretend", "skip"} {
 		svc.Pretend, svc.SkipTeardown = mode == "pretend", mode == "skip"
 		err := svc.RunTeardown(dir, "mine")
-		if !errors.Is(err, ErrGitWorktreeNotFound) {
-			t.Fatalf("%s: err = %v, want ErrGitWorktreeNotFound", mode, err)
+		if mode == "skip" {
+			if err != nil {
+				t.Fatalf("skip: err = %v, want none", err)
+			}
+		} else {
+			want := `git worktree does not exist: git lists no worktree of this project at "` + filepath.Join(link, "mine") + `"`
+			if !errors.Is(err, ErrGitWorktreeNotFound) || err.Error() != want {
+				t.Fatalf("%s: err = %v, want %q", mode, err, want)
+			}
 		}
-		want := `git worktree does not exist: git lists no worktree of this project at "` + filepath.Join(link, "mine") + `"`
-		if err.Error() != want {
-			t.Fatalf("%s: err = %q, want %q", mode, err, want)
+		for _, name := range []string{"gone", "legacy"} {
+			if err := svc.RunTeardown(dir, name); err != nil {
+				t.Fatalf("%s %s: err = %v, want none", mode, name, err)
+			}
 		}
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("a teardown ran: %q", buf.String())
 	}
 	svc.Pretend, svc.SkipTeardown = false, false
 	if err := svc.RunTeardown(dir, "ours"); err != nil {

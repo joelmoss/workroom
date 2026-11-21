@@ -3795,47 +3795,100 @@ fn delete_project_keeps_the_project_when_a_teardown_fails() {
     }
 }
 
-/// `--from-disk` runs each entry's teardown in `<workrooms folder>/<name>`, so a folder there git
-/// doesn't register for the project, here one of the user's, is refused (`WorkspaceNotFound`)
-/// before anything runs, `--skip-teardown` or not: the project stays registered and the folder
-/// keeps its files.
+/// `--from-disk` runs an entry's teardown in `<workrooms folder>/<name>` only where git registers
+/// that folder for the project. A folder that is there and isn't (the user's, the entry's checkout
+/// being elsewhere) is refused (`WorkspaceNotFound`) before anything runs, under `--pretend` too,
+/// and the project kept; `--skip-teardown` runs nothing, so goes ahead. A stale entry whose folder
+/// is gone, a workroom Jujutsu made and a project that is no longer a repository run no teardown
+/// and go ahead as they did, trash paths and all, under `--pretend` alike.
 #[test]
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "Mac only: here the Rust binary is MacOnly"
 )]
-fn delete_project_from_disk_refuses_a_folder_git_doesnt_register() {
+fn delete_project_from_disk_runs_a_teardown_only_in_a_registered_folder() {
     let home = Home::new("delete-project-not-ours");
     let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
-    let mine = home.path("workrooms/mine");
-    std::fs::create_dir_all(&mine).expect("mine");
-    std::fs::write(mine.join("notes"), "keep").expect("notes");
-    let project_arg = project.to_string_lossy().into_owned();
-    let written = format!(
-        "{{\"{project_arg}\": {{\"trusted_scripts\": {{\"workroom_teardown\": \"{STOPPING_SHA256}\"}}, \"vcs\": \"git\", \"workrooms\": {{\"mine\": {{\"path\": \"{}\"}}}}}}}}",
-        mine.display()
+    let checkout = home.path("elsewhere/mine");
+    home.git(
+        &project,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "workroom/mine",
+            &checkout.to_string_lossy(),
+        ],
     );
-    home.write_config(&written);
-    let p = project_arg.as_str();
-    for skip in [false, true] {
+    for folder in ["workrooms/mine", "workrooms/plain", "workrooms/x"] {
+        std::fs::create_dir_all(home.path(folder)).expect("folder");
+        std::fs::write(home.path(folder).join("notes"), "keep").expect("notes");
+    }
+    // A project folder that is no longer a repository, with its teardown still there.
+    let gone_repo = home.path("src/plain");
+    write_file(
+        &gone_repo,
+        "scripts/workroom_teardown",
+        "#!/bin/sh\necho stopping\n",
+        0o755,
+    );
+    let config = |project: &Path, name: &str, path: &Path| {
+        format!(
+            "{{\"{}\": {{\"trusted_scripts\": {{\"workroom_teardown\": \"{STOPPING_SHA256}\"}}, \"vcs\": \"git\", \"workrooms\": {{\"{name}\": {{\"path\": \"{}\"}}}}}}}}",
+            project.display(),
+            path.display()
+        )
+    };
+    let refused = format!(
+        "git worktree does not exist: git lists no worktree of this project at \"{}\"",
+        home.path("workrooms/mine").display()
+    );
+    for flags in [&[][..], &["--pretend"]] {
+        let written = config(&project, "mine", &checkout);
+        home.write_config(&written);
+        let p = project.to_string_lossy().into_owned();
+        let p = p.as_str();
         let mut args = vec!["delete-project", p, "--json", "--confirm", p, "--from-disk"];
-        if skip {
-            args.push("--skip-teardown");
-        }
+        args.extend(flags);
         let run = home.run(&home.dir, &args);
         run.assert_code(3).assert_quiet_stderr();
-        assert_eq!(run.error_kind(), "WorkspaceNotFound", "skip {skip}");
-        assert_eq!(
-            run.envelope()["error"]["message"],
-            format!(
-                "git worktree does not exist: git lists no worktree of this project at \"{}\"",
-                mine.display()
-            ),
-            "skip {skip}"
-        );
-        assert_eq!(config_text(&home), written, "skip {skip}");
-        assert_eq!(entries(&mine), ["notes"], "skip {skip}");
+        assert_eq!(run.error_kind(), "WorkspaceNotFound", "{flags:?}");
+        assert_eq!(run.envelope()["error"]["message"], refused, "{flags:?}");
+        assert_eq!(config_text(&home), written, "{flags:?}");
     }
+    let (gone, plain, x) = (
+        home.path("workrooms/gone"),
+        home.path("workrooms/plain"),
+        home.path("workrooms/x"),
+    );
+    let pretend = &["--pretend"][..];
+    for (project, name, path, flags) in [
+        (&project, "mine", &checkout, &["--skip-teardown"][..]),
+        (&project, "gone", &gone, &[]),
+        (&project, "gone", &gone, pretend),
+        (&project, "plain", &plain, &[]),
+        (&project, "plain", &plain, pretend),
+        (&gone_repo, "x", &x, &[]),
+        (&gone_repo, "x", &x, pretend),
+    ] {
+        home.write_config(&config(project, name, path));
+        let p = project.to_string_lossy().into_owned();
+        let p = p.as_str();
+        let mut args = vec!["delete-project", p, "--json", "--confirm", p, "--from-disk"];
+        args.extend(flags);
+        let run = home.run(&home.dir, &args);
+        run.assert_code(0).assert_quiet_stderr();
+        assert_eq!(
+            run.envelope()["trash_paths"],
+            serde_json::json!([p, path.to_string_lossy()]),
+            "{name} {flags:?}"
+        );
+    }
+    for folder in ["workrooms/mine", "workrooms/plain", "workrooms/x"] {
+        assert_eq!(entries(&home.path(folder)), ["notes"], "{folder}");
+    }
+    assert!(checkout.join(".git").exists());
 }
 
 /// A workroom's config key that is no name, `..` or an absolute path (here the project's own
@@ -4810,8 +4863,9 @@ fn delete_only_forgets_what_isnt_its_worktree() {
 /// The teardown runs in `<workrooms folder>/<name>` and `git worktree remove` removes it, so that
 /// folder must be a worktree git registers for this project. When git lists the name for this
 /// project but that folder is another project's worktree, or a folder of the user's, the delete
-/// is refused (`WorkspaceNotFound`) before the teardown runs, under `--pretend` too. A locked
-/// worktree is refused by git (`VCSCommandFailed`). Each keeps its files and its entry.
+/// is refused (`WorkspaceNotFound`) before the teardown runs, under `--pretend` too. With
+/// `--skip-teardown` no script would run, and git refuses the removal (`VCSCommandFailed`), as it
+/// does a locked worktree. Each keeps its files and its entry.
 #[test]
 #[cfg_attr(
     not(target_os = "macos"),
@@ -4889,6 +4943,29 @@ fn delete_never_removes_a_folder_git_wont_remove_for_the_project() {
             "{name}"
         );
     }
+    for name in ["theirs", "mine"] {
+        let run = home.run(
+            &home.dir,
+            &[
+                "delete",
+                name,
+                "--json",
+                "--confirm",
+                name,
+                "--project",
+                p,
+                "--skip-teardown",
+            ],
+        );
+        run.assert_code(1).assert_quiet_stderr();
+        assert_eq!(run.error_kind(), "VCSCommandFailed", "{name}");
+        assert_eq!(
+            run.envelope()["error"]["message"],
+            "version control command failed: exit status 128",
+            "{name}"
+        );
+        assert_eq!(config_text(&home), written, "{name}");
+    }
     assert_eq!(
         std::fs::read_to_string(theirs.join("work")).expect("work"),
         "theirs"
@@ -4906,6 +4983,49 @@ fn delete_never_removes_a_folder_git_wont_remove_for_the_project() {
         "unsaved"
     );
     assert_eq!(config_text(&home), written);
+}
+
+/// `--pretend` says what the real delete does with a workroom it only forgets, a workroom Jujutsu
+/// made and a remote one whose host is destroyed, word for word, in `--json` and to a person, and
+/// changes nothing; no teardown runs in either.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn delete_pretend_says_what_the_real_delete_does_with_what_it_only_forgets() {
+    let home = Home::new("delete-pretend-forget");
+    let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+    let p = project.to_string_lossy().into_owned();
+    let plain = home.path("workrooms/plain");
+    std::fs::create_dir_all(&plain).expect("plain");
+    std::fs::write(plain.join("notes"), "keep").expect("notes");
+    let written = format!(
+        "{{\"{p}\": {{\"trusted_scripts\": {{\"workroom_teardown\": \"{STOPPING_SHA256}\"}}, \"vcs\": \"git\", \"workrooms\": {{\"gone\": {{\"host\": {{\"state\": \"destroyed\"}}, \"path\": \"/home/workroom/gone\"}}, \"plain\": {{\"path\": \"{}\"}}}}}}}}",
+        plain.display()
+    );
+    for json in [false, true] {
+        for name in ["plain", "gone"] {
+            home.write_config(&written);
+            let mut args = vec!["delete", name, "--confirm", name, "--project", &p];
+            if json {
+                args.push("--json");
+            }
+            let mut pretend = args.clone();
+            pretend.push("--pretend");
+            let said = home.run(&home.dir, &pretend);
+            said.assert_code(0).assert_quiet_stderr();
+            assert_eq!(config_text(&home), written, "{name} {json}");
+            let done = home.run(&home.dir, &args);
+            done.assert_code(0).assert_quiet_stderr();
+            assert_eq!(said.stdout, done.stdout, "{name} {json}");
+            assert!(
+                !config_text(&home).contains(&format!("\"{name}\"")),
+                "{name} {json}"
+            );
+        }
+    }
+    assert_eq!(entries(&plain), ["notes"]);
 }
 
 /// A teardown script this Mac hasn't approved is refused with the script in the envelope, for the

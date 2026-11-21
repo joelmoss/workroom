@@ -12,10 +12,12 @@
 //! project, of `<workrooms folder>/<name>`, and git's own check covers it: git removes only a
 //! worktree of that repository registered at that path, so a folder of the user's, or another
 //! project's worktree, there is refused, not removed. The teardown runs in that folder before
-//! git is asked, so `run_teardown` first checks that git registers that very folder as a worktree
-//! of the project, symlinks resolved, and refuses it otherwise: a name git lists is no proof, as
-//! any folder of that name matches it. This covers every caller: `delete NAME`, a person's picks,
-//! and `delete-project`'s cascade and `--from-disk`. Every name, a config key's too, must be
+//! git is asked, so a script runs only once git registers that very folder as a worktree of the
+//! project, symlinks resolved (`teardown_folder`): a name git lists is no proof, as any folder of
+//! that name matches it. A folder of the user's or another project's there is refused before any
+//! script; where there is none, nothing runs and the delete goes on as it would. This covers
+//! every caller: `delete NAME`, a person's picks, and `delete-project`'s cascade and
+//! `--from-disk`. Every name, a config key's too, must be
 //! letters, digits, dashes and underscores before it is joined onto the workrooms folder, so the
 //! path never leaves it.
 
@@ -209,6 +211,9 @@ impl Delete<'_> {
                     }
                 }
             }
+        } else if !destroyed {
+            // `--pretend` says what the real run would do with a workroom it only forgets.
+            orphan = self.legacy_workroom_path(dir, name)?;
         }
         if let Some(path) = orphan {
             return self.forget_non_git(dir, name, path);
@@ -255,12 +260,8 @@ impl Delete<'_> {
             // `delete NAME` refuses it, before it is joined onto a path.
             check_name(name)?;
             self.destroyed_remote(dir, name)?;
-            let orphan = if self.pretend() {
-                None
-            } else {
-                self.legacy_workroom_path(dir, name)?
-            };
-            let deleted = match orphan {
+            // Under `--pretend` too, so it says what the real run would do.
+            let deleted = match self.legacy_workroom_path(dir, name)? {
                 Some(path) => self.forget_non_git(dir, name, path)?,
                 None => self.delete_by_name(dir, name)?,
             };
@@ -304,9 +305,12 @@ impl Delete<'_> {
 
     /// Drops the entry of workroom `name`, whose folder at `path` holds no git checkout, and
     /// nothing else: no git (it would find an ancestor repository) and no teardown (it would run
-    /// in that folder). The folder is the user's. Go's `forgetNonGitWorkroom`.
+    /// in that folder). The folder is the user's. Under `--pretend` it drops nothing. Go's
+    /// `forgetNonGitWorkroom`.
     fn forget_non_git(&self, dir: &str, name: &str, path: String) -> Result<Deleted, CliError> {
-        self.config.remove_workroom(dir, name)?;
+        if !self.pretend() {
+            self.config.remove_workroom(dir, name)?;
+        }
         Ok(Deleted::ForgotNonGit { path })
     }
 
@@ -359,9 +363,8 @@ impl Delete<'_> {
     /// Runs workroom `name`'s teardown script, if it has one, as Go's `RunTeardown`: the
     /// workroom's own copy, else the project root's, once this Mac has approved its bytes, with its
     /// output streamed to whoever watches. Under `--pretend` nothing runs, and `--skip-teardown`
-    /// skips it. It runs in `<workrooms folder>/<name>`, so first, under both of those too, that
-    /// folder must be a worktree git registers for the project, or it is refused
-    /// (`WorkspaceNotFound`): a name git lists matches a folder of the user's of that name too.
+    /// skips it. It runs in `<workrooms folder>/<name>`, so only when git registers that folder
+    /// for the project ([`Delete::teardown_folder`]), under `--pretend` as for real.
     pub(super) fn run_teardown(&self, dir: &str, name: &str) -> Result<(), CliError> {
         let data = self.data()?;
         let projects = config::all_projects(&data);
@@ -373,15 +376,6 @@ impl Delete<'_> {
             return Err(remote_workroom(name));
         }
         let path = self.workroom_path(name)?;
-        if !registered(dir, &path)? {
-            return Err(CliError::new(
-                Kind::WorkspaceNotFound,
-                format!(
-                    "git worktree does not exist: git lists no worktree of this project at {}",
-                    super::envelope::encode(&path.to_string_lossy(), false)
-                ),
-            ));
-        }
         let Some(script) = find_script(&path, Path::new(dir)) else {
             return Ok(());
         };
@@ -390,6 +384,9 @@ impl Delete<'_> {
                 "teardown",
                 &format!("Skipping {}, as asked", script.display()),
             );
+            return Ok(());
+        }
+        if !self.teardown_folder(dir, name, &path)? {
             return Ok(());
         }
         self.say(
@@ -454,6 +451,32 @@ impl Delete<'_> {
                 format!("teardown script failed: {script} returned a non-zero exit code"),
             )),
         }
+    }
+
+    /// Whether workroom `name`'s teardown may run in `path`: only when git registers it as a
+    /// worktree of the project at `dir`, as a name git lists matches any folder of that name. Go's
+    /// `teardownFolder`. Where git registers none, nothing runs and the delete goes on as it
+    /// would: the folder is gone, the project is no git repository, or the workroom is one
+    /// Jujutsu made, only ever forgotten. A folder that is there, in a git project, and not this
+    /// project's worktree (the user's, or another project's worktree) is refused
+    /// (`WorkspaceNotFound`) before anything runs.
+    fn teardown_folder(&self, dir: &str, name: &str, path: &Path) -> Result<bool, CliError> {
+        if !is_git_repo(Path::new(dir)) {
+            return Ok(false);
+        }
+        if registered(dir, path)? {
+            return Ok(true);
+        }
+        if std::fs::metadata(path).is_err() || self.non_git_workroom_path(dir, name)?.is_some() {
+            return Ok(false);
+        }
+        Err(CliError::new(
+            Kind::WorkspaceNotFound,
+            format!(
+                "git worktree does not exist: git lists no worktree of this project at {}",
+                super::envelope::encode(&path.to_string_lossy(), false)
+            ),
+        ))
     }
 
     /// Go's `gateFound`: lets the script at `path` through when this Mac approved its bytes, or

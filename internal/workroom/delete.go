@@ -2,6 +2,7 @@ package workroom
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/joelmoss/workroom/internal/script"
@@ -86,6 +87,11 @@ func (s *Service) Delete(dir, name, confirmValue string) (DeleteResult, error) {
 				return DeleteResult{Name: name, Outcome: Declined}, nil
 			}
 		}
+	} else if !destroyed {
+		// Pretend says what the real run would do with a workroom it only forgets.
+		if orphan, err = s.legacyWorkroomPath(dir, name); err != nil {
+			return DeleteResult{}, err
+		}
 	}
 
 	if orphan != "" {
@@ -125,10 +131,12 @@ func (s *Service) nonGitWorkroomPath(dir, name string) (string, error) {
 
 // forgetNonGitWorkroom removes a non-git workroom's config entry and nothing else. It runs no git
 // (git there would discover an ANCESTOR repository) and no teardown script (which would run in that
-// folder), and it leaves the folder for the user to remove.
+// folder), and it leaves the folder for the user to remove. Under Pretend it removes nothing.
 func (s *Service) forgetNonGitWorkroom(dir, name, path string) (DeleteResult, error) {
-	if err := s.Config.RemoveWorkroom(dir, name); err != nil {
-		return DeleteResult{}, err
+	if !s.Pretend {
+		if err := s.Config.RemoveWorkroom(dir, name); err != nil {
+			return DeleteResult{}, err
+		}
 	}
 	return DeleteResult{Name: name, Outcome: ForgotNonGit, Path: path}, nil
 }
@@ -207,19 +215,18 @@ func (s *Service) InteractiveDelete(dir string, report func(DeleteResult)) (Pick
 		if _, err := s.destroyedRemote(dir, name); err != nil {
 			return 0, err
 		}
-		if !s.Pretend {
-			orphan, err := s.legacyWorkroomPath(dir, name)
+		// Under Pretend too, so it says what the real run would do.
+		orphan, err := s.legacyWorkroomPath(dir, name)
+		if err != nil {
+			return 0, err
+		}
+		if orphan != "" {
+			res, err := s.forgetNonGitWorkroom(dir, name, orphan)
 			if err != nil {
 				return 0, err
 			}
-			if orphan != "" {
-				res, err := s.forgetNonGitWorkroom(dir, name, orphan)
-				if err != nil {
-					return 0, err
-				}
-				report(res)
-				continue
-			}
+			report(res)
+			continue
 		}
 		res, err := s.deleteByName(dir, name)
 		if err != nil {
@@ -238,10 +245,8 @@ func (s *Service) InteractiveDelete(dir string, report func(DeleteResult)) (Pick
 // Returns the script error if the script fails; returns nil when the script is absent.
 // deleteByName runs it first, so its remote refusal covers every delete.
 //
-// The script runs in <workrooms_dir>/<name>, so that folder must be one git registers as a
-// worktree of this project, or nothing runs: a folder of the user's, or another project's
-// worktree, there is refused (ErrGitWorktreeNotFound), under Pretend and SkipTeardown too. A
-// name git lists is no proof: it matches any folder of that name.
+// The script runs in <workrooms_dir>/<name>, so it runs only when git registers that folder as a
+// worktree of this project (see teardownFolder), under Pretend as for real.
 func (s *Service) RunTeardown(dir, name string) error {
 	if err := s.refuseRemote(dir, name); err != nil {
 		return err
@@ -255,13 +260,13 @@ func (s *Service) RunTeardown(dir, name string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.refuseUnregistered(dir, wrPath); err != nil {
-		return err
-	}
 
 	if teardownScript, ok := findScript("workroom_teardown", wrPath, dir); ok && s.SkipTeardown {
 		s.sayStatus("teardown", fmt.Sprintf("Skipping %s, as asked", teardownScript))
 	} else if ok {
+		if run, err := s.teardownFolder(dir, name, wrPath); err != nil || !run {
+			return err
+		}
 		s.sayStatus("teardown", fmt.Sprintf("Running %s from %q", teardownScript, wrPath))
 		if !s.Pretend {
 			if err := s.gateFound(dir, TeardownScript, wrPath, teardownScript); err != nil {
@@ -293,25 +298,32 @@ func checkName(name string) error {
 	return nil
 }
 
-// refuseUnregistered returns ErrGitWorktreeNotFound unless git registers wrPath as a worktree of
-// project dir. delete-project --from-disk detects no VCS first, and a project that is no git
-// repository registers none.
-func (s *Service) refuseUnregistered(dir, wrPath string) error {
+// teardownFolder reports whether workroom name's teardown may run in wrPath: only when git
+// registers it as a worktree of project dir, as a name git lists matches any folder of that name.
+// Where git registers none, nothing runs and the delete goes on as it would: the folder is gone,
+// the project is no git repository (delete-project --from-disk detects no VCS first), or the
+// workroom is one Jujutsu made, only ever forgotten. A folder that is there, in a git project, and
+// not this project's worktree (the user's, or another project's worktree) is refused
+// (ErrGitWorktreeNotFound) before anything runs.
+func (s *Service) teardownFolder(dir, name, wrPath string) (bool, error) {
 	v := s.VCS
 	if v == nil {
 		v, _ = vcs.Detect(dir)
 	}
-	registered := false
-	if v != nil {
-		var err error
-		if registered, err = v.HasWorktree(dir, wrPath); err != nil {
-			return err
-		}
+	if v == nil {
+		return false, nil
 	}
-	if !registered {
-		return fmt.Errorf("%w: git lists no worktree of this project at %q", ErrGitWorktreeNotFound, wrPath)
+	registered, err := v.HasWorktree(dir, wrPath)
+	if err != nil || registered {
+		return registered, err
 	}
-	return nil
+	if _, err := os.Stat(wrPath); err != nil {
+		return false, nil
+	}
+	if legacy, err := s.nonGitWorkroomPath(dir, name); err != nil || legacy != "" {
+		return false, err
+	}
+	return false, fmt.Errorf("%w: git lists no worktree of this project at %q", ErrGitWorktreeNotFound, wrPath)
 }
 
 // destroyedRemote reports whether name is a remote workroom whose host is already destroyed, which
