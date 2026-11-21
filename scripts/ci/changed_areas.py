@@ -42,6 +42,7 @@ RULES = (
     # here and is ci-actions.yml itself.
     ((".github/workflows/ci-actions.yml", ".github/workflows/ci-docs.yml",
       ".github/workflows/download-stats.yml", ".github/workflows/appcast-notes.yml",
+      ".github/workflows/docs-site-check.yml",
       ".github/actions/import-signing-certificate/*", ".github/dependabot.yml",
       ".github/CODEOWNERS", ".github/PULL_REQUEST_TEMPLATE.md", ".github/ISSUE_TEMPLATE/*"),
      frozenset()),

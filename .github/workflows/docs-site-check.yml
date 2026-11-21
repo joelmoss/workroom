@@ -1,0 +1,40 @@
+name: Docs site
+
+# AGENTS.md: a pull request that changes what users see updates docs-site/ in the same pull request.
+# scripts/ci/docs_site_check.py fails one that changes a user-facing declaration (a setting, a
+# default, a shortcut) without it, unless it carries the `no-docs` label.
+#
+# Its own workflow, not a ci.yml job: it re-runs when a label is added or removed, so the waiver
+# takes effect at once, and a label change must not re-run the whole of CI.
+on:
+  pull_request:
+    branches: [master, "release/**"]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions: {}
+
+concurrency:
+  group: docs-site-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs-site:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # A pull request's run checks out GitHub's merge commit: its first parent is the base branch's
+      # tip, so the diff between the two is exactly what merging the pull request would change.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+          filter: blob:none
+          sparse-checkout: scripts/ci
+
+      - name: Check a user-facing change brings its docs
+        shell: bash
+        env:
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: git diff --name-only --no-renames HEAD^1 HEAD | python3 scripts/ci/docs_site_check.py

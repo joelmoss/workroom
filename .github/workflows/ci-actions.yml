@@ -75,6 +75,9 @@ jobs:
       - name: Test the CI path filter
         run: python3 scripts/ci/test_changed_areas.py
 
+      - name: Test the docs-site check
+        run: python3 scripts/ci/test_docs_site_check.py
+
       - name: Test the toolchain pins agree
         run: python3 scripts/ci/test_tool_pins.py
 
