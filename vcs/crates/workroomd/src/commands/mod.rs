@@ -1804,6 +1804,27 @@ mod tests {
         }
     }
 
+    /// After `--`, `--json`, `--verbose` and `--help` are the COMMAND's words, not `command`'s: with
+    /// no daemon to ask, it fails for a person, not in an envelope and not with its help.
+    #[test]
+    fn global_flags_after_the_dashes_are_the_commands() {
+        let ((stdout, stderr), code) = run_on(
+            Platform::Other,
+            &[
+                "command",
+                "t",
+                "--",
+                "cargo",
+                "test",
+                "--json",
+                "--verbose",
+                "--help",
+            ],
+        );
+        assert_eq!((stdout.as_str(), code), ("", 7), "{stderr}");
+        assert!(stderr.starts_with("Error: no daemon to ask"), "{stderr}");
+    }
+
     /// As in Go, `base`'s flags are `set`'s and `clear`'s, and each subcommand's `--help` is its
     /// own; `create`'s `--help` lists the flags Go gives it, but the hidden ones.
     #[test]
