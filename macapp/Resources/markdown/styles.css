@@ -18,7 +18,9 @@ html,
 body {
   margin: 0;
   padding: 0;
-  background: var(--bg);
+  /* No page fill: the viewer hosting the web view paints the theme background behind it, so the
+     preview carries that one fill, frosted under Glass (#729). `--bg` still colours the diagrams. */
+  background: transparent;
   color: var(--fg);
 }
 

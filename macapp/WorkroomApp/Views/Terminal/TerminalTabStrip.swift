@@ -649,9 +649,11 @@ private struct TerminalTabChip: View {
     // tab is filled with the terminal background (`bg`) so it stands distinct from the recessed strip;
     // inactive tabs keep the faint hover wash, the `panel` bar showing through the clear idle fill. A
     // grouped chip insets its pill so it nests inside the split bracket instead of overrunning it.
+    // Under Glass the window base already is `bg`, so the active tab takes the selected-tab wash
+    // (`ThemeFill.tab`, #725).
     .background {
       RoundedRectangle(cornerRadius: 6, style: .continuous)
-        .fill(isActive ? tokens.bg : (isHovered ? tokens.hover : Color.clear))
+        .fill(ThemeFill.tab(active: isActive, hovered: isHovered))
         .padding(isGrouped ? EdgeInsets(top: 2, leading: 3, bottom: 2, trailing: 3) : EdgeInsets())
         // Fade the hover wash in/out instead of snapping it on.
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isHovered)

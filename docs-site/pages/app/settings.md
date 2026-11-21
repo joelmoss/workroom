@@ -51,6 +51,7 @@ See [Notifications](notifications.md).
 | **Appearance** | **System**, **Light** or **Dark**. System follows macOS. |
 | **Theme** | Opens the theme picker. A theme family has a light and a dark variant, and the one in use follows **Appearance**. Terminals change with it. The picker is also on <kbd>⇧⌘K</kbd> (**View ▸ Theme…**). |
 | **Diff view** | **Unified** or **Side by Side** for diffs you open from now on. A narrow pane always falls back to unified. |
+| **Glass** | Nightly only. Frosts the window: the desktop shows through it, blurred, behind the theme's colours, and the terminals frost with it. A slider from 70% to 100%: lower shows more through, and 100% (the default) is off. The window is opaque in full screen and while **Reduce transparency** is on in macOS's Accessibility settings. |
 | **Dim unfocused panes** | Shades every pane except the focused one so the active terminal stands out in a split. On by default. |
 | **Automatically resize splits evenly** | When you add or close a pane, or drag one to a new place in its split, the panes in its row or column resize to match. With workrooms side by side, every terminal in the window ends up the same size. Off leaves the dividers where you put them. See [Even out a split](splits-and-windows.md#even-out-a-split). |
 | **Load author avatars** | Fetches author and reviewer avatars from Gravatar and GitHub. Off shows coloured initials only and makes no network request. |

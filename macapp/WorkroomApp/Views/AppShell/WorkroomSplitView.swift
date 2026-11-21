@@ -412,7 +412,8 @@ struct WorkroomPaneCardBackground: View {
 
   var body: some View {
     ZStack {
-      Rectangle().fill(ThemeFill.panel)
+      // `.ground`: under Glass the terminal on the card carries the tint (see `ThemeFill`).
+      Rectangle().fill(ThemeFill.ground)
       activeState == .inactive || !highlighted
         ? tokens.splitGroupFill : tokens.splitGroupFocusedFill
     }
@@ -638,7 +639,7 @@ private struct WorkroomPaneTitleBar: View {
     .frame(height: 28)
     .frame(maxWidth: .infinity)
     // No own background and no bottom rule — inherit the card's raised lighter fill (issue #110) so the
-    // header and the terminal body below read as one continuous surface.
+    // header and the terminal body below read as one continuous surface, Glass on or off (#730).
     // So a tap/drag on the bar's empty area is hit-tested: a tap bubbles to the leaf's focus tap and a
     // drag (handled by the leaf's gesture on this bar) moves the group; each button consumes its own
     // click.

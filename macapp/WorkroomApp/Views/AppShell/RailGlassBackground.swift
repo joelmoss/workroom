@@ -4,7 +4,7 @@ import SwiftUI
 /// The switcher rail's backing material: the system's Liquid Glass, the same surface the macOS ⌘Tab
 /// switcher sits on (issue #132).
 ///
-/// Two reasons this is not the app's usual `sidebarCard(vibrant:)` recipe:
+/// Two reasons this is not the app's usual `sidebarCard` recipe:
 ///
 /// 1. **The material has to sample what is behind the *window*.** `VisualEffectView` defaults to
 ///    `.withinWindow`, which blends against the host window's own backdrop — deliberately, so the left

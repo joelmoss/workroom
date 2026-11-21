@@ -456,7 +456,7 @@ private struct CreationLogView: View {
           .padding(8)
         }
       }
-      .background(tokens.surface)
+      .background(ThemeFill.raised)
       .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -574,7 +574,9 @@ private struct CreationDoneFooter: View {
       .padding(.horizontal, inset)
       .padding(.vertical, 12)
     }
-    .background(ThemeFill.panel)
+    // `.ground`, the panel colour opaque: the pane under it already carries the panel wash under
+    // glass, and a second would stack (#725).
+    .background(ThemeFill.ground)
   }
 }
 

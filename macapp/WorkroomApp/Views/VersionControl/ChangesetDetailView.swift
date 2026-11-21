@@ -84,7 +84,7 @@ struct ChangesetDetailView: View {
   var body: some View {
     content
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-      .background(tokens.bg)
+      .background(ThemeFill.background)
       // Fetch on appear + whenever the tab is retargeted to another commit (preview reuse).
       .task(id: loadKey) {
         let myCommitID = descriptor.commitID

@@ -558,10 +558,11 @@ private struct WorkroomTabChip: View {
       // Selection & hover fill — the same treatment as the terminal tab chips: the selected tab is
       // filled with the terminal background (`bg`) so it stands distinct from the strip; a hovered idle
       // tab gets the faint hover wash. Front-most background so a dragged chip's material lift sits
-      // behind it.
+      // behind it. Under Glass the window base already is `bg`, so the selected chip takes the
+      // selected-tab wash instead (`ThemeFill.tab`, #725).
       .background {
         RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .fill(isActive ? tokens.bg : (isHovered ? tokens.hover : Color.clear))
+          .fill(ThemeFill.tab(active: isActive, hovered: isHovered))
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isHovered)
       }
       // A solid lifted chip while dragging.

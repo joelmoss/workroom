@@ -38,7 +38,7 @@ struct InspectorColumn: View {
       .sidebarCard(
         topMargin: WorkroomPaneMetrics.gutter,
         bottomMargin: WorkroomPaneMetrics.gutter + WorkroomPaneMetrics.windowBottomMargin,
-        leadingMargin: 2, vibrant: true
+        leadingMargin: 2
       )
       // AppKit drag handle over the leading edge (a SwiftUI gesture doesn't get events over the
       // AppKit inspector). 12pt hit area with a resize cursor.

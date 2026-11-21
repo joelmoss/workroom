@@ -201,7 +201,12 @@ final class DetachedPaneWindows {
     // Nothing recovered it either: the occlusion observer only fires on a CHANGE, and the surface
     // had already recorded "not visible" before the window ever appeared.
     window.makeKeyAndOrderFront(nil)
-    window.contentView = NSHostingView(rootView: content().themeTokensRoot())
+    // Glass like the main window (#731), resolving this window's own full screen. A normal title bar
+    // (`.standard`): the pane has a name and a place to drag from.
+    window.contentView = NSHostingView(
+      rootView: content().modifier(GlassWindowRoot(titlebar: .standard)).themeTokensRoot())
+    // Glass now, as that root will resolve it, not when it first mounts on a display cycle.
+    WindowBackgroundThemer.applyResolved(to: window, titlebar: .standard)
   }
 
   /// Close a detached pane's window WITHOUT closing its tab — a dock, or a teardown where the tab is

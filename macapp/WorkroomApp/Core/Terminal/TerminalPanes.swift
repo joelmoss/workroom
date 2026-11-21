@@ -2239,13 +2239,13 @@ final class TerminalPanes {
   /// deliberately NOT here: this is called inside a loop over every window's sessions, so doing it
   /// here meant N windows = N config writes + N parses of the same file on the main thread, each of
   /// which compiles the config's regexes. That amplification showed up as a 2s+ AppHang on an OS
-  /// appearance flip (WORKROOM-3R). It now runs once, in `applyActiveTheme`.
+  /// appearance flip (WORKROOM-3R). It now runs once, in `applyActiveTheme`. The rebuilt config
+  /// needs no push from here either: `ghostty_app_update_config` hands it to every live surface,
+  /// the Quick Terminal's and detached panes' included (libghostty's `App.updateConfig`).
   func applyThemeToAll(isDark: Bool) {
-    let config = GhosttyApp.shared.config
     for tab in heldTabs {
       // Content tabs have no surface to re-theme.
       guard let surface = surface(of: tab.id) else { continue }
-      if let config { surface.updateConfig(config) }
       surface.applyColorScheme(isDark: isDark)
     }
   }

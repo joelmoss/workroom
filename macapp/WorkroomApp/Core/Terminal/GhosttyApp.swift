@@ -26,7 +26,9 @@ final class GhosttyApp {
 
   /// The runtime handle, or nil if the engine failed to come up (see `isReady`).
   private(set) var app: ghostty_app_t?
-  /// The active config (owned; freed on `shutdown` / replaced on `reloadConfig`).
+  /// The active config (owned; freed on `shutdown` / replaced on `reloadConfig`). The one config
+  /// every surface draws, in every window: under Glass a window that resolves opaque (full screen)
+  /// lays the opaque theme background behind its terminals instead (`View.terminalBase`).
   private(set) var config: ghostty_config_t?
 
   /// Absolute path to the bundled terminfo directory (set once resources resolve), or nil if the
@@ -224,8 +226,8 @@ final class GhosttyApp {
   }
 
   /// Rebuild the config for the current appearance and apply it app-wide (called on a light/dark
-  /// change from `ThemeService.applyActiveTheme`, once per apply — NOT once per window). Individual
-  /// surfaces are refreshed by `TerminalPanes.applyThemeToAll` via `GhosttySurfaceView.updateConfig`.
+  /// change from `ThemeService.applyActiveTheme`, once per apply — NOT once per window). It writes
+  /// and parses the one app config, and `ghostty_app_update_config` hands it to every live surface.
   ///
   /// `force` rebuilds even when the appearance is unchanged — needed for a *same-appearance theme
   /// switch* (issue #36), where the active theme name changes but `dark` does not, so the plain
@@ -251,6 +253,7 @@ final class GhosttyApp {
     guard writeThemeConfig(dark: dark) else { return }
     lastConfiguredDark = dark
     guard let newConfig = loadConfig() else { return }
+    // This pushes `newConfig` to EVERY live surface (libghostty's `App.updateConfig`).
     ghostty_app_update_config(app, newConfig)
     let old = config
     config = newConfig
@@ -375,12 +378,16 @@ final class GhosttyApp {
   /// Returns whether the file is now on disk. Callers that go on to `loadConfig` must check it: the
   /// engine cannot (`ghostty_config_load_file` returns `void`), so this is the only place a failed
   /// write is still observable.
+  ///
+  /// Written at the app-wide terminal appearance, with the theme preview `ThemeService` already
+  /// resolved for its tokens, so a glass write parses no theme file of its own.
   @discardableResult
   func writeThemeConfig(dark: Bool) -> Bool {
     let written = Self.writeThemeConfig(
       theme: ThemeService.activeThemeName(isDark: dark),
       term: TerminalType(reportsGhostty: Defaults[.terminalReportsGhostty]),
-      command: Self.fixtureShellCommand, to: themeConfigURL)
+      command: Self.fixtureShellCommand, glass: GlassService.shared.terminalAppearance,
+      preview: ThemeService.shared.activePreview, to: themeConfigURL)
     if written {
       reportedConfigWriteFailure = false
     } else if !reportedConfigWriteFailure {
@@ -406,13 +413,39 @@ final class GhosttyApp {
     return written
   }
 
+  /// Under Glass, the config lines that hold `preview`'s colours to a 3:1 floor on its background,
+  /// in place of `minimum-contrast` (see `writeThemeConfig`): `palette = N=#rrggbb` for each of
+  /// palette 0-15, and `foreground = #rrggbb`, that is under it, moved toward black on a light
+  /// background or white on a dark one until it clears it. Empty for a theme that already does.
+  nonisolated static func glassContrastOverrides(for preview: ThemePreview) -> [String] {
+    let bg = preview.background
+    let target: NSColor =
+      ThemeTokens.luminance(of: bg) > ThemeTokens.luminance(of: .gray) ? .black : .white
+    // `legible` hands back a colour that already clears 3:1 as it is (in sRGB), so only a
+    // changed hex is an override.
+    func fixed(_ color: NSColor) -> String? {
+      let hex = ThemeCatalog.hex(color)
+      let legible = ThemeCatalog.hex(ThemeTokens.legible(color, on: bg, towards: target))
+      return legible == hex ? nil : legible
+    }
+    let palette = preview.palette.prefix(16).enumerated().compactMap { index, color in
+      fixed(color).map { "palette = \(index)=\($0)" }
+    }
+    return palette + (fixed(preview.foreground).map { ["foreground = \($0)"] } ?? [])
+  }
+
   /// The write itself, apart from the `Defaults` lookup, so `GhosttyConfigLocationTests` can write
   /// two identities' files side by side through the production path. Returns false if the directory
   /// could not be created or the file could not be written; the instance overload above is what logs.
+  ///
+  /// `preview` is the theme's, when the caller already holds it; one for another theme is ignored,
+  /// and without one a glass write resolves it.
   @discardableResult
   nonisolated static func writeThemeConfig(
-    theme: String, term: TerminalType = .xterm256Color, command: String? = nil, to url: URL
+    theme: String, term: TerminalType = .xterm256Color, command: String? = nil,
+    glass: GlassAppearance = .opaque, preview: ThemePreview? = nil, to url: URL
   ) -> Bool {
+    let theme = ThemeCatalog.sanitizedThemeName(theme)
     // The terminal's colours come from the active theme family's variant for this appearance
     // (issue #36). libghostty resolves `theme = "<name>"` from $GHOSTTY_RESOURCES_DIR/themes (and
     // ~/.config/ghostty/themes, which wins) — verified on the pinned GhosttyKit for new and live
@@ -427,6 +460,14 @@ final class GhosttyApp {
     // convention/comment only, not a shared constant — terminal content and app chrome are different
     // subsystems that may need different floors later.
     //
+    // Under Glass `minimum-contrast` is left out: Ghostty measures it against the cell background
+    // plus the default background times (1 - its alpha), premultiplied, so with
+    // `background-opacity = 0` it measures against black and turns a light theme's dark text white.
+    // Glass writes the floor into the colours instead (`glassContrastOverrides`): each of palette
+    // 0-15 and the default foreground that is under 3:1 on the theme's real background is
+    // overridden, made legible the way the app's status colours are (`ThemeTokens.legible`). A
+    // line in this file wins over the theme's own.
+    //
     // `abnormal-command-exit-runtime = 0` turns off libghostty's "Ghostty failed to launch the
     // requested command" screen. On macOS it fires for any command that exits within 250ms, whatever
     // its status (the `login` wrapper hides the status), and prints the whole wrapped command line.
@@ -435,19 +476,36 @@ final class GhosttyApp {
     //
     // `term` is the `TERM` new surfaces hand their shell (`TerminalType`).
     //
+    // `background-opacity = 0` is Glass (#725): the terminal draws no default background, so what
+    // shows under its text is the window base, the theme background at the Glass opacity
+    // (`WindowBackgroundThemer`), the one tint under every pixel. Cells with a background colour of
+    // their own, and the selection, still draw it (`background-opacity-cells` stays off). So the
+    // config does not depend on the opacity, and an opacity change within glass never rewrites it.
+    // It is the one config for every window: one that resolves opaque under Glass (full screen)
+    // lays the opaque theme background behind its terminals (`View.terminalBase`), which is what
+    // an opaque terminal would have drawn. Left out when the whole app is opaque, so an opaque
+    // terminal draws its own background, exactly as before Glass.
+    // `background-blur` is never written: that blur is the window's, and a second would stack on it.
+    //
     // `command` is only ever a UI test's shell (`fixtureShellCommand`). `direct:` runs it as is,
     // without `/bin/sh -c`, so Ghostty still sees `bash` and injects its integration. A newline
     // would start a directive of its own, so a path holding one is dropped.
     var contents = """
       # Generated by Workroom — active theme for the current appearance. Do not edit.
-      theme = "\(ThemeCatalog.sanitizedThemeName(theme))"
+      theme = "\(theme)"
       term = \(term.rawValue)
-      minimum-contrast = 3.0
       window-padding-x = 8
       window-padding-y = 8
       window-padding-balance = true
       abnormal-command-exit-runtime = 0
       """
+    if glass.isGlass {
+      contents += "\nbackground-opacity = 0"
+      let preview = preview?.name == theme ? preview : ThemeService.themePreview(named: theme)
+      for line in preview.map(glassContrastOverrides) ?? [] { contents += "\n" + line }
+    } else {
+      contents += "\nminimum-contrast = 3.0"
+    }
     if let command, !command.contains(where: \.isNewline) {
       contents += "\ncommand = direct:\(command)"
     }

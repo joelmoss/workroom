@@ -58,7 +58,7 @@ struct PlainFileViewer: View {
       .overlay(alignment: .topTrailing) {
         if isFocused && !showingPreview { FileFindBar(model: find) }
       }
-      .background(tokens.bg)
+      .background(ThemeFill.background)
       .task(id: descriptor.path) {
         previewRendered = false  // a new file means a new render to wait for
         let loaded = await loader.load(
@@ -126,13 +126,13 @@ struct PlainFileViewer: View {
             previewRendered = true
           }
         )
-        // Cover the web view's boot window with a themed panel from the first frame, so opening a
-        // Markdown file never shows an empty white rectangle. Most previews paint in under 100 ms,
-        // so the spinner only joins the cover once the render has taken `DelayedSpinner.delay`.
+        // Hold the loader over the web view's boot window. The page paints no background of its
+        // own, so the viewer's fill behind it is all that shows until the render lands, and the
+        // cover draws none (a second fill would stack under glass, #729). Most previews paint in
+        // under 100 ms, so the spinner only appears once the render has taken `DelayedSpinner.delay`.
         .overlay {
           if !previewRendered {
             centered { DelayedSpinner() }
-              .background(tokens.bg)
               .transition(.opacity)
           }
         }
@@ -141,8 +141,8 @@ struct PlainFileViewer: View {
         // Source: an NSTextView (CodeTextView) — read-only, fully selectable across lines, with a
         // line-number gutter and find-match highlighting.
         CodeTextView(
-          attributed: loader.attributed, version: loader.version, tokens: tokens, find: find,
-          isFocused: isFocused
+          attributed: loader.attributed, version: loader.version, tokens: tokens,
+          find: find, isFocused: isFocused
         )
       }
     }

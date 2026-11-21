@@ -110,7 +110,7 @@ struct DiffViewer: View {
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(tokens.bg)
+    .background(ThemeFill.background)
     // Find bar (⌘F), top-trailing over the focused pane only — search state is shared across every
     // file/diff/changeset pane (`AppStore.contentFind`), so only the focused one shows/feeds it.
     .overlay(alignment: .topTrailing) { if isFocused { FileFindBar(model: find) } }
@@ -219,7 +219,9 @@ struct DiffViewer: View {
     }
     .padding(.horizontal, 10).padding(.vertical, 5)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(tokens.panel)
+    // The panel strip over the diff's background: opaque, the panel colour; under glass, the panel
+    // wash over the window base, which the diff's background leaves showing (#725).
+    .background(ThemeFill.panel)
   }
 
   /// The header path with its leading directories dimmed and the file name in the primary colour.

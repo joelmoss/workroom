@@ -56,8 +56,9 @@ struct ActivityBar: View {
     .frame(width: Self.width)
     .frame(maxHeight: .infinity)
     // Not under the title bar: a fill there leaves the bar out of the window's drag region — see
-    // `RootView.detail`.
-    .background(ThemeFill.panel, ignoresSafeAreaEdges: [])
+    // `RootView.detail`. The flat panel, or Glass's chrome backing under glass (#730).
+    // A view background stays inside the safe area, as `ignoresSafeAreaEdges: []` did.
+    .background { ChromeBackground(role: .bar) }
   }
 
   /// Whether the inspector's current target has an uncommitted working tree — drives the Changes

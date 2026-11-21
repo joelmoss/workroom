@@ -360,6 +360,8 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     window.setFrameAutosaveName("QuickTerminal")
     window.contentView = NSHostingView(
       rootView: QuickTerminalContent(panes: panes).quickTerminalEnvironment(host: host))
+    // Glass now, as its root (`QuickTerminalContent`) will resolve it, not when that first mounts.
+    WindowBackgroundThemer.applyResolved(to: window, titlebar: .hidden)
     host.hostWindow = window
     self.window = window
     applyTheme()
@@ -371,18 +373,16 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     }
   }
 
-  /// Repaint the window background and re-theme every pane for the active theme. On a
-  /// `.themeDidChange` the global ghostty config is already reloaded (ThemeService posts the
-  /// notification after it reloads); `ThemeService` re-themes only registered stores' panes, so
-  /// this host's are pushed here.
+  /// Re-theme every pane for the active theme. On a `.themeDidChange` the global ghostty config is
+  /// already reloaded (ThemeService posts the notification after it reloads); `ThemeService`
+  /// re-themes only registered stores' panes, so this host's are pushed here. The window background
+  /// is its Glass root's (`QuickTerminalContent`, #731), which re-applies on the same notification.
   private func applyTheme() {
-    guard let window, let host else { return }
-    window.backgroundColor = ThemeService.shared.tokens.nsPanel
+    guard let host else { return }
     host.terminals.applyThemeToAll(isDark: ThemeService.isCurrentAppearanceDark())
   }
 
   private static func applyTheme(to surface: GhosttySurfaceView) {
-    if let config = GhosttyApp.shared.config { surface.updateConfig(config) }
     surface.applyColorScheme(isDark: ThemeService.isCurrentAppearanceDark())
   }
 

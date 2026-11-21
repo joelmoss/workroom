@@ -55,7 +55,7 @@ struct SidebarColumn: View {
       .sidebarCard(
         topMargin: WorkroomPaneMetrics.gutter,
         bottomMargin: WorkroomPaneMetrics.gutter + WorkroomPaneMetrics.windowBottomMargin,
-        trailingMargin: 2, vibrant: true
+        trailingMargin: 2
       )
       // AppKit drag handle over the trailing edge (a SwiftUI gesture doesn't get events over the
       // List reliably). 12pt hit area with a resize cursor.

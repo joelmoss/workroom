@@ -105,11 +105,13 @@ final class InspectorPaneViewController: NSViewController {
 
   /// Swap the hosted header + body. The body is hidden when collapsed so only the header shows (the
   /// enclosing split also pins a collapsed pane to the header height). Each is a hosting root, so
-  /// each gets the theme here rather than from every caller.
-  func setContent(header: AnyView, body: AnyView, collapsed: Bool) {
+  /// each gets the theme here rather than from every caller, and the window's Glass appearance.
+  func setContent(
+    header: AnyView, body: AnyView, collapsed: Bool, glass: GlassAppearance = .opaque
+  ) {
     _ = view  // ensure loaded
-    headerHost.rootView = AnyView(header.themeTokensRoot())
-    bodyHost.rootView = AnyView(body.themeTokensRoot())
+    headerHost.rootView = header.hostedRoot(glass: glass)
+    bodyHost.rootView = body.hostedRoot(glass: glass)
     (fillsBody ? bodyHost.view : bodyScroll).isHidden = collapsed
   }
 }
@@ -407,7 +409,7 @@ struct InspectorSplitView: NSViewControllerRepresentable {
     let controller = InspectorSplitContainerController()
     controller.onWeightsChanged = onWeightsChanged
     controller.install(panes: panes)
-    pushContent(into: panes)
+    pushContent(into: panes, glass: context.environment.glassAppearance)
     controller.update(workroomKey: workroomKey, collapsed: collapsed, weights: weights)
     return controller
   }
@@ -424,7 +426,7 @@ struct InspectorSplitView: NSViewControllerRepresentable {
       context.coordinator.sectionKey = sectionKey
       controller.rebuild(panes: panes)
     }
-    pushContent(into: context.coordinator.panes)
+    pushContent(into: context.coordinator.panes, glass: context.environment.glassAppearance)
     controller.update(workroomKey: workroomKey, collapsed: collapsed, weights: weights)
   }
 
@@ -449,11 +451,12 @@ struct InspectorSplitView: NSViewControllerRepresentable {
     }
   }
 
-  private func pushContent(into panes: [InspectorPaneViewController]) {
+  private func pushContent(into panes: [InspectorPaneViewController], glass: GlassAppearance) {
     guard panes.count == headers.count, panes.count == bodies.count, panes.count == collapsed.count
     else { return }
     for (index, pane) in panes.enumerated() {
-      pane.setContent(header: headers[index], body: bodies[index], collapsed: collapsed[index])
+      pane.setContent(
+        header: headers[index], body: bodies[index], collapsed: collapsed[index], glass: glass)
     }
   }
 

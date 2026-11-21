@@ -25,6 +25,16 @@ final class ThemeCatalogTests: XCTestCase {
     XCTAssertNil(ThemeCatalog.parseHex(""))
   }
 
+  /// `hex` is `parseHex`'s inverse: a theme file's colour comes back as written, and a component
+  /// outside 0...1 is clamped rather than wrapped.
+  func testHexRoundTripsParseHex() throws {
+    for value in ["#282a36", "#000000", "#ffffff", "#0a7fe3"] {
+      XCTAssertEqual(ThemeCatalog.hex(try XCTUnwrap(ThemeCatalog.parseHex(value))), value)
+    }
+    XCTAssertEqual(
+      ThemeCatalog.hex(NSColor(srgbRed: 1.2, green: -0.1, blue: 0.5, alpha: 0.3)), "#ff0080")
+  }
+
   private func writeTheme(_ contents: String) -> String {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try! contents.write(to: url, atomically: true, encoding: .utf8)

@@ -88,6 +88,70 @@ pane cards, the sidebar card, the inspector split's headers and the creation pan
 Glass (#725) changes how those fills draw. Dialog overlays, sheets, onboarding and the Settings
 window stay opaque, so they paint their tokens directly.
 
+Glass is one slider (Settings → Appearance), 70–100% in 5% stops, with no separate toggle: 100%
+(the default, which reads "Off") is opaque, and below it the window frosts at that opacity. It is
+decided in one place, `GlassResolver.resolve(opacity:reduceTransparency:fullScreen:)`, which
+quantizes the setting (`GlassResolver.quantize`: rounded to the whole percent, clamped to
+`GlassResolver.opacityRange`) and returns a `GlassAppearance`, `.opaque` or `.glass(opacity:)`;
+100%, Reduce transparency and full screen are all opaque. `GlassService.shared` keeps the app-wide
+inputs live: the `glassOpacity` default, quantized, as the observable `opacity` (assigned only when
+it changes, so a drag invalidates the window roots once per percent), and Reduce transparency. The
+Settings readout shows that `opacity`. Every window
+that hosts terminals (the main window, the Quick Terminal, each detached pane) has one
+`GlassWindowRoot`, which resolves against that window's own full-screen state and injects the result as
+`\.glassAppearance`, which `ThemeFill` reads; like `\.themeTokens`, a hosted tree forwards it
+(`TitlebarAccessoryHost`). Under glass every pixel carries one tint. The window is non-opaque and
+its own background is the window base, the theme `bg` at the slider's opacity
+(`WindowBackgroundThemer.baseColor`), under the title bar and everything else; the window server
+blurs what is behind it (`WindowBlur`, the private `CGSSetWindowBackgroundBlurRadius` resolved at
+runtime, ADR 0080), a pure blur with no tint of its own. `WindowBackgroundThemer.apply` is
+idempotent: it makes that call and re-cuts the shadow only when the window turns glass or opaque,
+and an opacity change sets the background colour alone. A window the window server hasn't numbered
+yet stays opaque until the next apply, so it turns glass with its blur. A detached pane's normal title bar turns
+transparent under glass so the base shows through it; the Quick Terminal's is already. Nothing else
+tints at the opacity: `.background` and `.ground` draw nothing, `.panel` is the panel wash
+(`tokens.panelWash`, the foreground at the 5.5% that `tokens.panel` is blended by, so the wash over
+the base is the panel colour), `.raised` is unchanged, `.nestedRaised` (a raised wash inside a host
+that already lays one) and `.textBackground` draw nothing, and a selected tab takes
+`tokens.tabActive` because the base already is `bg` (`ThemeFill.tab(active:hovered:)`, shared by
+the workroom tab bar and the terminal tab strip). A panel inside a panel uses `.ground`, so the wash
+never doubles. AppKit views take `nsFill`, nil where the fill draws nothing, and turn their own
+`drawsBackground` off on it. The terminals'
+generated Ghostty config has `background-opacity = 0` under glass, whatever the opacity, so their
+default background is the window base; cells with a background of their own, and the selection,
+still draw it (`background-opacity-cells` stays off). Glass leaves `minimum-contrast` out of that config, since Ghostty
+measures it against the default background premultiplied by its alpha (black at 0) and would turn a
+light theme's dark text white; instead each of palette 0–15 and the foreground under 3:1 on the
+theme's background is overridden with a legible colour (`GhosttyApp.glassContrastOverrides`, made
+with `ThemeTokens.legible`, from the preview `ThemeService` already resolved for its tokens). Opaque
+keeps `minimum-contrast = 3.0`. That is the one config every terminal draws, in every window: each
+terminal lies on `ThemeFill.background` (`View.terminalBase`, in the pane leaf), which is clear in a
+glass window and the opaque `tokens.bg` in a window that resolves opaque under glass (full screen),
+so there the terminal shows the opaque theme background it would have drawn. With the whole app
+opaque the config has no `background-opacity` and the terminal draws its own background over that
+fill, as before Glass. A sheet that hosts a terminal (exe.dev sign-up) lays `tokens.bg` itself. Only the slider crossing
+100% (or Reduce transparency) rewrites that config, through the theme's reload; an opacity change
+within glass does not touch it, and only recolours each window's base, each percent of a slider
+drag, from the observable `GlassService.opacity`, with no throttle. Add no behind-window blur view, and never write Ghostty's
+`background-blur`.
+The chrome (sidebar and inspector cards, activity bar, footers, the pane status bar) draws through
+`ChromeBackground`, the one place its Glass rules live: under glass the window frame (title bar,
+gutters, the activity bar and window footer, `.bar`) is the bare base, one colour; the cards are the
+flat panel wash over it; a band inside a card (`.cardBand`, the sidebar footer) draws nothing; and
+a floating card (`.floatingCard`, the edge-reveal sidebar) lays the base again under its wash, so the
+terminals do not show through it. A workroom's tab strip and pane header have no background of
+their own, Glass on or off: the pane card's raised fill is under them. No blur material, since a
+material over the window blur stacks into near-opacity, and no Liquid Glass, whose clear style
+paints a pale frost of its own.
+
+The AppKit text views (`CodeTextView`, `LogTextView`, `MarkdownWebView`) read the appearance from
+`context.environment.glassAppearance`; an opaque host (the script approval sheet, `ScriptCodeView`)
+sets it to `.opaque`, so it never frosts. Under glass `CodeTextView`'s scroll views, text view and
+gutter draw no fill, and neither does a SwiftUI wrapper behind them: the base under them already is
+the theme background. The diff's added and removed line tints draw over it unchanged, and its
+header strip is the panel wash. The Markdown page paints no background, and WebKit's under-page
+colour is `ThemeFill.background`.
+
 The pane views (everything under `Views/Terminal` but `TargetTerminalDetail`, the content panes, the
 coding-agent views, the title bar's controls and the toasts) ask their window through
 `@Environment(\.paneHost)`, a `PaneHost`, not `@EnvironmentObject AppStore`: the Quick Terminal's
