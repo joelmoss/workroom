@@ -29,13 +29,16 @@ struct TerminalGroup: Hashable, Sendable {
   /// Whether this is the Quick Terminal's group, which can't be deleted, moved or renamed.
   var isBuiltIn: Bool { id == TargetID.quickTerminalGroupID }
 
-  /// Its row's and title-bar tab's label: its name, else its first terminal's name and how many
-  /// more it has ("~ + 2 more"), else `untitled`.
+  /// Its row's and title-bar tab's label: its name, else its terminals' names — both of two
+  /// ("zsh + htop"), or the first and how many more ("zsh + 2 more") of three or more, or of two
+  /// that read the same — else `untitled`.
   func title(terminalNames: [String]) -> String {
     if let name { return name }
     guard let first = terminalNames.first else { return Self.untitled }
     let more = terminalNames.count - 1
-    return more == 0 ? first : "\(first) + \(more) more"
+    if more == 0 { return first }
+    if more == 1, terminalNames[1] != first { return "\(first) + \(terminalNames[1])" }
+    return "\(first) + \(more) more"
   }
 
   /// Where its new terminals start: its starting folder while that is still a folder, else "New
