@@ -572,11 +572,16 @@ fn oracle(pattern: &str, stream: &[u8]) -> (Option<Vec<u8>>, bool) {
 /// batches (`batches[i]` reads each), as the session's reader and the wait's thread hand it over:
 /// queued, chunked and matched, and the session's end settling what is left. With it, whether it
 /// answered before the end.
+///
+/// With a `pause` (an offset a read ends at), the output goes quiet there for `QUIET`, which the
+/// wait's thread meets with `Matcher::finish`, as `Waiter::wait` does once its timer runs out:
+/// that call is the seam, made here at once, so no test sleeps.
 fn answered(
     matcher: &Matcher,
     stream: &[u8],
     reads: &[usize],
     batches: &[usize],
+    pause: Option<usize>,
 ) -> (Option<Vec<u8>>, bool) {
     let mut matcher = matcher.clone();
     let mut reads = reads.iter();
@@ -586,6 +591,15 @@ fn answered(
         for &read in reads.by_ref().take(batch) {
             queue.push(&stream[at..at + read], 0);
             at += read;
+            // The thread takes what came before the pause, then hears nothing for `QUIET`.
+            if pause == Some(at) {
+                if let Some(found) = matcher.take(std::mem::take(&mut queue), |_| {}) {
+                    return (Some(found), true);
+                }
+                if let Some(found) = matcher.finish() {
+                    return (Some(found), true);
+                }
+            }
         }
         assert!(!queue.lagged, "the test's streams fit a queue");
         if let Some(found) = matcher.take(queue, |_| {}) {
@@ -594,6 +608,30 @@ fn answered(
     }
     assert_eq!(at, stream.len(), "every read is taken");
     (matcher.finish(), false)
+}
+
+/// [`oracle`], for a stream that goes quiet at `pause`: the output so far, searched once as if
+/// it ended there, when that gives a match, which is then due; else the whole stream's answer.
+fn oracle_paused(pattern: &str, stream: &[u8], pause: usize) -> (Option<Vec<u8>>, bool) {
+    match oracle(pattern, &stream[..pause]) {
+        (Some(found), _) => (Some(found), true),
+        (None, _) => oracle(pattern, stream),
+    }
+}
+
+/// `reads` cut so that one ends at `at`.
+fn ending_at(reads: &[usize], at: usize) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for &read in reads {
+        if start < at && at < start + read {
+            out.extend([at - start, start + read - at]);
+        } else {
+            out.push(read);
+        }
+        start += read;
+    }
+    out
 }
 
 /// Whether `answered` gave what `oracle` says, and early enough.
@@ -656,16 +694,20 @@ const PIECES: &[&str] = &[
     "\x07",
 ];
 
-fn stream(rng: &mut Rng) -> Vec<u8> {
+/// A stream, and the offsets between its pieces, where it may go quiet: no sequence or character
+/// is open there, so the output so far strips as it would on its own.
+fn stream(rng: &mut Rng) -> (Vec<u8>, Vec<usize>) {
     let mut out = Vec::new();
+    let mut between = Vec::new();
     for _ in 0..3 + rng.below(30) {
         // Now and then a line longer than the window, so trims fall everywhere.
         if rng.one_in(60) {
             out.extend(std::iter::repeat_n(b'x', WINDOW + rng.below(3 * CHUNK)));
         }
         out.extend_from_slice(PIECES[rng.below(PIECES.len())].as_bytes());
+        between.push(out.len());
     }
-    out
+    (out, between)
 }
 
 /// `len` bytes cut into reads, each boundary a cut one time in `one_in`.
@@ -689,8 +731,10 @@ fn cuts(rng: &mut Rng, len: usize, one_in: usize) -> Vec<usize> {
 /// arrives: in one read or split anywhere, inside an escape sequence or a character included, and
 /// however the wait's thread takes the reads in batches. Checked against the whole stream
 /// searched once ([`oracle`]): every split of small streams, and a seeded sweep of generated ones
-/// with lines longer than the window. No property-test crate: the workspace has none, and an
-/// exhaustive enumeration and a seeded generator need no dependency.
+/// with lines longer than the window. Output that goes quiet, at its end or between two pieces,
+/// is answered as the output so far searched once as if it ended there ([`oracle_paused`]). No
+/// property-test crate: the workspace has none, and an exhaustive enumeration and a seeded
+/// generator need no dependency.
 #[test]
 fn a_regex_waits_answer_is_the_same_however_its_output_is_split() {
     let matchers: Vec<(&str, Matcher)> = SPLIT_PATTERNS
@@ -708,6 +752,7 @@ fn a_regex_waits_answer_is_the_same_however_its_output_is_split() {
     ] {
         for (pattern, matcher) in &matchers {
             let want = oracle(pattern, small);
+            let quiet = oracle_paused(pattern, small, small.len());
             for mask in 0u32..1 << (small.len() - 1) {
                 let mut reads = vec![1];
                 for at in 0..small.len() - 1 {
@@ -717,10 +762,16 @@ fn a_regex_waits_answer_is_the_same_however_its_output_is_split() {
                     }
                 }
                 let batches = vec![1; reads.len()];
-                let answer = answered(matcher, small, &reads, &batches);
+                // Half the splits end in the session's end, half in a quiet at the output's end.
+                let (pause, want) = match mask % 2 {
+                    0 => (None, &want),
+                    _ => (Some(small.len()), &quiet),
+                };
+                let answer = answered(matcher, small, &reads, &batches, pause);
                 assert!(
-                    agrees(answer.clone(), &want),
-                    "{pattern:?} over {small:?} read as {reads:?}: {answer:?}, not {want:?}"
+                    agrees(answer.clone(), want),
+                    "{pattern:?} over {small:?} read as {reads:?}, quiet at {pause:?}: \
+                     {answer:?}, not {want:?}"
                 );
             }
         }
@@ -728,7 +779,7 @@ fn a_regex_waits_answer_is_the_same_however_its_output_is_split() {
     // Generated streams, each read three ways and batched at random.
     let mut rng = Rng(0x0690_5eed_cafe_f00d);
     for case in 0..60 {
-        let stream = stream(&mut rng);
+        let (stream, between) = stream(&mut rng);
         // A stream with a line longer than the window is read in fewer, longer reads, as a pty
         // reads one: each read rescans the window, and a byte at a time would take minutes.
         let fine = if stream.len() > WINDOW {
@@ -741,8 +792,18 @@ fn a_regex_waits_answer_is_the_same_however_its_output_is_split() {
             .map(|one_in| cuts(&mut rng, stream.len(), one_in))
             .collect();
         for (pattern, matcher) in &matchers {
-            let want = oracle(pattern, &stream);
             for reads in &ways {
+                // No quiet, one at the end, or one between two pieces.
+                let pause = match rng.below(3) {
+                    0 => None,
+                    1 => Some(stream.len()),
+                    _ => Some(between[rng.below(between.len())]),
+                };
+                let (reads, want) = match pause {
+                    None => (reads.clone(), oracle(pattern, &stream)),
+                    Some(at) => (ending_at(reads, at), oracle_paused(pattern, &stream, at)),
+                };
+                let reads = &reads;
                 let mut batches = Vec::new();
                 let mut left = reads.len();
                 while left > 0 {
@@ -750,11 +811,11 @@ fn a_regex_waits_answer_is_the_same_however_its_output_is_split() {
                     batches.push(batch);
                     left -= batch;
                 }
-                let answer = answered(matcher, &stream, reads, &batches);
+                let answer = answered(matcher, &stream, reads, &batches, pause);
                 assert!(
                     agrees(answer.clone(), &want),
-                    "case {case}: {pattern:?} over {:?} read as {reads:?}, batched {batches:?}: \
-                     {answer:?}, not {want:?}",
+                    "case {case}: {pattern:?} over {:?} read as {reads:?}, batched {batches:?}, \
+                     quiet at {pause:?}: {answer:?}, not {want:?}",
                     String::from_utf8_lossy(&stream)
                 );
             }
