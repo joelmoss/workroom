@@ -534,6 +534,39 @@ fn backslash_a_is_the_start_of_the_waits_text() {
     let mut matcher = Matcher::new(r"\Aready|(?-m)^ready").unwrap();
     assert_eq!(matcher.feed(&vec![b'x'; WINDOW * 2]), None);
     assert_eq!(matcher.feed(b"\nready\r\n"), None, "trimmed past the start");
+
+    // The screen's text, with `include_screen`, starts the wait's text at its top row.
+    for pattern in [r"\Aready", r"(?-m:^)ready"] {
+        let mut matcher = Matcher::new(pattern).unwrap();
+        assert_eq!(
+            matcher.feed_plain(b"ready on :5173\n$ ").as_deref(),
+            Some(&b"ready"[..]),
+            "{pattern}"
+        );
+        let mut matcher = Matcher::new(pattern).unwrap();
+        assert_eq!(matcher.feed_plain(b"$ npm run dev\n"), None, "{pattern}");
+        assert_eq!(
+            matcher.feed(b"ready\r\n"),
+            None,
+            "{pattern}: after the screen"
+        );
+    }
+    // As a waiter has it: the first output after it starts, a byte at a time, and the screen.
+    let waiter = output_waiter(r"\Aready");
+    for byte in b"ready\r\n" {
+        waiter.output(&[*byte]);
+    }
+    assert_eq!(
+        waiter.wait(in_20s()),
+        Outcome::Met(Met::Output(b"ready".to_vec()))
+    );
+    let waiter = output_waiter(r"(?-m:^)ready");
+    waiter.screen(b"ready on :5173\n".to_vec());
+    waiter.output(b"ready\r\n");
+    assert_eq!(
+        waiter.wait(in_20s()),
+        Outcome::Met(Met::Output(b"ready".to_vec()))
+    );
 }
 
 /// The patterns the split-invariance test asks about: literals, line anchors, word boundaries
