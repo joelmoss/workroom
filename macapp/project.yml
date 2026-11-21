@@ -6,7 +6,7 @@
 #
 # If you'd rather not use XcodeGen, create a SwiftUI macOS App target in Xcode,
 # add the local GhosttyKit package, drop in the WorkroomApp/ sources, and add the
-# Scripts/build-helper.sh as a post-build Run Script phase (see README.md).
+# Scripts/build-daemon.sh as a post-build Run Script phase (see README.md).
 
 name: WorkroomApp
 options:
@@ -316,21 +316,17 @@ targets:
             echo "warning: swift-format not found in the active toolchain; skipping lint"
           fi
     postCompileScripts:
-      - name: Build & embed workroom helper
-        # Runs before Xcode's final code-sign so the embedded binary is covered by
-        # the app signature. See Scripts/build-helper.sh.
-        basedOnDependencyAnalysis: false
-        script: '"${SRCROOT}/Scripts/build-helper.sh"'
       - name: Embed workroom-session
         # Copies the attach-only session helper next to the app binary and signs
         # it with the same identity. See Scripts/embed-session-helper.sh.
         basedOnDependencyAnalysis: false
         script: '"${SRCROOT}/Scripts/embed-session-helper.sh"'
-      - name: Build & embed workroomd
-        # The Rust daemon that owns every new persistent session (issue #154). Lands in
-        # Contents/MacOS beside workroom-session, which survives only as the attach client for
-        # sessions an older build's Swift helper still holds. See Scripts/build-daemon.sh and
-        # Core/Terminal/Session/SessionBackend.swift.
+      - name: Build & embed workroom
+        # The one Rust binary (ADR 0078): the CLI the app shells out to for every project and
+        # workroom operation, and the daemon (`workroom serve`) that owns every new persistent
+        # session (issue #154). Lands in Contents/Resources, the Go CLI's old path; runs before
+        # Xcode's final code-sign so the embedded binary is covered by the app signature. See
+        # Scripts/build-daemon.sh and Core/Terminal/Session/SessionBackend.swift.
         basedOnDependencyAnalysis: false
         script: '"${SRCROOT}/Scripts/build-daemon.sh"'
       - name: Symlink ghostty -> app binary

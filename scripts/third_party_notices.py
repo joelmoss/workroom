@@ -62,7 +62,7 @@ HEADERS = {
     ),
     "app": (
         "This file covers the Workroom app bundle, including the workroom binary inside it "
-        "(Contents/MacOS/workroomd and Contents/Resources/workroomd-linux-*). The names and "
+        "(Contents/Resources/workroom and Contents/Resources/workroom-linux-*). The names and "
         "logos of the tools Workroom shows beside their terminals belong to their owners, and "
         "are used only to identify those tools."
     ),

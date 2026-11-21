@@ -82,7 +82,7 @@ struct FamilySettings: Sendable {
       ?? LiveSettings.checkoutApp
     guard
       FileManager.default.isExecutableFile(
-        atPath: app.appendingPathComponent("Contents/MacOS/workroomd").path)
+        atPath: app.appendingPathComponent("Contents/Resources/workroom").path)
     else {
       throw XCTSkip("no built Dev app at \(app.path): run `make app-build`, or set WR_WORKROOM_APP")
     }
@@ -90,11 +90,11 @@ struct FamilySettings: Sendable {
   }
 
   /// The Mac's own attach client, as a pane runs it.
-  var macDaemon: URL { app.appendingPathComponent("Contents/MacOS/workroomd") }
+  var macDaemon: URL { app.appendingPathComponent("Contents/Resources/workroom") }
 
   /// The Linux daemon the bootstrap pushes, for an architecture `uname -m` names.
   func linuxDaemon(_ architecture: String) -> URL? {
-    let url = app.appendingPathComponent("Contents/Resources/workroomd-linux-\(architecture)")
+    let url = app.appendingPathComponent("Contents/Resources/workroom-linux-\(architecture)")
     return FileManager.default.isReadableFile(atPath: url.path) ? url : nil
   }
 

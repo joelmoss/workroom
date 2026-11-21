@@ -2,8 +2,8 @@ Third-party software notices
 
 Workroom is a Codaset product. It includes the third-party software below,
 each under the licence given with it. This file covers the Workroom app
-bundle, including the workroom binary inside it (Contents/MacOS/workroomd and
-Contents/Resources/workroomd-linux-*). The names and logos of the tools
+bundle, including the workroom binary inside it (Contents/Resources/workroom
+and Contents/Resources/workroom-linux-*). The names and logos of the tools
 Workroom shows beside their terminals belong to their owners, and are used
 only to identify those tools.
 
