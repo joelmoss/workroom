@@ -5587,7 +5587,7 @@ fn shell_word(arg: &str) -> String {
 /// (#683) and `wait` (#690), born in Rust for the terminal API. Completion offers each beside Go's
 /// commands, wherever it lists them (`''`, `help ''`, after a global flag), which Go's cobra, who
 /// wrote the golden, never did.
-const RUST_ONLY_COMMANDS: &[&str] = &["api", "capture", "sessions", "wait"];
+const RUST_ONLY_COMMANDS: &[&str] = &["api", "capture", "events", "sessions", "wait"];
 
 /// `stdout` without the candidates `RUST_ONLY_COMMANDS` name, with or without a description, so
 /// the Rust binary matches the transcript Go wrote in all else. Against Go it changes nothing.

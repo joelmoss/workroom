@@ -75,6 +75,8 @@ impl SessionStore {
         let Some((_, _, attached)) = self.parts(id) else {
             return;
         };
+        // The terminal API's events too, which tell a logged run's transitions from its log alone.
+        self.hooks().events.run(id, line, seq);
         let waiters = lock_or_recover(&attached).waiters.list();
         for waiter in waiters {
             waiter.run(line, seq);

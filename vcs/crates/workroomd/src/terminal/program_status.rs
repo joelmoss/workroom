@@ -773,8 +773,9 @@ fn snapshot_complete(boot: SessionId, sessions: &[SessionId]) -> Vec<u8> {
 }
 
 /// A fresh v4 uuid naming a session store, so the app can tell a daemon that kept its records
-/// (a hand-off) from one that started over.
-fn new_boot() -> SessionId {
+/// (a hand-off) from one that started over. The terminal API's events take one of their own
+/// (`events::Hub`).
+pub(crate) fn new_boot() -> SessionId {
     let mut bytes = [0u8; 16];
     // Should the system's randomness fail, a zero boot still names one store; the app only
     // compares it with the last one it saw.

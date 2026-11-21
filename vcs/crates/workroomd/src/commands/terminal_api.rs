@@ -96,6 +96,9 @@ pub(super) fn stream(
              under a Workroom daemon (every Workroom pane does, and sets {DAEMON_VARIABLE})"
         )));
     };
+    if method == EVENTS {
+        return events(context, &socket, params, encode, each);
+    }
     let started = Instant::now();
     // A wait that may be sent again is pinned to the session its target names now, so the next
     // program is asked about that one session, and can say it has gone ([`gone`]). It is sent
@@ -160,25 +163,15 @@ pub(super) fn stream(
                     });
                     return Ok(());
                 }
-                let mut message = error["message"]
-                    .as_str()
-                    .unwrap_or("the daemon refused")
-                    .to_string();
+                let mut failure = failure(error);
                 // Sent again by its id, the wait's errors still name the target as typed.
                 if resumes > 0
                     && let Some(id) = &pinned
                 {
-                    message = message.replace(&format!("{id:?}"), &format!("{typed:?}"));
+                    failure.message = failure
+                        .message
+                        .replace(&format!("{id:?}"), &format!("{typed:?}"));
                 }
-                let mut failure = CliError::new(
-                    Kind::from_code(error["kind"].as_str().unwrap_or_default()),
-                    message,
-                );
-                failure.matches = error["matches"].as_array().cloned().unwrap_or_default();
-                failure.details = error
-                    .get("details")
-                    .filter(|details| details.is_object())
-                    .map(|details| Box::new(details.clone()));
                 return Err(failure);
             }
             let replied = Replied {
@@ -196,6 +189,139 @@ pub(super) fn stream(
 }
 
 const WAIT: &str = "terminal.wait";
+
+const EVENTS: &str = "events.subscribe";
+
+/// The live events, which say where a stream stands, as against a snapshot's sessions.
+const PLACES: [&str; 2] = ["snapshot-complete", "resumed"];
+
+/// `events.subscribe`'s stream, from `workroom events` and `api call events.subscribe` alike: read
+/// with no timeout, since a quiet daemon is one with nothing to tell, and gone on with across a
+/// hand-off. The daemon hanging up mid-stream is a hand-off's doing when a daemon answers on the
+/// same socket at once (as for a wait, [`resumed`]): the stream is asked of the new program again,
+/// `since` the last place it reached (the last live event's `boot` and `revision`, or its
+/// snapshot's end), and its `session` pinned to the id it resolved to first. The new program
+/// answers `resumed`, which this swallows, saying so on stderr, and sends every event after that
+/// place: nothing missed, nothing twice. When it can't (the daemon started afresh, or the place is
+/// older than it keeps), it sends the sessions afresh, a snapshot whose `snapshot-complete` says
+/// `gap`; that goes to `each` like any reply, and stderr says events may have been missed. With no
+/// daemon there it is 7, as ever.
+fn events(
+    context: &Context,
+    socket: &str,
+    params: Value,
+    encode: impl Fn(&Value) -> Vec<u8>,
+    mut each: impl FnMut(Replied) -> bool,
+) -> Result<(), CliError> {
+    let pinned = params
+        .get("session")
+        .and_then(Value::as_str)
+        .and_then(|target| reply(context, "session.resolve", json!({"target": target})).ok())
+        .and_then(|resolved| {
+            resolved.result["session"]["id"]
+                .as_str()
+                .map(str::to_string)
+        });
+    let mut request = encode(&params);
+    let mut stream = connect(socket)?;
+    // Where the stream stands: the boot and revision a resume asks to go on after.
+    let mut place: Option<(Value, Value)> = None;
+    let mut resumes = 0;
+    // Whether the next reply answers a resume this made.
+    let mut resuming = false;
+    'connection: loop {
+        stream
+            .write_all(&Envelope::new(Service::TerminalApi, STREAM, request.clone()).encode())
+            .map_err(|error| unreachable(format!("the daemon on {socket} hung up: {error}")))?;
+        let _ = stream.set_read_timeout(None);
+        let mut decoder = EnvelopeDecoder::new();
+        loop {
+            let reply = match read_reply(&mut stream, &mut decoder) {
+                Ok(reply) => reply,
+                Err(Ended::HungUp) if resumes < MAX_RESUMES => {
+                    resumes += 1;
+                    stream = connect(socket).map_err(|mut error| {
+                        if error.kind == Kind::DaemonUnreachable {
+                            error.message = format!(
+                                "the daemon on {socket} went away during the events, and none \
+                                 is listening there now"
+                            );
+                        }
+                        error
+                    })?;
+                    let mut again = params.clone();
+                    if let Some(id) = &pinned {
+                        again["session"] = json!(id);
+                    }
+                    if let Some((boot, revision)) = &place {
+                        again["since"] = json!({"boot": boot, "revision": revision});
+                    }
+                    resuming = place.is_some();
+                    eprintln!(
+                        "workroom: the daemon on {socket} was handed off during the events; going \
+                         on in the new one"
+                    );
+                    request = encode(&again);
+                    continue 'connection;
+                }
+                Err(_) => {
+                    return Err(unreachable(format!(
+                        "the daemon on {socket} did not answer"
+                    )));
+                }
+            };
+            let reply: Value = serde_json::from_slice(&reply)
+                .map_err(|_| CliError::internal("the daemon's reply is not JSON"))?;
+            if let Some(error) = reply.get("error") {
+                return Err(failure(error));
+            }
+            let result = reply.get("result").cloned().unwrap_or(Value::Null);
+            let event = result["event"].as_str().unwrap_or_default();
+            if resuming {
+                resuming = false;
+                if event == "resumed" {
+                    continue;
+                }
+                eprintln!(
+                    "workroom: the new daemon could not go on from where the events stood, so \
+                     events may have been missed; the sessions follow afresh"
+                );
+            }
+            if PLACES.contains(&event) || event.contains('.') {
+                place = Some((result["boot"].clone(), result["revision"].clone()));
+            }
+            if event.contains('.') {
+                resumes = 0;
+            }
+            let more = reply.get("more") == Some(&Value::Bool(true));
+            let replied = Replied {
+                revision: reply.get("revision").cloned().unwrap_or(Value::Null),
+                result,
+                more,
+            };
+            if !each(replied) || !more {
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// The daemon's `error` as the command's.
+fn failure(error: &Value) -> CliError {
+    let mut failure = CliError::new(
+        Kind::from_code(error["kind"].as_str().unwrap_or_default()),
+        error["message"]
+            .as_str()
+            .unwrap_or("the daemon refused")
+            .to_string(),
+    );
+    failure.matches = error["matches"].as_array().cloned().unwrap_or_default();
+    failure.details = error
+        .get("details")
+        .filter(|details| details.is_object())
+        .map(|details| Box::new(details.clone()));
+    failure
+}
 
 const TARGET_NOT_FOUND: &str = crate::terminal::api::kind::TARGET_NOT_FOUND;
 

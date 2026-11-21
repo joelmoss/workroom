@@ -891,6 +891,32 @@ impl Api {
         let stream = self.0.take_stream();
         self.0.request(Service::TerminalApi, stream, request)
     }
+
+    /// Calls `method`, a stream, and returns the stream it answers on and its first reply.
+    fn stream(&mut self, method: &str, params: Value) -> (u32, Value) {
+        let stream = self.0.take_stream();
+        let first = self.0.request(
+            Service::TerminalApi,
+            stream,
+            &json!({"method": method, "params": params}),
+        );
+        (stream, first)
+    }
+
+    /// The next whole reply on `stream`.
+    fn reply_on(&mut self, stream: u32) -> Value {
+        let mut assembled = Vec::new();
+        loop {
+            let envelope = self
+                .0
+                .envelope(Service::TerminalApi, stream, Duration::from_secs(20));
+            let (last, body) = envelope.payload.split_first().expect("empty reply chunk");
+            assembled.extend_from_slice(body);
+            if *last == 1 {
+                return serde_json::from_slice(&assembled).expect("a JSON reply");
+            }
+        }
+    }
 }
 
 /// Every method publishes its schemas, and what each replies matches them: a listing, a resolve,
@@ -1020,6 +1046,55 @@ fn every_method_publishes_schemas_its_replies_match() {
     assert_eq!(timed_out["more"], false, "{timed_out}");
     assert_eq!(timed_out["error"]["kind"], "WaitTimeout", "{timed_out}");
     assert_eq!(violation(&error_schema, &timed_out["error"], "error"), None);
+
+    // Events stream, every reply `more`, while the connection takes other requests: a snapshot,
+    // a live event, a resume from it and one from a place this daemon never had.
+    let params = json!({"all": true, "types": ["session.created"]});
+    assert_eq!(
+        violation(&schema("events.subscribe", "input"), &params, "params"),
+        None
+    );
+    let output = schema("events.subscribe", "output");
+    let matches = |reply: &Value| {
+        assert_eq!(reply["revision"], 1, "{reply}");
+        assert_eq!(reply["more"], true, "{reply}");
+        assert_eq!(
+            violation(&output, &reply["result"], "events"),
+            None,
+            "{reply}"
+        );
+        reply["result"].clone()
+    };
+    let (stream, first) = api.stream("events.subscribe", params.clone());
+    assert_eq!(matches(&first)["event"], "session", "{first}");
+    let mut event = first;
+    while event["result"]["event"] != "snapshot-complete" {
+        event = api.reply_on(stream);
+        matches(&event);
+    }
+    let listed = api.call("session.list", json!({"all": true}));
+    assert_eq!(
+        listed["result"]["sessions"].as_array().map(Vec::len),
+        Some(2)
+    );
+    let _third = open(&socket, SHELL, "third", "wr-2", &workspace.dir);
+    let created = matches(&api.reply_on(stream));
+    assert_eq!(created["event"], "session.created", "{created}");
+    let mut since = params.clone();
+    since["since"] = json!({"boot": created["boot"], "revision": created["revision"]});
+    let resumed = matches(&api.stream("events.subscribe", since).1);
+    assert_eq!(resumed["event"], "resumed", "{resumed}");
+    assert_eq!(resumed["revision"], created["revision"], "{resumed}");
+    let mut elsewhere = params;
+    elsewhere["since"] = json!({"boot": "00000000-0000-4000-8000-000000000000", "revision": 1});
+    let (gap, mut event) = api.stream("events.subscribe", elsewhere);
+    while matches(&event)["event"] != "snapshot-complete" {
+        event = api.reply_on(gap);
+    }
+    assert_eq!(event["result"]["reason"], "gap", "{event}");
+    let refused = api.call("events.subscribe", json!({"types": ["session.renamed"]}));
+    assert_eq!(refused["error"]["kind"], "InvalidRequest", "{refused}");
+    assert_eq!(refused["more"], false, "{refused}");
 }
 
 /// Writes `lines` into a script in `dir` that clears the screen and its history, prints them, and
@@ -1645,6 +1720,7 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
             "terminal.wait",
             json!({"target": OTHER, "regex": "API-CALL-WAITED", "timeout_ms": 30000}),
         ),
+        ("events.subscribe", json!({"all": true})),
     ];
     let listed = api_json(&socket, &["list"]);
     for method in listed["methods"].as_array().expect("methods") {
@@ -1666,6 +1742,31 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
         let schema = &described["method"];
         assert_eq!(violation(&schema["input"], params, name), None);
         let params = params.to_string();
+        // A stream that goes on until its caller hangs up: its snapshot, one envelope a line,
+        // each with `more`.
+        if name == "events.subscribe" {
+            let mut stream = started(&socket, &["api", "call", name, &params, "--json"]);
+            let stdout = stream.stdout.take().expect("stdout");
+            let mut lines = std::io::BufRead::lines(std::io::BufReader::new(stdout));
+            loop {
+                let line = lines.next().expect("the snapshot ends").expect("a line");
+                let called: Value = serde_json::from_str(&line).expect("an envelope");
+                assert_eq!(called["command"], "api call", "{called}");
+                assert_eq!(called["more"], true, "{called}");
+                assert_eq!(called["revision"], described["revision"], "{called}");
+                assert_eq!(
+                    violation(&schema["output"], &called["result"], name),
+                    None,
+                    "{called}"
+                );
+                if called["result"]["event"] == "snapshot-complete" {
+                    break;
+                }
+            }
+            let _ = stream.kill();
+            let _ = stream.wait();
+            continue;
+        }
         let called = api_json(&socket, &["call", name, &params]);
         assert_eq!(called["revision"], described["revision"], "{called}");
         assert_eq!(
@@ -2662,5 +2763,386 @@ fn a_wait_whose_session_ends_during_a_hand_off_answers_as_ended() {
     assert_eq!(
         failed(wait(&socket, &["server", "--ended", "--timeout", "1s"])),
         (3, "TargetNotFound".into())
+    );
+}
+
+/// A running `workroom events`, whose stdout lines are read as they come.
+struct Events {
+    child: std::process::Child,
+    lines: std::sync::mpsc::Receiver<String>,
+    /// Every event read so far, in order.
+    seen: Vec<Value>,
+}
+
+impl Events {
+    /// `workroom events <args>` against `socket`.
+    fn start(socket: &Path, args: &[&str]) -> Events {
+        let mut child = started(socket, &[&["events"][..], args].concat());
+        let stdout = child.stdout.take().expect("stdout");
+        let (send, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stdout).lines() {
+                let Ok(line) = line else { return };
+                if send.send(line).is_err() {
+                    return;
+                }
+            }
+        });
+        Events {
+            child,
+            lines,
+            seen: Vec::new(),
+        }
+    }
+
+    /// The next event, read within `within`.
+    fn next(&mut self, within: Duration) -> Option<Value> {
+        let line = self.lines.recv_timeout(within).ok()?;
+        let event: Value = serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("not one JSON object a line ({e}): {line:?}"));
+        self.seen.push(event.clone());
+        Some(event)
+    }
+
+    /// Reads events until one `wanted` says is it, within 20 s, and returns it.
+    fn until(&mut self, what: &str, wanted: impl Fn(&Value) -> bool) -> Value {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+            match self.next(left) {
+                Some(event) if wanted(&event) => return event,
+                Some(_) => {}
+                None => break,
+            }
+        }
+        panic!("no {what} within 20 s; events: {:#?}", self.seen);
+    }
+
+    /// How many events read so far are named `name`.
+    fn count(&self, name: &str) -> usize {
+        self.seen
+            .iter()
+            .filter(|event| event["event"] == name)
+            .count()
+    }
+
+    /// Stops it, and returns what it said on stderr.
+    fn stop(mut self) -> String {
+        let _ = self.child.kill();
+        let mut stderr = String::new();
+        if let Some(mut pipe) = self.child.stderr.take() {
+            use std::io::Read;
+            let _ = pipe.read_to_string(&mut stderr);
+        }
+        stderr
+    }
+}
+
+impl Drop for Events {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn is(event: &Value, name: &str, session: &str) -> bool {
+    event["event"] == name && event["session"] == session
+}
+
+/// Every live event has `boot` and a `revision` higher than any before it.
+fn assert_numbered(seen: &[Value], boot: &Value) {
+    let mut last = 0;
+    for event in seen {
+        assert_eq!(&event["boot"], boot, "{event}");
+        let revision = event["revision"].as_u64().expect("a revision");
+        if event["event"]
+            .as_str()
+            .is_some_and(|name| name.contains('.'))
+        {
+            assert!(revision > last, "{revision} after {last}: {seen:#?}");
+        }
+        last = revision;
+    }
+}
+
+/// `workroom events` prints one JSON object a line: each session as it is, `snapshot-complete`,
+/// then live events as they happen, in order, every one with the same `boot` and a `revision`
+/// that only rises. A session created, its coding agent's program status and its end, each once.
+#[test]
+fn events_are_a_snapshot_then_snapshot_complete_then_live_events_in_order() {
+    let workspace = Workspace::new("api-events");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let _shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+
+    let mut events = Events::start(&socket, &[]);
+    let first = events.next(Duration::from_secs(20)).expect("a snapshot");
+    assert!(is(&first, "session", SHELL), "{first}");
+    assert_eq!(first["label"], "server", "{first}");
+    assert_eq!(first["scope"], json!({"kind": "workroom", "id": "wr-1"}));
+    assert_eq!(first["run"], false, "{first}");
+    let complete = events.next(Duration::from_secs(20)).expect("its end");
+    assert_eq!(complete["event"], "snapshot-complete", "{complete}");
+    assert_eq!(complete["sessions"], json!([SHELL]), "{complete}");
+    assert_eq!(complete["reason"], "subscribed", "{complete}");
+    assert_eq!(complete["revision"], first["revision"], "{complete}");
+
+    let mut other = open(&socket, OTHER, "tests", "wr-1", &workspace.dir);
+    let created = events.until("session.created", |e| is(e, "session.created", OTHER));
+    assert_eq!(created["label"], "tests", "{created}");
+    assert_eq!(created["run_state"], Value::Null, "{created}");
+    if has_terminal_state() {
+        // From a program of its own, with its message in base64 ("Allow").
+        type_line(
+            &mut other,
+            r#"sh -c 'printf "\033]7501;state=blocked:app=claude:msg=QWxsb3c=\033\\"; sleep 2'"#,
+        );
+        let status = events.until("its program status", |e| {
+            is(e, "session.program_status", OTHER)
+        });
+        assert_eq!(status["coding_agent"]["state"], "blocked", "{status}");
+        assert_eq!(status["coding_agent"]["app"], "claude", "{status}");
+        assert_eq!(status["coding_agent"]["message"], "Allow", "{status}");
+    }
+    type_line(&mut other, "exit 3");
+    let ended = events.until("session.ended", |e| is(e, "session.ended", OTHER));
+    assert_eq!(ended["exit_code"], 3, "{ended}");
+    assert_eq!(ended["scope"], json!({"kind": "workroom", "id": "wr-1"}));
+
+    assert_numbered(&events.seen, &first["boot"]);
+    assert!(first["boot"].is_string(), "{first}");
+    assert_eq!(events.count("session.created"), 1, "{:#?}", events.seen);
+    assert_eq!(events.count("snapshot-complete"), 1, "{:#?}", events.seen);
+    events.stop();
+}
+
+/// The events a `workroom events` that `shell` runs in the background writes to `name` under
+/// `dir`, read once its snapshot is complete.
+fn events_in_pane(shell: &mut Spawned, dir: &Path, name: &str, args: &str) -> std::path::PathBuf {
+    let path = dir.join(name);
+    type_line(
+        shell,
+        &format!(
+            "'{}' events {args} > '{}' 2>&1 &",
+            common::daemon_binary().display(),
+            path.display()
+        ),
+    );
+    assert!(
+        wait_for(Duration::from_secs(20), || {
+            std::fs::read_to_string(&path).is_ok_and(|text| text.contains("snapshot-complete"))
+        }),
+        "the pane's events never began: {:?}",
+        std::fs::read_to_string(&path)
+    );
+    path
+}
+
+/// Each event a file of them holds, one a line.
+fn events_written(path: &Path) -> Vec<Value> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line:?}")))
+        .collect()
+}
+
+/// Restarts run session `id`, as the app's restart does.
+fn restart_run(socket: &Path, id: &str) {
+    let mut payload: Vec<u8> = (0..16)
+        .map(|at| u8::from_str_radix(&id.replace('-', "")[at * 2..at * 2 + 2], 16).unwrap())
+        .collect();
+    payload.push(wr_protocol::frame::RunSignal::Restart as u8);
+    let reply = common::control(
+        socket,
+        wr_protocol::frame::Frame::new(wr_protocol::frame::FrameKind::Signal, payload),
+    );
+    assert_eq!(reply.kind, wr_protocol::frame::FrameKind::Acknowledged);
+}
+
+/// A run session's every transition is an event, in order, once each: `stopping` on a restart
+/// too, which the run goes straight on from. The snapshot says the run's state as it stands.
+#[test]
+fn events_tell_every_run_state_a_restart_included() {
+    let workspace = Workspace::new("api-events-run");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut events = Events::start(&socket, &["--type", "session.run_state"]);
+    events.until("snapshot-complete", |e| e["event"] == "snapshot-complete");
+    let _run = attach_with_env(
+        &socket,
+        RUN,
+        &[],
+        &[
+            ("WORKROOM_SESSION_RUN", "1"),
+            ("WORKROOM_SESSION_COMMAND", "sleep 60"),
+            ("WORKROOM_SESSION_TITLE", "dev"),
+        ],
+    );
+    events.until("running", |e| {
+        is(e, "session.run_state", RUN) && e["run_state"] == "running"
+    });
+    let later = Events::start(&socket, &[]);
+    let mut later = later;
+    let snapshot = later.until("the run in a snapshot", |e| is(e, "session", RUN));
+    assert_eq!(snapshot["run"], true, "{snapshot}");
+    assert_eq!(snapshot["run_state"], "running", "{snapshot}");
+    restart_run(&socket, RUN);
+    events.until("running again", |e| {
+        is(e, "session.run_state", RUN)
+            && e["run_state"] == "running"
+            && e["revision"].as_u64() > snapshot["revision"].as_u64()
+    });
+    let states: Vec<&str> = events
+        .seen
+        .iter()
+        .filter(|e| e["event"] == "session.run_state")
+        .map(|e| e["run_state"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        states,
+        ["starting", "running", "stopping", "starting", "running"],
+        "{:#?}",
+        events.seen
+    );
+    assert_eq!(
+        events.count("session.created"),
+        0,
+        "--type keeps to its own"
+    );
+}
+
+/// `(event, session)` of each event, the session's last 4 characters, for an assertion to read.
+fn told(events: &[Value]) -> Vec<(String, String)> {
+    events
+        .iter()
+        .map(|event| {
+            let session = event["session"].as_str().unwrap_or_default();
+            (
+                event["event"].as_str().unwrap_or_default().to_string(),
+                session[session.len().saturating_sub(4)..].to_string(),
+            )
+        })
+        .collect()
+}
+
+fn pair(event: &str, session: &str) -> (String, String) {
+    (event.to_string(), session[session.len() - 4..].to_string())
+}
+
+/// From a pane, `events` keeps to the pane's workroom unless `--all` widens it; from no pane it is
+/// every session's. `--workroom`, `--session` and `--type` each keep to theirs, the snapshot to
+/// the sessions they pass and the live events to those too. `--type` leaves the snapshot whole.
+#[test]
+fn events_keep_to_the_callers_workroom_and_to_each_filter() {
+    let workspace = Workspace::new("api-events-filters");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    let mut other = open(&socket, OTHER, "tests", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 2);
+
+    let scoped = events_in_pane(&mut shell, &workspace.dir, "scoped", "");
+    let all = events_in_pane(&mut shell, &workspace.dir, "all", "--all");
+    let mut second = Events::start(&socket, &["--workroom", "wr-2"]);
+    let mut named = Events::start(&socket, &["--session", "tests"]);
+    let mut ended = Events::start(&socket, &["--type", "session.ended"]);
+    let mut nowhere = Events::start(&socket, &[]);
+    for stream in [&mut second, &mut named, &mut ended, &mut nowhere] {
+        stream.until("snapshot-complete", |e| e["event"] == "snapshot-complete");
+    }
+
+    let mut elsewhere = open(&socket, RUN, "elsewhere", "wr-2", &workspace.dir);
+    second.until("its session created", |e| is(e, "session.created", RUN));
+    type_line(&mut other, "exit 4");
+    named.until("its session's end", |e| is(e, "session.ended", OTHER));
+    type_line(&mut elsewhere, "exit 5");
+    second.until("its session's end", |e| is(e, "session.ended", RUN));
+    nowhere.until("the last end", |e| is(e, "session.ended", RUN));
+    ended.until("the last end", |e| is(e, "session.ended", RUN));
+    assert!(
+        wait_for(Duration::from_secs(20), || {
+            events_written(&all)
+                .iter()
+                .any(|e| is(e, "session.ended", RUN))
+        }),
+        "--all never heard the last end: {:#?}",
+        events_written(&all)
+    );
+    // Time for anything a filter should have kept back to have come, had it not.
+    std::thread::sleep(Duration::from_secs(1));
+    while named.next(Duration::from_millis(100)).is_some() {}
+    while second.next(Duration::from_millis(100)).is_some() {}
+    while ended.next(Duration::from_millis(100)).is_some() {}
+
+    // A snapshot is in id order, and OTHER's sorts before SHELL's.
+    let complete = ("snapshot-complete".to_string(), String::new());
+    let with_snapshot = |live: &[(String, String)]| {
+        let mut all = vec![pair("session", OTHER), pair("session", SHELL)];
+        all.push(complete.clone());
+        all.extend_from_slice(live);
+        all
+    };
+    assert_eq!(
+        told(&events_written(&scoped)),
+        with_snapshot(&[pair("session.ended", OTHER)]),
+        "the pane's workroom"
+    );
+    assert_eq!(
+        told(&events_written(&all)),
+        with_snapshot(&[
+            pair("session.created", RUN),
+            pair("session.ended", OTHER),
+            pair("session.ended", RUN)
+        ]),
+        "--all"
+    );
+    assert_eq!(
+        told(&nowhere.seen),
+        told(&events_written(&all)),
+        "from no pane"
+    );
+    assert_eq!(
+        told(&second.seen),
+        [
+            complete.clone(),
+            pair("session.created", RUN),
+            pair("session.ended", RUN)
+        ],
+        "--workroom"
+    );
+    assert_eq!(
+        told(&named.seen),
+        [
+            pair("session", OTHER),
+            complete.clone(),
+            pair("session.ended", OTHER)
+        ],
+        "--session"
+    );
+    assert_eq!(
+        told(&ended.seen),
+        with_snapshot(&[pair("session.ended", OTHER), pair("session.ended", RUN)]),
+        "--type"
+    );
+
+    // Bad filters are refused before anything streams: a target that names no session is 3, and
+    // a type that isn't one, or `--all` with `--workroom`, is bad input.
+    let refused = |args: &[&str]| {
+        let run = workroom(Some(&socket), args);
+        (run.code, run.envelope()["error"]["kind"].clone())
+    };
+    assert_eq!(
+        refused(&["events", "--session", "nobody", "--json"]),
+        (3, json!("TargetNotFound"))
+    );
+    assert_eq!(
+        refused(&["events", "--type", "session.renamed", "--json"]),
+        (2, json!("InvalidRequest"))
+    );
+    assert_eq!(
+        refused(&["events", "--all", "--workroom", "wr-1", "--json"]),
+        (1, json!("InternalError"))
     );
 }

@@ -202,7 +202,12 @@ pub(super) fn read_session(
                         answer = replies;
                         published = changed.and_then(|blocked| {
                             let status = shadow.status()?;
-                            Some((status.event(hooks.boot(), id), blocked))
+                            Some(super::hooks::Published::of(
+                                status,
+                                hooks.boot(),
+                                id,
+                                blocked,
+                            ))
                         });
                         if !held.waiters.is_empty() {
                             waiting = Some((held.waiters.list(), shadow.seen_after_read()));
@@ -244,8 +249,8 @@ pub(super) fn read_session(
         if !answer.is_empty() {
             answer_program(&pty, &answer, id, &hooks);
         }
-        if let Some((event, blocked)) = published {
-            hooks.status_changed(id, event, blocked);
+        if let Some(published) = published {
+            hooks.status_changed(id, published);
         }
 
         // "The child is gone" looks different on each platform: reading a pty master whose child
@@ -326,6 +331,9 @@ pub(super) fn read_session(
             }
             // Not held: `kill` reaped the shell, so `status` is not its exit.
             super::waits::end(&attached, held.then(|| exit_code(status)));
+            if !replaced {
+                hooks.session_ended(id, held.then(|| exit_code(status)));
+            }
             for target in targets(&attached) {
                 let bytes = terminal_envelope(
                     target.stream,
@@ -398,6 +406,9 @@ pub(super) fn read_session(
                     hooks.program_ended(id, &shadow);
                 }
                 super::waits::end(&attached, None);
+                if !replaced {
+                    hooks.session_ended(id, None);
+                }
                 return;
             }
         }
