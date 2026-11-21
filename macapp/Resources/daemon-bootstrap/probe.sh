@@ -9,7 +9,7 @@
 # <resources> is where Ghostty's terminfo and shell integration go (resources.sh, issue #239).
 # <former binary> is where a host made before the daemon was renamed (#525) has it, `wr-agent`.
 #
-# It answers six questions, one line each on stdout, every line prefixed `WRB ` so the app can
+# It answers seven questions, one line each on stdout, every line prefixed `WRB ` so the app can
 # tell them from whatever a shell startup file on the host prints ahead of them:
 #
 #   WRB host <uname -s> <uname -m>
@@ -18,6 +18,7 @@
 #   WRB installed <sha256 of the binary beside the socket> | unknown (no sha256sum) | none
 #   WRB build <the installed daemon's build-number> | unknown (it states none, or would not run)
 #             | none
+#   WRB daemon-build <the installed daemon's daemon-build> | unknown | none
 #   WRB resources <sha256 of <resources>/CHECKSUMS> | unknown (no sha256sum) | none
 #   WRB hand-off <exit status of `workroomd hand-off`> <its first line>
 #                | off (hand-off is off) | no-socket | none (the installed binary is not this build)
@@ -84,6 +85,7 @@ echo "WRB installed $installed"
 # hangs reads as `unknown`, and is replaced, rather than holding up every connect. Its report goes
 # to a file, not a pipe: a process the daemon leaves behind would hold a pipe open past the kill.
 build=none
+daemon_build=none
 if [ -x "$binary" ]; then
   report=$(mktemp 2> /dev/null || echo "${TMPDIR:-/tmp}/workroomd-build.$$")
   "$binary" protocol > "$report" 2> /dev/null &
@@ -93,10 +95,15 @@ if [ -x "$binary" ]; then
   wait "$daemon" 2> /dev/null
   kill "$watchdog" 2> /dev/null
   build=$(sed -n 's/^build-number \([0-9][0-9]*\)$/\1/p' "$report" 2> /dev/null | head -n 1)
+  daemon_build=$(sed -n 's/^daemon-build \([0-9a-f][0-9a-f]*\)$/\1/p' "$report" 2> /dev/null | head -n 1)
   rm -f "$report"
   build=${build:-unknown}
+  daemon_build=${daemon_build:-unknown}
 fi
 echo "WRB build $build"
+# Its daemon build (#680), so a binary of the same build and daemon that differs only in the
+# version or channel stamped into it (a Nightly and a stable app of one commit) is not pushed.
+echo "WRB daemon-build $daemon_build"
 
 # The resource set's manifest stands for the set: resources.sh checks every file against it before
 # the set goes into place, and the app keys the set by the same hash of it. `unknown` for a host

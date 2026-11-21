@@ -199,13 +199,17 @@ public enum DaemonBootstrap {
       daemon(architecture).map { (architecture, $0) }
     }
     // Reading and hashing two 11 MB files is blocking work, off the cooperative pool.
-    let bundled: [String: (url: URL, digest: String, build: UInt64)] = try await runBlocking {
-      try Dictionary(
-        uniqueKeysWithValues: urls.map { architecture, url in
-          let data = try Data(contentsOf: url)
-          return (architecture, (url, digest(of: data), buildNumber(in: data)))
-        })
-    }
+    let bundled: [String: (url: URL, digest: String, build: UInt64, daemonBuild: String?)] =
+      try await runBlocking {
+        try Dictionary(
+          uniqueKeysWithValues: urls.map { architecture, url in
+            let data = try Data(contentsOf: url)
+            return (
+              architecture,
+              (url, digest(of: data), buildNumber(in: data), daemonBuild(in: data))
+            )
+          })
+      }
     let probe = try await run(
       script: "probe", in: scripts, on: host, driver: driver, input: nil,
       arguments: [binary, socket, handOff ? "1" : "0"]
@@ -278,6 +282,16 @@ public enum DaemonBootstrap {
         architecture: architecture, pushed: false,
         daemon: .keptNewer("the host runs build \(theirs), newer than this app's \(build)"),
         resources: set)
+    }
+    // The same build of the same daemon, stamped for another channel or version: a Nightly and a
+    // stable app of one commit, sharing the host (ADR 0036). Nothing to push, or each would push
+    // over the other on every connect; only a host that is older gets this one (#681).
+    if let theirs = report.build, build > 0, theirs == build,
+      let ours = bundled[architecture]?.daemonBuild, report.daemonBuild == ours
+    {
+      return Outcome(
+        architecture: architecture, pushed: false,
+        daemon: report.handOff == .noSocket ? .installed : .current, resources: set)
     }
 
     if let placing, placed != nil {
@@ -497,11 +511,14 @@ public enum DaemonBootstrap {
     /// The installed daemon's build number (`workroomd protocol`'s `build-number`), or nil when there
     /// is none, it predates build numbers, or it would not run (#255).
     var build: UInt64? = nil
+    /// The installed daemon's daemon build (`protocol`'s `daemon-build`, #680), or nil when it
+    /// states none or would not run.
+    var daemonBuild: String? = nil
     /// No daemon there, but a pre-#525 `wr-agent` is: an older Nightly's host (`olderLayout`).
     var former = false
   }
 
-  /// The probe's six lines. Anything not prefixed `WRB ` is whatever the host's shell startup
+  /// The probe's seven lines. Anything not prefixed `WRB ` is whatever the host's shell startup
   /// printed, and skipped.
   static func parseProbe(_ output: String) throws -> ProbeReport {
     let fields = reports(in: output)
@@ -530,6 +547,9 @@ public enum DaemonBootstrap {
       installed: installed == nil || installed == "none" ? nil : installed,
       resources: resources == "none" ? nil : resources, handOff: handOff,
       build: fields["build"]?.first.flatMap { UInt64($0) },
+      daemonBuild: fields["daemon-build"]?.first.flatMap {
+        ["none", "unknown"].contains($0) ? nil : $0
+      },
       former: fields["former"]?.first == "yes")
   }
 
@@ -595,6 +615,26 @@ public enum DaemonBootstrap {
 
   public static func digest(of data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+  }
+
+  /// A daemon binary's daemon build (#680), read out of its bytes as `buildNumber(in:)` reads its
+  /// build number: the marker `WORKROOMD-DAEMON-BUILD:<hex>;` (`handoff::DAEMON_BUILD_MARKER`), the
+  /// first complete one. Nil for a binary with none, which is a different daemon from any.
+  public static func daemonBuild(in data: Data) -> String? {
+    let marker = Data("WORKROOMD-DAEMON-BUILD:".utf8)
+    var searched = data.startIndex..<data.endIndex
+    while let found = data.range(of: marker, in: searched) {
+      let start = found.upperBound
+      let hex = data[start...].prefix(129).prefix { byte in
+        (0x30...0x39).contains(byte) || (0x61...0x66).contains(byte) || (0x41...0x46).contains(byte)
+      }
+      let end = data.index(start, offsetBy: hex.count)
+      if !hex.isEmpty, hex.count <= 128, end < data.endIndex, data[end] == UInt8(ascii: ";") {
+        return String(decoding: hex, as: UTF8.self)
+      }
+      searched = start..<data.endIndex
+    }
+    return nil
   }
 
   /// The build number a bundled daemon was built with, read out of its bytes rather than by running
