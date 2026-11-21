@@ -57,6 +57,11 @@ public final class DaemonClient: @unchecked Sendable {
     let onLost: @Sendable () -> Void
     var bytes = Data()
   }
+  /// Reply streams given up on (their first reply was too late), whose envelopes are dropped
+  /// unread: the terminal API has no way to end a subscription but the connection's end, so the
+  /// daemon may go on sending on them. Kept apart from `replyStreams` so a late daemon never holds
+  /// one of its slots. Held under `lock`.
+  private var silencedStreams: Set<UInt32> = []
   private var nextSubscription: UInt64 = 1
   /// The peer's raw greeting version. Kept (not just compared once in `connect()`) because the File
   /// service is gated on it separately from VCS: see `DaemonHandshake.minFileVersion`.
@@ -583,9 +588,16 @@ public final class DaemonClient: @unchecked Sendable {
   public func subscribeTerminalInput(
     onEvent: @escaping @Sendable (TerminalInputEvent) -> Void
   ) async throws -> TerminalInputAvailability {
-    guard helloVersion >= DaemonHandshake.minTerminalAPIVersion else { return .unsupported }
     // As long as a program-status request is given: the first reply follows at once.
-    let timeout: TimeInterval = 15
+    try await subscribeTerminalInput(timeout: 15, onEvent: onEvent)
+  }
+
+  /// `subscribeTerminalInput(onEvent:)`, given up on with `requestTimedOut` when its first reply
+  /// takes longer than `timeout`. A seam so a test needn't wait out the 15 s.
+  public func subscribeTerminalInput(
+    timeout: TimeInterval, onEvent: @escaping @Sendable (TerminalInputEvent) -> Void
+  ) async throws -> TerminalInputAvailability {
+    guard helloVersion >= DaemonHandshake.minTerminalAPIVersion else { return .unsupported }
     let answer = SubscriptionAnswer()
     return try await withCheckedThrowingContinuation { continuation in
       answer.set(continuation)
@@ -639,8 +651,14 @@ public final class DaemonClient: @unchecked Sendable {
           fail(error)
         }
       }
-      DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-        answer.resume(.failure(HostConnectionError.requestTimedOut))
+      DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
+        guard answer.resume(.failure(HostConnectionError.requestTimedOut)), let self else { return }
+        // Given up on: its slot is freed for the subscriber's retry, and whatever the daemon
+        // still sends on it is dropped rather than read as a protocol violation.
+        self.lock.withLock {
+          guard self.replyStreams.removeValue(forKey: stream) != nil else { return }
+          self.silencedStreams.insert(stream)
+        }
       }
     }
   }
@@ -910,6 +928,7 @@ public final class DaemonClient: @unchecked Sendable {
           let valid = lock.withLock {
             // A stream of replies (`subscribeTerminalInput`): each reply is whole at its final
             // chunk, and the stream goes on until its handler says it ended.
+            if service == .terminalAPI, silencedStreams.contains(stream) { return true }
             if service == .terminalAPI, var entry = replyStreams[stream] {
               guard entry.bytes.count + payload.count - 1 <= 16 * 1024 * 1024 else { return false }
               entry.bytes.append(payload.dropFirst())
@@ -1047,6 +1066,7 @@ public final class DaemonClient: @unchecked Sendable {
           watchHandlers.removeAll()
           programStatusHandler = nil
           self.replyStreams.removeAll()
+          silencedStreams.removeAll()
           forwardHandlers.removeAll()
           shutdown(descriptor, SHUT_RDWR)
           return (values, watchers, forwards, programStatus, replyStreams)
@@ -1077,16 +1097,18 @@ private final class SubscriptionAnswer: @unchecked Sendable {
     lock.withLock { self.continuation = continuation }
   }
 
-  /// Answers with `result` unless an answer was given already.
-  func resume(_ result: Result<TerminalInputAvailability, Error>) {
-    let continuation = lock.withLock {
-      () -> CheckedContinuation<TerminalInputAvailability, Error>? in
-      guard answered == nil else { return nil }
+  /// Answers with `result` unless an answer was given already; returns whether it did.
+  @discardableResult
+  func resume(_ result: Result<TerminalInputAvailability, Error>) -> Bool {
+    let answer = lock.withLock {
+      () -> (won: Bool, continuation: CheckedContinuation<TerminalInputAvailability, Error>?) in
+      guard answered == nil else { return (false, nil) }
       answered = result
       defer { self.continuation = nil }
-      return self.continuation
+      return (true, self.continuation)
     }
-    continuation?.resume(with: result)
+    answer.continuation?.resume(with: result)
+    return answer.won
   }
 
   /// Whether the caller was told the subscription is live.
