@@ -46,6 +46,17 @@ public final class DaemonClient: @unchecked Sendable {
   private var programStatusHandler: (@Sendable (ProgramStatusEvent) -> Void)?
   /// Set once the first undecodable program-status event or dropped record is logged.
   private var loggedProgramStatusDecode = false
+  /// Requests the daemon answers with a stream of replies on their own stream (the terminal API's
+  /// `events.subscribe`), keyed by that stream. Each reply is reassembled from its chunks and handed
+  /// over whole; the entry stays until its handler says the stream ended. Held under `lock`.
+  private var replyStreams: [UInt32: ReplyStream] = [:]
+  private struct ReplyStream {
+    /// One whole reply; returns whether more follow on the stream.
+    let onReply: @Sendable (Data) -> Bool
+    /// The connection ended with the stream still open.
+    let onLost: @Sendable () -> Void
+    var bytes = Data()
+  }
   private var nextSubscription: UInt64 = 1
   /// The peer's raw greeting version. Kept (not just compared once in `connect()`) because the File
   /// service is gated on it separately from VCS: see `DaemonHandshake.minFileVersion`.
@@ -564,6 +575,76 @@ public final class DaemonClient: @unchecked Sendable {
     handler?(event)
   }
 
+  /// Subscribe to who types into which session on the host (#696): the terminal API's
+  /// `events.subscribe`, kept to `session.input`. Answers once the daemon's first reply arrives (a
+  /// snapshot's first event, which follows at once), then hands `onEvent` each send as it is told,
+  /// and `.lost` once if the connection ends. A daemon before the terminal API is never sent the
+  /// request: its envelope decoder fails the whole connection on a service byte it doesn't know.
+  public func subscribeTerminalInput(
+    onEvent: @escaping @Sendable (TerminalInputEvent) -> Void
+  ) async throws -> TerminalInputAvailability {
+    guard helloVersion >= DaemonHandshake.minTerminalAPIVersion else { return .unsupported }
+    // As long as a program-status request is given: the first reply follows at once.
+    let timeout: TimeInterval = 15
+    let answer = SubscriptionAnswer()
+    return try await withCheckedThrowingContinuation { continuation in
+      answer.set(continuation)
+      let stream: UInt32? = lock.withLock {
+        guard !closed, nextStream < UInt32.max, replyStreams.count < 4 else { return nil }
+        let stream = nextStream
+        nextStream += 1
+        replyStreams[stream] = ReplyStream(
+          onReply: { payload in
+            let more: Bool
+            switch try? TerminalInputEvent.decode(reply: payload) {
+            case .refused(_, let message):
+              answer.resume(.success(.refused(message)))
+              more = false
+            case .event(let event, let continues):
+              answer.resume(.success(.available))
+              // A reply after the subscription was given up on (its first came too late) is
+              // dropped: nobody hears that stream, which the daemon ends with the connection.
+              if answer.isAvailable, let event { onEvent(event) }
+              more = continues
+            case nil:
+              // Not a reply at all: the stream can't be read on, so it ends here.
+              answer.resume(
+                .failure(HostConnectionError.serviceUnavailable("Terminal API: unreadable reply.")))
+              more = false
+            }
+            // A stream that ends after it was answered ends the subscription, which the
+            // subscriber hears as the connection's end, so it subscribes again.
+            if !more, answer.isAvailable { onEvent(.lost) }
+            return more
+          },
+          onLost: {
+            answer.resume(.failure(HostConnectionError.connectionLost))
+            if answer.isAvailable { onEvent(.lost) }
+          })
+        return stream
+      }
+      guard let stream else {
+        let closed = lock.withLock { self.closed }
+        answer.resume(
+          .failure(closed ? HostConnectionError.connectionLost : HostConnectionError.notDispatched))
+        return
+      }
+      writes.async { [self] in
+        do {
+          try sendOnWrites(
+            DaemonEnvelope.encode(
+              service: .terminalAPI, stream: stream, payload: TerminalInputEvent.subscribeRequest),
+            stallAfter: timeout / 2)
+        } catch {
+          fail(error)
+        }
+      }
+      DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+        answer.resume(.failure(HostConnectionError.requestTimedOut))
+      }
+    }
+  }
+
   private static let logger = Logger(subsystem: "com.developwithstyle.workroom", category: "daemon")
 
   /// The payloads to send for one request: exactly one, byte-identical to what shipped before, or a
@@ -774,7 +855,7 @@ public final class DaemonClient: @unchecked Sendable {
   private static func admits(stream: UInt32, on service: DaemonService) -> Bool {
     switch service {
     case .file, .status, .forward, .control, .programStatus: true
-    case .vcs, .layout, .terminal: stream > 0
+    case .vcs, .layout, .terminal, .terminalAPI: stream > 0
     }
   }
 
@@ -825,7 +906,20 @@ public final class DaemonClient: @unchecked Sendable {
             continue
           }
           var completed: Pending?
+          var streamed: (onReply: @Sendable (Data) -> Bool, reply: Data)?
           let valid = lock.withLock {
+            // A stream of replies (`subscribeTerminalInput`): each reply is whole at its final
+            // chunk, and the stream goes on until its handler says it ended.
+            if service == .terminalAPI, var entry = replyStreams[stream] {
+              guard entry.bytes.count + payload.count - 1 <= 16 * 1024 * 1024 else { return false }
+              entry.bytes.append(payload.dropFirst())
+              if payload.first == 1 {
+                streamed = (entry.onReply, entry.bytes)
+                entry.bytes = Data()
+              }
+              replyStreams[stream] = entry
+              return true
+            }
             if abandoned[stream] != nil {
               // Nobody is waiting on this any more (it timed out) — drain it and never surface it
               // as unexpected, so a slow-but-eventually-answered request never disturbs the
@@ -849,6 +943,10 @@ public final class DaemonClient: @unchecked Sendable {
             throw HostConnectionError.serviceUnavailable("Unexpected or oversized VCS reply.")
           }
           if let completed { completed.continuation.resume(returning: completed.bytes) }
+          // Outside the lock: the handler is caller code.
+          if let streamed, !streamed.onReply(streamed.reply) {
+            _ = lock.withLock { replyStreams.removeValue(forKey: stream) }
+          }
         }
         let count = chunk.withUnsafeMutableBytes {
           recv(descriptor, $0.baseAddress!, $0.count, 0)
@@ -933,7 +1031,8 @@ public final class DaemonClient: @unchecked Sendable {
       (
         pending: [Pending], watchers: [@Sendable (FileWatchEvent) -> Void],
         forwards: [@Sendable (UInt8, Data) -> Void],
-        programStatus: (@Sendable (ProgramStatusEvent) -> Void)?
+        programStatus: (@Sendable (ProgramStatusEvent) -> Void)?,
+        replyStreams: [@Sendable () -> Void]
       )? =
         lock.withLock {
           guard !closed else { return nil }
@@ -944,11 +1043,13 @@ public final class DaemonClient: @unchecked Sendable {
           pending.removeAll()
           abandoned.removeAll()
           let programStatus = programStatusHandler
+          let replyStreams = self.replyStreams.values.map(\.onLost)
           watchHandlers.removeAll()
           programStatusHandler = nil
+          self.replyStreams.removeAll()
           forwardHandlers.removeAll()
           shutdown(descriptor, SHUT_RDWR)
-          return (values, watchers, forwards, programStatus)
+          return (values, watchers, forwards, programStatus, replyStreams)
         }
     guard let failed else { return }
     carrier?.end()
@@ -957,10 +1058,43 @@ public final class DaemonClient: @unchecked Sendable {
     // can resubscribe on the next generation and refresh whatever it was showing.
     for watcher in failed.watchers { watcher(.lost) }
     failed.programStatus?(.lost)
+    for lost in failed.replyStreams { lost() }
     // Every live forward hears exactly what the daemon would have said, because it is true: the daemon
     // closes every socket a departing connection opened. Each one closes the socket it owns.
     for forward in failed.forwards { forward(ForwardOpcode.close, Data()) }
     disconnected.finish()
+  }
+}
+
+/// The one answer a streamed subscription gives its caller, from whichever comes first: its first
+/// reply, the connection's end or its deadline. Each of them may run on another thread.
+private final class SubscriptionAnswer: @unchecked Sendable {
+  private let lock = NSLock()
+  private var continuation: CheckedContinuation<TerminalInputAvailability, Error>?
+  private var answered: Result<TerminalInputAvailability, Error>?
+
+  func set(_ continuation: CheckedContinuation<TerminalInputAvailability, Error>) {
+    lock.withLock { self.continuation = continuation }
+  }
+
+  /// Answers with `result` unless an answer was given already.
+  func resume(_ result: Result<TerminalInputAvailability, Error>) {
+    let continuation = lock.withLock {
+      () -> CheckedContinuation<TerminalInputAvailability, Error>? in
+      guard answered == nil else { return nil }
+      answered = result
+      defer { self.continuation = nil }
+      return self.continuation
+    }
+    continuation?.resume(with: result)
+  }
+
+  /// Whether the caller was told the subscription is live.
+  var isAvailable: Bool {
+    lock.withLock {
+      if case .success(.available) = answered { return true }
+      return false
+    }
   }
 }
 

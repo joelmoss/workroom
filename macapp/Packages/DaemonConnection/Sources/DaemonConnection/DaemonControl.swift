@@ -19,6 +19,9 @@ public enum DaemonService: UInt8, Sendable {
   case layout = 0x06
   /// Requests on their own streams, events on stream 0 (#358).
   case programStatus = 0x07
+  /// The terminal API (ADR 0079): JSON requests, each answered on its own stream, with a stream of
+  /// replies for `events.subscribe`, which the app asks for who types into a pane (#696).
+  case terminalAPI = 0x08
 }
 
 /// One envelope: the service byte, the stream and the payload length (both big-endian `UInt32`),
