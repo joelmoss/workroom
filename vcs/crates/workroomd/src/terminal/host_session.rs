@@ -123,7 +123,15 @@ pub struct HostOrigin {
     pub shell: String,
     pub home: PathBuf,
     pub user: String,
+    /// The daemon's own folder, when it holds the `workroom` link the bootstrap puts beside the
+    /// installed `workroomd` (ADR 0078): put on the session's `PATH`, so `workroom` runs in every
+    /// host pane, as the app's own CLI does in a Mac pane (`WorkroomCLI.panePath`). None for a
+    /// daemon with no link beside it.
+    pub commands: Option<PathBuf>,
 }
+
+/// The name a host pane runs this binary by, a link beside the installed `workroomd`.
+const COMMAND_LINK: &str = "workroom";
 
 impl HostOrigin {
     /// This process's environment and its effective user's account entry.
@@ -131,7 +139,16 @@ impl HostOrigin {
         // SAFETY: geteuid takes nothing and cannot fail.
         let uid = unsafe { libc::geteuid() };
         let account = crate::host::account::lookup(&uid.to_string()).ok();
+        // Through `/proc/self/exe` on Linux: the file this process runs, wherever it was renamed
+        // to (an install stages it beside its final name).
+        let commands = std::env::current_exe()
+            .ok()
+            .and_then(|binary| binary.parent().map(Path::to_path_buf))
+            .filter(|folder| {
+                std::fs::metadata(folder.join(COMMAND_LINK)).is_ok_and(|meta| meta.is_file())
+            });
         HostOrigin {
+            commands,
             environment: std::env::vars_os().collect(),
             shell: account
                 .as_ref()
@@ -235,6 +252,19 @@ fn build(
             .cloned()
             .collect(),
     };
+    // The daemon's folder after the login's own entries, as a Mac pane's login shell puts its own
+    // ahead of the app's CLI: a `workroom` the user installed elsewhere still wins. Only to a PATH
+    // there is: with none, the shell's own default stands, which a PATH of this folder alone would
+    // replace.
+    if let Some(commands) = &origin.commands
+        && let Some((_, path)) = environment
+            .iter_mut()
+            .find(|(key, value)| key == "PATH" && !value.is_empty())
+        && !std::env::split_paths(path).any(|entry| entry == *commands)
+    {
+        path.push(":");
+        path.push(commands);
+    }
     // The login's own `HOME`, `SHELL`, `USER` and `LOGNAME` win over the account entry, which a
     // static lookup gets wrong for a directory service's users; the entry fills in what it lacks.
     let from_login = |name: &str| {
@@ -281,7 +311,19 @@ fn build(
         match (terminfo, resources) {
             (Some(terminfo), Some(resources)) => {
                 set("TERMINFO", terminfo.into_os_string());
-                set("GHOSTTY_SHELL_FEATURES", OsString::from(SHELL_FEATURES));
+                // A login profile can set PATH outright (Debian's /etc/profile does), so the
+                // folder above may not outlive it. The integration's `path` feature appends
+                // `GHOSTTY_BIN_DIR` once the profile has run.
+                match &origin.commands {
+                    Some(commands) => {
+                        set(
+                            "GHOSTTY_SHELL_FEATURES",
+                            OsString::from(format!("{SHELL_FEATURES},path")),
+                        );
+                        set("GHOSTTY_BIN_DIR", commands.clone().into_os_string());
+                    }
+                    None => set("GHOSTTY_SHELL_FEATURES", OsString::from(SHELL_FEATURES)),
+                }
                 session_resources = resources.to_string_lossy().into_owned();
             }
             _ => set("TERM", OsString::from(FALLBACK_TERM)),

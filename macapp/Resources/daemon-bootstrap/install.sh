@@ -4,7 +4,7 @@
 # architecture on stdin):
 #
 #   sh -c "$(cat install.sh)" install <binary> <socket> <hand-off 0|1> <sha256> \
-#     [<app starts daemon 0|1>]  < workroomd-linux-<arch>
+#     [<app starts daemon 0|1>]  < workroom-linux-<arch>
 #
 # It installs the binary beside the socket, which is where the supervisor starts the daemon from
 # and where the relay and the attach run. Every line it prints is prefixed `WRB `:
@@ -135,6 +135,15 @@ fi
 if ! mv -f "$staged" "$binary"; then
   echo "WRB outcome write-failed"
   exit 1
+fi
+# The name the host's panes run it by (ADR 0078; the daemon puts this folder on their PATH): a link
+# beside the installed file, which keeps its own name (ADR 0057), so an older app still finds it and
+# sees the host is newer. Relative, so an older app's install renaming another file onto <binary>
+# leaves it good. Made only where nothing but a link is: anything else at that name is not this
+# script's to replace. Best effort: without it a pane just has no `workroom`.
+link="${binary%/*}/workroom"
+if [ -L "$link" ] || [ ! -e "$link" ]; then
+  ln -sfn "${binary##*/}" "$link" 2> /dev/null || true
 fi
 echo "WRB outcome $outcome"
 

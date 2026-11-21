@@ -38,6 +38,28 @@ final class ContainerHostDriverExecTests: XCTestCase {
     return script
   }
 
+  /// The `workroom` link beside a daemon folder's `workroomd` (ADR 0078): made, put right when it
+  /// names something else, and never made over a file that is not a link.
+  func testTheDaemonFolderGetsAWorkroomLinkOnlyWhereNothingButALinkIs() throws {
+    let folder = directory.appendingPathComponent("bin")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let link = folder.appendingPathComponent("workroom").path
+    try ContainerHostDriver.linkCommand(in: folder)
+    XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link), "workroomd")
+    try ContainerHostDriver.linkCommand(in: folder)
+    XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link), "workroomd")
+
+    try FileManager.default.removeItem(atPath: link)
+    try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: "elsewhere")
+    try ContainerHostDriver.linkCommand(in: folder)
+    XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link), "workroomd")
+
+    try FileManager.default.removeItem(atPath: link)
+    try Data("someone's\n".utf8).write(to: URL(fileURLWithPath: link))
+    try ContainerHostDriver.linkCommand(in: folder)
+    XCTAssertEqual(try String(contentsOfFile: link, encoding: .utf8), "someone's\n")
+  }
+
   private var calls: [[String]] {
     get throws {
       try String(contentsOf: directory.appendingPathComponent("calls"), encoding: .utf8)
@@ -119,6 +141,8 @@ final class ContainerHostDriverExecTests: XCTestCase {
     let entries = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
     XCTAssertTrue(entries.contains(".workroom/bin/workroomd"), entries)
     XCTAssertTrue(entries.contains("-rwxr-xr-x"), "the daemon isn't executable: \(entries)")
+    // The name the container's panes run it by (ADR 0078), relative to the file it names.
+    XCTAssertTrue(entries.contains(".workroom/bin/workroom -> workroomd"), entries)
 
     XCTAssertEqual(
       driver.record(of: host), ContainerHostRecord(user: "vscode", image: nil, context: "orbstack"))

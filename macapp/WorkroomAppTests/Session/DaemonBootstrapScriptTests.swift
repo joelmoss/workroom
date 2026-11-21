@@ -103,18 +103,20 @@ final class DaemonBootstrapScriptTests: XCTestCase {
 
   /// A stand-in for a Linux daemon build: a script answering the subcommands the far side runs
   /// (`protocol`, `hand-off`, `list`). Its content is its build, so two stand-ins that answer
-  /// differently have different digests.
+  /// differently have different digests. `marker` is the build number the app reads out of the
+  /// file's bytes (`DaemonBootstrap.buildNumber(in:)`), for a stand-in that is the app's bundle.
   private func standIn(
     protocol status: Int = 0, protocolFirst: String = ":", handOff: String = "echo current",
-    list: Int = 0
+    list: Int = 0, marker: UInt64? = nil
   ) throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(
       "workroomd-standin-\(UUID().uuidString.prefix(8))")
-    try Data(
-      ("#!/bin/sh\ncase $1 in protocol) \(protocolFirst); exit \(status) ;; "
-        + "hand-off) \(handOff); exit ;; "
-        + "list) exit \(list) ;; esac\nexit 1\n").utf8
-    ).write(to: url)
+    let markerLine: String = marker.map { "# WORKROOMD-BUILD:\($0);\n" } ?? ""
+    let body: String =
+      "case $1 in protocol) \(protocolFirst); exit \(status) ;; "
+      + "hand-off) \(handOff); exit ;; "
+      + "list) exit \(list) ;; esac\nexit 1\n"
+    try Data(("#!/bin/sh\n" + markerLine + body).utf8).write(to: url)
     addTeardownBlock { try? FileManager.default.removeItem(at: url) }
     return url
   }
@@ -542,6 +544,50 @@ final class DaemonBootstrapScriptTests: XCTestCase {
     let outcome = try await ensure(host, bundling: cliOnly)
     XCTAssertEqual(outcome, .init(architecture: "aarch64", pushed: true, daemon: .current))
     XCTAssertEqual(try installed(on: host), try DaemonBootstrap.digest(of: cliOnly))
+  }
+
+  /// A host this build set up (#681, ADR 0078): the installed file is still `workroomd` (ADR 0057),
+  /// a regular file, with a relative `workroom` link beside it for the host's panes. An older app
+  /// (a lower build) connecting finds `workroomd`, sees the host is newer, and pushes nothing, so
+  /// the link still names this build's file. The probe and its reading are v3.1.0's in everything
+  /// this path runs, so a lower build of this code is that older app.
+  func testAHostThisBuildSetUpKeepsWorkroomdAndAnOlderAppSeesItIsNewer() async throws {
+    let host = try localHost()
+    let ours = try standIn(protocolFirst: "echo build-number 200", marker: 200)
+    let first = try await ensure(host, bundling: ours)
+    XCTAssertEqual(first, .init(architecture: "aarch64", pushed: true, daemon: .installed))
+    let link = host.directory.appendingPathComponent("workroom").path
+    func assertLayout(_ why: String) throws {
+      XCTAssertEqual(
+        try FileManager.default.destinationOfSymbolicLink(atPath: link), "workroomd", why)
+      let attributes = try FileManager.default.attributesOfItem(atPath: host.binary)
+      XCTAssertEqual(attributes[.type] as? FileAttributeType, .typeRegular, why)
+      XCTAssertEqual(try installed(on: host), try DaemonBootstrap.digest(of: ours), why)
+    }
+    try assertLayout("after this build's install")
+
+    try listen(on: host)
+    let older = try standIn(protocolFirst: "echo build-number 100", marker: 100)
+    let outcome = try await ensure(host, bundling: older)
+    XCTAssertEqual(
+      outcome,
+      .init(
+        architecture: "aarch64", pushed: false,
+        daemon: .keptNewer("the host runs build 200, newer than this app's 100")))
+    try assertLayout("after an older app connected")
+  }
+
+  /// A link is made only where nothing but a link is: a file of the user's at `workroom` beside the
+  /// daemon is left as it was, and the install still goes in.
+  func testTheRealInstallLeavesAFileAtTheLinksNameAlone() async throws {
+    let host = try localHost()
+    let mine = host.directory.appendingPathComponent("workroom")
+    try Data("not the daemon's\n".utf8).write(to: mine)
+    let build = try standIn()
+    let outcome = try await ensure(host, bundling: build)
+    XCTAssertEqual(outcome, .init(architecture: "aarch64", pushed: true, daemon: .installed))
+    XCTAssertEqual(try String(contentsOf: mine, encoding: .utf8), "not the daemon's\n")
+    XCTAssertEqual(try installed(on: host), try DaemonBootstrap.digest(of: build))
   }
 
   /// An installed daemon that hangs when asked its build reads as `unknown` within the probe's 5
