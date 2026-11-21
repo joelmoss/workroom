@@ -74,6 +74,16 @@ If the teardown script fails, the delete stops and nothing is removed, so you ca
 again. The app shows the script's output and offers **Delete Anyway**, which deletes the workroom without
 running it. From the CLI, run `workroom delete <name> --skip-teardown`.
 
+### When the folder isn't the workroom's {nightly}
+
+Workroom runs a teardown script only in a folder Git registers as one of the project's worktrees. If the
+workroom's folder has been moved, replaced, or belongs to another project, the delete stops before any
+script runs, changes nothing, and reports `WorkspaceNotFound`.
+
+- **You moved the worktree:** run `git worktree repair` in the project, then delete again.
+- **The folder is yours, or another project's:** move it out of the workrooms folder, then delete again.
+  With no folder there, Workroom forgets the workroom without running its teardown.
+
 ## Approve your scripts
 
 Setup and teardown scripts are code from the repository, so Workroom runs one only after you have

@@ -106,7 +106,7 @@ Branch on the exit code when you don't need the details.
 | `InvalidName` | 3 | The workroom name failed validation. |
 | `DirExists` | 3 | The target directory already exists. |
 | `WorkspaceExists` | 3 | The Git worktree already exists. |
-| `WorkspaceNotFound` | 3 | The Git worktree to delete doesn't exist. |
+| `WorkspaceNotFound` | 3 | The Git worktree to delete doesn't exist. In the Nightly, also when the workroom's folder isn't a worktree Git registers for the project, so its teardown script won't run there. |
 | `ConfirmationMismatch` | 2 | `--confirm` didn't match the workroom's name. |
 | `UnsafeDeletePath` | 2 | Workroom refused to delete an unsafe or reserved path. |
 | `Cancelled` | 4 | The user aborted, or there was nothing to do. |
