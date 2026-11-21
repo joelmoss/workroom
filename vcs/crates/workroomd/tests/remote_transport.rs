@@ -2556,17 +2556,54 @@ fn over_ssh_workroom_runs_on_a_host_by_name_and_refuses_what_only_the_mac_does()
     let (status, output) = fixture.bootstrap("resources", &arguments, Some(&pushed));
     assert_eq!(status, Some(0), "resources: {output}");
 
+    let seen = dialed_pane(
+        &fixture,
+        "7e0e7e0e-0000-4000-8000-000000000681",
+        "xterm-ghostty",
+        &[],
+        b"echo \"FOUND=$(command -v workroom)=\"\"END\"\n\
+          workroom create probe --json; echo \"STATUS=$?=\"\"END\"\nexit\n",
+    );
+    assert!(seen.contains(&format!("FOUND={link}=END")), "{seen}");
+    assert!(seen.contains("\"kind\":\"MacOnly\""), "{seen}");
+    assert!(seen.contains("STATUS=3=END"), "{seen}");
+
+    // dash, which Ghostty doesn't integrate: Debian's /etc/profile sets PATH outright, so the
+    // folder is on the PATH the shell started with (its /proc environ), not the one it then has.
+    let seen = dialed_pane(
+        &fixture,
+        "7e0e7e0e-0000-4000-8000-000000000682",
+        "xterm-256color",
+        &["env", "SHELL=/bin/dash"],
+        b"tr '\\0' '\\n' < /proc/$$/environ | grep '^PATH='; echo \"DASH=$0=\"\"END\"\nexit\n",
+    );
+    assert!(seen.contains("DASH=-dash=END"), "not a dash login: {seen}");
+    let started = seen
+        .lines()
+        .find_map(|line| line.trim_end().strip_prefix("PATH="))
+        .unwrap_or_else(|| panic!("no PATH in {seen}"));
+    assert!(started.ends_with(":/run/workroom"), "{started}");
+}
+
+/// A pane attached from the Mac as the app attaches one (ADR 0074), as `term`, with `relay` run on
+/// the host after `prefix` (`env SHELL=…` picks the login's shell), typing `typed`. What it showed
+/// by the time its shell exited.
+fn dialed_pane(
+    fixture: &Fixture,
+    session: &str,
+    term: &str,
+    prefix: &[&str],
+    typed: &[u8],
+) -> String {
     let pane = Command::new(daemon_binary())
         .arg("attach")
         .args(["--dial", "ssh", "-F", &fixture.config, "-T", "fixture"])
+        .args(prefix)
         .args([INSTALLED_DAEMON, "relay", "--socket", &fixture.socket])
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
-        .env("TERM", "xterm-ghostty")
-        .env(
-            "WORKROOM_SESSION_ID",
-            "7e0e7e0e-0000-4000-8000-000000000681",
-        )
+        .env("TERM", term)
+        .env("WORKROOM_SESSION_ID", session)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -2576,12 +2613,7 @@ fn over_ssh_workroom_runs_on_a_host_by_name_and_refuses_what_only_the_mac_does()
     // Held open until the shell has exited, as a pane's is: an attach whose stdin ends detaches.
     let mut stdin = pane.0.stdin.take().expect("stdin");
     // Split by the quotes, so the pty's echo of each line is not its answer.
-    stdin
-        .write_all(
-            b"echo \"FOUND=$(command -v workroom)=\"\"END\"\n\
-              workroom create probe --json; echo \"STATUS=$?=\"\"END\"\nexit\n",
-        )
-        .expect("type into the pane");
+    stdin.write_all(typed).expect("type into the pane");
     let mut stdout = pane.0.stdout.take().expect("stdout");
     let reader = std::thread::spawn(move || {
         let mut seen = String::new();
@@ -2595,9 +2627,7 @@ fn over_ssh_workroom_runs_on_a_host_by_name_and_refuses_what_only_the_mac_does()
     }
     let seen = reader.join().expect("the pane's output");
     drop(stdin);
-    assert!(seen.contains(&format!("FOUND={link}=END")), "{seen}");
-    assert!(seen.contains("\"kind\":\"MacOnly\""), "{seen}");
-    assert!(seen.contains("STATUS=3=END"), "{seen}");
+    seen
 }
 
 /// `workroom api` on a host (#685), as a coding agent in a remote pane runs it: `list` names the

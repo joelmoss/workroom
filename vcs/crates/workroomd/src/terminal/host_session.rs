@@ -130,25 +130,14 @@ pub struct HostOrigin {
     pub commands: Option<PathBuf>,
 }
 
-/// The name a host pane runs this binary by, a link beside the installed `workroomd`.
-const COMMAND_LINK: &str = "workroom";
-
 impl HostOrigin {
     /// This process's environment and its effective user's account entry.
     fn current() -> HostOrigin {
         // SAFETY: geteuid takes nothing and cannot fail.
         let uid = unsafe { libc::geteuid() };
         let account = crate::host::account::lookup(&uid.to_string()).ok();
-        // Through `/proc/self/exe` on Linux: the file this process runs, wherever it was renamed
-        // to (an install stages it beside its final name).
-        let commands = std::env::current_exe()
-            .ok()
-            .and_then(|binary| binary.parent().map(Path::to_path_buf))
-            .filter(|folder| {
-                std::fs::metadata(folder.join(COMMAND_LINK)).is_ok_and(|meta| meta.is_file())
-            });
         HostOrigin {
-            commands,
+            commands: crate::host::environment::commands_folder(),
             environment: std::env::vars_os().collect(),
             shell: account
                 .as_ref()
@@ -252,18 +241,21 @@ fn build(
             .cloned()
             .collect(),
     };
-    // The daemon's folder after the login's own entries, as a Mac pane's login shell puts its own
-    // ahead of the app's CLI: a `workroom` the user installed elsewhere still wins. Only to a PATH
-    // there is: with none, the shell's own default stands, which a PATH of this folder alone would
-    // replace.
-    if let Some(commands) = &origin.commands
-        && let Some((_, path)) = environment
-            .iter_mut()
-            .find(|(key, value)| key == "PATH" && !value.is_empty())
-        && !std::env::split_paths(path).any(|entry| entry == *commands)
-    {
-        path.push(":");
-        path.push(commands);
+    // The daemon's folder on the PATH every shell starts with, whatever the shell: after the login's
+    // own entries, as a Mac pane's login shell puts its own ahead of the app's CLI, so a `workroom`
+    // the user installed elsewhere still wins; after the standard directories when the login gave
+    // none (`with_commands`). A profile can still set PATH outright (Debian's /etc/profile does);
+    // Ghostty's `path` feature, below, puts it back for the shells it integrates.
+    if let Some(commands) = &origin.commands {
+        let at = environment.iter().position(|(key, _)| key == "PATH");
+        let path = crate::host::environment::with_commands(
+            at.map(|at| environment[at].1.as_os_str()),
+            commands,
+        );
+        match at {
+            Some(at) => environment[at].1 = path,
+            None => environment.push((OsString::from("PATH"), path)),
+        }
     }
     // The login's own `HOME`, `SHELL`, `USER` and `LOGNAME` win over the account entry, which a
     // static lookup gets wrong for a directory service's users; the entry fills in what it lacks.
@@ -340,3 +332,6 @@ fn build(
 fn is_readable(path: &Path) -> bool {
     std::fs::File::open(path).is_ok()
 }
+
+#[cfg(test)]
+mod tests;

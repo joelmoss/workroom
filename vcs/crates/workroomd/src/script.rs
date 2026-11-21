@@ -52,6 +52,9 @@ pub struct Script<'a> {
     /// Between the SIGTERM and the SIGKILL when the tree is ended. A local caller the app SIGKILLs
     /// two seconds after its SIGTERM wants less, so it can still report.
     pub kill_grace: Duration,
+    /// A folder put on the script's PATH after the login's own entries: on a host, the daemon's,
+    /// where `workroom` is (ADR 0078). None for a local script, whose PATH is the login's.
+    pub commands: Option<std::path::PathBuf>,
 }
 
 impl<'a> Script<'a> {
@@ -71,6 +74,7 @@ impl<'a> Script<'a> {
             shell: crate::terminal::shell::user_shell(std::env::var_os("SHELL")),
             probe_timeout: PROBE_TIMEOUT,
             kill_grace: KILL_GRACE,
+            commands: None,
         }
     }
 }
@@ -184,7 +188,15 @@ pub fn run(
 
 /// Runs `script` with `env` as its whole environment, `script.variables` on top, reading no login
 /// shell: [`run`] once it has the environment, and a test's seam.
-pub fn run_in(script: &Script, env: BTreeMap<String, String>, output: Output) -> Outcome {
+pub fn run_in(script: &Script, mut env: BTreeMap<String, String>, output: Output) -> Outcome {
+    if let Some(folder) = &script.commands {
+        let path = crate::host::environment::with_commands(
+            env.get("PATH")
+                .map(|path| std::ffi::OsStr::new(path.as_str())),
+            folder,
+        );
+        env.insert("PATH".to_string(), path.to_string_lossy().into_owned());
+    }
     let signals = Signals::watch();
     signals.catch_ignored();
     if let Some(signal) = signals.received() {
