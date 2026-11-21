@@ -192,7 +192,8 @@ fn describe_publishes_every_method_with_both_schemas() {
             "session.list",
             "session.resolve",
             "terminal.capture",
-            "terminal.wait"
+            "terminal.wait",
+            "events.subscribe"
         ]
     );
     for method in all["methods"].as_array().unwrap() {
@@ -953,4 +954,177 @@ fn a_connection_that_closes_ends_its_waits() {
         "a cancelled wait was answered"
     );
     store.kill(id);
+}
+
+fn subscribe(
+    subscriptions: &mut events::Subscriptions,
+    store: &SessionStore,
+    writer: &SharedWriter,
+    stream: u32,
+) {
+    let params = json!({"all": true});
+    let call = Call {
+        sessions: store,
+        params: &params,
+        caller: None,
+    };
+    events::start(subscriptions, &call, writer, stream);
+}
+
+/// The replies' `result.event`s, or `error.kind`s.
+fn said(written: &Written) -> Vec<String> {
+    written
+        .replies()
+        .iter()
+        .map(|reply| {
+            reply["result"]["event"]
+                .as_str()
+                .or(reply["error"]["kind"].as_str())
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect()
+}
+
+/// A connection and the daemon each hold a few subscriptions; one past either is `Busy` at once,
+/// and a connection that closes gives its places back.
+#[test]
+fn events_past_a_bound_are_busy_until_a_connection_closes() {
+    use std::sync::atomic::AtomicUsize;
+    static HELD: AtomicUsize = AtomicUsize::new(0);
+    let limits = events::Limits {
+        connection: 2,
+        daemon: 3,
+    };
+    let store = SessionStore::new();
+    let (first_written, first_writer) = written_writer();
+    let mut first = events::Subscriptions::with(limits, &HELD);
+    for stream in 1..=3 {
+        subscribe(&mut first, &store, &first_writer, stream);
+    }
+    assert!(
+        eventually(|| said(&first_written).len() == 3),
+        "{:?}",
+        said(&first_written)
+    );
+    let mut first_said = said(&first_written);
+    first_said.sort();
+    assert_eq!(
+        first_said,
+        ["Busy", "snapshot-complete", "snapshot-complete"]
+    );
+
+    let (second_written, second_writer) = written_writer();
+    let mut second = events::Subscriptions::with(limits, &HELD);
+    for stream in 1..=2 {
+        subscribe(&mut second, &store, &second_writer, stream);
+    }
+    assert!(eventually(|| said(&second_written).len() == 2));
+    let mut second_said = said(&second_written);
+    second_said.sort();
+    assert_eq!(
+        second_said,
+        ["Busy", "snapshot-complete"],
+        "the daemon's bound"
+    );
+
+    drop(first);
+    let (third_written, third_writer) = written_writer();
+    let mut third = events::Subscriptions::with(limits, &HELD);
+    // Its threads end a moment after it closes; until then a place is still `Busy`.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut stream = 0;
+    while std::time::Instant::now() < deadline {
+        stream += 1;
+        subscribe(&mut third, &store, &third_writer, stream);
+        let replied = eventually(|| said(&third_written).len() == stream as usize);
+        if replied && said(&third_written).last().map(String::as_str) == Some("snapshot-complete") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        said(&third_written).last().map(String::as_str),
+        Some("snapshot-complete"),
+        "a closed connection's places were never given back"
+    );
+    drop((second, third));
+}
+
+/// A connection that writes nothing a moment, as a caller that stops reading leaves it.
+#[derive(Clone, Default)]
+struct Stalled {
+    open: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    written: Written,
+}
+
+impl std::io::Write for Stalled {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let (open, wake) = &*self.open;
+        let mut open = open.lock().unwrap();
+        while !*open {
+            open = wake.wait(open).unwrap();
+        }
+        self.written.write(bytes)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A subscriber that stops reading never holds up what makes events: more of them than the daemon
+/// keeps are made while its write is stuck, and once it reads again it is told it fell behind,
+/// with the state afresh, and goes on from there. Nothing is lost without its saying so.
+#[test]
+fn a_subscriber_that_stops_reading_slows_nothing_and_is_told_it_lagged() {
+    let store = SessionStore::new();
+    let stalled = Stalled::default();
+    let writer: SharedWriter =
+        std::sync::Arc::new(std::sync::Mutex::new(Box::new(stalled.clone())));
+    let mut subscriptions = events::Subscriptions::default();
+    subscribe(&mut subscriptions, &store, &writer, 1);
+
+    let hub = &store.hooks().events;
+    let id = crate::terminal::session::SessionId([0x70; 16]);
+    let listing = json!({"id": id.to_hyphenated(), "scope": null, "coding_agent": null});
+    let started = std::time::Instant::now();
+    for _ in 0..crate::terminal::events::RING {
+        hub.created(id, listing.clone());
+        hub.ended(id, Some(0));
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "making events waited on the stuck subscriber: {:?}",
+        started.elapsed()
+    );
+    {
+        let (open, wake) = &*stalled.open;
+        *open.lock().unwrap() = true;
+        wake.notify_all();
+    }
+    assert!(
+        eventually(|| said(&stalled.written).len() >= 2),
+        "{:?}",
+        said(&stalled.written)
+    );
+    let replies = stalled.written.replies();
+    assert_eq!(
+        replies[0]["result"]["reason"], "subscribed",
+        "{:?}",
+        replies[0]
+    );
+    let lagged = &replies[1]["result"];
+    assert_eq!(lagged["event"], "snapshot-complete", "{lagged}");
+    assert_eq!(lagged["reason"], "lagged", "{lagged}");
+    assert_eq!(
+        lagged["revision"],
+        2 * crate::terminal::events::RING as u64,
+        "{lagged}"
+    );
+    hub.created(id, listing);
+    assert!(eventually(|| said(&stalled.written).len() == 3));
+    assert_eq!(
+        stalled.written.replies()[2]["result"]["event"],
+        "session.created"
+    );
 }

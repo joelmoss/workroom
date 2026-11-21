@@ -35,6 +35,7 @@ mod config;
 mod delete;
 mod delete_project;
 mod envelope;
+mod events;
 mod git;
 mod host;
 mod include_archive;
@@ -629,6 +630,22 @@ const COMMANDS: &[Command] = &[
             ],
             "#672",
         )
+    },
+    Command {
+        name: "events",
+        aliases: &[],
+        usage: "events",
+        short: "Stream terminal sessions' events as JSON lines: a snapshot, then live changes",
+        long: None,
+        hidden: false,
+        mac_only: false,
+        flags: events::FLAGS,
+        subcommands: &[],
+        // No arguments, which `events::run` checks.
+        arity: Arity::Own,
+        // `--session` takes a session the daemon knows, never a file, as `sessions`' TARGET is.
+        operands: Operands::Nothing,
+        implementation: Implementation::Ported(events::run),
     },
     Command {
         name: "help",
@@ -1707,6 +1724,20 @@ mod tests {
             let ((stdout, _), code) = run_on(Platform::Other, args);
             assert_eq!((stdout.as_str(), code), (":4\n", 0), "{args:?}");
         }
+    }
+
+    /// `events` is Rust's alone too (#687): completion offers it and its flags, and no file names,
+    /// since it takes no arguments and `--session` a session.
+    #[test]
+    fn completion_offers_events_and_its_flags() {
+        let ((stdout, _), _) = run_on(Platform::Other, &["__completeNoDesc", ""]);
+        assert!(stdout.lines().any(|line| line == "events"), "{stdout}");
+        let ((stdout, _), _) = run_on(Platform::Other, &["__completeNoDesc", "events", "--"]);
+        for flag in ["--all", "--session", "--type", "--workroom", "--json"] {
+            assert!(stdout.lines().any(|line| line == flag), "{flag}: {stdout}");
+        }
+        let ((stdout, _), code) = run_on(Platform::Other, &["__complete", "events", ""]);
+        assert_eq!((stdout.as_str(), code), (":4\n", 0));
     }
 
     /// As in Go, `base`'s flags are `set`'s and `clear`'s, and each subcommand's `--help` is its

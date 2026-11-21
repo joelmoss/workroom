@@ -170,6 +170,10 @@ The title a session's program last set for its terminal (OSC 0 or 2), which chan
 **Target**:
 How a terminal API command names one session: its id, the end of its id, its label or its live title. A target that names more than one session names none.
 
+**Event**:
+Something the terminal API's `workroom events` reports as it happens: a session created or ended, a change of its coding agent's program status, or a run state. Each is numbered by the daemon's boot and its revision, so a script that reconnects goes on from the last one it saw (ADR 0079).
+_Avoid_: Notification (the app's own, shown to the user)
+
 **Bootstrap**:
 Putting the bundled Linux workroomd, with Ghostty's terminfo and shell integration, on a host that has none or an older one, and handing a running older daemon off to it. It runs on every connect. A provider or container's supervisor starts the daemon; on an SSH host, the app starts it when nothing is listening.
 

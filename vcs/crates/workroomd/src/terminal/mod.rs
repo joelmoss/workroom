@@ -4,6 +4,7 @@
 
 pub(crate) mod api;
 pub(crate) mod dispatch;
+pub(crate) mod events;
 pub(crate) mod host_session;
 pub(crate) mod images;
 pub(crate) mod input;

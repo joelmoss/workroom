@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::SessionId;
+use super::{Described, SessionId, SessionInfo};
 use crate::terminal::program_status::{Hub, Store};
 use crate::terminal::run::Runs;
 use crate::terminal::screens::KeptScreens;
@@ -31,6 +31,10 @@ pub struct Hooks {
     pub program_status: Arc<Hub>,
     /// What a remote pane's session attached from the Mac is built from (ADR 0074).
     pub host: crate::terminal::host_session::HostSource,
+    /// The terminal API's events (#687): each session created and ended, each news of its coding
+    /// agent and each run transition, numbered, for `events.subscribe`. Told only with every
+    /// session lock released, as program status is.
+    pub events: Arc<crate::terminal::events::Hub>,
 }
 
 impl Hooks {
@@ -44,8 +48,15 @@ impl Hooks {
     }
 
     /// The new session is in the store and the store's lock is released. `superseded` is what
-    /// `creating` said.
-    pub(super) fn created(&self, run: bool, superseded: bool) {
+    /// `creating` said; `info` is the session as `list` reports it, before its reader starts.
+    pub(super) fn created(&self, info: SessionInfo, run: bool, superseded: bool) {
+        let id = info.id;
+        let listing = crate::terminal::api::session_json(&Described {
+            info,
+            title: None,
+            coding_agent: None,
+        });
+        self.events.created(id, listing);
         if run {
             self.runs.raise();
         }
@@ -100,9 +111,21 @@ impl Hooks {
         self.program_status.boot()
     }
 
-    /// A read changed `id`'s program status: published, with every session lock released.
-    pub(super) fn status_changed(&self, id: SessionId, event: Vec<u8>, blocked: bool) {
+    /// A read changed `id`'s program status: published, with every session lock released, to the
+    /// app's subscribers, and to the terminal API's events as `agent`, its coding agent now.
+    pub(super) fn status_changed(&self, id: SessionId, published: Published) {
+        let Published {
+            event,
+            blocked,
+            agent,
+        } = published;
         self.program_status.publish(id, event, blocked);
+        self.events.program_status(id, agent);
+    }
+
+    /// The session's reader has ended it, with its shell's exit code when it saw one.
+    pub(super) fn session_ended(&self, id: SessionId, exit_code: Option<i32>) {
+        self.events.ended(id, exit_code);
     }
 
     /// A program status probe's answer did not fit the pty's input queue.
@@ -123,11 +146,11 @@ impl Hooks {
             shadow.status().and_then(|status| {
                 change(status);
                 let blocked = status.commit()?;
-                Some((status.event(self.boot(), id), blocked))
+                Some(Published::of(status, self.boot(), id, blocked))
             })
         };
-        if let Some((event, blocked)) = published {
-            self.status_changed(id, event, blocked);
+        if let Some(published) = published {
+            self.status_changed(id, published);
         }
     }
 
@@ -136,5 +159,24 @@ impl Hooks {
     pub(super) fn program_ended(&self, id: SessionId, shadow: &Mutex<Shadow>) {
         self.change_program_status(id, shadow, Store::drop_on_exit);
         self.program_status.ended(id);
+    }
+}
+
+/// A committed change to a session's program status, taken under its shadow lock and published
+/// once it is released: the app's `status` event, whether a record entered blocked, and the coding
+/// agent as the terminal API lists it.
+pub(super) struct Published {
+    event: Vec<u8>,
+    blocked: bool,
+    agent: serde_json::Value,
+}
+
+impl Published {
+    pub(super) fn of(status: &Store, boot: SessionId, id: SessionId, blocked: bool) -> Published {
+        Published {
+            event: status.event(boot, id),
+            blocked,
+            agent: serde_json::json!(status.coding_agent()),
+        }
     }
 }

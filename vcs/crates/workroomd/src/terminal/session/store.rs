@@ -210,7 +210,7 @@ impl SessionStore {
             spec.id.to_hyphenated(),
             pty.child_pid()
         );
-        self.hooks.created(is_run, superseded);
+        self.hooks.created(info.clone(), is_run, superseded);
         // `std::thread::spawn` panics when the OS cannot create a thread. Reachable here on the
         // connection's own dispatch thread (this runs inside `handle_connection`), so the panic
         // would unwind past `Server::serve`'s `connections.fetch_sub` exactly as an unhandled

@@ -15,8 +15,9 @@
 //! registry every `workroom` command shares (ADR 0013), and an ambiguous target's error lists the
 //! sessions it matched under `matches`. Nothing is ever sent unasked, which is what leaves a client
 //! that never calls the service unaffected by it. Every method answers at once except
-//! `terminal.wait` (`wait`), which answers when its wait ends, while the connection goes on taking
-//! requests.
+//! `terminal.wait` (`wait`), which answers when its wait ends, and `events.subscribe` (`events`),
+//! which streams until its caller hangs up, each from a thread of its own while the connection
+//! goes on taking requests.
 //!
 //! **The caller** (#684) is the session a request comes from: the one whose shell the connecting
 //! process descends from (its peer pid, then its parents), else the one its optional `"caller"`
@@ -166,6 +167,9 @@ enum Run {
     /// When something happens, from a thread of its own, while the connection goes on taking
     /// requests: `terminal.wait` (`wait::start`).
     Wait,
+    /// For as long as the caller listens, from a thread of its own, while the connection goes on
+    /// taking requests: `events.subscribe` (`events::start`).
+    Events,
 }
 
 /// One request as a method sees it.
@@ -327,6 +331,23 @@ pub const METHODS: &[Method] = &[
         params_example: wait::params_example,
         result_example: wait::result_example,
         run: Run::Wait,
+    },
+    Method {
+        name: events::NAME,
+        summary: "The daemon's events, streamed: the sessions as they are (one `session` event \
+                  each, then `snapshot-complete`), then each session created and ended, each \
+                  change of its coding agent's program status and each run state, as they \
+                  happen, every one with the `boot` and `revision` a caller resumes from with \
+                  `since`. By default the caller's scope's; `workroom`, `all`, `session` and \
+                  `types` say whose and which. The stream goes on until the caller hangs up. A \
+                  connection and the daemon each hold a few subscriptions at once, and one past \
+                  them is `Busy`.",
+        input: events::input,
+        output: events::output,
+        errors: events::ERRORS,
+        params_example: events::params_example,
+        result_example: events::result_example,
+        run: Run::Events,
     },
 ];
 
@@ -893,7 +914,8 @@ fn metadata<'a>(session: &'a Described, key: &str) -> Option<&'a str> {
         .map(|(_, value)| value.as_str())
 }
 
-fn session_json(session: &Described) -> Value {
+/// One session in the listing's shape (`session_schema`).
+pub(crate) fn session_json(session: &Described) -> Value {
     json!({
         "id": session.info.id.to_hyphenated(),
         "label": metadata(session, "title"),
@@ -951,8 +973,8 @@ fn handle(sessions: &SessionStore, bytes: &[u8], peer: Option<i32>) -> Result<An
     let request = read(sessions, bytes, peer)?;
     match request.method.run {
         Run::Now(run) => run(&request.call(sessions)),
-        Run::Wait => Err(ApiError::invalid(
-            "terminal.wait answers on its own stream, from `dispatch`",
+        Run::Wait | Run::Events => Err(ApiError::invalid(
+            "this method answers on its own stream, from `dispatch`",
         )),
     }
 }
@@ -1049,6 +1071,8 @@ pub struct Connection {
     partial: PartialRequests,
     /// Its waits, which end when it does.
     waits: wait::Waits,
+    /// Its event subscriptions, which end when it does.
+    subscriptions: events::Subscriptions,
 }
 
 /// Answers one envelope on its own stream: at once, or for a wait, when it ends.
@@ -1078,6 +1102,12 @@ pub fn dispatch(
                 },
                 Run::Wait => wait::start(
                     &mut connection.waits,
+                    &request.call(sessions),
+                    writer,
+                    envelope.stream,
+                ),
+                Run::Events => events::start(
+                    &mut connection.subscriptions,
                     &request.call(sessions),
                     writer,
                     envelope.stream,
@@ -1123,6 +1153,7 @@ fn stream(
     }
 }
 
+mod events;
 mod wait;
 
 #[cfg(test)]
