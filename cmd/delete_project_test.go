@@ -184,8 +184,7 @@ func TestDeleteProjectCascadePartialFailureKeepsProject(t *testing.T) {
 // (none exist in this test), config is cleaned up, and the envelope contains
 // from_disk:true and trash_paths = [root, ...sorted workroom paths].
 func TestDeleteProjectFromDisk(t *testing.T) {
-	// Git registers both, as a teardown runs only in a worktree of the project's.
-	fake := &fakeVCS{list: []string{"alpha", "bravo"}}
+	fake := &fakeVCS{}
 	svc, cfg := newTestSvc(t, fake)
 	proj := t.TempDir()
 	canon, _ := config.CanonicalPath(proj)
@@ -320,7 +319,8 @@ func TestDeleteProjectFromDiskTeardownFailure(t *testing.T) {
 			if err := cfg.AddWorkroom(canon, wrName, filepath.Join(wrParent, wrName), "git"); err != nil {
 				t.Fatal(err)
 			}
-			// Git registers it, so its teardown is the one that fails.
+			// Git registers it: a teardown runs only in a worktree git registers, and this
+			// non-git folder would otherwise be a Jujutsu workroom, only forgotten.
 			fake.list = []string{wrName}
 
 			svc.SkipTeardown = skip
