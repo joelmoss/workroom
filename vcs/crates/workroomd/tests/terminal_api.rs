@@ -3013,6 +3013,123 @@ fn events_tell_every_run_state_a_restart_included() {
     );
 }
 
+/// Hands the daemon on `socket` off to a copy of the binary under test.
+fn hand_off(socket: &Path, dir: &Path) {
+    let next = dir.join("next-workroom");
+    if !next.exists() {
+        common::copy_daemon_binary(&next);
+    }
+    let handed = Command::new(common::daemon_binary())
+        .args(["hand-off", "--socket"])
+        .arg(socket)
+        .arg("--binary")
+        .arg(&next)
+        .arg("--force")
+        .output()
+        .expect("hand-off");
+    assert_eq!(
+        String::from_utf8_lossy(&handed.stdout).trim(),
+        "handed off",
+        "{}",
+        String::from_utf8_lossy(&handed.stderr)
+    );
+}
+
+/// A hand-off closes `workroom events`' connection with the old program, and it goes on in the
+/// new one from where it stood: every event once, in order, the ones made while it was away (in
+/// the old program before the hand-off, and in the new one before it asked again) included, and
+/// no second snapshot. A daemon that started afresh instead can't go on from there: the sessions
+/// come afresh, a snapshot that says `gap`, and stderr says events may have been missed.
+#[test]
+fn events_go_on_across_a_hand_off_from_their_boot_and_revision() {
+    if !has_terminal_state() {
+        eprintln!("skipped: a hand-off needs a daemon built with terminal-state");
+        return;
+    }
+    let workspace = Workspace::new("api-events-handoff");
+    let socket = workspace.socket();
+    let daemon = start_daemon(&socket);
+    let _shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+    let mut events = Events::start(&socket, &[]);
+    let complete = events.until("snapshot-complete", |e| e["event"] == "snapshot-complete");
+    let boot = complete["boot"].clone();
+
+    // Stopped, so it reads nothing until the new program has made events of its own.
+    signal(&events.child, libc::SIGSTOP);
+    let mut other = open(&socket, OTHER, "tests", "wr-1", &workspace.dir);
+    let mut output = common::ClientReader::new(&mut other);
+    // It exits once `go` exists: after the hand-off, which closes this client.
+    let go = workspace.dir.join("go");
+    type_line(
+        &mut other,
+        &format!(
+            r#"sh -c 'echo "LOOP""-ON"; while [ ! -e "{go}" ]; do sleep 0.05; done'; exit 4"#,
+            go = go.display()
+        ),
+    );
+    assert!(
+        output
+            .read_until("LOOP-ON\r\n", Duration::from_secs(20))
+            .contains("LOOP-ON\r\n"),
+        "fixture: the waiting command never started"
+    );
+    drop(output);
+    drop(other);
+    hand_off(&socket, &workspace.dir);
+    std::fs::write(&go, b"").expect("go");
+    listing_until(&socket, |listing| listing.len() == 1);
+    let _third = open(&socket, RUN, "third", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 2);
+    signal(&events.child, libc::SIGCONT);
+
+    events.until("the third session", |e| is(e, "session.created", RUN));
+    let live: Vec<(String, String)> = told(&events.seen)
+        .into_iter()
+        .filter(|(name, _)| name.contains('.'))
+        .collect();
+    assert_eq!(
+        live,
+        [
+            pair("session.created", OTHER),
+            pair("session.ended", OTHER),
+            pair("session.created", RUN)
+        ],
+        "{:#?}",
+        events.seen
+    );
+    let ended = events
+        .seen
+        .iter()
+        .find(|e| is(e, "session.ended", OTHER))
+        .unwrap();
+    assert_eq!(ended["exit_code"], 4, "{ended}");
+    assert_numbered(&events.seen, &boot);
+    assert_eq!(events.count("snapshot-complete"), 1, "{:#?}", events.seen);
+    assert_eq!(
+        events.count("resumed"),
+        0,
+        "the CLI keeps `resumed` to itself"
+    );
+
+    // Another daemon, started afresh on the same socket: another boot.
+    signal(&events.child, libc::SIGSTOP);
+    drop(daemon);
+    let _again = start_daemon(&socket);
+    let _fourth = open(&socket, OTHER, "fourth", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+    signal(&events.child, libc::SIGCONT);
+    let gap = events.until("a snapshot after the gap", |e| {
+        e["event"] == "snapshot-complete"
+    });
+    assert_eq!(gap["reason"], "gap", "{gap}");
+    assert_ne!(gap["boot"], boot, "{gap}");
+    assert_eq!(gap["sessions"], json!([OTHER]), "{gap}");
+    let stderr = events.stop();
+    assert!(stderr.contains("handed off during the events"), "{stderr}");
+    assert!(stderr.contains("events may have been missed"), "{stderr}");
+}
+
 /// `(event, session)` of each event, the session's last 4 characters, for an assertion to read.
 fn told(events: &[Value]) -> Vec<(String, String)> {
     events

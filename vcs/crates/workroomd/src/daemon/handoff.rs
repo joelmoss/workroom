@@ -137,8 +137,11 @@ const MAGIC: [u8; 4] = *b"WRHO";
 /// its check, so a hand-off never goes to a program that would drop what this one carries.
 /// `a_version_3_table_from_the_shipped_daemon_is_adopted_with_its_program_status` holds the shipped
 /// table: a field added to `program_status::Store` or `Record` needs a serde default, or a new
-/// version here with 3 still accepted.
-const TABLE_VERSION: u16 = 3;
+/// version here with 3 still accepted. Version 4 adds the terminal API's events (#687) after the
+/// sessions; a table before it carries none, and the next program numbers its events under a boot
+/// of its own, which is safe because no program that writes one has ever served the events, so
+/// no client holds a place in them.
+const TABLE_VERSION: u16 = 4;
 /// The oldest table this program still reads.
 const OLDEST_TABLE_VERSION: u16 = 1;
 /// How long the new binary gets to check the table. Every session's output is stopped meanwhile
@@ -217,13 +220,17 @@ pub struct Table {
     /// The session store's program status boot (#358); `None` from a table before version 3.
     pub boot: Option<SessionId>,
     pub sessions: Vec<FrozenSession>,
+    /// The terminal API's events (`events::Hub::carry`), as JSON; `None` from a table before
+    /// version 4.
+    pub events: Option<Vec<u8>>,
 }
 
 impl Table {
     /// Big-endian, like the rest of the wire: magic, version, listener, lock, (from version 3) the
     /// boot, count, then per session id, pid, master, columns, rows, screen length and screen,
     /// (from version 2) its metadata as a count of length-prefixed key and value pairs, and (from
-    /// version 3) its program status as length-prefixed JSON.
+    /// version 3) its program status as length-prefixed JSON; then (from version 4) the events as
+    /// length-prefixed JSON, empty for none.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = MAGIC.to_vec();
         out.extend_from_slice(&TABLE_VERSION.to_be_bytes());
@@ -251,6 +258,9 @@ impl Table {
             out.extend_from_slice(&(status.len() as u32).to_be_bytes());
             out.extend_from_slice(&status);
         }
+        let events = self.events.as_deref().unwrap_or_default();
+        out.extend_from_slice(&(events.len() as u32).to_be_bytes());
+        out.extend_from_slice(events);
         out
     }
 
@@ -311,6 +321,11 @@ impl Table {
                 program_status,
             });
         }
+        let mut events = None;
+        if version >= 4 {
+            let length = u32::from_be_bytes(reader.array()?) as usize;
+            events = Some(reader.take(length)?.to_vec()).filter(|events| !events.is_empty());
+        }
         if !reader.0.is_empty() {
             return Err(HandOffError::TrailingBytes);
         }
@@ -319,6 +334,7 @@ impl Table {
             lock,
             boot,
             sessions,
+            events,
         })
     }
 }
@@ -528,13 +544,20 @@ pub fn hand_off(
                 if sessions.is_killing() {
                     return Err(HandOffError::SessionEnding);
                 }
-                replace(
+                // Sealed as it is carried: nothing numbered after it is sent from here, so no
+                // client hears a revision the next program numbers again. Sent after all when the
+                // hand-off doesn't happen, which is the only way `replace` returns.
+                let events = sessions.hooks().events.carry();
+                let replaced = replace(
                     context,
                     binary,
                     sessions.hooks().program_status.boot(),
                     frozen,
+                    events,
                     before_exec,
-                )
+                );
+                sessions.hooks().events.unseal();
+                replaced
             },
         )
         .unwrap_or(Err(HandOffError::SessionsBusy))
@@ -599,6 +622,7 @@ fn replace(
     binary: &Path,
     boot: SessionId,
     frozen: &[FrozenSession],
+    events: Vec<u8>,
     before_exec: impl FnOnce() -> bool,
 ) -> Result<(), HandOffError> {
     let mut carried = Carried(Vec::new());
@@ -614,6 +638,7 @@ fn replace(
         lock: carried.dup(context.lock)?,
         boot: Some(boot),
         sessions,
+        events: Some(events),
     };
     let path = table_path(&context.socket);
     let _ = std::fs::remove_file(&path);
