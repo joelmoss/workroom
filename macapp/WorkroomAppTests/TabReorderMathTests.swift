@@ -389,4 +389,34 @@ final class TabReorderDragTests: XCTestCase {
     XCTAssertNil(drag.id)
     XCTAssertEqual(drag.translation, 0)
   }
+
+  // MARK: - Pointer-based, around drop bands (#652)
+
+  /// Tabs at 0–100, 104–204, 208–308.
+  private let spans: [ClosedRange<CGFloat>] = [0...100, 104...204, 208...308]
+
+  private func index(at x: CGFloat, from di: Int, joinable: [Bool] = [true, true, true]) -> Int {
+    TabReorder.dropTargetIndex(
+      spans: spans, draggedIndex: di, pointerX: x, joinable: joinable, band: 0.25)
+  }
+
+  func testANeighbourThatTakesTheDropStaysPutAcrossItsBandThenMovesOnce() {
+    // Dragging tab 0 right over tab 1 (band 129–179): nothing moves before or over the band…
+    for x: CGFloat in [101, 120, 130, 154, 178] { XCTAssertEqual(index(at: x, from: 0), 0, "\(x)") }
+    // …and past it, tab 1 moves aside, and stays aside while the pointer goes on.
+    for x: CGFloat in [180, 200, 206, 230] { XCTAssertEqual(index(at: x, from: 0), 1, "\(x)") }
+    XCTAssertEqual(index(at: 290, from: 0), 2)
+  }
+
+  func testDraggingLeftCrossesANeighbourOnlyBeforeItsBand() {
+    XCTAssertEqual(index(at: 180, from: 2), 2)
+    XCTAssertEqual(index(at: 130, from: 2), 2)
+    XCTAssertEqual(index(at: 128, from: 2), 1)
+    XCTAssertEqual(index(at: 20, from: 2), 0)
+  }
+
+  func testANeighbourThatRefusesTheDropIsCrossedAtItsMiddle() {
+    XCTAssertEqual(index(at: 153, from: 0, joinable: [false, false, true]), 0)
+    XCTAssertEqual(index(at: 155, from: 0, joinable: [false, false, true]), 1)
+  }
 }

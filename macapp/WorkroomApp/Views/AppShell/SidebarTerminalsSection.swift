@@ -33,7 +33,8 @@ struct SidebarTerminalsList: View, Equatable {
 
   var body: some View {
     List {
-      SidebarHeadingGap()
+      // The rows drag under the title chip, not a snapshot of themselves.
+      SidebarHeadingGap().background(SidebarTableDragImageHook())
       if !section.isFolded {
         let rows = Self.rows(of: section, in: store)
         ForEach(rows, id: \.item) { row in

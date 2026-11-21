@@ -140,7 +140,24 @@ final class TerminalDragSession {
   /// The part of a title-bar tab where another title-bar tab let go drops on it: the middle half
   /// of its width. Nearer either edge it reorders.
   nonisolated static func titleBarBand(of tab: CGRect) -> CGRect {
-    tab.insetBy(dx: tab.width / 4, dy: 0)
+    tab.insetBy(dx: tab.width * titleBarBandInset, dy: 0)
+  }
+
+  /// How far in from each edge of a title-bar tab its drop band starts, as a share of its width.
+  nonisolated static let titleBarBandInset: CGFloat = 0.25
+
+  /// The title bar's tabs as the drag measured them when it started, each with whether a drop on
+  /// it does something, for the bar to reorder around the same bands the drop uses
+  /// (`TabReorder.dropTargetIndex(spans:…)`). Empty when no drag from the title bar is on.
+  func titleBarTabs() -> [SidebarID: (rect: CGRect, takes: Bool)] {
+    guard let store, let source, surface == .titleBar else { return [:] }
+    var tabs: [SidebarID: (rect: CGRect, takes: Bool)] = [:]
+    for zone in zones where zone.isTitleBarTab {
+      guard case .target(let sid) = zone.zone else { continue }
+      let takes = source != .entry(sid) && store.terminalDrop(source, on: zone.zone) != nil
+      tabs[sid] = (zone.rect, takes)
+    }
+    return tabs
   }
 
   private func hit(_ zone: Zone, at point: CGPoint) -> PaneDropZone? {

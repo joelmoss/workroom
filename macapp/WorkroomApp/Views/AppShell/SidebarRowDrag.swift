@@ -37,6 +37,7 @@ final class SidebarRowDrag {
       self.dragged = dragged
       self.store = store
       lastDropped = nil
+      SidebarTableDragImage.title = store.ghostTitle(of: dragged)
       let poll = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
         MainActor.assumeIsolated { self?.follow() }
       }
@@ -61,6 +62,7 @@ final class SidebarRowDrag {
   }
 
   private func stop() {
+    SidebarTableDragImage.title = nil
     poll?.invalidate()
     poll = nil
     if let store, store.terminalDrag.source == dragged { store.terminalDrag.cancel() }
