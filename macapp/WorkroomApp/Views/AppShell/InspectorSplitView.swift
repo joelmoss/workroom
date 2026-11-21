@@ -511,7 +511,7 @@ struct SectionHeader<Accessory: View>: View {
     }
     .accessibilityIdentifier("inspector.header.\(title)")
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(tokens.surface)
+    .background(ThemeFill.raised)
     .overlay(alignment: .trailing) {
       accessory().padding(.trailing, 12)
     }

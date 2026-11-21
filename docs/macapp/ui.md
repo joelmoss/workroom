@@ -79,6 +79,15 @@ A hosted test that renders a themed view injects a root too, as production does.
 `ThemeService.shared` stays for AppKit drawing, for picking a theme, and for `generation`, which
 keys the syntax highlighting.
 
+A main-window surface paints its solid theme fill through `ThemeFill` (`.panel`, `.background`,
+`.raised`), never a `panel`/`bg`/`surface` token directly: the window background
+(`ThemeFill.panel.nsColor()`), the detail column, the activity bar, the footer, pane title bars,
+pane cards, the sidebar card, the inspector split's headers and the creation pane. It is a
+`ShapeStyle` that resolves against `\.themeTokens`, so it goes wherever a token did
+(`.background(ThemeFill.panel)`, `Rectangle().fill(ThemeFill.background)`). It is the one place
+Glass (#725) changes how those fills draw. Dialog overlays, sheets, onboarding and the Settings
+window stay opaque, so they paint their tokens directly.
+
 The pane views (everything under `Views/Terminal` but `TargetTerminalDetail`, the content panes, the
 coding-agent views, the title bar's controls and the toasts) ask their window through
 `@Environment(\.paneHost)`, a `PaneHost`, not `@EnvironmentObject AppStore`: the Quick Terminal's

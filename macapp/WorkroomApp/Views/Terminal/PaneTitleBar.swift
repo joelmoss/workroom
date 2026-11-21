@@ -189,7 +189,7 @@ struct PaneTitleBar: View {
     // `panel` (not the terminal's own background) so the bar reads as chrome, mirroring
     // `TerminalStatusBar` at the pane's other end — which puts its hairline on top, so this one puts
     // its hairline on the bottom and the pair bracket the content.
-    .background(tokens.panel)
+    .background(ThemeFill.panel)
     .overlay(alignment: .bottom) { tokens.border.frame(height: 1) }
     // No unfocused fade of its own: this bar is INSIDE the pane, so `PaneLeafView`'s 0.3 dim scrim
     // already covers it — exactly as it covers `TerminalStatusBar`. The strip above and the workroom
