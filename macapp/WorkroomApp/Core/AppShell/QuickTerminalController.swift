@@ -182,6 +182,10 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   /// Whether losing key focus slides the window away (Settings ▸ Terminal). Overridable in tests,
   /// so no shared `Defaults` write races the parallel test workers.
   var hidesWhenUnfocused: @MainActor () -> Bool = { Defaults[.quickTerminalHidesWhenUnfocused] }
+  /// Following a press in another window till its button comes up (`focusMoved`).
+  private var mouseUpWait: Timer?
+  /// Makes a press in another window act at once while the panel has focus (`watchPresses`).
+  private var pressMonitor: Any?
 
   /// True while a window is on screen and not sliding out. False when ABSENT or HIDDEN.
   var isVisible: Bool { !hiding && (window?.isVisible ?? false) }
@@ -404,7 +408,27 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
     host?.captureSession() ?? pendingSession
   }
 
+  /// While the panel has focus, a press in one of the app's windows makes that window key before
+  /// AppKit sees it, so the press acts at once, as in a key window, instead of only bringing the
+  /// window forward: it can start a drag of terminals onto the panel's tabs (#652), which stays up
+  /// till the button comes up (`focusMoved`).
+  private func watchPresses() {
+    guard pressMonitor == nil else { return }
+    pressMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+      nonisolated(unsafe) let event = event
+      MainActor.assumeIsolated {
+        guard let self, let window = self.window, window.isKeyWindow, self.isVisible,
+          let other = event.window, other !== window, other.parent !== window,
+          !other.isKeyWindow, other.canBecomeKey
+        else { return }
+        other.makeKey()
+      }
+      return event
+    }
+  }
+
   private func createWindow(_ host: QuickTerminalHost) {
+    watchPresses()
     let window = QuickTerminalWindow(
       contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),
       styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
@@ -538,11 +562,46 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
 
   /// Focus moved to `newKey` (nil: another app): slide away, unless it went to this window's own
   /// sheet (a clipboard confirmation) or popover (the usage detail), which are not leaving it.
+  ///
+  /// Focus that moved with the button down is a press in another window, which may start a drag
+  /// of terminals onto this panel's tabs (#652): the panel waits for the button to come up, and
+  /// stays if it was let go over the panel.
   func focusMoved(to newKey: NSWindow?) {
     guard hidesWhenUnfocused(), let window, window.attachedSheet == nil,
       newKey?.parent !== window
     else { return }
+    if NSEvent.pressedMouseButtons & 1 != 0 { return waitForMouseUp() }
     hide()
+  }
+
+  /// A drag of terminals is starting in a window (`TerminalDragSession`): the panel, while it
+  /// shows, comes in front of that window without taking focus, so its tabs can take the drop.
+  func holdForDrag() {
+    guard isVisible, let window else { return }
+    window.orderFront(nil)
+  }
+
+  private func waitForMouseUp() {
+    guard mouseUpWait == nil else { return }
+    let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+      MainActor.assumeIsolated {
+        guard NSEvent.pressedMouseButtons & 1 == 0 else { return }
+        self?.mouseUpWait?.invalidate()
+        self?.mouseUpWait = nil
+        self?.mouseCameUp()
+      }
+    }
+    // Common modes: a drag runs AppKit's event-tracking loop.
+    RunLoop.main.add(timer, forMode: .common)
+    mouseUpWait = timer
+  }
+
+  /// The press that took focus away ended: let go over the panel (a drop on its tabs), it takes
+  /// focus back and stays; anywhere else, it slides away as focus moving would have had it.
+  private func mouseCameUp() {
+    guard let window, isVisible, NSApp.keyWindow !== window else { return }
+    if window.frame.contains(NSEvent.mouseLocation) { return window.makeKeyAndOrderFront(nil) }
+    focusMoved(to: NSApp.keyWindow)
   }
 
   func windowWillClose(_ notification: Notification) {
@@ -556,6 +615,10 @@ final class QuickTerminalController: NSObject, NSWindowDelegate {
   private func tearDownState() {
     guard !tearingDown else { return }
     tearingDown = true
+    mouseUpWait?.invalidate()
+    mouseUpWait = nil
+    if let pressMonitor { NSEvent.removeMonitor(pressMonitor) }
+    pressMonitor = nil
     hiding = false
     host?.hostWindow = nil
     window?.delegate = nil

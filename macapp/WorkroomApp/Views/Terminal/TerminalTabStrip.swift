@@ -224,12 +224,16 @@ struct TerminalTabStrip: View {
               drag.setWidths(measuredWidths.values)
               // Kept within the tab run, as a workroom tab is: not past the last chip.
               drag.update(tab.id, translation: clampReorder(value.translation.width, index))
-              // Dragged clear of the window → a tear-off (issue #172), or into a workroom from the
-              // Quick Terminal: show where it goes and stop previewing a drop into the panes.
+              // Dragged clear of the window → over the Quick Terminal panel's tabs, it drops there
+              // (#652); else a tear-off (issue #172), or into a workroom from the Quick Terminal:
+              // show where it goes and stop previewing a drop into the panes.
               if isDragOutsideWindow(value.location) {
-                host.paneDragMoved(tab.id, of: target, to: nil)
                 chipPaneDrag = nil
-                panes.showDragOutside(tab)
+                if host.paneDragMoved(tab.id, of: target, to: NSEvent.mouseLocation) {
+                  panes.hideDragOutside()
+                } else {
+                  panes.showDragOutside(tab)
+                }
                 return
               }
               panes.hideDragOutside()

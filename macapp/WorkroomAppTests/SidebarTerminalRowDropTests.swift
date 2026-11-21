@@ -283,6 +283,108 @@ final class SidebarTerminalRowDropTests: XCTestCase {
     XCTAssertEqual(order(), [q2, q1, aTab], "one of its own moves there")
   }
 
+  // MARK: Onto the Quick Terminal panel's pane tabs
+
+  /// Value: protects=a window's terminal, standalone terminal or group let go on the Quick
+  /// Terminal panel's pane tab joins the panel before it, or after it on its after-half, with its
+  /// session, by the same rule as a window's pane tab (#652); fails_when=the drop is refused, lands
+  /// at the end, in the window, or restarts the shell; why_new=the panel's tabs were no destination;
+  /// seam=AppStore.terminalDrop/dropTerminals; no_claim=measuring the panel's views (UI tests)
+  func testATerminalLetGoOnTheQuickTerminalPanelsTabJoinsItThere() async throws {
+    let panel = makePanel()
+    panel.onReveal = { _ in }
+    let q1 = panel.terminals.addTab(for: panel.target).id
+    let q2 = panel.terminals.addTab(for: panel.target).id
+    func order() -> [TerminalTab.ID] { panel.terminals.tabs(for: panel.target).map(\.id) }
+    let store = makeStore()
+    let shell = UUID()
+    let (ops, opsTab) = try group(store, "Ops", session: shell)
+    _ = store.terminals.addTab(for: try XCTUnwrap(store.target(for: ops)))
+
+    XCTAssertEqual(
+      store.terminalDrop(.terminal(opsTab, of: ops), on: .tab(q1, in: builtIn, after: true)),
+      .move(opsTab, of: ops, into: builtIn, before: q2))
+    let dropped = await store.dropTerminals(
+      .terminal(opsTab, of: ops), on: .tab(q1, in: builtIn, after: true))
+    await settle { order().count == 3 }
+    XCTAssertTrue(dropped)
+    XCTAssertEqual(order(), [q1, opsTab, q2], "after the first, its after-half")
+    XCTAssertEqual(panel.terminals.sessionID(forTab: opsTab, inTarget: .quickTerminal), shell)
+
+    let a = try standalone(store)
+    let aTab = try XCTUnwrap(tabs(store, a).first)
+    let joined = await store.dropTerminals(.entry(a), on: .tab(q1, in: builtIn, after: false))
+    await settle { !rows.contains(a) }
+    XCTAssertTrue(joined)
+    XCTAssertEqual(order(), [aTab, q1, opsTab, q2], "a standalone's handle, before the first")
+
+    let opsRest = tabs(store, ops)
+    let merged = await store.dropTerminals(.entry(ops), on: .tab(q2, in: builtIn, after: true))
+    await settle { !rows.contains(ops) }
+    XCTAssertTrue(merged)
+    XCTAssertEqual(order(), [aTab, q1, opsTab, q2] + opsRest, "a group's handle, after the last")
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: .quickTerminal), 0, "none in the window")
+  }
+
+  /// Value: protects=a window's drag over the Quick Terminal panel's pane tab highlights it on the
+  /// panel, not the window, and back; the panel in front hides the window's zones under it, and
+  /// the window in front the panel's; let go there, the drop lands in the panel (#652);
+  /// fails_when=the highlight is set on the dragging window, stays on either, or a hidden zone
+  /// takes the drop; why_new=the panel's tabs were no destination;
+  /// seam=TerminalDragSession/AppStore.stacked; no_claim=measuring the views (UI tests)
+  func testADragOverTheQuickTerminalPanelHighlightsAndDropsThere() async throws {
+    let panel = makePanel()
+    panel.onReveal = { _ in }
+    let q1 = panel.terminals.addTab(for: panel.target).id
+    let store = makeStore()
+    let (ops, opsTab) = try group(store, "Ops")
+    _ = store.terminals.addTab(for: try XCTUnwrap(store.target(for: ops)))
+    let dev = try standalone(store)
+    let windowFrame = CGRect(x: 0, y: 0, width: 800, height: 600)
+    let panelFrame = CGRect(x: 0, y: 400, width: 800, height: 300)
+    let row = TerminalDragSession.Zone(
+      zone: .target(dev), rect: CGRect(x: 0, y: 420, width: 200, height: 40))
+    var tab = TerminalDragSession.Zone(
+      zone: .tab(q1, in: builtIn, after: false),
+      rect: CGRect(x: 100, y: 660, width: 100, height: 30), isPaneTab: true)
+    tab.host = panel
+    let underTab = CGPoint(x: 120, y: 675)
+    let underRow = CGPoint(x: 50, y: 440)
+    let session = TerminalDragSession(store: store)
+    let source = TerminalDragSource.terminal(opsTab, of: ops)
+
+    // The panel in front: its tab takes the drag, the window's row under it doesn't.
+    session.begin(
+      source, from: .paneTabs,
+      zones: AppStore.stacked(
+        [row], in: windowFrame, with: [tab], in: panelFrame, panelInFront: true))
+    XCTAssertTrue(session.moved(source, from: .paneTabs, to: underTab))
+    XCTAssertEqual(panel.incomingPaneDrop, .tab(q1, in: builtIn, after: false))
+    XCTAssertNil(store.incomingPaneDrop, "the panel's tab shows it, not the window")
+    XCTAssertTrue(session.host(at: underTab) === panel)
+    XCTAssertFalse(session.moved(source, from: .paneTabs, to: underRow), "hidden by the panel")
+    XCTAssertNil(panel.incomingPaneDrop)
+    XCTAssertNil(store.incomingPaneDrop)
+
+    // The window in front: its row takes it where it covers the panel.
+    session.begin(
+      source, from: .paneTabs,
+      zones: AppStore.stacked(
+        [row], in: windowFrame, with: [tab], in: CGRect(x: 0, y: 400, width: 800, height: 300),
+        panelInFront: false))
+    XCTAssertTrue(session.moved(source, from: .paneTabs, to: underRow))
+    XCTAssertEqual(store.incomingPaneDrop, .target(dev))
+    XCTAssertNil(panel.incomingPaneDrop)
+    XCTAssertTrue(session.moved(source, from: .paneTabs, to: underTab), "past the window's edge")
+    XCTAssertEqual(panel.incomingPaneDrop, .tab(q1, in: builtIn, after: false))
+    XCTAssertNil(store.incomingPaneDrop, "moved off the window's row")
+
+    XCTAssertTrue(session.ended(at: underTab))
+    XCTAssertNil(panel.incomingPaneDrop, "the session's end clears the panel's highlight")
+    await settle { panel.terminals.tabs(for: panel.target).count == 2 }
+    XCTAssertEqual(panel.terminals.tabs(for: panel.target).map(\.id), [opsTab, q1])
+  }
+
   // MARK: Out to standalone
 
   /// Value: protects=a group's terminal let go between the section's rows becomes a standalone
