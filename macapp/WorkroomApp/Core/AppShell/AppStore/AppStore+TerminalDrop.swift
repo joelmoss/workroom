@@ -120,7 +120,7 @@ extension AppStore {
         ? .standalone(tab, of: owner) : nil
     }
     if case .titleBarGap(let before) = zone {
-      guard owner.isStandaloneSidebarID else {
+      guard owner.isStandaloneTerminal else {
         return canDropPane(tab, of: target, on: .standalone, source: source)
           ? .standalone(tab, of: owner, titleBarBefore: .some(before)) : nil
       }
@@ -134,7 +134,7 @@ extension AppStore {
     guard let (into, before) = landing(zone) else { return nil }
     if into == owner {
       // Its own container's row, tab or title bar: it is already there.
-      guard zone.container != zone, !owner.isStandaloneSidebarID,
+      guard zone.container != zone, !owner.isStandaloneTerminal,
         paneMoveRefusal(ofTab: tab, in: target, source: source) == nil
       else { return nil }
       let order = tabOrder(of: owner)
@@ -293,13 +293,5 @@ extension AppStore {
       for tab in tabs { terminals.moveTab(tab, before: before, for: target) }
       markSessionDirty()
     }
-  }
-}
-
-extension SidebarID {
-  /// Whether this is a standalone terminal's.
-  fileprivate var isStandaloneSidebarID: Bool {
-    if case .standalone = self { return true }
-    return false
   }
 }

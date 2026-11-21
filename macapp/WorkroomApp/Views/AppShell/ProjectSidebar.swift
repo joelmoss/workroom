@@ -502,7 +502,7 @@ struct SidebarIconGlyph: View {
         width: SidebarRowMetrics.iconColumnWidth, height: SidebarRowMetrics.iconColumnWidth
       )
       .background {
-        RoundedRectangle(cornerRadius: 5)
+        RoundedRectangle(cornerRadius: Radius.xs)
           .fill(tokens.hover.opacity(hovering ? 1 : 0))
           .frame(width: SidebarRowMetrics.hoverWell, height: SidebarRowMetrics.hoverWell)
       }
@@ -748,7 +748,7 @@ private struct RowRunToggle: View {
       }
       .padding(4)
       .background(
-        RoundedRectangle(cornerRadius: 5)
+        RoundedRectangle(cornerRadius: Radius.xs)
           .fill(tint.opacity(hovering ? 0.18 : 0))
       )
     }
@@ -777,7 +777,7 @@ struct SettingsRowButton: View {
         .foregroundStyle(.secondary)
         .padding(4)
         .background(
-          RoundedRectangle(cornerRadius: 5)
+          RoundedRectangle(cornerRadius: Radius.xs)
             .fill(tokens.hover.opacity(hovering ? 1 : 0))
         )
     }
@@ -807,7 +807,7 @@ struct DeleteRowButton: View {
         .foregroundStyle(hovering ? tokens.failure : .secondary)
         .padding(4)
         .background(
-          RoundedRectangle(cornerRadius: 5)
+          RoundedRectangle(cornerRadius: Radius.xs)
             .fill(tokens.failure.opacity(hovering ? 0.18 : 0))
         )
     }
@@ -847,7 +847,7 @@ struct TerminalDisclosureButton: View {
         .foregroundStyle(.secondary)
         .frame(width: width, height: 18, alignment: .center)
         .background {
-          RoundedRectangle(cornerRadius: 5)
+          RoundedRectangle(cornerRadius: Radius.xs)
             .fill(tokens.hover.opacity(hovering ? 1 : 0))
             .frame(width: 18, height: 18)
         }

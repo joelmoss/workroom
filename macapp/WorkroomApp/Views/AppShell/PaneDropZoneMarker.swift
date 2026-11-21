@@ -1,4 +1,5 @@
 import AppKit
+import DesignSystem
 import SwiftUI
 
 /// Marks a sidebar row, the Terminals heading, a pane tab or a group's title bar as somewhere a
@@ -68,7 +69,7 @@ private struct PaneDropZoneModifier: ViewModifier {
         if insertion != nil {
           DropInsertionMark(vertical: isPaneTab)
         } else if store.incomingPaneDrop == zone {
-          DropAccent(cornerRadius: 6)
+          DropAccent(cornerRadius: Radius.s)
         }
       }
   }

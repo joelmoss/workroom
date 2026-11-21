@@ -58,6 +58,18 @@ public enum TargetID: Hashable, Sendable {
   /// The project a root or workroom belongs to. Nil for a create's pane, whose id names only its
   /// run, a standalone terminal and a terminal group (the Quick Terminal's included), which belong
   /// to none.
+  /// Whether this is a standalone terminal's (ADR 0077).
+  public var isStandaloneTerminal: Bool {
+    if case .standalone = self { return true }
+    return false
+  }
+
+  /// Whether this is a terminal group's (ADR 0077).
+  public var isTerminalGroup: Bool {
+    if case .terminalGroup = self { return true }
+    return false
+  }
+
   public var projectPath: String? {
     switch self {
     case .root(let project), .workroom(let project, _): return project
