@@ -42,6 +42,7 @@ mod kind;
 mod list;
 mod log;
 mod panel;
+mod prompt;
 mod sessions;
 mod start;
 mod teardown;

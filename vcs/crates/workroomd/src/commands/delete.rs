@@ -9,15 +9,16 @@
 //! else the controlling terminal, as Go's prompts open it); with no terminal the delete fails, and
 //! nothing is deleted.
 
-use std::io::{BufRead, BufReader, IsTerminal, Write};
+use std::io::{BufRead, IsTerminal, Write};
 
 use serde::Serialize;
 
 use super::config::{self, Config, Json};
 use super::envelope;
 use super::kind::{CliError, Kind};
+use super::panel::Paint;
+use super::prompt::{self, ask};
 use super::teardown::{Approve, Confirm, Delete, Deleted, INVALID_NAME, Watcher, check_name};
-use super::trust::{self, Paint};
 use super::trusted_script::Script;
 use super::{Args, Context, Outcome};
 
@@ -77,13 +78,7 @@ fn delete(context: &Context, args: &Args) -> Result<Outcome, CliError> {
 
     let paint = Paint(context.color);
     // Only a person at a terminal can read a script and approve it; anything else is refused.
-    let approve = |script: &Script| {
-        let mut stdout = std::io::stdout();
-        let approved =
-            trust::approve_script(&mut stdout, &mut std::io::stdin().lock(), paint, script);
-        let _ = stdout.flush();
-        approved
-    };
+    let approve = |script: &Script| prompt::approve(paint, script);
     let delete = Delete {
         context,
         config: &config,
@@ -203,60 +198,16 @@ fn said(paint: Paint, home: Option<&str>, name: &str, deleted: &Deleted) -> Stri
     }
 }
 
-/// The terminal a person is asked on: where the question goes and where the answer comes from.
-struct Terminal {
-    out: Box<dyn Write>,
-    input: Box<dyn BufRead>,
-}
-
-/// Stdin and stdout when stdin is a terminal, else the controlling terminal, which Go's prompts
-/// (charmbracelet/huh) open too. No terminal is an error, so nothing is done on an answer no one
-/// gave.
-fn terminal() -> Result<Terminal, CliError> {
-    if std::io::stdin().is_terminal() {
-        return Ok(Terminal {
-            out: Box::new(std::io::stdout()),
-            input: Box::new(std::io::stdin().lock()),
-        });
-    }
-    let tty = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")
-        .map_err(|error| {
-            CliError::internal(format!(
-                "could not open a terminal to ask on: open /dev/tty: {}",
-                config::os_error(&error)
-            ))
-        })?;
-    let input = tty.try_clone().map_err(|error| {
-        CliError::internal(format!(
-            "could not open a terminal to ask on: {}",
-            config::os_error(&error)
-        ))
-    })?;
-    Ok(Terminal {
-        out: Box::new(tty),
-        input: Box::new(BufReader::new(input)),
-    })
-}
-
-/// Asks a person `question`, yes or no, on the terminal.
-fn ask(question: &str) -> Result<bool, CliError> {
-    let mut terminal = terminal()?;
-    trust::confirm(&mut terminal.out, &mut terminal.input, question)
-}
-
 /// Asks a person which of `names` to pick, on the terminal.
 fn pick(message: &str, names: &[String]) -> Result<Vec<String>, CliError> {
-    let mut terminal = terminal()?;
+    let mut terminal = prompt::terminal()?;
     pick_from(&mut terminal.out, &mut terminal.input, message, names)
 }
 
 /// Shows `names` numbered under `message` on `out` and reads the numbers picked from `input`,
 /// separated by spaces or commas: the picks in `names`' order, each once, and none for an empty
 /// answer. A number that isn't one of them asks again. Input that ends before an answer is the
-/// person giving up, as `trust::confirm` takes it. Where Go showed a list to tick (huh's
+/// person giving up, as `prompt::confirm` takes it. Where Go showed a list to tick (huh's
 /// multi-select), this asks a line, as the CLI's other prompts do.
 fn pick_from(
     out: &mut dyn Write,
