@@ -7,7 +7,9 @@ Workroom manages development workrooms (isolated project copies) using Git workt
 - **The macOS app** (`macapp/` — see [`macapp/AGENTS.md`](../macapp/AGENTS.md)) is the primary,
   recommended product: a native SwiftUI app (macOS 15 Sequoia+) with a project/workroom sidebar and
   embedded terminals. It **bundles the CLI** and drives it over the machine-readable `--json` API
-  (`create`/`list`/`delete`/`add-project`/`delete-project --json`).
+  (`create`/`list`/`delete`/`add-project`/`delete-project --json`). Since #681 the CLI it bundles is
+  the Rust `workroom` (ADR 0078), which is its daemon too; the Go CLI below keeps the same contract
+  and still builds the standalone release until #682.
 - **The Go CLI** (repo root, documented below) is the engine that does the VCS work. It's also a
   fully **standalone** tool — terminal-first, and the only option on Linux/Windows — so app users
   never need to install it separately. It checks the project is a Git repo, generates friendly

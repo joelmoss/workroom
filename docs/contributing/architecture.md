@@ -88,7 +88,7 @@ SwiftUI app. The core loop:
 4. **VCS reading** (History, changeset/diffs, working-copy status, the sidebar's branch)
    goes through a `VCSProviding` layer: SwiftGitX (libgit2) for local Git, and `workroomd` for
    daemon-routed projects — both mapped to app-native models, no CLI text parsing.
-5. **Mutations** (create/delete workroom, add/remove project) call the bundled Go CLI via
+5. **Mutations** (create/delete workroom, add/remove project) call the bundled `workroom` CLI via
    `WorkroomCLI` (a `Process` wrapper that locates `Workroom.app/Contents/Resources/workroom`,
    overlays `PATH`, drains stdout/stderr concurrently, streams NDJSON logs, and decodes the JSON
    envelope), then update the store on success.
@@ -104,9 +104,12 @@ Key dependencies: **libghostty** (terminal), **SwiftGitX**
 (VCS reading), **Sparkle** (update), **Sentry** (crash reporting), **Defaults** (preferences), and
 the **tree-sitter** C runtime + grammars (syntax highlighting). The app is **non-sandboxed** with the
 **hardened runtime** enabled (it spawns `git`/`workroom` and opens arbitrary directories), and
-registers a global `⌘§` hotkey via Carbon. The embedded Go helper is built and signed during the
-Xcode build by `macapp/Scripts/build-helper.sh` and placed under `Contents/Resources/` (not
-`Contents/MacOS/`, to avoid a case-insensitive collision with `Workroom`).
+registers a global `⌘§` hotkey via Carbon. The app bundles one binary (ADR 0078): the Rust
+`workroom`, the CLI and the daemon (`workroom serve`), built and signed during the Xcode build by
+`macapp/Scripts/build-daemon.sh` and placed at `Contents/Resources/workroom` (not
+`Contents/MacOS/`, to avoid a case-insensitive collision with `Workroom`), with its static Linux
+builds beside it as `workroom-linux-<arch>`. Until #681 the app bundled the Go CLI there and the
+daemon as `Contents/MacOS/workroomd`.
 
 ## The Go CLI engine
 

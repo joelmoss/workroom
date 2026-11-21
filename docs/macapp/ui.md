@@ -41,7 +41,7 @@ never shows.
 
 `WorkroomApp/Core/` — store, CLI wrapper, terminal sessions, models, theme.
 `WorkroomApp/Views/` — hand-rolled sidebar | detail | inspector split (`SidebarColumn`, `InspectorColumn`; see `RootView.splitView`) inside a detail-only `NavigationSplitView` kept for window chrome, plus the terminal detail.
-`Scripts/` — `run.sh` (local), `build-helper.sh` (embeds+signs the Go binary), `release.sh`
+`Scripts/` — `run.sh` (local), `build-daemon.sh` (embeds+signs the one `workroom` binary), `release.sh`
 (build → notarize → staple → DMG → EdDSA-sign for Sparkle), `appcast.sh` (publishes the Sparkle
 appcast to the fixed `appcast` release), `appcast-notes.sh` (re-renders a published item's
 `<description>` from the current release body — see [auto-update](../contributing/releasing.md#auto-update-sparkle-appcast)), `make-icon.swift`

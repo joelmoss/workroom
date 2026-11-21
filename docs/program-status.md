@@ -282,7 +282,8 @@ Symbols, not line numbers: grep for the name. Paths under `macapp/` drop the pre
 `workroomd program-status` prints what the daemon holds for every session: whether its program is
 reporting, its records, whether this daemon keeps terminal state at all, and how many probe replies
 it could not deliver. `--json` prints the same with a `schema_version`. Run it on the host the
-terminal runs on (on this Mac it is inside the app bundle, `Contents/MacOS/workroomd`).
+terminal runs on (on this Mac it is inside the app bundle, `Contents/Resources/workroom`; on a host,
+`<daemon dir>/workroomd`).
 
 The daemon logs subscribers, dropped replies, evictions and truncations to the log beside its
 socket: on this Mac `~/Library/Application Support/<bundle id>/sessions/workroomd.log`, on a remote host

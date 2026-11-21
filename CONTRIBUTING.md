@@ -174,10 +174,9 @@ install.
 > **Adding/removing Swift files** requires regenerating the project (`make app-generate`), since the
 > file list lives in the generated `.xcodeproj`.
 
-The Xcode build runs `macapp/Scripts/build-helper.sh` as a phase, which compiles the Go CLI and
-embeds it in the app bundle — so a Go toolchain must be on `PATH` when building the app. The app
-targets also build the embedded `workroomd` (`macapp/Scripts/build-daemon.sh`), which needs a Rust
-toolchain on `PATH`. See
+The Xcode build runs `macapp/Scripts/build-daemon.sh` as a phase, which compiles the one Rust
+`workroom` binary (the CLI and the daemon, ADR 0078) and embeds it in the app bundle, so a Rust
+toolchain must be on `PATH` when building the app; the app no longer builds the Go CLI. See
 [`macapp/README.md`](macapp/README.md) for setup and signing, the
 [app instructions](macapp/AGENTS.md) for working rules and reference navigation, and
 [VCS and sessions](docs/macapp/vcs-and-sessions.md) for their architecture.
