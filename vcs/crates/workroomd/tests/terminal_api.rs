@@ -4608,6 +4608,10 @@ fn real_shell(socket: &Path, id: &str, path: &str, dir: &Path) -> (Spawned, comm
     let integration = resources.join("shell-integration");
     // The first shell has its integration from the daemon; one `exec` starts loads it here.
     let files = [
+        // Debian's and Ubuntu's /etc/zsh/zshrc run compinit unless told not to, which stops at a
+        // question when a directory on `fpath` is writable by others, as /usr/local's are on
+        // GitHub's runners: the prompt never comes.
+        (home.join(".zshenv"), "skip_global_compinit=1\n".to_string()),
         (
             home.join(".zshrc"),
             format!(
@@ -4655,11 +4659,10 @@ fn real_shell(socket: &Path, id: &str, path: &str, dir: &Path) -> (Spawned, comm
         ],
     );
     let mut output = common::ClientReader::new(&mut shell);
+    let seen = output.read_until("PROMPT> ", Duration::from_secs(30));
     assert!(
-        output
-            .read_until("PROMPT> ", Duration::from_secs(30))
-            .contains("PROMPT> "),
-        "{path} never prompted"
+        seen.contains("PROMPT> "),
+        "{path} never prompted; it showed {seen:?}"
     );
     (shell, output)
 }
