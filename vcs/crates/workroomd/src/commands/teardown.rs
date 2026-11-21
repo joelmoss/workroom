@@ -63,10 +63,16 @@ pub(super) enum Watcher<'a> {
 /// Shows a person a script this Mac hasn't approved and asks whether to approve and run it.
 pub(super) type Approve<'a> = &'a dyn Fn(&Script) -> Result<bool, CliError>;
 
+/// Asks a person a question, yes or no.
+pub(super) type Ask<'a> = &'a dyn Fn(&str) -> Result<bool, CliError>;
+
+/// Shows a person names under a message and asks which to pick.
+pub(super) type Pick<'a> = &'a dyn Fn(&str, &[String]) -> Result<Vec<String>, CliError>;
+
 /// How a delete is confirmed: by the `--confirm` value, which must be the name, or by asking.
 pub(super) enum Confirm<'a> {
     Value(&'a str),
-    Ask(&'a dyn Fn(&str) -> Result<bool, CliError>),
+    Ask(Ask<'a>),
 }
 
 /// What a delete did with a workroom: Go's `DeleteOutcome`.
@@ -78,6 +84,18 @@ pub(super) enum Deleted {
     /// Not a git checkout: only its entry is dropped, its folder left at `path`.
     ForgotNonGit { path: String },
     /// The person said no when asked, so nothing was done.
+    Declined,
+}
+
+/// How a person's pick of workrooms to delete ended: Go's `PickOutcome`.
+pub(super) enum Picked {
+    /// Every pick was deleted, each reported as it went.
+    Deleted,
+    /// The project has no workrooms, so nothing was offered.
+    NoWorkrooms,
+    /// The person picked none.
+    Nothing,
+    /// The person said no to the picks, so nothing was deleted.
     Declined,
 }
 
@@ -96,7 +114,7 @@ impl Delete<'_> {
     }
 
     /// Refuses `dir` when it is a workroom itself: Go's `CheckNotInWorkroom`.
-    pub(super) fn check_not_in_workroom(&self, dir: &str) -> Result<(), CliError> {
+    fn check_not_in_workroom(&self, dir: &str) -> Result<(), CliError> {
         if std::fs::metadata(Path::new(dir).join(".Workroom")).is_ok() {
             return Err(CliError::new(
                 Kind::InWorkroom,
@@ -108,7 +126,7 @@ impl Delete<'_> {
     }
 
     /// Refuses `dir` when it is no git repository: Go's `detectVCS`.
-    pub(super) fn detect_vcs(&self, dir: &str) -> Result<(), CliError> {
+    fn detect_vcs(&self, dir: &str) -> Result<(), CliError> {
         if !is_git_repo(Path::new(dir)) {
             return Err(CliError::unsupported_vcs());
         }
@@ -198,12 +216,65 @@ impl Delete<'_> {
         self.delete_by_name(dir, name)
     }
 
+    /// Offers the workrooms config records for project `dir` to `pick`, asks `ask` to confirm the
+    /// picks, and deletes each, handing `report` what was done as soon as it is: Go's
+    /// `InteractiveDelete`. A pick is deleted as `delete` deletes one, after the same checks: a
+    /// key that is no name or a live remote workroom stops it, and one git doesn't list whose
+    /// folder holds no checkout is only forgotten.
+    pub(super) fn delete_picks(
+        &self,
+        dir: &str,
+        pick: Pick<'_>,
+        ask: Ask<'_>,
+        report: &mut dyn FnMut(&str, &Deleted),
+    ) -> Result<Picked, CliError> {
+        self.check_not_in_workroom(dir)?;
+        // Go reads a config it can't parse as naming no project here.
+        let data = self.data().unwrap_or(Json::Null);
+        let names: Vec<String> = config::find_current_project(&data, dir)
+            .map(|(_, project)| project.workrooms.into_keys().collect())
+            .unwrap_or_default();
+        if names.is_empty() {
+            return Ok(Picked::NoWorkrooms);
+        }
+        let picked = pick("Select workrooms to delete:", &names)?;
+        if picked.is_empty() {
+            return Ok(Picked::Nothing);
+        }
+        let quoted: Vec<String> = picked.iter().map(|name| format!("'{name}'")).collect();
+        if !ask(&format!(
+            "Are you sure you want to delete {} workroom(s): {}?",
+            picked.len(),
+            quoted.join(", ")
+        ))? {
+            return Ok(Picked::Declined);
+        }
+        self.detect_vcs(dir)?;
+        for name in &picked {
+            // A pick is a config key, which may be any string: one that is no name is refused, as
+            // `delete NAME` refuses it, before it is joined onto a path.
+            check_name(name)?;
+            self.destroyed_remote(dir, name)?;
+            let orphan = if self.pretend() {
+                None
+            } else {
+                self.legacy_workroom_path(dir, name)?
+            };
+            let deleted = match orphan {
+                Some(path) => self.forget_non_git(dir, name, path)?,
+                None => self.delete_by_name(dir, name)?,
+            };
+            report(name, &deleted);
+        }
+        Ok(Picked::Deleted)
+    }
+
     /// Deletes workroom `name` of project `dir` with nothing asked or checked first but a live
     /// remote workroom: Go's `deleteByName`, which `delete`, and a person's pick of several, end
     /// with. A destroyed remote workroom is only forgotten; anything else has its teardown run,
     /// then `git worktree remove`, which removes only a worktree of this repository, then loses its
     /// entry.
-    pub(super) fn delete_by_name(&self, dir: &str, name: &str) -> Result<Deleted, CliError> {
+    fn delete_by_name(&self, dir: &str, name: &str) -> Result<Deleted, CliError> {
         if self.destroyed_remote(dir, name)? {
             // Nothing runs: there is no box for the teardown, and no workspace on this Mac.
             if !self.pretend() {
@@ -234,23 +305,14 @@ impl Delete<'_> {
     /// Drops the entry of workroom `name`, whose folder at `path` holds no git checkout, and
     /// nothing else: no git (it would find an ancestor repository) and no teardown (it would run
     /// in that folder). The folder is the user's. Go's `forgetNonGitWorkroom`.
-    pub(super) fn forget_non_git(
-        &self,
-        dir: &str,
-        name: &str,
-        path: String,
-    ) -> Result<Deleted, CliError> {
+    fn forget_non_git(&self, dir: &str, name: &str, path: String) -> Result<Deleted, CliError> {
         self.config.remove_workroom(dir, name)?;
         Ok(Deleted::ForgotNonGit { path })
     }
 
     /// [`Delete::non_git_workroom_path`] for a workroom git doesn't list, or none when git lists
     /// it: Go's `legacyWorkroomPath`.
-    pub(super) fn legacy_workroom_path(
-        &self,
-        dir: &str,
-        name: &str,
-    ) -> Result<Option<String>, CliError> {
+    fn legacy_workroom_path(&self, dir: &str, name: &str) -> Result<Option<String>, CliError> {
         if self.listed(dir, name)? {
             return Ok(None);
         }
@@ -259,7 +321,7 @@ impl Delete<'_> {
 
     /// Whether `name` is a remote workroom whose host is already destroyed, which is only
     /// forgotten. A remote workroom whose host is still there is refused.
-    pub(super) fn destroyed_remote(&self, dir: &str, name: &str) -> Result<bool, CliError> {
+    fn destroyed_remote(&self, dir: &str, name: &str) -> Result<bool, CliError> {
         let data = self.data()?;
         let projects = config::all_projects(&data);
         let workroom = projects
@@ -478,7 +540,7 @@ fn find_script(workroom: &Path, root: &Path) -> Option<PathBuf> {
 }
 
 /// Refuses `name` as `InvalidName` unless it is [`valid_name`]: Go's `checkName`.
-pub(super) fn check_name(name: &str) -> Result<(), CliError> {
+fn check_name(name: &str) -> Result<(), CliError> {
     if valid_name(name) {
         return Ok(());
     }
