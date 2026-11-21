@@ -223,6 +223,28 @@ fn queued_output_meets_the_wait_before_its_end_or_deadline() {
     assert_eq!(waiter.wait(in_20s()), Outcome::SessionEnded);
 }
 
+/// Output that goes `QUIET` settles what the wait holds, as the session's end would: a prompt
+/// with no line end meets `$`, and a number that could still grow is answered as it stands.
+#[test]
+fn a_wait_whose_output_goes_quiet_settles_what_it_holds() {
+    for (pattern, output, want) in [
+        (
+            "Password: $",
+            &b"login ok\r\nPassword: "[..],
+            &b"Password: "[..],
+        ),
+        (r"exit \d+", b"exit 42", b"exit 42"),
+    ] {
+        let waiter = output_waiter(pattern);
+        waiter.output(output);
+        assert_eq!(
+            waiter.wait(in_20s()),
+            Outcome::Met(Met::Output(want.to_vec())),
+            "{pattern}"
+        );
+    }
+}
+
 /// A session printing without end (`yes`) never leaves a regex wait's queue empty, and the wait
 /// still times out at its deadline: the batch taken past it is the last. The printer here keeps
 /// the queue within half its bound, so the wait never falls behind (which would end it sooner).
