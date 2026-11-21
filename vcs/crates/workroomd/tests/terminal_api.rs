@@ -1967,7 +1967,15 @@ fn a_regex_wait_settles_when_the_output_goes_quiet_and_not_before() {
     let socket = workspace.socket();
     let _daemon = start_daemon(&socket);
     let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
-    let _output = common::ClientReader::new(&mut shell);
+    let mut output = common::ClientReader::new(&mut shell);
+    // The session is up, and named, before the wait looks for it.
+    type_line(&mut shell, r#"echo "SHELL""-UP""#);
+    assert!(
+        output
+            .read_until("SHELL-UP\r\n", Duration::from_secs(20))
+            .contains("SHELL-UP\r\n"),
+        "the shell never answered"
+    );
     let prompt = started(
         &socket,
         &[
