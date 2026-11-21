@@ -61,6 +61,22 @@ final class TerminalInputWireTests: XCTestCase {
     XCTAssertThrowsError(try reply(#"{"revision":1,"more":true}"#))
   }
 
+  /// Ending a subscription names it by the stream it was asked on.
+  func testTheUnsubscribeRequestNamesTheStream() throws {
+    let request = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: TerminalInputEvent.unsubscribeRequest(stream: 42))
+        as? [String: Any])
+    XCTAssertEqual(request["method"] as? String, "events.unsubscribe")
+    XCTAssertEqual((request["params"] as? [String: Any])?["stream"] as? Int, 42)
+  }
+
+  /// The daemon's answer to it is a reply like any other, with no event in it.
+  func testTheUnsubscribeReplyIsAReplyWithNothingToRead() throws {
+    XCTAssertEqual(
+      try reply(#"{"revision":1,"more":false,"result":{"stream":42,"ended":true}}"#),
+      .event(nil, more: false))
+  }
+
   /// Every session's typing, whatever scope the daemon finds the app in, and nothing replayed.
   func testTheSubscribeRequestAsksForEverySessionsTypingAndNoReplay() throws {
     let request = try XCTUnwrap(

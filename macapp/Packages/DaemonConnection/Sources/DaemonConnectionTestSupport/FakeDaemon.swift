@@ -56,15 +56,20 @@ public final class FakeDaemon: @unchecked Sendable {
   /// Every program-status request received, as the JSON the client sent, in arrival order.
   public var receivedProgramStatusRequests: [String] { lock.withLock { programStatusRequests } }
   /// The replies, each a whole JSON reply, sent in answer to every `Service::TerminalApi` request
-  /// on its stream; nil leaves them unanswered. `push` sends more on `terminalAPIStreams`.
+  /// but `events.unsubscribe` on its stream; nil leaves them unanswered. `push` sends more on
+  /// `terminalAPIStreams`.
   private let terminalAPIReplies: [String]?
   private var terminalAPIRequests: [(stream: UInt32, request: String)] = []
-  /// Every terminal API request received, as the JSON the client sent, in arrival order.
+  private var unsubscribes: [String] = []
+  /// Every terminal API request received but `events.unsubscribe`, as the JSON the client sent,
+  /// in arrival order.
   public var receivedTerminalAPIRequests: [String] {
     lock.withLock { terminalAPIRequests.map(\.request) }
   }
-  /// The stream of every terminal API request received, in arrival order.
+  /// The stream of each of those, in arrival order.
   public var terminalAPIStreams: [UInt32] { lock.withLock { terminalAPIRequests.map(\.stream) } }
+  /// Every `events.unsubscribe` received, as the JSON the client sent, each answered `ended`.
+  public var receivedUnsubscribes: [String] { lock.withLock { unsubscribes } }
   /// Every exec request received, as the JSON the client sent, in arrival order.
   public var receivedExecs: [String] { lock.withLock { execs } }
   /// Stop reading the client's socket (without closing it) once `capabilities` is answered.
@@ -172,6 +177,12 @@ public final class FakeDaemon: @unchecked Sendable {
           continue
         }
         let request = String(decoding: payload, as: UTF8.self)
+        if bytes[0] == 8, request.contains(#""events.unsubscribe""#) {
+          lock.withLock { unsubscribes.append(request) }
+          let reply = #"{"revision":1,"more":false,"result":{"stream":0,"ended":true}}"#
+          push(service: 8, stream: stream, payload: Data([1]) + Data(reply.utf8))
+          continue
+        }
         if bytes[0] == 8 {
           lock.withLock { terminalAPIRequests.append((stream, request)) }
           for reply in terminalAPIReplies ?? [] {

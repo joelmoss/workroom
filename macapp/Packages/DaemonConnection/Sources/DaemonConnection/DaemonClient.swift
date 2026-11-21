@@ -53,7 +53,7 @@ public final class DaemonClient: @unchecked Sendable {
   private struct ReplyStream {
     /// One whole reply; returns whether more follow on the stream.
     let onReply: @Sendable (Data) -> Bool
-    /// The connection ended with the stream still open.
+    /// The stream ended under it: the connection did, or a reply past the ceiling.
     let onLost: @Sendable () -> Void
     var bytes = Data()
   }
@@ -599,66 +599,110 @@ public final class DaemonClient: @unchecked Sendable {
   ) async throws -> TerminalInputAvailability {
     guard helloVersion >= DaemonHandshake.minTerminalAPIVersion else { return .unsupported }
     let answer = SubscriptionAnswer()
-    return try await withCheckedThrowingContinuation { continuation in
-      answer.set(continuation)
-      let stream: UInt32? = lock.withLock {
-        guard !closed, nextStream < UInt32.max, replyStreams.count < 4 else { return nil }
-        let stream = nextStream
-        nextStream += 1
-        replyStreams[stream] = ReplyStream(
-          onReply: { payload in
-            let more: Bool
-            switch try? TerminalInputEvent.decode(reply: payload) {
-            case .refused(_, let message):
-              answer.resume(.success(.refused(message)))
-              more = false
-            case .event(let event, let continues):
-              answer.resume(.success(.available))
-              // A reply after the subscription was given up on (its first came too late) is
-              // dropped: nobody hears that stream, which the daemon ends with the connection.
-              if answer.isAvailable, let event { onEvent(event) }
-              more = continues
-            case nil:
-              // Not a reply at all: the stream can't be read on, so it ends here.
-              answer.resume(
-                .failure(HostConnectionError.serviceUnavailable("Terminal API: unreadable reply.")))
-              more = false
-            }
-            // A stream that ends after it was answered ends the subscription, which the
-            // subscriber hears as the connection's end, so it subscribes again.
-            if !more, answer.isAvailable { onEvent(.lost) }
-            return more
-          },
-          onLost: {
-            answer.resume(.failure(HostConnectionError.connectionLost))
-            if answer.isAvailable { onEvent(.lost) }
-          })
-        return stream
-      }
-      guard let stream else {
-        let closed = lock.withLock { self.closed }
-        answer.resume(
-          .failure(closed ? HostConnectionError.connectionLost : HostConnectionError.notDispatched))
-        return
-      }
-      writes.async { [self] in
-        do {
-          try sendOnWrites(
-            DaemonEnvelope.encode(
-              service: .terminalAPI, stream: stream, payload: TerminalInputEvent.subscribeRequest),
-            stallAfter: timeout / 2)
-        } catch {
-          fail(error)
+    let allocated: Result<UInt32, HostConnectionError> = lock.withLock {
+      if closed { return .failure(.connectionLost) }
+      guard nextStream < UInt32.max, replyStreams.count < 4 else { return .failure(.notDispatched) }
+      let stream = nextStream
+      nextStream += 1
+      return .success(stream)
+    }
+    let stream = try allocated.get()
+    let subscription = TerminalInputSubscription(stream: stream) { [weak self] in
+      self?.endReplyStream(stream, unsubscribe: true)
+    }
+    lock.withLock {
+      replyStreams[stream] = ReplyStream(
+        onReply: { [weak self] payload in
+          let more: Bool
+          switch try? TerminalInputEvent.decode(reply: payload) {
+          case .refused(let kind, let message):
+            // A daemon of protocol 12 from before `session.input` refuses the type as bad
+            // input: it has no typing to tell, as one before the terminal API has none.
+            answer.resume(.success(kind == "InvalidRequest" ? .unsupported : .refused(message)))
+            more = false
+          case .event(let event, let continues):
+            answer.resume(.success(.available(subscription)))
+            if answer.isAvailable, let event { onEvent(event) }
+            more = continues
+          case nil:
+            // Not a reply at all: the stream can't be read on, so it ends here, on the daemon
+            // too, which may well go on sending on it.
+            answer.resume(
+              .failure(HostConnectionError.serviceUnavailable("Terminal API: unreadable reply.")))
+            self?.unsubscribe(stream)
+            more = false
+          }
+          // A stream that ends after it was answered ends the subscription, which the subscriber
+          // hears as the connection's end, so it subscribes again.
+          if !more, answer.isAvailable { onEvent(.lost) }
+          return more
+        },
+        onLost: {
+          answer.resume(.failure(HostConnectionError.connectionLost))
+          if answer.isAvailable { onEvent(.lost) }
+        })
+    }
+    return try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        answer.set(continuation)
+        guard !answer.isAnswered else { return }
+        writes.async { [self] in
+          do {
+            try sendOnWrites(
+              DaemonEnvelope.encode(
+                service: .terminalAPI, stream: stream, payload: TerminalInputEvent.subscribeRequest),
+              // A wedged transport, as for any request; not this subscription's own deadline,
+              // which a short one would turn into failing the whole connection.
+              stallAfter: 7.5)
+          } catch {
+            fail(error)
+          }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
+          // Given up on: ended here and on the daemon, so neither holds it.
+          guard answer.resume(.failure(HostConnectionError.requestTimedOut)) else { return }
+          self?.endReplyStream(stream, unsubscribe: true)
         }
       }
-      DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
-        guard answer.resume(.failure(HostConnectionError.requestTimedOut)), let self else { return }
-        // Given up on: its slot is freed for the subscriber's retry, and whatever the daemon
-        // still sends on it is dropped rather than read as a protocol violation.
-        self.lock.withLock {
-          guard self.replyStreams.removeValue(forKey: stream) != nil else { return }
-          self.silencedStreams.insert(stream)
+    } onCancel: { [weak self] in
+      guard answer.resume(.failure(CancellationError())) else { return }
+      self?.endReplyStream(stream, unsubscribe: true)
+    }
+  }
+
+  /// Ends the reply stream on `stream` here: its handler is dropped, and whatever still arrives on
+  /// it is dropped unread rather than read as a protocol violation that would fail the connection
+  /// every other service shares. `unsubscribe` also ends it on the daemon (`events.unsubscribe`),
+  /// which would otherwise hold it, and its place, until the connection ends.
+  func endReplyStream(_ stream: UInt32, unsubscribe: Bool) {
+    let held = lock.withLock { () -> Bool in
+      silencedStreams.insert(stream)
+      return replyStreams.removeValue(forKey: stream) != nil
+    }
+    if held, unsubscribe { self.unsubscribe(stream) }
+  }
+
+  /// Asks the daemon to end its subscription on `stream`. A daemon of protocol 12 from before
+  /// `events.unsubscribe` refuses it as bad input and keeps the subscription until the connection
+  /// ends, as every daemon did before: nothing more can be done there, so the answer is only
+  /// logged.
+  private func unsubscribe(_ stream: UInt32) {
+    let host = String(describing: host)
+    Task.detached { [weak self] in
+      guard let self else { return }
+      do {
+        let reply = try await self.request(
+          bytes: TerminalInputEvent.unsubscribeRequest(stream: stream), timeout: 15,
+          service: .terminalAPI)
+        if case .refused(let kind, let message) = try TerminalInputEvent.decode(reply: reply) {
+          Self.logger.info(
+            "terminal API on \(host, privacy: .public): unsubscribe refused, \(kind, privacy: .public): \(message, privacy: .public)"
+          )
         }
+      } catch {
+        Self.logger.info(
+          "terminal API on \(host, privacy: .public): unsubscribe failed: \(String(describing: error), privacy: .public)"
+        )
       }
     }
   }
@@ -925,12 +969,21 @@ public final class DaemonClient: @unchecked Sendable {
           }
           var completed: Pending?
           var streamed: (onReply: @Sendable (Data) -> Bool, reply: Data)?
+          var oversized: (@Sendable () -> Void)?
           let valid = lock.withLock {
             // A stream of replies (`subscribeTerminalInput`): each reply is whole at its final
-            // chunk, and the stream goes on until its handler says it ended.
+            // chunk, and the stream goes on until its handler says it ended. One the client
+            // ended is dropped unread.
             if service == .terminalAPI, silencedStreams.contains(stream) { return true }
             if service == .terminalAPI, var entry = replyStreams[stream] {
-              guard entry.bytes.count + payload.count - 1 <= 16 * 1024 * 1024 else { return false }
+              // A reply past the ceiling ends its stream, not the connection every other
+              // service shares: its subscriber hears it end, as a dropped link, and asks again.
+              guard entry.bytes.count + payload.count - 1 <= 16 * 1024 * 1024 else {
+                replyStreams.removeValue(forKey: stream)
+                silencedStreams.insert(stream)
+                oversized = entry.onLost
+                return true
+              }
               entry.bytes.append(payload.dropFirst())
               if payload.first == 1 {
                 streamed = (entry.onReply, entry.bytes)
@@ -963,8 +1016,14 @@ public final class DaemonClient: @unchecked Sendable {
           }
           if let completed { completed.continuation.resume(returning: completed.bytes) }
           // Outside the lock: the handler is caller code.
+          // A stream its handler ended (its last reply, a refusal, an unreadable reply) is
+          // silenced, so a frame the daemon sends after it never fails the shared connection.
           if let streamed, !streamed.onReply(streamed.reply) {
-            _ = lock.withLock { replyStreams.removeValue(forKey: stream) }
+            endReplyStream(stream, unsubscribe: false)
+          }
+          if let oversized {
+            oversized()
+            unsubscribe(stream)
           }
         }
         let count = chunk.withUnsafeMutableBytes {
@@ -1093,9 +1152,20 @@ private final class SubscriptionAnswer: @unchecked Sendable {
   private var continuation: CheckedContinuation<TerminalInputAvailability, Error>?
   private var answered: Result<TerminalInputAvailability, Error>?
 
+  /// The caller waiting for the answer: told at once if the answer came first (a task cancelled
+  /// before it started waiting, or a reply that beat it).
   func set(_ continuation: CheckedContinuation<TerminalInputAvailability, Error>) {
-    lock.withLock { self.continuation = continuation }
+    let early = lock.withLock { () -> Result<TerminalInputAvailability, Error>? in
+      guard let answered else {
+        self.continuation = continuation
+        return nil
+      }
+      return answered
+    }
+    if let early { continuation.resume(with: early) }
   }
+
+  var isAnswered: Bool { lock.withLock { answered != nil } }
 
   /// Answers with `result` unless an answer was given already; returns whether it did.
   @discardableResult
@@ -1114,7 +1184,7 @@ private final class SubscriptionAnswer: @unchecked Sendable {
   /// Whether the caller was told the subscription is live.
   var isAvailable: Bool {
     lock.withLock {
-      if case .success(.available) = answered { return true }
+      if case .success(.available(_)) = answered { return true }
       return false
     }
   }
