@@ -17,8 +17,8 @@ pub(super) struct Terminal {
 }
 
 /// Stdin and stdout when stdin is a terminal, else the controlling terminal, which Go's prompts
-/// (charmbracelet/huh) open too. No terminal is an error, so nothing is done on an answer no one
-/// gave.
+/// (charmbracelet/huh) open too. No terminal is an error, in huh's words, so nothing is done on an
+/// answer no one gave.
 pub(super) fn terminal() -> Result<Terminal, CliError> {
     if std::io::stdin().is_terminal() {
         return Ok(Terminal {
@@ -26,22 +26,18 @@ pub(super) fn terminal() -> Result<Terminal, CliError> {
             input: Box::new(std::io::stdin().lock()),
         });
     }
+    let no_tty = |error: std::io::Error| {
+        CliError::internal(format!(
+            "huh: could not open a new TTY: open /dev/tty: {}",
+            config::os_error(&error)
+        ))
+    };
     let tty = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/tty")
-        .map_err(|error| {
-            CliError::internal(format!(
-                "could not open a terminal to ask on: open /dev/tty: {}",
-                config::os_error(&error)
-            ))
-        })?;
-    let input = tty.try_clone().map_err(|error| {
-        CliError::internal(format!(
-            "could not open a terminal to ask on: {}",
-            config::os_error(&error)
-        ))
-    })?;
+        .map_err(no_tty)?;
+    let input = tty.try_clone().map_err(no_tty)?;
     Ok(Terminal {
         out: Box::new(tty),
         input: Box::new(BufReader::new(input)),
