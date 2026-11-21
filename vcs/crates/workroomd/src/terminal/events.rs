@@ -267,6 +267,7 @@ impl Hub {
         lock_or_recover(&self.state)
     }
 
+    #[cfg(test)]
     pub fn boot(&self) -> SessionId {
         self.lock().boot
     }

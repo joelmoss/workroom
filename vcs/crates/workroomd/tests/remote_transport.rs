@@ -2868,6 +2868,170 @@ fn over_ssh_wait_sees_new_output_a_timeout_and_the_sessions_end() {
     );
 }
 
+/// `workroom events` on a host (#687), as a coding agent in a remote pane runs it, from the host's
+/// static musl daemon: the snapshot, then a session created and ended and a coding agent's program
+/// status, kept to the pane's workroom by default (its caller found through `SO_PEERCRED`), and
+/// `--type` with `--json` keeping to its types, one envelope a line.
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_events_stream_a_host_panes_workroom() {
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
+    let session = "7e0e7e0e-0000-4000-8000-000000000687";
+    let neighbour = "7e0e7e0e-0000-4000-8000-00000000687b";
+    let elsewhere = "7e0e7e0e-0000-4000-8000-00000000687c";
+    let workroom = "4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0687";
+    let in_workroom = |id: &str| format!("WORKROOM_SESSION_WORKROOM={id}");
+    let mut pane = Pane::attach_with(&fixture, session, false, &in_workroom(workroom));
+    pane.type_line("echo \"PANE-\"\"UP\"");
+    assert!(
+        pane.read_until("PANE-UP\r\n", Duration::from_secs(30))
+            .contains("PANE-UP\r\n"),
+        "the pane's shell never started"
+    );
+    // A folder of this run's own on the host, made here and so removed at the end.
+    let dir = (0..)
+        .map(|attempt| format!("/tmp/wr-687-{}-{attempt}", std::process::id()))
+        .find(|dir| {
+            fixture
+                .ssh()
+                .arg(format!("mkdir {dir}"))
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+        .expect("a folder on the host");
+    let read = |name: &str| {
+        let output = fixture
+            .ssh()
+            .arg(format!("cat {dir}/{name}"))
+            .output()
+            .expect("read the pane's output");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let events = |name: &str| -> Vec<Value> {
+        read(name)
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect()
+    };
+    let until = |name: &str, what: &str, done: &dyn Fn(&[Value]) -> bool| {
+        let reached = (0..120).any(|_| {
+            if done(&events(name)) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+            false
+        });
+        assert!(reached, "{name}: no {what}: {}", read(name));
+    };
+    // In the background of the pane, each one's pid kept to stop it.
+    let binary = INSTALLED_DAEMON;
+    pane.type_line(&format!(
+        "{binary} events > {dir}/scoped 2>&1 & echo $! >> {dir}/pids; \
+         {binary} events --json --type session.program_status,session.ended \
+           > {dir}/typed 2>&1 & echo $! >> {dir}/pids"
+    ));
+    for name in ["scoped", "typed"] {
+        until(name, "snapshot", &|seen| {
+            seen.iter()
+                .any(|event| event["event"] == "snapshot-complete")
+        });
+    }
+
+    let mut next = Pane::attach_with(&fixture, neighbour, false, &in_workroom(workroom));
+    let mut away = Pane::attach_with(
+        &fixture,
+        elsewhere,
+        false,
+        &in_workroom("4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c068c"),
+    );
+    // Its message in base64 ("Allow"), from a program of its own.
+    next.type_line(r#"sh -c 'printf "\033]7501;state=blocked:app=claude:msg=QWxsb3c=\033\\"; sleep 2'; exit 6"#);
+    away.type_line("exit 7");
+    for pane in [&mut next, &mut away] {
+        assert!(
+            pane.exit_code(Duration::from_secs(30)).is_some(),
+            "a session did not end"
+        );
+    }
+    let is = |event: &Value, name: &str, id: &str| event["event"] == name && event["session"] == id;
+    until("scoped", "end of the neighbour", &|seen| {
+        seen.iter()
+            .any(|event| is(event, "session.ended", neighbour))
+    });
+    until("typed", "end of the neighbour", &|seen| {
+        seen.iter()
+            .any(|event| is(event, "session.ended", neighbour))
+    });
+
+    let scoped = events("scoped");
+    let snapshot: Vec<&Value> = scoped
+        .iter()
+        .take_while(|event| event["event"] != "snapshot-complete")
+        .collect();
+    assert!(
+        snapshot.iter().any(|event| is(event, "session", session)),
+        "{scoped:?}"
+    );
+    assert!(
+        snapshot
+            .iter()
+            .all(|event| event["scope"]["id"] == workroom),
+        "the snapshot keeps to the pane's workroom: {scoped:?}"
+    );
+    let created = scoped
+        .iter()
+        .position(|event| is(event, "session.created", neighbour))
+        .unwrap_or_else(|| panic!("no session.created: {scoped:?}"));
+    let blocked = scoped
+        .iter()
+        .position(|event| {
+            is(event, "session.program_status", neighbour)
+                && event["coding_agent"]["state"] == "blocked"
+                && event["coding_agent"]["message"] == "Allow"
+        })
+        .unwrap_or_else(|| panic!("no blocked status: {scoped:?}"));
+    let ended = scoped
+        .iter()
+        .position(|event| is(event, "session.ended", neighbour))
+        .unwrap();
+    assert!(created < blocked && blocked < ended, "{scoped:?}");
+    assert_eq!(scoped[ended]["exit_code"], 6, "{scoped:?}");
+    assert!(
+        !scoped.iter().any(|event| event["session"] == elsewhere),
+        "another workroom's session: {scoped:?}"
+    );
+
+    let typed = events("typed");
+    let live: Vec<&Value> = typed
+        .iter()
+        .skip_while(|event| event["event"] != "snapshot-complete")
+        .skip(1)
+        .collect();
+    assert!(!live.is_empty(), "{typed:?}");
+    for event in &typed {
+        assert_eq!(event["command"], "events", "{event}");
+        assert_eq!(event["schema_version"], 1, "{event}");
+    }
+    for event in live {
+        assert!(
+            ["session.program_status", "session.ended"].contains(&event["event"].as_str().unwrap()),
+            "{event}"
+        );
+    }
+
+    let _ = fixture
+        .ssh()
+        .arg(format!("kill $(cat {dir}/pids); rm -r {dir}"))
+        .status();
+    pane.type_line("exit");
+    assert!(
+        pane.exit_code(Duration::from_secs(20)).is_some(),
+        "the pane's session did not end"
+    );
+}
+
 /// Two Macs on one remote workroom (#255): Mac A's session carries its workroom and title to the
 /// host, Mac B finds it in the host's list and A's layout in the Layout service, and reattaches to
 /// the same shell; A dropping its link leaves B attached; a close on A ends the session for B too;
