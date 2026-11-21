@@ -102,6 +102,28 @@ final class TerminalInputConnectionTests: XCTestCase {
     await connection.close()
   }
 
+  /// A subscription given up on (its first reply too late) frees its slot, so retries are never
+  /// refused for slots dead ones hold, and what the daemon still sends on it is dropped unread
+  /// rather than failing the connection.
+  func testASubscriptionGivenUpOnFreesItsSlotAndItsLateRepliesAreDropped() async throws {
+    let fake = try FakeDaemon(version: 12)
+    defer { fake.stop() }
+    let connection = try await DaemonClient.connect(host: .local, socketPath: fake.socketPath)
+    // Past the connection's 4 slots: each one timed out, none refused for want of a slot.
+    for _ in 0..<6 {
+      do {
+        _ = try await connection.subscribeTerminalInput(timeout: 0.2) { _ in }
+        XCTFail("a daemon that never answers subscribed")
+      } catch {
+        XCTAssertEqual(error as? HostConnectionError, .requestTimedOut)
+      }
+    }
+    let stream = try XCTUnwrap(fake.terminalAPIStreams.first)
+    fake.push(service: 8, stream: stream, payload: input(sender: sender))
+    _ = try await connection.request(DaemonVCSRequest(method: "capabilities"), timeout: 5)
+    await connection.close()
+  }
+
   /// The daemon going away hands the subscriber `.lost`, so the monitor subscribes again on the
   /// next connection.
   func testADroppedLinkHandsTheSubscriberLost() async throws {
