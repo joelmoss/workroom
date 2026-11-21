@@ -34,4 +34,16 @@ public enum SidebarID: Hashable, Sendable {
     case .project, .root, .workroom, .creation: return false
     }
   }
+
+  /// Whether this is a standalone terminal's row (ADR 0077).
+  public var isStandaloneTerminal: Bool {
+    if case .standalone = self { return true }
+    return false
+  }
+
+  /// Whether this is a terminal group's row (ADR 0077).
+  public var isTerminalGroup: Bool {
+    if case .terminalGroup = self { return true }
+    return false
+  }
 }

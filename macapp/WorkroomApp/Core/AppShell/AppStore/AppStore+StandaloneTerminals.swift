@@ -66,10 +66,7 @@ extension AppStore: TerminalsSectionHolder {
   /// it had terminals in is counted without them, and settled: one no other window holds goes.
   func endStandaloneTerminalsOnClose() async {
     guard !WindowRegistry.shared.isTerminating else { return }
-    let groups = terminals.activeTargetIDs.filter {
-      if case .terminalGroup = $0 { return true }
-      return false
-    }
+    let groups = terminals.activeTargetIDs.filter(\.isTerminalGroup)
     terminalsSection.unregister(self)
     for id in groups { groupTabsRemoved(id) }
     for id in terminals.activeTargetIDs where id.isStandaloneTerminal {
@@ -129,12 +126,4 @@ extension AppStore: TerminalsSectionHolder {
 struct WindowClosePrompt: Equatable {
   let title: String
   let detail: String
-}
-
-extension TargetID {
-  /// A standalone terminal's id.
-  var isStandaloneTerminal: Bool {
-    if case .standalone = self { return true }
-    return false
-  }
 }
