@@ -154,11 +154,27 @@ pub fn spawn_watcher(sessions: SessionStore) {
     };
     // Before the first tick, after any hand-off adopted its sessions: a file whose session is not
     // here was left by a daemon that died or a host that rebooted, and must never be read as a run's.
-    remove_stale(&dir, &sessions.run_session_ids());
+    let adopted = sessions.run_session_ids();
+    remove_stale(&dir, &adopted);
+    // A run a hand-off adopted has logged what the old program heard already: this one hears what
+    // comes after, so a wait sent again to it, in the moment before it knows where the log stood,
+    // is never met by a transition from before the hand-off.
+    let mut watched: HashMap<SessionId, Watched> = adopted
+        .into_iter()
+        .map(|id| {
+            let heard = last_transition(&status_file(&dir, id));
+            (
+                id,
+                Watched {
+                    published: None,
+                    heard,
+                },
+            )
+        })
+        .collect();
     let spawned = std::thread::Builder::new()
         .name("runs".into())
         .spawn(move || {
-            let mut watched = HashMap::new();
             let mut grace = Grace {
                 counted: sessions.hooks().runs.wake(),
                 until: Instant::now(),
