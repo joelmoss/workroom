@@ -124,7 +124,7 @@ The macOS app is the product; the Go CLI is the bundled engine (and an optional 
 | **CLI engine language** | Go 1.27+ (built and tested on Go 1.27.3) |
 | **CLI framework** | [Cobra](https://github.com/spf13/cobra) for commands |
 | **CLI prompts / output** | [charmbracelet/huh](https://github.com/charmbracelet/huh) · [fatih/color](https://github.com/fatih/color) |
-| **CLI release tooling** | [GoReleaser](https://goreleaser.com) v2 |
+| **CLI release tooling** | `macapp/Scripts/cli-archives.sh` (the Rust binary, under GoReleaser's archive names) |
 | **CI/CD** | GitHub Actions (CI on push/PR, release on `v*` tags) |
 
 ---

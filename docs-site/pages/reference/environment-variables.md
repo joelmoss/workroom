@@ -77,11 +77,11 @@ When `workroom create` finishes in a terminal and `EDITOR` is set, it offers to 
 
 ## Variables for the installer
 
-`install.sh` reads these. The Windows installer `install.ps1` reads `VERSION` and `WORKROOM_CHANNEL` too.
+`install.sh` reads these.
 
 | Variable | Effect |
 | -------- | ------ |
-| `WORKROOM_INSTALL_PATH` | The folder to install the CLI into. The default is `~/.local/bin`. `install.sh` only. |
+| `WORKROOM_INSTALL_PATH` | The folder to install the CLI into. The default is `~/.local/bin`. |
 | `VERSION` | Install this release, such as `v3.0.0`, in place of the latest. It overrides `WORKROOM_CHANNEL`. |
 | `WORKROOM_CHANNEL` | `stable` (the default), `pre` or `nightly`. `nightly` installs a separate `workroom-nightly` binary. |
 

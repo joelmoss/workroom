@@ -33,6 +33,9 @@ The `workroom` command-line tool is bundled inside the app. To use it on its own
 curl -fsSL https://raw.githubusercontent.com/joelmoss/workroom/master/install.sh | sh
 ```
 
+Windows builds of the command-line tool have ended: it is now one Rust binary, which also runs the
+terminal sessions, and that part has never run on Windows.
+
 ## Documentation
 
 Everything else, from your first workroom to the CLI reference, is at

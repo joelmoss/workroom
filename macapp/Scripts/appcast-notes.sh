@@ -3,7 +3,7 @@
 # Refresh a published appcast item's <description> from the *current* GitHub release notes.
 #
 # The build-time appcast (Scripts/appcast.sh) embeds whatever the release body holds when the DMG
-# ships — which is usually goreleaser's raw commit list, because the human-curated notes are written
+# ships — which is usually GitHub's generated notes, because the human-curated notes are written
 # later. This script re-renders the matching item's <description> from the release's current body so
 # the in-app Sparkle update dialog shows the curated notes, not the commit list. It runs on every
 # `release: edited` event (see .github/workflows/appcast-notes.yml) and is safe to re-run by hand.

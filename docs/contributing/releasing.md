@@ -63,18 +63,20 @@ git push origin v1.4.0
 ```
 
 A clean `vX.Y.Z` tag publishes as a normal ("Latest") release; a tag with a prerelease component
-(e.g. `v2.0.0-beta.1`, `v1.4.0-rc1`) is auto-marked as a GitHub **pre-release** so it never becomes
-"Latest" (GoReleaser `prerelease: auto`).
+(e.g. `v2.0.0-beta.1`, `v1.4.0-rc1`) is marked as a GitHub **pre-release** so it never becomes
+"Latest" (`macapp/Scripts/publish-assets.sh`, which classifies the tag with `channel-helper.sh`).
+The `publish` job creates the release as a draft with GitHub's generated notes, uploads every file,
+checks them, and only then publishes it, so "Latest" never names a release without its archives.
 
-You can test the CLI build locally with [GoReleaser](https://goreleaser.com/) before tagging
-(produces binaries in `dist/` without publishing):
+You can build the standalone archives locally before tagging (ad hoc signed, nothing published).
+The output directory must not exist yet:
 
 ```bash
-goreleaser build --snapshot --clean
+VERSION=1.4.0 macapp/Scripts/cli-archives.sh build dist
 ```
 
-**After a release publishes, curate its GitHub release notes** — replace GoReleaser's raw commit
-list with a succinct, themed summary (a headline, a one-line framing, and grouped bullets). Editing
+**After a release publishes, curate its GitHub release notes** — replace GitHub's generated
+notes with a succinct, themed summary (a headline, a one-line framing, and grouped bullets). Editing
 the release notes also triggers `appcast-notes.yml`, which re-renders the Sparkle update dialog's
 notes from your curated body.
 
@@ -134,8 +136,8 @@ Channels are delivered as **two products**, not one switchable install:
 
 `stable` and `pre` fall out of the normal tag-driven release above. **Nightly** is a scheduled
 build — `.github/workflows/nightly.yml` runs on a daily cron (and `workflow_dispatch`), building the
-`Nightly` configuration ("Workroom Nightly" app) and baking `-X main.channel=nightly` into the CLI
-archives. It's hosted on a single fixed **`nightly`** prerelease whose assets and appcast item are
+`Nightly` configuration ("Workroom Nightly" app) and baking the nightly channel
+(`WORKROOM_RELEASE_CHANNEL=nightly`) into the binary in the standalone archives. It's hosted on a single fixed **`nightly`** prerelease whose assets and appcast item are
 clobbered in place each run (no per-day tags accumulate). Its version is
 `<base>-nightly.<commit-count>`, where `<base>` is derived from the latest tag reachable from
 master — a prerelease tag targets its own release (`v2.0.0-rc.1` → `2.0.0`), a stable tag bumps the
@@ -159,8 +161,9 @@ clobber each other's `appcast.xml` edits.
 
 ## Required CI secrets
 
-The CLI release needs only the default `GITHUB_TOKEN`. The macOS app release (the `macapp` job) needs
-Apple signing/notarization credentials (plus optional Sparkle/Sentry):
+The `publish` job needs only the default `GITHUB_TOKEN`. The `macapp` job, which builds the app and
+the standalone archives (their darwin binaries are signed and notarized too), needs Apple
+signing/notarization credentials (plus optional Sparkle/Sentry):
 
 | Secret | Purpose |
 | --- | --- |
@@ -183,9 +186,9 @@ Each release publishes both components:
 | Artifact | Pattern | Example |
 | --- | --- | --- |
 | CLI archive (macOS/Linux) | `workroom_<version>_<os>_<arch>.tar.gz` | `workroom_1.4.0_darwin_arm64.tar.gz` |
-| CLI archive (Windows) | `workroom_<version>_windows_<arch>.zip` | `workroom_1.4.0_windows_amd64.zip` |
+| CLI checksums | `checksums.txt` | `<sha256>  workroom_1.4.0_darwin_arm64.tar.gz` per line |
 | macOS app installer | `workroom-macos-app_<version>.dmg` | `workroom-macos-app_1.4.0.dmg` |
-| Nightly CLI archive | `workroom_nightly_<os>_<arch>.<ext>` | `workroom_nightly_linux_amd64.tar.gz` |
+| Nightly CLI archive | `workroom_nightly_<os>_<arch>.tar.gz` | `workroom_nightly_linux_amd64.tar.gz` |
 | Nightly app installer | `workroom-macos-app_nightly.dmg` | (clobbered on the fixed `nightly` release) |
 | Sparkle feed (main app) | `appcast.xml` | published to a fixed `appcast` release |
 | Sparkle feed (Nightly app) | `appcast-nightly.xml` | same `appcast` release, single rolling item |
@@ -195,11 +198,27 @@ run, so download URLs stay stable). `workroom update` on the stable/pre channels
 asset URL from the GitHub API rather than constructing it, so those don't share the name-lockstep
 constraint below; the constructed path is still used by `install.sh` and the nightly channel.
 
-GoReleaser builds the CLI for `darwin`/`linux`/`windows` × `amd64`/`arm64` with
-`CGO_ENABLED=0` and `-s -w -X main.version=<tag>`. The archive name (`workroom_<version>_…`) is what
-`install.sh` and `internal/updater/updater.go` download, so the GoReleaser `name_template` and those
-two paths must stay in lockstep — a rename in one without the others breaks `curl | sh` and
-`workroom update`.
+The CLI archives hold the one Rust `workroom` binary, the CLI and the daemon (ADR 0078), and its
+`THIRD-PARTY-NOTICES.txt`, both at the archive's root. `macapp/Scripts/cli-archives.sh build`
+makes them in the `macapp` job, for `darwin` and `linux` × `arm64` and `amd64`: with Rust
+`VCS_RUST` (`mk/vcs.mk`) and the `terminal-state` feature, as the app's binary is built, and
+stamped with the version (`WORKROOM_VERSION`) and, for the Nightly, the channel. darwin is one thin
+Mach-O per arch, signed with the Developer ID (hardened runtime, secure timestamp) and notarized;
+a bare Mach-O can't be stapled, so Gatekeeper checks its ticket online. linux is a static musl ELF
+per arch. There is no Windows build. `cli-archives.sh check`, which the build and the `publish`
+job both run, refuses any other set of files, a Go binary, an unstamped binary or a bad checksum;
+`publish-assets.sh` then refuses a release holding any other archive, and removes the Go CLI's
+Windows archives from the reused `nightly` release. `macapp/Scripts/cli-archives_test.sh` builds
+both channels' archives and updates a Go CLI built from this checkout into the Rust binary with
+`workroom update`, from a releases server on 127.0.0.1. The release and the Nightly also run the
+CLI contract suite against the darwin arm64 binary unpacked from its archive.
+
+These are goreleaser's names, kept so `install.sh` and every Go CLI's `workroom update` reach the
+Rust binary. The archive name (`workroom_<version>_…`) is what `install.sh` builds and what the
+updaters (`commands/update.rs`, and the Go CLI's `internal/updater/updater.go` in every install
+before the swap) look up, so the script and those paths must stay in lockstep — a rename in one
+without the others breaks `curl | sh` and `workroom update`. Intel Macs keep a standalone CLI
+(`darwin_amd64`), though the app is arm64 only (ADR 0061).
 
 ## Third-party notices
 
@@ -233,7 +252,11 @@ The `macapp` job runs `make app-release` (`macapp/Scripts/release.sh`) on `xcode
    ticket, and run a Gatekeeper assessment (`spctl`).
 5. Build the DMG (`create-dmg`, signed), notarize + staple the DMG too.
 6. _(optional)_ EdDSA-sign the DMG for Sparkle and write `appcast-fields.env`.
-7. Upload the DMG to the release as `workroom-macos-app_<version>.dmg`.
+
+The job then builds, signs and notarizes the standalone archives (`macapp/Scripts/cli-archives.sh
+build`, [Release artifacts](#release-artifacts)) and runs the CLI contract suite against the binary in
+the darwin arm64 one. The `publish` job checks the archives again, creates the release and uploads
+them with the DMG, as `workroom-macos-app_<version>.dmg` (`macapp/Scripts/publish-assets.sh`).
 
 ## Auto-update (Sparkle appcast)
 
