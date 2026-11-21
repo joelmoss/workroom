@@ -4499,6 +4499,12 @@ fn command_runs_in_a_shell_and_gives_its_code_and_the_output_between_its_marks()
         ),
     );
     assert_eq!(raw["output"], "\x1b[1mbold\x1b[0m\r\n", "{raw}");
+    // And printed so, byte for byte, no line's end added: the pty's own `\r\n`.
+    let human = workroom(
+        Some(&socket),
+        &["command", "server", "--vt", "--", "echo hello"],
+    );
+    assert_eq!((human.code, human.stdout.as_str()), (0, "hello\r\n"));
 
     // The caller's own session, and a command that is not one line.
     let own = Api::connect(&socket).request(&json!({
@@ -4615,7 +4621,7 @@ fn real_shell(socket: &Path, id: &str, path: &str, dir: &Path) -> (Spawned, comm
         (
             home.join(".zshrc"),
             format!(
-                "PS1='PROMPT> '\nif [[ -n $WR_TEST_EXECED ]]; then autoload -Uz -- '{0}/zsh/ghostty-integration' && ghostty-integration; fi\nexport WR_TEST_EXECED=1\n",
+                "PS1='PROMPT> '\nRPROMPT='RIGHT'\nbindkey -e\nif [[ -n $WR_TEST_EXECED ]]; then autoload -Uz -- '{0}/zsh/ghostty-integration' && ghostty-integration; fi\nexport WR_TEST_EXECED=1\n",
                 integration.display()
             ),
         ),
@@ -4757,6 +4763,12 @@ fn command_runs_in_real_shells_with_the_bundled_integration() {
         assert_eq!(unended["output"], "foo", "{name}: {unended}");
 
         if name == "zsh" {
+            // Every command here ran beside a right prompt, which is no text at the prompt.
+            capture_awaiting(&socket, &[id, "--json"], "zsh's RPROMPT", |run| {
+                run.envelope()["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("RIGHT"))
+            });
             let stdin = shell.stdin.as_mut().expect("stdin");
             stdin.write_all(b": half").expect("type");
             stdin.flush().expect("flush");
@@ -4770,6 +4782,21 @@ fn command_runs_in_real_shells_with_the_bundled_integration() {
                 failed(run(&["echo NEVER-TYPED"])),
                 (3, "Busy".into()),
                 "a prompt holding `: half`"
+            );
+            // Ctrl+A: the cursor at the line's start, the text all after it.
+            let stdin = shell.stdin.as_mut().expect("stdin");
+            stdin.write_all(b"\x01").expect("type");
+            stdin.flush().expect("flush");
+            capture_awaiting(
+                &socket,
+                &[id, "--json"],
+                "the cursor at the line's start",
+                |run| run.envelope()["cursor"]["column"] == "PROMPT> ".len(),
+            );
+            assert_eq!(
+                failed(run(&["echo NEVER-TYPED"])),
+                (3, "Busy".into()),
+                "`: half` after the cursor"
             );
             // Run, it leaves the prompt empty; an open quote then goes on at PS2.
             type_line(&mut shell, "");
