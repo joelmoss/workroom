@@ -1239,11 +1239,9 @@ fn handle(sessions: &SessionStore, bytes: &[u8], peer: Option<i32>) -> Result<An
     let request = read(sessions, bytes, peer)?;
     match request.method.run {
         Run::Now(run) => run(&request.call(sessions)),
-        Run::Wait | Run::Command | Run::Events | Run::Prompt | Run::Unsubscribe => {
-            Err(ApiError::invalid(
-                "this method needs its connection, from `dispatch`",
-            ))
-        }
+        Run::Wait | Run::Command | Run::Events | Run::Prompt | Run::Unsubscribe => Err(
+            ApiError::invalid("this method needs its connection, from `dispatch`"),
+        ),
     }
 }
 
