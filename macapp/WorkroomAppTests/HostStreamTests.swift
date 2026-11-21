@@ -140,7 +140,8 @@ final class HostStreamTests: XCTestCase {
     let session = UUID()
     let fresh = SSHTransport.remoteAttachCommand(
       binary: "/run/workroom/workroomd", session: session, socket: "/run/workroom/workroomd.sock",
-      resources: "/run/workroom/ghostty", workingDirectory: "/home/w/it's here", restored: false)
+      resources: "/run/workroom/ghostty", workingDirectory: "/home/w/it's here", restored: false,
+      hostname: "joels-mac.local")
     XCTAssertEqual(
       fresh,
       "if ! test -e '/run/workroom/workroomd' && test -x '/run/workroom/wr-agent'; then echo "
@@ -155,6 +156,8 @@ final class HostStreamTests: XCTestCase {
         + "GHOSTTY_SHELL_FEATURES; set -- 'TERM=xterm-256color'; fi; "
         // Probed for keepalive (#593), whatever the host's daemon: an older one ignores it.
         + "'env' \"$@\" 'WORKROOM_SESSION_KEEPALIVE=1' "
+        // The Mac the pane is on, which the attach on the host can't name itself (#688).
+        + "'WORKROOM_SESSION_HOSTNAME=joels-mac.local' "
         + "'WORKROOM_SESSION_ID=\(session.uuidString)' "
         + "'WORKROOM_SESSION_SOCKET=/run/workroom/workroomd.sock' "
         + "'WORKROOM_SESSION_CWD=/home/w/it'\\''s here' '/run/workroom/workroomd' 'attach' "

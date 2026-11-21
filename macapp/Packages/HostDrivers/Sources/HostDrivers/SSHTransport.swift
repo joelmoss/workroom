@@ -410,9 +410,14 @@ public enum SSHTransport {
   /// the probe on its own, whether or not anyone types. Sent whatever the host's daemon is: one
   /// that predates it ignores it, as it drops every `WORKROOM_SESSION_*` from the shell's
   /// environment, and sends no probe.
+  ///
+  /// `hostname` names this Mac to the host's daemon (`WORKROOM_SESSION_HOSTNAME`, #688), which
+  /// `workroom sessions --clients` lists the pane under: the attach runs on the host, so its own
+  /// name would be the host's.
   public static func remoteAttachCommand(
     binary: String, session: UUID, socket: String, resources: String, workingDirectory: String,
-    restored: Bool, metadata: [(key: String, value: String)] = [], runCommand: String? = nil
+    restored: Bool, metadata: [(key: String, value: String)] = [], runCommand: String? = nil,
+    hostname: String? = macHostname
   ) -> String {
     let integrated = [
       "TERM=xterm-ghostty", "TERMINFO=\(resources)/terminfo",
@@ -421,8 +426,9 @@ public enum SSHTransport {
     let names = Dictionary(uniqueKeysWithValues: SessionMetadataKey.environmentVariables)
       .filter { [SessionMetadataKey.workroom, SessionMetadataKey.title].contains($0.key) }
     let variables =
-      [
-        keepaliveVariable,
+      [keepaliveVariable]
+      + (hostname.map { ["WORKROOM_SESSION_HOSTNAME=\($0)"] } ?? [])
+      + [
         "WORKROOM_SESSION_ID=\(session.uuidString)",
         "WORKROOM_SESSION_SOCKET=\(socket)",
         "WORKROOM_SESSION_CWD=\(workingDirectory)",
@@ -444,6 +450,16 @@ public enum SSHTransport {
       + "set -- 'TERM=xterm-256color'; fi; 'env' \"$@\" "
       + (variables + [binary, "attach", "--no-spawn"] + (restored ? ["--no-create"] : []))
       .map(shellQuoted).joined(separator: " ")
+  }
+
+  /// This Mac's hostname as `gethostname` gives it, the name a local pane's attach gives the
+  /// daemon too (#688); nil when it can't be read.
+  public static var macHostname: String? {
+    var buffer = [CChar](repeating: 0, count: 256)
+    guard gethostname(&buffer, buffer.count) == 0 else { return nil }
+    let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+    let name = String(decoding: bytes, as: UTF8.self)
+    return name.isEmpty ? nil : name
   }
 
   /// What a remote pane's attach sets to be probed (`remoteAttachCommand`): the daemon's
