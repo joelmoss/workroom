@@ -113,9 +113,10 @@ type VCS interface {
 	// checkout at dir. Empty unless start is a remote's branch.
 	LocalWork(dir, start string) LocalWork
 	Delete(dir, vcsName, path string) (string, error)
-	// ListWorkrooms is the sole membership primitive: a caller that needs an existence check
-	// lists once and does an in-memory lookup, rather than the interface exposing a second
-	// method that looks like a cheap single-name check but is secretly a full list-and-scan.
+	// ListWorkrooms is the membership primitive for names: a caller that needs a name's
+	// existence check lists once and does an in-memory lookup, rather than the interface
+	// exposing a second method that looks like a cheap single-name check but is secretly a full
+	// list-and-scan. HasWorktree, below, asks about a path instead.
 	ListWorkrooms(dir string) ([]string, error)
 	// HasWorktree reports whether path itself is a workspace this VCS registers for the project
 	// at dir, symlinks resolved: the proof that a folder is the project's before a script runs
