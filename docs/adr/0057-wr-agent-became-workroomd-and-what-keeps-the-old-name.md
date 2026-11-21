@@ -7,7 +7,8 @@ Stable users updating from v2.1.0 keep every terminal, but not by hand-off: v2.1
 What keeps the old name, and why:
 
 - The `WRA1` protocol magic: invisible, and changing it would cut the app off from every older daemon.
-- The command line an older daemon or installer runs on the new binary: `protocol` and its `build-number <n>` line (how builds are ordered, ADR 0037), `handoff-check <table>`, and `serve` with `--socket`, `--handoff`, `--idle-timeout` and `--screens`, plus the hand-off table format. Pinned by `vcs/crates/workroomd/tests/cli_contract.rs`.
+- The command line an older daemon or installer runs on the new binary: `protocol` and its `build-number <n>` line (how builds are ordered, ADR 0037), `handoff-check <table>`, and `serve` with `--socket`, `--handoff`, `--idle-timeout` and `--screens`, plus the hand-off table format. Since the binary became `workroom` (ADR 0078, #681), also `hand-off`, `relay`, `attach`, `list --socket`, `run-supervisor` and `run-script`, with `run-script`'s stderr prefix `workroomd run-script: `. Pinned by `vcs/crates/workroomd/tests/cli_contract.rs`.
+- A host's installed file, `<daemon dir>/workroomd`, so an older app still finds it and sees the host is newer (ADR 0078). A `workroom` link beside it is the name the host's panes run it by.
 - Until #526: the app's `agent.sock` lookup, the old-layout host detection (`wr-agent` in `agent/` or `/run/workroom`), and the pinned v2.1.0 daemon (`macapp/WorkroomAppTests/Fixtures/wr-agent-v2.1.0`) that proves the update. `macapp/Scripts/daemon-name_test.sh` fails on the old name anywhere else.
 - History: the frozen design docs, `docs/recently-done.md`, quoted issue titles, and ADR file names (they are links).
 

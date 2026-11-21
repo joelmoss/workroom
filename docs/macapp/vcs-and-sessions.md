@@ -123,8 +123,10 @@ same id and orphans the user's shell. A failed `connect` is NOT an unanswered pr
 nothing is listening, which is a definitive "not owned" (the Swift helper leaves a stale `session.sock`
 behind on any `pkill`, so this case is common, not exotic).
 
-**Building it.** `macapp/Scripts/build-daemon.sh` is a build phase, mirroring `build-helper.sh` (the
-Go CLI): it iterates `ARCHS` and `lipo`s the slices, though the app itself is arm64 only (ADR 0061). The
+**Building it.** `macapp/Scripts/build-daemon.sh` is a build phase. It builds the one `workroom`
+binary (ADR 0078: the CLI, and the daemon as `workroom serve`) into `Contents/Resources/workroom`, the
+Go CLI's path until #681, and removes the daemon's former `Contents/MacOS/workroomd` from a bundle
+an earlier build made. It iterates `ARCHS` and `lipo`s the slices, though the app itself is arm64 only (ADR 0061). The
 built binary is staged beside `$DEST` and **renamed into place, never written over it** — a running
 daemon executes that file, and macOS SIGKILLs a process whose signed binary changes under it ("Code
 Signature Invalid"); writing in place used to kill every Dev session, and any hand-off (#230), on
@@ -136,8 +138,10 @@ the app**: without it a reattaching pane repaints blank, which only shows up aft
 quit-and-relaunch. `workroomd protocol` reports `terminal-state yes|no`, and the build test asserts it
 against the shipped binary.
 
-**Linux daemons (issue #227).** Every build also puts a static musl `workroomd` per
-Linux arch in `Contents/Resources/workroomd-linux-{aarch64,x86_64}`, for pushing to remote hosts.
+**Linux daemons (issue #227).** Every build also puts a static musl `workroom` per
+Linux arch in `Contents/Resources/workroom-linux-{aarch64,x86_64}`, for pushing to remote hosts,
+where it is installed as `<daemon dir>/workroomd` (ADR 0057) with a `workroom` link beside it that
+the daemon puts on its panes' `PATH`.
 Both arches ship always, whatever `ARCHS` says, because a remote box's arch has nothing to do with
 the Mac's. They are not codesigned; the app's signature seals them as resources. Debug builds them
 too, since every build offers remote workrooms. Building them needs `cargo install

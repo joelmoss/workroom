@@ -1,8 +1,8 @@
 # --- macOS app (macapp/) ---
 #
 # App recipes run inside macapp/ and need its toolchain on PATH (xcodegen via Homebrew). The
-# Xcode build also runs project.yml phases — a non-fatal swift-format lint and embedding the Go
-# helper (macapp/Scripts/build-helper.sh).
+# Xcode build also runs project.yml phases — a non-fatal swift-format lint and embedding the one
+# `workroom` binary (macapp/Scripts/build-daemon.sh).
 
 # The Debug product is "Workroom Dev" (distinct bundle id + name) so it runs alongside the
 # installed release "Workroom" without conflict — see macapp/project.yml.

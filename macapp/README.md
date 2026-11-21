@@ -13,7 +13,8 @@ binary** and shelling out over its `--json` contract — no cgo, no duplicated l
 ## Prerequisites
 
 - Xcode 15+ (macOS 14+ deployment target)
-- Go (to build the embedded helper) — must be on `PATH`, or edit `Scripts/build-helper.sh`
+- Rust through rustup, with cargo-zigbuild and the musl targets (to build the embedded `workroom`;
+  see `Scripts/build-daemon.sh`)
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen`
 - Zig, at the `ZIG_VERSION` in `vcs/scripts/build-ghostty-vt.sh` (through mise when it is available),
   which `xcodegen generate` uses to build GhosttyKit on its first run
@@ -37,7 +38,7 @@ namespaced under `app-*` (run from the **repo root**):
 make app-run        # xcodegen (if needed) → xcodebuild (Debug) → relaunch the app
 make app-build      # build only
 make app-test       # run WorkroomAppTests
-make app-test-scripts # shell-script tests (build-helper architectures, channel classification)
+make app-test-scripts # shell-script tests (build-daemon architectures, channel classification)
 make app-format     # swift-format, rewrite sources in place
 make app-lint       # swift-format --strict
 make app-generate   # force-regenerate the .xcodeproj
@@ -50,23 +51,24 @@ make app-release    # notarized Release build + DMG installer (see below)
 > (`make app-run`/`make app-build` only regenerate when the `.xcodeproj` is missing, so
 > regenerate by hand after adding files.)
 
-Xcode resolves the local GhosttyKit package, and the `Build & embed workroom helper`
-script phase (`Scripts/build-helper.sh`) compiles the Go CLI into
-`Workroom.app/Contents/Resources/workroom` and signs it. (Resources, not
-`Contents/MacOS`: a helper named `workroom` there would collide with the `Workroom`
-app executable on the case-insensitive filesystem.)
+Xcode resolves the local GhosttyKit package, and the `Build & embed workroom`
+script phase (`Scripts/build-daemon.sh`) compiles the one Rust `workroom` binary (ADR 0078:
+the CLI, and the daemon as `workroom serve`) into `Workroom.app/Contents/Resources/workroom`
+and signs it, with its static Linux builds beside it as `workroom-linux-<arch>`. (Resources,
+not `Contents/MacOS`: a binary named `workroom` there would collide with the `Workroom` app
+executable on the case-insensitive filesystem.)
 
-The helper is built **once per architecture in `ARCHS` and `lipo`'d**. The app is arm64 only
+The binary is built **once per architecture in `ARCHS` and `lipo`'d**. The app is arm64 only
 (ADR 0061), and that is asserted, not assumed: `release.sh` refuses to notarize a bundle
-containing any Mach-O without an arm64 slice, and `Scripts/build-helper_test.sh` covers the
-arch matrix.
+containing any Mach-O without an arm64 slice, or a second binary beside `workroom`, and
+`Scripts/build-daemon_test.sh` covers the arch matrix and the one binary.
 
 ## Signing & distribution
 
 The project is configured for team **B898J443L9**:
 - **Debug** (`⌘R`): automatic signing with your *Apple Development* cert.
 - **Release**: manual signing with *Developer ID Application*, hardened runtime, secure
-  timestamp. `Scripts/build-helper.sh` signs the embedded helper the same way before the
+  timestamp. `Scripts/build-daemon.sh` signs the embedded `workroom` the same way before the
   app's final signature.
 
 Every configuration (Debug, Release and Nightly) signs with
@@ -115,7 +117,7 @@ script uses those automatically.
 
 Prefer not to use XcodeGen? Create a SwiftUI macOS App target manually, link the output of
 `vcs/scripts/build-ghostty-vt.sh --kit` to `GhosttyKit/GhosttyKit.xcframework`, add the
-`GhosttyKit/` package, add the `WorkroomApp/` sources, and add `Scripts/build-helper.sh`
+`GhosttyKit/` package, add the `WorkroomApp/` sources, and add `Scripts/build-daemon.sh`
 as a Run Script phase **after Compile Sources**.
 
 ## Auto-update (Sparkle)
@@ -200,7 +202,7 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
    surface via `ghostty_surface_free` (callbacks cleared first). Still worth a runtime check:
    switch/delete workrooms repeatedly and confirm no orphaned shells in `ps`.
 3. **Signing/notarization**: ✓ configured (Developer ID for Release, team B898J443L9;
-   helpers signed by `Scripts/build-helper.sh` and `Scripts/embed-session-helper.sh`). Run `Scripts/release.sh` to build + notarize
+   helpers signed by `Scripts/build-daemon.sh` and `Scripts/embed-session-helper.sh`). Run `Scripts/release.sh` to build + notarize
    + staple + package the DMG installer (after the one-time `notarytool store-credentials`
    above). See "Signing & distribution".
 4. **Process-group kill** (`WorkroomCLI.run`): the MVP uses `terminate()` + non-interactive
