@@ -49,9 +49,7 @@ See [Notifications](notifications.md).
 | Setting | What it does |
 | --- | --- |
 | **Appearance** | **System**, **Light** or **Dark**. System follows macOS. |
-| **Theme family** | Nightly only. The family your light theme and dark theme both belong to, or **Custom** when they come from different families. Choosing a family sets both. Opens the theme picker on its **Family** tab. |
-| **Light theme** | Nightly only. The theme Workroom shows while the appearance is Light. Opens the theme picker on its **Light** tab. |
-| **Dark theme** | Nightly only. The theme Workroom shows while the appearance is Dark. Opens the theme picker on its **Dark** tab. |
+| **Themes** | Nightly only. The family your light theme and dark theme both belong to, or **Custom** when they come from different families. Click it to go to [Themes](#themes). |
 | **Diff view** | **Unified** or **Side by Side** for diffs you open from now on. A narrow pane always falls back to unified. |
 | **Glass** | Nightly only. Frosts the window: the desktop shows through it, blurred, behind the theme's colours, and the terminals frost with it. A slider from 70% to 100%: lower shows more through, and 100% (the default) is off. The window is opaque in full screen and while **Reduce transparency** is on in macOS's Accessibility settings. |
 | **Dim unfocused panes** | Shades every pane except the focused one so the active terminal stands out in a split. On by default. |
@@ -60,23 +58,27 @@ See [Notifications](notifications.md).
 
 <kbd>⇧⌘L</kbd> (**View ▸ Light Mode** or **Dark Mode**) flips between light and dark without opening Settings.
 
-### Themes {nightly}
+## Themes {nightly}
 
-**Appearance** decides which of your two themes is on screen: the light theme while the appearance is Light, the dark theme while it is Dark. Terminals change with it.
+**Appearance** decides which of your two themes is on screen: the light theme while the appearance is Light, the dark theme while it is Dark. Terminals change with it. The Themes pane has the same **Appearance** switch at the top, beside the name of your theme family, or **Custom** when your two themes come from different families.
 
-The theme picker has three tabs over one search field:
+Under it, two small Workroom windows show your light theme and your dark theme as the app would look, with the name of each. The one on screen says **On screen**. Click a window to browse themes for that side.
 
-- **Family** lists the theme families. Choosing one sets both your light theme and your dark theme.
+Below the windows, choose what to browse, and search by name:
+
+- **Family** lists the theme families, each as its dark theme beside its light one. Choosing one sets both your light theme and your dark theme.
 - **Light** lists only light themes. Choosing one changes only your light theme.
 - **Dark** lists only dark themes. Choosing one changes only your dark theme.
 
-<kbd>↑</kbd> and <kbd>↓</kbd> apply the theme as you move. <kbd>Return</kbd> or <kbd>Esc</kbd> closes the picker. <kbd>⇧⌘K</kbd> (**View ▸ Theme…**) opens it on the tab for the appearance that is showing. On the tab for the other appearance, such as **Light** while the appearance is Dark, a note says **Applies when the appearance is Light**: your choice is saved, and the screen keeps its theme until the appearance changes.
+Each theme shows a few lines of terminal output in its own colours. Your current choice is outlined and ticked. While browsing the other appearance, such as **Light** while the appearance is Dark, a note says **Applies when the appearance is Light**: your choice is saved, and the screen keeps its theme until the appearance changes.
 
-Your own Ghostty theme files in `~/.config/ghostty/themes` are listed too, each with a **Yours** label. Workroom puts each file on the **Light** or **Dark** tab by its background colour. A file with the same name as a bundled theme replaces it. A file Workroom can't read is not listed.
+<kbd>⇧⌘K</kbd> (**View ▸ Theme…**) opens a smaller theme picker from the toolbar, with the same **Family**, **Light** and **Dark** tabs over a search field. It opens on the tab for the appearance that is showing. <kbd>↑</kbd> and <kbd>↓</kbd> apply the theme as you move, and <kbd>Return</kbd> or <kbd>Esc</kbd> closes it.
 
-A family is hidden from the **Family** tab while one of its two themes isn't on its own side, for example when a dark file of yours replaces its light theme. You can still choose its other theme on the **Light** or **Dark** tab.
+Your own Ghostty theme files in `~/.config/ghostty/themes` are listed too, each with a **Yours** label. Workroom puts each file with the light or dark themes by its background colour. A file with the same name as a bundled theme replaces it. A file Workroom can't read is not listed.
 
-If your light theme is missing, or is now a dark theme, Workroom shows **Workroom Light** in its place. If your dark theme is missing, or is now a light theme, it shows **Workroom**. The **Light theme** or **Dark theme** row says so under the theme's name. Your choice is kept, so the theme comes back when its file does.
+A family is hidden from **Family** while one of its two themes isn't on its own side, for example when a dark file of yours replaces its light theme. You can still choose its other theme on its own.
+
+If your light theme is missing, or is now a dark theme, Workroom shows **Workroom Light** in its place. If your dark theme is missing, or is now a light theme, it shows **Workroom**. The window for that side says so under the theme's name. Your choice is kept, so the theme comes back when its file does.
 
 ## Terminal
 
