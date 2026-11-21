@@ -1,7 +1,8 @@
 """`make tools-check`: compare this machine's tools with the versions the repo pins.
 
 Read-only. Every pin is read from where the repo already records it (go.mod, ci-go.yml,
-ci-actions.yml, mk/vcs.mk through make, the setup-app-build composite); none is written here.
+ci-actions.yml, mk/vcs.mk and mk/notices.mk through make, the setup-app-build composite); none is
+written here.
 Tools are found on PATH however they were installed (Homebrew, `go install`, rustup, mise, ...).
 Prints one line per tool and exits non-zero when a tool is missing or at another version.
 """
@@ -41,6 +42,7 @@ def parse_pins():
         "golangci-lint": first(r"^\s*GOLANGCI_LINT_VERSION:\s*(\S+)", ci_go,
                                "GOLANGCI_LINT_VERSION in ci-go.yml"),
         "rust": make_value("VCS_RUST"),
+        "cargo-about": make_value("CARGO_ABOUT_VERSION"),
         "shellcheck": first(r"^\s*SHELLCHECK_VERSION:\s*(\S+)", ci_actions,
                             "SHELLCHECK_VERSION in ci-actions.yml"),
         "jactionlint": first(r"^\s*JACTIONLINT_VERSION:\s*(\S+)", ci_actions,
@@ -124,6 +126,15 @@ def check_xcode(pin):
     return [compare("xcode", local, pin, f"install Xcode {pin}", newer_is_note=True)]
 
 
+def check_cargo_about(pin):
+    """cargo-about, which `make notices` runs (#714): Homebrew's or cargo's, at the pinned version."""
+    hint = f"cargo install --locked --features cli cargo-about@{pin} (or brew install cargo-about)"
+    if not shutil.which("cargo-about"):
+        return [(MISSING, f"cargo-about: not found; {hint}")]
+    local = version_in(run(["cargo-about", "--version"]), r"(\d+\.\d+\.\d+)")
+    return [compare("cargo-about", local, pin, hint)]
+
+
 def check_simple(name, pin, command):
     if not shutil.which(command[0]):
         return [(MISSING, f"{name}: not found; install {name} {pin}")]
@@ -137,6 +148,7 @@ def main():
     rows += check_go(pins["go"])
     rows += check_simple("golangci-lint", pins["golangci-lint"], ["golangci-lint", "--version"])
     rows += check_rust(pins["rust"])
+    rows += check_cargo_about(pins["cargo-about"])
     rows += check_simple("shellcheck", pins["shellcheck"], ["shellcheck", "--version"])
     rows += check_simple("jactionlint", pins["jactionlint"], ["jactionlint", "--version"])
     rows += check_xcode(pins["xcode"])

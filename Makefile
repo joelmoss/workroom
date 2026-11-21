@@ -1,8 +1,8 @@
 # Repo-wide dev tasks, namespaced: `cli-*` = the Go CLI (the primary product), `app-*` = the
 # macOS app under macapp/ (Xcode-based), `vcs-*` = the Rust workspace under vcs/, `docs-*` = the
 # docs site under docs-site/, `actions-*` = the GitHub Actions under .github/, `notices*` = the
-# third-party notices under third-party/. Run `make` with no
-# target to list them. Each area's targets live in mk/<area>.mk, included below.
+# third-party notices under third-party/. Run `make` with no target to list them. Each area's
+# targets live in mk/<area>.mk, included below.
 # Homebrew's dirs are a fallback for a shell that lacks them, so they go last: the caller's PATH
 # order wins, and a version manager's tools (mise's go, golangci-lint, shellcheck) come before
 # any Homebrew copy of the same tool.
@@ -27,7 +27,7 @@ tools-check: ## Compare this machine's tools with the versions the repo pins (re
 # compare against the latest stable tag) passes here and fails there. vcs-lint-linux needs a
 # container runtime (CONTRIBUTING.md). The VM UI tests and the full app-test are not in it.
 PRE_PUSH_GATES := app-test-scripts docs-check cli-test cli-lint vcs-lint vcs-lint-linux vcs-test \
-  app-lint app-package-test
+  notices-check app-lint app-package-test
 pre-push: ## Run CI's cheap gates before a push (says when the branch is behind origin/master)
 	@git fetch origin master --quiet 2>/dev/null || echo "pre-push: couldn't fetch origin/master"
 	@behind=$$(git rev-list --count HEAD..origin/master 2>/dev/null || echo 0); \

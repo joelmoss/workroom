@@ -69,9 +69,10 @@ class CheckComponentsTests(unittest.TestCase):
         self.assertRegex("\n".join(found), "allow-list")
 
     def test_a_copyleft_licence_needs_a_review(self):
-        found = self.problems(component(license="GPL-3.0-or-later"),
-                              not_shipped={"sparkle": "-"})
-        self.assertRegex("\n".join(found), "needs a `review`")
+        for licence in ("GPL-3.0-or-later", "MPL-2.0"):
+            with self.subTest(licence=licence):
+                found = self.problems(component(license=licence), not_shipped={"sparkle": "-"})
+                self.assertRegex("\n".join(found), "needs a `review`")
         self.assertEqual(self.problems(component(license="GPL-3.0-or-later", review="owner"),
                                        not_shipped={"sparkle": "-"}), [])
 
