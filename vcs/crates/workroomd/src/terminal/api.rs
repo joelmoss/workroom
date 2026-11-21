@@ -190,6 +190,9 @@ enum Run {
     /// At once, or with `wait` from a thread of its own once the turn it starts has ended:
     /// `terminal.prompt` (`prompt::start`).
     Prompt,
+    /// At once, on the connection's own subscriptions: `events.unsubscribe`
+    /// (`events::unsubscribe`).
+    Unsubscribe,
 }
 
 /// One request as a method sees it.
@@ -428,6 +431,18 @@ pub const METHODS: &[Method] = &[
         params_example: events::params_example,
         result_example: events::result_example,
         run: Run::Events,
+    },
+    Method {
+        name: events::UNSUBSCRIBE_NAME,
+        summary: "Ends one of this connection's `events.subscribe` subscriptions, named by the \
+                  stream it was asked on, before the connection does, and frees its place. \
+                  `ended` says whether one was still held there.",
+        input: events::unsubscribe_input,
+        output: events::unsubscribe_output,
+        errors: &[],
+        params_example: events::unsubscribe_params_example,
+        result_example: events::unsubscribe_result_example,
+        run: Run::Unsubscribe,
     },
 ];
 
@@ -1224,9 +1239,11 @@ fn handle(sessions: &SessionStore, bytes: &[u8], peer: Option<i32>) -> Result<An
     let request = read(sessions, bytes, peer)?;
     match request.method.run {
         Run::Now(run) => run(&request.call(sessions)),
-        Run::Wait | Run::Command | Run::Events | Run::Prompt => Err(ApiError::invalid(
-            "this method answers on its own stream, from `dispatch`",
-        )),
+        Run::Wait | Run::Command | Run::Events | Run::Prompt | Run::Unsubscribe => {
+            Err(ApiError::invalid(
+                "this method needs its connection, from `dispatch`",
+            ))
+        }
     }
 }
 
@@ -1388,6 +1405,11 @@ pub fn dispatch(
                     writer,
                     envelope.stream,
                 ),
+                Run::Unsubscribe => {
+                    let result =
+                        events::unsubscribe(&mut connection.subscriptions, &request.call(sessions));
+                    send(reply(result, false));
+                }
             },
             Err(error) => {
                 send(reply(Err(error), false));

@@ -196,7 +196,8 @@ fn describe_publishes_every_method_with_both_schemas() {
             "terminal.command",
             "terminal.wait",
             "terminal.prompt",
-            "events.subscribe"
+            "events.subscribe",
+            "events.unsubscribe"
         ]
     );
     for method in all["methods"].as_array().unwrap() {
@@ -1052,6 +1053,84 @@ fn events_past_a_bound_are_busy_until_a_connection_closes() {
         "a closed connection's places were never given back"
     );
     drop((second, third));
+}
+
+fn unsubscribe(
+    subscriptions: &mut events::Subscriptions,
+    store: &SessionStore,
+    params: Value,
+) -> Result<Value, ApiError> {
+    let call = Call {
+        sessions: store,
+        params: &params,
+        caller: None,
+    };
+    events::unsubscribe(subscriptions, &call)
+}
+
+/// `events.unsubscribe` (#696) ends one of the connection's subscriptions before the connection
+/// does: its place is free at once, however many a caller gives up on, and its stream goes quiet.
+/// Ending one it doesn't hold is `ended: false`, and bad input is `InvalidRequest`.
+#[test]
+fn events_unsubscribe_ends_a_subscription_and_frees_its_place() {
+    use std::sync::atomic::AtomicUsize;
+    static HELD: AtomicUsize = AtomicUsize::new(0);
+    let limits = events::Limits {
+        connection: 2,
+        daemon: 2,
+    };
+    let store = SessionStore::new();
+    let (written, writer) = written_writer();
+    let mut subscriptions = events::Subscriptions::with(limits, &HELD);
+    // Far past both bounds, each one ended before the next: none is ever `Busy`.
+    for stream in 1..=10 {
+        subscribe(&mut subscriptions, &store, &writer, stream);
+        assert!(
+            eventually(|| said(&written).len() == stream as usize),
+            "{:?}",
+            said(&written)
+        );
+        assert_eq!(
+            said(&written).last().map(String::as_str),
+            Some("snapshot-complete"),
+            "subscription {stream} was refused: {:?}",
+            said(&written)
+        );
+        let ended = unsubscribe(&mut subscriptions, &store, json!({"stream": stream})).unwrap();
+        assert_eq!(ended, json!({"stream": stream, "ended": true}));
+        // Its thread has stopped once the daemon's place is back.
+        assert!(
+            eventually(|| HELD.load(std::sync::atomic::Ordering::SeqCst) == 0),
+            "subscription {stream}'s thread still holds its place"
+        );
+    }
+    // Live events reach none of them.
+    let before = written.replies().len();
+    store
+        .hooks()
+        .events
+        .input(SessionId([7; 16]), Value::Null, None, 3);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_eq!(
+        written.replies().len(),
+        before,
+        "an ended subscription was sent to"
+    );
+
+    // Once is enough; a stream that never held one isn't an error.
+    assert_eq!(
+        unsubscribe(&mut subscriptions, &store, json!({"stream": 3})).unwrap(),
+        json!({"stream": 3, "ended": false})
+    );
+    for bad in [
+        json!({}),
+        json!({"stream": 0}),
+        json!({"stream": "7"}),
+        json!({"stream": -1}),
+    ] {
+        let error = unsubscribe(&mut subscriptions, &store, bad.clone()).unwrap_err();
+        assert_eq!(error.kind, kind::INVALID_REQUEST, "{bad}");
+    }
 }
 
 /// A connection whose every write fails, as one whose caller has read nothing for the transport's

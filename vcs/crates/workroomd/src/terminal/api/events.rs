@@ -42,7 +42,8 @@ static SUBSCRIPTIONS: AtomicUsize = AtomicUsize::new(0);
 /// One connection's subscriptions, ended when it closes: a caller that has gone away is sent to by
 /// nobody.
 pub struct Subscriptions {
-    held: Vec<Arc<AtomicBool>>,
+    /// Each held subscription's stream, and the flag that ends it.
+    held: Vec<(u32, Arc<AtomicBool>)>,
     limits: Limits,
     daemon: &'static AtomicUsize,
     /// The hub they wait on, for closing to wake them: the store's, set by the first.
@@ -87,7 +88,7 @@ impl Subscriptions {
 
 impl Drop for Subscriptions {
     fn drop(&mut self) {
-        for closed in &self.held {
+        for (_, closed) in &self.held {
             closed.store(true, Ordering::SeqCst);
         }
         // Every subscription on the store shares the hub's wake, so each sees its own flag.
@@ -405,7 +406,7 @@ pub fn start(subscriptions: &mut Subscriptions, call: &Call, writer: &SharedWrit
     };
     subscriptions
         .held
-        .retain(|closed| !closed.load(Ordering::SeqCst));
+        .retain(|(_, closed)| !closed.load(Ordering::SeqCst));
     if subscriptions.held.len() >= subscriptions.limits.connection {
         send(
             Err(busy(subscriptions.held.len(), "this connection")),
@@ -490,7 +491,7 @@ pub fn start(subscriptions: &mut Subscriptions, call: &Call, writer: &SharedWrit
             }
         });
     match spawned {
-        Ok(_) => subscriptions.held.push(closed),
+        Ok(_) => subscriptions.held.push((stream, closed)),
         Err(error) => {
             crate::note!("terminal API: no thread for an events subscription: {error}");
             let writer = Arc::clone(writer);
@@ -509,6 +510,81 @@ pub fn start(subscriptions: &mut Subscriptions, call: &Call, writer: &SharedWrit
             );
         }
     }
+}
+
+/// `events.unsubscribe` (#696): ends one of the connection's own subscriptions before the
+/// connection does, so a caller that gives up on one (it answered too late, or the caller stopped
+/// wanting it) doesn't hold one of the connection's places, and its thread, until it disconnects.
+pub const UNSUBSCRIBE_NAME: &str = "events.unsubscribe";
+
+/// Ends the subscription this connection started on `stream`, if it still holds it: its thread
+/// stops at its next wake, and its place is free at once. Whether it held one is the reply's
+/// `ended`; one that already ended, or never was, is not an error. Replies already on their way on
+/// that stream may still arrive after this one; nothing is sent there once its thread has stopped.
+pub fn unsubscribe(subscriptions: &mut Subscriptions, call: &Call) -> Result<Value, ApiError> {
+    let stream = match call.params.get("stream") {
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .and_then(|stream| u32::try_from(stream).ok())
+            .filter(|stream| *stream > 0),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        ApiError::invalid(format!(
+            "{UNSUBSCRIBE_NAME}'s `stream` is the stream of one of this connection's \
+             subscriptions, a whole number from 1"
+        ))
+    })?;
+    let mut ended = false;
+    subscriptions.held.retain(|(held, closed)| {
+        if *held != stream {
+            return !closed.load(Ordering::SeqCst);
+        }
+        ended = !closed.swap(true, Ordering::SeqCst);
+        false
+    });
+    if ended && let Some(hub) = &subscriptions.hub {
+        hub.wake();
+    }
+    Ok(json!({"stream": stream, "ended": ended}))
+}
+
+pub fn unsubscribe_input() -> Value {
+    json!({
+        "type": "object",
+        "required": ["stream"],
+        "properties": {
+            "stream": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The stream this connection sent the `events.subscribe` on, \
+                                whose replies it reads.",
+            },
+        },
+    })
+}
+
+pub fn unsubscribe_output() -> Value {
+    json!({
+        "type": "object",
+        "required": ["stream", "ended"],
+        "properties": {
+            "stream": {"type": "integer", "description": "The stream asked about."},
+            "ended": {
+                "type": "boolean",
+                "description": "`true`: this ended the subscription on it. `false`: the \
+                                connection held none there, as for one that had already ended.",
+            },
+        },
+    })
+}
+
+pub fn unsubscribe_params_example() -> Value {
+    json!({"stream": 7})
+}
+
+pub fn unsubscribe_result_example() -> Value {
+    json!({"stream": 7, "ended": true})
 }
 
 /// How often, at most, a filtered stream is sent a `place`.
