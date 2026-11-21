@@ -27,6 +27,13 @@ final class PaneTypingMarkerUITests: XCTestCase {
     app.descendants(matching: .any).matching(identifier: "terminal.typingMarker").firstMatch
   }
 
+  /// What VoiceOver reads of the marker, the tooltip's sentence: its description, which XCUITest
+  /// may hand over as the element's value instead.
+  private var said: String {
+    let label = marker.label
+    return label.isEmpty ? (marker.value as? String ?? "") : label
+  }
+
   /// The terminal chips, by position: a live shell renames its chip as it runs. Only the chip's
   /// text: its small close button carries the same identifier.
   private func chip(_ index: Int) -> XCUIElement {
@@ -108,7 +115,9 @@ final class PaneTypingMarkerUITests: XCTestCase {
     XCTAssertTrue(
       marker.waitForExistence(timeout: 20),
       "Terminal 1 never showed who was typing into it: \(app.debugDescription.prefix(2000))")
-    XCTAssertEqual(marker.label, "Claude in tab 2 is typing into this pane.")
+    XCTAssertTrue(
+      poll(timeout: 2) { said == "Claude in tab 2 is typing into this pane." },
+      "the marker says \(said): \(marker.debugDescription)")
 
     XCTAssertTrue(poll(timeout: 20) { !marker.exists }, "the marker never went")
     // The send went at least 4 s after `started`, and the marker lasts 3 s after it.
@@ -140,8 +149,8 @@ final class PaneTypingMarkerUITests: XCTestCase {
       // Polled: a keystroke the fixture sends before the window is registered names a terminal
       // no window has open, until the next one, a second later.
       XCTAssertTrue(
-        poll(timeout: 5) { marker.label == "Claude in tab 2 is typing into this pane." },
-        "the marker reads \(marker.label)")
+        poll(timeout: 5) { said == "Claude in tab 2 is typing into this pane." },
+        "the marker says \(said): \(marker.debugDescription)")
       // Past the fade-in.
       RunLoop.current.run(until: Date().addingTimeInterval(1))
       let name = "\(appearance), Glass \(glass == "1" ? "off" : "85%")"

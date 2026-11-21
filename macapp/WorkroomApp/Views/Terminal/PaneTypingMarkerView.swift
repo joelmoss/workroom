@@ -99,8 +99,9 @@ struct PaneTypingMarkerView: View {
     } action: {
       onPillFrame($0)
     }
+    // One element whose description is the tooltip's sentence. Not a static text: on macOS that
+    // reports its words as a value, with no description.
     .accessibilityElement(children: .ignore)
-    .accessibilityAddTraits(.isStaticText)
     .accessibilityLabel(marker.help)
     .accessibilityIdentifier("terminal.typingMarker")
   }
