@@ -71,7 +71,7 @@ final class ThemeFillTests: XCTestCase {
     let tokens = ThemeService.shared.tokens
     let glass = GlassAppearance.glass(opacity: 0.9)
     let cases: [(ThemeFill, Color)] = [
-      (.panel, tokens.fg.opacity(0.055)), (.background, .clear), (.ground, .clear),
+      (.panel, tokens.panelWash), (.background, .clear), (.ground, .clear),
       (.raised, tokens.surface), (.nestedRaised, .clear), (.textBackground, .clear),
       (.selectedTab, tokens.tabActive), (.hoveredTab, tokens.hover), (.idleTab, .clear),
     ]
@@ -108,7 +108,7 @@ final class ThemeFillTests: XCTestCase {
     let tokens = ThemeService.shared.tokens
     let glass = GlassAppearance.glass(opacity: 0.9)
     XCTAssertEqual(ThemeFill.panel.nsColor(glass: glass), tokens.nsPanelWash)
-    XCTAssertEqual(tokens.nsPanelWash, tokens.nsFg.withAlphaComponent(0.055))
+    XCTAssertEqual(tokens.nsPanelWash, tokens.nsFg.withAlphaComponent(tokens.panelWashAlpha))
     XCTAssertEqual(ThemeFill.background.nsColor(glass: glass), .clear)
     XCTAssertEqual(ThemeFill.ground.nsColor(glass: glass), .clear)
     XCTAssertNil(ThemeFill.background.nsFill(tokens, glass: glass), "so a view stops drawing")
