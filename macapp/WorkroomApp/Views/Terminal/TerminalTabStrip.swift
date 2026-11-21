@@ -761,7 +761,7 @@ private struct TerminalTabChip: View {
     // value instead of a descendant's.
     .accessibilityValue(runOrBusyAccessibilityValue)
     .scaleEffect(isDragging ? 1.04 : 1)
-    .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)
+    .shadow(color: .black.opacity(isDragging ? 0.2 : 0), radius: isDragging ? 2.5 : 0, y: 1)
   }
 }
 

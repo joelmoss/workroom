@@ -14,8 +14,8 @@ final class DragGhost {
 
   /// How far above the pointer the capsule's bottom sits, so the pointer never covers it and no
   /// drop under the pointer meets it.
-  private static let lift: CGFloat = 6
-  private static let size = NSSize(width: 360, height: 40)
+  static let lift: CGFloat = 2
+  private static let size = NSSize(width: 360, height: 50)
 
   private var panel: NSPanel?
   private var host: NSHostingView<DragGhostChip>?
@@ -66,25 +66,34 @@ final class DragGhost {
   }
 }
 
-/// What the ghost draws: a grip and the title in a capsule, with a shadow.
+/// What the ghost draws: a grip and the title in a capsule, with a shadow. Also the sidebar List's
+/// drag image (`SidebarTableDragImage`), so the chip is opaque: a material draws nothing there.
 struct DragGhostChip: View {
   let title: String
+  /// Sits at the bottom of the ghost's panel, filling it; else just the chip and its margin.
+  var fillsPanel = true
+
+  /// Room all round for the shadow to fade out inside the panel, which would otherwise clip it.
+  static let margin: CGFloat = 12
 
   var body: some View {
-    HStack(spacing: 5) {
+    let chip = HStack(spacing: 5) {
       Image(systemName: "line.3.horizontal").font(.system(size: 9, weight: .semibold))
       Text(title).font(.caption).lineLimit(1)
     }
     .foregroundStyle(.primary)
     .padding(.horizontal, 10)
     .padding(.vertical, 6)
-    .background(.regularMaterial, in: Capsule())
+    .background(Color(nsColor: .windowBackgroundColor), in: Capsule())
     .overlay(Capsule().strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
-    .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
+    .shadow(color: .black.opacity(0.22), radius: 3, y: 1.5)
     .fixedSize()
-    // Room below for its shadow, which the panel would otherwise clip.
-    .padding(.bottom, 10)
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+    .padding(Self.margin)
     .allowsHitTesting(false)
+    if fillsPanel {
+      chip.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+    } else {
+      chip
+    }
   }
 }

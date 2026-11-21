@@ -52,6 +52,39 @@ enum TabReorder {
     return idx
   }
 
+  /// Where the dragged chip lands given where the pointer is, for a drag that can also be let go on
+  /// a tab (#652, a terminal's or group's title-bar tab onto another). `spans` are the chips' x
+  /// extents as measured when the drag started; a neighbour that takes a drop (`joinable`) is
+  /// crossed only once the pointer is past its drop band (`band`: the share of its width either
+  /// side of the band), so over the band it stays put to be dropped on, and each neighbour moves
+  /// once, never back and forth. Any other neighbour is crossed at its middle.
+  static func dropTargetIndex(
+    spans: [ClosedRange<CGFloat>], draggedIndex di: Int, pointerX x: CGFloat, joinable: [Bool],
+    band: CGFloat
+  ) -> Int {
+    guard spans.indices.contains(di), joinable.count == spans.count else { return di }
+    func crossing(_ j: Int, rightward: Bool) -> CGFloat {
+      let span = spans[j]
+      let share: CGFloat = joinable[j] ? (rightward ? 1 - band : band) : 0.5
+      return span.lowerBound + (span.upperBound - span.lowerBound) * share
+    }
+    var idx = di
+    if x > spans[di].upperBound {
+      var j = di + 1
+      while j < spans.count, x > crossing(j, rightward: true) {
+        idx = j
+        j += 1
+      }
+    } else if x < spans[di].lowerBound {
+      var j = di - 1
+      while j >= 0, x < crossing(j, rightward: false) {
+        idx = j
+        j -= 1
+      }
+    }
+    return idx
+  }
+
   /// Horizontal shift for a non-dragged chip at `index` so the row opens a gap at the drop `target`.
   /// `amount` is the dragged chip's width plus inter-chip spacing.
   static func gapShift(index: Int, draggedIndex: Int?, target: Int?, amount: CGFloat) -> CGFloat {

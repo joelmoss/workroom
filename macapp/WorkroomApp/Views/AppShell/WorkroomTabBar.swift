@@ -53,6 +53,24 @@ struct WorkroomTabBar: View {
   /// `terminalDrag`): another tab's middle, a sidebar row, a pane tab or a group's title bar. The
   /// reorder gap closes so the destination stays under the pointer.
   @State private var overTerminalDrop = false
+  /// Where a dragged standalone terminal's or group's tab would land, from the pointer against the
+  /// tabs as they were when the drag started (#652). Nil for a workroom's tab, which no tab takes
+  /// a drop of: that reorders by its translation, as the terminal strip does.
+  @State private var pointerReorder: PointerReorder?
+  /// The tab just let go on another, whose drop (`AppStore.dropTerminals`) lands a moment later:
+  /// till then it stays hidden where it was let go and the rest stay put, so nothing slides back
+  /// to where it started only to move again once the tabs change.
+  @State private var landing: SidebarID?
+  /// The tab just let go, while the bar waits for the tabs to change (`settle`): the row stays as
+  /// it was let go, gap and all, so the change slides in from there and nothing jumps back first.
+  /// The tabs come from the store a pass after the drop, not in the drop's own update.
+  @State private var settling: SidebarID?
+  /// Where the tab let go is landing (`settling`), which holds the gap open while the tabs change.
+  @State private var settleIndex: Int?
+  /// Where the dragged tab's slot began when its drag started, along the row. The tab is drawn at
+  /// its translation less how far its slot has moved since, so when the new order puts it in its
+  /// new slot it stays exactly where it was let go, in the same pass, and then settles.
+  @State private var dragOriginX: CGFloat?
 
   private let tabSpacing: CGFloat = 4
   /// The tab row's coordinate space, which the tabs' frames are measured in.
@@ -75,9 +93,16 @@ struct WorkroomTabBar: View {
     let draggedIndex = drag.id.flatMap { id in tabs.firstIndex { $0.sid == id } }
     // While dragging a chip down into the content (forming a split), the strip stops opening a reorder
     // gap — mirrors `TerminalTabStrip`.
-    let dropIndex = drag.dropIndex(
-      ids: tabs.map(\.sid), spacing: tabSpacing,
-      suspendedByPaneDrag: chipPaneDrag != nil || overTerminalDrop)
+    // A tab dragged over another it would drop on keeps the gap where it is: each tab moves once,
+    // and stays put while it is the one under the pointer (`TabReorder.dropTargetIndex(spans:…)`).
+    let dropIndex =
+      settleIndex
+      ?? pointerReorder.map { reorder in
+        chipPaneDrag != nil || (overTerminalDrop && !reorder.inRow) ? nil : reorder.index
+      }
+      ?? drag.dropIndex(
+        ids: tabs.map(\.sid), spacing: tabSpacing,
+        suspendedByPaneDrag: chipPaneDrag != nil || overTerminalDrop)
     let draggedWidth = drag.draggedWidth
 
     // The bar fills the gap between the leading and trailing title-bar controls (the container's
@@ -148,7 +173,7 @@ struct WorkroomTabBar: View {
         let isHovered = hoveredID == tab.sid && !drag.isDragging
         let offsetX =
           isDragging
-          ? drag.translation
+          ? drag.translation - (dragOriginX.map { slotX(at: index) - $0 } ?? 0)
           : TabReorder.gapShift(
             index: index, draggedIndex: draggedIndex, target: dropIndex,
             amount: draggedWidth + tabSpacing) + incomingShift(at: index)
@@ -158,7 +183,7 @@ struct WorkroomTabBar: View {
           showLeadingSeparator: showsLeadingSeparator(at: index, groupOf: groupOf)
         )
         // Over a tab it would group with, the dragged tab lets the target's accent show through.
-        .opacity(isDragging && overTerminalDrop ? 0.55 : 1)
+        .opacity(isDragging && landing == tab.sid ? 0 : isDragging && overTerminalDrop ? 0.55 : 1)
         // A Quick Terminal pane dragged over this window would join this workroom.
         .overlay {
           if store.incomingQuickTerminalPane == tab.sid
@@ -189,6 +214,7 @@ struct WorkroomTabBar: View {
               // tab run — it can't be pulled left into the leading controls or right across the empty
               // fill (the bar spans the full title-bar width). Vertical drag-into-a-split is
               // unaffected (that reads `value.location`, below).
+              if drag.id == nil { dragOriginX = slotX(at: index) }
               drag.update(
                 tab.sid,
                 translation: clampReorder(value.translation.width, draggedIndex: index))
@@ -206,6 +232,7 @@ struct WorkroomTabBar: View {
               // pane tab or a group's title bar: a drop there takes its terminals (#652).
               overTerminalDrop = store.terminalDrag.moved(
                 .entry(tab.sid), from: .titleBar, to: NSEvent.mouseLocation)
+              pointerReorder = pointerReorder(draggedIndex: index, at: NSEvent.mouseLocation)
               // Dragged into the detail content → preview a drop-into-pane split (the strip stops
               // gapping); otherwise it's a plain reorder.
               chipPaneDrag =
@@ -214,12 +241,16 @@ struct WorkroomTabBar: View {
                 : localize(value.location).map { WorkroomPaneDrag(sid: tab.sid, location: $0) }
             }
             .onEnded { value in
+              // Worked out before the session ends, while it still has the tabs it measured.
+              let reorder = pointerReorder(draggedIndex: index, at: NSEvent.mouseLocation)
               let dropped =
                 !isDragOutsideWindow(value.location)
                 && store.terminalDrag.ended(at: NSEvent.mouseLocation)
               endTerminalDrag()
               if dropped {
-                drag.cancel()
+                // The gap stays where it was as the tab goes.
+                settleIndex = reorder?.index ?? index
+                settle(tab.sid, hidden: true)
               } else if isDragOutsideWindow(value.location) {
                 drag.cancel()
                 WorkroomWindowDrag.end(store: store, sid: tab.sid)
@@ -233,8 +264,12 @@ struct WorkroomTabBar: View {
                 // (XCUITest's interpolation, or a fast real trackpad flick) can deliver its last
                 // `onChanged` sample short of the true release point, before `onEnded` fires with the
                 // full, accurate displacement — committing off a stale, under-shot translation.
-                commitDrag(
-                  translation: clampReorder(value.translation.width, draggedIndex: index))
+                if let reorder {
+                  commitDrag(at: reorder.index)
+                } else {
+                  commitDrag(
+                    translation: clampReorder(value.translation.width, draggedIndex: index))
+                }
               }
               chipPaneDrag = nil
             }
@@ -242,7 +277,10 @@ struct WorkroomTabBar: View {
         .offset(x: offsetX)
         .zIndex(isDragging ? 1 : 0)
         .animation(
-          isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX
+          // Not while a reorder settles: the tabs reach their new slots in one pass with their
+          // offsets cleared to match, so animating either alone would fling them out and back.
+          isDragging || reduceMotion || (settling != nil && landing == nil)
+            ? nil : .easeInOut(duration: 0.18), value: offsetX
         )
         // Scroll target for `OverflowingTabScroller`'s `ScrollViewReader` (issue #129 follow-up) — the
         // same id `ForEach` already keys identity on.
@@ -277,6 +315,36 @@ struct WorkroomTabBar: View {
     .background { ViewAnchor { [store] in store.workroomTabRun = $0 } }
     .onPreferenceChange(WorkroomTabWidthKey.self) { drag.setWidths($0) }
     .onPreferenceChange(WorkroomTabFrameKey.self) { store.workroomTabFrames = $0 }
+    // A tab let go on another goes: the rest slide up to close its place, offsets and all.
+    .animation(
+      landing == nil || reduceMotion ? nil : .easeInOut(duration: 0.18), value: tabs.map(\.sid)
+    )
+    .onChange(of: tabs.map(\.sid)) { if settling != nil { finishSettling() } }
+  }
+
+  /// Tab `sid` was let go: holds the bar as it is till the tabs change (`settling`), or, should
+  /// they change none, a moment. `hidden`: it was let go on something that takes it, so it goes.
+  private func settle(_ sid: SidebarID, hidden: Bool) {
+    settling = sid
+    if hidden { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { landing = sid } }
+    Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(600))
+      if settling == sid { finishSettling() }
+    }
+  }
+
+  private func finishSettling() {
+    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+      drag.cancel()
+      settling = nil
+      settleIndex = nil
+      landing = nil
+    }
+  }
+
+  /// How far along the row tab `index`'s slot starts: the tabs before it and their spacing.
+  private func slotX(at index: Int) -> CGFloat {
+    tabs[..<index].reduce(0) { $0 + (drag.widths[$1.sid] ?? 0) + tabSpacing }
   }
 
   /// How far a tab moves aside for a workroom dragged in from another window (#444): every tab at or
@@ -326,6 +394,7 @@ struct WorkroomTabBar: View {
   /// Ends this bar's part in the window's terminal drag, and its highlight.
   private func endTerminalDrag() {
     overTerminalDrop = false
+    pointerReorder = nil
     store.terminalDrag.cancel()
   }
 
@@ -337,27 +406,53 @@ struct WorkroomTabBar: View {
 
   /// Commit the reorder on drop: rewrite `store.workroomTabOrder` (a `@Published`, so the parent view
   /// re-renders with the new order — a bare `Defaults` write didn't re-render, so the chip snapped
-  /// back), then clear drag state (animated, so the row settles). The order is filtered through
-  /// `orderedActiveTargets` on every read, so writing the current active order is self-healing.
-  /// `translation` is the caller's own final, clamped displacement (from `onEnded`'s `value`) —
-  /// `drag.commit` itself resolves off exactly that, never the live `drag.translation`.
-  ///
-  /// `drag.commit` must be CALLED inside `withAnimation`, not just the order write it gates: `commit`
-  /// resets `drag.id`/`translation` as a side effect, which is what drives this chip's `offsetX` back
-  /// to 0. Calling it outside the animation block (as a prior version of this function did, via a
-  /// `guard` ahead of `withAnimation`) snapped the chip back to its pre-drag position instantly, one
-  /// frame before the reorder animated in — a visible flick-back before the tab settled.
+  /// back). The order is filtered through `orderedActiveTargets` on every read, so writing the
+  /// current active order is self-healing. `translation` is the caller's own final, clamped
+  /// displacement (from `onEnded`'s `value`), never the live `drag.translation`, which a fast drag's
+  /// last `onChanged` can leave short.
   private func commitDrag(translation: CGFloat) {
-    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-      guard
-        let move = drag.commit(
-          ids: tabs.map(\.sid), spacing: tabSpacing, finalTranslation: translation)
-      else { return }
-      var order = tabs.compactMap { $0.sid.targetID }
-      let moved = order.remove(at: move.from)
-      order.insert(moved, at: move.to)
-      store.workroomTabOrder = order
+    guard let id = drag.id, let from = tabs.firstIndex(where: { $0.sid == id }) else {
+      return drag.cancel()
     }
+    commitDrag(
+      at: TabReorder.dropTargetIndex(
+        widths: tabs.map { drag.widths[$0.sid] ?? 0 }, draggedIndex: from,
+        translation: translation, spacing: tabSpacing))
+  }
+
+  /// Commit the reorder to drop index `target`. The drag isn't cleared here but once the new order
+  /// reaches the bar (`settle`): the tabs arrive a pass later, and clearing it now slid the dropped
+  /// tab back toward where it started, then flung it to its new place when they came (#652).
+  private func commitDrag(at target: Int) {
+    guard let id = drag.id, let from = tabs.firstIndex(where: { $0.sid == id }),
+      tabs.indices.contains(target), target != from
+    else {
+      return withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { drag.cancel() }
+    }
+    settleIndex = target
+    settle(id, hidden: false)
+    var order = tabs.compactMap { $0.sid.targetID }
+    let moved = order.remove(at: from)
+    order.insert(moved, at: target)
+    store.workroomTabOrder = order
+  }
+
+  /// Where the tab at `index` would land with the pointer at `point`, when some tab takes its drop.
+  struct PointerReorder: Equatable {
+    let index: Int
+    /// The pointer is in the tabs' row, where the gap stays open.
+    let inRow: Bool
+  }
+
+  private func pointerReorder(draggedIndex index: Int, at point: CGPoint) -> PointerReorder? {
+    let measured = store.terminalDrag.titleBarTabs()
+    let spans = tabs.compactMap { measured[$0.sid] }
+    guard spans.count == tabs.count, spans.contains(where: \.takes) else { return nil }
+    let target = TabReorder.dropTargetIndex(
+      spans: spans.map { $0.rect.minX...$0.rect.maxX }, draggedIndex: index, pointerX: point.x,
+      joinable: spans.map(\.takes), band: TerminalDragSession.titleBarBandInset)
+    let row = spans.map(\.rect).reduce(spans[0].rect) { $0.union($1) }
+    return PointerReorder(index: target, inRow: (row.minY...row.maxY).contains(point.y))
   }
 
   /// The glyph box inside each trailing button's hover well. **Fixed**, not the symbol's intrinsic
@@ -552,7 +647,7 @@ private struct WorkroomTabChip: View {
       .accessibilityIdentifier("workroom.tab.\(target.id)")
       .accessibilityAddTraits(isActive ? .isSelected : [])
       .scaleEffect(isDragging ? 1.04 : 1)
-      .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)
+      .shadow(color: .black.opacity(isDragging ? 0.2 : 0), radius: isDragging ? 2.5 : 0, y: 1)
   }
 
   /// The icons + title row: everything inside the pill's padding.
