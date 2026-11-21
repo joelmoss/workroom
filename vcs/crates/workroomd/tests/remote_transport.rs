@@ -3506,6 +3506,156 @@ fn over_ssh_command_runs_in_another_host_pane_with_its_code_and_output() {
     }
 }
 
+/// `workroom prompt` on a host (#692), from one pane into a stand-in coding agent in another
+/// (`common::FAKE_AGENT`, written on the host and run there by its absolute path, never a real
+/// agent), through the host's own static musl daemon: the prompt as a bracketed paste then Enter,
+/// read by the host's shadow terminal; `--wait` past the `done` the turn before left, for 3 s and
+/// more, until a fresh `working` and the turn's end; the reply naming the pane it came from (found
+/// through `SO_PEERCRED`); and the sending pane, a shell, refused as itself (`RefusedSelf`) and,
+/// allowed, as no agent (`NotAnAgent`), both 3.
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_prompt_types_into_a_host_agent_and_waits_for_its_fresh_turn() {
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
+    let sender_id = "7e0e7e0e-0000-4000-8000-000000000692";
+    let agent_id = "7e0e7e0e-0000-4000-8000-00000000692b";
+    let mut sender = Pane::attach_with(
+        &fixture,
+        sender_id,
+        false,
+        "'WORKROOM_SESSION_TITLE=prompt pane'",
+    );
+    let mut agent = Pane::attach_with(
+        &fixture,
+        agent_id,
+        false,
+        "'WORKROOM_SESSION_TITLE=agent pane'",
+    );
+    for pane in [&mut sender, &mut agent] {
+        pane.type_line("echo \"PANE-\"\"UP\"");
+        assert!(
+            pane.read_until("PANE-UP\r\n", Duration::from_secs(30))
+                .contains("PANE-UP\r\n"),
+            "a pane's shell never started"
+        );
+    }
+    // A folder of this run's own on the host, made here and so removed at the end.
+    let dir = (0..)
+        .map(|attempt| format!("/tmp/wr-692-{}-{attempt}", std::process::id()))
+        .find(|dir| {
+            fixture
+                .ssh()
+                .arg(format!("mkdir {dir}"))
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+        .expect("a folder on the host");
+    let host = |command: String| {
+        let output = fixture.ssh().arg(command).output().expect("ssh");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let until = |name: &str, what: &str| {
+        let reached = (0..120).any(|_| {
+            if host(format!("test -e {dir}/{name} && echo yes")).contains("yes") {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+            false
+        });
+        assert!(reached, "{name}: no {what}");
+    };
+    let mut writing = fixture
+        .ssh()
+        .arg(format!("cat > {dir}/claude && chmod +x {dir}/claude"))
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("write the agent on the host");
+    writing
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(common::FAKE_AGENT.as_bytes())
+        .expect("write the agent");
+    assert!(
+        writing.wait().expect("ssh").success(),
+        "the agent was not written"
+    );
+
+    let expected = b"\x1b[200~go on\x1b[201~\r";
+    agent.type_line(&format!(
+        "PROBE=1 FIRST=done MARK=on-host N={} {dir}/claude",
+        expected.len()
+    ));
+    assert!(
+        agent
+            .read_until("AGENT-on-host", Duration::from_secs(30))
+            .contains("AGENT-on-host"),
+        "the stand-in agent never started"
+    );
+    let binary = INSTALLED_DAEMON;
+    sender.type_line(&format!(
+        "{binary} prompt \"$WORKROOM_PANE\" x --json > {dir}/self; s=$?; \
+         {binary} prompt \"$WORKROOM_PANE\" x --allow-self --json > {dir}/none; n=$?; \
+         echo \"CODES-$s-$n-\"DONE; \
+         {binary} prompt 'agent pane' 'go on' --wait --timeout 60s --json > {dir}/waited.partial; \
+         mv {dir}/waited.partial {dir}/waited"
+    ));
+    assert!(
+        sender
+            .read_until("-DONE", Duration::from_secs(30))
+            .contains("CODES-3-3-DONE"),
+        "its own pane was not refused with 3, as itself and as no agent"
+    );
+    let refused: Value = serde_json::from_str(&host(format!("cat {dir}/self"))).expect("self");
+    assert_eq!(refused["error"]["kind"], "RefusedSelf", "{refused}");
+    let refused: Value = serde_json::from_str(&host(format!("cat {dir}/none"))).expect("none");
+    assert_eq!(refused["error"]["kind"], "NotAnAgent", "{refused}");
+
+    until("claude.typed", "prompt read");
+    let typed: Vec<u8> = host(format!("od -An -v -tx1 {dir}/claude.typed"))
+        .split_whitespace()
+        .map(|byte| u8::from_str_radix(byte, 16).expect("a hex byte"))
+        .collect();
+    assert_eq!(
+        String::from_utf8_lossy(&typed),
+        String::from_utf8_lossy(expected)
+    );
+    // The `done` from before is no answer.
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        !host(format!("test -e {dir}/waited && echo yes")).contains("yes"),
+        "the wait answered on the done left from the turn before"
+    );
+    host(format!("touch {dir}/claude.go"));
+    std::thread::sleep(Duration::from_secs(1));
+    host(format!("touch {dir}/claude.end"));
+    until("waited", "answer");
+    let waited: Value =
+        serde_json::from_str(&host(format!("cat {dir}/waited"))).expect("the prompt's envelope");
+    assert_eq!(waited["status"], "done", "{waited}");
+    assert_eq!(waited["session"], agent_id, "{waited}");
+    assert_eq!(waited["caller"], sender_id, "{waited}");
+    assert_eq!(waited["bytes"], expected.len(), "{waited}");
+
+    host(format!("touch {dir}/claude.quit"));
+    assert!(
+        agent
+            .read_until("AGENT-on-host-gone", Duration::from_secs(30))
+            .contains("AGENT-on-host-gone"),
+        "the stand-in agent never went"
+    );
+    host(format!("rm -r {dir}"));
+    for pane in [&mut sender, &mut agent] {
+        pane.type_line("exit");
+        assert!(
+            pane.exit_code(Duration::from_secs(20)).is_some(),
+            "a pane's session did not end"
+        );
+    }
+}
+
 /// Two Macs on one remote workroom (#255): Mac A's session carries its workroom and title to the
 /// host, Mac B finds it in the host's list and A's layout in the Layout service, and reattaches to
 /// the same shell; A dropping its link leaves B attached; a close on A ends the session for B too;
