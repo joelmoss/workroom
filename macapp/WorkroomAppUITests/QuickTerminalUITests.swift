@@ -235,6 +235,41 @@ final class QuickTerminalUITests: XCTestCase {
       waitForCount(tabs(in: workroom), workroomTabsBefore - 1), "the workroom's strip lost it")
   }
 
+  /// #652: a standalone terminal's sidebar row dragged from the window onto the showing panel's
+  /// tab joins the Quick Terminal there. The press in the window takes focus from the panel, which
+  /// would slide it away (it hides on losing focus, by default); it stays up through the drop.
+  func testAStandaloneRowDraggedOntoThePanelsTabJoinsIt() {
+    let app = XCUIApplication()
+    app.launchArguments += [
+      "-WorkroomUITestFixture", "1", "-WorkroomUITestStandaloneTerminals", "1",
+    ]
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launch()
+    app.activate()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    let row = app.descendants(matching: .any)
+      .matching(identifier: "sidebar.standalone.standalone:00000000-0000-0000-0000-000000000651")
+      .firstMatch
+    XCTAssertTrue(row.waitForExistence(timeout: 15), "the fixture's standalone terminal's row")
+    let qt = summon(app)
+    assertCounts(in: qt, tabs: 1, panes: 1, "summoned with one terminal")
+    let panelTab = tabs(in: qt).firstMatch
+    XCTAssertFalse(
+      qt.frame.contains(CGPoint(x: row.frame.midX, y: row.frame.midY)), "the row is not under it")
+
+    row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click(
+      forDuration: 0.6,
+      thenDragTo: panelTab.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)))
+
+    assertCounts(in: qt, tabs: 2, panes: 1, "the panel took the dropped terminal")
+    XCTAssertTrue(
+      waitForCount(
+        app.descendants(matching: .any).matching(
+          identifier: "sidebar.standalone.standalone:00000000-0000-0000-0000-000000000651"), 0),
+      "its standalone row went")
+    XCTAssertTrue(qt.isHittable, "the panel stayed up")
+  }
+
   /// #652 story 39: the Quick Terminal's only pane popped out by its right-click Move to New Window
   /// hides the panel; the Window menu's "Move back to main window", with the pane's window key,
   /// docks it back into the panel, which slides in holding it.

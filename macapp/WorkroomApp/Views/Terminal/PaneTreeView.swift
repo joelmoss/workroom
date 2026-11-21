@@ -216,7 +216,9 @@ struct PaneTreeView: View {
     let outcome = PaneTreeLayout.dragOutcome(
       cursor: location, windowBounds: Self.windowBounds(contentFrame: contentFrame),
       panes: plan.panes, dragging: tabID)
-    guard outcome == .detach, let tab = panes.tab(tabID, for: target) else {
+    // Over a destination that takes it, the Quick Terminal panel's tabs included (#652), it drops
+    // there: no tear-off ghost.
+    guard outcome == .detach, !overTerminalDrop, let tab = panes.tab(tabID, for: target) else {
       return panes.hideDragOutside()
     }
     panes.showDragOutside(tab)

@@ -218,10 +218,14 @@ struct WorkroomTabBar: View {
               drag.update(
                 tab.sid,
                 translation: clampReorder(value.translation.width, draggedIndex: index))
-              // Out of the window: into another window, or a new one (#444).
+              // Out of the window: onto the Quick Terminal panel's tabs (#652), else into another
+              // window, or a new one (#444).
               if isDragOutsideWindow(value.location) {
                 chipPaneDrag = nil
-                endTerminalDrag()
+                pointerReorder = nil
+                overTerminalDrop = store.terminalDrag.moved(
+                  .entry(tab.sid), from: .titleBar, to: NSEvent.mouseLocation)
+                if overTerminalDrop { return WorkroomWindowDrag.cancel() }
                 WorkroomWindowDrag.update(
                   store: store, sid: tab.sid, target: tab.target,
                   width: drag.widths[tab.sid] ?? 0)
@@ -243,9 +247,8 @@ struct WorkroomTabBar: View {
             .onEnded { value in
               // Worked out before the session ends, while it still has the tabs it measured.
               let reorder = pointerReorder(draggedIndex: index, at: NSEvent.mouseLocation)
-              let dropped =
-                !isDragOutsideWindow(value.location)
-                && store.terminalDrag.ended(at: NSEvent.mouseLocation)
+              // Out of the window, only the Quick Terminal panel's tabs take it.
+              let dropped = store.terminalDrag.ended(at: NSEvent.mouseLocation)
               endTerminalDrag()
               if dropped {
                 // The gap stays where it was as the tab goes.

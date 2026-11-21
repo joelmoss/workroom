@@ -7,6 +7,9 @@ import WorkroomDomain
 /// `AppStore.paneDragMoved`, or a group's title bar in a split (`WorkroomPaneTitleBar`). Each reports its pointer here and, when its own drag ends, asks
 /// `ended` first; what a drop does is `AppStore.terminalDrop`'s, so every surface has one rule set.
 ///
+/// The Quick Terminal's panel, another window, takes a drag from any window on its pane tabs while
+/// it shows: its zones are measured with the window's, and its own tabs show the highlight.
+///
 /// The drop zones are measured once, when the drag starts: the List opens a gap for a dragged row
 /// and the strips slide their tabs aside, and judged against where those have moved to, the
 /// pointer would leave the row it was let go over while it rests there (#652, a pause before the
@@ -32,12 +35,19 @@ final class TerminalDragSession {
     /// The zone is the title bar's tab row, its empty space past the last tab included: these are
     /// its tabs, left to right, in whose gaps a terminal let go becomes standalone.
     var titleBarTabs: [(sid: SidebarID, rect: CGRect)]? = nil
+    /// Whose zone it is when not the dragging window's: the Quick Terminal's panel, whose tabs
+    /// show the highlight.
+    weak var host: (any PaneDropZoneHost)? = nil
+    /// Where a window over this one hides it: a point in here does not reach the zone.
+    var covered: CGRect = .null
   }
 
   private weak var store: AppStore?
   private(set) var source: TerminalDragSource?
   private var surface: Surface = .sidebar
   private var zones: [Zone] = []
+  /// Another window's host whose zones the drag measured: the Quick Terminal's panel.
+  private weak var otherHost: (any PaneDropZoneHost)?
 
   init(store: AppStore) { self.store = store }
 
@@ -47,21 +57,36 @@ final class TerminalDragSession {
   func moved(_ source: TerminalDragSource, from surface: Surface, to screenPoint: CGPoint) -> Bool {
     guard let store else { return false }
     if self.source != source || self.surface != surface {
+      // The Quick Terminal's panel comes in front first, so its tabs are measured as on top.
+      WindowRegistry.shared.quickTerminal?.holdForDrag()
       begin(source, from: surface, zones: store.terminalDropZones())
     }
-    let zone = accepting(at: screenPoint)
-    if store.incomingPaneDrop != zone { store.incomingPaneDrop = zone }
-    showGhost(at: screenPoint)
-    return zone != nil
+    let hit = accepting(at: screenPoint)
+    highlight(hit?.zone, on: hit?.host)
+    showGhost(at: screenPoint, overOtherHost: hit?.host != nil)
+    return hit != nil
+  }
+
+  /// Shows `zone` as where the drop would land on `host` (nil: the dragging window), and nowhere
+  /// else.
+  private func highlight(_ zone: PaneDropZone?, on host: (any PaneDropZoneHost)?) {
+    if let store {
+      let own = host == nil ? zone : nil
+      if store.incomingPaneDrop != own { store.incomingPaneDrop = own }
+    }
+    if let otherHost {
+      let other = host === otherHost ? zone : nil
+      if otherHost.incomingPaneDrop != other { otherHost.incomingPaneDrop = other }
+    }
   }
 
   /// Carries the shared ghost (`DragGhost`) over the window, except where the dragged thing shows
   /// itself: its own tab strip or the title bar's tab row, where its chip follows the pointer, and
   /// the sidebar, whose List draws its own drag image. Out of the window the window it would make
   /// shows instead (`DetachedPaneDragPreview`).
-  private func showGhost(at screenPoint: CGPoint) {
+  private func showGhost(at screenPoint: CGPoint, overOtherHost: Bool) {
     guard let store, let source, let window = store.hostWindow,
-      window.frame.contains(screenPoint), surface != .sidebar,
+      overOtherHost || window.frame.contains(screenPoint), surface != .sidebar,
       !ownRow.contains(where: { $0.contains(screenPoint) }),
       let title = store.ghostTitle(of: source)
     else { return DragGhost.shared.hide() }
@@ -91,7 +116,7 @@ final class TerminalDragSession {
   @discardableResult
   func ended(at screenPoint: CGPoint) -> Bool {
     defer { cancel() }
-    guard let store, let source, let zone = accepting(at: screenPoint) else { return false }
+    guard let store, let source, let zone = accepting(at: screenPoint)?.zone else { return false }
     Task { await store.dropTerminals(source, on: zone) }
     return true
   }
@@ -101,18 +126,24 @@ final class TerminalDragSession {
     self.source = source
     self.surface = surface
     self.zones = zones
+    otherHost = zones.lazy.compactMap(\.host).first
   }
 
   /// Ends the session with no drop.
   func cancel() {
     DragGhost.shared.hide()
     source = nil
+    highlight(nil, on: nil)
     zones = []
-    if let store, store.incomingPaneDrop != nil { store.incomingPaneDrop = nil }
+    otherHost = nil
   }
 
   /// The zone under `screenPoint`, as it was when the drag started, other than the source's own.
   func zone(at screenPoint: CGPoint) -> PaneDropZone? { hitZone(at: screenPoint)?.zone }
+
+  /// Whose zone is under `screenPoint`: nil for the dragging window's, else the other host's (the
+  /// Quick Terminal's panel).
+  func host(at screenPoint: CGPoint) -> (any PaneDropZoneHost)? { hitZone(at: screenPoint)?.host }
 
   /// Whether the zone under `screenPoint` is a sidebar row, the Terminals heading or a title-bar
   /// tab that refuses the drag: a pane tab drag over one stops there, as over one that takes it.
@@ -122,19 +153,24 @@ final class TerminalDragSession {
     return store.terminalDrop(source, on: hit.zone) == nil
   }
 
-  private func hitZone(at screenPoint: CGPoint) -> (zone: PaneDropZone, isPaneTab: Bool)? {
-    for zone in zones {
-      if let hit = hit(zone, at: screenPoint) { return (hit, zone.isPaneTab) }
+  private func hitZone(at screenPoint: CGPoint)
+    -> (zone: PaneDropZone, isPaneTab: Bool, host: (any PaneDropZoneHost)?)?
+  {
+    for zone in zones where !zone.covered.contains(screenPoint) {
+      if let hit = hit(zone, at: screenPoint) { return (hit, zone.isPaneTab, zone.host) }
     }
     return nil
   }
 
-  /// The zone under `screenPoint` when the source's drop there does something.
-  private func accepting(at screenPoint: CGPoint) -> PaneDropZone? {
-    guard let store, let source, let zone = zone(at: screenPoint),
-      store.terminalDrop(source, on: zone) != nil
+  /// The zone under `screenPoint`, and whose it is, when the source's drop there does something.
+  /// The dragging window decides it, whoever's zone it is (`AppStore.terminalDrop`).
+  private func accepting(at screenPoint: CGPoint)
+    -> (zone: PaneDropZone, host: (any PaneDropZoneHost)?)?
+  {
+    guard let store, let source, let hit = hitZone(at: screenPoint),
+      store.terminalDrop(source, on: hit.zone) != nil
     else { return nil }
-    return zone
+    return (hit.zone, hit.host)
   }
 
   /// The part of a title-bar tab where another title-bar tab let go drops on it: the middle half
@@ -191,11 +227,61 @@ final class TerminalDragSession {
   }
 }
 
+extension AppStore: PaneDropZoneHost {}
+
 extension AppStore {
   /// Every drop zone this window shows, where it is on screen now: its title-bar tabs, and the
   /// sidebar rows, Terminals heading, pane tabs and group title bars marked as zones
   /// (`PaneDropZoneMarker`). Pane tabs first, so a tab inside a zone is hit before what holds it.
+  /// The Quick Terminal panel's pane tabs too, while it shows: whichever of the two windows is in
+  /// front hides the other's zones under it.
   func terminalDropZones() -> [TerminalDragSession.Zone] {
+    let own = ownTerminalDropZones()
+    guard let window = hostWindow,
+      let panel = terminalsSection.quickTerminalHolder as? QuickTerminalHost,
+      let panelWindow = panel.hostWindow, panelWindow !== window, quickTerminalShows(panelWindow)
+    else { return own }
+    var panelZones = Self.markedZones(panel.paneDropZoneViews, in: panelWindow) { _ in false }
+      .filter(\.isPaneTab)
+    guard !panelZones.isEmpty else { return own }
+    for index in panelZones.indices { panelZones[index].host = panel }
+    return Self.stacked(
+      own, in: window.frame, with: panelZones, in: panelWindow.frame,
+      panelInFront: isInFront(panelWindow, of: window))
+  }
+
+  /// `own` and the panel's zones, the front window's first, each window's hidden under the other's
+  /// frame where that is in front.
+  nonisolated static func stacked(
+    _ own: [TerminalDragSession.Zone], in frame: CGRect,
+    with panel: [TerminalDragSession.Zone], in panelFrame: CGRect, panelInFront: Bool
+  ) -> [TerminalDragSession.Zone] {
+    var own = own
+    var panel = panel
+    if panelInFront {
+      for index in own.indices { own[index].covered = panelFrame }
+      return panel + own
+    }
+    for index in panel.indices { panel[index].covered = frame }
+    return own + panel
+  }
+
+  /// Whether the Quick Terminal's panel is on screen and not sliding away.
+  private func quickTerminalShows(_ panelWindow: NSWindow) -> Bool {
+    if let controller = WindowRegistry.shared.quickTerminal, !controller.isVisible { return false }
+    return panelWindow.isVisible && panelWindow.occlusionState.contains(.visible)
+  }
+
+  /// Whether `window` is in front of `other`.
+  private func isInFront(_ window: NSWindow, of other: NSWindow) -> Bool {
+    let order = NSApp.orderedWindows
+    guard let index = order.firstIndex(of: window) else { return false }
+    guard let otherIndex = order.firstIndex(of: other) else { return true }
+    return index < otherIndex
+  }
+
+  /// This window's own zones.
+  private func ownTerminalDropZones() -> [TerminalDragSession.Zone] {
     guard let window = hostWindow else { return [] }
     var zones: [TerminalDragSession.Zone] = []
     if let run = workroomTabRun, run.window === window {
@@ -215,8 +301,17 @@ extension AppStore {
         x: row.minX, y: row.minY, width: window.frame.maxX - row.minX, height: row.height)
       zones.append(.init(zone: .titleBarGap(before: nil), rect: rowRect, titleBarTabs: tabs))
     }
+    let marked = Self.markedZones(paneDropZoneViews, in: window) { self.isFoldedGroup($0) }
+    return marked.filter(\.isPaneTab) + zones + marked.filter { !$0.isPaneTab }
+  }
+
+  /// The zones of `views` shown in `window`, where they are on screen now.
+  private static func markedZones(
+    _ views: [PaneDropZone: [PaneDropZoneMarker.Box]], in window: NSWindow,
+    isFoldedGroup: (PaneDropZone) -> Bool
+  ) -> [TerminalDragSession.Zone] {
     var marked: [TerminalDragSession.Zone] = []
-    for (zone, boxes) in paneDropZoneViews {
+    for (zone, boxes) in views {
       for box in boxes {
         guard let view = box.view, view.window === window, !view.isHiddenOrHasHiddenAncestor
         else { continue }
@@ -234,7 +329,7 @@ extension AppStore {
             isPaneTab: box.isPaneTab, isFoldedGroup: isFoldedGroup(zone)))
       }
     }
-    return marked.filter(\.isPaneTab) + zones + marked.filter { !$0.isPaneTab }
+    return marked
   }
 
   /// Whether `zone` is a folded group's row in the Terminals section.
