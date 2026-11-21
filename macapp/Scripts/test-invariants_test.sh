@@ -245,18 +245,21 @@ fi
 # ADR 0078: no release ships both binaries. The standalone archives are cli-archives.sh's, which
 # refuses a Go binary and a Windows build, and publish-assets.sh puts them up, which refuses a
 # release holding any other archive. Nothing builds the Go CLI or runs goreleaser beside them. The
-# contract suite runs against the binary each one ships.
+# release runs the contract suite against the binary it ships; the Nightly cannot, as the suite's
+# goldens are the main binary's and the nightly's baked channel differs by design.
+expect_workflow_runs() {
+  if ! grep -q -- "^[^#]*$2" "$WORKFLOWS_DIR/$1"; then
+    echo "FAIL: $1 no longer runs '$2'; its standalone archives would not be the checked Rust"
+    echo "      binary (ADR 0078)."
+    fails=$((fails + 1))
+  fi
+}
+[ -f "$WORKFLOWS_DIR/release.yml" ] && expect_workflow_runs release.yml '--test commands_contract'
 for workflow in release.yml nightly.yml; do
   path="$WORKFLOWS_DIR/$workflow"
   [ -f "$path" ] || continue
-  for want in 'macapp/Scripts/cli-archives.sh build' 'macapp/Scripts/publish-assets.sh' \
-    '--test commands_contract'; do
-    if ! grep -q "^[^#]*$want" "$path"; then
-      echo "FAIL: $workflow no longer runs '$want'; its standalone archives would not be the checked"
-      echo "      Rust binary (ADR 0078)."
-      fails=$((fails + 1))
-    fi
-  done
+  expect_workflow_runs "$workflow" 'macapp/Scripts/cli-archives.sh build'
+  expect_workflow_runs "$workflow" 'macapp/Scripts/publish-assets.sh'
   if grep -q 'CLI_ARCHIVES_PLATFORMS' "$path"; then
     echo "FAIL: $workflow sets CLI_ARCHIVES_PLATFORMS, which narrows the archives it builds below"
     echo "      the four every release ships (it is cli-archives_test.sh's)."

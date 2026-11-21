@@ -210,8 +210,10 @@ job both run, refuses any other set of files, a Go binary, an unstamped binary o
 `publish-assets.sh` then refuses a release holding any other archive, and removes the Go CLI's
 Windows archives from the reused `nightly` release. `macapp/Scripts/cli-archives_test.sh` builds
 both channels' archives and updates a Go CLI built from this checkout into the Rust binary with
-`workroom update`, from a releases server on 127.0.0.1. The release and the Nightly also run the
-CLI contract suite against the darwin arm64 binary unpacked from its archive.
+`workroom update`, from a releases server on 127.0.0.1. The release also runs the CLI contract
+suite against the darwin arm64 binary unpacked from its archive. The Nightly doesn't: the suite's
+goldens are the main binary's, and the nightly's baked channel changes `version --json` and
+refuses `update --channel` by design.
 
 These are goreleaser's names, kept so `install.sh` and every Go CLI's `workroom update` reach the
 Rust binary. The archive name (`workroom_<version>_…`) is what `install.sh` builds and what the
@@ -254,8 +256,8 @@ The `macapp` job runs `make app-release` (`macapp/Scripts/release.sh`) on `xcode
 6. _(optional)_ EdDSA-sign the DMG for Sparkle and write `appcast-fields.env`.
 
 The job then builds, signs and notarizes the standalone archives (`macapp/Scripts/cli-archives.sh
-build`, [Release artifacts](#release-artifacts)) and runs the CLI contract suite against the binary in
-the darwin arm64 one. The `publish` job checks the archives again, creates the release and uploads
+build`, [Release artifacts](#release-artifacts)) and, for a tag, runs the CLI contract suite against
+the binary in the darwin arm64 one. The `publish` job checks the archives again, creates the release and uploads
 them with the DMG, as `workroom-macos-app_<version>.dmg` (`macapp/Scripts/publish-assets.sh`).
 
 ## Auto-update (Sparkle appcast)
