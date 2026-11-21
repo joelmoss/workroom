@@ -188,6 +188,9 @@ struct Progress {
     /// A `CommandFinished` wait's shell has sent no mark yet: the wait is `NoShellIntegration`
     /// if none comes by then (`Waiter::marks_by`).
     marks_by: Option<Instant>,
+    /// A `Run` wait hears its run's logged transitions numbered past this, the last when it
+    /// started (`Waiter::runs_after`): one before is no news, its state read as the wait started.
+    runs_after: Option<u64>,
     /// Set once, by whatever ends the wait first.
     outcome: Option<Outcome>,
 }
@@ -276,6 +279,7 @@ impl Waiter {
                 in_hand: 0,
                 ended: false,
                 marks_by: None,
+                runs_after: None,
                 outcome: None,
             }),
             wake: Condvar::new(),
@@ -340,18 +344,31 @@ impl Waiter {
         }
     }
 
-    /// A run's status line, as its supervisor last wrote it.
-    pub fn run(&self, line: &str) {
+    /// A run's status line: its supervisor's `seq`th transition, from the run's log of them, or
+    /// with none, the state its status file shows. Every transition the supervisor logs reaches
+    /// the wait so, `stopping` on a restart included, however soon the next replaced it.
+    pub fn run(&self, line: &str, seq: Option<u64>) {
         let Some((state, code)) = RunState::of_line(line) else {
             return;
         };
-        self.update(|progress| match progress.wanted {
-            Wanted::Run(wanted) if wanted == state => Some(Met::Run {
-                state,
-                exit_code: code,
-            }),
-            _ => None,
+        self.update(|progress| {
+            let before =
+                seq.is_some_and(|seq| progress.runs_after.is_some_and(|after| seq <= after));
+            match progress.wanted {
+                Wanted::Run(wanted) if wanted == state && !before => Some(Met::Run {
+                    state,
+                    exit_code: code,
+                }),
+                _ => None,
+            }
         });
+    }
+
+    /// The number of the last transition the run's log held as the wait started, read before its
+    /// status file: those up to it came before the wait, and that file says where they left the
+    /// run, so only those after it are news.
+    pub fn runs_after(&self, seq: u64) {
+        lock_or_recover(&self.state).runs_after = Some(seq);
     }
 
     /// The session ended, with its shell's exit code when the daemon saw it. A regex wait first

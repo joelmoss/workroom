@@ -490,12 +490,15 @@ fn register(
         }
     };
     // The run's state now, read after the waiter is added: a change from here on reaches it from
-    // the runs watcher, so none is missed between the two.
-    if run
-        && let Some(path) = sessions.hooks().runs.status_path(id)
-        && let Ok(line) = std::fs::read_to_string(path)
-    {
-        waiter.run(line.trim());
+    // the runs watcher, so none is missed between the two. The log's last transition first, then
+    // the file: one logged between the two reads is heard again, never lost.
+    if run && let Some(path) = sessions.hooks().runs.status_path(id) {
+        if let Some(seq) = crate::terminal::run::last_transition(&path) {
+            waiter.runs_after(seq);
+        }
+        if let Ok(line) = std::fs::read_to_string(path) {
+            waiter.run(line.trim(), None);
+        }
     }
     Ok((request, waiter, slot))
 }

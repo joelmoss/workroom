@@ -429,7 +429,8 @@ fn run_invocation(
     let Some(status) = sessions.hooks().runs.status_path(id) else {
         return Err("this daemon keeps no run sessions: it serves no socket".to_string());
     };
-    // A file left by an earlier session under this id must not be read as this one's.
+    // A file left by an earlier session under this id must not be read as this one's, nor its log.
+    let _ = std::fs::remove_file(crate::terminal::run::transitions_file(&status));
     let _ = std::fs::remove_file(&status);
     let binary = crate::daemon::handoff::own_binary()
         .map_err(|e| format!("could not find this daemon's own binary: {e}"))?;

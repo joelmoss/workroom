@@ -69,14 +69,15 @@ impl SessionStore {
         })
     }
 
-    /// A run session's supervisor wrote `line` (the runs watcher, `crate::terminal::run`).
-    pub fn run_changed(&self, id: SessionId, line: &str) {
+    /// A run session's supervisor wrote `line` (the runs watcher, `crate::terminal::run`): its
+    /// `seq`th transition, from its log, or with none, from its status file.
+    pub fn run_changed(&self, id: SessionId, line: &str, seq: Option<u64>) {
         let Some((_, _, attached)) = self.parts(id) else {
             return;
         };
         let waiters = lock_or_recover(&attached).waiters.list();
         for waiter in waiters {
-            waiter.run(line);
+            waiter.run(line, seq);
         }
     }
 
