@@ -47,4 +47,34 @@ final class GhosttyConfigMinimumContrastTests: XCTestCase {
       "engine rejected/warned on the generated config — minimum-contrast may be an unknown key on "
         + "the pinned build: \(diagnosticMessages)")
   }
+
+  /// A fallback names the bundled theme file by its absolute path (`GhosttyApp.ThemeValue`), and the
+  /// linked engine loads that path with no diagnostics. The tripwire: a path to no file does raise
+  /// one, so the clean result means the theme was found, not that theme errors go unreported.
+  func testABundledThemePathLoadsWithNoDiagnostics() throws {
+    // `ghostty_config_new` needs `ghostty_init`, which `GhosttyApp.shared` runs; touching it first
+    // keeps this test from depending on another one having started the engine.
+    XCTAssertTrue(GhosttyApp.shared.isReady, "the engine didn't start")
+    let bundled = try XCTUnwrap(ThemeService.bundledThemeDirectory())
+    let url = URL(fileURLWithPath: NSTemporaryDirectory())
+      .appendingPathComponent("workroom-theme-path-\(UUID().uuidString).conf")
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    func diagnostics(for theme: GhosttyApp.ThemeValue) throws -> [String] {
+      XCTAssertTrue(GhosttyApp.writeThemeConfig(theme: theme, to: url))
+      let cfg = try XCTUnwrap(ghostty_config_new())
+      defer { ghostty_config_free(cfg) }
+      url.path.withCString { ghostty_config_load_file(cfg, $0) }
+      ghostty_config_finalize(cfg)
+      return (0..<ghostty_config_diagnostics_count(cfg)).map {
+        String(cString: ghostty_config_get_diagnostic(cfg, $0).message)
+      }
+    }
+
+    XCTAssertEqual(try diagnostics(for: .bundledFile(bundled + "/Workroom")), [])
+    XCTAssertEqual(try diagnostics(for: .bundledFile(bundled + "/Workroom Light")), [])
+    XCTAssertFalse(
+      try diagnostics(for: .bundledFile(bundled + "/No Such Theme")).isEmpty,
+      "a missing theme file raised no diagnostic, so a clean load proves nothing")
+  }
 }
