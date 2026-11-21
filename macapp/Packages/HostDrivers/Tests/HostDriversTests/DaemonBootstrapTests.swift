@@ -510,6 +510,24 @@ final class DaemonBootstrapTests: XCTestCase {
       42)
   }
 
+  func testTheDaemonBuildIsReadFromTheBundledDaemonsMarker() {
+    XCTAssertEqual(
+      DaemonBootstrap.daemonBuild(in: Data("x\0WORKROOMD-DAEMON-BUILD:ab12;\0y".utf8)), "ab12")
+    XCTAssertNil(DaemonBootstrap.daemonBuild(in: Data("WORKROOMD-BUILD:12;".utf8)))
+    XCTAssertNil(DaemonBootstrap.daemonBuild(in: Data("WORKROOMD-DAEMON-BUILD:ab".utf8)))
+    XCTAssertEqual(
+      DaemonBootstrap.daemonBuild(
+        in: Data("WORKROOMD-DAEMON-BUILD:\u{1}\0 WORKROOMD-DAEMON-BUILD:cd34;".utf8)), "cd34")
+  }
+
+  func testTheProbeReportsTheInstalledDaemonBuild() throws {
+    let base = "WRB host Linux aarch64\nWRB installed abc\nWRB build 7\nWRB hand-off none\n"
+    XCTAssertEqual(
+      try DaemonBootstrap.parseProbe(base + "WRB daemon-build ab12\n").daemonBuild, "ab12")
+    XCTAssertNil(try DaemonBootstrap.parseProbe(base + "WRB daemon-build unknown\n").daemonBuild)
+    XCTAssertNil(try DaemonBootstrap.parseProbe(base).daemonBuild)
+  }
+
   /// Refuse rather than kill: a daemon that predates hand-off, or one that refused the new
   /// binary, keeps running, and the outcome says so rather than failing the connect.
   func testAnOlderDaemonThatIsNotReplacedIsReportedNotFailed() async throws {
