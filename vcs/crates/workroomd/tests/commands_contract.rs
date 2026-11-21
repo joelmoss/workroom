@@ -4461,6 +4461,44 @@ fn delete_json_matches_the_goldens() {
     );
 }
 
+/// A `workrooms_dir` with `//`, `/./` and a `..` past a folder that doesn't exist: the workroom's
+/// path is joined onto it and cleaned, as Go's `workroomPath` joins it (`filepath.Join`), so the
+/// workroom is found and deleted, teardown and all, where a path left as written names nothing.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn delete_cleans_the_workroom_path_it_joins_onto_workrooms_dir() {
+    let home = Home::new("delete-clean-path");
+    let project = project_with_workroom(&home, "echo stopping\n", STOPPING_SHA256);
+    let worktree = home.path("workrooms/calm-river");
+    let config = config_text(&home).replacen(
+        '{',
+        &format!(
+            "{{\"workrooms_dir\": \"{}//gone/../workrooms/./\", ",
+            home.dir.display()
+        ),
+        1,
+    );
+    home.write_config(&config);
+    let project_arg = project.to_string_lossy().into_owned();
+    let run = home.run(&home.dir, &delete_args(&project_arg, &[]));
+    run.assert_code(0);
+    assert_eq!(run.envelope()["ok"], true);
+    assert!(
+        run.stderr.contains("\"text\":\"stopping\""),
+        "{}",
+        run.stderr
+    );
+    assert!(!worktree.exists(), "the worktree is still there");
+    assert!(
+        !config_text(&home).contains("calm-river"),
+        "{}",
+        config_text(&home)
+    );
+}
+
 /// A teardown that fails stops the delete with `TeardownScriptFailed` (exit 5), its output
 /// streamed first, and the workroom, its uncommitted work and its entry stay. The app's Delete
 /// Anyway (`--skip-teardown`) then deletes it without running the script.
