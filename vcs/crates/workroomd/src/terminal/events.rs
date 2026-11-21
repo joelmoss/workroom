@@ -419,7 +419,10 @@ impl Hub {
                     Start::Since {
                         boot: theirs,
                         revision: since,
-                    } if theirs == boot && state.first() <= since + 1 && since <= revision => {
+                    } if theirs == boot
+                        && state.first() <= since.saturating_add(1)
+                        && since <= revision =>
+                    {
                         cursor.sent = since;
                         return Next::Resumed {
                             boot,
@@ -436,7 +439,13 @@ impl Hub {
                     reason,
                 };
             }
-            if cursor.sent + 1 < state.first() && state.sealed.is_none() {
+            if cursor.sent + 1 < state.first() {
+                // Its state afresh only once the ring is unsealed: one taken now would be past
+                // what a hand-off carries.
+                if state.sealed.is_some() {
+                    state = recover(self.wake.wait(state));
+                    continue;
+                }
                 cursor.sent = state.revision;
                 return Next::Snapshot {
                     boot: state.boot.to_hyphenated(),
