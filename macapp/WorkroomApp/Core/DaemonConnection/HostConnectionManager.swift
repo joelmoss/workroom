@@ -45,6 +45,10 @@ protocol HostServiceConnection: Sendable {
   ) async throws -> ProgramStatusAvailability
   func programStatusSeen(session: UUID, revision: UInt64, states: [String]?) async throws
   func programStatusClear(session: UUID) async throws
+  /// Who types into which session on this host (#696): the terminal API's `session.input` events.
+  func subscribeTerminalInput(
+    onEvent: @escaping @Sendable (TerminalInputEvent) -> Void
+  ) async throws -> TerminalInputAvailability
   func close() async
 }
 
@@ -96,6 +100,12 @@ extension HostServiceConnection {
 
   func programStatusClear(session: UUID) async throws {
     throw VCSError.backendVersion("Host has no program status service.")
+  }
+
+  func subscribeTerminalInput(
+    onEvent: @escaping @Sendable (TerminalInputEvent) -> Void
+  ) async throws -> TerminalInputAvailability {
+    .unsupported
   }
 }
 

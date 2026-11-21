@@ -40,8 +40,9 @@ public enum DaemonHandshake {
   /// has updated the host's daemon.
   public static let minHostAttachVersion: UInt16 = 11
   /// `MIN_TERMINAL_API_VERSION`: the first peer version that answers `Service::TerminalApi`, the
-  /// terminal API the `workroom` commands call (ADR 0079). The app never sends it; the constant is
-  /// here so the two sides' protocol versions stay pinned together.
+  /// terminal API the `workroom` commands call (ADR 0079). The app asks it only for `session.input`
+  /// events, to mark who types into a pane (#696); an older daemon fails the whole connection on
+  /// the service byte, so it is never sent one.
   public static let minTerminalAPIVersion: UInt16 = 12
   public static let magic: [UInt8] = Array("WRA1".utf8)
 
