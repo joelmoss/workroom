@@ -200,6 +200,22 @@ extension AppStore {
   /// Does NOT ask whether the file or commit still exists on disk: that needs I/O inside a predicate run
   /// per candidate while stepping, and the pane already renders its own "Diff unavailable" /
   /// "Changeset unavailable" state.
+  /// The latest place behind the cursor that is still live, leaving out `sid` and the tabs in
+  /// `closing`: where the selection goes back to when a terminal outside any project closes with
+  /// its row (`closeSuccessor`). Read before the close's prune, while the cursor still marks
+  /// where the window was.
+  func previousLiveLocation(excluding sid: SidebarID, closing: Set<TerminalTab.ID>)
+    -> NavLocation?
+  {
+    let entries = history.entries
+    guard !entries.isEmpty else { return nil }
+    for index in stride(from: min(history.cursor, entries.count - 1), through: 0, by: -1) {
+      let loc = entries[index]
+      if loc.target != sid, !closing.contains(loc.tab), isLive(loc) { return loc }
+    }
+    return nil
+  }
+
   private func isLive(_ loc: NavLocation) -> Bool {
     guard let target = target(for: loc.target), target.opensTerminals else { return false }
     // `allTabs`: a detached pane is still reachable (its own window, ⌃⌘O), so its history entries

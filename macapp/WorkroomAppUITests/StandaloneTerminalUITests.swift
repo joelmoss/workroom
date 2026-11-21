@@ -65,6 +65,44 @@ final class StandaloneTerminalUITests: XCTestCase {
     XCTAssertEqual(elements(app, prefix: "workroom.tab.standalone:").count, 3)
   }
 
+  /// Closing the selected standalone terminal with ⌘W lands on the one selected before it (#652
+  /// critique): its row and title-bar tab selected, its terminal taking the keys.
+  func testClosingAStandaloneTerminalSelectsAndFocusesThePreviousOne() {
+    let app = launchedApp()
+    let first = element(app, "sidebar.standalone.\(seeded[0])")
+    let second = element(app, "sidebar.standalone.\(seeded[1])")
+    XCTAssertTrue(first.waitForExistence(timeout: 15))
+    first.click()
+    XCTAssertTrue(poll { self.element(app, "workroom.tab.\(self.seeded[0])").isSelected })
+    second.click()
+    XCTAssertTrue(poll { self.element(app, "workroom.tab.\(self.seeded[1])").isSelected })
+
+    app.typeKey("w", modifierFlags: .command)
+
+    XCTAssertTrue(waitForCount(elements(app, prefix: "sidebar.standalone."), 1), "its row goes")
+    XCTAssertTrue(
+      poll { self.element(app, "workroom.tab.\(self.seeded[0])").isSelected },
+      "the first terminal is selected (its row's selection isn't exposed; its tab's is)")
+    // The keys reach its terminal without a click: it has the focus.
+    app.typeText("echo WRCLOSE$((40+2))\r")
+    let surfaces = app.descendants(matching: .any).matching(identifier: "terminal.surface")
+    XCTAssertTrue(
+      poll(timeout: 20) {
+        surfaces.allElementsBoundByIndex.contains {
+          (($0.value as? String) ?? "").contains("WRCLOSE42")
+        }
+      }, "the typed command ran in a terminal")
+  }
+
+  private func poll(timeout: TimeInterval = 5, _ condition: () -> Bool) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if condition() { return true }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return condition()
+  }
+
   /// #657: with no projects the empty state offers New Terminal; using it opens a terminal that has
   /// a row in the sidebar, which is shown (with its toggle) though there is still no project.
   /// Rename… on a standalone terminal's row edits its name in place, as a group's row does (#652

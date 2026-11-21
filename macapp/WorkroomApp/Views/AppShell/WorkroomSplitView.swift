@@ -257,7 +257,11 @@ private struct WorkroomPaneLeaf: View {
       // *which* member this is and offers the way back out of the group. A create's pane is bare
       // (#483): its checklist names it, and it has no ✕ or menu to close it by while it runs. The
       // bar is a sibling above the content, so the content keeps its one structural slot.
-      if store.lifecycle.creationRun(forTargetID: target.id) == nil {
+      // A standalone terminal on its own goes without one too: its row and tab name it, and it has
+      // no split to leave. In a split it keeps the bar, which names the member and holds its ✕.
+      if store.lifecycle.creationRun(forTargetID: target.id) == nil,
+        !(target.id.isStandaloneTerminal && !multi)
+      {
         titleBar
       }
       // One unconditional slot. The "Directory not found" state and the withheld-during-setup state

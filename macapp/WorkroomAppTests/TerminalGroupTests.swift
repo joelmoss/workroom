@@ -374,18 +374,18 @@ final class TerminalGroupTests: XCTestCase {
     store.selectedTargetID = nil
     store.newStandaloneTerminal()
     let b = try XCTUnwrap(store.selectedTargetID?.targetID)
-    let items: [SidebarTerminalsSection.Item] = [
+    let items: [SidebarTerminalsList.Item] = [
       .entry(a), .entry(g), .terminal(UUID()), .terminal(UUID()), .entry(b),
     ]
 
-    SidebarTerminalsSection.move(items, [4], to: 3, in: section)
+    SidebarTerminalsList.move(items, [4], to: 3, in: section)
     XCTAssertEqual(section.entries.map(\.targetID), [a, g, b], "among g's terminals: after g")
-    SidebarTerminalsSection.move(items, [0], to: 3, in: section)
+    SidebarTerminalsList.move(items, [0], to: 3, in: section)
     XCTAssertEqual(section.entries.map(\.targetID), [g, a, b])
-    let now: [SidebarTerminalsSection.Item] = [
+    let now: [SidebarTerminalsList.Item] = [
       .entry(g), .terminal(UUID()), .terminal(UUID()), .entry(a), .entry(b),
     ]
-    SidebarTerminalsSection.move(now, [4], to: 0, in: section)
+    SidebarTerminalsList.move(now, [4], to: 0, in: section)
     XCTAssertEqual(section.entries.map(\.targetID), [b, g, a])
   }
 

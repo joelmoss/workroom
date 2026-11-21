@@ -264,7 +264,7 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
     // The workroom menu of the tab chip, split title bar, sidebar row and inspector header.
     "WorkroomMenuAdapter",
     // The sidebar and activity bar.
-    "ProjectSidebar", "RowRunButton", "RowRunToggle", "ActivityBar",
+    "ProjectSidebar", "SidebarProjectsList", "RowRunButton", "RowRunToggle", "ActivityBar",
     "NotificationsBarButton",
     // The sidebar's row adapters, terminal subtrees and row menus.
     "SidebarProjectRowAdapter", "SidebarRootRowAdapter", "SidebarWorkroomRowAdapter",

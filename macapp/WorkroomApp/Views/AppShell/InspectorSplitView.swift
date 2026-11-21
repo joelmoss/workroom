@@ -44,6 +44,40 @@ final class InspectorPaneViewController: NSViewController {
   /// Whether the body fills the pane and scrolls itself (vs. the default `NSScrollView` hosting).
   /// Must be set before the view first loads.
   var fillsBody = false
+  /// Whether a fill-mode body's own scroll views draw overlay scrollers whatever the system's "Show
+  /// scroll bars" setting. The sidebar's: a legacy scroller narrows its List's rows but not the
+  /// sticky header above them, which would push the rows' "+" column out of line with the
+  /// heading's. Must be set before the view first loads.
+  var forcesOverlayScrollers = false
+  private var observesScrollerStyle = false
+
+  override func viewDidLayout() {
+    super.viewDidLayout()
+    if forcesOverlayScrollers { applyOverlayScrollers() }
+  }
+
+  /// A scroll view resets its style when the system preference changes, so that change re-applies
+  /// it on the next layout.
+  @objc private func preferredScrollerStyleDidChange(_ notification: Notification) {
+    view.needsLayout = true
+  }
+
+  /// Sets every scroll view in the body to overlay scrollers.
+  private func applyOverlayScrollers() {
+    if !observesScrollerStyle {
+      observesScrollerStyle = true
+      NotificationCenter.default.addObserver(
+        self, selector: #selector(preferredScrollerStyleDidChange(_:)),
+        name: NSScroller.preferredScrollerStyleDidChangeNotification, object: nil)
+    }
+    func visit(_ view: NSView) {
+      if let scroll = view as? NSScrollView, scroll.scrollerStyle != .overlay {
+        scroll.scrollerStyle = .overlay
+      }
+      view.subviews.forEach(visit)
+    }
+    visit(bodyHost.view)
+  }
 
   override func loadView() {
     let container = NSView()
@@ -142,6 +176,24 @@ final class ThemedSplitView: NSSplitView {
 }
 
 final class InspectorSplitContainerController: NSViewController, NSSplitViewDelegate {
+  /// How one use of the split sizes its panes. The inspector's is the default; the sidebar's
+  /// Terminals + Projects split (`ProjectSidebar`) floors a pane lower, holds the Terminals pane
+  /// through a window resize, and re-derives its saved layout when a pane re-opens.
+  struct Sizing: Equatable {
+    /// Each expanded pane's floor, in pane order; nil floors every one at `expandedMinHeight`.
+    var minHeights: [CGFloat]? = nil
+    /// Each pane's holding priority, in pane order: the lowest flexes first on a window resize.
+    /// Nil holds every pane equally (proportional resize).
+    var holdingPriorities: [NSLayoutConstraint.Priority]? = nil
+    /// Expanding a pane restores the saved (or content-sized) layout rather than splitting
+    /// equally, and a collapse records no weights, so a fold and unfold returns the panes to where
+    /// they were.
+    var restoresLayoutOnExpand = false
+    /// The most of the expanded panes' space a preferred (content-sized) pane takes.
+    var preferredCap: CGFloat = 0.5
+  }
+  /// Set before `install`.
+  var sizing = Sizing()
   let splitView = ThemedSplitView()
   private(set) var panes: [InspectorPaneViewController] = []
   private var heightConstraints: [NSLayoutConstraint] = []
@@ -151,6 +203,9 @@ final class InspectorSplitContainerController: NSViewController, NSSplitViewDele
   private var collapsedFlags: [Bool] = []
   private var weights: [CGFloat] = []
   private var workroomKey = ""
+  /// Content-sized heights for the panes that have one, used in place of `weights` while no layout
+  /// is saved. Nil when the weights decide.
+  private(set) var preferredHeights: [CGFloat?]?
 
   /// What the next real layout should do. `.redistribute` re-derives the whole layout from the saved
   /// weights (initial layout + workroom switch); `.toggle` re-sizes for one collapse change while
@@ -192,7 +247,8 @@ final class InspectorSplitContainerController: NSViewController, NSSplitViewDele
       addChild(pane)
       pane.view.translatesAutoresizingMaskIntoConstraints = false
       splitView.addArrangedSubview(pane.view)
-      splitView.setHoldingPriority(.defaultLow, forSubviewAt: index)
+      let holding = sizing.holdingPriorities.flatMap { index < $0.count ? $0[index] : nil }
+      splitView.setHoldingPriority(holding ?? .defaultLow, forSubviewAt: index)
       let constraint = makeHeightConstraint(for: pane, collapsed: collapsedFlags[index])
       constraint.isActive = true
       heightConstraints.append(constraint)
@@ -221,15 +277,30 @@ final class InspectorSplitContainerController: NSViewController, NSSplitViewDele
   /// collapse toggling re-sizes only a neighbour, preserving the other panes' heights (so a manual
   /// drag elsewhere survives). A mere weights update coming back from a drag / a toggle's own
   /// persistence does nothing (the dividers are already where they belong).
-  func update(workroomKey: String, collapsed: [Bool], weights: [Double]) {
+  ///
+  /// `preferredHeights` (content-sized panes, while no layout is saved) re-lays out the panes when it
+  /// changes to new heights, so the sidebar's Terminals pane follows its rows. Its going away (the
+  /// user dragged, and the drag's weights now decide) does not: the panes are already there, and a
+  /// re-layout mid-drag would fight the mouse.
+  func update(
+    workroomKey: String, collapsed: [Bool], weights: [Double],
+    preferredHeights: [CGFloat?]? = nil
+  ) {
     precondition(collapsed.count == panes.count, "need one collapse flag per section")
     let resolvedWeights =
       weights.count == panes.count ? weights.map { CGFloat($0) } : self.weights
     let workroomChanged = workroomKey != self.workroomKey
     let previousCollapsed = collapsedFlags
     let collapseChanged = collapsed != previousCollapsed
+    let preferredChanged = preferredHeights != nil && preferredHeights != self.preferredHeights
     self.weights = resolvedWeights
     self.workroomKey = workroomKey
+    self.preferredHeights = preferredHeights
+    if preferredChanged, !workroomChanged, !collapseChanged {
+      pendingLayout = .redistribute
+      view.needsLayout = true
+      return
+    }
     guard workroomChanged || collapseChanged else { return }
 
     // A lone collapse toggle within the same workroom preserves the other panes; a workroom switch
@@ -290,10 +361,15 @@ final class InspectorSplitContainerController: NSViewController, NSSplitViewDele
   /// rest split by the saved weights — equal by default) via divider positions. Used for the initial
   /// layout and on a workroom switch, when the saved/default proportions should reassert.
   private func redistribute() {
-    let heights = InspectorPanePolicy.allocate(
-      collapsed: collapsedFlags, weights: weights, capacity: splitView.bounds.height,
-      dividerThickness: splitView.dividerThickness)
-    setPositions(heights)
+    setPositions(defaultHeights())
+  }
+
+  /// The layout the saved weights, or the content-sized preferred heights, give.
+  private func defaultHeights() -> [CGFloat] {
+    InspectorPanePolicy.allocate(
+      collapsed: collapsedFlags, weights: weights, minHeights: sizing.minHeights,
+      preferred: preferredHeights, preferredCap: sizing.preferredCap,
+      capacity: splitView.bounds.height, dividerThickness: splitView.dividerThickness)
   }
 
   /// Resize for a single section's collapse toggle: a **collapse** preserves the untouched panes'
@@ -307,7 +383,12 @@ final class InspectorSplitContainerController: NSViewController, NSSplitViewDele
       // user dragged elsewhere survives.
       heights = InspectorPanePolicy.reallocateOnToggle(
         previous: previous, collapsed: collapsedFlags, toggled: index,
-        capacity: splitView.bounds.height, dividerThickness: splitView.dividerThickness)
+        minHeights: sizing.minHeights, capacity: splitView.bounds.height,
+        dividerThickness: splitView.dividerThickness)
+    } else if sizing.restoresLayoutOnExpand {
+      // Re-opened, the panes go back to the saved or content-sized layout.
+      setPositions(defaultHeights())
+      return
     } else {
       // Expand: split the space EQUALLY among the now-expanded panes, so re-opening a collapsed
       // section returns the stack to equal heights (a third each for Changes + History + Pull Request)
@@ -317,7 +398,8 @@ final class InspectorSplitContainerController: NSViewController, NSSplitViewDele
         capacity: splitView.bounds.height, dividerThickness: splitView.dividerThickness)
     }
     setPositions(heights)
-    reportWeights(from: heights)
+    // A split that restores its layout on expand keeps the weights a drag saved through a fold.
+    if !sizing.restoresLayoutOnExpand { reportWeights(from: heights) }
   }
 
   /// Set divider positions to realise `heights` (top to bottom).
@@ -366,13 +448,14 @@ final class InspectorSplitContainerController: NSViewController, NSSplitViewDele
   private func makeHeightConstraint(for pane: NSViewController, collapsed: Bool)
     -> NSLayoutConstraint
   {
+    let index = panes.firstIndex { $0 === pane } ?? 0
     if collapsed {
       let c = pane.view.heightAnchor.constraint(equalToConstant: InspectorPanePolicy.headerHeight)
       c.priority = .required - 1
       return c
     }
     let c = pane.view.heightAnchor.constraint(
-      greaterThanOrEqualToConstant: InspectorPanePolicy.expandedMinHeight)
+      greaterThanOrEqualToConstant: InspectorPanePolicy.minHeight(index, sizing.minHeights))
     c.priority = .defaultHigh
     return c
   }
@@ -401,16 +484,27 @@ struct InspectorSplitView: NSViewControllerRepresentable {
   var weights: [Double]
   /// Reports the new relative pane heights after the user drags a divider, for persistence.
   var onWeightsChanged: ([Double]) -> Void
+  /// Content-sized pane heights, used while no layout is saved (`weights` empty); nil otherwise.
+  var preferredHeights: [CGFloat?]? = nil
+  /// How this use sizes its panes (`InspectorSplitContainerController.Sizing`); the inspector's by
+  /// default.
+  var sizing = InspectorSplitContainerController.Sizing()
+  /// Whether the fill-mode panes draw overlay scrollers whatever the system setting
+  /// (`InspectorPaneViewController.forcesOverlayScrollers`).
+  var forcesOverlayScrollers = false
 
   func makeNSViewController(context: Context) -> InspectorSplitContainerController {
     let panes = makePanes()
     context.coordinator.panes = panes
     context.coordinator.sectionKey = sectionKey
     let controller = InspectorSplitContainerController()
+    controller.sizing = sizing
     controller.onWeightsChanged = onWeightsChanged
     controller.install(panes: panes)
     pushContent(into: panes, glass: context.environment.glassAppearance)
-    controller.update(workroomKey: workroomKey, collapsed: collapsed, weights: weights)
+    controller.update(
+      workroomKey: workroomKey, collapsed: collapsed, weights: weights,
+      preferredHeights: preferredHeights)
     return controller
   }
 
@@ -427,7 +521,9 @@ struct InspectorSplitView: NSViewControllerRepresentable {
       controller.rebuild(panes: panes)
     }
     pushContent(into: context.coordinator.panes, glass: context.environment.glassAppearance)
-    controller.update(workroomKey: workroomKey, collapsed: collapsed, weights: weights)
+    controller.update(
+      workroomKey: workroomKey, collapsed: collapsed, weights: weights,
+      preferredHeights: preferredHeights)
   }
 
   /// Fill the space SwiftUI offers. Without this, SwiftUI sizes the controller to the split's
@@ -447,6 +543,7 @@ struct InspectorSplitView: NSViewControllerRepresentable {
     (0..<headers.count).map { index in
       let pane = InspectorPaneViewController()
       pane.fillsBody = index < fills.count && fills[index]
+      pane.forcesOverlayScrollers = forcesOverlayScrollers
       return pane
     }
   }
