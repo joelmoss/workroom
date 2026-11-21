@@ -1768,7 +1768,16 @@ final class AppStore: ObservableObject {
           }
           // Typing marker scenario (#696): Claude in one terminal typing into another, no daemon.
           if UITestFixture.typingMarker {
-            UITestFixture.seedTypingMarker(in: terminals, target: target)
+            if UITestFixture.typingMarkerElsewhere, project.workrooms.count > 1 {
+              // Into the second workroom's terminal, shown, from the first's.
+              let other = project.workrooms[1]
+              let receiver = other.target(inProject: project.path)
+              terminals.ensureTab(for: receiver)
+              UITestFixture.seedTypingMarker(in: terminals, receiver: receiver, sender: target)
+              selectedTargetID = .workroom(project: project.path, name: other.name)
+            } else {
+              UITestFixture.seedTypingMarker(in: terminals, receiver: target, sender: target)
+            }
           }
           // Workroom-bar overflow scenario (issue #129): make every seeded workroom an *active target*
           // so the title-bar tab bar shows a chip for each. `ensureTab` only registers a tab; the shell

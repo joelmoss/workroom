@@ -51,12 +51,20 @@ struct PaneTypingMarker: Equatable {
   let icon: Icon
   /// "Claude".
   let name: String
-  /// "tab 2", "tab 2 in fix-auth" or "own window"; nil when the sender is in no tab.
-  let place: String?
+  /// "tab 2" or "own window"; nil when the sender is in no tab.
+  let tab: String?
+  /// "fix-auth": the sender's workroom, when it is not this pane's.
+  let workroom: String?
   /// How many others are typing into the pane too.
   let others: Int
   /// The tooltip, which VoiceOver reads too: "Claude in tab 2 is typing into this pane."
   let help: String
+
+  /// Where the sender is, as one phrase: "tab 2", "tab 2 in fix-auth", "own window".
+  var place: String? {
+    guard let tab else { return nil }
+    return workroom.map { "\(tab) in \($0)" } ?? tab
+  }
 
   /// What the marker reads, as one line: "Claude · tab 2 +1".
   var text: String {
@@ -77,14 +85,15 @@ struct PaneTypingMarker: Equatable {
     let verb = senders.count == 1 ? "is" : "are"
     let help = "\(list(senders.map(\.phrase)).capitalizedFirst) \(verb) typing into this pane."
     return PaneTypingMarker(
-      icon: first.icon, name: first.name, place: first.place, others: senders.count - 1,
-      help: help)
+      icon: first.icon, name: first.name, tab: first.tab, workroom: first.workroom,
+      others: senders.count - 1, help: help)
   }
 
   private struct Sender {
     let icon: Icon
     let name: String
-    let place: String?
+    var tab: String? = nil
+    var workroom: String? = nil
     /// How the tooltip names it: "Claude in tab 2", "the terminal in tab 3".
     let phrase: String
   }
@@ -94,30 +103,28 @@ struct PaneTypingMarker: Equatable {
   ) -> Sender {
     guard let sender else {
       return Sender(
-        icon: .terminal, name: "Outside Workroom", place: nil,
-        phrase: "a program outside Workroom")
+        icon: .terminal, name: "Outside Workroom", phrase: "a program outside Workroom")
     }
     guard let place = locate(sender) else {
       return Sender(
-        icon: .terminal, name: "Another terminal", place: nil,
+        icon: .terminal, name: "Another terminal",
         phrase: "a terminal that isn't open in Workroom")
     }
-    let spot: String
-    if let tab = place.tab {
-      let elsewhere = place.target != receiver?.target ? place.targetName : nil
-      spot = elsewhere.map { "tab \(tab) in \($0)" } ?? "tab \(tab)"
-    } else {
-      spot = "own window"
-    }
-    let inSpot = place.tab == nil ? "in its own window" : "in \(spot)"
+    let tab = place.tab.map { "tab \($0)" } ?? "own window"
+    // A popped-out pane's window is its own, whatever its workroom.
+    let workroom =
+      place.tab != nil && place.target != receiver?.target ? place.targetName : nil
+    let inSpot =
+      place.tab == nil ? "in its own window" : "in \(workroom.map { "\(tab) in \($0)" } ?? tab)"
     if let agent = place.agent {
       return Sender(
-        icon: .agent(agent), name: agent.displayName, place: spot,
+        icon: .agent(agent), name: agent.displayName, tab: tab, workroom: workroom,
         phrase: "\(agent.displayName) \(inSpot)")
     }
     let article = place.tab == nil ? "a" : "the"
     return Sender(
-      icon: .terminal, name: "Terminal", place: spot, phrase: "\(article) terminal \(inSpot)")
+      icon: .terminal, name: "Terminal", tab: tab, workroom: workroom,
+      phrase: "\(article) terminal \(inSpot)")
   }
 
   /// "A", "A and B", "A, B and C".

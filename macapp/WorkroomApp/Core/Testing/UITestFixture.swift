@@ -457,22 +457,42 @@ import WorkroomVCS
     /// When set (`-WorkroomUITestTypingMarker 1`, #696), the fixture workroom opens two terminals with
     /// Claude in the second, which types into the first once a second for the whole launch, the
     /// first focused: its typing marker shows "Claude · tab 2" with no daemon, for as long as a
-    /// screenshot needs. The live path, a real send through a scratch daemon that the marker
-    /// outlasts by 3 s, is `PaneTypingMarkerUITests`' other test.
+    /// screenshot needs (`seedTypingMarker`). The live path, a real send through a scratch daemon
+    /// that the marker outlasts by 3 s, is `PaneTypingMarkerUITests`' first test.
     static var typingMarker: Bool {
       flag("WorkroomUITestTypingMarker")
     }
 
+    /// With `typingMarker` and `-WorkroomUITestTwoTabs 1`: Claude types from the first workroom's
+    /// terminal into the second's, which is shown, so the marker names the sender's workroom
+    /// ("Claude · tab 1 in …"); with `-WorkroomUITestLongWorkroomName 1` too, a name long enough
+    /// that the marker must truncate it.
+    static var typingMarkerElsewhere: Bool {
+      flag("WorkroomUITestTypingMarkerElsewhere")
+    }
+
+    /// Claude in `sender`'s last terminal types into `receiver`'s first once a second, for the
+    /// whole launch; the two are one target's first two terminals when they are the same.
     @MainActor
-    static func seedTypingMarker(in terminals: TerminalPanes, target: TerminalTarget) {
-      while terminals.tabs(for: target).count < 2 { _ = terminals.addTab(for: target) }
-      let tabs = terminals.tabs(for: target)
+    static func seedTypingMarker(
+      in terminals: TerminalPanes, receiver: TerminalTarget, sender: TerminalTarget
+    ) {
+      let least = receiver.id == sender.id ? 2 : 1
+      while terminals.tabs(for: receiver).count < least { _ = terminals.addTab(for: receiver) }
+      if terminals.tabs(for: sender).isEmpty { _ = terminals.addTab(for: sender) }
+      let receiving = terminals.tabs(for: receiver)[0]
+      let sending = terminals.tabs(for: sender).last ?? receiving
       // The title Claude Code's shell integration sets, which latches the agent on its tab as a
       // real one does (`PaneLiveState`), so the marker names it as it would a real one.
-      terminals.surface(tabs[1])?.handleTitleChange("claude")
-      let receiver = terminals.assignFixtureSession(tab: tabs[0].id, target: target.id)
-      let sender = terminals.assignFixtureSession(tab: tabs[1].id, target: target.id)
-      terminals.select(tabs[0].id, for: target)
+      terminals.surface(sending)?.handleTitleChange("claude")
+      let receiverSession = terminals.assignFixtureSession(tab: receiving.id, target: receiver.id)
+      let senderSession = terminals.assignFixtureSession(tab: sending.id, target: sender.id)
+      terminals.select(receiving.id, for: receiver)
+      typeForever(into: receiverSession, by: senderSession)
+    }
+
+    @MainActor
+    private static func typeForever(into receiver: UUID, by sender: UUID) {
       Task { @MainActor in
         while !Task.isCancelled {
           PaneTypingMonitor.shared.typed(into: receiver, by: sender)

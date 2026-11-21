@@ -7,11 +7,12 @@ import WorkroomDomain
 enum PaneTypingLimits {
   /// How long a sender's marker stays after its last keystroke: long enough to read who it was
   /// and where from, short enough that it never outstays the typing (#360's story 49).
-  static let linger: TimeInterval = 3
+  static let linger: Duration = .seconds(3)
 }
 
 /// Who is typing into which session, and since when (#696). Pure: every change takes the time it
-/// happens at, so the 3 s rule is tested with a clock the test sets.
+/// happens at, on the monotonic clock (a wall-clock change never stretches or cuts the 3 s), so
+/// the 3 s rule is tested with times the test picks.
 ///
 /// A "keystroke" is one `session.input` event: the daemon tells each `terminal.send` (a `workroom
 /// send` or `prompt`) once, before it types. A session's typists are kept in the order they
@@ -22,11 +23,11 @@ struct PaneTypingState: Equatable {
     /// The session the typing comes from; nil for a send from no pane (a script outside Workroom).
     let sender: UUID?
     /// When this run of typing began: what orders a session's typists.
-    let started: Date
+    let started: ContinuousClock.Instant
     /// The sender's last keystroke into the session.
-    var lastTyped: Date
+    var lastTyped: ContinuousClock.Instant
 
-    var expires: Date { lastTyped.addingTimeInterval(PaneTypingLimits.linger) }
+    var expires: ContinuousClock.Instant { lastTyped + PaneTypingLimits.linger }
   }
 
   private var typists: [UUID: [Typist]] = [:]
@@ -41,7 +42,9 @@ struct PaneTypingState: Equatable {
   /// send with `--allow-self`) is no one else's typing, so it marks nothing. Returns whether the
   /// session's typists changed who they are, which is all a marker shows.
   @discardableResult
-  mutating func typed(into session: UUID, by sender: UUID?, at now: Date) -> Bool {
+  mutating func typed(into session: UUID, by sender: UUID?, at now: ContinuousClock.Instant)
+    -> Bool
+  {
     guard sender != session else { return false }
     var list = typists[session] ?? []
     if let index = list.firstIndex(where: { $0.sender == sender }) {
@@ -56,7 +59,7 @@ struct PaneTypingState: Equatable {
 
   /// Drops every typist whose last keystroke is `linger` old at `now`. Returns the sessions whose
   /// typists changed.
-  mutating func expire(at now: Date) -> Set<UUID> {
+  mutating func expire(at now: ContinuousClock.Instant) -> Set<UUID> {
     var changed = Set<UUID>()
     for (session, list) in typists {
       let kept = list.filter { $0.expires > now }
@@ -68,7 +71,7 @@ struct PaneTypingState: Equatable {
   }
 
   /// When the next typist's 3 s run out, nil with nobody typing.
-  var nextExpiry: Date? { typists.values.joined().map(\.expires).min() }
+  var nextExpiry: ContinuousClock.Instant? { typists.values.joined().map(\.expires).min() }
 }
 
 /// Every host's typing, app-wide (#696): one `events.subscribe` per host connection, kept to
@@ -89,14 +92,13 @@ final class PaneTypingMonitor {
   }
   /// Waits between reconnects. A seam so tests reconnect at once.
   var backoff: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
-  /// Returns once `host`'s link comes up again, so a retry need not wait out its backoff.
+  /// Returns once `host`'s link comes up again as a new connection, so a retry need not wait out
+  /// its backoff; never for this Mac's daemon.
   var reconnected: @Sendable (HostID) async -> Void = ProgramStatusMonitor.hostReconnected
-  /// The clock the 3 s are measured on, and the wait until the next typist expires. Seams, so the
-  /// timing tests run on a clock the test moves.
-  var now: () -> Date = Date.init
-  var sleep: @Sendable (TimeInterval) async throws -> Void = {
-    try await Task.sleep(for: .seconds($0))
-  }
+  /// The monotonic clock the 3 s are measured on, and the wait until the next typist expires.
+  /// Seams, so the timing tests run on a clock the test moves.
+  var now: () -> ContinuousClock.Instant = { .now }
+  var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
 
   /// False in a test process or a fixture launch, which must never reach the developer's daemon,
   /// as for program status: a fixture launch with a scratch daemon of its own does watch it.
@@ -111,6 +113,8 @@ final class PaneTypingMonitor {
   private var tasks: [HostID: Task<Void, Never>] = [:]
   private var expiry: Task<Void, Never>?
   private var listeners: [UUID: (Set<UUID>) -> Void] = [:]
+  /// Hosts already logged as having no typing to tell, so it is said once.
+  private var loggedUnsupported: Set<HostID> = []
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "pane-typing")
 
@@ -131,9 +135,11 @@ final class PaneTypingMonitor {
     tasks[host] = Task { [weak self] in await self?.run(host) }
   }
 
-  /// A removed host: its subscription ends. Typing it told already runs out on its own.
+  /// A removed host: its subscription ends, on its daemon too. Typing it told already runs out on
+  /// its own.
   func forget(_ host: HostID) {
     tasks.removeValue(forKey: host)?.cancel()
+    loggedUnsupported.remove(host)
   }
 
   /// `sender` typed into `session` now: from the host's events, or the UI-test fixture's seam.
@@ -154,7 +160,7 @@ final class PaneTypingMonitor {
       expiry = nil
       return
     }
-    let delay = max(0, next.timeIntervalSince(now()))
+    let delay = max(.zero, next - now())
     let sleep = self.sleep
     expiry = Task { [weak self] in
       do { try await sleep(delay) } catch { return }
@@ -173,40 +179,58 @@ final class PaneTypingMonitor {
 
   private func run(_ host: HostID) async {
     var wait = ProgramStatusLimits.backoffFloor
+    let name = String(describing: host)
     while !Task.isCancelled {
+      // Whether the host has typing to tell: one that has none is asked again only on a new
+      // connection, never on a timer.
+      var unsupported = false
       do {
         let connection = try await connect(host)
         let (events, continuation) = AsyncStream<TerminalInputEvent>.makeStream()
         let availability = try await connection.subscribeTerminalInput {
           continuation.yield($0)
         }
-        guard !Task.isCancelled else { return }
         switch availability {
-        case .available:
+        case .available(let subscription):
           wait = ProgramStatusLimits.backoffFloor
-          for await event in events {
-            guard !Task.isCancelled else { return }
-            guard case .input(let session, let sender) = event else { break }
-            typed(into: session, by: sender)
+          // Ended on the daemon as well when this stops listening (the host forgotten), so its
+          // place there is free at once; a stream that ends on its own (`.lost`) needs nothing.
+          await withTaskCancellationHandler {
+            for await event in events {
+              guard case .input(let session, let sender) = event else { break }
+              typed(into: session, by: sender)
+            }
+          } onCancel: {
+            subscription.end()
           }
+          guard !Task.isCancelled else { return }
         case .refused(let reason):
           Self.logger.error(
-            "typing: \(String(describing: host), privacy: .public) refused: \(reason, privacy: .public)"
-          )
+            "typing: \(name, privacy: .public) refused: \(reason, privacy: .public)")
         case .unsupported:
-          // A daemon is replaced only by an app update, which relaunches this monitor too; a
-          // remote host's may be upgraded by a later connect, so look again now and then.
-          wait = ProgramStatusLimits.backoffCeiling
+          unsupported = true
+          if loggedUnsupported.insert(host).inserted {
+            Self.logger.info("typing: \(name, privacy: .public) has no typing to tell")
+          }
         }
+      } catch is CancellationError {
+        return
       } catch {
-        // Not connected: try again after the backoff, or once the link is back.
+        Self.logger.info(
+          "typing: \(name, privacy: .public) not followed: \(String(describing: error), privacy: .public)"
+        )
       }
+      guard !Task.isCancelled else { return }
       let (backoff, reconnected, delay) = (self.backoff, self.reconnected, wait)
-      await withTaskGroup(of: Void.self) { group in
-        group.addTask { try? await backoff(delay) }
-        group.addTask { await reconnected(host) }
-        await group.next()
-        group.cancelAll()
+      if unsupported {
+        await reconnected(host)
+      } else {
+        await withTaskGroup(of: Void.self) { group in
+          group.addTask { try? await backoff(delay) }
+          group.addTask { await reconnected(host) }
+          await group.next()
+          group.cancelAll()
+        }
       }
       guard !Task.isCancelled else { return }
       wait = min(wait * 2, ProgramStatusLimits.backoffCeiling)
