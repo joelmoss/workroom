@@ -46,7 +46,7 @@ struct WindowBackgroundThemer: NSViewRepresentable {
     guard let window else { return }
     // The background is the part every themed window wants; everything below it takes the title bar
     // over, which a window with a normal title bar must not do.
-    window.backgroundColor = ThemeService.shared.tokens.nsPanel
+    window.backgroundColor = ThemeFill.panel.nsColor()
     guard takesOverTitlebar else { return }
     // Content extends up under the (transparent) title bar so the custom bar can be drawn as the
     // top strip of the content at any height — see `WorkroomTitlebar` / `TitlebarBars`.

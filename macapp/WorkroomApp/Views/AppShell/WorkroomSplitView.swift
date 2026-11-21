@@ -412,7 +412,7 @@ struct WorkroomPaneCardBackground: View {
 
   var body: some View {
     ZStack {
-      tokens.panel
+      Rectangle().fill(ThemeFill.panel)
       activeState == .inactive || !highlighted
         ? tokens.splitGroupFill : tokens.splitGroupFocusedFill
     }

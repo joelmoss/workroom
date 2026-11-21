@@ -62,7 +62,7 @@ struct CreationPane: View {
       }
       .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: run.outcome)
     }
-    .background(tokens.panel)
+    .background(ThemeFill.panel)
     // Return and Escape reach the footer only while focus is inside this pane (D16): another pane's
     // failed create never answers them, as a window-wide `.keyboardShortcut` would.
     // Return answers the primary. Approving a script is never a keypress away: that is the
@@ -574,7 +574,7 @@ private struct CreationDoneFooter: View {
       .padding(.horizontal, inset)
       .padding(.vertical, 12)
     }
-    .background(tokens.panel)
+    .background(ThemeFill.panel)
   }
 }
 

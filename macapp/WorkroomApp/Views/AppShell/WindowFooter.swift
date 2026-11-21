@@ -33,7 +33,7 @@ struct WindowFooter: View {
     .lineLimit(1)
     .frame(height: Self.height)
     .padding(.bottom, 4)
-    .background(tokens.panel)
+    .background(ThemeFill.panel)
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("window.footer")
   }

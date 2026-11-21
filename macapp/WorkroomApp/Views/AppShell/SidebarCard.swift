@@ -2,23 +2,21 @@ import SwiftUI
 
 /// Shared themed material for sidebar cards and pane footers.
 struct SidebarBackground: View {
-  @Environment(\.themeTokens) private var tokens
-
   var body: some View {
     VisualEffectView()
-      .overlay(tokens.panel.opacity(0.7))
+      .overlay(ThemeFill.panel.opacity(0.7))
   }
 }
 
 extension View {
-  /// The floating-card chrome for the edge-reveal panels: a rounded `tokens.bg` card with a hairline
+  /// The floating-card chrome for the edge-reveal panels: a rounded `ThemeFill.background` card with a hairline
   /// border all the way around and a soft shadow, inset from its container by `margin`. macOS already
   /// renders the *docked* sidebar/inspector columns as inset cards, so this is applied only to the
   /// reveal overlays (which get no native card) to match that pinned look.
   // Radius + margins are tuned to match macOS's native docked sidebar card (the reveal is the only
   // caller; the docked columns use the system card). `topMargin` defaults to `margin` but can be
   // reduced so the reveal extends a little higher, to line up with the native card's top.
-  // `vibrant` swaps the opaque `tokens.bg` fill for the system `.sidebar` vibrancy material (see
+  // `vibrant` swaps the opaque `ThemeFill.background` fill for the system `.sidebar` vibrancy material (see
   // `VisualEffectView`) — the right inspector opts in so it reads as the same translucent surface
   // as the native left sidebar column. The left reveal stays opaque (it matches the native left
   // column, which is unchanged).
@@ -56,7 +54,7 @@ private struct SidebarCard: ViewModifier {
         if vibrant {
           SidebarBackground()
         } else {
-          tokens.bg
+          Rectangle().fill(ThemeFill.background)
         }
       }
       .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))

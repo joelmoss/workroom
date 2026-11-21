@@ -57,7 +57,7 @@ struct ActivityBar: View {
     .frame(maxHeight: .infinity)
     // Not under the title bar: a fill there leaves the bar out of the window's drag region — see
     // `RootView.detail`.
-    .background(tokens.panel, ignoresSafeAreaEdges: [])
+    .background(ThemeFill.panel, ignoresSafeAreaEdges: [])
   }
 
   /// Whether the inspector's current target has an uncommitted working tree — drives the Changes

@@ -21,8 +21,6 @@ struct RootView: View {
   @Environment(\.openSettings) private var openSettings
   /// Drives the title-bar accessory's dim while a dialog is up, matched to `DialogOverlay`'s backdrop.
   @Environment(\.colorScheme) private var colorScheme
-  /// Injected by `RootWindow` (`themeTokensRoot()`), above this view.
-  @Environment(\.themeTokens) private var tokens
   @Default(.theme) private var theme
   /// Whether the right-hand inspector (Changes / Files / Pull Request) is open. `@Default` (not
   /// `@State`) so the View-menu command (WorkroomCommands) toggles the same value.
@@ -537,7 +535,7 @@ struct RootView: View {
     // Not under the title bar (`ignoresSafeAreaEdges: []`): SwiftUI counts a fill there as not-the-drag
     // region, and AppKit only zooms the window on a title-bar double-click inside the drag region. The
     // window background behind the bar is already this colour (`WindowBackgroundThemer`).
-    .background(tokens.panel, ignoresSafeAreaEdges: [])
+    .background(ThemeFill.panel, ignoresSafeAreaEdges: [])
   }
 
   /// The content-local point for a chip drag at `global`, or nil when the cursor is still over the bar
