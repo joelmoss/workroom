@@ -285,6 +285,7 @@
       "source": "https://github.com/vancluever/z2d/tree/8787d71bac42d9aab00428ccb37a4fd453418761",
       "ships": "app",
       "note": "Its Source Code Form, unmodified, is available at the source above (MPL-2.0 section 3.2).",
+      "review": "MPL-2.0 is file-level copyleft: Workroom ships z2d unmodified, in libghostty, and names where its source is.",
       "files": ["third-party/licenses/z2d/LICENSE", "third-party/licenses/z2d/COPYING"],
       "pin": {"file": "vcs/scripts/build-ghostty-vt.sh", "pattern": "GHOSTTY_SHA=\"([^\"]+)\"", "value": "ea8b12a8a"}
     },
@@ -373,7 +374,7 @@
       "source": "https://github.com/ibrahimcetin/libgit2/tree/1.9.2",
       "ships": "app",
       "swiftpm": {"identity": "libgit2", "revision": "52287b0914f300f916b58fec80e13d8dd8f6824f"},
-      "note": "COPYING is libgit2's whole licence file: GPL-2.0 with the linking exception, the terms of the code it bundles, and the LGPL-2.1 text at its end. Its bundled xdiff (LibXDiff, Copyright (C) 2003 Davide Libenzi) is LGPL-2.1-or-later and statically linked into the app. Its source, as built, is deps/xdiff of libgit2 1.9.2, commit 52287b0914f300f916b58fec80e13d8dd8f6824f: https://github.com/ibrahimcetin/libgit2/tree/52287b0914f300f916b58fec80e13d8dd8f6824f/deps/xdiff",
+      "note": "COPYING is libgit2's whole licence file: GPL-2.0 with the linking exception, the terms of the code it bundles, and the LGPL-2.1 text at its end. Its bundled xdiff (LibXDiff, Copyright (C) 2003 Davide Libenzi) is LGPL-2.1-or-later and statically linked into the app. Its source, as built, is deps/xdiff of libgit2 1.9.2, commit 52287b0914f300f916b58fec80e13d8dd8f6824f: https://github.com/ibrahimcetin/libgit2/tree/52287b0914f300f916b58fec80e13d8dd8f6824f/deps/xdiff. To relink the app with a modified xdiff, take Workroom's own source for the release at https://github.com/joelmoss/workroom at that release's tag (vX.Y.Z; a Nightly names its commit in its release notes), point the libgit2 package in macapp/Packages/WorkroomGit/Package.swift at a libgit2 checkout holding the modified xdiff, and build the app with `make app-build` (or `make app-release` for a signed build), as CONTRIBUTING.md describes.",
       "review": "libgit2 is GPL-2.0 with its linking exception, and its bundled xdiff (deps/xdiff, statically linked) is LGPL-2.1-or-later. Owner, 2026-11-21: ship the LGPL-2.1 text and name xdiff's source.",
       "files": ["third-party/licenses/libgit2/COPYING"]
     },
@@ -503,12 +504,12 @@
     },
     {
       "id": "pele",
-      "name": "Pele (Markdown preview diagrams)",
-      "version": "1.8.0",
-      "license": "MIT",
+      "name": "Pele (Markdown preview diagrams), with Lucide's rotate-ccw icon",
+      "version": "1.8.0, Lucide 1.14.0",
+      "license": "MIT AND ISC",
       "source": "https://github.com/obsidianmd/pele/tree/1.8.0",
       "ships": "app",
-      "note": "pele.global.js bundles no third-party code: Pele 1.8.0 has no runtime dependencies, and its devDependencies are build and test tools (checked against its package.json and sources at 1.8.0).",
+      "note": "pele.global.js carries Lucide's rotate-ccw icon (https://lucide.dev, ISC), whose notice is in Pele's licence file below. It bundles no other third-party code: Pele 1.8.0 has no runtime dependencies, and its devDependencies are build and test tools (checked against its package.json and sources at 1.8.0).",
       "files": ["third-party/licenses/pele/LICENSE"],
       "pin": {"file": "macapp/Resources/markdown/VENDOR.md", "pattern": "\\| `pele\\.global\\.js` \\| pele \\| ([^ ]+) \\|", "value": "1.8.0"}
     }

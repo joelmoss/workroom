@@ -46,8 +46,11 @@ maintainer follows.
 - **Xcode 27.1**, the version CI, Nightly and Release build with.
 - **[XcodeGen](https://github.com/yonaskolb/XcodeGen)** (`brew install xcodegen`) — the `.xcodeproj`
   is generated from `macapp/project.yml`, not checked in.
-- **Rust** (rustup `stable`) — the app build compiles the embedded `workroomd` from the `vcs/` workspace
-  (`macapp/Scripts/build-daemon.sh`).
+- **Rust 1.99.1** through rustup (`rustup toolchain install 1.99.1`, then `rustup target add
+  --toolchain 1.99.1` the darwin and `*-unknown-linux-musl` targets you build) — the app build compiles
+  the embedded `workroomd` from the `vcs/` workspace (`macapp/Scripts/build-daemon.sh`) on
+  `mk/vcs.mk`'s `VCS_RUST`, the Rust its third-party notices describe; a Release or Nightly build
+  refuses any other.
 - **Zig 0.17.1** (installed through mise when it is available) — `xcodegen generate` builds the pinned
   Ghostty on its first run, which also needs Xcode's Metal toolchain (the build downloads it, about
   840 MB, if it is missing).
@@ -78,6 +81,12 @@ and Linux Cargo output and credentials are separate from the Mac's. A working `c
 or Podman runtime is required; the compiler container gets 4 GB of memory. The command fails rather
 than reporting a skipped check as a pass.
 On Linux it runs the canonical gate natively, with its normal Rust/Zig prerequisites.
+
+**To change a dependency** (`vcs/Cargo.lock`, a Swift package, a vendored library): **cargo-about
+0.9.3** for `make notices` and `make notices-check`, which `make pre-push` runs too
+(`cargo install --locked --features cli cargo-about@0.9.3`, or Homebrew's `cargo-about` when it is
+that version; no mise needed). Run `make notices` after the change and commit the two notices files
+it rewrites; CI's `rust` job fails while they are stale.
 
 **To change a GitHub workflow:** **`jactionlint` 2.5.0** for `make actions-lint`
 (`go install github.com/jdx/jactionlint/v2/cmd/jactionlint@v2.5.0`, or

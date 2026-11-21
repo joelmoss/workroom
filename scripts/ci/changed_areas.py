@@ -45,19 +45,20 @@ RULES = (
       ".github/actions/import-signing-certificate/*", ".github/dependabot.yml",
       ".github/CODEOWNERS", ".github/PULL_REQUEST_TEMPLATE.md", ".github/ISSUE_TEMPLATE/*"),
      frozenset()),
-    # Only the macOS jobs run `make` (the cli and Rust jobs call go and cargo directly), and every
-    # make parses every mk file: a setting in any of them reaches the app targets, and
+    # The macOS jobs and the rust job's `make notices-check` run `make` (the cli job and the rust
+    # job's other steps call go and cargo directly), and every make parses every mk file: a setting
+    # in any of them reaches those targets, mk/vcs.mk's VCS_RUST is a version the notices pin, and
     # test-invariants_test.sh (app-scripts) reads every file make reads.
-    # The rust job runs `make notices-check` from this one.
-    (("mk/notices.mk",), {"rust", "packages", "app", "scripts"}),
-    (("Makefile", "mk/*"), {"packages", "app", "scripts"}),
+    (("Makefile", "mk/*"), {"rust", "packages", "app", "scripts"}),
     ((".github/*",), ALL),
-    # What the rust job's notices check reads (#714): its inputs and the app's copy, and the
-    # version lines components.json pins. Each also runs the jobs its own tree does.
+    # What the rust job's notices check reads (#714): its inputs and the app's copy, the licence
+    # files components.json names and the version lines it pins. Each also runs the jobs its own
+    # tree does. test_changed_areas.py checks every file components.json names is covered.
     (("third-party/*", "scripts/third_party_notices.py"), {"rust"}),
     (("macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
       "macapp/Resources/THIRD-PARTY-NOTICES.txt", "macapp/Resources/markdown/VENDOR.md",
-      "macapp/Resources/ghostty/themes/SOURCE.md", "macapp/Resources/ghostty/themes/LICENSE"),
+      "macapp/Resources/ghostty/themes/SOURCE.md", "macapp/Resources/ghostty/themes/LICENSE",
+      "macapp/Resources/ghostty/shell-integration/*/LICENSE"),
      {"rust", "app", "scripts"}),
     (("macapp/Packages/TreeSitter/VENDOR.md", "macapp/Packages/TreeSitter/lib/LICENSE",
       "macapp/Packages/SyntaxHighlighting/Grammars/*/VENDOR.md",

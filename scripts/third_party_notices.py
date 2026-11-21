@@ -42,14 +42,14 @@ OUTPUTS = {
 # The features the shipped binary is built with (macapp/Scripts/build-daemon.sh).
 FEATURES = "terminal-state"
 
-# The licences a component outside the crate graph may carry. A copyleft one needs a `review`
-# naming it, so it is never added quietly.
+# The licences a component outside the crate graph may carry. A copyleft one, weak copyleft
+# (MPL-2.0) included, needs a `review` naming it, so it is never added quietly.
 PERMISSIVE = {
     "MIT", "ISC", "Zlib", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "Unicode-3.0", "CC0-1.0",
-    "FTL", "libpng-2.0", "OFL-1.1", "MPL-2.0", "LicenseRef-KhronosFreeUse", "CC-BY-4.0",
-    "Unlicense", "LicenseRef-Powerline-Symbols",
+    "FTL", "libpng-2.0", "OFL-1.1", "LicenseRef-KhronosFreeUse", "CC-BY-4.0", "Unlicense",
+    "LicenseRef-Powerline-Symbols",
 }
-COPYLEFT = {"GPL-2.0-only", "GPL-3.0-or-later", "LGPL-2.1-or-later",
+COPYLEFT = {"GPL-2.0-only", "GPL-3.0-or-later", "LGPL-2.1-or-later", "MPL-2.0",
             "LicenseRef-libgit2-linking-exception"}
 
 RULE = "=" * 78
@@ -178,13 +178,17 @@ def check_grammars(manifest, root=ROOT):
 
 def run_cargo_about(cargo_about, version):
     """cargo-about's JSON for the shipped binary's dependency graph."""
-    reported = subprocess.run([cargo_about, "--version"], capture_output=True, text=True,
-                              check=True).stdout.split()
+    install = (f"Install it with `cargo install cargo-about --locked --features cli --version "
+               f"{version}`, or set CARGO_ABOUT to its path.")
+    try:
+        reported = subprocess.run([cargo_about, "--version"], capture_output=True, text=True,
+                                  check=True).stdout.split()
+    except (OSError, subprocess.CalledProcessError):
+        raise NoticeError(f"cannot run {cargo_about}. {install}") from None
     if reported[-1:] != [version]:
         raise NoticeError(
             f"{cargo_about} is {' '.join(reported)}; the notices are made with cargo-about "
-            f"{version}. Run: cargo install cargo-about --locked --features cli "
-            f"--version {version}")
+            f"{version}. {install}")
     # cargo-about reads every crate's sources offline, so the build is the same on every machine;
     # this fetches the crates of all four targets first, which a host's own build does not.
     subprocess.run(["cargo", "fetch", "--locked", "--manifest-path", str(CRATE_MANIFEST)],
@@ -241,9 +245,10 @@ def crate_sections(about, supplements, linked=None, root=ROOT):
     """The crates' notices: one section per licence text, naming every crate under it.
 
     Only cargo-about's crates that are also in `linked` (all of them, when it is None) are named,
-    less Workroom's own (no registry source), and each of those must have a licence. A text cargo-about found no file for
-    is the bare licence, without the crate's copyright: such a crate needs a supplement, which
-    names the licence it takes (one the crate offers) and the files that hold it."""
+    less Workroom's own (no registry source), and each of those must have a licence. A text
+    cargo-about found no file for is the bare licence, without the crate's copyright: such a crate
+    needs a supplement, which names the licence it takes (one the crate offers) and the files that
+    hold it."""
     own = {c["package"]["id"] for c in about["crates"] if c["package"]["source"] is None}
 
     def shipped(crate):

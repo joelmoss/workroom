@@ -12,7 +12,8 @@ class PinParsingTests(unittest.TestCase):
         pins = tc.parse_pins()
         self.assertRegex(pins["go"], r"^\d+\.\d+(\.\d+)?$")
         self.assertEqual(pins["rust"], make_value("VCS_RUST"))
-        for name in ("golangci-lint", "shellcheck", "jactionlint"):
+        self.assertEqual(pins["cargo-about"], make_value("CARGO_ABOUT_VERSION"))
+        for name in ("golangci-lint", "shellcheck", "jactionlint", "cargo-about"):
             with self.subTest(name=name):
                 self.assertRegex(pins[name], r"^\d+\.\d+\.\d+$")
         self.assertRegex(pins["xcode"], r"^\d+(\.\d+)*$")

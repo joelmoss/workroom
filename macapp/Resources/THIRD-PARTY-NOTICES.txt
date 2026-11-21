@@ -7648,7 +7648,13 @@ the terms of the code it bundles, and the LGPL-2.1 text at its end. Its
 bundled xdiff (LibXDiff, Copyright (C) 2003 Davide Libenzi) is
 LGPL-2.1-or-later and statically linked into the app. Its source, as built, is
 deps/xdiff of libgit2 1.9.2, commit 52287b0914f300f916b58fec80e13d8dd8f6824f:
-https://github.com/ibrahimcetin/libgit2/tree/52287b0914f300f916b58fec80e13d8dd8f6824f/deps/xdiff
+https://github.com/ibrahimcetin/libgit2/tree/52287b0914f300f916b58fec80e13d8dd8f6824f/deps/xdiff.
+To relink the app with a modified xdiff, take Workroom's own source for the
+release at https://github.com/joelmoss/workroom at that release's tag (vX.Y.Z;
+a Nightly names its commit in its release notes), point the libgit2 package in
+macapp/Packages/WorkroomGit/Package.swift at a libgit2 checkout holding the
+modified xdiff, and build the app with `make app-build` (or `make app-release`
+for a signed build), as CONTRIBUTING.md describes.
 ------------------------------------------------------------------------------
 
  libgit2 is Copyright (C) the libgit2 contributors,
@@ -10071,12 +10077,13 @@ Redistribution and use in source and binary forms, with or without modification,
 This software is provided by the copyright holders and contributors “as is” and any express or implied warranties, including, but not limited to, the implied warranties of merchantability and fitness for a particular purpose are disclaimed. In no event shall the copyright owner or contributors be liable for any direct, indirect, incidental, special, exemplary, or consequential damages (including, but not limited to, procurement of substitute goods or services; loss of use, data, or profits; or business interruption) however caused and on any theory of liability, whether in contract, strict liability, or tort (including negligence or otherwise) arising in any way out of the use of this software, even if advised of the possibility of such damage.
 
 ==============================================================================
-Pele (Markdown preview diagrams) 1.8.0
-Licence: MIT
+Pele (Markdown preview diagrams), with Lucide's rotate-ccw icon 1.8.0, Lucide 1.14.0
+Licence: MIT AND ISC
 Source: https://github.com/obsidianmd/pele/tree/1.8.0
-pele.global.js bundles no third-party code: Pele 1.8.0 has no runtime
-dependencies, and its devDependencies are build and test tools (checked
-against its package.json and sources at 1.8.0).
+pele.global.js carries Lucide's rotate-ccw icon (https://lucide.dev, ISC),
+whose notice is in Pele's licence file below. It bundles no other third-party
+code: Pele 1.8.0 has no runtime dependencies, and its devDependencies are
+build and test tools (checked against its package.json and sources at 1.8.0).
 ------------------------------------------------------------------------------
 
 MIT License
@@ -11856,6 +11863,32 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ==============================================================================
+Rust crates under MIT: aho-corasick 1.1.5, byteorder 1.5.0, jiff 0.2.42, jiff-core 0.1.4, memchr 2.8.3, walkdir 2.5.0
+------------------------------------------------------------------------------
+
+The MIT License (MIT)
+
+Copyright (c) 2015 Andrew Gallant
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+==============================================================================
 Rust crates under MIT: arc-swap 1.9.5
 ------------------------------------------------------------------------------
 
@@ -11912,7 +11945,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ==============================================================================
-Rust crates under MIT: bitflags 2.13.2, log 0.4.35, regex-automata 0.4.18
+Rust crates under MIT: bitflags 2.13.2, log 0.4.35, regex-automata 0.4.18, regex-syntax 0.8.11
 ------------------------------------------------------------------------------
 
 Copyright (c) 2014 The Rust Project Developers
@@ -11948,32 +11981,6 @@ Rust crates under MIT: bstr 1.13.1
 The MIT License (MIT)
 
 Copyright (c) 2018-2019 Andrew Gallant
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-==============================================================================
-Rust crates under MIT: byteorder 1.5.0, jiff 0.2.42, jiff-core 0.1.4, memchr 2.8.3, walkdir 2.5.0
-------------------------------------------------------------------------------
-
-The MIT License (MIT)
-
-Copyright (c) 2015 Andrew Gallant
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

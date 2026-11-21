@@ -1,6 +1,7 @@
 """Regression tests for the path filter that decides which CI jobs a pull request runs."""
 
 import io
+import json
 import re
 import unittest
 from contextlib import redirect_stdout
@@ -105,12 +106,13 @@ class ChangedAreasTests(unittest.TestCase):
                                 ".github/PULL_REQUEST_TEMPLATE.md",
                                 ".github/ISSUE_TEMPLATE/bug_report.yml"), set())
 
-    def test_every_make_file_runs_the_macos_jobs(self):
-        # Every make parses every mk file, and test-invariants_test.sh reads each one make reads.
+    def test_every_make_file_runs_the_jobs_that_run_make(self):
+        # Every make parses every mk file, test-invariants_test.sh reads each one make reads, and
+        # the rust job runs `make notices-check`.
         for path in ("Makefile", "mk/app.mk", "mk/cli.mk", "mk/docs.mk", "mk/vcs.mk",
-                     "mk/actions.mk", "mk/new.mk"):
+                     "mk/actions.mk", "mk/notices.mk", "mk/new.mk"):
             with self.subTest(path=path):
-                self.assertEqual(needed(path), {"packages", "app", "scripts"})
+                self.assertEqual(needed(path), {"rust", "packages", "app", "scripts"})
 
     def test_new_plumbing_runs_everything(self):
         for path in (".github/workflows/ci-new.yml", ".github/actions/new/action.yml",
@@ -160,10 +162,28 @@ class ChangedAreasTests(unittest.TestCase):
                      "macapp/Resources/markdown/VENDOR.md"):
             with self.subTest(path=path):
                 self.assertEqual(needed(path), {"rust", "app", "scripts"})
-        for path in ("mk/notices.mk", "macapp/Packages/TreeSitter/VENDOR.md",
+        for path in ("macapp/Packages/TreeSitter/VENDOR.md",
                      "macapp/Packages/SyntaxHighlighting/Grammars/tree-sitter-css/VENDOR.md"):
             with self.subTest(path=path):
                 self.assertEqual(needed(path), {"rust", "packages", "app", "scripts"})
+
+    def test_every_file_the_notices_check_reads_runs_the_rust_job(self):
+        # The licence files and pinned version lines components.json names, and the generated
+        # files: a change to any of them can make `make notices-check` fail (#714).
+        root = Path(__file__).resolve().parents[2]
+        manifest = json.loads((root / "third-party" / "components.json").read_text())
+        paths = {"vcs/Cargo.lock", "third-party/about.toml",
+                 "vcs/crates/workroomd/THIRD-PARTY-NOTICES.txt",
+                 "macapp/Resources/THIRD-PARTY-NOTICES.txt",
+                 "macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/"
+                 "Package.resolved"}
+        for component in manifest["components"]:
+            paths.update(component["files"])
+            if "pin" in component:
+                paths.add(component["pin"]["file"])
+        for path in sorted(paths):
+            with self.subTest(path=path):
+                self.assertIn("rust", needed(path))
 
     def test_the_apps_and_the_daemons_own_docs_run_nothing_filtered(self):
         self.assertEqual(needed("macapp/AGENTS.md", "macapp/README.md", "macapp/QA-libghostty.md",
