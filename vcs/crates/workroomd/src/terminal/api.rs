@@ -1359,7 +1359,9 @@ mod events;
 mod send;
 mod wait;
 
-pub use send::MAX_BYTES as SEND_MAX_BYTES;
+pub use send::{
+    DEADLINE as SEND_DEADLINE, DEADLINE_GRACE as SEND_DEADLINE_GRACE, MAX_BYTES as SEND_MAX_BYTES,
+};
 
 #[cfg(test)]
 mod tests;

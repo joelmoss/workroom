@@ -532,7 +532,9 @@ fn every_refusal_reads_as_before() {
         ),
         (
             HandOffError::RepositoryBusy,
-            "a repository command is still running; try again when it finishes".into(),
+            "a repository command, or a send typing into a session, is still running; try again \
+             when it finishes"
+                .into(),
         ),
         (
             HandOffError::FilesystemStuck,

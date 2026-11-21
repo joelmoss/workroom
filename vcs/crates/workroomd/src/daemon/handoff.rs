@@ -75,7 +75,10 @@ pub enum HandOffError {
     },
     #[error("another hand-off is in progress")]
     InProgress,
-    #[error("a repository command is still running; try again when it finishes")]
+    #[error(
+        "a repository command, or a send typing into a session, is still running; try again when \
+         it finishes"
+    )]
     RepositoryBusy,
     #[error("a filesystem operation is still stuck on a mount; try again when it returns")]
     FilesystemStuck,
@@ -161,6 +164,11 @@ const QUIET_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long a hand-off waits to stop every session (`SessionStore::frozen`) before refusing. Every
 /// list and attach waits behind it meanwhile.
 const FREEZE_TIMEOUT: Duration = Duration::from_millis(500);
+/// How long a hand-off gives the programs whose paste a `terminal.send` left open (#689) to take
+/// its end (`SessionStore::close_owed_pastes`). One that hasn't by then has read nothing for the
+/// pty's write deadline and more, and its paste stays open in the next program, which owes it
+/// nothing.
+const PASTE_CLOSE_TIMEOUT: Duration = Duration::from_millis(100);
 /// What encoding and writing the table may take (`replace`), before `CHECK_TIMEOUT` starts. The
 /// table carries every session's screen, up to `HANDOFF_TOTAL_BYTES` (16 MiB) and more where a
 /// screen alone is over its share.
@@ -175,6 +183,7 @@ const TABLE_WRITE_ALLOWANCE: Duration = Duration::from_millis(250);
 const APP_TIMEOUT: Duration = Duration::from_secs(7);
 const _: () = assert!(
     QUIET_TIMEOUT.as_millis()
+        + PASTE_CLOSE_TIMEOUT.as_millis()
         + FREEZE_TIMEOUT.as_millis()
         + crate::terminal::session::HANDOFF_FORMAT_DEADLINE.as_millis()
         + crate::terminal::session::HANDOFF_IMAGE_DEADLINE.as_millis()
@@ -523,6 +532,12 @@ pub fn hand_off(
     // through.
     if crate::vcs::file::filesystem_operations_left_behind() > 0 {
         return Err(HandOffError::FilesystemStuck);
+    }
+    // A `terminal.send` holds a permit while it types (#689), so `Quiet` waited for every one, and
+    // none starts now. What one left owed, the end of a paste its program stopped reading inside,
+    // goes now if the program takes it: the next program knows nothing of it.
+    if !sessions.close_owed_pastes(Instant::now() + PASTE_CLOSE_TIMEOUT) {
+        crate::note!("hand-off: a paste a send left open could not be closed; it stays open");
     }
     // A kill on its own thread holds `TERMINATING` until its shell is gone, so `frozen` already
     // keeps the exec out of its SIGHUP grace. What is left is its acknowledgement, written after:

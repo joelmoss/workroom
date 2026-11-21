@@ -4084,6 +4084,99 @@ fn a_send_attaches_nothing_takes_no_size_and_gets_no_probes() {
     );
 }
 
+/// A send to a program reading slowly types for as long as it reads, up to the send's own
+/// deadline, past the CLI's usual 10 s wait for an answer: the CLI waits it out rather than call
+/// the daemon gone. A hand-off meanwhile waits for it, and is refused when it can't, rather than
+/// cut it off: every byte arrives.
+#[test]
+fn a_send_to_a_slow_reader_outlasts_ten_seconds_and_a_hand_off() {
+    const KIB: usize = 1024;
+    const CHUNKS: usize = 150;
+    let workspace = Workspace::new("api-send-slow");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut target = open(&socket, OTHER, "target", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+    // At most 1 KiB each tenth of a second, one read each, so 15 s and more for all of it.
+    let (ready, kept, counted) = (
+        workspace.dir.join("slow-ready"),
+        workspace.dir.join("slow-kept"),
+        workspace.dir.join("slow"),
+    );
+    type_line(
+        &mut target,
+        &format!(
+            "stty raw -echo; touch '{ready}'; : > '{kept}'; while [ $(wc -c < '{kept}') -lt {} \
+             ]; do dd bs={KIB} count=1 2>/dev/null >> '{kept}'; sleep 0.1; done; wc -c < \
+             '{kept}' > '{counted}'; stty sane",
+            CHUNKS * KIB,
+            ready = ready.display(),
+            kept = kept.display(),
+            counted = counted.display(),
+        ),
+    );
+    assert!(
+        wait_for(Duration::from_secs(20), || ready.exists()),
+        "the reader never started"
+    );
+    let started = std::time::Instant::now();
+    let mut send = Command::new(common::daemon_binary())
+        .args(["send", OTHER, "--stdin", "--json"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", std::env::temp_dir())
+        .env("WORKROOM_DAEMON", &socket)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run workroom send");
+    send.stdin
+        .take()
+        .expect("stdin")
+        .write_all("x".repeat(CHUNKS * KIB).as_bytes())
+        .expect("write stdin");
+
+    std::thread::sleep(Duration::from_secs(3));
+    let next = workspace.dir.join("next-workroom");
+    common::copy_daemon_binary(&next);
+    let refused = Command::new(common::daemon_binary())
+        .args(["hand-off", "--socket"])
+        .arg(&socket)
+        .arg("--binary")
+        .arg(&next)
+        .arg("--force")
+        .output()
+        .expect("hand-off");
+    let said = String::from_utf8_lossy(&refused.stdout).into_owned()
+        + &String::from_utf8_lossy(&refused.stderr);
+    let at = started.elapsed();
+    let sent = finished(send);
+    assert!(
+        !said.contains("handed off") && said.contains("a send typing into a session"),
+        "the hand-off went ahead mid-send, {at:?} in: {said}; the send: {} {} in {:?}",
+        sent.stdout,
+        sent.stderr,
+        started.elapsed()
+    );
+
+    assert_eq!(sent.code, 0, "{} {}", sent.stdout, sent.stderr);
+    assert!(
+        started.elapsed() > Duration::from_secs(10),
+        "the send was answered in {:?}, before the CLI's usual wait was up",
+        started.elapsed()
+    );
+    assert_eq!(sent.envelope()["bytes"], CHUNKS * KIB);
+    assert!(
+        wait_for(Duration::from_secs(20), || counted.exists()),
+        "the program never had all of it"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&counted).unwrap().trim(),
+        (CHUNKS * KIB).to_string()
+    );
+}
+
 /// One send types at most 1 MiB, whole: from stdin, exactly that much reaches the program, in
 /// chunked requests the CLI makes of it; a byte more is `TooLarge` (2) before any daemon is looked
 /// for, and so is that much with a key after it, which the daemon refuses.

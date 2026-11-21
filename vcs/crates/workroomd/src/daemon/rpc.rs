@@ -68,11 +68,11 @@ pub(crate) fn escaped_len(text: &str) -> usize {
 }
 /// The reassembled ceiling for a CHUNKED request, mirroring `MAX_RESPONSE` on the reply side. A
 /// single-envelope request is still bounded by `MAX_ENVELOPE_PAYLOAD` (1 MiB) as before.
-const MAX_REQUEST: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_REQUEST: usize = 16 * 1024 * 1024;
 /// First byte of a chunked request envelope. A whole request is JSON and therefore always starts
 /// `{`, so this is unambiguous — and it is what keeps an UNCHUNKED request byte-identical to what
 /// the previous protocol sent, rather than adding a header to every request to serve the rare one.
-const REQUEST_CHUNK_MARKER: u8 = 0x02;
+pub(crate) const REQUEST_CHUNK_MARKER: u8 = 0x02;
 /// Every byte buffered across all of ONE connection's partial requests. Per-stream caps alone would
 /// still allow 32 × `MAX_REQUEST` = 512 MiB of peer-controlled memory, which is not a bound worth
 /// having on a background daemon.

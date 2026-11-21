@@ -64,11 +64,59 @@ pub struct Pty {
     /// send and the program is quiet (`wake_reader`). Read end, then write end; `None` if the
     /// pipe could not be made, which costs that session's images and nothing else.
     wake: Option<(libc::c_int, libc::c_int)>,
-    /// Held by each `write_all`, so one writer's input is never split by another's: a client's
-    /// keystrokes never land inside a `terminal.send`'s bracketed paste (#689), nor one send
-    /// inside another, when the program reads slower than they come.
-    input: std::sync::Mutex<()>,
+    /// Held by each writer of input (`write_all`, `send`), so one writer's input is never split by
+    /// another's: a client's keystrokes never land inside a `terminal.send`'s bracketed paste
+    /// (#689), nor one send inside another, when the program reads slower than they come. It holds
+    /// what the next writer owes first: the end of a paste a send began and couldn't finish.
+    input: std::sync::Mutex<Input>,
 }
+
+/// A pty's input, between writers.
+#[derive(Debug, Default)]
+struct Input {
+    /// What is left of a bracketed paste's end (`CSI 201 ~`) that a send began the paste for and
+    /// stopped before writing: written first by the next writer, so nothing after it lands inside
+    /// the paste.
+    owed: Vec<u8>,
+}
+
+/// Why a send stopped before everything was written (`Pty::send`).
+#[derive(Debug)]
+pub enum Stop {
+    /// Another writer held the input until the send's deadline.
+    Turn,
+    /// The program read nothing for `WRITE_DEADLINE`.
+    Stalled,
+    /// The send's own deadline passed while the program was still reading.
+    Deadline,
+    /// The write failed: the program is gone, say.
+    Failed(std::io::Error),
+}
+
+/// A send that stopped: how many of its bytes went, why, and whether it left its paste open, its
+/// end owed to the next input (`Input::owed`).
+#[derive(Debug)]
+pub struct Stopped {
+    pub written: usize,
+    pub why: Stop,
+    pub paste_open: bool,
+}
+
+impl Stop {
+    /// As `write_all` has always reported it.
+    fn into_io(self) -> std::io::Error {
+        match self {
+            Stop::Failed(error) => error,
+            Stop::Turn | Stop::Deadline | Stop::Stalled => std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the shell stopped reading its input",
+            ),
+        }
+    }
+}
+
+/// The bracketed paste's end, which a paste a send began is owed.
+const PASTE_END: &[u8] = crate::terminal::keys::PASTE_END.as_bytes();
 
 impl Pty {
     /// Forks a child on a new pty and execs `program`.
@@ -262,7 +310,7 @@ impl Pty {
             master,
             pid,
             wake: wake_pipe(),
-            input: std::sync::Mutex::new(()),
+            input: std::sync::Mutex::default(),
         })
     }
 
@@ -279,7 +327,7 @@ impl Pty {
             master,
             pid,
             wake: wake_pipe(),
-            input: std::sync::Mutex::new(()),
+            input: std::sync::Mutex::default(),
         }
     }
 
@@ -508,20 +556,120 @@ impl Pty {
     /// wedged, and blocking the connection thread on it would stall every other frame from that
     /// client. Report it instead.
     ///
-    /// One writer at a time (`input`). The deadline is for reading nothing: it runs from when the
-    /// writer's turn comes, and again from each write the shell took, so a long paste (a
-    /// `terminal.send`'s 1 MiB, #689) to a program that reads it as fast as it can is never cut off
-    /// half-typed for taking longer than `WRITE_DEADLINE` in all.
+    /// One writer at a time (`input`), which first writes a paste's end a send left owed, so these
+    /// bytes never land inside that paste; while it can't, they are not written. The deadline is
+    /// for reading nothing: it runs from when the writer's turn comes, and again from each write
+    /// the shell took, so a long paste (a `terminal.send`'s 1 MiB, #689) to a program that reads it
+    /// as fast as it can is never cut off half-typed for taking longer than `WRITE_DEADLINE` in
+    /// all.
     pub fn write_all(&self, bytes: &[u8]) -> std::io::Result<()> {
-        let _turn = crate::util::lock_or_recover(&self.input);
-        let mut deadline = std::time::Instant::now() + WRITE_DEADLINE;
+        let mut input = crate::util::lock_or_recover(&self.input);
+        self.settle(&mut input, WRITE_DEADLINE, None)
+            .and_then(|()| self.write_until(bytes, WRITE_DEADLINE, None).1)
+            .map_err(Stop::into_io)
+    }
+
+    /// A `terminal.send`'s bytes (#689), of which `paste`, when given, is a bracketed paste, its
+    /// markers included: written as `write_all` writes, but by `until`, the send's own deadline,
+    /// its wait for its turn included. One that stops inside its paste closes it at once if the
+    /// program takes the end within `WRITE_DEADLINE`, else leaves the end owed to the next writer,
+    /// so nothing typed later lands inside the paste.
+    pub fn send(
+        &self,
+        bytes: &[u8],
+        paste: Option<std::ops::Range<usize>>,
+        until: std::time::Instant,
+    ) -> Result<(), Stopped> {
+        self.send_with(bytes, paste, WRITE_DEADLINE, until)
+    }
+
+    /// [`Pty::send`] with `idle` for `WRITE_DEADLINE`, so a test reaches it in less.
+    pub(crate) fn send_with(
+        &self,
+        bytes: &[u8],
+        paste: Option<std::ops::Range<usize>>,
+        idle: std::time::Duration,
+        until: std::time::Instant,
+    ) -> Result<(), Stopped> {
+        let stopped = |written, why| Stopped {
+            written,
+            why,
+            paste_open: false,
+        };
+        let mut input = loop {
+            if let Some(input) = crate::util::try_recover(self.input.try_lock()) {
+                break input;
+            }
+            if std::time::Instant::now() >= until {
+                return Err(stopped(0, Stop::Turn));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        };
+        self.settle(&mut input, idle, Some(until))
+            .map_err(|why| stopped(0, why))?;
+        let (written, result) = self.write_until(bytes, idle, Some(until));
+        let Err(why) = result else {
+            return Ok(());
+        };
+        let mut stop = stopped(written, why);
+        if let Some(paste) = paste.filter(|paste| written > paste.start && written < paste.end) {
+            // What is left of its end: all of it, or the rest of one cut inside it.
+            let end = paste.end - PASTE_END.len();
+            input.owed = bytes[written.max(end)..paste.end].to_vec();
+            stop.paste_open = self.settle(&mut input, idle, None).is_err();
+        }
+        Err(stop)
+    }
+
+    /// Writes what `input` owes, if anything, as [`Pty::write_until`] does; what is left of it stays
+    /// owed.
+    fn settle(
+        &self,
+        input: &mut Input,
+        idle: std::time::Duration,
+        until: Option<std::time::Instant>,
+    ) -> Result<(), Stop> {
+        if input.owed.is_empty() {
+            return Ok(());
+        }
+        let owed = std::mem::take(&mut input.owed);
+        let (written, result) = self.write_until(&owed, idle, until);
+        input.owed = owed[written..].to_vec();
+        result
+    }
+
+    /// For a hand-off (#689): writes a paste's end a send left owed, if the program takes it by
+    /// `until`, so the next program doesn't inherit a paste left open, which it would know nothing
+    /// of. Whether nothing is owed now. A writer holding the input owes nothing past its turn.
+    pub fn close_owed_paste(&self, until: std::time::Instant) -> bool {
+        let Some(mut input) = crate::util::try_recover(self.input.try_lock()) else {
+            return true;
+        };
+        let idle = until.saturating_duration_since(std::time::Instant::now());
+        self.settle(&mut input, idle, Some(until)).is_ok()
+    }
+
+    /// Writes `bytes`, retrying a short write or `EAGAIN`, until the program has read nothing for
+    /// `idle` or `until` passes: how many went, and why it stopped, if it did.
+    fn write_until(
+        &self,
+        bytes: &[u8],
+        idle: std::time::Duration,
+        until: Option<std::time::Instant>,
+    ) -> (usize, Result<(), Stop>) {
+        let mut deadline = std::time::Instant::now() + idle;
         let mut written = 0;
         while written < bytes.len() {
             match self.write(&bytes[written..]) {
-                Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+                Ok(0) => {
+                    return (
+                        written,
+                        Err(Stop::Failed(std::io::ErrorKind::WriteZero.into())),
+                    );
+                }
                 Ok(n) => {
                     written += n;
-                    deadline = std::time::Instant::now() + WRITE_DEADLINE;
+                    deadline = std::time::Instant::now() + idle;
                     continue;
                 }
                 Err(e)
@@ -529,17 +677,18 @@ impl Pty {
                         e.kind(),
                         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
                     ) => {}
-                Err(e) => return Err(e),
+                Err(e) => return (written, Err(Stop::Failed(e))),
             }
-            if std::time::Instant::now() >= deadline {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "the shell stopped reading its input",
-                ));
+            let now = std::time::Instant::now();
+            if until.is_some_and(|until| now >= until) {
+                return (written, Err(Stop::Deadline));
+            }
+            if now >= deadline {
+                return (written, Err(Stop::Stalled));
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        Ok(())
+        (written, Ok(()))
     }
 
     /// Blocks until the child exits, returning its status. Returns `None` if it was already reaped.

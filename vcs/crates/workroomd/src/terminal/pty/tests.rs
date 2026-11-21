@@ -414,6 +414,251 @@ fn input_written_to_the_master_reaches_the_child() {
     assert!(output.contains("got:ping"), "got {output:?}");
 }
 
+/// A directory this run made itself (an exclusive `create_dir`), and only that one is removed when
+/// it is dropped.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Scratch {
+        let base = std::env::temp_dir();
+        let dir = (0..)
+            .map(|n| base.join(format!("wr-pty-{name}-{}-{n}", std::process::id())))
+            .find(|dir| std::fs::create_dir(dir).is_ok())
+            .unwrap();
+        Scratch(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A pty whose program puts its terminal in raw mode, says `READY` and then runs `then`, as typed
+/// input reaches it whole once it has said so.
+fn raw(then: &str) -> Pty {
+    let pty = spawn(
+        OsStr::new("/bin/sh"),
+        &[
+            OsString::from("-c"),
+            OsString::from(format!("stty raw -echo; printf READY; {then}")),
+        ],
+        &env(),
+        None,
+        80,
+        24,
+    )
+    .expect("spawn");
+    assert!(read_until(&pty, "READY", Duration::from_secs(10)).contains("READY"));
+    pty
+}
+
+/// Waits until `path` holds what `done` says, within 20 s, and returns it.
+fn file_until(path: &std::path::Path, what: &str, done: impl Fn(&[u8]) -> bool) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let held = std::fs::read(path).unwrap_or_default();
+        if done(&held) {
+            return held;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{what} never came: {} bytes",
+            held.len()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A send that waits on a program that isn't reading yet. Each is far more than a pty's input
+/// queue holds, so each write is cut short many times before the program takes the rest.
+const MORE_THAN_THE_QUEUE: usize = 256 * 1024;
+
+/// Two sends, and a client typing, take turns (#689): what each writes reaches the program whole,
+/// one after another, however often the program's slow reading cuts their writes short, and the
+/// typing waits for the send under way.
+#[test]
+fn writers_of_input_take_turns_and_never_interleave() {
+    let scratch = Scratch::new("turns");
+    let (out, go) = (scratch.0.join("out"), scratch.0.join("go"));
+    let total = 2 * MORE_THAN_THE_QUEUE + 3;
+    let pty = std::sync::Arc::new(raw(&format!(
+        "while [ ! -e '{}' ]; do sleep 0.02; done; head -c {total} > '{}'",
+        go.display(),
+        out.display()
+    )));
+    let until = Instant::now() + Duration::from_secs(30);
+    let sends: Vec<_> = (*b"AB")
+        .into_iter()
+        .map(|byte| {
+            let pty = std::sync::Arc::clone(&pty);
+            std::thread::spawn(move || {
+                pty.send(&vec![byte; MORE_THAN_THE_QUEUE], None, until)
+                    .is_ok()
+            })
+        })
+        .collect();
+    // Each waits on a program that reads nothing yet, its first write cut short.
+    std::thread::sleep(Duration::from_millis(200));
+    let typing = {
+        let pty = std::sync::Arc::clone(&pty);
+        std::thread::spawn(move || pty.write_all(b"KEY").is_ok())
+    };
+    std::thread::sleep(Duration::from_millis(200));
+    std::fs::write(&go, b"").expect("go");
+    for send in sends {
+        assert!(send.join().unwrap(), "a send stopped");
+    }
+    assert!(typing.join().unwrap(), "the typing stopped");
+    let read = file_until(&out, "every byte", |held| held.len() == total);
+    // The typing after one send, before or after the other; each send in one piece.
+    let at = read
+        .windows(3)
+        .position(|window| window == b"KEY")
+        .expect("the typing");
+    assert!(
+        at == MORE_THAN_THE_QUEUE || at == 2 * MORE_THAN_THE_QUEUE,
+        "the typing landed inside a send, at {at}"
+    );
+    let sent = [&read[..at], &read[at + 3..]].concat();
+    let runs: Vec<(u8, usize)> = sent
+        .chunk_by(|a, b| a == b)
+        .map(|run| (run[0], run.len()))
+        .collect();
+    assert!(
+        runs.len() == 2 && runs.iter().all(|(_, len)| *len == MORE_THAN_THE_QUEUE),
+        "the sends interleaved: {:?}",
+        &runs[..runs.len().min(8)]
+    );
+}
+
+/// A paste whose program stops reading inside it owes the paste's end (#689): what is typed next
+/// waits for it, and comes after it, never inside the paste.
+#[test]
+fn a_paste_cut_off_by_a_program_that_stopped_reading_is_closed_before_anything_else() {
+    let scratch = Scratch::new("owed");
+    let (out, go) = (scratch.0.join("out"), scratch.0.join("go"));
+    let pty = std::sync::Arc::new(raw(&format!(
+        "while [ ! -e '{}' ]; do sleep 0.02; done; exec cat > '{}'",
+        go.display(),
+        out.display()
+    )));
+    let paste = [
+        b"\x1b[200~".as_slice(),
+        &vec![b'x'; MORE_THAN_THE_QUEUE],
+        PASTE_END,
+    ]
+    .concat();
+    let stopped = pty
+        .send_with(
+            &paste,
+            Some(0..paste.len()),
+            Duration::from_millis(300),
+            Instant::now() + Duration::from_secs(30),
+        )
+        .expect_err("the program reads nothing yet");
+    assert!(matches!(stopped.why, Stop::Stalled), "{stopped:?}");
+    assert!(stopped.paste_open, "{stopped:?}");
+    assert!(stopped.written > 0 && stopped.written < paste.len() - PASTE_END.len());
+
+    let typing = {
+        let pty = std::sync::Arc::clone(&pty);
+        std::thread::spawn(move || pty.write_all(b"KEY").is_ok())
+    };
+    std::fs::write(&go, b"").expect("go");
+    assert!(typing.join().unwrap(), "the typing stopped");
+    let read = file_until(&out, "the typing", |held| held.ends_with(b"KEY"));
+    assert_eq!(read.len(), stopped.written + PASTE_END.len() + 3);
+    assert!(read.ends_with(&[PASTE_END, b"KEY"].concat()));
+    assert_eq!(
+        read.windows(PASTE_END.len())
+            .filter(|window| *window == PASTE_END)
+            .count(),
+        1
+    );
+}
+
+/// A hand-off closes a paste a send left open (#689) once its program takes the end, and says
+/// whether it could: not while the program reads nothing.
+#[test]
+fn a_hand_off_closes_a_paste_left_open_when_its_program_reads() {
+    let scratch = Scratch::new("hand-off");
+    let (out, go) = (scratch.0.join("out"), scratch.0.join("go"));
+    let pty = raw(&format!(
+        "while [ ! -e '{}' ]; do sleep 0.02; done; exec cat > '{}'",
+        go.display(),
+        out.display()
+    ));
+    let paste = [
+        b"\x1b[200~".as_slice(),
+        &vec![b'x'; MORE_THAN_THE_QUEUE],
+        PASTE_END,
+    ]
+    .concat();
+    let stopped = pty
+        .send_with(
+            &paste,
+            Some(0..paste.len()),
+            Duration::from_millis(300),
+            Instant::now() + Duration::from_secs(30),
+        )
+        .expect_err("the program reads nothing yet");
+    assert!(stopped.paste_open, "{stopped:?}");
+    assert!(
+        !pty.close_owed_paste(Instant::now() + Duration::from_millis(100)),
+        "closed while the program read nothing"
+    );
+    std::fs::write(&go, b"").expect("go");
+    assert!(
+        pty.close_owed_paste(Instant::now() + Duration::from_secs(10)),
+        "not closed once the program read"
+    );
+    let read = file_until(&out, "the paste's end", |held| held.ends_with(PASTE_END));
+    assert_eq!(read.len(), stopped.written + PASTE_END.len());
+    assert!(pty.close_owed_paste(Instant::now()), "nothing is owed now");
+}
+
+/// A send that runs to its deadline on a program reading slowly (#689) stops there, says so and
+/// how much went, and closes its paste at once, since the program is still reading.
+#[test]
+fn a_send_past_its_deadline_stops_and_closes_its_paste() {
+    let scratch = Scratch::new("deadline");
+    let out = scratch.0.join("out");
+    // About 10 KiB a second.
+    let pty = raw(&format!(
+        "while :; do dd bs=512 count=1 2>/dev/null; sleep 0.05; done > '{}'",
+        out.display()
+    ));
+    let paste = [
+        b"\x1b[200~".as_slice(),
+        &vec![b'x'; MORE_THAN_THE_QUEUE],
+        PASTE_END,
+    ]
+    .concat();
+    let started = Instant::now();
+    let stopped = pty
+        .send(
+            &paste,
+            Some(0..paste.len()),
+            started + Duration::from_secs(3),
+        )
+        .expect_err("too slow a reader for 256 KiB in 3 s");
+    assert!(matches!(stopped.why, Stop::Deadline), "{stopped:?}");
+    assert!(!stopped.paste_open, "{stopped:?}");
+    assert!(
+        stopped.written < paste.len() - PASTE_END.len(),
+        "{stopped:?}"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_secs(3),
+        "stopped before its deadline: {:?}",
+        started.elapsed()
+    );
+    let read = file_until(&out, "the paste's end", |held| held.ends_with(PASTE_END));
+    assert_eq!(read.len(), stopped.written + PASTE_END.len());
+}
+
 #[test]
 fn rejects_an_interior_nul_rather_than_truncating() {
     let bad = OsString::from_vec(b"/bin/sh\0extra".to_vec());
