@@ -6750,6 +6750,56 @@ fn create_remote_host_parent_reserves_the_generated_leaf() {
     assert_eq!(run.error_kind(), "InWorkroom");
 }
 
+/// A `workrooms_dir` with `//`, `/./` and `..` in it: the workroom's path is joined onto it and
+/// cleaned, as Go's `workroomPath` joins it (`filepath.Join`), in the envelope and in config alike,
+/// while the setting itself is as written, as `list` reports it. A `~` one is the home folder's,
+/// cleaned the same way.
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Mac only: here the Rust binary is MacOnly"
+)]
+fn create_cleans_the_workroom_path_it_joins_onto_workrooms_dir() {
+    let home = Home::new("create-clean-path");
+    let project = home.repo("src/app");
+    let dir = home.dir.to_string_lossy().into_owned();
+    for (workrooms_dir, cleaned) in [
+        (
+            format!("{dir}//wr/./old/../rooms/"),
+            format!("{dir}/wr/rooms"),
+        ),
+        (
+            "~//wr/./old/../tilde".to_string(),
+            format!("{dir}/wr/tilde"),
+        ),
+    ] {
+        home.write_config(&format!(
+            "{{\"workrooms_dir\": \"{workrooms_dir}\", \"{}\": {{\"vcs\": \"git\", \
+             \"workrooms\": {{}}}}}}",
+            project.display()
+        ));
+        let run = create(&home, &project, &[]);
+        run.assert_code(0);
+        let name = created_name(&run);
+        let path = format!("{cleaned}/{name}");
+        assert_eq!(run.envelope()["path"], path.as_str(), "{workrooms_dir}");
+        let config: serde_json::Value =
+            serde_json::from_str(&config_text(&home)).expect("config JSON");
+        let entry = &config[&*project.to_string_lossy()]["workrooms"][&name];
+        assert_eq!(entry["path"], path.as_str(), "{workrooms_dir}");
+        assert!(Path::new(&path).join(".git").exists(), "{workrooms_dir}");
+        let list = home.run(&home.dir, &["list", "--json"]);
+        list.assert_code(0);
+        // Go's `expandPath` cleans only what it joins onto the home folder.
+        let listed = if workrooms_dir.starts_with('~') {
+            &cleaned
+        } else {
+            &workrooms_dir
+        };
+        assert_eq!(list.envelope()["workrooms_dir"], listed.as_str());
+    }
+}
+
 /// SHA-256 of `#!/bin/sh\necho installing\necho done\n` (`shasum -a 256`).
 const SHA_INSTALLING: &str = "4d8ae5db2ce29afadf684314193ac5e4002d244dac6a45945d2c2ea74f19978e";
 /// SHA-256 of `#!/bin/sh\necho boom\nexit 3\n`.

@@ -969,7 +969,7 @@ pub(crate) fn getwd(context: &Context) -> Result<String, String> {
 }
 
 /// Go's `filepath.Join` of two paths: joined, then cleaned. An empty part is left out.
-fn join(base: &str, rest: &str) -> String {
+pub(crate) fn join(base: &str, rest: &str) -> String {
     match (base.is_empty(), rest.is_empty()) {
         (true, true) => String::new(),
         (true, false) => clean(rest),
