@@ -272,6 +272,56 @@ for workflow in release.yml nightly.yml; do
   fi
 done
 
+# --- the Nightly's contract suite skips exactly the main binary's channel cases ---------------
+# The nightly's baked channel changes `version --json` and refuses `update --channel`, so these
+# four goldens are the main binary's; any other skip would hide a contract break in the Nightly.
+NIGHTLY_YML="$WORKFLOWS_DIR/nightly.yml"
+if [ -f "$NIGHTLY_YML" ]; then
+  want_skips="update_json_refuses_a_channel_it_cant_switch_to
+version_json_flag_may_come_before_the_command
+version_json_matches_the_golden
+version_json_reports_the_configured_channel"
+  got_skips="$(grep -o -- '--skip [A-Za-z0-9_]*' "$NIGHTLY_YML" | sed 's/^--skip //' | LC_ALL=C sort)"
+  if [ "$got_skips" != "$want_skips" ] || ! grep -q -- '^[^#]*--include-ignored --exact' "$NIGHTLY_YML"; then
+    echo "FAIL: nightly.yml's contract suite no longer skips exactly the four main-channel cases"
+    echo "      (with --exact): got '$(echo "$got_skips" | tr '\n' ' ')'."
+    fails=$((fails + 1))
+  fi
+fi
+
+# --- a Nightly dry run never touches the real release ------------------------------------------
+# The dry run (workflow_dispatch dry_run) uploads into a throwaway draft and deletes it. Its job is
+# the only one that runs then; `publish`, which writes the nightly release, the appcast, the
+# download stats and the skip marker, never does.
+# job_block <workflow> <job>: the lines of that job, up to the next job.
+job_block() {
+  awk -v job="  $2:" '$0 == job {f=1; print; next} f && /^  [A-Za-z0-9_-]+:$/ {f=0} f' "$1"
+}
+if [ -f "$NIGHTLY_YML" ]; then
+  dry_block="$(job_block "$NIGHTLY_YML" dry-run)"
+  publish_block="$(job_block "$NIGHTLY_YML" publish)"
+  only_dry="    if: \${{ inputs.dry_run }}"
+  if ! printf '%s\n' "$dry_block" | grep -qxF "$only_dry" \
+    || ! printf '%s\n' "$dry_block" | grep -q '^[^#]*macapp/Scripts/publish-assets.sh --dry-run nightly '; then
+    echo "FAIL: nightly.yml's dry-run job no longer runs only on a dry run, through publish-assets.sh --dry-run."
+    fails=$((fails + 1))
+  fi
+  if printf '%s\n' "$dry_block" | grep -Eq '^[^#]*(appcast|download-stats|gh release|publish-assets\.sh nightly)'; then
+    echo "FAIL: nightly.yml's dry-run job touches the nightly release, the appcast or the download stats."
+    fails=$((fails + 1))
+  fi
+  not_dry="    if: \${{ !inputs.dry_run }}"
+  if ! printf '%s\n' "$publish_block" | grep -qxF "$not_dry"; then
+    echo "FAIL: nightly.yml's publish job would run on a dry run and publish it."
+    fails=$((fails + 1))
+  fi
+  if grep -v '^ *#' "$NIGHTLY_YML" | grep -q -- '--dry-run' \
+    && [ "$(grep -v '^ *#' "$NIGHTLY_YML" | grep -c -- '--dry-run')" -ne "$(printf '%s\n' "$dry_block" | grep -v '^ *#' | grep -c -- '--dry-run')" ]; then
+    echo "FAIL: nightly.yml runs publish-assets.sh --dry-run outside its dry-run job."
+    fails=$((fails + 1))
+  fi
+fi
+
 if [ "$fails" -ne 0 ]; then
   echo "test-invariants_test: $fails failure(s)" >&2
   exit 1
