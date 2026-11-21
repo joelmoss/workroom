@@ -25,6 +25,18 @@ fn a_mac_only_command_on_a_host_fails_with_mac_only() {
         &["host", "set", "null", "--json"],
         &["host", "clear", "--json", "--workroom", "w"],
         &["add-project", "/tmp/x", "--json"],
+        // Ported: the gate comes before the name and confirmation are checked, so nothing is
+        // deleted.
+        &[
+            "delete",
+            "calm-river",
+            "--json",
+            "--confirm",
+            "calm-river",
+            "--project",
+            "/nonexistent/x",
+        ],
+        &["delete", "--json"],
         // Ported: the gate comes before the arguments and flags are read, so nothing is deleted,
         // and no config is read or written.
         &[

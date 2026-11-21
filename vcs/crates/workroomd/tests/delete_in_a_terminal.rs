@@ -250,8 +250,46 @@ fn without_a_name_a_person_picks_which_to_delete() {
     assert!(stdout.ends_with(DELETED), "{stdout:?}");
     assert!(!home.path("workrooms/calm-river").exists());
     assert!(home.path("workrooms/bright-star/.git").exists());
-    assert!(home.config().contains("bright-star"));
-    assert!(!home.config().contains("calm-river"));
+    assert!(home.config().contains("\"bright-star\""));
+    assert!(!home.config().contains("\"calm-river\""));
+}
+
+/// A picked workroom whose folder holds no git checkout is only forgotten, as `delete NAME`
+/// forgets one: its folder and files stay, no teardown runs, and the other workroom is untouched.
+#[test]
+fn a_picked_workroom_that_isnt_a_checkout_is_only_forgotten() {
+    let home = Home::new("pick-orphan");
+    let project = home.project(&["calm-river"], STOPPING_SHA256);
+    let orphan = home.path("elsewhere/orphan");
+    std::fs::create_dir_all(&orphan).expect("orphan");
+    std::fs::write(orphan.join("notes"), "keep").expect("notes");
+    let config = home.config().replacen(
+        "\"workrooms\": {",
+        &format!(
+            "\"workrooms\": {{\"orphan\": {{\"path\": \"{}\"}}, ",
+            orphan.display()
+        ),
+        1,
+    );
+    std::fs::write(home.config_path(), &config).expect("config");
+
+    let (code, stdout, stderr) = home.run_typing(&project, &["delete"], "2\ny\n");
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    assert_eq!(
+        stdout,
+        "Select workrooms to delete:\n  1) calm-river\n  2) orphan\nNumbers to delete, separated \
+         by spaces (none to delete nothing): Are you sure you want to delete 1 workroom(s): \
+         'orphan'? [y/N] Workroom 'orphan' removed from Workroom. It is not a git worktree, so \
+         no git or teardown ran.\nNote: its folder was left at ~/elsewhere/orphan. Delete it \
+         manually if needed.\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(orphan.join("notes")).expect("notes"),
+        "keep"
+    );
+    assert!(!home.config().contains("\"orphan\""), "{}", home.config());
+    assert!(home.config().contains("\"calm-river\""));
+    assert!(home.path("workrooms/calm-river/.git").exists());
 }
 
 /// A teardown script this Mac hasn't approved is shown and asked about: a no cancels the delete
