@@ -221,6 +221,11 @@ final class GhosttySurfaceView: NSView {
   // A toast over this pane (`PaneNoticeToast`), for news about the pane itself (#459).
   private var paneNotice: PaneNoticeHost?
 
+  /// Who else is typing into this pane's session (#696), floating at the top centre.
+  private(set) lazy var typingMarker = PaneTypingMarkerOverlay(surface: self) { [weak self] in
+    self?.attachment.sessionID
+  }
+
   // OSC 9;4 progress safety timer (issue #28 follow-up): a program that reports it's working but never
   // sends REMOVE — or a long-idle TUI — would otherwise pin the busy indicator on forever. It's a
   // "declared busy but went silent" backstop, not a fixed time-since-last-report cutoff: while the
@@ -274,6 +279,7 @@ final class GhosttySurfaceView: NSView {
       if action == .end { self.window?.makeFirstResponder(self) }
     }
     attachment.surface = self
+    typingMarker.start()
   }
 
   @available(*, unavailable)
@@ -391,6 +397,7 @@ final class GhosttySurfaceView: NSView {
     addSubview(goToBottomButton, positioned: .above, relativeTo: nil)
     layoutGoToBottomButton()
     if let paneNotice { addSubview(paneNotice, positioned: .above, relativeTo: nil) }
+    typingMarker.raise()
     // The surface may have been created AFTER this view already became first responder: a zero-bounds
     // attach defers `createSurface` to `setFrameSize`/`layout`, so `becomeFirstResponder` ran while
     // `surface == nil` and its `setSurfaceFocused(true)` no-oped (see `setSurfaceFocused`). Without
@@ -445,6 +452,7 @@ final class GhosttySurfaceView: NSView {
     progressTimeoutTimer?.invalidate()
     progressTimeoutTimer = nil
     stopAccessibilityPolling()
+    typingMarker.stop()
     if let occlusionObserver {
       NotificationCenter.default.removeObserver(occlusionObserver)
       self.occlusionObserver = nil
@@ -585,6 +593,7 @@ final class GhosttySurfaceView: NSView {
     layoutScrollbar()
     layoutGoToBottomButton()
     layoutPaneNotice()
+    typingMarker.layout()
   }
 
   override func viewDidChangeBackingProperties() {

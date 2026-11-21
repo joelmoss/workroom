@@ -454,6 +454,40 @@ import WorkroomVCS
       terminals.select(tabs[0].id, for: target)
     }
 
+    /// When set (`-WorkroomUITestTypingMarker 1`, #696), the fixture workroom opens two terminals with
+    /// Claude in the second, which types into the first once a second for the whole launch, the
+    /// first focused: its typing marker shows "Claude · tab 2" with no daemon, for as long as a
+    /// screenshot needs. The live path, a real send through a scratch daemon that the marker
+    /// outlasts by 3 s, is `PaneTypingMarkerUITests`' other test.
+    static var typingMarker: Bool {
+      flag("WorkroomUITestTypingMarker")
+    }
+
+    @MainActor
+    static func seedTypingMarker(in terminals: TerminalPanes, target: TerminalTarget) {
+      while terminals.tabs(for: target).count < 2 { _ = terminals.addTab(for: target) }
+      let tabs = terminals.tabs(for: target)
+      // The title Claude Code's shell integration sets, which latches the agent on its tab as a
+      // real one does (`PaneLiveState`), so the marker names it as it would a real one.
+      terminals.surface(tabs[1])?.handleTitleChange("claude")
+      let receiver = terminals.assignFixtureSession(tab: tabs[0].id, target: target.id)
+      let sender = terminals.assignFixtureSession(tab: tabs[1].id, target: target.id)
+      terminals.select(tabs[0].id, for: target)
+      Task { @MainActor in
+        while !Task.isCancelled {
+          PaneTypingMonitor.shared.typed(into: receiver, by: sender)
+          try? await Task.sleep(for: .seconds(1))
+        }
+      }
+    }
+
+    /// `-WorkroomUITestGlassOpacity <0.7…1>` (#696's screenshots): the Glass setting for this
+    /// launch, mirrored into `Defaults` by `applyFixtureDefaults` (a launch argument can't set a
+    /// `Double` key). Unset leaves the setting as it is, which `GlassSettingsUITests`' relaunch reads.
+    static var glassOpacity: Double? {
+      text("WorkroomUITestGlassOpacity").flatMap(Double.init)
+    }
+
     /// When set (`-WorkroomUITestWorkroomCount <n>`), the fixture seeds `n` workrooms and makes each an
     /// *active target*, so the title-bar **workroom** tab bar shows `n` chips and overflows on launch —
     /// the `WorkroomTabBar` half of issue #129. Clamped to 1...16. Unset keeps the single workroom.
@@ -1269,6 +1303,7 @@ import WorkroomVCS
       // Auto-even splits: same persistence trap, and it decides where every divider in a split lands
       // (issue #126) — an unpinned value rebaselines any test or screenshot that measures panes.
       Defaults[.autoResizeSplitsEvenly] = autoResizeSplitsEvenly
+      if let glassOpacity { Defaults[.glassOpacity] = glassOpacity }
       // Pinned "already onboarded" for the same reason as `lightTheme`/`diffViewMode` above: the flag
       // PERSISTS in the real Dev `Defaults` domain, so a fresh machine with zero registered projects
       // would otherwise pop the onboarding wizard (issue #151) over e.g. `NewWorkroomDialogUITests`'

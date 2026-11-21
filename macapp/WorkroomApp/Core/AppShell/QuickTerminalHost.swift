@@ -230,6 +230,10 @@ final class QuickTerminalHost: PaneHost, PaneNotifierHost {
     terminals.defaultTitle(ofTab: tabID, inTarget: targetID) ?? "A terminal"
   }
 
+  func targetName(_ targetID: TerminalTarget.ID) -> String? {
+    targetID == target.id ? "Quick Terminal" : nil
+  }
+
   // MARK: PaneNotifierHost
 
   var isHostWindowKey: Bool { hostWindow?.isKeyWindow == true }

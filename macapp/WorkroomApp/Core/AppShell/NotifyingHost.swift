@@ -30,4 +30,11 @@ protocol NotifyingHost: AnyObject {
   func terminalPlace(targetID: TerminalTarget.ID, tabID: TerminalTab.ID) -> String
   /// Show a toast here, whichever host raised it (`WindowRegistry.showToast`).
   func enqueueToast(_ note: WorkroomNotification)
+  /// "fix-auth": the workroom `targetID` is, or its project for a root, as the typing marker names
+  /// where a sender's tab is (#696). Nil for a target the host can't name.
+  func targetName(_ targetID: TerminalTarget.ID) -> String?
+}
+
+extension NotifyingHost {
+  func targetName(_ targetID: TerminalTarget.ID) -> String? { nil }
 }
