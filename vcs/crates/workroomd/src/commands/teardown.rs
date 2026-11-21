@@ -9,10 +9,12 @@
 //! to be asked. The judging is `trusted_script`'s, the one `trust` uses (#674).
 //!
 //! Nothing here removes a folder itself. The one removal is `git worktree remove`, run in the
-//! project, of `<workrooms folder>/<name>` for a name git lists among the project's worktrees:
-//! git removes only a worktree of that repository registered at that path, so a folder of the
-//! user's, or another project's worktree, there is refused, not removed. A name is letters,
-//! digits, dashes and underscores, so that path never leaves the workrooms folder.
+//! project, of `<workrooms folder>/<name>`, and that is the proof: git removes only a worktree of
+//! that repository registered at that path, so a folder of the user's, or another project's
+//! worktree, there is refused, not removed. `delete NAME` also first checks that git lists a
+//! worktree of that name for the project and that the name is letters, digits, dashes and
+//! underscores, so the path never leaves the workrooms folder; a person's picks, as Go's, rest on
+//! git's check alone.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
