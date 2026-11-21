@@ -65,8 +65,7 @@ struct SidebarTerminalGroupRow: View, Equatable {
         action: newTerminal)
     }
     .padding(.trailing, SidebarRowMetrics.iconColumnInset)
-    .frame(height: SidebarRowMetrics.rowHeight)
-    .contentShape(Rectangle())
+    .sidebarRowFrame(ProjectSidebar.childRowInsets)
     .onTapGesture { actions.select(sid) }
     .help(rowHelp)
     .contextMenu { menu }
@@ -253,7 +252,8 @@ enum TerminalGroupNamePrompt {
 
 /// One of a group's terminals under its row: this window's, at any count, selecting the group and
 /// focusing that terminal on a tap; or one of the Quick Terminal's, held by its panel (`holder`),
-/// sliding the panel in on it.
+/// sliding the panel in on it. It looks as a standalone terminal's row does, indented under the
+/// group (`SidebarTerminalRowStyle.section`).
 struct SidebarTerminalGroupChild: View {
   let store: AppStore
   let tokens: ThemeTokens
@@ -262,22 +262,21 @@ struct SidebarTerminalGroupChild: View {
   let parent: SidebarID
   var holder: QuickTerminalHost? = nil
   let actions: SidebarActions
-  let insets: EdgeInsets
 
   @State private var hovered = false
 
   var body: some View {
     SidebarTerminalRowAdapter(
       tabID: tabID, target: target, parent: parent, hovered: hovered, actions: actions,
-      holder: holder
+      holder: holder, style: .section
     )
     .equatable()
     .onHover { hovered = $0 }
-    .listRowInsets(insets)
+    .listRowInsets(EdgeInsets())
     .listRowSeparator(.hidden)
     .listRowBackground(
       SidebarTerminalRowBackground(
         store: store, tokens: tokens, tabID: tabID, target: target, parent: parent,
-        hovered: hovered))
+        hovered: hovered, style: .section))
   }
 }

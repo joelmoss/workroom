@@ -109,6 +109,41 @@ enum SidebarRowMetrics {
   static let hoverWell: CGFloat = 18
   /// Between a row's trailing edge and its last control.
   static let iconColumnInset: CGFloat = Spacing.s
+  /// What a plain `List` keeps between each side of the sidebar and a row's content, over the
+  /// row's own insets. The sticky headings sit above their pane's List, not in it (#652), so they
+  /// add it themselves to keep their chevron and "+" in line with the rows'.
+  static let listContentInset: CGFloat = 9
+}
+
+/// How a terminal's row looks (`SidebarTerminalRow`): compact under a root or workroom, or as a
+/// standalone terminal's row under a terminal group or the Quick Terminal in the Terminals section
+/// (#652 critique).
+enum SidebarTerminalRowStyle: Equatable {
+  /// Under a root or workroom: a footnote title, as tall as its title, with tighter spacing.
+  case tree
+  /// Under a group in the Terminals section: a standalone terminal's row, indented.
+  case section
+
+  var font: Font { self == .section ? .callout : .footnote }
+  /// The row's content height; nil is its title's own.
+  var height: CGFloat? { self == .section ? SidebarRowMetrics.rowHeight : nil }
+  /// Its spacing, inside the row (`sidebarRowFrame`).
+  var padding: EdgeInsets {
+    self == .section ? ProjectSidebar.childRowInsets : ProjectSidebar.terminalRowInsets
+  }
+}
+
+extension View {
+  /// A sidebar row's one hit target (#652 critique): its content `height` tall, with the row's
+  /// spacing as `padding` inside it rather than as List insets outside it, and one rectangle over
+  /// all of it. So a click, a right-click, a hover or a drag anywhere from the row's top edge to its
+  /// bottom edge is the row's; the List gives the row no insets (`EdgeInsets()`). Apply it before
+  /// the row's gestures, menu, tooltip and accessibility, so they take the whole frame.
+  func sidebarRowFrame(_ padding: EdgeInsets, height: CGFloat? = SidebarRowMetrics.rowHeight)
+    -> some View
+  {
+    frame(height: height).padding(padding).contentShape(Rectangle())
+  }
 }
 
 /// What a root or workroom row's leading column shows: whether the row owns a terminal subtree
@@ -341,8 +376,7 @@ struct SidebarRootRow: View, Equatable {
       }
       // Only an active run gets a control on the project root: click it to stop the command.
       RowRunButton(target: target, projectPath: model.projectPath)
-    }.frame(height: SidebarRowMetrics.rowHeight)
-      .contentShape(Rectangle())
+    }.sidebarRowFrame(ProjectSidebar.childRowInsets)
       .modifier(SidebarDragDim(id: id, drag: drag.drag))
       .onTapGesture { actions.select(id) }
       // Drag this root onto a displayed workroom pane to split them (issue #101). Simultaneous so
@@ -487,8 +521,7 @@ struct SidebarWorkroomRow: View, Equatable {
           target: target, projectPath: model.projectPath,
           identifier: "sidebar.workroom.\(workroom.name).run")
       }
-    }.frame(height: SidebarRowMetrics.rowHeight)
-      .contentShape(Rectangle())
+    }.sidebarRowFrame(ProjectSidebar.childRowInsets)
       .modifier(SidebarDragDim(id: id, drag: drag.drag))
       .onTapGesture { actions.select(id) }
       // Drag this workroom onto a displayed pane to split them (issue #101). Simultaneous so the
@@ -541,6 +574,7 @@ struct SidebarTerminalRowModel: Equatable {
   /// Whether it is a terminal attached to a daemon session, whose host can say why its program
   /// reports nothing (`SidebarTerminalTooltip`).
   let hasSession: Bool
+  var style: SidebarTerminalRowStyle = .tree
 
   var isRunning: Bool {
     if case .running = indicator { return true }
@@ -596,7 +630,7 @@ struct SidebarTerminalRow: View, Equatable {
       SidebarInlineNameField(
         placeholder: content.title, draft: $draft,
         help: "The terminal's name. Leave it empty to show the title the program sets",
-        id: "sidebar.terminal.rename.\(model.tabID)", font: .footnote,
+        id: "sidebar.terminal.rename.\(model.tabID)", font: model.style.font,
         commit: {
           renaming = false
           if let holder {
@@ -609,6 +643,7 @@ struct SidebarTerminalRow: View, Equatable {
       Spacer(minLength: 0)
     }
     .padding(.leading, Spacing.m)
+    .sidebarRowFrame(model.style.padding, height: model.style.height)
   }
 
   /// Shows the name field, starting from the name the user gave it (empty for none), so keeping
@@ -640,7 +675,7 @@ struct SidebarTerminalRow: View, Equatable {
         #endif
         // The program as bright as a row's name, the folder faded as the row's title was.
         TerminalTitleLabel(title: content.titleParts)
-          .font(.footnote)
+          .font(model.style.font)
           .foregroundStyle(.primary, .secondary)
           .lineLimit(1)
           .truncationMode(.middle)
@@ -679,8 +714,10 @@ struct SidebarTerminalRow: View, Equatable {
     }
     // A small indent so the expanded terminal rows read as children of their root/workroom row.
     .padding(.leading, Spacing.m)
-    .contentShape(Rectangle())
+    .sidebarRowFrame(model.style.padding, height: model.style.height)
     .onTapGesture { actions.revealTerminal(model.tabID, model.parent) }
+    // One element over the whole row, its close button inside it, so the row's frame is its own.
+    .accessibilityElement(children: .contain)
     .accessibilityAddTraits(.isButton)
     .accessibilityAction { actions.revealTerminal(model.tabID, model.parent) }
     .withTabTitle(content) { row, title in

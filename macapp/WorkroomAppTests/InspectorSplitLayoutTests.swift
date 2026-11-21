@@ -148,4 +148,68 @@ final class InspectorSplitLayoutTests: XCTestCase {
     XCTAssertEqual(result.collapsed, [true, false, false])
     XCTAssertEqual(result.weights, [1, 2, 1])
   }
+  // MARK: The sidebar's split (#652)
+
+  /// A two-pane split laid out in a real view of `height`, with the sidebar's sizing.
+  private func sidebarSplit(height: CGFloat) -> InspectorSplitContainerController {
+    let container = InspectorSplitContainerController()
+    container.isLikelyUserDrag = { false }
+    container.sizing = ProjectSidebar.splitSizing
+    container.install(panes: [InspectorPaneViewController(), InspectorPaneViewController()])
+    container.view.frame = CGRect(x: 0, y: 0, width: 300, height: height)
+    return container
+  }
+
+  private func layOut(_ container: InspectorSplitContainerController) {
+    container.view.needsLayout = true
+    container.view.layoutSubtreeIfNeeded()
+    container.viewDidLayout()
+  }
+
+  /// Value: protects=with no saved layout, the Terminals pane follows its rows as they change;
+  /// fails_when=a new preferred height doesn't re-lay out the panes
+  func testTheSidebarSplitFollowsItsPreferredHeight() {
+    let container = sidebarSplit(height: 801)
+    container.update(
+      workroomKey: "sidebar", collapsed: [false, false], weights: [], preferredHeights: [100, nil])
+    layOut(container)
+    XCTAssertEqual(container.panes[0].view.frame.height, 100, accuracy: 1)
+
+    container.update(
+      workroomKey: "sidebar", collapsed: [false, false], weights: [], preferredHeights: [200, nil])
+    layOut(container)
+    XCTAssertEqual(container.panes[0].view.frame.height, 200, accuracy: 1, "a row more")
+    XCTAssertEqual(container.panes[1].view.frame.height, 600, accuracy: 1, "Projects the rest")
+  }
+
+  /// Value: protects=a saved divider position decides the layout; fails_when=saved weights are
+  /// ignored in favour of the content height
+  func testTheSidebarSplitUsesSavedWeights() {
+    let container = sidebarSplit(height: 801)
+    container.update(workroomKey: "sidebar", collapsed: [false, false], weights: [300, 500])
+    layOut(container)
+    XCTAssertEqual(container.panes[0].view.frame.height, 300, accuracy: 1)
+    XCTAssertEqual(container.panes[1].view.frame.height, 500, accuracy: 1)
+  }
+
+  /// Value: protects=folding and unfolding Terminals returns the panes to the saved layout, and
+  /// records no weights; fails_when=an unfold splits equally, or a fold overwrites the saved layout
+  func testTheSidebarSplitRestoresItsLayoutOnExpand() {
+    let container = sidebarSplit(height: 801)
+    var reported: [Double]?
+    container.onWeightsChanged = { reported = $0 }
+    container.update(workroomKey: "sidebar", collapsed: [false, false], weights: [300, 500])
+    layOut(container)
+
+    container.update(workroomKey: "sidebar", collapsed: [true, false], weights: [300, 500])
+    layOut(container)
+    XCTAssertEqual(
+      container.panes[0].view.frame.height, InspectorPanePolicy.headerHeight, accuracy: 1,
+      "folded to its heading")
+
+    container.update(workroomKey: "sidebar", collapsed: [false, false], weights: [300, 500])
+    layOut(container)
+    XCTAssertEqual(container.panes[0].view.frame.height, 300, accuracy: 1, "back where it was")
+    XCTAssertNil(reported, "a fold records no layout")
+  }
 }

@@ -112,14 +112,15 @@ final class SidebarBenchmarkTests: XCTestCase {
     await draw(hosting)
     settle(hosting)
     XCTAssertNotNil(hover, "the actual root row must register its hover binding")
-    func findTable(_ view: NSView) -> NSTableView? {
-      if let table = view as? NSTableView { return table }
-      return view.subviews.lazy.compactMap { findTable($0) }.first
+    func tables(_ view: NSView) -> [NSTableView] {
+      if let table = view as? NSTableView { return [table] }
+      return view.subviews.flatMap { tables($0) }
     }
-    let list = try XCTUnwrap(findTable(hosting), "must host the native List")
-    // 32 projects × (project + root + five workrooms), plus the Terminals heading (#655),
-    // and the Projects heading (#652).
-    XCTAssertEqual(list.numberOfRows, 227, "the hover wrappers must preserve individual List rows")
+    // The Projects pane's List, under the Terminals pane's (#652).
+    let list = try XCTUnwrap(tables(hosting).last, "must host the native List")
+    // 32 projects × (project + root + five workrooms). The Terminals and Projects headings are
+    // their panes' sticky headers, and the Terminals rows are in their own List (#652).
+    XCTAssertEqual(list.numberOfRows, 224, "the hover wrappers must preserve individual List rows")
     var samples: [Double] = []
     var rows: [Int] = []
     for _ in 0..<3 {
@@ -138,11 +139,11 @@ final class SidebarBenchmarkTests: XCTestCase {
     store.collapsedProjects.insert(store.projectStore.projects[0].path)
     await draw(hosting)
     settle(hosting)
-    XCTAssertEqual(list.numberOfRows, 221, "collapse removes the root and five workrooms")
+    XCTAssertEqual(list.numberOfRows, 218, "collapse removes the root and five workrooms")
     store.collapsedProjects.remove(store.projectStore.projects[0].path)
     await draw(hosting)
     settle(hosting)
-    XCTAssertEqual(list.numberOfRows, 227, "expand restores every row")
+    XCTAssertEqual(list.numberOfRows, 224, "expand restores every row")
   }
 
   func testSidebarScaling() async throws {

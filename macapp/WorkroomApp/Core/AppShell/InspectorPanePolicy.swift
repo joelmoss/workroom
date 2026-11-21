@@ -41,8 +41,16 @@ enum InspectorPanePolicy {
   ///
   /// The result is realised by the controller via `setPosition(ofDividerAt:)`; the user can then
   /// drag dividers freely down to the panes' floors.
+  ///
+  /// `minHeights` replaces `expandedMinHeight` per pane (the sidebar's Terminals pane may be one
+  /// row). `preferred` sizes a pane to its content instead of by weight: an expanded pane with a
+  /// preferred height gets it, floored, and capped at `preferredCap` of the space the expanded panes
+  /// share, and the panes without one split what is left by weight. Used only while no layout is
+  /// saved (the sidebar's Terminals pane, sized to its rows until the user drags the divider).
   static func allocate(
-    collapsed: [Bool], weights: [CGFloat]? = nil, capacity: CGFloat, dividerThickness: CGFloat
+    collapsed: [Bool], weights: [CGFloat]? = nil, minHeights: [CGFloat]? = nil,
+    preferred: [CGFloat?]? = nil, preferredCap: CGFloat = 0.5, capacity: CGFloat,
+    dividerThickness: CGFloat
   ) -> [CGFloat] {
     let n = collapsed.count
     guard n > 0 else { return [] }
@@ -57,18 +65,43 @@ enum InspectorPanePolicy {
     for i in 0..<n where collapsed[i] { heights[i] = headerHeight }
     guard !expanded.isEmpty else { return heights }
 
+    // A pane with a preferred height takes it (floored, capped) unless it is the only expanded
+    // pane, which fills the split as any lone pane does.
+    func preferredHeight(_ index: Int) -> CGFloat? {
+      guard expanded.count > 1, let preferred, index < preferred.count else { return nil }
+      return preferred[index]
+    }
+    var weighted: [Int] = []
+    var remaining = available
+    for index in expanded {
+      if let height = preferredHeight(index) {
+        let floor = minHeight(index, minHeights)
+        heights[index] = max(floor, min(height, available * preferredCap))
+        remaining -= heights[index]
+      } else {
+        weighted.append(index)
+      }
+    }
+    remaining = max(0, remaining)
+
     // Per-expanded-pane share: each expanded pane's weight (default 1 = equal) over the sum of the
     // expanded panes' weights. A non-positive or missing weight falls back to an equal share.
-    let rawWeights = expanded.map { index -> CGFloat in
+    let rawWeights = weighted.map { index -> CGFloat in
       guard let weights, index < weights.count, weights[index] > 0 else { return 1 }
       return weights[index]
     }
     let totalWeight = rawWeights.reduce(0, +)
-    for (slot, index) in expanded.enumerated() {
-      let share = totalWeight > 0 ? available * (rawWeights[slot] / totalWeight) : 0
-      heights[index] = max(expandedMinHeight, share)
+    for (slot, index) in weighted.enumerated() {
+      let share = totalWeight > 0 ? remaining * (rawWeights[slot] / totalWeight) : 0
+      heights[index] = max(minHeight(index, minHeights), share)
     }
     return heights
+  }
+
+  /// The floor of an expanded pane: its entry in `minHeights`, or `expandedMinHeight`.
+  static func minHeight(_ index: Int, _ minHeights: [CGFloat]?) -> CGFloat {
+    guard let minHeights, index < minHeights.count else { return expandedMinHeight }
+    return minHeights[index]
   }
 
   /// Re-derive pane heights after a **single** section's collapse state toggled, preserving the
@@ -89,8 +122,8 @@ enum InspectorPanePolicy {
   /// the user left it. Used only for a lone toggle within one workroom; a workroom switch or a
   /// multi-flag change re-derives the whole layout from the saved weights via `allocate`.
   static func reallocateOnToggle(
-    previous: [CGFloat], collapsed: [Bool], toggled: Int, capacity: CGFloat,
-    dividerThickness: CGFloat
+    previous: [CGFloat], collapsed: [Bool], toggled: Int, minHeights: [CGFloat]? = nil,
+    capacity: CGFloat, dividerThickness: CGFloat
   ) -> [CGFloat] {
     let n = collapsed.count
     guard n > 0, previous.count == n, toggled >= 0, toggled < n else { return previous }
@@ -106,16 +139,17 @@ enum InspectorPanePolicy {
       if collapsed[i] {
         heights[i] = headerHeight
       } else if i == toggled {
-        heights[i] = expandedMinHeight
+        heights[i] = minHeight(i, minHeights)
       } else {
-        heights[i] = max(expandedMinHeight, heights[i])
+        heights[i] = max(minHeight(i, minHeights), heights[i])
       }
     }
 
     let anchors = anchorOrder(around: toggled, collapsed: collapsed)
     guard !anchors.isEmpty else {
       // The toggled pane is the only expanded one — it fills whatever the collapsed headers leave.
-      heights[toggled] = max(expandedMinHeight, target - CGFloat(n - 1) * headerHeight)
+      heights[toggled] = max(
+        minHeight(toggled, minHeights), target - CGFloat(n - 1) * headerHeight)
       return heights
     }
 
@@ -124,7 +158,7 @@ enum InspectorPanePolicy {
       heights[anchors[0]] += delta  // freed space → the nearest expanded neighbour
     } else {
       for anchor in anchors {  // deficit → take from neighbours, nearest first, down to their floor
-        let room = max(0, heights[anchor] - expandedMinHeight)
+        let room = max(0, heights[anchor] - minHeight(anchor, minHeights))
         let take = min(-delta, room)
         heights[anchor] -= take
         delta += take

@@ -305,6 +305,11 @@ extension Defaults.Keys {
   /// folds (#652).
   static let projectsFolded = Key<Bool>("sidebar.projectsFolded", default: false, suite: .app)
 
+  /// The sidebar's Terminals and Projects panes' relative heights, once the user has dragged the
+  /// divider between them; empty (the default) sizes the Terminals pane to its rows (#652).
+  static let sidebarPaneWeights = Key<[Double]>(
+    "sidebar.paneWeights", default: [], suite: .app)
+
   /// Per-project "Run command" config, keyed by the project's absolute path (issue #7). Absence of a
   /// path means no run command configured. A single path-keyed map (mirrors `collapsedProjects`):
   /// `Defaults` keys are static, so per-project keys aren't an option.

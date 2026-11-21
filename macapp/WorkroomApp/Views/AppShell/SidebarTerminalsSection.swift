@@ -3,23 +3,23 @@ import DesignSystem
 import SwiftUI
 import WorkroomDomain
 
-/// The Terminals section at the top of the sidebar (ADR 0077): a heading that folds as a project
-/// does, with New Standalone Terminal and New Terminal Group… beside it, and one row per terminal
-/// with no project and per terminal group, a group's terminals under it while it is unfolded. The
-/// rows are the app's `TerminalsSection`, so every window lists the same ones; a group's terminals
-/// are this window's. Rows reorder by dragging, and a standalone terminal's row dragged onto
-/// another's makes a group of the two.
-struct SidebarTerminalsSection: View {
+/// The Terminals section's list, the sidebar's top pane under its sticky heading
+/// (`SidebarTerminalsHeader`, ADR 0077): one row per terminal with no project and per terminal
+/// group, a group's terminals under it while it is unfolded. The rows are the app's
+/// `TerminalsSection`, so every window lists the same ones; a group's terminals are this window's.
+/// Rows reorder by dragging, and a standalone terminal's row dragged onto another's makes a group of
+/// the two. Its own `List`, so it scrolls on its own; hosted in the pane, so it is gated on the
+/// store alone (it reads the section itself).
+struct SidebarTerminalsList: View, Equatable {
   let store: AppStore
-  let actions: SidebarActions
-  let headingInsets: EdgeInsets
-  let rowInsets: EdgeInsets
-  let terminalRowInsets: EdgeInsets
   @Environment(\.themeTokens) private var tokens
   /// A standalone terminal's row being dragged, in this window's sidebar.
   @State private var rowDrag = SidebarRowDrag()
 
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.store === rhs.store }
+
   private var section: TerminalsSection { store.terminalsSection }
+  private var actions: SidebarActions { .live(store: store) }
   private var sectionActions: SidebarSectionActions {
     .live(store: store, select: actions.select, rowDrag: rowDrag)
   }
@@ -31,34 +31,35 @@ struct SidebarTerminalsSection: View {
   }
 
   var body: some View {
-    SidebarTerminalsHeading(
-      section: section, newTerminal: { store.newStandaloneTerminal() },
-      newGroup: {
-        TerminalGroupNamePrompt.present { [store] name in _ = store.newTerminalGroup(named: name) }
-      }
-    )
-    .listRowInsets(headingInsets)
-    .listRowSeparator(.hidden)
-    // A terminal's tab let go on the band becomes a standalone terminal (#660). On the row's
-    // background, not its content, so the fold button keeps its clicks.
-    .listRowBackground(SidebarSectionHeadingBand().paneDropZone(.standalone, store: store))
-    if !section.isFolded {
-      let rows = items
-      ForEach(rows, id: \.item) { row in
-        view(for: row)
-      }
-      // Reorders. A row let go on another's middle groups instead (`SidebarRowDrag`), and the List
-      // makes no move of that drop; should one come anyway, it doesn't also reorder the row.
-      .onMove { offsets, destination in
-        let items = rows.map(\.item)
-        if let offset = offsets.first, offsets.count == 1, case .entry(let id) = items[offset],
-          let sid = id.sidebarID, rowDrag.grouped(sid)
-        {
-          return
+    List {
+      if !section.isFolded {
+        let rows = Self.rows(of: section, in: store)
+        ForEach(rows, id: \.item) { row in
+          view(for: row)
         }
-        Self.move(items, offsets, to: destination, in: section)
+        // Reorders. A row let go on another's middle groups instead (`SidebarRowDrag`), and the List
+        // makes no move of that drop; should one come anyway, it doesn't also reorder the row.
+        .onMove { offsets, destination in
+          let items = rows.map(\.item)
+          if let offset = offsets.first, offsets.count == 1, case .entry(let id) = items[offset],
+            let sid = id.sidebarID, rowDrag.grouped(sid)
+          {
+            return
+          }
+          Self.move(items, offsets, to: destination, in: section)
+        }
       }
     }
+    .sidebarListStyle()
+  }
+
+  /// The height the list's rows take, for the pane to size itself to them while no layout is
+  /// saved: each entry's row, and each of an unfolded group's terminals, which are as tall.
+  static func contentHeight(of section: TerminalsSection, in store: AppStore) -> CGFloat {
+    let rowHeight =
+      SidebarRowMetrics.rowHeight + ProjectSidebar.childRowInsets.top
+      + ProjectSidebar.childRowInsets.bottom
+    return CGFloat(rows(of: section, in: store).count) * rowHeight + ProjectSidebar.listPadding
   }
 
   private struct Row {
@@ -71,7 +72,7 @@ struct SidebarTerminalsSection: View {
 
   /// The section's rows top to bottom, each unfolded group followed by this window's terminals in
   /// it; the Quick Terminal's by its panel's, which is their only holder (story 10).
-  private var items: [Row] {
+  private static func rows(of section: TerminalsSection, in store: AppStore) -> [Row] {
     section.rows.flatMap { entry -> [Row] in
       let own = Row(item: .entry(entry.targetID), entry: entry, target: nil)
       guard case .group(let group) = entry, !group.isFolded else { return [own] }
@@ -108,17 +109,19 @@ struct SidebarTerminalsSection: View {
       if let target = row.target {
         SidebarTerminalGroupChild(
           store: store, tokens: tokens, tabID: tabID, target: target, parent: sid,
-          holder: row.holder, actions: actions, insets: terminalRowInsets
+          holder: row.holder, actions: actions
         )
         .moveDisabled(true)
       }
     case (.entry, .standalone):
-      SidebarStandaloneRowAdapter(sid: sid, actions: sectionActions)
-        .equatable()
-        .paneDropZone(.target(sid), store: store)
-        .listRowInsets(rowInsets)
-        .listRowSeparator(.hidden)
-        .listRowBackground(SidebarRowBackground(store: store, id: sid, hovered: false))
+      SidebarHoverRegion(id: sid) { hovered in
+        SidebarStandaloneRowAdapter(sid: sid, actions: sectionActions)
+          .equatable()
+          .paneDropZone(.target(sid), store: store)
+          .listRowInsets(EdgeInsets())
+          .listRowSeparator(.hidden)
+          .listRowBackground(SidebarRowBackground(store: store, id: sid, hovered: hovered))
+      }
     case (.entry, .group(let group)):
       SidebarHoverRegion(id: sid) { hovered in
         SidebarTerminalGroupRowAdapter(
@@ -128,7 +131,7 @@ struct SidebarTerminalsSection: View {
         .equatable()
         .paneDropZone(.target(sid), store: store)
         .moveDisabled(group.isBuiltIn)
-        .listRowInsets(rowInsets)
+        .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
         .listRowBackground(SidebarRowBackground(store: store, id: sid, hovered: hovered))
       }
@@ -152,33 +155,42 @@ struct SidebarTerminalsSection: View {
   }
 }
 
-/// "Terminals", its fold chevron, and its New Standalone Terminal and New Terminal Group… buttons.
-private struct SidebarTerminalsHeading: View {
-  let section: TerminalsSection
-  let newTerminal: () -> Void
-  let newGroup: () -> Void
+/// The Terminals pane's sticky heading: "Terminals", its fold chevron, which collapses the pane,
+/// and its New Standalone Terminal and New Terminal Group… buttons, on the section header band. A
+/// terminal's tab let go on the band becomes a standalone terminal (#660); the drop zone is on the
+/// band, not the heading's content, so the fold button keeps its clicks.
+struct SidebarTerminalsHeader: View {
+  let store: AppStore
 
   var body: some View {
-    @Bindable var section = section
-    SidebarSectionHeading(title: "Terminals", isFolded: $section.isFolded, id: "sidebar.terminals")
-    {
+    SidebarSectionHeading(
+      title: "Terminals",
+      isFolded: Binding(
+        get: { store.isCollapsed(.terminals) }, set: { store.setCollapsed(.terminals, $0) }),
+      id: "sidebar.terminals"
+    ) {
       SidebarIconButton(
         systemImage: TerminalGroup.glyph, help: "New Terminal Group…",
-        label: "New Terminal Group", id: "sidebar.terminals.newGroup", action: newGroup)
+        label: "New Terminal Group", id: "sidebar.terminals.newGroup"
+      ) {
+        TerminalGroupNamePrompt.present { [store] name in _ = store.newTerminalGroup(named: name) }
+      }
       SidebarIconButton(
         systemImage: "plus",
         help: "New Standalone Terminal"
           + Shortcuts.shared.table.hint(for: .newStandaloneTerminal),
-        label: "New Standalone Terminal", id: "sidebar.terminals.new", action: newTerminal)
+        label: "New Standalone Terminal", id: "sidebar.terminals.new"
+      ) { store.newStandaloneTerminal() }
     }
+    .background(SidebarSectionHeadingBand().paneDropZone(.standalone, store: store))
   }
 }
 
 /// A sidebar section's heading, the Terminals' and the Projects': the inspector's section header
 /// look (`SectionHeaderLabel`, `SectionHeaderMetrics`), a leading fold chevron and the bold title,
 /// which fold the section, then its buttons, the last a "+" in the trailing column every sidebar "+"
-/// shares. Its List row paints the band (`SidebarSectionHeadingBand`) with no insets
-/// (`ProjectSidebar.headingInsets`), so it spans the sidebar as the inspector's spans its pane.
+/// shares. It is its pane's sticky header, on the band (`SidebarSectionHeadingBand`), spanning the
+/// sidebar as the inspector's spans its pane.
 struct SidebarSectionHeading<Trailing: View>: View {
   let title: String
   @Binding var isFolded: Bool
@@ -204,11 +216,12 @@ struct SidebarSectionHeading<Trailing: View>: View {
       HStack(spacing: Spacing.s) { trailing() }
         .padding(.trailing, SidebarRowMetrics.iconColumnInset)
     }
+    .padding(.horizontal, SidebarRowMetrics.listContentInset)
     .frame(height: SectionHeaderMetrics.height)
   }
 }
 
-/// A heading's List row background: the section header band, edge to edge.
+/// A heading's background: the section header band, edge to edge.
 struct SidebarSectionHeadingBand: View {
   var body: some View { Color.clear.sectionHeaderBand() }
 }
@@ -340,8 +353,7 @@ struct SidebarStandaloneRow: View, Equatable {
       Spacer(minLength: 0)
       SidebarSectionActivityMarks(sid: sid, activity: model.activity, actions: actions)
     }
-    .frame(height: SidebarRowMetrics.rowHeight)
-    .contentShape(Rectangle())
+    .sidebarRowFrame(ProjectSidebar.childRowInsets)
     .onTapGesture { actions.select(sid) }
     // Dragged onto another standalone terminal's row, the two become a group (#659). Beside the
     // List's own drag, which reorders; `minimumDistance` keeps a click a click. Only its start is

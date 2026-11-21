@@ -17,7 +17,7 @@ To hide or show the sidebar, use **View ▸ Projects** (<kbd>⌃⌘S</kbd>).
 
 ### The Projects section {nightly}
 
-The projects sit in the **Projects** section of the sidebar, under the **Terminals** section and a line between the two. Click **Projects** to fold every project away, and click it again to show them. Workroom remembers the fold when you relaunch. The **+** beside **Projects** adds a project, and it is there even when you have no projects yet but the sidebar shows standalone terminals.
+The projects sit in the **Projects** section of the sidebar, under the **Terminals** section. Each section's heading stays at the top of its part of the sidebar, and each section scrolls on its own, as the inspector's sections do. Drag the line between the two sections to give one more room; Workroom remembers where you leave it. Until you drag it, the **Terminals** section is as tall as its rows, up to under half the sidebar, and **Projects** takes the rest. Click **Projects** to fold every project away, down to the heading, and click it again to show them. Workroom remembers the fold when you relaunch. The **+** beside **Projects** adds a project, and it is there even when you have no projects yet but the sidebar shows standalone terminals.
 
 ## Add a project
 

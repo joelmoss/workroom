@@ -155,4 +155,54 @@ final class InspectorPanePolicyTests: XCTestCase {
         dividerThickness: divider),
       [0, 0, 0], "zero capacity is all zeros")
   }
+  // MARK: The sidebar's split (#652): per-pane floors and a content-sized pane
+
+  /// Value: protects=the sidebar's Terminals pane sized to its rows, with Projects taking the rest;
+  /// fails_when=a preferred pane is split by weight, or Projects doesn't fill what's left
+  func testAPreferredPaneTakesItsHeightAndTheOthersTheRest() {
+    let h = InspectorPanePolicy.allocate(
+      collapsed: [false, false], minHeights: [60, 120], preferred: [100, nil],
+      capacity: 801, dividerThickness: divider)
+    XCTAssertEqual(h[0], 100, accuracy: 0.5, "Terminals fits its rows")
+    XCTAssertEqual(h[1], 700, accuracy: 0.5, "Projects takes the rest")
+  }
+
+  /// Value: protects=a long Terminals section stops at its cap, so Projects keeps most of the
+  /// sidebar; fails_when=the preferred height isn't capped at `preferredCap` of the space
+  func testAPreferredPaneIsCapped() {
+    let h = InspectorPanePolicy.allocate(
+      collapsed: [false, false], minHeights: [60, 120], preferred: [900, nil], preferredCap: 0.4,
+      capacity: 1001, dividerThickness: divider)
+    XCTAssertEqual(h[0], 400, accuracy: 0.5, "at most 40% of the sidebar")
+    XCTAssertEqual(h[1], 600, accuracy: 0.5)
+  }
+
+  /// Value: protects=a one-row Terminals pane isn't padded to the inspector's 120pt floor;
+  /// fails_when=`minHeights` is ignored for a preferred pane
+  func testAPreferredPaneIsFlooredAtItsOwnMinimum() {
+    let h = InspectorPanePolicy.allocate(
+      collapsed: [false, false], minHeights: [60, 120], preferred: [10, nil],
+      capacity: 801, dividerThickness: divider)
+    XCTAssertEqual(h[0], 60, accuracy: 0.5, "its own floor, under the inspector's")
+  }
+
+  /// Value: protects=with Projects folded, the Terminals pane fills the sidebar under the
+  /// Projects heading; fails_when=a lone expanded pane keeps its content height
+  func testALonePreferredPaneFills() {
+    let h = InspectorPanePolicy.allocate(
+      collapsed: [false, true], minHeights: [60, 120], preferred: [100, nil],
+      capacity: 801, dividerThickness: divider)
+    XCTAssertEqual(h[0], 800 - header, accuracy: 0.5)
+    XCTAssertEqual(h[1], header, accuracy: 0.5)
+  }
+
+  /// Value: protects=collapsing Projects gives Terminals the space, floored at its own minimum;
+  /// fails_when=`reallocateOnToggle` floors at the inspector's minimum instead of the pane's
+  func testReallocateUsesPerPaneFloors() {
+    let h = InspectorPanePolicy.reallocateOnToggle(
+      previous: [60, 740], collapsed: [false, true], toggled: 1, minHeights: [40, 120],
+      capacity: 801, dividerThickness: divider)
+    XCTAssertEqual(h[1], header, accuracy: 0.5)
+    XCTAssertEqual(h[0], 800 - header, accuracy: 0.5, "the neighbour absorbs it")
+  }
 }
