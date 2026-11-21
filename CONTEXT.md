@@ -181,6 +181,12 @@ Something attached to a session, which is shown its output and has a size: a pan
 Typing into a session through the terminal API (`workroom send`) without attaching to it: text, as a bracketed paste when its program turned that on, then named keys encoded for its keyboard modes. A send is no client: it takes no size and counts as nobody attached. Its **sender** is the session it came from, which its event names (ADR 0079).
 _Avoid_: Inject, attach (a send never attaches)
 
+**Prompt** (through the terminal API):
+Giving the coding agent in a session a prompt in one step (`workroom prompt`): its text as a bracketed paste, then Enter, typed as a send is. Only into a **coding-agent session**, one whose foreground program is `claude` or `codex`, or whose program status came from the program in its foreground now; and only while that agent can take one, not working, waiting on the user or without its prompt up (ADR 0079).
+
+**Turn** (of a coding agent):
+What one prompt sets a coding agent doing: from the `working` it reports, to the first program status after it that isn't `working` (done, blocked, idle or error). `prompt --wait` and `wait --turn` wait for one to end, never taking the status the last turn left for this one's end (ADR 0079).
+
 **Bootstrap**:
 Putting the bundled Linux workroomd, with Ghostty's terminfo and shell integration, on a host that has none or an older one, and handing a running older daemon off to it. It runs on every connect. A provider or container's supervisor starts the daemon; on an SSH host, the app starts it when nothing is listening.
 
