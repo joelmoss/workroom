@@ -110,7 +110,7 @@ Choose **Edit Label…** to change it, or **Remove Label** to go back to the rea
 
 ## Close a workroom
 
-Right-click a workroom's tab and choose **Close** to close all of its terminals and take it out of the tab bar. The workroom itself and its files stay, and you can open it again. Workroom asks you to confirm.
+Right-click a workroom's tab and choose **Close** to close all of its terminals and take it out of the tab bar. Nightly only: you can also hover over the tab and click the **✕** that shows at its end. The workroom itself and its files stay, and you can open it again. Workroom asks you to confirm.
 
 ## Move a workroom to another window
 

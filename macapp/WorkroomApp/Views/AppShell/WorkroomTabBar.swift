@@ -7,8 +7,9 @@ import WorkroomDomain
 /// appears when its workroom gains a terminal and disappears when it loses its last. The "selected"
 /// chip **is** `store.selectedTargetID` — tapping one selects that target (like the sidebar), so every
 /// selection-driven command (⌘T/⌘W/splits/run/notifications/⌥⌘1–9) operates on the focused workroom.
-/// No per-chip close button: a tab vanishes when its terminals are closed, and closing-as-kill would
-/// defeat the parallel-monitoring purpose.
+/// A tab vanishes when its terminals are closed. Its ✕ shows only while the pointer is over it, laid
+/// over its title (`tabHoverClose`), and asks first, as the right-click menu's Close does; at rest the
+/// tabs carry no close control, so a row of them reads as places to monitor rather than to close.
 ///
 /// The bar is mounted whether or not there are any tabs: its trailing controls are how a fresh window
 /// opens its first workroom, so an empty run still shows them (over the otherwise bare, draggable
@@ -462,6 +463,18 @@ private struct WorkroomTabChip: View {
     WorkroomLabel(project: primaryLabel, workroom: workroomName).full
   }
 
+  /// The name Close asks about, for the right-click menu and the hover ✕. Nil while a create's run
+  /// lasts (#483): its chip has no terminals to close then, and its pane's own actions end it.
+  private var closeName: String? {
+    lifecycle.isCreationBlocking(target.id) ? nil : workroomName ?? primaryLabel
+  }
+
+  /// Close every terminal of this tab, as the menu's Close does: it asks first.
+  private func requestClose() {
+    guard let closeName else { return }
+    store.modals.pendingWorkroomClose = PendingWorkroomClose(target: target, name: closeName)
+  }
+
   private var hasActivity: Bool { notifications.count(target: target.id) > 0 }
   private var hasRunTab: Bool { runCommand.runTabID(for: target.id) != nil }
   private var runRunning: Bool { runCommand.isRunCommandRunning(for: target.id) }
@@ -481,15 +494,16 @@ private struct WorkroomTabChip: View {
       // only, a workroom chip shows the full set — same as before the extraction. A create's chip has
       // no terminals to close while its run lasts (#483): its pane's own actions end it.
       .contextMenu {
-        WorkroomMenuAdapter(
-          sid: sid, target: target,
-          closeName: lifecycle.isCreationBlocking(target.id) ? nil : workroomName ?? primaryLabel,
-          style: .full)
+        WorkroomMenuAdapter(sid: sid, target: target, closeName: closeName, style: .full)
       }
       .accessibilityElement(children: .combine)
       .accessibilityLabel(
         accessibilityLabel(hasActivity: hasActivity, running: hasRunTab && runRunning)
       )
+      // The hover ✕ is hidden until the pointer is over the tab, so Close is an action here too.
+      .accessibilityActions {
+        if closeName != nil { Button("Close") { requestClose() } }
+      }
       .accessibilityIdentifier("workroom.tab.\(target.id)")
       .accessibilityAddTraits(isActive ? .isSelected : [])
       .scaleEffect(isDragging ? 1.04 : 1)
@@ -529,7 +543,8 @@ private struct WorkroomTabChip: View {
       }
       HStack(alignment: .firstTextBaseline, spacing: 4) {
         if let standaloneTitle {
-          TerminalTitleLabel(title: standaloneTitle)
+          // Its folder a size smaller than its program, as on a pane's tabs.
+          TerminalTitleLabel(title: standaloneTitle, folderFont: .caption)
             .foregroundStyle(
               hasActivity ? tokens.accent : Color.primary,
               hasActivity ? tokens.accent.opacity(0.7) : tokens.fgMuted
@@ -587,6 +602,13 @@ private struct WorkroomTabChip: View {
     contentRow
       .padding(.horizontal, 10)
       .padding(.vertical, 4)
+      // The ✕ shows on hover only, over the title's trailing end, as on a pane's tabs.
+      .tabHoverClose(isHovered: isHovered && closeName != nil) {
+        TabCloseButton(action: requestClose)
+          .help("Close \(closeName ?? fullTitle)")
+          .accessibilityLabel("Close \(closeName ?? fullTitle)")
+          .accessibilityIdentifier("workroom.tabClose.\(target.id)")
+      }
       // Selection & hover fill — the same treatment as the terminal tab chips: the selected tab is
       // filled with the terminal background (`bg`) so it stands distinct from the strip; a hovered idle
       // tab gets the faint hover wash. Front-most background so a dragged chip's material lift sits

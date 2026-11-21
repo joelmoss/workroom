@@ -30,14 +30,18 @@ extension View {
 /// faded, in that style's second level. A caller sets both levels with `.foregroundStyle(_:_:)`.
 /// The program truncates only when it is alone too wide; the folder gives way first and is cut in
 /// the middle, so the end of its path stays. Any other title is one `Text`, as the caller styles it.
+///
+/// A tab passes `folderFont` to draw the folder a size smaller than the program, on the program's
+/// baseline. Without it (the sidebar, the pane title bar) both parts take the caller's one font.
 struct TerminalTitleLabel: View {
   let title: TerminalTitle
+  var folderFont: Font? = nil
 
   var body: some View {
     if let folder = title.folder {
       HStack(alignment: .firstTextBaseline, spacing: 0) {
         Text(title.name).layoutPriority(1)
-        Text(" " + folder).foregroundStyle(.secondary).truncationMode(.middle)
+        folderText(" " + folder).foregroundStyle(.secondary).truncationMode(.middle)
       }
       // One element for VoiceOver, read as the title in plain text ("zsh ~/dev/workroom").
       .accessibilityElement(children: .ignore)
@@ -46,5 +50,12 @@ struct TerminalTitleLabel: View {
     } else {
       Text(title.name)
     }
+  }
+
+  /// The folder in `folderFont`, else in the inherited font: `.font(nil)` would not inherit it, it
+  /// would reset the text to the system default.
+  private func folderText(_ text: String) -> Text {
+    if let folderFont { return Text(text).font(folderFont) }
+    return Text(text)
   }
 }
