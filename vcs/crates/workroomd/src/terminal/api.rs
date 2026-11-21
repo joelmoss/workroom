@@ -15,7 +15,8 @@
 //! registry every `workroom` command shares (ADR 0013), and an ambiguous target's error lists the
 //! sessions it matched under `matches`. Nothing is ever sent unasked, which is what leaves a client
 //! that never calls the service unaffected by it. Every method answers at once except
-//! `terminal.wait` (`wait`), which answers when its wait ends, and `events.subscribe` (`events`),
+//! `terminal.wait` (`wait`), which answers when its wait ends, `terminal.command` (`command`),
+//! which answers when the command it typed has ended, and `events.subscribe` (`events`),
 //! which streams until its caller hangs up, each from a thread of its own while the connection
 //! goes on taking requests.
 //!
@@ -88,13 +89,16 @@ pub mod kind {
     pub const WAIT_INTERRUPTED: &str = "WaitInterrupted";
     /// The request needs the shell's integration marks, and the session has sent none.
     pub const NO_SHELL_INTEGRATION: &str = "NoShellIntegration";
+    /// A full-screen program has the session's screen, so it has no shell prompt to type at.
+    pub const ALTERNATE_SCREEN: &str = "AlternateScreen";
     /// A wait for a run to exit with one code, which it exited with another.
     pub const EXIT_CODE_MISMATCH: &str = "ExitCodeMismatch";
     /// A send into the caller's own session, which it didn't allow.
     pub const REFUSED_SELF: &str = "RefusedSelf";
     /// The daemon is at a limit on concurrent work (`MAX_CAPTURES` captures of history, or the
     /// waits `wait::LIMITS` bounds), so it refuses rather than queue, and a retry once some has
-    /// finished can succeed. A send during a hand-off is refused so too.
+    /// finished can succeed. A send during a hand-off is refused so too, and a command into a
+    /// session whose shell is running one.
     pub const BUSY: &str = "Busy";
     /// Anything else, such as a screen the daemon has no copy of (a build without terminal-state,
     /// or a shadow terminal that failed) or one the formatter could not read.
@@ -171,6 +175,9 @@ enum Run {
     /// When something happens, from a thread of its own, while the connection goes on taking
     /// requests: `terminal.wait` (`wait::start`).
     Wait,
+    /// Once the command it types has ended, from a thread of its own, as a wait is:
+    /// `terminal.command` (`command::start`).
+    Command,
     /// For as long as the caller listens, from a thread of its own, while the connection goes on
     /// taking requests: `events.subscribe` (`events::start`).
     Events,
@@ -345,6 +352,22 @@ pub const METHODS: &[Method] = &[
         params_example: send::params_example,
         result_example: send::result_example,
         run: Run::Now(send::send),
+    },
+    Method {
+        name: command::NAME,
+        summary: "Runs one shell command in a session and answers once it has ended, with its \
+                  exit code and what it printed between the shell's OSC 133 marks, as plain \
+                  text. It is typed at the shell's prompt as `terminal.send` types (and told as \
+                  `session.input`), then Enter. A session whose shell sends no marks is \
+                  `NoShellIntegration`; one running a command is `Busy`, and one with a \
+                  full-screen program up `AlternateScreen`. `timeout_ms` ends the wait with \
+                  `WaitTimeout`, leaving the command running.",
+        input: command::input,
+        output: command::output,
+        errors: command::ERRORS,
+        params_example: command::params_example,
+        result_example: command::result_example,
+        run: Run::Command,
     },
     Method {
         name: wait::NAME,
@@ -1162,7 +1185,7 @@ fn handle(sessions: &SessionStore, bytes: &[u8], peer: Option<i32>) -> Result<An
     let request = read(sessions, bytes, peer)?;
     match request.method.run {
         Run::Now(run) => run(&request.call(sessions)),
-        Run::Wait | Run::Events => Err(ApiError::invalid(
+        Run::Wait | Run::Command | Run::Events => Err(ApiError::invalid(
             "this method answers on its own stream, from `dispatch`",
         )),
     }
@@ -1308,6 +1331,12 @@ pub fn dispatch(
                     writer,
                     envelope.stream,
                 ),
+                Run::Command => command::start(
+                    &mut connection.waits,
+                    &request.call(sessions),
+                    writer,
+                    envelope.stream,
+                ),
                 Run::Events => events::start(
                     &mut connection.subscriptions,
                     &request.call(sessions),
@@ -1355,6 +1384,7 @@ fn stream(
     }
 }
 
+mod command;
 mod events;
 mod send;
 mod wait;

@@ -142,6 +142,8 @@ pub(super) fn stream(
                     answer = answer_timeout(method, &again);
                     continue 'connection;
                 }
+                // Never sent again: that would type the command a second time.
+                Err(Ended::HungUp) if method == COMMAND => return Err(cut_off(&socket)),
                 Err(_) => {
                     return Err(unreachable(format!(
                         "the daemon on {socket} did not answer"
@@ -193,11 +195,14 @@ const WAIT: &str = "terminal.wait";
 
 const SEND: &str = "terminal.send";
 
+const COMMAND: &str = "terminal.command";
+
 /// The longest request the CLI sends for `method`: one envelope's payload, but for
 /// `terminal.send`, whose 1 MiB of text JSON may escape to six times that (a control character is
-/// `\u001b`), so it goes in chunks up to the 16 MiB the daemon reassembles (`rpc::reassemble`).
+/// `\u001b`), so it goes in chunks up to the 16 MiB the daemon reassembles (`rpc::reassemble`),
+/// and `terminal.command`, whose 1 MiB line may escape to twice that (a quote or a backslash).
 fn max_request(method: &str) -> usize {
-    if method == SEND {
+    if method == SEND || method == COMMAND {
         crate::daemon::rpc::MAX_REQUEST
     } else {
         MAX_ENVELOPE_PAYLOAD
@@ -493,29 +498,57 @@ fn resumed(
     Ok((stream, again))
 }
 
+/// A `terminal.command` the daemon on `socket` hung up on before it answered: a hand-off, when a
+/// daemon answers there at once, which is `WaitInterrupted` (3), as a `command_finished` wait's
+/// is, since the command may have ended unseen in between; else nobody listening, 7. Never sent
+/// again, which would type the command a second time.
+fn cut_off(socket: &str) -> CliError {
+    match connect(socket) {
+        Ok(_) => CliError::new(
+            Kind::WaitInterrupted,
+            format!(
+                "the daemon on {socket} was handed off (replaced by its update) while the command \
+                 ran, so its end and its output went unseen; it may still be running, or have \
+                 ended, and is not run again"
+            ),
+        ),
+        Err(mut error) => {
+            if error.kind == Kind::DaemonUnreachable {
+                error.message = format!(
+                    "the daemon on {socket} went away while the command ran, and none is \
+                     listening there now"
+                );
+            }
+            error
+        }
+    }
+}
+
 /// How long the daemon gets to answer `method` with `params` once the request is sent: `TIMEOUT`,
 /// but for `terminal.wait`, which answers when what it waits for happens. That is its own
 /// `timeout_ms` and `TIMEOUT` more, so its `WaitTimeout` arrives before the client gives up, and
 /// no limit when it has none (`None`). A `timeout_ms` the daemon will refuse gets `TIMEOUT`: the
 /// refusal comes at once. The same for `wait` and `api call terminal.wait`, so neither reads a
-/// long wait as a daemon gone quiet (7).
+/// long wait as a daemon gone quiet (7). `terminal.command` waits as a wait does, and types its
+/// command first, as a send does, so it gets the send's time beside its own.
 pub(super) fn answer_timeout(method: &str, params: &Value) -> Option<Duration> {
     // A send types for up to its deadline, then closes its paste, so it gets both and `TIMEOUT`.
+    let send = crate::terminal::api::SEND_DEADLINE + crate::terminal::api::SEND_DEADLINE_GRACE;
     if method == SEND {
-        return Some(
-            crate::terminal::api::SEND_DEADLINE
-                + crate::terminal::api::SEND_DEADLINE_GRACE
-                + TIMEOUT,
-        );
+        return Some(send + TIMEOUT);
     }
-    if method != "terminal.wait" {
-        return Some(TIMEOUT);
-    }
+    let typing = match method {
+        WAIT => Duration::ZERO,
+        COMMAND => send,
+        _ => return Some(TIMEOUT),
+    };
     match params.get("timeout_ms") {
         None | Some(Value::Null) => None,
         Some(millis) => match millis.as_u64() {
             // Past what a `Duration` holds is no limit, as it is on the daemon.
-            Some(millis) => Duration::from_millis(millis).checked_add(TIMEOUT),
+            Some(millis) => Duration::from_millis(millis)
+                .checked_add(typing)
+                .and_then(|waited| waited.checked_add(TIMEOUT)),
             None => Some(TIMEOUT),
         },
     }

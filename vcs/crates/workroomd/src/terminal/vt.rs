@@ -248,6 +248,10 @@ struct Effects {
     reset: bool,
     /// Bytes for the pty: only the answer to a program status probe.
     replies: Vec<u8>,
+    /// Whether the shell has shown a prompt (OSC 133 A or B) to this terminal, so `command`
+    /// says whether a command is open. A hand-off's next program starts without one: a command
+    /// begun before it is open with no C this terminal saw.
+    prompted: bool,
 }
 
 /// What `OSC 7501 ; ?` is answered with, up to the states and kinds that follow it.
@@ -336,10 +340,12 @@ impl Callbacks for Effects {
         match kind {
             GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_PROMPT_START => {
                 self.command = CommandSlot::default();
+                self.prompted = true;
                 self.program.push(Event::Prompt);
             }
             GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_INPUT_START => {
                 self.command = CommandSlot::default();
+                self.prompted = true;
             }
             GhosttySemanticPromptKind_GHOSTTY_SEMANTIC_PROMPT_OUTPUT_START => {
                 self.command.started = Some(Instant::now());
@@ -745,6 +751,19 @@ impl ShadowTerminal {
     /// The live title, as the program last set it with OSC 0 or 2; `None` when it set none.
     pub fn title(&self) -> Option<String> {
         self.terminal.title().filter(|title| !title.is_empty())
+    }
+
+    /// Whether the shell is running a command, by its OSC 133 marks: a C (output start) has come
+    /// and no D, prompt or input start has closed it since (`CommandSlot`). What `terminal.command`
+    /// (#691) refuses to type into, since the next D would be that command's, not its own. `None`
+    /// before the shell has shown this terminal a prompt, when the marks can't say: after a
+    /// hand-off, a command begun before it is open with no C seen here.
+    pub fn command_open(&self) -> Option<bool> {
+        let effects = self.terminal.callbacks();
+        if effects.command.started.is_some() {
+            return Some(true);
+        }
+        effects.prompted.then_some(false)
     }
 
     /// How many bytes `replay` ends with for the parser continuation.

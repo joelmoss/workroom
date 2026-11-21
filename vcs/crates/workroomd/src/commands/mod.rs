@@ -28,6 +28,7 @@ mod base;
 mod capture;
 pub(crate) mod channel;
 mod claim;
+mod command;
 mod complete;
 mod completion;
 mod config;
@@ -447,6 +448,22 @@ const COMMANDS: &[Command] = &[
                 },
             ],
         )
+    },
+    Command {
+        name: "command",
+        aliases: &[],
+        usage: "command TARGET [flags] -- COMMAND...",
+        short: "Run a shell command in a terminal session and exit with its code",
+        long: None,
+        hidden: false,
+        mac_only: false,
+        flags: command::FLAGS,
+        subcommands: &[],
+        // A TARGET and the COMMAND's words, which `command::run` checks.
+        arity: Arity::Own,
+        // A TARGET is a session the daemon knows, never a file, as for `sessions`.
+        operands: Operands::Nothing,
+        implementation: command::run,
     },
     Command {
         name: "completion",
@@ -1762,6 +1779,25 @@ mod tests {
         for args in [
             &["__complete", "send", ""][..],
             &["__complete", "send", "server", ""],
+        ] {
+            let ((stdout, _), code) = run_on(Platform::Other, args);
+            assert_eq!((stdout.as_str(), code), (":4\n", 0), "{args:?}");
+        }
+    }
+
+    /// `command` is Rust's alone too (#691): completion offers it and its flags, and nothing for
+    /// its TARGET or its COMMAND, neither of which is a file name here.
+    #[test]
+    fn completion_offers_command_and_its_flags() {
+        let ((stdout, _), _) = run_on(Platform::Other, &["__completeNoDesc", ""]);
+        assert!(stdout.lines().any(|line| line == "command"), "{stdout}");
+        let ((stdout, _), _) = run_on(Platform::Other, &["__completeNoDesc", "command", "--"]);
+        for flag in ["--allow-self", "--timeout", "--json"] {
+            assert!(stdout.lines().any(|line| line == flag), "{flag}: {stdout}");
+        }
+        for args in [
+            &["__complete", "command", ""][..],
+            &["__complete", "command", "server", ""],
         ] {
             let ((stdout, _), code) = run_on(Platform::Other, args);
             assert_eq!((stdout.as_str(), code), (":4\n", 0), "{args:?}");

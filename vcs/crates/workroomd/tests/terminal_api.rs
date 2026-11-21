@@ -1272,6 +1272,24 @@ fn every_method_publishes_schemas_its_replies_match() {
     assert_eq!(own["error"]["kind"], "RefusedSelf", "{own}");
     assert_eq!(violation(&error_schema, &own["error"], "error"), None);
 
+    // A command, which needs its shell's marks: `/bin/sh` sends none, so it is refused, once the
+    // new session's grace for them is over, with nothing typed. One that runs is matched against
+    // the output schema in `command_runs_in_a_shell_…`.
+    let params = json!({"target": OTHER, "command": "true", "timeout_ms": 30_000});
+    assert_eq!(
+        violation(&schema("terminal.command", "input"), &params, "command"),
+        None
+    );
+    let refused = api.call("terminal.command", params);
+    let kind = if has_terminal_state() {
+        "NoShellIntegration"
+    } else {
+        "InvalidRequest"
+    };
+    assert_eq!(refused["error"]["kind"], kind, "{refused}");
+    assert_eq!(refused["more"], false, "{refused}");
+    assert_eq!(violation(&error_schema, &refused["error"], "error"), None);
+
     // A wait answers on its stream when it ends: here at once, out of time.
     let params = json!({"target": "beef", "ended": true, "timeout_ms": 0});
     assert_eq!(
@@ -1947,6 +1965,7 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
     let socket = workspace.socket();
     let _daemon = start_daemon(&socket);
     let mut first = open(&socket, OTHER, "tests", "wr-1", &workspace.dir);
+    let mut output = common::ClientReader::new(&mut first);
     let _second = open(&socket, RUN, "tests", "wr-1", &workspace.dir);
     listing_until(&socket, |listing| {
         listing.len() == 2 && listing.iter().all(|session| !session["cwd"].is_null())
@@ -1961,6 +1980,10 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
         // A no-op command, typed into the shell.
         ("terminal.send", json!({"target": OTHER, "text": ":\n"})),
         (
+            "terminal.command",
+            json!({"target": OTHER, "command": "echo ran", "timeout_ms": 30000}),
+        ),
+        (
             "terminal.wait",
             json!({"target": OTHER, "regex": "API-CALL-WAITED", "timeout_ms": 30000}),
         ),
@@ -1973,9 +1996,19 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
             .iter()
             .find(|(case, _)| *case == name)
             .unwrap_or_else(|| panic!("{name} has no case here: add one"));
-        // A capture needs a screen to read, which only terminal-state keeps.
-        if name == "terminal.capture" && !has_terminal_state() {
+        // A capture needs a screen to read, which only terminal-state keeps, as a command's end
+        // does; and a command, a shell that sends marks.
+        if ["terminal.capture", "terminal.command"].contains(&name) && !has_terminal_state() {
             continue;
+        }
+        if name == "terminal.command" {
+            type_line(&mut first, INTEGRATED_SHELL);
+            assert!(
+                output
+                    .read_until("IS> ", Duration::from_secs(20))
+                    .contains("IS> "),
+                "fixture: the integrated shell never prompted"
+            );
         }
         // Printed 3 s from now, once the wait has started; split in the typed line, so its echo
         // is not the match.
@@ -4238,4 +4271,305 @@ fn a_send_types_one_mib_whole_and_refuses_more() {
         assert_eq!(past.code, 2, "{}", past.stdout);
         assert_eq!(past.envelope()["error"]["kind"], "TooLarge");
     }
+}
+
+/// A shell with OSC 133 integration, for `/bin/sh`, which has none and no preexec to send a C: a
+/// loop that reads a line and runs it, as a shell does, sending A before its prompt (`IS> `), B
+/// after it, C before it runs the line and D with its exit code after. A line typed as a bracketed
+/// paste has the paste's markers taken off, and runs with `P=1`. Its prompt is split in the line
+/// typed, so the echo is not the prompt.
+const INTEGRATED_SHELL: &str = r#"e=$(printf '\033'); while printf '%s]133;A\007I''S> %s]133;B\007' "$e" "$e"; IFS= read -r l; do P=; case $l in "$e[200~"*) P=1; l=${l#"$e[200~"}; l=${l%"$e[201~"};; esac; printf '%s]133;C\007' "$e"; eval "$l"; printf '%s]133;D;%d\007' "$e" "$?"; done"#;
+
+/// `workroom command <args> --json`'s exit code and envelope.
+fn command(socket: &Path, args: &[&str]) -> (i32, Value) {
+    let args: Vec<&str> = [&["command", "--json"][..], args].concat();
+    let run = workroom(Some(socket), &args);
+    (run.code, run.envelope())
+}
+
+/// A command's envelope, which ran: `command`'s, with the API's result fields, which match the
+/// schema the daemon publishes.
+fn ran(socket: &Path, outcome: (i32, Value)) -> Value {
+    let (code, envelope) = outcome;
+    assert_eq!(envelope["ok"], true, "{envelope}");
+    assert_eq!(envelope["command"], "command", "{envelope}");
+    assert_eq!(
+        code,
+        i32::try_from(envelope["exit_code"].as_i64().expect("an exit code")).unwrap(),
+        "it exits with the command's own code: {envelope}"
+    );
+    let described =
+        Api::connect(socket).call("api.describe", json!({"method": "terminal.command"}));
+    let schema = &described["result"]["methods"][0]["output"];
+    assert_eq!(violation(schema, &envelope, "result"), None, "{envelope}");
+    envelope
+}
+
+/// `workroom command TARGET -- COMMAND` runs the command in a session's shell and exits with its
+/// code. Its output is what the command printed between its shell's marks, rendered as a capture
+/// reads a screen: not the command line the shell echoed, nor the prompt after it. A new session
+/// gets the marks' grace for its shell's first prompt before anything is typed. The command goes
+/// as a bracketed paste once the shell has turned that on, with Enter after it. A shell already
+/// running a command is `Busy`, the caller's own session `RefusedSelf`, a line end
+/// `InvalidRequest`, and a command that outlasts `--timeout` `WaitTimeout` (8), left running.
+#[test]
+fn command_runs_in_a_shell_and_gives_its_code_and_the_output_between_its_marks() {
+    let workspace = Workspace::new("api-command");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    let mut output = common::ClientReader::new(&mut shell);
+    if !has_terminal_state() {
+        listing_until(&socket, |listing| listing.len() == 1);
+        assert_eq!(
+            failed(command(&socket, &["server", "--", "true"])),
+            (2, "InvalidRequest".into()),
+            "a command's end needs the shadow terminal"
+        );
+        return;
+    }
+    // Its first prompt a second from now: the command waits for it, within the new session's
+    // grace, and only then types.
+    type_line(&mut shell, &format!("sleep 1; {INTEGRATED_SHELL}"));
+    listing_until(&socket, |listing| listing.len() == 1);
+    let passed = ran(
+        &socket,
+        command(&socket, &["server", "--", r"printf 'one\ntwo\n'"]),
+    );
+    assert_eq!(passed["session"], SHELL, "{passed}");
+    assert_eq!(passed["caller"], Value::Null, "{passed}");
+    assert_eq!(passed["exit_code"], 0, "{passed}");
+    assert_eq!(passed["output"], "one\ntwo", "{passed}");
+    assert_eq!(passed["truncated"], false, "{passed}");
+    assert!(
+        output
+            .read_until("two\r\n", Duration::from_secs(20))
+            .contains("printf 'one\\ntwo\\n'"),
+        "the command was typed at the prompt"
+    );
+
+    let failing = ran(
+        &socket,
+        command(
+            &socket,
+            &["server", "--", "sh", "-c", "'echo bad >&2; exit 3'"],
+        ),
+    );
+    assert_eq!(
+        (failing["exit_code"].clone(), failing["output"].clone()),
+        (json!(3), json!("bad")),
+        "{failing}"
+    );
+    let silent = ran(&socket, command(&socket, &["server", "--", "true"]));
+    assert_eq!(silent["output"], "", "{silent}");
+    let redrawn = ran(
+        &socket,
+        command(
+            &socket,
+            &["server", "--", r"printf '\033[1m10%%\033[0m\r100%%\n'"],
+        ),
+    );
+    assert_eq!(redrawn["output"], "100%", "{redrawn}");
+    let human = workroom(
+        Some(&socket),
+        &["command", "server", "printf", "%s-%s", "a", "b"],
+    );
+    assert_eq!(
+        (human.code, human.stdout.as_str(), human.stderr.as_str()),
+        (0, "a-b\n", "")
+    );
+    let human = workroom(
+        Some(&socket),
+        &[
+            "command",
+            "server",
+            "--",
+            "exit_code() { return 4; }; exit_code",
+        ],
+    );
+    assert_eq!((human.code, human.stdout.as_str()), (4, ""));
+
+    // A shell that has turned bracketed paste on is pasted the command, Enter after the paste.
+    ran(
+        &socket,
+        command(&socket, &["server", "--", r"printf '\033[?2004h'"]),
+    );
+    let pasted = ran(
+        &socket,
+        command(&socket, &["server", "--", r#"echo "pasted=$P""#]),
+    );
+    assert_eq!(pasted["output"], "pasted=1", "{pasted}");
+
+    // A command typed into the pane, still running, owns the next command's end.
+    type_line(&mut shell, r#"echo "SLEEP""ING"; sleep 4"#);
+    assert!(
+        output
+            .read_until("SLEEPING\r\n", Duration::from_secs(20))
+            .contains("SLEEPING\r\n"),
+        "fixture: the pane's command never started"
+    );
+    assert_eq!(
+        failed(command(&socket, &["server", "--", "true"])),
+        (3, "Busy".into())
+    );
+    met(
+        &socket,
+        wait(
+            &socket,
+            &["server", "--command-finished", "--timeout", "60s"],
+        ),
+    );
+
+    // The caller's own session, and a command that is not one line.
+    let own = Api::connect(&socket).request(&json!({
+        "method": "terminal.command",
+        "params": {"target": SHELL, "command": "true"},
+        "caller": SHELL,
+    }));
+    assert_eq!(own["error"]["kind"], "RefusedSelf", "{own}");
+    assert_eq!(
+        failed(command(&socket, &["server", "--", "true\nfalse"])),
+        (2, "InvalidRequest".into())
+    );
+
+    // Out of time before it is typed: nothing is.
+    assert_eq!(
+        failed(command(
+            &socket,
+            &["server", "--timeout", "0s", "--", "echo NEVER-TYPED"]
+        )),
+        (8, "WaitTimeout".into())
+    );
+    // Out of time, its command left running; its end then comes as any command's does.
+    assert_eq!(
+        failed(command(
+            &socket,
+            &["server", "--timeout", "1s", "--", "sleep 5"]
+        )),
+        (8, "WaitTimeout".into())
+    );
+    met(
+        &socket,
+        wait(
+            &socket,
+            &["server", "--command-finished", "--timeout", "60s"],
+        ),
+    );
+    let screen = capture(&socket, &["server", "--json"]);
+    assert!(
+        !screen.envelope()["text"]
+            .as_str()
+            .unwrap()
+            .contains("NEVER-TYPED"),
+        "{}",
+        screen.stdout
+    );
+}
+
+/// A session whose shell sends no OSC 133 marks is `NoShellIntegration` (3), the command never
+/// typed: a new one once the marks' grace is over, an older one at once.
+#[test]
+fn command_without_shell_integration_is_refused_with_nothing_typed() {
+    if !has_terminal_state() {
+        eprintln!("skipped: a command's end needs a daemon built with terminal-state");
+        return;
+    }
+    let workspace = Workspace::new("api-command-none");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let _shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+    for _ in 0..2 {
+        assert_eq!(
+            failed(command(
+                &socket,
+                &["server", "--timeout", "60s", "--", "echo NEVER-TYPED"]
+            )),
+            (3, "NoShellIntegration".into())
+        );
+    }
+    let screen = capture(&socket, &["server", "--json"]);
+    assert!(
+        !screen.envelope()["text"]
+            .as_str()
+            .unwrap()
+            .contains("NEVER-TYPED"),
+        "{}",
+        screen.stdout
+    );
+}
+
+/// A hand-off while a command runs closes `workroom command`'s connection: it is
+/// `WaitInterrupted` (3), as a wait for a command's end is, and is never typed again. The next
+/// program saw no C for the command still running, and no prompt since, so it asks whether a
+/// program has the shell's terminal: one has, so a command now is `Busy`.
+#[test]
+fn a_command_across_a_hand_off_is_interrupted_and_not_run_again() {
+    if !has_terminal_state() {
+        eprintln!("skipped: a hand-off needs a daemon built with terminal-state");
+        return;
+    }
+    let workspace = Workspace::new("api-command-handoff");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    let mut output = common::ClientReader::new(&mut shell);
+    type_line(&mut shell, INTEGRATED_SHELL);
+    assert!(
+        output
+            .read_until("IS> ", Duration::from_secs(20))
+            .contains("IS> "),
+        "fixture: the integrated shell never prompted"
+    );
+    let running = started(
+        &socket,
+        &[
+            "command",
+            "server",
+            "--json",
+            "--timeout",
+            "60s",
+            "--",
+            r#"echo "RUN""NING"; sleep 10"#,
+        ],
+    );
+    assert!(
+        output
+            .read_until("RUNNING\r\n", Duration::from_secs(20))
+            .contains("RUNNING\r\n"),
+        "the command never started"
+    );
+    drop(output);
+    drop(shell);
+    hand_off(&socket, &workspace.dir);
+    let running = finished(running);
+    assert_eq!(
+        (running.code, running.envelope()["error"]["kind"].clone()),
+        (3, json!("WaitInterrupted")),
+        "{} {}",
+        running.stdout,
+        running.stderr
+    );
+    // The sleep has most of its 10 s still to go: the hand-off takes a second or two.
+    assert_eq!(
+        failed(command(&socket, &["server", "--", "echo NOT-NOW"])),
+        (3, "Busy".into()),
+        "a command typed now would go to the sleep"
+    );
+    // Its prompt back (trimmed, as a capture trims), the command was run once.
+    let after = |run: &Run| {
+        let text = run.envelope()["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        text.rsplit_once("RUNNING")
+            .is_some_and(|(_, after)| after.contains("IS>"))
+    };
+    let screen = capture_awaiting(&socket, &["server", "--json"], "its prompt back", after);
+    let text = screen.envelope()["text"].as_str().unwrap().to_string();
+    assert_eq!(text.matches("RUNNING").count(), 1, "{text}");
+    assert!(!text.contains("NOT-NOW"), "{text}");
+    // At its prompt again, a command runs.
+    let again = ran(&socket, command(&socket, &["server", "--", "echo again"]));
+    assert_eq!(again["output"], "again", "{again}");
 }

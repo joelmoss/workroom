@@ -28,6 +28,26 @@ fn a_wait_is_read_for_as_long_as_it_may_take() {
     }
 }
 
+/// A command (#691) types first, as a send does, and then waits, as a wait does: it is read for
+/// its own timeout, the send's deadline and its grace, and `TIMEOUT` more, or with no limit when
+/// it has none; and its request goes in chunks, as a send's does.
+#[test]
+fn a_command_is_read_for_its_typing_and_its_wait() {
+    let command = |params: Value| answer_timeout(COMMAND, &params);
+    let typing = crate::terminal::api::SEND_DEADLINE + crate::terminal::api::SEND_DEADLINE_GRACE;
+    assert_eq!(
+        command(json!({"target": "x", "command": "ls", "timeout_ms": 60_000})),
+        Some(Duration::from_secs(60) + typing + TIMEOUT)
+    );
+    assert_eq!(command(json!({"target": "x", "command": "ls"})), None);
+    assert_eq!(
+        command(json!({"timeout_ms": u64::MAX})),
+        Some(Duration::from_millis(u64::MAX) + typing + TIMEOUT)
+    );
+    assert_eq!(command(json!({"timeout_ms": "1m"})), Some(TIMEOUT));
+    assert_eq!(max_request(COMMAND), crate::daemon::rpc::MAX_REQUEST);
+}
+
 fn argv(arguments: &[&str]) -> Vec<String> {
     arguments
         .iter()
