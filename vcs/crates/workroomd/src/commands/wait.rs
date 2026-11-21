@@ -42,6 +42,11 @@ pub(super) const FLAGS: &[Flag] = &[
          integration)",
     ),
     value_flag(
+        "turn",
+        "Wait for the coding agent's turn to end: next (one a working from now on starts) or \
+         current (the one under way)",
+    ),
+    value_flag(
         "timeout",
         "Give up after this long (such as 30s or 2m), exiting 8; no limit when not given",
     ),
@@ -64,12 +69,13 @@ const fn bool_flag(name: &'static str, usage: &'static str) -> Flag {
 }
 
 /// The conditions, as the flags name them and as the API's `params` do.
-const CONDITIONS: [(&str, &str); 5] = [
+const CONDITIONS: [(&str, &str); 6] = [
     ("status", "status"),
     ("run", "run"),
     ("regex", "regex"),
     ("ended", "ended"),
     ("command-finished", "command_finished"),
+    ("turn", "turn"),
 ];
 
 /// The CLI waits for the daemon's answer as long as the wait may take, and a little more
@@ -105,8 +111,8 @@ fn params(args: &Args) -> Result<Map<String, Value>, String> {
         .collect();
     let [(flag, key)] = given.as_slice() else {
         return Err(
-            "`workroom wait` takes exactly one of --status, --run, --regex, --ended or \
-             --command-finished"
+            "`workroom wait` takes exactly one of --status, --run, --regex, --ended, \
+             --command-finished or --turn"
                 .into(),
         );
     };
@@ -190,6 +196,12 @@ fn said(result: &Value) -> String {
         "status" => format!(
             "status: {}\n",
             result["status"].as_str().unwrap_or_default()
+        ),
+        "turn" => format!(
+            "status: {}\n",
+            result["status"]
+                .as_str()
+                .unwrap_or("none, the agent's report went")
         ),
         "run" => format!(
             "run: {}{}\n",

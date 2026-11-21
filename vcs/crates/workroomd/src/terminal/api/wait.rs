@@ -17,7 +17,7 @@ use super::{ApiError, Call, Slot, kind, listed, resolve};
 use crate::daemon::rpc::SharedWriter;
 use crate::terminal::program_status::State;
 use crate::terminal::session::{CREATED_KEY, SessionId, SessionStore};
-use crate::terminal::wait::{Condition, Matcher, Met, Outcome, RunState, Waiter};
+use crate::terminal::wait::{Condition, Matcher, Met, Outcome, RunState, Turn, Waiter};
 use crate::util::lock_or_recover;
 
 pub const NAME: &str = "terminal.wait";
@@ -25,14 +25,23 @@ pub const NAME: &str = "terminal.wait";
 const STATES: [&str; 5] = ["idle", "working", "done", "blocked", "error"];
 
 /// The names of the conditions, as `params` and the result's `condition` spell them.
-const CONDITIONS: [&str; 5] = ["status", "run", "regex", "ended", "command_finished"];
+const CONDITIONS: [&str; 6] = [
+    "status",
+    "run",
+    "regex",
+    "ended",
+    "command_finished",
+    "turn",
+];
 
 pub fn input() -> Value {
     let run_states: Vec<&str> = RunState::ALL.iter().map(|state| state.name()).collect();
+    let turns: Vec<&str> = Turn::ALL.iter().map(|turn| turn.name()).collect();
     json!({
         "type": "object",
         "required": ["target"],
-        "description": "Exactly one of `status`, `run`, `regex`, `ended` or `command_finished`.",
+        "description": "Exactly one of `status`, `run`, `regex`, `ended`, `command_finished` or \
+                        `turn`.",
         "properties": {
             "target": {
                 "type": "string",
@@ -85,6 +94,16 @@ pub fn input() -> Value {
                                 whether it was running then or starts later. A session whose \
                                 shell has sent no marks fails with `NoShellIntegration`.",
             },
+            "turn": {
+                "type": "string",
+                "enum": turns,
+                "description": "Wait for the coding agent's turn to end: the first program status \
+                                other than `working` after a `working`, which the result's \
+                                `status` gives (null when its report went: it exited). `next`: \
+                                the turn a `working` reported now or later starts, so a `done` \
+                                left from the turn before is no end of it. `current`: the turn \
+                                under way, which any status but `working` ends, now counting.",
+            },
             "timeout_ms": {
                 "type": "integer",
                 "description": "Fail with `WaitTimeout` after this many milliseconds; no limit \
@@ -111,7 +130,8 @@ pub fn output() -> Value {
             "status": {
                 "type": ["string", "null"],
                 "enum": states,
-                "description": "The program status reached, for `status`.",
+                "description": "The program status reached, for `status`; for `turn`, the one \
+                                the turn ended in, null when the agent's report went.",
             },
             "run_state": {
                 "type": ["string", "null"],
@@ -410,6 +430,16 @@ fn register(
             }
             Condition::CommandFinished
         }
+        "turn" => {
+            let turn = Turn::named(text("turn")?).ok_or_else(|| {
+                let names: Vec<&str> = Turn::ALL.iter().map(|turn| turn.name()).collect();
+                ApiError::invalid(format!("`turn` is one of {}", names.join(", ")))
+            })?;
+            if !shadowed {
+                return Err(without_shadow("waiting for a coding agent's turn"));
+            }
+            Condition::Turn(turn)
+        }
         other => return Err(ApiError::invalid(format!("`{other}` is `true` when given"))),
     };
     if exit_code.is_some() && *name != "run" {
@@ -570,6 +600,7 @@ fn result(request: &Request, outcome: Outcome) -> Result<Value, ApiError> {
     });
     match outcome {
         Outcome::Met(Met::Status(state)) => reply["status"] = json!(state),
+        Outcome::Met(Met::Turn(state)) => reply["status"] = json!(state),
         Outcome::Met(Met::Run { state, exit_code }) => {
             // An exit, but not with the code asked for: answered now, since it will not exit
             // again until it is restarted, and refused, so a script's `&&` stops there. The code

@@ -371,8 +371,10 @@ fn failure(error: &Value) -> CliError {
 
 const TARGET_NOT_FOUND: &str = crate::terminal::api::kind::TARGET_NOT_FOUND;
 
-/// The conditions a wait is sent again for after a hand-off: states (`resumed`).
-const STATES: [&str; 3] = ["status", "run", "ended"];
+/// The conditions a wait is sent again for after a hand-off: states (`resumed`), and a coding
+/// agent's turn, whose `current` is a state, and whose `next` misses a turn that started and
+/// ended between the two programs (ADR 0079).
+const STATES: [&str; 4] = ["status", "run", "ended", "turn"];
 
 /// For a wait for a state, the id of the session its target names, by `session.resolve`, which
 /// resolves as `terminal.wait` does: what is sent again after a hand-off, in place of the target.
