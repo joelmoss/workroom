@@ -19,10 +19,13 @@ fi
 } always {
     'builtin' 'unset' '_workroom_file'
     if [[ -o 'interactive' && -n "${WORKROOM_BIN_DIR-}" ]]; then
+        # A startup file that unset WORKROOM_BIN_DIR keeps the PATH it made: never an empty entry,
+        # which would be the current directory.
         _workroom_bin_first() {
             precmd_functions=(${precmd_functions:#_workroom_bin_first})
-            path=("$WORKROOM_BIN_DIR" ${path:#${(b)WORKROOM_BIN_DIR}})
             'builtin' 'unfunction' '_workroom_bin_first'
+            [[ -n "${WORKROOM_BIN_DIR-}" ]] || 'builtin' 'return' 0
+            path=("$WORKROOM_BIN_DIR" ${path:#${(b)WORKROOM_BIN_DIR}})
         }
         'builtin' 'typeset' -ag precmd_functions
         precmd_functions+=(_workroom_bin_first)

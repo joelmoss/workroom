@@ -2631,15 +2631,37 @@ fn over_ssh_workroom_runs_on_a_host_by_name_and_refuses_what_only_the_mac_does()
     assert!(seen.contains("\"kind\":\"MacOnly\""), "{seen}");
     assert!(seen.contains("STATUS=3=END"), "{seen}");
 
-    // fish, through Ghostty's integration: first at its first prompt, after config.fish.
+    // fish, through Ghostty's integration (Debian's fish, the fixture's oldest): first at its first
+    // prompt, after a startup file that set PATH outright. The file is this test's own, made
+    // exclusively and removed when done, and does anything only in the panes that ask for it.
+    println!("fish: {}", fixture.run("fish --version").trim());
+    let startup = "$HOME/.config/fish/conf.d/wr-695-test.fish";
+    fixture.run(&format!(
+        "mkdir -p \"$HOME/.config/fish/conf.d\" && (set -C; printf '%s\\n' \
+         'if set -q WR_695_RESET; set -gx PATH /usr/bin /bin; end' \
+         'if set -q WR_695_OPTOUT; set -e WORKROOM_BIN_DIR; set -gx PATH /opt/mine $PATH; end' \
+         > \"{startup}\")"
+    ));
     let seen = dialed_pane(
         &fixture,
         "7e0e7e0e-0000-4000-8000-000000000683",
         "xterm-ghostty",
-        &["env", "SHELL=/usr/bin/fish"],
+        &["env", "SHELL=/usr/bin/fish", "WR_695_RESET=1"],
         b"echo FIRST=$PATH[1]=\"\"END; echo FOUND=(command -v workroom)=\"\"END\n\
           echo XDG=$XDG_DATA_DIRS=\"\"END\nexit\n",
     );
+    // Erasing WORKROOM_BIN_DIR in a startup file keeps the PATH it made, with no empty entry.
+    let optout = dialed_pane(
+        &fixture,
+        "7e0e7e0e-0000-4000-8000-000000000685",
+        "xterm-ghostty",
+        &["env", "SHELL=/usr/bin/fish", "WR_695_OPTOUT=1"],
+        b"echo FIRST=$PATH[1]=\"\"END; echo EMPTY=(count (string match -r '^$' -- $PATH))=\"\"END\n\
+          exit\n",
+    );
+    fixture.run(&format!("rm \"{startup}\""));
+    assert!(optout.contains("FIRST=/opt/mine=END"), "{optout}");
+    assert!(optout.contains("EMPTY=0=END"), "{optout}");
     assert!(seen.contains(&format!("FIRST={bin}=END")), "{seen}");
     assert!(
         seen.contains(&format!("FOUND={bin}/workroom=END")),
