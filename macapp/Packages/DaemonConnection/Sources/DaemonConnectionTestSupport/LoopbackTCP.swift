@@ -53,6 +53,16 @@ public final class EchoServer: @unchecked Sendable {
         guard client >= 0 else { return }
         // An accepted socket inherits the listener's `O_NONBLOCK`; the echo below blocks.
         _ = fcntl(client, F_SETFL, fcntl(client, F_GETFL) & ~O_NONBLOCK)
+        // So echoing to a peer that has gone fails with EPIPE rather than killing the test process.
+        // Checked: it fails once that peer has gone, and then there is nothing to echo to.
+        var enabled: Int32 = 1
+        guard
+          setsockopt(
+            client, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size)) == 0
+        else {
+          Darwin.close(client)
+          continue
+        }
         DispatchQueue.global().async {
           var buffer = [UInt8](repeating: 0, count: 64 * 1024)
           while true {
@@ -112,6 +122,11 @@ public final class TCPClient: @unchecked Sendable {
   public init(port: UInt16, receiveBuffer: Int? = nil) throws {
     let descriptor = socket(AF_INET, SOCK_STREAM, 0)
     guard descriptor >= 0 else { throw NSError(domain: "TCPClient", code: Int(errno)) }
+    // Before `connect`, as `DaemonClient.noSignalOnWrite` does it: set after, it fails with EINVAL
+    // against a forward that has already closed the connection (the 65th, or one lost to EMFILE).
+    var enabled: Int32 = 1
+    setsockopt(
+      descriptor, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size))
     if var receiveBuffer {
       // Before `connect`: the window is negotiated then, and a small one keeps the peer's writes
       // parked instead of absorbed.
@@ -132,9 +147,6 @@ public final class TCPClient: @unchecked Sendable {
       Darwin.close(descriptor)
       throw NSError(domain: "TCPClient", code: Int(errno))
     }
-    var enabled: Int32 = 1
-    setsockopt(
-      descriptor, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size))
     self.descriptor = descriptor
   }
 

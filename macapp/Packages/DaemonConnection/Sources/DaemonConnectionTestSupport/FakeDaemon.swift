@@ -9,6 +9,13 @@ import Foundation
 /// shipped binary in `DaemonPortForwardingTests`; this exists for what that structurally cannot show —
 /// which opcodes, and which stream ids, the client actually sent. `forwardRefusal` makes every OPEN
 /// fail with that `connect` detail instead.
+///
+/// **Every socket it accepts is `SO_NOSIGPIPE`, and it is closed only once nothing can write to
+/// it.** A serve thread answers whatever it has already read, so it can still be writing when the
+/// test that owns it stops it. The old `stop()` closed each descriptor under that thread, which then
+/// wrote the previous test's EOF and CLOSE replies onto the next test's socket that had taken the
+/// number (measured, from `testTheConnectionCapIsSharedAcrossForwards`'s 64 pumps), and with no
+/// `SO_NOSIGPIPE` a write to a peer that had gone killed the whole test process with SIGPIPE.
 public final class FakeDaemon: @unchecked Sendable {
   public let socketPath: String
   private let listener: Int32
@@ -17,6 +24,15 @@ public final class FakeDaemon: @unchecked Sendable {
   private var services: [UInt8] = []
   private var clients: [Int32] = []
   private var forwardTraffic: [(stream: UInt32, opcode: UInt8)] = []
+  private var stopped = false
+  /// A read source, as `EchoServer` does it, not a blocking `accept` on a thread of its own, which
+  /// could reach `accept` after `stop()` closed the listener and accept on whatever reused the
+  /// number. The cancel handler runs after any accept in flight.
+  private let source: DispatchSourceRead
+  private let listenerClosed = DispatchSemaphore(value: 0)
+  /// One entry per serve thread; `stop()` closes the clients only once every one has left.
+  private let serving = DispatchGroup()
+  private let version: UInt16
 
   public var receivedServices: [UInt8] { lock.withLock { services } }
 
@@ -121,33 +137,89 @@ public final class FakeDaemon: @unchecked Sendable {
     directory = URL(fileURLWithPath: "/tmp/wra-fake-\(UUID().uuidString.prefix(8))")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     socketPath = directory.appendingPathComponent("a.sock").path
-    listener = socket(AF_UNIX, SOCK_STREAM, 0)
+    let listenerFD = socket(AF_UNIX, SOCK_STREAM, 0)
     var address = sockaddr_un()
     address.sun_family = sa_family_t(AF_UNIX)
     let path = Array(socketPath.utf8)
     withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: path) }
     let bound = withUnsafePointer(to: &address) {
       $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-        bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+        bind(listenerFD, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
       }
     }
-    guard bound == 0, listen(listener, 4) == 0 else {
-      throw NSError(domain: "FakeDaemon", code: Int(errno))
+    guard bound == 0, listen(listenerFD, 4) == 0,
+      fcntl(listenerFD, F_SETFL, fcntl(listenerFD, F_GETFL) | O_NONBLOCK) == 0
+    else {
+      let error = NSError(domain: "FakeDaemon", code: Int(errno))
+      close(listenerFD)
+      throw error
     }
-    let listenerFD = self.listener
-    DispatchQueue.global().async { [weak self] in
-      while true {
-        let client = accept(listenerFD, nil, nil)
-        guard client >= 0 else { return }
-        self?.lock.withLock { self?.clients.append(client) }
-        DispatchQueue.global().async { [weak self] in self?.serve(client, version: version) }
+    listener = listenerFD
+    self.version = version
+    source = DispatchSource.makeReadSource(
+      fileDescriptor: listenerFD, queue: DispatchQueue(label: "FakeDaemon.accept"))
+    source.setEventHandler { [weak self] in self?.acceptPending() }
+    let listenerClosed = self.listenerClosed
+    source.setCancelHandler {
+      close(listenerFD)
+      listenerClosed.signal()
+    }
+    source.activate()
+  }
+
+  /// Everything the backlog holds, on the accept queue.
+  private func acceptPending() {
+    while true {
+      let client = accept(listener, nil, nil)
+      guard client >= 0 else { return }
+      // An accepted socket inherits the listener's `O_NONBLOCK`; `serve` blocks.
+      _ = fcntl(client, F_SETFL, fcntl(client, F_GETFL) & ~O_NONBLOCK)
+      // Checked, as `PortForward.prepare` does it: it fails once the peer has gone, and a socket
+      // without it raises SIGPIPE on the first write. Such a peer has nothing to be served.
+      var enabled: Int32 = 1
+      let admitted =
+        setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size))
+        == 0
+        && lock.withLock { () -> Bool in
+          guard !stopped else { return false }
+          clients.append(client)
+          serving.enter()
+          return true
+        }
+      guard admitted else {
+        close(client)
+        continue
+      }
+      DispatchQueue.global().async { [self] in
+        defer { serving.leave() }
+        serve(client, version: version)
       }
     }
   }
 
+  /// Idempotent. Waits for the listener and every serve thread to let go before closing anything,
+  /// so no number this fake used can be written to by it once this returns.
   public func stop() {
-    close(listener)
-    lock.withLock { for client in clients { close(client) } }
+    let first = lock.withLock { () -> Bool in
+      defer { stopped = true }
+      return !stopped
+    }
+    guard first else { return }
+    source.cancel()
+    _ = listenerClosed.wait(timeout: .now() + 5)
+    // Shut down, not closed: a serve thread blocked in `recv` reads EOF and returns, one in `send`
+    // fails with EPIPE (not a signal), and the numbers stay theirs. Nothing is added to `clients`
+    // once `stopped` is set.
+    let accepted = lock.withLock { clients }
+    for client in accepted { shutdown(client, SHUT_RDWR) }
+    // Bounded. A serve thread that has not returned keeps its descriptor: leaked, never closed
+    // under it.
+    if serving.wait(timeout: .now() + 5) == .success {
+      lock.withLock {
+        for client in clients { close(client) }
+        clients = []
+      }
+    }
     try? FileManager.default.removeItem(at: directory)
   }
 
@@ -283,7 +355,11 @@ public final class FakeDaemon: @unchecked Sendable {
     var sent = 0
     while sent < forwardEpilogue {
       let count = min(64 * 1024, forwardEpilogue - sent)
-      sendForward(client, stream: stream, opcode: 0x03, body: Data(repeating: 0xAB, count: count))
+      // A client that has gone, or a `stop()`, ends the epilogue rather than failing every chunk.
+      guard
+        sendForward(
+          client, stream: stream, opcode: 0x03, body: Data(repeating: 0xAB, count: count))
+      else { return }
       sent += count
     }
     sendForward(client, stream: stream, opcode: 0x04, body: Data())
@@ -291,14 +367,19 @@ public final class FakeDaemon: @unchecked Sendable {
 
   /// An unsolicited Forward envelope to every connected client — what a future daemon's stream-0
   /// notification, or a misbehaving peer's stray frame, looks like on the wire.
+  ///
+  /// Under the lock, as `push` is: `stop()` closes the clients under it, so a descriptor is never
+  /// written here after it has been closed.
   public func pushForward(stream: UInt32, opcode: UInt8, body: Data = Data()) {
-    let clients = lock.withLock { self.clients }
-    for client in clients { sendForward(client, stream: stream, opcode: opcode, body: body) }
+    lock.withLock {
+      for client in clients { sendForward(client, stream: stream, opcode: opcode, body: body) }
+    }
   }
 
   /// Deliberately takes no lock: it is called from the per-client serve thread with that client's
-  /// descriptor in hand, and `handleForward` is already holding nothing.
-  private func sendForward(_ client: Int32, stream: UInt32, opcode: UInt8, body: Data) {
+  /// descriptor in hand, and `handleForward` is already holding nothing. False when it did not all go.
+  @discardableResult
+  private func sendForward(_ client: Int32, stream: UInt32, opcode: UInt8, body: Data) -> Bool {
     var envelope = Data([5])
     for value in [stream, UInt32(body.count + 1)] {
       var value = value.bigEndian
@@ -306,6 +387,6 @@ public final class FakeDaemon: @unchecked Sendable {
     }
     envelope.append(opcode)
     envelope.append(body)
-    _ = envelope.withUnsafeBytes { send(client, $0.baseAddress, $0.count, 0) }
+    return envelope.withUnsafeBytes { send(client, $0.baseAddress, $0.count, 0) } == envelope.count
   }
 }
