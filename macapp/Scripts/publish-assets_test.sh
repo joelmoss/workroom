@@ -26,6 +26,22 @@ cat >"$WORK/bin/gh" <<'EOF'
 #!/bin/sh
 echo "$*" >>"$FAKE_GH/calls"
 if [ "$1" = api ]; then
+  # The git tags, one name a line in $FAKE_GH/tags: a draft has none until it is published.
+  case "$*" in
+    *"/git/matching-refs/tags/"*)
+      prefix="${2##*/git/matching-refs/tags/}"
+      grep "^$prefix" "$FAKE_GH/tags" 2>/dev/null | sed 's|^|refs/tags/|'
+      exit 0
+      ;;
+    "api -X DELETE "*"/git/refs/tags/"*)
+      name="${4##*/git/refs/tags/}"
+      grep -qxF "$name" "$FAKE_GH/tags" 2>/dev/null \
+        || { echo "HTTP 422: Reference does not exist" >&2; exit 1; }
+      grep -vxF "$name" "$FAKE_GH/tags" >"$FAKE_GH/tags.new" || true
+      mv "$FAKE_GH/tags.new" "$FAKE_GH/tags"
+      exit 0
+      ;;
+  esac
   [ -f "$FAKE_GH/latest" ] || exit 1
   cat "$FAKE_GH/latest"
   exit 0
@@ -62,6 +78,13 @@ case "$sub" in
     ;;
   delete)
     rm -r "$rel"
+    # As GitHub's: the release goes, then a missing tag fails the cleanup.
+    case "$*" in
+      *--cleanup-tag*)
+        grep -qxF "$(basename "$rel" | sed 's/^rel-//')" "$FAKE_GH/tags" 2>/dev/null \
+          || { echo "HTTP 422: Reference does not exist" >&2; exit 1; }
+        ;;
+    esac
     ;;
   edit)
     case "$*" in *--draft=false*) echo false >"$rel/draft" ;; esac
@@ -242,8 +265,15 @@ expect_call "release create nightly-dryrun-4242 --draft --title nightly-dryrun-4
 expect_call "release upload nightly-dryrun-4242" "dry run"
 expect_call "release edit nightly-dryrun-4242 --notes" "dry run"
 expect_call "api repos/example/workroom/releases/latest" "dry run"
-expect_call "release delete nightly-dryrun-4242 --yes --cleanup-tag" "dry run"
+expect_call "release delete nightly-dryrun-4242 --yes" "dry run"
+# A draft has no tag (run 44978170787's cleanup failed on --cleanup-tag's 422): none is deleted.
+expect_no_call "--cleanup-tag" "dry run"
+expect_call "api repos/example/workroom/git/matching-refs/tags/nightly-dryrun-4242" "dry run"
+expect_no_call "-X DELETE" "dry run"
 expect_no_call "--draft=false" "dry run"
+others="$(grep '^api ' "$FAKE_GH/calls" | grep '/git/' | grep -v 'tags/nightly-dryrun-4242 ' \
+  | grep -v 'tags/nightly-dryrun-4242$' || true)"
+[ -z "$others" ] || fail "dry run: tag calls on another tag: $others"
 # Every release call named the dry run's draft, and the nightly is as it was.
 others="$(grep '^release ' "$FAKE_GH/calls" | grep -v '^release [a-z-]* nightly-dryrun-4242 ' || true)"
 [ -z "$others" ] || fail "dry run: gh calls on another release: $others"
@@ -261,8 +291,20 @@ expect_no_call "upload" "a dry run's draft already there"
 fresh dry-upload-fails
 run --dry-run nightly nightly VERSION=2.1.0-nightly.912 GITHUB_RUN_ID=88 FAKE_GH_UPLOAD_FAILS=1
 expect_rc 1 "a dry run whose upload fails"
-expect_call "release delete nightly-dryrun-88 --yes --cleanup-tag" "a dry run whose upload fails"
+expect_call "release delete nightly-dryrun-88 --yes" "a dry run whose upload fails"
+expect_no_call "--cleanup-tag" "a dry run whose upload fails"
 [ ! -d "$FAKE_GH/rel-nightly-dryrun-88" ] || fail "a failed dry run left its draft"
+
+# --- a dry run's draft that did get a tag loses it, and only it ---
+fresh dry-tagged
+# Its tag there already, as should GitHub ever tag a draft, beside one it only prefixes.
+printf '%s\n' nightly nightly-dryrun-4243 nightly-dryrun-42430 >"$FAKE_GH/tags"
+run --dry-run nightly nightly VERSION=2.1.0-nightly.912 GITHUB_RUN_ID=4243
+expect_rc 0 "a dry run whose draft has a tag"
+expect_call "api -X DELETE repos/example/workroom/git/refs/tags/nightly-dryrun-4243" \
+  "a dry run whose draft has a tag"
+[ "$(cat "$FAKE_GH/tags")" = "nightly
+nightly-dryrun-42430" ] || fail "a dry run whose draft has a tag: the tags left are '$(tr '\n' ' ' <"$FAKE_GH/tags")'"
 
 # --- a dry run needs a run id, so its draft can never be named like a real release ---
 fresh dry-no-id

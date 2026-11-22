@@ -24,8 +24,9 @@
 #   `_<os>_<arch>.` in its name, which both updaters would take for an archive.
 #
 # A dry run does all of that to a draft of its own, `<tag>-dryrun-<run id>`, made here and never
-# published, then checks it is not GitHub's Latest and deletes it, tag included: every `gh` call
-# names that draft's tag and nothing else (gh_release refuses any other), so the real release, the
+# published, then checks it is not GitHub's Latest and deletes it, and its tag if it has one
+# (delete_dry_run): every `gh` call names that draft's tag and nothing else (gh_release and
+# delete_dry_run refuse any other), so the real release, the
 # appcast and the download stats are never touched.
 set -euo pipefail
 
@@ -94,6 +95,23 @@ gh_release() {
   gh release "$@" --repo "$REPO"
 }
 
+# delete_dry_run: deletes the dry run's draft, then its tag only if there is one. A draft's tag is
+# made only when it is published, so there is none to find, and `gh release delete --cleanup-tag`
+# fails on a missing tag ("HTTP 422: Reference does not exist") after deleting the draft. Only ever
+# a dry run's own `-dryrun-<n>`, as gh_release allows.
+delete_dry_run() {
+  case "$DRY_RUN:$TARGET" in
+    1:*-dryrun-[0-9]*) ;;
+    *) echo "error: refusing to delete $TARGET: not a dry run's draft." >&2; return 1 ;;
+  esac
+  gh_release delete "$TARGET" --yes || return 1
+  local refs
+  refs="$(gh api "repos/$REPO/git/matching-refs/tags/$TARGET" -q '.[].ref')" || return 1
+  if printf '%s\n' "$refs" | grep -qxF "refs/tags/$TARGET"; then
+    gh api -X DELETE "repos/$REPO/git/refs/tags/$TARGET" || return 1
+  fi
+}
+
 # The release's state: "draft", "published" or "missing".
 release_state() {
   local draft
@@ -110,9 +128,8 @@ STATE="$(release_state)"
 case "${DRY_RUN:+dry}:$CHANNEL:$STATE" in
   dry:*:missing)
     echo "==> Dry run: creating the draft $TARGET (never published, deleted at the end)"
-    # Deleted whatever happens below, the tag too. A draft's tag is made only on publishing, so
-    # --cleanup-tag finds none; it is there in case GitHub ever makes one.
-    trap 'gh_release delete "$TARGET" --yes --cleanup-tag || echo "::error::delete the draft release $TARGET by hand" >&2' EXIT
+    # Deleted whatever happens below, its tag too should GitHub ever have made one.
+    trap 'delete_dry_run || echo "::error::delete the draft release $TARGET by hand" >&2' EXIT
     gh_release create "$TARGET" --draft --title "$TARGET" --target "${GITHUB_SHA:-master}" \
       --notes "Dry run of publishing $TAG ($VERSION). Never published; deleted when the run ends."
     STATE="$(release_state)"
@@ -171,7 +188,7 @@ if [ -n "$DRY_RUN" ]; then
   fi
   echo "==> Dry run: $TARGET held exactly this build's files, stayed a draft and is not Latest ($latest)"
   trap - EXIT
-  gh_release delete "$TARGET" --yes --cleanup-tag
+  delete_dry_run || { echo "error: deleting the dry run's $TARGET failed." >&2; exit 1; }
   if [ "$(release_state)" != missing ]; then
     echo "error: the dry run's draft $TARGET is still there; delete it by hand." >&2
     exit 1
