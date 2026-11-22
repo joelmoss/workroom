@@ -33,12 +33,10 @@ final class TerminalInputWireTests: XCTestCase {
     XCTAssertEqual(decoded, .event(.input(session: session, sender: nil), more: true))
   }
 
-  /// A snapshot's sessions, its end, a filtered stream's place and an event this build doesn't
-  /// know are replies all the same, with nothing in them the app reads.
+  /// A snapshot's end, a filtered stream's place and an event this build doesn't know are replies
+  /// all the same, with nothing in them the app reads.
   func testEveryOtherEventIsAReplyWithNothingToRead() throws {
-    let id = session.uuidString.lowercased()
     for event in [
-      #"{"event":"session","boot":"b","revision":3,"session":"\#(id)"}"#,
       #"{"event":"snapshot-complete","boot":"b","revision":3,"sessions":[]}"#,
       #"{"event":"place","boot":"b","revision":90}"#,
       #"{"event":"session.someday","boot":"b","revision":91}"#,
@@ -86,8 +84,77 @@ final class TerminalInputWireTests: XCTestCase {
     let params = try XCTUnwrap(request["params"] as? [String: Any])
     XCTAssertEqual(params["all"] as? Bool, true)
     XCTAssertEqual(
-      params["types"] as? [String], ["session.input", "session.created", "session.ended"])
+      params["types"] as? [String],
+      ["session.input", "session.created", "session.ended", "session.labelled"])
     XCTAssertNil(params["since"])
+  }
+
+  /// A label given to a session (#694), the events schema's example, is its tabs' name; a cleared
+  /// one is null. A snapshot's session says its label as it is, which a Mac catches up from.
+  func testALabelAndASnapshotsLabelAreRead() throws {
+    let id = session.uuidString.lowercased()
+    for (event, expected) in [
+      (
+        #"{"event":"session.labelled","boot":"b","revision":46,"session":"\#(id)","scope":null,"label":"dev server"}"#,
+        TerminalInputEvent.labelled(session: session, label: "dev server")
+      ),
+      (
+        #"{"event":"session.labelled","boot":"b","revision":47,"session":"\#(id)","label":null}"#,
+        .labelled(session: session, label: nil)
+      ),
+      (
+        #"{"event":"session","boot":"b","revision":3,"session":"\#(id)","label":"tests"}"#,
+        .listed(session: session, label: "tests")
+      ),
+      (
+        #"{"event":"session","boot":"b","revision":3,"session":"\#(id)","label":null}"#,
+        .listed(session: session, label: nil)
+      ),
+    ] {
+      XCTAssertEqual(
+        try reply(#"{"revision":1,"more":true,"result":\#(event)}"#),
+        .event(expected, more: true), event)
+    }
+  }
+
+  /// A rename sends `session.label` by the session's full id, its label a string, or null (never
+  /// left out, which the daemon refuses) to clear it.
+  func testTheLabelRequestNamesTheSessionByIdAndSendsNullToClear() throws {
+    for label in ["web", nil] as [String?] {
+      let request = try XCTUnwrap(
+        JSONSerialization.jsonObject(
+          with: TerminalInputEvent.labelRequest(session: session, label: label))
+          as? [String: Any])
+      XCTAssertEqual(request["method"] as? String, "session.label")
+      let params = try XCTUnwrap(request["params"] as? [String: Any])
+      XCTAssertEqual(params["target"] as? String, session.uuidString.lowercased())
+      XCTAssertTrue(params.keys.contains("label"), "\(params)")
+      XCTAssertEqual(params["label"] as? String, label)
+      if label == nil { XCTAssertTrue(params["label"] is NSNull, "\(params)") }
+    }
+  }
+
+  /// `session.label`'s reply: labelled, changed or not; refused with its kind; and a daemon
+  /// without the method, which refuses it as bad input, has none.
+  func testTheLabelReplyIsReadAsItsOutcome() throws {
+    func outcome(_ json: String) throws -> TerminalLabelOutcome {
+      try TerminalLabelOutcome.decode(reply: Data(json.utf8))
+    }
+    XCTAssertEqual(
+      try outcome(#"{"revision":1,"more":false,"result":{"session":{},"changed":true}}"#),
+      .labelled(changed: true))
+    XCTAssertEqual(
+      try outcome(#"{"revision":1,"more":false,"result":{"session":{},"changed":false}}"#),
+      .labelled(changed: false))
+    XCTAssertEqual(
+      try outcome(
+        #"{"revision":1,"more":false,"error":{"kind":"TargetNotFound","message":"gone"}}"#),
+      .refused(kind: "TargetNotFound", message: "gone"))
+    XCTAssertEqual(
+      try outcome(
+        #"{"revision":1,"more":false,"error":{"kind":"InvalidRequest","message":"no method"}}"#),
+      .unsupported)
+    XCTAssertThrowsError(try outcome("not json"))
   }
 
   /// A `session.created` that `workroom new` made (#693) asks the app to show it: who asked, the

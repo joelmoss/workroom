@@ -49,6 +49,9 @@ protocol HostServiceConnection: Sendable {
   func subscribeTerminalInput(
     onEvent: @escaping @Sendable (TerminalInputEvent) -> Void
   ) async throws -> TerminalInputAvailability
+  /// Labels terminal `session` on this host, or clears its label with nil (#694): its tab was
+  /// renamed. The terminal API's `session.label`.
+  func labelSession(_ session: UUID, label: String?) async throws -> TerminalLabelOutcome
   func close() async
 }
 
@@ -105,6 +108,10 @@ extension HostServiceConnection {
   func subscribeTerminalInput(
     onEvent: @escaping @Sendable (TerminalInputEvent) -> Void
   ) async throws -> TerminalInputAvailability {
+    .unsupported
+  }
+
+  func labelSession(_ session: UUID, label: String?) async throws -> TerminalLabelOutcome {
     .unsupported
   }
 }

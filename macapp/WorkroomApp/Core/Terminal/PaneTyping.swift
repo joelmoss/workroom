@@ -204,6 +204,8 @@ final class PaneTypingMonitor {
               // What `workroom new` and `workroom close` ask of the app (#693), on the same
               // subscription.
               case .opened, .closed: TerminalRequests.shared.handle(event, from: host)
+              // Each session's label, its tabs' name (#694), on the same subscription.
+              case .labelled, .listed: SessionLabels.shared.handle(event, from: host)
               case .lost: break
               }
               if case .lost = event { break }

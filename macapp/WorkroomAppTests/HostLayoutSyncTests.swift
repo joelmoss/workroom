@@ -320,6 +320,10 @@ final class HostLayoutSyncTests: XCTestCase {
     let fromNothing = HostLayoutSync.appending(sessions, key: key, to: nil, targetID: "mine")
     XCTAssertEqual(fromNothing?.targetID, "mine")
     XCTAssertEqual(fromNothing?.tabs.count, 3)
+    // A session's label (#694) is the user's name for its tab, which clearing shows its default.
+    XCTAssertEqual(fromNothing?.tabs.first?.terminal?.userTitle, "named")
+    XCTAssertEqual(fromNothing?.tabs.first?.terminal?.defaultTitle, "Terminal")
+    XCTAssertNil(fromNothing?.tabs.last?.terminal?.userTitle, "a numbered label names nothing")
     XCTAssertNil(HostLayoutSync.appending([], key: key, to: nil, targetID: "mine"))
   }
 }
