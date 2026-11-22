@@ -120,17 +120,23 @@ final class WorkroomSkill: ObservableObject {
     let key = Self.key(host)
     switch (policy, result) {
     case (.install, .done(let skills)):
-      if skills.contains(where: { ["installed", "updated", "current"].contains($0.state) }),
-        !Defaults[.workroomSkillHosts].contains(key)
-      {
-        Defaults[.workroomSkillHosts].append(key)
+      if skills.contains(where: { ["installed", "updated", "current"].contains($0.state) }) {
+        // An install that finished after the setting was turned off, which counted no host it
+        // hadn't heard from yet, is due its removal at once, as every other host is.
+        let list: Defaults.Key<[String]> =
+          Defaults[.installWorkroomSkill] ? .workroomSkillHosts : .workroomSkillPendingRemoval
+        if !Defaults[list].contains(key) { Defaults[list].append(key) }
       }
       hostNotices[key] = Self.notice(for: WorkroomSkillReport(skills: skills), install: true)
         .map { "On a remote host: \($0)" }
     case (.install, .failed(let why)):
       hostNotices[key] = "On a remote host, the skill couldn't be installed: \(why)"
     case (.remove, .done(let skills)):
-      Defaults[.workroomSkillPendingRemoval].removeAll { $0 == key }
+      // Done only when every folder's removal went through: one that failed (a read-only disk,
+      // say) stays in the host's own record, and the host stays due, so the next connect retries.
+      if !Self.anyFailed(skills) {
+        Defaults[.workroomSkillPendingRemoval].removeAll { $0 == key }
+      }
       hostNotices[key] = Self.notice(for: WorkroomSkillReport(skills: skills), install: false)
         .map { "On a remote host: \($0)" }
     case (.remove, nil):
@@ -161,9 +167,19 @@ final class WorkroomSkill: ObservableObject {
     apply(install: on)
   }
 
-  /// At launch: brings the skill up to date while the setting is on. Off, nothing is touched.
+  /// At launch: brings the skill up to date while the setting is on. Off, only a removal on this
+  /// Mac that didn't go through is tried again; nothing else is touched.
   func launched() {
-    if Defaults[.installWorkroomSkill] { apply(install: true) }
+    if Defaults[.installWorkroomSkill] {
+      apply(install: true)
+    } else if Defaults[.workroomSkillMacRemovalPending] {
+      apply(install: false)
+    }
+  }
+
+  /// Whether a folder's install or removal failed.
+  nonisolated static func anyFailed(_ skills: [WorkroomSkillReport.Skill]) -> Bool {
+    skills.contains { $0.state == "failed" }
   }
 
   /// Installs or removes the skill on this Mac, after whatever is under way.
@@ -187,7 +203,11 @@ final class WorkroomSkill: ObservableObject {
             "Workroom skill \(install ? "install" : "remove", privacy: .public): \(report.skills.map { "\($0.agent) \($0.state)" }.joined(separator: ", "), privacy: .public)"
           )
           said = Self.notice(for: report, install: install)
+          // A removal here that failed for a folder is tried again at the next launch; the
+          // CLI keeps that folder in its record. An install puts the skill back anyway.
+          Defaults[.workroomSkillMacRemovalPending] = !install && Self.anyFailed(report.skills)
         } catch {
+          if !install { Defaults[.workroomSkillMacRemovalPending] = true }
           Self.logger.error(
             "Workroom skill: \(error.localizedDescription, privacy: .public)")
           said =

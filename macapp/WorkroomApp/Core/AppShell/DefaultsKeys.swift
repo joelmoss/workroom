@@ -243,6 +243,10 @@ extension Defaults.Keys {
   /// the skill a Nightly beside it installed on a shared host.
   static let workroomSkillPendingRemoval = Key<[String]>(
     "workroomSkillPendingRemoval", default: [], suite: .app)
+  /// A removal of the skill on this Mac didn't go through for every folder (or didn't run), so
+  /// the next launch with the setting off tries it again.
+  static let workroomSkillMacRemovalPending = Key<Bool>(
+    "workroomSkillMacRemovalPending", default: false, suite: .app)
   /// Mask common secret shapes in captured output before it's sent to the agent. On by default.
   static let terminalCodingAgentRedactSecrets = Key<Bool>(
     "terminalAgentRedactSecrets", default: true, suite: .app)
