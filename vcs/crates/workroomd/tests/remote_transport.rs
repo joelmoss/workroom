@@ -4101,6 +4101,77 @@ fn over_ssh_new_close_and_run_control_open_end_and_restart_host_terminals() {
     );
 }
 
+/// A label set on a host (#694), as the app's rename of a remote tab sets it over its service
+/// connection and a host pane's `workroom api call` does: the host's daemon names the session by
+/// it, its target resolves by it and no longer by the old one, and the same label again changes
+/// nothing; an empty one clears it.
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_a_label_set_on_a_host_names_its_session_there() {
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
+    let pane_id = "7e0e7e0e-0000-4000-8000-000000000694";
+    let mut pane = Pane::attach_with(
+        &fixture,
+        pane_id,
+        false,
+        "'WORKROOM_SESSION_TITLE=agent pane' WORKROOM_SESSION_WORKROOM=wr-694 \
+         WORKROOM_SESSION_HOSTNAME=mac-a.local",
+    );
+    pane.type_line("echo \"PANE-\"\"UP\"");
+    assert!(
+        pane.read_until("PANE-UP\r\n", Duration::from_secs(30))
+            .contains("PANE-UP\r\n"),
+        "the pane's shell never started"
+    );
+    let binary = INSTALLED_DAEMON;
+    let host = |args: &str| -> (bool, Value) {
+        let output = fixture
+            .ssh()
+            .arg(format!(
+                "WORKROOM_DAEMON={} {binary} {args} --json",
+                fixture.socket
+            ))
+            .output()
+            .expect("ssh");
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let envelope = serde_json::from_str(&stdout)
+            .unwrap_or_else(|e| panic!("{args}: no envelope ({e}): {stdout}"));
+        (output.status.success(), envelope)
+    };
+    let (ok, set) = host(&format!(
+        "api call session.label '{{\"target\":\"{pane_id}\",\"label\":\"host web\"}}'"
+    ));
+    assert!(ok, "{set}");
+    assert_eq!(set["result"]["changed"], true, "{set}");
+    assert_eq!(set["result"]["session"]["label"], "host web", "{set}");
+    let (ok, resolved) = host("sessions 'host web'");
+    assert!(ok, "{resolved}");
+    assert_eq!(resolved["sessions"][0]["id"], pane_id, "{resolved}");
+    let (ok, old) = host("sessions 'agent pane'");
+    assert!(!ok, "the old label names nothing: {old}");
+    assert_eq!(old["error"]["kind"], "TargetNotFound", "{old}");
+    let (ok, again) = host(&format!(
+        "api call session.label '{{\"target\":\"{pane_id}\",\"label\":\"host web\"}}'"
+    ));
+    assert!(ok, "{again}");
+    assert_eq!(again["result"]["changed"], false, "{again}");
+    let (ok, cleared) = host("api call session.label '{\"target\":\"host web\",\"label\":\"\"}'");
+    assert!(ok, "{cleared}");
+    assert_eq!(
+        cleared["result"]["session"]["label"],
+        Value::Null,
+        "{cleared}"
+    );
+
+    pane.type_line("exit");
+    assert!(
+        pane.exit_code(Duration::from_secs(20)).is_some(),
+        "the pane's session did not end"
+    );
+}
+
 /// Two Macs on one remote workroom (#255): Mac A's session carries its workroom and title to the
 /// host, Mac B finds it in the host's list and A's layout in the Layout service, and reattaches to
 /// the same shell; A dropping its link leaves B attached; a close on A ends the session for B too;
