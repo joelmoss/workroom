@@ -143,6 +143,27 @@ fn visible_text(text: &[u8]) -> String {
     out
 }
 
+/// Whether `ch` is one a terminal would act on or a reader can't see: a control character (C0,
+/// DEL, C1: escapes, a carriage return, a newline) or a format one (bidi overrides, zero-width
+/// characters). What a session's label and `new`'s title never hold (#694).
+pub(crate) fn is_hidden(ch: char) -> bool {
+    ch.is_control() || is_format(ch)
+}
+
+/// `text` on one line, as `visible_text` shows it but with its newlines and tabs written out too:
+/// for a cell of a table, such as `workroom sessions`' label and live title, which a program sets.
+pub(crate) fn one_line(text: &str) -> String {
+    text.chars()
+        .map(|ch| {
+            if is_hidden(ch) {
+                format!("\\u{{{:04x}}}", u32::from(ch))
+            } else {
+                ch.to_string()
+            }
+        })
+        .collect()
+}
+
 /// Whether `ch` is in Unicode's Cf (format) category, as Go's `unicode.Cf` table has it in the Go
 /// `go.mod` names (1.27.4: Unicode 17.0.0): invisible characters that change how text around them
 /// is shown. A Go whose table differs needs this one changed with it.
@@ -193,6 +214,16 @@ mod tests {
         assert_eq!(
             visible_text("a\u{85}b\u{e0041}".as_bytes()),
             "a\\u{0085}b\\u{e0041}"
+        );
+    }
+
+    /// A table cell (#694) writes out every hidden character, its newlines and tabs too, and
+    /// leaves the rest.
+    #[test]
+    fn one_line_writes_out_every_hidden_character() {
+        assert_eq!(
+            one_line("a\x1b]0;x\x07\r\n\tb\u{202e}\u{200b}\u{85}é"),
+            "a\\u{001b}]0;x\\u{0007}\\u{000d}\\u{000a}\\u{0009}b\\u{202e}\\u{200b}\\u{0085}é"
         );
     }
 

@@ -102,7 +102,9 @@ pub fn new_input() -> Value {
         "properties": {
             "title": {
                 "type": "string",
-                "description": "Its label, and the name of its tab in the app.",
+                "description": "Its label, and the name of its tab in the app, kept as \
+                                `session.label` keeps one: control and format characters left \
+                                out, cut to 256 bytes and trimmed.",
             },
             "run": {
                 "type": "string",
@@ -281,10 +283,12 @@ pub fn label_input() -> Value {
             "target": target_schema(),
             "label": {
                 "type": ["string", "null"],
-                "description": "Its label, and the name of its tab in the app on every Mac, trimmed \
-                                and cut to 256 bytes. Null or empty clears it, and the tab shows \
-                                the name it shows unnamed: the title its program sets, else its \
-                                program and folder.",
+                "description": "Its label, and the name of its tab in the app on every Mac, with \
+                                its control and format characters (escapes, line breaks, bidi \
+                                overrides, zero-width characters) left out, cut to 256 bytes and \
+                                trimmed. Null or empty clears it, and the tab shows the name it \
+                                shows unnamed: the title its program sets, else its program and \
+                                folder.",
             },
         },
     })
@@ -331,13 +335,22 @@ fn text<'a>(call: &'a Call, method: &str, name: &str) -> Result<Option<&'a str>,
     }
 }
 
-/// `title` cut to the `MAX_TITLE_BYTES` a session keeps, at a character's boundary.
-fn bounded(title: &str) -> String {
-    let mut end = title.len().min(MAX_TITLE_BYTES);
-    while !title.is_char_boundary(end) {
+/// A session's name as `session.label` and `session.new`'s `title` keep it (#694): with no control
+/// or format character a terminal would act on or a reader couldn't see (escapes, carriage
+/// returns and newlines, bidi overrides, zero-width characters), cut to the `MAX_TITLE_BYTES` a
+/// session keeps at a character's boundary, then trimmed, so no space the cut left survives.
+/// `None` when nothing is left.
+pub(crate) fn name(text: &str) -> Option<String> {
+    let shown: String = text
+        .chars()
+        .filter(|ch| !crate::commands::prompt::is_hidden(*ch))
+        .collect();
+    let mut end = shown.len().min(MAX_TITLE_BYTES);
+    while !shown.is_char_boundary(end) {
         end -= 1;
     }
-    title[..end].to_string()
+    let trimmed = shown[..end].trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// The parsed `session.new` parameters.
@@ -349,9 +362,7 @@ struct Asked {
 }
 
 fn asked(call: &Call) -> Result<Asked, ApiError> {
-    let title = text(call, NEW, "title")?
-        .filter(|title| !title.is_empty())
-        .map(bounded);
+    let title = text(call, NEW, "title")?.and_then(name);
     let run = match text(call, NEW, "run")? {
         Some(run) if run.trim().is_empty() => {
             return Err(ApiError::invalid(format!(
@@ -677,10 +688,7 @@ pub fn label(call: &Call) -> Result<Value, ApiError> {
             "{LABEL} needs a `label`: a string, or null to clear it"
         )));
     }
-    let label = text(call, LABEL, "label")?
-        .map(str::trim)
-        .filter(|label| !label.is_empty())
-        .map(bounded);
+    let label = text(call, LABEL, "label")?.and_then(name);
     let (_, id, hyphenated) = resolved(call, LABEL, true)?;
     let ended = || {
         ApiError::new(
@@ -770,6 +778,27 @@ mod tests {
             owns_size: false,
             keepalive: KeepaliveState::Answering,
         }
+    }
+
+    /// A label and `new`'s title (#694) keep no character a terminal would act on or a reader
+    /// couldn't see (ESC and an OSC's BEL, CR and LF, an RLO, a ZWSP, a C1), are cut to 256 bytes
+    /// at a character's boundary and only then trimmed, so the cut leaves no trailing space; what
+    /// is left of nothing is no name.
+    /// Value: protects=a label shown in every Mac's tab strip and printed by `workroom sessions` can't rewrite a terminal or hide what it says; fails_when=a hidden character survives, the cut splits a character, or a space before the cut survives; why_new=the review of #694; seam=none
+    #[test]
+    fn a_name_keeps_no_hidden_character_and_is_cut_then_trimmed() {
+        assert_eq!(
+            name("  \x1b]0;evil\x07web\r\n\u{202e}lo\u{200b}g\u{85}  ").as_deref(),
+            Some("]0;evilweblog")
+        );
+        assert_eq!(name(" \x1b \u{200b} "), None);
+        assert_eq!(name(""), None);
+        // 255 bytes then a space and more: the cut leaves the space last, and the trim takes it.
+        let long = format!("{} tail", "a".repeat(255));
+        assert_eq!(name(&long), Some("a".repeat(255)));
+        // A 2-byte character across the cut is dropped whole.
+        let split = format!("{}é", "a".repeat(255));
+        assert_eq!(name(&split), Some("a".repeat(255)));
     }
 
     /// The size owner's Mac, else the last to attach; a pane that says no Mac, one gone stale and

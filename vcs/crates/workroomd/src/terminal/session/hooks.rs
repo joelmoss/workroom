@@ -48,9 +48,12 @@ impl Hooks {
             .is_some_and(|screens| screens.remove_unsynced(id))
     }
 
-    /// The new session is in the store and the store's lock is released. `superseded` is what
-    /// `creating` said; `info` is the session as `list` reports it, before its reader starts.
-    pub(super) fn created(&self, info: SessionInfo, run: bool, superseded: bool) {
+    /// The new session is in the store, whose lock is still held: its `session.created` is told
+    /// now, so a `session.label` (which takes the store's lock, then tells under it) can't set a
+    /// label between the session entering the store and the events knowing it, a label the
+    /// events would then never tell (#694). `info` is the session as `list` reports it, before its
+    /// reader starts. Only the hub's own locks are taken, which never wait on the store's.
+    pub(super) fn announce(&self, info: SessionInfo) {
         let id = info.id;
         let listing = crate::terminal::api::session_json(&Described {
             info,
@@ -59,6 +62,11 @@ impl Hooks {
             clients: Vec::new(),
         });
         self.events.created(id, listing);
+    }
+
+    /// The new session is in the store and the store's lock is released, its creation told
+    /// (`announce`). `superseded` is what `creating` said.
+    pub(super) fn created(&self, run: bool, superseded: bool) {
         if run {
             self.runs.raise();
         }

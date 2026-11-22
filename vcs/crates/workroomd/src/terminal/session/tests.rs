@@ -228,6 +228,55 @@ fn a_label_changes_only_the_title_and_the_last_told_is_the_one_kept() {
     store.kill_all();
 }
 
+/// A label set the moment a session is made (#694) is the one its events end on: its
+/// `session.created` is told under the store's lock, so no `set_label` can land between the session
+/// entering the store and the events knowing it, which would change the label with nothing told.
+/// Value: protects=a label set as its session starts reaches every Mac; fails_when=created is told after the store lock is dropped (the label set in between is never told); why_new=the review of #694; seam=none
+#[test]
+fn a_label_set_as_its_session_is_made_is_the_one_its_events_end_on() {
+    use crate::terminal::events::{Cursor, Next, Start};
+    let args = [OsString::from("-c"), OsString::from("sleep 5")];
+    let e = env();
+    for round in 0..20u8 {
+        let store = SessionStore::new();
+        // Asks until its first label lands, as early as the session can take one, and no more: a
+        // later one would be told and hide a first one that wasn't.
+        let labeller = {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                while store.set_label(id(1), Some("early")).is_none() {
+                    std::hint::spin_loop();
+                }
+            })
+        };
+        store.create(spec(id(1), &args, &e)).expect("create");
+        labeller.join().expect("the labelling thread");
+        let kept = store
+            .list()
+            .into_iter()
+            .find(|info| info.id == id(1))
+            .and_then(|info| {
+                info.metadata
+                    .into_iter()
+                    .find(|(k, _)| k == "title")
+                    .map(|(_, v)| v)
+            });
+        let Next::Snapshot { sessions, .. } = store
+            .hooks()
+            .events
+            .next(&mut Cursor::new(Start::Fresh), &|| false)
+        else {
+            panic!("no snapshot");
+        };
+        assert_eq!(
+            sessions[&id(1)].listing["label"].as_str(),
+            kept.as_deref(),
+            "round {round}"
+        );
+        store.kill_all();
+    }
+}
+
 /// A hand-off's session with only what `adopt` reads from it: an 80x24 `screen`.
 fn frozen_with(session: SessionId, screen: &[u8]) -> FrozenSession {
     FrozenSession {
