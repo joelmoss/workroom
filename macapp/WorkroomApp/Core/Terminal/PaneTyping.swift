@@ -75,7 +75,9 @@ struct PaneTypingState: Equatable {
 }
 
 /// Every host's typing, app-wide (#696): one `events.subscribe` per host connection, kept to
-/// `session.input`, however many windows show its panes. Each send restarts its sender's 3 s, and
+/// `session.input`, and the `session.created` and `session.ended` that `workroom new` and
+/// `workroom close` ask the app through (#693, handed to `TerminalRequests`), however many
+/// windows show its panes. Each send restarts its sender's 3 s, and
 /// one timer drops whoever went quiet. Panes hear about the sessions that changed through a
 /// listener (`GhosttySurfaceView`'s typing marker), not through their tab's state, so a keystroke
 /// re-renders the one marker it concerns and nothing else.
@@ -197,8 +199,14 @@ final class PaneTypingMonitor {
           // place there is free at once; a stream that ends on its own (`.lost`) needs nothing.
           await withTaskCancellationHandler {
             for await event in events {
-              guard case .input(let session, let sender) = event else { break }
-              typed(into: session, by: sender)
+              switch event {
+              case .input(let session, let sender): typed(into: session, by: sender)
+              // What `workroom new` and `workroom close` ask of the app (#693), on the same
+              // subscription.
+              case .opened, .closed: TerminalRequests.shared.handle(event, from: host)
+              case .lost: break
+              }
+              if case .lost = event { break }
             }
           } onCancel: {
             subscription.end()
