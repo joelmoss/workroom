@@ -1194,6 +1194,118 @@ fn a_kill_before_an_idle_exit_still_refuses_the_late_attach() {
     assert!(!list_sessions(&socket).contains(session));
 }
 
+/// The binary under test with another daemon build in its marker, at `path`: what `protocol` and a
+/// daemon offered it read (`handoff::daemon_build`), so it is another daemon to hand off to, and a
+/// daemon running it keeps a copy under that build. Signed again on macOS, where the edit breaks
+/// the linker's ad hoc signature and the kernel would kill it. Returns its daemon build, once it
+/// runs: Linux refuses to run a file another process forked meanwhile still has open for writing.
+fn another_daemon_binary(path: &Path) -> String {
+    let mut bytes = std::fs::read(daemon_binary()).expect("read the daemon");
+    let prefix = b"WORKROOMD-DAEMON-BUILD:";
+    let at = bytes
+        .windows(prefix.len())
+        .position(|window| window == prefix)
+        .expect("the daemon carries its daemon build marker")
+        + prefix.len();
+    bytes[at] = if bytes[at] == b'0' { b'1' } else { b'0' };
+    std::fs::write(path, &bytes).expect("write the other daemon");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    if cfg!(target_os = "macos") {
+        let signed = Command::new("/usr/bin/codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(path)
+            .output()
+            .expect("codesign");
+        assert!(
+            signed.status.success(),
+            "codesign: {}",
+            String::from_utf8_lossy(&signed.stderr)
+        );
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let report = loop {
+        match Command::new(path).arg("protocol").output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                assert!(Instant::now() < deadline, "{} stayed busy", path.display());
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            other => break other.expect("protocol"),
+        }
+    };
+    let report = String::from_utf8_lossy(&report.stdout).into_owned();
+    let build = report
+        .lines()
+        .find_map(|line| line.strip_prefix("daemon-build "))
+        .unwrap_or_else(|| panic!("no daemon build in {report:?}"))
+        .to_string();
+    assert_ne!(build, stated_daemon_build());
+    build
+}
+
+/// After a hand-off the bin folder's `workroom` (#695) is the new program's: a link to its copy,
+/// made before the old copy it pointed at is swept. A pane opened before the hand-off reaches it
+/// through the PATH and `WORKROOM_BIN_DIR` it already had, which name the same folder.
+#[test]
+fn after_a_hand_off_the_bin_folders_link_runs_the_new_daemon() {
+    let workspace = Workspace::new("bin-dir");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let copies = socket.with_extension("bin");
+    let link = copies.join("path").join("workroom");
+    let points_at = |build: &str| {
+        std::fs::read_link(&link)
+            .is_ok_and(|target| target == copies.join(format!("workroom-{build}")))
+    };
+    let before = stated_daemon_build();
+    assert!(
+        wait_for(Duration::from_secs(15), || points_at(&before)),
+        "the link never pointed at the first copy: {:?}",
+        std::fs::read_link(&link)
+    );
+    let session = "4a4a4a4a-0000-4000-8000-000000000695";
+    let mut client = attach(&socket, session);
+    let mut reader = ClientReader::new(&mut client);
+    std::thread::sleep(Duration::from_millis(400));
+
+    let other = workspace.dir.join("other-daemon");
+    let after = another_daemon_binary(&other);
+    let output = hand_off(&socket, &other, false);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "handed off",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        wait_for(Duration::from_secs(15), || points_at(&after)),
+        "the link never pointed at the new copy: {:?}",
+        std::fs::read_link(&link)
+    );
+    assert!(
+        wait_for(Duration::from_secs(10), || !copies
+            .join(format!("workroom-{before}"))
+            .exists()),
+        "the old copy was never swept"
+    );
+
+    // Split by the quotes, so the pty's echo of the line is not its answer.
+    type_line(
+        &mut client,
+        "case \":$PATH:\" in *\":$WORKROOM_BIN_DIR:\"*) echo ON-\"\"PATH;; esac; \
+         \"$WORKROOM_BIN_DIR/workroom\" protocol | grep daemon-build | sed 's/^/NOW-/'",
+    );
+    let seen = reader.read_until(
+        &format!("NOW-daemon-build {after}"),
+        Duration::from_secs(10),
+    );
+    assert!(seen.contains("ON-PATH"), "{seen:?}");
+    assert!(
+        seen.contains(&format!("NOW-daemon-build {after}")),
+        "the old pane's workroom is not the new daemon: {seen:?}"
+    );
+    let _ = client.kill();
+}
+
 /// The build number the app reads out of a binary it never runs (`DaemonBootstrap.buildNumber(in:)`)
 /// is in the linked program, not only in its object files, and it is the one `protocol` states. The
 /// prefix is there once: the app reads the first, and a second copy ahead of the marker (once from

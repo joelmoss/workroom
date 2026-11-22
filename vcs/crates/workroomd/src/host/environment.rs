@@ -311,12 +311,14 @@ pub(crate) fn floor_path() -> String {
     union_path(&std::env::var("PATH").unwrap_or_default(), FLOOR_PATH)
 }
 
-/// The name a host's panes and scripts run this binary by: the bootstrap's link beside the
-/// installed `workroomd` (ADR 0078).
+/// The name a host's scripts run this binary by: the bootstrap's link beside the installed
+/// `workroomd` (ADR 0078).
 const COMMAND_LINK: &str = "workroom";
 
 /// The folder of this program's file when `workroom` is beside it (the bootstrap's link on a host,
-/// or the binary itself), which a host's panes and scripts get on their PATH. Through
+/// or the binary itself), which a host's setup and teardown scripts get on their PATH. `run-script`
+/// runs under no daemon, so it has no daemon's bin folder to give them (`daemon::bin_dir`), which
+/// every session gets first instead. Through
 /// `/proc/self/exe` on Linux: the file this process runs, wherever an install renamed it to.
 pub(crate) fn commands_folder() -> Option<std::path::PathBuf> {
     std::env::current_exe()

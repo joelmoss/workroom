@@ -178,6 +178,10 @@ pub fn run_serve(
         .hooks()
         .runs
         .keep(crate::terminal::run::dir_beside(&socket));
+    // The bin folder every session's PATH starts with (#695), its `workroom` this program's own
+    // file until the copy below is made. First: it makes the folder the copy goes in, and the
+    // copy's thread re-points the link.
+    crate::daemon::bin_dir::keep(&socket);
     // The copy of this binary its run sessions start from (#681), so an update that moves or
     // replaces the file this program runs from cannot stop it starting one.
     crate::daemon::own_copy::keep(&crate::daemon::own_copy::dir_beside(&socket));

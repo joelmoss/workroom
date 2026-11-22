@@ -1943,11 +1943,39 @@ fn over_ssh_the_bootstrap_installs_hands_off_and_survives_a_crashed_restore() {
         "the new program did not repaint; got {seen:?}"
     );
     std::thread::sleep(Duration::from_millis(200));
-    pane.type_line("echo SHELL-NOW=$$; exit 7");
+    pane.type_line("echo SHELL-NOW=$$");
     let seen = pane.read_until(&format!("SHELL-NOW={shell}"), Duration::from_secs(10));
     assert!(
         seen.contains(&format!("SHELL-NOW={shell}")),
         "another shell answered: {seen:?}"
+    );
+    // The bin folder's `workroom` (#695) is the new daemon's copy now, which the shell started
+    // before the hand-off reaches through the folder it was given.
+    let newer_build = daemon_build_of(&newer);
+    let copy = format!(
+        "{}/workroom-{newer_build}",
+        Path::new(&fixture.socket).with_extension("bin").display()
+    );
+    assert!(
+        fixture.wait_for(
+            &format!(
+                "readlink {}/workroom || true",
+                bin_folder_of(&fixture.socket)
+            ),
+            |out| out.trim() == copy
+        ),
+        "the link never pointed at {copy}"
+    );
+    pane.type_line(
+        "\"$WORKROOM_BIN_DIR/workroom\" protocol | grep daemon-build | sed 's/^/NOW-/'; exit 7",
+    );
+    let seen = pane.read_until(
+        &format!("NOW-daemon-build {newer_build}"),
+        Duration::from_secs(10),
+    );
+    assert!(
+        seen.contains(&format!("NOW-daemon-build {newer_build}")),
+        "the old shell's workroom is not the new daemon: {seen:?}"
     );
     assert_eq!(pane.exit_code(Duration::from_secs(10)), Some(7));
     drop(pane);
@@ -2055,6 +2083,31 @@ fn daemon_update(elf: &Path, name: &str) -> PathBuf {
     bytes[at] = if bytes[at] == b'0' { b'1' } else { b'0' };
     std::fs::write(&path, &bytes).expect("write the update");
     path
+}
+
+/// The daemon build a binary's marker states, read as a daemon offered it reads it.
+fn daemon_build_of(binary: &Path) -> String {
+    let bytes = std::fs::read(binary).expect("read the daemon");
+    let prefix = b"WORKROOMD-DAEMON-BUILD:";
+    let at = bytes
+        .windows(prefix.len())
+        .position(|window| window == prefix)
+        .expect("the daemon carries its daemon build marker")
+        + prefix.len();
+    let end = bytes[at..]
+        .iter()
+        .position(|&byte| byte == b';')
+        .expect("an unterminated marker");
+    String::from_utf8(bytes[at..at + end].to_vec()).expect("a hex marker")
+}
+
+/// The bin folder of the daemon on `socket` (#695), every pane's first PATH entry.
+fn bin_folder_of(socket: &str) -> String {
+    Path::new(socket)
+        .with_extension("bin")
+        .join("path")
+        .display()
+        .to_string()
 }
 
 /// The number that follows `label` in terminal output, skipping the tty's echo of the command
@@ -2556,27 +2609,58 @@ fn over_ssh_workroom_runs_on_a_host_by_name_and_refuses_what_only_the_mac_does()
     let (status, output) = fixture.bootstrap("resources", &arguments, Some(&pushed));
     assert_eq!(status, Some(0), "resources: {output}");
 
+    // bash, through Ghostty's integration: Debian's /etc/profile sets PATH outright, and the bin
+    // folder's hook puts the daemon's bin folder first again once it has run (#695).
+    let bin = bin_folder_of(&fixture.socket);
     let seen = dialed_pane(
         &fixture,
         "7e0e7e0e-0000-4000-8000-000000000681",
         "xterm-ghostty",
         &[],
-        b"echo \"FOUND=$(command -v workroom)=\"\"END\"\n\
+        b"echo \"FOUND=$(command -v workroom)=\"\"END\"; echo \"FIRST=${PATH%%:*}=\"\"END\"\n\
+          echo \"BIN=$WORKROOM_BIN_DIR=\"\"END\"\n\
           workroom create probe --json; echo \"STATUS=$?=\"\"END\"\nexit\n",
     );
-    assert!(seen.contains(&format!("FOUND={link}=END")), "{seen}");
+    assert!(
+        seen.contains(&format!("FOUND={bin}/workroom=END")),
+        "{seen}"
+    );
+    assert!(seen.contains(&format!("FIRST={bin}=END")), "{seen}");
+    assert!(seen.contains(&format!("BIN={bin}=END")), "{seen}");
     assert!(seen.contains("\"kind\":\"MacOnly\""), "{seen}");
     assert!(seen.contains("STATUS=3=END"), "{seen}");
 
-    // dash, which Ghostty doesn't integrate: Debian's /etc/profile sets PATH outright, so the
-    // folder is on the PATH the shell started with (its /proc environ), not the one it then has.
+    // fish, through Ghostty's integration: first at its first prompt, after config.fish.
+    let seen = dialed_pane(
+        &fixture,
+        "7e0e7e0e-0000-4000-8000-000000000683",
+        "xterm-ghostty",
+        &["env", "SHELL=/usr/bin/fish"],
+        b"echo FIRST=$PATH[1]=\"\"END; echo FOUND=(command -v workroom)=\"\"END\n\
+          echo XDG=$XDG_DATA_DIRS=\"\"END\nexit\n",
+    );
+    assert!(seen.contains(&format!("FIRST={bin}=END")), "{seen}");
+    assert!(
+        seen.contains(&format!("FOUND={bin}/workroom=END")),
+        "{seen}"
+    );
+    // The hook took its own folder off the data dirs again.
+    let data_dirs = seen
+        .lines()
+        .map(str::trim_end)
+        .find(|line| line.starts_with("XDG=") && line.ends_with("=END"))
+        .unwrap_or_else(|| panic!("no XDG_DATA_DIRS in {seen}"));
+    assert!(!data_dirs.contains(".bin/shell"), "{data_dirs}");
+
+    // dash, which has no hook: Debian's /etc/profile sets PATH outright, so the folder is first on
+    // the PATH the shell started with (its /proc environ), not on the one it then has.
     let seen = dialed_pane(
         &fixture,
         "7e0e7e0e-0000-4000-8000-000000000682",
         "xterm-256color",
         &["env", "SHELL=/bin/dash"],
         b"tr '\\0' '\\n' < /proc/$$/environ | grep '^PATH='; echo \"DASH=$0=\"\"END\"\n\
-          \"$(dirname \"$WORKROOM_DAEMON\")/workroom\" version > /dev/null && echo BYPATH=\"\"OK\n\
+          \"$WORKROOM_BIN_DIR/workroom\" version > /dev/null && echo BYPATH=\"\"OK\n\
           exit\n",
     );
     assert!(seen.contains("DASH=-dash=END"), "not a dash login: {seen}");
@@ -2586,7 +2670,7 @@ fn over_ssh_workroom_runs_on_a_host_by_name_and_refuses_what_only_the_mac_does()
         .lines()
         .find_map(|line| line.trim_end().strip_prefix("PATH="))
         .unwrap_or_else(|| panic!("no PATH in {seen}"));
-    assert!(started.ends_with(":/run/workroom"), "{started}");
+    assert!(started.starts_with(&format!("{bin}:")), "{started}");
 }
 
 /// A pane attached from the Mac as the app attaches one (ADR 0074), as `term`, with `relay` run on

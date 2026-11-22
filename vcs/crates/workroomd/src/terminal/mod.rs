@@ -3,6 +3,7 @@
 //! screens, run sessions and program status.
 
 pub(crate) mod api;
+pub(crate) mod bin_path;
 pub(crate) mod dispatch;
 pub(crate) mod events;
 pub(crate) mod host_session;

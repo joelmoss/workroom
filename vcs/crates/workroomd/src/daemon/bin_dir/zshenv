@@ -1,0 +1,30 @@
+# Workroom's (#695, `bin_dir.rs`), written by the daemon at every start.
+#
+# The session pointed ZDOTDIR here. This restores the ZDOTDIR it replaced (Ghostty's shell
+# integration, or the user's own; WORKROOM_ZSH_ZDOTDIR, unset for none), and runs that folder's
+# .zshenv, as zsh would have. zsh then reads the rest of the startup files from there. Once they
+# have all run, at the first prompt, it puts the daemon's bin folder, WORKROOM_BIN_DIR, first on
+# PATH again: a login profile can move it (macOS's path_helper) or set PATH outright.
+
+if [[ -n "${WORKROOM_ZSH_ZDOTDIR+X}" ]]; then
+    'builtin' 'export' ZDOTDIR="$WORKROOM_ZSH_ZDOTDIR"
+    'builtin' 'unset' 'WORKROOM_ZSH_ZDOTDIR'
+else
+    'builtin' 'unset' 'ZDOTDIR'
+fi
+
+{
+    'builtin' 'typeset' _workroom_file=${ZDOTDIR-$HOME}"/.zshenv"
+    [[ ! -r "$_workroom_file" ]] || 'builtin' 'source' '--' "$_workroom_file"
+} always {
+    'builtin' 'unset' '_workroom_file'
+    if [[ -o 'interactive' && -n "${WORKROOM_BIN_DIR-}" ]]; then
+        _workroom_bin_first() {
+            precmd_functions=(${precmd_functions:#_workroom_bin_first})
+            path=("$WORKROOM_BIN_DIR" ${path:#${(b)WORKROOM_BIN_DIR}})
+            'builtin' 'unfunction' '_workroom_bin_first'
+        }
+        'builtin' 'typeset' -ag precmd_functions
+        precmd_functions+=(_workroom_bin_first)
+    fi
+}

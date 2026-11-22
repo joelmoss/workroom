@@ -9,7 +9,13 @@
 //! copies its own binary beside its socket, `<socket>.bin/workroom-<daemon build>`, and starts its
 //! children from the copy. Keyed by the daemon build (#680) because that is what decides how a
 //! child behaves: two binaries of one daemon build differ only in CLI commands, which a child of
-//! the daemon never runs.
+//! the daemon never runs. A pane does run them, through the `workroom` link in the daemon's bin
+//! folder (`bin_dir`, #695), which points at the copy; so a copy of this daemon build whose bytes
+//! are not this binary's is made again, and the link runs the commands of the binary the daemon
+//! runs.
+//!
+//! The bin folder lives in this folder too, as `path/`, beside `shell/`, its shells' hooks. The
+//! sweep below takes only copies and staged copies, so it leaves both alone.
 //!
 //! **Whose files these are.** Only this code makes the folder, exclusively, and writes `OWNER` in
 //! it when it does; a folder without that marker is someone else's, and nothing in it is used or
@@ -72,6 +78,9 @@ fn keep_now(dir: &Path, source: &Path) {
             let path = kept.path.clone();
             let _ = KEPT.set(kept);
             crate::note!("starting run sessions from {}", path.display());
+            // Before the sweep, which removes the copy the link may still point at: the last
+            // daemon's, after a hand-off to another daemon build.
+            crate::daemon::bin_dir::point(&path);
             sweep(dir, &name);
         }
         Err(e) => crate::note!(
@@ -87,6 +96,13 @@ pub fn binary() -> io::Result<PathBuf> {
         KEPT.get().map(|kept| kept.path.as_path()),
         handoff::own_binary,
     )
+}
+
+/// This daemon's copy, while it is still there.
+pub(crate) fn kept() -> Option<&'static Path> {
+    KEPT.get()
+        .map(|kept| kept.path.as_path())
+        .filter(|path| fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()))
 }
 
 /// The copy while it is still there, else `own`: a copy can go from under a daemon, as macOS's
@@ -124,7 +140,9 @@ fn establish(dir: &Path, source: &Path, build: &str) -> io::Result<Kept> {
     // A copy made in the instant between this one's check and its lock can replace it; a second
     // look is enough, a third means something else is at work.
     for _ in 0..3 {
-        if is_copy(&path, build)? {
+        // A copy of this daemon build from a binary whose CLI commands alone differ is made again:
+        // the `workroom` link every pane runs points at it (`bin_dir`).
+        if is_copy(&path, build)? && !differs(&path, source) {
             let file = File::open(&path)?;
             // Waits out a sweep's exclusive lock, which it holds only to remove the file; the
             // name is then checked to still be this file.
@@ -146,7 +164,7 @@ fn establish(dir: &Path, source: &Path, build: &str) -> io::Result<Kept> {
 
 /// Makes `dir` this code's own, or checks that it is: made exclusively with `OWNER` written in it
 /// at once, or found with that marker.
-fn own_folder(dir: &Path) -> io::Result<()> {
+pub(crate) fn own_folder(dir: &Path) -> io::Result<()> {
     match fs::DirBuilder::new().mode(0o700).create(dir) {
         Ok(()) => {
             let mut marker = OpenOptions::new()
@@ -171,7 +189,7 @@ fn own_folder(dir: &Path) -> io::Result<()> {
 }
 
 /// Whether `dir` is a real folder holding the marker only `own_folder` writes.
-fn marked(dir: &Path) -> bool {
+pub(crate) fn marked(dir: &Path) -> bool {
     fs::symlink_metadata(dir).is_ok_and(|meta| meta.is_dir())
         && fs::symlink_metadata(dir.join(OWNER)).is_ok_and(|meta| meta.is_file())
         && fs::read_to_string(dir.join(OWNER)).is_ok_and(|text| text == OWNER_TEXT)
@@ -187,6 +205,38 @@ fn is_copy(path: &Path, build: &str) -> io::Result<bool> {
         ))),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(e),
+    }
+}
+
+/// Whether `source` can be read and its bytes are not `copy`'s. A source that is gone (an update
+/// took it away) differs from nothing: the copy is what this daemon has left.
+fn differs(copy: &Path, source: &Path) -> bool {
+    let (Ok(theirs), Ok(ours)) = (File::open(source), File::open(copy)) else {
+        return false;
+    };
+    match (theirs.metadata(), ours.metadata()) {
+        (Ok(a), Ok(b)) if a.len() != b.len() => return true,
+        (Ok(_), Ok(_)) => {}
+        _ => return false,
+    }
+    let mut theirs = io::BufReader::with_capacity(1 << 16, theirs);
+    let mut ours = io::BufReader::with_capacity(1 << 16, ours);
+    loop {
+        let (Ok(a), Ok(b)) = (
+            io::BufRead::fill_buf(&mut theirs),
+            io::BufRead::fill_buf(&mut ours),
+        ) else {
+            return false;
+        };
+        if a.is_empty() || b.is_empty() {
+            return a.len() != b.len();
+        }
+        let n = a.len().min(b.len());
+        if a[..n] != b[..n] {
+            return true;
+        }
+        io::BufRead::consume(&mut theirs, n);
+        io::BufRead::consume(&mut ours, n);
     }
 }
 
@@ -289,7 +339,7 @@ fn same_file(file: &File, path: &Path) -> bool {
 
 /// Whether no process has `pid`: `kill(pid, 0)` says there is none. A pid taken again since keeps
 /// its staged file, which only costs the space.
-fn gone(pid: i32) -> bool {
+pub(crate) fn gone(pid: i32) -> bool {
     // SAFETY: `kill` takes no pointers, and signal 0 delivers nothing.
     unsafe {
         libc::kill(pid, 0) != 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)

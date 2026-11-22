@@ -471,12 +471,15 @@ fn a_sessions_shell_sees_its_pane_and_daemon_and_no_session_variables() {
             ("WORKROOM_SESSION_WORKROOM", "wr-1"),
             ("WORKROOM_PANE", "an-outer-pane"),
             ("WORKROOM_DAEMON", "/an/outer/daemon.sock"),
+            ("WORKROOM_BIN_DIR", "/an/outer/bin"),
         ],
     );
+    let bin = format!("WORKROOM_BIN_DIR={}", bin_folder(&socket).display());
     let env = shell_output(&mut shell, &workspace.dir, "shell-env", "env");
     assert_eq!(
         workroom_variables(&env),
         [
+            bin.clone(),
             format!("WORKROOM_DAEMON={}", socket.display()),
             format!("WORKROOM_PANE={SHELL}"),
         ],
@@ -508,11 +511,204 @@ fn a_sessions_shell_sees_its_pane_and_daemon_and_no_session_variables() {
     assert_eq!(
         workroom_variables(&env),
         [
+            bin,
             format!("WORKROOM_DAEMON={}", socket.display()),
             format!("WORKROOM_PANE={RUN}"),
         ],
         "{env}"
     );
+}
+
+/// The bin folder of `socket`'s daemon (#695).
+fn bin_folder(socket: &Path) -> std::path::PathBuf {
+    socket.with_extension("bin").join("path")
+}
+
+/// The copy of its binary the daemon on `socket` keeps (#681), which its link points at once made.
+fn daemons_copy(socket: &Path) -> std::path::PathBuf {
+    socket
+        .with_extension("bin")
+        .join(format!("workroom-{}", common::stated_daemon_build()))
+}
+
+/// Every session gets the daemon's bin folder first on the PATH it starts with, and once (#695),
+/// whatever PATH the client sent, none included; the folder holds one entry, `workroom`, a link to
+/// the daemon's copy of its own binary, which is the daemon's build.
+#[test]
+fn a_session_starts_with_the_daemons_bin_folder_first_and_its_one_link() {
+    let workspace = Workspace::new("api-bin");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let bin = bin_folder(&socket);
+    let link = bin.join("workroom");
+    assert!(
+        wait_for(Duration::from_secs(15), || std::fs::read_link(&link)
+            .is_ok_and(|target| target == daemons_copy(&socket))),
+        "the link never pointed at the copy: {:?}",
+        std::fs::read_link(&link)
+    );
+    let entries: Vec<_> = std::fs::read_dir(&bin)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name())
+        .collect();
+    assert_eq!(entries, ["workroom"], "the folder holds one entry");
+
+    // A command session's environment is the one it was started with: no profile runs before it.
+    for (case, id, path) in [
+        (
+            "given",
+            "b1b1b1b1-0000-4000-8000-000000000001",
+            Some("/usr/bin:/bin"),
+        ),
+        (
+            "listed",
+            "b1b1b1b1-0000-4000-8000-000000000002",
+            Some(&*format!("/usr/bin:{}:/bin", bin.display())),
+        ),
+        ("none", "b1b1b1b1-0000-4000-8000-000000000003", None),
+    ] {
+        let out = workspace.dir.join(format!("bin-{case}"));
+        let command = format!(
+            "/bin/sh -c 'printf \"%s\\n\" \"$PATH\" \"$WORKROOM_BIN_DIR\" > {0}.partial; \
+             \"$WORKROOM_BIN_DIR/workroom\" protocol >> {0}.partial; mv {0}.partial {0}; sleep 30'",
+            out.display()
+        );
+        let mut env = vec![
+            ("SHELL", "/bin/sh"),
+            ("WORKROOM_SESSION_COMMAND", command.as_str()),
+        ];
+        if let Some(path) = path {
+            env.push(("PATH", path));
+        }
+        let client = attach_with_only(&socket, id, &env);
+        assert!(
+            wait_for(Duration::from_secs(20), || out.exists()),
+            "{case}: the command never ran"
+        );
+        let seen = std::fs::read_to_string(&out).unwrap();
+        let mut lines = seen.lines();
+        let want = match path {
+            Some(_) => format!("{}:/usr/bin:/bin", bin.display()),
+            None => format!(
+                "{}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                bin.display()
+            ),
+        };
+        assert_eq!(lines.next(), Some(want.as_str()), "{case}: {seen}");
+        assert_eq!(
+            lines.next(),
+            Some(&*bin.display().to_string()),
+            "{case}: {seen}"
+        );
+        assert!(
+            seen.contains(&format!("daemon-build {}\n", common::stated_daemon_build())),
+            "{case}: the link is not the daemon's build: {seen}"
+        );
+        drop(client);
+    }
+}
+
+/// An attach for session `id` with `env` and nothing else in its environment, which it forwards
+/// to the session: none of this test's own, a developer's `ZDOTDIR` or `PATH` say.
+fn attach_with_only(socket: &Path, id: &str, env: &[(&str, &str)]) -> Spawned {
+    Spawned(
+        Command::new(common::daemon_binary())
+            .args(["attach", "--socket"])
+            .arg(socket)
+            .args(["--session", id])
+            .env_clear()
+            .envs(env.iter().copied())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn attach"),
+    )
+}
+
+/// A login zsh, the Mac's default shell, has the bin folder first once its startup files have run
+/// (#695), with Ghostty's integration and without: macOS's `/etc/zprofile` reorders PATH
+/// (`path_helper`), and here a `.zprofile` sets it outright and a `.zshrc` puts a folder ahead.
+/// `workroom` by name is the link, and the shell's own `.zshenv`, `.zprofile` and `.zshrc` all ran.
+#[test]
+fn a_login_zsh_has_the_bin_folder_first_after_its_startup_files() {
+    if !Path::new("/bin/zsh").exists() {
+        eprintln!("skipped: no /bin/zsh");
+        return;
+    }
+    let workspace = Workspace::new("api-bin-zsh");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let bin = bin_folder(&socket);
+    let home = workspace.dir.join("home");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(home.join(".zshenv"), "export ZSHENV_RAN=1\n").unwrap();
+    std::fs::write(
+        home.join(".zprofile"),
+        "export PATH=/usr/bin:/bin\nexport ZPROFILE_RAN=1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        home.join(".zshrc"),
+        "path=(/opt/elsewhere $path)\nexport ZSHRC_RAN=1\n",
+    )
+    .unwrap();
+    let resources = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../macapp/Resources/ghostty");
+    let resources = resources.to_string_lossy().into_owned();
+    let home = home.to_string_lossy().into_owned();
+    for (case, id, integration) in [
+        ("ghostty", "b2b2b2b2-0000-4000-8000-000000000001", true),
+        ("plain", "b2b2b2b2-0000-4000-8000-000000000002", false),
+    ] {
+        let mut env = vec![
+            ("SHELL", "/bin/zsh"),
+            ("HOME", home.as_str()),
+            ("PATH", "/usr/bin:/bin"),
+            ("TERM", "xterm-256color"),
+        ];
+        if integration {
+            env.push(("WORKROOM_SESSION_RESOURCES", resources.as_str()));
+        }
+        let mut shell = attach_with_only(&socket, id, &env);
+        let seen = shell_output(
+            &mut shell,
+            &workspace.dir,
+            &format!("zsh-{case}"),
+            "print -rl -- \"$PATH\" \"$ZSHENV_RAN$ZPROFILE_RAN$ZSHRC_RAN\" \"$(whence -p workroom)\" \
+             \"${ZDOTDIR-unset}\" \"${+functions[_ghostty_precmd]}\"",
+        );
+        let mut lines = seen.lines();
+        let path = lines.next().unwrap_or_default();
+        assert_eq!(
+            path.split(':').next(),
+            Some(&*bin.display().to_string()),
+            "{case}: {seen}"
+        );
+        assert_eq!(
+            path.split(':')
+                .filter(|entry| *entry == bin.display().to_string())
+                .count(),
+            1,
+            "{case}: {seen}"
+        );
+        assert!(path.contains(":/opt/elsewhere:"), "{case}: {seen}");
+        assert_eq!(
+            lines.next(),
+            Some("111"),
+            "{case}: a startup file did not run: {seen}"
+        );
+        assert_eq!(
+            lines.next(),
+            Some(&*bin.join("workroom").display().to_string()),
+            "{case}: {seen}"
+        );
+        // The hook gave the shell its own ZDOTDIR back: none.
+        assert_eq!(lines.next(), Some("unset"), "{case}: {seen}");
+        // Ghostty's integration still loaded behind the hook, where it was asked for.
+        let loaded = if integration { "1" } else { "0" };
+        assert_eq!(lines.next(), Some(loaded), "{case}: {seen}");
+    }
 }
 
 /// `workroom sessions --json` run by `shell` with `prefix` before it (`env -i`, say): its envelope.

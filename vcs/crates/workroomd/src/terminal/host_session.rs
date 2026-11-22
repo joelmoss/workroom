@@ -123,11 +123,6 @@ pub struct HostOrigin {
     pub shell: String,
     pub home: PathBuf,
     pub user: String,
-    /// The daemon's own folder, when it holds the `workroom` link the bootstrap puts beside the
-    /// installed `workroomd` (ADR 0078): put on the session's `PATH`, so `workroom` runs in every
-    /// host pane, as the app's own CLI does in a Mac pane (`WorkroomCLI.panePath`). None for a
-    /// daemon with no link beside it.
-    pub commands: Option<PathBuf>,
 }
 
 impl HostOrigin {
@@ -137,7 +132,6 @@ impl HostOrigin {
         let uid = unsafe { libc::geteuid() };
         let account = crate::host::account::lookup(&uid.to_string()).ok();
         HostOrigin {
-            commands: crate::host::environment::commands_folder(),
             environment: std::env::vars_os().collect(),
             shell: account
                 .as_ref()
@@ -241,22 +235,8 @@ fn build(
             .cloned()
             .collect(),
     };
-    // The daemon's folder on the PATH every shell starts with, whatever the shell: after the login's
-    // own entries, as a Mac pane's login shell puts its own ahead of the app's CLI, so a `workroom`
-    // the user installed elsewhere still wins; after the standard directories when the login gave
-    // none (`with_commands`). A profile can still set PATH outright (Debian's /etc/profile does);
-    // Ghostty's `path` feature, below, puts it back for the shells it integrates.
-    if let Some(commands) = &origin.commands {
-        let at = environment.iter().position(|(key, _)| key == "PATH");
-        let path = crate::host::environment::with_commands(
-            at.map(|at| environment[at].1.as_os_str()),
-            commands,
-        );
-        match at {
-            Some(at) => environment[at].1 = path,
-            None => environment.push((OsString::from("PATH"), path)),
-        }
-    }
+    // `workroom` on the PATH is the daemon's bin folder, first, as for every session
+    // (`terminal::bin_path`, #695), added once this is built.
     // The login's own `HOME`, `SHELL`, `USER` and `LOGNAME` win over the account entry, which a
     // static lookup gets wrong for a directory service's users; the entry fills in what it lacks.
     let from_login = |name: &str| {
@@ -303,19 +283,9 @@ fn build(
         match (terminfo, resources) {
             (Some(terminfo), Some(resources)) => {
                 set("TERMINFO", terminfo.into_os_string());
-                // A login profile can set PATH outright (Debian's /etc/profile does), so the
-                // folder above may not outlive it. The integration's `path` feature appends
-                // `GHOSTTY_BIN_DIR` once the profile has run.
-                match &origin.commands {
-                    Some(commands) => {
-                        set(
-                            "GHOSTTY_SHELL_FEATURES",
-                            OsString::from(format!("{SHELL_FEATURES},path")),
-                        );
-                        set("GHOSTTY_BIN_DIR", commands.clone().into_os_string());
-                    }
-                    None => set("GHOSTTY_SHELL_FEATURES", OsString::from(SHELL_FEATURES)),
-                }
+                // Not the `path` feature, which appends `GHOSTTY_BIN_DIR` after the profile: the
+                // bin folder's own hooks put it first again (`terminal::bin_path`).
+                set("GHOSTTY_SHELL_FEATURES", OsString::from(SHELL_FEATURES));
                 session_resources = resources.to_string_lossy().into_owned();
             }
             _ => set("TERM", OsString::from(FALLBACK_TERM)),
