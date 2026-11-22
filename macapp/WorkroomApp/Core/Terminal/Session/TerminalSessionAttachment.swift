@@ -4,12 +4,16 @@ import WorkroomWire
 @MainActor
 enum TerminalSessionAttachment {
   /// Point the focused terminal tab at `sessionID`. The tab's previous session stays running
-  /// (detached). Returns false if the session is already owned by another tab.
+  /// (detached). Returns false if the session is already owned by another tab. The tab is named
+  /// as the new session is (#694), as opening it in a new tab names it: by `label`, the session's
+  /// own as its daemon listed it, then by whatever its daemon told of it since; the old session's
+  /// name, and what this Mac agreed with its daemon about it, go with the old session.
   @discardableResult
   static func attachToActivePane(
     sessionID: UUID,
     target: TerminalTarget,
-    sessions: TerminalPanes
+    sessions: TerminalPanes,
+    label: String? = nil
   ) -> Bool {
     guard var tab = sessions.focusedTab(for: target),
       case .terminal(var state) = tab.content,
@@ -17,6 +21,11 @@ enum TerminalSessionAttachment {
     else { return false }
     if let owner = sessions.owner(of: sessionID, in: target), owner != tab.id {
       return false
+    }
+    if state.sessionID != sessionID {
+      state.userTitle = nil
+      state.syncedLabel = nil
+      view.attachment.metadata = target.sessionMetadata(title: state.sessionLabel)
     }
     // A remote workroom's session from its host's list is attached on that host, as a new tab's
     // is (`makeTerminalTab`): unregistered, its attach would go to this Mac's helpers.
@@ -30,8 +39,13 @@ enum TerminalSessionAttachment {
     sessions.replace(tab, for: target)
     view.attachment.sessionChanged()
     sessions.refreshProgramStatus(tab: tab.id, target: target.id)
-    if let previous, previous != sessionID {
-      ProgramStatusAlerts.shared.paneLeft(session: previous)
+    if previous != sessionID {
+      if let previous { ProgramStatusAlerts.shared.paneLeft(session: previous) }
+      // A numbered label an older build gave it names nothing.
+      if let label, !TerminalState.isNumberedName(label) {
+        sessions.applySessionLabel(label, forTab: tab.id, in: target)
+      }
+      SessionLabels.shared.mounted(sessionID, on: target.hostID)
     }
     // The waiting list counts only sessions an open pane shows.
     WindowRegistry.shared.recomputeBadge()
