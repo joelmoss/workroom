@@ -83,7 +83,8 @@ struct DetachedSessionsButton: View {
     let released = terminals.focusedTab(for: target)?.terminal?.sessionID
     guard
       TerminalSessionAttachment.attachToActivePane(
-        sessionID: id, target: target, sessions: terminals)
+        sessionID: id, target: target, sessions: terminals,
+        label: session.value(forMetadataKey: SessionMetadataKey.title))
     else { return }
     showing = false
     Task { [terminals, target, sessionsStore] in

@@ -328,6 +328,48 @@ final class SessionLabelsTests: XCTestCase {
     XCTAssertEqual(sent.labels, [])
   }
 
+  // Value: protects=Detached sessions > Active tab names the pane as its new session is, as New
+  // tab does (#694, Codex on #780); fails_when=the pane keeps the old session's name, or its
+  // baseline leaks into the new session's sync; why_new=the review of #694;
+  // seam=TerminalSessionAttachment over a holder; no_claim=the popover's drawing
+  /// A named pane pointed at a detached session takes that session's label, its own name and
+  /// what it last agreed going with the old session; one with no label of its own is named by
+  /// what its daemon told of it since.
+  func testAttachingADetachedSessionToTheActivePaneNamesItAsThatSession() async {
+    let holder = Holder(target: target)
+    let labels = labels([holder])
+    let tab = holder.terminals.addTab(for: target, sessionID: UUID())
+    holder.terminals.applySessionLabel("old", forTab: tab.id, in: target)
+    XCTAssertEqual(name(holder, tab), "old")
+
+    let labelled = UUID()
+    XCTAssertTrue(
+      TerminalSessionAttachment.attachToActivePane(
+        sessionID: labelled, target: target, sessions: holder.terminals, label: "dev"))
+    XCTAssertEqual(name(holder, tab), "dev")
+    XCTAssertEqual(
+      holder.terminals.labelSync(ofTab: tab.id, in: target)?.synced, SyncedLabel(label: "dev"))
+
+    // Heard before it was attached: caught up from that, with no name of the old one's left.
+    let heard = UUID()
+    labels.handle(.listed(session: heard, label: "cached"), from: .local)
+    XCTAssertTrue(
+      TerminalSessionAttachment.attachToActivePane(
+        sessionID: heard, target: target, sessions: holder.terminals, label: nil))
+    XCTAssertNil(name(holder, tab), "the old session's name doesn't leak")
+    await labels.settled()
+    XCTAssertEqual(name(holder, tab), "cached")
+
+    let unnamed = UUID()
+    XCTAssertTrue(
+      TerminalSessionAttachment.attachToActivePane(
+        sessionID: unnamed, target: target, sessions: holder.terminals, label: "Terminal 4"))
+    await labels.settled()
+    XCTAssertNil(name(holder, tab), "a numbered label names nothing")
+    XCTAssertNil(holder.terminals.labelSync(ofTab: tab.id, in: target)?.synced)
+    XCTAssertEqual(sent.labels, [])
+  }
+
   /// A rename for a session that ended while it was told is not tried again.
   func testARenameOfAnEndedSessionIsNotRetried() async {
     let holder = Holder(target: target)
