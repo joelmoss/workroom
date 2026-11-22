@@ -490,7 +490,24 @@ struct TerminalState {
   }
   /// The name the user gave this terminal (Rename…): it outranks the live title and the default
   /// until cleared. Nil when never named, or cleared with an empty name. Saved with the tab.
+  /// One name with its session's label (#694): a rename labels the session, and a label set on it
+  /// through the terminal API, on any Mac, names this tab (`SessionLabels`).
   var userTitle: String?
+
+  /// This terminal's session's label (#694), its name as the terminal API names it: the user's
+  /// name for it, else a name the app gave it that it shows ("Run"); nil when it shows its
+  /// default, which a numbered "Terminal 2" never is.
+  var sessionLabel: String? {
+    userTitle ?? (Self.isNumberedName(defaultTitle) ? nil : defaultTitle)
+  }
+
+  /// The user's name this terminal takes from its session's `label` (#694), cleaned as a rename
+  /// is: nil for none, and for the name the app gave it itself ("Run" on a run tab), which it shows
+  /// unnamed; any other label, even a numbered one, as it is.
+  func userTitle(forLabel label: String?) -> String? {
+    guard let name = TerminalPanes.cleanedName(label) else { return nil }
+    return !Self.isNumberedName(defaultTitle) && name == defaultTitle ? nil : name
+  }
   /// The surface's latest non-empty title (OSC 0/2 via shell integration): the running command while
   /// busy, the working directory when idle. Nil until the first report (issue #2). Kept on an
   /// observable of its own (`titleCell`), so a program repainting its title re-renders the views
@@ -1616,13 +1633,51 @@ final class TerminalPanes {
   }
 
   /// Name a terminal tab (Rename…). The name is trimmed; an empty one clears it, which brings the
-  /// program's live title back. No-op for a missing or non-terminal tab.
+  /// program's live title back. No-op for a missing or non-terminal tab. The tab's session is
+  /// labelled the same on its host's daemon (#694), which renames its tabs on every other Mac.
   func setUserTitle(_ name: String, forTab tabID: TerminalTab.ID, in target: TerminalTarget) {
     let cleaned = Self.cleanedName(name)
     guard let state = terminalState(tabID, in: target.id), state.userTitle != cleaned else {
       return
     }
-    mutateTerminalState(tabID, target: target.id) { $0.userTitle = cleaned }
+    let label = rename(tabID, in: target, to: cleaned)
+    if let session = state.sessionID {
+      SessionLabels.shared.renamed(session, on: target.hostID, to: label)
+    }
+  }
+
+  /// Names a terminal tab by its session's `label` (#694), as the daemon told it: a label set
+  /// through the terminal API, a tab renamed on another Mac, or `workroom new --title`. Never told
+  /// back to the daemon, which already has it. Returns the tab's session label now, which differs
+  /// from `label` only when the label names nothing this tab shows (cleared on a run tab, which
+  /// shows "Run"); nil for a missing or non-terminal tab.
+  @discardableResult
+  func applySessionLabel(
+    _ label: String?, forTab tabID: TerminalTab.ID, in target: TerminalTarget
+  ) -> String?? {
+    guard let state = terminalState(tabID, in: target.id) else { return nil }
+    let named = state.userTitle(forLabel: label)
+    guard state.userTitle != named else { return .some(state.sessionLabel) }
+    return .some(rename(tabID, in: target, to: named))
+  }
+
+  /// Terminal tab `tabID`'s session label (`TerminalState.sessionLabel`); nil for none, and for a
+  /// missing or non-terminal tab.
+  func sessionLabel(ofTab tabID: TerminalTab.ID, in target: TerminalTarget) -> String? {
+    terminalState(tabID, in: target.id)?.sessionLabel
+  }
+
+  /// Gives tab `tabID` the user's name `name`, and its surface the label a session it starts
+  /// again is made with (a reattach after a reboot). Returns its session label now.
+  private func rename(
+    _ tabID: TerminalTab.ID, in target: TerminalTarget, to name: String?
+  ) -> String? {
+    mutateTerminalState(tabID, target: target.id) { $0.userTitle = name }
+    let label = terminalState(tabID, in: target.id)?.sessionLabel
+    if let view = surface(of: tabID) {
+      view.attachment.metadata = target.sessionMetadata(title: label)
+    }
+    return label
   }
 
   /// `name` trimmed, or nil when nothing is left.
@@ -2186,8 +2241,8 @@ final class TerminalPanes {
         order: [tabID], focused: tabID, counter: targets[target.id]?.state.counter ?? 0),
       detached: [:], agent: [tabID: codingAgentManager.handOff(tabID)])
     if let view {
-      let title = view.attachment.metadata.first { $0.key == SessionMetadataKey.title }?.value
-      view.attachment.metadata = destination.sessionMetadata(title: title ?? tab.title)
+      // Under its label (#694), which goes with it.
+      view.attachment.metadata = destination.sessionMetadata(title: tab.terminal?.sessionLabel)
     }
     remove(tabID, from: target.id)
     forgetPerTabWork(tabID)
@@ -2687,7 +2742,15 @@ final class TerminalPanes {
     // The workroom a session is tagged with is how its daemon's list finds it again: `target.id`
     // for a workroom on this Mac, whose daemon no other Mac reads, and the workroom's own id for a
     // remote one, since `target.id` holds this Mac's project path and another Mac's differs (#255).
-    let metadata = target.sessionMetadata(title: title ?? "Terminal \(count)")
+    var state = TerminalState(
+      defaultTitle: title ?? "Terminal \(count)",
+      launch: TerminalLaunch(
+        isRunSession: view.isRunSession, runsCommand: view.isRunCommandSurface),
+      launchDirectory: view.workingDirectory, sessionID: assignedSessionID)
+    state.userTitle = userTitle
+    // Its session is labelled with the tab's name (#694): the user's, or one the app shows ("Run");
+    // none for a tab that shows its default.
+    let metadata = target.sessionMetadata(title: state.sessionLabel)
     if let host = target.remoteHost, let assignedSessionID {
       // `cwd` is a path on the host here: the target's, or a split's anchor pane's.
       registerRemote(
@@ -2703,12 +2766,6 @@ final class TerminalPanes {
     view.attachment.metadata = metadata
     // The tab's facts are what the surface was just told, read back once: its launch and start
     // directory never change. Its session is the tab's alone, which the surface reads below.
-    var state = TerminalState(
-      defaultTitle: title ?? "Terminal \(count)",
-      launch: TerminalLaunch(
-        isRunSession: view.isRunSession, runsCommand: view.isRunCommandSurface),
-      launchDirectory: view.workingDirectory, sessionID: assignedSessionID)
-    state.userTitle = userTitle
     if let assignedSessionID {
       programStatusBinding.follow(target.hostID)
       // Who else types into it (#696), from the same host's events.

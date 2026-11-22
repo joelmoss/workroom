@@ -75,13 +75,15 @@ struct TerminalTarget: Identifiable, Hashable {
 
   /// What a pane's session here is registered with: its project, its workroom
   /// (`sessionWorkroomKey`) and its pane's `title`, in that order. A pane moving into this target
-  /// takes the same, under its own title.
-  func sessionMetadata(title: String) -> [(key: String, value: String)] {
-    [
-      (SessionMetadataKey.project, id.projectPath ?? path),
-      (SessionMetadataKey.workroom, sessionWorkroomKey),
-      (SessionMetadataKey.title, title),
+  /// takes the same, under its own title. The title is the session's label (#694), the pane's
+  /// `TerminalState.sessionLabel`; none for a pane that shows its default name.
+  func sessionMetadata(title: String?) -> [(key: String, value: String)] {
+    var metadata = [
+      (key: SessionMetadataKey.project, value: id.projectPath ?? path),
+      (key: SessionMetadataKey.workroom, value: sessionWorkroomKey),
     ]
+    if let title { metadata.append((SessionMetadataKey.title, title)) }
+    return metadata
   }
 
   /// The daemon this target's panes talk to: their remote host's, or this Mac's.

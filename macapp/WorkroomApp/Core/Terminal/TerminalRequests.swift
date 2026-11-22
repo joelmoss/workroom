@@ -44,7 +44,8 @@ extension TerminalRequestHolder {
       }
     }
     let tab = split ?? terminals.addTab(for: target, sessionID: session, focus: false)
-    if let label { terminals.setUserTitle(label, forTab: tab.id, in: target) }
+    // Its session's label, which the daemon has: not told back (#694).
+    if let label { terminals.applySessionLabel(label, forTab: tab.id, in: target) }
     // The waiting list counts only sessions an open pane shows.
     WindowRegistry.shared.recomputeBadge()
     return tab
@@ -143,7 +144,7 @@ final class TerminalRequests {
     switch event {
     case .opened(let request): open(request, from: host)
     case .closed(let session): close(session)
-    case .input, .lost: break
+    case .input, .labelled, .listed, .lost: break
     }
   }
 

@@ -678,6 +678,17 @@ public final class DaemonClient: @unchecked Sendable {
     }
   }
 
+  /// Labels terminal `session` on the host `label`, or clears its label with nil (#694): its tab
+  /// was renamed. One request and its one reply on the terminal API, as any other service's
+  /// request goes. A daemon before the terminal API is never sent it, as for the subscription.
+  public func labelSession(_ session: UUID, label: String?) async throws -> TerminalLabelOutcome {
+    guard helloVersion >= DaemonHandshake.minTerminalAPIVersion else { return .unsupported }
+    let reply = try await request(
+      bytes: TerminalInputEvent.labelRequest(session: session, label: label), timeout: 15,
+      service: .terminalAPI)
+    return try TerminalLabelOutcome.decode(reply: reply)
+  }
+
   /// Ends the reply stream on `stream` here: its handler is dropped, and whatever still arrives on
   /// it is dropped unread rather than read as a protocol violation that would fail the connection
   /// every other service shares. `unsubscribe` also ends it on the daemon (`events.unsubscribe`),

@@ -109,8 +109,14 @@ struct DetachedSessionsButton: View {
       Task { await refresh() }
       return
     }
+    let label = session.value(forMetadataKey: SessionMetadataKey.title)
     host.whenHostLayoutRestored(target) { [terminals = host.terminals] target in
-      _ = terminals.addTab(for: target, sessionID: id)
+      let tab = terminals.addTab(for: target, sessionID: id)
+      // Named by its session's label (#694), as every Mac names its tabs; a numbered one an
+      // older build gave it names nothing.
+      if let label, !TerminalState.isNumberedName(label) {
+        terminals.applySessionLabel(label, forTab: tab.id, in: target)
+      }
       // The waiting list counts only sessions an open pane shows.
       WindowRegistry.shared.recomputeBadge()
     }

@@ -1,6 +1,7 @@
 import DaemonConnection
 import DaemonConnectionTestSupport
 import Synchronization
+import WorkroomWire
 import XCTest
 
 @testable import Workroom
@@ -296,6 +297,57 @@ final class TerminalInputLiveDaemonTests: XCTestCase {
     guard case .available(let subscription) = availability else {
       return XCTFail("refused after giving up on 12: \(availability)")
     }
+    subscription.end()
+    await connection.close()
+  }
+
+  // Value: protects=a renamed tab's name reaching its session's label on a real daemon, and the
+  // label coming back to every subscriber once (#694); fails_when=the app's request or the event
+  // it reads drifts from the daemon's wire, or the daemon tells an unchanged label (an echo loop);
+  // why_new=labels never changed after creation; seam=none
+  /// `labelSession` labels a real session, which the session list then names it by, and the
+  /// subscription hears `session.labelled` once; the same label again changes nothing and is told
+  /// nothing. The snapshot that starts a subscription says each session's label.
+  func testALabelReachesTheDaemonAndComesBackToTheSubscriberOnce() async throws {
+    let daemon = try DaemonHarness.start()
+    defer { daemon.stop() }
+    let session = UUID()
+    try daemon.startSession(
+      identifier: session, metadata: [(SessionMetadataKey.title, "Terminal 1")])
+    let connection = try await DaemonClient.connect(host: .local, socketPath: daemon.socketPath)
+    for _ in 0..<100 {
+      if try await connection.sessions().contains(where: { $0.identifier.uuid == session }) {
+        break
+      }
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    let received = AsyncStream<TerminalInputEvent>.makeStream()
+    let availability = try await connection.subscribeTerminalInput(timeout: 15) {
+      received.continuation.yield($0)
+    }
+    guard case .available(let subscription) = availability else {
+      return XCTFail("not subscribed: \(availability)")
+    }
+    var events = received.stream.makeAsyncIterator()
+    let listed = await events.next()
+    XCTAssertEqual(listed, .listed(session: session, label: "Terminal 1"))
+
+    let first = try await connection.labelSession(session, label: "web")
+    XCTAssertEqual(first, .labelled(changed: true))
+    let told = await events.next()
+    XCTAssertEqual(told, .labelled(session: session, label: "web"))
+    let again = try await connection.labelSession(session, label: "web")
+    XCTAssertEqual(again, .labelled(changed: false))
+    let cleared = try await connection.labelSession(session, label: nil)
+    XCTAssertEqual(cleared, .labelled(changed: true))
+    let next = await events.next()
+    XCTAssertEqual(next, .labelled(session: session, label: nil), "the same label told nothing")
+    let gone = try await connection.labelSession(UUID(), label: "x")
+    guard case .refused(kind: "TargetNotFound", _) = gone else {
+      return XCTFail("a session the daemon doesn't hold: \(gone)")
+    }
+    let listedNow = try await connection.sessions().first { $0.identifier.uuid == session }
+    XCTAssertNil(listedNow?.value(forMetadataKey: SessionMetadataKey.title))
     subscription.end()
     await connection.close()
   }

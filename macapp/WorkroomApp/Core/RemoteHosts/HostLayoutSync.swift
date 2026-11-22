@@ -155,14 +155,19 @@ enum HostLayoutSync {
       guard result.tabs.count < SessionLimits.maxTabsPerTarget,
         let id = descriptor.identifier.uuid
       else { break }
-      let title = descriptor.value(forMetadataKey: SessionMetadataKey.title) ?? "Terminal"
+      // Named by its session's label (#694), as the user's name is, so clearing it shows its
+      // default; a numbered "Terminal 2" an older build labelled it with names nothing, and stays
+      // its default title, as before.
+      let label = descriptor.value(forMetadataKey: SessionMetadataKey.title)
+      let numbered = label.map(TerminalState.isNumberedName) ?? true
       result.tabs.append(
         TabSession(
           key: UUID().uuidString, kind: TabSession.terminalKind,
           terminal: TerminalPayload(
-            defaultTitle: title,
+            defaultTitle: numbered ? label ?? "Terminal" : "Terminal",
             cwd: descriptor.workingDirectory.isEmpty ? nil : descriptor.workingDirectory,
-            sessionID: id.uuidString)))
+            sessionID: id.uuidString,
+            userTitle: numbered ? nil : label)))
     }
     return result
   }
