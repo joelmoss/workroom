@@ -338,6 +338,13 @@ fn sessions_clients_reports_every_field_of_a_pane_an_app_connection_and_a_cli_ca
 
     let _pane = open(&socket, SHELL, "server", "wr-1", &cwd);
     listing_until(&socket, |listing| listing.len() == 1);
+    // The session is listed before its pane's attach lands: wait for the pane's client, or the
+    // app's can attach first and the order below flips.
+    assert!(
+        wait_for(Duration::from_secs(15), || clients_of(&socket, SHELL).len()
+            == 1),
+        "the pane's client never attached"
+    );
     let mut app = attach_as_app(&socket, SHELL, "mac-b.local", (100, 30));
     let mut clients = Vec::new();
     let mut attached = |app: &mut common::RpcClient, count: usize| {
