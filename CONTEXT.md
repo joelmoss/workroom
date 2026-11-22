@@ -228,6 +228,10 @@ A banner action on a failed command that opens a coding agent in a terminal to l
 **Usage**:
 A coding agent's quota in each of its windows, such as five hours or a week.
 
+**Workroom skill**:
+The skill that teaches Claude Code and Codex the terminal API, the text of `workroom help agents`. Settings ▸ AI Agents installs it in `~/.claude/skills/workroom` and `~/.codex/skills/workroom`, on the Mac and each host, only while turned on; a marker Workroom writes in the folder is what makes it Workroom's to update or remove (#697).
+_Avoid_: Agent skill
+
 **Claude account**:
 One Claude login whose usage is metered on its own, such as a personal plan and a work organization. cswap numbers each one with a slot.
 _Avoid_: cswap account, slot (for the account itself)

@@ -176,7 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     // The Workroom skill for Claude Code and Codex (#697), brought up to this build's text while
     // its setting is on; a test process installs only into its throwaway home, or nowhere.
-    MainActor.assumeIsolated { AgentSkill.shared.launched() }
+    MainActor.assumeIsolated { WorkroomSkill.shared.launched() }
 
     // Wire shortcuts now; the optional panel render waits for the first window update. An earlier
     // reveal still prepares it on demand through `show`, so input never depends on the warmup.

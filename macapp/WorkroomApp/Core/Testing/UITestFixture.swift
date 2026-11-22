@@ -200,16 +200,16 @@ import WorkroomVCS
       return text("WorkroomUITestGhosttyConfigFile")
     }
 
-    /// The home folder a fixture launch installs the agent skill into (#697), never the user's:
-    /// `-WorkroomUITestAgentSkillHome <dir>` when it names a folder under `/tmp` or the temporary
+    /// The home folder a fixture launch installs the Workroom skill into (#697), never the user's:
+    /// `-WorkroomUITestWorkroomSkillHome <dir>` when it names a folder under `/tmp` or the temporary
     /// folder, which a UI test passes so it can look inside; else one of this process's own there.
     /// It gets a `.claude` and a `.codex` of its own, as a machine with both agents has, since the
     /// skill is installed only where an agent's folder is.
-    static var agentSkillHome: URL {
+    static var workroomSkillHome: URL {
       let fileManager = FileManager.default
       let temporary = fileManager.temporaryDirectory.standardizedFileURL.path
       let home =
-        text("WorkroomUITestAgentSkillHome")
+        text("WorkroomUITestWorkroomSkillHome")
         .map { URL(fileURLWithPath: $0).standardizedFileURL }
         .flatMap { given -> URL? in
           let path = given.path
@@ -219,7 +219,7 @@ import WorkroomVCS
           return throwaway ? given : nil
         }
         ?? fileManager.temporaryDirectory.appendingPathComponent(
-          "workroom-agent-skill-ui-\(ProcessInfo.processInfo.processIdentifier)",
+          "workroom-skill-ui-\(ProcessInfo.processInfo.processIdentifier)",
           isDirectory: true)
       for agent in [".claude", ".codex"] {
         try? fileManager.createDirectory(

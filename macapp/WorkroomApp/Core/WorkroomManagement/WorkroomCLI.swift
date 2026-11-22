@@ -399,11 +399,11 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   }
 
   /// Installs, or removes, the Workroom skill for Claude Code and Codex (#697) in `home`'s
-  /// `.claude` and `.codex` (`workroom agent-skill`), saying what became of each.
-  func agentSkill(install: Bool, home: String) async throws -> AgentSkillReport {
+  /// `.claude` and `.codex` (`workroom skill`), saying what became of each.
+  func workroomSkill(install: Bool, home: String) async throws -> WorkroomSkillReport {
     let result = try await run(
-      ["agent-skill", install ? "install" : "remove", "--json"], timeout: 10, home: home)
-    return try decode(AgentSkillReport.self, from: result)
+      ["skill", install ? "install" : "remove", "--json"], timeout: 10, home: home)
+    return try decode(WorkroomSkillReport.self, from: result)
   }
 
   /// Registers a remote workroom the app is about to make (#253) under a new name, with
@@ -696,7 +696,7 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   /// script is cut off partway.
   ///
   /// `home`, when given, is the child's `HOME`: the folder whose `~/.claude` and `~/.codex` the
-  /// agent skill is written into, a throwaway one in tests.
+  /// Workroom skill is written into, a throwaway one in tests.
   private func run(
     _ args: [String], timeout: TimeInterval?, userInitiated: Bool = false, stdin: Data? = nil,
     cancellable: Bool = false, home: String? = nil, onEvent: ((StreamEvent) -> Void)? = nil

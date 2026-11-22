@@ -231,14 +231,15 @@ extension Defaults.Keys {
   /// The user chose "Don't Ask Again" on the footer's "Enable usage…" (#480): the footer stops
   /// offering the status-line bridge, and Settings ▸ AI Agents ▸ Usage offers it instead.
   static let claudeUsageDeclined = Key<Bool>("claudeUsageDeclined", default: false, suite: .app)
-  /// The Workroom skill for Claude Code and Codex (#697): on, `AgentSkill` installs it on this Mac
+  /// The Workroom skill for Claude Code and Codex (#697): on, `WorkroomSkill` installs it on this Mac
   /// and each host's bootstrap on that host; off, it is removed. Off by default, so Workroom
   /// writes into an agent's config only once asked to (ADR 0050).
-  static let installAgentSkill = Key<Bool>("installAgentSkill", default: false, suite: .app)
-  /// Whether the user turned `installAgentSkill` off after having it on, so each host's bootstrap
+  static let installWorkroomSkill = Key<Bool>("installWorkroomSkill", default: false, suite: .app)
+  /// Whether the user turned `installWorkroomSkill` off after having it on, so each host's bootstrap
   /// removes the skill there. A build that never had it on removes nothing, so a Dev build left at
   /// the default never takes away the skill a Nightly beside it installed on a shared host.
-  static let agentSkillTurnedOff = Key<Bool>("agentSkillTurnedOff", default: false, suite: .app)
+  static let workroomSkillTurnedOff = Key<Bool>(
+    "workroomSkillTurnedOff", default: false, suite: .app)
   /// Mask common secret shapes in captured output before it's sent to the agent. On by default.
   static let terminalCodingAgentRedactSecrets = Key<Bool>(
     "terminalAgentRedactSecrets", default: true, suite: .app)

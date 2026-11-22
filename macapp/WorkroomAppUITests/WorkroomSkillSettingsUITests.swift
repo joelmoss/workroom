@@ -4,21 +4,21 @@ import XCTest
 /// Claude Code and Codex, and turning it off removes it again, in the fixture's throwaway home,
 /// never the developer's. The setting is captured in each appearance for a reviewer. Run in the
 /// VM, this class only (`make app-uitest-vm`).
-final class AgentSkillSettingsUITests: XCTestCase {
+final class WorkroomSkillSettingsUITests: XCTestCase {
   /// The home the app installs into: under `/tmp`, which the fixture takes, and this runner reads.
   /// `ThemePickerUITests.generatedConfURL` has why `/tmp`, and not a path worked out here.
   private var home: URL!
 
   override func setUpWithError() throws {
     continueAfterFailure = false
-    home = URL(fileURLWithPath: "/tmp/workroom-uitest-agent-skill-\(UUID().uuidString)")
+    home = URL(fileURLWithPath: "/tmp/workroom-uitest-skill-\(UUID().uuidString)")
     addTeardownBlock { [home] in try? FileManager.default.removeItem(at: home!) }
   }
 
   private func launchedApp(appearance: String? = nil) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
-    app.launchArguments += ["-WorkroomUITestAgentSkillHome", home.path]
+    app.launchArguments += ["-WorkroomUITestWorkroomSkillHome", home.path]
     if let appearance { app.launchArguments += ["-appearance", appearance] }
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
@@ -39,7 +39,7 @@ final class AgentSkillSettingsUITests: XCTestCase {
     XCTAssertTrue(pane.waitForExistence(timeout: 10), "the AI Agents row should exist")
     pane.click()
     // A grouped Form draws its Toggle as a switch.
-    let toggle = app.switches["settings.control.agentSkill"]
+    let toggle = app.switches["settings.control.workroomSkill"]
     XCTAssertTrue(toggle.waitForExistence(timeout: 5), "AI Agents shows the skill's toggle")
     toggle.scrollIntoView(in: app)
     return toggle
@@ -92,7 +92,7 @@ final class AgentSkillSettingsUITests: XCTestCase {
         "Workroom's marker is beside it")
     }
     XCTAssertFalse(
-      app.descendants(matching: .any).matching(identifier: "settings.control.agentSkillNotice")
+      app.descendants(matching: .any).matching(identifier: "settings.control.workroomSkillNotice")
         .firstMatch.exists, "an install that went as asked says nothing more")
 
     toggle.click()

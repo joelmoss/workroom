@@ -352,6 +352,48 @@ final class RemoteHostIntegrationTests: XCTestCase {
     _ = try await connection.sessions()
   }
 
+  /// The Workroom skill on a real host over ssh (#697), written by this build's Linux binary in
+  /// the host user's home, which has Claude Code's folder and not Codex's: a connect with the
+  /// setting on installs it there; one from a build that never had it on leaves it; one after it
+  /// was turned off removes it, keeping `~/.claude`; and the next finds nothing to remove.
+  func testTheWorkroomSkillIsInstalledOnTheHostOnlyWhileOnAndRemovedOnceTurnedOff() async throws {
+    let fixture = try fixture()
+    try onHost(fixture, "rm -rf ~/.claude ~/.codex && mkdir ~/.claude")
+    defer { _ = try? onHost(fixture, "rm -rf ~/.claude") }
+    let id = UUID()
+    let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
+    func connect(_ policy: DaemonBootstrap.WorkroomSkillPolicy) async throws
+      -> DaemonBootstrap.Outcome
+    {
+      try await DaemonBootstrap.ensure(
+        host: .remote(id), driver: driver, socket: fixture.host.daemonSocket,
+        daemon: { _ in fixture.daemon }, handOff: true, workroomSkill: policy)
+    }
+    let skill = "~/.claude/skills/workroom"
+    let there = "test -e \(skill) && echo yes || echo no"
+
+    var outcome = try await connect(.leave)
+    XCTAssertNil(outcome.workroomSkill)
+    XCTAssertEqual(try onHost(fixture, there), "no")
+
+    outcome = try await connect(.install)
+    XCTAssertEqual(outcome.workroomSkill, .done("claude installed, codex no-agent"))
+    XCTAssertEqual(try onHost(fixture, "head -n 2 \(skill)/SKILL.md"), "---\nname: workroom")
+    XCTAssertEqual(try onHost(fixture, "test -e ~/.codex && echo yes || echo no"), "no")
+
+    outcome = try await connect(.leave)
+    XCTAssertNil(outcome.workroomSkill)
+    XCTAssertEqual(try onHost(fixture, there), "yes")
+
+    outcome = try await connect(.remove)
+    XCTAssertEqual(outcome.workroomSkill, .done("claude removed, codex absent"))
+    XCTAssertEqual(try onHost(fixture, there), "no")
+    XCTAssertEqual(try onHost(fixture, "test -d ~/.claude && echo yes || echo no"), "yes")
+
+    outcome = try await connect(.remove)
+    XCTAssertNil(outcome.workroomSkill, "the probe found no skill, so nothing ran")
+  }
+
   /// Connecting again with the same build pushes nothing: the probe finds the file, and the
   /// running daemon answers that it is current. Self-contained, whatever an earlier test left
   /// running: the first `ensure` gets the host to this build, the second is the one measured.

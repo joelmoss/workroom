@@ -4,9 +4,9 @@ import SwiftUI
 /// Settings ▸ AI Agents ▸ Workroom skill (#697): one toggle, off by default, that installs the
 /// Workroom skill for Claude Code and Codex on this Mac and each host, and removes it when turned
 /// off. Its note says where it writes; a line under it says when a skill was left alone or failed.
-struct AgentSkillSection: View {
-  @Default(.installAgentSkill) private var installAgentSkill
-  @ObservedObject private var agentSkill = AgentSkill.shared
+struct WorkroomSkillSection: View {
+  @Default(.installWorkroomSkill) private var installWorkroomSkill
+  @ObservedObject private var workroomSkill = WorkroomSkill.shared
 
   var body: some View {
     Section {
@@ -14,10 +14,10 @@ struct AgentSkillSection: View {
       // asynchronously, and the install should follow the click, not the next redraw.
       Toggle(
         isOn: Binding(
-          get: { installAgentSkill },
+          get: { installWorkroomSkill },
           set: { on in
-            installAgentSkill = on
-            agentSkill.settingChanged(to: on)
+            installWorkroomSkill = on
+            workroomSkill.settingChanged(to: on)
           })
       ) {
         Text("Install the Workroom skill for Claude Code and Codex")
@@ -31,9 +31,9 @@ struct AgentSkillSection: View {
           + "and only where the agent is set up. A host gets the skill, or loses it, the next "
           + "time Workroom connects to it."
       )
-      .accessibilityIdentifier("settings.control.agentSkill")
+      .accessibilityIdentifier("settings.control.workroomSkill")
 
-      if let notice = agentSkill.notice {
+      if let notice = workroomSkill.notice {
         Label {
           Text(notice)
             .font(.caption)
@@ -45,7 +45,7 @@ struct AgentSkillSection: View {
             .foregroundStyle(.orange)
         }
         .help(notice)
-        .accessibilityIdentifier("settings.control.agentSkillNotice")
+        .accessibilityIdentifier("settings.control.workroomSkillNotice")
       }
     } header: {
       Text("Workroom skill")

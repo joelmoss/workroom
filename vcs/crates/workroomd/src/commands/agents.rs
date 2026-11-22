@@ -1,6 +1,6 @@
 //! `workroom help agents` (#697): the terminal API (ADR 0079) explained to a coding agent in plain
 //! words, as Markdown, which is also the body of the Workroom skill the app installs for Claude
-//! Code and Codex (`agent_skill`).
+//! Code and Codex (`skill`).
 //!
 //! It can't drift from the commands. Each terminal API command has its own section here
 //! ([`GUIDED`]), and a section's usage line, summary, subcommands and flags are read from
