@@ -48,8 +48,8 @@ final class TerminalNewUITests: XCTestCase {
   /// What the first terminal's screen shows.
   private var screen: String { (surfaces.firstMatch.value as? String) ?? "" }
 
-  /// Launches the fixture with one terminal on a scratch daemon, and has its shell find the
-  /// bundled binary, the daemon among its parents, as `W`.
+  /// Launches the fixture with one terminal on a scratch daemon, and has its shell name the
+  /// daemon's own `workroom` as `W`.
   private func launch() {
     app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
@@ -65,10 +65,8 @@ final class TerminalNewUITests: XCTestCase {
     chip.click()
     XCTAssertTrue(surfaces.firstMatch.waitForExistence(timeout: 10))
     RunLoop.current.run(until: Date().addingTimeInterval(1))
-    run(
-      "p=$PPID; while [ \"$p\" -gt 1 ]; do c=$(ps -o comm= -p $p); "
-        + "case $c in */workroomd) W=$c; break;; esac; p=$(ps -o ppid= -p $p | tr -d ' '); done; "
-        + "echo WRREADY$((1+1))")
+    // The daemon's bin folder's `workroom`, its own build, as every pane has it (#695).
+    run("W=\"$WORKROOM_BIN_DIR/workroom\"; \"$W\" version > /dev/null && echo WRREADY$((1+1))")
     XCTAssertTrue(
       poll(timeout: 30) { screen.contains("WRREADY2") },
       "the terminal's shell never came up through the scratch daemon")
@@ -81,10 +79,11 @@ final class TerminalNewUITests: XCTestCase {
   func testNewOpensATabBesideTheCallerAndCloseClosesIt() {
     launch()
     XCTAssertEqual(chips.count, 1)
-    run("\"$W\" new --title api-tab && echo NEW$((2+2))")
+    // Its envelope and this Mac's name stay on the screen, for a failure to say what was asked.
+    run("\"$W\" new --title api-tab --json; hostname; echo NEW$((2+2))")
     XCTAssertTrue(
       poll(timeout: 20) { chips.count == 2 },
-      "no tab opened for the new terminal: \(app.debugDescription.prefix(2000))")
+      "no tab opened for the new terminal; the pane shows: \(screen.suffix(1500))")
     XCTAssertTrue(
       poll(timeout: 10) { chips.allElementsBoundByIndex.contains { $0.label == "api-tab" } },
       "the tab isn't named by --title: \(chips.allElementsBoundByIndex.map(\.label))")
@@ -107,7 +106,7 @@ final class TerminalNewUITests: XCTestCase {
     run("\"$W\" new --title api-split --split right && echo SPLIT$((4+4))")
     XCTAssertTrue(
       poll(timeout: 20) { surfaces.count == 2 },
-      "no split opened beside the caller: \(app.debugDescription.prefix(2000))")
+      "no split opened beside the caller; the pane shows: \(screen.suffix(1500))")
     let caller = surfaces.element(boundBy: 0).frame
     let split = surfaces.element(boundBy: 1).frame
     XCTAssertGreaterThan(split.minX, caller.minX, "the split is on the caller's right")
