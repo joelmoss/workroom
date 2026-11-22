@@ -3312,7 +3312,8 @@ fn events_tell_each_client_attaching_and_detaching() {
 /// A hand-off closes every client's connection, so the next program tells each client the events
 /// held as detached, and a client attaching to it is numbered past every one before (#688), those
 /// that left before the hand-off included: a stream that goes on across the hand-off hears the
-/// pane leave and come back as another client, never under a number one before it had.
+/// pane leave and come back, attaching again itself (#681), as another client, never under a
+/// number one before it had.
 #[test]
 fn clients_detach_across_a_hand_off_and_attach_again_numbered_past_the_last() {
     if !has_terminal_state() {
@@ -3345,7 +3346,7 @@ fn clients_detach_across_a_hand_off_and_attach_again_numbered_past_the_last() {
         is(e, "client.detached", SHELL) && e["client"]["id"] == before
     });
     assert_eq!(left["client"], first["clients"][0], "{left}");
-    let _again = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    // The pane attaches again itself, to the new program (#681).
     let back = events.until("the pane back", |e| is(e, "client.attached", SHELL));
     let after = back["client"]["id"].as_u64().expect("an id");
     assert_eq!(after, gone + 1, "numbered past the client that left first");

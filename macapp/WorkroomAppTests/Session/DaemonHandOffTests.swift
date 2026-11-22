@@ -112,7 +112,7 @@ final class DaemonHandOffTests: XCTestCase {
 
   /// A move the daemon refuses for now is tried again (#681): a repository command that outlasts
   /// the hand-off's 2 s wait for it (`QUIET_TIMEOUT`) refuses the first, and a later one goes in,
-  /// after which run sessions start.
+  /// after which run sessions start, and a local pane attached meanwhile still reaches its shell.
   @MainActor
   func testAMoveRefusedForARepositoryCommandIsTriedAgain() async throws {
     let app = try appBundle()
@@ -133,14 +133,24 @@ final class DaemonHandOffTests: XCTestCase {
     // Until the command holds its slot: the daemon lists it as running a repository command only
     // by refusing the hand-off, so this waits a moment of the 4 s it holds it for.
     try await Task.sleep(for: .milliseconds(500))
-    let said =
-      await DaemonHandOff.start(binary: ours, socket: daemon.socketPath, delays: [1, 1, 1, 1])?
-      .value ?? []
+    let moving = DaemonHandOff.start(binary: ours, socket: daemon.socketPath, delays: [1, 1, 1, 1])
+    // A pane the app attaches while the move waits to go in: attached when the exec lands, it
+    // attaches again itself and keeps working, its shell and all.
+    try await Task.sleep(for: .milliseconds(300))
+    let pane = try attach(ours, socket: daemon.socketPath, session: UUID(), command: "/bin/sh")
+    let shell = try XCTUnwrap(try shellPID(of: pane), "the pane's shell never answered")
+    let said = await moving?.value ?? []
     _ = await held.value
     XCTAssertGreaterThan(said.count, 1, "\(said)")
     XCTAssertTrue(said.first?.contains("repository command") == true, "\(said)")
     XCTAssertEqual(said.last, "exit 0: handed off", "\(said)")
     XCTAssertEqual(DaemonHandOff.execPath(of: daemon.pid), ours.path)
+    XCTAssertTrue(pane.isRunning, "the pane's attach ended with the move")
+    let input = try XCTUnwrap(pane.standardInput as? Pipe)
+    try input.fileHandleForWriting.write(contentsOf: Data("echo \"SAME=$$=\"\"\"\n".utf8))
+    XCTAssertTrue(
+      try read(pane, until: "SAME=\(shell)=").contains("SAME=\(shell)="),
+      "the pane did not reach its shell after the move")
     let run = try daemon.startSession(identifier: UUID(), command: "echo RUN-\"\"OK", run: true)
     XCTAssertTrue(try read(run, until: "RUN-OK").contains("RUN-OK"))
   }

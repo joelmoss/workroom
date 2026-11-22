@@ -686,6 +686,92 @@ fn a_hand_off_nobody_is_waiting_for_is_called_off() {
     assert!(!socket.with_extension("handoff").exists());
 }
 
+/// A local pane attached when the exec lands attaches again itself, to its session in the new
+/// program (#681): a launch's move the daemon refused for now and the app retried lands while
+/// panes are attached, and each used to end with its shell running on. The same shell answers the
+/// same client after it, and its exit code still reaches that client.
+#[test]
+fn a_local_pane_attached_through_a_hand_off_keeps_working() {
+    let workspace = Workspace::new("attached-through");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let session = "4a4a4a4a-0000-4000-8000-000000000021";
+    let mut client = attach(&socket, session);
+    let mut reader = ClientReader::new(&mut client);
+    std::thread::sleep(Duration::from_millis(400));
+    type_line(&mut client, "echo \"PID=\"\"$$=\"");
+    let seen = reader.read_until("=\r\n", Duration::from_secs(10));
+    let shell = seen
+        .rsplit("PID=")
+        .next()
+        .and_then(|rest| rest.split('=').next())
+        .and_then(|pid| pid.trim().parse::<i32>().ok())
+        .unwrap_or_else(|| panic!("no pid in {seen:?}"));
+    reader.drain(Duration::from_millis(200));
+
+    let output = hand_off(&socket, &daemon_binary(), true);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "handed off",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        matches!(client.try_wait(), Ok(None)),
+        "the pane's attach ended with the hand-off"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    type_line(&mut client, "echo \"SAME=\"\"$$=\"");
+    let seen = reader.read_until(&format!("SAME={shell}="), Duration::from_secs(10));
+    assert!(
+        seen.contains(&format!("SAME={shell}=")),
+        "the pane did not reach its shell after the hand-off; got {seen:?}"
+    );
+    type_line(&mut client, "exit 7");
+    assert!(
+        wait_for(Duration::from_secs(10), || matches!(
+            client.try_wait(),
+            Ok(Some(_))
+        )),
+        "the client did not exit after its shell did"
+    );
+    assert_eq!(
+        client.try_wait().expect("wait").expect("status").code(),
+        Some(7)
+    );
+}
+
+/// A daemon that dies with a pane attached ends the pane at once, as it always has: nothing
+/// listens on the socket, so there is no program to attach again to, and none is started.
+#[test]
+fn a_local_pane_whose_daemon_dies_ends() {
+    let workspace = Workspace::new("attached-dies");
+    let socket = workspace.socket();
+    let mut daemon = start_daemon(&socket);
+    let mut client = attach(&socket, "4a4a4a4a-0000-4000-8000-000000000022");
+    let mut reader = ClientReader::new(&mut client);
+    std::thread::sleep(Duration::from_millis(400));
+    type_line(&mut client, "echo \"UP\"\"-NOW\"");
+    assert!(
+        reader
+            .read_until("UP-NOW", Duration::from_secs(10))
+            .contains("UP-NOW")
+    );
+    daemon.kill().expect("kill the daemon");
+    daemon.wait().expect("reap the daemon");
+    assert!(
+        wait_for(Duration::from_secs(3), || matches!(
+            client.try_wait(),
+            Ok(Some(_))
+        )),
+        "the pane did not end with its daemon"
+    );
+    assert!(
+        UnixStream::connect(&socket).is_err(),
+        "the pane started a daemon of its own"
+    );
+}
+
 /// A pane that connects while a hand-off is under way is not accepted by the program about to be
 /// replaced: it waits in the listener's backlog and is attached by the new one.
 #[test]
