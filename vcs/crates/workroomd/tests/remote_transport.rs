@@ -2645,12 +2645,19 @@ fn over_ssh_workroom_runs_on_a_host_by_name_and_refuses_what_only_the_mac_does()
         "{seen}"
     );
     // The hook took its own folder off the data dirs again.
+    // The answer follows the prompt's redraw on its line, after a carriage return.
     let data_dirs = seen
         .lines()
-        .map(str::trim_end)
+        .filter_map(|line| line.trim_end().rsplit('\r').next())
         .find(|line| line.starts_with("XDG=") && line.ends_with("=END"))
         .unwrap_or_else(|| panic!("no XDG_DATA_DIRS in {seen}"));
-    assert!(!data_dirs.contains(".bin/shell"), "{data_dirs}");
+    // And left the rest as it was, which Ghostty's integration takes its own folder off in turn.
+    // fish shows a path variable's entries apart, and a plain one as it is.
+    assert_eq!(
+        data_dirs.replace(' ', ":"),
+        "XDG=/usr/local/share:/usr/share=END",
+        "{seen}"
+    );
 
     // dash, which has no hook: Debian's /etc/profile sets PATH outright, so the folder is first on
     // the PATH the shell started with (its /proc environ), not on the one it then has.
@@ -2929,6 +2936,7 @@ fn over_ssh_the_terminal_api_knows_which_pane_calls_it() {
     assert_eq!(
         env.lines().collect::<Vec<_>>(),
         [
+            format!("WORKROOM_BIN_DIR={}", bin_folder_of(&fixture.socket)),
             format!("WORKROOM_DAEMON={}", fixture.socket),
             format!("WORKROOM_PANE={session}"),
         ],

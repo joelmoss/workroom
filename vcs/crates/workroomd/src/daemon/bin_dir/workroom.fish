@@ -14,8 +14,9 @@ if set -q WORKROOM_FISH_XDG_DIR
         end
     end
     set --erase workroom_dir
+    # A path variable, so it is exported joined by colons, as it came.
     if set -q workroom_kept[1]
-        set --global --export --unpath XDG_DATA_DIRS "$workroom_kept"
+        set --global --export --path XDG_DATA_DIRS $workroom_kept
     else
         set --erase --global XDG_DATA_DIRS
     end
