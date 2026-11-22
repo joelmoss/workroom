@@ -60,6 +60,18 @@ final class ContainerHostDriverExecTests: XCTestCase {
     XCTAssertEqual(try String(contentsOfFile: link, encoding: .utf8), "someone's\n")
   }
 
+  /// `tar -tv` of the last tar the runtime was handed by `cp -`.
+  private func copiedEntries() throws -> String {
+    let listing = Process()
+    listing.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+    listing.arguments = ["-tvf", directory.appendingPathComponent("copied.tar").path]
+    let pipe = Pipe()
+    listing.standardOutput = pipe
+    try listing.run()
+    listing.waitUntilExit()
+    return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+  }
+
   private var calls: [[String]] {
     get throws {
       try String(contentsOf: directory.appendingPathComponent("calls"), encoding: .utf8)
@@ -131,14 +143,7 @@ final class ContainerHostDriverExecTests: XCTestCase {
         ContainerExecTransport.ownHome + "command -v git >/dev/null 2>&1 || exit 3",
       ])
 
-    let listing = Process()
-    listing.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-    listing.arguments = ["-tvf", directory.appendingPathComponent("copied.tar").path]
-    let pipe = Pipe()
-    listing.standardOutput = pipe
-    try listing.run()
-    listing.waitUntilExit()
-    let entries = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    let entries = try copiedEntries()
     XCTAssertTrue(entries.contains(".workroom/bin/workroomd"), entries)
     XCTAssertTrue(entries.contains("-rwxr-xr-x"), "the daemon isn't executable: \(entries)")
     // The name the container's panes run it by (ADR 0078), relative to the file it names.
@@ -189,15 +194,18 @@ final class ContainerHostDriverExecTests: XCTestCase {
   func testAppleCreatesAtOnceShareTheDaemonFolder() async throws {
     let creates = 8
     let slots = directory.appendingPathComponent("slots").path
-    // Bounded, so a create that fails before its inspect fails the test rather than hanging it.
+    // Bounded by the clock (read every thousand turns, which a slow machine only makes later), so
+    // a create that fails before its inspect fails the test rather than hanging it.
     let driver = try driver(
       try stubRuntime(
         """
         "image inspect "*)
           i=0; while ! mkdir "\(slots)/$i" 2> /dev/null; do i=$((i + 1)); done
           last=$(( (i / \(creates) + 1) * \(creates) - 1 )); n=0
+          deadline=$(( $(date +%s) + 120 ))
           while [ ! -d "\(slots)/$last" ]; do
-            n=$((n + 1)); [ "$n" -gt 1000000 ] && exit 9
+            n=$((n + 1))
+            if [ $((n % 1000)) = 0 ] && [ "$(date +%s)" -gt "$deadline" ]; then exit 9; fi
           done
           echo '[]' ;;
         """), dialect: .apple)
@@ -222,11 +230,17 @@ final class ContainerHostDriverExecTests: XCTestCase {
       case 3: try Data("someone's\n".utf8).write(to: URL(fileURLWithPath: link))
       default: break
       }
+      let before = try? FileManager.default.attributesOfItem(atPath: daemon.path)[.systemFileNumber]
       let hosts = try await withThrowingTaskGroup(of: HostID.self) { group in
         for _ in 0..<creates { group.addTask { try await driver.create(spec: spec) } }
         return try await group.reduce(into: [HostID]()) { $0.append($1) }
       }
       XCTAssertEqual(Set(hosts).count, creates, "round \(round)")
+      if round % 4 == 2 {
+        // The daemon its containers may be running from is the same file: not replaced by itself.
+        let after = try FileManager.default.attributesOfItem(atPath: daemon.path)[.systemFileNumber]
+        XCTAssertEqual(after as? Int, before as? Int, "round \(round): the daemon was replaced")
+      }
       if round % 4 == 3 {
         XCTAssertEqual(try String(contentsOfFile: link, encoding: .utf8), "someone's\n")
       } else {
@@ -238,6 +252,79 @@ final class ContainerHostDriverExecTests: XCTestCase {
       let left = try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
       XCTAssertEqual(left, ["workroom", "workroomd"], "round \(round): staged files left")
     }
+  }
+
+  // Value: protects=a staged daemon a killed create left in Apple's folder is removed, and nothing
+  // else is: not a create's copy at work alongside, not a name of another shape, not a link or a
+  // folder; fails_when=the sweep matches by prefix alone, by modification time (a copy keeps its
+  // source's), or follows a link; why_new=nothing removed what a killed create left;
+  // seam=removeAbandonedDaemons with the clock moved on; no_claim=a create killed by the system
+  /// A staged daemon a create left (killed mid-copy) is removed once it is older than any staging
+  /// lasts, and only that: a fresh one, a name not exactly the staged shape, a link and a folder
+  /// stay, as do the daemon and its link.
+  func testOnlyAnAbandonedStagedDaemonIsRemovedFromApplesFolder() throws {
+    let folder = directory.appendingPathComponent("daemon")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let manager = FileManager.default
+    let abandoned = ".workroomd-\(UUID().uuidString)"
+    let linked = ".workroomd-\(UUID().uuidString)"
+    let folderNamed = ".workroomd-\(UUID().uuidString)"
+    let keptNames = [
+      "workroomd", ".workroomd-\(UUID().uuidString.lowercased())", ".workroomd-notauuid",
+      "workroomd-\(UUID().uuidString)",
+    ]
+    for name in [abandoned] + keptNames {
+      try Data("ELF".utf8).write(to: folder.appendingPathComponent(name))
+    }
+    let outside = directory.appendingPathComponent("outside")
+    try Data("someone's".utf8).write(to: outside)
+    try manager.createSymbolicLink(
+      atPath: folder.appendingPathComponent(linked).path, withDestinationPath: outside.path)
+    try manager.createDirectory(
+      at: folder.appendingPathComponent(folderNamed), withIntermediateDirectories: false)
+    try manager.createSymbolicLink(
+      atPath: folder.appendingPathComponent("workroom").path, withDestinationPath: "workroomd")
+    let everything = Set(try manager.contentsOfDirectory(atPath: folder.path))
+
+    // Just made, as a create's copy at work is: kept.
+    ContainerHostDriver.removeAbandonedDaemons(in: folder)
+    XCTAssertEqual(Set(try manager.contentsOfDirectory(atPath: folder.path)), everything)
+
+    ContainerHostDriver.removeAbandonedDaemons(
+      in: folder, now: Date().addingTimeInterval(ContainerHostDriver.abandonedDaemonAge + 60))
+    XCTAssertEqual(
+      Set(try manager.contentsOfDirectory(atPath: folder.path)),
+      everything.subtracting([abandoned]))
+    XCTAssertEqual(try String(contentsOf: outside, encoding: .utf8), "someone's")
+  }
+
+  /// A copy that fails part way leaves nothing behind in Apple's folder: here the "daemon" is a
+  /// folder holding a file no one can read, so the copy is made, then fails on that file.
+  func testAFailedStagingInApplesFolderLeavesNoCopy() async throws {
+    let runtime = try stubRuntime()
+    let notAFile = directory.appendingPathComponent("not-a-daemon", isDirectory: true)
+    try FileManager.default.createDirectory(at: notAFile, withIntermediateDirectories: true)
+    let unreadable = notAFile.appendingPathComponent("unreadable")
+    try Data("ELF".utf8).write(to: unreadable)
+    try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: unreadable.path)
+    let folder = directory.appendingPathComponent("daemon")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    try Data("OLD".utf8).write(to: folder.appendingPathComponent("workroomd"))
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory.appendingPathComponent("hosts"),
+      provisioning: ContainerHostDriver.Provisioning(
+        runtime: runtime, image: "unused", user: "",
+        daemonSocket: DaemonInstall.defaultSocket, labels: ["workroom.provisioner=test"],
+        context: nil, dialect: .apple, daemon: { _ in notAFile }, daemonFolder: folder))
+    do {
+      _ = try await driver.create(spec: spec)
+      XCTFail("a daemon that can't be put in place was taken")
+    } catch {}
+    XCTAssertEqual(
+      try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted(),
+      ["workroom", "workroomd"])
+    XCTAssertEqual(
+      try Data(contentsOf: folder.appendingPathComponent("workroomd")), Data("OLD".utf8))
   }
 
   /// An image with no git fails the create with what to do, and its container goes.
@@ -305,8 +392,15 @@ final class ContainerHostDriverExecTests: XCTestCase {
     XCTAssertEqual(rootDriver.record(of: rootHost)?.user, "root")
   }
 
+  // Value: protects=a placement in a running Docker container never unpacks a `workroom` link over
+  // the running one, and makes it by one rename of a link of its own; fails_when=the tar carries
+  // the link again (Docker removes then makes it, so a placement alongside finds it gone or fails),
+  // or the link is made in place; why_new=placements overlap (a connect's and a retried
+  // bootstrap's); seam=stub runtime; no_claim=the image's own ln and mv
   /// A later build's daemon (#308): Docker stages it beside the entrypoint under a name of its own,
-  /// and moves it over the entrypoint, or removes it, as root, whose folder it is.
+  /// and moves it over the entrypoint, or removes it, as root, whose folder it is. The tar holds
+  /// the staged daemon alone; the `workroom` link is made under a name of the placement's own and
+  /// moved over whatever is there, so two placements at once never share or remove a name.
   func testADockerContainersDaemonIsStagedThenMovedIntoPlaceAsRoot() async throws {
     let driver = try driver(try stubRuntime())
     let host = try await driver.create(spec: spec)
@@ -319,7 +413,25 @@ final class ContainerHostDriverExecTests: XCTestCase {
       directory.appendingPathComponent("workroomd-linux"), on: host)
     XCTAssertTrue(placed.staged)
     XCTAssertTrue(placed.path.hasPrefix("/.workroom/bin/workroomd.new."), placed.path)
-    XCTAssertEqual(try calls.last?.suffix(2), ["-", "\(name ?? ""):/"])
+    let id = String(placed.path.dropFirst("/.workroom/bin/workroomd.new.".count))
+    let placing = try calls.map { Array($0.dropFirst(2)) }
+    XCTAssertEqual(placing.first?.suffix(2), ["-", "\(name ?? ""):/"])
+    XCTAssertEqual(
+      Array(placing.dropFirst()),
+      [
+        ["exec", "-u", "0", name ?? "", "ln", "-s", "workroomd", "/.workroom/bin/.workroom-\(id)"],
+        [
+          "exec", "-u", "0", name ?? "", "mv", "-f", "/.workroom/bin/.workroom-\(id)",
+          "/.workroom/bin/workroom",
+        ],
+      ])
+    let entries = try copiedEntries()
+    XCTAssertTrue(entries.contains(".workroom/bin/workroomd.new.\(id)"), entries)
+    XCTAssertFalse(entries.contains(".workroom/bin/workroom "), entries)
+
+    let again = try await driver.placeDaemon(
+      directory.appendingPathComponent("workroomd-linux"), on: host)
+    XCTAssertNotEqual(again.path, placed.path)
     try await driver.settleDaemon(placed.path, keep: true, on: host)
     try await driver.settleDaemon(placed.path, keep: false, on: host)
     XCTAssertEqual(

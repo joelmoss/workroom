@@ -545,6 +545,17 @@ class ContainerIntegrationTestCase: XCTestCase {
       driver, host,
       "\(ContainerHostDriver.containerDaemon) list --socket \(ContainerHostDriver.containerSocket)")
     XCTAssertTrue(listed.lowercased().contains(session.uuidString.lowercased()), listed)
+
+    // Placements at once (a connect's and a retried bootstrap's) each succeed, and leave the
+    // `workroom` link naming the daemon.
+    async let first = driver.placeDaemon(other, on: host)
+    async let second = driver.placeDaemon(other, on: host)
+    for placed in try await [first, second] where placed.staged {
+      try await driver.settleDaemon(placed.path, keep: false, on: host)
+    }
+    let link = try await onHost(
+      driver, host, "readlink \(ContainerHostDriver.daemonFolder)/workroom")
+    XCTAssertEqual(link, "workroomd")
     try await driver.destroy(host)
   }
 }
