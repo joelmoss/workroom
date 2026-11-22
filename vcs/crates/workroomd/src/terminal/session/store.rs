@@ -144,6 +144,34 @@ impl SessionStore {
         true
     }
 
+    /// Names a live session `label`, its tab's name in the app (#694): replaces its `title`
+    /// metadata, or removes it for `None`, and leaves every other key alone. The list and a
+    /// hand-off both read `Session::metadata`, so the name shows in the next of either. Its
+    /// `session.labelled` is told under the store's lock, so of two names set at once the last
+    /// told is the one kept. `None` when there is no such session; else whether the name changed,
+    /// since setting the one it has tells nothing.
+    pub fn set_label(&self, id: SessionId, label: Option<&str>) -> Option<bool> {
+        let mut sessions = lock_or_recover(&self.sessions);
+        let session = sessions.get_mut(&id)?;
+        let at = session.metadata.iter().position(|(key, _)| key == "title");
+        let current = at.map(|at| session.metadata[at].1.as_str());
+        if current == label {
+            return Some(false);
+        }
+        match (at, label) {
+            (Some(at), Some(label)) => session.metadata[at].1 = label.to_string(),
+            (None, Some(label)) => session
+                .metadata
+                .push(("title".to_string(), label.to_string())),
+            (Some(at), None) => {
+                session.metadata.remove(at);
+            }
+            (None, None) => {}
+        }
+        self.hooks.events.labelled(id, label);
+        Some(true)
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

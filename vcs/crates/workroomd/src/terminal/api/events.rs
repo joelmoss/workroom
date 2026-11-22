@@ -231,6 +231,14 @@ pub fn output() -> Value {
                 "sender": "5a1e0f7e-0d6c-4c9f-9c3e-2b7f1d0a8e11",
                 "bytes": 14,
             },
+            {
+                "event": name::LABELLED,
+                "boot": "9b2f6c1e-3d4a-4f5b-8c6d-7e8f9a0b1c2d",
+                "revision": 46,
+                "session": "c0ffee00-1111-4222-8333-44445555beef",
+                "scope": {"kind": "workroom", "id": "4c0f5f2e-2b49-4c4d-9c1e-6a1b2b3c0d4e"},
+                "label": "dev server",
+            },
         ],
         "properties": {
             "event": {
@@ -250,8 +258,10 @@ pub fn output() -> Value {
                                 scope, sent to the subscribers of both), `client.attached` and \
                                 `client.detached` (a client attached to the session, or left \
                                 it; a session's end is its clients' too, with no \
-                                `client.detached` each) and `session.input` (`terminal.send` \
-                                typed into it, from the session `sender` names): live events.",
+                                `client.detached` each), `session.input` (`terminal.send` \
+                                typed into it, from the session `sender` names) and \
+                                `session.labelled` (given another label, by `session.label` or \
+                                by a tab renamed in the app): live events.",
             },
             "boot": {
                 "type": "string",
@@ -282,7 +292,10 @@ pub fn output() -> Value {
                 "type": ["object", "null"],
                 "description": "`session.moved`: the scope it moved from.",
             },
-            "label": text_or_null("`session` and `session.created`: as `session.list` gives it."),
+            "label": text_or_null(
+                "`session` and `session.created`: as `session.list` gives it; \
+                 `session.labelled`: the label it was given, null when it was cleared."
+            ),
             "title": text_or_null("`session` and `session.created`: as `session.list` gives it."),
             "run": {
                 "type": "boolean",
@@ -651,8 +664,9 @@ fn busy(held: usize, on: &str) -> ApiError {
 }
 
 /// The events the snapshot `known` (as of `revision`) is sent as: each session the filter passes,
-/// with what `session.list` says of it now for the fields no event tells (its label, title and
-/// cwd), then `snapshot-complete`.
+/// with what `session.list` says of it now for the fields no event tells (its title and cwd),
+/// then `snapshot-complete`. Its label is `session.labelled`'s (#694), as of `revision`, so a
+/// subscriber is told a label set after it once, by the event.
 fn snapshot(
     sessions: &crate::terminal::session::SessionStore,
     filter: &Filter,
@@ -667,7 +681,7 @@ fn snapshot(
         .map(|(id, mut known)| {
             let hyphenated = id.to_hyphenated();
             if let Some(now) = live.iter().find(|session| session["id"] == *hyphenated) {
-                for key in ["label", "title", "cwd"] {
+                for key in ["title", "cwd"] {
                     known.listing[key] = now[key].clone();
                 }
             }

@@ -1,7 +1,8 @@
 //! `Service::TerminalApi`: the terminal API (#360, ADR 0079), the daemon's public, versioned JSON
 //! service for coding agents and the user's scripts. The `workroom` commands are thin clients of
-//! it (`commands::terminal_api`); the app calls it only to subscribe to `session.input` events,
-//! for its typing marker (#696).
+//! it (`commands::terminal_api`); the app calls it to subscribe to the events its typing marker
+//! (#696), `new` and `close` (#693) and its tabs' names (#694) need, and to label a session when
+//! its tab is renamed (`session.label`).
 //!
 //! **A contract, not an internal wire.** Fields and methods are only ever added; none is removed,
 //! renamed or given another meaning. [`REVISION`] counts the additions, and every reply carries
@@ -466,12 +467,26 @@ pub const METHODS: &[Method] = &[
         run: Run::Thread(lifecycle::close),
     },
     Method {
+        name: lifecycle::LABEL,
+        summary: "Gives a session another label, the name of its tab in the app, or clears it \
+                  with null or an empty label: one name, which renaming the tab in the app sets \
+                  too. Every Mac renames its tabs of the session, told by `session.labelled`; a \
+                  label the session already has is told nothing.",
+        input: lifecycle::label_input,
+        output: lifecycle::label_output,
+        errors: lifecycle::LABEL_ERRORS,
+        params_example: lifecycle::label_params_example,
+        result_example: lifecycle::label_result_example,
+        run: Run::Now(|call| lifecycle::label(call).map(Answer::One)),
+    },
+    Method {
         name: events::NAME,
         summary: "The daemon's events, streamed: the sessions as they are (one `session` event \
                   each, then `snapshot-complete`), then each session created, ended and moved \
                   to another workroom, each change of its coding agent's program status, \
-                  each run state, each client attaching and detaching and each send typed into \
-                  it, as they happen, every one with the `boot` and `revision` a caller resumes \
+                  each run state, each client attaching and detaching, each send typed into \
+                  it and each label it is given, as they happen, every one with the `boot` and \
+                  `revision` a caller resumes \
                   from with `since`. By default the caller's scope's; `workroom`, `all`, `session` and \
                   `types` say whose and which. The stream goes on until the caller hangs up. A \
                   connection and the daemon each hold a few subscriptions at once, and one past \
@@ -876,7 +891,11 @@ pub fn session_schema() -> Value {
         "required": ["id", "label", "title", "scope", "run", "cwd", "coding_agent"],
         "properties": {
             "id": {"type": "string", "description": "The session's id, a hyphenated UUID."},
-            "label": text_or_null("The name the app gave the session: its tab's name."),
+            "label": text_or_null(
+                "The session's name, its tab's name in the app: the one the user gave its tab, \
+                 `session.new`'s `title` or `session.label`'s, which are one name. Null when it \
+                 has none."
+            ),
             "title": text_or_null("The live title its program last set (OSC 0 or 2)."),
             "scope": {
                 "type": ["object", "null"],

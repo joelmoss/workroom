@@ -199,6 +199,7 @@ fn describe_publishes_every_method_with_both_schemas() {
             "session.new",
             "session.run_control",
             "session.close",
+            "session.label",
             "events.subscribe",
             "events.unsubscribe"
         ]

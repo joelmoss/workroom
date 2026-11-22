@@ -56,11 +56,14 @@ pub mod name {
     /// The terminal API typed into a session (`terminal.send`, #689), naming the session it came
     /// from.
     pub const INPUT: &str = "session.input";
+    /// A session given another label, its tab's name (`session.label`, #694): what the app renames
+    /// its tab by on every Mac.
+    pub const LABELLED: &str = "session.labelled";
     /// Where a filtered stream stands, when the events it skipped have moved its place on: never
     /// shown by the CLI, which resumes from it.
     pub const PLACE: &str = "place";
     /// The live events, which `types` filters.
-    pub const LIVE: [&str; 8] = [
+    pub const LIVE: [&str; 9] = [
         CREATED,
         ENDED,
         PROGRAM_STATUS,
@@ -69,6 +72,7 @@ pub mod name {
         CLIENT_ATTACHED,
         CLIENT_DETACHED,
         INPUT,
+        LABELLED,
     ];
 }
 
@@ -76,6 +80,7 @@ pub mod name {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Known {
     /// The session as `session.list` lists it when it was created: its label, scope, run and cwd.
+    /// Its label and scope follow `session.labelled` and `session.moved`.
     pub listing: Value,
     /// Its coding agent as the last `session.program_status` gave it (the listing's shape).
     pub coding_agent: Value,
@@ -446,6 +451,28 @@ impl Hub {
         self.publish(&mut state, json);
     }
 
+    /// Session `id` was labelled `label` (`SessionStore::set_label`, #694), `None` for none:
+    /// `session.labelled`, when that is another label than the events last told; its snapshots
+    /// carry it from here on.
+    pub fn labelled(&self, id: SessionId, label: Option<&str>) {
+        let mut state = self.lock();
+        let Some(known) = state.sessions.get_mut(&id) else {
+            return;
+        };
+        let label = json!(label);
+        if known.listing["label"] == label {
+            return;
+        }
+        known.listing["label"] = label.clone();
+        let json = json!({
+            "event": name::LABELLED,
+            "session": id.to_hyphenated(),
+            "scope": known.listing["scope"],
+            "label": label,
+        });
+        self.publish(&mut state, json);
+    }
+
     /// `terminal.send` is about to type into session `id` (#689): `session.input`, naming as
     /// `sender` the session the send comes from (hyphenated; null from none) and how many `bytes`
     /// it types, never what. `scope` is the session's, for one whose creation the events have not
@@ -689,7 +716,7 @@ impl Hub {
     /// After a hand-off, with every session adopted: what the events must say about `live` (each
     /// session as `session.list` lists it now) that the old program's didn't. A session that
     /// ended while the hand-off was under way ended (its exit code unknown), one created then was
-    /// created, and a coding agent that changed then changed. With nothing carried (a table from
+    /// created, and a coding agent or a label that changed then changed. With nothing carried (a table from
     /// before the events, or one that couldn't be read), the live sessions are taken as they are,
     /// with no event: the boot is new, so no client resumes into them.
     ///
@@ -737,6 +764,9 @@ impl Hub {
             let known = self.lock().sessions.contains_key(&id);
             if known {
                 self.program_status(id, listing["coding_agent"].clone());
+                // `session.label` holds a request permit, so no hand-off is under way while it
+                // changes a label; a label the carried events don't match is told all the same.
+                self.labelled(id, listing["label"].as_str());
             } else {
                 self.created(id, listing);
             }

@@ -20,6 +20,11 @@
 //! **`session.run_control`** restarts or stops a run session's command through its supervisor's
 //! run signal (`SessionStore::signal_run`), as the app's Run tab does. A session that is no run is
 //! `NotARun`.
+//!
+//! **`session.label`** (#694) gives a session another label, its tab's name in the app, or clears
+//! it: one name, which a tab renamed in the app sets too, and which every Mac hears as
+//! `session.labelled` and renames its tabs of the session by. Setting the label a session has is
+//! told nothing, so the app's own rename, heard back, ends there.
 
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
@@ -35,6 +40,7 @@ use crate::terminal::session::{
 pub const NEW: &str = "session.new";
 pub const CLOSE: &str = "session.close";
 pub const RUN_CONTROL: &str = "session.run_control";
+pub const LABEL: &str = "session.label";
 
 /// The metadata key a session `session.new` made carries: who asked for it, the caller's id, or
 /// `outside` for a request from no pane. The app reads it so a run made this way is never taken
@@ -58,6 +64,13 @@ pub const CLOSE_ERRORS: &[&str] = &[
     kind::TARGET_NOT_FOUND,
     kind::TARGET_AMBIGUOUS,
     kind::REFUSED_SELF,
+    kind::SESSION_ENDED,
+    kind::BUSY,
+];
+
+pub const LABEL_ERRORS: &[&str] = &[
+    kind::TARGET_NOT_FOUND,
+    kind::TARGET_AMBIGUOUS,
     kind::SESSION_ENDED,
     kind::BUSY,
 ];
@@ -260,6 +273,53 @@ pub fn run_control_result_example() -> Value {
     })
 }
 
+pub fn label_input() -> Value {
+    json!({
+        "type": "object",
+        "required": ["target", "label"],
+        "properties": {
+            "target": target_schema(),
+            "label": {
+                "type": ["string", "null"],
+                "description": "Its label, and the name of its tab in the app on every Mac, trimmed \
+                                and cut to 256 bytes. Null or empty clears it, and the tab shows \
+                                the name it shows unnamed: the title its program sets, else its \
+                                program and folder.",
+            },
+        },
+    })
+}
+
+pub fn label_output() -> Value {
+    json!({
+        "type": "object",
+        "required": ["session", "caller", "changed"],
+        "properties": {
+            "session": super::session_schema(),
+            "caller": caller_schema(),
+            "changed": {
+                "type": "boolean",
+                "description": "Whether its label changed: false when it already had this one, \
+                                and no `session.labelled` was told.",
+            },
+        },
+    })
+}
+
+pub fn label_params_example() -> Value {
+    json!({"target": "dev server", "label": "web"})
+}
+
+pub fn label_result_example() -> Value {
+    let mut session = super::run_session_example();
+    session["label"] = json!("web");
+    json!({
+        "session": session,
+        "caller": super::agent_session_example()["id"],
+        "changed": true,
+    })
+}
+
 /// A parameter that is a string when given, `None` when left out or null.
 fn text<'a>(call: &'a Call, method: &str, name: &str) -> Result<Option<&'a str>, ApiError> {
     match call.params.get(name) {
@@ -269,6 +329,15 @@ fn text<'a>(call: &'a Call, method: &str, name: &str) -> Result<Option<&'a str>,
             "{method}'s `{name}` is a string"
         ))),
     }
+}
+
+/// `title` cut to the `MAX_TITLE_BYTES` a session keeps, at a character's boundary.
+fn bounded(title: &str) -> String {
+    let mut end = title.len().min(MAX_TITLE_BYTES);
+    while !title.is_char_boundary(end) {
+        end -= 1;
+    }
+    title[..end].to_string()
 }
 
 /// The parsed `session.new` parameters.
@@ -282,13 +351,7 @@ struct Asked {
 fn asked(call: &Call) -> Result<Asked, ApiError> {
     let title = text(call, NEW, "title")?
         .filter(|title| !title.is_empty())
-        .map(|title| {
-            let mut end = title.len().min(MAX_TITLE_BYTES);
-            while !title.is_char_boundary(end) {
-                end -= 1;
-            }
-            title[..end].to_string()
-        });
+        .map(bounded);
     let run = match text(call, NEW, "run")? {
         Some(run) if run.trim().is_empty() => {
             return Err(ApiError::invalid(format!(
@@ -604,6 +667,43 @@ pub fn close(call: &Call) -> Result<Value, ApiError> {
         return Err(ended());
     }
     Ok(json!({"session": hyphenated, "caller": call.caller}))
+}
+
+/// `session.label`: the target resolved, as every target is, and given the label asked, trimmed
+/// and bounded, or none for null or an empty one. Its `session.labelled` tells every Mac.
+pub fn label(call: &Call) -> Result<Value, ApiError> {
+    if call.params.get("label").is_none() {
+        return Err(ApiError::invalid(format!(
+            "{LABEL} needs a `label`: a string, or null to clear it"
+        )));
+    }
+    let label = text(call, LABEL, "label")?
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(bounded);
+    let (_, id, hyphenated) = resolved(call, LABEL, true)?;
+    let ended = || {
+        ApiError::new(
+            kind::SESSION_ENDED,
+            format!("session {hyphenated} ended before it could be labelled"),
+        )
+    };
+    let sessions = call.sessions;
+    // Held while the label changes and is told, so a hand-off waits for it rather than carry a
+    // table without it; refused while one is under way.
+    let Some(_permit) = crate::daemon::rpc::Permit::acquire() else {
+        return Err(ApiError::new(
+            kind::BUSY,
+            "the daemon is being handed off to its next program, or is at its limit on \
+             requests at once; try again when it has been",
+        ));
+    };
+    let changed = sessions.set_label(id, label.as_deref()).ok_or_else(ended)?;
+    let session = listed(sessions)
+        .into_iter()
+        .find(|session| session["id"] == hyphenated.as_str())
+        .ok_or_else(ended)?;
+    Ok(json!({"session": session, "caller": call.caller, "changed": changed}))
 }
 
 /// `session.run_control`: the run signal `action` names, sent to the target's supervisor.

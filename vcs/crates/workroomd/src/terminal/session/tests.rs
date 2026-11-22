@@ -170,6 +170,64 @@ fn a_retag_changes_the_workroom_the_list_and_a_hand_off_report() {
     store.kill_all();
 }
 
+/// A label (#694) changes only `title`, adds it when absent and removes it when cleared; setting
+/// the one a session has changes nothing. However many are set at once, the label the events
+/// last told is the one the store keeps, since each is told under the store's lock.
+/// Value: protects=the label every Mac shows (the last `session.labelled`) is the session's own after names set at once; fails_when=set_label tells outside the store lock (two sets told in the other order), changes another key, or reports an unchanged label as changed; why_new=a label never changed after creation; seam=none
+#[test]
+fn a_label_changes_only_the_title_and_the_last_told_is_the_one_kept() {
+    use crate::terminal::events::{Cursor, Next, Start};
+    let store = SessionStore::new();
+    let args = [OsString::from("-c"), OsString::from("sleep 5")];
+    let e = env();
+    let tagged = [("workroom".to_string(), "wr".to_string())];
+    let mut s = spec(id(1), &args, &e);
+    s.metadata = &tagged;
+    store.create(s).expect("create");
+    let value = |key: &str| {
+        let listed = store.list();
+        let info = listed.iter().find(|i| i.id == id(1)).expect("listed");
+        info.metadata
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+
+    assert_eq!(store.set_label(id(1), Some("web")), Some(true), "added");
+    assert_eq!(store.set_label(id(1), Some("web")), Some(false), "the same");
+    assert_eq!(value("title").as_deref(), Some("web"));
+    assert_eq!(value("workroom").as_deref(), Some("wr"), "kept");
+    assert_eq!(store.set_label(id(1), None), Some(true), "cleared");
+    assert_eq!(value("title"), None);
+    assert_eq!(store.set_label(id(1), None), Some(false));
+    assert_eq!(store.set_label(id(2), Some("x")), None, "an unknown id");
+
+    let threads: Vec<_> = (0..8)
+        .map(|n| {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                for round in 0..50 {
+                    store.set_label(id(1), Some(&format!("{n}-{round}")));
+                }
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().expect("a labelling thread");
+    }
+    let hub = &store.hooks().events;
+    let Next::Snapshot { sessions, .. } = hub.next(&mut Cursor::new(Start::Fresh), &|| false)
+    else {
+        panic!("no snapshot");
+    };
+    assert_eq!(
+        sessions[&id(1)].listing["label"].as_str(),
+        value("title").as_deref(),
+        "the last told is the one kept"
+    );
+    store.kill_all();
+}
+
 /// A hand-off's session with only what `adopt` reads from it: an 80x24 `screen`.
 fn frozen_with(session: SessionId, screen: &[u8]) -> FrozenSession {
     FrozenSession {
