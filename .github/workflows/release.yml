@@ -166,9 +166,10 @@ jobs:
         run: scripts/ci/download-stats.sh release
 
       # cli-archives.sh check, which publish-assets.sh runs first, runs the linux binaries: the
-      # arm64 one under qemu.
+      # arm64 one under qemu (`qemu-aarch64`). `qemu-user`, not `qemu-user-static`, which Ubuntu
+      # 26.04 (ubuntu-latest) dropped, as in ci-rust.yml: a static binary needs no static qemu.
       - name: Install qemu-user (runs the linux arm64 binary)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user
 
       # Creates the release as a draft, uploads the archives, checksums.txt and the DMG, checks
       # they are exactly this build's, then publishes it: Latest for a clean vX.Y.Z, a pre-release
