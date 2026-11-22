@@ -86,7 +86,15 @@ and `coding_agent` (the program status a coding agent last reported: `state` idl
 blocked or error, `app`, `message` and `waiting_on_user`), and `caller`, the id of the pane the \
 daemon took you for. `workroom sessions TARGET` shows the one session a target names, so you can \
 check a target before you act on it. `--clients` adds who is attached to each session: `kind` \
-(pane, app or cli), `hostname`, `attached_at_ms`, `size`, `owns_size` and `keepalive`.",
+(pane, app or cli), `hostname`, `attached_at_ms`, `size`, `owns_size` and `keepalive`.\n\
+\n\
+A session's `label` is its tab's name, one name on every Mac: the name the user gave the tab, or \
+`new --title`'s. Label a session with `workroom api call session.label '{\"target\": \"TARGET\", \
+\"label\": \"tests\"}'`, and clear it with `\"label\": null`: every Mac showing it renames its tab \
+at once, and a cleared one shows its default name again. Control and format characters (escapes, \
+line breaks, bidi and zero-width characters) are stripped, and it is cut to 256 bytes; the \
+reply's `changed` says whether it was new. Labelling your own pane is allowed. A label is a \
+target, ahead of the live title, so label the terminals you open to name them again later.",
     },
     Guided {
         command: "capture",
@@ -171,8 +179,9 @@ type an answer into it on the user's behalf. Tell the user what it asks, and wai
         says: "Streams what happens to the sessions, one JSON object per line, until stopped: first \
 a `session` event for each session as it is, then `snapshot-complete`, then live events: \
 `session.created`, `session.ended`, `session.program_status`, `session.run_state`, \
-`session.moved`, `client.attached`, `client.detached` and `session.input` (someone typed into a \
-session; `sender` is who). Every event has `event`, `boot` and `revision`. By default your \
+`session.moved`, `client.attached`, `client.detached`, `session.input` (someone typed into a \
+session; `sender` is who) and `session.labelled` (its tab was renamed, or `session.label` set \
+it; `label` null when cleared). Every event has `event`, `boot` and `revision`. By default your \
 workroom's sessions; `--all` for every session, `--workroom ID` for one workroom, `--session \
 TARGET` for one session, `--type` for some event types only. A `snapshot-complete` with `reason` \
 `gap` or `lagged` replaced what you knew: start from it again. Ignore event types you don't know. \
@@ -365,6 +374,13 @@ Start a dev server in a new tab and wait until it is up:
 ```sh
 id=$(workroom new --title 'dev server' --run 'npm run dev')
 workroom wait \"$id\" --regex 'ready in [0-9]+ ?ms' --include-screen --timeout 2m
+```
+
+Name a terminal, its tab on every Mac, so you can target it by that name later:
+
+```sh
+workroom api call session.label '{\"target\": \"TARGET\", \"label\": \"tests\"}'
+workroom command tests --timeout 10m -- npm test
 ```
 
 A coding agent in another terminal is blocked on a question, such as permission to run a \
@@ -589,6 +605,11 @@ mod tests {
             "Never answer for the user",
             "a draft",
             "WORKROOM_DAEMON.bin/path/workroom",
+            // Labels (#694): setting, clearing, the event, and that a label is a target.
+            "session.label",
+            "\"label\": null",
+            "session.labelled",
+            "A label is a target",
         ] {
             assert!(text.contains(said), "{said}");
         }

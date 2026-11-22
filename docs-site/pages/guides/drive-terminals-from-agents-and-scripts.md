@@ -54,6 +54,17 @@ The first of those that matches anything decides. If more than one terminal matc
 
 Each daemon has its own terminals: a pane on a remote host sees that host's terminals, not your Mac's.
 
+### Name a terminal
+
+A terminal's label is its tab's name, one name on every Mac: the name you give the tab with **Rename…**, or the one `workroom new --title` gives it. A script or an agent labels a terminal with the terminal API's `session.label`, and clears the label with `null`:
+
+```sh
+workroom api call session.label '{"target": "TARGET", "label": "tests"}'
+workroom api call session.label '{"target": "tests", "label": null}'
+```
+
+Every Mac showing that terminal renames its tab at once, and a cleared label shows the tab's default name again. Control and format characters, such as escapes, line breaks and zero-width characters, are stripped, and a label is cut to 256 bytes. Labelling the terminal you run in is allowed. A label is a target ahead of the live title, so a terminal you name can be named again later: `workroom command tests -- npm test`. `workroom events` tells each change as `session.labelled`. See [Terminals and tabs](../app/terminals-and-tabs.md).
+
 ## Read, run and wait
 
 - `workroom capture TARGET` prints a terminal's screen as text. `--lines N` adds history above it, and `--all` streams the whole scrollback.
