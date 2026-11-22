@@ -198,6 +198,10 @@ _Avoid_: Inject, attach (a send never attaches)
 **Prompt** (through the terminal API):
 Giving the coding agent in a session a prompt in one step (`workroom prompt`): its text as a bracketed paste, then Enter, typed as a send is. Only into a **coding-agent session**, one whose foreground program is `claude` or `codex`, or whose program status came from the program in its foreground now; and only while that agent can take one, not working, waiting on the user or without its prompt up (ADR 0079).
 
+**Opening a terminal** (through the terminal API):
+`workroom new`: a session made as the caller's pane was, in its workroom, that the Mac showing that pane opens as a tab, or a split beside it; every other Mac lists it with the detached sessions. `workroom close` ends one, and the app closes its tab or split; `workroom run-control` restarts or stops a run session's command (ADR 0079).
+_Avoid_: Spawn, create (a workroom is created; a terminal is opened)
+
 **Turn** (of a coding agent):
 What one prompt sets a coding agent doing: from the `working` it reports, to the first program status after it that isn't `working` (done, blocked, idle or error). `prompt --wait` and `wait --turn` wait for one to end, never taking the status the last turn left for this one's end (ADR 0079).
 
