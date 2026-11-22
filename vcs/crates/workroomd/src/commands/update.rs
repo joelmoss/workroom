@@ -17,7 +17,9 @@
 //!   a daemon (`workroom serve`) included, keeps running it: nothing is handed off or signalled.
 //! - **Managed installs are refused** (`ManagedInstall`): a copy inside an app bundle is the
 //!   app's, which Sparkle updates, and a daemon in a host's daemon directory is the app's
-//!   bootstrap's, which pushes it. `--check` only reads, so it runs anywhere, as Go's does.
+//!   bootstrap's, which pushes it. So is the daemon's own copy, which a pane's `workroom` resolves
+//!   to (#695): the daemon makes it from one of those. `--check` only reads, so it runs anywhere,
+//!   as Go's does.
 //!
 //! As in Go, what `update` prints is text, `--json` or not.
 
@@ -429,6 +431,10 @@ enum Manager {
     AppBundle,
     /// The app's daemon bootstrap installed it on a host, and pushes each newer one.
     DaemonDirectory,
+    /// The daemon's own copy of its binary (`daemon::own_copy`), which every pane's `workroom`
+    /// link points at (`daemon::bin_dir`, #695), and which the daemon makes again from the app's
+    /// or the bootstrap's file.
+    DaemonCopy,
 }
 
 impl Manager {
@@ -442,6 +448,11 @@ impl Manager {
                 "this workroom is the daemon the Workroom app installed on this host and is \
                  managed by it \u{2014} the app installs each newer build when it connects"
             }
+            Manager::DaemonCopy => {
+                "this workroom is the Workroom daemon's own copy, which its terminals run and \
+                 the daemon keeps up to date \u{2014} update the Workroom app instead (\"Check for \
+                 Updates\u{2026}\"; a host gets each newer build when the app connects)"
+            }
         }
     }
 }
@@ -449,6 +460,7 @@ impl Manager {
 /// Who manages the install at `binary` (symlinks resolved), if anyone does.
 ///
 /// - The app bundle: anything inside `<name>.app/Contents/`, as Go's `inAppBundle` tests.
+/// - The daemon's own copy: a file in a folder `own_copy` marked as its own (#695).
 /// - A host's daemon directory: bootstrap installs the daemon as `workroomd` (ADR 0057; staged as
 ///   `workroomd.new.*`) beside its socket (`DaemonInstall.binary`), and the `workroom` link
 ///   beside it resolves to that file. A container's daemon folder has no socket in it, hence
@@ -456,6 +468,11 @@ impl Manager {
 fn managed(binary: &Path) -> Option<Manager> {
     if binary.to_string_lossy().contains(".app/Contents/") {
         return Some(Manager::AppBundle);
+    }
+    // The daemon's copy, which a pane's `workroom` resolves to through its bin folder's link: in a
+    // folder holding the marker only `own_copy` writes, whatever the file is called.
+    if binary.parent().is_some_and(crate::daemon::own_copy::marked) {
+        return Some(Manager::DaemonCopy);
     }
     let name = binary.file_name()?.to_string_lossy();
     let staged = name

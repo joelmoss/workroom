@@ -914,6 +914,43 @@ fn a_managed_install_is_refused_with_managed_install() {
     assert_eq!(server.hits(), Vec::<String>::new());
 }
 
+/// `workroom update` typed in a pane runs the daemon's own copy, through the bin folder's link
+/// (#695), and is refused before it asks the network anything: run through the link or on the
+/// copy itself, nothing is replaced. The copy is known by the marker only the daemon writes in its
+/// folder, not by its name: the same names in an unmarked folder are a standalone install's.
+#[test]
+fn the_daemons_own_copy_is_refused_through_the_panes_link_and_directly() {
+    let server = Server::start();
+    let install = Install::new("copy");
+    let copies = install.dir.join("workroomd.bin");
+    crate::daemon::own_copy::own_folder(&copies).expect("a folder the daemon marks as its own");
+    let copy = copies.join("workroom-abcd");
+    fs::write(&copy, b"the daemon's copy").unwrap();
+    fs::create_dir(copies.join("path")).unwrap();
+    let link = copies.join("path/workroom");
+    symlink(&copy, &link).unwrap();
+    for executable in [link.clone(), copy.clone()] {
+        let mut updater = install.updater(&server, "v1.3.0");
+        updater.executable = Ok(executable.clone());
+        let (out, error) = printed(updater.run(&plain(false))).unwrap_err();
+        assert_eq!(out, "", "{}", executable.display());
+        assert_eq!(error.kind, Kind::ManagedInstall, "{}", executable.display());
+        assert!(
+            error.message.contains("the Workroom daemon's own copy"),
+            "{}",
+            error.message
+        );
+    }
+    assert_eq!(fs::read(&copy).unwrap(), b"the daemon's copy");
+    assert_eq!(server.hits(), Vec::<String>::new());
+
+    let unmarked = install.dir.join("elsewhere.bin");
+    fs::create_dir(&unmarked).unwrap();
+    fs::write(unmarked.join("workroom-abcd"), b"a standalone install").unwrap();
+    assert_eq!(managed(&unmarked.join("workroom-abcd")), None);
+    assert_eq!(managed(&copy), Some(Manager::DaemonCopy));
+}
+
 #[test]
 fn a_binary_beside_the_daemons_socket_is_managed() {
     let install = Install::new("socket");
