@@ -235,18 +235,13 @@ extension Defaults.Keys {
   /// Mac and each host's connect on that host; off, it is removed. Off by default, so Workroom
   /// writes into a coding agent's config only once asked to (ADR 0050).
   static let installWorkroomSkill = Key<Bool>("installWorkroomSkill", default: false, suite: .app)
-  /// The hosts (`WorkroomSkill.key`) the skill was installed on while the setting was on.
+  /// The hosts (`WorkroomSkill.key`) Workroom's skill may be on: each is marked as an install is
+  /// about to start there, and unmarked once a removal there went through, or found nothing,
+  /// with the setting off. A build that never had it on marks none, so a Dev build left at the
+  /// default never takes away the skill a Nightly beside it installed on a shared host.
   static let workroomSkillHosts = Key<[String]>("workroomSkillHosts", default: [], suite: .app)
-  /// The hosts whose skill is to be removed at their next connect, since the setting was turned
-  /// off: each is dropped once a removal there finished or found nothing, and kept when it failed.
-  /// A build that never had it on has none, so a Dev build left at the default never takes away
-  /// the skill a Nightly beside it installed on a shared host.
-  static let workroomSkillPendingRemoval = Key<[String]>(
-    "workroomSkillPendingRemoval", default: [], suite: .app)
-  /// A removal of the skill on this Mac didn't go through for every folder (or didn't run), so
-  /// the next launch with the setting off tries it again.
-  static let workroomSkillMacRemovalPending = Key<Bool>(
-    "workroomSkillMacRemovalPending", default: false, suite: .app)
+  /// Whether Workroom's skill may be on this Mac, by the same rule (`WorkroomSkill.reconcile`).
+  static let workroomSkillOnMac = Key<Bool>("workroomSkillOnMac", default: false, suite: .app)
   /// Mask common secret shapes in captured output before it's sent to the agent. On by default.
   static let terminalCodingAgentRedactSecrets = Key<Bool>(
     "terminalAgentRedactSecrets", default: true, suite: .app)
