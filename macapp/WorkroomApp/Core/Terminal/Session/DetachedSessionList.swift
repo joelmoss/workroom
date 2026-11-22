@@ -147,10 +147,16 @@ final class DetachedSessionList: ObservableObject {
   /// the exception: its last attach was this Mac's, whose ssh the host can go on counting until it
   /// notices it gone. Only one let go: a session merely registered here may be a reconnecting
   /// pane's in another window, or a hidden tab's that another Mac holds.
-  /// A remote run session is never offered: another Mac's run, which Run adopts (D7).
+  /// A remote run session is never offered: another Mac's run, which Run adopts (D7). A run
+  /// `workroom new --run` opened (#693, its `opened_by`) is offered as any terminal is: Run never
+  /// adopts it, so this list is where another Mac finds it.
   private func isDetached(_ session: SessionDescriptor, remote: Bool) -> Bool {
     guard remote else { return !session.isAttached }
-    if session.value(forMetadataKey: RunSessionKey.kind) == RunSessionKey.run { return false }
+    if session.value(forMetadataKey: RunSessionKey.kind) == RunSessionKey.run,
+      session.value(forMetadataKey: RunSessionKey.openedBy) == nil
+    {
+      return false
+    }
     guard session.isAttached else { return true }
     guard let id = session.identifier.uuid else { return false }
     return service.wasReleasedHere(id) && !service.hasAttachedPane(to: id)

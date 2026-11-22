@@ -496,6 +496,26 @@ final class DetachedSessionListTests: XCTestCase {
     XCTAssertEqual(list.detached(for: remote).map(\.identifier), [shell.identifier])
   }
 
+  // Value: protects=a run `workroom new --run` opened on the host (#693), which no Mac's Run
+  // adopts, is offered here as any terminal no pane shows, so another Mac finds it; fails_when=
+  // the remote list drops it as the workroom's own run; why_new=#693; seam=a stub host connection
+  func testARemoteRunThatNewOpenedIsListed() async throws {
+    let opened = SessionDescriptor(
+      identifier: SessionIdentifier(UUID()), shellProcessID: 1, ttyDevice: 0,
+      workingDirectory: "/home/workroom/far", isAttached: false,
+      metadata: [
+        SessionEnvironmentEntry(key: SessionMetadataKey.workroom, value: workroomID.uuidString),
+        SessionEnvironmentEntry(key: RunSessionKey.kind, value: RunSessionKey.run),
+        SessionEnvironmentEntry(key: RunSessionKey.openedBy, value: UUID().uuidString),
+      ])
+    let fixture = SessionsConnection(sessions: [opened])
+    let list = makeList(connections: try await connected(fixture))
+
+    await list.refresh(remote, ownedSessionIDs: [])
+
+    XCTAssertEqual(list.detached(for: remote).map(\.identifier), [opened.identifier])
+  }
+
   // Value: protects=a host whose link drops shows nothing, and lists again on the next
   // connection; fails_when=a disconnect keeps the old list, or a new lease is not listed;
   // why_new=the review of #584 (claimed, untested); seam=a manager the test disconnects
