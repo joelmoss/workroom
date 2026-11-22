@@ -216,11 +216,15 @@ pub(crate) fn dispatch(
                 //
                 // A remote pane attached from the Mac is built from this host instead, with only
                 // the client's terminal and locale (`host_session`, ADR 0074).
+                // A Mac pane's PATH has the app's own CLI already (`WorkroomCLI.panePath`); a host
+                // pane's gets the daemon's folder when there is no bin folder (`bin_path`).
+                let mut fallback = None;
                 let (child_environment, session_shell, resources) = if request.host_environment {
                     let host = sessions
                         .hooks()
                         .host
                         .session(&request.env, attachment.peer.as_deref());
+                    fallback = host.commands;
                     (host.environment, host.shell, host.resources)
                 } else {
                     (
@@ -269,12 +273,11 @@ pub(crate) fn dispatch(
                 // The daemon's bin folder first on its PATH (#695): its link and hooks made again
                 // first, should something have taken them.
                 crate::daemon::bin_dir::ensure();
-                let folders = crate::daemon::bin_dir::folders();
-                let fallback = folders
-                    .is_none()
-                    .then(crate::host::environment::commands_folder)
-                    .flatten();
-                crate::terminal::bin_path::apply(&mut invocation, folders, fallback.as_deref());
+                crate::terminal::bin_path::apply(
+                    &mut invocation,
+                    crate::daemon::bin_dir::folders(),
+                    fallback.as_deref(),
+                );
                 sessions.create_then(
                     SessionSpec {
                         id,

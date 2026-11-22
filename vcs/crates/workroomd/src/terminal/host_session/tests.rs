@@ -13,6 +13,7 @@ fn origin(environment: &[(&str, &str)], shell: &str) -> HostOrigin {
         shell: shell.to_string(),
         home: PathBuf::from("/home/u"),
         user: "u".to_string(),
+        commands: Some(PathBuf::from("/run/workroom")),
     }
 }
 

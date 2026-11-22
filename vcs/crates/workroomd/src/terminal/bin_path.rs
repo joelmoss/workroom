@@ -20,7 +20,8 @@
 //!
 //! A daemon without a bin folder (`bin_dir::keep` could not make it) gives a session no
 //! `WORKROOM_BIN_DIR`, and puts the folder of its own `workroom`, when it has one beside it (a
-//! host's bootstrap link), after the session's PATH instead, as #681 did.
+//! host's bootstrap link, `HostOrigin::commands`), after a host session's PATH instead, as #681
+//! did. A Mac pane's PATH has the app's own CLI already.
 //!
 //! What the attach client sent under these names is another pane's, or the Mac's, and is dropped.
 
