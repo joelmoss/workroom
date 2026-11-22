@@ -438,10 +438,11 @@ extension QuickTerminalHost: TerminalRequestHolder {
   var isKeyHolder: Bool { hostWindow?.isKeyWindow == true }
 
   func showRequestedSession(
-    _ session: UUID, label: String?, in target: TerminalTarget, beside anchor: TerminalTab.ID?,
-    on edge: PaneEdge?
+    _ session: UUID, label: String?, caller: TerminalTab.ID, in target: TerminalTarget,
+    split edge: PaneEdge?, unplaced: @escaping () -> Void
   ) {
-    openRequestedPane(session, label: label, in: target, beside: anchor, on: edge)
+    guard terminals.tab(caller, for: target) != nil else { return unplaced() }
+    openRequestedPane(session, label: label, in: target, beside: edge.map { _ in caller }, on: edge)
   }
 
   func closeRequestedTab(_ tabID: TerminalTab.ID, in target: TerminalTarget) {

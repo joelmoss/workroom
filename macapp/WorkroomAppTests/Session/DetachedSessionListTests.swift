@@ -496,6 +496,35 @@ final class DetachedSessionListTests: XCTestCase {
     XCTAssertEqual(list.detached(for: remote).map(\.identifier), [shell.identifier])
   }
 
+  // Value: protects=a terminal `workroom new` opened from no pane, which belongs to no workroom,
+  // is listed as detached in this Mac's standalone terminals and groups and in a host's
+  // workrooms, so every Mac finds it (#693); fails_when=it is listed nowhere, in a workroom here,
+  // or a scope-less session nobody's `new` made is listed; why_new=the review of #693;
+  // seam=a stub host connection and stub local helpers
+  func testANewFromNoPaneIsListedWithTheStandaloneTerminalsAndOnItsHost() async throws {
+    let unscoped = SessionDescriptor(
+      identifier: SessionIdentifier(UUID()), shellProcessID: 1, ttyDevice: 0,
+      workingDirectory: "/w", isAttached: false,
+      metadata: [SessionEnvironmentEntry(key: RunSessionKey.openedBy, value: "outside")])
+    let stray = SessionDescriptor(
+      identifier: SessionIdentifier(UUID()), shellProcessID: 2, ttyDevice: 0,
+      workingDirectory: "/w", isAttached: false, metadata: [])
+    let standalone = TerminalTarget(
+      id: .standalone(UUID()), title: "zsh", path: "/tmp", isMissing: false)
+    let group = TerminalTarget(
+      id: .terminalGroup(UUID()), title: "g", path: "/tmp", isMissing: false)
+    let here = makeList(
+      connections: try await connected(SessionsConnection(sessions: [unscoped, stray])),
+      local: [unscoped, stray])
+    for listed in [standalone, group, remote] {
+      await here.refresh(listed, ownedSessionIDs: [])
+      XCTAssertEqual(
+        here.detached(for: listed).map(\.identifier), [unscoped.identifier], "\(listed.id)")
+    }
+    await here.refresh(local, ownedSessionIDs: [])
+    XCTAssertTrue(here.detached(for: local).isEmpty, "a workroom here offers none")
+  }
+
   // Value: protects=a run `workroom new --run` opened on the host (#693), which no Mac's Run
   // adopts, is offered here as any terminal no pane shows, so another Mac finds it; fails_when=
   // the remote list drops it as the workroom's own run; why_new=#693; seam=a stub host connection

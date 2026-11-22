@@ -588,6 +588,11 @@ final class PersistentSessionService {
   /// The host a remote session's pane attaches to, or nil for a local session.
   func remoteHost(of sessionID: UUID) -> HostID? { remoteSessions[sessionID]?.host }
 
+  /// The folder on its host a remote session's pane was registered to start in.
+  func remoteWorkingDirectory(of sessionID: UUID) -> String? {
+    remoteSessions[sessionID]?.workingDirectory
+  }
+
   /// `pane`'s ssh to `sessionID` ended: its surface was freed or its process exited (#356). A
   /// window closing does both without ending the session, so this, not `endSession`, is what
   /// stops a pane counting as attached to its host. A reconnect attaches it again (`attachCommand`).

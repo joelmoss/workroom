@@ -17,22 +17,40 @@ extension AppStore: TerminalRequestHolder {
   /// In a standalone terminal, the new terminal joins it in an unnamed group made in its place,
   /// as a split does (ADR 0077), and its session is tagged with the group, as the caller's is by
   /// the move; anywhere else, it opens in the caller's target.
+  ///
+  /// A standalone terminal's or a group's request waits its turn behind every regroup queued
+  /// before it (`enqueueRegroup`), then looks again for where the caller's tab is now: an earlier
+  /// `new` from the same standalone terminal may have made it a group meanwhile, which this one
+  /// then joins, and a group may have dissolved. One whose caller's tab has gone, or whose
+  /// standalone terminal can't become a group, is `unplaced`, never dropped.
   func showRequestedSession(
-    _ session: UUID, label: String?, in target: TerminalTarget, beside anchor: TerminalTab.ID?,
-    on edge: PaneEdge?
+    _ session: UUID, label: String?, caller: TerminalTab.ID, in target: TerminalTarget,
+    split edge: PaneEdge?, unplaced: @escaping () -> Void
   ) {
-    guard target.id.isStandaloneTerminal else {
-      openRequestedPane(session, label: label, in: target, beside: anchor, on: edge)
+    guard target.id.isStandaloneTerminal || target.id.isTerminalGroup else {
+      openRequestedPane(
+        session, label: label, in: target, beside: edge.map { _ in caller }, on: edge)
       markSessionDirty()
       return
     }
     let section = terminalsSection
     section.enqueueRegroup { [weak self] in
-      guard let group = await section.convertToGroup(target.id), let self,
-        let grouped = self.terminalTarget(forID: group)
-      else { return }
-      _ = await self.terminals.sessionService.retag(sessionID: session, workroom: group.encoded)
-      self.openRequestedPane(session, label: label, in: grouped, beside: anchor, on: edge)
+      guard let self, let nowID = self.terminals.targetID(ofTab: caller),
+        var now = self.terminalTarget(forID: nowID)
+      else { return unplaced() }
+      if now.id.isStandaloneTerminal {
+        guard let group = await section.convertToGroup(now.id),
+          let grouped = self.terminalTarget(forID: group)
+        else { return unplaced() }
+        now = grouped
+      }
+      // Tagged with the caller's target as it was asked; with where it opens, if that moved.
+      if now.sessionWorkroomKey != target.sessionWorkroomKey {
+        _ = await self.terminals.sessionService.retag(
+          sessionID: session, workroom: now.sessionWorkroomKey)
+      }
+      self.openRequestedPane(
+        session, label: label, in: now, beside: edge.map { _ in caller }, on: edge)
       self.markSessionDirty()
     }
   }

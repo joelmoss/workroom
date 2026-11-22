@@ -99,6 +99,16 @@ struct DetachedSessionsButton: View {
 
   private func openNew(_ session: SessionDescriptor) {
     guard let id = session.identifier.uuid else { return }
+    // A terminal `workroom new` opened from no pane, which belongs to no workroom (#693): on this
+    // Mac it becomes a standalone terminal of its own, as a terminal of no project is (ADR 0077).
+    if target.remoteHost == nil, DetachedSessionList.isUnscopedNew(session),
+      let store = host as? AppStore
+    {
+      store.openAsStandaloneTerminal(session: id)
+      showing = false
+      Task { await refresh() }
+      return
+    }
     host.whenHostLayoutRestored(target) { [terminals = host.terminals] target in
       _ = terminals.addTab(for: target, sessionID: id)
       // The waiting list counts only sessions an open pane shows.

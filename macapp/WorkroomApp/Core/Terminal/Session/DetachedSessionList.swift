@@ -132,12 +132,29 @@ final class DetachedSessionList: ObservableObject {
     } else {
       sessions = await localSessions()
     }
+    let unscoped = Self.offersUnscoped(target)
     detachedByWorkroom[key] = sessions.filter { session in
-      session.value(forMetadataKey: SessionMetadataKey.workroom) == key
+      (session.value(forMetadataKey: SessionMetadataKey.workroom) == key
+        || (unscoped && Self.isUnscopedNew(session)))
         && (session.identifier.uuid.map { !ownedSessionIDs.contains($0) } ?? true)
         && isDetached(session, remote: target.remoteHost != nil)
     }
     return sessions
+  }
+
+  /// Whether `target`'s list offers the sessions `workroom new` made from no pane (#693), which
+  /// belong to no workroom: on this Mac, a standalone terminal's and a terminal group's (the
+  /// Quick Terminal's included), the places for a terminal of no project, where opening one
+  /// makes it a standalone terminal of its own (ADR 0077); on a host, which has neither, every
+  /// workroom's. So every Mac lists it with the detached sessions.
+  static func offersUnscoped(_ target: TerminalTarget) -> Bool {
+    target.remoteHost != nil || target.id.isStandaloneTerminal || target.id.isTerminalGroup
+  }
+
+  /// A session `workroom new` made from no pane: one it opened (`opened_by`) with no workroom.
+  static func isUnscopedNew(_ session: SessionDescriptor) -> Bool {
+    session.value(forMetadataKey: SessionMetadataKey.workroom) == nil
+      && session.value(forMetadataKey: RunSessionKey.openedBy) != nil
   }
 
   /// Whether no one is using `session`, as Stop Detached Terminals judges it
