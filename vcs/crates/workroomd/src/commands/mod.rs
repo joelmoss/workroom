@@ -884,8 +884,8 @@ const COMMANDS: &[Command] = &[
                 false,
                 "install",
                 "skill install",
-                "Install the skill in ~/.claude and ~/.codex, where each is there",
-                &[],
+                "Install the skill in Claude Code's and Codex's skill folders, where each is set up",
+                skill::FLAGS,
             ),
             subcommand(
                 SKILL,
@@ -893,7 +893,7 @@ const COMMANDS: &[Command] = &[
                 "remove",
                 "skill remove",
                 "Remove the skill Workroom installed, keeping anything else",
-                &[],
+                skill::FLAGS,
             ),
         ],
         // `install` or `remove`, which `skill::run` checks.
@@ -1329,7 +1329,16 @@ fn run(args: &[String], mut context: Context) -> Output {
         return Output::stdout(help(None));
     };
     if parsed.help {
-        return Output::stdout(help(Some(leaf)));
+        return Output::stdout(help(Some((leaf, honours_pretend(command.name)))));
+    }
+    // A command that can't go through without doing what it does refuses `--pretend` rather than
+    // ignore it: `close --pretend` would close the session.
+    if context.pretend && !honours_pretend(command.name) {
+        let message = format!(
+            "`workroom {}` has no --pretend: it can't run without doing what it does",
+            command.name
+        );
+        return report(&context, None, Outcome::Usage(CliError::internal(message)));
     }
     // Go checks a command's arguments before it runs, so the envelope names no command.
     let args = Args {
@@ -1439,13 +1448,37 @@ fn help_command(_: &Context, args: &Args) -> Outcome {
         return Outcome::Printed(agents::text());
     }
     let topic = args.positional.split_first().and_then(|(name, rest)| {
-        find(name).map(|command| complete::descend(command, rest.to_vec()).0)
+        find(name).map(|command| {
+            (
+                complete::descend(command, rest.to_vec()).0,
+                honours_pretend(command.name),
+            )
+        })
     });
     Outcome::Printed(help(topic))
 }
 
 /// The `help` topic that is no command: `help agents`.
 const HELP_AGENTS: &str = "agents";
+
+/// Whether the command `name` (a top-level one) honours `--pretend`. The terminal API's commands,
+/// the ones `help agents` guides, and `skill` can't go through without doing what they do, so they
+/// refuse it, and their help and docs don't list it.
+fn honours_pretend(name: &str) -> bool {
+    name != "skill" && !agents::GUIDED.iter().any(|guided| guided.command == name)
+}
+
+/// The help of the top-level command `name`, as a command with only subcommands shows it alone.
+fn command_help(name: &str) -> String {
+    help(find(name).map(|command| (command, honours_pretend(name))))
+}
+
+/// The global flags a command takes: all of them, but `--pretend` only for one that honours it.
+fn global_flags(pretend: bool) -> impl Iterator<Item = &'static Flag> {
+    PERSISTENT_FLAGS
+        .iter()
+        .filter(move |flag| pretend || flag.name != "pretend")
+}
 
 /// `--help` itself, as its table lists it.
 const HELP_FLAG: Flag = Flag {
@@ -1456,13 +1489,15 @@ const HELP_FLAG: Flag = Flag {
 };
 
 /// `--help`'s flag table: `--help` and the global flags, then `own` but its hidden ones, each
-/// usage in one column.
-fn flag_table(own: &[Flag]) -> String {
+/// usage in one column. `--pretend` only when `pretend`, for a command that honours it.
+fn flag_table(own: &[Flag], pretend: bool) -> String {
     let mut rows: Vec<(String, String)> = Vec::new();
-    let all = std::iter::once(&HELP_FLAG)
-        .chain(PERSISTENT_FLAGS)
-        .chain(own);
-    for flag in all.filter(|flag| !flag.hidden) {
+    let mut all: Vec<&Flag> = vec![&HELP_FLAG];
+    for flag in global_flags(pretend) {
+        all.push(flag);
+    }
+    all.extend(own);
+    for flag in all.into_iter().filter(|flag| !flag.hidden) {
         let spelled = match flag.short {
             Some(_) => flag.spelled(),
             None => format!("    {}", flag.spelled()),
@@ -1485,11 +1520,11 @@ fn flag_table(own: &[Flag]) -> String {
         .collect()
 }
 
-/// `--help` for the CLI, or for one command.
-fn help(command: Option<&Command>) -> String {
+/// `--help` for the CLI, or for one command, with whether its command honours `--pretend`.
+fn help(command: Option<(&Command, bool)>) -> String {
     let mark = |command: &Command| if command.mac_only { " (Mac only)" } else { "" };
     match command {
-        Some(command) => {
+        Some((command, pretend)) => {
             let mut text = format!(
                 "{}{}\n\nUsage:\n  workroom {}\n",
                 command.long.unwrap_or(command.short),
@@ -1520,7 +1555,7 @@ fn help(command: Option<&Command>) -> String {
                     command.aliases.join(", ")
                 );
             }
-            text + "\nFlags:\n" + &flag_table(command.flags)
+            text + "\nFlags:\n" + &flag_table(command.flags, pretend)
         }
         None => {
             // As cobra lays it out: sorted by name, `help` among them, each name padded to the
@@ -1545,7 +1580,7 @@ fn help(command: Option<&Command>) -> String {
                 text += &format!("  {name:width$} {short}\n");
             }
             text + "\nFlags:\n"
-                + &flag_table(&[])
+                + &flag_table(&[], true)
                 + "\nUse \"workroom [command] --help\" for more information about a command.\n"
                 + "Use \"workroom help agents\" for how a coding agent drives Workroom's \
                    terminals.\n"
@@ -2246,6 +2281,37 @@ mod tests {
         );
         let ((none, _), code) = run_on(Platform::Other, &[]);
         assert_eq!((none, code), (mac, 0));
+    }
+
+    /// A command that can't go through without doing what it does refuses `--pretend` as a usage
+    /// error before anything is asked of a daemon, so `close X --pretend` closes nothing; its help
+    /// doesn't offer the flag. A command that honours it still does.
+    #[test]
+    fn the_terminal_api_and_skill_refuse_pretend_and_dont_offer_it() {
+        for name in agents::GUIDED
+            .iter()
+            .map(|guided| guided.command)
+            .chain(["skill"])
+        {
+            for flag in ["--pretend", "-p"] {
+                let ((stdout, stderr), code) =
+                    run_on(Platform::Other, &[name, "abcd", flag, "--json"]);
+                assert_eq!(code, 1, "{name} {flag}");
+                assert_eq!(stderr, "", "{name}");
+                let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+                assert_eq!(envelope["error"]["kind"], "InternalError", "{name}");
+                assert!(envelope.get("command").is_none(), "{name}: {stdout}");
+                let message = envelope["error"]["message"].as_str().unwrap();
+                assert!(message.contains("has no --pretend"), "{name}: {message}");
+            }
+            let ((help, _), _) = run_on(Platform::Other, &[name, "--help"]);
+            assert!(!help.contains("--pretend"), "{name}: {help}");
+        }
+        // Without it, `close` goes on to look for the daemon: the refusal was the flag's.
+        let ((_, stderr), code) = run_on(Platform::Other, &["close", "abcd"]);
+        assert_eq!(code, 7, "{stderr}");
+        let ((help, _), _) = run_on(Platform::Mac, &["list", "--help"]);
+        assert!(help.contains("--pretend"), "{help}");
     }
 
     #[test]

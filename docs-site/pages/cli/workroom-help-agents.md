@@ -20,14 +20,15 @@ Every pane's shell has three variables Workroom sets:
 
 - `WORKROOM_PANE`: this pane's session id. Commands use it to know who is calling.
 - `WORKROOM_DAEMON`: the daemon's socket. Commands reach the daemon without being told.
-- `WORKROOM_BIN_DIR`: the folder of the `workroom` that matches that daemon, first on `PATH`. If `workroom` is missing or says `DaemonTooOld`, run `"$WORKROOM_BIN_DIR/workroom"` instead.
+- `WORKROOM_BIN_DIR`: the folder of the `workroom` that matches that daemon, first on `PATH`. If `workroom` is missing or says `DaemonTooOld`, run `"$WORKROOM_DAEMON.bin/path/workroom"`, that same `workroom`, which works even where a startup file unset `WORKROOM_BIN_DIR`.
 
 ## Rules
 
 - **Read results as JSON.** Add `--json` and a command prints one JSON object on stdout: `ok`, `schema_version`, `command` and the result's fields, or `ok: false` with `error.kind` and `error.message`. Streams (`events`, `capture --all`) print one object per line. Branch on `error.kind` or the exit code, never on the message, and ignore fields you don't know.
 - **Look before you act.** `workroom sessions` first, then `capture` the screen you are about to type into.
 - **Never type into your own pane.** `send`, `command`, `prompt` and `close` refuse the session you run in with `RefusedSelf` unless you pass `--allow-self`. Your own pane is `caller` in `sessions --json`.
-- **Prefer the command that waits.** Run a shell command with `command`, not `send` and Enter: it waits for the command to end and gives you its exit code and output. Prompt a coding agent with `prompt --wait`, not `send`, and wait for a turn an agent already has under way with `workroom wait TARGET --turn current`. Use `send` for keys and answers.
+- **Prefer the command that waits.** Run a shell command with `command`, not `send` and Enter: it waits for the command to end and gives you its exit code and output. Prompt a coding agent with `prompt --wait`, not `send`, and wait for a turn an agent already has under way with `workroom wait TARGET --turn current`. Use `send` for keys, and to answer a program's own question.
+- **Never answer for the user.** A coding agent whose `coding_agent.state` is `blocked` is asking the user something, often permission to run a command. Don't press Enter or type into it on the user's behalf: report what it asks, and wait for the user.
 - **Wait on the daemon, never poll.** `wait`, `command` and `prompt --wait` answer the moment it happens. Give each a `--timeout` (such as `30s`, `10m`).
 - **Use ids.** Once you know a session, name it by the `id` from `sessions --json`.
 
@@ -72,7 +73,7 @@ Flags:
 Waits on the daemon for one thing to happen in a session, so you never poll. Give exactly one condition, and always a `--timeout` (past it, `WaitTimeout`, exit 8):
 
 - `--status STATE`: the coding agent's program status is that state. Already true answers at once.
-- `--turn next|current`: a coding agent's turn ends. `next` is the turn a `working` from now on starts, `current` the one under way. It prints `status: <state>`, the state the turn ended in.
+- `--turn next|current`: a coding agent's turn ends. `next` is the turn a `working` from now on starts; on an agent that is already working, that is the turn under way, so the wait ends with it. `current` is the turn under way. It prints `status: <state>`, the state the turn ended in.
 - `--run STATE`: a run tab's command is starting, running, stopping, stopped or exited. With `--run exited --exit-code N` it answers when the run exits and is `ExitCodeMismatch` (exit 3) when it exited with another code; `error.details.exit_code` has the code.
 - `--regex RE`: output matching RE, counting only output printed from now on (escape codes stripped; `^` and `$` are line anchors). `--include-screen` also matches what is on the screen now. It prints the match.
 - `--ended`: the session ends.
@@ -89,14 +90,14 @@ Flags:
 - `--include-screen`: With --regex, also match what is on the screen now.
 - `--ended`: Wait for the session to end.
 - `--command-finished`: Wait for the next command to finish, running now or started later (needs shell integration).
-- `--turn VALUE`: Wait for the coding agent's turn to end: next (one a working from now on starts) or current (the one under way).
+- `--turn VALUE`: Wait for the coding agent's turn to end: next (one a working from now on starts, which on an agent already working is the turn under way) or current (the one under way).
 - `--timeout VALUE`: Give up after this long (such as 30s or 2m), exiting 8; no limit when not given.
 
 ### `workroom send`
 
 `workroom send TARGET [TEXT] [flags]`: Type text and keys into a terminal session.
 
-Types into a session as if someone typed it, without attaching: TEXT (or `--stdin`, taken exactly as it comes), then each `--key` in order, then Enter with `--enter`. Text goes as a bracketed paste when the program has turned that on, so several lines arrive as one paste and nothing in them runs a line at a time. Use it to answer a program's question, to press a key (`--key Ctrl+C` to interrupt, `--key Escape`, `--key Up`), or to type into something that is not a shell. To run a shell command use `command`, and to give a coding agent a prompt use `prompt`: `send` doesn't wait, and can't tell you what happened. At most 1 MiB in one call (`TooLarge`, exit 2). A send that stopped part way says how many bytes went; what was typed can't be taken back.
+Types into a session as if someone typed it, without attaching: TEXT (or `--stdin`, taken exactly as it comes), then each `--key` in order, then Enter with `--enter`. Text goes as a bracketed paste when the program has turned that on, so several lines arrive as one paste and nothing in them runs a line at a time. Use it to answer a program's own question, to press a key (`--key Ctrl+C` to interrupt, `--key Escape`, `--key Up`), or to type into something that is not a shell. Never use it to answer another coding agent's permission prompt or question (its `coding_agent.state` is `blocked`): that is the user's to answer. To run a shell command use `command`, and to give a coding agent a prompt use `prompt`: `send` doesn't wait, and can't tell you what happened. At most 1 MiB in one call (`TooLarge`, exit 2). A send that stopped part way says how many bytes went; what was typed can't be taken back.
 
 Flags:
 
@@ -121,7 +122,7 @@ Flags:
 
 `workroom prompt TARGET [TEXT] [flags]`: Give the coding agent in a terminal session a prompt.
 
-Gives the coding agent (Claude Code or Codex) in a session a prompt: the text as a paste, then Enter, in one step. With `--wait` it returns once the turn the prompt started has ended, printing `status: <state>` (done, blocked, idle or error); give it a `--timeout`. It refuses rather than interrupt: `NotAnAgent` (3) when no coding agent runs there (and with `--wait`, for an agent that has never reported a status), `AgentBusy` (3) while the agent is working or blocked on a question, or not ready for a prompt. When the agent started working between the paste and the Enter, `AgentBusy` says `error.details.typed: true, submitted: false`: the text is in its input box, not submitted. Use `send` to answer a blocked agent's question, after `capture` shows you what it asks. A prompt is never typed twice.
+Gives the coding agent (Claude Code or Codex) in a session a prompt: the text as a paste, then Enter, in one step. Text the user already left in the agent's input box, a draft, is submitted with it, your text after the draft: `capture` first if that matters. With `--wait` it returns once the turn the prompt started has ended, printing `status: <state>` (done, blocked, idle or error); give it a `--timeout`. It refuses rather than interrupt: `NotAnAgent` (3) when no coding agent runs there (and with `--wait`, for an agent that has never reported a status), `AgentBusy` (3) while the agent is working or blocked on a question, or not ready for a prompt. When the agent started working between the paste and the Enter, `AgentBusy` says `error.details.typed: true, submitted: false`: the text is in its input box, not submitted. A prompt is never typed twice. An agent that is `blocked` is asking the user something, often permission to run a command: never press Enter or type an answer into it on the user's behalf. Tell the user what it asks, and wait (`wait TARGET --status working`, or `--turn current`) until they have answered.
 
 Flags:
 
@@ -209,7 +210,7 @@ Raw access to every terminal API method on the daemon, for what no command above
 - `InvalidRequest` (2): The daemon can't read the request: an unknown method or parameters it refuses.
 - `TooLarge` (2): More than one request carries (1 MiB of text or parameters), or than one reply holds (16 MiB, as `capture --lines` can ask; `--all` streams any length).
 - `DaemonUnreachable` (7): No daemon answers: outside a Workroom pane, or `WORKROOM_DAEMON` names none.
-- `DaemonTooOld` (7): The daemon is older than this `workroom`. Run `"$WORKROOM_BIN_DIR/workroom"`, the one that matches it; if that says so too, the daemon needs updating, which updating the app does.
+- `DaemonTooOld` (7): The daemon is older than this `workroom`. Run `"$WORKROOM_DAEMON.bin/path/workroom"`, the one that matches it; if that says so too, the daemon needs updating, which updating the app does.
 - `WaitTimeout` (8): The `--timeout` passed first. What you waited on is still going.
 - `InternalError` (1): Anything else, a malformed command line included. Read the message.
 
@@ -235,11 +236,11 @@ id=$(workroom new --title 'dev server' --run 'npm run dev')
 workroom wait "$id" --regex 'ready in [0-9]+ ?ms' --include-screen --timeout 2m
 ```
 
-Answer a coding agent that is blocked on a question:
+A coding agent in another terminal is blocked on a question, such as permission to run a command: read what it asks, tell the user, and wait for them to answer it. Never answer it yourself:
 
 ```sh
 workroom capture TARGET
-workroom send TARGET --key Enter
+workroom wait TARGET --status working --timeout 30m
 ```
 
 Interrupt what a terminal is running:

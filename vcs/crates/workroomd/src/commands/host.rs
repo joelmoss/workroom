@@ -44,7 +44,7 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
             None
         }
         // `host` alone, or with no subcommand it knows, is its help, as cobra shows it.
-        _ => return Outcome::Printed(super::help(super::find("host"))),
+        _ => return Outcome::Printed(super::command_help("host")),
     };
     let workroom = args.value("workroom").unwrap_or_default();
     match set(context, args, workroom, host) {

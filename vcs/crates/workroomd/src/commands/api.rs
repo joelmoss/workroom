@@ -72,7 +72,7 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
         ))),
         // Alone, its help, as cobra shows a command that has only subcommands: from the table, so
         // it lists the subcommands completion offers.
-        None => Outcome::Printed(super::help(super::find("api"))),
+        None => Outcome::Printed(super::command_help("api")),
     }
 }
 

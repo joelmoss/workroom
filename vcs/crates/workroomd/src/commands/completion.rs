@@ -93,7 +93,7 @@ pub(super) fn run(_: &Context, args: &Args) -> Outcome {
         Some("fish") => FISH,
         Some("powershell") => POWERSHELL,
         // `completion` alone, or with a shell it doesn't know, is its help, as cobra shows it.
-        _ => return Outcome::Printed(super::help(super::find("completion"))),
+        _ => return Outcome::Printed(super::command_help("completion")),
     };
     if let Some(extra) = args.positional.get(1) {
         return Outcome::Usage(CliError::internal(format!(

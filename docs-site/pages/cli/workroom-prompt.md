@@ -28,13 +28,12 @@ workroom prompt TARGET [TEXT] [flags]
 
 ```text
       --json[=true|false]      Emit machine-readable JSON (exactly one object on stdout)
-  -p, --pretend[=true|false]   Run through the command without making changes (dry run)
   -v, --verbose[=true|false]   Print detailed and verbose output
 ```
 
 ## How to use it
 
-Gives the coding agent (Claude Code or Codex) in a session a prompt: the text as a paste, then Enter, in one step. With `--wait` it returns once the turn the prompt started has ended, printing `status: <state>` (done, blocked, idle or error); give it a `--timeout`. It refuses rather than interrupt: `NotAnAgent` (3) when no coding agent runs there (and with `--wait`, for an agent that has never reported a status), `AgentBusy` (3) while the agent is working or blocked on a question, or not ready for a prompt. When the agent started working between the paste and the Enter, `AgentBusy` says `error.details.typed: true, submitted: false`: the text is in its input box, not submitted. Use `send` to answer a blocked agent's question, after `capture` shows you what it asks. A prompt is never typed twice.
+Gives the coding agent (Claude Code or Codex) in a session a prompt: the text as a paste, then Enter, in one step. Text the user already left in the agent's input box, a draft, is submitted with it, your text after the draft: `capture` first if that matters. With `--wait` it returns once the turn the prompt started has ended, printing `status: <state>` (done, blocked, idle or error); give it a `--timeout`. It refuses rather than interrupt: `NotAnAgent` (3) when no coding agent runs there (and with `--wait`, for an agent that has never reported a status), `AgentBusy` (3) while the agent is working or blocked on a question, or not ready for a prompt. When the agent started working between the paste and the Enter, `AgentBusy` says `error.details.typed: true, submitted: false`: the text is in its input box, not submitted. A prompt is never typed twice. An agent that is `blocked` is asking the user something, often permission to run a command: never press Enter or type an answer into it on the user's behalf. Tell the user what it asks, and wait (`wait TARGET --status working`, or `--turn current`) until they have answered.
 
 ## See also
 

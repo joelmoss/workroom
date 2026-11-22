@@ -5,9 +5,10 @@
 //! It can't drift from the commands. Each terminal API command has its own section here
 //! ([`GUIDED`]), and a section's usage line, summary, subcommands and flags are read from
 //! `COMMANDS`, so a flag added to a command is in its section at once. The exit codes and kinds
-//! are read from the kind registry, each with a meaning here ([`KINDS`]). Tests fail when a public
-//! command is neither guided nor named in `NOT_TERMINAL_API`, and when a terminal API kind has
-//! no meaning.
+//! are read from the kind registry, each with a meaning here ([`KINDS`]). Tests fail when any
+//! command in the table, hidden and Mac-only ones too, is neither guided nor named in
+//! `NOT_TERMINAL_API`, and when any kind in the registry is neither explained nor named in
+//! `NOT_TERMINAL_API_KINDS`.
 
 use super::kind::Kind;
 use super::{Command, Flag};
@@ -18,10 +19,61 @@ pub(super) struct Guided {
     pub(super) says: &'static str,
 }
 
-/// The public commands that are not the terminal API's, so `help agents` leaves them out: the
-/// lifecycle commands and the CLI's own. A Mac-only command never is, so isn't listed.
+/// Every command that is not the terminal API's, so `help agents` leaves it out, by name, hidden
+/// and Mac-only ones included: the workroom lifecycle, the app's own commands, and the CLI's.
 #[cfg(test)]
-pub(super) const NOT_TERMINAL_API: &[&str] = &["completion", "help", "update", "version"];
+pub(super) const NOT_TERMINAL_API: &[&str] = &[
+    "add-project",
+    "base",
+    "claim-provisioned",
+    "completion",
+    "create",
+    "delete",
+    "delete-project",
+    "help",
+    "host",
+    "include-archive",
+    "list",
+    "skill",
+    "trust",
+    "untrust",
+    "update",
+    "version",
+];
+
+/// Every kind in the registry no terminal API command ends with, by name: the workroom
+/// lifecycle's and the CLI's own.
+#[cfg(test)]
+pub(super) const NOT_TERMINAL_API_KINDS: &[Kind] = &[
+    Kind::InWorkroom,
+    Kind::UnsupportedVcs,
+    Kind::InvalidName,
+    Kind::DirExists,
+    Kind::WorkspaceExists,
+    Kind::WorkspaceNotFound,
+    Kind::ConfirmationMismatch,
+    Kind::UnsafeDeletePath,
+    Kind::Cancelled,
+    Kind::SetupScriptFailed,
+    Kind::TeardownScriptFailed,
+    Kind::ConfigReadFailed,
+    Kind::ConfigWriteFailed,
+    Kind::VcsCommandFailed,
+    Kind::RemoteProjectUnsupported,
+    Kind::RemoteWorkroomUnsupported,
+    Kind::ProjectNotFound,
+    Kind::WorkroomNotFound,
+    Kind::InvalidHostDescriptor,
+    Kind::WorkroomExists,
+    Kind::BaseBranchNotFound,
+    Kind::ScriptNotTrusted,
+    Kind::LocalWorkLeftOut,
+    Kind::StartCommitUnusable,
+    Kind::CloneFailed,
+    Kind::DestinationNotEmpty,
+    Kind::MacOnly,
+    Kind::ManagedInstall,
+];
 
 /// The terminal API's commands, in the order an agent meets them.
 pub(super) const GUIDED: &[Guided] = &[
@@ -53,7 +105,8 @@ exactly one condition, and always a `--timeout` (past it, `WaitTimeout`, exit 8)
 - `--status STATE`: the coding agent's program status is that state. Already true answers at \
 once.\n\
 - `--turn next|current`: a coding agent's turn ends. `next` is the turn a `working` from now on \
-starts, `current` the one under way. It prints `status: <state>`, the state the turn ended in.\n\
+starts; on an agent that is already working, that is the turn under way, so the wait ends with \
+it. `current` is the turn under way. It prints `status: <state>`, the state the turn ended in.\n\
 - `--run STATE`: a run tab's command is starting, running, stopping, stopped or exited. With \
 `--run exited --exit-code N` it answers when the run exits and is `ExitCodeMismatch` (exit 3) \
 when it exited with another code; `error.details.exit_code` has the code.\n\
@@ -73,9 +126,11 @@ starts count. Start the wait before you cause what it waits for, or use `command
         says: "Types into a session as if someone typed it, without attaching: TEXT (or `--stdin`, \
 taken exactly as it comes), then each `--key` in order, then Enter with `--enter`. Text goes as \
 a bracketed paste when the program has turned that on, so several lines arrive as one paste and \
-nothing in them runs a line at a time. Use it to answer a program's question, to press a key \
+nothing in them runs a line at a time. Use it to answer a program's own question, to press a key \
 (`--key Ctrl+C` to interrupt, `--key Escape`, `--key Up`), or to type into something that is not \
-a shell. To run a shell command use `command`, and to give a coding agent a prompt use `prompt`: \
+a shell. Never use it to answer another coding agent's permission prompt or question (its \
+`coding_agent.state` is `blocked`): that is the user's to answer. To run a shell command use \
+`command`, and to give a coding agent a prompt use `prompt`: \
 `send` doesn't wait, and can't tell you what happened. At most 1 MiB in one call (`TooLarge`, \
 exit 2). A send that stopped part way says how many bytes went; what was typed can't be taken \
 back.",
@@ -98,14 +153,18 @@ is workroom's.",
     Guided {
         command: "prompt",
         says: "Gives the coding agent (Claude Code or Codex) in a session a prompt: the text as a \
-paste, then Enter, in one step. With `--wait` it returns once the turn the prompt started has \
+paste, then Enter, in one step. Text the user already left in the agent's input box, a draft, is \
+submitted with it, your text after the draft: `capture` first if that matters. With `--wait` it \
+returns once the turn the prompt started has \
 ended, printing `status: <state>` (done, blocked, idle or error); give it a `--timeout`. It \
 refuses rather than interrupt: `NotAnAgent` (3) when no coding agent runs there (and with \
 `--wait`, for an agent that has never reported a status), `AgentBusy` (3) while the agent is \
 working or blocked on a question, or not ready for a prompt. When the agent started working \
 between the paste and the Enter, `AgentBusy` says `error.details.typed: true, submitted: false`: \
-the text is in its input box, not submitted. Use `send` to answer a blocked agent's question, \
-after `capture` shows you what it asks. A prompt is never typed twice.",
+the text is in its input box, not submitted. A prompt is never typed twice. An agent that is \
+`blocked` is asking the user something, often permission to run a command: never press Enter or \
+type an answer into it on the user's behalf. Tell the user what it asks, and wait (`wait TARGET \
+--status working`, or `--turn current`) until they have answered.",
     },
     Guided {
         command: "events",
@@ -218,7 +277,7 @@ pub(super) const KINDS: &[(Kind, &str)] = &[
     ),
     (
         Kind::DaemonTooOld,
-        "The daemon is older than this `workroom`. Run `\"$WORKROOM_BIN_DIR/workroom\"`, the \
+        "The daemon is older than this `workroom`. Run `\"$WORKROOM_DAEMON.bin/path/workroom\"`, the \
          one that matches it; if that says so too, the daemon needs updating, which updating \
          the app does.",
     ),
@@ -244,7 +303,8 @@ Every pane's shell has three variables Workroom sets:
 - `WORKROOM_PANE`: this pane's session id. Commands use it to know who is calling.
 - `WORKROOM_DAEMON`: the daemon's socket. Commands reach the daemon without being told.
 - `WORKROOM_BIN_DIR`: the folder of the `workroom` that matches that daemon, first on `PATH`. If \
-`workroom` is missing or says `DaemonTooOld`, run `\"$WORKROOM_BIN_DIR/workroom\"` instead.
+`workroom` is missing or says `DaemonTooOld`, run `\"$WORKROOM_DAEMON.bin/path/workroom\"`, that \
+same `workroom`, which works even where a startup file unset `WORKROOM_BIN_DIR`.
 
 ## Rules
 
@@ -260,7 +320,10 @@ you run in with `RefusedSelf` unless you pass `--allow-self`. Your own pane is `
 - **Prefer the command that waits.** Run a shell command with `command`, not `send` and Enter: it \
 waits for the command to end and gives you its exit code and output. Prompt a coding agent with \
 `prompt --wait`, not `send`, and wait for a turn an agent already has under way with `workroom \
-wait TARGET --turn current`. Use `send` for keys and answers.
+wait TARGET --turn current`. Use `send` for keys, and to answer a program's own question.
+- **Never answer for the user.** A coding agent whose `coding_agent.state` is `blocked` is \
+asking the user something, often permission to run a command. Don't press Enter or type into it \
+on the user's behalf: report what it asks, and wait for the user.
 - **Wait on the daemon, never poll.** `wait`, `command` and `prompt --wait` answer the moment it \
 happens. Give each a `--timeout` (such as `30s`, `10m`).
 - **Use ids.** Once you know a session, name it by the `id` from `sessions --json`.
@@ -304,11 +367,13 @@ id=$(workroom new --title 'dev server' --run 'npm run dev')
 workroom wait \"$id\" --regex 'ready in [0-9]+ ?ms' --include-screen --timeout 2m
 ```
 
-Answer a coding agent that is blocked on a question:
+A coding agent in another terminal is blocked on a question, such as permission to run a \
+command: read what it asks, tell the user, and wait for them to answer it. Never answer it \
+yourself:
 
 ```sh
 workroom capture TARGET
-workroom send TARGET --key Enter
+workroom wait TARGET --status working --timeout 30m
 ```
 
 Interrupt what a terminal is running:
@@ -347,22 +412,32 @@ fn section(command: &Command, says: &str) -> String {
         .collect();
     if !subcommands.is_empty() {
         text += "\n";
-        for sub in subcommands {
+        for sub in &subcommands {
             text += &format!("- `workroom {}`: {}.\n", sub.usage, sub.short);
         }
     }
-    let flags: Vec<&Flag> = command.flags.iter().filter(|flag| !flag.hidden).collect();
-    if !flags.is_empty() {
-        text += "\nFlags:\n\n";
-        for flag in flags {
-            let value = if flag.takes_value { " VALUE" } else { "" };
-            let default = if flag.default.is_empty() {
-                String::new()
-            } else {
-                format!(" (default {})", flag.default)
-            };
-            text += &format!("- `--{}{value}`: {}{default}.\n", flag.name, flag.usage);
-        }
+    text += &flag_list("Flags", command.flags);
+    for sub in subcommands {
+        text += &flag_list(&format!("`workroom {}` flags", sub.usage), sub.flags);
+    }
+    text
+}
+
+/// A command's shown flags as a list under `heading`; nothing when it has none.
+fn flag_list(heading: &str, flags: &[Flag]) -> String {
+    let flags: Vec<&Flag> = flags.iter().filter(|flag| !flag.hidden).collect();
+    if flags.is_empty() {
+        return String::new();
+    }
+    let mut text = format!("\n{heading}:\n\n");
+    for flag in flags {
+        let value = if flag.takes_value { " VALUE" } else { "" };
+        let default = if flag.default.is_empty() {
+            String::new()
+        } else {
+            format!(" (default {})", flag.default)
+        };
+        text += &format!("- `--{}{value}`: {}{default}.\n", flag.name, flag.usage);
     }
     text
 }
@@ -390,54 +465,33 @@ pane) or the target names no one session. Retrying later, or with another target
     text
 }
 
-/// The kinds a terminal API command can end with: the registry's from `TargetAmbiguous` on, which
-/// the terminal API added (ADR 0079), and `NotADirectory`, which `new --cwd` reuses.
-#[cfg(test)]
-pub(super) fn terminal_api_kinds() -> Vec<Kind> {
-    let first = super::kind::ALL
-        .iter()
-        .position(|kind| *kind == Kind::TargetAmbiguous)
-        .expect("TargetAmbiguous is in the registry");
-    std::iter::once(Kind::NotADirectory)
-        .chain(super::kind::ALL[first..].iter().copied())
-        .collect()
-}
-
-/// The public commands `help agents` must guide: every one shown in `--help` that runs anywhere
-/// and is not in [`NOT_TERMINAL_API`].
-#[cfg(test)]
-pub(super) fn terminal_api_commands() -> impl Iterator<Item = &'static Command> {
-    super::COMMANDS.iter().filter(|command| {
-        !command.hidden && !command.mac_only && !NOT_TERMINAL_API.contains(&command.name)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The test that keeps `help agents` complete: a command added to the CLI that runs anywhere is
-    /// either guided or named as not the terminal API's, and every guided name is a command.
+    /// The test that keeps `help agents` complete: every command in the table, hidden and Mac-only
+    /// ones too, is either guided or named as not the terminal API's, never both, and every name
+    /// in either list is a command. A guided command is shown and runs anywhere.
     #[test]
     fn help_agents_guides_every_terminal_api_command() {
-        for command in terminal_api_commands() {
+        for command in super::super::COMMANDS {
+            let guided = GUIDED.iter().any(|guided| guided.command == command.name);
+            let excluded = NOT_TERMINAL_API.contains(&command.name);
             assert!(
-                GUIDED.iter().any(|guided| guided.command == command.name),
-                "`workroom {}` is a public command that `help agents` doesn't guide: add it to \
-                 `agents::GUIDED`, or to `NOT_TERMINAL_API` when it isn't the terminal API's",
+                guided != excluded,
+                "`workroom {}` must be in exactly one of `agents::GUIDED` (the terminal API's, \
+                 which `help agents` explains) and `NOT_TERMINAL_API`",
                 command.name
             );
+            if guided {
+                assert!(!command.hidden && !command.mac_only, "{}", command.name);
+            }
         }
-        for guided in GUIDED {
-            let command = super::super::find(guided.command)
-                .unwrap_or_else(|| panic!("`{}` is guided but no command", guided.command));
-            assert!(
-                terminal_api_commands().any(|listed| listed.name == command.name),
-                "`{}` is guided but hidden, Mac-only or listed as not the terminal API's",
-                guided.command
-            );
-        }
-        for name in NOT_TERMINAL_API {
+        for name in GUIDED
+            .iter()
+            .map(|guided| guided.command)
+            .chain(NOT_TERMINAL_API.iter().copied())
+        {
             assert!(super::super::find(name).is_some(), "`{name}` is no command");
         }
         let mut names: Vec<&str> = GUIDED.iter().map(|guided| guided.command).collect();
@@ -467,6 +521,14 @@ mod tests {
             );
             for sub in command.subcommands.iter().filter(|sub| !sub.hidden) {
                 assert!(own.contains(&format!("`workroom {}`", sub.usage)), "{own}");
+                for flag in sub.flags.iter().filter(|flag| !flag.hidden) {
+                    assert!(
+                        own.contains(&format!("- `--{}", flag.name)),
+                        "`workroom {}`'s section lacks --{}",
+                        sub.usage,
+                        flag.name
+                    );
+                }
             }
             for flag in command.flags.iter().filter(|flag| !flag.hidden) {
                 assert!(
@@ -479,22 +541,25 @@ mod tests {
         }
     }
 
-    /// Every kind a terminal API command can end with has a meaning, with its exit code from the
-    /// registry, and no kind is listed twice.
+    /// Every kind in the registry, wherever it sits there, is explained with its exit code or
+    /// named as no terminal API command's, never both, and no kind is listed twice.
     #[test]
     fn help_agents_explains_every_terminal_api_kind() {
         let text = text();
-        for kind in terminal_api_kinds() {
+        for kind in super::super::kind::ALL.iter().copied() {
+            let explained = KINDS.iter().any(|(listed, _)| *listed == kind);
+            let excluded = NOT_TERMINAL_API_KINDS.contains(&kind);
             assert!(
-                KINDS.iter().any(|(listed, _)| *listed == kind),
-                "`{}` has no meaning in `agents::KINDS`",
+                explained != excluded,
+                "`{}` must be in exactly one of `agents::KINDS` and `NOT_TERMINAL_API_KINDS`",
                 kind.code()
             );
-            let line = format!("- `{}` ({}): ", kind.code(), kind.exit_code());
-            assert!(text.contains(&line), "{line}");
+            if explained {
+                let line = format!("- `{}` ({}): ", kind.code(), kind.exit_code());
+                assert!(text.contains(&line), "{line}");
+            }
         }
         for (kind, _) in KINDS {
-            assert!(terminal_api_kinds().contains(kind), "{}", kind.code());
             assert_eq!(
                 KINDS.iter().filter(|(listed, _)| listed == kind).count(),
                 1,
@@ -521,8 +586,13 @@ mod tests {
             "WORKROOM_DAEMON",
             "WORKROOM_BIN_DIR",
             "--timeout",
+            "Never answer for the user",
+            "a draft",
+            "WORKROOM_DAEMON.bin/path/workroom",
         ] {
             assert!(text.contains(said), "{said}");
         }
+        // Nothing teaches pressing Enter at another agent's question on the user's behalf.
+        assert!(!text.contains("send TARGET --key Enter"), "{text}");
     }
 }
