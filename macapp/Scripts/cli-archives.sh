@@ -178,7 +178,7 @@ set_runner() {
           return 0
         fi
       done
-      die "$1 cannot run here: install qemu-user (apt-get install qemu-user-static)."
+      die "$1 cannot run here: install qemu-user (apt-get install qemu-user)."
       ;;
   esac
   return 1

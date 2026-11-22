@@ -322,6 +322,30 @@ if [ -f "$NIGHTLY_YML" ]; then
   fi
 fi
 
+# --- every job that publishes can run the linux arm64 binary ------------------------------------
+# publish-assets.sh runs cli-archives.sh check, which runs each linux binary on the job's Ubuntu
+# runner, the arm64 one under `qemu-aarch64`. Ubuntu 26.04 (ubuntu-latest) has no
+# `qemu-user-static`, so installing it fails the job before anything publishes; `qemu-user` is the
+# package. Pinned per job: each job that runs publish-assets.sh installs exactly it.
+for workflow in release.yml nightly.yml; do
+  path="$WORKFLOWS_DIR/$workflow"
+  [ -f "$path" ] || continue
+  jobs="$(awk '/^  [A-Za-z0-9_-]+:$/ {sub(/:$/, ""); sub(/^  /, ""); print}' "$path")"
+  while read -r job; do
+    [ -n "$job" ] || continue
+    block="$(job_block "$path" "$job")"
+    printf '%s\n' "$block" | grep -q '^[^#]*macapp/Scripts/publish-assets.sh' || continue
+    if ! printf '%s\n' "$block" | grep -qxF '        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user' \
+      || printf '%s\n' "$block" | grep -q '^[^#]*qemu-user-static'; then
+      echo "FAIL: $workflow's $job job runs publish-assets.sh without installing qemu-user, which"
+      echo "      runs the linux arm64 binary (Ubuntu 26.04 has no qemu-user-static)."
+      fails=$((fails + 1))
+    fi
+  done <<EOF
+$jobs
+EOF
+done
+
 # --- the swap's hand-off test runs against the pre-swap daemon ---------------------------------
 # DaemonHandOffTests moves a daemon an app from before the swap (#681) started from
 # Contents/MacOS/workroomd. ci-app.yml's `app` job builds that daemon from the commit

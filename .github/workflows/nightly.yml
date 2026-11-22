@@ -276,9 +276,10 @@ jobs:
           path: macapp/build/release
 
       # cli-archives.sh check, which publish-assets.sh runs first, runs the linux binaries: the
-      # arm64 one under qemu.
+      # arm64 one under qemu (`qemu-aarch64`). `qemu-user`, not `qemu-user-static`, which Ubuntu
+      # 26.04 (ubuntu-latest) dropped, as in ci-rust.yml: a static binary needs no static qemu.
       - name: Install qemu-user (runs the linux arm64 binary)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user
 
       - name: Dry-run the nightly's upload into a throwaway draft
         run: |
@@ -323,9 +324,10 @@ jobs:
         run: scripts/ci/download-stats.sh nightly-publish
 
       # cli-archives.sh check, which publish-assets.sh runs first, runs the linux binaries: the
-      # arm64 one under qemu.
+      # arm64 one under qemu (`qemu-aarch64`). `qemu-user`, not `qemu-user-static`, which Ubuntu
+      # 26.04 (ubuntu-latest) dropped, as in ci-rust.yml: a static binary needs no static qemu.
       - name: Install qemu-user (runs the linux arm64 binary)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user
 
       # Uploads the archives, checksums.txt and the DMG, removes the Go CLI's Windows archives,
       # and checks the release's archives are exactly this build's.
