@@ -727,17 +727,33 @@ fn a_run_that_exits_parks_with_its_exit_code() {
 }
 
 /// A daemon started from `binary`, a file of the test's own standing in for an app bundle's.
+///
+/// Linux refuses to run a file some process still has open for writing (`ETXTBSY`), and the copy
+/// the caller just wrote can be: another test on this binary's threads forks while the copy's file
+/// is open, and its child holds that descriptor until it execs. That child execs within moments,
+/// so the spawn is tried again until it does.
 fn start_daemon_from(binary: &Path, socket: &Path) -> common::Spawned {
-    let child = std::process::Command::new(binary)
-        .args(["serve", "--socket"])
-        .arg(socket)
-        .args(["--idle-timeout", "60"])
-        .env("SHELL", "/bin/sh")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn daemon");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let child = loop {
+        let spawned = std::process::Command::new(binary)
+            .args(["serve", "--socket"])
+            .arg(socket)
+            .args(["--idle-timeout", "60"])
+            .env("SHELL", "/bin/sh")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        match spawned {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            other => break other.expect("spawn daemon"),
+        }
+    };
     let child = common::Spawned(child);
     assert!(
         common::wait_listening(socket, Duration::from_secs(30)),
