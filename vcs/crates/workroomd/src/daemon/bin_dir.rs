@@ -8,7 +8,9 @@
 //! replaces or removes it (the swap took `Contents/MacOS/workroomd` away, and moving or deleting the
 //! app takes `Contents/Resources/workroom` with it), and a link to it would then run something that
 //! is not this daemon, or nothing. The copy is this daemon's alone and goes only once no daemon
-//! runs from it.
+//! runs from it. An update whose CLI commands alone changed (#680) is installed over that file
+//! without a hand-off; the next session to start notices (`ensure`) and the copy is made again
+//! from it, so panes, open ones too, run the new commands while the daemon runs its own.
 //!
 //! **Re-pointed after every hand-off.** A program a hand-off starts runs `keep` as any daemon does:
 //! the link points at that program's own file at once, then at its copy once that is made, and both
@@ -32,7 +34,10 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+use crate::util::lock_or_recover;
 
 /// The one entry the folder is for.
 pub(crate) const LINK: &str = "workroom";
@@ -79,13 +84,19 @@ pub fn keep(socket: &Path) {
         .and_then(|()| own_subfolder(&bin));
     if let Err(e) = made {
         crate::note!(
-            "no bin folder at {}: {e}; sessions get no WORKROOM_BIN_DIR",
+            "no bin folder at {}: {e}; sessions get no WORKROOM_BIN_DIR, and the folder of this \
+             program's `workroom` after their PATH instead (`terminal::bin_path`)",
             bin.display()
         );
         return;
     }
     sweep_staged(&bin);
-    match own_file() {
+    let own = own_file();
+    if let Some(own) = &own {
+        let _ = SOURCE.set(own.clone());
+    }
+    *lock_or_recover(&SEEN) = source_now().and_then(|source| identity(&source));
+    match own {
         Some(own) => {
             if let Err(e) = relink(&bin, &own) {
                 crate::note!(
@@ -132,12 +143,27 @@ pub fn point(target: &Path) {
     }
 }
 
-/// Makes the link again when it leads nowhere, as a new session starts: a cleaner can take a
-/// `/tmp` fallback's files (#528), and a copy can go from under the daemon.
+/// As a new session starts: makes the folders, hooks and link again when something took them (a
+/// cleaner takes a `/tmp` fallback's files, #528, and a copy can go from under the daemon), and
+/// makes the copy again from the file this daemon started from once an update whose CLI commands
+/// alone changed replaced it (`own_copy::refresh`), so every pane's `workroom`, open ones too,
+/// runs the new commands. That last is judged by the file's identity, size and time, one `stat`
+/// per session, and done on a thread of its own: a copy is tens of MB.
 pub fn ensure() {
     let Some(folders) = FOLDERS.get() else {
         return;
     };
+    if let Some(parent) = folders.bin.parent()
+        && fs::symlink_metadata(parent).is_err()
+        && let Err(e) = crate::daemon::own_copy::own_folder(parent)
+    {
+        crate::note!("could not make {} again: {e}", parent.display());
+        return;
+    }
+    if let Err(e) = own_subfolder(&folders.bin) {
+        crate::note!("could not make {} again: {e}", folders.bin.display());
+        return;
+    }
     // A shell is pointed at a hook only while it is there (`terminal::bin_path`), so one that
     // cannot be written again costs the shell its PATH fix, never its startup files.
     if let Some(hooks) = &folders.hooks
@@ -148,14 +174,81 @@ pub fn ensure() {
             hooks.display()
         );
     }
+    refresh_when_replaced();
     if fs::metadata(folders.bin.join(LINK)).is_ok() {
         return;
     }
-    let target = crate::daemon::own_copy::kept()
-        .map(Path::to_path_buf)
-        .or_else(own_file);
-    if let Some(target) = target {
+    if let Some(target) = crate::daemon::own_copy::kept().or_else(own_file) {
         point(&target);
+    }
+}
+
+/// What a file is, to tell when an install replaced it: device, inode, size, modification time.
+type Identity = (u64, u64, u64, i64, i64);
+
+fn identity(path: &Path) -> Option<Identity> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = fs::metadata(path).ok()?;
+    Some((
+        meta.dev(),
+        meta.ino(),
+        meta.size(),
+        meta.mtime(),
+        meta.mtime_nsec(),
+    ))
+}
+
+/// The path this daemon's program was started from, as it is now. On Linux the kernel's: the file
+/// wherever an install renamed it, or, once an install replaced it, the path it had (the
+/// replacement's). Elsewhere, its path at start.
+fn source_now() -> Option<PathBuf> {
+    if cfg!(target_os = "linux") {
+        let path = fs::read_link("/proc/self/exe").ok()?;
+        let text = path.to_string_lossy();
+        Some(match text.strip_suffix(" (deleted)") {
+            Some(gone) => PathBuf::from(gone),
+            None => path,
+        })
+    } else {
+        SOURCE.get().cloned()
+    }
+}
+
+/// The file this program was started from, resolved, at start (not on Linux: `source_now`).
+static SOURCE: OnceLock<PathBuf> = OnceLock::new();
+/// The identity of that file when it was last looked at.
+static SEEN: Mutex<Option<Identity>> = Mutex::new(None);
+/// Whether a refresh is under way, so a burst of sessions starts one.
+static REFRESHING: AtomicBool = AtomicBool::new(false);
+
+fn refresh_when_replaced() {
+    let Some(source) = source_now() else {
+        return;
+    };
+    let now = identity(&source);
+    {
+        let mut seen = lock_or_recover(&SEEN);
+        if now.is_none() || *seen == now {
+            return;
+        }
+        *seen = now;
+    }
+    if REFRESHING.swap(true, Ordering::AcqRel) {
+        // The one under way may have read the file before this change: the next session looks
+        // again.
+        *lock_or_recover(&SEEN) = None;
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("own-copy-refresh".into())
+        .spawn(move || {
+            if let Some(copy) = crate::daemon::own_copy::refresh(&source) {
+                point(&copy);
+            }
+            REFRESHING.store(false, Ordering::Release);
+        });
+    if spawned.is_err() {
+        REFRESHING.store(false, Ordering::Release);
     }
 }
 
@@ -206,9 +299,9 @@ fn relink(folder: &Path, target: &Path) -> io::Result<()> {
         Ok(_) if fs::read_link(&link).is_ok_and(|now| now == target) => return Ok(()),
         _ => {}
     }
-    let staged = folder.join(format!(".{LINK}.{}", std::process::id()));
-    // One there under this pid is this process's own, left by a hand-off's exec (the pid outlives
-    // it), or a dead process's whose pid this one reuses.
+    let staged = folder.join(crate::daemon::own_copy::staged_name(LINK));
+    // One there under this name is this process's own, left by a hand-off's exec (the pid outlives
+    // it, and the count starts again), or a dead process's whose pid this one reuses.
     if fs::symlink_metadata(&staged).is_ok_and(|meta| meta.file_type().is_symlink()) {
         let _ = fs::remove_file(&staged);
     }
@@ -219,7 +312,9 @@ fn relink(folder: &Path, target: &Path) -> io::Result<()> {
     })
 }
 
-/// Removes every staged link (`.workroom.<pid>`, a symlink) whose process is gone.
+/// Removes every staged link (`.workroom.<pid>-<n>`, a symlink) whose process is gone, or is this
+/// one's from the program before a hand-off: called once, at start, before this program stages
+/// any.
 fn sweep_staged(folder: &Path) {
     let Ok(entries) = fs::read_dir(folder) else {
         return;
@@ -229,14 +324,12 @@ fn sweep_staged(folder: &Path) {
         let Some(pid) = name
             .to_str()
             .and_then(|name| name.strip_prefix(&format!(".{LINK}.")))
-            .and_then(|pid| pid.parse::<i32>().ok())
+            .and_then(crate::daemon::own_copy::staged_pid)
         else {
             continue;
         };
         let path = entry.path();
-        if pid > 0
-            && pid != std::process::id() as i32
-            && crate::daemon::own_copy::gone(pid)
+        if (pid == std::process::id() as i32 || crate::daemon::own_copy::gone(pid))
             && fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink())
         {
             let _ = fs::remove_file(&path);
@@ -272,10 +365,8 @@ fn write_hooks(dir: &Path) -> io::Result<()> {
                 path.display()
             )));
         }
-        let staged = path.with_file_name(format!(
-            ".{}.{}",
-            path.file_name().unwrap_or_default().to_string_lossy(),
-            std::process::id()
+        let staged = path.with_file_name(crate::daemon::own_copy::staged_name(
+            &path.file_name().unwrap_or_default().to_string_lossy(),
         ));
         let _ = fs::remove_file(&staged);
         let written = fs::write(&staged, text).and_then(|()| fs::rename(&staged, &path));

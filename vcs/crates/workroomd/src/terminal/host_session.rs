@@ -284,7 +284,8 @@ fn build(
             (Some(terminfo), Some(resources)) => {
                 set("TERMINFO", terminfo.into_os_string());
                 // Not the `path` feature, which appends `GHOSTTY_BIN_DIR` after the profile: the
-                // bin folder's own hooks put it first again (`terminal::bin_path`).
+                // bin folder's own hooks put it first again, and only the shells without one get
+                // the feature (`terminal::bin_path`).
                 set("GHOSTTY_SHELL_FEATURES", OsString::from(SHELL_FEATURES));
                 session_resources = resources.to_string_lossy().into_owned();
             }

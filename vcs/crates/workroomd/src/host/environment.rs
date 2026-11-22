@@ -318,7 +318,8 @@ const COMMAND_LINK: &str = "workroom";
 /// The folder of this program's file when `workroom` is beside it (the bootstrap's link on a host,
 /// or the binary itself), which a host's setup and teardown scripts get on their PATH. `run-script`
 /// runs under no daemon, so it has no daemon's bin folder to give them (`daemon::bin_dir`), which
-/// every session gets first instead. Through
+/// every session gets first instead. A session of a daemon whose bin folder could not be made gets
+/// this folder after its PATH (`terminal::bin_path`). Through
 /// `/proc/self/exe` on Linux: the file this process runs, wherever an install renamed it to.
 pub(crate) fn commands_folder() -> Option<std::path::PathBuf> {
     std::env::current_exe()

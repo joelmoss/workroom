@@ -34,9 +34,11 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::daemon::handoff;
+use crate::util::lock_or_recover;
 
 /// The marker file only this code writes, in a folder only it made.
 const OWNER: &str = "OWNER";
@@ -51,7 +53,36 @@ struct Kept {
     _lock: File,
 }
 
-static KEPT: OnceLock<Kept> = OnceLock::new();
+/// This daemon's copy, once made: replaced only by `refresh`, under this lock.
+static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
+/// Held while this program makes a copy or sweeps: the initial one, `refresh`'s. Not `KEPT`, which
+/// a run session's start reads and must not wait a copy's time for.
+static STAGING: Mutex<()> = Mutex::new(());
+/// Numbers this process's staged files, so two made at once never share a name.
+static STAGED: AtomicU64 = AtomicU64::new(0);
+
+/// A name for a file this process stages in a folder of ours: `.<name>.<pid>-<n>`, unique to this
+/// call. A sweep reads the pid back (`staged_pid`).
+pub(crate) fn staged_name(name: &str) -> String {
+    format!(
+        ".{name}.{}-{}",
+        std::process::id(),
+        STAGED.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// The pid of the process that staged `rest`, the part of a staged name after `.<name>.`: this
+/// code's `<pid>-<n>`, or an earlier build's bare `<pid>`.
+pub(crate) fn staged_pid(rest: &str) -> Option<i32> {
+    let pid = rest.split_once('-').map_or(rest, |(pid, n)| {
+        if n.bytes().all(|b| b.is_ascii_digit()) && !n.is_empty() {
+            pid
+        } else {
+            ""
+        }
+    });
+    pid.parse::<i32>().ok().filter(|pid| *pid > 0)
+}
 
 /// Where a socket's daemon keeps its copies: beside the socket, in the daemon's own folder.
 pub fn dir_beside(socket: &Path) -> PathBuf {
@@ -72,11 +103,12 @@ pub fn keep(dir: &Path) {
 
 fn keep_now(dir: &Path, source: &Path) {
     let build = handoff::daemon_build();
+    let _staging = lock_or_recover(&STAGING);
     match establish(dir, source, build) {
         Ok(kept) => {
             let name = file_name(build);
             let path = kept.path.clone();
-            let _ = KEPT.set(kept);
+            *lock_or_recover(&KEPT) = Some(kept);
             crate::note!("starting run sessions from {}", path.display());
             // Before the sweep, which removes the copy the link may still point at: the last
             // daemon's, after a hand-off to another daemon build.
@@ -92,17 +124,49 @@ fn keep_now(dir: &Path, source: &Path) {
 
 /// The binary this daemon starts its own children from: its copy, or its own file without one.
 pub fn binary() -> io::Result<PathBuf> {
-    pick(
-        KEPT.get().map(|kept| kept.path.as_path()),
-        handoff::own_binary,
-    )
+    let kept = lock_or_recover(&KEPT)
+        .as_ref()
+        .map(|kept| kept.path.clone());
+    pick(kept.as_deref(), handoff::own_binary)
 }
 
 /// This daemon's copy, while it is still there.
-pub(crate) fn kept() -> Option<&'static Path> {
-    KEPT.get()
-        .map(|kept| kept.path.as_path())
+pub(crate) fn kept() -> Option<PathBuf> {
+    lock_or_recover(&KEPT)
+        .as_ref()
+        .map(|kept| kept.path.clone())
         .filter(|path| fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()))
+}
+
+/// Makes this daemon's copy again from `source` when `source` is this daemon build with other
+/// bytes: an update whose CLI commands alone changed (#680), installed over the file the daemon
+/// started from without a hand-off. The daemon goes on running its own program; its children, and
+/// every pane's `workroom` (`bin_dir`), run the new commands. The copy is replaced by a rename
+/// over it, a file of ours by its name, folder and build marker (`is_copy`), so nothing is left
+/// to sweep. Returns the copy when it was made again.
+pub(crate) fn refresh(source: &Path) -> Option<PathBuf> {
+    let build = handoff::daemon_build();
+    let _staging = lock_or_recover(&STAGING);
+    let path = lock_or_recover(&KEPT).as_ref()?.path.clone();
+    let dir = path.parent()?;
+    if handoff::daemon_build_in(source).ok()?.as_deref() != Some(build) || !differs(&path, source) {
+        return None;
+    }
+    match establish(dir, source, build) {
+        Ok(made) => {
+            *lock_or_recover(&KEPT) = Some(made);
+            crate::note!(
+                "made {} again from {}, whose CLI commands changed",
+                path.display(),
+                source.display()
+            );
+            Some(path)
+        }
+        Err(e) => {
+            crate::note!("could not make {} again: {e}", path.display());
+            None
+        }
+    }
 }
 
 /// The copy while it is still there, else `own`: a copy can go from under a daemon, as macOS's
@@ -243,10 +307,10 @@ fn differs(copy: &Path, source: &Path) -> bool {
 /// Copies `source` to `path` through a file of this process's own, checked to be daemon build
 /// `build` before it is renamed into place.
 fn stage(dir: &Path, source: &Path, build: &str, path: &Path) -> io::Result<()> {
-    let staged = dir.join(format!(".{}.{}", file_name(build), std::process::id()));
-    // One already there under this pid is this process's own, left when a hand-off's exec ended
-    // the thread making it (the pid outlives the exec), or a dead process's whose pid this one
-    // reuses: no other live process has this pid.
+    let staged = dir.join(staged_name(&file_name(build)));
+    // One already there under this name is this process's own, left when a hand-off's exec ended
+    // the thread making it (the pid outlives the exec, and the count starts again), or a dead
+    // process's whose pid this one reuses: no other live process has this pid.
     let _ = fs::remove_file(&staged);
     let mut out = OpenOptions::new()
         .write(true)
@@ -272,7 +336,7 @@ fn stage(dir: &Path, source: &Path, build: &str, path: &Path) -> io::Result<()> 
 }
 
 /// Removes, from a folder of ours, every other build's copy no daemon holds, and every staged copy
-/// whose process is gone. `keep` is this daemon's own copy's name.
+/// whose process is gone, or is this one's (see below). `keep` is this daemon's own copy's name.
 fn sweep(dir: &Path, keep: &str) {
     if !marked(dir) {
         return;
@@ -295,10 +359,10 @@ fn sweep(dir: &Path, keep: &str) {
             .and_then(|rest| rest.strip_prefix(PREFIX))
             .and_then(|rest| rest.rsplit_once('.'))
             && build.bytes().all(|b| b.is_ascii_hexdigit())
-            && let Ok(pid) = pid.parse::<i32>()
-            && pid > 0
-            && pid != std::process::id() as i32
-            && gone(pid)
+            && let Some(pid) = staged_pid(pid)
+            // This process's own only from a program before a hand-off: this one stages only under
+            // `STAGING`, which every sweep is called under.
+            && (pid == std::process::id() as i32 || gone(pid))
             && fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file())
         {
             let _ = fs::remove_file(&path);
