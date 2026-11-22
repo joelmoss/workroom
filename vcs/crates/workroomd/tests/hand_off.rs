@@ -1288,17 +1288,22 @@ fn after_a_hand_off_the_bin_folders_link_runs_the_new_daemon() {
         "the old copy was never swept"
     );
 
-    // Split by the quotes, so the pty's echo of the line is not its answer.
+    // Split by the quotes, so the pty's echo of the line is not its answer. By WORKROOM_BIN_DIR,
+    // not PATH: a login `sh` keeps the folder first only until its profile runs, and Debian's
+    // /etc/profile sets PATH outright.
     type_line(
         &mut client,
-        "case \":$PATH:\" in *\":$WORKROOM_BIN_DIR:\"*) echo ON-\"\"PATH;; esac; \
+        "echo BIN-\"\"DIR=$WORKROOM_BIN_DIR=; \
          \"$WORKROOM_BIN_DIR/workroom\" protocol | grep daemon-build | sed 's/^/NOW-/'",
     );
     let seen = reader.read_until(
         &format!("NOW-daemon-build {after}"),
         Duration::from_secs(10),
     );
-    assert!(seen.contains("ON-PATH"), "{seen:?}");
+    assert!(
+        seen.contains(&format!("BIN-DIR={}=", copies.join("path").display())),
+        "{seen:?}"
+    );
     assert!(
         seen.contains(&format!("NOW-daemon-build {after}")),
         "the old pane's workroom is not the new daemon: {seen:?}"
