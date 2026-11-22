@@ -361,6 +361,65 @@ fn a_restart_that_fails_the_same_way_is_published_again() {
     );
 }
 
+/// A Stop reaches the command as the Ctrl-C a server shuts down on, in sh and bash too, whose
+/// commands used to inherit the supervisor's ignored INT and so ended only by the SIGKILL six
+/// seconds on (#681): sent once the command runs, and as the run starts, while its login shell
+/// still reads its rc files and an INT is lost.
+#[test]
+fn a_stop_reaches_the_command_as_a_ctrl_c_in_any_posix_shell() {
+    let shells: Vec<&str> = ["/bin/sh", "/bin/bash"]
+        .into_iter()
+        .filter(|shell| Path::new(shell).exists())
+        .collect();
+    let workspace = Workspace::new("run-stop-int");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let sessions = [
+        "1a6ad0a5-36a0-4c34-9c8d-8f06f0f3a101",
+        "1a6ad0a5-36a0-4c34-9c8d-8f06f0f3a102",
+        "1a6ad0a5-36a0-4c34-9c8d-8f06f0f3a103",
+        "1a6ad0a5-36a0-4c34-9c8d-8f06f0f3a104",
+    ];
+    let mut cases = sessions.iter();
+    for shell in shells {
+        for at_once in [false, true] {
+            let session = cases.next().unwrap();
+            let mut client = attach_with_env(
+                &socket,
+                session,
+                &[],
+                &[
+                    ("SHELL", shell),
+                    ("WORKROOM_SESSION_RUN", "1"),
+                    ("WORKROOM_SESSION_COMMAND", "sleep 30"),
+                ],
+            );
+            let _reader = ClientReader::new(&mut client);
+            assert!(
+                wait_for(Duration::from_secs(10), || running(&socket, session)),
+                "{shell}: the run never started"
+            );
+            if !at_once {
+                // Past the login shell's startup, so the INT lands on the command itself.
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            let stopped = std::time::Instant::now();
+            assert_eq!(
+                signal(&socket, session, RunSignal::Stop).kind,
+                FrameKind::Acknowledged
+            );
+            assert!(
+                wait_for(Duration::from_secs(4), || read_status(&socket, session)
+                    == "stopped 1"),
+                "{shell} (at once: {at_once}): the stop did not end the command by its INT, \
+                 status '{}' after {:?}",
+                read_status(&socket, session),
+                stopped.elapsed()
+            );
+        }
+    }
+}
+
 /// An update hands the daemon off to its new program: the run keeps going, its state is still
 /// published, and its supervisor still answers stop and restart. Q6: a run survives an update.
 #[test]

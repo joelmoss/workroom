@@ -12,7 +12,9 @@
 # The screen is CLEARED before each (re)launch, so every start/restart begins fresh.
 #
 # argv: $1 = status file (we write transitions here, atomically; and each, numbered, to "$1.log")
-#       $2.. = the child command in argv form (e.g. zsh -lic '...'), run in the foreground.
+#       $2.. = the child command in argv form, run in the foreground: `<workroom> run-supervisor
+#              --child -- <shell> -lic 'exec <shell> -c <command>'`, the launcher putting the INT
+#              and QUIT this script and its background jobs ignore back to their defaults.
 #
 # Signals (daemon -> our pid): USR1 = restart (relaunch in place), USR2 = stop (keep pane, park),
 # TERM = quit (exit → the session ends). A typed Ctrl-C reaches the child via the foreground pgroup;
@@ -53,18 +55,24 @@ write_status() {  # atomic: temp + rename, so a watcher never reads a half-writt
 # child AND its grandchildren (a server forked through a shell), whatever the exec/fork shape, as
 # long as they're in our foreground pgroup (they are — job control is off). We survive because we
 # ignore INT below. A truly forked-free leaf in another pgroup escapes; when the run ends, the daemon
-# ends whatever is left in its session (`sweep_run_session`).
+# ends whatever is left in its session (`sweep_run_session`). A child still starting when it is sent
+# may lose it (`starting`, below): wait_child_dead sends it again once the command runs.
+INT_LOST=0
+send_int() {
+  if [ -n "$CHILD_PID" ] && starting "$CHILD_PID"; then INT_LOST=1; fi
+  kill -INT 0 2>/dev/null
+}
 on_restart() {
   ACTION=restart
-  kill -INT 0 2>/dev/null
+  send_int
 }
 on_stop() {
   ACTION=stop
-  kill -INT 0 2>/dev/null
+  send_int
 }
 on_quit() {
   ACTION=quit
-  kill -INT 0 2>/dev/null
+  send_int
 }
 trap on_restart USR1
 trap on_stop USR2
@@ -76,10 +84,42 @@ trap on_quit TERM
 trap on_quit HUP
 trap '' INT
 
-wait_child_dead() {  # poll until the launcher is gone; SIGKILL after ~6s for an INT-ignorer
+# A process's command line, one line: /proc where there is one (every Linux host, whatever its ps),
+# else ps.
+args_of() {
+  if [ -r "/proc/$1/cmdline" ]; then
+    tr '\000' ' ' <"/proc/$1/cmdline" 2>/dev/null
+  else
+    ps -o args= -p "$1" 2>/dev/null
+  fi
+}
+SUPERVISOR_ARGS="$(args_of $$)"
+
+# Whether the child is still starting: not yet exec'd (still a copy of this supervisor), still its
+# launcher, or still its login shell, which has not yet exec'd the command (the prefixes
+# start_child sets). An INT then is lost: until the launcher runs the child has INT ignored (a
+# background job's, and this supervisor's own `trap '' INT`), and a login shell that has taken INT
+# over only cuts its rc files short and runs the command anyway. A Stop pressed as a run starts was
+# then the 6s SIGKILL's to end (#681).
+starting() {
+  __a="$(args_of "$1")"
+  [ -n "$__a" ] || return 1
+  [ "$__a" = "$SUPERVISOR_ARGS" ] && return 0
+  case "$__a" in "$LAUNCHER_ARGS"* | "$LOGIN_ARGS"*) return 0 ;; esac
+  return 1
+}
+
+# Poll until the launcher is gone; SIGKILL after ~6s for an INT-ignorer. An INT sent while the
+# child was still starting is sent again once it runs the command, which then gets its own ~6s.
+wait_child_dead() {
   [ -z "$CHILD_PID" ] && return
   __i=0
   while kill -0 "$CHILD_PID" 2>/dev/null; do
+    if [ "$INT_LOST" = 1 ] && ! starting "$CHILD_PID"; then
+      INT_LOST=0
+      kill -INT 0 2>/dev/null
+      __i=0
+    fi
     __i=$((__i + 1))
     [ "$__i" -ge 60 ] && kill -KILL "$CHILD_PID" 2>/dev/null
     sleep 0.1
@@ -89,10 +129,17 @@ wait_child_dead() {  # poll until the launcher is gone; SIGKILL after ~6s for an
 start_child() {
   printf '\033[3J\033[H\033[2J'  # clear scrollback + screen so each (re)launch starts fresh
   LAUNCH=$((LAUNCH + 1))
+  LAUNCHER_ARGS="$1 $2 $3 $4 "
+  LOGIN_ARGS="$5 $6 exec "
+  INT_LOST=0
   write_status "starting"
   # (a) job control is OFF (non-interactive /bin/sh), so `&` keeps the child in OUR pgroup = the tty
   #     foreground group (no SIGTTIN). (b) `< /dev/tty` overrides the POSIX async-stdin-from-/dev/null
   #     rule so the child actually receives keystrokes. BOTH are required for interactivity.
+  # Without its launcher (the daemon's copy this ran from, removed once an update's daemon took the
+  # session over and no daemon holds it), the shell runs as it did before the launcher: a restart
+  # still runs the command, though in bash or sh a Stop then ends it only by the SIGKILL.
+  if [ "${2:-} ${3:-} ${4:-}" = "run-supervisor --child --" ] && [ ! -x "$1" ]; then shift 4; fi
   "$@" </dev/tty &
   CHILD_PID=$!
   write_status "running $CHILD_PID"
