@@ -61,6 +61,25 @@ impl SessionStore {
             .find_map(|pid| shells.get(&pid).copied())
     }
 
+    /// Keeps what `id`'s shell was built from (#693), forgetting every session's that has ended.
+    pub fn remember_recipe(&self, id: SessionId, recipe: super::Recipe) {
+        let live: std::collections::HashSet<SessionId> =
+            lock_or_recover(&self.sessions).keys().copied().collect();
+        let mut recipes = lock_or_recover(&self.recipes);
+        recipes.retain(|kept, _| live.contains(kept));
+        if live.contains(&id) {
+            recipes.insert(id, Arc::new(recipe));
+        }
+    }
+
+    /// What `id`'s shell was built from, when this program created it and it is live.
+    pub fn recipe(&self, id: SessionId) -> Option<Arc<super::Recipe>> {
+        if !self.contains(id) {
+            return None;
+        }
+        lock_or_recover(&self.recipes).get(&id).cloned()
+    }
+
     /// The live run sessions.
     pub fn run_session_ids(&self) -> Vec<SessionId> {
         lock_or_recover(&self.sessions)

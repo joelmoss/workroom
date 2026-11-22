@@ -130,3 +130,68 @@ fn anything_but_a_daemon_serving_a_socket_names_none() {
         assert_eq!(served_socket(&argv(other)), None, "{other:?}");
     }
 }
+
+/// `new`'s daemon on a Mac is where the app keeps it (`PersistentSessionPaths.daemonSocket`):
+/// Application Support's `<bundle>/sessions/workroomd`, or the app's `/tmp` folder when that is
+/// past `sun_path`, and the name before #525 under either. Never a path past `sun_path`.
+#[test]
+fn new_finds_the_macs_daemon_where_the_app_keeps_it() {
+    let short = mac_daemon_socket("/Users/me", "com.developwithstyle.workroom.dev", 501);
+    assert_eq!(
+        short,
+        MacDaemonSocket {
+            standard: "/Users/me/Library/Application Support/com.developwithstyle.workroom.dev/\
+                       sessions/workroomd"
+                .into(),
+            candidates: vec![
+                "/Users/me/Library/Application Support/com.developwithstyle.workroom.dev/\
+                 sessions/workroomd"
+                    .into(),
+                "/tmp/workroom-501-com.developwithstyle.workroom.dev/workroomd".into(),
+                "/Users/me/Library/Application Support/com.developwithstyle.workroom.dev/\
+                 sessions/agent.sock"
+                    .into(),
+                "/tmp/workroom-501-com.developwithstyle.workroom.dev/agent.sock".into(),
+            ],
+        }
+    );
+    let long_home = format!("/Users/{}", "m".repeat(60));
+    let long = mac_daemon_socket(&long_home, "com.developwithstyle.workroom", 502);
+    assert_eq!(
+        long.standard,
+        "/tmp/workroom-502-com.developwithstyle.workroom/workroomd"
+    );
+    assert!(
+        long.candidates
+            .iter()
+            .all(|path| path.len() < SUN_PATH_LIMIT)
+    );
+    assert_eq!(long.candidates[0], long.standard);
+}
+
+/// The bundle id of the app a binary is in, from `Contents/Resources/<binary>`'s
+/// `Contents/Info.plist`; none for a binary outside an app's resources.
+#[test]
+fn new_reads_its_apps_bundle_id_from_the_info_plist() {
+    let plist = "<?xml version=\"1.0\"?>\n<plist><dict>\n\t<key>CFBundleName</key>\n\t\
+                 <string>Workroom</string>\n\t<key>CFBundleIdentifier</key>\n\t\
+                 <string>com.developwithstyle.workroom.nightly</string>\n</dict></plist>";
+    assert_eq!(
+        plist_string(plist, "CFBundleIdentifier").as_deref(),
+        Some("com.developwithstyle.workroom.nightly")
+    );
+    assert_eq!(plist_string(plist, "CFBundleVersion"), None);
+    assert_eq!(
+        plist_string(
+            "<key>CFBundleIdentifier</key><integer>1</integer>",
+            "CFBundleIdentifier"
+        ),
+        None
+    );
+    assert_eq!(bundle_of(Path::new("/usr/local/bin/workroom")), None);
+    assert_eq!(
+        bundle_of(Path::new("/nonexistent/W.app/Contents/Resources/workroom")),
+        None,
+        "no Info.plist to read"
+    );
+}

@@ -263,11 +263,25 @@ pub struct Hub {
     state: Mutex<State>,
     /// Woken on every event, on unsealing, and when a subscription closes.
     wake: Condvar,
+    /// What the terminal API asked of sessions it is about to create or end (#693), told in
+    /// their `session.created` (`opened`) and `session.ended` (`closed`). Taken alone, never
+    /// under `state`.
+    asked: Mutex<Asked>,
+}
+
+/// What `session.new` and `session.close` asked (#693), by session, until the event that tells it.
+#[derive(Default)]
+struct Asked {
+    /// `session.created`'s `opened`: who asked for the session and how the app is to show it.
+    opening: std::collections::HashMap<SessionId, Value>,
+    /// The sessions `session.close` is ending, whose `session.ended` says `closed`.
+    closing: std::collections::HashSet<SessionId>,
 }
 
 impl Default for Hub {
     fn default() -> Hub {
         Hub {
+            asked: Mutex::new(Asked::default()),
             state: Mutex::new(State {
                 boot: crate::terminal::program_status::new_boot(),
                 revision: 0,
@@ -328,11 +342,31 @@ impl Hub {
         self.wake.notify_all();
     }
 
+    /// `session.new` is about to create `id` (#693): its `session.created` carries `opened`, who
+    /// asked and how the app is to show it, in place of null.
+    pub fn will_open(&self, id: SessionId, opened: Value) {
+        lock_or_recover(&self.asked).opening.insert(id, opened);
+    }
+
+    /// `session.close` is about to end `id` (#693): its `session.ended` says `closed`.
+    pub fn will_close(&self, id: SessionId) {
+        lock_or_recover(&self.asked).closing.insert(id);
+    }
+
+    /// `session.new` failed to create `id`, or `session.close` to end it: nothing is told of it.
+    pub fn forget_asked(&self, id: SessionId) {
+        let mut asked = lock_or_recover(&self.asked);
+        asked.opening.remove(&id);
+        asked.closing.remove(&id);
+    }
+
     /// A session was created: `listing` is it as `session.list` lists it.
     pub fn created(&self, id: SessionId, listing: Value) {
+        let opened = lock_or_recover(&self.asked).opening.remove(&id);
         let mut state = self.lock();
         let known = Known::new(listing);
-        let json = session_event(name::CREATED, id, &known);
+        let mut json = session_event(name::CREATED, id, &known);
+        json["opened"] = opened.unwrap_or(Value::Null);
         state.sessions.insert(id, known);
         self.publish(&mut state, json);
     }
@@ -376,6 +410,7 @@ impl Hub {
 
     /// A session ended, with its shell's exit code when the daemon saw it.
     pub fn ended(&self, id: SessionId, exit_code: Option<i32>) {
+        let closed = lock_or_recover(&self.asked).closing.remove(&id);
         let mut state = self.lock();
         let Some(known) = state.sessions.remove(&id) else {
             return;
@@ -385,6 +420,7 @@ impl Hub {
             "session": id.to_hyphenated(),
             "scope": known.listing["scope"],
             "exit_code": exit_code,
+            "closed": closed,
         });
         self.publish(&mut state, json);
     }

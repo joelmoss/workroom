@@ -37,6 +37,7 @@
 
 use std::ffi::OsStr;
 use std::ops::Range;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::{Value, json};
@@ -98,6 +99,11 @@ pub mod kind {
     pub const REFUSED_SELF: &str = "RefusedSelf";
     /// A prompt to a session that runs no coding agent.
     pub const NOT_AN_AGENT: &str = "NotAnAgent";
+    /// A run control (`session.run_control`) for a session that is no run session (#693).
+    pub const NOT_A_RUN: &str = "NotARun";
+    /// A `session.new` folder that isn't one (#693): the registry's kind for a path that names no
+    /// folder.
+    pub const NOT_A_DIRECTORY: &str = "NotADirectory";
     /// A prompt to a coding agent that can't take one now: working, waiting on the user, or with
     /// no prompt up.
     pub const AGENT_BUSY: &str = "AgentBusy";
@@ -193,6 +199,10 @@ enum Run {
     /// At once, on the connection's own subscriptions: `events.unsubscribe`
     /// (`events::unsubscribe`).
     Unsubscribe,
+    /// One reply, from a thread of its own, while the connection goes on taking requests:
+    /// `session.close`, whose kill waits out a shell's SIGHUP grace (`lifecycle::close`), and
+    /// `session.run_control`, which waits for a run's supervisor to be ready for its signal.
+    Thread(fn(&Call) -> Result<Value, ApiError>),
 }
 
 /// One request as a method sees it.
@@ -413,6 +423,47 @@ pub const METHODS: &[Method] = &[
         params_example: prompt::params_example,
         result_example: prompt::result_example,
         run: Run::Prompt,
+    },
+    Method {
+        name: lifecycle::NEW,
+        summary: "Opens a new terminal: a session made as the caller's was, tagged with its \
+                  scope, running a login shell, or `run`'s command under a run supervisor, in \
+                  `cwd`, then shown by the app. The Mac showing the caller's pane opens it, as a \
+                  split beside that pane when `split` asks and the pane is on screen, else as a \
+                  tab; every other Mac lists it with the detached sessions, as every Mac does \
+                  when no pane shows the caller. `opened`, here and in its `session.created`, \
+                  says what the app was asked.",
+        input: lifecycle::new_input,
+        output: lifecycle::new_output,
+        errors: lifecycle::NEW_ERRORS,
+        params_example: lifecycle::new_params_example,
+        result_example: lifecycle::new_result_example,
+        run: Run::Now(|call| lifecycle::create(call).map(Answer::One)),
+    },
+    Method {
+        name: lifecycle::RUN_CONTROL,
+        summary: "Restarts or stops a run session's command through its supervisor, as the \
+                  app's Run tab does: `restart` stops it and starts it again in place, `stop` \
+                  stops it and keeps the pane. A session that is no run is `NotARun`.",
+        input: lifecycle::run_control_input,
+        output: lifecycle::run_control_output,
+        errors: lifecycle::RUN_CONTROL_ERRORS,
+        params_example: lifecycle::run_control_params_example,
+        result_example: lifecycle::run_control_result_example,
+        run: Run::Thread(lifecycle::run_control),
+    },
+    Method {
+        name: lifecycle::CLOSE,
+        summary: "Closes a terminal: ends its session (a run's supervisor asked to quit first), \
+                  and the app closes its tab or split, since its `session.ended` says `closed`. \
+                  Answered once its shell has gone. The caller's own session is `RefusedSelf` \
+                  without `allow_self`.",
+        input: lifecycle::close_input,
+        output: lifecycle::close_output,
+        errors: lifecycle::CLOSE_ERRORS,
+        params_example: lifecycle::close_params_example,
+        result_example: lifecycle::close_result_example,
+        run: Run::Thread(lifecycle::close),
     },
     Method {
         name: events::NAME,
@@ -1239,6 +1290,7 @@ fn handle(sessions: &SessionStore, bytes: &[u8], peer: Option<i32>) -> Result<An
     let request = read(sessions, bytes, peer)?;
     match request.method.run {
         Run::Now(run) => run(&request.call(sessions)),
+        Run::Thread(run) => run(&request.call(sessions)).map(Answer::One),
         Run::Wait | Run::Command | Run::Events | Run::Prompt | Run::Unsubscribe => Err(
             ApiError::invalid("this method needs its connection, from `dispatch`"),
         ),
@@ -1408,6 +1460,30 @@ pub fn dispatch(
                         events::unsubscribe(&mut connection.subscriptions, &request.call(sessions));
                     send(reply(result, false));
                 }
+                Run::Thread(run) => {
+                    let (store, shared, stream) =
+                        (sessions.clone(), Arc::clone(writer), envelope.stream);
+                    let (params, caller) = (request.params, request.caller);
+                    let answer = move || {
+                        let call = Call {
+                            sessions: &store,
+                            params: &params,
+                            caller,
+                        };
+                        let result = run(&call);
+                        self::send(&shared, stream, reply(result, false));
+                    };
+                    // No thread to be had: refused, rather than wait out a kill on the reader.
+                    if let Err(error) = std::thread::Builder::new().spawn(answer) {
+                        send(reply(
+                            Err(ApiError::new(
+                                kind::INTERNAL_ERROR,
+                                format!("no thread to answer on: {error}"),
+                            )),
+                            false,
+                        ));
+                    }
+                }
             },
             Err(error) => {
                 send(reply(Err(error), false));
@@ -1451,6 +1527,7 @@ fn stream(
 
 mod command;
 mod events;
+mod lifecycle;
 mod prompt;
 mod send;
 mod wait;

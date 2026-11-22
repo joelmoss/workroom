@@ -11,7 +11,7 @@ use crate::daemon::rpc::{self, SharedWriter};
 use crate::daemon::transport::Closer;
 use crate::terminal::pty::Size;
 use crate::terminal::session::{
-    ClientIdentity, RunSignalError, SessionId, SessionInfo, SessionSpec, SessionStore,
+    ClientIdentity, Recipe, RunSignalError, SessionId, SessionInfo, SessionSpec, SessionStore,
 };
 use crate::terminal::shell;
 use wr_protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
@@ -199,7 +199,7 @@ pub(crate) fn dispatch(
             // Create on first attach, reattach afterwards. One code path, so a client that
             // crashed and came back does not have to know which case it is in.
             let result = if exists {
-                attach()
+                attach().map_err(|e| e.to_string())
             } else {
                 // Not `<shell>` with no arguments: see `shell::invocation`. Spawning the shell
                 // bare cost the login profile and ghostty's shell integration, which showed up in
@@ -218,17 +218,21 @@ pub(crate) fn dispatch(
                 // the client's terminal and locale (`host_session`, ADR 0074).
                 // A Mac pane's PATH has the app's own CLI already (`WorkroomCLI.panePath`); a host
                 // pane's gets the daemon's folder when there is no bin folder (`bin_path`).
-                let mut fallback = None;
-                let (child_environment, session_shell, resources) = if request.host_environment {
+                let recipe = if request.host_environment {
                     let host = sessions
                         .hooks()
                         .host
                         .session(&request.env, attachment.peer.as_deref());
-                    fallback = host.commands;
-                    (host.environment, host.shell, host.resources)
+                    Recipe {
+                        run_shell: Some(OsString::from(&host.shell)),
+                        environment: host.environment,
+                        shell: host.shell,
+                        resources: host.resources,
+                        commands: host.commands,
+                    }
                 } else {
-                    (
-                        request
+                    Recipe {
+                        environment: request
                             .env
                             .iter()
                             .filter(|(key, _)| {
@@ -236,62 +240,31 @@ pub(crate) fn dispatch(
                             })
                             .cloned()
                             .collect(),
-                        shell::user_shell(request.shell.clone()),
-                        request
+                        shell: shell::user_shell(request.shell.clone()),
+                        resources: request
                             .resources
                             .clone()
                             .unwrap_or_default()
                             .to_string_lossy()
                             .into_owned(),
-                    )
-                };
-                let mut invocation = shell::invocation(
-                    &request
-                        .command
-                        .clone()
-                        .unwrap_or_default()
-                        .to_string_lossy(),
-                    &session_shell,
-                    &resources,
-                    &child_environment,
-                );
-                if crate::terminal::run::is_requested(&request.env) {
-                    let run_shell = if request.host_environment {
-                        Some(OsString::from(&session_shell))
-                    } else {
-                        request.shell.clone()
-                    };
-                    match run_invocation(sessions, id, &request, run_shell, invocation.environment)
-                    {
-                        Ok(run) => invocation = run,
-                        Err(reason) => {
-                            return reply(Frame::new(FrameKind::Failure, reason.into_bytes()));
-                        }
+                        run_shell: request.shell.clone(),
+                        commands: None,
                     }
-                }
-                identify(&mut invocation.environment, id, sessions.socket());
-                // The daemon's bin folder first on its PATH (#695): its link and hooks made again
-                // first, should something have taken them.
-                crate::daemon::bin_dir::ensure();
-                crate::terminal::bin_path::apply(
-                    &mut invocation,
-                    crate::daemon::bin_dir::folders(),
-                    fallback.as_deref(),
-                );
-                sessions.create_then(
-                    SessionSpec {
+                };
+                let run = crate::terminal::run::is_requested(&request.env);
+                launch(
+                    sessions,
+                    Launch {
                         id,
-                        program: &invocation.program,
-                        argv0: invocation.arguments.first().map(|a| a.as_os_str()),
-                        args: &invocation.arguments[1..],
-                        env: &invocation.environment,
+                        recipe,
+                        command: request.command.clone().unwrap_or_default(),
+                        run,
                         cwd: request.cwd.as_deref(),
                         columns: request.columns,
                         rows: request.rows,
-                        metadata: &session_metadata(&request.env),
-                        interactive: invocation.interactive,
+                        metadata: session_metadata(&request.env),
                     },
-                    |_| attach(),
+                    |_| attach().map_err(|e| e.to_string()),
                 )
             };
             match result {
@@ -300,7 +273,7 @@ pub(crate) fn dispatch(
                     attachment.token = granted;
                     None
                 }
-                Err(e) => reply(Frame::new(FrameKind::Failure, e.to_string().into_bytes())),
+                Err(reason) => reply(Frame::new(FrameKind::Failure, reason.into_bytes())),
             }
         }
         FrameKind::Input => {
@@ -429,18 +402,105 @@ pub(crate) fn dispatch(
     }
 }
 
-/// What a run session's pty runs (#522): this binary's `run-supervisor` around the request's
-/// command, writing to the status file the store names for `id`. `environment` is what a command
-/// session would get (`shell::invocation`): the client's, with the shell integration's variables.
-/// `SHELL` is the one the client asked for, which `run-supervisor` runs the command in.
+/// One session to start: its id, what its shell is built from, the command it runs (a run
+/// session's, under its supervisor, with `run`), where, at what size, and its metadata.
+pub(crate) struct Launch<'a> {
+    pub id: SessionId,
+    pub recipe: Recipe,
+    pub command: OsString,
+    pub run: bool,
+    pub cwd: Option<&'a OsStr>,
+    pub columns: u16,
+    pub rows: u16,
+    pub metadata: Vec<(String, String)>,
+}
+
+/// Starts a session as an attach that creates one does, or the terminal API's `session.new`
+/// (#693): its shell invoked from the recipe, a run's command under its supervisor, its pane and
+/// daemon named in its environment and the daemon's bin folder first on its PATH; then
+/// `register` before its reader starts (`SessionStore::create_then`). The recipe is kept, so a
+/// `session.new` from this session builds the next one as this one was built. Why it failed, as
+/// the `Failure` an attach is told.
+pub(crate) fn launch<T>(
+    sessions: &SessionStore,
+    launch: Launch<'_>,
+    register: impl FnOnce(SessionInfo) -> Result<T, String>,
+) -> Result<T, String> {
+    let Launch {
+        id,
+        recipe,
+        command,
+        run,
+        cwd,
+        columns,
+        rows,
+        metadata,
+    } = launch;
+    let mut invocation = shell::invocation(
+        &command.to_string_lossy(),
+        &recipe.shell,
+        &recipe.resources,
+        &recipe.environment,
+    );
+    if run {
+        invocation = run_invocation(
+            sessions,
+            id,
+            command,
+            recipe.run_shell.clone(),
+            invocation.environment,
+        )?;
+    }
+    identify(&mut invocation.environment, id, sessions.socket());
+    // The daemon's bin folder first on its PATH (#695): its link and hooks made again first,
+    // should something have taken them.
+    crate::daemon::bin_dir::ensure();
+    crate::terminal::bin_path::apply(
+        &mut invocation,
+        crate::daemon::bin_dir::folders(),
+        recipe.commands.as_deref(),
+    );
+    let mut failure = None;
+    let created = sessions.create_then(
+        SessionSpec {
+            id,
+            program: &invocation.program,
+            argv0: invocation.arguments.first().map(|a| a.as_os_str()),
+            args: &invocation.arguments[1..],
+            env: &invocation.environment,
+            cwd,
+            columns,
+            rows,
+            metadata: &metadata,
+            interactive: invocation.interactive,
+        },
+        |info| {
+            register(info).map_err(|reason| {
+                failure = Some(reason);
+                crate::terminal::session::SessionError::NotFound(id.to_hyphenated())
+            })
+        },
+    );
+    match created {
+        Ok(registered) => {
+            sessions.remember_recipe(id, recipe);
+            Ok(registered)
+        }
+        Err(error) => Err(failure.unwrap_or_else(|| error.to_string())),
+    }
+}
+
+/// What a run session's pty runs (#522): this binary's `run-supervisor` around `command`, writing
+/// to the status file the store names for `id`. `environment` is what a command session would get
+/// (`shell::invocation`): the client's, with the shell integration's variables. `SHELL` is the one
+/// the client asked for, which `run-supervisor` runs the command in.
 fn run_invocation(
     sessions: &SessionStore,
     id: SessionId,
-    request: &AttachRequest,
+    command: OsString,
     shell: Option<OsString>,
     mut environment: Vec<(OsString, OsString)>,
 ) -> Result<shell::Invocation, String> {
-    let command = request.command.clone().unwrap_or_default();
     if command.is_empty() {
         return Err(format!("run session {} has no command", id.to_hyphenated()));
     }

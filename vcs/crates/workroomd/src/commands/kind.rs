@@ -67,6 +67,8 @@ pub(crate) enum Kind {
     AgentBusy,
     /// A prompt to a session with no coding agent in it.
     NotAnAgent,
+    /// A run control (`run-control`) for a session that is no run session.
+    NotARun,
     /// A session that ended before or while it was asked.
     SessionEnded,
     /// A request a full-screen program on the alternate screen can't take.
@@ -131,6 +133,7 @@ pub(crate) const ALL: &[Kind] = &[
     Kind::WaitTimeout,
     Kind::AgentBusy,
     Kind::NotAnAgent,
+    Kind::NotARun,
     Kind::SessionEnded,
     Kind::AlternateScreen,
     Kind::NoShellIntegration,
@@ -202,6 +205,7 @@ impl Kind {
             // A valid request the session can't take now: a precondition, as the CLI's others are.
             Kind::AgentBusy => ("AgentBusy", 3),
             Kind::NotAnAgent => ("NotAnAgent", 3),
+            Kind::NotARun => ("NotARun", 3),
             Kind::SessionEnded => ("SessionEnded", 3),
             Kind::AlternateScreen => ("AlternateScreen", 3),
             Kind::NoShellIntegration => ("NoShellIntegration", 3),
@@ -353,6 +357,7 @@ mod tests {
                 "WaitTimeout",
                 "AgentBusy",
                 "NotAnAgent",
+                "NotARun",
                 "SessionEnded",
                 "AlternateScreen",
                 "NoShellIntegration",
@@ -386,6 +391,7 @@ mod tests {
             (Kind::TargetNotFound, "TargetNotFound", 3),
             (Kind::AgentBusy, "AgentBusy", 3),
             (Kind::NotAnAgent, "NotAnAgent", 3),
+            (Kind::NotARun, "NotARun", 3),
             (Kind::SessionEnded, "SessionEnded", 3),
             (Kind::AlternateScreen, "AlternateScreen", 3),
             (Kind::NoShellIntegration, "NoShellIntegration", 3),
@@ -419,6 +425,8 @@ mod tests {
             kind::WAIT_INTERRUPTED,
             kind::NO_SHELL_INTEGRATION,
             kind::EXIT_CODE_MISMATCH,
+            kind::NOT_A_RUN,
+            kind::NOT_A_DIRECTORY,
             kind::BUSY,
             kind::INTERNAL_ERROR,
         ] {
