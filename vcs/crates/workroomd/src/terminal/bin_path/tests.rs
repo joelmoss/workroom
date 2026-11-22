@@ -1,6 +1,40 @@
 use super::*;
 use std::path::PathBuf;
 
+/// `apply`, with every hook there.
+fn apply(invocation: &mut Invocation, folders: Option<&Folders>) {
+    apply_with(invocation, folders, |_| true);
+}
+
+/// A hook that is gone is never pointed at: the shell starts as it would without one, with the
+/// folder still first on the PATH it starts with.
+#[test]
+fn a_shell_whose_hook_is_gone_starts_without_it() {
+    for (program, env) in [
+        ("/bin/zsh", vec![("ZDOTDIR", "/res/shell-integration/zsh")]),
+        (
+            "/usr/bin/bash",
+            vec![
+                ("ENV", "/res/shell-integration/bash/ghostty.bash"),
+                ("GHOSTTY_BASH_INJECT", "1"),
+            ],
+        ),
+        ("/usr/bin/fish", vec![("XDG_DATA_DIRS", "/usr/share")]),
+    ] {
+        let mut invocation = shell(program, &env);
+        let before = invocation.environment.clone();
+        apply_with(&mut invocation, Some(&folders()), |_| false);
+        let mut changed: Vec<_> = invocation
+            .environment
+            .iter()
+            .filter(|entry| !before.contains(entry))
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        changed.sort();
+        assert_eq!(changed, ["PATH", "WORKROOM_BIN_DIR"], "{program}");
+    }
+}
+
 fn folders() -> Folders {
     Folders {
         bin: PathBuf::from("/run/w.bin/path"),

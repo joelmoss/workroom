@@ -47,7 +47,7 @@ const FISH_HOOK: &str = include_str!("bin_dir/workroom.fish");
 /// Where the hooks are, under the hooks folder.
 pub(crate) const ZSH_DIR: &str = "zsh";
 pub(crate) const BASH_FILE: &str = "bash/workroom.bash";
-const FISH_FILE: &str = "fish/vendor_conf.d/workroom.fish";
+pub(crate) const FISH_FILE: &str = "fish/vendor_conf.d/workroom.fish";
 
 /// This daemon's folders, once `keep` has made them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,6 +138,16 @@ pub fn ensure() {
     let Some(folders) = FOLDERS.get() else {
         return;
     };
+    // A shell is pointed at a hook only while it is there (`terminal::bin_path`), so one that
+    // cannot be written again costs the shell its PATH fix, never its startup files.
+    if let Some(hooks) = &folders.hooks
+        && let Err(e) = write_hooks(hooks)
+    {
+        crate::note!(
+            "could not write the shell hooks in {} again: {e}",
+            hooks.display()
+        );
+    }
     if fs::metadata(folders.bin.join(LINK)).is_ok() {
         return;
     }

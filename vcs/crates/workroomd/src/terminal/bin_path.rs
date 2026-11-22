@@ -17,7 +17,7 @@
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
-use crate::daemon::bin_dir::{BASH_FILE, Folders, ZSH_DIR};
+use crate::daemon::bin_dir::{BASH_FILE, FISH_FILE, Folders, ZSH_DIR};
 use crate::terminal::shell::{Invocation, XDG_FALLBACK_DATA_DIRECTORIES, shell_name};
 
 /// The folder, for the session's shell and what it runs.
@@ -32,6 +32,19 @@ const FISH_XDG_DIR: &str = "WORKROOM_FISH_XDG_DIR";
 /// Puts `folders`' bin folder first on `invocation`'s PATH, as the module says. With no folders
 /// (a daemon on stdio, or one that could not make its folder), only drops what the client sent.
 pub(crate) fn apply(invocation: &mut Invocation, folders: Option<&Folders>) {
+    apply_with(invocation, folders, |hook| {
+        std::fs::metadata(hook).is_ok_and(|meta| meta.is_file())
+    });
+}
+
+/// [`apply`], pointing a shell at a hook only when `present` says its file is there: a shell sent
+/// to a hook that is gone would read none of its startup files (zsh), or stay in POSIX mode with
+/// none read (bash).
+fn apply_with(
+    invocation: &mut Invocation,
+    folders: Option<&Folders>,
+    present: impl Fn(&Path) -> bool,
+) {
     let env = &mut invocation.environment;
     env.retain(|(key, _)| {
         ![BIN_DIR_VARIABLE, ZSH_ZDOTDIR, BASH_ENV, FISH_XDG_DIR]
@@ -48,13 +61,13 @@ pub(crate) fn apply(invocation: &mut Invocation, folders: Option<&Folders>) {
         return;
     };
     match shell_name(&invocation.program.to_string_lossy()) {
-        "zsh" => {
+        "zsh" if present(&hooks.join(ZSH_DIR).join(".zshenv")) => {
             if let Some(zdotdir) = get(env, "ZDOTDIR").map(OsStr::to_os_string) {
                 set(env, ZSH_ZDOTDIR, zdotdir);
             }
             set(env, "ZDOTDIR", hooks.join(ZSH_DIR).into_os_string());
         }
-        "bash" => {
+        "bash" if present(&hooks.join(BASH_FILE)) => {
             // Only where Ghostty's integration starts bash, in POSIX mode with its `ENV`: no other
             // file runs after bash's startup files.
             let injected = get(env, "GHOSTTY_BASH_INJECT").is_some_and(|value| !value.is_empty());
@@ -66,7 +79,7 @@ pub(crate) fn apply(invocation: &mut Invocation, folders: Option<&Folders>) {
                 set(env, "ENV", hooks.join(BASH_FILE).into_os_string());
             }
         }
-        "fish" => {
+        "fish" if present(&hooks.join(FISH_FILE)) => {
             let dirs = get(env, "XDG_DATA_DIRS")
                 .filter(|dirs| !dirs.is_empty())
                 .map(OsStr::to_os_string)
