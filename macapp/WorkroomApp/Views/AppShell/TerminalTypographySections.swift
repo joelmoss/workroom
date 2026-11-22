@@ -3,8 +3,9 @@ import Defaults
 import DesignSystem
 import SwiftUI
 
-/// Settings ▸ Terminal's Font and Cursor sections: a live preview in the active theme, then the
-/// font's family, weight, style, size and line height, and the cursor's shape and blink.
+/// Settings ▸ Terminal's Font and Cursor sections: the font's family, weight, style, size and line
+/// height, then a live preview in the active theme, and the cursor's shape and blink. The preview
+/// sits below the font controls so its height changing with the font never moves them.
 ///
 /// Each control writes its `Defaults` key, and `GhosttyApp` rebuilds the generated `ghostty.conf`
 /// on the change (`observeTerminalSettings`), which reaches every open terminal: libghostty re-lays
@@ -41,14 +42,6 @@ struct TerminalTypographySections: View {
 
   var body: some View {
     Section {
-      TerminalTypographyPreview(typography: typography)
-        .listRowInsets(
-          EdgeInsets(top: Spacing.m, leading: Spacing.m, bottom: Spacing.m, trailing: Spacing.m)
-        )
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Terminal preview")
-        .accessibilityIdentifier("settings.terminal.preview")
-
       Picker("Font", selection: $family) {
         Text("\(TerminalFontCatalog.builtInFamily) (Built-in)").tag("")
         Divider()
@@ -136,6 +129,14 @@ struct TerminalTypographySections: View {
             .accessibilityHidden(true)
         }
       }
+
+      TerminalTypographyPreview(typography: typography)
+        .listRowInsets(
+          EdgeInsets(top: Spacing.m, leading: Spacing.m, bottom: Spacing.m, trailing: Spacing.m)
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Terminal preview")
+        .accessibilityIdentifier("settings.terminal.preview")
 
       HStack {
         Spacer()
