@@ -99,6 +99,36 @@
       page: cli/workroom-update
     - title: workroom version
       page: cli/workroom-version
+    - title: workroom help agents
+      page: cli/workroom-help-agents
+    - title: workroom sessions
+      page: cli/workroom-sessions
+    - title: workroom capture
+      page: cli/workroom-capture
+    - title: workroom wait
+      page: cli/workroom-wait
+    - title: workroom send
+      page: cli/workroom-send
+    - title: workroom command
+      page: cli/workroom-command
+    - title: workroom prompt
+      page: cli/workroom-prompt
+    - title: workroom events
+      page: cli/workroom-events
+    - title: workroom new
+      page: cli/workroom-new
+    - title: workroom close
+      page: cli/workroom-close
+    - title: workroom run-control
+      page: cli/workroom-run-control
+    - title: workroom api
+      page: cli/workroom-api
+    - title: workroom api list
+      page: cli/workroom-api-list
+    - title: workroom api describe
+      page: cli/workroom-api-describe
+    - title: workroom api call
+      page: cli/workroom-api-call
     - title: workroom completion
       page: cli/workroom-completion
     - title: workroom completion bash

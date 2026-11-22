@@ -146,6 +146,8 @@ class ChangedAreasTests(unittest.TestCase):
     def test_docs_site_runs_the_go_checks_and_the_shortcuts_page_the_app(self):
         self.assertEqual(needed("docs-site/pages/guides/remote.md"), {"cli"})
         self.assertEqual(needed("docs-site/pages/reference/keyboard-shortcuts.md"), {"cli", "app"})
+        # The terminal API's CLI pages, which the Rust tests generate and check.
+        self.assertEqual(needed("docs-site/pages/cli/workroom-wait.md"), {"cli", "rust"})
 
     def test_design_docs_run_nothing_filtered(self):
         self.assertEqual(needed("docs/designs/x.md", "README.md", "scripts/ci/watch_pr_checks.py"),

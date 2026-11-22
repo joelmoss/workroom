@@ -23,6 +23,8 @@
 //! one's included, are offered as Go offers them.
 
 mod add_project;
+mod agent_skill;
+mod agents;
 mod api;
 mod base;
 mod capture;
@@ -35,6 +37,8 @@ mod config;
 mod create;
 mod delete;
 mod delete_project;
+#[cfg(test)]
+mod docs;
 mod envelope;
 mod events;
 mod git;
@@ -322,6 +326,40 @@ const COMMANDS: &[Command] = &[
                 },
             ],
         )
+    },
+    Command {
+        name: "agent-skill",
+        aliases: &[],
+        usage: "agent-skill install|remove",
+        short: "Install or remove the Workroom skill for Claude Code and Codex (used by the \
+                desktop app)",
+        long: None,
+        // The app's, from Settings ▸ AI Agents and each host's bootstrap, which runs it anywhere.
+        hidden: true,
+        mac_only: false,
+        flags: &[],
+        subcommands: &[
+            subcommand(
+                AGENT_SKILL,
+                false,
+                "install",
+                "agent-skill install",
+                "Install the skill in ~/.claude and ~/.codex, where each is there",
+                &[],
+            ),
+            subcommand(
+                AGENT_SKILL,
+                false,
+                "remove",
+                "agent-skill remove",
+                "Remove the skill Workroom installed, keeping anything else",
+                &[],
+            ),
+        ],
+        // `install` or `remove`, which `agent_skill::run` checks.
+        arity: Arity::Own,
+        operands: Operands::Nothing,
+        implementation: AGENT_SKILL,
     },
     Command {
         name: "api",
@@ -952,6 +990,7 @@ const COMMANDS: &[Command] = &[
     },
 ];
 
+const AGENT_SKILL: Implementation = agent_skill::run;
 const API: Implementation = api::run;
 const BASE: Implementation = base::run;
 const HOST: Implementation = host::run;
@@ -1393,13 +1432,20 @@ fn report(context: &Context, command: Option<&str>, outcome: Outcome) -> Output 
     }
 }
 
-/// `help [command…]`: the help of the command (or subcommand) it names, else the CLI's.
+/// `help [command…]`: the help of the command (or subcommand) it names, else the CLI's. `help
+/// agents` is the terminal API explained to a coding agent (`agents`), a topic and no command.
 fn help_command(_: &Context, args: &Args) -> Outcome {
+    if args.positional.first().map(String::as_str) == Some(HELP_AGENTS) {
+        return Outcome::Printed(agents::text());
+    }
     let topic = args.positional.split_first().and_then(|(name, rest)| {
         find(name).map(|command| complete::descend(command, rest.to_vec()).0)
     });
     Outcome::Printed(help(topic))
 }
+
+/// The `help` topic that is no command: `help agents`.
+const HELP_AGENTS: &str = "agents";
 
 /// `--help` itself, as its table lists it.
 const HELP_FLAG: Flag = Flag {
@@ -1501,6 +1547,8 @@ fn help(command: Option<&Command>) -> String {
             text + "\nFlags:\n"
                 + &flag_table(&[])
                 + "\nUse \"workroom [command] --help\" for more information about a command.\n"
+                + "Use \"workroom help agents\" for how a coding agent drives Workroom's \
+                   terminals.\n"
         }
     }
 }
