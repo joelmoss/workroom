@@ -344,8 +344,10 @@ final class GhosttySurfaceView: NSView {
       envPairs.append(("TERMINFO", terminfo))
     }
     // Every pane, attached or a plain fallback shell: the attach client forwards its environment to
-    // the daemon's shell. A login shell keeps the entry but puts /etc/paths and the user's dotfile
-    // entries ahead of it, so a `workroom` the user installed elsewhere still wins.
+    // the daemon's shell, which puts the daemon's bin folder (`WORKROOM_BIN_DIR`, #695) ahead of
+    // this entry, and in zsh, fish and bash puts it first again after the startup files. A plain
+    // fallback shell has only this entry, which a login shell moves behind /etc/paths and the
+    // user's dotfile entries.
     if let path = WorkroomCLI.panePath() {
       envPairs.append(("PATH", path))
     }

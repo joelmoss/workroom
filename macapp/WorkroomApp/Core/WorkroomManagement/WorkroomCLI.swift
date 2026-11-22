@@ -625,8 +625,10 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     throw WorkroomCLIError.binaryMissing
   }
 
-  /// A pane's PATH: this app's own CLI first, so `workroom` works in every pane with nothing
-  /// installed. Nil when the app has no bundled CLI.
+  /// A pane's PATH as the app hands it to the attach client: this app's own CLI first, so
+  /// `workroom` works in a plain fallback shell with nothing installed. A daemon's session puts
+  /// the daemon's bin folder ahead of it (`WORKROOM_BIN_DIR`, #695). Nil when the app has no
+  /// bundled CLI.
   static func panePath(
     cliDirectory: String? = try? bundledBinaryURL().deletingLastPathComponent().path,
     inheritedPath: String = ProcessInfo.processInfo.environment["PATH"] ?? ""
