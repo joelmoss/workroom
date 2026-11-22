@@ -120,7 +120,7 @@ struct ThemeListLoading: View {
 
 extension ThemePreview {
   /// A palette colour, or the foreground when the theme leaves that slot out.
-  fileprivate func ansi(_ index: Int) -> Color {
+  func ansi(_ index: Int) -> Color {
     Color(nsColor: palette.indices.contains(index) ? palette[index] : foreground)
   }
 }
