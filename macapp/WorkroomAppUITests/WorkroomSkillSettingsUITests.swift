@@ -80,33 +80,41 @@ final class WorkroomSkillSettingsUITests: XCTestCase {
 
     toggle.click()
     XCTAssertTrue(poll(timeout: 5) { self.isOn(toggle) }, "the toggle turns on")
-    for agent in [".claude", ".codex"] {
+    // Claude Code's in its `~/.claude`, Codex's in `~/.agents`, the folder Codex reads skills from.
+    for skills in [".claude", ".agents"] {
       XCTAssertTrue(
-        poll(timeout: 15) { FileManager.default.fileExists(atPath: self.skillFile(agent).path) },
-        "turning it on installs \(agent)'s skill in the fixture's home")
-      let text = try String(contentsOf: skillFile(agent), encoding: .utf8)
+        poll(timeout: 15) { FileManager.default.fileExists(atPath: self.skillFile(skills).path) },
+        "turning it on installs the skill in the fixture's \(skills)")
+      let text = try String(contentsOf: skillFile(skills), encoding: .utf8)
       XCTAssertTrue(text.hasPrefix("---\nname: workroom\n"), text)
       XCTAssertTrue(
         FileManager.default.fileExists(
-          atPath: home.appendingPathComponent("\(agent)/skills/workroom/.workroom-skill").path),
+          atPath: home.appendingPathComponent("\(skills)/skills/workroom/.workroom-skill").path),
         "Workroom's marker is beside it")
     }
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: home.appendingPathComponent(".codex/skills").path))
     XCTAssertFalse(
       app.descendants(matching: .any).matching(identifier: "settings.control.workroomSkillNotice")
         .firstMatch.exists, "an install that went as asked says nothing more")
 
     toggle.click()
     XCTAssertTrue(poll(timeout: 5) { !self.isOn(toggle) }, "the toggle turns off")
-    for agent in [".claude", ".codex"] {
+    for skills in [".claude", ".agents"] {
       XCTAssertTrue(
         poll(timeout: 15) {
           !FileManager.default.fileExists(
-            atPath: self.home.appendingPathComponent("\(agent)/skills/workroom").path)
-        }, "turning it off removes \(agent)'s skill")
+            atPath: self.home.appendingPathComponent("\(skills)/skills/workroom").path)
+        }, "turning it off removes the skill in \(skills)")
+    }
+    for agent in [".claude", ".codex"] {
       XCTAssertTrue(
         FileManager.default.fileExists(atPath: home.appendingPathComponent(agent).path),
-        "the agent's own folder stays")
+        "the coding agent's own folder stays")
     }
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: home.appendingPathComponent(".agents").path),
+      "the ~/.agents Workroom made for it goes with it")
     app.terminate()
   }
 

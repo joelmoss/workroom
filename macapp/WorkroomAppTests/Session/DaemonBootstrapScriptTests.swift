@@ -167,7 +167,7 @@ final class DaemonBootstrapScriptTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: skill.path), "off writes nothing")
 
     outcome = try await ensure(host, bundling: build, workroomSkill: .install)
-    XCTAssertEqual(outcome.workroomSkill, .done("claude installed, codex no-agent"))
+    XCTAssertEqual(outcome.workroomSkill?.summary, "claude installed, codex no-agent")
     XCTAssertTrue(
       try String(contentsOf: file, encoding: .utf8).hasPrefix("---\nname: workroom\n"))
     XCTAssertFalse(
@@ -179,7 +179,7 @@ final class DaemonBootstrapScriptTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
 
     outcome = try await ensure(host, bundling: build, workroomSkill: .remove)
-    XCTAssertEqual(outcome.workroomSkill, .done("claude removed, codex absent"))
+    XCTAssertEqual(outcome.workroomSkill?.summary, "claude removed, codex absent")
     XCTAssertFalse(FileManager.default.fileExists(atPath: skill.path))
     XCTAssertTrue(
       FileManager.default.fileExists(atPath: home.appendingPathComponent(".claude").path))

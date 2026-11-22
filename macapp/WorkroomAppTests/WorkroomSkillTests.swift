@@ -1,20 +1,25 @@
 import Defaults
 import HostDrivers
+import WorkroomDomain
 import XCTest
 
 @testable import Workroom
 
-/// The Workroom skill for Claude Code and Codex on this Mac (#697): Settings ▸ AI Agents' toggle
-/// installs it and removes it again through the bundled CLI, in a throwaway home only.
+/// The Workroom skill for Claude Code and Codex (#697): Settings ▸ AI Agents' toggle installs it
+/// and removes it again through the bundled CLI, in a throwaway home only, and each host's connect
+/// is told what to do with it.
 @MainActor
 final class WorkroomSkillTests: XCTestCase {
   /// Calls the runner was given, in order.
   private final class Calls: @unchecked Sendable {
     private let lock = NSLock()
-    private var calls: [(install: Bool, home: String)] = []
-    func record(_ install: Bool, _ home: String) { lock.withLock { calls.append((install, home)) } }
+    private var calls: [(install: Bool, home: String, variables: [String: String])] = []
+    func record(_ install: Bool, _ home: String, _ variables: [String: String]) {
+      lock.withLock { calls.append((install, home, variables)) }
+    }
     var installs: [Bool] { lock.withLock { calls.map(\.install) } }
     var homes: [String] { lock.withLock { calls.map(\.home) } }
+    var variables: [[String: String]] { lock.withLock { calls.map(\.variables) } }
   }
 
   private func throwawayHome(agents: [String] = [".claude", ".codex"]) throws -> URL {
@@ -28,21 +33,25 @@ final class WorkroomSkillTests: XCTestCase {
     return home
   }
 
+  private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
+
   override func setUp() {
     super.setUp()
-    Defaults.reset(.installWorkroomSkill, .workroomSkillTurnedOff)
+    Defaults.reset(.installWorkroomSkill, .workroomSkillHosts, .workroomSkillPendingRemoval)
   }
 
   override func tearDown() {
-    Defaults.reset(.installWorkroomSkill, .workroomSkillTurnedOff)
+    Defaults.reset(.installWorkroomSkill, .workroomSkillHosts, .workroomSkillPendingRemoval)
     super.tearDown()
   }
 
-  /// The real bundled CLI, in a throwaway home: on writes each agent's skill, with Workroom's
-  /// marker; off takes away exactly that, leaving the agents' folders and a skill of the user's.
+  /// The real bundled CLI, in a throwaway home: on writes Claude Code's skill in `~/.claude` and
+  /// Codex's in `~/.agents`, each with Workroom's marker; off takes away exactly that, leaving
+  /// the agents' folders and a skill of the user's. Whatever `CLAUDE_CONFIG_DIR` or `CODEX_HOME`
+  /// this process has (a developer's may name their real config) never reaches the CLI.
   func testTheBundledCLIInstallsAndRemovesTheSkillInTheHomeItIsGiven() async throws {
     let home = try throwawayHome()
-    let theirs = home.appendingPathComponent(".codex/skills/mine/SKILL.md")
+    let theirs = home.appendingPathComponent(".agents/skills/mine/SKILL.md")
     try FileManager.default.createDirectory(
       at: theirs.deletingLastPathComponent(), withIntermediateDirectories: true)
     try Data("the user's own".utf8).write(to: theirs)
@@ -50,32 +59,37 @@ final class WorkroomSkillTests: XCTestCase {
 
     await skill.apply(install: true).value
     XCTAssertNil(skill.notice)
-    for agent in [".claude", ".codex"] {
-      let folder = home.appendingPathComponent("\(agent)/skills/workroom")
+    for folder in [".claude/skills/workroom", ".agents/skills/workroom"].map({
+      home.appendingPathComponent($0)
+    }) {
       let text = try String(
         contentsOf: folder.appendingPathComponent("SKILL.md"), encoding: .utf8)
       XCTAssertTrue(text.hasPrefix("---\nname: workroom\ndescription: "), text)
       XCTAssertTrue(text.contains("workroom wait"), text)
-      XCTAssertTrue(
-        FileManager.default.fileExists(
-          atPath: folder.appendingPathComponent(".workroom-skill").path)
-      )
+      XCTAssertTrue(exists(folder.appendingPathComponent(".workroom-skill")))
     }
+    XCTAssertFalse(exists(home.appendingPathComponent(".codex/skills")))
 
     await skill.apply(install: false).value
     XCTAssertNil(skill.notice)
-    XCTAssertFalse(
-      FileManager.default.fileExists(
-        atPath: home.appendingPathComponent(".claude/skills/workroom").path))
-    XCTAssertFalse(
-      FileManager.default.fileExists(
-        atPath: home.appendingPathComponent(".codex/skills/workroom").path))
-    // Claude's skills folder was Workroom's to make, Codex's wasn't.
-    XCTAssertFalse(
-      FileManager.default.fileExists(atPath: home.appendingPathComponent(".claude/skills").path))
-    XCTAssertTrue(
-      FileManager.default.fileExists(atPath: home.appendingPathComponent(".claude").path))
+    XCTAssertFalse(exists(home.appendingPathComponent(".claude/skills")))
+    XCTAssertFalse(exists(home.appendingPathComponent(".agents/skills/workroom")))
+    XCTAssertTrue(exists(home.appendingPathComponent(".claude")))
     XCTAssertEqual(try String(contentsOf: theirs, encoding: .utf8), "the user's own")
+  }
+
+  /// The variables given are the ones the CLI uses: `CLAUDE_CONFIG_DIR` moves Claude Code's skill.
+  func testTheBundledCLIUsesTheVariablesItIsGiven() async throws {
+    let home = try throwawayHome(agents: [])
+    let config = home.appendingPathComponent("claude-config")
+    try FileManager.default.createDirectory(at: config, withIntermediateDirectories: true)
+    let report = try await WorkroomCLI.shared.workroomSkill(
+      install: true, home: home.path, variables: ["CLAUDE_CONFIG_DIR": config.path])
+    XCTAssertEqual(report.skills.map(\.state), ["installed", "no-agent"])
+    XCTAssertTrue(exists(config.appendingPathComponent("skills/workroom/SKILL.md")))
+    XCTAssertFalse(exists(home.appendingPathComponent(".claude")))
+    _ = try await WorkroomCLI.shared.workroomSkill(install: false, home: home.path, variables: [:])
+    XCTAssertFalse(exists(config.appendingPathComponent("skills")), "found from the record")
   }
 
   /// A skill of that name the user made is left alone, and the section says so.
@@ -96,12 +110,12 @@ final class WorkroomSkillTests: XCTestCase {
       try String(contentsOf: folder.appendingPathComponent("SKILL.md"), encoding: .utf8), "mine")
   }
 
-  /// The toggle installs, then removes and remembers the turn-off for the hosts; launch installs
-  /// only while it is on.
+  /// The toggle installs and removes, in the order asked; launch installs only while it is on; a
+  /// home that isn't the user's is given no variables.
   func testTheSettingInstallsRemovesAndLaunchInstallsOnlyWhileOn() async {
     let calls = Calls()
-    let skill = WorkroomSkill(home: "/tmp/skill-home") { install, home in
-      calls.record(install, home)
+    let skill = WorkroomSkill(home: "/tmp/skill-home") { install, home, variables in
+      calls.record(install, home, variables)
       return WorkroomSkillReport(skills: [])
     }
     skill.launched()
@@ -110,13 +124,12 @@ final class WorkroomSkillTests: XCTestCase {
 
     Defaults[.installWorkroomSkill] = true
     skill.settingChanged(to: true)
-    XCTAssertFalse(Defaults[.workroomSkillTurnedOff])
     skill.settingChanged(to: false)
-    XCTAssertTrue(Defaults[.workroomSkillTurnedOff])
     // The last one asked wins, after the ones before it.
     await skill.apply(install: false).value
     XCTAssertEqual(calls.installs, [true, true, false, false])
     XCTAssertEqual(Set(calls.homes), ["/tmp/skill-home"])
+    XCTAssertEqual(Set(calls.variables), [[:]])
     XCTAssertFalse(skill.isApplying)
 
     skill.launched()
@@ -127,13 +140,13 @@ final class WorkroomSkillTests: XCTestCase {
   /// A runner that fails says so, and a process with no home touches nothing.
   func testAFailureIsSaidAndNoHomeRunsNothing() async {
     struct Failed: LocalizedError { var errorDescription: String? { "no binary" } }
-    let failing = WorkroomSkill(home: "/tmp/skill-home") { _, _ in throw Failed() }
+    let failing = WorkroomSkill(home: "/tmp/skill-home") { _, _, _ in throw Failed() }
     await failing.apply(install: true).value
     XCTAssertEqual(failing.notice, "The skill couldn't be installed: no binary")
 
     let calls = Calls()
-    let homeless = WorkroomSkill(home: nil) { install, home in
-      calls.record(install, home)
+    let homeless = WorkroomSkill(home: nil) { install, home, variables in
+      calls.record(install, home, variables)
       return WorkroomSkillReport(skills: [])
     }
     await homeless.apply(install: true).value
@@ -146,13 +159,71 @@ final class WorkroomSkillTests: XCTestCase {
     XCTAssertNil(WorkroomSkill.defaultHome())
   }
 
-  /// What each host's bootstrap is told: install while on, remove once turned off, else nothing.
-  func testTheHostPolicyFollowsTheSetting() {
-    XCTAssertEqual(WorkroomSkill.hostPolicy(on: true, turnedOff: false), .install)
-    XCTAssertEqual(WorkroomSkill.hostPolicy(on: true, turnedOff: true), .install)
-    XCTAssertEqual(WorkroomSkill.hostPolicy(on: false, turnedOff: true), .remove)
-    XCTAssertEqual(WorkroomSkill.hostPolicy(on: false, turnedOff: false), .leave)
-    XCTAssertEqual(WorkroomSkill.hostPolicy(), .leave, "off by default")
+  /// Only the coding agents' two variables, and only set ones, are taken from an environment.
+  func testOnlyTheAgentsVariablesAreTaken() {
+    XCTAssertEqual(
+      WorkroomSkill.agentVariables(from: [
+        "CLAUDE_CONFIG_DIR": "/c", "CODEX_HOME": "", "HOME": "/h", "PATH": "/bin",
+      ]), ["CLAUDE_CONFIG_DIR": "/c"])
+  }
+
+  /// What each host's connect is told: install while on; once turned off, remove on each host it
+  /// went onto, once, until a removal there finished or found nothing, and kept while one fails
+  /// (a host whose binary predates `workroom skill`); a host it never went onto is left alone.
+  func testEachHostGetsItsRemovalOnceAfterTheSettingIsTurnedOff() {
+    let a = HostID.remote(UUID())
+    let b = HostID.remote(UUID())
+    let never = HostID.remote(UUID())
+    let skill = WorkroomSkill(home: nil) { _, _, _ in WorkroomSkillReport(skills: []) }
+    XCTAssertEqual(WorkroomSkill.hostPolicy(for: a), .leave, "off by default")
+
+    Defaults[.installWorkroomSkill] = true
+    skill.settingChanged(to: true)
+    XCTAssertEqual(WorkroomSkill.hostPolicy(for: a), .install)
+    let installed = DaemonBootstrap.Outcome.WorkroomSkill.done([
+      .init(agent: "claude", path: "/h/.claude/skills/workroom", state: "installed"),
+      .init(agent: "codex", path: "/h/.agents/skills/workroom", state: "no-agent"),
+    ])
+    skill.recordHost(a, policy: .install, result: installed)
+    skill.recordHost(b, policy: .install, result: installed)
+    skill.recordHost(never, policy: .install, result: .failed("unknown command \"skill\""))
+    XCTAssertEqual(
+      Set(Defaults[.workroomSkillHosts]), [WorkroomSkill.key(a), WorkroomSkill.key(b)])
+    XCTAssertEqual(
+      skill.notice, "On a remote host, the skill couldn't be installed: unknown command \"skill\"")
+
+    Defaults[.installWorkroomSkill] = false
+    skill.settingChanged(to: false)
+    XCTAssertEqual(WorkroomSkill.hostPolicy(for: a), .remove)
+    XCTAssertEqual(WorkroomSkill.hostPolicy(for: b), .remove)
+    XCTAssertEqual(WorkroomSkill.hostPolicy(for: never), .leave)
+
+    skill.recordHost(
+      a, policy: .remove,
+      result: .done([.init(agent: "claude", path: "/h/.claude/skills/workroom", state: "removed")]))
+    XCTAssertEqual(WorkroomSkill.hostPolicy(for: a), .leave, "removed once")
+    skill.recordHost(b, policy: .remove, result: .failed("unknown command \"skill\""))
+    XCTAssertEqual(WorkroomSkill.hostPolicy(for: b), .remove, "kept until it goes through")
+    XCTAssertEqual(
+      skill.notice, "On a remote host, the skill couldn't be removed yet: unknown command \"skill\""
+    )
+    skill.recordHost(b, policy: .remove, result: nil)
+    XCTAssertEqual(WorkroomSkill.hostPolicy(for: b), .leave, "the probe found nothing to remove")
+    XCTAssertNil(skill.notice)
+  }
+
+  /// A host whose skill was left alone or edited says so in the setting.
+  func testAHostsSkillLeftAloneIsSaid() {
+    let skill = WorkroomSkill(home: nil) { _, _, _ in WorkroomSkillReport(skills: []) }
+    skill.recordHost(
+      .remote(UUID()), policy: .install,
+      result: .done([
+        .init(agent: "codex", path: "/home/u/.agents/skills/workroom", state: "not-ours")
+      ]))
+    XCTAssertEqual(
+      skill.notice,
+      "On a remote host: /home/u/.agents/skills/workroom is a skill Workroom didn't install, "
+        + "so Codex's was left alone.")
   }
 
   func testTheNoticeNamesWhatWasLeftOrFailedAndNothingElse() {
