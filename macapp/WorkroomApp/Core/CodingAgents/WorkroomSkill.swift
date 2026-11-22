@@ -93,19 +93,39 @@ final class WorkroomSkill: ObservableObject {
     }
   }
 
-  /// What a connect does with the skill on `host`: install it while the setting is on; remove it
-  /// once, after the setting was turned off, on a host it was installed on; otherwise leave the
-  /// host alone, so a build that never had it on never takes away another build's skill.
+  // MARK: - The state, by construction
+  //
+  // One wanted state for every target, `installWorkroomSkill`, which the setting writes the
+  // moment it changes; and per target, persisted, whether Workroom's skill may be there: this
+  // Mac's `workroomSkillOnMac`, and each host in `workroomSkillHosts`. A target is marked the
+  // moment an install is about to start (intent first, work second), and unmarked only once a
+  // removal there went through for every folder, or found nothing, while the setting is still
+  // off. Reconciling a target is then one rule: wanted on, install; wanted off and marked,
+  // remove; otherwise leave it, so a build that never had it on touches nothing. Launch and each
+  // connect reconcile, and so does every change of the setting, so neither a quit in the middle
+  // nor a result that lands after the setting changed can leave the skill behind.
+
+  /// What reconciling `host` does, from the wanted state and whether its skill may be there.
   nonisolated static func hostPolicy(
     for host: HostID, on: Bool = Defaults[.installWorkroomSkill],
-    pending: [String] = Defaults[.workroomSkillPendingRemoval]
+    marked: [String] = Defaults[.workroomSkillHosts]
   ) -> DaemonBootstrap.WorkroomSkillPolicy {
-    on ? .install : pending.contains(key(host)) ? .remove : .leave
+    on ? .install : marked.contains(key(host)) ? .remove : .leave
   }
 
-  /// A host's connect synced the skill (`DaemonBootstrap.connect`): a host it went onto is
-  /// remembered for the removal, a removal that finished (or found nothing to remove) is done,
-  /// and anything left alone or failed is said in the setting.
+  /// A connect to `host` is about to reconcile it (`DaemonBootstrap.connect`): an install marks
+  /// the host first, so however it ends (a quit, a lost link, a late result), the host stays due
+  /// its removal once the setting is off.
+  nonisolated static func beginHostSync(for host: HostID) -> DaemonBootstrap.WorkroomSkillPolicy {
+    let policy = hostPolicy(for: host)
+    if policy == .install, !Defaults[.workroomSkillHosts].contains(key(host)) {
+      Defaults[.workroomSkillHosts].append(key(host))
+    }
+    return policy
+  }
+
+  /// A host's connect synced the skill (`DaemonBootstrap.connect`): reconciled against the wanted
+  /// state as it is now, and anything left alone or failed said in the setting.
   nonisolated static func hostSynced(
     _ host: HostID, policy: DaemonBootstrap.WorkroomSkillPolicy,
     result: DaemonBootstrap.Outcome.WorkroomSkill?
@@ -118,63 +138,61 @@ final class WorkroomSkill: ObservableObject {
     result: DaemonBootstrap.Outcome.WorkroomSkill?
   ) {
     let key = Self.key(host)
+    // A removal that went through for every folder, or that the probe found nothing for, is the
+    // only result that unmarks a host, and only while the setting is still off. An install, late
+    // or not, leaves the mark its start made.
+    let removedAll: Bool
     switch (policy, result) {
     case (.install, .done(let skills)):
-      if skills.contains(where: { ["installed", "updated", "current"].contains($0.state) }) {
-        // An install that finished after the setting was turned off, which counted no host it
-        // hadn't heard from yet, is due its removal at once, as every other host is.
-        let list: Defaults.Key<[String]> =
-          Defaults[.installWorkroomSkill] ? .workroomSkillHosts : .workroomSkillPendingRemoval
-        if !Defaults[list].contains(key) { Defaults[list].append(key) }
-      }
+      removedAll = false
       hostNotices[key] = Self.notice(for: WorkroomSkillReport(skills: skills), install: true)
         .map { "On a remote host: \($0)" }
     case (.install, .failed(let why)):
+      removedAll = false
       hostNotices[key] = "On a remote host, the skill couldn't be installed: \(why)"
     case (.remove, .done(let skills)):
-      // Done only when every folder's removal went through: one that failed (a read-only disk,
-      // say) stays in the host's own record, and the host stays due, so the next connect retries.
-      if !Self.anyFailed(skills) {
-        Defaults[.workroomSkillPendingRemoval].removeAll { $0 == key }
-      }
+      // One folder that failed (a read-only disk, say) stays in the host's own record, and the
+      // host stays marked, so the next connect retries.
+      removedAll = !Self.anyFailed(skills)
       hostNotices[key] = Self.notice(for: WorkroomSkillReport(skills: skills), install: false)
         .map { "On a remote host: \($0)" }
     case (.remove, nil):
-      // The probe found no Workroom skill there: nothing left to remove.
-      Defaults[.workroomSkillPendingRemoval].removeAll { $0 == key }
+      removedAll = true
       hostNotices[key] = nil
     case (.remove, .failed(let why)):
-      // Kept, so the next connect tries again: a host whose daemon predates `workroom skill`
-      // removes it once it is updated.
+      // A host whose daemon predates `workroom skill` removes it once it is updated.
+      removedAll = false
       hostNotices[key] = "On a remote host, the skill couldn't be removed yet: \(why)"
     case (.install, nil), (.leave, _):
-      break
+      removedAll = false
+    }
+    if removedAll, !Defaults[.installWorkroomSkill] {
+      Defaults[.workroomSkillHosts].removeAll { $0 == key }
     }
     publishNotice()
   }
 
-  /// The setting changed to `on`. Off, every host the skill went onto is due its removal at its
-  /// next connect; on, none is. Then installs or removes it on this Mac.
-  func settingChanged(to on: Bool) {
-    if on {
-      Defaults[.workroomSkillPendingRemoval] = []
-    } else {
-      let due = Defaults[.workroomSkillPendingRemoval] + Defaults[.workroomSkillHosts]
-      Defaults[.workroomSkillPendingRemoval] = Array(Set(due)).sorted()
-      Defaults[.workroomSkillHosts] = []
-    }
+  /// The setting changed (the binding has already stored it): reconcile this Mac. Each host is
+  /// reconciled at its next connect.
+  @discardableResult
+  func settingChanged(to on: Bool) -> Task<Void, Never>? {
     hostNotices = [:]
-    apply(install: on)
+    return reconcile()
   }
 
-  /// At launch: brings the skill up to date while the setting is on. Off, only a removal on this
-  /// Mac that didn't go through is tried again; nothing else is touched.
-  func launched() {
-    if Defaults[.installWorkroomSkill] {
-      apply(install: true)
-    } else if Defaults[.workroomSkillMacRemovalPending] {
-      apply(install: false)
-    }
+  /// At launch: reconcile this Mac. On, that brings the skill up to date; off, it finishes a
+  /// removal that a quit or a failure left undone; never had it on, it touches nothing.
+  @discardableResult
+  func launched() -> Task<Void, Never>? {
+    reconcile()
+  }
+
+  /// This Mac, by the rule above: the work it started, or nil when there is none to do.
+  @discardableResult
+  func reconcile() -> Task<Void, Never>? {
+    if Defaults[.installWorkroomSkill] { return apply(install: true) }
+    if Defaults[.workroomSkillOnMac] { return apply(install: false) }
+    return nil
   }
 
   /// Whether a folder's install or removal failed.
@@ -182,9 +200,12 @@ final class WorkroomSkill: ObservableObject {
     skills.contains { $0.state == "failed" }
   }
 
-  /// Installs or removes the skill on this Mac, after whatever is under way.
+  /// Installs or removes the skill on this Mac, after whatever is under way. An install marks
+  /// this Mac first; a removal unmarks it only once it went through for every folder and the
+  /// setting is still off when it lands.
   @discardableResult
   func apply(install: Bool) -> Task<Void, Never> {
+    if install { Defaults[.workroomSkillOnMac] = true }
     let previous = last
     applied += 1
     let turn = applied
@@ -203,11 +224,12 @@ final class WorkroomSkill: ObservableObject {
             "Workroom skill \(install ? "install" : "remove", privacy: .public): \(report.skills.map { "\($0.agent) \($0.state)" }.joined(separator: ", "), privacy: .public)"
           )
           said = Self.notice(for: report, install: install)
-          // A removal here that failed for a folder is tried again at the next launch; the
-          // CLI keeps that folder in its record. An install puts the skill back anyway.
-          Defaults[.workroomSkillMacRemovalPending] = !install && Self.anyFailed(report.skills)
+          // A folder that failed stays in the CLI's record and this Mac stays marked, so the
+          // next launch tries again; a setting turned back on meanwhile keeps the mark too.
+          if !install, !Self.anyFailed(report.skills), !Defaults[.installWorkroomSkill] {
+            Defaults[.workroomSkillOnMac] = false
+          }
         } catch {
-          if !install { Defaults[.workroomSkillMacRemovalPending] = true }
           Self.logger.error(
             "Workroom skill: \(error.localizedDescription, privacy: .public)")
           said =

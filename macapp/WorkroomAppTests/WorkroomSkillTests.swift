@@ -36,9 +36,7 @@ final class WorkroomSkillTests: XCTestCase {
   private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
 
   nonisolated private static func resetSettings() {
-    Defaults.reset(
-      .installWorkroomSkill, .workroomSkillHosts, .workroomSkillPendingRemoval,
-      .workroomSkillMacRemovalPending)
+    Defaults.reset(.installWorkroomSkill, .workroomSkillHosts, .workroomSkillOnMac)
   }
 
   override func setUp() {
@@ -51,22 +49,26 @@ final class WorkroomSkillTests: XCTestCase {
     super.tearDown()
   }
 
-  /// A host's install that finishes after the setting was turned off, before the host was
-  /// counted, makes that host due its removal, not one Workroom leaves for good.
+  /// A host's install that finishes after the setting was turned off leaves the host due its
+  /// removal: the connect marked it before the install started, and only a removal unmarks it.
   func testAnInstallThatFinishesAfterTheSettingIsOffIsDueItsRemoval() {
     let late = HostID.remote(UUID())
     let skill = WorkroomSkill(home: nil) { _, _, _ in WorkroomSkillReport(skills: []) }
     Defaults[.installWorkroomSkill] = true
     skill.settingChanged(to: true)
+    XCTAssertEqual(WorkroomSkill.beginHostSync(for: late), .install)
     Defaults[.installWorkroomSkill] = false
     skill.settingChanged(to: false)
-    XCTAssertEqual(WorkroomSkill.hostPolicy(for: late), .leave, "not heard from yet")
+    XCTAssertEqual(WorkroomSkill.hostPolicy(for: late), .remove, "marked as it started")
     skill.recordHost(
       late, policy: .install,
       result: .done([.init(agent: "claude", path: "/h/.claude/skills/workroom", state: "installed")]
       ))
-    XCTAssertEqual(WorkroomSkill.hostPolicy(for: late), .remove)
-    XCTAssertEqual(Defaults[.workroomSkillHosts], [])
+    XCTAssertEqual(WorkroomSkill.hostPolicy(for: late), .remove, "the late install changes nothing")
+    // A removal that lands after the setting went back on leaves the mark for the next install.
+    Defaults[.installWorkroomSkill] = true
+    skill.recordHost(late, policy: .remove, result: nil)
+    XCTAssertEqual(Defaults[.workroomSkillHosts], [WorkroomSkill.key(late)])
   }
 
   /// A removal whose envelope went through but one of whose folders failed (a read-only disk)
@@ -74,7 +76,7 @@ final class WorkroomSkillTests: XCTestCase {
   func testAHostRemovalWithAFailedFolderStaysDue() {
     let host = HostID.remote(UUID())
     let skill = WorkroomSkill(home: nil) { _, _, _ in WorkroomSkillReport(skills: []) }
-    Defaults[.workroomSkillPendingRemoval] = [WorkroomSkill.key(host)]
+    Defaults[.workroomSkillHosts] = [WorkroomSkill.key(host)]
     skill.recordHost(
       host, policy: .remove,
       result: .done([
@@ -105,17 +107,47 @@ final class WorkroomSkillTests: XCTestCase {
     ])
     let skill = WorkroomSkill(home: "/tmp/skill-home") { install, home, variables in
       calls.record(install, home, variables)
-      return calls.installs.count == 1 ? failing : WorkroomSkillReport(skills: [])
+      return calls.installs.count == 2 ? failing : WorkroomSkillReport(skills: [])
     }
-    await skill.apply(install: false).value
-    XCTAssertTrue(Defaults[.workroomSkillMacRemovalPending])
-    skill.launched()
-    await skill.apply(install: false).value
-    XCTAssertEqual(calls.installs, [false, false, false], "launch tried the removal again")
-    XCTAssertFalse(Defaults[.workroomSkillMacRemovalPending])
-    skill.launched()
-    await skill.apply(install: true).value
-    XCTAssertEqual(calls.installs.count, 4, "nothing more to retry at launch")
+    Defaults[.installWorkroomSkill] = true
+    await skill.settingChanged(to: true)?.value
+    Defaults[.installWorkroomSkill] = false
+    await skill.settingChanged(to: false)?.value
+    XCTAssertTrue(Defaults[.workroomSkillOnMac], "the failed folder keeps this Mac marked")
+    await skill.launched()?.value
+    XCTAssertEqual(calls.installs, [true, false, false], "launch tried the removal again")
+    XCTAssertFalse(Defaults[.workroomSkillOnMac], "the retry went through")
+    XCTAssertNil(skill.launched(), "nothing more to do at launch")
+  }
+
+  /// The setting turned off, then the app quit before the removal ran (its task dropped, stuck
+  /// in the login-shell read): the next launch removes the skill, since the wanted state and the
+  /// mark were both written before any work started.
+  func testAQuitBeforeTheRemovalRunsIsFinishedByTheNextLaunch() async {
+    Defaults[.installWorkroomSkill] = true
+    let first = WorkroomSkill(home: "/tmp/skill-home") { _, _, _ in
+      try await Task.sleep(for: .seconds(3600))
+      return WorkroomSkillReport(skills: [])
+    }
+    let installing = first.settingChanged(to: true)
+    XCTAssertTrue(Defaults[.workroomSkillOnMac], "marked before the install's work")
+    Defaults[.installWorkroomSkill] = false
+    let removing = first.settingChanged(to: false)
+    // The app quits here: neither task gets anywhere.
+
+    let calls = Calls()
+    let relaunched = WorkroomSkill(home: "/tmp/skill-home") { install, home, variables in
+      calls.record(install, home, variables)
+      return WorkroomSkillReport(skills: [])
+    }
+    await relaunched.launched()?.value
+    XCTAssertEqual(calls.installs, [false], "the relaunch removed it")
+    XCTAssertFalse(Defaults[.workroomSkillOnMac])
+    // The quit app's tasks end, writing nothing: a runner that throws changes no state.
+    installing?.cancel()
+    removing?.cancel()
+    await removing?.value
+    XCTAssertFalse(Defaults[.workroomSkillOnMac])
   }
 
   /// The real bundled CLI, in a throwaway home: on writes Claude Code's skill in `~/.claude` and
@@ -195,19 +227,20 @@ final class WorkroomSkillTests: XCTestCase {
     await skill.apply(install: true).value
     XCTAssertEqual(calls.installs, [true], "launch with the setting off installs nothing")
 
+    // The setting is stored before it is told, as its binding does.
     Defaults[.installWorkroomSkill] = true
     skill.settingChanged(to: true)
-    skill.settingChanged(to: false)
+    Defaults[.installWorkroomSkill] = false
     // The last one asked wins, after the ones before it.
-    await skill.apply(install: false).value
-    XCTAssertEqual(calls.installs, [true, true, false, false])
+    await skill.settingChanged(to: false)?.value
+    XCTAssertEqual(calls.installs, [true, true, false])
     XCTAssertEqual(Set(calls.homes), ["/tmp/skill-home"])
     XCTAssertEqual(Set(calls.variables), [[:]])
     XCTAssertFalse(skill.isApplying)
 
-    skill.launched()
-    await skill.apply(install: true).value
-    XCTAssertEqual(calls.installs.suffix(2), [true, true], "launch with it on installs")
+    Defaults[.installWorkroomSkill] = true
+    await skill.launched()?.value
+    XCTAssertEqual(calls.installs.suffix(2), [false, true], "launch with it on installs")
   }
 
   /// A runner that fails says so, and a process with no home touches nothing.
@@ -240,28 +273,32 @@ final class WorkroomSkillTests: XCTestCase {
       ]), ["CLAUDE_CONFIG_DIR": "/c"])
   }
 
-  /// What each host's connect is told: install while on; once turned off, remove on each host it
-  /// went onto, once, until a removal there finished or found nothing, and kept while one fails
-  /// (a host whose binary predates `workroom skill`); a host it never went onto is left alone.
+  /// What each host's connect is told: install while on, the host marked as the install starts;
+  /// once turned off, remove on each marked host until a removal there finished or found
+  /// nothing, kept while one fails (a host whose binary predates `workroom skill`); a host no
+  /// connect reached while it was on is left alone.
   func testEachHostGetsItsRemovalOnceAfterTheSettingIsTurnedOff() {
     let a = HostID.remote(UUID())
     let b = HostID.remote(UUID())
+    let old = HostID.remote(UUID())
     let never = HostID.remote(UUID())
     let skill = WorkroomSkill(home: nil) { _, _, _ in WorkroomSkillReport(skills: []) }
-    XCTAssertEqual(WorkroomSkill.hostPolicy(for: a), .leave, "off by default")
+    XCTAssertEqual(WorkroomSkill.beginHostSync(for: a), .leave, "off by default")
+    XCTAssertEqual(Defaults[.workroomSkillHosts], [], "and nothing marked")
 
     Defaults[.installWorkroomSkill] = true
     skill.settingChanged(to: true)
-    XCTAssertEqual(WorkroomSkill.hostPolicy(for: a), .install)
+    for host in [a, b, old] { XCTAssertEqual(WorkroomSkill.beginHostSync(for: host), .install) }
     let installed = DaemonBootstrap.Outcome.WorkroomSkill.done([
       .init(agent: "claude", path: "/h/.claude/skills/workroom", state: "installed"),
       .init(agent: "codex", path: "/h/.agents/skills/workroom", state: "no-agent"),
     ])
     skill.recordHost(a, policy: .install, result: installed)
     skill.recordHost(b, policy: .install, result: installed)
-    skill.recordHost(never, policy: .install, result: .failed("unknown command \"skill\""))
+    skill.recordHost(old, policy: .install, result: .failed("unknown command \"skill\""))
     XCTAssertEqual(
-      Set(Defaults[.workroomSkillHosts]), [WorkroomSkill.key(a), WorkroomSkill.key(b)])
+      Set(Defaults[.workroomSkillHosts]),
+      Set([a, b, old].map(WorkroomSkill.key)), "each marked as its install started")
     XCTAssertEqual(
       skill.notice, "On a remote host, the skill couldn't be installed: unknown command \"skill\"")
 
@@ -269,7 +306,10 @@ final class WorkroomSkillTests: XCTestCase {
     skill.settingChanged(to: false)
     XCTAssertEqual(WorkroomSkill.hostPolicy(for: a), .remove)
     XCTAssertEqual(WorkroomSkill.hostPolicy(for: b), .remove)
+    XCTAssertEqual(WorkroomSkill.hostPolicy(for: old), .remove)
     XCTAssertEqual(WorkroomSkill.hostPolicy(for: never), .leave)
+    skill.recordHost(old, policy: .remove, result: nil)
+    XCTAssertEqual(WorkroomSkill.hostPolicy(for: old), .leave, "nothing there to remove")
 
     skill.recordHost(
       a, policy: .remove,

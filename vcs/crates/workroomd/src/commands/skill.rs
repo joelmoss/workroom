@@ -241,7 +241,7 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
         }
     };
     let places = if args.is_set("login-environment") {
-        let shell = context.env("SHELL").unwrap_or_else(|| "/bin/sh".into());
+        let shell = login_shell(context.env("SHELL"), crate::terminal::shell::user_shell);
         let login = crate::host::environment::login_environment(
             &shell,
             &home,
@@ -283,6 +283,22 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
             })
             .collect(),
     )
+}
+
+/// The shell whose login environment says where the coding agents' folders are: the user's
+/// shell as their terminals get it (`resolve`, `terminal::shell::user_shell`): `SHELL` when it
+/// names one, else the passwd database's, since a container's `docker exec` sets no `SHELL`;
+/// `/bin/sh` when neither says.
+fn login_shell(
+    env_shell: Option<String>,
+    resolve: impl FnOnce(Option<std::ffi::OsString>) -> String,
+) -> String {
+    let shell = resolve(env_shell.map(Into::into));
+    if shell.is_empty() {
+        "/bin/sh".into()
+    } else {
+        shell
+    }
 }
 
 /// The skill's `SKILL.md`: its front matter, then `help agents`.
@@ -1063,6 +1079,36 @@ mod tests {
         assert_eq!(fs::read_to_string(folder.join("notes.md")).unwrap(), "mine");
         assert!(!folder.join(SKILL_FILE).exists() && !folder.join(MARKER).exists());
         assert!(home.join(".claude/skills").is_dir());
+    }
+
+    /// With no `SHELL`, as in a container's exec, the login environment is read with the passwd
+    /// database's shell, so a variable a bash or zsh startup file exports is found; `SHELL` wins
+    /// when it names one, and `/bin/sh` is the last resort.
+    #[test]
+    fn the_login_shell_is_the_users_as_their_terminals_get_it() {
+        // A passwd database whose user's shell is zsh, as the terminals' resolver reads it.
+        let passwd_zsh = |env: Option<std::ffi::OsString>| {
+            env.filter(|shell| !shell.is_empty())
+                .map_or("/usr/bin/zsh".to_string(), |shell| {
+                    shell.to_string_lossy().into_owned()
+                })
+        };
+        assert_eq!(login_shell(None, passwd_zsh), "/usr/bin/zsh");
+        assert_eq!(login_shell(Some(String::new()), passwd_zsh), "/usr/bin/zsh");
+        assert_eq!(
+            login_shell(Some("/bin/bash".into()), passwd_zsh),
+            "/bin/bash"
+        );
+        assert_eq!(login_shell(None, |_| String::new()), "/bin/sh");
+        // The real resolver, with no `SHELL`, names this user's passwd shell, never nothing.
+        let real = login_shell(None, crate::terminal::shell::user_shell);
+        assert!(real.starts_with('/'), "{real}");
+        assert_eq!(
+            real,
+            Some(crate::terminal::shell::user_shell(None))
+                .filter(|shell| !shell.is_empty())
+                .unwrap_or_else(|| "/bin/sh".into())
+        );
     }
 
     #[test]

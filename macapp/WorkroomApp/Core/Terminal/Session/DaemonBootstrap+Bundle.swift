@@ -19,7 +19,7 @@ extension DaemonBootstrap {
     try await connect(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
       resources: resources, scripts: scripts,
-      workroomSkill: workroomSkill ?? WorkroomSkill.hostPolicy(for: host),
+      workroomSkill: workroomSkill ?? WorkroomSkill.beginHostSync(for: host),
       onWorkroomSkill: { policy, result in
         WorkroomSkill.hostSynced(host, policy: policy, result: result)
       })
