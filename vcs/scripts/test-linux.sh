@@ -209,6 +209,9 @@ if ! cargo zigbuild -p workroom ${FEATURES[@]+"${FEATURES[@]}"} --target "$TARGE
   exit 1
 fi
 cp "target/${TARGET}/debug/workroom" "$STAGE/workroomd"
+# With the `workroom` link a host's bootstrap puts beside its `workroomd` (ADR 0078), which
+# run_script.rs's PATH test finds there, as a host's script does.
+ln -s workroomd "$STAGE/workroom"
 
 # `-scm` rather than `-slim`: the file-service tests `git init` their fixtures, and slim has no git.
 IMAGE="${WR_LINUX_IMAGE:-docker.io/library/buildpack-deps:stable-scm}"
