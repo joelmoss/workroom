@@ -325,7 +325,7 @@ extension TabSession {
           defaultTitle: state.defaultTitle, cwd: state.cwd,
           sessionID: state.sessionID?.uuidString,
           run: state.launch.isRunSession ? true : nil,
-          userTitle: state.userTitle))
+          userTitle: state.userTitle, syncedLabel: state.syncedLabel))
     case .diff(let descriptor):
       self.init(
         key: key, kind: Self.diffKind,
@@ -494,19 +494,25 @@ struct TerminalState {
   /// through the terminal API, on any Mac, names this tab (`SessionLabels`).
   var userTitle: String?
 
+  /// The label this Mac last agreed with the daemon for this terminal's session (#694): the one it
+  /// told the daemon and the daemon took, or the one the daemon told it. Nil when it has never
+  /// agreed on one (a tab from before #694, or one opened onto a session that already was).
+  /// Saved with the tab, so a name changed while the daemon couldn't be told is told it later,
+  /// and a label set while this Mac was away wins over a name this Mac never changed.
+  var syncedLabel: SyncedLabel?
+
   /// This terminal's session's label (#694), its name as the terminal API names it: the user's
-  /// name for it, else a name the app gave it that it shows ("Run"); nil when it shows its
-  /// default, which a numbered "Terminal 2" never is.
+  /// name for it, else the name a run tab shows unnamed ("Run"); nil when it shows its default.
   var sessionLabel: String? {
-    userTitle ?? (Self.isNumberedName(defaultTitle) ? nil : defaultTitle)
+    userTitle ?? (launch.isRunSession ? defaultTitle : nil)
   }
 
   /// The user's name this terminal takes from its session's `label` (#694), cleaned as a rename
-  /// is: nil for none, and for the name the app gave it itself ("Run" on a run tab), which it shows
-  /// unnamed; any other label, even a numbered one, as it is.
+  /// is: nil for none, and for the name a run tab shows unnamed ("Run"); any other label, even a
+  /// numbered one, as it is.
   func userTitle(forLabel label: String?) -> String? {
     guard let name = TerminalPanes.cleanedName(label) else { return nil }
-    return !Self.isNumberedName(defaultTitle) && name == defaultTitle ? nil : name
+    return launch.isRunSession && name == defaultTitle ? nil : name
   }
   /// The surface's latest non-empty title (OSC 0/2 via shell integration): the running command while
   /// busy, the working directory when idle. Nil until the first report (issue #2). Kept on an
@@ -1364,12 +1370,18 @@ final class TerminalPanes {
         let cwd =
           target.remoteHost == nil
           ? Self.restoredCwd(payload.cwd, fallback: target.path) : target.path
+        // A tab an older build adopted from its session's label kept the label as its default
+        // title, which a clear could never take away: it is the user's name now, so it can be
+        // cleared like any other (#694).
+        let legacyName =
+          TerminalState.isNumberedName(payload.defaultTitle) ? nil : payload.defaultTitle
         tab = makeTerminalTab(
           for: target,
           cwd: cwd,
-          title: payload.defaultTitle,
+          title: legacyName == nil ? payload.defaultTitle : "Terminal",
           sessionID: payload.sessionID.flatMap(UUID.init(uuidString:)),
-          userTitle: Self.cleanedName(payload.userTitle))
+          userTitle: Self.cleanedName(payload.userTitle) ?? Self.cleanedName(legacyName),
+          syncedLabel: payload.syncedLabel)
       } else if let content = saved.restoredContent {
         tab = TerminalTab(
           content: content, diffViewModeOverride: saved.restoredDiffViewMode,
@@ -1651,20 +1663,44 @@ final class TerminalPanes {
   /// back to the daemon, which already has it. Returns the tab's session label now, which differs
   /// from `label` only when the label names nothing this tab shows (cleared on a run tab, which
   /// shows "Run"); nil for a missing or non-terminal tab.
+  /// The tab now agrees with the daemon on `label` (`TerminalState.syncedLabel`).
   @discardableResult
   func applySessionLabel(
     _ label: String?, forTab tabID: TerminalTab.ID, in target: TerminalTarget
   ) -> String?? {
     guard let state = terminalState(tabID, in: target.id) else { return nil }
     let named = state.userTitle(forLabel: label)
+    markLabelSynced(label, forTab: tabID, in: target)
     guard state.userTitle != named else { return .some(state.sessionLabel) }
     return .some(rename(tabID, in: target, to: named))
   }
 
-  /// Terminal tab `tabID`'s session label (`TerminalState.sessionLabel`); nil for none, and for a
-  /// missing or non-terminal tab.
-  func sessionLabel(ofTab tabID: TerminalTab.ID, in target: TerminalTarget) -> String? {
-    terminalState(tabID, in: target.id)?.sessionLabel
+  /// Tab `tabID` and its session's daemon agree on `label` (#694): the daemon took the label this
+  /// Mac told it, or told it.
+  func markLabelSynced(_ label: String?, forTab tabID: TerminalTab.ID, in target: TerminalTarget) {
+    let synced = SyncedLabel(label: Self.cleanedName(label))
+    guard let state = terminalState(tabID, in: target.id), state.syncedLabel != synced else {
+      return
+    }
+    mutateTerminalState(tabID, target: target.id) { $0.syncedLabel = synced }
+  }
+
+  /// Terminal tab `tabID`'s session label now and the one it last agreed with the daemon; nil for
+  /// a missing or non-terminal tab.
+  func labelSync(ofTab tabID: TerminalTab.ID, in target: TerminalTarget) -> (
+    local: String?, synced: SyncedLabel?
+  )? {
+    terminalState(tabID, in: target.id).map { ($0.sessionLabel, $0.syncedLabel) }
+  }
+
+  /// What tab `tabID`'s session label would be with `label` applied (`applySessionLabel`), without
+  /// applying it; nil for a missing or non-terminal tab.
+  func sessionLabel(
+    ofTab tabID: TerminalTab.ID, in target: TerminalTarget, applying label: String?
+  ) -> String?? {
+    guard var state = terminalState(tabID, in: target.id) else { return nil }
+    state.userTitle = state.userTitle(forLabel: label)
+    return .some(state.sessionLabel)
   }
 
   /// Gives tab `tabID` the user's name `name`, and its surface the label a session it starts
@@ -1680,12 +1716,28 @@ final class TerminalPanes {
     return label
   }
 
-  /// `name` trimmed, or nil when nothing is left.
+  /// `name` as a terminal's name is kept, the daemon's rule for a label (#694): with no control or
+  /// format character (an escape, a line break, a bidi override, a zero-width character) to
+  /// rewrite or hide what a tab shows, cut to 256 bytes at a character's boundary, then trimmed;
+  /// nil when nothing is left.
   nonisolated static func cleanedName(_ name: String?) -> String? {
-    guard let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty
-    else { return nil }
-    return trimmed
+    guard let name else { return nil }
+    var shown = String.UnicodeScalarView()
+    for scalar in name.unicodeScalars {
+      switch scalar.properties.generalCategory {
+      case .control, .format: continue
+      default: shown.append(scalar)
+      }
+    }
+    var kept = String(shown)
+    while kept.utf8.count > maxNameBytes { kept.removeLast() }
+    let trimmed = kept.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
   }
+
+  /// The most a terminal's name holds, in UTF-8 bytes: a label's (`lifecycle.rs`'s
+  /// `MAX_TITLE_BYTES`).
+  nonisolated static let maxNameBytes = 256
 
   /// Set a diff tab's per-tab layout override (issue #66), from the tab toolbar's unified/side-by-side
   /// toggle. Reassigns the tab value so the sessions publish and the pane's `DiffViewer`
@@ -2726,7 +2778,8 @@ final class TerminalPanes {
   /// (#522); otherwise a `command` runs in this pane's own process (an Investigate tab).
   private func makeTerminalTab(
     for target: TerminalTarget, cwd: String, command: String? = nil, title: String? = nil,
-    sessionID: UUID? = nil, runSession: Bool = false, userTitle: String? = nil
+    sessionID: UUID? = nil, runSession: Bool = false, userTitle: String? = nil,
+    syncedLabel: SyncedLabel? = nil
   ) -> TerminalTab {
     let count = openPanes(target.id).updateState { $0.numberNextTerminal() }
     // A remote workroom's path is a path on its host; this Mac's process starts in the home
@@ -2750,8 +2803,12 @@ final class TerminalPanes {
         isRunSession: view.isRunSession, runsCommand: view.isRunCommandSurface),
       launchDirectory: view.workingDirectory, sessionID: assignedSessionID)
     state.userTitle = userTitle
-    // Its session is labelled with the tab's name (#694): the user's, or one the app shows ("Run");
-    // none for a tab that shows its default.
+    // Its session is labelled with the tab's name (#694): the user's, or "Run" on a run tab; none
+    // for a tab that shows its default. A fresh session is made with it, so this Mac and the daemon
+    // agree on it from the start; a restored tab keeps what it last agreed.
+    state.syncedLabel =
+      sessionID == nil && assignedSessionID != nil
+      ? SyncedLabel(label: state.sessionLabel) : syncedLabel
     let metadata = target.sessionMetadata(title: state.sessionLabel)
     if let host = target.remoteHost, let assignedSessionID {
       // `cwd` is a path on the host here: the target's, or a split's anchor pane's.
@@ -2771,6 +2828,9 @@ final class TerminalPanes {
       // Who else types into it (#696), from the same host's events.
       PaneTypingMonitor.shared.watch(target.hostID)
       state.programStatus = programStatus.rollup(for: assignedSessionID)
+      // A tab onto a session that already is (restored, or opened from the detached list) may
+      // mount after its host's snapshot told the session's label: caught up from what was heard.
+      if sessionID != nil { SessionLabels.shared.mounted(assignedSessionID, on: target.hostID) }
     }
     let tab = TerminalTab(content: .terminal(state))
     // By the tab's id, not through this window's layout: a tab in transit to another window keeps

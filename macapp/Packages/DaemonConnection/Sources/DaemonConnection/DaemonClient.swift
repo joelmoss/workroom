@@ -601,6 +601,31 @@ public final class DaemonClient: @unchecked Sendable {
     timeout: TimeInterval, onEvent: @escaping @Sendable (TerminalInputEvent) -> Void
   ) async throws -> TerminalInputAvailability {
     guard helloVersion >= DaemonHandshake.minTerminalAPIVersion else { return .unsupported }
+    let wanted = TerminalInputEvent.subscribedTypes
+    let first = try await subscribe(
+      TerminalInputEvent.subscribeRequest, timeout: timeout, onEvent: onEvent)
+    guard first == .unsupported else { return first }
+    // A daemon that knows one of the types refuses them all (one from before `session.labelled`,
+    // #694, or before `session.input`): asked which it knows, it is subscribed to those, so one
+    // type it lacks never costs the rest.
+    let described = try await request(
+      bytes: TerminalInputEvent.describeEventsRequest, timeout: timeout, service: .terminalAPI)
+    let known = TerminalInputEvent.eventTypes(described: described) ?? []
+    let types = wanted.filter(known.contains)
+    guard types.contains("session.input"), types != wanted else { return .unsupported }
+    Self.logger.info(
+      "terminal API on \(String(describing: self.host), privacy: .public): subscribed to \(types.joined(separator: ","), privacy: .public), all this daemon has of \(wanted.joined(separator: ","), privacy: .public)"
+    )
+    return try await subscribe(
+      TerminalInputEvent.subscribeRequest(types: types), timeout: timeout, onEvent: onEvent)
+  }
+
+  /// One `events.subscribe` asking `request`: `.unsupported` when the daemon refuses it as bad
+  /// input.
+  private func subscribe(
+    _ request: Data, timeout: TimeInterval,
+    onEvent: @escaping @Sendable (TerminalInputEvent) -> Void
+  ) async throws -> TerminalInputAvailability {
     let answer = SubscriptionAnswer()
     let allocated: Result<UInt32, HostConnectionError> = lock.withLock {
       if closed { return .failure(.connectionLost) }
@@ -654,8 +679,7 @@ public final class DaemonClient: @unchecked Sendable {
         writes.async { [self] in
           do {
             try sendOnWrites(
-              DaemonEnvelope.encode(
-                service: .terminalAPI, stream: stream, payload: TerminalInputEvent.subscribeRequest),
+              DaemonEnvelope.encode(service: .terminalAPI, stream: stream, payload: request),
               // A wedged transport, as for any request; not this subscription's own deadline,
               // which a short one would turn into failing the whole connection.
               stallAfter: 7.5)

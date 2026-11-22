@@ -30,6 +30,44 @@ import os
 /// finds nothing listening and ends as it always has. A REMOTE pane's attach exits 255 instead,
 /// and the app attaches it again (#231; `DaemonBootstrap` is the remote side of this, on in every
 /// build).
+/// This Mac's daemon's completed hand-offs, told to whoever waits for the next (#694): what this
+/// Mac's subscriptions wait on, as a remote host's wait on its link coming back
+/// (`ProgramStatusMonitor.hostReconnected`). A subscription the old program refused (one that
+/// predates a service or an event type) is asked again of the new one, where nothing else would
+/// ask it again.
+final class LocalDaemonHandOffs: @unchecked Sendable {
+  static let shared = LocalDaemonHandOffs()
+
+  private let lock = NSLock()
+  private var waiting: [UUID: AsyncStream<Void>.Continuation] = [:]
+
+  /// Returns once a hand-off completes after this was called, or once the task is cancelled.
+  func next() async {
+    let (stream, continuation) = AsyncStream<Void>.makeStream()
+    let id = UUID()
+    continuation.onTermination = { [weak self] _ in
+      self?.lock.withLock { _ = self?.waiting.removeValue(forKey: id) }
+    }
+    lock.withLock { waiting[id] = continuation }
+    for await _ in stream { return }
+  }
+
+  /// A hand-off completed: every waiter returns.
+  func completed() {
+    let woken = lock.withLock { () -> [AsyncStream<Void>.Continuation] in
+      defer { waiting.removeAll() }
+      return Array(waiting.values)
+    }
+    for continuation in woken {
+      continuation.yield()
+      continuation.finish()
+    }
+  }
+
+  /// How many wait, for tests.
+  var waiters: Int { lock.withLock { waiting.count } }
+}
+
 enum DaemonHandOff {
   /// How long the app waits before killing the request. Safe to give up: the daemon tells its
   /// requester just before it replaces itself, and calls the hand-off off when the requester is
@@ -81,11 +119,17 @@ enum DaemonHandOff {
       let result = run(binary: binary, socket: socket, force: force)
       said.append(result)
       logger.notice("daemon hand-off: \(result, privacy: .public)")
+      if handedOff(result) { LocalDaemonHandOffs.shared.completed() }
       guard force, isTransient(result), attempt < delays.count else { break }
       logger.notice("daemon hand-off: trying the move again in \(delays[attempt])s")
       try? await Task.sleep(for: .seconds(delays[attempt]))
     }
     return said
+  }
+
+  /// Whether `result` says the daemon's program was replaced: `workroom hand-off`'s success.
+  static func handedOff(_ result: String) -> Bool {
+    result.hasPrefix("exit 0:") && result.hasSuffix("handed off")
   }
 
   /// Whether a hand-off was refused only for now: a repository command, a stuck mount or a session

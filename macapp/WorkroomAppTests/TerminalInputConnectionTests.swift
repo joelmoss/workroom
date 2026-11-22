@@ -131,6 +131,51 @@ final class TerminalInputConnectionTests: XCTestCase {
     await connection.close()
   }
 
+  // Value: protects=a daemon from before `session.labelled` still tells typing, `new` and `close`
+  // (#694 review); fails_when=one type it lacks costs the whole subscription; why_new=#694 asked
+  // for a type older protocol-12 daemons refuse; seam=FakeDaemon answering by method
+  /// A daemon that refuses one of the types is asked which it knows, and subscribed to those: its
+  /// typing reaches the subscriber.
+  func testADaemonWithoutOneTypeIsSubscribedToTheOthers() async throws {
+    let refused =
+      #"{"revision":1,"more":false,"error":{"kind":"InvalidRequest","message":"unknown type"}}"#
+    let described =
+      #"{"revision":1,"more":false,"result":{"revision":1,"methods":[{"name":"events.subscribe","#
+      + #""input":{"type":"object","properties":{"types":{"type":"array","items":{"type":"string","#
+      + #""enum":["session.created","session.ended","session.input","client.attached"]}}}}}]}}"#
+    let complete = snapshotComplete
+    let fake = try FakeDaemon(
+      version: 12,
+      terminalAPIReplying: { request in
+        if request.contains("api.describe") { return [described] }
+        return request.contains("session.labelled") ? [refused] : [complete]
+      })
+    defer { fake.stop() }
+    let connection = try await connect(fake)
+    let received = AsyncStream<TerminalInputEvent>.makeStream()
+    let availability = try await connection.subscribeTerminalInput {
+      received.continuation.yield($0)
+    }
+    XCTAssertNotNil(subscription(availability), "\(availability)")
+    let requests = fake.receivedTerminalAPIRequests
+    XCTAssertEqual(requests.count, 3, "\(requests)")
+    let last = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(try XCTUnwrap(requests.last).utf8))
+        as? [String: Any])
+    XCTAssertEqual(
+      (last["params"] as? [String: Any])?["types"] as? [String],
+      ["session.input", "session.created", "session.ended"])
+    let stream = try XCTUnwrap(fake.terminalAPIStreams.last)
+    fake.push(service: 8, stream: stream, payload: input(sender: sender))
+    var events = received.stream.makeAsyncIterator()
+    let event = await events.next()
+    XCTAssertEqual(
+      event,
+      .input(session: try XCTUnwrap(UUID(uuidString: session)), sender: UUID(uuidString: sender)))
+    try await stillAnswers(connection)
+    await connection.close()
+  }
+
   /// A refusal (past the daemon's subscription limits, or a reply too large) says why, and what
   /// the daemon still sends on that stream is dropped, never failing the connection.
   func testARefusalSaysWhyAndItsStreamIsSilenced() async throws {

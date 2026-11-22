@@ -55,7 +55,7 @@ struct DetachedSessionsButton: View {
       ForEach(detached, id: \.identifier.uuidString) { session in
         HStack(alignment: .firstTextBaseline, spacing: 8) {
           VStack(alignment: .leading, spacing: 2) {
-            Text(session.value(forMetadataKey: SessionMetadataKey.title) ?? "Terminal")
+            Text(DetachedSessionList.name(of: session))
               .lineLimit(1)
             Text(session.workingDirectory)
               .font(.caption)
