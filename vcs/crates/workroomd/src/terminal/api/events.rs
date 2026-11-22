@@ -315,6 +315,13 @@ pub fn output() -> Value {
                                 size, size owner and keepalive change with no event, so only \
                                 `session.list` with `clients` has them.",
             },
+            "opened": super::lifecycle::opened_schema(),
+            "closed": {
+                "type": "boolean",
+                "description": "`session.ended`: whether `session.close` (`workroom close`) \
+                                ended it, so the app closes its tab or split; false for a \
+                                session that ended any other way, whose pane stays.",
+            },
             "client": {
                 "description": "`client.attached` and `client.detached`: the client, as it \
                                 attached.",

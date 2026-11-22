@@ -41,6 +41,7 @@ mod git;
 mod host;
 mod include_archive;
 mod kind;
+mod lifecycle;
 mod list;
 mod log;
 mod namegen;
@@ -428,6 +429,22 @@ const COMMANDS: &[Command] = &[
         implementation: capture::run,
     },
     Command {
+        name: "close",
+        aliases: &[],
+        usage: "close TARGET [flags]",
+        short: "Close a terminal session, and its tab or split in the app",
+        long: None,
+        hidden: false,
+        mac_only: false,
+        flags: lifecycle::CLOSE_FLAGS,
+        subcommands: &[],
+        // One TARGET, which `lifecycle::run_close` checks.
+        arity: Arity::Own,
+        // A TARGET is a session the daemon knows, never a file, as `sessions`' is.
+        operands: Operands::Nothing,
+        implementation: lifecycle::run_close,
+    },
+    Command {
         hidden: true,
         ..mac_command(
             claim::run,
@@ -755,6 +772,21 @@ const COMMANDS: &[Command] = &[
         implementation: list::run,
     },
     Command {
+        name: "new",
+        aliases: &[],
+        usage: "new [flags]",
+        short: "Open a new terminal beside this one, as a tab or a split in the app",
+        long: None,
+        hidden: false,
+        mac_only: false,
+        flags: lifecycle::NEW_FLAGS,
+        subcommands: &[],
+        // Flags only, which `lifecycle::run_new` checks.
+        arity: Arity::Own,
+        operands: Operands::Nothing,
+        implementation: lifecycle::run_new,
+    },
+    Command {
         name: "prompt",
         aliases: &[],
         usage: "prompt TARGET [TEXT] [flags]",
@@ -769,6 +801,21 @@ const COMMANDS: &[Command] = &[
         // A TARGET is a session the daemon knows, never a file, as for `sessions`.
         operands: Operands::Nothing,
         implementation: prompt_agent::run,
+    },
+    Command {
+        name: "run-control",
+        aliases: &[],
+        usage: "run-control TARGET restart|stop",
+        short: "Restart or stop the command of a run session",
+        long: None,
+        hidden: false,
+        mac_only: false,
+        flags: &[],
+        subcommands: &[],
+        // A TARGET and its action, which `lifecycle::run_control` checks.
+        arity: Arity::Own,
+        operands: Operands::Nothing,
+        implementation: lifecycle::run_control,
     },
     Command {
         name: "send",

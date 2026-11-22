@@ -10,6 +10,7 @@
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -88,16 +89,24 @@ pub(super) fn stream(
             format!("the request is over {ceiling} bytes"),
         ));
     }
-    let Some(socket) = context
+    let named = context
         .env(DAEMON_VARIABLE)
         .filter(|path| !path.is_empty())
-        .or_else(context.daemon_above)
-    else {
+        .or_else(context.daemon_above);
+    // `new` alone starts a daemon (#693): the one named, or this Mac's own, where the app would.
+    let named = match named {
+        None if method == NEW => local_socket(context),
+        named => named,
+    };
+    let Some(socket) = named else {
         return Err(unreachable(format!(
             "no daemon to ask: {DAEMON_VARIABLE} names none, and this process does not run \
              under a Workroom daemon (every Workroom pane does, and sets {DAEMON_VARIABLE})"
         )));
     };
+    if method == NEW {
+        start_if_absent(&socket)?;
+    }
     if method == EVENTS {
         return events(context, &socket, params, encode, each);
     }
@@ -233,6 +242,148 @@ const SEND: &str = "terminal.send";
 const COMMAND: &str = "terminal.command";
 
 const PROMPT: &str = "terminal.prompt";
+
+const NEW: &str = "session.new";
+
+/// How long `new` waits for a daemon it started to take connections, as `attach` waits.
+const START_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The bundle id of the release app, whose daemon a `workroom` outside every app bundle reaches,
+/// as the app falls back to it (`PersistentSessionPaths`).
+const RELEASE_BUNDLE: &str = "com.developwithstyle.workroom";
+
+/// The longest socket path a unix socket takes (`sun_path`), as the app counts it.
+const SUN_PATH_LIMIT: usize = 104;
+
+/// This Mac's daemon, for `new` from outside every pane with none named (#693): where the app
+/// whose bundle holds this binary keeps its daemon, or the release app's for a binary in none.
+/// None on a host, whose daemon only its supervisor starts.
+fn local_socket(context: &Context) -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let home = context.env("HOME").filter(|home| !home.is_empty())?;
+    let bundle = std::env::current_exe()
+        .ok()
+        .and_then(|exe| std::fs::canonicalize(exe).ok())
+        .and_then(|exe| bundle_of(&exe))
+        .unwrap_or_else(|| RELEASE_BUNDLE.to_string());
+    // SAFETY: `getuid` takes nothing and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let place = mac_daemon_socket(&home, &bundle, uid);
+    Some(
+        place
+            .candidates
+            .iter()
+            .find(|socket| UnixStream::connect(socket).is_ok())
+            .cloned()
+            .unwrap_or(place.standard),
+    )
+}
+
+/// Where the app keeps its daemon's socket on this Mac (`PersistentSessionPaths.daemonSocket`):
+/// `standard`, where one is started, and every path one may already answer on, first to last.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct MacDaemonSocket {
+    pub(super) standard: String,
+    pub(super) candidates: Vec<String>,
+}
+
+/// [`MacDaemonSocket`] for the app `bundle` of the user `uid` whose home is `home`: Application
+/// Support's `<bundle>/sessions/workroomd`, or, when that is past `sun_path`, the app's fallback
+/// folder `/tmp/workroom-<uid>-<bundle>`; and under either the name the daemon had before #525,
+/// `agent.sock`, which a daemon an older build started keeps.
+pub(super) fn mac_daemon_socket(home: &str, bundle: &str, uid: u32) -> MacDaemonSocket {
+    let preferred = format!("{home}/Library/Application Support/{bundle}/sessions");
+    let fallback = format!("/tmp/workroom-{uid}-{bundle}");
+    let fits = |path: &String| path.len() < SUN_PATH_LIMIT;
+    let new_preferred = format!("{preferred}/workroomd");
+    let new_fallback = format!("{fallback}/workroomd");
+    let standard = if fits(&new_preferred) {
+        new_preferred.clone()
+    } else {
+        new_fallback.clone()
+    };
+    let candidates = [
+        standard.clone(),
+        new_fallback,
+        format!("{preferred}/agent.sock"),
+        format!("{fallback}/agent.sock"),
+    ]
+    .into_iter()
+    .filter(fits)
+    .collect();
+    MacDaemonSocket {
+        standard,
+        candidates,
+    }
+}
+
+/// The bundle id of the app whose `Contents/Resources` holds `exe`, from its `Info.plist`.
+pub(super) fn bundle_of(exe: &Path) -> Option<String> {
+    let resources = exe.parent()?;
+    let contents = resources.parent()?;
+    if resources.file_name()? != "Resources" || contents.file_name()? != "Contents" {
+        return None;
+    }
+    let plist = std::fs::read_to_string(contents.join("Info.plist")).ok()?;
+    plist_string(&plist, "CFBundleIdentifier")
+}
+
+/// The string an XML property list gives `key`: `<key>KEY</key>` and the `<string>` after it.
+pub(super) fn plist_string(plist: &str, key: &str) -> Option<String> {
+    let after = plist.split_once(&format!("<key>{key}</key>"))?.1;
+    let value = after.trim_start().strip_prefix("<string>")?;
+    let value = value.split_once("</string>")?.0.trim();
+    (!value.is_empty() && !value.contains('<')).then(|| value.to_string())
+}
+
+/// Starts a daemon on `socket` when nothing answers there (#693), as `attach` does, and waits for
+/// it to take connections: `new` from a script with no daemon running. A daemon that answers is
+/// left as it is; whether it speaks the terminal API is for `connect` to say.
+fn start_if_absent(socket: &str) -> Result<(), CliError> {
+    if UnixStream::connect(socket).is_ok() {
+        return Ok(());
+    }
+    let path = Path::new(socket);
+    if let Some(folder) = path.parent()
+        && !folder.as_os_str().is_empty()
+        && !folder.exists()
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(folder)
+            .map_err(|error| {
+                unreachable(format!(
+                    "no daemon is listening on {socket}, and its folder can't be made: {error}"
+                ))
+            })?;
+    }
+    let binary = std::env::current_exe().map_err(|error| {
+        unreachable(format!(
+            "no daemon is listening on {socket}, and this binary can't be found to start one: \
+             {error}"
+        ))
+    })?;
+    crate::daemon::serve::spawn_daemon(&binary, path).map_err(|error| {
+        unreachable(format!(
+            "no daemon is listening on {socket}, and one could not be started: {error}"
+        ))
+    })?;
+    let deadline = Instant::now() + START_TIMEOUT;
+    while Instant::now() < deadline {
+        if UnixStream::connect(socket).is_ok() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Err(unreachable(format!(
+        "the daemon started on {socket} did not take connections within {}s",
+        START_TIMEOUT.as_secs()
+    )))
+}
 
 /// A `terminal.prompt` the daemon on `socket` hung up on before it said the prompt was typed: a
 /// hand-off, when a daemon answers there at once, which is `WaitInterrupted` (3), since whether

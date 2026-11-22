@@ -2278,8 +2278,8 @@ fn api_list_names_every_method_the_daemon_has() {
     assert!(
         human
             .stdout
-            // Padded to the longest name, `events.unsubscribe`, and two spaces.
-            .contains(&format!("session.list        {summary}\n")),
+            // Padded to the longest name, `session.run_control`, and two spaces.
+            .contains(&format!("session.list         {summary}\n")),
         "{}",
         human.stdout
     );
@@ -2452,6 +2452,21 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
             "terminal.wait",
             json!({"target": OTHER, "regex": "API-CALL-WAITED", "timeout_ms": 30000}),
         ),
+        // A run, from no pane, which the next two restart and then close.
+        (
+            "session.new",
+            json!({
+                "title": "api-call-new",
+                "run": "sleep 60",
+                "split": "right",
+                "cwd": workspace.dir,
+            }),
+        ),
+        (
+            "session.run_control",
+            json!({"target": "api-call-new", "action": "restart"}),
+        ),
+        ("session.close", json!({"target": "api-call-new"})),
         ("events.subscribe", json!({"all": true})),
         // From a connection of its own, which holds no subscription there: `ended` false.
         ("events.unsubscribe", json!({"stream": 1})),
@@ -6127,4 +6142,374 @@ fn a_prompt_wait_across_a_hand_off_goes_on_in_the_new_program() {
     );
     working.open("quit");
     starting.open("quit");
+}
+
+/// `workroom <args>` as [`workroom`] runs it, with `env` too: a caller's `WORKROOM_PANE`, or the
+/// `SHELL` a daemon `new` starts gives its sessions.
+fn workroom_with_env(daemon: Option<&Path>, env: &[(&str, &str)], args: &[&str]) -> Run {
+    let mut command = Command::new(common::daemon_binary());
+    command
+        .args(args)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", std::env::temp_dir())
+        .envs(env.iter().copied())
+        .stdin(Stdio::null());
+    if let Some(socket) = daemon {
+        command.env("WORKROOM_DAEMON", socket);
+    }
+    let output = command.output().expect("run workroom");
+    Run {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        code: output.status.code().unwrap_or(-1),
+    }
+}
+
+/// Runs `workroom <args> --json` in `shell`'s pane and returns its exit code and envelope.
+fn from_pane(shell: &mut Spawned, dir: &Path, name: &str, args: &str) -> (i32, Value) {
+    let output = shell_output(
+        shell,
+        dir,
+        name,
+        &format!(
+            "/bin/sh -c \"'{}' {args} --json; echo exit=\\$?\"",
+            common::daemon_binary().display()
+        ),
+    );
+    let (envelope, code) = output
+        .rsplit_once("exit=")
+        .unwrap_or_else(|| panic!("no exit status in {output:?}"));
+    let envelope = serde_json::from_str(envelope.trim())
+        .unwrap_or_else(|e| panic!("not one envelope ({e}): {output:?}"));
+    (code.trim().parse().expect("an exit code"), envelope)
+}
+
+/// Waits for `path`, written whole by a session's shell, and returns it.
+fn written(path: &Path) -> String {
+    assert!(
+        wait_for(Duration::from_secs(20), || path.exists()),
+        "the session never wrote {}",
+        path.display()
+    );
+    std::fs::read_to_string(path).expect("read what the session wrote")
+}
+
+/// Has session `target`'s shell run `command` with its output in `name` under `dir`, written
+/// whole, through `workroom send` from no pane; returns what it wrote.
+fn run_in(socket: &Path, target: &str, dir: &Path, name: &str, command: &str) -> String {
+    let path = dir.join(name);
+    let partial = dir.join(format!("{name}.partial"));
+    // Its newline as text, not `--enter`, which a daemon without terminal-state can't encode.
+    let line = format!(
+        "{{ {command}; }} > '{}' 2>&1; mv '{}' '{}'\n",
+        partial.display(),
+        partial.display(),
+        path.display()
+    );
+    let sent = workroom(Some(socket), &["send", target, &line]);
+    assert_eq!(sent.code, 0, "{} {}", sent.stdout, sent.stderr);
+    written(&path)
+}
+
+/// `workroom new` in a pane (#693) opens a session made as the pane's was, in its workroom: its
+/// environment, a login shell of the pane's shell, the title as its label, and `--cwd` resolved
+/// against the pane's folder. It prints the session, and says what the app is asked in
+/// `opened`, as its `session.created` does: the pane that asked, the split, and the Mac whose
+/// pane has the caller's session. Without `--split` the app opens a tab; with no `--title` the
+/// session has no label. A folder that isn't one is `NotADirectory` (3), and a bad `--split` a bad
+/// command line (1).
+#[test]
+fn new_in_a_pane_opens_a_session_in_its_workroom_and_asks_its_mac_to_show_it() {
+    let workspace = Workspace::new("api-new");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = attach_with_env(
+        &socket,
+        SHELL,
+        &[],
+        &[
+            ("WORKROOM_SESSION_TITLE", "agent"),
+            ("WORKROOM_SESSION_WORKROOM", "wr-1"),
+            ("WORKROOM_SESSION_CWD", workspace.dir.to_str().unwrap()),
+            ("NEW_INHERITS", "from-the-pane"),
+        ],
+    );
+    listing_until(&socket, |listing| listing.len() == 1);
+    let web = workspace.dir.join("web");
+    std::fs::create_dir(&web).expect("a folder to start in");
+    let mut events = Events::start(&socket, &["--all", "--type", "session.created"]);
+    events.until("the snapshot's end", |e| e["event"] == "snapshot-complete");
+
+    let (code, envelope) = from_pane(
+        &mut shell,
+        &workspace.dir,
+        "new.json",
+        "new --title 'dev server' --split right --cwd web",
+    );
+    assert_eq!(code, 0, "{envelope}");
+    assert_eq!(envelope["command"], "new", "{envelope}");
+    assert_eq!(envelope["caller"], SHELL, "{envelope}");
+    let session = &envelope["session"];
+    let id = session["id"]
+        .as_str()
+        .expect("the new session's id")
+        .to_string();
+    assert_ne!(id, SHELL);
+    assert_eq!(session["label"], "dev server", "{envelope}");
+    assert_eq!(session["run"], false, "{envelope}");
+    assert_eq!(
+        session["scope"],
+        json!({"kind": "workroom", "id": "wr-1"}),
+        "the caller's scope: {envelope}"
+    );
+    let opened = json!({"by": SHELL, "split": "right", "hostname": this_hostname()});
+    assert_eq!(envelope["opened"], opened, "{envelope}");
+    let created = events.until("its creation", |e| is(e, "session.created", &id));
+    assert_eq!(created["opened"], opened, "{created}");
+    assert_eq!(created["label"], "dev server", "{created}");
+
+    // The pane's environment, its own pane and daemon named, in the folder asked for.
+    let said = run_in(
+        &socket,
+        &id,
+        &workspace.dir,
+        "inherited",
+        "echo \"$NEW_INHERITS $WORKROOM_PANE\"; pwd -P",
+    );
+    let real_web = std::fs::canonicalize(&web).unwrap();
+    assert_eq!(
+        said,
+        format!("from-the-pane {id}\n{}\n", real_web.display()),
+        "the new session's environment and folder"
+    );
+
+    // A tab, and no label, when neither is asked for; the app's own sessions open nothing.
+    let (code, plain) = from_pane(&mut shell, &workspace.dir, "plain.json", "new");
+    assert_eq!(code, 0, "{plain}");
+    assert_eq!(plain["session"]["label"], Value::Null, "{plain}");
+    assert_eq!(plain["opened"]["split"], Value::Null, "{plain}");
+    let plain_id = plain["session"]["id"].as_str().unwrap().to_string();
+    let said = run_in(&socket, &plain_id, &workspace.dir, "plain", "pwd -P");
+    assert_eq!(
+        said,
+        format!(
+            "{}\n",
+            std::fs::canonicalize(&workspace.dir).unwrap().display()
+        ),
+        "the pane's own folder"
+    );
+    let _app = open(&socket, OTHER, "app's", "wr-1", &workspace.dir);
+    let app = events.until("the app's own session", |e| is(e, "session.created", OTHER));
+    assert_eq!(app["opened"], Value::Null, "{app}");
+
+    let (code, missing) = from_pane(
+        &mut shell,
+        &workspace.dir,
+        "missing.json",
+        "new --cwd no-such-folder",
+    );
+    assert_eq!(code, 3, "{missing}");
+    assert_eq!(missing["error"]["kind"], "NotADirectory", "{missing}");
+    let bad = workroom(Some(&socket), &["new", "--split", "left"]);
+    assert_eq!(bad.code, 1, "{} {}", bad.stdout, bad.stderr);
+    assert!(bad.stderr.contains("right or down"), "{}", bad.stderr);
+}
+
+/// Ends the daemon serving `socket` when dropped: one `new` started, which no test spawned.
+struct StartedDaemon<'a>(&'a Path);
+
+impl Drop for StartedDaemon<'_> {
+    fn drop(&mut self) {
+        let _ = Command::new("pkill")
+            .arg("-f")
+            .arg(format!("serve --socket {}", self.0.display()))
+            .status();
+    }
+}
+
+/// `workroom new` with no daemon listening where it is to ask starts one there (#693), as an
+/// attach does, and opens its session in it: from no pane, no scope, no caller, and no Mac to
+/// show it, so every Mac lists it as detached. Every other command still exits 7 there.
+#[test]
+fn new_starts_the_daemon_when_none_is_listening() {
+    let workspace = Workspace::new("api-new-start");
+    let socket = workspace.dir.join("d.sock");
+    let refused = workroom(Some(&socket), &["sessions", "--json"]);
+    assert_eq!(refused.code, 7, "{} {}", refused.stdout, refused.stderr);
+    let _started = StartedDaemon(&socket);
+    let run = workroom_with_env(
+        Some(&socket),
+        &[("SHELL", "/bin/sh")],
+        &["new", "--json", "--cwd", workspace.dir.to_str().unwrap()],
+    );
+    assert_eq!(run.code, 0, "{} {}", run.stdout, run.stderr);
+    let envelope = run.envelope();
+    assert_eq!(envelope["caller"], Value::Null, "{envelope}");
+    assert_eq!(envelope["session"]["scope"], Value::Null, "{envelope}");
+    assert_eq!(
+        envelope["opened"],
+        json!({"by": null, "split": null, "hostname": null}),
+        "{envelope}"
+    );
+    let id = envelope["session"]["id"].as_str().unwrap();
+    let listed = sessions(&socket);
+    assert!(
+        listed.iter().any(|session| session["id"] == id),
+        "{listed:?}"
+    );
+    // Once one is listening, `new` asks it, and starts no other.
+    let again = workroom_with_env(Some(&socket), &[("SHELL", "/bin/sh")], &["new"]);
+    assert_eq!(again.code, 0, "{} {}", again.stdout, again.stderr);
+    assert_eq!(sessions(&socket).len(), 2);
+}
+
+/// `workroom close` (#693) ends a session, and its `session.ended` says `closed`, so the app
+/// closes its tab or split; a session that ends any other way says it wasn't. The caller's own is
+/// `RefusedSelf` (3) without `--allow-self`, and a target nothing matches `TargetNotFound` (3).
+/// A run session's supervisor is asked to quit first, and the session ends long before its grace.
+#[test]
+fn close_ends_a_session_says_so_in_its_end_and_refuses_the_callers_own() {
+    let workspace = Workspace::new("api-close");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut caller = open(&socket, SHELL, "caller", "wr-1", &workspace.dir);
+    let _target = open(&socket, OTHER, "target", "wr-1", &workspace.dir);
+    let mut exits = open(&socket, RUN, "exits", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 3);
+    let mut events = Events::start(&socket, &["--all", "--type", "session.ended"]);
+    events.until("the snapshot's end", |e| e["event"] == "snapshot-complete");
+
+    let (code, refused) = from_pane(&mut caller, &workspace.dir, "self.json", "close caller");
+    assert_eq!(code, 3, "{refused}");
+    assert_eq!(refused["error"]["kind"], "RefusedSelf", "{refused}");
+    let (code, closed) = from_pane(&mut caller, &workspace.dir, "close.json", "close target");
+    assert_eq!(code, 0, "{closed}");
+    assert_eq!(closed["command"], "close", "{closed}");
+    assert_eq!(closed["session"], OTHER, "{closed}");
+    assert_eq!(closed["caller"], SHELL, "{closed}");
+    let ended = events.until("its end", |e| is(e, "session.ended", OTHER));
+    assert_eq!(ended["closed"], true, "{ended}");
+    assert!(
+        sessions(&socket)
+            .iter()
+            .all(|session| session["id"] != OTHER),
+        "closed, it is gone"
+    );
+
+    type_line(&mut exits, "exit 4");
+    let ended = events.until("the shell's own end", |e| is(e, "session.ended", RUN));
+    assert_eq!(ended["closed"], false, "{ended}");
+    assert_eq!(ended["exit_code"], 4, "{ended}");
+
+    let (code, missing) = from_pane(&mut caller, &workspace.dir, "none.json", "close nobody");
+    assert_eq!(code, 3, "{missing}");
+    assert_eq!(missing["error"]["kind"], "TargetNotFound", "{missing}");
+
+    // A run, from no pane: its supervisor quits, so it is gone well before the quit's grace.
+    let made = workroom_with_env(
+        Some(&socket),
+        &[],
+        &["new", "--title", "server", "--run", "sleep 60", "--json"],
+    );
+    assert_eq!(made.code, 0, "{} {}", made.stdout, made.stderr);
+    let run = made.envelope()["session"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let waited = workroom(
+        Some(&socket),
+        &["wait", &run, "--run", "running", "--timeout", "20s"],
+    );
+    assert_eq!(waited.code, 0, "{} {}", waited.stdout, waited.stderr);
+    let started = std::time::Instant::now();
+    let closed = workroom(Some(&socket), &["close", "server"]);
+    assert_eq!(closed.code, 0, "{} {}", closed.stdout, closed.stderr);
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "the supervisor never quit: {:?}",
+        started.elapsed()
+    );
+    let ended = events.until("the run's end", |e| is(e, "session.ended", &run));
+    assert_eq!(ended["closed"], true, "{ended}");
+
+    // The caller's own, allowed, from a process outside it that names it.
+    let own = workroom_with_env(
+        Some(&socket),
+        &[("WORKROOM_PANE", SHELL)],
+        &["close", SHELL, "--allow-self", "--json"],
+    );
+    assert_eq!(own.code, 0, "{} {}", own.stdout, own.stderr);
+    assert_eq!(own.envelope()["caller"], SHELL, "{}", own.stdout);
+    let ended = events.until("the caller's end", |e| is(e, "session.ended", SHELL));
+    assert_eq!(ended["closed"], true, "{ended}");
+}
+
+/// `workroom run-control` (#693) restarts and stops a run session's command through its
+/// supervisor's run signal, which its run states tell; a session that is no run is `NotARun` (3),
+/// and an action other than restart or stop a bad command line (1).
+#[test]
+fn run_control_restarts_and_stops_a_run_and_refuses_a_shell() {
+    let workspace = Workspace::new("api-run-control");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let _shell = open(&socket, SHELL, "shell", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 1);
+    let made = workroom_with_env(
+        Some(&socket),
+        &[("WORKROOM_PANE", SHELL)],
+        &["new", "--run", "sleep 60", "--title", "dev", "--json"],
+    );
+    assert_eq!(made.code, 0, "{} {}", made.stdout, made.stderr);
+    let made = made.envelope();
+    let run = made["session"]["id"].as_str().unwrap().to_string();
+    assert_eq!(made["session"]["run"], true, "{made}");
+    assert_eq!(
+        made["session"]["scope"],
+        json!({"kind": "workroom", "id": "wr-1"}),
+        "{made}"
+    );
+    let mut events = Events::start(&socket, &["--session", &run, "--type", "session.run_state"]);
+    events.until("the snapshot's end", |e| e["event"] == "snapshot-complete");
+    let waited = workroom(
+        Some(&socket),
+        &["wait", "dev", "--run", "running", "--timeout", "20s"],
+    );
+    assert_eq!(waited.code, 0, "{} {}", waited.stdout, waited.stderr);
+
+    let restarted = workroom(Some(&socket), &["run-control", "dev", "restart", "--json"]);
+    assert_eq!(
+        restarted.code, 0,
+        "{} {}",
+        restarted.stdout, restarted.stderr
+    );
+    let envelope = restarted.envelope();
+    assert_eq!(envelope["command"], "run-control", "{envelope}");
+    assert_eq!(envelope["action"], "restart", "{envelope}");
+    assert_eq!(envelope["session"], run.as_str(), "{envelope}");
+    events.until("stopping", |e| e["run_state"] == "stopping");
+    events.until("running again", |e| e["run_state"] == "running");
+
+    let stopped = workroom(Some(&socket), &["run-control", "dev", "stop"]);
+    assert_eq!(
+        (stopped.code, stopped.stdout.as_str()),
+        (0, ""),
+        "{}",
+        stopped.stderr
+    );
+    events.until("stopped", |e| e["run_state"] == "stopped");
+
+    let shell = workroom(
+        Some(&socket),
+        &["run-control", "shell", "restart", "--json"],
+    );
+    assert_eq!(shell.code, 3, "{} {}", shell.stdout, shell.stderr);
+    assert_eq!(
+        shell.envelope()["error"]["kind"],
+        "NotARun",
+        "{}",
+        shell.stdout
+    );
+    let bad = workroom(Some(&socket), &["run-control", "dev", "pause"]);
+    assert_eq!(bad.code, 1, "{} {}", bad.stdout, bad.stderr);
 }

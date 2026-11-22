@@ -540,6 +540,23 @@ pub struct SessionStore {
     socket: Arc<OnceLock<PathBuf>>,
     /// The thread that probes the clients that asked for it (#593), started by the first.
     keepalive: Arc<keepalive::Ticker>,
+    /// What each live session's shell was built from (`Recipe`), so the terminal API's
+    /// `session.new` (#693) builds a new session as its caller's was. Kept apart from the map, by
+    /// id, and only for sessions this program created: one a hand-off adopted has none.
+    recipes: Arc<Mutex<HashMap<SessionId, Arc<Recipe>>>>,
+}
+
+/// What a session's shell was built from, before `shell::invocation` added the shell
+/// integration's variables and the daemon its own (#693): the environment, the shell, Ghostty's
+/// resources, and the folder a daemon without a bin folder puts after a host pane's PATH.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Recipe {
+    pub environment: Vec<(OsString, OsString)>,
+    pub shell: String,
+    pub resources: String,
+    /// The shell a run session's supervisor runs its command in (`dispatch::run_invocation`).
+    pub run_shell: Option<OsString>,
+    pub commands: Option<PathBuf>,
 }
 
 /// Sessions marked as being ended in `SessionStore::ending` until dropped, panics included.
