@@ -640,6 +640,26 @@ fn a_session_starts_with_the_daemons_bin_folder_first_and_its_one_link() {
     );
 }
 
+/// The start of a test home's `.zshenv`. Ubuntu's /etc/zsh/zshrc runs compinit unless told not to,
+/// and on GitHub's runners, where a folder on `fpath` is writable by others, compinit asks
+/// "Ignore insecure directories and continue [y] or abort compaudit and exit [n]?" and reads one
+/// key: the first one the test typed (as in `real_shell`).
+const ZSHENV_FOR_TESTS: &str = "skip_global_compinit=1\n";
+/// The start of a test home's `.zshrc`: a prompt `wait_for_prompt` waits for.
+const ZSHRC_PROMPT: &str = "PS1='PROMPT> '\n";
+
+/// Waits for `shell`'s prompt (`ZSHRC_PROMPT`), so nothing is typed before the line editor reads
+/// it. The reader goes on draining the pane while it is held.
+fn wait_for_prompt(shell: &mut Spawned, case: &str) -> common::ClientReader {
+    let mut screen = common::ClientReader::new(shell);
+    let seen = screen.read_until("PROMPT> ", Duration::from_secs(30));
+    assert!(
+        seen.contains("PROMPT> "),
+        "{case}: the shell never prompted: {seen:?}"
+    );
+    screen
+}
+
 /// An attach for session `id` with `env` and nothing else in its environment, which it forwards
 /// to the session: none of this test's own, a developer's `ZDOTDIR` or `PATH` say.
 fn attach_with_only(socket: &Path, id: &str, env: &[(&str, &str)]) -> Spawned {
@@ -672,9 +692,10 @@ fn a_zsh_whose_startup_file_unsets_the_variable_keeps_its_own_path() {
     let _daemon = start_daemon(&socket);
     let home = workspace.dir.join("home");
     std::fs::create_dir(&home).unwrap();
+    std::fs::write(home.join(".zshenv"), ZSHENV_FOR_TESTS).unwrap();
     std::fs::write(
         home.join(".zshrc"),
-        "unset WORKROOM_BIN_DIR\npath=(/opt/mine $path)\n",
+        format!("{ZSHRC_PROMPT}unset WORKROOM_BIN_DIR\npath=(/opt/mine $path)\n"),
     )
     .unwrap();
     let resources = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../macapp/Resources/ghostty");
@@ -694,6 +715,7 @@ fn a_zsh_whose_startup_file_unsets_the_variable_keeps_its_own_path() {
             env.push(("WORKROOM_SESSION_RESOURCES", resources.as_str()));
         }
         let mut shell = attach_with_only(&socket, id, &env);
+        let _screen = wait_for_prompt(&mut shell, case);
         let seen = shell_output(
             &mut shell,
             &workspace.dir,
@@ -841,7 +863,11 @@ fn a_login_zsh_has_the_bin_folder_first_after_its_startup_files() {
     let bin = bin_folder(&socket);
     let home = workspace.dir.join("home");
     std::fs::create_dir(&home).unwrap();
-    std::fs::write(home.join(".zshenv"), "export ZSHENV_RAN=1\n").unwrap();
+    std::fs::write(
+        home.join(".zshenv"),
+        format!("{ZSHENV_FOR_TESTS}export ZSHENV_RAN=1\n"),
+    )
+    .unwrap();
     std::fs::write(
         home.join(".zprofile"),
         "export PATH=/usr/bin:/bin\nexport ZPROFILE_RAN=1\n",
@@ -849,7 +875,7 @@ fn a_login_zsh_has_the_bin_folder_first_after_its_startup_files() {
     .unwrap();
     std::fs::write(
         home.join(".zshrc"),
-        "path=(/opt/elsewhere $path)\nexport ZSHRC_RAN=1\n",
+        format!("{ZSHRC_PROMPT}path=(/opt/elsewhere $path)\nexport ZSHRC_RAN=1\n"),
     )
     .unwrap();
     let resources = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../macapp/Resources/ghostty");
@@ -875,6 +901,7 @@ fn a_login_zsh_has_the_bin_folder_first_after_its_startup_files() {
             std::fs::remove_file(&hook).expect("the daemon's hook");
         }
         let mut shell = attach_with_only(&socket, id, &env);
+        let _screen = wait_for_prompt(&mut shell, case);
         let seen = shell_output(
             &mut shell,
             &workspace.dir,
