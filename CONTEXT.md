@@ -179,13 +179,16 @@ The daemon's public, versioned service for reading, typing into, waiting on and 
 _Avoid_: Agent API
 
 **Live title**:
-The title a session's program last set for its terminal (OSC 0 or 2), which changes as the program runs; not the session's label, the name the app gave it, which is its tab's name.
+The title a session's program last set for its terminal (OSC 0 or 2), which changes as the program runs; not the session's label.
+
+**Label**:
+A session's name in the terminal API, and the name of its tab in the app on every Mac: one name, so renaming the tab labels the session and a label set through the API renames the tab (#694, ADR 0079). It is the name the user gave the terminal, or one the app gave a tab it shows ("Run"); a terminal that shows its default name has none. A terminal group's name is no session's label.
 
 **Target**:
 How a terminal API command names one session: its id, the end of its id, its label or its live title. A target that names more than one session names none.
 
 **Event**:
-Something the terminal API's `workroom events` reports as it happens: a session created, ended or moved to another workroom, a change of its coding agent's program status, a run state, a client attaching or detaching, or a send typed into it, naming its sender. Each is numbered by the daemon's boot and its revision, so a script that reconnects goes on from the last one it saw (ADR 0079).
+Something the terminal API's `workroom events` reports as it happens: a session created, ended or moved to another workroom, a change of its coding agent's program status, a run state, a client attaching or detaching, a send typed into it, naming its sender, or a label it was given. Each is numbered by the daemon's boot and its revision, so a script that reconnects goes on from the last one it saw (ADR 0079).
 _Avoid_: Notification (the app's own, shown to the user)
 
 **Client** (of a session):
