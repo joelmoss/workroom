@@ -322,6 +322,16 @@ if [ -f "$NIGHTLY_YML" ]; then
   fi
 fi
 
+# --- a dry run's cleanup never fails on the tag its draft never had ----------------------------
+# A draft has no git tag until it is published, and `gh release delete --cleanup-tag` then fails
+# with a 422 once it has deleted the draft (run 44978170787). publish-assets.sh deletes the draft,
+# then its tag only if one exists (delete_dry_run, pinned by publish-assets_test.sh).
+if grep -q '^[^#]*--cleanup-tag' "$DIR/publish-assets.sh"; then
+  echo "FAIL: publish-assets.sh deletes a dry run's draft with --cleanup-tag, which fails on its"
+  echo "      missing tag; delete_dry_run deletes the tag only when there is one."
+  fails=$((fails + 1))
+fi
+
 # --- every job that publishes can run the linux arm64 binary ------------------------------------
 # publish-assets.sh runs cli-archives.sh check, which runs each linux binary on the job's Ubuntu
 # runner, the arm64 one under `qemu-aarch64`. Ubuntu 26.04 (ubuntu-latest) has no
