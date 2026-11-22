@@ -160,7 +160,7 @@ See [Coding agents](coding-agents.md#usage).
 
 | Setting | What it does |
 | --- | --- |
-| **Install the Workroom skill for Claude Code and Codex** | Adds a skill that teaches Claude Code and Codex the `workroom` commands for driving your other terminals, to `~/.claude/skills/workroom` and `~/.codex/skills/workroom` on this Mac and on each host, and removes it when turned off. A host gets it, or loses it, the next time Workroom connects to it. Off by default. |
+| **Install the Workroom skill for Claude Code and Codex** | Adds a skill that teaches Claude Code and Codex the `workroom` commands for driving your other terminals to their skill folders, `~/.claude/skills` (or `$CLAUDE_CONFIG_DIR/skills`) and `~/.agents/skills`, on this Mac and on each host, and removes it when turned off. A host gets it, or loses it, after Workroom next connects to it. A line under the setting says when a skill was left alone or failed, on this Mac or a host. Off by default. |
 
 See [Drive terminals from agents and scripts](../guides/drive-terminals-from-agents-and-scripts.md#teach-your-coding-agents).
 

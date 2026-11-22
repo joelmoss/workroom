@@ -18,12 +18,21 @@ workroom help agents
 
 Or have Workroom install it as a skill, so Claude Code and Codex find it by themselves. Turn on **Settings ▸ AI Agents ▸ Install the Workroom skill for Claude Code and Codex**. It is off by default.
 
-- On your Mac, Workroom writes the skill to `~/.claude/skills/workroom` and `~/.codex/skills/workroom` at once. It writes each only when that agent's folder, `~/.claude` or `~/.codex`, is already there.
-- On each remote host, Workroom writes it the next time it connects to that host, in the host user's home.
-- While the setting is on, Workroom brings the skill up to date each time the app starts and each time it connects to a host, so the skill always matches the `workroom` there.
-- Turn the setting off and Workroom removes the skill, from your Mac at once and from each host the next time it connects.
+Workroom puts the skill in each coding agent's own skills folder, and only for an agent that is set up:
 
-Workroom only ever writes and removes its own skill folder, which it marks as its own. If you already have a skill named `workroom` that Workroom didn't make, it is left alone, and the setting says so. If you edit Workroom's `SKILL.md`, Workroom leaves your edit as it is from then on. When the setting is turned off, it keeps your edited file and stops managing the folder.
+| Agent | Where the skill goes | Set up when |
+| ----- | -------------------- | ----------- |
+| Claude Code | `$CLAUDE_CONFIG_DIR/skills/workroom` when `CLAUDE_CONFIG_DIR` is set, else `~/.claude/skills/workroom` | that config folder is there |
+| Codex | `~/.agents/skills/workroom`, the user skills folder Codex reads. Workroom makes `~/.agents` and its `skills` folder when they aren't there, and takes them away again with the skill if they are empty | `$CODEX_HOME`, else `~/.codex`, is there |
+
+Workroom reads `CLAUDE_CONFIG_DIR` and `CODEX_HOME` from your login shell, as a terminal would set them, and on a host from the host user's login shell.
+
+- On your Mac, Workroom writes the skill at once.
+- On each remote host, Workroom writes it after it next connects to that host, in the host user's home.
+- While the setting is on, Workroom brings the skill up to date each time the app starts and each time it connects to a host, so the skill always matches the `workroom` there.
+- Turn the setting off and Workroom removes the skill: from your Mac at once, and from each host it put it on after it next connects there. A host whose Workroom is too old to remove it keeps it until a later connect can. A build of Workroom that never had the setting on removes nothing.
+
+Workroom only ever writes and removes its own skill folder, which it marks as its own, and remembers where it put it, so it finds it again even after `CLAUDE_CONFIG_DIR` changes. If you already have a skill named `workroom` that Workroom didn't make, it is left alone, and the setting says so, for a host too. If you edit Workroom's `SKILL.md`, Workroom leaves your edit as it is from then on. When the setting is turned off, it keeps your edited file and stops managing the folder. Workroom follows a `~/.claude`, `~/.agents` or `skills` folder that is a link, to your dotfiles say, and writes the skill where it points. It never follows a link where the `workroom` skill folder itself should be: that is not its own, and it leaves it alone.
 
 ## Find the right terminal
 
@@ -54,7 +63,9 @@ Each daemon has its own terminals: a pane on a remote host sees that host's term
 ## Type, prompt and open
 
 - `workroom send TARGET 'text' --key Enter` types text and keys into a terminal, as if you typed them. Several lines go as one paste when the program supports bracketed paste.
-- `workroom prompt TARGET 'Fix the failing test' --wait` gives the coding agent in a terminal a prompt and, with `--wait`, returns when the turn it started has ended. It refuses an agent that is working or waiting on a question, rather than interrupt it.
+- `workroom prompt TARGET 'Fix the failing test' --wait` gives the coding agent in a terminal a prompt and, with `--wait`, returns when the turn it started has ended. It refuses an agent that is working or waiting on a question, rather than interrupt it. Text you left typed in the agent's input box is submitted with the prompt, ahead of it.
+
+`workroom help agents` tells agents never to answer another agent's question or permission prompt on your behalf: an agent that finds one blocked reports what it asks and waits for you to answer it.
 - `workroom new` opens a terminal beside yours, as a tab or with `--split right` or `--split down` as a split, and prints its id. `--run CMD` makes it a run tab, which `workroom run-control TARGET restart` and `stop` control.
 - `workroom close TARGET` closes a terminal and its tab.
 
@@ -96,8 +107,8 @@ To keep your own `PATH` order instead, for example so that a `workroom` you buil
 unset WORKROOM_BIN_DIR
 ```
 
-In fish, use `set -e WORKROOM_BIN_DIR` in `config.fish`. You can always run the matching one directly as `"$WORKROOM_BIN_DIR/workroom"`. See [Environment variables](../reference/environment-variables.md#variables-your-terminals-receive) for `WORKROOM_PANE`, `WORKROOM_DAEMON` and how Workroom keeps the folder first.
+In fish, use `set -e WORKROOM_BIN_DIR` in `config.fish`. You can always run the matching one directly, whether or not the variable is set, as `"$WORKROOM_DAEMON.bin/path/workroom"`: the bin folder sits beside the daemon's socket. See [Environment variables](../reference/environment-variables.md#variables-your-terminals-receive) for `WORKROOM_PANE`, `WORKROOM_DAEMON` and how Workroom keeps the folder first.
 
 ## Who can use it
 
-The terminal API is reached through the daemon's socket, which only your user can open. Anything that can open it can read and type into every terminal, as you can, so it adds no access your user doesn't already have. A command finds which pane it runs in from its own process first, so a `WORKROOM_PANE` copied from another pane, by a tmux server say, doesn't make it that pane's.
+The terminal API is reached through the daemon's socket, which only your user can open. Anything that can open it can read and type into every terminal, as you can, so it adds no access your user doesn't already have. A command finds which pane it runs in from its own process: the pane whose shell it runs under. Only a process outside every pane's processes uses `WORKROOM_PANE` instead, such as a shell in a tmux server's window, whose server a pane started and left running. tmux can hand such a window another pane's `WORKROOM_PANE` (its `update-environment` option), and the command is then taken for that pane: refused as that pane's own by `send` and `close`, and named as sent from it.
