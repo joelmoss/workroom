@@ -2742,6 +2742,8 @@ final class TerminalPanes {
     // The workroom a session is tagged with is how its daemon's list finds it again: `target.id`
     // for a workroom on this Mac, whose daemon no other Mac reads, and the workroom's own id for a
     // remote one, since `target.id` holds this Mac's project path and another Mac's differs (#255).
+    // The tab's facts are what the surface was just told, read back once: its launch and start
+    // directory never change. Its session is the tab's alone, which the surface reads below.
     var state = TerminalState(
       defaultTitle: title ?? "Terminal \(count)",
       launch: TerminalLaunch(
@@ -2764,8 +2766,6 @@ final class TerminalPanes {
     // a session that may no longer exist. A fresh pane's id was minted a line ago.
     view.attachment.isRestored = sessionID != nil
     view.attachment.metadata = metadata
-    // The tab's facts are what the surface was just told, read back once: its launch and start
-    // directory never change. Its session is the tab's alone, which the surface reads below.
     if let assignedSessionID {
       programStatusBinding.follow(target.hostID)
       // Who else types into it (#696), from the same host's events.
