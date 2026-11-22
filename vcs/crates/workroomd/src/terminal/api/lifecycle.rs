@@ -551,6 +551,9 @@ pub fn close(call: &Call) -> Result<Value, ApiError> {
     };
     let hub = &sessions.hooks().events;
     hub.will_close(id);
+    // First, as every kill refuses first (#297): a pane's attach on its way can't start the
+    // session again under its id, whether the run quits by itself or is killed.
+    sessions.refuse(id);
     if session["run"] == true
         && sessions
             .signal_run(id, wr_protocol::frame::RunSignal::Quit)
@@ -564,7 +567,6 @@ pub fn close(call: &Call) -> Result<Value, ApiError> {
             return Ok(json!({"session": hyphenated, "caller": call.caller}));
         }
     }
-    sessions.refuse(id);
     if !sessions.kill(id) {
         hub.forget_asked(id);
         return Err(ended());
