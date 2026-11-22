@@ -144,7 +144,10 @@ const MAGIC: [u8; 4] = *b"WRHO";
 /// sessions; a table before it carries none, and the next program numbers its events under a boot
 /// of its own, which is safe because no program that writes one has ever served the events, so
 /// no client holds a place in them.
-const TABLE_VERSION: u16 = 4;
+/// Version 5 adds each session's recipe (#693) after its program status, as length-prefixed JSON,
+/// empty for none; a table before it carries none, and `session.new` from such a session builds
+/// from the daemon's own environment.
+const TABLE_VERSION: u16 = 5;
 /// The oldest table this program still reads.
 const OLDEST_TABLE_VERSION: u16 = 1;
 /// How long the new binary gets to check the table. Every session's output is stopped meanwhile
@@ -238,8 +241,9 @@ impl Table {
     /// Big-endian, like the rest of the wire: magic, version, listener, lock, (from version 3) the
     /// boot, count, then per session id, pid, master, columns, rows, screen length and screen,
     /// (from version 2) its metadata as a count of length-prefixed key and value pairs, and (from
-    /// version 3) its program status as length-prefixed JSON; then (from version 4) the events as
-    /// length-prefixed JSON, empty for none.
+    /// version 3) its program status as length-prefixed JSON and (from version 5) its recipe as
+    /// length-prefixed JSON, empty for none; then (from version 4) the events as length-prefixed
+    /// JSON, empty for none.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = MAGIC.to_vec();
         out.extend_from_slice(&TABLE_VERSION.to_be_bytes());
@@ -266,6 +270,13 @@ impl Table {
                 serde_json::to_vec(&session.program_status).expect("program status serializes");
             out.extend_from_slice(&(status.len() as u32).to_be_bytes());
             out.extend_from_slice(&status);
+            let recipe = session
+                .recipe
+                .as_ref()
+                .map(|recipe| serde_json::to_vec(&recipe.to_json()).expect("a recipe serializes"))
+                .unwrap_or_default();
+            out.extend_from_slice(&(recipe.len() as u32).to_be_bytes());
+            out.extend_from_slice(&recipe);
         }
         let events = self.events.as_deref().unwrap_or_default();
         out.extend_from_slice(&(events.len() as u32).to_be_bytes());
@@ -319,7 +330,19 @@ impl Table {
                 program_status = serde_json::from_slice(reader.take(length)?)
                     .map_err(|_| HandOffError::ProgramStatus)?;
             }
+            let mut recipe = None;
+            if version >= 5 {
+                let length = u32::from_be_bytes(reader.array()?) as usize;
+                let bytes = reader.take(length)?;
+                // A recipe that can't be read is none: the session is still adopted, and a `new`
+                // from it builds from the daemon's own environment.
+                recipe = (!bytes.is_empty())
+                    .then(|| serde_json::from_slice::<serde_json::Value>(bytes).ok())
+                    .flatten()
+                    .and_then(|json| crate::terminal::session::Recipe::from_json(&json));
+            }
             sessions.push(FrozenSession {
+                recipe,
                 id,
                 pid,
                 master,

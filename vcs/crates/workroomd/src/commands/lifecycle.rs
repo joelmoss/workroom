@@ -41,6 +41,12 @@ pub(super) const NEW_FLAGS: &[Flag] = &[
     },
 ];
 
+pub(super) const CLOSE_LONG: &str = "Close a terminal session, and its tab or split in the app.\n\n\
+TARGET is the session's id, the end of its id (4 characters or more) or its label. Never its live \
+title, as other commands take: its program sets that, and anything it prints can change it, and \
+a close can't be undone. The session this command runs in is refused unless --allow-self is \
+given.";
+
 pub(super) const CLOSE_FLAGS: &[Flag] = &[Flag {
     name: "allow-self",
     usage: "Close the session this command runs in, which is otherwise refused",

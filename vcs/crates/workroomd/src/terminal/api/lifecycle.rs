@@ -182,7 +182,12 @@ pub fn close_input() -> Value {
         "type": "object",
         "required": ["target"],
         "properties": {
-            "target": target_schema(),
+            "target": {
+                "type": "string",
+                "description": "A session's id or id suffix, or its label: never its live title, \
+                                which its program sets and anything it prints can change, since \
+                                a close can't be undone.",
+            },
             "allow_self": {
                 "type": "boolean",
                 "default": false,
@@ -501,10 +506,37 @@ pub fn create(call: &Call) -> Result<Value, ApiError> {
 }
 
 /// The one session `target` names, resolved as every target is, and its id.
-fn resolved(call: &Call, method: &str) -> Result<(Value, SessionId, String), ApiError> {
+/// `by_title` false leaves out the last step, the live title, which the session's program sets
+/// and anything printed can change: `session.close`'s target, since a close can't be undone.
+fn resolved(
+    call: &Call,
+    method: &str,
+    by_title: bool,
+) -> Result<(Value, SessionId, String), ApiError> {
     let target = text(call, method, "target")?
         .ok_or_else(|| ApiError::invalid(format!("{method} needs a string `target`")))?;
-    let session = resolve(&listed(call.sessions), target)?;
+    let full = listed(call.sessions);
+    let mut listing = full.clone();
+    if !by_title {
+        for session in &mut listing {
+            session["title"] = Value::Null;
+        }
+    }
+    let session = resolve(&listing, target).map_err(|mut error| {
+        if !by_title && error.kind == kind::TARGET_NOT_FOUND {
+            error.message.push_str(
+                "; a close names a session by its id, an id suffix or its label, never its live \
+                 title",
+            );
+        }
+        // The matches as they are listed, live titles and all.
+        for matched in &mut error.matches {
+            if let Some(listed) = full.iter().find(|session| session["id"] == matched["id"]) {
+                *matched = listed.clone();
+            }
+        }
+        error
+    })?;
     let hyphenated = session["id"].as_str().unwrap_or_default().to_string();
     let id = wr_protocol::terminal::parse_session_id(OsStr::new(&hyphenated))
         .ok_or_else(|| ApiError::new(kind::SESSION_ENDED, format!("session {target:?} ended")))?;
@@ -524,7 +556,7 @@ pub fn close(call: &Call) -> Result<Value, ApiError> {
             )));
         }
     };
-    let (session, id, hyphenated) = resolved(call, CLOSE)?;
+    let (session, id, hyphenated) = resolved(call, CLOSE, false)?;
     let target = call.params["target"].as_str().unwrap_or_default();
     if !allow_self && call.caller.as_deref() == Some(hyphenated.as_str()) {
         return Err(ApiError::new(
@@ -579,7 +611,20 @@ pub fn run_control(call: &Call) -> Result<Value, ApiError> {
     let action = text(call, RUN_CONTROL, "action")?
         .and_then(|action| ACTIONS.into_iter().find(|known| *known == action))
         .ok_or_else(|| ApiError::invalid(format!("{RUN_CONTROL}'s `action` is restart or stop")))?;
-    let (_, id, hyphenated) = resolved(call, RUN_CONTROL)?;
+    let (session, id, hyphenated) = resolved(call, RUN_CONTROL, true)?;
+    let not_a_run = || {
+        ApiError::new(
+            kind::NOT_A_RUN,
+            format!(
+                "session {hyphenated} is no run session: only a run's command can be restarted \
+                 or stopped (`workroom new --run`, or the app's Run tab)"
+            ),
+        )
+    };
+    // At once, before any wait for a supervisor a shell never has.
+    if session["run"] != true {
+        return Err(not_a_run());
+    }
     // A supervisor sent its signal before it has set its traps dies of it, taking its run with
     // it: a `run-control` straight after `new --run`. Its first status comes after them.
     if let Some(status) = call.sessions.hooks().runs.status_path(id) {
@@ -595,13 +640,7 @@ pub fn run_control(call: &Call) -> Result<Value, ApiError> {
     use crate::terminal::session::RunSignalError;
     match call.sessions.signal_run(id, signal) {
         Ok(()) => Ok(json!({"session": hyphenated, "caller": call.caller, "action": action})),
-        Err(RunSignalError::NotARun) => Err(ApiError::new(
-            kind::NOT_A_RUN,
-            format!(
-                "session {hyphenated} is no run session: only a run's command can be restarted \
-                 or stopped (`workroom new --run`, or the app's Run tab)"
-            ),
-        )),
+        Err(RunSignalError::NotARun) => Err(not_a_run()),
         Err(RunSignalError::NotFound) => Err(ApiError::new(
             kind::SESSION_ENDED,
             format!("session {hyphenated} ended before it could be signalled"),

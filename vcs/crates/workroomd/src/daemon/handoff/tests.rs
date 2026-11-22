@@ -40,6 +40,20 @@ fn a_table_survives_encoding() {
                     ("created".into(), "1791130740000".into()),
                 ],
                 program_status: blocked_status(),
+                // What its shell was built from (#693), a text that is no UTF-8 among it.
+                recipe: Some(crate::terminal::session::Recipe {
+                    environment: vec![
+                        ("PATH".into(), "/opt/bin:/usr/bin".into()),
+                        (
+                            "RAW".into(),
+                            std::os::unix::ffi::OsStringExt::from_vec(vec![0xff, b'x']),
+                        ),
+                    ],
+                    shell: "/bin/zsh".into(),
+                    resources: "/Applications/W.app/Contents/Resources/ghostty".into(),
+                    run_shell: Some("/bin/zsh".into()),
+                    commands: None,
+                }),
             },
             FrozenSession {
                 id: SessionId([8; 16]),
@@ -50,6 +64,7 @@ fn a_table_survives_encoding() {
                 screen: Vec::new(),
                 metadata: Vec::new(),
                 program_status: Default::default(),
+                recipe: None,
             },
         ],
         events: Some(br#"{"boot":"x","revision":3}"#.to_vec()),
@@ -72,7 +87,11 @@ fn the_events_cross_the_table_after_the_sessions() {
         events: None,
     };
     let bytes = table.encode();
-    assert_eq!(bytes[4..6], 4u16.to_be_bytes(), "version 4");
+    assert_eq!(
+        bytes[4..6],
+        5u16.to_be_bytes(),
+        "version 5, the recipes' (#693)"
+    );
     assert_eq!(bytes[bytes.len() - 4..], [0, 0, 0, 0], "no events");
     assert_eq!(Table::decode(&bytes).map_err(|e| e.to_string()), Ok(table));
 }
@@ -98,6 +117,7 @@ fn a_shells_marks_cross_the_table() {
             screen: Vec::new(),
             metadata: Vec::new(),
             program_status: status,
+            recipe: None,
         }],
         events: None,
     };
@@ -124,6 +144,7 @@ fn screens_are_refused_by_a_build_that_cannot_paint_them() {
             screen: b"on screen".to_vec(),
             metadata: Vec::new(),
             program_status: Default::default(),
+            recipe: None,
         }],
         events: None,
     };
@@ -369,6 +390,7 @@ fn a_damaged_table_is_refused() {
             screen: b"screen".to_vec(),
             metadata: Vec::new(),
             program_status: Default::default(),
+            recipe: None,
         }],
         events: None,
     };
@@ -378,7 +400,7 @@ fn a_damaged_table_is_refused() {
     longer.push(0);
     assert!(Table::decode(&longer).is_err());
     let mut newer = bytes;
-    newer[5] = 5;
+    newer[5] = 6;
     assert!(Table::decode(&newer).is_err());
 }
 
@@ -417,6 +439,7 @@ fn a_version_1_table_from_an_older_daemon_is_adopted_without_metadata() {
                 screen: b"hello".to_vec(),
                 metadata: Vec::new(),
                 program_status: Default::default(),
+                recipe: None,
             }],
             events: None,
         }
