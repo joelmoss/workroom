@@ -97,14 +97,14 @@ final class PaneTypingMarkerUITests: XCTestCase {
     ready(0, then: "echo $WORKROOM_PANE > \(directory)/pane-one")
     XCTAssertFalse(marker.exists, "nobody has typed into Terminal 1 yet")
 
-    // Terminal 2: the bundled daemon binary (an ancestor of every pane's shell) is the `workroom`
-    // command (`main.rs` gives it every CLI subcommand), and `$WORKROOM_DAEMON` names its socket.
-    // `claude` is a shell function, so the app recognises Claude from the title the shell sets
-    // for it, as for the real one; it waits long enough for the test to look at Terminal 1.
+    // Terminal 2: the daemon's bin folder's `workroom`, its own build, which every pane has
+    // (#695), and `$WORKROOM_DAEMON` names its socket. The daemon runs as a copy of the bundled
+    // binary, so no ancestor's name says which it is. `claude` is a shell function, so the app
+    // recognises Claude from the title the shell sets for it, as for the real one; it waits long
+    // enough for the test to look at Terminal 1.
     ready(
       1,
-      then: "p=$PPID; while [ \"$p\" -gt 1 ]; do c=$(ps -o comm= -p $p); "
-        + "case $c in */workroomd) W=$c; break;; esac; p=$(ps -o ppid= -p $p | tr -d ' '); done; "
+      then: "W=\"$WORKROOM_BIN_DIR/workroom\"; "
         + "claude() { sleep 4; \"$W\" send \"$(cat \(directory)/pane-one)\" 'echo typed-by-claude'"
         + " || echo SENDFAILED; sleep 5; }")
     // Before `claude` starts, so the 4 s it waits before sending all fall after this.
