@@ -171,6 +171,9 @@ extension StatusCommandRunning {
 /// keeps draining past the cap (so the child never blocks) but discards the overflow.
 public struct StatusCommandRunner: StatusCommandRunning, Sendable {
   public var maxBytes: Int
+  /// Kills a child and its descendants on cancellation and on the hard-kill fallback. A seam so a
+  /// test can hold the kill on a gate it controls and prove `cancel()` returns before the kill runs.
+  var killTree: @Sendable (pid_t) -> Void = ProcessTree.killTree
 
   public init(maxBytes: Int = 4 * 1024 * 1024) {
     self.maxBytes = maxBytes
@@ -391,7 +394,8 @@ public struct StatusCommandRunner: StatusCommandRunning, Sendable {
 
     // `proc` is shared with the @Sendable cancellation handler; box it so the non-Sendable Process
     // can cross that boundary (mirrors the @unchecked Sendable helpers below).
-    let box = ProcessBox(proc)
+    let killTree = self.killTree
+    let box = ProcessBox(proc, killTree: killTree)
 
     return await withTaskCancellationHandler {
       await withCheckedContinuation { (continuation: CheckedContinuation<CommandResult, Never>) in
@@ -427,7 +431,7 @@ public struct StatusCommandRunner: StatusCommandRunning, Sendable {
         // awaiting Task would hang forever, defeating the timeout. SIGKILL is uncatchable, guaranteeing
         // the process exits and we resume. A 2s grace after SIGTERM lets well-behaved children exit.
         nonisolated(unsafe) let killItem = DispatchWorkItem {
-          if proc.isRunning { ProcessTree.killTree(proc.processIdentifier) }
+          if proc.isRunning { killTree(proc.processIdentifier) }
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout + 2, execute: killItem)
 
@@ -523,7 +527,11 @@ public struct StatusCommandRunner: StatusCommandRunning, Sendable {
 /// Boxes a non-Sendable `Process` so it can be captured by the @Sendable task-cancellation handler.
 private final class ProcessBox: @unchecked Sendable {
   private let process: Process
-  init(_ process: Process) { self.process = process }
+  private let killTree: @Sendable (pid_t) -> Void
+  init(_ process: Process, killTree: @escaping @Sendable (pid_t) -> Void) {
+    self.process = process
+    self.killTree = killTree
+  }
   /// SIGKILL the child (and any descendants it spawned) if still running — the cancellation path
   /// abandons the result, so kill promptly rather than wait out a SIGTERM grace.
   ///
@@ -540,8 +548,9 @@ private final class ProcessBox: @unchecked Sendable {
   /// queue.
   func terminate() {
     let process = self.process
+    let killTree = self.killTree
     DispatchQueue.global(qos: .userInitiated).async {
-      if process.isRunning { ProcessTree.killTree(process.processIdentifier) }
+      if process.isRunning { killTree(process.processIdentifier) }
     }
   }
 }

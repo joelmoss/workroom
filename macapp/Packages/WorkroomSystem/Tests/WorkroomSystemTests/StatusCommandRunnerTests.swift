@@ -54,40 +54,51 @@ final class StatusCommandRunnerTests: XCTestCase {
     XCTAssertLessThan(Date().timeIntervalSince(start), 8)  // not the 30s sleep
   }
 
-  func testCancellingAProbeDoesNotBlockTheCancellingThread() async {
+  func testCancellingAProbeDoesNotBlockTheCancellingThread() async throws {
     // `withTaskCancellationHandler`'s `onCancel` runs synchronously on whichever thread calls
     // `cancel()`, and the hottest canceller is the MAIN thread — every selection change supersedes the
     // in-flight status probe. The kill walks the child's process tree with a blocking `pgrep -P` per
     // node, so inline it stalled that thread for the whole walk (and a blocking wait spins a nested run
     // loop, reordering queued main-queue work against SwiftUI's update — how this surfaced).
     //
-    // A wide child tree makes the difference unmissable: ~40 children means ~41 sequential `pgrep`
-    // spawns, several hundred ms inline. The bound below sits well under that and far above the cost of
-    // simply enqueueing the work.
-    let runner = self.runner
-    let tmp = self.tmp
-    let task = Task {
-      await runner.run(
-        "sh", ["-c", "for i in $(seq 40); do sleep 120 & done; wait"], in: tmp, timeout: 120)
+    // Proved by order, not by elapsed time: the kill waits on a gate this test opens only once
+    // `cancel()` has returned. A kill run inside `cancel()` waits out the gate's 30 s fail-safe
+    // instead, and says so. Timing either the cancel or the kill fails on a busy CI runner, where
+    // the real tree walk's `pgrep` spawns took over 10 s (#644).
+    let gate = KillGate()
+    var runner = self.runner
+    runner.killTree = { pid in
+      gate.hold()
+      ProcessTree.killTree(pid)
     }
-    // Let the tree actually spawn, or the walk would have nothing to traverse and this would pass
-    // against the blocking version too.
-    try? await Task.sleep(nanoseconds: 700_000_000)
+    let tmp = self.tmp
+    let ready = URL(fileURLWithPath: tmp).appendingPathComponent("cancel-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: ready) }
+    // A 60 s timeout, past the gate's fail-safe, so only the kill can end this child.
+    let task = Task { [runner] in
+      await runner.run(
+        "sh", ["-c", "touch \"$0\"; exec sleep 60", ready.path], in: tmp, timeout: 60)
+    }
+    // Cancel only once the child runs, or there is nothing to kill. Setup, so a generous budget.
+    let deadline = Date().addingTimeInterval(30)
+    while !FileManager.default.fileExists(atPath: ready.path), Date() < deadline {
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: ready.path), "the probe's child didn't start in 30 s")
 
-    let start = Date()
     task.cancel()
-    let blocked = Date().timeIntervalSince(start)
+    gate.open()
 
-    XCTAssertLessThan(blocked, 0.3, "cancelling a probe blocked the cancelling thread on the kill")
-    // And the kill still lands: the probe resumes instead of running out its 120s sleep. The bound
-    // only has to tell "killed" from "slept it out": the walk is ~41 sequential `pgrep` spawns, which a
-    // loaded CI runner has taken 10.5 s to finish, so a tight bound here measures the runner, not us.
     let r = await task.value
+    XCTAssertTrue(
+      gate.wasOpenedForTheKill,
+      "cancelling a probe ran the kill on the cancelling thread: the kill waited on a gate that "
+        + "opens only after cancel() returns")
     XCTAssertFalse(r.ok, "a cancelled probe's result is abandoned, not a success")
-    XCTAssertLessThan(Date().timeIntervalSince(start), 60, "not the 120s sleep")
     // The result shape a cancelled probe actually has — and the one `classifyGitHubCLI` used to read
     // as a logout. Killed by SIGKILL, so `exitCode` is the SIGNAL NUMBER (9), `timedOut` is false
-    // (the 120s deadline never fired), and stdout is empty or half-written. Nothing here is evidence
+    // (the 60s deadline never fired), and stdout is empty or half-written. Nothing here is evidence
     // about gh's auth state, which is why the flag exists.
     XCTAssertTrue(r.signaled, "a cancelled probe's child was killed by a signal")
     XCTAssertFalse(r.timedOut, "cancellation is not a timeout")
@@ -359,4 +370,21 @@ final class StatusCommandRunnerTests: XCTestCase {
     let expectedBase = plain.stdout.isEmpty ? "ssh" : plain.stdout
     XCTAssertEqual(network.stdout, "\(expectedBase) -o BatchMode=yes")
   }
+}
+
+/// Holds a kill until the test opens it, and records whether the test's `open()` released it or
+/// the fail-safe ran out. Only the kill blocks on it; the async test body just opens it.
+private final class KillGate: @unchecked Sendable {
+  private let semaphore = DispatchSemaphore(value: 0)
+  private let lock = NSLock()
+  private var opened = false
+
+  func hold() {
+    let released = semaphore.wait(timeout: .now() + 30) == .success
+    lock.withLock { opened = released }
+  }
+
+  func open() { semaphore.signal() }
+
+  var wasOpenedForTheKill: Bool { lock.withLock { opened } }
 }
