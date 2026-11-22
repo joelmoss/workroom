@@ -59,6 +59,16 @@ Release channels and Sparkle feeds are documented in
   (`Core/Terminal/GhosttySurfaceView.swift`) + runtime (`GhosttyApp`/`GhosttyRuntimeAdapter`) are ours; the
   bundled `Resources/ghostty` (terminfo + shell-integration) must ship for the engine to start.
 
+- **Everything the app tells the engine goes through one generated `ghostty.conf`**
+  (`GhosttyApp.writeThemeConfig`): theme, TERM, padding, contrast, and Settings ▸ Terminal's font
+  and cursor (`TerminalTypography.configLines`, which writes nothing at the defaults). `GhosttyApp`
+  rebuilds it when any of those preferences changes (`observeTerminalSettings`), so a new setting
+  joins `TerminalTypography.keys` rather than reloading from its control. The engine's embedded
+  JetBrains Mono takes no weight or italic, so the app ships the same font's variable files in
+  `Resources/fonts` and registers them for the process at engine start
+  (`TerminalFontCatalog.registerBundledFonts`); refresh them with the pin (§N of
+  `macapp/QA-libghostty.md`).
+
 - **The child environment has two layers, and only one of them is reliable** (`WorkroomSystem/ShellEnvironment.swift`).
   A Finder-launched `.app` gets a minimal PATH, so: the **floor** (`floorPath()`) reads `/etc/paths`
   + `/etc/paths.d/*` — `path_helper`'s own inputs — with no shell at all, and that alone resolves

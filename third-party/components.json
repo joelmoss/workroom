@@ -291,7 +291,7 @@
     },
     {
       "id": "jetbrains-mono",
-      "name": "JetBrains Mono font (embedded in libghostty)",
+      "name": "JetBrains Mono font (embedded in libghostty, and bundled for the terminal font settings)",
       "version": "2.304",
       "license": "OFL-1.1",
       "source": "https://github.com/JetBrains/JetBrainsMono",

@@ -56,6 +56,12 @@ final class GhosttyApp {
   private var reportedConfigWriteFailure = false
   /// NSApplication active/inactive observers that drive app-level focus (see `observeAppFocus`).
   private var appFocusObservers: [NSObjectProtocol] = []
+  /// Watches the preferences the generated config is written from (`observeTerminalSettings`).
+  private var terminalSettingsWatch: Task<Void, Never>?
+  /// How long a burst of those changes settles before the config is rebuilt.
+  private static let settingsReloadDelay: Duration = .milliseconds(150)
+  /// The reload a burst of those preference changes is waiting on.
+  private var pendingSettingsReload: Task<Void, Never>?
 
   private init() {
     initialize()
@@ -70,6 +76,9 @@ final class GhosttyApp {
       reportStartupFailure("ghostty_init failed — terminals unavailable")
       return
     }
+
+    // Before the first config: a weight or italic on the built-in font names the bundled copy.
+    TerminalFontCatalog.registerBundledFonts()
 
     guard let cfg = makeConfig() else {
       reportStartupFailure("ghostty_config_new failed — terminals unavailable")
@@ -139,8 +148,33 @@ final class GhosttyApp {
     // focus-independent) still works. Keeping the app-level flag in sync is part of the embedding
     // contract and a prerequisite for correct DECSET 1004 (`CSI I`/`CSI O`) focus reporting.
     observeAppFocus(for: createdApp)
+    observeTerminalSettings()
     let info = ghostty_info()
     logger.info("libghostty ready (build mode \(info.build_mode.rawValue), version available)")
+  }
+
+  // MARK: Settings the config is written from
+
+  /// Rebuild the config when a preference it is written from changes (Settings ▸ Terminal's TERM,
+  /// font and cursor), whoever wrote it: one place, so a new control or a reset can't forget to.
+  /// Coalesced, so a stepper held down or a slider dragged rewrites and re-parses the config, and
+  /// re-lays every open terminal out, once it settles rather than on each tick.
+  private func observeTerminalSettings() {
+    let keys: [Defaults._AnyKey] = [.terminalReportsGhostty] + TerminalTypography.keys
+    terminalSettingsWatch = Task { @MainActor [weak self] in
+      for await _ in Defaults.updates(keys, initial: false) {
+        self?.scheduleSettingsReload()
+      }
+    }
+  }
+
+  private func scheduleSettingsReload() {
+    pendingSettingsReload?.cancel()
+    pendingSettingsReload = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: Self.settingsReloadDelay)
+      guard !Task.isCancelled else { return }
+      self?.reloadConfig(force: true, dark: ThemeService.isCurrentAppearanceDark())
+    }
   }
 
   // MARK: App-level focus (embedding contract)
@@ -391,7 +425,7 @@ final class GhosttyApp {
       theme: theme ?? ThemeService.activeTheme(for: ThemeSide(isDark: dark)).configValue,
       term: TerminalType(reportsGhostty: Defaults[.terminalReportsGhostty]),
       command: Self.fixtureShellCommand, glass: GlassService.shared.terminalAppearance,
-      preview: ThemeService.shared.activePreview, to: themeConfigURL)
+      preview: ThemeService.shared.activePreview, typography: .current, to: themeConfigURL)
     if written {
       reportedConfigWriteFailure = false
     } else if !reportedConfigWriteFailure {
@@ -491,7 +525,8 @@ final class GhosttyApp {
   @discardableResult
   nonisolated static func writeThemeConfig(
     theme: ThemeValue, term: TerminalType = .xterm256Color, command: String? = nil,
-    glass: GlassAppearance = .opaque, preview: ThemePreview? = nil, to url: URL
+    glass: GlassAppearance = .opaque, preview: ThemePreview? = nil,
+    typography: TerminalTypography = TerminalTypography(), to url: URL
   ) -> Bool {
     // The terminal's colours come from the active theme family's variant for this appearance
     // (issue #36). libghostty resolves `theme = "<name>"` from $GHOSTTY_RESOURCES_DIR/themes (and
@@ -534,6 +569,9 @@ final class GhosttyApp {
     // terminal draws its own background, exactly as before Glass.
     // `background-blur` is never written: that blur is the window's, and a second would stack on it.
     //
+    // `typography` is Settings ▸ Terminal's font and cursor (`TerminalTypography.configLines`);
+    // at its defaults it adds no line, so the file is what it was before those settings.
+    //
     // `command` is only ever a UI test's shell (`fixtureShellCommand`). `direct:` runs it as is,
     // without `/bin/sh -c`, so Ghostty still sees `bash` and injects its integration. A newline
     // would start a directive of its own, so a path holding one is dropped.
@@ -554,6 +592,7 @@ final class GhosttyApp {
     } else {
       contents += "\nminimum-contrast = 3.0"
     }
+    for line in typography.configLines() { contents += "\n" + line }
     if let command, !command.contains(where: \.isNewline) {
       contents += "\ncommand = direct:\(command)"
     }
@@ -608,6 +647,8 @@ final class GhosttyApp {
   // MARK: Teardown (A1 — on app quit, after surfaces are freed)
 
   func shutdown() {
+    terminalSettingsWatch?.cancel()
+    pendingSettingsReload?.cancel()
     for observer in appFocusObservers { NotificationCenter.default.removeObserver(observer) }
     appFocusObservers.removeAll()
     if let app {

@@ -175,6 +175,10 @@ bump is worthless.
   and trapped on the first callback from libghostty's own threads; typed constants do not.
 - Regenerate `Resources/ghostty/` (terminfo via `infocmp`/`tic`, `shell-integration/`) from the
   pinned commit; see `Resources/ghostty/SOURCE.md`.
+- Refresh `Resources/fonts/` (the variable JetBrains Mono files Settings ▸ Terminal registers for
+  a weight or italic on the built-in font) from the new sha's `jetbrains_mono_variable` and
+  `jetbrains_mono_variable_italic` sources (`src/build/SharedDeps.zig`), so they match the font the
+  engine embeds, and update the version in `third-party/components.json`.
 - Check whether ghostty#14444 (the pane-close freeze, #547) has merged, and whether the new sha holds
   it. We carry no patches, so a fix arrives only through a bump (ADR 0061).
 - Check the app's terminal still ignores OSC 7501: `src/termio/stream_handler.zig` at the new sha

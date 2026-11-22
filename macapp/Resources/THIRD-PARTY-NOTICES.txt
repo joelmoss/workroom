@@ -4810,7 +4810,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 
 ==============================================================================
-JetBrains Mono font (embedded in libghostty) 2.304
+JetBrains Mono font (embedded in libghostty, and bundled for the terminal font settings) 2.304
 Licence: OFL-1.1
 Source: https://github.com/JetBrains/JetBrainsMono
 ------------------------------------------------------------------------------

@@ -108,6 +108,12 @@ targets:
       - path: Resources/markdown
         type: folder
         buildPhase: resources
+      # JetBrains Mono, the font libghostty embeds, as variable font files. Folder reference →
+      # Contents/Resources/fonts; `TerminalFontCatalog.registerBundledFonts` registers them for the
+      # process, so a weight or italic chosen for the built-in font (Settings ▸ Terminal) can name it.
+      - path: Resources/fonts
+        type: folder
+        buildPhase: resources
       # Curated CLI/TUI tool-logo registry + fetched favicons (issue #141). Folder reference → copied
       # verbatim to Contents/Resources/tool-logos; ToolLogoRegistry loads it offline via
       # Bundle.main.url(forResource:withExtension:subdirectory:). See Resources/tool-logos/registry.json.

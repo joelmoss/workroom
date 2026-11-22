@@ -878,98 +878,99 @@ private struct TerminalSettingsPane: View {
 
   var body: some View {
     Form {
-      Toggle("Copy on select", isOn: $copyOnSelect)
-        .help("Automatically copy the terminal selection to the clipboard.")
-        .accessibilityIdentifier("settings.control.copyOnSelect")
+      TerminalTypographySections()
 
-      Toggle("Confirm before closing a terminal", isOn: $confirmOnCloseTerminal)
-        .help("Ask before closing a terminal (kills its shell and any running process, no undo).")
+      Section {
+        Toggle("Copy on select", isOn: $copyOnSelect)
+          .help("Automatically copy the terminal selection to the clipboard.")
+          .accessibilityIdentifier("settings.control.copyOnSelect")
 
-      VStack(alignment: .leading, spacing: 4) {
-        Button("Stop Detached Terminals…") {
-          Task {
-            let held = Self.heldSessionIDs()
-            detachedToStop = PersistentSessionService.detachedSessionIDs(
-              await PersistentSessionService.shared.liveSessions(), held: held)
+        Toggle("Confirm before closing a terminal", isOn: $confirmOnCloseTerminal)
+          .help("Ask before closing a terminal (kills its shell and any running process, no undo).")
+
+        VStack(alignment: .leading, spacing: 4) {
+          Button("Stop Detached Terminals…") {
+            Task {
+              let held = Self.heldSessionIDs()
+              detachedToStop = PersistentSessionService.detachedSessionIDs(
+                await PersistentSessionService.shared.liveSessions(), held: held)
+            }
           }
-        }
-        .accessibilityIdentifier("settings.control.stopDetachedTerminals")
-        .alert(
-          detachedToStop?.isEmpty == true ? "No detached terminals" : "Stop detached terminals?",
-          isPresented: Binding(
-            get: { detachedToStop != nil }, set: { if !$0 { detachedToStop = nil } })
-        ) {
-          if let ids = detachedToStop, !ids.isEmpty {
-            Button("Stop \(ids.count)", role: .destructive) {
-              // Only the sessions counted, each re-checked just before it is ended: one a tab or
-              // client took over since the count (or while an earlier kill was awaited) must not
-              // lose its shell, and one created since was never offered. The helper's kill does
-              // not check attachment itself, so a client attaching between this check and the kill
-              // can still lose it; the window is one list round trip.
-              Task {
-                let service = PersistentSessionService.shared
-                for id in ids {
-                  let stillDetached = PersistentSessionService.detachedSessionIDs(
-                    await service.liveSessions(), held: Self.heldSessionIDs())
-                  guard stillDetached.contains(id) else { continue }
-                  await service.endSession(sessionID: id)
+          .accessibilityIdentifier("settings.control.stopDetachedTerminals")
+          .alert(
+            detachedToStop?.isEmpty == true ? "No detached terminals" : "Stop detached terminals?",
+            isPresented: Binding(
+              get: { detachedToStop != nil }, set: { if !$0 { detachedToStop = nil } })
+          ) {
+            if let ids = detachedToStop, !ids.isEmpty {
+              Button("Stop \(ids.count)", role: .destructive) {
+                // Only the sessions counted, each re-checked just before it is ended: one a tab or
+                // client took over since the count (or while an earlier kill was awaited) must not
+                // lose its shell, and one created since was never offered. The helper's kill does
+                // not check attachment itself, so a client attaching between this check and the kill
+                // can still lose it; the window is one list round trip.
+                Task {
+                  let service = PersistentSessionService.shared
+                  for id in ids {
+                    let stillDetached = PersistentSessionService.detachedSessionIDs(
+                      await service.liveSessions(), held: Self.heldSessionIDs())
+                    guard stillDetached.contains(id) else { continue }
+                    await service.endSession(sessionID: id)
+                  }
                 }
               }
+              Button("Cancel", role: .cancel) {}
+            } else {
+              Button("OK", role: .cancel) {}
             }
-            Button("Cancel", role: .cancel) {}
-          } else {
-            Button("OK", role: .cancel) {}
+          } message: {
+            if let ids = detachedToStop, !ids.isEmpty {
+              Text(
+                "\(ids.count) background terminal(s) with no open tab will be stopped, "
+                  + "along with anything running in them.")
+            }
           }
-        } message: {
-          if let ids = detachedToStop, !ids.isEmpty {
-            Text(
-              "\(ids.count) background terminal(s) with no open tab will be stopped, "
-                + "along with anything running in them.")
-          }
-        }
-        Text(
-          "Terminals keep running in the background after you quit, and reattach when you "
-            + "relaunch Workroom. Closing a terminal ends it. Run commands keep running too, "
-            + "unless you choose to stop them when you quit, and the Quick Terminal is never "
-            + "kept. Stopping detached terminals ends every one no open tab is attached to."
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
-      }
-
-      Picker("Open file paths in", selection: $pathEditor) {
-        Text("Default App").tag("")
-        ForEach(ExternalEditor.installed) { editor in
-          Text(editor.name).tag(editor.id)
-        }
-      }
-      .help("The app used to open ⌘-clicked file paths.")
-
-      VStack(alignment: .leading, spacing: 4) {
-        Toggle("Report terminal as Ghostty", isOn: $reportsGhostty)
-          .help(
-            "New terminals set TERM=xterm-ghostty instead of xterm-256color. Programs that look "
-              + "the terminal up by name, such as tmux, get Ghostty's extra features. Only this Mac "
-              + "has the xterm-ghostty entry. top, sudo, and ssh to a machine without the entry "
-              + "stop working."
+          Text(
+            "Terminals keep running in the background after you quit, and reattach when you "
+              + "relaunch Workroom. Closing a terminal ends it. Run commands keep running too, "
+              + "unless you choose to stop them when you quit, and the Quick Terminal is never "
+              + "kept. Stopping detached terminals ends every one no open tab is attached to."
           )
-          .accessibilityIdentifier("settings.control.terminalReportsGhostty")
-          // A surface takes its TERM from the config when it starts, so a reload is enough: the
-          // next terminal opened gets the new value, and running shells keep theirs.
-          .onChange(of: reportsGhostty) { _, reports in
-            // Written here too, so the reload reads the new value whenever `@Default` lands it.
-            Defaults[.terminalReportsGhostty] = reports
-            GhosttyApp.shared.reloadConfig(
-              force: true, dark: ThemeService.isCurrentAppearanceDark())
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        }
+
+        Picker("Open file paths in", selection: $pathEditor) {
+          Text("Default App").tag("")
+          ForEach(ExternalEditor.installed) { editor in
+            Text(editor.name).tag(editor.id)
           }
-        Text(
-          "Off, terminals use xterm-256color, which every Mac, server and container knows. On, "
-            + "they use xterm-ghostty, and tmux gets full colour and curly underlines. top, sudo, "
-            + "and ssh to a machine without the entry then stop working. Applies to new "
-            + "terminals. Remote workrooms don't use this setting."
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
+        }
+        .help("The app used to open ⌘-clicked file paths.")
+
+        VStack(alignment: .leading, spacing: 4) {
+          Toggle("Report terminal as Ghostty", isOn: $reportsGhostty)
+            .help(
+              "New terminals set TERM=xterm-ghostty instead of xterm-256color. Programs that look "
+                + "the terminal up by name, such as tmux, get Ghostty's extra features. Only this Mac "
+                + "has the xterm-ghostty entry. top, sudo, and ssh to a machine without the entry "
+                + "stop working."
+            )
+            .accessibilityIdentifier("settings.control.terminalReportsGhostty")
+          // A surface takes its TERM from the config when it starts, so the reload `GhosttyApp`
+          // makes on the change (`observeTerminalSettings`) is enough: the next terminal opened
+          // gets the new value, and running shells keep theirs.
+          Text(
+            "Off, terminals use xterm-256color, which every Mac, server and container knows. On, "
+              + "they use xterm-ghostty, and tmux gets full colour and curly underlines. top, sudo, "
+              + "and ssh to a machine without the entry then stop working. Applies to new "
+              + "terminals. Remote workrooms don't use this setting."
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        }
+      } header: {
+        Text("Behaviour")
       }
 
       QuickTerminalSection()

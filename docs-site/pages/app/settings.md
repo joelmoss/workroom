@@ -88,6 +88,23 @@ If your light theme is missing, or is now a dark theme, Workroom shows **Workroo
 | **Confirm before closing a terminal** | Asks before closing a terminal, because that ends its shell and anything running in it, with no undo. |
 | **Open file paths in** | The app that opens a file path you <kbd>⌘</kbd>-click in a terminal: **Default App**, or one of Visual Studio Code, Zed and Xcode if installed. |
 
+### Font and cursor {nightly}
+
+The top of the Terminal pane shows a few lines of terminal in your theme, set the way your terminals will be, with your cursor. Changes reach every open terminal straight away.
+
+| Setting | What it does |
+| --- | --- |
+| **Font** | The terminal's font: **JetBrains Mono (Built-in)**, or any monospaced font installed on your Mac. |
+| **Weight** | How heavy the text is, from the weights the font has. A variable font offers every step from Thin to Black that it covers. Bold text is drawn heavier still. |
+| **Style** | **Normal** or **Italic** for the terminal's text. Text a program makes italic stays italic, and bold text follows the weight and style too. Unavailable for a font with no italic. |
+| **Size** | The font size in points, from 6 to 72. 13 by default. |
+| **Line height** | The space each line takes, from 0.8 to 2 times the font's own. |
+| **Shape** | The cursor's shape: **Automatic**, **Block**, **Bar**, **Underline** or **Hollow Block**. Automatic shows a bar at the shell prompt and a block elsewhere. |
+| **Blink** | Makes the cursor blink. On by default. |
+| **Restore Defaults** | Puts the font and cursor back as they were. |
+
+Programs such as Vim can still change the cursor while they run. With a chosen shape, the shell no longer switches the cursor to a bar at its prompt. At the prompt, a chosen shape and blinking apply to terminals you open after changing them. Remote workrooms keep a blinking bar at their prompt.
+
 ### Report terminal as Ghostty
 
 Off by default. New terminals set `TERM=xterm-256color`, which every Mac, server and container knows, so `top`, `sudo vim` and `ssh` to any server work as they do in Terminal. Programs still see `COLORTERM=truecolor` and `TERM_PROGRAM=ghostty`, so full colour and Ghostty detection are unchanged.

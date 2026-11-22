@@ -114,6 +114,27 @@ extension Defaults.Keys {
   static let terminalReportsGhostty = Key<Bool>(
     "terminalReportsGhostty", default: false, suite: .app)
 
+  /// The terminal's font and cursor (Settings ▸ Terminal), written into the generated
+  /// `ghostty.conf` by `TerminalTypography.configLines`. Each default writes no line.
+  /// The font family; "" is libghostty's built-in JetBrains Mono.
+  static let terminalFontFamily = Key<String>(
+    "terminalFontFamily", default: TerminalTypography.defaults.family, suite: .app)
+  /// CSS-style weight, 100–900.
+  static let terminalFontWeight = Key<Int>(
+    "terminalFontWeight", default: TerminalTypography.defaults.weight, suite: .app)
+  static let terminalFontItalic = Key<Bool>(
+    "terminalFontItalic", default: TerminalTypography.defaults.italic, suite: .app)
+  /// Points.
+  static let terminalFontSize = Key<Double>(
+    "terminalFontSize", default: TerminalTypography.defaults.size, suite: .app)
+  /// A multiple of the font's own line height.
+  static let terminalLineHeight = Key<Double>(
+    "terminalLineHeight", default: TerminalTypography.defaults.lineHeight, suite: .app)
+  static let terminalCursorShape = Key<TerminalCursorShape>(
+    "terminalCursorShape", default: TerminalTypography.defaults.cursorShape, suite: .app)
+  static let terminalCursorBlinks = Key<Bool>(
+    "terminalCursorBlinks", default: TerminalTypography.defaults.cursorBlinks, suite: .app)
+
   /// The host options every boxd and exe.dev workroom is created with (#575, ADR 0065), keyed by
   /// `HostKind.hostOptionsKey`: Settings ▸ Remote Hosts.
   static let hostOptions = Key<[String: HostOptions]>("hostOptions", default: [:], suite: .app)
