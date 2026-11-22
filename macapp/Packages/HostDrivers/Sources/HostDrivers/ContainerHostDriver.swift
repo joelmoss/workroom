@@ -1138,16 +1138,37 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
   /// PATH. Relative, so it names whichever `workroomd` is moved there. In a folder on this Mac
   /// (Docker's staging folder, Apple's mounted one), made only where nothing or a link is: anything
   /// else at that name is not this driver's.
+  ///
+  /// Apple's creates at once share one folder, so each step is a single call that can't lose to
+  /// another create: the link is made by `symlink(2)`, which fails rather than replaces, and what
+  /// is there when it fails is read again, never taken for right unseen; a link to something else
+  /// is replaced by `rename(2)`ing a link of this call's own over it, never removed first.
   static func linkCommand(in folder: URL) throws {
-    let link = folder.appendingPathComponent("workroom")
-    let fileManager = FileManager.default
-    if let existing = try? fileManager.destinationOfSymbolicLink(atPath: link.path) {
-      guard existing != "workroomd" else { return }
-      try fileManager.removeItem(at: link)
-    } else if fileManager.fileExists(atPath: link.path) {
+    let link = folder.appendingPathComponent("workroom").path
+    if symlink("workroomd", link) == 0 { return }
+    let made = errno
+    guard made == EEXIST else { throw fileFailure("link workroom in \(folder.path)", made) }
+    var info = stat()
+    guard lstat(link, &info) == 0 else {
+      throw fileFailure("read \(link)", errno)
+    }
+    guard info.st_mode & S_IFMT == S_IFLNK else { return }
+    guard try FileManager.default.destinationOfSymbolicLink(atPath: link) != "workroomd" else {
       return
     }
-    try fileManager.createSymbolicLink(atPath: link.path, withDestinationPath: "workroomd")
+    let staged = folder.appendingPathComponent(".workroom-\(UUID().uuidString)").path
+    guard symlink("workroomd", staged) == 0 else {
+      throw fileFailure("link workroom in \(folder.path)", errno)
+    }
+    guard rename(staged, link) == 0 else {
+      let renamed = errno
+      unlink(staged)  // This call's own link, made just above under a name of its own.
+      throw fileFailure("replace \(link)", renamed)
+    }
+  }
+
+  private static func fileFailure(_ what: String, _ code: Int32) -> HostDriverError {
+    .provisioning("couldn't \(what): \(String(cString: strerror(code)))")
   }
 
   /// Apple: the folder on this Mac its containers mount the daemon from, holding `binary`'s bytes.
@@ -1162,10 +1183,20 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
     if FileManager.default.contentsEqual(atPath: binary.path, andPath: target.path) {
       return folder
     }
+    // Staged under a name of its own and renamed into place in one call, which replaces whatever
+    // daemon is there: creates at once that all find it missing or old each put the same bytes in,
+    // and none fails for finding another's there first.
     let staged = folder.appendingPathComponent(".workroomd-\(UUID().uuidString)")
     try FileManager.default.copyItem(at: binary, to: staged)
-    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: staged.path)
-    _ = try FileManager.default.replaceItemAt(target, withItemAt: staged)
+    do {
+      try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: staged.path)
+      guard rename(staged.path, target.path) == 0 else {
+        throw Self.fileFailure("put the daemon in \(folder.path)", errno)
+      }
+    } catch {
+      try? FileManager.default.removeItem(at: staged)  // This call's own copy, named just above.
+      throw error
+    }
     return folder
   }
 
