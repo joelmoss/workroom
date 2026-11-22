@@ -3989,7 +3989,7 @@ fn over_ssh_new_close_and_run_control_open_end_and_restart_host_terminals() {
         pane_id,
         false,
         "'WORKROOM_SESSION_TITLE=agent pane' WORKROOM_SESSION_WORKROOM=wr-693 \
-         WORKROOM_SESSION_HOSTNAME=mac-a.local NEW_INHERITS=from-the-host-pane",
+         WORKROOM_SESSION_HOSTNAME=mac-a.local",
     );
     pane.type_line("echo \"PANE-\"\"UP\"");
     assert!(
@@ -4051,11 +4051,13 @@ fn over_ssh_new_close_and_run_control_open_end_and_restart_host_terminals() {
     let refused = envelope("self");
     assert_eq!(refused["error"]["kind"], "RefusedSelf", "{refused}");
 
-    // The new session is the host pane's kind: its environment, in the pane's folder.
+    // The new session is a host pane like the caller: the host's account, its own pane named, in
+    // the caller's folder. Enter as a key: the host's shell has bracketed paste on, so a newline
+    // in the text would stay in its line.
     let sent = host(format!(
         "WORKROOM_DAEMON={} {binary} send '{id}' \
-         '{{ echo \"$NEW_INHERITS\"; pwd; }} > {dir}/said.partial; mv {dir}/said.partial {dir}/said\n'; \
-         echo sent=$?",
+         '{{ echo \"$USER $WORKROOM_PANE\"; pwd; }} > {dir}/said.partial; mv {dir}/said.partial {dir}/said' \
+         --enter; echo sent=$?",
         fixture.socket
     ));
     assert!(sent.contains("sent=0"), "{sent}");
@@ -4069,7 +4071,7 @@ fn over_ssh_new_close_and_run_control_open_end_and_restart_host_terminals() {
             Some(said)
         })
         .expect("the new session never ran what it was sent");
-    assert_eq!(said, format!("from-the-host-pane\n{dir}\n"));
+    assert_eq!(said, format!("workroom {id}\n{dir}\n"));
 
     let closed = host(format!(
         "WORKROOM_DAEMON={} {binary} close 'host dev' && WORKROOM_DAEMON={} {binary} close \
