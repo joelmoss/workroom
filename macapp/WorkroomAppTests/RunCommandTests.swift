@@ -2052,8 +2052,11 @@ final class RunCommandTests: XCTestCase {
     let mine = session([SessionMetadataKey.workroom: "W", "kind": "run"])
     let shell = session([SessionMetadataKey.workroom: "W"])
     let other = session([SessionMetadataKey.workroom: "X", "kind": "run"])
+    // An agent's `workroom new --run` in the workroom (#693): its command, not the project's Run.
+    let opened = session([SessionMetadataKey.workroom: "W", "kind": "run", "opened_by": "outside"])
 
     XCTAssertEqual(
-      RunCommands.runSessions(in: [shell, mine, other], workroom: "W"), [mine.identifier.uuid!])
+      RunCommands.runSessions(in: [shell, mine, other, opened], workroom: "W"),
+      [mine.identifier.uuid!])
   }
 }

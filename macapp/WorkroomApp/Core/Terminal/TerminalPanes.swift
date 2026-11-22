@@ -1431,13 +1431,43 @@ final class TerminalPanes {
   }
 
   /// Open a new solo terminal at the end of the strip and focus it (⌘T). Does not touch the split.
+  /// `focus: false` leaves the strip's focus where it is: a tab `workroom new` asked for (#693),
+  /// which must never take the user's keyboard from the pane they are typing in.
   @discardableResult
-  func addTab(for target: TerminalTarget, sessionID: UUID? = nil) -> TerminalTab {
+  func addTab(for target: TerminalTarget, sessionID: UUID? = nil, focus: Bool = true)
+    -> TerminalTab
+  {
     let tab = makeTerminalTab(for: target, cwd: target.path, sessionID: sessionID)
     insert(tab, for: target)
-    setFocused(tab.id, for: target.id)
+    if focus { setFocused(tab.id, for: target.id) }
     reconcileOcclusion(for: target)
     return tab
+  }
+
+  /// A split beside `anchor` on `edge` showing the session `sessionID` that already exists, for
+  /// `workroom new --split` (#693): the anchor's group grows as a split command grows it, and the
+  /// focus stays where it was, so the agent that asked keeps the user's keyboard. Nil, splitting
+  /// nothing, when `anchor` isn't one of `target`'s or is too small to halve; the caller opens a
+  /// tab instead.
+  @discardableResult
+  func openSplit(
+    sessionID: UUID, beside anchor: TerminalTab.ID, on edge: PaneEdge, for target: TerminalTarget
+  ) -> TerminalTab? {
+    guard let anchorTab = record(anchor, in: target.id),
+      fits(splitting: anchorTab, orientation: edge.orientation, for: target)
+    else { return nil }
+    let cwd =
+      target.remoteHost != nil
+      ? anchorTab.terminal?.hostCwd ?? target.path : anchorTab.terminal?.cwd ?? target.path
+    let newTab = makeTerminalTab(for: target, cwd: cwd, sessionID: sessionID)
+    store(newTab)
+    setSplits(
+      splitGroups(target.id).inserting(
+        newTab.id, beside: anchor, edge: edge, policy: splitPolicy(for: target.id)),
+      for: target.id)
+    insertID(newTab.id, after: anchor, for: target)
+    reconcileOcclusion(for: target)
+    return newTab
   }
 
   /// Wait for a pane's branch read in flight. For tests.

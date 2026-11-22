@@ -423,3 +423,28 @@ extension QuickTerminalHost: TerminalsSectionHolder {
       focusedKey: captured.focused.flatMap { keysByTabID[$0] }, terminalCounter: captured.counter)
   }
 }
+
+/// The Quick Terminal's panel as `workroom new` and `workroom close` see it (#693): its one
+/// group, on screen while the panel shows.
+extension QuickTerminalHost: TerminalRequestHolder {
+  func terminalTarget(forID targetID: TerminalTarget.ID) -> TerminalTarget? {
+    targetID == target.id ? target : nil
+  }
+
+  func isShowingTarget(_ targetID: TerminalTarget.ID) -> Bool {
+    targetID == target.id && hostWindow?.isVisible == true
+  }
+
+  var isKeyHolder: Bool { hostWindow?.isKeyWindow == true }
+
+  func showRequestedSession(
+    _ session: UUID, label: String?, in target: TerminalTarget, beside anchor: TerminalTab.ID?,
+    on edge: PaneEdge?
+  ) {
+    openRequestedPane(session, label: label, in: target, beside: anchor, on: edge)
+  }
+
+  func closeRequestedTab(_ tabID: TerminalTab.ID, in target: TerminalTarget) {
+    closeFlow.performClose([tabID], for: target)
+  }
+}

@@ -11,6 +11,8 @@ typealias RunSignalOutcome = PersistentSessionService.RunSignalOutcome
 enum RunSessionKey {
   static let kind = "kind"
   static let run = "run"
+  /// Who asked for a session `workroom new` made (#693): the daemon's `opened_by`.
+  static let openedBy = "opened_by"
 }
 
 /// A window's run commands (issue #7): which tab is each target's run here and its run state, read

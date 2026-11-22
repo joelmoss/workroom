@@ -174,11 +174,13 @@ final class RunCommands: ObservableObject {
     return runSessions(in: sessions, workroom: workroom)
   }
 
-  /// The run sessions among `sessions` that are `workroom`'s.
+  /// The run sessions among `sessions` that are `workroom`'s. Not a run `workroom new --run`
+  /// opened (#693, its `opened_by`): an agent's command, never the project's Run.
   static func runSessions(in sessions: [SessionDescriptor], workroom: String) -> [UUID] {
     sessions.compactMap { descriptor in
       guard descriptor.value(forMetadataKey: SessionMetadataKey.workroom) == workroom,
-        descriptor.value(forMetadataKey: RunSessionKey.kind) == RunSessionKey.run
+        descriptor.value(forMetadataKey: RunSessionKey.kind) == RunSessionKey.run,
+        descriptor.value(forMetadataKey: RunSessionKey.openedBy) == nil
       else { return nil }
       return descriptor.identifier.uuid
     }
