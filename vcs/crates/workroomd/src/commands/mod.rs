@@ -23,7 +23,6 @@
 //! one's included, are offered as Go offers them.
 
 mod add_project;
-mod agent_skill;
 mod agents;
 mod api;
 mod base;
@@ -54,6 +53,7 @@ pub(crate) mod prompt;
 mod prompt_agent;
 mod send;
 mod sessions;
+mod skill;
 mod start;
 mod teardown;
 mod terminal_api;
@@ -326,40 +326,6 @@ const COMMANDS: &[Command] = &[
                 },
             ],
         )
-    },
-    Command {
-        name: "agent-skill",
-        aliases: &[],
-        usage: "agent-skill install|remove",
-        short: "Install or remove the Workroom skill for Claude Code and Codex (used by the \
-                desktop app)",
-        long: None,
-        // The app's, from Settings ▸ AI Agents and each host's bootstrap, which runs it anywhere.
-        hidden: true,
-        mac_only: false,
-        flags: &[],
-        subcommands: &[
-            subcommand(
-                AGENT_SKILL,
-                false,
-                "install",
-                "agent-skill install",
-                "Install the skill in ~/.claude and ~/.codex, where each is there",
-                &[],
-            ),
-            subcommand(
-                AGENT_SKILL,
-                false,
-                "remove",
-                "agent-skill remove",
-                "Remove the skill Workroom installed, keeping anything else",
-                &[],
-            ),
-        ],
-        // `install` or `remove`, which `agent_skill::run` checks.
-        arity: Arity::Own,
-        operands: Operands::Nothing,
-        implementation: AGENT_SKILL,
     },
     Command {
         name: "api",
@@ -902,6 +868,40 @@ const COMMANDS: &[Command] = &[
         implementation: sessions::run,
     },
     Command {
+        name: "skill",
+        aliases: &[],
+        usage: "skill install|remove",
+        short: "Install or remove the Workroom skill for Claude Code and Codex (used by the \
+                desktop app)",
+        long: None,
+        // The app's, from Settings ▸ AI Agents and each host's bootstrap, which runs it anywhere.
+        hidden: true,
+        mac_only: false,
+        flags: &[],
+        subcommands: &[
+            subcommand(
+                SKILL,
+                false,
+                "install",
+                "skill install",
+                "Install the skill in ~/.claude and ~/.codex, where each is there",
+                &[],
+            ),
+            subcommand(
+                SKILL,
+                false,
+                "remove",
+                "skill remove",
+                "Remove the skill Workroom installed, keeping anything else",
+                &[],
+            ),
+        ],
+        // `install` or `remove`, which `skill::run` checks.
+        arity: Arity::Own,
+        operands: Operands::Nothing,
+        implementation: SKILL,
+    },
+    Command {
         name: "trust",
         aliases: &[],
         usage: "trust",
@@ -990,10 +990,10 @@ const COMMANDS: &[Command] = &[
     },
 ];
 
-const AGENT_SKILL: Implementation = agent_skill::run;
 const API: Implementation = api::run;
 const BASE: Implementation = base::run;
 const HOST: Implementation = host::run;
+const SKILL: Implementation = skill::run;
 const TRUST: Implementation = trust::run;
 
 /// A Mac-only command run by `implementation`, shown in `--help`, with no aliases. It has the

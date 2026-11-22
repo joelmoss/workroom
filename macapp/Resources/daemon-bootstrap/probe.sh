@@ -15,7 +15,7 @@
 #   WRB host <uname -s> <uname -m>
 #   WRB former yes (no daemon here, but the pre-#525 `wr-agent` is: an older Nightly's host,
 #                  whose supervisor only starts that name; the probe stops here) | no
-#   WRB agent-skill yes (a Workroom skill's marker is in ~/.claude or ~/.codex, #697) | no
+#   WRB skill yes (a Workroom skill's marker is in ~/.claude or ~/.codex, #697) | no
 #   WRB installed <sha256 of the binary beside the socket> | unknown (no sha256sum) | none
 #   WRB build <the installed daemon's build-number> | unknown (it states none, or would not run)
 #             | none
@@ -52,13 +52,13 @@ fi
 echo "WRB former no"
 
 # Whether the app has a Workroom skill to remove here once its setting is turned off (#697). Only
-# a hint that saves an exec: `workroomd agent-skill remove` judges what is Workroom's, by this
-# marker's contents (`commands/agent_skill.rs`'s MARKER), and never follows a link.
+# a hint that saves an exec: `workroomd skill remove` judges what is Workroom's, by this
+# marker's contents (`commands/skill.rs`'s MARKER), and never follows a link.
 skill=no
 for agent in .claude .codex; do
   [ -f "${HOME:-}/$agent/skills/workroom/.workroom-skill" ] && skill=yes
 done
-echo "WRB agent-skill $skill"
+echo "WRB skill $skill"
 
 # An SSH server has no supervisor to make the socket's private directory. The socket was resolved
 # from the remote home by the driver's checks, and this path may only be inside that home.

@@ -101,28 +101,28 @@ final class DaemonBootstrapTests: XCTestCase {
   /// the set's own tests pass one.
   private func ensure(
     _ driver: StubDriver, daemon: ((String) -> URL?)? = nil, handOff: Bool = true,
-    resources: URL? = nil, agentSkill: DaemonBootstrap.AgentSkillPolicy = .leave
+    resources: URL? = nil, workroomSkill: DaemonBootstrap.WorkroomSkillPolicy = .leave
   ) async throws -> DaemonBootstrap.Outcome {
     try await DaemonBootstrap.ensure(
       host: host, driver: driver, socket: socket, daemon: daemon ?? bundled(_:), handOff: handOff,
-      resources: resources, scripts: Self.scripts, agentSkill: agentSkill)
+      resources: resources, scripts: Self.scripts, workroomSkill: workroomSkill)
   }
 
-  /// What `workroom agent-skill --json` prints, after a line a login's startup printed.
+  /// What `workroom skill --json` prints, after a line a login's startup printed.
   private func skillAnswer(_ states: [(String, String)]) -> StubDriver.Answer {
     let skills = states.map { "{\"agent\":\"\($0.0)\",\"path\":\"/h\",\"state\":\"\($0.1)\"}" }
     return .init(
       output: "Welcome to the host\n{\"ok\":true,\"schema_version\":1,\"cli_version\":\"dev\","
-        + "\"command\":\"agent-skill\",\"skills\":[\(skills.joined(separator: ","))]}\n")
+        + "\"command\":\"skill\",\"skills\":[\(skills.joined(separator: ","))]}\n")
   }
 
   /// The Workroom skill (#697) on a host whose daemon is current: on, every connect has the host's
   /// own binary install it once the daemon is in place; left alone (a build that never had it on),
   /// nothing more runs, a Workroom skill there or not; turned off, it is removed, but only where the
   /// probe found Workroom's marker, so a connect with it off costs no exec.
-  func testTheAgentSkillIsInstalledOnlyWhenOnAndRemovedOnlyWhereFound() async throws {
+  func testTheWorkroomSkillIsInstalledOnlyWhenOnAndRemovedOnlyWhereFound() async throws {
     let found = StubDriver.Answer(
-      output: "WRB host Linux aarch64\nWRB agent-skill yes\nWRB installed \(digest)\n"
+      output: "WRB host Linux aarch64\nWRB skill yes\nWRB installed \(digest)\n"
         + "WRB hand-off 0 current\n")
     let notFound = probe(installed: digest, handOff: "0 current")
     let binary = DaemonInstall.binary(besideSocket: socket)
@@ -133,48 +133,48 @@ final class DaemonBootstrapTests: XCTestCase {
     XCTAssertEqual(driver.commands.count, 1, "left alone, only the probe runs")
 
     driver = StubDriver([notFound, skillAnswer([("claude", "installed"), ("codex", "no-agent")])])
-    outcome = try await ensure(driver, agentSkill: .install)
+    outcome = try await ensure(driver, workroomSkill: .install)
     XCTAssertEqual(outcome.daemon, .current)
-    XCTAssertEqual(outcome.agentSkill, .done("claude installed, codex no-agent"))
+    XCTAssertEqual(outcome.workroomSkill, .done("claude installed, codex no-agent"))
     XCTAssertEqual(driver.commands.count, 2)
-    XCTAssertEqual(driver.commands[1], "'\(binary)' 'agent-skill' 'install' '--json'")
+    XCTAssertEqual(driver.commands[1], "'\(binary)' 'skill' 'install' '--json'")
 
     driver = StubDriver([notFound])
-    outcome = try await ensure(driver, agentSkill: .remove)
-    XCTAssertNil(outcome.agentSkill)
+    outcome = try await ensure(driver, workroomSkill: .remove)
+    XCTAssertNil(outcome.workroomSkill)
     XCTAssertEqual(driver.commands.count, 1, "nothing of Workroom's to remove")
 
     driver = StubDriver([found, skillAnswer([("claude", "removed"), ("codex", "absent")])])
-    outcome = try await ensure(driver, agentSkill: .remove)
-    XCTAssertEqual(outcome.agentSkill, .done("claude removed, codex absent"))
-    XCTAssertEqual(driver.commands[1], "'\(binary)' 'agent-skill' 'remove' '--json'")
+    outcome = try await ensure(driver, workroomSkill: .remove)
+    XCTAssertEqual(outcome.workroomSkill, .done("claude removed, codex absent"))
+    XCTAssertEqual(driver.commands[1], "'\(binary)' 'skill' 'remove' '--json'")
   }
 
-  /// A host daemon kept from before `agent-skill` refuses the command: reported, and the connect
+  /// A host daemon kept from before `skill` refuses the command: reported, and the connect
   /// goes on. So does an exchange that fails outright.
-  func testAHostBinaryWithoutAgentSkillIsReportedNotFailed() async throws {
+  func testAHostBinaryWithoutWorkroomSkillIsReportedNotFailed() async throws {
     let driver = StubDriver([
       probe(installed: digest, handOff: "0 current"),
-      .init(output: "Error: unknown command \"agent-skill\" for \"workroom\"\n", status: 1),
+      .init(output: "Error: unknown command \"skill\" for \"workroom\"\n", status: 1),
     ])
-    let outcome = try await ensure(driver, agentSkill: .install)
+    let outcome = try await ensure(driver, workroomSkill: .install)
     XCTAssertEqual(outcome.daemon, .current)
     XCTAssertEqual(
-      outcome.agentSkill, .failed("Error: unknown command \"agent-skill\" for \"workroom\""))
+      outcome.workroomSkill, .failed("Error: unknown command \"skill\" for \"workroom\""))
     XCTAssertEqual(
-      DaemonBootstrap.agentSkillOutcome(status: 0, output: ""), .failed("agent-skill exited 0"))
+      DaemonBootstrap.workroomSkillOutcome(status: 0, output: ""), .failed("skill exited 0"))
   }
 
   /// A container's skill is installed by its placed daemon, at the entrypoint.
-  func testAContainersAgentSkillIsInstalledByItsPlacedDaemon() async throws {
+  func testAContainersWorkroomSkillIsInstalledByItsPlacedDaemon() async throws {
     let driver = PlacingStub([
       probe(installed: digest, handOff: "0 current"),
       skillAnswer([("claude", "current"), ("codex", "current")]),
     ])
-    let outcome = try await ensure(driver, agentSkill: .install)
-    XCTAssertEqual(outcome.agentSkill, .done("claude current, codex current"))
+    let outcome = try await ensure(driver, workroomSkill: .install)
+    XCTAssertEqual(outcome.workroomSkill, .done("claude current, codex current"))
     XCTAssertEqual(
-      driver.commands.last, "'/.workroom/bin/workroomd' 'agent-skill' 'install' '--json'")
+      driver.commands.last, "'/.workroom/bin/workroomd' 'skill' 'install' '--json'")
   }
 
   private func probe(installed: String, handOff: String) -> StubDriver.Answer {

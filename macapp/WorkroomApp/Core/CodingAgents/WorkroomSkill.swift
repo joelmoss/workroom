@@ -3,8 +3,8 @@ import Foundation
 import HostDrivers
 import os
 
-/// What `workroom agent-skill install|remove` said of each coding agent's Workroom skill.
-struct AgentSkillReport: Decodable, Equatable, Sendable {
+/// What `workroom skill install|remove` said of each coding agent's Workroom skill.
+struct WorkroomSkillReport: Decodable, Equatable, Sendable {
   struct Skill: Decodable, Equatable, Sendable {
     /// `claude` or `codex`.
     let agent: String
@@ -20,18 +20,18 @@ struct AgentSkillReport: Decodable, Equatable, Sendable {
 }
 
 /// The Workroom skill for Claude Code and Codex (#697), on this Mac: Settings ▸ AI Agents' toggle
-/// (`installAgentSkill`) installs it into `~/.claude` and `~/.codex` and removes it again, through
-/// the bundled CLI's `agent-skill`, which alone decides what is Workroom's to write or delete. Each
+/// (`installWorkroomSkill`) installs it into `~/.claude` and `~/.codex` and removes it again, through
+/// the bundled CLI's `skill`, which alone decides what is Workroom's to write or delete. Each
 /// host's bootstrap does the same on that host (`hostPolicy`).
 ///
 /// It is installed again at every launch while the setting is on, so an app update brings the
 /// skill's text up to date, and an agent installed since gets it too.
 @MainActor
-final class AgentSkill: ObservableObject {
-  static let shared = AgentSkill()
+final class WorkroomSkill: ObservableObject {
+  static let shared = WorkroomSkill()
 
   /// Installs (`true`) or removes the skill in a home folder, saying what became of each agent's.
-  typealias Runner = @Sendable (_ install: Bool, _ home: String) async throws -> AgentSkillReport
+  typealias Runner = @Sendable (_ install: Bool, _ home: String) async throws -> WorkroomSkillReport
 
   /// What a person needs to know about the last install or removal: a skill left alone, or one
   /// that failed. Nil when it went as asked.
@@ -48,12 +48,12 @@ final class AgentSkill: ObservableObject {
   private var applied = 0
 
   private static let logger = Logger(
-    subsystem: "com.developwithstyle.workroom", category: "AgentSkill")
+    subsystem: "com.developwithstyle.workroom", category: "WorkroomSkill")
 
   init(
-    home: String? = AgentSkill.defaultHome(),
+    home: String? = WorkroomSkill.defaultHome(),
     runner: @escaping Runner = { install, home in
-      try await WorkroomCLI.shared.agentSkill(install: install, home: home)
+      try await WorkroomCLI.shared.workroomSkill(install: install, home: home)
     }
   ) {
     self.home = home
@@ -65,7 +65,7 @@ final class AgentSkill: ObservableObject {
   nonisolated static func defaultHome() -> String? {
     #if DEBUG
       let environment = AppEnvironment.current
-      if environment.isFixture { return UITestFixture.agentSkillHome.path }
+      if environment.isFixture { return UITestFixture.workroomSkillHome.path }
       if environment.isTestProcess { return nil }
     #endif
     return NSHomeDirectory()
@@ -74,20 +74,20 @@ final class AgentSkill: ObservableObject {
   /// What each host's bootstrap does with the skill: install it while the setting is on, remove
   /// it once the user turned it off, and otherwise leave whatever is there alone.
   nonisolated static func hostPolicy(
-    on: Bool = Defaults[.installAgentSkill], turnedOff: Bool = Defaults[.agentSkillTurnedOff]
-  ) -> DaemonBootstrap.AgentSkillPolicy {
+    on: Bool = Defaults[.installWorkroomSkill], turnedOff: Bool = Defaults[.workroomSkillTurnedOff]
+  ) -> DaemonBootstrap.WorkroomSkillPolicy {
     on ? .install : turnedOff ? .remove : .leave
   }
 
   /// The setting changed to `on`: remember a turn-off for the hosts, then install or remove here.
   func settingChanged(to on: Bool) {
-    Defaults[.agentSkillTurnedOff] = !on
+    Defaults[.workroomSkillTurnedOff] = !on
     apply(install: on)
   }
 
   /// At launch: brings the skill up to date while the setting is on. Off, nothing is touched.
   func launched() {
-    if Defaults[.installAgentSkill] { apply(install: true) }
+    if Defaults[.installWorkroomSkill] { apply(install: true) }
   }
 
   /// Installs or removes the skill, after whatever is under way.
@@ -104,12 +104,12 @@ final class AgentSkill: ObservableObject {
         do {
           let report = try await runner(install, home)
           Self.logger.notice(
-            "agent skill \(install ? "install" : "remove", privacy: .public): \(report.skills.map { "\($0.agent) \($0.state)" }.joined(separator: ", "), privacy: .public)"
+            "Workroom skill \(install ? "install" : "remove", privacy: .public): \(report.skills.map { "\($0.agent) \($0.state)" }.joined(separator: ", "), privacy: .public)"
           )
           said = Self.notice(for: report, install: install)
         } catch {
           Self.logger.error(
-            "agent skill: \(error.localizedDescription, privacy: .public)")
+            "Workroom skill: \(error.localizedDescription, privacy: .public)")
           said =
             install
             ? "The skill couldn't be installed: \(error.localizedDescription)"
@@ -129,7 +129,7 @@ final class AgentSkill: ObservableObject {
 
   /// What a person needs to know of `report`, in the app's voice; nil when every agent's skill went
   /// as asked, or the agent isn't on this Mac.
-  nonisolated static func notice(for report: AgentSkillReport, install: Bool) -> String? {
+  nonisolated static func notice(for report: WorkroomSkillReport, install: Bool) -> String? {
     let lines = report.skills.compactMap { skill -> String? in
       let name = skill.agent == "codex" ? "Codex" : "Claude Code"
       let path = (skill.path as NSString).abbreviatingWithTildeInPath

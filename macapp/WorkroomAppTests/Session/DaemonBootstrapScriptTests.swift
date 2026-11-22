@@ -111,7 +111,7 @@ final class DaemonBootstrapScriptTests: XCTestCase {
   private func standIn(
     protocol status: Int = 0, protocolFirst: String = ":", handOff: String = "echo current",
     list: Int = 0, marker: UInt64? = nil, daemonBuild: String? = nil, stamp: String = "",
-    agentSkill cli: String? = nil
+    workroomSkill cli: String? = nil
   ) throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(
       "workroomd-standin-\(UUID().uuidString.prefix(8))")
@@ -121,7 +121,7 @@ final class DaemonBootstrapScriptTests: XCTestCase {
     let body: String =
       "case $1 in protocol) \(protocolFirst); exit \(status) ;; "
       + "hand-off) \(handOff); exit ;; "
-      + (cli.map { "agent-skill) exec \(PosixShell.quoted($0)) \"$@\" ;; " } ?? "")
+      + (cli.map { "skill) exec \(PosixShell.quoted($0)) \"$@\" ;; " } ?? "")
       + "list) exit \(list) ;; esac\nexit 1\n"
     try Data(("#!/bin/sh\n" + markerLine + body).utf8).write(to: url)
     addTeardownBlock { try? FileManager.default.removeItem(at: url) }
@@ -136,26 +136,26 @@ final class DaemonBootstrapScriptTests: XCTestCase {
 
   private func ensure(
     _ host: LocalHost, bundling build: URL, handOff: Bool = true, resources: URL? = nil,
-    agentSkill: DaemonBootstrap.AgentSkillPolicy = .leave
+    workroomSkill: DaemonBootstrap.WorkroomSkillPolicy = .leave
   ) async throws -> DaemonBootstrap.Outcome {
     try await DaemonBootstrap.ensure(
       host: self.host, driver: host.driver, socket: host.socket,
       daemon: { $0 == "aarch64" ? build : nil }, handOff: handOff, resources: resources,
-      agentSkill: agentSkill)
+      workroomSkill: workroomSkill)
   }
 
-  /// The real probe, and a host binary that answers `agent-skill` as this build's does (it runs
+  /// The real probe, and a host binary that answers `skill` as this build's does (it runs
   /// the bundled CLI), in a host home of its own holding only `.claude` (#697): the skill is
   /// installed there only with the setting on, left alone by a build that never had it on, and
   /// removed once the setting is turned off, after which the probe finds nothing more to remove.
-  func testTheRealProbeAndBinaryInstallTheAgentSkillOnlyWhenOn() async throws {
+  func testTheRealProbeAndBinaryInstallTheWorkroomSkillOnlyWhenOn() async throws {
     let host = try localHost()
     let home = host.directory.deletingLastPathComponent().appendingPathComponent("home")
     try FileManager.default.createDirectory(
       at: home.appendingPathComponent(".claude"), withIntermediateDirectories: true)
     host.driver.home = home.path
     let cli = try WorkroomCLI.bundledBinaryURL()
-    let build = try standIn(agentSkill: cli.path)
+    let build = try standIn(workroomSkill: cli.path)
     try preinstall(build, on: host)
     try listen(on: host)
     let skill = home.appendingPathComponent(".claude/skills/workroom")
@@ -163,11 +163,11 @@ final class DaemonBootstrapScriptTests: XCTestCase {
 
     var outcome = try await ensure(host, bundling: build)
     XCTAssertEqual(outcome.daemon, .current)
-    XCTAssertNil(outcome.agentSkill)
+    XCTAssertNil(outcome.workroomSkill)
     XCTAssertFalse(FileManager.default.fileExists(atPath: skill.path), "off writes nothing")
 
-    outcome = try await ensure(host, bundling: build, agentSkill: .install)
-    XCTAssertEqual(outcome.agentSkill, .done("claude installed, codex no-agent"))
+    outcome = try await ensure(host, bundling: build, workroomSkill: .install)
+    XCTAssertEqual(outcome.workroomSkill, .done("claude installed, codex no-agent"))
     XCTAssertTrue(
       try String(contentsOf: file, encoding: .utf8).hasPrefix("---\nname: workroom\n"))
     XCTAssertFalse(
@@ -175,17 +175,17 @@ final class DaemonBootstrapScriptTests: XCTestCase {
       "no Codex on the host, so no ~/.codex")
 
     outcome = try await ensure(host, bundling: build)
-    XCTAssertNil(outcome.agentSkill, "a build that never had it on leaves it")
+    XCTAssertNil(outcome.workroomSkill, "a build that never had it on leaves it")
     XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
 
-    outcome = try await ensure(host, bundling: build, agentSkill: .remove)
-    XCTAssertEqual(outcome.agentSkill, .done("claude removed, codex absent"))
+    outcome = try await ensure(host, bundling: build, workroomSkill: .remove)
+    XCTAssertEqual(outcome.workroomSkill, .done("claude removed, codex absent"))
     XCTAssertFalse(FileManager.default.fileExists(atPath: skill.path))
     XCTAssertTrue(
       FileManager.default.fileExists(atPath: home.appendingPathComponent(".claude").path))
 
-    outcome = try await ensure(host, bundling: build, agentSkill: .remove)
-    XCTAssertNil(outcome.agentSkill, "the probe found no skill, so nothing ran")
+    outcome = try await ensure(host, bundling: build, workroomSkill: .remove)
+    XCTAssertNil(outcome.workroomSkill, "the probe found no skill, so nothing ran")
   }
 
   /// The installed file's digest, and that no staged copy was left beside it.

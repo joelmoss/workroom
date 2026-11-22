@@ -1114,7 +1114,7 @@ private struct CodingAgentSettingsPane: View {
         }
       }
 
-      AgentSkillSection()
+      WorkroomSkillSection()
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)

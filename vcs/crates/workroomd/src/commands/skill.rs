@@ -1,9 +1,9 @@
-//! `workroom agent-skill install|remove` (#697, hidden): the Workroom skill for Claude Code and
+//! `workroom skill install|remove` (#697, hidden): the Workroom skill for Claude Code and
 //! Codex, which teaches them the terminal API (`help agents`). The app runs it on the Mac when
 //! Settings ▸ AI Agents turns the skill on or off, and on each host as its bootstrap connects, so
 //! one implementation decides what is Workroom's to write and to delete, everywhere.
 //!
-//! It writes only into an agent's own folder that is already there (`~/.claude`, `~/.codex`): a
+//! It writes only into a coding agent's own folder that is already there (`~/.claude`, `~/.codex`): a
 //! machine without Codex gets no `~/.codex`. The skill is `<agent>/skills/workroom/SKILL.md`.
 //!
 //! **What proves a skill is Workroom's.** Workroom makes the skill's folder itself (`create_dir`,
@@ -44,7 +44,7 @@ const READ_LIMIT: u64 = 1 << 20;
 /// home folder.
 const AGENTS: &[(&str, &str)] = &[("claude", ".claude"), ("codex", ".codex")];
 
-/// What `agent-skill install` and `remove` reply, one entry per agent.
+/// What `skill install` and `remove` reply, one entry per coding agent.
 #[derive(Serialize, Debug)]
 struct Payload {
     skills: Vec<Report>,
@@ -101,11 +101,11 @@ struct Marker {
 
 pub(super) fn run(context: &Context, args: &Args) -> Outcome {
     let (name, install) = match args.positional.as_slice() {
-        [action] if action == "install" => ("agent-skill install", true),
-        [action] if action == "remove" => ("agent-skill remove", false),
+        [action] if action == "install" => ("skill install", true),
+        [action] if action == "remove" => ("skill remove", false),
         _ => {
             return Outcome::Usage(CliError::internal(
-                "`workroom agent-skill` takes install or remove",
+                "`workroom skill` takes install or remove",
             ));
         }
     };
