@@ -196,6 +196,9 @@ fn describe_publishes_every_method_with_both_schemas() {
             "terminal.command",
             "terminal.wait",
             "terminal.prompt",
+            "session.new",
+            "session.run_control",
+            "session.close",
             "events.subscribe",
             "events.unsubscribe"
         ]
