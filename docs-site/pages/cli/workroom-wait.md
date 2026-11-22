@@ -25,7 +25,7 @@ workroom wait TARGET [flags]
       --include-screen[=true|false]     With --regex, also match what is on the screen now
       --ended[=true|false]              Wait for the session to end
       --command-finished[=true|false]   Wait for the next command to finish, running now or started later (needs shell integration)
-      --turn string                     Wait for the coding agent's turn to end: next (one a working from now on starts) or current (the one under way)
+      --turn string                     Wait for the coding agent's turn to end: next (one a working from now on starts, which on an agent already working is the turn under way) or current (the one under way)
       --timeout string                  Give up after this long (such as 30s or 2m), exiting 8; no limit when not given
 ```
 
@@ -33,7 +33,6 @@ workroom wait TARGET [flags]
 
 ```text
       --json[=true|false]      Emit machine-readable JSON (exactly one object on stdout)
-  -p, --pretend[=true|false]   Run through the command without making changes (dry run)
   -v, --verbose[=true|false]   Print detailed and verbose output
 ```
 
@@ -42,7 +41,7 @@ workroom wait TARGET [flags]
 Waits on the daemon for one thing to happen in a session, so you never poll. Give exactly one condition, and always a `--timeout` (past it, `WaitTimeout`, exit 8):
 
 - `--status STATE`: the coding agent's program status is that state. Already true answers at once.
-- `--turn next|current`: a coding agent's turn ends. `next` is the turn a `working` from now on starts, `current` the one under way. It prints `status: <state>`, the state the turn ended in.
+- `--turn next|current`: a coding agent's turn ends. `next` is the turn a `working` from now on starts; on an agent that is already working, that is the turn under way, so the wait ends with it. `current` is the turn under way. It prints `status: <state>`, the state the turn ended in.
 - `--run STATE`: a run tab's command is starting, running, stopping, stopped or exited. With `--run exited --exit-code N` it answers when the run exits and is `ExitCodeMismatch` (exit 3) when it exited with another code; `error.details.exit_code` has the code.
 - `--regex RE`: output matching RE, counting only output printed from now on (escape codes stripped; `^` and `$` are line anchors). `--include-screen` also matches what is on the screen now. It prints the match.
 - `--ended`: the session ends.

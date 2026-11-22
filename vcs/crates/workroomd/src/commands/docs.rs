@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::agents::GUIDED;
-use super::{Command, Flag, PERSISTENT_FLAGS, find};
+use super::{Command, Flag, find, global_flags, honours_pretend};
 
 /// The line under a page's front matter that makes it this generator's.
 const HEADER: &str = "<!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->";
@@ -74,7 +74,8 @@ fn page(command: &Command, parent: Option<&Command>, says: Option<&str>) -> Stri
         .chain(own.iter().map(|flag| row(flag))),
     );
     text += "```\n\n## Options inherited from parent commands\n\n```text\n";
-    text += &table(PERSISTENT_FLAGS.iter().map(row));
+    let top = parent.unwrap_or(command).name;
+    text += &table(global_flags(honours_pretend(top)).map(row));
     text += "```\n\n";
     if let Some(says) = says {
         text += "## How to use it\n\n";

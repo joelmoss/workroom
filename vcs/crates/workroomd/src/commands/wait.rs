@@ -43,8 +43,8 @@ pub(super) const FLAGS: &[Flag] = &[
     ),
     value_flag(
         "turn",
-        "Wait for the coding agent's turn to end: next (one a working from now on starts) or \
-         current (the one under way)",
+        "Wait for the coding agent's turn to end: next (one a working from now on starts, which \
+         on an agent already working is the turn under way) or current (the one under way)",
     ),
     value_flag(
         "timeout",

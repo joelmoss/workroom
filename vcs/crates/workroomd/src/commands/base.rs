@@ -45,7 +45,7 @@ pub(super) fn run(context: &Context, args: &Args) -> Outcome {
             None
         }
         // `base` alone, or with no subcommand it knows, is its help, as cobra shows it.
-        _ => return Outcome::Printed(super::help(super::find("base"))),
+        _ => return Outcome::Printed(super::command_help("base")),
     };
     let global = args.is_set("global");
     let result = match branch {

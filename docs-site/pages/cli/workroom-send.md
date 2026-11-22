@@ -28,13 +28,12 @@ workroom send TARGET [TEXT] [flags]
 
 ```text
       --json[=true|false]      Emit machine-readable JSON (exactly one object on stdout)
-  -p, --pretend[=true|false]   Run through the command without making changes (dry run)
   -v, --verbose[=true|false]   Print detailed and verbose output
 ```
 
 ## How to use it
 
-Types into a session as if someone typed it, without attaching: TEXT (or `--stdin`, taken exactly as it comes), then each `--key` in order, then Enter with `--enter`. Text goes as a bracketed paste when the program has turned that on, so several lines arrive as one paste and nothing in them runs a line at a time. Use it to answer a program's question, to press a key (`--key Ctrl+C` to interrupt, `--key Escape`, `--key Up`), or to type into something that is not a shell. To run a shell command use `command`, and to give a coding agent a prompt use `prompt`: `send` doesn't wait, and can't tell you what happened. At most 1 MiB in one call (`TooLarge`, exit 2). A send that stopped part way says how many bytes went; what was typed can't be taken back.
+Types into a session as if someone typed it, without attaching: TEXT (or `--stdin`, taken exactly as it comes), then each `--key` in order, then Enter with `--enter`. Text goes as a bracketed paste when the program has turned that on, so several lines arrive as one paste and nothing in them runs a line at a time. Use it to answer a program's own question, to press a key (`--key Ctrl+C` to interrupt, `--key Escape`, `--key Up`), or to type into something that is not a shell. Never use it to answer another coding agent's permission prompt or question (its `coding_agent.state` is `blocked`): that is the user's to answer. To run a shell command use `command`, and to give a coding agent a prompt use `prompt`: `send` doesn't wait, and can't tell you what happened. At most 1 MiB in one call (`TooLarge`, exit 2). A send that stopped part way says how many bytes went; what was typed can't be taken back.
 
 ## See also
 
