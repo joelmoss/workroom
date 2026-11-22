@@ -669,6 +669,12 @@ fn a_login_zsh_has_the_bin_folder_first_after_its_startup_files() {
         ];
         if integration {
             env.push(("WORKROOM_SESSION_RESOURCES", resources.as_str()));
+        } else {
+            // The hook gone from under the daemon, as a `/tmp` cleaner takes it: a new session
+            // writes it again before its shell is pointed at it, and the shell still reads its
+            // startup files.
+            let hook = socket.with_extension("bin").join("shell/zsh/.zshenv");
+            std::fs::remove_file(&hook).expect("the daemon's hook");
         }
         let mut shell = attach_with_only(&socket, id, &env);
         let seen = shell_output(

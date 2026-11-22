@@ -1869,8 +1869,9 @@ fn over_ssh_the_bootstrap_installs_hands_off_and_survives_a_crashed_restore() {
     let shell = number_after(&seen, "SHELL=").unwrap_or_else(|| panic!("no shell pid in {seen:?}"));
 
     // A newer app whose CLI commands alone changed (#680): another file, the same daemon build.
-    // It is installed, so the host's next `workroom <command>` runs it, and nothing is handed
-    // off: the pane stays attached to the daemon it had.
+    // It is installed, so the host's next `workroomd <command>` and script run it, and nothing is
+    // handed off: the pane stays attached to the daemon it had, and its `workroom` (the bin
+    // folder's, #695) stays the running daemon's until the next hand-off or start.
     let cli_only = cli_only_update(&elf, "workroomd-cli-only");
     let cli_only_sha = sha256_hex(&cli_only);
     let output = probe(&cli_only_sha);

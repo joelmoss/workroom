@@ -266,12 +266,13 @@ pub(crate) fn dispatch(
                     }
                 }
                 identify(&mut invocation.environment, id, sessions.socket());
-                // The daemon's bin folder first on its PATH (#695), and its link there.
+                // The daemon's bin folder first on its PATH (#695): its link and hooks made again
+                // first, should something have taken them.
+                crate::daemon::bin_dir::ensure();
                 crate::terminal::bin_path::apply(
                     &mut invocation,
                     crate::daemon::bin_dir::folders(),
                 );
-                crate::daemon::bin_dir::ensure();
                 sessions.create_then(
                     SessionSpec {
                         id,
