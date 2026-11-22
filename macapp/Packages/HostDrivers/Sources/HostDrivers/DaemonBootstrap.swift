@@ -91,15 +91,42 @@ public enum DaemonBootstrap {
     public var resources: Resources? = nil
     /// A daemon this connect started on an unsupervised host, recorded in the bootstrap log.
     public var startedPID: Int32? = nil
-    /// The Workroom skill for the host's coding agents (#697), when this connect installed or
-    /// removed it; nil when it left the host alone. Never fails the connect.
+    /// The Workroom skill for the host's coding agents (#697), when `ensure` installed or removed
+    /// it; nil when it left the host alone. Never fails the connect.
     public var workroomSkill: WorkroomSkill? = nil
+    /// The probe found Workroom's record of a skill it installed on the host, so a removal has
+    /// something to look at (`WRB skill`).
+    public var skillFound = false
 
     public enum WorkroomSkill: Equatable, Sendable {
-      /// What `workroom skill` said of each coding agent's: `claude installed, codex no-agent`.
-      case done(String)
+      /// What `workroom skill` said of each skill folder.
+      case done([Entry])
       /// It didn't run, or failed: a host daemon from before `workroom skill`, say, with why.
       case failed(String)
+
+      /// One skill folder's state, as `workroom skill --json` says it: `installed`, `updated`,
+      /// `current`, `removed`, `absent`, `no-agent`, `not-ours`, `edited` or `failed`.
+      public struct Entry: Equatable, Sendable, Decodable {
+        public let agent: String
+        public let path: String
+        public let state: String
+        public let message: String?
+
+        public init(agent: String, path: String, state: String, message: String? = nil) {
+          self.agent = agent
+          self.path = path
+          self.state = state
+          self.message = message
+        }
+      }
+
+      /// For the log, and tests: `claude installed, codex no-agent`, or the failure.
+      public var summary: String {
+        switch self {
+        case .done(let entries): entries.map { "\($0.agent) \($0.state)" }.joined(separator: ", ")
+        case .failed(let why): why
+        }
+      }
     }
 
     public init(
@@ -166,18 +193,38 @@ public enum DaemonBootstrap {
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "PersistentSession")
 
+  /// What a connect made of the Workroom skill on a host: the policy it was given, and what came
+  /// of it (nil when nothing ran).
+  public typealias WorkroomSkillCallback =
+    @Sendable (WorkroomSkillPolicy, Outcome.WorkroomSkill?) -> Void
+
   /// The bootstrap, then the connection: the one way to a remote host's services.
+  ///
+  /// The Workroom skill (`workroomSkill`) is synced once the connection is up, in a task of its
+  /// own and bounded (`syncWorkroomSkill`), so it never holds a connect up; `onWorkroomSkill`
+  /// hears how it went.
   public static func connect(
     host: HostID, driver: any HostDriver, socket: String, daemon: (String) -> URL?,
     handOff: Bool = true, resources: URL?, scripts: ScriptLocator,
-    workroomSkill: WorkroomSkillPolicy = .leave
+    workroomSkill: WorkroomSkillPolicy = .leave, onWorkroomSkill: WorkroomSkillCallback? = nil
   ) async throws -> DaemonClient {
     let outcome = try await ensure(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
-      resources: resources, scripts: scripts, workroomSkill: workroomSkill)
+      resources: resources, scripts: scripts)
     logger.notice("daemon bootstrap: \(String(describing: outcome), privacy: .public)")
-    return try await DaemonClient.connect(
+    let client = try await DaemonClient.connect(
       host: host, stream: try await driver.openStream(to: host))
+    if workroomSkill != .leave {
+      let found = outcome.skillFound
+      Task.detached {
+        let result = await syncWorkroomSkill(
+          workroomSkill, found: found, host: host, driver: driver, socket: socket)
+        logger.notice(
+          "workroom skill: \(result?.summary ?? "nothing to do", privacy: .public)")
+        onWorkroomSkill?(workroomSkill, result)
+      }
+    }
+    return client
   }
 
   /// Makes sure the host runs this app's daemon, as far as the policy above allows, and says what
@@ -190,7 +237,8 @@ public enum DaemonBootstrap {
   /// remote host keeps its first daemon until the box restarts, since its supervisor never lets it
   /// idle out, and so never gets a newer build's services.
   /// `workroomSkill` says what to do with the Workroom skill for the host's coding agents, once the
-  /// daemon is in place (`syncWorkroomSkill`).
+  /// daemon is in place (`syncWorkroomSkill`), awaited here; `connect` syncs it after the
+  /// connection instead.
   public static func ensure(
     host: HostID, driver: any HostDriver, socket: String, daemon: (String) -> URL?,
     handOff: Bool = true, resources: URL?, scripts: ScriptLocator,
@@ -210,18 +258,24 @@ public enum DaemonBootstrap {
           host: host, driver: driver, socket: socket, scripts: scripts)
       }
     }
+    outcome.skillFound = skillFound
     outcome.workroomSkill = await syncWorkroomSkill(
       workroomSkill, found: skillFound, host: host, driver: driver, socket: socket)
     return outcome
   }
 
+  /// How long a skill sync may go silent: the host's login-shell read takes up to 10 s, and the
+  /// rest is a few files.
+  static let skillTimeout: TimeInterval = 30
+
   /// Installs or removes the Workroom skill on the host with the host's own binary, which alone
-  /// decides what there is Workroom's (`workroom skill`, #697): installed on every connect
-  /// while the setting is on, so the skill's text keeps up with the host's binary; removed only
-  /// when the user turned the setting off and the probe found a Workroom skill there, so a connect
-  /// with it off costs nothing more. A failure, such as a kept daemon from before `skill` was,
-  /// is reported and never fails the connect.
-  private static func syncWorkroomSkill(
+  /// decides what there is Workroom's (`workroom skill`, #697), with `CLAUDE_CONFIG_DIR` and
+  /// `CODEX_HOME` from the host user's login environment: installed on every connect while the
+  /// setting is on, so the skill's text keeps up with the host's binary; removed when the setting
+  /// was turned off and the probe found Workroom's record of a skill there, so a removal that
+  /// finds nothing costs no exec. A failure, such as a kept daemon from before `skill` was, is
+  /// reported and never fails the connect.
+  public static func syncWorkroomSkill(
     _ policy: WorkroomSkillPolicy, found: Bool, host: HostID, driver: any HostDriver, socket: String
   ) async -> Outcome.WorkroomSkill? {
     let action: String
@@ -236,9 +290,10 @@ public enum DaemonBootstrap {
       ?? DaemonInstall.binary(besideSocket: socket)
     do {
       let stream = try await driver.exec(
-        [binary, "skill", action, "--json"].map(PosixShell.quoted).joined(separator: " "),
+        [binary, "skill", action, "--login-environment", "--json"].map(PosixShell.quoted)
+          .joined(separator: " "),
         on: host)
-      let answer = try await stream.communicate(nil, timeout: timeout)
+      let answer = try await stream.communicate(nil, timeout: skillTimeout)
       return workroomSkillOutcome(status: answer.status, output: answer.output)
     } catch {
       return .failed(error.localizedDescription)
@@ -249,12 +304,8 @@ public enum DaemonBootstrap {
   /// login's startup printed ahead of the envelope is skipped.
   static func workroomSkillOutcome(status: Int32, output: String) -> Outcome.WorkroomSkill {
     struct Envelope: Decodable {
-      struct Skill: Decodable {
-        let agent: String
-        let state: String
-      }
       let ok: Bool
-      let skills: [Skill]?
+      let skills: [Outcome.WorkroomSkill.Entry]?
     }
     let envelope = output.split(whereSeparator: \.isNewline).reversed().lazy
       .compactMap { try? JSONDecoder().decode(Envelope.self, from: Data($0.utf8)) }.first
@@ -262,7 +313,7 @@ public enum DaemonBootstrap {
       let said = output.trimmingCharacters(in: .whitespacesAndNewlines)
       return .failed(said.isEmpty ? "skill exited \(status)" : said)
     }
-    return .done(skills.map { "\($0.agent) \($0.state)" }.joined(separator: ", "))
+    return .done(skills)
   }
 
   private static func prepare(

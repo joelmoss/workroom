@@ -36,6 +36,12 @@ extension ScriptTrust {
   }
 }
 
+/// A home folder for `workroom skill`, with the only coding-agent variables it is to see.
+struct SkillHome: Sendable {
+  let path: String
+  let variables: [String: String]
+}
+
 private struct CLIResult {
   let stdout: Data
   let stderr: String
@@ -398,11 +404,15 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     try throwIfError(try await run(args, timeout: 5))
   }
 
-  /// Installs, or removes, the Workroom skill for Claude Code and Codex (#697) in `home`'s
-  /// `.claude` and `.codex` (`workroom skill`), saying what became of each.
-  func workroomSkill(install: Bool, home: String) async throws -> WorkroomSkillReport {
+  /// Installs, or removes, the Workroom skill for Claude Code and Codex (#697) for `home`
+  /// (`workroom skill`), saying what became of each. `variables` are the only `CLAUDE_CONFIG_DIR`
+  /// and `CODEX_HOME` it sees: the app's own are never passed on.
+  func workroomSkill(install: Bool, home: String, variables: [String: String]) async throws
+    -> WorkroomSkillReport
+  {
     let result = try await run(
-      ["skill", install ? "install" : "remove", "--json"], timeout: 10, home: home)
+      ["skill", install ? "install" : "remove", "--json"], timeout: 30,
+      home: SkillHome(path: home, variables: variables))
     return try decode(WorkroomSkillReport.self, from: result)
   }
 
@@ -695,11 +705,11 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   /// `cancellable` (every command but a clone) a cancelled task still lets the child finish, so no
   /// script is cut off partway.
   ///
-  /// `home`, when given, is the child's `HOME`: the folder whose `~/.claude` and `~/.codex` the
-  /// Workroom skill is written into, a throwaway one in tests.
+  /// `home`, when given, is the child's `HOME`, with only its coding-agent variables: the folder
+  /// whose coding agents the Workroom skill is written for, a throwaway one in tests.
   private func run(
     _ args: [String], timeout: TimeInterval?, userInitiated: Bool = false, stdin: Data? = nil,
-    cancellable: Bool = false, home: String? = nil, onEvent: ((StreamEvent) -> Void)? = nil
+    cancellable: Bool = false, home: SkillHome? = nil, onEvent: ((StreamEvent) -> Void)? = nil
   ) async throws -> CLIResult {
     let url = try Self.bundledBinaryURL()
     guard cancellable else {
@@ -719,7 +729,7 @@ final class WorkroomCLI: WorkroomCLIProtocol {
 
   private func run(
     url: URL, _ args: [String], timeout: TimeInterval?, userInitiated: Bool, stdin: Data?,
-    home: String?, onEvent: ((StreamEvent) -> Void)?, cancel: CancelSignal?
+    home: SkillHome?, onEvent: ((StreamEvent) -> Void)?, cancel: CancelSignal?
   ) async throws -> CLIResult {
     try await withCheckedThrowingContinuation { continuation in
       let proc = Process()
@@ -737,7 +747,13 @@ final class WorkroomCLI: WorkroomCLIProtocol {
       if let config = Self.configPath() { env["WORKROOM_CONFIG"] = config }
       env["GIT_TERMINAL_PROMPT"] = "0"
       env["GIT_OPTIONAL_LOCKS"] = "0"
-      if let home { env["HOME"] = home }
+      if let home {
+        // The app's own coding-agent variables never reach it (a developer's may name their
+        // real config): only the ones given.
+        env["HOME"] = home.path
+        for name in WorkroomSkill.variableNames { env[name] = nil }
+        env.merge(home.variables.filter { WorkroomSkill.variableNames.contains($0.key) }) { $1 }
+      }
       proc.environment = env
 
       let outPipe = Pipe()

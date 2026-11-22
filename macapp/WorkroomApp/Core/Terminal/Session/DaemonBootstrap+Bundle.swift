@@ -7,26 +7,31 @@ import WorkroomDomain
 /// daemons, its Ghostty resource set and the far-side scripts. Every connect in the app goes
 /// through these; a test passes its own `daemon` or `resources` and still gets the bundle's scripts.
 extension DaemonBootstrap {
-  /// The bootstrap, then the connection: the one way to a remote host's services.
-  /// `workroomSkill` is Settings ▸ AI Agents' Workroom skill setting, as the host gets it
-  /// (`WorkroomSkill.hostPolicy`).
+  /// The bootstrap, then the connection: the one way to a remote host's services. Once connected,
+  /// the host gets Settings ▸ AI Agents' Workroom skill setting (`WorkroomSkill.hostPolicy`),
+  /// unless `workroomSkill` says otherwise, and the setting hears how it went.
   static func connect(
     host: HostID, driver: any HostDriver, socket: String,
     daemon: (String) -> URL? = PersistentSessionPaths.linuxDaemonURL(architecture:),
     handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL,
-    workroomSkill: WorkroomSkillPolicy = WorkroomSkill.hostPolicy()
+    workroomSkill: WorkroomSkillPolicy? = nil
   ) async throws -> DaemonClient {
     try await connect(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
-      resources: resources, scripts: scripts, workroomSkill: workroomSkill)
+      resources: resources, scripts: scripts,
+      workroomSkill: workroomSkill ?? WorkroomSkill.hostPolicy(for: host),
+      onWorkroomSkill: { policy, result in
+        WorkroomSkill.hostSynced(host, policy: policy, result: result)
+      })
   }
 
-  /// Makes sure the host runs this app's daemon, as far as the bootstrap's policy allows.
+  /// Makes sure the host runs this app's daemon, as far as the bootstrap's policy allows. The
+  /// Workroom skill only when `workroomSkill` asks: a connect syncs it, after connecting.
   static func ensure(
     host: HostID, driver: any HostDriver, socket: String,
     daemon: (String) -> URL? = PersistentSessionPaths.linuxDaemonURL(architecture:),
     handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL,
-    workroomSkill: WorkroomSkillPolicy = WorkroomSkill.hostPolicy()
+    workroomSkill: WorkroomSkillPolicy = .leave
   ) async throws -> Outcome {
     try await ensure(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,

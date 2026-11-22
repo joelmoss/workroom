@@ -383,7 +383,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertEqual(try onHost(fixture, there), "no")
 
     outcome = try await connect(.install)
-    XCTAssertEqual(outcome.workroomSkill, .done("claude installed, codex no-agent"))
+    XCTAssertEqual(outcome.workroomSkill?.summary, "claude installed, codex no-agent")
     XCTAssertEqual(try onHost(fixture, "head -n 2 \(skill)/SKILL.md"), "---\nname: workroom")
     XCTAssertEqual(try onHost(fixture, "test -e ~/.codex && echo yes || echo no"), "no")
 
@@ -392,7 +392,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertEqual(try onHost(fixture, there), "yes")
 
     outcome = try await connect(.remove)
-    XCTAssertEqual(outcome.workroomSkill, .done("claude removed, codex absent"))
+    XCTAssertEqual(outcome.workroomSkill?.summary, "claude removed, codex absent")
     XCTAssertEqual(try onHost(fixture, there), "no")
     XCTAssertEqual(try onHost(fixture, "test -d ~/.claude && echo yes || echo no"), "yes")
 

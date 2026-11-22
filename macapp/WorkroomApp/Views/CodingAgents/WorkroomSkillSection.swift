@@ -22,14 +22,15 @@ struct WorkroomSkillSection: View {
       ) {
         Text("Install the Workroom skill for Claude Code and Codex")
         Text(
-          "Adds a skill to ~/.claude and ~/.codex on this Mac and each host, and removes it "
-            + "when turned off.")
+          "Adds a skill to your Claude Code and Codex skill folders on this Mac and each host, "
+            + "and removes it when turned off.")
       }
       .help(
         "Teaches Claude Code and Codex the workroom commands that list, read, wait on and type "
-          + "into your other terminals. Workroom writes only its own skills/workroom folder, "
-          + "and only where the agent is set up. A host gets the skill, or loses it, the next "
-          + "time Workroom connects to it."
+          + "into your other terminals: ~/.claude/skills/workroom (or $CLAUDE_CONFIG_DIR's) and "
+          + "~/.agents/skills/workroom, only where the agent is set up. Workroom writes only its "
+          + "own folder there. A host gets the skill, or loses it, the next time Workroom "
+          + "connects to it."
       )
       .accessibilityIdentifier("settings.control.workroomSkill")
 

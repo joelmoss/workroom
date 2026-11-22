@@ -116,10 +116,11 @@ final class DaemonBootstrapTests: XCTestCase {
         + "\"command\":\"skill\",\"skills\":[\(skills.joined(separator: ","))]}\n")
   }
 
-  /// The Workroom skill (#697) on a host whose daemon is current: on, every connect has the host's
-  /// own binary install it once the daemon is in place; left alone (a build that never had it on),
-  /// nothing more runs, a Workroom skill there or not; turned off, it is removed, but only where the
-  /// probe found Workroom's marker, so a connect with it off costs no exec.
+  /// The Workroom skill (#697) on a host whose daemon is current: on, the host's own binary
+  /// installs it once the daemon is in place, with the host's login environment; left alone (a
+  /// build that never had it on), nothing more runs, a Workroom skill there or not; turned off, it
+  /// is removed, but only where the probe found Workroom's record, so a removal costs no exec
+  /// where there is nothing to remove.
   func testTheWorkroomSkillIsInstalledOnlyWhenOnAndRemovedOnlyWhereFound() async throws {
     let found = StubDriver.Answer(
       output: "WRB host Linux aarch64\nWRB skill yes\nWRB installed \(digest)\n"
@@ -129,15 +130,18 @@ final class DaemonBootstrapTests: XCTestCase {
 
     var driver = StubDriver([found])
     var outcome = try await ensure(driver)
-    XCTAssertEqual(outcome, .init(architecture: "aarch64", pushed: false, daemon: .current))
+    XCTAssertEqual(outcome.daemon, .current)
+    XCTAssertTrue(outcome.skillFound)
+    XCTAssertNil(outcome.workroomSkill)
     XCTAssertEqual(driver.commands.count, 1, "left alone, only the probe runs")
 
     driver = StubDriver([notFound, skillAnswer([("claude", "installed"), ("codex", "no-agent")])])
     outcome = try await ensure(driver, workroomSkill: .install)
     XCTAssertEqual(outcome.daemon, .current)
-    XCTAssertEqual(outcome.workroomSkill, .done("claude installed, codex no-agent"))
+    XCTAssertEqual(outcome.workroomSkill?.summary, "claude installed, codex no-agent")
     XCTAssertEqual(driver.commands.count, 2)
-    XCTAssertEqual(driver.commands[1], "'\(binary)' 'skill' 'install' '--json'")
+    XCTAssertEqual(
+      driver.commands[1], "'\(binary)' 'skill' 'install' '--login-environment' '--json'")
 
     driver = StubDriver([notFound])
     outcome = try await ensure(driver, workroomSkill: .remove)
@@ -146,8 +150,26 @@ final class DaemonBootstrapTests: XCTestCase {
 
     driver = StubDriver([found, skillAnswer([("claude", "removed"), ("codex", "absent")])])
     outcome = try await ensure(driver, workroomSkill: .remove)
-    XCTAssertEqual(outcome.workroomSkill, .done("claude removed, codex absent"))
-    XCTAssertEqual(driver.commands[1], "'\(binary)' 'skill' 'remove' '--json'")
+    XCTAssertEqual(outcome.workroomSkill?.summary, "claude removed, codex absent")
+    XCTAssertEqual(
+      driver.commands[1], "'\(binary)' 'skill' 'remove' '--login-environment' '--json'")
+  }
+
+  /// `connect` never waits on the skill: it connects, then syncs it in a task of its own and says
+  /// how it went. The stub's stream refuses, so a sync that ran first would show as a command
+  /// before the failure.
+  func testConnectSyncsTheSkillOnlyOnceConnected() async throws {
+    let driver = StubDriver([
+      probe(installed: digest, handOff: "0 current"),
+      skillAnswer([("claude", "installed"), ("codex", "no-agent")]),
+    ])
+    do {
+      _ = try await DaemonBootstrap.connect(
+        host: host, driver: driver, socket: socket, daemon: bundled(_:), handOff: true,
+        resources: nil, scripts: Self.scripts, workroomSkill: .install)
+      XCTFail("the stub's openStream answered")
+    } catch HostDriverError.notImplemented {}
+    XCTAssertEqual(driver.commands.count, 1, "no connection, no sync")
   }
 
   /// A host daemon kept from before `skill` refuses the command: reported, and the connect
@@ -172,9 +194,10 @@ final class DaemonBootstrapTests: XCTestCase {
       skillAnswer([("claude", "current"), ("codex", "current")]),
     ])
     let outcome = try await ensure(driver, workroomSkill: .install)
-    XCTAssertEqual(outcome.workroomSkill, .done("claude current, codex current"))
+    XCTAssertEqual(outcome.workroomSkill?.summary, "claude current, codex current")
     XCTAssertEqual(
-      driver.commands.last, "'/.workroom/bin/workroomd' 'skill' 'install' '--json'")
+      driver.commands.last,
+      "'/.workroom/bin/workroomd' 'skill' 'install' '--login-environment' '--json'")
   }
 
   private func probe(installed: String, handOff: String) -> StubDriver.Answer {
