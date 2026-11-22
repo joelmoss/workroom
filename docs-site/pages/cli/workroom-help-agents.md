@@ -48,6 +48,8 @@ A TARGET names one session: its full id, else the end of its id (4 characters or
 
 Start here. It lists the terminals in your pane's workroom, one row each, or with `--json` a `sessions` array: each session's `id`, `label` (its tab's name), `title` (what its program last set), `scope` (the workroom it belongs to), `run` (whether it is a run tab), `cwd` and `coding_agent` (the program status a coding agent last reported: `state` idle, working, done, blocked or error, `app`, `message` and `waiting_on_user`), and `caller`, the id of the pane the daemon took you for. `workroom sessions TARGET` shows the one session a target names, so you can check a target before you act on it. `--clients` adds who is attached to each session: `kind` (pane, app or cli), `hostname`, `attached_at_ms`, `size`, `owns_size` and `keepalive`.
 
+A session's `label` is its tab's name, one name on every Mac: the name the user gave the tab, or `new --title`'s. Label a session with `workroom api call session.label '{"target": "TARGET", "label": "tests"}'`, and clear it with `"label": null`: every Mac showing it renames its tab at once, and a cleared one shows its default name again. Control and format characters (escapes, line breaks, bidi and zero-width characters) are stripped, and it is cut to 256 bytes; the reply's `changed` says whether it was new. Labelling your own pane is allowed. A label is a target, ahead of the live title, so label the terminals you open to name them again later.
+
 Flags:
 
 - `--all`: List every session, not just those in this pane's workroom.
@@ -135,13 +137,13 @@ Flags:
 
 `workroom events`: Stream terminal sessions' events as JSON lines: a snapshot, then live changes.
 
-Streams what happens to the sessions, one JSON object per line, until stopped: first a `session` event for each session as it is, then `snapshot-complete`, then live events: `session.created`, `session.ended`, `session.program_status`, `session.run_state`, `session.moved`, `client.attached`, `client.detached` and `session.input` (someone typed into a session; `sender` is who). Every event has `event`, `boot` and `revision`. By default your workroom's sessions; `--all` for every session, `--workroom ID` for one workroom, `--session TARGET` for one session, `--type` for some event types only. A `snapshot-complete` with `reason` `gap` or `lagged` replaced what you knew: start from it again. Ignore event types you don't know. To wait for one thing, `wait` is simpler.
+Streams what happens to the sessions, one JSON object per line, until stopped: first a `session` event for each session as it is, then `snapshot-complete`, then live events: `session.created`, `session.ended`, `session.program_status`, `session.run_state`, `session.moved`, `client.attached`, `client.detached`, `session.input` (someone typed into a session; `sender` is who) and `session.labelled` (its tab was renamed, or `session.label` set it; `label` null when cleared). Every event has `event`, `boot` and `revision`. By default your workroom's sessions; `--all` for every session, `--workroom ID` for one workroom, `--session TARGET` for one session, `--type` for some event types only. A `snapshot-complete` with `reason` `gap` or `lagged` replaced what you knew: start from it again. Ignore event types you don't know. To wait for one thing, `wait` is simpler.
 
 Flags:
 
 - `--all`: Every session's events, not only the caller's workroom's.
 - `--session VALUE`: Only this session's events (a TARGET, as for sessions).
-- `--type VALUE`: Only live events of this type, repeated or comma-separated: session.created, session.ended, session.program_status, session.run_state, session.moved, client.attached, client.detached or session.input.
+- `--type VALUE`: Only live events of this type, repeated or comma-separated: session.created, session.ended, session.program_status, session.run_state, session.moved, client.attached, client.detached, session.input or session.labelled.
 - `--workroom VALUE`: Only this workroom's sessions' events (its id, a session's scope id).
 
 ### `workroom new`
@@ -234,6 +236,13 @@ Start a dev server in a new tab and wait until it is up:
 ```sh
 id=$(workroom new --title 'dev server' --run 'npm run dev')
 workroom wait "$id" --regex 'ready in [0-9]+ ?ms' --include-screen --timeout 2m
+```
+
+Name a terminal, its tab on every Mac, so you can target it by that name later:
+
+```sh
+workroom api call session.label '{"target": "TARGET", "label": "tests"}'
+workroom command tests --timeout 10m -- npm test
 ```
 
 A coding agent in another terminal is blocked on a question, such as permission to run a command: read what it asks, tell the user, and wait for them to answer it. Never answer it yourself:
