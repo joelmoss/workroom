@@ -8,25 +8,29 @@ import WorkroomDomain
 /// through these; a test passes its own `daemon` or `resources` and still gets the bundle's scripts.
 extension DaemonBootstrap {
   /// The bootstrap, then the connection: the one way to a remote host's services.
+  /// `agentSkill` is Settings ▸ AI Agents' Workroom skill setting, as the host gets it
+  /// (`AgentSkill.hostPolicy`).
   static func connect(
     host: HostID, driver: any HostDriver, socket: String,
     daemon: (String) -> URL? = PersistentSessionPaths.linuxDaemonURL(architecture:),
-    handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL
+    handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL,
+    agentSkill: AgentSkillPolicy = AgentSkill.hostPolicy()
   ) async throws -> DaemonClient {
     try await connect(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
-      resources: resources, scripts: scripts)
+      resources: resources, scripts: scripts, agentSkill: agentSkill)
   }
 
   /// Makes sure the host runs this app's daemon, as far as the bootstrap's policy allows.
   static func ensure(
     host: HostID, driver: any HostDriver, socket: String,
     daemon: (String) -> URL? = PersistentSessionPaths.linuxDaemonURL(architecture:),
-    handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL
+    handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL,
+    agentSkill: AgentSkillPolicy = AgentSkill.hostPolicy()
   ) async throws -> Outcome {
     try await ensure(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
-      resources: resources, scripts: scripts)
+      resources: resources, scripts: scripts, agentSkill: agentSkill)
   }
 
   /// The bundled far-side script `name`.

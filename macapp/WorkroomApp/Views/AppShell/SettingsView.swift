@@ -1113,6 +1113,8 @@ private struct CodingAgentSettingsPane: View {
           .foregroundStyle(.secondary)
         }
       }
+
+      AgentSkillSection()
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)

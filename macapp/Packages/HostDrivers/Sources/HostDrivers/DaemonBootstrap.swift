@@ -91,17 +91,37 @@ public enum DaemonBootstrap {
     public var resources: Resources? = nil
     /// A daemon this connect started on an unsupervised host, recorded in the bootstrap log.
     public var startedPID: Int32? = nil
+    /// The Workroom skill for the host's coding agents (#697), when this connect installed or
+    /// removed it; nil when it left the host alone. Never fails the connect.
+    public var agentSkill: AgentSkill? = nil
+
+    public enum AgentSkill: Equatable, Sendable {
+      /// What `agent-skill` said of each agent's skill: `claude installed, codex no-agent`.
+      case done(String)
+      /// It didn't run, or failed: a host daemon from before `agent-skill`, say, with why.
+      case failed(String)
+    }
 
     public init(
       architecture: String, pushed: Bool, daemon: Daemon, resources: Resources? = nil,
-      startedPID: Int32? = nil
+      startedPID: Int32? = nil, agentSkill: AgentSkill? = nil
     ) {
       self.architecture = architecture
       self.pushed = pushed
       self.daemon = daemon
       self.resources = resources
       self.startedPID = startedPID
+      self.agentSkill = agentSkill
     }
+  }
+
+  /// What a connect does with the Workroom skill on the host (#697): Settings ▸ AI Agents' toggle
+  /// on installs it; turned off, the skill Workroom installed there is removed; otherwise, as for a
+  /// build that never had it on, nothing on the host is touched.
+  public enum AgentSkillPolicy: Equatable, Sendable {
+    case install
+    case remove
+    case leave
   }
 
   public enum Error: Swift.Error, Equatable, LocalizedError {
@@ -149,11 +169,12 @@ public enum DaemonBootstrap {
   /// The bootstrap, then the connection: the one way to a remote host's services.
   public static func connect(
     host: HostID, driver: any HostDriver, socket: String, daemon: (String) -> URL?,
-    handOff: Bool = true, resources: URL?, scripts: ScriptLocator
+    handOff: Bool = true, resources: URL?, scripts: ScriptLocator,
+    agentSkill: AgentSkillPolicy = .leave
   ) async throws -> DaemonClient {
     let outcome = try await ensure(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
-      resources: resources, scripts: scripts)
+      resources: resources, scripts: scripts, agentSkill: agentSkill)
     logger.notice("daemon bootstrap: \(String(describing: outcome), privacy: .public)")
     return try await DaemonClient.connect(
       host: host, stream: try await driver.openStream(to: host))
@@ -168,28 +189,85 @@ public enum DaemonBootstrap {
   /// `handOff` is on in every build, as the local hand-off (`DaemonHandOff`) is: off, a
   /// remote host keeps its first daemon until the box restarts, since its supervisor never lets it
   /// idle out, and so never gets a newer build's services.
+  /// `agentSkill` says what to do with the Workroom skill for the host's coding agents, once the
+  /// daemon is in place (`syncAgentSkill`).
   public static func ensure(
     host: HostID, driver: any HostDriver, socket: String, daemon: (String) -> URL?,
-    handOff: Bool = true, resources: URL?, scripts: ScriptLocator
+    handOff: Bool = true, resources: URL?, scripts: ScriptLocator,
+    agentSkill: AgentSkillPolicy = .leave
   ) async throws -> Outcome {
+    var skillFound = false
     var outcome = try await prepare(
       host: host, driver: driver, socket: socket, daemon: daemon, handOff: handOff,
-      resources: resources, scripts: scripts)
-    guard driver.startsDaemon else { return outcome }
-    switch outcome.daemon {
-    case .current, .handedOff: break
-    case .installed, .keptOlder, .keptNewer:
-      // A retained newer build must be started too: an older Mac can be the first to reconnect
-      // after the server reboots. start.sh first checks for a listener, so a live daemon is kept.
-      outcome.startedPID = try await start(
-        host: host, driver: driver, socket: socket, scripts: scripts)
+      resources: resources, scripts: scripts, skillFound: &skillFound)
+    if driver.startsDaemon {
+      switch outcome.daemon {
+      case .current, .handedOff: break
+      case .installed, .keptOlder, .keptNewer:
+        // A retained newer build must be started too: an older Mac can be the first to reconnect
+        // after the server reboots. start.sh first checks for a listener, so a live daemon is kept.
+        outcome.startedPID = try await start(
+          host: host, driver: driver, socket: socket, scripts: scripts)
+      }
     }
+    outcome.agentSkill = await syncAgentSkill(
+      agentSkill, found: skillFound, host: host, driver: driver, socket: socket)
     return outcome
+  }
+
+  /// Installs or removes the Workroom skill on the host with the host's own binary, which alone
+  /// decides what there is Workroom's (`workroom agent-skill`, #697): installed on every connect
+  /// while the setting is on, so the skill's text keeps up with the host's binary; removed only
+  /// when the user turned the setting off and the probe found a Workroom skill there, so a connect
+  /// with it off costs nothing more. A failure, such as a kept daemon from before `agent-skill`,
+  /// is reported and never fails the connect.
+  private static func syncAgentSkill(
+    _ policy: AgentSkillPolicy, found: Bool, host: HostID, driver: any HostDriver, socket: String
+  ) async -> Outcome.AgentSkill? {
+    let action: String
+    switch policy {
+    case .leave: return nil
+    case .remove where !found: return nil
+    case .remove: action = "remove"
+    case .install: action = "install"
+    }
+    let binary =
+      (driver as? any DaemonPlacingDriver)?.daemonPath(on: host)
+      ?? DaemonInstall.binary(besideSocket: socket)
+    do {
+      let stream = try await driver.exec(
+        [binary, "agent-skill", action, "--json"].map(PosixShell.quoted).joined(separator: " "),
+        on: host)
+      let answer = try await stream.communicate(nil, timeout: timeout)
+      return agentSkillOutcome(status: answer.status, output: answer.output)
+    } catch {
+      return .failed(error.localizedDescription)
+    }
+  }
+
+  /// What `agent-skill --json` answered: each agent's state, or why it didn't run. Anything a
+  /// login's startup printed ahead of the envelope is skipped.
+  static func agentSkillOutcome(status: Int32, output: String) -> Outcome.AgentSkill {
+    struct Envelope: Decodable {
+      struct Skill: Decodable {
+        let agent: String
+        let state: String
+      }
+      let ok: Bool
+      let skills: [Skill]?
+    }
+    let envelope = output.split(whereSeparator: \.isNewline).reversed().lazy
+      .compactMap { try? JSONDecoder().decode(Envelope.self, from: Data($0.utf8)) }.first
+    guard status == 0, let envelope, envelope.ok, let skills = envelope.skills else {
+      let said = output.trimmingCharacters(in: .whitespacesAndNewlines)
+      return .failed(said.isEmpty ? "agent-skill exited \(status)" : said)
+    }
+    return .done(skills.map { "\($0.agent) \($0.state)" }.joined(separator: ", "))
   }
 
   private static func prepare(
     host: HostID, driver: any HostDriver, socket: String, daemon: (String) -> URL?,
-    handOff: Bool, resources: URL?, scripts: ScriptLocator
+    handOff: Bool, resources: URL?, scripts: ScriptLocator, skillFound: inout Bool
   ) async throws -> Outcome {
     // A container's driver places its daemon itself (#308), outside the socket's folder.
     let placing = driver as? any DaemonPlacingDriver
@@ -218,6 +296,7 @@ public enum DaemonBootstrap {
           DaemonInstall.formerBinary(besideSocket: socket),
         ] + (driver.startsDaemon ? ["1"] : []))
     let report = try parseProbe(probe.output)
+    skillFound = report.agentSkill
     if report.former { throw Error.olderLayout }
     // A probe cut off part way (its hand-off is the long step) would read as "not asked".
     guard probe.status == 0 else {
@@ -516,9 +595,12 @@ public enum DaemonBootstrap {
     var daemonBuild: String? = nil
     /// No daemon there, but a pre-#525 `wr-agent` is: an older Nightly's host (`olderLayout`).
     var former = false
+    /// A Workroom skill's marker is in the host's `~/.claude` or `~/.codex` (#697), so a removal
+    /// has something to look at. The binary judges what is Workroom's; this only saves the exec.
+    var agentSkill = false
   }
 
-  /// The probe's seven lines. Anything not prefixed `WRB ` is whatever the host's shell startup
+  /// The probe's eight lines. Anything not prefixed `WRB ` is whatever the host's shell startup
   /// printed, and skipped.
   static func parseProbe(_ output: String) throws -> ProbeReport {
     let fields = reports(in: output)
@@ -550,7 +632,8 @@ public enum DaemonBootstrap {
       daemonBuild: fields["daemon-build"]?.first.flatMap {
         ["none", "unknown"].contains($0) ? nil : $0
       },
-      former: fields["former"]?.first == "yes")
+      former: fields["former"]?.first == "yes",
+      agentSkill: fields["agent-skill"]?.first == "yes")
   }
 
   /// The install's outcome words, and whether the supervisor started the daemon (nil when that was
