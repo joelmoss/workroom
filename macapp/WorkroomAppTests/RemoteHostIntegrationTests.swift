@@ -360,8 +360,8 @@ final class RemoteHostIntegrationTests: XCTestCase {
     let fixture = try fixture()
     // A host user with Claude Code and no Codex: this test makes `~/.claude` itself, and so only
     // on a home that has neither, and takes away only that folder, empty, at the end.
-    guard try onHost(fixture, "test -e ~/.claude || test -e ~/.codex && echo yes || echo no") == "no"
-    else {
+    let either = "test -e ~/.claude || test -e ~/.codex && echo yes || echo no"
+    guard try onHost(fixture, either) == "no" else {
       throw XCTSkip("the fixture's home already has ~/.claude or ~/.codex")
     }
     try onHost(fixture, "mkdir ~/.claude")
