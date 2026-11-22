@@ -23,13 +23,18 @@ if set -q WORKROOM_FISH_XDG_DIR
     set --erase --global WORKROOM_FISH_XDG_DIR
 end
 
+# fish 3.3 and later: no `set --function`. A startup file that erased WORKROOM_BIN_DIR keeps the
+# PATH it made: never an empty entry, which would be the current directory.
 if status --is-interactive; and test -n "$WORKROOM_BIN_DIR"
     function __workroom_bin_first --on-event fish_prompt
         functions --erase __workroom_bin_first
-        set --function rest
+        if not set -q WORKROOM_BIN_DIR; or test -z "$WORKROOM_BIN_DIR"
+            return 0
+        end
+        set -l rest
         for dir in $PATH
             if test "$dir" != "$WORKROOM_BIN_DIR"
-                set --append rest $dir
+                set -a rest $dir
             end
         end
         set --global --export PATH $WORKROOM_BIN_DIR $rest
