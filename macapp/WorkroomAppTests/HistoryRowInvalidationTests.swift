@@ -289,11 +289,13 @@ final class HistoryRowInvalidationTests: XCTestCase {
     let elapsed = Date().timeIntervalSince(started)
 
     // A count proves the mechanism changed; only wall clock proves the main thread stayed free. The
-    // ceiling is deliberately generous — 8× under the 2 s app-hang watchdog and far above the
+    // ceiling is deliberately generous — 4× under the 2 s app-hang watchdog and far above the
     // handful of milliseconds this costs once the list is lazy — so a loaded CI machine can't flake
-    // it while a genuine regression (all 200 rows × 2 authors × MD5 + format) still fails it.
+    // it (a GitHub macOS runner has taken 0.281 s, which failed the old 0.25 s ceiling) while a
+    // genuine regression (all 200 rows × 2 authors × MD5 + format) still fails it.
+    // `testLargePageDoesNotBuildEveryRow` is the exact net for eagerness; this one is the backstop.
     XCTAssertLessThan(
-      elapsed, 0.25,
+      elapsed, 0.5,
       "first layout of a 200-commit page took \(String(format: "%.3f", elapsed))s on the main thread"
     )
   }
