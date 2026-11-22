@@ -215,6 +215,12 @@ mod tests {
     fn the_cli_reference_pages_are_current() {
         let want = pages();
         let dir = pages_dir();
+        // `test-linux.sh` runs the test binaries in a container that holds `vcs/` alone; every
+        // checkout, CI's included, has the folder.
+        if !dir.is_dir() {
+            eprintln!("no {}, so the CLI pages aren't checked here", dir.display());
+            return;
+        }
         if std::env::var_os("WORKROOM_DOCS_UPDATE").is_some_and(|value| value == "1") {
             for name in ours_on_disk().keys() {
                 std::fs::remove_file(dir.join(name)).expect("remove a page of ours");

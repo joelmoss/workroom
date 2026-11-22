@@ -157,7 +157,7 @@ The commands that drive terminals (`sessions`, `capture`, `wait`, `send`, `comma
 | `InvalidRequest` | 2 | The daemon couldn't read the request: an unknown method, or parameters it refuses. |
 | `TooLarge` | 2 | The request, or what it asked for, is more than one request or reply carries. |
 | `DaemonUnreachable` | 7 | No daemon answers: the command ran outside a Workroom terminal, or `WORKROOM_DAEMON` names a socket nothing listens on. |
-| `DaemonTooOld` | 7 | The daemon is older than the command needs. Run `"$WORKROOM_BIN_DIR/workroom"`, the one that matches it. |
+| `DaemonTooOld` | 7 | The daemon is older than the command needs. Run `"$WORKROOM_BIN_DIR/workroom"`, the one that matches it. If that says so too, the daemon needs updating, which updating the app does. |
 | `WaitTimeout` | 8 | The `--timeout` passed before what was waited for happened. |
 
 ### The ScriptNotTrusted envelope

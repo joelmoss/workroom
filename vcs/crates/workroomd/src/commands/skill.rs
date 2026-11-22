@@ -557,6 +557,30 @@ mod tests {
         assert!(elsewhere.join("skills/workroom").join(SKILL_FILE).exists());
     }
 
+    /// A `skills` folder that is the user's link to their dotfiles is where the agent reads its
+    /// skills, so the skill goes in what it points at; remove takes the skill and leaves the link.
+    #[test]
+    fn a_linked_skills_folder_gets_the_skill_and_keeps_its_link() {
+        let home = Scratch::new("skill-linked-skills");
+        let dotfiles = Scratch::new("skill-linked-skills-dotfiles");
+        fs::create_dir(home.join(".claude")).unwrap();
+        std::os::unix::fs::symlink(&dotfiles.0, home.join(".claude/skills")).unwrap();
+        assert_eq!(install(&home, "one")[0].state, State::Installed);
+        assert_eq!(
+            fs::read_to_string(dotfiles.join("workroom").join(SKILL_FILE)).unwrap(),
+            "one"
+        );
+        assert_eq!(remove(&home)[0].state, State::Removed);
+        assert!(!dotfiles.join("workroom").exists());
+        assert!(
+            fs::symlink_metadata(home.join(".claude/skills"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(dotfiles.is_dir());
+    }
+
     #[test]
     fn a_fifo_in_place_of_the_skill_file_is_never_opened() {
         let home = Scratch::new("skill-fifo");

@@ -209,7 +209,7 @@ Raw access to every terminal API method on the daemon, for what no command above
 - `InvalidRequest` (2): The daemon can't read the request: an unknown method or parameters it refuses.
 - `TooLarge` (2): More than one request carries (1 MiB of text or parameters), or than one reply holds (16 MiB, as `capture --lines` can ask; `--all` streams any length).
 - `DaemonUnreachable` (7): No daemon answers: outside a Workroom pane, or `WORKROOM_DAEMON` names none.
-- `DaemonTooOld` (7): The daemon is older than the command. Run `"$WORKROOM_BIN_DIR/workroom"`.
+- `DaemonTooOld` (7): The daemon is older than this `workroom`. Run `"$WORKROOM_BIN_DIR/workroom"`, the one that matches it; if that says so too, the daemon needs updating, which updating the app does.
 - `WaitTimeout` (8): The `--timeout` passed first. What you waited on is still going.
 - `InternalError` (1): Anything else, a malformed command line included. Read the message.
 

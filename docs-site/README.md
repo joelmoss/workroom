@@ -111,10 +111,16 @@ shortcut catalog (`ShortcutAction`) has no matching row, or a row matches no def
 
 ## CLI reference
 
-The pages under `pages/cli/` are generated from the CLI's cobra commands. Don't edit them by hand; run
+The pages under `pages/cli/` are generated from the CLI's commands. Don't edit them by hand; run
 `make docs-cli` instead. There is one page per public command, named after its command path, so
-`workroom create` is `cli/workroom-create.md`. `nav.yml` lists each one in the CLI group, and the test in
-`cmd/docs_test.go` fails when they are stale.
+`workroom create` is `cli/workroom-create.md`. `nav.yml` lists each one in the CLI group.
+
+Two generators write them. The Go CLI's cobra commands generate their pages, and the test in
+`cmd/docs_test.go` fails when they are stale. The Rust binary generates the pages for the commands only
+it has, the terminal API's, and `workroom help agents`
+(`vcs/crates/workroomd/src/commands/docs.rs`); its test fails when they are stale. Each generator's
+pages carry its own comment under the front matter, and each writes, checks and removes only the pages
+that carry its comment. `make docs-check` runs both tests.
 
 ## Search, `.md` and `llms.txt`
 
