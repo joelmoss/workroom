@@ -6513,3 +6513,63 @@ fn run_control_restarts_and_stops_a_run_and_refuses_a_shell() {
     let bad = workroom(Some(&socket), &["run-control", "dev", "pause"]);
     assert_eq!(bad.code, 1, "{} {}", bad.stdout, bad.stderr);
 }
+
+/// A `new` from a real zsh with Workroom's bundled Ghostty integration (#693) is made as that pane
+/// was, integration and all, so `workroom command` runs in it at once: it waits for the new
+/// shell's first mark, then answers with the command's code and output.
+#[test]
+fn a_new_session_has_its_callers_shell_integration_so_command_runs_in_it() {
+    if !has_terminal_state() {
+        eprintln!("skipped: a command's end needs a daemon built with terminal-state");
+        return;
+    }
+    let resources = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../macapp/Resources/ghostty");
+    if !resources.join("shell-integration").is_dir() {
+        eprintln!(
+            "skipped: no bundled shell integration at {}",
+            resources.display()
+        );
+        return;
+    }
+    let zsh = match installed_shell(
+        "zsh",
+        &["/opt/homebrew/bin/zsh", "/bin/zsh", "/usr/bin/zsh"],
+    ) {
+        Ok(zsh) => zsh,
+        Err(why) => {
+            eprintln!("skipped: {why}");
+            return;
+        }
+    };
+    let workspace = Workspace::new("api-new-integrated");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let (mut caller, _output) = real_shell(&socket, SHELL, &zsh, &workspace.dir);
+    let made = shell_output(
+        &mut caller,
+        &workspace.dir,
+        "new.json",
+        &format!("'{}' new --json", common::daemon_binary().display()),
+    );
+    let made: Value = serde_json::from_str(made.trim()).unwrap_or_else(|e| panic!("{e}: {made}"));
+    let id = made["session"]["id"]
+        .as_str()
+        .expect("the new session")
+        .to_string();
+    let ran = workroom(
+        Some(&socket),
+        &[
+            "command",
+            &id,
+            "--timeout",
+            "30s",
+            "--json",
+            "--",
+            "echo",
+            "integrated",
+        ],
+    );
+    assert_eq!(ran.code, 0, "{} {}", ran.stdout, ran.stderr);
+    assert_eq!(ran.envelope()["exit_code"], 0, "{}", ran.stdout);
+    assert_eq!(ran.envelope()["output"], "integrated", "{}", ran.stdout);
+}
