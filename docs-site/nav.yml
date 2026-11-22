@@ -13,6 +13,8 @@
       page: guides/prepare-a-project
     - title: Run agents in parallel
       page: guides/run-agents-in-parallel
+    - title: Drive terminals from agents and scripts
+      page: guides/drive-terminals-from-agents-and-scripts
     - title: Review and ship
       page: guides/review-and-ship
     - title: Work on a remote host
