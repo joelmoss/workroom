@@ -25,6 +25,11 @@
 # rebuilt.
 set -u
 
+# What cli-archives.sh and notarize.sh read, which a release or Nightly job exports for its own
+# build (VERSION=3.2.0-nightly.2807 failed publish-assets_test.sh's cases): each case sets its own.
+unset VERSION WORKROOM_RELEASE_CHANNEL CLI_ARCHIVES_PLATFORMS CODESIGN_IDENTITY \
+  NOTARY_KEY_PATH NOTARY_KEY_ID NOTARY_ISSUER_ID NOTARY_PROFILE
+
 DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$DIR/../.." && pwd)"
 SCRIPT="${CLI_ARCHIVES:-$DIR/cli-archives.sh}"

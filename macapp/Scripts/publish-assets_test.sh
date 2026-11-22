@@ -112,7 +112,10 @@ run() {
   tag="$1"
   label="$2"
   shift 2
-  OUT="$(env PATH="$WORK/bin:$PATH" REPO=example/workroom CLI_ARCHIVES="$WORK/bin/cli-archives" \
+  # A clean environment: the Nightly and the release run this with their own VERSION (and
+  # GITHUB_RUN_ID, GITHUB_SHA, …) exported, which a case that sets none must not see.
+  OUT="$(env -i PATH="$WORK/bin:$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" FAKE_GH="$FAKE_GH" \
+    REPO=example/workroom CLI_ARCHIVES="$WORK/bin/cli-archives" \
     "$@" sh "$PUBLISH" $dry "$tag" "$(archives "$label")" "$WORK/app.dmg" 2>&1)"
   RC=$?
 }
