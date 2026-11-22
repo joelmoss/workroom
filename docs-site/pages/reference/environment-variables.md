@@ -68,6 +68,8 @@ In fish, use `set -e WORKROOM_BIN_DIR` in `config.fish`.
 
 Workroom finds the pane a command runs in from the command's process first, and uses `WORKROOM_PANE` only when that finds none. A tmux server keeps the variables of the pane it started in, so list them in tmux's `update-environment` option if you run tmux across panes.
 
+These are what the `workroom` commands that drive terminals use. See [Drive terminals from agents and scripts](../guides/drive-terminals-from-agents-and-scripts.md).
+
 ## Variables you can set
 
 ### `WORKROOM_SHELL_PROBE`

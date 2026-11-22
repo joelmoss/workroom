@@ -11,6 +11,12 @@ Start `claude` or `codex` in a workroom's terminal. Give each agent its own work
 
 Workroom shows when an agent needs you. See [Notifications](notifications.md#when-a-terminal-needs-you).
 
+## Let agents drive other terminals {nightly}
+
+An agent in one terminal can work with the others through the `workroom` command: list them, read their screens, run a command in one and get its exit code, wait for a dev server to say it is ready, or give the agent in another terminal a prompt and wait for its turn to end. `workroom help agents` explains every command to an agent.
+
+To have Claude Code and Codex know this by themselves, turn on **Settings ▸ AI Agents ▸ Install the Workroom skill for Claude Code and Codex**. Workroom adds its skill to `~/.claude` and `~/.codex` on your Mac, and on each host the next time it connects, and removes it when you turn the setting off. See [Drive terminals from agents and scripts](../guides/drive-terminals-from-agents-and-scripts.md).
+
 ## Diagnose a failed command
 
 When a command fails in a terminal, the pane footer shows **Command failed (exit N)** in red. Click it to open the diagnosis.

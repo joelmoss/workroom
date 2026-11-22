@@ -93,6 +93,8 @@ Branch on the exit code when you don't need the details.
 | `4` | Cancelled, or nothing to do. |
 | `5` | A setup or teardown script failed. |
 | `6` | The config file could not be read, written or parsed. |
+| `7` | Nightly only. A terminal API command could reach no daemon it can use: none answers, or the one that does is too old for the command. |
+| `8` | Nightly only. A terminal API wait timed out. |
 
 `workroom trust status` has its own answers: `0` when every script is approved or ignored by git, `1` when one is not, and `2` when it can't tell.
 
@@ -133,6 +135,30 @@ These kinds are returned as well:
 | `CloneFailed` | 1 | `add-project --clone` could not clone the repository. The message carries git's own error, such as `Permission denied (publickey).`; git never prompts, so missing credentials fail here. Nothing was registered. |
 | `DestinationNotEmpty` | 3 | `add-project --clone` was given a folder that already has files in it, or the folder gained files while the clone ran. No clone is left behind. Hidden staging that a crashed clone on this machine left is removed first and doesn't count. When only clone staging (`.clone-*` folders and `.clone-*.lock` files) is in the way, the message names it. |
 | `StartCommitUnusable` | 3 | A create answering an earlier one's question was given a `start_commit` that is no longer where it starts, as when the project's base branch changed in between. Nothing was created; create again without it. |
+
+### The terminal API's kinds {nightly}
+
+The commands that drive terminals (`sessions`, `capture`, `wait`, `send`, `command`, `prompt`, `events`, `new`, `close`, `run-control` and `api`) return these, and `NotADirectory` for a `new --cwd` that is no folder. A kind may carry more in `error.details`, and `TargetAmbiguous` lists the terminals it matched in `error.matches`. `workroom command` exits with the command's own code when it runs, so tell its failures from the command's by `ok` in its `--json` envelope. See [Drive terminals from agents and scripts](../guides/drive-terminals-from-agents-and-scripts.md).
+
+| `kind` | Exit | Meaning |
+| ------ | ---- | ------- |
+| `TargetNotFound` | 3 | No terminal matches the target. |
+| `TargetAmbiguous` | 3 | More than one terminal matches the target, so nothing was done. |
+| `SessionEnded` | 3 | The terminal ended before or while it was asked. |
+| `RefusedSelf` | 3 | The command named the terminal it runs in. Pass `--allow-self` to allow it. |
+| `AgentBusy` | 3 | The coding agent is working or waiting on a question, so the prompt wasn't given. `error.details` says whether the text was typed but not submitted. |
+| `NotAnAgent` | 3 | No coding agent runs in the terminal. |
+| `NotARun` | 3 | `run-control` named a terminal that is no run tab. |
+| `AlternateScreen` | 3 | A full-screen program is up in the terminal. |
+| `NoShellIntegration` | 3 | The terminal's shell sends no shell integration marks, so a command's end can't be seen. |
+| `ExitCodeMismatch` | 3 | `wait --run exited --exit-code N` saw the run exit with another code, which `error.details.exit_code` holds. |
+| `WaitInterrupted` | 3 | A wait for output or a command's end may have missed it: the app updated the daemon in the middle, or the output came faster than the wait could read it. |
+| `Busy` | 3 | The terminal or the daemon is busy, such as a shell running another command, so try again shortly. |
+| `InvalidRequest` | 2 | The daemon couldn't read the request: an unknown method, or parameters it refuses. |
+| `TooLarge` | 2 | The request, or what it asked for, is more than one request or reply carries. |
+| `DaemonUnreachable` | 7 | No daemon answers: the command ran outside a Workroom terminal, or `WORKROOM_DAEMON` names a socket nothing listens on. |
+| `DaemonTooOld` | 7 | The daemon is older than the command needs. Run `"$WORKROOM_BIN_DIR/workroom"`, the one that matches it. |
+| `WaitTimeout` | 8 | The `--timeout` passed before what was waited for happened. |
 
 ### The ScriptNotTrusted envelope
 

@@ -156,6 +156,14 @@ See [Coding agents](coding-agents.md#diagnose-a-failed-command).
 
 See [Coding agents](coding-agents.md#usage).
 
+### Workroom skill {nightly}
+
+| Setting | What it does |
+| --- | --- |
+| **Install the Workroom skill for Claude Code and Codex** | Adds a skill that teaches Claude Code and Codex the `workroom` commands for driving your other terminals, to `~/.claude/skills/workroom` and `~/.codex/skills/workroom` on this Mac and on each host, and removes it when turned off. A host gets it, or loses it, the next time Workroom connects to it. Off by default. |
+
+See [Drive terminals from agents and scripts](../guides/drive-terminals-from-agents-and-scripts.md#teach-your-coding-agents).
+
 ## Projects
 
 The pane lists your projects. Click one to open its settings, and the back button to return to the list. They are its run command, its base branch and its boxd and exe.dev options. The gear on a project row in the sidebar, and **Project Settings…** in its right-click menu, open this pane on that project. A text field saves when you press <kbd>Return</kbd> or leave it. See [Project settings](projects.md#project-settings).
