@@ -48,6 +48,15 @@ Every terminal pane's shell, on your Mac and on a remote host, gets these, so Wo
 | -------- | ----- |
 | `WORKROOM_PANE` | The ID of the pane's terminal session. |
 | `WORKROOM_DAEMON` | The path of the socket of the Workroom daemon that runs the pane. |
+| `WORKROOM_BIN_DIR` | The folder that holds the `workroom` command of the daemon that runs the pane. It is the first entry of the pane's `PATH`. |
+
+The `workroom` in `WORKROOM_BIN_DIR` is the build of the daemon the pane talks to, so its commands always match that daemon. When the app updates and the daemon moves to the new build, the same folder holds the new one, in panes that were already open too. It comes ahead of any `workroom` you installed yourself.
+
+A login profile can move the folder down `PATH` (macOS's `path_helper` does) or replace `PATH` (Debian's `/etc/profile` does). In zsh and fish, and in bash in a pane that uses Ghostty's terminal type, Workroom puts the folder first again once your startup files have run. Other shells, such as `sh` and `dash`, start with it first and keep what your profile does. If your dotfiles set `PATH` and you want the folder back, add this to the end of your profile:
+
+```sh
+[ -n "$WORKROOM_BIN_DIR" ] && export PATH="$WORKROOM_BIN_DIR:$PATH"
+```
 
 Workroom finds the pane a command runs in from the command's process first, and uses `WORKROOM_PANE` only when that finds none. A tmux server keeps the variables of the pane it started in, so list them in tmux's `update-environment` option if you run tmux across panes.
 

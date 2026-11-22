@@ -171,6 +171,9 @@ One capability a workroomd serves over its stream, such as terminal sessions, ve
 **Hand-off**:
 Replacing a running workroomd's program with a newer binary in place, keeping its process and every session.
 
+**Bin folder**:
+The daemon's folder holding one link, `workroom`, to its copy of the binary it runs, re-pointed after every hand-off. It is first on every session's PATH, and its path is `WORKROOM_BIN_DIR` (#695).
+
 **Terminal API**:
 The daemon's public, versioned service for reading, typing into, waiting on and watching sessions, used by coding agents and the user's scripts from inside a pane. Its commands are `workroom` subcommands (#360, ADR 0078). It's a public contract that only ever adds fields (ADR 0079).
 _Avoid_: Agent API
