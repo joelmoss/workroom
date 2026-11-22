@@ -15,11 +15,13 @@ protocol TerminalRequestHolder: AnyObject {
   func isShowingTarget(_ targetID: TerminalTarget.ID) -> Bool
   /// Whether this holder's window is the key window.
   var isKeyHolder: Bool { get }
-  /// Shows session `session` in `target`: beside tab `anchor` on `edge` as a split when both are
-  /// given, else as a tab; named `label` when given. Focus stays where it is.
+  /// Shows session `session` beside the caller's tab `caller`, in `target`, the caller's target
+  /// when it was asked: as a split on `edge` when one is given, else as a tab; named `label` when
+  /// given. Focus stays where it is. `unplaced` when it can't be shown after all (the caller's tab
+  /// has gone, or its standalone terminal couldn't become a group), so it is never dropped.
   func showRequestedSession(
-    _ session: UUID, label: String?, in target: TerminalTarget, beside anchor: TerminalTab.ID?,
-    on edge: PaneEdge?)
+    _ session: UUID, label: String?, caller: TerminalTab.ID, in target: TerminalTarget,
+    split edge: PaneEdge?, unplaced: @escaping () -> Void)
   /// Closes tab `tabID` of `target`, whose session `workroom close` ended: no confirmation, as
   /// the shell has already gone, and through the close path every tab takes, so a run tab and a
   /// terminal group are closed as the user's own close would close them.
@@ -54,8 +56,8 @@ extension TerminalRequestHolder {
 enum TerminalOpenPlan: Equatable {
   /// A split beside the caller's tab, on `edge`, in holder `holder`'s `target`.
   case split(holder: Int, target: TerminalTarget.ID, beside: TerminalTab.ID, edge: PaneEdge)
-  /// A tab in holder `holder`'s `target`, the caller's.
-  case tab(holder: Int, target: TerminalTarget.ID)
+  /// A tab in holder `holder`'s `target`, the caller's, whose tab is `caller`.
+  case tab(holder: Int, target: TerminalTarget.ID, caller: TerminalTab.ID)
   /// Nothing opens here: the session is listed with the detached sessions of its workroom.
   case detached
 }
@@ -98,7 +100,7 @@ enum TerminalOpenRule {
         holder: chosen.holder, target: chosen.target, beside: chosen.tab,
         edge: split == .right ? .right : .bottom)
     }
-    return .tab(holder: chosen.holder, target: chosen.target)
+    return .tab(holder: chosen.holder, target: chosen.target, caller: chosen.tab)
   }
 }
 
@@ -119,10 +121,18 @@ final class TerminalRequests {
   }
   /// This Mac's name as its panes' attaches give it to a daemon (#688). A seam for tests.
   var thisMac: () -> String? = { SSHTransport.macHostname }
-  /// Reads the detached list again of every target of `host` tagged `workroom`, so a session no
-  /// pane here shows is offered there at once. A seam for tests.
-  var refreshDetached: (HostID, String?) -> Void = { host, workroom in
-    TerminalRequests.refreshDetachedLists(host: host, workroom: workroom)
+  /// A test's answer in place of `readDetachedAgain`'s reads; nil reads them.
+  var refreshDetached: ((HostID, String?) -> Void)?
+
+  /// Reads the detached list again of every target of `host` tagged `workroom`
+  /// (`detachedListTargets`), so a session no pane here shows is offered there at once.
+  private func readDetachedAgain(_ host: HostID, _ workroom: String?) {
+    if let refreshDetached { return refreshDetached(host, workroom) }
+    for (target, owned) in Self.detachedListTargets(
+      host: host, workroom: workroom, in: holders())
+    {
+      Task { await DetachedSessionList.shared.refresh(target, ownedSessionIDs: owned) }
+    }
   }
 
   private static let logger = Logger(
@@ -160,21 +170,20 @@ final class TerminalRequests {
     let holders = holders()
     let placements = request.by.map { placements(of: $0, in: holders) } ?? []
     let plan = TerminalOpenRule.plan(request, thisMac: thisMac(), placements: placements)
+    let unplaced = { [weak self] in self?.readDetachedAgain(host, request.workroom) ?? () }
     switch plan {
     case .detached:
-      refreshDetached(host, request.workroom)
-    case .tab(let index, let targetID):
-      guard let target = holders[index].terminalTarget(forID: targetID) else {
-        return refreshDetached(host, request.workroom)
-      }
+      unplaced()
+    case .tab(let index, let targetID, let caller):
+      guard let target = holders[index].terminalTarget(forID: targetID) else { return unplaced() }
       holders[index].showRequestedSession(
-        request.session, label: request.label, in: target, beside: nil, on: nil)
+        request.session, label: request.label, caller: caller, in: target, split: nil,
+        unplaced: unplaced)
     case .split(let index, let targetID, let anchor, let edge):
-      guard let target = holders[index].terminalTarget(forID: targetID) else {
-        return refreshDetached(host, request.workroom)
-      }
+      guard let target = holders[index].terminalTarget(forID: targetID) else { return unplaced() }
       holders[index].showRequestedSession(
-        request.session, label: request.label, in: target, beside: anchor, on: edge)
+        request.session, label: request.label, caller: anchor, in: target, split: edge,
+        unplaced: unplaced)
     }
     Self.logger.info(
       "new: \(request.session.uuidString, privacy: .public) \(String(describing: plan), privacy: .public)"
@@ -190,16 +199,23 @@ final class TerminalRequests {
     }
   }
 
-  /// `refreshDetached`'s production answer: every window's targets on `host` tagged `workroom`.
-  private static func refreshDetachedLists(host: HostID, workroom: String?) {
-    guard let workroom else { return }
-    for store in WindowRegistry.shared.allStores {
-      for id in store.terminals.activeTargetIDs {
-        guard let target = store.terminalTarget(forID: id), target.hostID == host,
-          target.sessionWorkroomKey == workroom
-        else { continue }
-        let owned = store.terminals.ownedSessionIDs(for: target)
-        Task { await DetachedSessionList.shared.refresh(target, ownedSessionIDs: owned) }
+  /// The targets whose detached lists `refreshDetached` reads again, each with the sessions its
+  /// holder's tabs own: every holder's targets on `host` tagged `workroom`; for a session with no
+  /// workroom (a `new` from no pane), every one whose list offers such sessions
+  /// (`DetachedSessionList.offersUnscoped`).
+  static func detachedListTargets(
+    host: HostID, workroom: String?, in holders: [any TerminalRequestHolder]
+  ) -> [(TerminalTarget, Set<UUID>)] {
+    holders.flatMap { holder in
+      holder.terminals.activeTargetIDs.compactMap { id -> (TerminalTarget, Set<UUID>)? in
+        guard let target = holder.terminalTarget(forID: id), target.hostID == host else {
+          return nil
+        }
+        let listed =
+          workroom.map { target.sessionWorkroomKey == $0 }
+          ?? DetachedSessionList.offersUnscoped(target)
+        guard listed else { return nil }
+        return (target, holder.terminals.ownedSessionIDs(for: target))
       }
     }
   }

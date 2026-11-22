@@ -82,6 +82,20 @@ extension AppStore: TerminalsSectionHolder {
   /// New Standalone Terminal (⌥⌘T), and ⌘T where the selection opens no terminals: a new row just
   /// below the selected one when that is in the Terminals section, else at the section's end,
   /// selected, with its one terminal open in "New terminals open in".
+  /// A session `workroom new` made from no pane (#693), taken from the detached list: a
+  /// standalone terminal of its own, after the selection, selected, its session tagged with it so
+  /// a quit brings it back there.
+  func openAsStandaloneTerminal(session: UUID) {
+    let id = terminalsSection.addStandalone(after: selectedTargetID?.targetID)
+    guard let sid = id.sidebarID, let target = target(for: sid) else { return }
+    let service = terminals.sessionService
+    Task { _ = await service.retag(sessionID: session, workroom: id.encoded) }
+    selectedTargetID = sid
+    terminals.addTab(for: target, sessionID: session)
+    refreshSelectionHasTabs()
+    markSessionDirty()
+  }
+
   func newStandaloneTerminal() {
     let id = terminalsSection.addStandalone(after: selectedTargetID?.targetID)
     guard let sid = id.sidebarID, let target = target(for: sid) else { return }

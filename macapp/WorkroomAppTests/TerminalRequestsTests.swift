@@ -41,7 +41,7 @@ final class TerminalRequestsTests: XCTestCase {
   func testTheMacShowingTheCallersPaneOpensATab() {
     XCTAssertEqual(
       TerminalOpenRule.plan(request(), thisMac: "laptop", placements: [placement()]),
-      .tab(holder: 0, target: workroomID))
+      .tab(holder: 0, target: workroomID, caller: tab))
   }
 
   /// A split asked for goes beside the caller's tab while it is on screen, on its right or below.
@@ -60,7 +60,7 @@ final class TerminalRequestsTests: XCTestCase {
     for hidden in [placement(onScreen: false), placement(poppedOut: true)] {
       XCTAssertEqual(
         TerminalOpenRule.plan(request(split: .right), thisMac: "laptop", placements: [hidden]),
-        .tab(holder: 0, target: workroomID), "\(hidden)")
+        .tab(holder: 0, target: workroomID, caller: tab), "\(hidden)")
     }
   }
 
@@ -110,7 +110,7 @@ final class TerminalRequestsTests: XCTestCase {
       .split(holder: 2, target: workroomID, beside: tab, edge: .right))
     XCTAssertEqual(
       TerminalOpenRule.plan(request(split: .right), thisMac: "laptop", placements: [hidden]),
-      .tab(holder: 0, target: workroomID))
+      .tab(holder: 0, target: workroomID, caller: other))
   }
 
   // MARK: Handling the events
@@ -142,10 +142,10 @@ final class TerminalRequestsTests: XCTestCase {
     func isShowingTarget(_ targetID: TerminalTarget.ID) -> Bool { showing }
 
     func showRequestedSession(
-      _ session: UUID, label: String?, in target: TerminalTarget, beside anchor: TerminalTab.ID?,
-      on edge: PaneEdge?
+      _ session: UUID, label: String?, caller: TerminalTab.ID, in target: TerminalTarget,
+      split edge: PaneEdge?, unplaced: @escaping () -> Void
     ) {
-      shown.append((session, label, anchor, edge))
+      shown.append((session, label, caller, edge))
     }
 
     func closeRequestedTab(_ tabID: TerminalTab.ID, in target: TerminalTarget) {
@@ -256,7 +256,8 @@ final class TerminalRequestsTests: XCTestCase {
     let workroom = try XCTUnwrap(store.terminalTarget(forID: workroomID))
     let callerTab = store.terminals.addTab(for: workroom, sessionID: caller)
     store.showRequestedSession(
-      created, label: "dev server", in: workroom, beside: nil, on: nil)
+      created, label: "dev server", caller: callerTab.id, in: workroom, split: nil,
+      unplaced: { XCTFail("unplaced") })
     let tabs = store.terminals.tabs(for: workroom)
     XCTAssertEqual(tabs.map(\.terminal?.sessionID), [caller, created])
     XCTAssertEqual(tabs.last?.terminal?.userTitle, "dev server")
@@ -270,7 +271,9 @@ final class TerminalRequestsTests: XCTestCase {
     let store = makeStore()
     let workroom = try XCTUnwrap(store.terminalTarget(forID: workroomID))
     let callerTab = store.terminals.addTab(for: workroom, sessionID: caller)
-    store.showRequestedSession(created, label: nil, in: workroom, beside: callerTab.id, on: .right)
+    store.showRequestedSession(
+      created, label: nil, caller: callerTab.id, in: workroom, split: .right,
+      unplaced: { XCTFail("unplaced") })
     let split = try XCTUnwrap(store.terminals.split(for: workroom))
     XCTAssertEqual(split.tabIDs.count, 2)
     XCTAssertEqual(split.tabIDs.first, callerTab.id, "on the caller's right")
@@ -289,7 +292,9 @@ final class TerminalRequestsTests: XCTestCase {
     let target = try XCTUnwrap(store.target(for: standalone))
     let callerTab = store.terminals.addTab(for: target, sessionID: caller)
     store.selectedTargetID = standalone
-    store.showRequestedSession(created, label: nil, in: target, beside: callerTab.id, on: .bottom)
+    store.showRequestedSession(
+      created, label: nil, caller: callerTab.id, in: target, split: .bottom,
+      unplaced: { XCTFail("unplaced") })
     await section.regroupsSettled()
     let group = try XCTUnwrap(store.selectedTargetID)
     guard case .terminalGroup = group else { return XCTFail("\(group) is no group") }
@@ -302,6 +307,109 @@ final class TerminalRequestsTests: XCTestCase {
     XCTAssertEqual(retags.map(\.1), [tag, tag])
     XCTAssertFalse(
       section.entries.map(\.sidebarID).contains(standalone), "the group took its place")
+  }
+
+  /// Value: protects=two `new`s from one standalone terminal, the second asked before the first's
+  /// regroup has run, both open, in the one group the first made; fails_when=the second is
+  /// dropped because its standalone terminal is a group by its turn, or a second group is made;
+  /// why_new=the review of #693; seam=AppStore over a shared section; no_claim=the rows' drawing
+  func testTwoNewsFromAStandaloneTerminalBackToBackBothOpenInOneGroup() async throws {
+    let store = makeStore()
+    let standalone = try XCTUnwrap(section.addStandalone(after: nil).sidebarID)
+    let target = try XCTUnwrap(store.target(for: standalone))
+    let callerTab = store.terminals.addTab(for: target, sessionID: caller)
+    store.selectedTargetID = standalone
+    let second = UUID()
+    var unplaced = 0
+    for (session, edge) in [(created, PaneEdge?.none), (second, PaneEdge.right)] {
+      store.showRequestedSession(
+        session, label: nil, caller: callerTab.id, in: target, split: edge,
+        unplaced: { unplaced += 1 })
+    }
+    await section.regroupsSettled()
+    XCTAssertEqual(unplaced, 0, "neither was dropped")
+    let group = try XCTUnwrap(store.selectedTargetID)
+    guard case .terminalGroup = group else { return XCTFail("\(group) is no group") }
+    let grouped = try XCTUnwrap(store.target(for: group))
+    XCTAssertEqual(
+      Set(store.terminals.allTabs(for: grouped).compactMap(\.terminal?.sessionID)),
+      [caller, created, second])
+    let tag = try XCTUnwrap(group.targetID).encoded
+    XCTAssertEqual(
+      Set(retags.filter { $0.1 == tag }.map(\.0)), [caller, created, second],
+      "each tagged with the group")
+    let groups = section.entries.map(\.targetID).filter {
+      $0.isTerminalGroup && $0 != .quickTerminal
+    }
+    XCTAssertEqual(groups, [try XCTUnwrap(group.targetID)], "one group made")
+  }
+
+  /// A request whose caller's tab has gone by its turn is never dropped: it is listed as
+  /// detached.
+  func testANewWhoseCallerHasGoneIsListedAsDetached() async throws {
+    let store = makeStore()
+    let standalone = try XCTUnwrap(section.addStandalone(after: nil).sidebarID)
+    let target = try XCTUnwrap(store.target(for: standalone))
+    var unplaced = 0
+    store.showRequestedSession(
+      created, label: nil, caller: UUID(), in: target, split: nil, unplaced: { unplaced += 1 })
+    await section.regroupsSettled()
+    XCTAssertEqual(unplaced, 1)
+  }
+
+  // MARK: Remote targets
+
+  private let host = UUID()
+  private let remoteWorkroom = UUID()
+
+  private func remoteTarget(_ host: UUID, name: String = "far") -> TerminalTarget {
+    var target = TerminalTarget(
+      id: .workroom(project: "/p", name: name), title: name, path: "/home/workroom/\(name)",
+      isMissing: false)
+    target.remoteHost = host
+    target.remoteWorkroomID = remoteWorkroom
+    return target
+  }
+
+  /// Value: protects=a `new` no pane here shows reads again the lists of this host's targets of
+  /// its workroom only, and a `new` from no pane every target there that offers such sessions
+  /// (on a host, every workroom; here, the standalone terminals and groups); fails_when=another
+  /// host's or this Mac's same-named target is read, or a scope-less one is read nowhere;
+  /// why_new=the review of #693; seam=TerminalRequests.detachedListTargets; no_claim=the reads
+  func testTheDetachedListsReadAgainAreThatHostsTargetsOfThatWorkroom() throws {
+    let here = Holder(target: remoteTarget(host))
+    let elsewhere = Holder(target: remoteTarget(UUID()))
+    let local = Holder(target: target)
+    for holder in [here, elsewhere, local] {
+      _ = holder.terminals.addTab(for: holder.target, sessionID: UUID())
+    }
+    let holders: [any TerminalRequestHolder] = [here, elsewhere, local]
+    let read = { (workroom: String?) in
+      TerminalRequests.detachedListTargets(
+        host: .remote(self.host), workroom: workroom, in: holders
+      )
+      .map(\.0.id)
+    }
+    XCTAssertEqual(read(remoteWorkroom.uuidString), [here.target.id])
+    XCTAssertEqual(read("someone-else"), [])
+    XCTAssertEqual(read(nil), [here.target.id], "a host's workrooms offer a scope-less new")
+    XCTAssertEqual(
+      TerminalRequests.detachedListTargets(host: .local, workroom: nil, in: holders).map(\.0.id),
+      [], "a workroom here offers none")
+  }
+
+  /// A split in a remote workroom starts where the caller's shell is on the host, never this
+  /// Mac's folder of the same path: the target's path there, until the host has said.
+  func testASplitInARemoteWorkroomStartsOnTheHost() throws {
+    let holder = Holder(target: remoteTarget(host))
+    let callerTab = holder.terminals.addTab(for: holder.target, sessionID: caller)
+    let split = try XCTUnwrap(
+      holder.terminals.openSplit(
+        sessionID: created, beside: callerTab.id, on: .right, for: holder.target))
+    XCTAssertEqual(split.terminal?.sessionID, created)
+    XCTAssertEqual(
+      holder.terminals.sessionService.remoteWorkingDirectory(of: created), "/home/workroom/far")
+    XCTAssertEqual(holder.terminals.sessionService.remoteHost(of: created), .remote(host))
   }
 
   /// A close takes the tab without asking, the shell having gone, through the window's own close.
