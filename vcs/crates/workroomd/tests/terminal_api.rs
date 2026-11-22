@@ -2467,6 +2467,11 @@ fn every_methods_reply_through_api_call_matches_what_api_describe_publishes() {
             json!({"target": "api-call-new", "action": "restart"}),
         ),
         ("session.close", json!({"target": "api-call-new"})),
+        // The agent's pane, so the two named `tests` still are, for the ambiguity below.
+        (
+            "session.label",
+            json!({"target": SHELL, "label": "api-call-label"}),
+        ),
         ("events.subscribe", json!({"all": true})),
         // From a connection of its own, which holds no subscription there: `ended` false.
         ("events.unsubscribe", json!({"stream": 1})),
@@ -6568,6 +6573,111 @@ fn run_control_restarts_and_stops_a_run_and_refuses_a_shell() {
     );
     let bad = workroom(Some(&socket), &["run-control", "dev", "pause"]);
     assert_eq!(bad.code, 1, "{} {}", bad.stdout, bad.stderr);
+}
+
+/// `session.label` (`api call`, #694) through `workroom api call`, as `--json` gives its result.
+fn label(socket: &Path, params: Value) -> Run {
+    workroom(
+        Some(socket),
+        &[
+            "api",
+            "call",
+            "session.label",
+            &params.to_string(),
+            "--json",
+        ],
+    )
+}
+
+/// A session's label is its tab's name (#694): `session.label` sets it, trimmed, and every
+/// subscriber is told `session.labelled` once; the same label again changes nothing and is told
+/// nothing, which is what ends the app's own rename heard back. The new label is a target and the
+/// old one no longer is; an empty one clears it. A label without `label`, or for a target nothing
+/// matches, is refused, and no event is told. Across a hand-off the label stays and the events go
+/// on, each label told once.
+/// Value: protects=the API's label and the app's tab name are one name every Mac hears change once; fails_when=set_label leaves the listing or targets on the old name, tells an unchanged label (an echo loop), or a hand-off drops the label or retells it; why_new=a session's label never changed after creation; seam=none
+#[test]
+fn a_label_set_through_the_api_is_the_sessions_and_told_once_across_a_hand_off() {
+    let workspace = Workspace::new("api-label");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let _shell = open(&socket, SHELL, "server", "wr-1", &workspace.dir);
+    let _other = open(&socket, OTHER, "tests", "wr-1", &workspace.dir);
+    listing_until(&socket, |listing| listing.len() == 2);
+    let mut events = Events::start(&socket, &["--all", "--type", "session.labelled"]);
+    events.until("snapshot-complete", |e| e["event"] == "snapshot-complete");
+
+    let set = label(&socket, json!({"target": "server", "label": "  web  "}));
+    assert_eq!(set.code, 0, "{} {}", set.stdout, set.stderr);
+    let result = &set.envelope()["result"];
+    assert_eq!(result["changed"], true, "{result}");
+    assert_eq!(result["session"]["id"], SHELL, "{result}");
+    assert_eq!(result["session"]["label"], "web", "trimmed: {result}");
+    let told = events.until("the label", |e| is(e, "session.labelled", SHELL));
+    assert_eq!(told["label"], "web", "{told}");
+    assert_eq!(told["scope"], json!({"kind": "workroom", "id": "wr-1"}));
+
+    let again = label(&socket, json!({"target": SHELL, "label": "web"}));
+    assert_eq!(again.code, 0, "{} {}", again.stdout, again.stderr);
+    assert_eq!(
+        again.envelope()["result"]["changed"],
+        false,
+        "{}",
+        again.stdout
+    );
+    assert_eq!(session(&sessions(&socket), SHELL)["label"], "web");
+    assert_eq!(target(&socket, "web"), Ok(SHELL.into()));
+    assert_eq!(
+        target(&socket, "server"),
+        Err((3, "TargetNotFound".into(), vec![])),
+        "the old label names nothing"
+    );
+
+    let missing = label(&socket, json!({"target": SHELL}));
+    assert_eq!(missing.code, 2, "{}", missing.stdout);
+    assert_eq!(missing.envelope()["error"]["kind"], "InvalidRequest");
+    let nobody = label(&socket, json!({"target": "nobody", "label": "x"}));
+    assert_eq!(nobody.code, 3, "{}", nobody.stdout);
+    assert_eq!(nobody.envelope()["error"]["kind"], "TargetNotFound");
+
+    let cleared = label(&socket, json!({"target": "web", "label": ""}));
+    assert_eq!(cleared.code, 0, "{} {}", cleared.stdout, cleared.stderr);
+    assert_eq!(
+        cleared.envelope()["result"]["session"]["label"],
+        Value::Null
+    );
+    let told = events.until("the label cleared", |e| is(e, "session.labelled", SHELL));
+    assert_eq!(told["label"], Value::Null, "{told}");
+    let set = label(&socket, json!({"target": OTHER, "label": "db"}));
+    assert_eq!(set.code, 0, "{} {}", set.stdout, set.stderr);
+    events.until("the other's label", |e| is(e, "session.labelled", OTHER));
+    assert_eq!(events.count("session.labelled"), 3, "{:#?}", events.seen);
+
+    if !has_terminal_state() {
+        events.stop();
+        return;
+    }
+    hand_off(&socket, &workspace.dir);
+    assert_eq!(session(&sessions(&socket), OTHER)["label"], "db", "carried");
+    let set = label(&socket, json!({"target": "db", "label": "db2"}));
+    assert_eq!(set.code, 0, "{} {}", set.stdout, set.stderr);
+    let told = events.until("a label after the hand-off", |e| {
+        is(e, "session.labelled", OTHER) && e["label"] == "db2"
+    });
+    assert_eq!(told["label"], "db2", "{told}");
+    let labels: Vec<&Value> = events
+        .seen
+        .iter()
+        .filter(|e| e["event"] == "session.labelled")
+        .map(|e| &e["label"])
+        .collect();
+    assert_eq!(
+        labels,
+        [&json!("web"), &Value::Null, &json!("db"), &json!("db2")],
+        "each label told once: {:#?}",
+        events.seen
+    );
+    events.stop();
 }
 
 /// A `new` from a real zsh with Workroom's bundled Ghostty integration (#693) is made as that pane

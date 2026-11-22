@@ -142,6 +142,54 @@ fn a_session_tagged_with_another_scope_is_moved() {
     assert_eq!(live[1]["scope"], to, "its end is in the new scope");
 }
 
+/// A session given another label (#694) is `session.labelled`, saying the label, once: the label
+/// it has is no event, which is what ends the app's own rename heard back. A snapshot after it
+/// holds the label, a hand-off carries it, and a label that changed while one was under way is
+/// told by the next program.
+/// Value: protects=every Mac hears a label change once and a snapshot at R holds R's label, across a hand-off; fails_when=labelled publishes an unchanged label (an echo loop), forgets Known's label (a snapshot says the old name), or reconcile skips labels; why_new=labels never changed after creation, so no event told one; seam=none
+#[test]
+fn a_session_given_another_label_is_labelled_once_and_its_snapshot_holds_it() {
+    let hub = Hub::default();
+    hub.created(id(1), listing(1, "wr-1"));
+    let mut cursor = Cursor::new(Start::Since {
+        boot: hub.boot().to_hyphenated(),
+        revision: 1,
+    });
+    let _ = next(&hub, &mut cursor);
+    hub.labelled(id(1), Some("server"));
+    hub.labelled(id(1), Some("web"));
+    hub.labelled(id(1), Some("web"));
+    hub.labelled(id(1), None);
+    hub.labelled(id(9), Some("nobody's"));
+    let live = events(next(&hub, &mut cursor));
+    assert_eq!(names(&live), [name::LABELLED, name::LABELLED], "{live:?}");
+    assert_eq!(live[0]["label"], "web");
+    assert_eq!(live[0]["scope"], json!({"kind": "workroom", "id": "wr-1"}));
+    assert_eq!(live[1]["label"], Value::Null, "cleared");
+
+    hub.labelled(id(1), Some("api"));
+    let Next::Snapshot { sessions, .. } = next(&hub, &mut Cursor::new(Start::Fresh)) else {
+        panic!("no snapshot");
+    };
+    assert_eq!(sessions[&id(1)].listing["label"], "api");
+
+    let carried = hub.carry();
+    let new = Hub::default();
+    assert!(new.adopt(&carried));
+    let mut relabelled = listing(1, "wr-1");
+    relabelled["label"] = json!("db");
+    new.reconcile(vec![(id(1), relabelled)], true);
+    let mut resumed = Cursor::new(Start::Since {
+        boot: hub.boot().to_hyphenated(),
+        revision: 3,
+    });
+    let _ = next(&new, &mut resumed);
+    let live = events(next(&new, &mut resumed));
+    assert_eq!(names(&live), [name::LABELLED, name::LABELLED], "{live:?}");
+    assert_eq!(live[0]["label"], "api", "carried");
+    assert_eq!(live[1]["label"], "db", "changed during the hand-off");
+}
+
 /// A send typed into a session (#689) is `session.input`, in the session's scope as the events
 /// know it, naming its sender and its size; the ring a hand-off carries holds it, so a subscriber
 /// resuming in the next program is told it. While the ring is sealed for a hand-off, none is
