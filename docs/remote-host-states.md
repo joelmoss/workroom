@@ -34,6 +34,15 @@ something on a host: a connect, an exec, a script, a delete.
   container or provider host itself; on SSH hosts its bootstrap starts the daemon when nothing
   listens. It fails while another connect to the host is under way:
   `HostConnectionManager.connectIfDisconnected` throws `.unavailable` for a `.connecting` host.
+- **The Workroom skill** (#697): once a connect's service connection is up, `DaemonBootstrap.connect`
+  runs one more exec, in a task of its own and never awaited by the connect: the host's own binary,
+  `<daemon> skill install|remove --login-environment --json`, bounded by 30 s of silence. Install
+  runs on every connect while Settings ▸ AI Agents' setting is on; remove runs once per host after
+  it was turned off (`WorkroomSkill.hostPolicy`), and only when the probe's `WRB skill` says the host
+  holds Workroom's record of a skill. Every state the connect reaches applies: a kept older daemon
+  without `skill` answers "unknown command", reported as `.failed` and its removal kept for a later
+  connect; a newer one takes it; an unreachable host never gets that far. Its outcome goes to the
+  setting (`WorkroomSkill.hostSynced`) and never fails the connect.
 
 ## States
 
