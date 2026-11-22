@@ -35,14 +35,87 @@ final class WorkroomSkillTests: XCTestCase {
 
   private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
 
+  nonisolated private static func resetSettings() {
+    Defaults.reset(
+      .installWorkroomSkill, .workroomSkillHosts, .workroomSkillPendingRemoval,
+      .workroomSkillMacRemovalPending)
+  }
+
   override func setUp() {
     super.setUp()
-    Defaults.reset(.installWorkroomSkill, .workroomSkillHosts, .workroomSkillPendingRemoval)
+    Self.resetSettings()
   }
 
   override func tearDown() {
-    Defaults.reset(.installWorkroomSkill, .workroomSkillHosts, .workroomSkillPendingRemoval)
+    Self.resetSettings()
     super.tearDown()
+  }
+
+  /// A host's install that finishes after the setting was turned off, before the host was
+  /// counted, makes that host due its removal, not one Workroom leaves for good.
+  func testAnInstallThatFinishesAfterTheSettingIsOffIsDueItsRemoval() {
+    let late = HostID.remote(UUID())
+    let skill = WorkroomSkill(home: nil) { _, _, _ in WorkroomSkillReport(skills: []) }
+    Defaults[.installWorkroomSkill] = true
+    skill.settingChanged(to: true)
+    Defaults[.installWorkroomSkill] = false
+    skill.settingChanged(to: false)
+    XCTAssertEqual(WorkroomSkill.hostPolicy(for: late), .leave, "not heard from yet")
+    skill.recordHost(
+      late, policy: .install,
+      result: .done([.init(agent: "claude", path: "/h/.claude/skills/workroom", state: "installed")]
+      ))
+    XCTAssertEqual(WorkroomSkill.hostPolicy(for: late), .remove)
+    XCTAssertEqual(Defaults[.workroomSkillHosts], [])
+  }
+
+  /// A removal whose envelope went through but one of whose folders failed (a read-only disk)
+  /// leaves the host due, so the next connect retries; only every folder removed or absent ends it.
+  func testAHostRemovalWithAFailedFolderStaysDue() {
+    let host = HostID.remote(UUID())
+    let skill = WorkroomSkill(home: nil) { _, _, _ in WorkroomSkillReport(skills: []) }
+    Defaults[.workroomSkillPendingRemoval] = [WorkroomSkill.key(host)]
+    skill.recordHost(
+      host, policy: .remove,
+      result: .done([
+        .init(agent: "claude", path: "/h/.claude/skills/workroom", state: "removed"),
+        .init(
+          agent: "codex", path: "/h/.agents/skills/workroom", state: "failed",
+          message: "Read-only file system"),
+      ]))
+    XCTAssertEqual(WorkroomSkill.hostPolicy(for: host), .remove, "kept for the next connect")
+    XCTAssertEqual(
+      skill.notice,
+      "On a remote host: Codex's skill at /h/.agents/skills/workroom failed: Read-only file system")
+    skill.recordHost(
+      host, policy: .remove,
+      result: .done([
+        .init(agent: "claude", path: "/h/.claude/skills/workroom", state: "absent"),
+        .init(agent: "codex", path: "/h/.agents/skills/workroom", state: "removed"),
+      ]))
+    XCTAssertEqual(WorkroomSkill.hostPolicy(for: host), .leave)
+  }
+
+  /// The Mac's own removal that failed for a folder is tried again at the next launch with the
+  /// setting off, until it goes through.
+  func testTheMacsFailedRemovalIsRetriedAtLaunch() async {
+    let calls = Calls()
+    let failing = WorkroomSkillReport(skills: [
+      .init(agent: "claude", path: "/h/.claude/skills/workroom", state: "failed", message: "EROFS")
+    ])
+    let skill = WorkroomSkill(home: "/tmp/skill-home") { install, home, variables in
+      calls.record(install, home, variables)
+      return calls.installs.count == 1 ? failing : WorkroomSkillReport(skills: [])
+    }
+    await skill.apply(install: false).value
+    XCTAssertTrue(Defaults[.workroomSkillMacRemovalPending])
+    skill.launched()
+    await skill.apply(install: false).value
+    XCTAssertEqual(calls.installs, [false, false, false], "launch tried the removal again")
+    XCTAssertFalse(Defaults[.workroomSkillMacRemovalPending])
+    skill.launched()
+    await skill.apply(install: true).value
+    XCTAssertEqual(calls.installs.count, 4, "nothing more to retry at launch")
   }
 
   /// The real bundled CLI, in a throwaway home: on writes Claude Code's skill in `~/.claude` and
