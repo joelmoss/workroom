@@ -3971,6 +3971,134 @@ fn over_ssh_prompt_types_into_a_host_agent_and_waits_for_its_fresh_turn() {
     }
 }
 
+/// `workroom new`, `close` and `run-control` on a host (#693), from a pane the app attached from
+/// a Mac it names, through the host's own static musl daemon: `new` opens a session in the
+/// pane's workroom, made as the pane's was (its environment, from the host), and asks the Mac
+/// showing that pane to show it, the caller found through `SO_PEERCRED`; `new --run` runs its
+/// command under a supervisor that `run-control` restarts; `close` ends each, and refuses the
+/// pane's own (`RefusedSelf`, 3).
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_new_close_and_run_control_open_end_and_restart_host_terminals() {
+    let Some(fixture) = plain_fixture() else {
+        return;
+    };
+    let pane_id = "7e0e7e0e-0000-4000-8000-000000000693";
+    let mut pane = Pane::attach_with(
+        &fixture,
+        pane_id,
+        false,
+        "'WORKROOM_SESSION_TITLE=agent pane' WORKROOM_SESSION_WORKROOM=wr-693 \
+         WORKROOM_SESSION_HOSTNAME=mac-a.local NEW_INHERITS=from-the-host-pane",
+    );
+    pane.type_line("echo \"PANE-\"\"UP\"");
+    assert!(
+        pane.read_until("PANE-UP\r\n", Duration::from_secs(30))
+            .contains("PANE-UP\r\n"),
+        "the pane's shell never started"
+    );
+    // A folder of this run's own on the host, made here and so removed at the end.
+    let dir = (0..)
+        .map(|attempt| format!("/tmp/wr-693-{}-{attempt}", std::process::id()))
+        .find(|dir| {
+            fixture
+                .ssh()
+                .arg(format!("mkdir {dir}"))
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+        .expect("a folder on the host");
+    let host = |command: String| {
+        let output = fixture.ssh().arg(command).output().expect("ssh");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let envelope = |name: &str| -> Value {
+        serde_json::from_str(&host(format!("cat {dir}/{name}")))
+            .unwrap_or_else(|e| panic!("{name} is no envelope ({e})"))
+    };
+    let binary = INSTALLED_DAEMON;
+    pane.type_line(&format!(
+        "cd {dir} && {binary} new --title 'host dev' --split down --json > {dir}/new; \
+         {binary} new --title hostrun --run 'sleep 60' --json > {dir}/run; \
+         {binary} wait hostrun --run running --timeout 30s > /dev/null; \
+         {binary} run-control hostrun restart --json > {dir}/restart; \
+         {binary} close \"$WORKROOM_PANE\" --json > {dir}/self; s=$?; \
+         echo \"CODES-$s-\"DONE"
+    ));
+    assert!(
+        pane.read_until("-DONE", Duration::from_secs(60))
+            .contains("CODES-3-DONE"),
+        "the pane's own close was not refused with 3"
+    );
+    let new = envelope("new");
+    assert_eq!(new["caller"], pane_id, "{new}");
+    assert_eq!(
+        new["opened"],
+        serde_json::json!({"by": pane_id, "split": "down", "hostname": "mac-a.local"}),
+        "{new}"
+    );
+    assert_eq!(
+        new["session"]["scope"],
+        serde_json::json!({"kind": "workroom", "id": "wr-693"}),
+        "{new}"
+    );
+    assert_eq!(new["session"]["label"], "host dev", "{new}");
+    let id = new["session"]["id"].as_str().expect("its id").to_string();
+    let run = envelope("run");
+    assert_eq!(run["session"]["run"], true, "{run}");
+    let restarted = envelope("restart");
+    assert_eq!(restarted["action"], "restart", "{restarted}");
+    let refused = envelope("self");
+    assert_eq!(refused["error"]["kind"], "RefusedSelf", "{refused}");
+
+    // The new session is the host pane's kind: its environment, in the pane's folder.
+    let sent = host(format!(
+        "WORKROOM_DAEMON={} {binary} send '{id}' \
+         '{{ echo \"$NEW_INHERITS\"; pwd; }} > {dir}/said.partial; mv {dir}/said.partial {dir}/said\n'; \
+         echo sent=$?",
+        fixture.socket
+    ));
+    assert!(sent.contains("sent=0"), "{sent}");
+    let said = (0..120)
+        .find_map(|_| {
+            let said = host(format!("cat {dir}/said 2>/dev/null"));
+            if said.is_empty() {
+                std::thread::sleep(Duration::from_millis(250));
+                return None;
+            }
+            Some(said)
+        })
+        .expect("the new session never ran what it was sent");
+    assert_eq!(said, format!("from-the-host-pane\n{dir}\n"));
+
+    let closed = host(format!(
+        "WORKROOM_DAEMON={} {binary} close 'host dev' && WORKROOM_DAEMON={} {binary} close \
+         hostrun && echo closed",
+        fixture.socket, fixture.socket
+    ));
+    assert!(closed.contains("closed"), "{closed}");
+    let left = host(format!(
+        "WORKROOM_DAEMON={} {binary} sessions --all --json",
+        fixture.socket
+    ));
+    let left: Value = serde_json::from_str(&left).expect("sessions");
+    let ids: Vec<&str> = left["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .filter_map(|session| session["id"].as_str())
+        .collect();
+    assert!(!ids.contains(&id.as_str()), "{ids:?}");
+    assert!(ids.contains(&pane_id), "{ids:?}");
+
+    host(format!("rm -r {dir}"));
+    pane.type_line("exit");
+    assert!(
+        pane.exit_code(Duration::from_secs(20)).is_some(),
+        "the pane's session did not end"
+    );
+}
+
 /// Two Macs on one remote workroom (#255): Mac A's session carries its workroom and title to the
 /// host, Mac B finds it in the host's list and A's layout in the Layout service, and reattaches to
 /// the same shell; A dropping its link leaves B attached; a close on A ends the session for B too;
