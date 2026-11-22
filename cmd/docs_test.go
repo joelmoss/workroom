@@ -18,6 +18,21 @@ import (
 //	go test ./cmd -run TestCLIDocs -update
 const cliDocsDir = "../docs-site/pages/cli"
 
+// rustDocsHeader starts the line under the front matter of the pages the Rust binary generates
+// for the commands only it has, the terminal API's (`vcs/crates/workroomd/src/commands/docs.rs`).
+// This test neither checks nor removes them, as that one leaves these alone.
+const rustDocsHeader = "<!-- Generated from the workroom binary's commands by"
+
+// isRustDocsPage reports whether the page at p is the Rust generator's.
+func isRustDocsPage(t *testing.T, p string) bool {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Contains(string(b), rustDocsHeader)
+}
+
 // TestCLIDocs fails when docs-site/pages/cli no longer matches the commands, so the reference can't
 // drift from the CLI.
 func TestCLIDocs(t *testing.T) {
@@ -31,6 +46,9 @@ func TestCLIDocs(t *testing.T) {
 	if *updateContracts {
 		old, _ := filepath.Glob(filepath.Join(cliDocsDir, "*.md"))
 		for _, p := range old {
+			if isRustDocsPage(t, p) {
+				continue
+			}
 			if err := os.Remove(p); err != nil {
 				t.Fatal(err)
 			}
@@ -52,6 +70,12 @@ func TestCLIDocs(t *testing.T) {
 		b, err := os.ReadFile(p)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if strings.Contains(string(b), rustDocsHeader) {
+			if _, ok := want[filepath.Base(p)]; ok {
+				t.Errorf("docs-site/pages/cli/%s is the Rust binary's page, and a Go command has its name", filepath.Base(p))
+			}
+			continue
 		}
 		got[filepath.Base(p)] = string(b)
 	}

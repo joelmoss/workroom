@@ -95,6 +95,8 @@ RULES = (
     (("go.mod", "go.sum"), {"cli", "scripts"}),
     # KeyboardShortcutsDocsTests reads this page; cmd/docs_test.go and internal/docsite read all.
     (("docs-site/pages/reference/keyboard-shortcuts.md",), {"cli", "app"}),
+    # The terminal API's CLI pages, which the Rust binary generates and checks (commands/docs.rs).
+    (("docs-site/pages/cli/*",), {"cli", "rust"}),
     (("docs-site/*",), {"cli"}),
     # Go sources only: a data file under cmd/ or internal/ (channel_cases.tsv, which the app and
     # the script tests read) has no rule and so runs everything.
