@@ -1,6 +1,7 @@
 //! The daemon itself: the accept loop and connections, the request envelope every service shares,
 //! transports, hand-off and the log.
 
+pub(crate) mod bin_dir;
 pub(crate) mod handoff;
 pub(crate) mod log;
 pub(crate) mod own_copy;

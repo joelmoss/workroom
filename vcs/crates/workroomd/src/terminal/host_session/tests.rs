@@ -13,60 +13,55 @@ fn origin(environment: &[(&str, &str)], shell: &str) -> HostOrigin {
         shell: shell.to_string(),
         home: PathBuf::from("/home/u"),
         user: "u".to_string(),
-        commands: Some(PathBuf::from("/run/workroom")),
     }
 }
 
-fn path_of(session: &HostSession) -> Option<String> {
+fn value_of(session: &HostSession, name: &str) -> Option<String> {
     session
         .environment
         .iter()
-        .find(|(key, _)| key == "PATH")
+        .find(|(key, _)| key == name)
         .map(|(_, value)| value.to_string_lossy().into_owned())
 }
 
-/// Every shell starts with the daemon's folder on its PATH (ADR 0078), sh and dash included, which
-/// Ghostty's integration doesn't reach: after the login's entries, once.
+/// The login's PATH is the session's as it came: the daemon's bin folder goes first afterwards,
+/// as for every session (`terminal::bin_path`, #695), not here.
 #[test]
-fn every_shell_starts_with_the_daemons_folder_after_the_logins_path() {
+fn the_logins_path_is_kept_as_it_came() {
     for shell in ["/bin/sh", "/bin/dash", "/bin/bash", "/usr/bin/fish"] {
         let login = pairs(&[("PATH", "/home/u/bin:/usr/bin:/bin"), ("SHELL", shell)]);
         let session = build(&[], Some(&login), &origin(&[], shell), None);
         assert_eq!(session.shell, shell);
         assert_eq!(
-            path_of(&session).as_deref(),
-            Some("/home/u/bin:/usr/bin:/bin:/run/workroom"),
+            value_of(&session, "PATH").as_deref(),
+            Some("/home/u/bin:/usr/bin:/bin"),
             "{shell}"
         );
     }
-    let listed = pairs(&[("PATH", "/run/workroom:/usr/bin")]);
-    let session = build(&[], Some(&listed), &origin(&[], "/bin/sh"), None);
-    assert_eq!(path_of(&session).as_deref(), Some("/run/workroom:/usr/bin"));
 }
 
-/// A login with no PATH, or an empty one, gets the standard directories and then the folder: a PATH
-/// of the folder alone would leave the shell no `ls`.
+/// Ghostty's `path` feature is off: it would append its folder after the profile, where the bin
+/// folder's hooks put the bin folder first.
 #[test]
-fn a_login_with_no_path_gets_the_standard_directories_and_the_folder() {
-    let want = format!("{}:/run/workroom", crate::host::environment::FLOOR_PATH);
-    for login in [
-        pairs(&[("PATH", ""), ("SHELL", "/bin/sh")]),
-        pairs(&[("SHELL", "/bin/sh")]),
-    ] {
-        let session = build(&[], Some(&login), &origin(&[], "/bin/sh"), None);
-        assert_eq!(path_of(&session).as_deref(), Some(want.as_str()));
-    }
-    // No login environment at all: the daemon's own, which has none either.
-    let session = build(&[], None, &origin(&[("HOME", "/x")], "/bin/sh"), None);
-    assert_eq!(path_of(&session).as_deref(), Some(want.as_str()));
-}
-
-/// A daemon with no `workroom` beside it leaves the login's PATH as it was.
-#[test]
-fn a_daemon_without_the_link_changes_no_path() {
-    let login = pairs(&[("PATH", "/usr/bin"), ("SHELL", "/bin/sh")]);
-    let mut without = origin(&[], "/bin/sh");
-    without.commands = None;
-    let session = build(&[], Some(&login), &without, None);
-    assert_eq!(path_of(&session).as_deref(), Some("/usr/bin"));
+fn ghosttys_path_feature_is_not_asked_for() {
+    let scratch = std::env::temp_dir().join(format!("wr-host-session-{}", std::process::id()));
+    std::fs::create_dir(&scratch).expect("a scratch folder of this run's own");
+    let terminfo = scratch.join("terminfo/x");
+    std::fs::create_dir_all(&terminfo).unwrap();
+    std::fs::write(terminfo.join(GHOSTTY_TERM), b"compiled").unwrap();
+    let client = pairs(&[("TERM", GHOSTTY_TERM)]);
+    let login = pairs(&[("PATH", "/usr/bin"), ("SHELL", "/bin/bash")]);
+    let session = build(
+        &client,
+        Some(&login),
+        &origin(&[], "/bin/bash"),
+        Some(&scratch),
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert_eq!(
+        value_of(&session, "GHOSTTY_SHELL_FEATURES").as_deref(),
+        Some(SHELL_FEATURES)
+    );
+    assert_eq!(value_of(&session, "GHOSTTY_BIN_DIR"), None);
+    assert_eq!(value_of(&session, "PATH").as_deref(), Some("/usr/bin"));
 }

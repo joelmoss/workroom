@@ -46,6 +46,30 @@ fn a_copy_is_made_in_a_folder_of_its_own_and_found_again_by_the_next_start() {
     assert_eq!(fs::metadata(&again.path).unwrap().ino(), inode);
 }
 
+/// A start from a binary whose CLI commands alone changed (#680) has the daemon build of the copy
+/// already there and other bytes. The copy is made again from it: the `workroom` link every pane
+/// runs (`bin_dir`) points at the copy, and must run the commands of the binary the daemon runs.
+#[test]
+fn a_copy_of_this_daemon_build_with_other_bytes_is_made_again() {
+    let scratch = Scratch::new("refresh");
+    let older = binary(&scratch.0.join("older"), BUILD);
+    let dir = scratch.0.join("d.bin");
+    drop(establish(&dir, &older, BUILD).expect("the older copy"));
+
+    let newer = scratch.0.join("workroom");
+    fs::write(
+        &newer,
+        format!(
+            "{} and newer CLI commands",
+            fs::read_to_string(&older).unwrap()
+        ),
+    )
+    .unwrap();
+    let kept = establish(&dir, &newer, BUILD).expect("a copy of the newer binary");
+    assert_eq!(kept.path, dir.join("workroom-aaaa"));
+    assert_eq!(fs::read(&kept.path).unwrap(), fs::read(&newer).unwrap());
+}
+
 #[test]
 fn a_source_that_is_not_this_daemon_build_is_never_copied() {
     let scratch = Scratch::new("wrong");

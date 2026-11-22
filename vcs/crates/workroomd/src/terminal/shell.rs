@@ -23,7 +23,7 @@ use std::ffi::{OsStr, OsString};
 
 pub const DEFAULT_SHELL: &str = "/bin/zsh";
 pub(crate) const POSIX_SHELL: &str = "/bin/sh";
-const XDG_FALLBACK_DATA_DIRECTORIES: &str = "/usr/local/share:/usr/share";
+pub(crate) const XDG_FALLBACK_DATA_DIRECTORIES: &str = "/usr/local/share:/usr/share";
 
 /// What to exec for a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
