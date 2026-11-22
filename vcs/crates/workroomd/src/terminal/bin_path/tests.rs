@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 /// `apply`, with every hook there.
 fn apply(invocation: &mut Invocation, folders: Option<&Folders>) {
-    apply_with(invocation, folders, |_| true);
+    apply_with(invocation, folders, None, |_| true);
 }
 
 /// A hook that is gone is never pointed at: the shell starts as it would without one, with the
@@ -23,7 +23,7 @@ fn a_shell_whose_hook_is_gone_starts_without_it() {
     ] {
         let mut invocation = shell(program, &env);
         let before = invocation.environment.clone();
-        apply_with(&mut invocation, Some(&folders()), |_| false);
+        apply_with(&mut invocation, Some(&folders()), None, |_| false);
         let mut changed: Vec<_> = invocation
             .environment
             .iter()
@@ -94,7 +94,7 @@ fn a_missing_or_empty_path_gets_the_standard_directories_after_the_folder() {
 /// names is dropped.
 #[test]
 fn every_session_gets_the_folder_and_its_variable() {
-    for program in ["/bin/sh", "/bin/dash", "/bin/ksh", "/usr/bin/elvish"] {
+    for program in ["/bin/sh", "/bin/dash", "/bin/ksh"] {
         let mut invocation = shell(
             program,
             &[
@@ -211,4 +211,86 @@ fn a_daemon_without_a_folder_changes_no_path() {
     assert_eq!(value(&invocation, "PATH").as_deref(), Some("/usr/bin"));
     assert_eq!(value(&invocation, "WORKROOM_BIN_DIR"), None);
     assert_eq!(value(&invocation, "ZDOTDIR"), None);
+}
+
+/// A daemon whose bin folder could not be made still gives a host pane `workroom`: the folder of
+/// its own, the bootstrap's link beside `workroomd`, after the PATH, as #681 did.
+#[test]
+fn a_daemon_without_a_folder_appends_the_folder_of_its_own_workroom() {
+    let mut invocation = shell("/bin/sh", &[("PATH", "/usr/bin:/bin")]);
+    apply_with(
+        &mut invocation,
+        None,
+        Some(Path::new("/run/workroom")),
+        |_| true,
+    );
+    assert_eq!(
+        value(&invocation, "PATH").as_deref(),
+        Some("/usr/bin:/bin:/run/workroom")
+    );
+    assert_eq!(value(&invocation, "WORKROOM_BIN_DIR"), None);
+}
+
+/// elvish and nu have no hook: Ghostty's `path` feature appends the folder after their startup
+/// files took it off, where Ghostty's integration starts them and no `ssh-*` feature needs
+/// `GHOSTTY_BIN_DIR` for Ghostty's own program.
+#[test]
+fn elvish_and_nu_get_ghosttys_path_feature_for_the_folder() {
+    for program in ["/usr/bin/elvish", "/usr/bin/nu"] {
+        let mut integrated = shell(
+            program,
+            &[
+                (
+                    "GHOSTTY_SHELL_INTEGRATION_XDG_DIR",
+                    "/res/shell-integration",
+                ),
+                ("GHOSTTY_SHELL_FEATURES", "cursor,sudo,title"),
+            ],
+        );
+        apply(&mut integrated, Some(&folders()));
+        assert_eq!(
+            value(&integrated, "GHOSTTY_SHELL_FEATURES").as_deref(),
+            Some("cursor,sudo,title,path"),
+            "{program}"
+        );
+        assert_eq!(
+            value(&integrated, "GHOSTTY_BIN_DIR").as_deref(),
+            Some("/run/w.bin/path")
+        );
+    }
+    let mut ssh = shell(
+        "/usr/bin/elvish",
+        &[
+            (
+                "GHOSTTY_SHELL_INTEGRATION_XDG_DIR",
+                "/res/shell-integration",
+            ),
+            ("GHOSTTY_SHELL_FEATURES", "cursor,ssh-terminfo"),
+            (
+                "GHOSTTY_BIN_DIR",
+                "/Applications/Workroom.app/Contents/MacOS",
+            ),
+        ],
+    );
+    apply(&mut ssh, Some(&folders()));
+    assert_eq!(
+        value(&ssh, "GHOSTTY_BIN_DIR").as_deref(),
+        Some("/Applications/Workroom.app/Contents/MacOS")
+    );
+    let mut plain = shell("/usr/bin/elvish", &[]);
+    apply(&mut plain, Some(&folders()));
+    assert_eq!(value(&plain, "GHOSTTY_SHELL_FEATURES"), None);
+    // zsh has its hook instead.
+    let mut zsh = shell(
+        "/bin/zsh",
+        &[
+            ("GHOSTTY_SHELL_FEATURES", "cursor"),
+            ("ZDOTDIR", "/res/zsh"),
+        ],
+    );
+    apply(&mut zsh, Some(&folders()));
+    assert_eq!(
+        value(&zsh, "GHOSTTY_SHELL_FEATURES").as_deref(),
+        Some("cursor")
+    );
 }

@@ -70,6 +70,21 @@ fn a_copy_of_this_daemon_build_with_other_bytes_is_made_again() {
     assert_eq!(fs::read(&kept.path).unwrap(), fs::read(&newer).unwrap());
 }
 
+/// Every staged name is this call's own, and gives its pid back, as an earlier build's bare
+/// `<pid>` does; anything else gives none.
+#[test]
+fn staged_names_are_unique_and_name_their_process() {
+    let first = staged_name("workroom");
+    let second = staged_name("workroom");
+    assert_ne!(first, second);
+    let rest = first.strip_prefix(".workroom.").expect("the name");
+    assert_eq!(staged_pid(rest), Some(std::process::id() as i32));
+    assert_eq!(staged_pid("4242"), Some(4242));
+    for odd in ["", "0", "-1", "12-", "12-x", "x-1", "12-1-1"] {
+        assert_eq!(staged_pid(odd), None, "{odd:?}");
+    }
+}
+
 #[test]
 fn a_source_that_is_not_this_daemon_build_is_never_copied() {
     let scratch = Scratch::new("wrong");

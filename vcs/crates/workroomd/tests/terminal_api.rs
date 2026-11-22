@@ -7,6 +7,7 @@
 mod common;
 
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -607,6 +608,36 @@ fn a_session_starts_with_the_daemons_bin_folder_first_and_its_one_link() {
         );
         drop(client);
     }
+
+    // The folder gone from under the daemon, as a `/tmp` cleaner takes it (this test's daemon's,
+    // in this test's own workspace): the next session makes it and its link again.
+    std::fs::remove_dir_all(&bin).expect("the daemon's bin folder");
+    let out = workspace.dir.join("bin-again");
+    let command = format!(
+        "/bin/sh -c '\"$WORKROOM_BIN_DIR/workroom\" protocol > {0}.partial; mv {0}.partial {0}; \
+         sleep 30'",
+        out.display()
+    );
+    let _client = attach_with_only(
+        &socket,
+        "b1b1b1b1-0000-4000-8000-000000000004",
+        &[
+            ("SHELL", "/bin/sh"),
+            ("PATH", "/usr/bin:/bin"),
+            ("WORKROOM_SESSION_COMMAND", command.as_str()),
+        ],
+    );
+    assert!(
+        wait_for(Duration::from_secs(20), || out.exists()),
+        "the command never ran"
+    );
+    assert_eq!(std::fs::read_link(&link).unwrap(), daemons_copy(&socket));
+    assert!(
+        std::fs::read_to_string(&out)
+            .unwrap()
+            .contains(&format!("daemon-build {}", common::stated_daemon_build())),
+        "the link made again does not run the daemon's build"
+    );
 }
 
 /// An attach for session `id` with `env` and nothing else in its environment, which it forwards
@@ -625,6 +656,173 @@ fn attach_with_only(socket: &Path, id: &str, env: &[(&str, &str)]) -> Spawned {
             .spawn()
             .expect("spawn attach"),
     )
+}
+
+/// A login zsh whose `.zshrc` unsets `WORKROOM_BIN_DIR` keeps the PATH its startup files made
+/// (#695): the user's own folder first, as for their own `workroom` build, and never an empty
+/// entry, which would put the current directory on PATH.
+#[test]
+fn a_zsh_whose_startup_file_unsets_the_variable_keeps_its_own_path() {
+    if !Path::new("/bin/zsh").exists() {
+        eprintln!("skipped: no /bin/zsh");
+        return;
+    }
+    let workspace = Workspace::new("api-bin-optout");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let home = workspace.dir.join("home");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(
+        home.join(".zshrc"),
+        "unset WORKROOM_BIN_DIR\npath=(/opt/mine $path)\n",
+    )
+    .unwrap();
+    let resources = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../macapp/Resources/ghostty");
+    let resources = resources.to_string_lossy().into_owned();
+    let home = home.to_string_lossy().into_owned();
+    for (case, id, integration) in [
+        ("ghostty", "b3b3b3b3-0000-4000-8000-000000000001", true),
+        ("plain", "b3b3b3b3-0000-4000-8000-000000000002", false),
+    ] {
+        let mut env = vec![
+            ("SHELL", "/bin/zsh"),
+            ("HOME", home.as_str()),
+            ("PATH", "/usr/bin:/bin"),
+            ("TERM", "xterm-256color"),
+        ];
+        if integration {
+            env.push(("WORKROOM_SESSION_RESOURCES", resources.as_str()));
+        }
+        let mut shell = attach_with_only(&socket, id, &env);
+        let seen = shell_output(
+            &mut shell,
+            &workspace.dir,
+            &format!("zsh-optout-{case}"),
+            "print -r -- \"[$PATH]\" \"[${WORKROOM_BIN_DIR-unset}]\"",
+        );
+        let path = seen
+            .trim()
+            .strip_prefix('[')
+            .and_then(|rest| rest.split_once("] ["))
+            .map(|(path, _)| path)
+            .unwrap_or_else(|| panic!("{case}: {seen}"));
+        assert!(path.starts_with("/opt/mine:"), "{case}: {seen}");
+        assert!(
+            !path
+                .split(':')
+                .any(|entry| entry.is_empty() || entry == "."),
+            "{case}: an empty entry: {seen}"
+        );
+        assert!(seen.contains("[unset]"), "{case}: {seen}");
+    }
+}
+
+/// A daemon started from `binary`, a file of the test's own standing in for an app bundle's.
+/// Linux refuses to run a file another process forked meanwhile still has open for writing
+/// (`ETXTBSY`), so the spawn is tried again until it runs.
+fn start_daemon_from(binary: &Path, socket: &Path) -> Spawned {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let child = loop {
+        let spawned = Command::new(binary)
+            .args(["serve", "--socket"])
+            .arg(socket)
+            .args(["--idle-timeout", "60"])
+            .env("SHELL", "/bin/sh")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        match spawned {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            other => break other.expect("spawn daemon"),
+        }
+    };
+    let child = Spawned(child);
+    assert!(
+        common::wait_listening(socket, Duration::from_secs(30)),
+        "daemon never listened on its socket"
+    );
+    child
+}
+
+/// An update whose CLI commands alone changed (#680) is installed over the file the daemon started
+/// from, and nothing is handed off. The next session to start notices, and the daemon's copy is
+/// made again from it: that session's `workroom`, and the one a pane opened before it reaches
+/// through the same link, is the new binary, while the daemon goes on running its own program.
+/// The old copy went with the rename over it; nothing staged is left.
+#[test]
+fn a_cli_only_update_reaches_every_panes_workroom() {
+    let workspace = Workspace::new("api-bin-cli");
+    let socket = workspace.socket();
+    let app = workspace.dir.join("app");
+    std::fs::create_dir(&app).unwrap();
+    let source = app.join("workroom");
+    std::fs::copy(common::daemon_binary(), &source).expect("copy the binary");
+    let mut daemon = start_daemon_from(&source, &socket);
+    let copy = daemons_copy(&socket);
+    let link = bin_folder(&socket).join("workroom");
+    assert!(
+        wait_for(Duration::from_secs(15), || std::fs::read_link(&link)
+            .is_ok_and(|target| target == copy)),
+        "the link never pointed at the copy"
+    );
+    let env = [("SHELL", "/bin/sh"), ("PATH", "/usr/bin:/bin")];
+    let mut before = attach_with_only(&socket, "b4b4b4b4-0000-4000-8000-000000000001", &env);
+    let _ = shell_output(&mut before, &workspace.dir, "cli-ready", "true");
+
+    // The update, staged and renamed into place as an installer does: the daemon build is the
+    // same, and a byte more, which the loader ignores, makes it another file.
+    let staged = app.join(".workroom.new");
+    let mut bytes = std::fs::read(common::daemon_binary()).unwrap();
+    bytes.push(b'\n');
+    std::fs::write(&staged, &bytes).unwrap();
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::rename(&staged, &source).unwrap();
+
+    let mut after = attach_with_only(&socket, "b4b4b4b4-0000-4000-8000-000000000002", &env);
+    assert!(
+        wait_for(Duration::from_secs(20), || std::fs::read(&copy)
+            .is_ok_and(|now| now == bytes)),
+        "the copy was never made again from the update"
+    );
+    assert_eq!(std::fs::read_link(&link).unwrap(), copy);
+    for (name, shell) in [("cli-before", &mut before), ("cli-after", &mut after)] {
+        let seen = shell_output(
+            shell,
+            &workspace.dir,
+            name,
+            &format!(
+                "{{ cmp \"$WORKROOM_BIN_DIR/workroom\" '{}' && echo SAME; \
+                 \"$WORKROOM_BIN_DIR/workroom\" protocol; }}",
+                source.display()
+            ),
+        );
+        assert!(seen.contains("SAME"), "{name}: {seen}");
+        assert!(
+            seen.contains(&format!("daemon-build {}", common::stated_daemon_build())),
+            "{name}: {seen}"
+        );
+    }
+    assert!(daemon.0.try_wait().unwrap().is_none(), "the daemon ended");
+    let mut left: Vec<String> = std::fs::read_dir(socket.with_extension("bin"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort();
+    let mut want = vec![
+        "OWNER".to_string(),
+        copy.file_name().unwrap().to_string_lossy().into_owned(),
+        "path".to_string(),
+        "shell".to_string(),
+    ];
+    want.sort();
+    assert_eq!(left, want, "something staged was left");
 }
 
 /// A login zsh, the Mac's default shell, has the bin folder first once its startup files have run

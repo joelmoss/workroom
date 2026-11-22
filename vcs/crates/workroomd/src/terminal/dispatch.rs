@@ -269,10 +269,12 @@ pub(crate) fn dispatch(
                 // The daemon's bin folder first on its PATH (#695): its link and hooks made again
                 // first, should something have taken them.
                 crate::daemon::bin_dir::ensure();
-                crate::terminal::bin_path::apply(
-                    &mut invocation,
-                    crate::daemon::bin_dir::folders(),
-                );
+                let folders = crate::daemon::bin_dir::folders();
+                let fallback = folders
+                    .is_none()
+                    .then(crate::host::environment::commands_folder)
+                    .flatten();
+                crate::terminal::bin_path::apply(&mut invocation, folders, fallback.as_deref());
                 sessions.create_then(
                     SessionSpec {
                         id,
