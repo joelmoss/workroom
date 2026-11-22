@@ -762,8 +762,21 @@ pub fn connect(socket: &Path) -> Option<UnixStream> {
 /// Spawns `workroomd serve` detached, the way the Swift attach client spawns the daemon today:
 /// `posix_spawn` with a new session, stdio to /dev/null, so it outlives whoever started it.
 pub fn spawn_daemon(binary: &Path, socket: &Path) -> std::io::Result<()> {
+    spawn_daemon_with(binary, socket, None)
+}
+
+/// [`spawn_daemon`], with only `environment` for the daemon's environment when given, in place of
+/// this process's: `workroom new` (#693), run from a script whose environment is no daemon's.
+pub fn spawn_daemon_with(
+    binary: &Path,
+    socket: &Path,
+    environment: Option<&[(std::ffi::OsString, std::ffi::OsString)]>,
+) -> std::io::Result<()> {
     use std::process::{Command, Stdio};
     let mut command = Command::new(binary);
+    if let Some(environment) = environment {
+        command.env_clear().envs(environment.iter().cloned());
+    }
     command
         .arg("serve")
         .arg("--socket")

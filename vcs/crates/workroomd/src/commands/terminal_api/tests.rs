@@ -195,3 +195,122 @@ fn new_reads_its_apps_bundle_id_from_the_info_plist() {
         "no Info.plist to read"
     );
 }
+
+/// `new` starts a daemon only where this Mac's app keeps its own: a socket `WORKROOM_DAEMON`
+/// names, or the daemon above, is asked and never started, whatever the method; and no other
+/// method looks for this Mac's daemon at all.
+#[test]
+fn new_starts_only_this_macs_own_daemon() {
+    let local = || {
+        Ok(Some(
+            "/Users/me/Library/Application Support/b/sessions/workroomd".into(),
+        ))
+    };
+    let never = || -> Result<Option<String>, CliError> { panic!("looked for this Mac's daemon") };
+    assert_eq!(
+        daemon_to_ask(NEW, Some("/elsewhere.sock".into()), never).ok(),
+        Some((Some("/elsewhere.sock".into()), false))
+    );
+    assert_eq!(
+        daemon_to_ask(NEW, None, local).ok(),
+        Some((
+            Some("/Users/me/Library/Application Support/b/sessions/workroomd".into()),
+            true
+        ))
+    );
+    assert_eq!(
+        daemon_to_ask(NEW, None, || Ok(None)).ok(),
+        Some((None, false))
+    );
+    assert_eq!(daemon_to_ask(WAIT, None, never).ok(), Some((None, false)));
+}
+
+/// The daemon `new` starts is given a login's variables and the locale, and nothing of the
+/// script's own.
+#[test]
+fn a_started_daemon_gets_a_logins_variables_and_nothing_else() {
+    let vars = [
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "PATH",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "CLAUDECODE",
+        "WORKROOM_PANE",
+        "WORKROOM_DAEMON",
+        "AWS_SECRET_ACCESS_KEY",
+        "TERM",
+    ]
+    .map(|key| (std::ffi::OsString::from(key), std::ffi::OsString::from("x")));
+    let kept: Vec<String> = daemon_environment(vars.into_iter())
+        .into_iter()
+        .map(|(key, _)| key.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            "HOME", "USER", "LOGNAME", "SHELL", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"
+        ]
+    );
+}
+
+/// The app's `/tmp` folder is trusted absent (it is made 0700), or as a real folder this user
+/// owns that nobody else can reach; a link, a file or a folder others can reach is refused.
+#[test]
+fn the_tmp_folder_is_trusted_only_as_this_users_own() {
+    use std::os::unix::fs::PermissionsExt;
+    let base = std::env::temp_dir().join(format!("wr-693-trust-{}", std::process::id()));
+    std::fs::create_dir(&base).expect("a folder of this run's own");
+    // SAFETY: `getuid` takes nothing and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let own = base.join("own");
+    std::fs::create_dir(&own).unwrap();
+    std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let open = base.join("open");
+    std::fs::create_dir(&open).unwrap();
+    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let link = base.join("link");
+    std::os::unix::fs::symlink(&own, &link).unwrap();
+    let file = base.join("file");
+    std::fs::write(&file, b"").unwrap();
+    let results = [
+        trusted_folder(&base.join("absent"), uid),
+        trusted_folder(&own, uid),
+        trusted_folder(&open, uid),
+        trusted_folder(&link, uid),
+        trusted_folder(&file, uid),
+        trusted_folder(&own, uid + 1),
+    ];
+    for path in [&link, &file] {
+        std::fs::remove_file(path).unwrap();
+    }
+    for path in [&own, &open, &base] {
+        std::fs::remove_dir(path).unwrap();
+    }
+    assert_eq!(results[0], Ok(()));
+    assert_eq!(results[1], Ok(()));
+    assert!(
+        results[2].as_ref().is_err_and(|why| why.contains("others")),
+        "{results:?}"
+    );
+    assert!(
+        results[3].as_ref().is_err_and(|why| why.contains("link")),
+        "{results:?}"
+    );
+    assert!(
+        results[4]
+            .as_ref()
+            .is_err_and(|why| why.contains("no folder")),
+        "{results:?}"
+    );
+    assert!(
+        results[5]
+            .as_ref()
+            .is_err_and(|why| why.contains("another user")),
+        "{results:?}"
+    );
+}

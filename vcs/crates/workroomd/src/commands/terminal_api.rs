@@ -93,19 +93,17 @@ pub(super) fn stream(
         .env(DAEMON_VARIABLE)
         .filter(|path| !path.is_empty())
         .or_else(context.daemon_above);
-    // `new` alone starts a daemon (#693): the one named, or this Mac's own, where the app would.
-    let named = match named {
-        None if method == NEW => local_socket(context),
-        named => named,
-    };
+    // `new` alone starts a daemon (#693), and only this Mac's own, where the app keeps it: never
+    // one on a socket a variable names, which may be anything.
+    let (named, start_here) = daemon_to_ask(method, named, || local_socket(context))?;
     let Some(socket) = named else {
         return Err(unreachable(format!(
             "no daemon to ask: {DAEMON_VARIABLE} names none, and this process does not run \
              under a Workroom daemon (every Workroom pane does, and sets {DAEMON_VARIABLE})"
         )));
     };
-    if method == NEW {
-        start_if_absent(&socket)?;
+    if start_here {
+        start_if_absent(&socket, &daemon_environment(std::env::vars_os()))?;
     }
     if method == EVENTS {
         return events(context, &socket, params, encode, each);
@@ -255,14 +253,38 @@ const RELEASE_BUNDLE: &str = "com.developwithstyle.workroom";
 /// The longest socket path a unix socket takes (`sun_path`), as the app counts it.
 const SUN_PATH_LIMIT: usize = 104;
 
+/// The daemon `method` asks, and whether one is started there when none answers: the one `named`
+/// (`WORKROOM_DAEMON`, or the daemon above), never started; else, for `new` alone, this Mac's
+/// own (`local`), started when it isn't running (#693).
+pub(super) fn daemon_to_ask(
+    method: &str,
+    named: Option<String>,
+    local: impl FnOnce() -> Result<Option<String>, CliError>,
+) -> Result<(Option<String>, bool), CliError> {
+    match named {
+        Some(named) => Ok((Some(named), false)),
+        None if method == NEW => {
+            let local = local()?;
+            let start = local.is_some();
+            Ok((local, start))
+        }
+        None => Ok((None, false)),
+    }
+}
+
 /// This Mac's daemon, for `new` from outside every pane with none named (#693): where the app
 /// whose bundle holds this binary keeps its daemon, or the release app's for a binary in none.
 /// None on a host, whose daemon only its supervisor starts.
-fn local_socket(context: &Context) -> Option<String> {
+///
+/// A socket in the app's `/tmp` folder is used only while that folder is safe to trust
+/// ([`trusted_folder`]); one that isn't is refused, as the app refuses it.
+fn local_socket(context: &Context) -> Result<Option<String>, CliError> {
     if !cfg!(target_os = "macos") {
-        return None;
+        return Ok(None);
     }
-    let home = context.env("HOME").filter(|home| !home.is_empty())?;
+    let Some(home) = context.env("HOME").filter(|home| !home.is_empty()) else {
+        return Ok(None);
+    };
     let bundle = std::env::current_exe()
         .ok()
         .and_then(|exe| std::fs::canonicalize(exe).ok())
@@ -271,14 +293,73 @@ fn local_socket(context: &Context) -> Option<String> {
     // SAFETY: `getuid` takes nothing and cannot fail.
     let uid = unsafe { libc::getuid() };
     let place = mac_daemon_socket(&home, &bundle, uid);
-    Some(
-        place
-            .candidates
-            .iter()
-            .find(|socket| UnixStream::connect(socket).is_ok())
-            .cloned()
-            .unwrap_or(place.standard),
-    )
+    let trusted = |socket: &String| {
+        !socket.starts_with("/tmp/")
+            || Path::new(socket)
+                .parent()
+                .is_some_and(|folder| trusted_folder(folder, uid).is_ok())
+    };
+    if let Some(live) = place
+        .candidates
+        .iter()
+        .filter(|socket| trusted(socket))
+        .find(|socket| UnixStream::connect(socket).is_ok())
+    {
+        return Ok(Some(live.clone()));
+    }
+    if place.standard.starts_with("/tmp/")
+        && let Some(folder) = Path::new(&place.standard).parent()
+        && let Err(why) = trusted_folder(folder, uid)
+    {
+        return Err(unreachable(format!(
+            "no daemon is listening, and none is started in {}: {why}",
+            folder.display()
+        )));
+    }
+    Ok(Some(place.standard))
+}
+
+/// Whether `folder` is safe to keep a daemon's socket in for user `uid`, as the app checks its
+/// own (`PersistentSessionPaths.prepareFallbackDirectory`): absent (it is made, 0700), or a real
+/// folder, not a link, that `uid` owns and nobody else can write to or read. Why not, otherwise.
+pub(super) fn trusted_folder(folder: &Path, uid: u32) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = match std::fs::symlink_metadata(folder) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("it can't be read: {error}")),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err("it is a link".into());
+    }
+    if !metadata.is_dir() {
+        return Err("it is no folder".into());
+    }
+    if metadata.uid() != uid {
+        return Err(format!("another user ({}) owns it", metadata.uid()));
+    }
+    if metadata.mode() & 0o077 != 0 {
+        return Err(format!(
+            "others can reach it (mode {:o}); only its owner should",
+            metadata.mode() & 0o777
+        ));
+    }
+    Ok(())
+}
+
+/// What a daemon `new` starts is given of this process's environment: what a login has
+/// (`HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH`, `TMPDIR`) and its locale (`LANG`, `LC_*`), and
+/// nothing else, so a script's own variables (a coding agent's, a `WORKROOM_*` of another pane)
+/// never become every later session's.
+pub(super) fn daemon_environment(
+    vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    const KEPT: [&str; 7] = ["HOME", "USER", "LOGNAME", "SHELL", "PATH", "TMPDIR", "LANG"];
+    vars.filter(|(key, _)| {
+        let key = key.to_string_lossy();
+        KEPT.contains(&key.as_ref()) || key.starts_with("LC_")
+    })
+    .collect()
 }
 
 /// Where the app keeps its daemon's socket on this Mac (`PersistentSessionPaths.daemonSocket`):
@@ -341,7 +422,10 @@ pub(super) fn plist_string(plist: &str, key: &str) -> Option<String> {
 /// Starts a daemon on `socket` when nothing answers there (#693), as `attach` does, and waits for
 /// it to take connections: `new` from a script with no daemon running. A daemon that answers is
 /// left as it is; whether it speaks the terminal API is for `connect` to say.
-fn start_if_absent(socket: &str) -> Result<(), CliError> {
+fn start_if_absent(
+    socket: &str,
+    environment: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Result<(), CliError> {
     if UnixStream::connect(socket).is_ok() {
         return Ok(());
     }
@@ -367,7 +451,7 @@ fn start_if_absent(socket: &str) -> Result<(), CliError> {
              {error}"
         ))
     })?;
-    crate::daemon::serve::spawn_daemon(&binary, path).map_err(|error| {
+    crate::daemon::serve::spawn_daemon_with(&binary, path, Some(environment)).map_err(|error| {
         unreachable(format!(
             "no daemon is listening on {socket}, and one could not be started: {error}"
         ))

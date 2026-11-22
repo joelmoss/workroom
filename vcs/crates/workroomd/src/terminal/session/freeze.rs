@@ -121,6 +121,9 @@ impl SessionStore {
                     screen,
                     metadata: metadata.clone(),
                     program_status,
+                    recipe: lock_or_recover(&self.recipes)
+                        .get(id)
+                        .map(|recipe| (**recipe).clone()),
                 }
             })
             .collect();
@@ -203,6 +206,7 @@ impl SessionStore {
             screen,
             metadata,
             program_status,
+            recipe,
             ..
         } = frozen;
         let mut shadow = Shadow::new(columns, rows);
@@ -244,6 +248,10 @@ impl SessionStore {
                 return Err(SessionError::AlreadyExists(id.to_hyphenated()));
             }
             sessions.insert(id, session);
+        }
+        // What its shell was built from, carried, so a `session.new` from it is built so (#693).
+        if let Some(recipe) = recipe {
+            self.remember_recipe(id, recipe);
         }
         let pid = pty.child_pid();
         // Spawned now, so a thread that can't start fails the adoption, and parked until `start`:

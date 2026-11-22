@@ -181,6 +181,7 @@ fn frozen_with(session: SessionId, screen: &[u8]) -> FrozenSession {
         screen: screen.to_vec(),
         metadata: Vec::new(),
         program_status: Store::default(),
+        recipe: None,
     }
 }
 

@@ -433,7 +433,7 @@ const COMMANDS: &[Command] = &[
         aliases: &[],
         usage: "close TARGET [flags]",
         short: "Close a terminal session, and its tab or split in the app",
-        long: None,
+        long: Some(lifecycle::CLOSE_LONG),
         hidden: false,
         mac_only: false,
         flags: lifecycle::CLOSE_FLAGS,

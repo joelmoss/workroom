@@ -303,6 +303,10 @@ pub struct FrozenSession {
     /// Its program status records (#358): the screen's VT carries none, and a record still
     /// waiting on the user must not vanish because the daemon was replaced.
     pub program_status: Store,
+    /// What its shell was built from (`Recipe`, #693), so a `session.new` from it after the
+    /// hand-off is built as it was; `None` for one the program had none for, and from a table
+    /// before version 5.
+    pub recipe: Option<Recipe>,
 }
 
 /// What a client needs to know about a session it is not attached to, for the session list.
@@ -557,6 +561,68 @@ pub struct Recipe {
     /// The shell a run session's supervisor runs its command in (`dispatch::run_invocation`).
     pub run_shell: Option<OsString>,
     pub commands: Option<PathBuf>,
+}
+
+/// One text of a recipe as a hand-off table carries it: a string, or its bytes when it is no
+/// UTF-8, so an environment crosses whole.
+fn text_json(text: &OsStr) -> serde_json::Value {
+    use std::os::unix::ffi::OsStrExt;
+    match text.to_str() {
+        Some(text) => serde_json::Value::String(text.to_string()),
+        None => serde_json::json!({"bytes": text.as_bytes()}),
+    }
+}
+
+fn text_of(value: &serde_json::Value) -> Option<OsString> {
+    use std::os::unix::ffi::OsStringExt;
+    match value {
+        serde_json::Value::String(text) => Some(OsString::from(text)),
+        value => {
+            let bytes = value.get("bytes")?.as_array()?;
+            let bytes: Option<Vec<u8>> = bytes
+                .iter()
+                .map(|byte| byte.as_u64().and_then(|byte| u8::try_from(byte).ok()))
+                .collect();
+            Some(OsString::from_vec(bytes?))
+        }
+    }
+}
+
+impl Recipe {
+    /// As a hand-off table carries it (#693): JSON whose texts are strings, or bytes for none.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "environment": self
+                .environment
+                .iter()
+                .map(|(key, value)| serde_json::json!([text_json(key), text_json(value)]))
+                .collect::<Vec<_>>(),
+            "shell": self.shell,
+            "resources": self.resources,
+            "run_shell": self.run_shell.as_deref().map(text_json),
+            "commands": self.commands.as_deref().map(|path| text_json(path.as_os_str())),
+        })
+    }
+
+    /// What [`Recipe::to_json`] wrote, or none for anything else.
+    pub fn from_json(value: &serde_json::Value) -> Option<Recipe> {
+        let environment = value["environment"]
+            .as_array()?
+            .iter()
+            .map(|pair| Some((text_of(pair.get(0)?)?, text_of(pair.get(1)?)?)))
+            .collect::<Option<Vec<_>>>()?;
+        let optional = |key: &str| match &value[key] {
+            serde_json::Value::Null => Some(None),
+            text => text_of(text).map(Some),
+        };
+        Some(Recipe {
+            environment,
+            shell: value["shell"].as_str()?.to_string(),
+            resources: value["resources"].as_str()?.to_string(),
+            run_shell: optional("run_shell")?,
+            commands: optional("commands")?.map(PathBuf::from),
+        })
+    }
 }
 
 /// Sessions marked as being ended in `SessionStore::ending` until dropped, panics included.

@@ -6316,52 +6316,101 @@ fn new_in_a_pane_opens_a_session_in_its_workroom_and_asks_its_mac_to_show_it() {
     assert!(bad.stderr.contains("right or down"), "{}", bad.stderr);
 }
 
-/// Ends the daemon serving `socket` when dropped: one `new` started, which no test spawned.
-struct StartedDaemon<'a>(&'a Path);
-
-impl Drop for StartedDaemon<'_> {
-    fn drop(&mut self) {
-        let _ = Command::new("pkill")
-            .arg("-f")
-            .arg(format!("serve --socket {}", self.0.display()))
-            .status();
-    }
-}
-
-/// `workroom new` with no daemon listening where it is to ask starts one there (#693), as an
-/// attach does, and opens its session in it: from no pane, no scope, no caller, and no Mac to
-/// show it, so every Mac lists it as detached. Every other command still exits 7 there.
+/// `workroom new` never starts a daemon on a socket `WORKROOM_DAEMON` names (#693), which may be
+/// anything: with none listening there it is 7, as every other command is, and nothing is
+/// started. (This Mac's own daemon, the one `new` does start, is `daemon_to_ask`'s unit test's:
+/// no test here may reach where the app keeps it.)
 #[test]
-fn new_starts_the_daemon_when_none_is_listening() {
+fn new_starts_no_daemon_on_a_socket_a_variable_names() {
     let workspace = Workspace::new("api-new-start");
     let socket = workspace.dir.join("d.sock");
-    let refused = workroom(Some(&socket), &["sessions", "--json"]);
-    assert_eq!(refused.code, 7, "{} {}", refused.stdout, refused.stderr);
-    let _started = StartedDaemon(&socket);
     let run = workroom_with_env(
         Some(&socket),
         &[("SHELL", "/bin/sh")],
+        &["new", "--json", "--cwd", workspace.dir.to_str().unwrap()],
+    );
+    assert_eq!(run.code, 7, "{} {}", run.stdout, run.stderr);
+    assert_eq!(
+        run.envelope()["error"]["kind"],
+        "DaemonUnreachable",
+        "{}",
+        run.stdout
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!socket.exists(), "a daemon was started on the named socket");
+}
+
+/// `workroom new` from no pane (#693) opens a session with no scope, no caller and no Mac named
+/// to show it: every Mac lists it with the detached standalone terminals, as `opened` with no
+/// `by` tells the app.
+#[test]
+fn new_from_no_pane_has_no_scope_and_names_no_mac() {
+    let workspace = Workspace::new("api-new-outside");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut events = Events::start(&socket, &["--all", "--type", "session.created"]);
+    events.until("the snapshot's end", |e| e["event"] == "snapshot-complete");
+    let run = workroom(
+        Some(&socket),
         &["new", "--json", "--cwd", workspace.dir.to_str().unwrap()],
     );
     assert_eq!(run.code, 0, "{} {}", run.stdout, run.stderr);
     let envelope = run.envelope();
     assert_eq!(envelope["caller"], Value::Null, "{envelope}");
     assert_eq!(envelope["session"]["scope"], Value::Null, "{envelope}");
-    assert_eq!(
-        envelope["opened"],
-        json!({"by": null, "split": null, "hostname": null}),
-        "{envelope}"
-    );
-    let id = envelope["session"]["id"].as_str().unwrap();
-    let listed = sessions(&socket);
+    let opened = json!({"by": null, "split": null, "hostname": null});
+    assert_eq!(envelope["opened"], opened, "{envelope}");
+    let id = envelope["session"]["id"].as_str().unwrap().to_string();
+    let created = events.until("its creation", |e| is(e, "session.created", &id));
+    assert_eq!(created["opened"], opened, "{created}");
+    assert_eq!(created["scope"], Value::Null, "{created}");
     assert!(
-        listed.iter().any(|session| session["id"] == id),
-        "{listed:?}"
+        sessions(&socket)
+            .iter()
+            .any(|session| session["id"] == id.as_str())
     );
-    // Once one is listening, `new` asks it, and starts no other.
-    let again = workroom_with_env(Some(&socket), &[("SHELL", "/bin/sh")], &["new"]);
-    assert_eq!(again.code, 0, "{} {}", again.stdout, again.stderr);
-    assert_eq!(sessions(&socket).len(), 2);
+}
+
+/// `close` names a session by id, id suffix or label, never by its live title, which its
+/// program sets and anything it prints can change (#693): a target only a title matches is
+/// `TargetNotFound`, and the session goes on.
+#[test]
+fn close_never_resolves_a_live_title() {
+    if !has_terminal_state() {
+        eprintln!("skipped: the live title is the shadow terminal's");
+        return;
+    }
+    let workspace = Workspace::new("api-close-title");
+    let socket = workspace.socket();
+    let _daemon = start_daemon(&socket);
+    let mut shell = open(&socket, OTHER, "labelled", "wr-1", &workspace.dir);
+    type_line(&mut shell, "printf '\\033]2;titled-only\\007'");
+    listing_until(&socket, |listing| {
+        listing
+            .iter()
+            .any(|session| session["title"] == "titled-only")
+    });
+    let refused = workroom(Some(&socket), &["close", "titled-only", "--json"]);
+    assert_eq!(refused.code, 3, "{} {}", refused.stdout, refused.stderr);
+    let error = &refused.envelope()["error"];
+    assert_eq!(error["kind"], "TargetNotFound", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("never its live title"),
+        "{error}"
+    );
+    assert!(
+        sessions(&socket)
+            .iter()
+            .any(|session| session["id"] == OTHER)
+    );
+    // Other commands still take it.
+    let resolved = workroom(Some(&socket), &["sessions", "titled-only", "--json"]);
+    assert_eq!(resolved.code, 0, "{} {}", resolved.stdout, resolved.stderr);
+    let closed = workroom(Some(&socket), &["close", "labelled"]);
+    assert_eq!(closed.code, 0, "{} {}", closed.stdout, closed.stderr);
 }
 
 /// `workroom close` (#693) ends a session, and its `session.ended` says `closed`, so the app
@@ -6499,9 +6548,16 @@ fn run_control_restarts_and_stops_a_run_and_refuses_a_shell() {
     );
     events.until("stopped", |e| e["run_state"] == "stopped");
 
+    // At once: no wait for the first status of a supervisor a shell never has.
+    let asked = std::time::Instant::now();
     let shell = workroom(
         Some(&socket),
         &["run-control", "shell", "restart", "--json"],
+    );
+    assert!(
+        asked.elapsed() < Duration::from_secs(3),
+        "NotARun took {:?}",
+        asked.elapsed()
     );
     assert_eq!(shell.code, 3, "{} {}", shell.stdout, shell.stderr);
     assert_eq!(
@@ -6519,6 +6575,19 @@ fn run_control_restarts_and_stops_a_run_and_refuses_a_shell() {
 /// shell's first mark, then answers with the command's code and output.
 #[test]
 fn a_new_session_has_its_callers_shell_integration_so_command_runs_in_it() {
+    new_then_command(false);
+}
+
+/// So it is from a pane opened before the daemon was handed off to its next program (an app
+/// update): the hand-off carries what the pane's shell was built from (table version 5).
+#[test]
+fn a_new_session_after_a_hand_off_still_has_its_callers_shell_integration() {
+    new_then_command(true);
+}
+
+/// A `new` from a real zsh pane with the bundled integration, after a hand-off with `handed_off`,
+/// then `command` in the new session.
+fn new_then_command(handed_off: bool) {
     if !has_terminal_state() {
         eprintln!("skipped: a command's end needs a daemon built with terminal-state");
         return;
@@ -6541,10 +6610,17 @@ fn a_new_session_has_its_callers_shell_integration_so_command_runs_in_it() {
             return;
         }
     };
-    let workspace = Workspace::new("api-new-integrated");
+    let workspace = Workspace::new(if handed_off {
+        "api-new-handed-off"
+    } else {
+        "api-new-integrated"
+    });
     let socket = workspace.socket();
     let _daemon = start_daemon(&socket);
     let (mut caller, _output) = real_shell(&socket, SHELL, &zsh, &workspace.dir);
+    if handed_off {
+        hand_off(&socket, &workspace.dir);
+    }
     let made = shell_output(
         &mut caller,
         &workspace.dir,
