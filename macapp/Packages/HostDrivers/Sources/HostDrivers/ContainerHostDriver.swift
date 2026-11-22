@@ -3,6 +3,7 @@ import Foundation
 import WorkroomDomain
 import WorkroomSystem
 import WorkroomWire
+import os
 
 /// The first `HostDriver`. Its hosts are the ones the caller hands in over ssh (the ssh fixture,
 /// `vcs/scripts/ssh-fixture`, #228, whose ssh transport, `exec` and `attachCommand`, a real
@@ -158,6 +159,9 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
   private let lock = NSLock()
   private var hosts: [UUID: Reach]
   private var provisioned: [UUID: Provisioned] = [:]
+
+  private static let logger = Logger(
+    subsystem: "com.developwithstyle.workroom", category: "ContainerHostDriver")
   /// Hosts this driver has destroyed, so destroying one again succeeds: a caller retrying after a
   /// later step of its own failed (forgetting its record) gets past the destroy it already did.
   private var destroyed: Set<UUID> = []
@@ -1073,9 +1077,10 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
 
   /// Docker: the daemon into the container, named `name` in the daemon's folder, as a tar the
   /// runtime unpacks at `/` (`cp -` makes the folders). A create copies it before the container
-  /// starts; a later build stages it beside the running one (`placeDaemon`).
+  /// starts, with its `workroom` link; a later build stages it beside the running one, alone
+  /// (`placeDaemon`).
   private func copyDaemon(
-    _ binary: URL, into container: String, as name: String = "workroomd"
+    _ binary: URL, into container: String, as name: String = "workroomd", withLink: Bool = true
   ) async throws {
     let staging = FileManager.default.temporaryDirectory.appendingPathComponent(
       "workroom-daemon-\(UUID().uuidString)", isDirectory: true)
@@ -1085,10 +1090,10 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
     let copy = folder.appendingPathComponent(name)
     try FileManager.default.copyItem(at: binary, to: copy)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: copy.path)
-    // Into this fresh staging folder, so the link always goes in the tar. Unpacked at `/`, it
-    // replaces whatever is at `workroom` in the container's daemon folder: that folder is root's
-    // and made by this driver alone (`daemonFolder`), so nothing else is there to keep.
-    try Self.linkCommand(in: folder)
+    // Into this fresh staging folder, so the link always goes in the tar. Unpacked at `/` in a
+    // container not yet started, it is the only thing at `workroom` in the daemon's folder: that
+    // folder is root's and made by this driver alone (`daemonFolder`).
+    if withLink { try Self.linkCommand(in: folder) }
     let tar = staging.appendingPathComponent("daemon.tar")
     let archive = Process()
     archive.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
@@ -1120,9 +1125,31 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
       _ = try appleDaemonFolder(holding: binary)
       return (Self.containerDaemon, false)
     }
-    let name = "workroomd.new.\(UUID().uuidString.prefix(8).lowercased())"
-    try await copyDaemon(binary, into: target.container, as: name)
+    let id = UUID().uuidString.prefix(8).lowercased()
+    let name = "workroomd.new.\(id)"
+    // Alone: a tar's link, unpacked over the running container's, is removed and made again, so
+    // a placement alongside (a connect's and a retried bootstrap's) could find it gone or fail.
+    try await copyDaemon(binary, into: target.container, as: name, withLink: false)
+    await linkCommand(inContainer: target.container, id: id)
     return (Self.daemonFolder + "/" + name, true)
+  }
+
+  /// Docker: the `workroom` link in a running container's daemon folder, for a container made
+  /// before ADR 0078 too, made under a name of this call's own and moved over whatever is there in
+  /// one rename, so `workroom` is never missing and placements alongside both succeed. As root,
+  /// whose folder it is. Best effort, as install.sh's: without it a pane just has no `workroom`.
+  private func linkCommand(inContainer container: String, id: String) async {
+    let staged = "\(Self.daemonFolder)/.workroom-\(id)"
+    do {
+      _ = try await runtime(["exec", "-u", "0", container, "ln", "-s", "workroomd", staged])
+      _ = try await runtime(
+        ["exec", "-u", "0", container, "mv", "-f", staged, Self.daemonFolder + "/workroom"])
+    } catch {
+      Self.logger.error(
+        "couldn't link workroom in \(container, privacy: .public): \(error.localizedDescription, privacy: .public)"
+      )
+      _ = try? await runtime(["exec", "-u", "0", container, "rm", "-f", staged])
+    }
   }
 
   /// As root: the daemon's folder is root's, so the remote user can't replace the entrypoint.
@@ -1152,7 +1179,14 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
     guard lstat(link, &info) == 0 else {
       throw fileFailure("read \(link)", errno)
     }
-    guard info.st_mode & S_IFMT == S_IFLNK else { return }
+    guard info.st_mode & S_IFMT == S_IFLNK else {
+      // No build has made anything but a link here (ADR 0078), so whatever it is came from
+      // elsewhere: kept, and said, since the container's `workroom` is then that and not ours.
+      logger.error(
+        "\(link, privacy: .public) is not a link to workroomd (mode \(info.st_mode, format: .octal)); left as it is, so a container's `workroom` runs it"
+      )
+      return
+    }
     guard try FileManager.default.destinationOfSymbolicLink(atPath: link) != "workroomd" else {
       return
     }
@@ -1179,6 +1213,7 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
     }
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     try Self.linkCommand(in: folder)
+    Self.removeAbandonedDaemons(in: folder)
     let target = folder.appendingPathComponent("workroomd")
     if FileManager.default.contentsEqual(atPath: binary.path, andPath: target.path) {
       return folder
@@ -1186,10 +1221,16 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
     // Staged under a name of its own and renamed into place in one call, which replaces whatever
     // daemon is there: creates at once that all find it missing or old each put the same bytes in,
     // and none fails for finding another's there first.
-    let staged = folder.appendingPathComponent(".workroomd-\(UUID().uuidString)")
-    try FileManager.default.copyItem(at: binary, to: staged)
+    let staged = folder.appendingPathComponent("\(Self.stagedDaemonPrefix)\(UUID().uuidString)")
     do {
+      try FileManager.default.copyItem(at: binary, to: staged)
       try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: staged.path)
+      // Another create may have put these bytes in while this one copied: then the daemon a
+      // container just started from is left as it is, not replaced by an identical file.
+      if FileManager.default.contentsEqual(atPath: binary.path, andPath: target.path) {
+        try FileManager.default.removeItem(at: staged)
+        return folder
+      }
       guard rename(staged.path, target.path) == 0 else {
         throw Self.fileFailure("put the daemon in \(folder.path)", errno)
       }
@@ -1198,6 +1239,36 @@ public final class ContainerHostDriver: HostTerminalDriver, ProvisioningHostDriv
       throw error
     }
     return folder
+  }
+
+  /// What a daemon staged in Apple's folder is named until it is renamed into place.
+  static let stagedDaemonPrefix = ".workroomd-"
+  /// How long a staged daemon lives at most: a copy of the daemon, made a moment before its rename.
+  static let abandonedDaemonAge: TimeInterval = 10 * 60
+
+  /// Removes from `folder` (this build's daemon folder) a staged daemon a create left when it
+  /// was killed mid-copy. Only what can be nothing else: a regular file named exactly as
+  /// `appleDaemonFolder` names one (the prefix, then a UUID), whose inode last changed longer ago
+  /// than any staging lasts, so a create at work alongside never loses its copy. The inode's
+  /// change time, not its modification time: a copy keeps its source's.
+  static func removeAbandonedDaemons(in folder: URL, now: Date = Date()) {
+    guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else {
+      return
+    }
+    for name in names where name.hasPrefix(stagedDaemonPrefix) {
+      let id = name.dropFirst(stagedDaemonPrefix.count)
+      guard UUID(uuidString: String(id))?.uuidString == String(id) else { continue }
+      let path = folder.appendingPathComponent(name).path
+      var info = stat()
+      guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { continue }
+      let changed = Date(
+        timeIntervalSince1970: TimeInterval(info.st_ctimespec.tv_sec)
+          + TimeInterval(info.st_ctimespec.tv_nsec) / 1e9)
+      guard now.timeIntervalSince(changed) > abandonedDaemonAge else { continue }
+      if unlink(path) == 0 {
+        logger.notice("removed an abandoned staged daemon, \(path, privacy: .public)")
+      }
+    }
   }
 
   /// Until the container's daemon answers its remote user: it starts a moment after the container.
