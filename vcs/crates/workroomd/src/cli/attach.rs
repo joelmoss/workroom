@@ -506,115 +506,185 @@ pub fn run_attach(args: &[String]) -> ExitCode {
 
     let mut stdout = std::io::stdout();
     loop {
-        // What is already decoded first: `await_attached` may have left the repaint in `decoder`.
         loop {
-            match decoder.next_envelope() {
-                Ok(Some(envelope)) => {
-                    let mut frames = FrameDecoder::new();
-                    frames.push(&envelope.payload);
-                    while let Ok(Some(frame)) = frames.next_frame() {
-                        match frame.kind {
-                            FrameKind::Output => {
-                                if stdout.write_all(&frame.payload).is_err() {
-                                    return ExitCode::SUCCESS;
+            // What is already decoded first: `await_attached` may have left the repaint in `decoder`.
+            loop {
+                match decoder.next_envelope() {
+                    Ok(Some(envelope)) => {
+                        let mut frames = FrameDecoder::new();
+                        frames.push(&envelope.payload);
+                        while let Ok(Some(frame)) = frames.next_frame() {
+                            match frame.kind {
+                                FrameKind::Output => {
+                                    if stdout.write_all(&frame.payload).is_err() {
+                                        return ExitCode::SUCCESS;
+                                    }
+                                    let _ = stdout.flush();
                                 }
-                                let _ = stdout.flush();
+                                // The shell's own exit code becomes this process's, so a command run
+                                // through an attach is indistinguishable from running it directly —
+                                // which is what `workroom-session attach` did, and what any caller
+                                // testing `$?` depends on.
+                                FrameKind::Exited => {
+                                    let code = frame
+                                        .payload
+                                        .get(..4)
+                                        .map(|b| i32::from_be_bytes(b.try_into().unwrap()))
+                                        .unwrap_or(0);
+                                    // `ExitCode` is a byte; a shell status is already 0-255.
+                                    let code = code.clamp(0, 255) as u8;
+                                    // On a remote host (`--no-spawn`) this status is ssh's, and 255 is
+                                    // what ssh reports for its OWN failure, which the app answers by
+                                    // reconnecting. A session that ended with 255 must not read as a
+                                    // dropped link, so it becomes 254.
+                                    return ExitCode::from(if no_spawn && code == 255 {
+                                        254
+                                    } else {
+                                        code
+                                    });
+                                }
+                                // **Deliberately NOT a fallback**, and an earlier version of this made
+                                // it one. That was wrong in the worst available direction.
+                                //
+                                // A `Failure` here does not mean the daemon is broken — it is talking,
+                                // and the session it is talking about is usually ALIVE. `RepaintFailed`
+                                // (session.rs) says so outright: "the client could not take its repaint
+                                // whole, so it was not attached at all… can retry from a clean
+                                // terminal", and it only fires on reattach to a session that already
+                                // has scrollback — precisely the pane with the user's work in it. A
+                                // fatal pty read reports the same kind for an already-attached client.
+                                //
+                                // Exec'ing a shell on either is unrecoverable (exec is one-way, so the
+                                // retry the daemon is inviting can never happen) and, worse, it hands
+                                // back a healthy-looking prompt for a session that is still running.
+                                // That is the exact failure `--no-create` exists to prevent: the one
+                                // that looks like success. A visible error and a
+                                // non-zero exit is the honest answer, and it leaves the session where
+                                // the user can still reach it from the detached-sessions list.
+                                // The one exception: a `--no-create` attach whose session exited
+                                // between the daemon's check and its attach. That is "ended", not a
+                                // failure on a live session, so it gets a shell that says so. Not a new
+                                // session, as a refusal gets: the relay is already running, and this
+                                // race is rare enough to leave that pane not surviving a quit.
+                                FrameKind::Failure
+                                    if request.existing_only
+                                        && frame.payload.starts_with(b"no session ") =>
+                                {
+                                    drop(_raw);
+                                    drop(link);
+                                    return ended(&request, no_spawn);
+                                }
+                                // A remote pane shown the record of a session that ended with its
+                                // host, notice and all: the daemon says it is over and closes the
+                                // connection, which is no lost link to attach again. The pane keeps
+                                // the screen.
+                                FrameKind::Failure
+                                    if request.existing_only
+                                        && frame.payload.starts_with(SESSION_ENDED) =>
+                                {
+                                    drop(link);
+                                    return hold();
+                                }
+                                FrameKind::Failure => {
+                                    eprintln!(
+                                        "workroomd: {}",
+                                        String::from_utf8_lossy(&frame.payload)
+                                    );
+                                    return ExitCode::FAILURE;
+                                }
+                                _ => {}
                             }
-                            // The shell's own exit code becomes this process's, so a command run
-                            // through an attach is indistinguishable from running it directly —
-                            // which is what `workroom-session attach` did, and what any caller
-                            // testing `$?` depends on.
-                            FrameKind::Exited => {
-                                let code = frame
-                                    .payload
-                                    .get(..4)
-                                    .map(|b| i32::from_be_bytes(b.try_into().unwrap()))
-                                    .unwrap_or(0);
-                                // `ExitCode` is a byte; a shell status is already 0-255.
-                                let code = code.clamp(0, 255) as u8;
-                                // On a remote host (`--no-spawn`) this status is ssh's, and 255 is
-                                // what ssh reports for its OWN failure, which the app answers by
-                                // reconnecting. A session that ended with 255 must not read as a
-                                // dropped link, so it becomes 254.
-                                return ExitCode::from(if no_spawn && code == 255 {
-                                    254
-                                } else {
-                                    code
-                                });
-                            }
-                            // **Deliberately NOT a fallback**, and an earlier version of this made
-                            // it one. That was wrong in the worst available direction.
-                            //
-                            // A `Failure` here does not mean the daemon is broken — it is talking,
-                            // and the session it is talking about is usually ALIVE. `RepaintFailed`
-                            // (session.rs) says so outright: "the client could not take its repaint
-                            // whole, so it was not attached at all… can retry from a clean
-                            // terminal", and it only fires on reattach to a session that already
-                            // has scrollback — precisely the pane with the user's work in it. A
-                            // fatal pty read reports the same kind for an already-attached client.
-                            //
-                            // Exec'ing a shell on either is unrecoverable (exec is one-way, so the
-                            // retry the daemon is inviting can never happen) and, worse, it hands
-                            // back a healthy-looking prompt for a session that is still running.
-                            // That is the exact failure `--no-create` exists to prevent: the one
-                            // that looks like success. A visible error and a
-                            // non-zero exit is the honest answer, and it leaves the session where
-                            // the user can still reach it from the detached-sessions list.
-                            // The one exception: a `--no-create` attach whose session exited
-                            // between the daemon's check and its attach. That is "ended", not a
-                            // failure on a live session, so it gets a shell that says so. Not a new
-                            // session, as a refusal gets: the relay is already running, and this
-                            // race is rare enough to leave that pane not surviving a quit.
-                            FrameKind::Failure
-                                if request.existing_only
-                                    && frame.payload.starts_with(b"no session ") =>
-                            {
-                                drop(_raw);
-                                drop(link);
-                                return ended(&request, no_spawn);
-                            }
-                            // A remote pane shown the record of a session that ended with its
-                            // host, notice and all: the daemon says it is over and closes the
-                            // connection, which is no lost link to attach again. The pane keeps
-                            // the screen.
-                            FrameKind::Failure
-                                if request.existing_only
-                                    && frame.payload.starts_with(SESSION_ENDED) =>
-                            {
-                                drop(link);
-                                return hold();
-                            }
-                            FrameKind::Failure => {
-                                eprintln!("workroomd: {}", String::from_utf8_lossy(&frame.payload));
-                                return ExitCode::FAILURE;
-                            }
-                            _ => {}
                         }
                     }
+                    Ok(None) => break,
+                    Err(_) => return ExitCode::FAILURE,
                 }
-                Ok(None) => break,
-                Err(_) => return ExitCode::FAILURE,
+            }
+            match link.reader.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => decoder.push(&buffer[..n]),
             }
         }
-        match link.reader.read(&mut buffer) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => decoder.push(&buffer[..n]),
+        // The daemon went away without saying the shell had ended: it handed off to a new program
+        // (#230; the exec closes every connection and the session carries on) or it died. On a remote
+        // host this status is ssh's, and 255 is what the app reads as a dropped link, which it answers
+        // by attaching the pane again as a restored one (`--no-create`, #231): the new program repaints
+        // it, the daemon shows the record it kept of a session that ended with its host (#232), or the
+        // notice-and-shell says the session has ended. The `Exited` arm above keeps 255 meaning only
+        // this, by reporting a shell that itself exited 255 as 254.
+        if no_spawn {
+            return ExitCode::from(255);
         }
+        // Locally this process attaches again itself (#681): a hand-off the app's launch retried after
+        // a refusal lands while panes are attached, and each would otherwise end with its shell still
+        // running. A daemon that died has no listener, so the pane ends as it always has, as if its
+        // shell had.
+        let Some(socket) = socket.as_deref() else {
+            return ExitCode::SUCCESS;
+        };
+        let Some((reader, next)) = reattach_local(socket, &request, &link.writer, &mut buffer)
+        else {
+            return ExitCode::SUCCESS;
+        };
+        link.reader = reader;
+        decoder = next;
     }
-    // The daemon went away without saying the shell had ended: it handed off to a new program
-    // (#230; the exec closes every connection and the session carries on) or it died. On a remote
-    // host this status is ssh's, and 255 is what the app reads as a dropped link, which it answers
-    // by attaching the pane again as a restored one (`--no-create`, #231): the new program repaints
-    // it, the daemon shows the record it kept of a session that ended with its host (#232), or the
-    // notice-and-shell says the session has ended. The `Exited` arm above keeps 255 meaning only
-    // this, by reporting a shell that itself exited 255 as 254.
-    //
-    // Locally the app has no such path, and a pane is attached only after the launch's hand-off
-    // has been asked for, so this is left as it was: the pane ends as if the shell had.
-    if no_spawn {
-        ExitCode::from(255)
-    } else {
-        ExitCode::SUCCESS
+}
+
+/// Attaches this pane again to its session in the program a hand-off left on `socket`, as a
+/// restored pane (`--no-create`) at the terminal's size now, and puts the new connection behind
+/// `writer`, which the input and resize threads keep writing to. The new program repaints the
+/// pane from an erase, so its screen and history are the session's again.
+///
+/// None when nothing listens on the socket (the daemon died), the session is gone (it ended in the
+/// hand-off's gap), or no program answers within 10s. Only a connection that closes before an
+/// answer, the old program on its way out, is tried again. `writer` is held meanwhile, so input
+/// typed during the attach waits for the new connection rather than going to the old one.
+fn reattach_local(
+    socket: &std::path::Path,
+    request: &AttachRequest,
+    writer: &SharedWriter,
+    buffer: &mut [u8],
+) -> Option<(Box<dyn Read + Send>, EnvelopeDecoder)> {
+    let size = terminal_size();
+    let request = AttachRequest {
+        existing_only: true,
+        columns: size.columns,
+        rows: size.rows,
+        x_pixels: size.x_pixels,
+        y_pixels: size.y_pixels,
+        ..request.clone()
+    };
+    let attach = Envelope::new(
+        Service::Terminal,
+        1,
+        Frame::new(FrameKind::Attach, request.encode()).encode(),
+    )
+    .encode();
+    let mut held = writer.lock().ok()?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let mut link = Link::socket(serve::connect(socket)?).ok()?;
+        handshake(&mut link).ok()?;
+        let mut decoder = EnvelopeDecoder::new();
+        let answer = if link.send(&attach) {
+            await_attached(&mut link.reader, &mut decoder, buffer)
+        } else {
+            Answer::Closed
+        };
+        match answer {
+            Answer::Attached => {
+                let stream =
+                    std::mem::replace(&mut *link.writer.lock().ok()?, Box::new(std::io::sink()));
+                *held = stream;
+                let reader = std::mem::replace(&mut link.reader, Box::new(std::io::empty()));
+                return Some((reader, decoder));
+            }
+            Answer::Closed if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Answer::Closed | Answer::Refused(_) => return None,
+        }
     }
 }
 
@@ -696,14 +766,15 @@ fn relay_resizes(writer: SharedWriter, initial: Size) {
         let Some(next) = size_to_send(size, terminal_size()) else {
             continue;
         };
-        size = next;
-
-        let frame = Frame::new(FrameKind::Resize, encode_resize(size));
-        if !write_to(
+        // Kept as sent only once it is: a link lost to a hand-off is attached again
+        // (`reattach_local`), and the next one is sent the size it missed. A link that is gone for
+        // good ends the process.
+        let frame = Frame::new(FrameKind::Resize, encode_resize(next));
+        if write_to(
             &writer,
             &Envelope::new(Service::Terminal, 1, frame.encode()).encode(),
         ) {
-            return;
+            size = next;
         }
     }
 }
@@ -767,14 +838,15 @@ fn relay_stdin(writer: SharedWriter) {
     loop {
         match stdin.read(&mut buffer) {
             Ok(0) | Err(_) => break,
+            // Input that finds the link gone is dropped, and the thread reads on: a link lost to
+            // a hand-off is attached again (`reattach_local`), and one gone for good ends the
+            // process.
             Ok(n) => {
                 let frame = Frame::new(FrameKind::Input, buffer[..n].to_vec());
-                if !write_to(
+                write_to(
                     &writer,
                     &Envelope::new(Service::Terminal, 1, frame.encode()).encode(),
-                ) {
-                    break;
-                }
+                );
             }
         }
     }

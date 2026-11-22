@@ -24,10 +24,12 @@ import os
 /// Panes do not wait for it, so launch never freezes on it. The daemon stops accepting while it
 /// hands off, so a pane that connects meanwhile is attached by the new program, and `workroomd
 /// attach` sends an attach again when the daemon closes before answering. A pane already attached
-/// when the exec lands still loses its connection and ends as if its shell had, with the session
-/// carrying on detached: a launch-only race, since panes attach after this is asked for. A REMOTE
-/// pane's attach exits 255 instead, and the app attaches it again (#231; `DaemonBootstrap` is the
-/// remote side of this, on in every build).
+/// when the exec lands, as every pane is when a move refused for now goes in later, loses its
+/// connection, and its `workroomd attach` attaches it again itself to its session in the new
+/// program, which repaints it (#681; `reattach_local` in `cli/attach.rs`). One whose daemon died
+/// finds nothing listening and ends as it always has. A REMOTE pane's attach exits 255 instead,
+/// and the app attaches it again (#231; `DaemonBootstrap` is the remote side of this, on in every
+/// build).
 enum DaemonHandOff {
   /// How long the app waits before killing the request. Safe to give up: the daemon tells its
   /// requester just before it replaces itself, and calls the hand-off off when the requester is
