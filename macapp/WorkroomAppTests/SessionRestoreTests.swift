@@ -925,8 +925,9 @@ final class SessionRestoreTests: XCTestCase {
     }
     poll()
     await fulfillment(of: [restored], timeout: AppStore.hostLayoutTimeout + 3)
+    // By the name each tab shows: a named default title restores as the user's name (#694).
     let titles = store.captureWindowSession().targets.first { $0.targetID == id.encoded }?.tabs
-      .compactMap { $0.terminal?.defaultTitle }
+      .compactMap { $0.terminal.map { $0.userTitle ?? $0.defaultTitle } }
     XCTAssertEqual(titles?.first, "from the second host", "restored through the old host")
     XCTAssertEqual(titles?.count, 2, "the terminal asked for meanwhile was lost")
     XCTAssertFalse(store.waitingForHostLayout.contains(id))
