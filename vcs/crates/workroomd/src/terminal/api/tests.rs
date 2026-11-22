@@ -831,8 +831,9 @@ fn a_regex_wait_that_falls_behind_is_interrupted() {
         crate::util::lock_or_recover(&PARKED).push(work);
         Ok(())
     }
-    let go = std::env::temp_dir().join(format!("wr-wait-behind-{}", std::process::id()));
-    let _ = std::fs::remove_file(&go);
+    // A gate file inside a folder of this run's own, removed with it.
+    let scratch = crate::commands::Scratch::in_temp("wr-wait-behind");
+    let go = scratch.join("go");
     let store = SessionStore::new();
     let id = running(
         &store,
@@ -874,7 +875,6 @@ fn a_regex_wait_that_falls_behind_is_interrupted() {
         "{reply}"
     );
     store.kill(id);
-    let _ = std::fs::remove_file(&go);
 }
 
 fn written_writer() -> (Written, SharedWriter) {
