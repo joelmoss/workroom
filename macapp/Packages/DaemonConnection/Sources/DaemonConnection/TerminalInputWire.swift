@@ -91,12 +91,56 @@ public enum TerminalInputEvent: Sendable, Equatable {
   /// daemon finds the app's process in (a Dev app started from a pane descends from that pane's
   /// shell), and no `since`, so nothing typed, opened or closed before the app subscribed is
   /// replayed as happening now; the snapshot that starts it says each session's label as it is.
-  /// A daemon that knows no `session.input` (one from before #689) refuses the whole of it, and
-  /// has no `new` or `close` either; so does one from before `session.labelled` (#694), which
-  /// only a Nightly between the two can be: no release has the terminal API.
-  public static let subscribeRequest = Data(
-    #"{"method":"events.subscribe","params":{"all":true,"types":["session.input","session.created","session.ended","session.labelled"]}}"#
-      .utf8)
+  /// A daemon that knows one of the types refuses the whole of it as bad input; the connection
+  /// then asks it which it knows (`describeEventsRequest`) and subscribes to those
+  /// (`subscribeRequest(types:)`), so a daemon from before `session.labelled` (#694) still tells
+  /// its typing, `new` and `close`.
+  public static let subscribeRequest = subscribeRequest(types: subscribedTypes)
+
+  /// Every event type the app reads, in the order it asks for them.
+  public static let subscribedTypes = [
+    "session.input", "session.created", "session.ended", "session.labelled",
+  ]
+
+  /// The subscribe request for `types` alone, as `subscribeRequest` asks for them all.
+  public static func subscribeRequest(types: [String]) -> Data {
+    struct Params: Encodable {
+      let all = true
+      let types: [String]
+    }
+    struct Request: Encodable {
+      let method = "events.subscribe"
+      let params: Params
+    }
+    // Encoding strings can't fail.
+    return (try? JSONEncoder().encode(Request(params: Params(types: types)))) ?? Data()
+  }
+
+  /// `api.describe` for `events.subscribe`: what its `types` may name on the daemon asked.
+  public static let describeEventsRequest = Data(
+    #"{"method":"api.describe","params":{"method":"events.subscribe"}}"#.utf8)
+
+  /// The event types `events.subscribe` takes, from `describeEventsRequest`'s reply: its input
+  /// schema's `types` enum. Nil for a reply that doesn't say, or is refused.
+  public static func eventTypes(described payload: Data) -> [String]? {
+    struct Wire: Decodable {
+      struct Result: Decodable { let methods: [Method]? }
+      struct Method: Decodable {
+        let name: String?
+        let input: Schema?
+      }
+      struct Schema: Decodable { let properties: Properties? }
+      struct Properties: Decodable { let types: Types? }
+      struct Types: Decodable { let items: Items? }
+      struct Items: Decodable {
+        let `enum`: [String]?
+      }
+      let result: Result?
+    }
+    let wire = try? JSONDecoder().decode(Wire.self, from: payload)
+    return wire?.result?.methods?.first { $0.name == "events.subscribe" }?.input?.properties?
+      .types?.items?.enum
+  }
 
   /// The request that labels `session` (`session.label`, #694): its tab was renamed, to `label`,
   /// or its name cleared with nil. By the session's full id, which only it matches.

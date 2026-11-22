@@ -313,6 +313,16 @@ struct TerminalPayload: Codable, Hashable, Sendable {
   /// The name the user gave the terminal (Rename…). Additive, so no schema bump: an older build
   /// ignores it and shows the default title.
   var userTitle: String? = nil
+  /// The label this Mac last agreed with the daemon for the terminal's session (#694;
+  /// `TerminalState.syncedLabel`). Additive: an older build ignores it, and a tab without it
+  /// catches up as one from before #694 does.
+  var syncedLabel: SyncedLabel? = nil
+}
+
+/// A label this Mac and its daemon agreed on (#694), `label` nil when they agreed on none: kept
+/// apart from "never agreed", which is no `SyncedLabel` at all.
+struct SyncedLabel: Codable, Hashable, Sendable {
+  var label: String?
 }
 
 /// `DiffSource` on disk. Split into a kind plus an optional commit id so a new case is an additive
@@ -761,6 +771,9 @@ extension TabSession {
       terminal.defaultTitle = clamp(terminal.defaultTitle)
       terminal.cwd = clamp(terminal.cwd)
       terminal.userTitle = clamp(terminal.userTitle)
+      if let synced = terminal.syncedLabel {
+        terminal.syncedLabel = SyncedLabel(label: clamp(synced.label))
+      }
       tab.terminal = terminal
     }
     if var diff = tab.diff {

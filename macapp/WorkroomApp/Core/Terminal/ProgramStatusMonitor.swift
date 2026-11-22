@@ -145,17 +145,19 @@ final class ProgramStatusMonitor: ObservableObject {
   }
   var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
   /// Returns once `host`'s link comes up as a new connection (its workroom opened, or a boxd host
-  /// woken), so a retry need not wait out its backoff; never for this Mac's daemon. A link that is
+  /// woken), so a retry need not wait out its backoff; for this Mac's daemon, once it is handed off
+  /// to a new program (`LocalDaemonHandOffs`). A link that is
   /// already up does not count, or a host whose daemon has no program status would be retried
   /// without pause. A background host that was unreachable is not reconnected early:
   /// `HostReachability` holds its retry window, which this monitor's own failed connects keep open.
   var reconnected: @Sendable (HostID) async -> Void = ProgramStatusMonitor.hostReconnected
 
   /// `reconnected`'s answer for the app's own hosts, which the typing marker's subscription
-  /// (`PaneTypingMonitor`) waits on too.
+  /// (`PaneTypingMonitor`) waits on too. This Mac's daemon "reconnects" when it is handed off to
+  /// a new program, which may have what the old one refused (#694).
   static let hostReconnected: @Sendable (HostID) async -> Void = { host in
     guard host != .local else {
-      while !Task.isCancelled { try? await Task.sleep(for: .seconds(3600)) }
+      await LocalDaemonHandOffs.shared.next()
       return
     }
     var baseline: HostConnectionManager.Snapshot?

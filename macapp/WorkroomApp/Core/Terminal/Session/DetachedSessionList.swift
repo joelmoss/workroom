@@ -151,6 +151,16 @@ final class DetachedSessionList: ObservableObject {
     target.remoteHost != nil || target.id.isStandaloneTerminal || target.id.isTerminalGroup
   }
 
+  /// The name a detached session is listed by: its label, as its tab would show it (#694), else
+  /// the name a terminal shows unnamed, its shell and folder (a numbered label an older build gave
+  /// it is no name).
+  static func name(of session: SessionDescriptor) -> String {
+    let label = TerminalPanes.cleanedName(session.value(forMetadataKey: SessionMetadataKey.title))
+    if let label, !TerminalState.isNumberedName(label) { return label }
+    let folder = session.workingDirectory.isEmpty ? "~" : session.workingDirectory
+    return TerminalState.programAndFolder(program: TerminalState.shellName, folder: folder).text
+  }
+
   /// A session `workroom new` made from no pane: one it opened (`opened_by`) with no workroom.
   static func isUnscopedNew(_ session: SessionDescriptor) -> Bool {
     session.value(forMetadataKey: SessionMetadataKey.workroom) == nil

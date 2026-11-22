@@ -251,6 +251,30 @@ final class PaneTypingMonitorTests: XCTestCase {
     await until(newer.subscribed)
     monitor.forget(.local)
   }
+
+  // Value: protects=a subscription this Mac's old daemon refused is asked again of the program a
+  // hand-off replaced it with (#694 review); fails_when=`hostReconnected(.local)` never returns,
+  // so typing, `new`, `close` and labels stay off until the app restarts; why_new=a new event type
+  // made old daemons refuse; seam=LocalDaemonHandOffs
+  /// This Mac's daemon "reconnects" when a hand-off completes, and only then: the subscription its
+  /// old program refused is asked of the new one.
+  func testAfterALocalHandOffTheSubscriptionIsAskedAgain() async {
+    XCTAssertTrue(DaemonHandOff.handedOff("exit 0: handed off"))
+    XCTAssertFalse(DaemonHandOff.handedOff("exit 0: current"))
+    XCTAssertFalse(DaemonHandOff.handedOff("exit 92: the daemon did not greet"))
+    let old = FakeTerminalInputConnection(refusal: .unsupported)
+    let newer = FakeTerminalInputConnection()
+    let before = LocalDaemonHandOffs.shared.waiters
+    let monitor = monitor([old, newer]) { await ProgramStatusMonitor.hostReconnected(.local) }
+    monitor.watch(.local)
+    await until(old.subscribeCount == 1)
+    await until(LocalDaemonHandOffs.shared.waiters > before)
+    try? await Task.sleep(for: .milliseconds(100))
+    XCTAssertFalse(newer.subscribed, "asked again with no hand-off")
+    LocalDaemonHandOffs.shared.completed()
+    await until(newer.subscribed)
+    monitor.forget(.local)
+  }
 }
 
 /// What the marker says (#696): the sender as the app names it, its tab as the user sees it, and

@@ -59,6 +59,9 @@ public final class FakeDaemon: @unchecked Sendable {
   /// but `events.unsubscribe` on its stream; nil leaves them unanswered. `push` sends more on
   /// `terminalAPIStreams`.
   private let terminalAPIReplies: [String]?
+  /// The replies to each terminal API request, chosen from the request itself, in place of
+  /// `terminalAPIReplies`: a daemon that answers each method its own way.
+  private let terminalAPIReplying: (@Sendable (String) -> [String])?
   private var terminalAPIRequests: [(stream: UInt32, request: String)] = []
   private var unsubscribes: [String] = []
   /// Every terminal API request received but `events.unsubscribe`, as the JSON the client sent,
@@ -98,10 +101,12 @@ public final class FakeDaemon: @unchecked Sendable {
     forwardRefusals: Int = .max, forwardEpilogueOnData: Bool = false,
     capabilities: String = #"{"version":1,"result":{"version":1,"reads":9,"exec":2}}"#,
     stallAfterCapabilities: Bool = false, execResult: String? = nil,
-    programStatusResult: String? = nil, terminalAPIReplies: [String]? = nil, files: Bool = true
+    programStatusResult: String? = nil, terminalAPIReplies: [String]? = nil,
+    terminalAPIReplying: (@Sendable (String) -> [String])? = nil, files: Bool = true
   ) throws {
     self.programStatusResult = programStatusResult
     self.terminalAPIReplies = terminalAPIReplies
+    self.terminalAPIReplying = terminalAPIReplying
     self.files = files
     self.capabilities = Data(capabilities.utf8)
     self.execResult = execResult.map { #"{"version":1,"result":\#($0)}"# }
@@ -185,7 +190,7 @@ public final class FakeDaemon: @unchecked Sendable {
         }
         if bytes[0] == 8 {
           lock.withLock { terminalAPIRequests.append((stream, request)) }
-          for reply in terminalAPIReplies ?? [] {
+          for reply in terminalAPIReplying?(request) ?? terminalAPIReplies ?? [] {
             push(service: 8, stream: stream, payload: Data([1]) + Data(reply.utf8))
           }
           continue

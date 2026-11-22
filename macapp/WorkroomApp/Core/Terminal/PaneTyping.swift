@@ -95,7 +95,8 @@ final class PaneTypingMonitor {
   /// Waits between reconnects. A seam so tests reconnect at once.
   var backoff: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
   /// Returns once `host`'s link comes up again as a new connection, so a retry need not wait out
-  /// its backoff; never for this Mac's daemon.
+  /// its backoff; for this Mac's daemon, once it is handed off to a new program, which may tell
+  /// what the old one refused.
   var reconnected: @Sendable (HostID) async -> Void = ProgramStatusMonitor.hostReconnected
   /// The monotonic clock the 3 s are measured on, and the wait until the next typist expires.
   /// Seams, so the timing tests run on a clock the test moves.
