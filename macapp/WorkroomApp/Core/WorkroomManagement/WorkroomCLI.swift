@@ -398,6 +398,14 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     try throwIfError(try await run(args, timeout: 5))
   }
 
+  /// Installs, or removes, the Workroom skill for Claude Code and Codex (#697) in `home`'s
+  /// `.claude` and `.codex` (`workroom agent-skill`), saying what became of each.
+  func agentSkill(install: Bool, home: String) async throws -> AgentSkillReport {
+    let result = try await run(
+      ["agent-skill", install ? "install" : "remove", "--json"], timeout: 10, home: home)
+    return try decode(AgentSkillReport.self, from: result)
+  }
+
   /// Registers a remote workroom the app is about to make (#253) under a new name, with
   /// `descriptor` as its host descriptor and `hostPath` its checkout on the host. Nothing is made on
   /// this Mac.
@@ -686,21 +694,24 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   /// wedged one can't hold the caller forever; that one's cleanup may be left unfinished. Without
   /// `cancellable` (every command but a clone) a cancelled task still lets the child finish, so no
   /// script is cut off partway.
+  ///
+  /// `home`, when given, is the child's `HOME`: the folder whose `~/.claude` and `~/.codex` the
+  /// agent skill is written into, a throwaway one in tests.
   private func run(
     _ args: [String], timeout: TimeInterval?, userInitiated: Bool = false, stdin: Data? = nil,
-    cancellable: Bool = false, onEvent: ((StreamEvent) -> Void)? = nil
+    cancellable: Bool = false, home: String? = nil, onEvent: ((StreamEvent) -> Void)? = nil
   ) async throws -> CLIResult {
     let url = try Self.bundledBinaryURL()
     guard cancellable else {
       return try await run(
         url: url, args, timeout: timeout, userInitiated: userInitiated, stdin: stdin,
-        onEvent: onEvent, cancel: nil)
+        home: home, onEvent: onEvent, cancel: nil)
     }
     let cancel = CancelSignal()
     return try await withTaskCancellationHandler {
       try await run(
         url: url, args, timeout: timeout, userInitiated: userInitiated, stdin: stdin,
-        onEvent: onEvent, cancel: cancel)
+        home: home, onEvent: onEvent, cancel: cancel)
     } onCancel: {
       cancel.fire()
     }
@@ -708,7 +719,7 @@ final class WorkroomCLI: WorkroomCLIProtocol {
 
   private func run(
     url: URL, _ args: [String], timeout: TimeInterval?, userInitiated: Bool, stdin: Data?,
-    onEvent: ((StreamEvent) -> Void)?, cancel: CancelSignal?
+    home: String?, onEvent: ((StreamEvent) -> Void)?, cancel: CancelSignal?
   ) async throws -> CLIResult {
     try await withCheckedThrowingContinuation { continuation in
       let proc = Process()
@@ -726,6 +737,7 @@ final class WorkroomCLI: WorkroomCLIProtocol {
       if let config = Self.configPath() { env["WORKROOM_CONFIG"] = config }
       env["GIT_TERMINAL_PROMPT"] = "0"
       env["GIT_OPTIONAL_LOCKS"] = "0"
+      if let home { env["HOME"] = home }
       proc.environment = env
 
       let outPipe = Pipe()

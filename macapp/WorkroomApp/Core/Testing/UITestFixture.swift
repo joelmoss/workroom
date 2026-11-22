@@ -200,6 +200,35 @@ import WorkroomVCS
       return text("WorkroomUITestGhosttyConfigFile")
     }
 
+    /// The home folder a fixture launch installs the agent skill into (#697), never the user's:
+    /// `-WorkroomUITestAgentSkillHome <dir>` when it names a folder under `/tmp` or the temporary
+    /// folder, which a UI test passes so it can look inside; else one of this process's own there.
+    /// It gets a `.claude` and a `.codex` of its own, as a machine with both agents has, since the
+    /// skill is installed only where an agent's folder is.
+    static var agentSkillHome: URL {
+      let fileManager = FileManager.default
+      let temporary = fileManager.temporaryDirectory.standardizedFileURL.path
+      let home =
+        text("WorkroomUITestAgentSkillHome")
+        .map { URL(fileURLWithPath: $0).standardizedFileURL }
+        .flatMap { given -> URL? in
+          let path = given.path
+          let throwaway =
+            path != NSHomeDirectory()
+            && ["/tmp/", "/private/tmp/", temporary + "/"].contains { path.hasPrefix($0) }
+          return throwaway ? given : nil
+        }
+        ?? fileManager.temporaryDirectory.appendingPathComponent(
+          "workroom-agent-skill-ui-\(ProcessInfo.processInfo.processIdentifier)",
+          isDirectory: true)
+      for agent in [".claude", ".codex"] {
+        try? fileManager.createDirectory(
+          at: home.appendingPathComponent(agent, isDirectory: true),
+          withIntermediateDirectories: true)
+      }
+      return home
+    }
+
     /// `-WorkroomUITestSearchNeedle <text>`: the needle a find bar adopts when it opens empty, so the
     /// engine-bump smoke test (`EngineBumpSmokeUITests`) can drive a real search. XCUITest cannot
     /// type into the bar's field (TODOS.md, "Finish the action-dispatch UI coverage"), and this
