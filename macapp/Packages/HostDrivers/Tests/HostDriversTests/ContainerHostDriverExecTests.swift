@@ -173,6 +173,73 @@ final class ContainerHostDriverExecTests: XCTestCase {
       try Data(contentsOf: directory.appendingPathComponent("daemon/workroomd")), Data("ELF".utf8))
   }
 
+  // Value: protects=Apple creates at once all share one daemon folder on this Mac and each still
+  // succeeds, with the `workroom` link and the daemon left right; fails_when=two creates both see
+  // no link, a wrong link or no daemon, and the second to make it fails with "already exists"
+  // (Cocoa 516) or finds the other's removal; why_new=only one create at a time was tested, and the
+  // live concurrent test failed every run; seam=stub runtime; no_claim=the runtime's own handling
+  // of a shared bind mount
+  /// Apple creates at once share the daemon's folder on this Mac: each makes its container, and
+  /// the folder ends with the one daemon and its `workroom` link, however the creates interleave
+  /// and whatever the folder held: nothing, a link to something else and an older daemon, or the
+  /// right ones already; and a file at `workroom` that is not a link is still left alone.
+  /// The runtime holds each round of `image inspect`s (the image's check, then its user's read,
+  /// the last call before the daemon's folder) until every create has made one, then lets them go
+  /// together, so the creates reach the folder at the same moment, as the live ones do.
+  func testAppleCreatesAtOnceShareTheDaemonFolder() async throws {
+    let creates = 8
+    let slots = directory.appendingPathComponent("slots").path
+    // Bounded, so a create that fails before its inspect fails the test rather than hanging it.
+    let driver = try driver(
+      try stubRuntime(
+        """
+        "image inspect "*)
+          i=0; while ! mkdir "\(slots)/$i" 2> /dev/null; do i=$((i + 1)); done
+          last=$(( (i / \(creates) + 1) * \(creates) - 1 )); n=0
+          while [ ! -d "\(slots)/$last" ]; do
+            n=$((n + 1)); [ "$n" -gt 1000000 ] && exit 9
+          done
+          echo '[]' ;;
+        """), dialect: .apple)
+    let folder = directory.appendingPathComponent("daemon")
+    let link = folder.appendingPathComponent("workroom").path
+    let daemon = folder.appendingPathComponent("workroomd")
+    var userless = spec
+    userless.user = nil
+    let spec = userless
+    for round in 0..<12 {
+      try? FileManager.default.removeItem(at: folder)
+      try? FileManager.default.removeItem(atPath: slots)
+      try FileManager.default.createDirectory(atPath: slots, withIntermediateDirectories: true)
+      try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+      switch round % 4 {
+      case 1:
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: "elsewhere")
+        try Data("OLD".utf8).write(to: daemon)
+      case 2:
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: "workroomd")
+        try Data("ELF".utf8).write(to: daemon)
+      case 3: try Data("someone's\n".utf8).write(to: URL(fileURLWithPath: link))
+      default: break
+      }
+      let hosts = try await withThrowingTaskGroup(of: HostID.self) { group in
+        for _ in 0..<creates { group.addTask { try await driver.create(spec: spec) } }
+        return try await group.reduce(into: [HostID]()) { $0.append($1) }
+      }
+      XCTAssertEqual(Set(hosts).count, creates, "round \(round)")
+      if round % 4 == 3 {
+        XCTAssertEqual(try String(contentsOfFile: link, encoding: .utf8), "someone's\n")
+      } else {
+        XCTAssertEqual(
+          try FileManager.default.destinationOfSymbolicLink(atPath: link), "workroomd",
+          "round \(round)")
+      }
+      XCTAssertEqual(try Data(contentsOf: daemon), Data("ELF".utf8), "round \(round)")
+      let left = try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
+      XCTAssertEqual(left, ["workroom", "workroomd"], "round \(round): staged files left")
+    }
+  }
+
   /// An image with no git fails the create with what to do, and its container goes.
   func testAnImageWithoutGitIsRefusedAndItsContainerRemoved() async throws {
     let driver = try driver(try stubRuntime(#"*"exec -i"*"command -v git"*) exit 3 ;;"#))
