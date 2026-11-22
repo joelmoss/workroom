@@ -171,7 +171,9 @@ fn table(sessions: &[Value], now: u64) -> String {
 
 /// The sessions' rows, a header first.
 fn session_rows(sessions: &[Value]) -> Vec<Vec<String>> {
-    let text = |value: &Value| value.as_str().unwrap_or("").to_string();
+    // Written out on one line (#694): a label, a live title its program set, a folder or a scope
+    // can hold an escape or a line break that would rewrite the terminal the table is printed in.
+    let text = |value: &Value| super::prompt::one_line(value.as_str().unwrap_or(""));
     let mut rows = vec![
         ["ID", "LABEL", "TITLE", "STATUS", "RUN", "SCOPE", "CWD"]
             .map(str::to_string)
@@ -251,6 +253,17 @@ mod tests {
             Ok(())
         );
         assert_eq!(listed_clients(&[]), Ok(()));
+    }
+
+    /// A label or live title with an escape, a line break or a bidi override (#694) is printed
+    /// written out, so the table can't rewrite the terminal it is printed in or split a row.
+    #[test]
+    fn a_hidden_character_in_a_cell_is_written_out() {
+        let mut row = session("5a1e0f7e-0d6c-4c9f-9c3e-2b7f1d0a8e11", "a\x1b[2Jb\nc", None);
+        row["title"] = json!("t\u{202e}x");
+        let rows = session_rows(&[row]);
+        assert_eq!(rows[1][1], "a\\u{001b}[2Jb\\u{000a}c");
+        assert_eq!(rows[1][2], "t\\u{202e}x");
     }
 
     /// Each session's clients are rows under its own, indented, their columns lined up across

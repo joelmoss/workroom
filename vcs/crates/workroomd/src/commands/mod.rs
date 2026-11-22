@@ -46,7 +46,7 @@ mod list;
 mod log;
 mod namegen;
 mod panel;
-mod prompt;
+pub(crate) mod prompt;
 mod prompt_agent;
 mod send;
 mod sessions;
