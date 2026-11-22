@@ -206,10 +206,11 @@ impl FrameDecoder {
         }
 
         let raw_kind = self.buffer[0];
-        let mut length = 0usize;
-        for i in 1..HEADER_SIZE {
-            length = (length << 8) | self.buffer[i] as usize;
-        }
+        // The rest of the header: the payload length, big-endian.
+        let length = self
+            .buffer
+            .range(1..HEADER_SIZE)
+            .fold(0usize, |length, &byte| (length << 8) | usize::from(byte));
 
         // Length first, then kind — see the module doc. Swapping these changes what a peer is
         // told about a malformed stream, and the Swift decoder is the one already deployed.
