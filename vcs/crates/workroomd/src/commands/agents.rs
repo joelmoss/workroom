@@ -218,7 +218,9 @@ pub(super) const KINDS: &[(Kind, &str)] = &[
     ),
     (
         Kind::DaemonTooOld,
-        "The daemon is older than the command. Run `\"$WORKROOM_BIN_DIR/workroom\"`.",
+        "The daemon is older than this `workroom`. Run `\"$WORKROOM_BIN_DIR/workroom\"`, the \
+         one that matches it; if that says so too, the daemon needs updating, which updating \
+         the app does.",
     ),
     (
         Kind::WaitTimeout,

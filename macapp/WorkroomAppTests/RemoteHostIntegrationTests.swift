@@ -358,8 +358,14 @@ final class RemoteHostIntegrationTests: XCTestCase {
   /// was turned off removes it, keeping `~/.claude`; and the next finds nothing to remove.
   func testTheWorkroomSkillIsInstalledOnTheHostOnlyWhileOnAndRemovedOnceTurnedOff() async throws {
     let fixture = try fixture()
-    try onHost(fixture, "rm -rf ~/.claude ~/.codex && mkdir ~/.claude")
-    defer { _ = try? onHost(fixture, "rm -rf ~/.claude") }
+    // A host user with Claude Code and no Codex: this test makes `~/.claude` itself, and so only
+    // on a home that has neither, and takes away only that folder, empty, at the end.
+    guard try onHost(fixture, "test -e ~/.claude || test -e ~/.codex && echo yes || echo no") == "no"
+    else {
+      throw XCTSkip("the fixture's home already has ~/.claude or ~/.codex")
+    }
+    try onHost(fixture, "mkdir ~/.claude")
+    defer { _ = try? onHost(fixture, "rmdir ~/.claude") }
     let id = UUID()
     let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
     func connect(_ policy: DaemonBootstrap.WorkroomSkillPolicy) async throws

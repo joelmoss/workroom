@@ -19,13 +19,13 @@ struct WorkroomSkillReport: Decodable, Equatable, Sendable {
   let skills: [Skill]
 }
 
-/// The Workroom skill for Claude Code and Codex (#697), on this Mac: Settings ▸ AI Agents' toggle
-/// (`installWorkroomSkill`) installs it into `~/.claude` and `~/.codex` and removes it again, through
-/// the bundled CLI's `skill`, which alone decides what is Workroom's to write or delete. Each
-/// host's bootstrap does the same on that host (`hostPolicy`).
+/// The Workroom skill for Claude Code and Codex (#697), on this Mac: Settings ▸ AI Agents'
+/// toggle (`installWorkroomSkill`) installs it into `~/.claude` and `~/.codex` and removes it
+/// again, through the bundled CLI's `workroom skill`, which alone decides what is Workroom's to
+/// write or delete. Each host's bootstrap does the same on that host (`hostPolicy`).
 ///
 /// It is installed again at every launch while the setting is on, so an app update brings the
-/// skill's text up to date, and an agent installed since gets it too.
+/// skill's text up to date, and a coding agent installed since gets it too.
 @MainActor
 final class WorkroomSkill: ObservableObject {
   static let shared = WorkroomSkill()
