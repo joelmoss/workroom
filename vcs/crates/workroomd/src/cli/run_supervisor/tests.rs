@@ -9,13 +9,17 @@ fn strings(argv: Vec<OsString>) -> Vec<String> {
 /// A POSIX login shell runs the command login and interactive, so the user's rc PATH applies.
 #[test]
 fn a_posix_shell_runs_the_command_login_and_interactive() {
-    let argv = strings(invocation("/s", "npm run dev", "/bin/zsh"));
+    let argv = strings(invocation("/s", "npm run dev", "/bin/zsh", "/w".as_ref()));
     assert_eq!(argv[..2], ["/bin/sh", "-c"]);
     assert_eq!(
         argv[3..],
         [
             "workroom-run",
             "/s",
+            "/w",
+            "run-supervisor",
+            "--child",
+            "--",
             "/bin/zsh",
             "-lic",
             "exec '/bin/zsh' -c 'npm run dev'"
@@ -26,15 +30,50 @@ fn a_posix_shell_runs_the_command_login_and_interactive() {
 /// fish, nushell and csh have no trusted `-lic`, so a login `/bin/sh` runs the command.
 #[test]
 fn another_shell_falls_back_to_a_login_sh() {
-    let argv = strings(invocation("/s", "make", "/opt/homebrew/bin/fish"));
-    assert_eq!(argv[5..], ["/bin/sh", "-lc", "exec '/bin/sh' -c 'make'"]);
+    let argv = strings(invocation(
+        "/s",
+        "make",
+        "/opt/homebrew/bin/fish",
+        "/w".as_ref(),
+    ));
+    assert_eq!(argv[9..], ["/bin/sh", "-lc", "exec '/bin/sh' -c 'make'"]);
 }
 
 /// The command reaches the shell as one word, quotes and all.
 #[test]
 fn a_quote_in_the_command_survives() {
-    let argv = strings(invocation("/s", "echo 'hi'", "/bin/sh"));
-    assert_eq!(argv[7], r"exec '/bin/sh' -c 'echo '\''hi'\'''");
+    let argv = strings(invocation("/s", "echo 'hi'", "/bin/sh", "/w".as_ref()));
+    assert_eq!(argv[11], r"exec '/bin/sh' -c 'echo '\''hi'\'''");
+}
+
+/// `--child --` is the supervisor's child, and only right before the `--`: a run's own command
+/// may say anything.
+#[test]
+fn only_child_dash_dash_is_the_child() {
+    let args = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+    let child = args(&[
+        "workroomd",
+        "run-supervisor",
+        "--child",
+        "--",
+        "sh",
+        "-c",
+        "x",
+    ]);
+    assert_eq!(child_argv(&child), Some(&child[4..]));
+    let run = args(&[
+        "w",
+        "run-supervisor",
+        "--status",
+        "/s",
+        "--",
+        "--child -- x",
+    ]);
+    assert_eq!(child_argv(&run), None);
+    assert_eq!(
+        child_argv(&args(&["w", "run-supervisor", "--child", "--"])),
+        None
+    );
 }
 
 /// The cut every 64th transition keeps the ones the daemon hasn't read yet: a restart that
