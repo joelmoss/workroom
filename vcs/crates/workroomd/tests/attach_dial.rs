@@ -153,6 +153,7 @@ impl Host {
                 shell: "/bin/sh".into(),
                 home: scratch.home(),
                 user: "fixture".into(),
+                commands: None,
             },
         )
     }
@@ -330,6 +331,7 @@ fn a_dialed_session_on_a_host_without_a_passwd_entry_gets_the_ssh_logins_home_an
             shell: String::new(),
             home: PathBuf::from("/"),
             user: String::new(),
+            commands: None,
         },
     );
     let lines = session_environment(&host);
@@ -417,6 +419,38 @@ fn with_ghosttys_terminfo_on_the_host_the_session_is_xterm_ghostty_with_integrat
     ] {
         assert!(contains(&lines, &entry), "{entry} in {lines:?}");
     }
+}
+
+/// A daemon with no bin folder (#695; this in-process one serves no socket, so it has none) and
+/// the bootstrap's `workroom` link beside it (ADR 0078) puts that folder after a dialed session's
+/// PATH, as #681 did, so a host pane still runs `workroom` by name. No `WORKROOM_BIN_DIR`.
+#[test]
+fn a_daemon_without_a_bin_folder_puts_its_own_workrooms_folder_after_a_dialed_sessions_path() {
+    let scratch = Scratch::new("link");
+    let folder = scratch.0.join("daemon");
+    let host = Host::serve_as(
+        &scratch,
+        SessionStore::new(),
+        HostOrigin {
+            environment: DAEMON
+                .iter()
+                .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+                .collect(),
+            shell: "/bin/sh".into(),
+            home: scratch.home(),
+            user: "fixture".into(),
+            commands: Some(folder.clone()),
+        },
+    );
+    let lines = session_environment(&host);
+    let path = format!("PATH=/login/bin:/usr/bin:/bin:{}", folder.display());
+    assert!(contains(&lines, &path), "{path} in {lines:?}");
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.starts_with("WORKROOM_BIN_DIR=")),
+        "{lines:?}"
+    );
 }
 
 /// The account's shell starts as a login shell, so its profile runs as an ssh login's did.

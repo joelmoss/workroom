@@ -123,6 +123,10 @@ pub struct HostOrigin {
     pub shell: String,
     pub home: PathBuf,
     pub user: String,
+    /// The daemon's own folder, when it holds the `workroom` link the bootstrap puts beside the
+    /// installed `workroomd` (ADR 0078): put after a host session's PATH only by a daemon that has
+    /// no bin folder (`terminal::bin_path`, #695), so a host pane still runs `workroom` by name.
+    pub commands: Option<PathBuf>,
 }
 
 impl HostOrigin {
@@ -143,6 +147,7 @@ impl HostOrigin {
                 .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
                 .unwrap_or_else(|| PathBuf::from("/")),
             user: account.map(|a| a.name).unwrap_or_default(),
+            commands: crate::host::environment::commands_folder(),
         }
     }
 }
@@ -198,6 +203,8 @@ pub struct HostSession {
     pub shell: String,
     /// Ghostty's resources for the shell integration, or empty for none.
     pub resources: String,
+    /// `HostOrigin::commands`: the folder a daemon without a bin folder puts after the PATH.
+    pub commands: Option<PathBuf>,
 }
 
 /// Variables the daemon's own environment must not hand a host session, when no ssh login's came:
@@ -296,6 +303,7 @@ fn build(
         environment,
         shell,
         resources: session_resources,
+        commands: origin.commands.clone(),
     }
 }
 
