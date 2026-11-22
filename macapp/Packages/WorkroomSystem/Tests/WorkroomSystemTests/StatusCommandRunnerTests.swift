@@ -68,7 +68,7 @@ final class StatusCommandRunnerTests: XCTestCase {
     let tmp = self.tmp
     let task = Task {
       await runner.run(
-        "sh", ["-c", "for i in $(seq 40); do sleep 30 & done; wait"], in: tmp, timeout: 30)
+        "sh", ["-c", "for i in $(seq 40); do sleep 120 & done; wait"], in: tmp, timeout: 120)
     }
     // Let the tree actually spawn, or the walk would have nothing to traverse and this would pass
     // against the blocking version too.
@@ -79,13 +79,15 @@ final class StatusCommandRunnerTests: XCTestCase {
     let blocked = Date().timeIntervalSince(start)
 
     XCTAssertLessThan(blocked, 0.3, "cancelling a probe blocked the cancelling thread on the kill")
-    // And the kill still lands: the probe resumes instead of running out its 30s sleep.
+    // And the kill still lands: the probe resumes instead of running out its 120s sleep. The bound
+    // only has to tell "killed" from "slept it out": the walk is ~41 sequential `pgrep` spawns, which a
+    // loaded CI runner has taken 10.5 s to finish, so a tight bound here measures the runner, not us.
     let r = await task.value
     XCTAssertFalse(r.ok, "a cancelled probe's result is abandoned, not a success")
-    XCTAssertLessThan(Date().timeIntervalSince(start), 10, "not the 30s sleep")
+    XCTAssertLessThan(Date().timeIntervalSince(start), 60, "not the 120s sleep")
     // The result shape a cancelled probe actually has — and the one `classifyGitHubCLI` used to read
     // as a logout. Killed by SIGKILL, so `exitCode` is the SIGNAL NUMBER (9), `timedOut` is false
-    // (the 30s deadline never fired), and stdout is empty or half-written. Nothing here is evidence
+    // (the 120s deadline never fired), and stdout is empty or half-written. Nothing here is evidence
     // about gh's auth state, which is why the flag exists.
     XCTAssertTrue(r.signaled, "a cancelled probe's child was killed by a signal")
     XCTAssertFalse(r.timedOut, "cancellation is not a timeout")
