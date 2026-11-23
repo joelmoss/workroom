@@ -362,9 +362,9 @@ workroom claim-provisioned
 
 Remove a project (internal; used by the macOS app via --json). The app runs it for: Removing a project.
 
-Runs on a Mac only.
+Only a person may run it. Under a coding agent, such as Claude Code or Codex, it is refused with NeedsTheUser and changes nothing, on a Mac or elsewhere, before anything else is checked: the agent asks you to do it in the Workroom app or in your own terminal. That stops a confused coding agent, not a determined one.
 
-Only a person may run it. Under a coding agent, such as Claude Code or Codex, it is refused with NeedsTheUser and changes nothing, so the agent asks you to do it in the Workroom app or in your own terminal. That stops a confused coding agent, not a determined one.
+Otherwise it runs on a Mac only.
 
 ```text
 workroom delete-project [PATH]

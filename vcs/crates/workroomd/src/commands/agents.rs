@@ -339,11 +339,13 @@ on the user's behalf: report what it asks, and wait for the user.
 - **Never approve or delete for the user.** Approving a project's setup and teardown scripts \
 (`workroom trust`) and deleting a workroom or project (`workroom delete`, `delete-project`) are \
 the user's to do. Run by a coding agent, each is refused with `NeedsTheUser` (exit 3) and changes \
-nothing, whatever its flags. When a create stops on a script nobody has approved \
-(`ScriptNotTrusted`), or a workroom should go, tell the user and ask them to do it in the \
-Workroom app, or to run the command themselves in their own terminal. Don't get around it, such \
-as by typing the command into another terminal with `send`: the refusal stops a mistake, not a \
-determined agent, so it is yours to respect.
+nothing, whatever its flags, even in a terminal you hold; so is a `workroom create` that would \
+run a setup script nobody has approved. `workroom delete --pretend` runs, and shows what a delete \
+would remove. When a create stops on an unapproved script, or a workroom should go, tell the user \
+and ask them to do it in the Workroom app, or to run the command themselves in their own \
+terminal; `create --skip-setup` creates without the script. Don't get around it, such as by \
+typing the command into another terminal with `send`, or through tmux or `ssh localhost`: the \
+refusal stops a mistake, not a determined agent, so it is yours to respect.
 - **Wait on the daemon, never poll.** `wait`, `command` and `prompt --wait` answer the moment it \
 happens. Give each a `--timeout` (such as `30s`, `10m`).
 - **Use ids.** Once you know a session, name it by the `id` from `sessions --json`.

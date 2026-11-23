@@ -124,8 +124,9 @@ workroom untrust        # forget this project's approvals
 See [`workroom trust`](../cli/workroom-trust.md).
 
 Nightly only. Only you can approve a script. Run by a coding agent such as Claude Code or Codex,
-`workroom trust` approves nothing and tells the agent to ask you to approve it in the app or in your
-own terminal. This stops a confused agent, not a determined one. See
+`workroom trust` approves nothing, and `workroom create` never asks about an unapproved setup
+script, even in a terminal the agent holds: each tells the agent to ask you to approve it in the app
+or in your own terminal. This stops a confused agent, not a determined one. See
 [What a coding agent leaves to you](drive-terminals-from-agents-and-scripts.md#what-a-coding-agent-leaves-to-you).
 
 ## Copy gitignored files into new workrooms

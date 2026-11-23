@@ -5,9 +5,42 @@ use crate::commands::{Platform, Scratch};
 
 /// A config file, not yet made, in a directory not yet made, inside `scratch`.
 fn config_in(scratch: &Scratch) -> Config {
-    Config {
-        path: scratch.0.join("nested/config.json"),
-    }
+    Config::at(scratch.0.join("nested/config.json"))
+}
+
+/// Under a coding agent (#793) no approval is recorded and no project removed, whichever command
+/// asks, and the file is left as it was; forgetting an approval is anyone's.
+#[test]
+fn under_a_coding_agent_no_approval_is_recorded_and_no_project_removed() {
+    let scratch = Scratch::new("under-an-agent");
+    let path = scratch.0.join("config.json");
+    let mine = Config::at(path.clone());
+    mine.add_project("/p", "git").unwrap();
+    mine.set_trusted_script("/p", "workroom_setup", "aa")
+        .unwrap();
+    let before = std::fs::read_to_string(&path).unwrap();
+    let agents = Config {
+        path: path.clone(),
+        coding_agent_above: || Some("claude".to_string()),
+    };
+    let error = agents
+        .set_trusted_script("/p", "workroom_teardown", "bb")
+        .unwrap_err();
+    assert_eq!(error.kind, Kind::NeedsTheUser);
+    assert!(
+        error.message.contains("coding agent (claude)"),
+        "{}",
+        error.message
+    );
+    assert_eq!(
+        agents.remove_project("/p").unwrap_err().kind,
+        Kind::NeedsTheUser
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    agents
+        .set_trusted_script("/p", "workroom_setup", "")
+        .unwrap();
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("\"aa\""));
 }
 
 fn context(env: fn(&str) -> Option<String>) -> Context {
@@ -266,9 +299,7 @@ fn a_canonical_path_keeps_the_case_it_was_given() {
 #[test]
 fn config_errors_are_worded_as_go_wraps_them() {
     let scratch = Scratch::new("errors");
-    let dir = Config {
-        path: scratch.0.clone(),
-    };
+    let dir = Config::at(scratch.0.clone());
     let error = dir.read().unwrap_err();
     let path = scratch.0.display();
     assert_eq!(error.kind, Kind::ConfigReadFailed);
@@ -278,9 +309,7 @@ fn config_errors_are_worded_as_go_wraps_them() {
     );
     // A file where the config's directory should be.
     std::fs::write(scratch.0.join("file"), "").unwrap();
-    let blocked = Config {
-        path: scratch.0.join("file/sub/config.json"),
-    };
+    let blocked = Config::at(scratch.0.join("file/sub/config.json"));
     let error = blocked.write(&Json::Null).unwrap_err();
     assert_eq!(error.kind, Kind::ConfigWriteFailed);
     assert_eq!(
@@ -292,9 +321,7 @@ fn config_errors_are_worded_as_go_wraps_them() {
     );
     // A directory in the config's place, so the rename over it fails after the temp file's write.
     std::fs::create_dir_all(scratch.0.join("taken/config.json/x")).unwrap();
-    let taken = Config {
-        path: scratch.0.join("taken/config.json"),
-    };
+    let taken = Config::at(scratch.0.join("taken/config.json"));
     let error = taken.write(&Json::Null).unwrap_err();
     let message = error.message;
     let config = format!("{path}/taken/config.json");

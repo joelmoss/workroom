@@ -96,19 +96,76 @@ pub fn working_directory(pid: i32) -> Option<String> {
     platform::working_directory(pid)
 }
 
-/// Picks the user-meaningful name out of a full argv. Shared by both platforms because the
-/// interpreter problem is identical on each: the kernel rewrites a shebang invocation so argv[0]
-/// is the runtime, and the script the user actually typed is argv[1].
-fn name_from_argv(argv: &[String]) -> Option<String> {
+/// Picks the user-meaningful name out of a full argv: the basename of [`program_from_argv`]'s
+/// answer. Shared by both platforms because the interpreter problem is identical on each: the
+/// kernel rewrites a shebang invocation so argv[0] is the runtime, and the script the user actually
+/// typed is argv[1].
+fn name_from_argv(argv: &[String], is_file: &dyn Fn(&str) -> bool) -> Option<String> {
+    basename(program_from_argv(argv, is_file)?).map(str::to_string)
+}
+
+/// The program a full argv runs, as given: an interpreter's script, else `argv[0]`.
+///
+/// An interpreter's script is its first argument past its own flags, and only when that names a
+/// file (`is_file`, which resolves a relative path against the process's own folder). Never the
+/// argument after a flag that takes a program inline (`sh -c`, `bash -lc`, `python -c`/`-m`,
+/// `node -e`/`--eval`/`-p`, `perl -e`): `sh -c "ls ~/bin/codex"` runs `sh`, not `codex`. And never
+/// a word that is no file, such as a flag's value (`python -W ignore`): the interpreter is then
+/// its own answer, as a bare REPL is.
+fn program_from_argv<'a>(argv: &'a [String], is_file: &dyn Fn(&str) -> bool) -> Option<&'a str> {
     let first = argv.first()?;
     let name = basename(first)?;
-    if is_interpreter(name)
-        && let Some(script) = argv.iter().skip(1).find(|a| !a.starts_with('-'))
-        && let Some(script_name) = basename(script)
-    {
-        return Some(script_name.to_string());
+    if !is_interpreter(name) {
+        return Some(first);
     }
-    Some(name.to_string())
+    for argument in argv.iter().skip(1) {
+        if argument.starts_with('-') && argument.len() > 1 {
+            if takes_code(name, argument) {
+                break;
+            }
+            continue;
+        }
+        if is_file(argument) {
+            return Some(argument);
+        }
+        break;
+    }
+    Some(first)
+}
+
+/// Whether `flag`, given to the interpreter `interpreter`, takes a program inline: the next
+/// argument is code, not a script's path.
+fn takes_code(interpreter: &str, flag: &str) -> bool {
+    if let Some(long) = flag.strip_prefix("--") {
+        return matches!(long, "eval" | "print" | "command");
+    }
+    let letters = &flag[1..];
+    let family = interpreter.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    let any = |set: &[char]| letters.chars().any(|letter| set.contains(&letter));
+    match family {
+        "sh" | "bash" | "zsh" | "fish" | "dash" => any(&['c']),
+        "python" => any(&['c', 'm']),
+        "node" | "deno" | "bun" => any(&['e', 'p']),
+        "ruby" | "perl" => any(&['e', 'E']),
+        _ => false,
+    }
+}
+
+/// Whether `path`, an argument of process `pid`, names a file: a relative one is the process's,
+/// resolved against its working directory, never this process's.
+fn names_a_file(pid: i32, path: &str) -> bool {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return path.is_file();
+    }
+    working_directory(pid).is_some_and(|cwd| Path::new(&cwd).join(path).is_file())
+}
+
+/// The program process `pid` runs, as its arguments name it: an interpreter's script, else its
+/// `argv[0]` ([`program_from_argv`]). A path as it was given, which may be relative.
+pub fn program(pid: i32) -> Option<String> {
+    let argv = arguments(pid)?;
+    program_from_argv(&argv, &|path| names_a_file(pid, path)).map(str::to_string)
 }
 
 #[cfg(target_os = "macos")]
@@ -118,7 +175,7 @@ mod platform {
     /// `KERN_PROCARGS2`, the exec-time argv snapshot. Layout: `argc` (i32), the exec path
     /// (NUL-terminated), NUL padding, then `argc` NUL-terminated argv strings.
     pub(super) fn executable_name(pid: i32) -> Option<String> {
-        name_from_argv(&arguments(pid)?)
+        name_from_argv(&arguments(pid)?, &|path| super::names_a_file(pid, path))
     }
 
     pub(super) fn arguments(pid: i32) -> Option<Vec<String>> {
@@ -248,7 +305,7 @@ mod platform {
 
 #[cfg(target_os = "linux")]
 mod platform {
-    use super::{basename, is_interpreter, name_from_argv};
+    use super::{basename, is_interpreter, name_from_argv, names_a_file};
     use std::fs;
 
     /// Prefers `/proc/<pid>/exe`, which a process cannot rewrite, and only consults `cmdline` when
@@ -256,6 +313,7 @@ mod platform {
     /// obvious port (`cmdline`, the shape-match for `KERN_PROCARGS2`) is the wrong one.
     pub(super) fn executable_name(pid: i32) -> Option<String> {
         let argv = cmdline(pid);
+        let is_file = |path: &str| names_a_file(pid, path);
         if let Some(exe) = fs::read_link(format!("/proc/{pid}/exe"))
             .ok()
             .and_then(|p| p.to_str().map(str::to_string))
@@ -265,14 +323,14 @@ mod platform {
                 return Some(name.to_string());
             }
             // An interpreter: the script the user typed is in argv, not in `exe`.
-            if let Some(from_argv) = name_from_argv(&argv) {
+            if let Some(from_argv) = name_from_argv(&argv, &is_file) {
                 return Some(from_argv);
             }
             return Some(name.to_string());
         }
         // No `exe` (a zombie, or a process we cannot read): argv is all that is left, with its
         // self-renaming caveat, which still beats reporting nothing.
-        name_from_argv(&argv)
+        name_from_argv(&argv, &is_file)
     }
 
     fn cmdline(pid: i32) -> Vec<String> {

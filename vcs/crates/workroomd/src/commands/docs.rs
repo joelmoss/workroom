@@ -169,8 +169,10 @@ fn page(command: &Command, parents: &[&Command]) -> String {
         }
         text += "Runs on a Mac only, and fails with `MacOnly` elsewhere.\n\n";
     }
-    if parents.is_empty() && super::needs_the_user::guards(command.name) {
-        text += &format!("Nightly only. {}\n\n", escaped(super::needs_the_user::SAYS));
+    if parents.is_empty()
+        && let Some(says) = super::needs_the_user::says(command.name)
+    {
+        text += &format!("Nightly only. {}\n\n", escaped(&says));
     }
     text += &format!("```text\nworkroom {}\n```\n\n", command.usage);
     text += "## Options\n\n```text\n";

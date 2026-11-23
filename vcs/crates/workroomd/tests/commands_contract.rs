@@ -8421,6 +8421,31 @@ fn needs_the_user_trust_under_a_coding_agent_approves_nothing() {
         } else {
             assert_mac_only(&status);
         }
+
+        // A create that would run the unapproved script approves nothing and makes nothing, and
+        // says to ask the user or create without it.
+        let create = ["create", "--json", "--no-editor", "--project", &project];
+        let created = under(&create, None);
+        if cfg!(target_os = "macos") {
+            created.assert_code(3);
+            assert_eq!(created.error_kind(), "NeedsTheUser", "{}", created.stdout);
+            let message = created.envelope()["error"]["message"].to_string();
+            assert!(
+                message.contains(&format!("coding agent ({agent})")),
+                "{message}"
+            );
+            assert!(message.contains("scripts/workroom_setup"), "{message}");
+            assert!(message.contains("--skip-setup"), "{message}");
+            assert!(!config_text(&home).contains("trusted_scripts"), "{agent}");
+            // The workrooms folder a create may make first, with no workroom in it.
+            assert_eq!(
+                std::fs::read_dir(home.path("workrooms")).map_or(0, |dir| dir.count()),
+                0,
+                "{agent}: a create made a workroom"
+            );
+        } else {
+            assert_mac_only(&created);
+        }
     }
 
     let run = home.run(&home.dir, &["trust", "--json", "--project", &project]);
@@ -8458,7 +8483,6 @@ fn needs_the_user_delete_and_delete_project_under_a_coding_agent_delete_nothing(
         for args in [
             &app_delete[..],
             &skip_teardown[..],
-            &pretend[..],
             &["delete", "calm-river", "--confirm", "calm-river"],
             &["d", "calm-river"],
             &app_delete_project,
@@ -8471,11 +8495,24 @@ fn needs_the_user_delete_and_delete_project_under_a_coding_agent_delete_nothing(
                 p,
                 "--with-workrooms",
             ],
+            // Its `--pretend` still drops the project from config, as Go's does.
+            &["delete-project", p, "--json", "--confirm", p, "--pretend"],
         ] {
             assert_needs_the_user(&under(args), agent);
             assert_eq!(config_text(&home), before, "{agent}: {args:?}");
             assert!(home.path("workrooms/calm-river/.git").exists(), "{args:?}");
         }
+
+        // `delete --pretend` changes nothing, so an agent may show the user what would go.
+        let dry_run = under(&pretend);
+        if cfg!(target_os = "macos") {
+            dry_run.assert_code(0).assert_quiet_stderr();
+            assert_eq!(dry_run.envelope()["name"], "calm-river");
+        } else {
+            assert_mac_only(&dry_run);
+        }
+        assert_eq!(config_text(&home), before, "{agent}: --pretend");
+        assert!(home.path("workrooms/calm-river/.git").exists());
 
         let list = under(&["list", "--json"]);
         if cfg!(target_os = "macos") {

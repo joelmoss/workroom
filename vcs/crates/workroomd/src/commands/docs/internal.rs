@@ -731,12 +731,21 @@ fn hidden_section(command: &Command, path: &str, app: &str, sub: bool) -> String
         text += &escaped(long);
         text += "\n\n";
     }
-    if !sub && command.mac_only {
-        text += "Runs on a Mac only.\n\n";
-    }
-    if !sub && super::super::needs_the_user::guards(command.name) {
-        text += &escaped(super::super::needs_the_user::SAYS);
+    // A command only a person may run says so first: under a coding agent its refusal comes
+    // before `MacOnly` (#793).
+    let says = (!sub)
+        .then(|| super::super::needs_the_user::says(command.name))
+        .flatten();
+    if let Some(says) = &says {
+        text += &escaped(says);
         text += "\n\n";
+    }
+    if !sub && command.mac_only {
+        text += if says.is_some() {
+            "Otherwise it runs on a Mac only.\n\n"
+        } else {
+            "Runs on a Mac only.\n\n"
+        };
     }
     text += &format!("```text\nworkroom {}\n```\n\n", command.usage);
     // A subcommand that takes its parent's flags lists them; its parent, with none of its own, says
