@@ -416,7 +416,10 @@ mod tests {
         let dir = site_pages_dir();
         // As for the CLI pages: `test-linux.sh`'s container holds `vcs/` alone.
         if !dir.is_dir() {
-            eprintln!("no {}, so the Reference pages aren't checked here", dir.display());
+            eprintln!(
+                "no {}, so the Reference pages aren't checked here",
+                dir.display()
+            );
             return;
         }
         let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();

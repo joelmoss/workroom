@@ -286,7 +286,9 @@ fn fields_table(schema: &Value) -> String {
     if rows.is_empty() {
         return "None.\n".to_string();
     }
-    format!("| Field | Type | Required | Description |\n| ----- | ---- | -------- | ----------- |\n{rows}")
+    format!(
+        "| Field | Type | Required | Description |\n| ----- | ---- | -------- | ----------- |\n{rows}"
+    )
 }
 
 /// `value` as a JSON block.
@@ -555,7 +557,10 @@ mod tests {
         let mut sorted = named.clone();
         sorted.sort_unstable();
         listed.sort_unstable();
-        assert_eq!(listed, sorted, "EVENTS must list every event the schema names, once");
+        assert_eq!(
+            listed, sorted,
+            "EVENTS must list every event the schema names, once"
+        );
         let fields = output["properties"].as_object().expect("fields");
         // Every event about a session carries these, which their descriptions say so.
         let about_a_session = ["session", "scope"];
@@ -578,7 +583,9 @@ mod tests {
         for field in fields.keys() {
             assert!(
                 EVERY_EVENT.contains(&field.as_str())
-                    || EVENTS.iter().any(|event| event.fields.contains(&field.as_str())),
+                    || EVENTS
+                        .iter()
+                        .any(|event| event.fields.contains(&field.as_str())),
                 "no event carries {field}"
             );
         }
@@ -621,7 +628,11 @@ mod tests {
         assert!(page.contains(HEADER));
         assert!(page.contains("\nnightly: true\n"));
         for method in METHODS {
-            assert!(page.contains(&format!("\n### `{}`\n", method.name)), "{}", method.name);
+            assert!(
+                page.contains(&format!("\n### `{}`\n", method.name)),
+                "{}",
+                method.name
+            );
             assert!(
                 page.contains(&format!("workroom api call {} '", method.name)),
                 "{}",
@@ -632,7 +643,11 @@ mod tests {
             }
         }
         for event in EVENTS {
-            assert!(page.contains(&format!("| `{}` |", event.name)), "{}", event.name);
+            assert!(
+                page.contains(&format!("| `{}` |", event.name)),
+                "{}",
+                event.name
+            );
         }
         assert!(page.contains("| `since.boot` |"), "nested fields get rows");
         assert!(page.contains("\n### The session object\n"));
@@ -642,7 +657,10 @@ mod tests {
     #[test]
     fn type_names_link_the_shared_objects() {
         let sessions = serde_json::json!({"type": "array", "items": session_schema()});
-        assert_eq!(type_of(&sessions), "array of [session](#the-session-object)");
+        assert_eq!(
+            type_of(&sessions),
+            "array of [session](#the-session-object)"
+        );
         assert_eq!(
             type_of(&serde_json::json!({"type": ["string", "null"]})),
             "string or null"
