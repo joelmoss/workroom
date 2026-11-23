@@ -103,6 +103,14 @@ struct SidebarTerminalsList: View, Equatable {
     return !store.terminals.tabs(for: target).isEmpty
   }
 
+  /// Whose terminals are listed under a group's row here, when they are: the Quick Terminal's
+  /// panel's for its group, this window's for any other.
+  private func listedTerminals(of group: TerminalGroup, _ sid: SidebarID) -> TerminalPanes? {
+    guard showsTerminals(of: group, sid) else { return nil }
+    guard group.isBuiltIn else { return store.terminals }
+    return (section.observedQuickTerminalHolder as? QuickTerminalHost)?.terminals
+  }
+
   /// Whether the Quick Terminal's panel has terminals to list under its row, folded or not.
   private var quickTerminalHasTerminals: Bool {
     guard let panel = section.observedQuickTerminalHolder as? QuickTerminalHost else {
@@ -134,7 +142,7 @@ struct SidebarTerminalsList: View, Equatable {
       SidebarHoverRegion(id: sid) { hovered in
         SidebarTerminalGroupRowAdapter(
           sid: sid, group: group, canFold: !group.isBuiltIn || quickTerminalHasTerminals,
-          hovered: hovered, actions: sectionActions
+          listedHere: listedTerminals(of: group, sid), hovered: hovered, actions: sectionActions
         )
         .equatable()
         .paneDropZone(.target(sid), store: store)
@@ -392,7 +400,7 @@ struct SidebarStandaloneRowAdapter: View, Equatable {
   private var model: SidebarStandaloneRowModel {
     SidebarStandaloneRowModel(
       sid: sid, title: title, tool: store.standaloneTerminal(sid)?.tab.recognizedTool,
-      activity: sid.targetID.map(store.sectionActivity(of:)) ?? SidebarTargetActivity())
+      activity: sid.targetID.map { store.sectionActivity(of: $0) } ?? SidebarTargetActivity())
   }
 
   /// Its terminal's title, in parts so the row can fade a default title's folder.

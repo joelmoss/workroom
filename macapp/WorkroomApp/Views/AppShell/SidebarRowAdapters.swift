@@ -163,11 +163,14 @@ extension AppStore {
 
   /// What a Terminals-section row's terminals report on it (story 13): every holder's, since a
   /// standalone terminal or a group's terminals may be in another window or the Quick Terminal's
-  /// panel, and the row is in every window.
-  func sectionActivity(of targetID: TargetID) -> SidebarTargetActivity {
+  /// panel, and the row is in every window. `excluding` leaves out the holder whose terminals are
+  /// listed under the row, as their own rows show their marks; another holder's still count.
+  func sectionActivity(of targetID: TargetID, excluding listed: TerminalPanes? = nil)
+    -> SidebarTargetActivity
+  {
     SidebarTargetActivity(
       terminalsSection.observedHolders.reduce(TargetStatusSummary()) {
-        $0 + $1.terminals.statusSummary(forTargetID: targetID)
+        $1.terminals === listed ? $0 : $0 + $1.terminals.statusSummary(forTargetID: targetID)
       })
   }
 

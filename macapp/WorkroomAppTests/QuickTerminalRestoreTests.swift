@@ -178,7 +178,7 @@ final class QuickTerminalRestoreTests: XCTestCase {
     let reloaded = TerminalsSection(file: TerminalsSectionFile(url: url))
     XCTAssertEqual(reloaded.quickTerminal.startingFolder, "~/ops")
     XCTAssertTrue(reloaded.quickTerminal.isFolded)
-    XCTAssertEqual(reloaded.quickTerminal.name, "Quick Terminal")
+    XCTAssertEqual(reloaded.quickTerminal.name, "Quick Terminals")
     XCTAssertEqual(reloaded.entries.count, 1, "the built-in group is no entry")
     XCTAssertEqual(reloaded.rows.first?.targetID, .quickTerminal)
   }

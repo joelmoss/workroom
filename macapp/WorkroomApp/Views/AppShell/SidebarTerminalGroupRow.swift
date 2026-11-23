@@ -61,11 +61,9 @@ struct SidebarTerminalGroupRow: View, Equatable {
       // Its terminals' marks (waiting beats a stopped error beats running), sliding left on hover
       // for its "+", as a project row's do for its settings and "+".
       SidebarHoverTrailing(hovered: model.hovered && !renaming) {
-        // Expanded, its terminals' rows show their own marks and unread dots, so it shows neither,
-        // as a root's or workroom's row does.
-        if !model.showsTerminals {
-          SidebarSectionActivityMarks(sid: sid, activity: model.activity, actions: actions)
-        }
+        // Its terminals listed under it show their own marks (`listedHere`); it shows what the
+        // rest report, in other windows or the Quick Terminal's panel.
+        SidebarSectionActivityMarks(sid: sid, activity: model.activity, actions: actions)
       } buttons: {
         SidebarIconButton(
           systemImage: "plus", help: newTerminalTitle, id: "sidebar.group.new.\(key)",
@@ -203,9 +201,6 @@ struct SidebarTerminalGroupRowModel: Equatable {
   /// Whether the pointer is over the row.
   var hovered = false
 
-  /// Whether its terminals are listed under it: it can fold, and is not folded.
-  var showsTerminals: Bool { canFold && !group.isFolded }
-
   /// Its menu's and VoiceOver's Expand or Collapse, offered whenever its chevron would be.
   var foldItem: SidebarFoldItem? { canFold ? SidebarFoldItem(expanded: !group.isFolded) : nil }
 
@@ -225,12 +220,15 @@ struct SidebarTerminalGroupRowAdapter: View, Equatable {
   let group: TerminalGroup
   /// See `SidebarTerminalGroupRowModel.canFold`.
   var canFold = true
+  /// Whose terminals are listed under its row here, left out of its marks
+  /// (`AppStore.sectionActivity(of:excluding:)`), or nil while none are.
+  var listedHere: TerminalPanes? = nil
   var hovered = false
   let actions: SidebarSectionActions
 
   nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
     lhs.sid == rhs.sid && lhs.group == rhs.group && lhs.canFold == rhs.canFold
-      && lhs.hovered == rhs.hovered
+      && lhs.listedHere === rhs.listedHere && lhs.hovered == rhs.hovered
   }
 
   var body: some View {
@@ -240,7 +238,8 @@ struct SidebarTerminalGroupRowAdapter: View, Equatable {
   private var model: SidebarTerminalGroupRowModel {
     SidebarTerminalGroupRowModel(
       sid: sid, group: group, title: store.target(for: sid)?.title ?? TerminalGroup.untitled,
-      activity: sid.targetID.map(store.sectionActivity(of:)) ?? SidebarTargetActivity(),
+      activity: sid.targetID.map { store.sectionActivity(of: $0, excluding: listedHere) }
+        ?? SidebarTargetActivity(),
       canFold: canFold, hovered: hovered)
   }
 }

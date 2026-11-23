@@ -726,22 +726,25 @@ final class SidebarInvalidationTests: XCTestCase {
     XCTAssertEqual(Set(SidebarRowPasses.byRow.keys), [group], "only the hovered row re-runs")
   }
 
-  /// A group lists its terminals under its row, and so hides its own marks, only while it can
-  /// fold and is unfolded; hover never changes that.
-  func testAGroupsRowListsItsTerminalsOnlyWhileUnfolded() throws {
-    func model(folded: Bool, canFold: Bool, hovered: Bool) -> SidebarTerminalGroupRowModel {
-      var group = TerminalGroup(id: UUID(), name: "Ops")
-      group.isFolded = folded
-      return SidebarTerminalGroupRowModel(
-        sid: .terminalGroup(group.id), group: group, title: "Ops",
-        activity: SidebarTargetActivity(), canFold: canFold, hovered: hovered)
-    }
-    XCTAssertTrue(model(folded: false, canFold: true, hovered: false).showsTerminals)
-    XCTAssertTrue(model(folded: false, canFold: true, hovered: true).showsTerminals)
-    XCTAssertFalse(model(folded: true, canFold: true, hovered: true).showsTerminals, "folded")
-    XCTAssertFalse(
-      model(folded: false, canFold: false, hovered: true).showsTerminals,
-      "an empty Quick Terminal never folds")
+  /// A group's row leaves out only the terminals listed under it, whose own rows show their
+  /// marks: a terminal waiting in another window, listed nowhere here, still shows on it.
+  func testAGroupsRowLeavesOutOnlyTheTerminalsListedUnderIt() throws {
+    let store = AppStore()
+    let sid = try XCTUnwrap(store.terminalsSection.addGroup(named: "Ops").sidebarID)
+    let target = try XCTUnwrap(store.target(for: sid))
+    let tab = store.terminals.addTab(for: target)
+    store.terminals.seedProgramStatusForFixture(
+      tab: tab.id, target: target.id,
+      records: [ProgramStatusRecord(id: "", state: .blocked, kind: .permission, episode: 1)])
+
+    XCTAssertEqual(store.sectionActivity(of: target.id).waiting, 1, "folded, it shows it")
+    XCTAssertEqual(
+      store.sectionActivity(of: target.id, excluding: store.terminals).waiting, 0,
+      "listed under it here, its own row shows it")
+    let otherWindow = AppStore(terminalsSection: store.terminalsSection)
+    XCTAssertEqual(
+      otherWindow.sectionActivity(of: target.id, excluding: otherWindow.terminals).waiting, 1,
+      "in a window that lists none of the group's terminals, the row still shows it")
   }
 
   /// A group's menu and VoiceOver offer Collapse while its terminals show and Expand while folded,
