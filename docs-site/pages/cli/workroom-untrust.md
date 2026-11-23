@@ -5,7 +5,7 @@ description: "Forget the approval of a project's setup and teardown scripts."
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
-Mac only.
+Nightly only. Runs on a Mac only, and fails with `MacOnly` elsewhere.
 
 ```text
 workroom untrust

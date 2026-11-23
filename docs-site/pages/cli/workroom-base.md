@@ -9,7 +9,7 @@ description: "Set or clear the branch new workrooms start from."
 
 Set or clear the branch new workrooms start from. BRANCH is a branch on origin, such as develop, or &lt;remote>/&lt;branch> for another remote, such as upstream/main. Workroom fetches that remote and uses its copy of the branch, else the local branch. A project's own base wins over the --global one. Unset, new workrooms start from origin's default branch.
 
-Mac only.
+Nightly only. Runs on a Mac only, and fails with `MacOnly` elsewhere.
 
 ```text
 workroom base

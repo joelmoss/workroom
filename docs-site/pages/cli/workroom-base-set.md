@@ -5,7 +5,7 @@ description: "Start new workrooms from BRANCH."
 
 <!-- Generated from the workroom binary's commands by `make docs-cli`. Don't edit by hand. -->
 
-Mac only.
+Nightly only. Runs on a Mac only, and fails with `MacOnly` elsewhere.
 
 ```text
 workroom base set BRANCH

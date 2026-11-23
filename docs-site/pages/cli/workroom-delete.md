@@ -9,7 +9,7 @@ description: "Delete an existing workroom."
 
 Delete an existing workroom. When run without a name, shows an interactive multi-select menu.
 
-Mac only.
+Nightly only. Runs on a Mac only, and fails with `MacOnly` elsewhere.
 
 ```text
 workroom delete [NAME]
